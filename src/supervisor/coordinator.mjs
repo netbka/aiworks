@@ -18,6 +18,8 @@ export const LANE = '_coordinator';
 const RUNNER = join(here, 'runner.mjs');
 const AIWORKS_ROOT = resolve(here, '..', '..');
 const DAY = 24 * 60 * 60_000;
+// AW-005: a controller running unmerged code starts no coordinator read either.
+const UNMERGED_REASON = 'the supervisor code is not merged into origin/main, so no new coordinator read starts';
 const MAX_ATTEMPTS = 2;
 const REPO = '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$';
 
@@ -273,6 +275,8 @@ export async function coordinatorTick(ctl) {
   const today = ctl.store.get('SELECT COUNT(*) AS n FROM coordinator_runs WHERE created_at > ?', now - DAY).n;
   // No daily cap unless the owner sets maxRunsPerDay; provider usage limits are the stop (failed reads retry after 30 minutes).
   if (Number.isSafeInteger(cfg.maxRunsPerDay) && today >= cfg.maxRunsPerDay) return;
+  const unmerged = ctl.unmergedRevision?.();
+  if (unmerged) { setBlocked(ctl, `${UNMERGED_REASON}: ${unmerged}`); return; }
   if (!runtimeIntact(ctl, cfg)) { setBlocked(ctl, 'the live runtime checkout is not clean at the deployed commit; restore it before the coordinator reads'); return; }
   const workspace = prepareWorkspace(ctl, cfg);
   if (workspace.error) { setBlocked(ctl, workspace.error); return; }
@@ -340,7 +344,13 @@ async function reconcile(ctl, ctx, cfg, run) {
   const now = ctl.now();
   if (run.state === 'recorded') {
     if (runner) { markRead(ctl, ctx, run); return; }
-    if (!existsSync(join(run.run_dir, 'launch.json'))) { await launch(ctl, ctx, run); return; }
+    if (!existsSync(join(run.run_dir, 'launch.json'))) {
+      // Unmerged code launches nothing (AW-005); the recorded run waits for merged code.
+      const unmerged = ctl.unmergedRevision?.();
+      if (unmerged) { setBlocked(ctl, `${UNMERGED_REASON}: ${unmerged}`); return; }
+      await launch(ctl, ctx, run);
+      return;
+    }
     if (!result && now - run.updated_at < ctl.config.startGraceMs) return;
     if (!result && existsSync(join(run.run_dir, 'run.lock'))) return; // a runner exists without its receipt: never start a second one
   }

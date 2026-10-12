@@ -2,7 +2,6 @@
 // pointers, declared exception and gap IDs and rules), resolved from the governance root's registry exactly as the registration
 // gate matches. Never another project's, never a default; earlier packets, digests and resumes are unchanged.
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,7 +13,7 @@ import * as workerContext from '../../scripts/lib/worker-context.mjs';
 import { buildPrompt } from '../../src/supervisor/adapters/claude.mjs';
 import { campaignPause, campaignRecheck, campaignStart } from '../../src/supervisor/api.mjs';
 import * as campaign from '../../src/supervisor/campaign.mjs';
-import { CLI, declaration, environment, GOVERNANCE, ROOT, runUntil, skipWithoutSqlite, SQLITE } from './helpers.mjs';
+import { declaration, environment, GOVERNANCE, ROOT, runCli, runtimeCheckout, runUntil, skipWithoutSqlite, SQLITE } from './helpers.mjs';
 const { Store } = SQLITE ? await import('../../src/supervisor/store.mjs') : {};
 const { Controller } = SQLITE ? await import('../../src/supervisor/controller.mjs') : {};
 
@@ -308,7 +307,9 @@ test('the scope and authority digests of every committed declaration are unchang
 
 test('an identical resume of every committed declaration is accepted, in process and through cli.mjs start', { skip: !SQLITE }, (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'aiworks-resume-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
+  // The deploy runs the runtime checkout's own CLI on its own campaigns/ files, at a revision merged into main (AW-005).
+  const runtime = runtimeCheckout();
+  t.after(() => { rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); runtime.cleanup(); });
   for (const name of COMMITTED) {
     const data = join(dir, name.replace(/\.json$/, ''));
     const store = new Store(join(data, 'supervisor.db'));
@@ -321,10 +322,7 @@ test('an identical resume of every committed declaration is accepted, in process
       campaignPause(store, decl.campaignId, 'upgrade');
     } finally { store.close(); }
     // The upgrade procedure: pause, stop, deploy, then `cli.mjs start <file>` with the identical declaration.
-    const env = { ...process.env, AIWORKS_DATA: '' };
-    delete env.NODE_TEST_CONTEXT;
-    const resumed = spawnSync(process.execPath, ['--no-warnings', CLI, 'start', join(ROOT, 'campaigns', name), '--data', data],
-      { env, windowsHide: true, encoding: 'utf8' });
+    const resumed = runCli(runtime.cli, ['start', join(runtime.root, 'campaigns', name), '--data', data]);
     assert.equal(resumed.status, 0, `${name}: ${resumed.stderr}`);
     const status = JSON.parse(resumed.stdout);
     assert.equal(status.control, 'registered', `${name} resumed`);

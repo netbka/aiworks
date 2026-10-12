@@ -4,21 +4,24 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CampaignError, campaignCancel, campaignPause, campaignRecheck, campaignStart, campaignStatus } from './api.mjs';
 import { assertRegisteredTarget } from './campaign.mjs';
 import { Controller } from './controller.mjs';
 import { configuredGovernanceRoot, requireGovernanceRoot } from './governance.mjs';
 import { clearCoordinatorViolation, coordinatorView, postOwnerMessage } from './coordinator.mjs';
+import { CODE_ROOT, declarationFromMain, revisionNotMerged } from './provenance.mjs';
 import { Store } from './store.mjs';
 
 const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--governance <engineering-platform-checkout>] ...
   serve                                 run the controller loop (exits cleanly when <data>/STOP exists)
   keep                                  OS-supervision helper: run serve and restart it after any exit until STOP
   stop                                  create <data>/STOP so serve and keep exit cleanly
-  start <declaration.json>              register, amend (authorization.version + 1) or resume a campaign; registering a new
-                                        one needs the governance checkout (GOVERNANCE_ROOT_REQUIRED / GOVERNANCE_ROOT_INVALID)
+  start <declaration.json>              register, amend (authorization.version + 1) or resume a campaign. The file must be
+                                        campaigns/<name>.json of this checkout, committed unmodified at a HEAD merged into
+                                        origin/main (DECLARATION_NOT_ON_MAIN / RUNTIME_NOT_MERGED); registering a new one also
+                                        needs the governance checkout (GOVERNANCE_ROOT_REQUIRED / GOVERNANCE_ROOT_INVALID)
   status <campaignId>
   pause <campaignId> [reason]
   cancel <campaignId> [reason]
@@ -64,8 +67,10 @@ try {
   store = new Store(join(dataDir, 'supervisor.db'), { readOnly: command === 'status' || command === 'messages' });
   if (command === 'serve') await serve();
   else if (command === 'start') {
-    const declaration = JSON.parse(readFileSync(rest[0], 'utf8'));
-    // Only a new registration is gated; resuming or amending a stored campaign is unaffected.
+    // AW-005: registration, amendment and resume all take the declaration committed in this checkout's campaigns/,
+    // unmodified, at a HEAD merged into origin/main. There is no flag to skip this.
+    const declaration = declarationFromMain(rest[0], { root: CODE_ROOT });
+    // Only a new registration is gated on the registry; resuming or amending a stored campaign is unaffected.
     if (!store.campaign(declaration?.campaignId)) {
       assertRegisteredTarget(declaration, explicitGovernance ? resolve(explicitGovernance) : configuredGovernanceRoot(dataDir));
     }
@@ -102,16 +107,19 @@ async function serve() {
     try { appendFileSync(logFile, text); } catch { /* keep running without a log file */ }
     if (process.stdout.isTTY) process.stdout.write(text);
   };
-  const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', windowsHide: true });
+  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: CODE_ROOT, encoding: 'utf8', windowsHide: true });
   const codeRevision = head.status === 0 ? head.stdout.trim() : null;
+  // AW-005: this process's own code must be merged into origin/main before it starts new work. Always supplied here.
+  const revisionCheck = () => revisionNotMerged({ root: CODE_ROOT, revision: codeRevision });
   // Governance is optional at startup: without a valid root the controller still runs but dispatches no worker (it raises a
   // project-governance blocker per campaign) rather than fall back to this checkout.
   const governanceRoot = explicitGovernance ? resolve(explicitGovernance) : config.governanceRoot;
   let governanceNote = 'governance checkout ok';
   try { requireGovernanceRoot(governanceRoot); } catch (error) { governanceNote = `${error.code}: no worker will be dispatched until it is fixed`; }
-  const controller = new Controller({ store, config, dataDir, log, codeRevision, governanceRoot });
+  const controller = new Controller({ store, config, dataDir, log, codeRevision, governanceRoot, revisionCheck });
   log(`supervisor instance ${controller.instanceId} started (pid ${process.pid}, code ${codeRevision ?? 'unknown'}, data ${dataDir}, ${governanceNote})`);
+  const unmerged = controller.unmergedRevision();
+  if (unmerged) log(`no new work will start: ${unmerged} (AW-005)`);
   let stopping = false;
   const stop = (signal) => {
     if (stopping) return;

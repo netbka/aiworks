@@ -8,6 +8,7 @@ import { pendingInstructions } from '../supervisor/instructions.mjs';
 import { roleUnavailableReason } from '../supervisor/adapters/executors.mjs';
 import { campaignLimits } from '../supervisor/campaign.mjs';
 import { coordinatorView, postOwnerMessage } from '../supervisor/coordinator.mjs';
+import { CODE_ROOT, storedDeclarationOnMain } from '../supervisor/provenance.mjs';
 
 const readConfig = (dataDir) => {
   try { return JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { return {}; }
@@ -286,7 +287,9 @@ export function postMessage(dataDir, input, now = Date.now()) {
   } finally { store.close(); }
 }
 
-export function applyCommand(dataDir, input, now = Date.now()) {
+// provenanceRoot: the checkout whose origin/main a Resume is checked against (AW-005). The HTTP server never passes it, so
+// it is always this dashboard's own checkout; only in-process callers (the tests) point it at another repository.
+export function applyCommand(dataDir, input, now = Date.now(), { provenanceRoot = CODE_ROOT } = {}) {
   const allowed = ['campaignId', 'action', 'taskId', 'taskVersion', 'version', 'authorizationVersion', 'scopeDigest', 'requestId', 'text', 'role'];
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !allowed.includes(key)) ||
       !identifier.test(input.campaignId ?? '') || !['pause', 'resume', 'recheck', 'cancel', 'instruct'].includes(input.action) ||
@@ -301,6 +304,13 @@ export function applyCommand(dataDir, input, now = Date.now()) {
   if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'Supervisor is unavailable.');
   const store = new Store(join(dataDir, 'supervisor.db'));
   try {
+    // AW-005: Resume restarts work from the stored declaration, so that declaration must be one committed in campaigns/
+    // on origin/main. Checked before the write transaction (git reads), then pinned inside it by the campaign version.
+    const before = input.action === 'resume' ? store.campaign(input.campaignId) : null;
+    if (before?.control === 'paused') {
+      try { storedDeclarationOnMain(before.declaration, { root: provenanceRoot }); }
+      catch (error) { throw fail(409, `Resume refused: ${error.message}`); }
+    }
     return store.tx(() => {
       const id = input.campaignId;
       const c = store.campaign(id);
@@ -325,6 +335,7 @@ export function applyCommand(dataDir, input, now = Date.now()) {
       }
       if (input.action === 'resume') {
         if (c.control !== 'paused') throw fail(409, 'Only a paused campaign can resume.');
+        if (c.version !== before?.version) throw fail(409, 'Work changed since this view was loaded. Refresh and try again.');
         campaignStart(store, c.declaration, now);
       } else if (input.action === 'instruct') {
         if (pendingInstructions(store, c, input.taskId).length >= 5) throw fail(409, 'This task already has five queued instructions. Wait for its next worker.');

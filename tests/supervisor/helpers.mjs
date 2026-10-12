@@ -1,7 +1,7 @@
 // Shared harness for AIWorks supervisor tests: a disposable git origin + clone, synthetic
 // claude/gh executables and fast timings. No network, model, production or GitHub access.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -103,6 +103,47 @@ export function declaration({ tasks, limits = {}, version = 1, campaignId = 'tes
 }
 
 export const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+
+/**
+ * A disposable AIWorks checkout for tests that run cli.mjs as a process (AW-005): a temp git repository holding a copy of
+ * this tree's supervisor code, worker-context runtime, schemas and campaigns, plus any extra `declarations`, committed
+ * with `refs/remotes/origin/main` at that commit, so it is "merged main". `unmerged: true` adds one local commit that
+ * origin/main does not contain. node_modules is linked, never copied or committed. The real checkout's own git state
+ * (a campaign branch, a CI merge commit) therefore never decides a test. Governance still comes from GOVERNANCE.
+ */
+export function runtimeCheckout({ declarations = {}, unmerged = false } = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'aiworks-runtime-'));
+  for (const dir of ['src/supervisor', 'scripts/lib', 'registry', 'schemas', 'campaigns']) {
+    cpSync(join(ROOT, dir), join(root, dir), { recursive: true });
+  }
+  cpSync(join(ROOT, 'package.json'), join(root, 'package.json'));
+  for (const [name, value] of Object.entries(declarations)) writeFileSync(join(root, 'campaigns', name), `${JSON.stringify(value, null, 2)}\n`);
+  writeFileSync(join(root, '.gitignore'), 'node_modules\n');
+  symlinkSync(join(ROOT, 'node_modules'), join(root, 'node_modules'), 'junction');
+  // autocrlf=true, as on HomePc: committed blobs are LF while working files may keep CRLF.
+  const run = (...args) => git(root, '-c', 'user.name=Runtime Test', '-c', 'user.email=runtime-test@example.invalid', '-c', 'core.autocrlf=true', ...args);
+  run('init', '-q', '-b', 'main');
+  run('add', '-A');
+  run('commit', '-q', '-m', 'merged runtime');
+  run('update-ref', 'refs/remotes/origin/main', 'HEAD');
+  if (unmerged) {
+    writeFileSync(join(root, 'UNMERGED.md'), 'A local commit that origin/main does not contain.\n');
+    run('add', '-A');
+    run('commit', '-q', '-m', 'unmerged local change');
+  }
+  return {
+    root, cli: join(root, 'src', 'supervisor', 'cli.mjs'), git: run,
+    // The node_modules junction is removed as a link; rmSync never follows it into the real dependencies.
+    cleanup: () => { try { rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* Windows may hold files briefly */ } },
+  };
+}
+
+/** Run `cli.mjs <args>` from `cli` as the owner would, with a clean environment for the store selection. */
+export function runCli(cli, args) {
+  const env = { ...process.env, AIWORKS_DATA: '' };
+  delete env.NODE_TEST_CONTEXT;
+  return spawnSync(process.execPath, ['--no-warnings', cli, ...args], { env, windowsHide: true, encoding: 'utf8' });
+}
 
 /** Tick a controller until the predicate holds, asserting the liveness invariant on every tick. The generous
  * deadline only matters when a run is slow under machine load (engineering-platform-archive#58); a passing test returns as soon as it holds. */
