@@ -11,8 +11,8 @@ Nothing else is blocked on you.
 
 ## Where things stand
 
-- **AIWorks is its own product now.** On 2026-10-12 it was split out of Engineering Platform ([AW-007](DECISIONS.md#aw-007---aiworks-is-a-standalone-product-separate-from-engineering-platform)). It runs on HomePc from `D:/Git/aiworks/.local/runtime`.
-- **All earlier campaigns are finished.** Every campaign that ran on HomePc before the split finished; one (`dyk-no-manual-edit`) was cancelled. Their pull requests and reports are in GitHub. The supervisor store is fresh, so no campaign is registered yet. The old records are archived ([AW-007](DECISIONS.md#aw-007---aiworks-is-a-standalone-product-separate-from-engineering-platform)).
+- **AIWorks is its own product now.** On 2026-10-12 it was split out of Engineering Platform ([AW-007](DECISIONS.md#aw-007---aiworks-is-a-standalone-product-separate-from-engineering-platform)). It runs on HomePc from `D:/Git/aiworks/.local/runtime` (verified 2026-10-12: tasks `AIWorks Supervisor` and `AIWorks Dashboard`, dashboard at http://127.0.0.1:4318).
+- **All earlier campaigns are finished.** Every campaign that ran on HomePc before the split finished; one (`dyk-no-manual-edit`) was cancelled. Their pull requests and reports are in GitHub. The supervisor store started fresh. The first campaign, `aiworks-smoke`, checked end to end that the runbooks match the code; it passed independent verification and posted its report on [netbka/aiworks#2](https://github.com/netbka/aiworks/issues/2) (2 worker runs). The old records are archived ([AW-007](DECISIONS.md#aw-007---aiworks-is-a-standalone-product-separate-from-engineering-platform)).
 - **The second PC is unchanged.** HOMELENOVO still runs the old Engineering Platform build with the elma-wiki campaigns. AIWorks does not manage it, and its current state is not observed from here.
 - **Project rules come from Engineering Platform.** AIWorks reads the project registry and policies from the governance checkout at `D:/Git/aiworks/.local/governance` ([SUPERVISOR.md §6](SUPERVISOR.md#governance-checkout)).
 
