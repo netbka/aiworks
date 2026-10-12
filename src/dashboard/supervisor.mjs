@@ -2,7 +2,8 @@ import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
-import { campaignStatus, campaignPause, campaignCancel, campaignRecheck, campaignStart } from '../supervisor/api.mjs';
+import { campaignStatus, campaignPause, campaignCancel, campaignRecheck, campaignStart, supervisorLiveness } from '../supervisor/api.mjs';
+import { DEFAULTS } from '../supervisor/controller.mjs';
 import { safeText } from './roadmap.mjs';
 import { pendingInstructions } from '../supervisor/instructions.mjs';
 import { roleUnavailableReason } from '../supervisor/adapters/executors.mjs';
@@ -254,6 +255,8 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
       reason: code(item.detail?.reason), credits: item.detail?.credits === true || /credits\/billing/.test(item.detail?.detail ?? ''),
     }; });
     const recent = recentEvents(store, since, now);
+    // aiworks#18: a stopped supervisor, with its last lease renewal, for the owner view to lead with.
+    const controller = supervisorLiveness(store, { now, leaseMs: readConfig(dataDir).leaseMs ?? DEFAULTS.leaseMs, stopRequested: existsSync(join(dataDir, 'STOP')) });
     store.db.exec('COMMIT');
     const view = coordinatorView(store, readConfig(dataDir), now);
     const coordinator = { configured: view.configured, configError: view.configError ? safeText(view.configError, 300) : null,
@@ -265,7 +268,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
           const run = view.runs.find((item) => item.id === m.runId);
           return run ? workerProgress(dataDir, { executor_kind: 'claude-cli', workspace: run.workspace, session_id: run.session_id, run_dir: run.run_dir }) : null;
         })() : null })) };
-    return { available: true, observedAt: new Date(now).toISOString(), campaigns, activity, coordinator, recent };
+    return { available: true, observedAt: new Date(now).toISOString(), controller, campaigns, activity, coordinator, recent };
   } catch { return { available: false, message: 'Supervisor state is temporarily unavailable. Commands are disabled until it reconnects.', campaigns: [], activity: [] }; }
   finally { store?.close(); }
 }
