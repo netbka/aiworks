@@ -7,7 +7,7 @@
     "grantedBy": "owner (netbka), delegated to the owner's main session",
     "grantedAt": "2026-10-12",
     "reference": "https://github.com/netbka/aiworks/issues/14",
-    "text": "On 2026-10-12 the owner directed: \"take this as starting point and deliver till end. Delivery this work with the AIWorks environment.\" The starting point is docs/PROJECT_WORKSPACE_PLAN.md (PR #12), with owner decisions D1, D3, D5 (direction only) and D9 recorded in its section 8. This campaign takes wave 0 of the plan: port archived Engineering Platform PR #139 (AW-005 enforcement), port archived PR #126 (duplicate repair admission, #5 scope A) and the #6 documentation carry-over. Commits are published as PRs only: the supervisor never merges or deploys, and the live runtime, its data directory, the governance checkout and the scheduled tasks are never touched. No run cap or cost ceiling (AW-002); provider limits are waited out. Provider order Claude, then Codex."
+    "text": "On 2026-10-12 the owner directed: \"take this as starting point and deliver till end. Delivery this work with the AIWorks environment.\" The starting point is docs/PROJECT_WORKSPACE_PLAN.md (PR #12), with owner decisions D1, D3, D5 (direction only) and D9 recorded in its section 8. This campaign takes wave 0 of the plan: the AIWorks stopper rule (#17), port archived Engineering Platform PR #139 (AW-005 enforcement), port archived PR #126 (duplicate repair admission, #5 scope A) and the #6 documentation carry-over. Commits are published as PRs only: the supervisor never merges or deploys, and the live runtime, its data directory, the governance checkout and the scheduled tasks are never touched. No run cap or cost ceiling (AW-002); provider limits are waited out. Provider order Claude, then Codex."
   },
   "target": {
     "tenantId": "netbka",
@@ -44,6 +44,30 @@
     "Write for the owner first: plain English, short sentences, the outcome before the mechanism. Link Engineering Platform policies instead of copying them."
   ],
   "tasks": [
+    {
+      "id": "F0-STOPPERS",
+      "issue": 17,
+      "title": "When to stop for the owner: add the stopper rule to AGENTS.md",
+      "outcome": "Agents working on AIWorks stop for the owner only for owner-reserved matters, and every unjustified stop is recorded as an issue.",
+      "deliverable": "commit",
+      "goal": "Fix the rule gap recorded in #17 (gh issue view 17). Add a short section \"When to stop for the owner\" to AGENTS.md that applies Engineering Platform's rules to AIWorks, linking them instead of copying them: docs/OWNER_INTERVENTION.md and docs/DELIVERY_PRACTICES.md sections \"Prove the blocker\" and \"Unjustified interruptions\" (read with gh api, read-only). Use netbka/Dyk AGENTS.md section 4 as the model (gh api repos/netbka/Dyk/contents/AGENTS.md, read-only). It must say: ask the owner only for an owner-reserved matter (one owner-reserved issue with options, a recommendation and a default that keeps current behaviour, while other work continues; silence keeps the default), for a destructive or hard-to-reverse action not already authorized, or for access only the owner can grant after the allowed alternatives failed; never add a new blocking gate that depends on something only the owner can provide; prove a blocker before pausing; every unjustified interruption gets an issue. Name the AIWorks cases that are not owner stops: merging a PR that passed the supervisor's independent verification of its exact head (owner decision 2026-10-12, #17), declaring campaigns for an outcome the owner already authorized, provider limits, one failing tool or provider, file overlap with another task.",
+      "dependsOn": [],
+      "constraints": [
+        "Change only AGENTS.md. Add the section; keep every existing rule. Where the section records the 2026-10-12 owner decision on supervisor verification as the review, say so next to the existing rule in \"Changing the supervisor\" with a link to #17, without removing that rule."
+      ],
+      "acceptance": [
+        "The section links EP OWNER_INTERVENTION.md and DELIVERY_PRACTICES.md#unjustified-interruptions and copies no EP policy text beyond one-line summaries.",
+        "It lists the allowed owner stops, the AIWorks non-stops named in the goal, the default-and-continue rule for owner-reserved questions, the no-new-self-made-blockers rule and the issue-per-unjustified-interruption rule.",
+        "No existing rule in AGENTS.md is removed or weakened; the PR shows the diff is additive apart from the linked note on supervisor verification.",
+        "npm run check passes."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md",
+        "docs/DECISIONS.md",
+        "docs/SUPERVISOR.md"
+      ]
+    },
     {
       "id": "F1-AW005",
       "issue": 6,
