@@ -69,7 +69,11 @@ export const DEFAULTS = {
   startGraceMs: 30_000, dispatchWaitMs: 15_000, publishRetryMs: 5 * 60_000, outboxRetryMs: 60_000,
   retryBackoffMs: [2 * 60_000, 10 * 60_000, 30 * 60_000],
   integrationPollMs: 60_000,
+  // A GitHub rate-limit refusal waits for its reported reset plus this margin, instead of publishRetryMs (aiworks#21).
+  rateLimitMarginMs: 5_000,
 };
+// GitHub resets its rate limits within the hour: a reset time further out is treated as an hour.
+const RATE_LIMIT_MAX_WAIT_MS = 60 * 60_000;
 // AW-005: how often a controller re-reads whether its own revision is merged. A constant, not a config.json key.
 const REVISION_CHECK_MS = 60_000;
 
@@ -931,9 +935,15 @@ export class Controller {
       if (error instanceof FencedError) throw error;
       this.log(`publish ${task.task_id} failed: ${error.message}`);
       this.fenced(ctx, () => {
-        const t = this.store.task(ctx.id, task.task_id);
-        this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, t.version,
-          { retry_at: this.now() + this.config.publishRetryMs, last_error: `publish: ${String(error.message).slice(0, 500)}` }, this.now());
+        const t = this.store.task(ctx.id, task.task_id), now = this.now();
+        // A rate-limit refusal with a reset time waits until that reset; any other failure retries after publishRetryMs.
+        const reset = error instanceof github.RateLimitError && Number.isFinite(error.resetAt)
+          ? Math.min(Math.max(error.resetAt, now), now + RATE_LIMIT_MAX_WAIT_MS) + this.config.rateLimitMarginMs : null;
+        const detail = String(error.message).slice(0, 500);
+        this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, t.version, reset
+          ? { retry_at: reset, last_error: `publish: GitHub rate limit; waiting until ${new Date(reset).toISOString()}: ${detail}` }
+          : { retry_at: now + this.config.publishRetryMs, last_error: `publish: ${detail}` }, now);
+        if (reset) this.store.journal(ctx.id, 'publish-rate-limited', { task: task.task_id, retryAt: reset }, now);
       });
     }
   }
