@@ -228,7 +228,7 @@ function providerStatus(c) {
 }
 
 // What the worker actually returned. "result" only means a valid response arrived; the verdict inside decides.
-const terminalLabels = { accepted: 'accepted', rejected: 'rejected', resolved: 'built, waiting for the independent check', 'evidence-unavailable': 'could not gather required evidence', 'blocked-owner-reserved': 'blocked on a decision reserved for you' };
+const terminalLabels = { accepted: 'passed the check', rejected: 'rejected', resolved: 'built, waiting for the independent check', 'evidence-unavailable': 'could not gather required evidence', 'blocked-owner-reserved': 'blocked on a decision reserved for you' };
 const outcomeLabels = { unavailable: 'AI provider unavailable (run not counted)', quota: 'provider limit', auth: 'provider authentication', timeout: 'timed out', lost: 'runner lost', 'invalid-result': 'invalid result', 'exit-without-result': 'exited without a result', 'spawn-failed': 'could not start', error: 'failed',
   'reply-withheld': 'reply withheld because it looked like it contained a credential (it was not posted)',
   'boundary-violation': 'the agent changed its checkout or the live runtime; nothing it produced was posted' };
@@ -834,6 +834,34 @@ function stepScreen(project, c, task) {
         el('p', { class: 'subtext' }, `Step ${task.id} · campaign ${c.id} · `, link('step issue ↗', task.issueUrl))))))];
 }
 
+/** One Results row: what the step delivers, its state word, what follows, the link to the result and the check in details. */
+const resultRow = (row) => el('li', { class: `result-row ${row.group}`, 'data-focus-scope': `${row.campaignId}/${row.taskId}` },
+  el('div', { class: 'needs-text' }, el('span', {}, row.text), row.link ? link(`${row.link.label} ↗`, row.link.url, 'needs-link') : null),
+  // A merged row says when, then the project's release rule: never released or live.
+  el('div', { class: 'result-state' }, row.group === 'merged' ? [`Merged${row.mergedAt ? ` ${dateTime(row.mergedAt)}` : ''}.`, row.release].join(' ') : row.word),
+  row.note ? el('div', { class: 'subtext' }, row.note) : null,
+  row.asOf ? el('div', { class: 'needs-stale' }, mergeAsOf(row.asOf)) : null,
+  row.evidence ? disclosure(`results/${row.campaignId}/${row.taskId}`, el('span', { class: 'evidence' }, row.evidence),
+    el('p', { class: 'needs-detail' }, row.detail)) : null,
+  el('div', { class: 'subtext' }, campaignContext(row.campaignId)));
+
+/**
+ * Results (OWNER_WORKSPACE §4.9, slice S6): the project's finished steps grouped by state in the owner view's order,
+ * with "Review pull request #N" for the oldest waiting review as the one primary action.
+ */
+function resultsScreen(project) {
+  const results = state.owner?.results?.[String(project).toLowerCase()];
+  if (!state.owner?.available) return unavailable();
+  // The §7.1 empty copy, from the copy module through the owner view.
+  if (!results?.groups.length) return el('section', { class: 'panel' }, empty(state.owner.noResults.title, state.owner.noResults.text));
+  return el('section', { class: 'panel', 'aria-labelledby': 'results-title', 'data-focus-scope': `results/${project}` },
+    el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'results-title' }, `${plural(results.total, 'result')}, grouped by state`)),
+      results.primary ? link(`${results.primary.label} ↗`, results.primary.url, 'button') : null),
+    ...results.groups.map((group) => el('section', { class: 'needs-group', 'aria-labelledby': `results-group-${group.key}` },
+      el('h3', { id: `results-group-${group.key}`, class: 'section-title' }, `${group.title} (${group.count})`),
+      el('ul', { class: 'needs-list' }, ...group.rows.map(resultRow)))));
+}
+
 /** One project's screens. Campaign cards, step tables and costs are today's, limited to this project. */
 function projectScreen(route) {
   const project = route.project, all = projectCampaigns(project);
@@ -858,7 +886,7 @@ function projectScreen(route) {
       cards.some((c) => !['finished', 'cancelled'].includes(c.control)) ? providerNote() : null,
       cards.length ? null : empty('Nothing is running or waiting in this project', 'Finished work is under Results.')].filter(Boolean);
   }
-  if (route.tab === 'results') return [finishedList(finished), workView(campaignWork(all))].filter(Boolean);
+  if (route.tab === 'results') return [resultsScreen(project), finishedList(finished)].filter(Boolean);
   if (route.tab === 'cost') return all.map((c) => panel(campaignTitle(c), `Campaign ${c.id}`, costNotes(c).body));
   return cards.length ? [...cards.map((c) => campaignCard(c, false))] : [empty('No work is running in this project', 'Finished work and its results are under Results.')];
 }
