@@ -35,7 +35,7 @@ test('declarations: DAG order, never bypassPermissions, stable scope digest', { 
   forward.tasks[0].dependsOn = ['T2'];
   assert.throws(() => m.validateDeclaration(forward), /must name an earlier task/);
   assert.throws(() => m.validateDeclaration({ ...d, executor: { ...d.executor, permissionMode: 'bypassPermissions' } }), /permissionMode/);
-  assert.throws(() => m.validateDeclaration({ ...d, limits: { ...d.limits, slots: 2 } }), /slots must be 1/);
+  assert.throws(() => m.validateDeclaration({ ...d, limits: { ...d.limits, slots: 9 } }), /slots must be 1\.\.8 or "auto"/);
   const badPath = declaration();
   badPath.tasks[0].references = ['../secrets'];
   assert.throws(() => m.validateDeclaration(badPath), /references/);

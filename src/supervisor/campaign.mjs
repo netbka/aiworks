@@ -43,6 +43,10 @@ const controlPlane = (url) => CONTROL_PLANE_PORTS.includes(new URL(url).port);
 const safePath = (path) => text(path, 512) && !path.startsWith('/') && !/[\\:%\u0000-\u001f\u007f]/.test(path) &&
   !path.split('/').some((part) => !part || part === '.' || part === '..');
 
+// A write-domain entry: a safe path prefix (a trailing slash marks a directory) or a named exclusive resource.
+const writeEntry = (entry) => typeof entry === 'string' && (/^resource:[a-z0-9][a-z0-9._-]{0,63}$/.test(entry) ||
+  safePath(entry.endsWith('/') ? entry.slice(0, -1) : entry));
+
 export function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   if (value !== null && typeof value === 'object') {
@@ -65,7 +69,7 @@ export const authorityDigest = (declaration) => sha256(declaration);
 /**
  * Effective limits. Every limit is optional and defaults to no limit: an omitted or null limit never
  * stops work; only provider subscription/usage limits (which the supervisor waits out) do. Parallel
- * slots default to 1, the only supported value.
+ * slots default to 1; `limits.slots` may be 1..8 or "auto", which the scheduler (slice RUN5) honours once it is enabled.
  */
 export function campaignLimits(declaration) {
   const l = declaration?.limits ?? {};
@@ -115,7 +119,7 @@ export function validateDeclaration(declaration) {
   // Every limit is optional. Omitted or null means no limit (the default): work then stops only on provider
   // subscription/usage limits, which the supervisor waits out. A budget is set only when the owner declares one.
   if (l.maxWorkerRuns != null && !int(l.maxWorkerRuns, 1, 100)) bad('limits.maxWorkerRuns must be 1..100, or omitted/null for no limit');
-  if (l.slots != null && l.slots !== 1) bad('limits.slots must be 1 (parallel slots are a later admission change)');
+  if (l.slots != null && !(l.slots === 'auto' || int(l.slots, 1, 8))) bad('limits.slots must be 1..8 or "auto"');
   if (l.maxRepairRounds != null && !int(l.maxRepairRounds, 0, 5)) bad('limits.maxRepairRounds must be 0..5, or omitted/null for no limit');
   if (l.maxRetriesPerTask != null && !int(l.maxRetriesPerTask, 0, 5)) bad('limits.maxRetriesPerTask must be 0..5, or omitted/null for no limit');
   for (const key of Object.keys(l)) if (!['maxWorkerRuns', 'slots', 'maxRepairRounds', 'maxRetriesPerTask', 'maxCostUsd', 'unknownRunCostUsd'].includes(key)) bad(`unknown limits key ${key}`);
@@ -169,7 +173,7 @@ export function validateDeclaration(declaration) {
     const where = `tasks[${index}]`;
     if (!task || typeof task !== 'object') { bad(`${where} must be an object`); continue; }
     for (const key of Object.keys(task)) {
-      if (!['id', 'issue', 'title', 'outcome', 'workKey', 'deliverable', 'goal', 'dependsOn', 'requiresMergedDependencies', 'constraints', 'acceptance', 'references', 'web'].includes(key)) bad(`${where} unknown key ${key}`);
+      if (!['id', 'issue', 'title', 'outcome', 'workKey', 'writes', 'deliverable', 'goal', 'dependsOn', 'requiresMergedDependencies', 'constraints', 'acceptance', 'references', 'web'].includes(key)) bad(`${where} unknown key ${key}`);
     }
     if (!ID.test(task.id ?? '')) bad(`${where}.id invalid`);
     // commit: a verified commit is published as a PR. report: a verified report is posted to the task issue.
@@ -183,6 +187,12 @@ export function validateDeclaration(declaration) {
     if (task.workKey !== undefined && (task.deliverable !== 'commit' || typeof task.workKey !== 'string' ||
         !/^[a-z0-9][a-z0-9._:-]{0,95}$/.test(task.workKey))) {
       bad(`${where}.workKey must be a lowercase repair key (max 96) on a commit task`);
+    }
+    // The part of the repository this commit task may change (ADAPTIVE_SCHEDULER 4.3): path prefixes and named exclusive
+    // resources. Absent means the whole repository. It is part of scopeDigest, like workKey; an absent list changes no digest.
+    if (task.writes !== undefined && (task.deliverable !== 'commit' || !Array.isArray(task.writes) || task.writes.length < 1 ||
+        task.writes.length > 32 || !task.writes.every(writeEntry) || new Set(task.writes.map((w) => w.toLowerCase())).size !== task.writes.length)) {
+      bad(`${where}.writes must be 1..32 unique repository-relative path prefixes or resource:<name> entries on a commit task`);
     }
     if (!text(task.goal, 1500)) bad(`${where}.goal required (max 1500)`);
     if (!Array.isArray(task.dependsOn)) bad(`${where}.dependsOn must be an array`);
