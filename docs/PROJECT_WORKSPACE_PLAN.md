@@ -2,7 +2,7 @@
 
 **Status:** PROPOSAL / PLANNING ONLY. This document is not an execution authorization, not a campaign declaration and not an amendment to AW-001..AW-007. Do not change runtime, merge or deploy on the authority of this plan.
 
-**Prepared:** 2026-10-12. Repository basis: \`netbka/aiworks\` main at \`c63333cc04581e469d7fed4840f470db8dda7a09\`, and the linked \`netbka/engineering-platform\` main. Every "current" statement below describes inspected repository code/docs as of this revision; it is not a new live-host check.
+**Prepared:** 2026-10-12. Repository basis: `netbka/aiworks` main at `c63333cc04581e469d7fed4840f470db8dda7a09`, and the linked `netbka/engineering-platform` main. Every "current" statement below describes inspected repository code/docs as of this revision; it is not a new live-host check.
 
 **Tracking:** This planning PR plus [Workspace #7](https://github.com/netbka/aiworks/issues/7), [#8](https://github.com/netbka/aiworks/issues/8), [#9](https://github.com/netbka/aiworks/issues/9), [#10](https://github.com/netbka/aiworks/issues/10), [#11](https://github.com/netbka/aiworks/issues/11); existing [#1](https://github.com/netbka/aiworks/issues/1)..[#6](https://github.com/netbka/aiworks/issues/6). This is the one implementation-roadmap document for this redesign. GitHub issues/PRs remain the live work-state authority.
 
@@ -30,24 +30,24 @@ A **project** is the primary product object. A **campaign** is one authorized wo
 
 | Present and useful | Limitation requiring work |
 | --- | --- |
-| Deterministic supervisor with SQLite operations, fencing, restart recovery, worker/verifier separation (\`src/supervisor/\`) | The owner must prepare \`campaigns/*.json\` and register through the CLI. There is no dashboard create-project/create-campaign route. |
-| Configured local Git checkouts and isolated worktrees (\`README.md\`, \`src/supervisor/adapters/git.mjs\`) | Paths/repos are manually registered in local \`config.json\`; no folder-first onboarding. |
-| Coordinator with durable owner-message receipts and read-only research (\`src/supervisor/coordinator.mjs\`) | It proposes work but does not turn an approved plan into a registered execution program. |
-| Task DAG, declarative executor chain, project governance lookup (\`src/supervisor/campaign.mjs\`, \`controller.mjs\`) | \`limits.slots\` permits only \`1\`; \`schedule()\` exits when one operation is open. No adaptive parallelism or fair cross-project capacity controller. |
+| Deterministic supervisor with SQLite operations, fencing, restart recovery, worker/verifier separation (`src/supervisor/`) | The owner must prepare `campaigns/*.json` and register through the CLI. There is no dashboard create-project/create-campaign route. |
+| Configured local Git checkouts and isolated worktrees (`README.md`, `src/supervisor/adapters/git.mjs`) | Paths/repos are manually registered in local `config.json`; no folder-first onboarding. |
+| Coordinator with durable owner-message receipts and read-only research (`src/supervisor/coordinator.mjs`) | It proposes work but does not turn an approved plan into a registered execution program. |
+| Task DAG, declarative executor chain, project governance lookup (`src/supervisor/campaign.mjs`, `controller.mjs`) | `limits.slots` permits only `1`; `schedule()` exits when one operation is open. No adaptive parallelism or fair cross-project capacity controller. |
 | Explicit Claude/Codex/Cursor models, AGY/browser adapter, independent verifier, provider fallback and some cost receipts | Provider order/model choices are declared per campaign, not quality/cost-selected per task/role. Some costs remain unreported; account cooldown scope across campaigns is a risk (#5). |
-| Dashboard with owner-attention reconciliation, GitHub issue/PR metadata, commands, receipts and activity (\`src/dashboard/\`) | Global sections are Overview / Plans / Issues & PRs / Agents / Messages / Activity; Overview mixes every concern. A project is not the main navigation context. |
-| EP inherited governance and AIWorks-local \`AGENTS.md\`, decisions and constitution | Inheritance is already correct; **do not fork EP policies or duplicate generic documentation here**. |
+| Dashboard with owner-attention reconciliation, GitHub issue/PR metadata, commands, receipts and activity (`src/dashboard/`) | Global sections are Overview / Plans / Issues & PRs / Agents / Messages / Activity; Overview mixes every concern. A project is not the main navigation context. |
+| EP inherited governance and AIWorks-local `AGENTS.md`, decisions and constitution | Inheritance is already correct; **do not fork EP policies or duplicate generic documentation here**. |
 
-Current GitHub snapshot: zero open PRs and six pre-existing open issues when this planning work began (#1..#6). Archived \`engineering-platform-archive\` PRs [#126](https://github.com/netbka/engineering-platform-archive/pull/126) and [#139](https://github.com/netbka/engineering-platform-archive/pull/139) are **closed and unmerged**; issue [#6](https://github.com/netbka/aiworks/issues/6) tracks their selective port. The current branch's planning-only PR should not race with those runtime files or with the previously reserved audit-fix work in #5.
+Current GitHub snapshot: zero open PRs and six pre-existing open issues when this planning work began (#1..#6). Archived `engineering-platform-archive` PRs [#126](https://github.com/netbka/engineering-platform-archive/pull/126) and [#139](https://github.com/netbka/engineering-platform-archive/pull/139) are **closed and unmerged**; issue [#6](https://github.com/netbka/aiworks/issues/6) tracks their selective port. The current branch's planning-only PR should not race with those runtime files or with the previously reserved audit-fix work in #5.
 
 ### Existing authority and constraints (non-negotiable for this plan)
 
 - [AIWorks AGENTS.md](../AGENTS.md), [Product Constitution](PRODUCT_CONSTITUTION.md), [Decisions AW-001..AW-007](DECISIONS.md), [Supervisor](SUPERVISOR.md), [Worker Context Lifecycle](WORKER_CONTEXT_LIFECYCLE.md).
 - [EP Constitution](https://github.com/netbka/engineering-platform/blob/main/docs/CONSTITUTION.md), [Agent Operating Model](https://github.com/netbka/engineering-platform/blob/main/docs/AGENT_OPERATING_MODEL.md), [Continuation](https://github.com/netbka/engineering-platform/blob/main/docs/CONTINUATION.md), [Owner Intervention](https://github.com/netbka/engineering-platform/blob/main/docs/OWNER_INTERVENTION.md), [Governance Inheritance](https://github.com/netbka/engineering-platform/blob/main/docs/GOVERNANCE_INHERITANCE.md), [AGENT-001](https://github.com/netbka/engineering-platform/blob/main/policies/AGENT-001.json), [Delivery Practices](https://github.com/netbka/engineering-platform/blob/main/docs/DELIVERY_PRACTICES.md), [Experience Review / UX-002](https://github.com/netbka/engineering-platform/blob/main/docs/EXPERIENCE_REVIEW.md), [Behavioral Interaction / UX-001](https://github.com/netbka/engineering-platform/blob/main/docs/BEHAVIORAL_INTERACTION.md).
-- EP owns portfolio policies, project registry, role catalog and project-contract schemas. AIWorks reads the governance checkout, never writes it as a side effect of project selection. \`registry/projects/aiworks.json\` already registers AIWorks with \`ui\` and \`worker\` capabilities.
+- EP owns portfolio policies, project registry, role catalog and project-contract schemas. AIWorks reads the governance checkout, never writes it as a side effect of project selection. `registry/projects/aiworks.json` already registers AIWorks with `ui` and `worker` capabilities.
 - AW-001: no automatic merge, deploy or provider-resource mutations from the existing supervisor grant. AW-003: local-only dashboard; AW-006: no combined dashboard across machines. "Several projects" means several registered checkouts **on this machine**.
 - AW-002: no default run/cost ceilings. Safety limits for actual host/provider concurrency are not equivalent to a monetary/run cap. All user-declared budgets remain honored.
-- AW-004: coordinator is read-only. It must not independently register or dispatch work. AW-005: campaign declarations are on AIWorks \`main\` and runtime code is merged. UI convenience cannot bypass either gate.
+- AW-004: coordinator is read-only. It must not independently register or dispatch work. AW-005: campaign declarations are on AIWorks `main` and runtime code is merged. UI convenience cannot bypass either gate.
 - One accountable Task Controller per parent outcome; fresh independent verifier; durable bounded packets; no idle model calls, credential copies, peer-to-peer orchestration or invented completion evidence.
 
 ## 3. Product vocabulary and state model
@@ -55,7 +55,7 @@ Current GitHub snapshot: zero open PRs and six pre-existing open issues when thi
 ### 3.1 Project connection (new lightweight local metadata, not a new governance registry)
 
 A local connection references:
-- stable project ID resolved from EP registry, canonical \`owner/repository\`, local checkout root, selected base branch, dedicated worktree root, machine identity and observed Git revision;
+- stable project ID resolved from EP registry, canonical `owner/repository`, local checkout root, selected base branch, dedicated worktree root, machine identity and observed Git revision;
 - verified capability flags and status (Not connected / Needs setup / Ready / Temporarily unavailable);
 - last preflight time and explicit error reason; no credential values.
 
@@ -65,7 +65,7 @@ Connection is not evidence of worker authorization, a clean checkout, an authent
 
 ### 3.2 Work request (new owner-facing object/view over established campaign authority)
 
-Required: project, origin type (\`goal\`, \`issue\`, \`pr\`, \`plan\`), owner outcome, origin URL/revision if any, current \`main\` reference, acceptance intent and execution boundary. Proposed by coordinator or deterministic import; explicitly approved before becoming an executable campaign.
+Required: project, origin type (`goal`, `issue`, `pr`, `plan`), owner outcome, origin URL/revision if any, current `main` reference, acceptance intent and execution boundary. Proposed by coordinator or deterministic import; explicitly approved before becoming an executable campaign.
 
 A request can be **Plan only** (read-only analysis/report) or **Plan and execute**. The former must not mutate a target repo. A planning report can be accepted, revised or used to propose a new approved campaign. Existing issues and PRs are *evidence and context*, not implicit permission to take their entire backlog.
 
@@ -80,7 +80,7 @@ For an existing PR, pin exact head, origin, ownership, integration and required 
 
 ### 3.3 Lifecycle (do not flatten evidence)
 
-\`Draft plan -> Awaiting owner authorization -> Declaration PR / main gate -> Registered -> Queued -> Implementing -> Independently checking -> PR/report published -> Awaiting merge/release -> Verified downstream outcome\`.
+`Draft plan -> Awaiting owner authorization -> Declaration PR / main gate -> Registered -> Queued -> Implementing -> Independently checking -> PR/report published -> Awaiting merge/release -> Verified downstream outcome`.
 
 A published report may close an authorized *report-only* campaign without downstream deployment. A code campaign must show GitHub state separately (open, changed, merged, closed-unmerged) and, where available from the target project, deploy and real acceptance separately. Never claim these later states without corresponding evidence. Paused, blocked-owner, blocked-environment, provider-wait, unknown and cancelled are distinct from completed.
 
@@ -98,14 +98,14 @@ Material scope changes become explicit versioned amendments/decisions; ordinary 
 | Screen / question | First thing visible | Principal action | Hidden under details / separate screen |
 | --- | --- | --- | --- |
 | **Project / Where are we now?** | One real-world goal, current outcome, one next action; active/waiting truth | **Start work** or **Open current work** | Worker run IDs, provider chains, cost counters |
-| **Start work / What should be done?** | Goal input and **Use issue / PR / plan** alternatives; \`Plan only\` | **Review proposed plan** | JSON declaration, command syntax, framework selection |
+| **Start work / What should be done?** | Goal input and **Use issue / PR / plan** alternatives; `Plan only` | **Review proposed plan** | JSON declaration, command syntax, framework selection |
 | **Review / What will run under my authorization?** | Work outcome, steps, verification, boundaries and existing work conflicts | **Approve work** (or revise) | Full task DAG and per-role executor parameters |
 | **Work / What is running, queued or waiting?** | Outcome-oriented steps in simple order, reasons for waits and next dependency | **Open a step**; pause/recheck when applicable | Per-worker sessions and technical journal |
 | **Step / What is this agent actually doing?** | Task outcome, role, progress backed by native receipts, verification result | **Send guidance** or see PR/evidence | Logs, attempts, exact model/limits |
 | **Results / What is delivered and what remains?** | Delivered steps, accepted commits and open PRs clearly distinct from merged/deployed | **Review result** / **Open PR** | Detailed check evidence |
 | **Cost / What did the outcome cost?** | Actual reported project and accepted-outcome consumption, unknown separately | **Inspect breakdown** | Raw token/input/cache and provider receipts |
 
-Keep a maximum of one obvious primary button per state; do not show inactive technical buttons as decoration. Empty, disconnected, no-worker, GitHub-stale, paused, running, blocked and finished states each require explicit truthful copy. Preserve selected project, route, scroll and unsent draft after refresh/back. Navigation shows a short project name rather than campaign IDs; link raw GitHub artifacts where valuable. Existing \`Needs you\` correctness, lifecycle evidence and receipts in [#4](https://github.com/netbka/aiworks/issues/4) are **reused**, not thrown away.
+Keep a maximum of one obvious primary button per state; do not show inactive technical buttons as decoration. Empty, disconnected, no-worker, GitHub-stale, paused, running, blocked and finished states each require explicit truthful copy. Preserve selected project, route, scroll and unsent draft after refresh/back. Navigation shows a short project name rather than campaign IDs; link raw GitHub artifacts where valuable. Existing `Needs you` correctness, lifecycle evidence and receipts in [#4](https://github.com/netbka/aiworks/issues/4) are **reused**, not thrown away.
 
 **Language:** Use normal human outcomes and short verbs. Avoid "pipeline", "fencing", "lease", "slots", "project control plane" or "campaign declaration" at the primary UI level. Technical terms belong in diagnostics. Current interface is English; adding Russian/localization is an open scope choice, not an implied blocker. UX-001/UX-002 reviews apply to the actual interactive local dashboard; start with a blind task-oriented review before approving visual polish.
 
@@ -124,7 +124,7 @@ Keep a maximum of one obvious primary button per state; do not show inactive tec
 
 ### 5.2 Adaptive parallelism
 
-Current code: \`campaign.mjs\` rejects \`limits.slots != 1\`; \`controller.mjs.schedule()\` returns when a campaign has an open operation. The proposed work must change admission, not blindly launch processes.
+Current code: `campaign.mjs` rejects `limits.slots != 1`; `controller.mjs.schedule()` returns when a campaign has an open operation. The proposed work must change admission, not blindly launch processes.
 
 **Runnable capacity** is bounded by independently ready DAG nodes, write-domain/work-key ownership, verified worktree isolation, relevant provider/account availability, process/CPU/memory health, active verifier needs, host safety and explicit owner controls.
 
@@ -169,11 +169,11 @@ Waves are **dependency-oriented**, not a mandate to have five idle agents or for
 
 ### Explicit implementation boundaries
 
-- \`src/supervisor/\`: durable campaign/admission, coordination and concurrency. The existing audit-fix owner on #5 has priority over overlapping edits to \`api.mjs\`/\`campaign.mjs\`.
-- \`src/dashboard/\`: new local UI/interaction and presentation adapters; preserve security headers, origin checks and CSRF, and never serve raw prompts/secrets/paths.
-- \`campaigns/\`: approved declarations, created from a reconciled proposal and allowed on main only.
-- \`docs/\`: AIWorks-specific product flow, decisions and operations. EP portfolio standards only linked, not copied.
-- \`tests/\`: new synthetic first-run/multi-project/plan/parallelism/model-router/unknown-state/UX review evidence; never use real customer data.
+- `src/supervisor/`: durable campaign/admission, coordination and concurrency. The existing audit-fix owner on #5 has priority over overlapping edits to `api.mjs`/`campaign.mjs`.
+- `src/dashboard/`: new local UI/interaction and presentation adapters; preserve security headers, origin checks and CSRF, and never serve raw prompts/secrets/paths.
+- `campaigns/`: approved declarations, created from a reconciled proposal and allowed on main only.
+- `docs/`: AIWorks-specific product flow, decisions and operations. EP portfolio standards only linked, not copied.
+- `tests/`: new synthetic first-run/multi-project/plan/parallelism/model-router/unknown-state/UX review evidence; never use real customer data.
 
 **Stop before implementation** where an owner-reserved question in section 8 changes authorization or product boundary; independent tasks without that dependency may be designed and tested. This planning PR itself should remain draft and contain documentation only.
 
