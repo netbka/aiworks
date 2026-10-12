@@ -190,18 +190,12 @@ function agentVerdict(agent) {
   return Date.now() - agent.startedAt < 5 * 60_000 ? ['pending', 'Starting'] : ['stale', 'Not started'];
 }
 
-function agentCard(campaign, agent) {
-  const task = campaign.tasks.find((item) => item.id === agent.taskId);
-  const [tone, verdict] = agentVerdict(agent);
-  const p = agent.progress;
-  return el('article', { class: 'agent-card' }, el('div', { class: 'agent-heading' },
-    el('div', { class: 'agent-avatar', 'aria-hidden': 'true' }, provider(agent.executor)[0]),
-    el('div', {}, el('div', { class: 'agent-name' }, `${provider(agent.executor)} · ${roleName(agent.role)}`), el('div', { class: 'agent-role' }, campaignTitle(campaign))),
-    el('div', { class: 'agent-state' }, badge(tone, verdict))),
-    el('div', { class: 'agent-task' }, task?.outcome ?? task?.title ?? agent.taskId),
-    el('div', { class: 'agent-meta' }, el('span', {}, agent.taskId), el('span', {}, `started ${timeAgo(agent.startedAt)}`),
-      p ? el('span', {}, `${plural(p.turns, 'turn')} · ${plural(p.toolCalls, 'action')} · last activity ${timeAgo(p.lastActivityAt)}`)
-        : agent.outputAt ? el('span', {}, `last output ${timeAgo(agent.outputAt)}`) : null));
+/** Who is on a step now, in the owner's words: "Builder (Claude) · working normally · last activity 2m ago". */
+function whoIsOn(c, task) {
+  const agent = c.agents.find((item) => item.taskId === task.id);
+  if (!agent) return null;
+  const [, verdict] = agentVerdict(agent), last = agent.progress?.lastActivityAt ?? agent.outputAt ?? null;
+  return `${roleName(agent.role)} (${provider(agent.executor)}) · ${verdict.charAt(0).toLowerCase()}${verdict.slice(1)}${last ? ` · last activity ${timeAgo(last)}` : ''}`;
 }
 
 /** How the verdicts are decided, shown once rather than on every card. */
@@ -372,8 +366,7 @@ function campaignCard(c, expanded = true) {
     el('button', { class: 'button secondary small', onclick: () => openInstructions(c), disabled: !controllable || !unfinished, title: note ?? (unfinished ? null : 'Every step is finished; there is no next run to instruct.') }, 'Send instructions'),
     el('button', { class: 'button secondary small', onclick: () => command(c, c.control === 'paused' ? 'resume' : 'pause'), disabled: !controllable, title: note }, c.control === 'paused' ? '▶ Resume' : 'Ⅱ Pause'),
     el('button', { class: 'button secondary small', onclick: () => command(c, 'recheck'), disabled: !controllable, title: note }, '↻ Recheck'),
-    el('button', { class: 'button text-danger small', disabled: !controllable, title: note,
-      onclick: () => { pendingCancel = c; $('#cancel-description').textContent = `${c.id} · ${c.repository}`; $('#cancel-dialog').showModal(); } }, 'Cancel…'));
+    el('button', { class: 'button text-danger small', disabled: !controllable, title: note, onclick: () => askCancel(c) }, 'Cancel…'));
   const owner = ownerCampaign(c), summary = deliverySummary(c);
   const liveness = owner?.liveness ?? (c.controllerLive ? 'running' : 'stopped');
   const progress = el('progress', { max: c.tasks.length || 1, value: summary.delivered, 'aria-label': 'Campaign steps delivered' });
@@ -511,19 +504,20 @@ function saveDraft() {
   if (instructionCampaign) drafts.set(instructionAddress, `instruction:${instructionCampaign.id}`, { taskId: $('#instruction-task').value, role: $('#instruction-role').value, text: $('#instruction-text').value });
 }
 
-function openInstructions(c) {
+function openInstructions(c, task = null) {
   instructionCampaign = c; instructionAddress = current.address;
   const draft = drafts.get(instructionAddress, `instruction:${c.id}`);
   $('#instruction-campaign').textContent = c.id;
   $('#instruction-task').replaceChildren(...c.tasks.filter((t) => !['done', 'verified'].includes(t.state)).map((t) => el('option', { value: t.id }, `${t.id} — ${t.title}`)));
   if (draft && c.tasks.some((t) => t.id === draft.taskId && !['done', 'verified'].includes(t.state))) $('#instruction-task').value = draft.taskId;
+  else if (task) $('#instruction-task').value = task.id;
   $('#instruction-role').value = draft?.role ?? (c.tasks.find((t) => t.id === $('#instruction-task').value)?.state === 'implemented' ? 'verify' : 'implement');
   $('#instruction-text').value = draft?.text ?? '';
   $('#instruction-dialog').showModal();
   $('#instruction-text').focus();
 }
 
-function activityList(limit = 80) {
+function activityList(limit = 80, journal = state.supervisor.activity) {
   const descriptions = { 'operation-recorded': 'Agent scheduled', 'operation-finished': 'Agent finished', 'lease-acquired': 'Supervisor took over the campaign',
     'run-refunded': 'Unused run not counted', 'runs-recounted': 'Run count corrected', 'dashboard-command': 'Your dashboard command',
     paused: 'Campaign paused', resumed: 'Campaign resumed', 'cancel-requested': 'Cancellation requested', cancelled: 'Campaign cancelled',
@@ -538,7 +532,7 @@ function activityList(limit = 80) {
     'authorization-amended': 'Campaign authorization updated', 'message-received': 'Your message was received', 'message-read': 'The coordinator started reading your message',
     'message-answered': 'The coordinator answered', 'message-failed': 'Your message was not answered', 'instruction-attached': 'Your instruction reached a worker',
     'liveness-defect': 'Supervisor liveness problem', 'operation-abandoned': 'Worker run abandoned', 'step-error': 'Supervisor step failed and will retry' });
-  const items = state.supervisor.activity.slice(0, limit);
+  const items = journal.slice(0, limit);
   if (!items.length) return empty('No recorded activity', 'Supervisor events will appear here.');
   return el('div', { class: 'timeline' }, ...items.map((item) => el('div', { class: 'timeline-item' },
     el('span', { class: 'timeline-mark', 'aria-hidden': 'true' }), el('div', {}, el('div', { class: 'timeline-text' },
@@ -751,6 +745,95 @@ function nowScreen(project) {
   since].filter(Boolean);
 }
 
+/** A piece of work's steps in the order they can run: each after the steps it depends on, otherwise as declared. */
+function runOrder(c) {
+  const placed = [], left = [...c.tasks];
+  while (left.length) {
+    const index = left.findIndex((task) => task.dependsOn.every((id) => placed.some((item) => item.id === id) || !c.tasks.some((item) => item.id === id)));
+    placed.push(...left.splice(Math.max(index, 0), 1));
+  }
+  return placed;
+}
+
+// Why a step waits (named by step outcomes in the supervisor snapshot), with when AIWorks tries again by itself.
+const waitLine = (wait) => wait ? `${wait.text}${wait.retryAt ? ` · next try ${timeOnly(wait.retryAt)}` : ''}` : null;
+const commandsOff = () => sending || offline || !state.supervisor.available;
+function askCancel(c) {
+  pendingCancel = c; $('#cancel-description').textContent = `${c.id} · ${c.repository}`; $('#cancel-dialog').showModal();
+}
+const resumeButton = (c) => c.controls?.primary === 'resume' ? button('Resume', () => command(c, 'resume'), '', commandsOff()) : null;
+
+/**
+ * The More menu (OWNER_WORKSPACE §4.7): Pause, Check again and Cancel work, as the supervisor allows them for this work
+ * now. Finished and cancelled work allows none, so it has no menu. On a step, Check again rechecks that step only.
+ */
+function moreMenu(c, task = null) {
+  const allowed = c.controls?.more ?? [];
+  const actions = task ? allowed.filter((action) => action === 'recheck' && task.state !== 'done' && Boolean(task.blocked || task.retryAt || task.errorClass)) : allowed;
+  if (!actions.length) return null;
+  const labels = { pause: 'Pause', recheck: 'Check again' };
+  return disclosure(`${c.id}/${task?.id ?? ''}/more`, 'More', el('div', { class: 'campaign-controls' }, ...actions.map((action) => action === 'cancel'
+    ? el('button', { class: 'button text-danger small', disabled: commandsOff(), onclick: () => askCancel(c) }, 'Cancel work…')
+    : button(labels[action], () => command(c, action, task ?? undefined), 'secondary small', commandsOff()))));
+}
+
+/**
+ * One piece of work on the Work screen (OWNER_WORKSPACE §4.7, slice S5): its steps in the order they can run, each with
+ * its outcome, one state, who is on it and why it waits; Resume as the one primary action when it is paused, and Pause,
+ * Check again and Cancel under More. Dependencies, attempts, AI workers and cost are in Details.
+ */
+function workPanel(project, c) {
+  const terminal = ['finished', 'cancelled'].includes(c.control), note = terminal ? null : controlsNote(c);
+  const rows = runOrder(c).map((task) => el('tr', { 'data-focus-scope': `${c.id}/${task.id}` },
+    el('td', { class: 'c-work' }, routeLink(task.outcome ?? task.title, { screen: 'step', project, work: c.id, step: task.id }, 'task-name'),
+      task.outcome ? el('div', { class: 'subtext' }, task.title) : null),
+    el('td', { class: 'c-state' }, stepBadge(c, task),
+      ...[whoIsOn(c, task), task.stopped?.title, waitLine(task.wait)].filter(Boolean).map((text) => el('div', { class: 'subtext' }, text)))));
+  const { cost, body } = costNotes(c);
+  return el('section', { class: 'panel', 'data-focus-scope': `work/${c.id}` },
+    el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, campaignTitle(c)), el('p', {}, campaignNext(c)), note ? el('p', { class: 'controls-note' }, note) : null),
+      el('div', {}, resumeButton(c), moreMenu(c))),
+    el('div', { class: 'steps' }, table(['What it delivers', 'Where it stands'], rows)),
+    disclosure(`${c.id}/work-details`, `Details · ${plural(c.tasks.length, 'step')} · ${plural(c.runsUsed, 'run')} · ${cost}`,
+      el('div', {}, stepsTable(c), terminal ? null : providerStatus(c), body)));
+}
+
+/** One attempt of a step and how it ended, from the supervisor's records: "Builder (Claude): rejected · started … · ended …". */
+const attemptText = (a) => `${a.outcome ? outcomeText(a) : `${roleName(a.role)} (${provider(a.executor)}): ${a.endedAt ? 'ended without a result' : 'running'}`} · started ${dateTime(a.startedAt)}${
+  a.endedAt ? ` · ended ${dateTime(a.endedAt)}` : ''}${a.refunded ? ' · not counted as a run' : ''}`;
+
+/**
+ * Step (OWNER_WORKSPACE §4.8, slice S5): the outcome with its work's goal and project; one state and who is on it;
+ * progress from the worker's own record; the last result; guidance sent, with receipts; one primary action by state;
+ * and, in Details, every attempt with its end and the step's own events.
+ */
+function stepScreen(project, c, task) {
+  const agent = c.agents.find((item) => item.taskId === task.id), p = agent?.progress;
+  const number = deliveryOf(c, task)?.number ?? /\/pull\/(\d+)$/.exec(task.resultUrl ?? '')?.[1];
+  const unfinished = !['done', 'verified'].includes(task.state);
+  const primary = task.stopped ? primaryAction(task.stopped.primary)
+    : task.resultUrl ? link(number ? `Open pull request #${number} ↗` : 'Open the result ↗', task.resultUrl, 'button')
+      : unfinished && c.controls?.more.length ? button('Send guidance', () => openInstructions(c, task), '', commandsOff()) : null;
+  const last = task.verifiedSha ? `Passed the check at commit ${task.verifiedSha.slice(0, 7)}` : outcomeText(task.lastOutcome);
+  const guidance = (c.instructions ?? []).filter((item) => item.taskId === task.id);
+  const { attempts, events } = task.history ?? { attempts: [], events: [] };
+  return [el('section', { class: 'panel', 'data-focus-scope': `step/${c.id}/${task.id}` },
+    el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, task.outcome ?? task.title), el('p', {}, `${campaignTitle(c)} · project ${projectName(project)}`)),
+      moreMenu(c, task)),
+    el('div', { class: 'panel-body' },
+      el('p', { role: 'status', 'aria-live': 'polite' }, stepBadge(c, task), ' ', task.stopped ? el('strong', {}, task.stopped.title) : whoIsOn(c, task) ?? waitLine(task.wait) ?? ''),
+      task.stopped ? el('p', {}, task.stopped.text) : null,
+      p ? el('p', { class: 'subtext' }, `From the worker’s own record: ${plural(p.turns, 'turn')} · ${plural(p.toolCalls, 'action')} · last activity ${timeAgo(p.lastActivityAt)}`) : null,
+      last ? el('p', { class: 'subtext' }, `Last result: ${last}`) : null,
+      primary,
+      guidance.length ? el('div', { class: 'instruction-list' }, el('h3', { class: 'section-title' }, 'Guidance you sent'), ...guidance.map((item) => instructionReceipt(item))) : null,
+      disclosure(`step/${c.id}/${task.id}/details`, `Details · ${plural(attempts.length, 'attempt')}`, el('div', {},
+        attempts.length ? el('ol', { class: 'receipt-steps' }, ...attempts.map((a) => el('li', {}, attemptText(a), a.id ? el('div', { class: 'subtext' }, `Run ${a.id}`) : null)))
+          : el('p', { class: 'subtext' }, 'No attempt has run yet.'),
+        activityList(30, events),
+        el('p', { class: 'subtext' }, `Step ${task.id} · campaign ${c.id} · `, link('step issue ↗', task.issueUrl))))))];
+}
+
 /** One project's screens. Campaign cards, step tables and costs are today's, limited to this project. */
 function projectScreen(route) {
   const project = route.project, all = projectCampaigns(project);
@@ -767,13 +850,12 @@ function projectScreen(route) {
   if (route.screen === 'step') {
     const c = all.find((item) => item.id === route.work), task = c?.tasks.find((item) => item.id === route.step);
     if (!task) return [empty('This step is not recorded for this project', 'It may belong to another project, or the address is mistyped.'), routeLink('All work in this project', { screen: 'project', project, tab: 'work' }, 'button secondary')];
-    return [panel(task.outcome ?? task.title, `${campaignTitle(c)} · step ${task.id}`, el('div', { class: 'steps' }, table(['Step', 'What it delivers', 'Where it stands', 'Tries', ''], [taskRow(c, task)])))];
+    return stepScreen(project, c, task);
   }
   if (route.screen === 'start' || route.screen === 'review') return [empty('Starting work from this page is not built yet.', 'Today, work starts after its plan is merged into AIWorks and started on this computer.')];
   if (route.tab === 'work') {
-    const agents = all.flatMap((c) => c.agents.map((a) => [c, a]));
-    return [...(agents.length ? [el('div', { class: 'agents-grid' }, ...agents.map(([c, a]) => agentCard(c, a))), verdictExplanation()] : []),
-      ...cards.map((c) => campaignCard(c)), cards.some((c) => !['finished', 'cancelled'].includes(c.control)) ? providerNote() : null,
+    return [...cards.map((c) => workPanel(project, c)), cards.some((c) => c.agents.length) ? verdictExplanation() : null,
+      cards.some((c) => !['finished', 'cancelled'].includes(c.control)) ? providerNote() : null,
       cards.length ? null : empty('Nothing is running or waiting in this project', 'Finished work is under Results.')].filter(Boolean);
   }
   if (route.tab === 'results') return [finishedList(finished), workView(campaignWork(all))].filter(Boolean);

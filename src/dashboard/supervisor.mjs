@@ -10,6 +10,7 @@ import { roleUnavailableReason } from '../supervisor/adapters/executors.mjs';
 import { campaignLimits } from '../supervisor/campaign.mjs';
 import { coordinatorView, postOwnerMessage } from '../supervisor/coordinator.mjs';
 import { CODE_ROOT, storedDeclarationOnMain } from '../supervisor/provenance.mjs';
+import { stateCopy } from './copy.mjs';
 
 const readConfig = (dataDir) => {
   try { return JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { return {}; }
@@ -28,6 +29,88 @@ function publicTaskWait(task, spec) {
   if (task.retry_at) return `Retry after ${code(error.split(':')[0]) ?? 'worker failure'}`;
   return null;
 }
+
+/**
+ * Why a step waits, in the owner's words (OWNER_WORKSPACE §4.7, slice S5): other steps are named by their outcome, never
+ * by ID, and only supervisor-known fields are read (stored errors can quote worker text). `retryAt` is when AIWorks
+ * tries again by itself. Built from today's fields; the status `wait` field replaces it later (plan §6.12 C7, UI11).
+ */
+function stepWait(task, spec, specs, taskRows) {
+  if (task.blocked || ['done', 'verified'].includes(task.state)) return null;
+  const names = (ids) => {
+    const quoted = ids.map((id) => `“${safeText(specs.get(id)?.outcome ?? specs.get(id)?.title ?? 'an earlier step', 120)}”`);
+    return quoted.length > 1 ? `${quoted.slice(0, -1).join(', ')} and ${quoted.at(-1)}` : quoted[0];
+  };
+  const be = (ids) => ids.length === 1 ? 'is' : 'are';
+  const error = String(task.last_error ?? ''), dependsOn = spec?.dependsOn ?? [];
+  if (error.startsWith('dependency-integration:') && dependsOn.length) return { text: `Starts after ${names(dependsOn)} ${be(dependsOn)} merged`, retryAt: task.retry_at ?? null };
+  if (error.startsWith('waiting for executor availability:') || error.startsWith('quota:')) return { text: 'Waiting for an AI worker to be free', retryAt: task.retry_at ?? null };
+  if (task.retry_at) return { text: 'The last run did not finish; AIWorks tries again by itself', retryAt: task.retry_at };
+  const open = dependsOn.filter((id) => taskRows.find((item) => item.task_id === id)?.state !== 'done');
+  if (task.state === 'pending' && open.length) return { text: `Starts after ${names(open)} ${be(open)} finished`, retryAt: null };
+  return null;
+}
+
+/** A stopped step in the §7.7 words of the state copy module, with its one primary action (open the step issue). */
+function stepStopped(task, label, issueUrl) {
+  if (!task.blocked) return null;
+  const reason = String(task.blocked.reason ?? '');
+  // An owner decision: the worker said so, it made no progress, or the checker still rejects it after the repair rounds.
+  const key = task.blocked.class === 'B3' || /^verifier still rejects/.test(reason) ? 'needs-decision' : /^admission blocked/.test(reason) ? 'recorded-blocker' : 'failed-attempts';
+  const { title, text, primary } = stateCopy(key, { step: label, reason: stopReason(task), attempts: task.attempts, url: issueUrl });
+  return { key, title, text, primary };
+}
+
+/** What the owner can do with a piece of work: Resume first when paused; Pause, Check again and Cancel in the More menu. */
+function workControls(control) {
+  if (control === 'paused') return { primary: 'resume', more: ['recheck', 'cancel'] };
+  if (control === 'registered') return { primary: null, more: ['pause', 'recheck', 'cancel'] };
+  // Finished, cancelled or cancelling work accepts no command (applyCommand refuses it), so it has no menu.
+  return { primary: null, more: [] };
+}
+
+/** One journal entry with supervisor-authored fields only: the activity journal and a step's own history share it. */
+const publicEvent = (item, op) => ({
+  id: item.seq, campaignId: item.campaign_id, at: item.at, kind: code(item.kind),
+  operation: typeof item.detail?.op === 'string' && /^[\w.-]{1,220}$/.test(item.detail.op) ? item.detail.op : null,
+  action: code(item.detail?.action), outcome: code(item.detail?.class), terminal: code(item.detail?.terminal),
+  blocking: Number.isSafeInteger(item.detail?.blocking) ? item.detail.blocking : null, run: Number.isSafeInteger(item.detail?.run) ? item.detail.run : null,
+  taskId: identifier.test(op?.task_id ?? item.detail?.task ?? '') ? op?.task_id ?? item.detail.task : null,
+  executor: code(item.detail?.executor ?? op?.executor_kind), fromExecutor: code(item.detail?.from),
+  reason: code(item.detail?.reason), credits: item.detail?.credits === true || /credits\/billing/.test(item.detail?.detail ?? ''),
+});
+
+const HISTORY_LIMIT = 30;
+/**
+ * Every step's own history (OWNER_WORKSPACE §4.8, slice S5): its attempts with how each ended, from `operations`, and
+ * its journal events. A read-only query of one campaign's records; an entry belongs to a step only when the supervisor
+ * recorded it for that step, so one step never shows another's. Worker text never leaves: codes, counts, times, run IDs.
+ */
+function stepHistories(store, campaignId) {
+  const histories = new Map(), of = (taskId) => {
+    if (!histories.has(taskId)) histories.set(taskId, { attempts: [], events: [] });
+    return histories.get(taskId);
+  };
+  const operations = new Map();
+  for (const op of store.all('SELECT id, task_id, kind, executor_kind, state, outcome, created_at, updated_at FROM operations WHERE campaign_id = ? ORDER BY created_at DESC, seq DESC', campaignId)) {
+    operations.set(op.id, op);
+    const { attempts } = of(op.task_id);
+    if (attempts.length >= HISTORY_LIMIT) continue;
+    const terminal = op.outcome?.class === 'result' ? op.outcome.value?.result ?? op.outcome.value?.verdict ?? null : null;
+    attempts.push({ id: /^[\w.-]{1,220}$/.test(op.id) ? op.id : null, role: op.kind === 'verify' ? 'Verifier' : 'Implementer', executor: code(op.executor_kind),
+      state: code(op.state), startedAt: op.created_at, endedAt: ['finished', 'abandoned'].includes(op.state) ? op.updated_at : null,
+      outcome: code(op.outcome?.class), terminal: code(terminal), refunded: op.outcome?.refunded === true,
+      blockingFindings: op.outcome?.class === 'result' && Array.isArray(op.outcome.value?.findings) ? op.outcome.value.findings.filter((f) => f?.severity === 'blocking').length : null });
+  }
+  for (const item of store.all("SELECT seq, campaign_id, at, kind, detail FROM journal WHERE campaign_id = ? AND kind NOT IN ('event-dashboard-command', 'lease-acquired') ORDER BY seq DESC LIMIT 2000", campaignId)) {
+    const event = publicEvent(item, typeof item.detail?.op === 'string' ? operations.get(item.detail.op) ?? null : null);
+    if (!event.taskId) continue;
+    const { events } = of(event.taskId);
+    if (events.length < HISTORY_LIMIT) events.push(event);
+  }
+  return histories;
+}
+
 // The controller's own next action for a finished campaign is one of two fixed sentences naming the repository; it
 // is passed through only when it is exactly one of them (other next actions can quote stored worker text).
 const FINISHED_ACTION = /^(?:Planning reports published in [\w.-]+\/[\w.-]+; review recommendations before assigning implementation|Release gate: review campaign deliveries under [\w.-]+\/[\w.-]+'s own merge and release policy)\.$/;
@@ -159,6 +242,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
       for (const op of store.all("SELECT task_id, outcome FROM operations WHERE campaign_id = ? AND kind = 'verify' AND state = 'finished'", id)) {
         if (op.outcome?.class === 'result' && (op.outcome.value?.verdict ?? op.outcome.value?.result) === 'rejected') rejections.set(op.task_id, (rejections.get(op.task_id) ?? 0) + 1);
       }
+      const histories = stepHistories(store, id);
       const paused = c.control === 'paused' ? store.get("SELECT at, detail FROM journal WHERE campaign_id = ? AND kind = 'paused' ORDER BY seq DESC LIMIT 1", id) : null;
       // Latest finished attempt per task: the worker's own verdict, not the protocol class alone.
       const lastOutcome = (taskId) => {
@@ -190,6 +274,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
         blockerClass: code(c.blocker?.class),
         blockerReason: c.blocker ? ['budget', 'executors'].includes(c.blocker.kind) ? safeText(String(c.blocker.reason ?? ''), 300) : `Recovery required: ${code(c.blocker.kind) ?? 'blocked'}` : null,
         blockerAction: c.blocker ? ['budget', 'executors'].includes(c.blocker.kind) ? safeText(String(c.blocker.requestedAction ?? ''), 300) : 'Inspect local supervisor status, resolve the recorded blocker, then recheck.' : null,
+        controls: workControls(c.control),
         slots: campaignLimits(c.declaration).slots, phase: status.phase,
         runsUsed: status.runsUsed, maxWorkerRuns: status.maxWorkerRuns, recordedCostUsd: status.costUsd,
         executors: (c.declaration.executor.providers ?? [c.declaration.executor]).map((item) => code(item.kind)),
@@ -233,7 +318,12 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
           blocked: code(task.blocked?.class), blockedReason: task.blocked ? stopReason(task) : null,
           errorClass: code(String(task.last_error ?? '').split(':')[0]),
           retryAt: task.retry_at, dependsOn: specs.get(task.task_id)?.dependsOn ?? [], resultUrl: githubLink(task.pr_url),
-          headSha: task.head_sha, verifiedSha: task.verified_sha, lastOutcome: lastOutcome(task.task_id) })),
+          headSha: task.head_sha, verifiedSha: task.verified_sha, lastOutcome: lastOutcome(task.task_id),
+          // OWNER_WORKSPACE S5: why it waits, naming steps by outcome; a stop in §7.7 words; its own attempts and events.
+          wait: stepWait(task, specs.get(task.task_id), specs, taskRows),
+          stopped: stepStopped(task, safeText(specs.get(task.task_id)?.outcome ?? specs.get(task.task_id)?.title ?? task.task_id),
+            `https://github.com/${c.declaration.target.repository}/issues/${specs.get(task.task_id)?.issue}`),
+          history: histories.get(task.task_id) ?? { attempts: [], events: [] } })),
         agents: operations.map((op) => {
           const beat = heartbeat(dataDir, op.run_dir);
           return { id: op.id, taskId: op.task_id, role: op.kind === 'verify' ? 'Verifier' : 'Implementer',
@@ -243,17 +333,8 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
             progress: workerProgress(dataDir, op) };
         }) };
     });
-    const activity = store.all("SELECT seq, campaign_id, at, kind, detail FROM journal WHERE kind NOT IN ('event-dashboard-command', 'lease-acquired') ORDER BY seq DESC LIMIT 80").map((item) => {
-      const op = typeof item.detail?.op === 'string' ? store.get('SELECT * FROM operations WHERE id = ?', item.detail.op) : null;
-      return {
-      id: item.seq, campaignId: item.campaign_id, at: item.at, kind: code(item.kind),
-      operation: typeof item.detail?.op === 'string' && /^[\w.-]{1,220}$/.test(item.detail.op) ? item.detail.op : null,
-      action: code(item.detail?.action), outcome: code(item.detail?.class), terminal: code(item.detail?.terminal),
-      blocking: Number.isSafeInteger(item.detail?.blocking) ? item.detail.blocking : null, run: Number.isSafeInteger(item.detail?.run) ? item.detail.run : null,
-      taskId: identifier.test(op?.task_id ?? item.detail?.task ?? '') ? op?.task_id ?? item.detail.task : null,
-      executor: code(item.detail?.executor ?? op?.executor_kind), fromExecutor: code(item.detail?.from),
-      reason: code(item.detail?.reason), credits: item.detail?.credits === true || /credits\/billing/.test(item.detail?.detail ?? ''),
-    }; });
+    const activity = store.all("SELECT seq, campaign_id, at, kind, detail FROM journal WHERE kind NOT IN ('event-dashboard-command', 'lease-acquired') ORDER BY seq DESC LIMIT 80").map((item) =>
+      publicEvent(item, typeof item.detail?.op === 'string' ? store.get('SELECT * FROM operations WHERE id = ?', item.detail.op) : null));
     const recent = recentEvents(store, since, now);
     // aiworks#18: a stopped supervisor, with its last lease renewal, for the owner view to lead with.
     const controller = supervisorLiveness(store, { now, leaseMs: readConfig(dataDir).leaseMs ?? DEFAULTS.leaseMs, stopRequested: existsSync(join(dataDir, 'STOP')) });
