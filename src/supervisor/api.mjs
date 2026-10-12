@@ -3,6 +3,7 @@
 // themselves. Readiness is derived from a live controller lease, never from registration.
 import { runNotCounted } from './adapters/executors.mjs';
 import { authorityDigest, campaignLimits, canonicalJson, executorOrder, scopeDigest, validateDeclaration } from './campaign.mjs';
+import { findWorkConflict } from './work-ownership.mjs';
 
 export class CampaignError extends Error {
   constructor(code, message) { super(message); this.name = 'CampaignError'; this.code = code; }
@@ -14,6 +15,11 @@ export function campaignStart(store, declaration, now = Date.now()) {
   store.tx(() => {
     const existing = store.campaign(decl.campaignId);
     if (!existing) {
+      // Registration and admission share BEGIN IMMEDIATE: another connection cannot register
+      // the same repair between this ownership check and the campaign insert (aiworks#5 A).
+      const conflict = findWorkConflict(store, decl);
+      if (conflict) throw Object.assign(new CampaignError('WORK_ALREADY_ASSIGNED',
+        `task ${conflict.taskId} is already assigned to ${conflict.campaignId}/${conflict.ownerTaskId} (${conflict.reason}); reuse that campaign or finish or cancel it before registering another`), { conflict });
       store.insert('campaigns', {
         id: decl.campaignId, controller_id: `aiworks-supervisor/${decl.campaignId}`, scope_digest: scope,
         authorization_version: decl.authorization.version, declaration: decl, control: 'registered', status: 'active',

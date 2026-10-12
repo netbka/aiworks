@@ -223,8 +223,9 @@ test('the controller starts no new work from an unmerged revision, and resumes o
   assert.match(reason, /is not merged/);
   let current = reason;
   const { store, env, id, make } = controlled(t);
-  // A second registered campaign: each registered campaign gets its own hold.
-  const other = declaration({ tasks: [declaration().tasks[0]], campaignId: `${id}-other` });
+  // A second registered campaign: each registered campaign gets its own hold. Its task is separate work,
+  // because the same commit task cannot be registered by two campaigns (aiworks#5).
+  const other = declaration({ tasks: [{ ...declaration().tasks[0], goal: 'Produce the other campaign artifact.' }], campaignId: `${id}-other` });
   campaignStart(store, other);
   const controller = make(() => current);
   await controller.tick();

@@ -169,7 +169,7 @@ export function validateDeclaration(declaration) {
     const where = `tasks[${index}]`;
     if (!task || typeof task !== 'object') { bad(`${where} must be an object`); continue; }
     for (const key of Object.keys(task)) {
-      if (!['id', 'issue', 'title', 'outcome', 'deliverable', 'goal', 'dependsOn', 'requiresMergedDependencies', 'constraints', 'acceptance', 'references', 'web'].includes(key)) bad(`${where} unknown key ${key}`);
+      if (!['id', 'issue', 'title', 'outcome', 'workKey', 'deliverable', 'goal', 'dependsOn', 'requiresMergedDependencies', 'constraints', 'acceptance', 'references', 'web'].includes(key)) bad(`${where} unknown key ${key}`);
     }
     if (!ID.test(task.id ?? '')) bad(`${where}.id invalid`);
     // commit: a verified commit is published as a PR. report: a verified report is posted to the task issue.
@@ -178,6 +178,12 @@ export function validateDeclaration(declaration) {
     if (!int(task.issue, 1, 1e9)) bad(`${where}.issue must be an issue number`);
     if (!text(task.title, 200)) bad(`${where}.title required`);
     if (task.outcome !== undefined && !text(task.outcome, 300)) bad(`${where}.outcome must be a non-empty string (max 300)`);
+    // An optional logical repair identity (aiworks#5), not a file lock or a parent-issue-wide lock. It stays in
+    // scopeDigest, so an admitted assignment cannot silently switch keys; an absent key leaves both digests unchanged.
+    if (task.workKey !== undefined && (task.deliverable !== 'commit' || typeof task.workKey !== 'string' ||
+        !/^[a-z0-9][a-z0-9._:-]{0,95}$/.test(task.workKey))) {
+      bad(`${where}.workKey must be a lowercase repair key (max 96) on a commit task`);
+    }
     if (!text(task.goal, 1500)) bad(`${where}.goal required (max 1500)`);
     if (!Array.isArray(task.dependsOn)) bad(`${where}.dependsOn must be an array`);
     if (task.requiresMergedDependencies !== undefined && task.requiresMergedDependencies !== true) bad(`${where}.requiresMergedDependencies must be true when specified`);
