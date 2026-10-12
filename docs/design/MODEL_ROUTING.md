@@ -140,7 +140,7 @@ The router cannot pick a model or provider the campaign does not list, because t
 
 ### 4.2 Filters
 
-Each candidate passes these filters in this order. The first failing filter is recorded in the receipt as the reason.
+Each candidate passes these filters in this order, once for each role the decision needs (section 4.4). The router computes them itself from facts recorded in the receipt: the declaration, the host platform, and one host-fact entry per provider kind (section 9). The receipt's `decision.eligibility` lists **every** failing filter per candidate and per role, not only the first.
 
 | # | Filter | Source today | Reason code |
 | --- | --- | --- | --- |
@@ -155,6 +155,11 @@ Each candidate passes these filters in this order. The first failing filter is r
 
 Filter 5 moves **before** the choice. Today it runs after the choice, and a failure costs one tick (`controller.mjs:714-724`). Its result is cached per provider for the tick, so the Codex probe still runs at most once per dispatch.
 
+Which filters are host facts and which are pure rules:
+
+- **Pure rules** (filters 1, 2, 4, 7, 8). The router computes them from the candidate, its provider entry's `researchOnly`, the task's `deliverable` and `web`, the role, and the host `platform`. Today's role check takes exactly these values (`roleUnavailableReason(executor, role, deliverable, platform, web)`, `executors.mjs:124-134`), and its answer differs by role: Codex on Windows may verify but not commit (`executors.mjs:129-132`). So the receipt records `platform` and each candidate's `researchOnly`, never a pre-computed role answer.
+- **Host facts** (filters 3, 5, 6). They depend on this machine at this moment, so the receipt records them as observed: per provider kind, whether its CLI is configured, the host check's reason or `null`, and the account wait's reason or `null`. Host facts do not depend on the role. The host check reads the provider, the project's extension files and `web` (`executors.mjs:80-122`), not the role.
+
 ### 4.3 Verifier independence
 
 These rules hold for every verify step, whatever the mode:
@@ -162,8 +167,18 @@ These rules hold for every verify step, whatever the mode:
 1. **Never the same session.** The verifier gets a new session id (`controller.mjs:687`), and only that session's result is accepted (`controller.mjs:313-316`). The receipt also records the implementer session(s) that produced the head under review (`inputs.implementerSessions`, section 9) and asserts that the new id differs from all of them. A test fails if it ever matches.
 2. **Never an unauthorized provider or model.** Candidates come only from the declaration (section 4.1). The verifier filters are the same as above, with role `verification`.
 3. **Read-only and fresh checkout**, unchanged (section 2.2).
-4. **Prefer a different model for risky work.** For R2 steps, and for C3 steps, a candidate whose `(kind, model)` differs from the implementer of the head (`inputs.headImplementer`, section 9) is ranked first, if one is eligible at or above the floor. If none is, the same model runs in a fresh session, and the receipt says `independence: "fresh-session-same-model"`. This is a preference, not a gate. A hard requirement would block work until the owner configures a second provider. AGENTS.md forbids adding such a gate without the owner ([When to stop for the owner](../../AGENTS.md#when-to-stop-for-the-owner)).
+4. **Prefer a different model for risky work.** For R2 steps, and for C3 steps, a candidate whose `(kind, model)` differs from the implementer of the head (`inputs.headImplementer`, section 9) is ranked first, if one is eligible at or above the floor. Then the receipt says `independence: "different-model"`. If none is, the same model runs in a fresh session, and the receipt says `independence: "fresh-session-same-model"`. This is a preference, not a gate. A hard requirement would block work until the owner configures a second provider. AGENTS.md forbids adding such a gate without the owner ([When to stop for the owner](../../AGENTS.md#when-to-stop-for-the-owner)).
 5. **Catalog independence.** When a task declares a catalog role, the verifier's catalog role (`verification-agent`, or `security-reviewer` for R2 with a security role) must list it in `independent_from`, or the receipt records `catalog-independence: "not-declared"`. This is report-only, for the same reason as rule 4.
+
+### 4.4 The verifier projection (implement steps)
+
+An implement step's cost includes the check that must follow it (section 5.2). So, to rank implement candidates, the router predicts which verifier would check each one. This prediction is the **verifier projection**.
+
+- For each implement candidate `m` that passes filters 1 to 8, the router runs the verify-stage choice as if `m` had produced the head: role `verification`, verify floor (section 5.1), verify-class history, and rule 4 above with `headImplementer = m`. The result is `v(m)`, or `null` when no verifier is eligible.
+- `v(m)` can differ between candidates. Rule 4 prefers a verifier whose model differs from `m`, so `v(m1)` and `v(m2)` may not be the same model.
+- Everything the projection reads is in the receipt's `inputs`: the same candidates, `platform`, `researchOnly` and host facts as the implement choice, and the verify-class rows of `inputs.history`. Host facts are taken once, at the implement dispatch, and reused for the projection.
+- The projection is a prediction only. When the verify step is later dispatched, it gets its own receipt with the facts of that moment, and its own choice. A difference between the two is normal and is not an error.
+- The receipt's `decision.verifierProjection` lists, per implement candidate `m`, the projected verifier, its independence value, its verify-role eligibility and the `u(v)` used. Replay recomputes this list and must get the same one (section 9).
 
 ## 5. Choice: the lowest expected cost of an accepted result
 
@@ -189,14 +204,17 @@ For each eligible candidate `m` at or above the floor, the router computes from 
   - Implement: an attempt is accepted when the verifier later accepted the head (or report) it produced.
   - Verify: an attempt is accepted when it returned a valid verdict (`accepted`, or `rejected` with a blocking finding). This measures usable reviews only. Whether a verifier missed a real defect is not visible in the store (section 8.3).
 - **Mean cost per attempt `u(m)`**, in the candidate's native unit, from attempts whose cost is known. The count of attempts with unknown cost is kept beside it.
-- **Expected cost of an accepted result** for an implement candidate, with the verifier `v` the router would pick: `E(m) = (u(m) + u(v)) / â(m)`. Each implement attempt needs a verify run, and `1/â` is the expected number of attempts. For a verify candidate: `E(v) = u(v) / â(v)`.
+- **Expected cost of an accepted result** for an implement candidate, with its projected verifier `v = v(m)` (section 4.4): `E(m) = (u(m) + u(v(m))) / â(m)`. Each implement attempt needs a verify run, and `1/â` is the expected number of attempts. For a verify candidate: `E(v) = u(v) / â(v)`.
+- `E(m)` is **unknown** when `v(m)` is `null`, when `u(m)` or `u(v(m))` is unknown, or when the two are in different units. Units are never added together. An unknown `E` never ranks as cheap: it sends the step to the tier walk (section 5.3, rule 2).
+
+Why `v(m)` matters: `u(v)` is added before dividing by `â(m)`, so a different verifier can reverse the ranking. Example in dollars: `m1` has `u = 1`, `â = 0.5`, and `m2` has `u = 2`, `â = 0.8`. With `u(v) = 0`, `E(m1) = 2` and `E(m2) = 2.5`, so `m1` wins. With `u(v) = 10`, `E(m1) = 22` and `E(m2) = 15`, so `m2` wins. That is why the projection is part of the decision, and its inputs are in the receipt.
 
 Planning overhead (coordinator runs) is the same for every candidate. It is reported per campaign (section 9) and does not affect the ranking.
 
 ### 5.3 Ranking
 
-1. **Comparable dollars.** If every eligible candidate at or above the floor has at least 5 attempts in this class **and** a known cost in the same unit, pick the lowest `E`. Today only Claude reports dollars (section 2.3), so this applies to Claude-only candidate sets.
-2. **Otherwise, walk up the tiers.** Starting at the floor, take the lowest tier whose best candidate has `1/â ≤ 2` (at most two expected attempts). Within that tier, pick the lowest `E` among candidates with the same unit, then the fewest expected attempts, then declared order. If no tier qualifies, use the top tier.
+1. **Comparable dollars.** If every eligible candidate at or above the floor has at least 5 attempts in this class **and** a known `E` in the same unit, pick the lowest `E`. For an implement step, this includes each projected verifier: `v(m)` must exist and have at least 5 attempts and a known cost in the verify class. Today only Claude reports dollars (section 2.3), so this applies to Claude-only candidate sets.
+2. **Otherwise, walk up the tiers.** Starting at the floor, take the lowest tier whose best candidate has `1/â ≤ 2` (at most two expected attempts). Within that tier, pick the lowest known `E` among candidates with the same unit, then the fewest expected attempts, then declared order. If no tier qualifies, use the top tier.
 3. **Cold start.** With no history for this class, use the floor tier and declared order. The receipt says `basis: "cold-start"`.
 4. **Ties** go to the shorter median run time, then declared order.
 
@@ -317,12 +335,16 @@ Every operation gets an immutable, versioned receipt. It is written in the same 
       "dependsOn": 1, "requiresMergedDependencies": false, "writes": ["src/api/"], "declared": { "risk": null, "complexity": null } },
     "sensitivePaths": ["src/supervisor/"],
     "catalog": { "digest": "84f078e6...", "independentFrom": null },
-    "candidates": [ { "kind": "claude-cli", "model": "sonnet", "tier": 2 }, "..." ],
+    "candidates": [ { "kind": "claude-cli", "model": "sonnet", "tier": 2, "researchOnly": false }, "..." ],
     "candidatesDigest": "sha256 of the declared candidates",
-    "eligibility": [ { "kind": "codex-cli", "model": "gpt-6-astra", "reason": "role-unsupported" }, "..." ],
+    "platform": "win32",
+    "hostFacts": [ { "kind": "claude-cli", "cliConfigured": true, "hostUnavailable": null, "wait": null },
+      { "kind": "codex-cli", "cliConfigured": true, "hostUnavailable": null, "wait": null } ],
     "history": [ { "kind": "claude-cli", "model": "sonnet", "class": "implement/R0/C2", "attempts": 12, "accepted": 9,
       "cost": { "unit": "usd-reported", "mean": 0.84, "known": 12, "unknown": 0 }, "medianMs": 610000,
-      "window": { "fromOp": "...", "toOp": "...", "to": 1760000000000 } } ],
+      "window": { "fromOp": "...", "toOp": "...", "to": 1760000000000 } },
+      { "kind": "codex-cli", "model": "gpt-6-astra", "class": "verify/R0/C2", "attempts": 8, "accepted": 8,
+      "cost": { "unit": "tokens", "mean": null, "known": 0, "unknown": 8 }, "medianMs": 240000, "window": { "...": "..." } } ],
     "escalation": { "tier": 2, "qualityFailuresOnTier": 0, "priorAttempts": [ { "op": "...", "kind": "claude-cli", "model": "sonnet",
       "class": "result", "terminal": "rejected", "denied": false, "tier": 2 } ] },
     "pin": null,
@@ -332,21 +354,30 @@ Every operation gets an immutable, versioned receipt. It is written in the same 
   "decision": {
     "indicators": { "risk": "R0", "complexity": "C2" },
     "floor": 2,
+    "eligibility": [ { "kind": "codex-cli", "model": "gpt-6-astra", "role": "implementer", "reasons": ["role-unsupported"] },
+      { "kind": "codex-cli", "model": "gpt-6-astra", "role": "verification", "reasons": [] }, "..." ],
+    "verifierProjection": [ { "implementer": { "kind": "claude-cli", "model": "sonnet" },
+      "verifier": { "kind": "codex-cli", "model": "gpt-6-astra", "tier": 3 }, "independence": "different-model",
+      "u": { "unit": "tokens", "mean": null } }, "..." ],
     "chosen": { "kind": "claude-cli", "model": "sonnet", "tier": 2 },
     "basis": "tier-walk",
-    "reason": "lowest tier with <= 2 expected attempts; E = 0.84/0.75 usd-reported",
+    "reason": "lowest tier with <= 2 expected attempts; E unknown: projected verifier reports tokens",
     "independence": null
   },
   "inputsDigest": "sha256 of canonical inputs"
 }
 ```
 
-**Reproducible from the receipt alone.** `inputs` is the complete argument of `route()`. `route(inputs)` is a pure function of it: no clock, no store, no host check, no other argument. Host facts (CLI configured, probe result, waits) enter as eligibility entries, and history enters as aggregated numbers. Every value a decision rule reads is in `inputs`:
+**Reproducible from the receipt alone.** `inputs` is the complete argument of `route()`. `route(inputs)` is a pure function of it: no clock, no store, no host check, no other argument. Host facts (CLI configured, probe result, waits) enter as `hostFacts`, one entry per provider kind, and history enters as aggregated numbers. Every value a decision rule reads is in `inputs`:
+
+- `platform`, each candidate's `researchOnly`, and the task's `deliverable` and `web` are everything the pure filters 1, 2 and 4 read (section 4.2). So the router computes eligibility for **both** roles from the receipt. It does not rely on a stored answer for one role.
+- `hostFacts` holds filters 3, 5 and 6 as observed at dispatch. They apply to both roles.
+- `history` holds the rows of the step's own class. For an implement step, it also holds the verify-class rows (`verify/<risk>/<complexity>`) of every candidate. The verifier projection (section 4.4) reads them.
 
 - `escalation.priorAttempts` lists the task's earlier finished attempts of the same stage, newest first. Each entry carries the attempt's `kind` and `model`, its outcome `class` and `terminal`, whether it was a denial (`denied`, the same test as `controller.mjs:557`), and its tier. The model comes from that attempt's own receipt (`decision.chosen.model`). An operation recorded before slice R2 has no receipt, so its `model` is `null` and its `kind` is its `executor_kind`. The section 5.4 sidestep and static mode's `lastFailedExecutor` avoidance (`controller.mjs:549-561`, `controller.mjs:568`, `controller.mjs:586`) both read the newest entry, so both replay from the receipt.
 - `implementerSessions` lists the session ids of the implement attempts that produced the head under review. `headImplementer` is `{ "session", "kind", "model" }` of the attempt that produced that head, taken the same way; it is `null` for implement steps. Verifier rule 1 (section 4.3) reads the sessions; rule 4 reads `headImplementer.kind` and `headImplementer.model`.
 
-Replaying any receipt must give the same `decision`; a test checks that for every operation in the routing suite. A change of policy is a new `policy` id, and old receipts replay with the old policy.
+Replaying any receipt must give the same `decision`, including `decision.eligibility` and `decision.verifierProjection`; a test checks that for every operation in the routing suite. For an implement step, replay recomputes `v(m)` and `u(v(m))` for every candidate from `inputs` alone, so a ranking that depends on the verifier (section 5.2) replays exactly. A change of policy is a new `policy` id, and old receipts replay with the old policy.
 
 **Restart and replay.**
 
@@ -376,6 +407,7 @@ These cases become the table-driven tests of slice R4. Candidates as in section 
 | 8 | Owner pins `implementer: claude-cli/opus` | R0, C1 | pinned | Opus | No escalation; when Opus's account waits, the step waits |
 | 9 | Campaign without `routing` | any | — | First provider in the declared chain, as today | Today's `lastFailedExecutor` rotation, unchanged |
 | 10 | Verify step after implementer session S1 | any | 2 | Fresh session S2 ≠ S1; only declared candidates | A test forcing an equal id fails |
+| 11 | Implement step, two candidates in dollars: `m1` with `u` = 1, `â` = 0.5; `m2` with `u` = 2, `â` = 0.8; 5+ attempts each in both classes | R0, C1 | impl 1, verify 2 | Verify-class history gives `v(m1)` and `v(m2)` with `u(v)` = 0 → `m1` (`E` 2 against 2.5); the same receipt with only the verify-class rows changed so `u(v)` = 10 → `m2` (`E` 22 against 15) | Replay of both receipts gives the same `chosen` and `verifierProjection`; on Windows, a Codex candidate is `role-unsupported` for implementer but eligible as verifier, recomputed from `platform` |
 
 ## 11. Decisions taken here (not owner-reserved)
 
@@ -423,7 +455,7 @@ Slices that edit `controller.mjs`, `campaign.mjs` or `api.mjs` are sequenced wit
 
 - Outcome: each new operation stores a `routing` receipt (`mode: "static"`) that records today's choice, its eligibility reasons and the model. The `operation-recorded` journal entry names the model.
 - Files: `src/supervisor/store.mjs` (additive `routing` column), new `src/supervisor/router.mjs` (static mode, receipt builder, `route`), `src/supervisor/controller.mjs` (`executorChoice` returns the receipt; dispatch stores it), new `tests/supervisor/routing-receipt.test.mjs`.
-- Tests: for every operation of a chain campaign with fallback, `route(receipt.inputs)` equals `receipt.decision`, and that decision equals the executor actually run. This includes a retry after a task-level failure, where static mode must move the failed provider behind the others from `inputs.escalation.priorAttempts` alone, and a retry after a denial, which must keep the declared order. `route` takes `inputs` as its only argument. A crash after record (`AIWORKS_FAULT=after-record`) relaunches with the same receipt and model.
+- Tests: for every operation of a chain campaign with fallback, `route(receipt.inputs)` equals `receipt.decision`, and that decision equals the executor actually run. The receipt holds `platform`, each candidate's `researchOnly` and the `hostFacts` (section 9), and `decision.eligibility` lists both roles; a test runs the same receipt with `platform` changed from `win32` to `linux` and checks that only Codex's commit-role reason changes. This includes a retry after a task-level failure, where static mode must move the failed provider behind the others from `inputs.escalation.priorAttempts` alone, and a retry after a denial, which must keep the declared order. `route` takes `inputs` as its only argument. A crash after record (`AIWORKS_FAULT=after-record`) relaunches with the same receipt and model.
 - Acceptance: the whole existing suite passes unchanged; old stores open, and operations without a receipt read as `null`.
 - Depends on: nothing. Waits for: nothing.
 
@@ -439,7 +471,7 @@ Slices that edit `controller.mjs`, `campaign.mjs` or `api.mjs` are sequenced wit
 
 - Outcome: indicators, filters, floors, history aggregation, ranking, escalation, pin and verifier independence, as `routing-policy/1`.
 - Files: `src/supervisor/router.mjs`, new `tests/supervisor/router.test.mjs`.
-- Tests: the section 10 table, case by case; property tests that a choice is always a declared candidate, never below the floor unless `floor-capped`, never escalated by a denial, quota, auth or host outcome, and never a verifier session equal to an implementer session; a sidestep and a different-model verifier preference that change when only `priorAttempts[0].kind`/`model` or `headImplementer.kind`/`model` change; replay of every generated receipt.
+- Tests: the section 10 table, case by case; property tests that a choice is always a declared candidate, never below the floor unless `floor-capped`, never escalated by a denial, quota, auth or host outcome, and never a verifier session equal to an implementer session; a sidestep and a different-model verifier preference that change when only `priorAttempts[0].kind`/`model` or `headImplementer.kind`/`model` change; an implement choice that flips when only the verify-class `history` rows change (section 10, case 11), with `verifierProjection` recomputed and the replay equal; `E` unknown, never zero, when a projected verifier has no known cost or another unit; replay of every generated receipt.
 - Acceptance: the router reads no clock, store or host state; coverage of every reason code.
 - Depends on: R2, R3. Waits for: nothing.
 
