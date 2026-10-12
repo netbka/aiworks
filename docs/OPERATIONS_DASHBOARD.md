@@ -17,7 +17,7 @@ Open **http://127.0.0.1:4318**. Optional arguments are `--port` and `--governanc
 
 The dashboard (`src/dashboard`) and delivery supervisor (`src/supervisor`) belong to the AIWorks repository. GitHub branches and PRs hold unmerged work; merge status remains in GitHub rather than this runbook.
 
-The active local service uses a detached, reviewed checkout at `D:/Git/aiworks/.local/runtime`. Updating the main development checkout does not change that running version; upgrade the pin using the [supervisor procedure](SUPERVISOR.md#upgrade). Local state lives at `.local/supervisor`, generated target worktrees at `.local/worktrees/<repo>` and the governance checkout at `.local/governance`, relative to the AIWorks root. `.local/` is ignored by Git and is not part of a source update. Target checkouts remain at `D:/Git/<project>`. See the [supervisor layout and relocation procedure](SUPERVISOR.md#6-running-on-homepc).
+The active local service uses a detached checkout of a merged, independently reviewed commit on main at `D:/Git/aiworks/.local/runtime`. Updating the main development checkout does not change that running version; upgrade the pin using the [supervisor procedure](SUPERVISOR.md#upgrade). Local state lives at `.local/supervisor`, generated target worktrees at `.local/worktrees/<repo>` and the governance checkout at `.local/governance`, relative to the AIWorks root. `.local/` is ignored by Git and is not part of a source update. Target checkouts remain at `D:/Git/<project>`. See the [supervisor layout and relocation procedure](SUPERVISOR.md#6-running-on-homepc).
 
 ## What the owner sees
 
@@ -128,7 +128,7 @@ Controls apply to existing **supervisor-managed campaigns**. Other chat/IDE agen
 | Command | Effect |
 | --- | --- |
 | Pause | Stops new dispatch; an existing worker can finish. |
-| Resume | Resumes the recorded declaration with its existing authorization and run cap. |
+| Resume | Resumes the recorded declaration with its existing authorization and run cap. The declaration must equal a version committed in `campaigns/` in a revision merged to main, not necessarily main's tip ([AW-005](DECISIONS.md#aw-005---campaigns-run-only-from-merged-supervisor-code-and-a-declaration-on-main)). Otherwise the dashboard answers "Resume refused" and the campaign stays paused ([SUPERVISOR.md §1](SUPERVISOR.md#1-boundary)). |
 | Recheck | Queues the existing recovery event, for a campaign or a selected unfinished task. It does not force acceptance or bypass owner-reserved conditions. |
 | Cancel | Requires a confirmation explaining that the controller terminates its owned workers and that cancelled campaigns cannot resume. Completed results remain available. |
 | Send instructions | Select an unfinished task and implementer/verifier role. Up to 2,000 characters are queued for that role's next run on the task; an already running worker is not interrupted. |

@@ -40,7 +40,7 @@ const STATUS_FOR = { B2: 'blocked-owner-action', B3: 'blocked-owner-decision', B
 const RUNNABLE = ['pending', 'implemented', 'verified'];
 // aiworks#1: dependencies whose recheck is a deterministic in-process probe. Any other dependency is rechecked by one
 // bounded probe run of a held parent task, which only an owner or recovery event (never a timer) starts.
-const DETERMINISTIC_PROBES = new Set(['budget', 'process-ownership']);
+const DETERMINISTIC_PROBES = new Set(['budget', 'process-ownership', 'runtime-not-merged']);
 const RECHECK_PROCEDURE = {
   auth: 'Run the held task once with the same executor; a structured result proves the login works.',
   executors: 'Select an eligible executor and run the held task once; a structured result proves availability.',
@@ -48,6 +48,7 @@ const RECHECK_PROCEDURE = {
   'publication-size': 'Publish the held task again; a successful publication is the evidence.',
   budget: 'Evaluate the campaign budget from durable state; resume when it is no longer exhausted.',
   'process-ownership': 'Reconcile the recorded run; resume when the operation is no longer open.',
+  'runtime-not-merged': 'Compare the supervisor code revision with origin/main in its checkout; resume once it is an ancestor.',
   'owner-decision': 'Record the decision on the task issue, then run: supervisor recheck <campaign> --task <task>.',
 };
 const RECOVERY_TRIED = {
@@ -69,6 +70,8 @@ export const DEFAULTS = {
   retryBackoffMs: [2 * 60_000, 10 * 60_000, 30 * 60_000],
   integrationPollMs: 60_000,
 };
+// AW-005: how often a controller re-reads whether its own revision is merged. A constant, not a config.json key.
+const REVISION_CHECK_MS = 60_000;
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const runLease = (op, state, sessionId = op.session_id) => ({
@@ -82,10 +85,14 @@ export class Controller {
   // governanceRoot: the read-only Engineering Platform checkout whose registry/projects and policies/catalog.json resolve each
   // target project's governance; the explicit argument, else config.json `governanceRoot`. With neither (or an invalid root) no
   // worker is dispatched: dispatch fails closed with a project-governance blocker, never falling back to this checkout.
+  // revisionCheck (AW-005): returns null while this code is merged into origin/main, else the reason. `cli.mjs serve` always
+  // supplies it from git; only an in-process embedding (the tests) constructs a controller without it. revisionCheckMs
+  // is likewise an in-process seam, never read from config.json.
   constructor({ store, config, dataDir, log = () => {}, now = () => Date.now(), instanceId = randomUUID(),
     codeRevision = null, fault = process.env.AIWORKS_FAULT ?? null, notifier = noopTransport, probes = {},
-    governanceRoot = undefined }) {
-    Object.assign(this, { store, dataDir, log, now, instanceId, codeRevision, fault, notifier, probes, governanceRoot });
+    governanceRoot = undefined, revisionCheck = null, revisionCheckMs = REVISION_CHECK_MS }) {
+    Object.assign(this, { store, dataDir, log, now, instanceId, codeRevision, fault, notifier, probes, governanceRoot,
+      revisionCheck, revisionCheckMs });
     this.config = { ...DEFAULTS, ...config };
     this.governanceRoot = governanceRoot ?? this.config.governanceRoot;
     // aiworks#1 owner-intervention core: off unless the data-directory config enables it.
@@ -172,10 +179,57 @@ export class Controller {
       return;
     }
     if (campaign.control === 'registered') {
-      this.reconcileIntegration(ctx);
-      await this.schedule(ctx);
+      const unmerged = this.unmergedRevision();
+      if (unmerged) this.holdForUnmergedCode(ctx, unmerged);
+      else {
+        this.releaseUnmergedHold(ctx);
+        this.reconcileIntegration(ctx);
+        await this.schedule(ctx);
+      }
     }
     this.refreshStatus(ctx);
+  }
+
+  /** Why this code may not start new work (AW-005), or null. Re-evaluated at most every revisionCheckMs. */
+  unmergedRevision() {
+    if (!this.revisionCheck) return null;
+    const now = this.now();
+    if (!this.revisionState || now - this.revisionState.at >= this.revisionCheckMs) {
+      let reason;
+      try { reason = this.revisionCheck(); } catch (error) { reason = `revision check failed: ${error.message}`; }
+      reason = reason ? String(reason).slice(0, 400) : null;
+      if (reason && reason !== this.revisionState?.reason) this.log(`no new work: ${reason}`);
+      this.revisionState = { at: now, reason };
+    }
+    return this.revisionState.reason;
+  }
+
+  /**
+   * Unmerged code starts no new work: no dispatch, no launch of an unlaunched operation, no publication. Operations
+   * already running keep running and their results are still recorded. The campaign shows a B2 blocker unless it
+   * already has another one, which stays as it is.
+   */
+  holdForUnmergedCode(ctx, reason) {
+    if (this.store.campaign(ctx.id).blocker) return;
+    this.fenced(ctx, () => this.raiseBlocker(ctx, this.store.campaign(ctx.id).declaration, {
+      kind: 'runtime-not-merged', class: 'B2',
+      reason: `No new work starts: ${reason}. A campaign runs only from merged supervisor code (AW-005).`,
+      requestedAction: 'Deploy a revision of origin/main to the supervisor runtime checkout (fetch origin first if this revision is already merged); the hold then clears by itself.',
+    }, this.now(), { identity: this.codeRevision ?? 'unknown' }));
+  }
+
+  releaseUnmergedHold(ctx) {
+    if (this.store.campaign(ctx.id).blocker?.kind !== 'runtime-not-merged') return;
+    this.fenced(ctx, () => {
+      const c = this.store.campaign(ctx.id);
+      if (c.blocker?.kind !== 'runtime-not-merged') return;
+      this.store.patch('campaigns', { id: ctx.id }, c.version, { blocker: null }, this.now());
+      this.store.journal(ctx.id, 'blocker-cleared', { kind: 'runtime-not-merged', revision: this.codeRevision }, this.now());
+      // With the aiworks#1 owner-intervention core on, the durable blocker record resolves on the same evidence.
+      const record = this.oi && c.blocker.fingerprint ? this.store.blocker(c.blocker.fingerprint) : null;
+      if (record && record.status !== 'resolved') this.resolveBlocker(ctx, record, { trigger: 'state-change', probe: 'deterministic', pass: true,
+        detail: `supervisor code ${String(this.codeRevision ?? 'unknown').slice(0, 12)} is an ancestor of origin/main`, at: this.now() }, this.now());
+    });
   }
 
   processEvents(ctx) {
@@ -242,6 +296,8 @@ export class Controller {
         }
         // Checkpoint committed but never launched (controller died in between): launch the
         // same operation. The runner's exclusive lock prevents a second agent for it.
+        // Unmerged code does not start it (AW-005); it stays recorded until merged code runs.
+        if (this.unmergedRevision()) return;
         this.log(`resuming recorded operation ${op.id}`);
         await this.launch(ctx, op);
       }
@@ -1021,6 +1077,10 @@ export class Controller {
       if (record.dependency === 'budget') {
         const budget = campaignBudget(this.store, this.store.campaign(ctx.id));
         return { pass: !budget.exhausted, evidence: budget.exhausted ?? `budget available (${budget.runsUsed} runs used)` };
+      }
+      if (record.dependency === 'runtime-not-merged') {
+        const reason = this.unmergedRevision();
+        return { pass: !reason, evidence: reason ?? 'the supervisor code revision is an ancestor of origin/main' };
       }
       if (record.dependency === 'process-ownership') {
         const open = this.store.openOperations(ctx.id).some((op) => op.id === record.subject);
