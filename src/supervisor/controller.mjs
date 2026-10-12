@@ -417,7 +417,9 @@ export class Controller {
       this.store.updateOperation(op.id, { state: 'finished', outcome: verdict }, now);
       if (verdict.class === 'result') this.store.run('DELETE FROM executor_waits WHERE campaign_id = ? AND executor_kind = ?', ctx.id, op.executor_kind);
       const blocked = this.store.campaign(ctx.id);
-      if (blocked.blocker?.kind === 'process-ownership') {
+      // Only the operation whose ownership was unresolved clears its blocker; another operation finishing proves nothing
+      // about it. A blocker recorded before the operation id was kept (no `operation`) keeps the old behaviour.
+      if (blocked.blocker?.kind === 'process-ownership' && (!blocked.blocker.operation || blocked.blocker.operation === op.id)) {
         this.store.patch('campaigns', { id: ctx.id }, blocked.version, { blocker: null }, now);
         const record = this.oi && blocked.blocker.fingerprint ? this.store.blocker(blocked.blocker.fingerprint) : null;
         if (record && record.status !== 'resolved') this.resolveBlocker(ctx, record, { trigger: 'state-change', probe: 'deterministic', pass: true,
@@ -557,7 +559,7 @@ export class Controller {
 
   blockOwnership(ctx, op, detail) {
     this.fenced(ctx, () => this.raiseBlocker(ctx, this.store.campaign(ctx.id).declaration, {
-      kind: 'process-ownership', class: 'B4', reason: `process ownership is unresolved for ${op.id}: ${detail}`,
+      kind: 'process-ownership', class: 'B4', operation: op.id, reason: `process ownership is unresolved for ${op.id}: ${detail}`,
       requestedAction: 'Reconcile the recorded run and prove its processes stopped before repairing its ownership receipt; do not dispatch a replacement from missing receipt files alone.',
     }, this.now(), { identity: op.id, subject: op.id }));
   }
@@ -578,18 +580,29 @@ export class Controller {
     });
   }
 
-  /** Publication is not integration. Refresh only when an explicitly gated task is due. */
+  /**
+   * Fetch the base branch into this supervisor's own ref and read it there. FETCH_HEAD is shared by every fetch in the
+   * checkout (another campaign, the dashboard, the owner), so a base read from it can be another branch's tip.
+   */
+  fetchBase(repoPath, base) {
+    const ref = `refs/aiworks/base/${base}`;
+    const fetched = gitA.exec(this.cmd.git, ['fetch', 'origin', `+refs/heads/${base}:${ref}`], { cwd: repoPath, timeoutMs: 30_000 });
+    const sha = fetched.ok ? gitA.exec(this.cmd.git, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: repoPath }).stdout : '';
+    return /^[0-9a-f]{40}$/.test(sha ?? '') ? { ok: true, sha } : { ok: false, sha: null };
+  }
+
+  /** Publication is not integration. Refresh only when an explicitly gated task is due, whatever else is running. */
   reconcileIntegration(ctx) {
     const c = this.store.campaign(ctx.id);
-    if (c.blocker || this.store.openOperations(ctx.id).length) return;
+    if (c.blocker) return;
     const tasks = this.store.tasks(ctx.id), specs = new Map(c.declaration.tasks.map((t) => [t.id, t]));
     const due = tasks.filter((t) => t.state === 'pending' && !t.blocked && (!t.retry_at || t.retry_at <= this.now()) &&
       specs.get(t.task_id).requiresMergedDependencies && specs.get(t.task_id).dependsOn.every((id) => tasks.find((d) => d.task_id === id)?.state === 'done'));
     if (!due.length) return;
     this.fenced(ctx, () => {
       const repo = this.repo(c.declaration), base = c.declaration.target.baseBranch;
-      const fetched = gitA.exec(this.cmd.git, ['fetch', 'origin', base], { cwd: repo.path, timeoutMs: 30_000 });
-      const fetchedSha = fetched.ok ? gitA.exec(this.cmd.git, ['rev-parse', 'FETCH_HEAD'], { cwd: repo.path }).stdout : null;
+      const fetched = this.fetchBase(repo.path, base);
+      const fetchedSha = fetched.sha;
       for (const task of due) {
         const missing = !fetched.ok ? specs.get(task.task_id).dependsOn
           : this.missingIntegratedDependencies(c.declaration, specs.get(task.task_id), tasks, fetchedSha, repo.path);
@@ -625,8 +638,7 @@ export class Controller {
     if (!candidates) return;
     this.fenced(ctx, () => {
       const repo = this.repo(decl), base = decl.target.baseBranch, git = this.cmd.git;
-      const fetched = gitA.exec(git, ['fetch', 'origin', base], { cwd: repo.path, timeoutMs: 30_000 });
-      const baseSha = fetched.ok ? gitA.exec(git, ['rev-parse', 'FETCH_HEAD'], { cwd: repo.path }).stdout : null;
+      const baseSha = this.fetchBase(repo.path, base).sha;
       const heads = /^[0-9a-f]{40}$/.test(baseSha ?? '') ? gitA.remoteBranches({ git, repoPath: repo.path, pattern: `refs/heads/campaign/${ctx.id}/*` }) : null;
       if (!heads) { this.log(`integration check of ${ctx.id} skipped: remote refresh unavailable`); return; }
       const limits = campaignLimits(decl);
@@ -778,7 +790,6 @@ export class Controller {
   }
 
   async schedule(ctx) {
-    if (this.store.openOperations(ctx.id).length) return; // one slot
     const now = this.now();
     let campaign = this.store.campaign(ctx.id);
     const decl = campaign.declaration;
@@ -799,10 +810,17 @@ export class Controller {
     const spec = new Map(decl.tasks.map((task) => [task.id, task]));
     const hold = decl.executor.kind === 'cli-chain' ? 0 : quotaHoldUntil(tasks, now); // a chain holds only the exhausted account
     const held = this.heldTasks(ctx.id);
-    const ready = tasks.find((task) => RUNNABLE.includes(task.state) && !task.blocked && !held.has(task.task_id) && (!task.retry_at || task.retry_at <= now) &&
+    const runnable = tasks.filter((task) => RUNNABLE.includes(task.state) && !task.blocked && !held.has(task.task_id) && (!task.retry_at || task.retry_at <= now) &&
       (!hold || task.state === 'verified') && spec.get(task.task_id).dependsOn.every((dep) => done.has(dep)));
+    // Publication is not a worker and takes no capacity: every verified task publishes this tick, whatever else is
+    // running (ADAPTIVE_SCHEDULER row 2). Dependents see the new state on the next tick.
+    const verified = runnable.filter((task) => task.state === 'verified');
+    for (const task of verified) await this.publish(ctx, this.store.campaign(ctx.id), task);
+    if (verified.length) return;
+    // One worker at a time per campaign until the scheduler admission pass replaces this check (slice RUN5).
+    if (this.store.openOperations(ctx.id).length) return;
+    const ready = runnable[0];
     if (!ready) return;
-    if (ready.state === 'verified') { await this.publish(ctx, campaign, ready); return; }
     if (campaign.blocker) return;
     const budget = campaignBudget(this.store, campaign);
     if (budget.exhausted) {
@@ -916,8 +934,8 @@ export class Controller {
       if (kind === 'implement') {
         let integrationBase;
         if (spec.requiresMergedDependencies) {
-          const fetched = gitA.exec(this.cmd.git, ['fetch', 'origin', decl.target.baseBranch], { cwd: repo.path, timeoutMs: 30_000 });
-          integrationBase = fetched.ok ? gitA.exec(this.cmd.git, ['rev-parse', 'FETCH_HEAD'], { cwd: repo.path }).stdout : null;
+          const fetched = this.fetchBase(repo.path, decl.target.baseBranch);
+          integrationBase = fetched.sha;
           const missing = !fetched.ok ? spec.dependsOn : this.missingIntegratedDependencies(decl, spec, this.store.tasks(ctx.id), integrationBase, repo.path);
           if (!/^[0-9a-f]{40}$/.test(integrationBase ?? '') || missing.length) {
             this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
@@ -1036,7 +1054,7 @@ export class Controller {
       const c = this.store.campaign(ctx.id);
       const t = this.store.task(ctx.id, task.task_id);
       if (t.version !== task.version) return null;
-      this.store.insert('operations', {
+      this.store.recordOperation({
         id: opId, campaign_id: ctx.id, task_id: task.task_id, kind, seq, idempotency_key: opId, lease_generation: ctx.generation,
         state: 'recorded', session_id: sessionId, run_dir: runDir, workspace, base_sha: revision, target_sha: targetSha,
         report_digest: reportDigest, packet, packet_digest: digest, outcome: null, created_at: now, updated_at: now,
@@ -1343,8 +1361,9 @@ export class Controller {
         status = STATUS_FOR[c.blocker.class] ?? 'blocked-external';
         nextAction = c.blocker.requestedAction;
       } else if (open.length) {
-        status = open[0].kind === 'verify' ? 'verifying' : 'active';
-        nextAction = `${open[0].kind} ${open[0].task_id} running (operation ${open[0].id}, session ${open[0].session_id})`;
+        // Every open operation is named; the campaign is `verifying` only while all of them verify (ADAPTIVE_SCHEDULER row 5).
+        status = open.every((op) => op.kind === 'verify') ? 'verifying' : 'active';
+        nextAction = open.map((op) => `${op.kind} ${op.task_id} running (operation ${op.id}, session ${op.session_id})`).join('; ').slice(0, 1000);
         wakeup = c.next_wakeup_at && c.next_wakeup_at > now ? c.next_wakeup_at : now + this.config.pollMs;
       } else if (c.control === 'paused') {
         nextAction = 'Paused by the owner; start the campaign again to resume.';

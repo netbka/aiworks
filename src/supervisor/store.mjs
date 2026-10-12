@@ -171,6 +171,16 @@ export class Store {
     this.run(`INSERT INTO ${table} (${keys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`, ...keys.map((key) => row[key]));
   }
 
+  /**
+   * Record an operation. One task has at most one open operation, whatever the campaign's parallelism: its implementer
+   * and its verifier never overlap. Called inside the dispatch transaction, so the check and the insert commit together.
+   */
+  recordOperation(row) {
+    const open = this.get("SELECT id FROM operations WHERE campaign_id = ? AND task_id = ? AND state IN ('recorded', 'dispatched')", row.campaign_id, row.task_id);
+    if (open) throw new ConflictError(`task ${row.task_id} of ${row.campaign_id} already has the open operation ${open.id}`);
+    this.insert('operations', row);
+  }
+
   /** Compare-and-swap update for versioned rows (campaigns, tasks). */
   patch(table, where, expectedVersion, changes, now) {
     const entries = Object.entries(changes);
