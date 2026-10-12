@@ -159,10 +159,10 @@ Filter 5 moves **before** the choice. Today it runs after the choice, and a fail
 
 These rules hold for every verify step, whatever the mode:
 
-1. **Never the same session.** The verifier gets a new session id (`controller.mjs:687`), and only that session's result is accepted (`controller.mjs:313-316`). The receipt also records the implementer session(s) that produced the head under review and asserts that the new id differs from all of them. A test fails if it ever matches.
+1. **Never the same session.** The verifier gets a new session id (`controller.mjs:687`), and only that session's result is accepted (`controller.mjs:313-316`). The receipt also records the implementer session(s) that produced the head under review (`inputs.implementerSessions`, section 9) and asserts that the new id differs from all of them. A test fails if it ever matches.
 2. **Never an unauthorized provider or model.** Candidates come only from the declaration (section 4.1). The verifier filters are the same as above, with role `verification`.
 3. **Read-only and fresh checkout**, unchanged (section 2.2).
-4. **Prefer a different model for risky work.** For R2 steps, and for C3 steps, a candidate whose `(kind, model)` differs from the implementer of the head is ranked first, if one is eligible at or above the floor. If none is, the same model runs in a fresh session, and the receipt says `independence: "fresh-session-same-model"`. This is a preference, not a gate. A hard requirement would block work until the owner configures a second provider. AGENTS.md forbids adding such a gate without the owner ([When to stop for the owner](../../AGENTS.md#when-to-stop-for-the-owner)).
+4. **Prefer a different model for risky work.** For R2 steps, and for C3 steps, a candidate whose `(kind, model)` differs from the implementer of the head (`inputs.headImplementer`, section 9) is ranked first, if one is eligible at or above the floor. If none is, the same model runs in a fresh session, and the receipt says `independence: "fresh-session-same-model"`. This is a preference, not a gate. A hard requirement would block work until the owner configures a second provider. AGENTS.md forbids adding such a gate without the owner ([When to stop for the owner](../../AGENTS.md#when-to-stop-for-the-owner)).
 5. **Catalog independence.** When a task declares a catalog role, the verifier's catalog role (`verification-agent`, or `security-reviewer` for R2 with a security role) must list it in `independent_from`, or the receipt records `catalog-independence: "not-declared"`. This is report-only, for the same reason as rule 4.
 
 ## 5. Choice: the lowest expected cost of an accepted result
@@ -224,7 +224,7 @@ Escalation is per task and per stage, and it is sticky: a task never moves down 
 
 Steps:
 
-- **First poor-quality result on a tier:** the next attempt goes to another eligible candidate on the **same** tier if there is one (a sidestep, like today's `lastFailedExecutor`). Otherwise, it stays.
+- **First poor-quality result on a tier:** the next attempt goes to another eligible candidate on the **same** tier if there is one (a sidestep, like today's `lastFailedExecutor`). The failed candidate is the `(kind, model)` of the newest entry in `inputs.escalation.priorAttempts` (section 9). Otherwise, it stays.
 - **Second poor-quality result on the same tier:** move up one tier. For R2 steps, move up after the **first**.
 - **Verifier:** two unusable reviews in a row (`invalid-result`, `exit-without-result`, `timeout`) move the verifier up one tier. A rejection is a useful review, not a verifier failure.
 - **At the top tier**, the existing rules apply unchanged: backoff retries and repair rounds, with no cap unless the owner declared one ([AW-002](../DECISIONS.md#aw-002---campaigns-have-no-capacity-limits-by-default)).
@@ -323,9 +323,11 @@ Every operation gets an immutable, versioned receipt. It is written in the same 
     "history": [ { "kind": "claude-cli", "model": "sonnet", "class": "implement/R0/C2", "attempts": 12, "accepted": 9,
       "cost": { "unit": "usd-reported", "mean": 0.84, "known": 12, "unknown": 0 }, "medianMs": 610000,
       "window": { "fromOp": "...", "toOp": "...", "to": 1760000000000 } } ],
-    "escalation": { "tier": 2, "qualityFailuresOnTier": 0, "priorAttempts": [ { "op": "...", "class": "result", "terminal": "rejected", "tier": 2 } ] },
+    "escalation": { "tier": 2, "qualityFailuresOnTier": 0, "priorAttempts": [ { "op": "...", "kind": "claude-cli", "model": "sonnet",
+      "class": "result", "terminal": "rejected", "denied": false, "tier": 2 } ] },
     "pin": null,
-    "implementerSessions": []
+    "implementerSessions": [],
+    "headImplementer": null
   },
   "decision": {
     "indicators": { "risk": "R0", "complexity": "C2" },
@@ -339,7 +341,12 @@ Every operation gets an immutable, versioned receipt. It is written in the same 
 }
 ```
 
-**Reproducible from the receipt alone.** `route(inputs)` is a pure function of `inputs`: no clock, no store, no host check. Host facts (CLI configured, probe result, waits) enter as eligibility entries, and history enters as aggregated numbers. Replaying any receipt must give the same `decision`; a test checks that for every operation in the routing suite. A change of policy is a new `policy` id, and old receipts replay with the old policy.
+**Reproducible from the receipt alone.** `inputs` is the complete argument of `route()`. `route(inputs)` is a pure function of it: no clock, no store, no host check, no other argument. Host facts (CLI configured, probe result, waits) enter as eligibility entries, and history enters as aggregated numbers. Every value a decision rule reads is in `inputs`:
+
+- `escalation.priorAttempts` lists the task's earlier finished attempts of the same stage, newest first. Each entry carries the attempt's `kind` and `model`, its outcome `class` and `terminal`, whether it was a denial (`denied`, the same test as `controller.mjs:557`), and its tier. The model comes from that attempt's own receipt (`decision.chosen.model`). An operation recorded before slice R2 has no receipt, so its `model` is `null` and its `kind` is its `executor_kind`. The section 5.4 sidestep and static mode's `lastFailedExecutor` avoidance (`controller.mjs:549-561`, `controller.mjs:568`, `controller.mjs:586`) both read the newest entry, so both replay from the receipt.
+- `implementerSessions` lists the session ids of the implement attempts that produced the head under review. `headImplementer` is `{ "session", "kind", "model" }` of the attempt that produced that head, taken the same way; it is `null` for implement steps. Verifier rule 1 (section 4.3) reads the sessions; rule 4 reads `headImplementer.kind` and `headImplementer.model`.
+
+Replaying any receipt must give the same `decision`; a test checks that for every operation in the routing suite. A change of policy is a new `policy` id, and old receipts replay with the old policy.
 
 **Restart and replay.**
 
@@ -416,7 +423,7 @@ Slices that edit `controller.mjs`, `campaign.mjs` or `api.mjs` are sequenced wit
 
 - Outcome: each new operation stores a `routing` receipt (`mode: "static"`) that records today's choice, its eligibility reasons and the model. The `operation-recorded` journal entry names the model.
 - Files: `src/supervisor/store.mjs` (additive `routing` column), new `src/supervisor/router.mjs` (static mode, receipt builder, `route`), `src/supervisor/controller.mjs` (`executorChoice` returns the receipt; dispatch stores it), new `tests/supervisor/routing-receipt.test.mjs`.
-- Tests: for every operation of a chain campaign with fallback, `route(receipt.inputs)` equals `receipt.decision`, and that decision equals the executor actually run. A crash after record (`AIWORKS_FAULT=after-record`) relaunches with the same receipt and model.
+- Tests: for every operation of a chain campaign with fallback, `route(receipt.inputs)` equals `receipt.decision`, and that decision equals the executor actually run. This includes a retry after a task-level failure, where static mode must move the failed provider behind the others from `inputs.escalation.priorAttempts` alone, and a retry after a denial, which must keep the declared order. `route` takes `inputs` as its only argument. A crash after record (`AIWORKS_FAULT=after-record`) relaunches with the same receipt and model.
 - Acceptance: the whole existing suite passes unchanged; old stores open, and operations without a receipt read as `null`.
 - Depends on: nothing. Waits for: nothing.
 
@@ -432,7 +439,7 @@ Slices that edit `controller.mjs`, `campaign.mjs` or `api.mjs` are sequenced wit
 
 - Outcome: indicators, filters, floors, history aggregation, ranking, escalation, pin and verifier independence, as `routing-policy/1`.
 - Files: `src/supervisor/router.mjs`, new `tests/supervisor/router.test.mjs`.
-- Tests: the section 10 table, case by case; property tests that a choice is always a declared candidate, never below the floor unless `floor-capped`, never escalated by a denial, quota, auth or host outcome, and never a verifier session equal to an implementer session; replay of every generated receipt.
+- Tests: the section 10 table, case by case; property tests that a choice is always a declared candidate, never below the floor unless `floor-capped`, never escalated by a denial, quota, auth or host outcome, and never a verifier session equal to an implementer session; a sidestep and a different-model verifier preference that change when only `priorAttempts[0].kind`/`model` or `headImplementer.kind`/`model` change; replay of every generated receipt.
 - Acceptance: the router reads no clock, store or host state; coverage of every reason code.
 - Depends on: R2, R3. Waits for: nothing.
 
