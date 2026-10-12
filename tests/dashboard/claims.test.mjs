@@ -330,6 +330,26 @@ test('each "Needs you" item leads with what its step delivers, with the evidence
   assert.match(page, /item\.action \? el\('div', \{ class: 'needs-action' \}, item\.action\)/);
 });
 
+test('"AIWorks itself" holds only items that say they are not owner actions; a project group never names a campaign', (t) => {
+  const { dataDir, store, d, finish } = fixture(t, [task('T1', 'first', { outcome: 'Telegram ingestion: analysed messages are not sent again' })], Date.now() - 10 * 60_000);
+  finish('T1', 'https://github.com/netbka/Dyk/pull/463', { verified_sha: sha('T1') });
+  store.acquireLease(d.campaignId, 'synthetic-instance', Date.now(), 60_000);
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ coordinator: { enabled: true, permissionMode: 'auto', reportTo: 'netbka/aiworks#3' } }));
+  const supervisor = supervisorSnapshot(dataDir);
+  const merges = checked(results(d.campaignId, { T1: false }));
+  const healthy = ownerView(supervisor, merges);
+  assert.deepEqual(healthy.groups.map((group) => [group.name, group.items.map((item) => item.kind)]), [['Dyk', ['review']], ['AIWorks itself', ['coordinator']]]);
+  const faulty = ownerView({ ...supervisor, campaigns: supervisor.campaigns.map((c) => ({ ...c, livenessDefect: true })) }, merges, { host: 'HomePc' });
+  const [project, system] = faulty.groups;
+  assert.deepEqual([project.name, project.items.map((item) => item.kind)], ['Dyk', ['review']]);
+  assert.deepEqual(system.items.map((item) => item.kind), ['controller', 'coordinator']);
+  assert.deepEqual([system.items[0].system, system.items[0].repository], [true, 'netbka/Dyk'], 'the fault still names the project whose work it holds up');
+  for (const item of system.items) assert.match(whole(item), /Not an owner action|for whoever maintains AIWorks/, item.text);
+  for (const item of project.items) assert.doesNotMatch(whole(item), /Not an owner action|for whoever maintains AIWorks/, item.text);
+  assert.equal(faulty.headline, 'Needs you (3)', 'the same count as the ungrouped list');
+  assert.ok(faulty.groups.every((group) => !group.name.includes(d.campaignId)), 'groups are named by project, never by campaign');
+});
+
 test('release wording follows the project registry: a recorded standing authorization, else the project’s own policy', (t) => {
   const releases = readReleaseAuthorizations(GOVERNANCE);
   assert.deepEqual(releases['netbka/dyk'], { source: 'deploy/AGENTS.md', approval: 'https://github.com/netbka/engineering-platform-archive/issues/82' });

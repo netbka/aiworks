@@ -12,7 +12,9 @@ import { campaignStart, campaignPause, CampaignError } from '../../src/superviso
 import { scopeDigest, validateDeclaration } from '../../src/supervisor/campaign.mjs';
 import { declaration } from '../supervisor/helpers.mjs';
 import { supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
-import { ownerView, delivery, purpose } from '../../src/dashboard/owner.mjs';
+import { ownerView, delivery, purpose, SYSTEM_GROUP } from '../../src/dashboard/owner.mjs';
+import { configuredCheckouts, configuredGitCommand, MergeWatcher, publishedSteps } from '../../src/dashboard/merges.mjs';
+import { buildReviewFixture, REVIEW_STATES } from './fixtures/review-store.mjs';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
 
 const three = () => [
@@ -239,6 +241,77 @@ test('stops, decisions, unchecked merges and an unreadable inbox need the owner;
   assert.ok(!view.items.some((item) => /is paused$|Supervisor upgrade/.test(item.text)), 'the pause reason is never an owner item');
   assert.equal(view.items[3].text, 'The coordinator cannot read your messages');
   assert.ok(view.layout.cards.includes(d.campaignId), 'a paused campaign keeps its card');
+});
+
+test('Needs me groups today\'s items by project, case-insensitively, with "AIWorks itself" last and counts that add up', () => {
+  const now = Date.now(), sha = (n) => String(n).padStart(40, '0');
+  const campaign = (id, repository, extra = {}) => ({ id, repository, trackingIssue: 1, trackingUrl: `https://github.com/${repository}/issues/1`, purpose: `Purpose of ${id}`,
+    control: 'registered', controllerLive: true, livenessDefect: false, leaseExpiresAt: null, blocker: null, tasks: [], agents: [], lastProgressAt: null, ...extra });
+  const review = (id, repository, number) => ({ id, title: `${id} title`, outcome: `${id} outcome`, state: 'done', resultUrl: `https://github.com/${repository}/pull/${number}`,
+    dependsOn: [], attempts: 1, verifierRejections: 0, verifiedSha: sha(number) });
+  const decision = (id, repository) => ({ id, title: `${id} title`, outcome: `${id} outcome`, state: 'pending', resultUrl: null, dependsOn: [], attempts: 1, verifierRejections: 0,
+    blocked: 'B3', blockedReason: 'owner-reserved decision; see the task issue', issueUrl: `https://github.com/${repository}/issues/9` });
+  const supervisor = { available: true, recent: null, campaigns: [
+    campaign('dyk-a', 'netbka/Dyk', { tasks: [review('A1', 'netbka/Dyk', 463)] }),
+    // A supervisor fault says it is not an owner action: it belongs to AIWorks itself, still naming its project.
+    campaign('shop-fault', 'example/shop', { livenessDefect: true, tasks: [decision('S1', 'example/shop')] }),
+    campaign('dyk-b', 'netbka/dyk', { tasks: [review('B1', 'netbka/dyk', 464)] }),
+    // Another owner's repository with the same short name keeps its owner in the group name.
+    campaign('other-dyk', 'example/Dyk', { tasks: [review('O1', 'example/Dyk', 7)] }),
+    // A stopped supervisor stops this project's work and restarting it is the owner's action: it stays with the project.
+    campaign('notes-stopped', 'example/notes', { controllerLive: false, leaseExpiresAt: new Date(now - 60 * 60_000).toISOString() }),
+    // Waiting for an AI worker's usage limit to reset is never listed (AW-002).
+    campaign('notes-wait', 'example/notes', { waitingReason: 'provider-availability', tasks: [{ ...decision('W1', 'example/notes'), blocked: null, blockedReason: null }] }),
+  ], coordinator: { configError: 'coordinator.reportTo is missing', blocked: null, messages: [] } };
+  const merges = { repositories: ['netbka/Dyk', 'example/Dyk'].map((repository) => ({ repository, configured: true, fetchedAt: now, attemptedAt: now, error: null })),
+    steps: { 'dyk-a/A1': result(sha(463), false), 'dyk-b/B1': result(sha(464), false), 'other-dyk/O1': result(sha(7), false) } };
+  const view = ownerView(supervisor, merges, { host: 'HomePc', now });
+  assert.deepEqual(view.groups.map((group) => [group.name, group.project, group.count]), [
+    ['netbka/Dyk', 'netbka/Dyk', 2], ['shop', 'example/shop', 1], ['example/Dyk', 'example/Dyk', 1], ['notes', 'example/notes', 1], [SYSTEM_GROUP, null, 2]]);
+  assert.equal(SYSTEM_GROUP, 'AIWorks itself');
+  assert.deepEqual(view.groups[0].items.map((item) => item.campaignId), ['dyk-a', 'dyk-b'], 'one project whatever the spelling of its name');
+  assert.deepEqual(view.groups.at(-1).items.map((item) => [item.kind, item.repository]), [['controller', 'example/shop'], ['coordinator', null]]);
+  assert.deepEqual(view.groups[3].items.map((item) => [item.kind, item.text]), [['controller', 'The supervisor on HomePc stopped running notes-stopped']]);
+  // Grouping only: the same items, in today's order within each group, and the count is today's headline count.
+  const grouped = view.groups.flatMap((group) => group.items);
+  assert.equal(grouped.length, view.items.length);
+  assert.deepEqual(new Set(grouped), new Set(view.items), 'no item is added, dropped or copied');
+  assert.equal(view.headline, `Needs you (${view.groups.reduce((n, group) => n + group.count, 0)})`);
+  assert.ok(!view.items.some((item) => item.campaignId === 'notes-wait'), 'a usage-limit wait is not an owner task');
+  // Nothing for the owner: no group at all, not an empty one. No supervisor state: no groups either.
+  const calm = ownerView({ ...supervisor, coordinator: null, campaigns: [supervisor.campaigns.at(-1)] }, merges, { now });
+  assert.deepEqual([calm.items, calm.groups, calm.headline], [[], [], 'Nothing is blocked on you right now']);
+  assert.deepEqual(ownerView({ available: false }).groups, []);
+});
+
+test('on the review fixture, Needs me lists the same items and count as before, grouped by project', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'aiworks-owner-review-'));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5 }));
+  const { dataDir } = buildReviewFixture(root);
+  const watcher = new MergeWatcher({ steps: () => publishedSteps(dataDir), checkouts: configuredCheckouts(dataDir), git: configuredGitCommand(dataDir) });
+  await watcher.refresh();
+  const now = Date.now(), view = ownerView(supervisorSnapshot(dataDir, now), watcher.snapshot(), { host: 'review-pc', now });
+  assert.ok(view.items.length > 0);
+  assert.equal(view.headline, `Needs you (${view.items.length})`);
+  const grouped = view.groups.flatMap((group) => group.items);
+  assert.deepEqual(new Set(grouped), new Set(view.items));
+  assert.equal(grouped.length, view.items.length);
+  assert.deepEqual(view.groups.map((group) => group.name), ['notes-site', 'shop-app', SYSTEM_GROUP], 'projects in the order of their first item, AIWorks itself last');
+  for (const group of view.groups.slice(0, -1)) assert.ok(group.items.every((item) => item.repository.toLowerCase() === group.project.toLowerCase() && !item.system), group.name);
+  // The supervisor fault in notes-site says it is not an owner action, so it is listed under AIWorks itself.
+  assert.deepEqual(view.groups.at(-1).items.map((item) => item.campaignId), [REVIEW_STATES['supervisor-fault'].campaignId]);
+  // Neither the usage-limit wait nor a pause with a running supervisor is listed.
+  for (const state of ['provider-wait', 'paused']) assert.ok(!view.items.some((item) => item.campaignId === REVIEW_STATES[state].campaignId), state);
+});
+
+test('the Needs me page shows one headed group per project, linked to it, and "AIWorks itself" with the project its item is about', () => {
+  const page = readFileSync(join(resolve(import.meta.dirname, '../..'), 'src/dashboard/public/dashboard.js'), 'utf8');
+  assert.match(page, /const \{ headline, items, groups = \[\], unknownResults: unknown, also, reply \} = owner;/);
+  assert.match(page, /\.\.\.groups\.map\(needsGroup\),/);
+  assert.match(page, /el\('h3', \{ id: `needs-group-\$\{group\.key\}`, class: 'section-title' \}, group\.project \? routeLink\(group\.name, \{ screen: 'project', project: group\.project \}\) : group\.name, ` \(\$\{group\.count\}\)`\)/);
+  assert.match(page, /el\('ul', \{ class: 'needs-list' \}, \.\.\.group\.items\.map\(needsItem\)\)/);
+  assert.match(page, /item\.system && item\.repository \? `Project \$\{projectName\(item\.repository\)\}` : null/);
+  assert.doesNotMatch(page, /\.\.\.items\.map\(\(item\) => el\('li', \{ class: `needs-item/, 'no ungrouped list is left on the page');
 });
 
 const raw = (base, path, headers, method = 'GET') => new Promise((resolve, reject) => {

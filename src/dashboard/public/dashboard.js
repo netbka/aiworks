@@ -614,11 +614,33 @@ function finishedList(list) {
 const mergeAsOf = (check) => `Merge check from ${!check.at ? 'an unknown time' : new Date(check.at).toDateString() === new Date().toDateString() ? timeOnly(check.at) : dateTime(check.at)}; ${
   check.reason === 'fetch-failed' ? 'the last fetch failed, retrying within 5 minutes' : 'checking again'}`;
 
-/** Needs me: what is waiting for the owner, in plain words, each with the link to act on. */
+/** One Needs me row: what to do, then the subject (what the step delivers) with its link, then the evidence in one line. */
+const needsItem = (item) => el('li', { class: `needs-item ${item.kind}` },
+  item.action ? el('div', { class: 'needs-action' }, item.action) : null,
+  // A time, when known, completes the sentence: "…stopped checking in at about 12:31".
+  el('div', { class: 'needs-text' }, el('span', {}, `${item.text}${item.at ? ` at about ${timeOnly(item.at)}` : ''}`),
+    item.link ? link(`${item.link.label} ↗`, item.link.url, 'needs-link') : null),
+  item.mergeCheck ? el('div', { class: 'needs-stale' }, mergeAsOf(item.mergeCheck)) : null,
+  item.evidence ? disclosure(`needs/${item.link?.url ?? item.text}`, el('span', { class: 'evidence' }, item.evidence),
+    el('p', { class: 'needs-detail' }, item.detail)) : null,
+  ...item.points.map((point) => el('div', { class: 'needs-point' }, point.link ? link(`${point.link.label} ↗`, point.link.url, 'needs-link') : null, el('span', {}, point.text))),
+  // Under "AIWorks itself", an item about one project's work still names that project.
+  el('div', { class: 'subtext' }, [item.system && item.repository ? `Project ${projectName(item.repository)}` : null,
+    item.campaignId ? campaignContext(item.campaignId) : null].filter(Boolean).join(' · ')));
+
+/**
+ * One Needs me group (OWNER_WORKSPACE S3): a project, named and linked to its own screen, or "AIWorks itself" (always
+ * last), with its count and its items in today's order.
+ */
+const needsGroup = (group) => el('section', { class: 'needs-group', 'aria-labelledby': `needs-group-${group.key}`, 'data-focus-scope': `needs/${group.key}` },
+  el('h3', { id: `needs-group-${group.key}`, class: 'section-title' }, group.project ? routeLink(group.name, { screen: 'project', project: group.project }) : group.name, ` (${group.count})`),
+  el('ul', { class: 'needs-list' }, ...group.items.map(needsItem)));
+
+/** Needs me: what is waiting for the owner, grouped by project, in plain words, each with the link to act on. */
 function needsYou() {
   const owner = state.owner;
   if (!owner?.available) return null;
-  const { headline, items, unknownResults: unknown, also, reply } = owner;
+  const { headline, items, groups = [], unknownResults: unknown, also, reply } = owner;
   // aiworks#18: a stopped supervisor leads, with the time it last renewed its leases.
   const controller = state.supervisor.controller;
   return el('section', { class: `needs${items.length ? '' : unknown ? ' checking' : ' calm'}`, 'aria-labelledby': 'needs-title' },
@@ -628,17 +650,7 @@ function needsYou() {
       unknown ? el('span', { class: 'needs-unknown' }, `Merge of ${unknown} published step${unknown === 1 ? '' : 's'} being checked`) : null),
     // Not blocking, never "nothing": posted reports and merged work ready for release.
     also ? el('p', { class: 'needs-also' }, also.text) : null,
-    items.length ? el('ul', { class: 'needs-list' }, ...items.map((item) => el('li', { class: `needs-item ${item.kind}` },
-      // What to do, then the subject (what the step delivers) with its link, then the evidence in one line.
-      item.action ? el('div', { class: 'needs-action' }, item.action) : null,
-      // A time, when known, completes the sentence: "…stopped checking in at about 12:31".
-      el('div', { class: 'needs-text' }, el('span', {}, `${item.text}${item.at ? ` at about ${timeOnly(item.at)}` : ''}`),
-        item.link ? link(`${item.link.label} ↗`, item.link.url, 'needs-link') : null),
-      item.mergeCheck ? el('div', { class: 'needs-stale' }, mergeAsOf(item.mergeCheck)) : null,
-      item.evidence ? disclosure(`needs/${item.link?.url ?? item.text}`, el('span', { class: 'evidence' }, item.evidence),
-        el('p', { class: 'needs-detail' }, item.detail)) : null,
-      ...item.points.map((point) => el('div', { class: 'needs-point' }, point.link ? link(`${point.link.label} ↗`, point.link.url, 'needs-link') : null, el('span', {}, point.text))),
-      el('div', { class: 'subtext' }, item.campaignId ? campaignContext(item.campaignId) : '')))) : null,
+    ...groups.map(needsGroup),
     reply ? el('div', { class: 'needs-reply' }, `The coordinator answered your message #${reply.messageId} (${dateTime(reply.answeredAt)}). `,
       link('Read its “What needs you” ↗', reply.url)) : null);
 }
