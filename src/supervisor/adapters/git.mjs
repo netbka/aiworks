@@ -65,6 +65,15 @@ export function checkImplementation({ git, path, baseSha, headSha }) {
   return null;
 }
 
+/**
+ * Paths a commit changed since it left `from` (three-dot: since their merge base), renames as delete + add; null if git
+ * fails. NUL-separated, so a path with spaces or non-ASCII characters arrives as written, never quoted.
+ */
+export function changedPaths({ git, path, from, to }) {
+  const out = exec(git, ['diff', '--name-only', '-z', '--no-renames', `${from}...${to}`], { cwd: path });
+  return out.ok ? out.stdout.split('\0').filter(Boolean) : null;
+}
+
 export function currentHead({ git, path }) {
   return exec(git, ['rev-parse', 'HEAD'], { cwd: path }).stdout;
 }

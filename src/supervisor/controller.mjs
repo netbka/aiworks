@@ -14,6 +14,7 @@ import * as github from './adapters/github.mjs';
 import { authorityDigest, campaignLimits, executorOrder, projectGovernance } from './campaign.mjs';
 import { campaignBudget } from './api.mjs';
 import { ACCOUNT_SCOPED, accountOf, accountWait, clearAccountWait, laterWait, setAccountWait } from './accounts.mjs';
+import { domainOf, pathsOutside, writeDomainConstraint } from './work-ownership.mjs';
 import { coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
 import { stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions } from './instructions.mjs';
@@ -400,6 +401,21 @@ export class Controller {
       const integration = this.integrationFinding(before);
       if (!problem && integration && !gitA.isAncestor({ git: this.cmd.git, path: op.workspace, ancestor: integration.base, descendant: verdict.value.headSha })) {
         verdict = { ...verdict, class: 'invalid-result', detail: `integration repair head ${verdict.value.headSha} does not contain the base ${integration.base}` };
+      }
+      // A declared write domain is checked, not trusted (ADAPTIVE_SCHEDULER 4.3): a path outside it is a boundary
+      // violation, held for the owner and never retried on another provider. An integration repair is measured from the
+      // base it merged, so the sibling changes it brought in are not counted as its own.
+      const decl = this.store.campaign(ctx.id).declaration;
+      const spec = decl.tasks.find((item) => item.id === op.task_id);
+      const domain = verdict.class === 'result' ? domainOf(decl, spec) : null;
+      if (domain && !domain.whole) {
+        const changed = gitA.changedPaths({ git: this.cmd.git, path: op.workspace, from: integration ? integration.base : before.base_sha, to: verdict.value.headSha });
+        const outside = changed === null ? null : pathsOutside(domain, changed);
+        if (outside === null) verdict = { ...verdict, class: 'invalid-result', detail: 'cannot list the paths the commit changed' };
+        else if (outside.length) {
+          verdict = { ...verdict, class: 'error', violation: true,
+            detail: `writes outside the declared domain (${spec.writes.join(', ')}): ${outside.slice(0, 10).join(', ')}${outside.length > 10 ? ', ...' : ''}` };
+        }
       }
     }
     if (verdict.class === 'result' && op.kind === 'verify' && before.head_sha !== op.target_sha) {
@@ -1048,7 +1064,8 @@ export class Controller {
         authorityDigest: authorityDigest(decl),
         access: readOnly ? 'read-only' : 'write',
         goal: `${spec.title} (${decl.target.repository}#${spec.issue}). ${spec.goal}`.slice(0, 2000),
-        constraints: [...decl.constraints, ...(spec.constraints ?? []), ...findings],
+        // A declared write domain is enforced on the commit, so the worker and its verifier are told it first.
+        constraints: [...decl.constraints, ...(spec.constraints ?? []), ...(spec.writes ? [writeDomainConstraint(spec.writes)] : []), ...findings],
         acceptance: spec.acceptance,
         references: spec.references.map((path) => ({ path, revision })),
         governance,

@@ -56,3 +56,82 @@ export function findWorkConflict(store, declaration) {
   }
   return null;
 }
+
+// ---- aiworks#5 scope B / ADAPTIVE_SCHEDULER 4.3: write domains, held from dispatch until integration. ----
+
+const normalise = (path) => path.split('\\').join('/').toLowerCase();
+// A declared entry covers a path when it is that path or a directory above it: `docs/A.md` covers neither `docs/A.md.bak`
+// nor `docs/A.mdx`, and `src/a` covers `src/a/x.js` but not `src/ab.js`. A trailing slash marks a directory.
+const covers = (entry, path) => entry.endsWith('/') ? path.startsWith(entry) : path === entry || path.startsWith(`${entry}/`);
+
+/**
+ * The write domain of a task: the part of one repository its implement step may change. A commit task without `writes`
+ * owns the whole repository (the safe default). Report tasks and verifiers write nothing and hold nothing: null.
+ */
+export function domainOf(declaration, task) {
+  if (!task || task.deliverable !== 'commit' || !readable(declaration)) return null;
+  const key = `${declaration.target.tenantId}\u0000${declaration.target.repository.toLowerCase()}`;
+  const workKey = task.workKey ?? null;
+  if (!Array.isArray(task.writes)) return { key, whole: true, paths: [], resources: [], workKey };
+  return { key, whole: false, workKey,
+    paths: task.writes.filter((entry) => !entry.startsWith('resource:')).map(normalise),
+    resources: task.writes.filter((entry) => entry.startsWith('resource:')) };
+}
+
+/**
+ * Two domains overlap within one tenant and repository when either owns the whole repository, they share a workKey, one
+ * declared path covers the other (case folded, as Windows file systems fold case), or they name the same resource.
+ */
+export function domainsOverlap(a, b) {
+  if (!a || !b || a.key !== b.key) return false;
+  if (a.whole || b.whole || (a.workKey && a.workKey === b.workKey)) return true;
+  return a.paths.some((x) => b.paths.some((y) => covers(x, y) || covers(y, x))) ||
+    a.resources.some((resource) => b.resources.includes(resource));
+}
+
+/** Changed paths outside a declared domain; [] for a whole-repository domain. */
+export function pathsOutside(domain, paths) {
+  if (!domain || domain.whole) return [];
+  return paths.filter((path) => !domain.paths.some((entry) => covers(entry, normalise(path))));
+}
+
+const ACTIVE = new Set(['implementing', 'implemented', 'verifying', 'verified']);
+
+/**
+ * Who holds a domain that overlaps `domain`, computed from existing rows, never from a lock table (ADAPTIVE_SCHEDULER 4.3):
+ * - an open implement operation, in any campaign: it is writing ('writing'). A cancelled or finished campaign's run holds
+ *   its domain until it is settled, because suspicion is not proof it stopped;
+ * - a task implemented, verifying or verified, not yet integrated ('unintegrated');
+ * - a done commit task whose verified head is not in its base yet, in any campaign, finished or cancelled included
+ *   ('published-unmerged'). `integrated(campaignId, taskRow, declaration)` answers that from the fetched base.
+ * A pending task with nothing open holds nothing. The candidate task itself is skipped.
+ */
+export function domainHolders(store, { campaignId, taskId, domain }, { integrated = () => false } = {}) {
+  if (!domain) return [];
+  const holders = [];
+  for (const c of store.all('SELECT id, control, declaration FROM campaigns ORDER BY created_at, id')) {
+    if (!readable(c.declaration)) continue;
+    const terminal = ['finished', 'cancelled'].includes(c.control);
+    const writing = new Set(store.all("SELECT task_id FROM operations WHERE campaign_id = ? AND kind = 'implement' AND state IN ('recorded', 'dispatched')", c.id)
+      .map((row) => row.task_id));
+    const rows = new Map(store.all('SELECT * FROM tasks WHERE campaign_id = ?', c.id).map((row) => [row.task_id, row]));
+    for (const spec of c.declaration.tasks) {
+      if (c.id === campaignId && spec.id === taskId) continue;
+      if (!domainsOverlap(domain, domainOf(c.declaration, spec))) continue;
+      const row = rows.get(spec.id);
+      if (!row) continue;
+      const reason = writing.has(spec.id) ? 'writing'
+        : !terminal && ACTIVE.has(row.state) ? 'unintegrated'
+          : row.state === 'done' && row.verified_sha && !integrated(c.id, row, c.declaration) ? 'published-unmerged' : null;
+      if (reason) holders.push({ campaignId: c.id, taskId: spec.id, reason });
+    }
+  }
+  return holders;
+}
+
+/** The packet constraint that tells a worker and its verifier the task's declared write domain before it is enforced. */
+export const writeDomainConstraint = (writes) => {
+  const paths = writes.filter((entry) => !entry.startsWith('resource:'));
+  const resources = writes.filter((entry) => entry.startsWith('resource:'));
+  return `Write domain: change only files under ${paths.length ? paths.join(', ') : 'no repository path'}${resources.length ? ` (resources held: ${resources.join(', ')})` : ''}. A commit that changes any other file is rejected as a boundary violation; if the outcome needs another file, report that instead of changing it.`;
+};
