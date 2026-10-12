@@ -573,7 +573,11 @@ function needsYou() {
   const owner = state.owner;
   if (!owner?.available) return null;
   const { headline, items, unknownResults: unknown, also, reply } = owner;
+  // aiworks#18: a stopped supervisor leads, with the time it last renewed its leases.
+  const controller = state.supervisor.controller;
   return el('section', { class: `needs${items.length ? '' : unknown ? ' checking' : ' calm'}`, 'aria-labelledby': 'needs-title' },
+    controller?.stopped ? el('p', { class: 'needs-stopped' }, `Supervisor stopped. Last lease renewal ${dateTime(controller.lastLeaseRenewalAt)}${
+      controller.stopRequested ? ' (STOP file present: an upgrade or an operator stop)' : ''}.`) : null,
     el('div', { class: 'needs-head' }, el('h2', { id: 'needs-title' }, headline),
       unknown ? el('span', { class: 'needs-unknown' }, `Merge of ${unknown} published step${unknown === 1 ? '' : 's'} being checked`) : null),
     // Not blocking, never "nothing": posted reports and merged work ready for release.

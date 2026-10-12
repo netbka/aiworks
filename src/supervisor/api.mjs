@@ -188,6 +188,42 @@ export function campaignStatus(store, id, now = Date.now()) {
   };
 }
 
+/**
+ * A restart takes over expired leases on its first tick (tickMs, 5 s by default), and keep restarts serve within about
+ * 10 s. Leases must have been expired this long before the supervisor reads as stopped, so a handover never does.
+ */
+export const STOPPED_AFTER_MS = 60_000;
+
+/**
+ * Whether the supervisor is running, from the store's leases alone (aiworks#18). A running controller renews the lease
+ * of every campaign that is registered, paused or cancelling (or has a pending outbox) on every tick, so with such a
+ * campaign present and every lease expired for STOPPED_AFTER_MS, no controller is running: state 'stopped'. A
+ * controller that renews its leases is never reported stopped.
+ * lastLeaseRenewalAt is derived as expiry minus leaseMs (the controller's lease length, from config.json): exact when
+ * the supervisor died, up to leaseMs early after a graceful stop, which expires its leases at once. leaseEndedAt is
+ * exact in both cases. Without such a campaign a running controller may hold no lease, so nothing is claimed ('idle');
+ * with one but no lease ever recorded, no controller has run against this store ('not-started').
+ * stopRequested: the caller saw <data>/STOP, written by `cli.mjs stop` and by deploy.ps1 during an upgrade.
+ */
+export function supervisorLiveness(store, { now = Date.now(), leaseMs, stopRequested = false } = {}) {
+  const iso = (ms) => new Date(ms).toISOString();
+  const leases = store.all('SELECT campaign_id, acquired_at, expires_at FROM leases');
+  const expected = store.get(`SELECT COUNT(*) AS n FROM campaigns WHERE control IN ('registered', 'paused', 'cancel-requested')
+    OR EXISTS (SELECT 1 FROM outbox WHERE campaign_id = campaigns.id AND state = 'pending')`).n;
+  const live = leases.filter((lease) => lease.expires_at > now);
+  const ended = leases.length ? Math.max(...leases.map((lease) => lease.expires_at)) : null;
+  const renewed = leases.length ? Math.max(...leases.map((lease) => Math.max(lease.acquired_at, lease.expires_at - leaseMs))) : null;
+  const state = live.length ? 'running' : !expected ? 'idle' : !leases.length ? 'not-started'
+    : now - ended >= STOPPED_AFTER_MS ? 'stopped' : 'restarting';
+  const stop = stopRequested ? '; a STOP file is present (an upgrade or an operator stop is in progress)' : '';
+  const message = state === 'stopped' ? `supervisor stopped; last lease renewal at ${iso(renewed)}${stop}`
+    : state === 'not-started' ? `supervisor not started: no controller has run against this store${stop}`
+      : state === 'restarting' ? `supervisor leases expired at ${iso(ended)}; waiting for a restart to take over${stop}`
+        : state === 'idle' ? `no campaign needs a controller, so liveness is not known from leases${stop}` : `supervisor running${stop}`;
+  return { state, stopped: state === 'stopped', liveLeases: live.length, lastLeaseRenewalAt: renewed === null ? null : iso(renewed),
+    leaseEndedAt: ended === null ? null : iso(ended), stopRequested, message };
+}
+
 /** aiworks#1 blocker records this campaign references. An unmigrated store read-only, or the feature off, yields none. */
 function ownerBlockerView(store, campaignId) {
   if (!store.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'blocker_parents'")) return [];
