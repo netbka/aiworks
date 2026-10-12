@@ -101,6 +101,10 @@ export class Controller {
     this.governanceRoot = governanceRoot ?? this.config.governanceRoot;
     // aiworks#1 owner-intervention core: off unless the data-directory config enables it.
     this.oi = this.config.ownerIntervention?.enabled === true;
+    // aiworks#27 integration repair: off unless the data-directory config enables it. The check times are kept in memory
+    // only: after a restart every published task is checked once more, which is harmless.
+    this.ir = this.config.integrationRepair?.enabled === true;
+    this.integrationCheckedAt = new Map();
     const commands = config.commands ?? {};
     this.cmd = { codex: commands.codex, cursor: commands.cursor, agy: commands.agy, chrome: commands.chrome,
       claude: commands.claude ?? ['claude'], git: commands.git ?? ['git'], gh: commands.gh ?? ['gh'] };
@@ -117,6 +121,12 @@ export class Controller {
   async tick() {
     const ids = this.store.all(`SELECT id FROM campaigns WHERE control IN ('registered', 'paused', 'cancel-requested')
       OR EXISTS (SELECT 1 FROM outbox WHERE campaign_id = campaigns.id AND state = 'pending')`).map((row) => row.id);
+    // A finished campaign is visited again only while integration repair is on and its published PRs are due a check.
+    if (this.ir) {
+      for (const { id } of this.store.all("SELECT id FROM campaigns WHERE control = 'finished'")) {
+        if (!ids.includes(id) && this.integrationDue(id)) ids.push(id);
+      }
+    }
     for (const id of ids) {
       try {
         await this.step(id);
@@ -166,6 +176,8 @@ export class Controller {
     if (!lease.renewed) this.log(`campaign ${id}: holding lease generation ${lease.generation}${lease.takeover ? ' after expiry of the previous holder' : ''}`);
     this.held.set(id, lease.generation);
     const ctx = { id, generation: lease.generation };
+    // A conflicting published PR reopens its task and with it the finished campaign (aiworks#27).
+    if (this.ir && this.store.campaign(id).control === 'finished') this.checkPublishedIntegration(ctx);
     if (['finished', 'cancelled'].includes(this.store.campaign(id).control)) return;
 
     this.processEvents(ctx);
@@ -187,6 +199,7 @@ export class Controller {
       if (unmerged) this.holdForUnmergedCode(ctx, unmerged);
       else {
         this.releaseUnmergedHold(ctx);
+        if (this.ir) this.checkPublishedIntegration(ctx);
         this.reconcileIntegration(ctx);
         await this.schedule(ctx);
       }
@@ -357,6 +370,11 @@ export class Controller {
         this.deliverable(ctx, op.task_id) === 'commit') {
       const problem = gitA.checkImplementation({ git: this.cmd.git, path: op.workspace, baseSha: before.base_sha, headSha: verdict.value.headSha });
       if (problem) verdict = { ...verdict, class: 'invalid-result', detail: problem };
+      // An integration repair must actually merge the base it was reopened for (aiworks#27).
+      const integration = this.integrationFinding(before);
+      if (!problem && integration && !gitA.isAncestor({ git: this.cmd.git, path: op.workspace, ancestor: integration.base, descendant: verdict.value.headSha })) {
+        verdict = { ...verdict, class: 'invalid-result', detail: `integration repair head ${verdict.value.headSha} does not contain the base ${integration.base}` };
+      }
     }
     if (verdict.class === 'result' && op.kind === 'verify' && before.head_sha !== op.target_sha) {
       verdict = { ...verdict, class: 'invalid-result', detail: `stale verification: task head is ${before.head_sha}, verifier saw ${op.target_sha}` };
@@ -481,11 +499,14 @@ export class Controller {
     if (value.verdict === 'rejected') {
       const blocking = value.findings.filter((finding) => finding.severity === 'blocking');
       if (!blocking.length) return retry('invalid-result', 'rejected without a blocking finding', 'implemented');
+      // The integration finding stays with the task until its repaired head is published.
+      const integration = this.integrationFinding(task);
+      const findings = integration ? [...blocking, integration] : blocking;
       if (limits.maxRepairRounds !== null && task.repair_rounds >= limits.maxRepairRounds) {
-        return { state: 'pending', verification: value, findings: blocking,
+        return { state: 'pending', verification: value, findings,
           blocked: { class: 'stalled', reason: `verifier still rejects after ${task.repair_rounds} repair rounds`, at: now } };
       }
-      return { state: 'pending', verification: value, findings: blocking, repair_rounds: task.repair_rounds + 1, retry_at: null, last_error: null };
+      return { state: 'pending', verification: value, findings, repair_rounds: task.repair_rounds + 1, retry_at: null, last_error: null };
     }
     return retry('evidence-unavailable', value.summary, 'implemented');
   }
@@ -558,6 +579,73 @@ export class Controller {
         if (reason !== task.last_error) this.store.journal(ctx.id, reason ? 'integration-wait' : 'integration-ready', { task: task.task_id }, this.now());
       }
     });
+  }
+
+  integrationDue(id, now = this.now()) {
+    return (this.integrationCheckedAt.get(id) ?? -Infinity) + this.config.integrationPollMs <= now;
+  }
+
+  /**
+   * aiworks#27: a published, unmerged commit task whose verified head no longer merges cleanly into the freshly fetched
+   * base becomes an integration repair round. Detection is local (`git merge-tree`), after the same bounded base fetch as
+   * reconcileIntegration, and never calls GitHub. A task is left alone once its remote branch no longer points at its
+   * verified head (merged and deleted, or changed by someone else), or once the base contains it.
+   */
+  checkPublishedIntegration(ctx) {
+    if (!this.integrationDue(ctx.id)) return;
+    const c = this.store.campaign(ctx.id);
+    if (c.blocker) return;
+    const decl = c.declaration, specs = new Map(decl.tasks.map((t) => [t.id, t]));
+    const published = (tasks) => tasks.filter((t) => t.state === 'done' && !t.blocked && t.pr_url &&
+      specs.get(t.task_id)?.deliverable === 'commit' && /^[0-9a-f]{40}$/.test(t.verified_sha ?? ''));
+    const candidates = published(this.store.tasks(ctx.id)).length;
+    // A finished campaign with nothing left to check is not visited again until a restart; a running one may publish more.
+    this.integrationCheckedAt.set(ctx.id, !candidates && c.control === 'finished' ? Infinity : this.now());
+    if (!candidates) return;
+    this.fenced(ctx, () => {
+      const repo = this.repo(decl), base = decl.target.baseBranch, git = this.cmd.git;
+      const fetched = gitA.exec(git, ['fetch', 'origin', base], { cwd: repo.path, timeoutMs: 30_000 });
+      const baseSha = fetched.ok ? gitA.exec(git, ['rev-parse', 'FETCH_HEAD'], { cwd: repo.path }).stdout : null;
+      const heads = /^[0-9a-f]{40}$/.test(baseSha ?? '') ? gitA.remoteBranches({ git, repoPath: repo.path, pattern: `refs/heads/campaign/${ctx.id}/*` }) : null;
+      if (!heads) { this.log(`integration check of ${ctx.id} skipped: remote refresh unavailable`); return; }
+      const limits = campaignLimits(decl);
+      let open = 0;
+      for (const task of published(this.store.tasks(ctx.id))) {
+        const sha = task.verified_sha, branch = gitA.branchName(ctx.id, task.task_id);
+        if (heads.get(`refs/heads/${branch}`) !== sha) continue;
+        if (gitA.isAncestor({ git, path: repo.path, ancestor: sha, descendant: baseSha })) continue;
+        const merge = gitA.mergeCheck({ git, repoPath: repo.path, baseSha, sha });
+        if (merge.clean) { if (merge.tree !== merge.baseTree) open++; continue; }
+        open++;
+        const now = this.now();
+        const paths = merge.paths.slice(0, 20);
+        const commits = gitA.siblingCommits({ git, repoPath: repo.path, baseSha, sha, paths });
+        const finding = {
+          id: 'integration-conflict', severity: 'blocking', base: baseSha, verified: sha, paths, commits,
+          description: `Integration conflict: the verified commit ${sha} (${task.pr_url}) no longer merges into ${base} at ${baseSha}. ` +
+            `Conflicting paths: ${paths.join(', ')}. Sibling commits on ${base}: ${commits.map((item) => `${item.sha.slice(0, 12)} ${item.subject}`).join('; ') || 'unknown'}. ` +
+            `Merge ${baseSha} into this branch (git merge ${baseSha}), resolve the conflicts, run the full gate and commit the merge. Never rebase, reset or amend: ${sha} must stay an ancestor of the new head.`,
+        };
+        const stalled = limits.maxRepairRounds !== null && task.repair_rounds >= limits.maxRepairRounds;
+        this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version, {
+          state: 'pending', base_sha: sha, findings: [finding], failures: {}, retry_at: null,
+          last_error: `integration-conflict: ${paths.join(', ')} conflict with ${base} at ${baseSha}`.slice(0, 1000),
+          ...(stalled ? { blocked: { class: 'stalled', reason: `integration conflict with ${base} after ${task.repair_rounds} repair rounds`, at: now } }
+            : { repair_rounds: task.repair_rounds + 1 }),
+        }, now);
+        this.store.journal(ctx.id, 'integration-conflict', { task: task.task_id, sha, base: baseSha, paths, commits: commits.map((item) => item.sha), stalled }, now);
+        const fresh = this.store.campaign(ctx.id);
+        if (fresh.control === 'finished') {
+          this.store.patch('campaigns', { id: ctx.id }, fresh.version, { control: 'registered', status: 'active', next_action: null }, now);
+        }
+      }
+      if (!open && this.store.campaign(ctx.id).control === 'finished') this.integrationCheckedAt.set(ctx.id, Infinity);
+    });
+  }
+
+  /** The open integration-conflict finding of a task in an integration repair round, or null. */
+  integrationFinding(task) {
+    return (task.findings ?? []).find((finding) => finding.id === 'integration-conflict') ?? null;
   }
 
   async schedule(ctx) {
@@ -693,6 +781,7 @@ export class Controller {
       let workspace;
       let revision;
       let targetSha = null;
+      const integration = spec.deliverable === 'commit' ? this.integrationFinding(task) : null;
       if (kind === 'implement') {
         let integrationBase;
         if (spec.requiresMergedDependencies) {
@@ -705,8 +794,16 @@ export class Controller {
             return null;
           }
         }
+        // An integration repair continues the published branch: a missing worktree and branch are recreated at the verified head.
         const ws = gitA.prepareImplementWorkspace({ git: this.cmd.git, repoPath: repo.path, worktreeRoot: repo.worktreeRoot,
-          campaignId: ctx.id, taskId: task.task_id, baseBranch: decl.target.baseBranch, baseSha: integrationBase });
+          campaignId: ctx.id, taskId: task.task_id, baseBranch: decl.target.baseBranch, baseSha: integration ? integration.verified : integrationBase });
+        if (integration && !gitA.isAncestor({ git: this.cmd.git, path: ws.path, ancestor: integration.verified, descendant: ws.head })) {
+          this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
+            { blocked: { class: 'stalled', reason: `Implementation workspace ${ws.head} does not contain the published verified head ${integration.verified}; preserve it and reconcile the branch before recheck.`, at: this.now() },
+              last_error: 'integration-workspace: verified head absent' }, this.now());
+          this.store.journal(ctx.id, 'integration-workspace-blocked', { task: task.task_id }, this.now());
+          return null;
+        }
         if (spec.requiresMergedDependencies && this.missingIntegratedDependencies(decl, spec, this.store.tasks(ctx.id), ws.head, ws.path).length) {
           this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
             { blocked: { class: 'stalled', reason: 'Existing implementation workspace lacks the integrated dependency revisions; preserve it and reconcile its base before recheck.', at: this.now() }, last_error: 'dependency-workspace: required integrated revisions absent' }, this.now());
@@ -730,7 +827,7 @@ export class Controller {
       const report = kind === 'verify' || repairing ? String(task.result?.report ?? '') : null;
       const reportDigest = report !== null ? createHash('sha256').update(report, 'utf8').digest('hex') : null;
       const findings = kind === 'implement' ? (task.findings ?? []).slice(0, 8)
-        .map((finding) => `Blocking verifier finding ${finding.id}: ${finding.description}`.slice(0, 2000)) : [];
+        .map((finding) => `Blocking ${finding.id === 'integration-conflict' ? 'integration' : 'verifier'} finding ${finding.id}: ${finding.description}`.slice(0, 2000)) : [];
       const packet = validatePacket({
         version: 1, tenantId: decl.target.tenantId, projectId: decl.target.projectId, environment: decl.target.environment,
         taskId: task.task_id, stageId: kind, runId: opId, role, revision,
@@ -745,7 +842,11 @@ export class Controller {
       const digest = packetDigest(packet, POLICY);
       const instructions = pendingInstructions(this.store, current, task.task_id, kind);
       const sessionId = randomUUID();
-      const note = repairing
+      const note = integration && kind === 'verify'
+        ? `This head is an integration repair round: it must merge ${integration.base} (the current ${decl.target.baseBranch}) into the previously verified ${integration.verified} to resolve conflicts in ${integration.paths.join(', ')}. Check that both are ancestors of the target, review the resolution with git show --remerge-diff ${targetSha}, and run the full gate.`
+        : integration && task.findings.length === 1
+          ? `This is repair round ${task.repair_rounds}, an integration repair: the verified, published commit ${integration.verified} conflicts with ${decl.target.baseBranch} at ${integration.base} after a sibling merge. Merge that base into this branch, resolve the conflicts listed in the packet constraints, run the full gate, commit, and return resolved with the new headSha. Never rebase, reset or amend the verified commit.`
+          : repairing
         ? spec.deliverable === 'commit'
           ? `This is repair round ${task.repair_rounds}: the independent verifier rejected ${task.head_sha}. Fix every blocking finding listed in the packet constraints, commit, and return resolved with the new headSha.`
           : `This is repair round ${task.repair_rounds}: the independent verifier rejected the previous report (sha256 ${reportDigest}), reproduced below. Produce a corrected COMPLETE report that resolves every blocking finding listed in the packet constraints and return resolved with that report. Do not commit or change repository files; this task is report-only and read-only.`
@@ -875,7 +976,35 @@ export class Controller {
         const fresh = this.store.task(ctx.id, task.task_id);
         if (current.control !== 'registered' || fresh.state !== 'verified' || fresh.version !== task.version) return;
         let url;
-        if (spec.deliverable === 'commit') {
+        const integration = spec.deliverable === 'commit' ? this.integrationFinding(fresh) : null;
+        if (integration) {
+          // aiworks#27: the repaired head goes to the same branch and PR. The push is a plain fast-forward (the earlier
+          // verified head is an ancestor), never a force-push; without an open PR nothing is pushed and no PR is opened.
+          const key = `${ctx.id}:${task.task_id}:integration:${task.verified_sha}`;
+          const comment = `${this.integrationBody(decl, spec, task, integration)}\n\n${github.marker(key)}`;
+          if (comment.length > BODY_LIMIT) {
+            this.raiseBlocker(ctx, decl, { kind: 'publication-size', class: 'B2', reason: 'The integration repair verification exceeds the GitHub comment limit; nothing was truncated or pushed.',
+              requestedAction: 'Provide an authorized publication format that preserves the verification, then recheck.' }, this.now(),
+            { identity: task.task_id });
+            return;
+          }
+          const existing = github.findOpenPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, branch });
+          if (!existing) {
+            const now = this.now();
+            this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, fresh.version, { retry_at: null,
+              blocked: { class: 'stalled', reason: `integration repair ${task.verified_sha} verified, but ${branch} has no open PR; nothing was pushed or opened`, at: now } }, now);
+            this.store.journal(ctx.id, 'integration-repair-unpublished', { task: task.task_id, sha: task.verified_sha }, now);
+            return;
+          }
+          gitA.pushVerified({ git: this.cmd.git, repoPath: repo.path, branch, sha: task.verified_sha });
+          this.injectFault('after-push');
+          url = existing.url;
+          const prefix = `https://github.com/${decl.target.repository}/pull/`;
+          const number = String(url).startsWith(prefix) ? /^(\d+)/.exec(String(url).slice(prefix.length))?.[1] : null;
+          if (!number) throw new Error(`cannot post the integration repair comment: no PR number in ${url}`);
+          const target = { gh: this.cmd.gh, repository: decl.target.repository, issue: Number(number), key };
+          if (!github.findMarkedComment(target)) github.postComment({ ...target, body: comment, bodyFile });
+        } else if (spec.deliverable === 'commit') {
           // Over GitHub's body limit, the verification moves to its own marked PR comment: nothing is truncated.
           const split = this.prBody(decl, spec, task).length > BODY_LIMIT;
           const body = this.prBody(decl, spec, task, { verificationElsewhere: split });
@@ -923,10 +1052,14 @@ export class Controller {
           if (verification && !github.findMarkedComment(vTarget)) github.postComment({ ...vTarget, body: verification, bodyFile });
         }
         const now = this.now();
-        this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, fresh.version, { state: 'done', pr_url: url, retry_at: null, last_error: null }, now);
+        this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, fresh.version,
+          { state: 'done', pr_url: url, retry_at: null, last_error: null, ...(integration ? { findings: null } : {}) }, now);
         this.store.journal(ctx.id, 'published', { task: task.task_id, sha: task.verified_sha, url }, now);
+        if (integration) this.store.journal(ctx.id, 'integration-repaired', { task: task.task_id, from: integration.verified, base: integration.base, sha: task.verified_sha, url }, now);
         if (this.oi) this.probeSucceeded(ctx, task.task_id, { detail: `publication of ${task.verified_sha} succeeded` }, now);
-        this.enqueue(ctx.id, `${ctx.id}:${task.task_id}:published:${task.verified_sha}`, decl, spec.deliverable === 'commit'
+        this.enqueue(ctx.id, `${ctx.id}:${task.task_id}:published:${task.verified_sha}`, decl, integration
+          ? `**${task.task_id}** (#${spec.issue}) conflicted with ${decl.target.baseBranch} after a sibling merge. The supervisor merged the base, a fresh independent verification accepted \`${task.verified_sha}\`, and it is pushed to the same PR: ${url}. Not merged; merge follows ${decl.target.repository}'s release gate.`
+          : spec.deliverable === 'commit'
           ? `**${task.task_id}** (#${spec.issue}) passed independent verification and is published for review: ${url} at \`${task.verified_sha}\`. Not merged; merge follows ${decl.target.repository}'s release gate.`
           : `**${task.task_id}** (#${spec.issue}) passed independent verification; the verified report is posted: ${url} (revision \`${task.verified_sha}\`).`, now);
         this.log(`published ${task.task_id}: ${url}`);
@@ -965,6 +1098,21 @@ export class Controller {
       ...this.verificationLines(task),
       '',
       'Generated by the AIWorks delivery supervisor.',
+    ].join('\n');
+  }
+
+  /** PR comment for a repaired head pushed to an already open PR (aiworks#27). */
+  integrationBody(decl, spec, task, integration) {
+    return [
+      `## ${spec.id}: integration repair, independently verified`,
+      '',
+      `The verified commit \`${integration.verified}\` stopped merging into \`${decl.target.baseBranch}\` at \`${integration.base}\` after a sibling merge. Conflicting paths: ${integration.paths.map((path) => `\`${path}\``).join(', ')}.`,
+      '',
+      `The base was merged into this branch and the conflicts resolved. A separate fresh verifier session accepted exactly \`${task.verified_sha}\`, which was pushed here as a fast-forward: \`${integration.verified}\` stays an ancestor.`,
+      '',
+      ...this.verificationLines(task),
+      '',
+      `Not merged and not deployed: merge and release follow ${decl.target.repository}'s release gate. Generated by the AIWorks delivery supervisor.`,
     ].join('\n');
   }
 

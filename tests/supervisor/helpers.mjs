@@ -82,6 +82,9 @@ export function environment({ scenario = {}, config = {} } = {}) {
       ? readFileSync(join(stateGh, 'gh-calls.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []),
     // Make one REST route ('GET pulls', 'POST pulls', 'GET pull', 'POST comments', or '*') refuse with a rate limit `times` times.
     rateLimit: (limit) => writeFileSync(join(stateGh, 'rate-limit.json'), JSON.stringify(limit)),
+    // The owner merged the PR of `branch`: the synthetic gh no longer lists it as open. The test moves the base itself.
+    markMerged: (branch, mergeCommit = null) => writeFileSync(join(stateGh, 'prs.json'), JSON.stringify(
+      JSON.parse(readFileSync(join(stateGh, 'prs.json'), 'utf8')).map((pr) => (pr.head === branch ? { ...pr, merged: true, mergeCommit } : pr)))),
     remoteHead: (branch) => spawnSync('git', ['ls-remote', origin, `refs/heads/${branch}`], { encoding: 'utf8', windowsHide: true }).stdout.split(/\s/)[0] || null,
     setScenario: (next) => writeFileSync(join(stateClaude, 'scenario.json'), JSON.stringify(next)),
     cleanup: () => {
