@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import { CLI, declaration, environment, runUntil, skipWithoutSqlite, sleep } from './helpers.mjs';
+import { declaration, environment, runUntil, skipWithoutSqlite, sleep, runtimeCheckout } from './helpers.mjs';
 
 const OI = { ownerIntervention: { enabled: true } };
 // The synthetic credential-shaped values the `owner-leak` fixture mode puts in its trigger text. The key
@@ -288,9 +288,11 @@ test('restart during the recheck probe: the probe launches once and the dependen
   const store = new Store(join(env.dataDir, 'supervisor.db'));
   const d = declaration();
   campaignStart(store, d);
+  // `serve` starts new work only from code merged into origin/main (AW-005): run it from a merged runtime checkout.
+  const runtime = runtimeCheckout();
   const children = new Set();
   const serve = (extraEnv = {}) => {
-    const child = spawn(process.execPath, ['--no-warnings', CLI, 'serve', '--data', env.dataDir], {
+    const child = spawn(process.execPath, ['--no-warnings', runtime.cli, 'serve', '--data', env.dataDir], {
       env: { ...process.env, ...env.env, ...extraEnv }, stdio: 'ignore', windowsHide: true,
     });
     children.add(child);
@@ -307,6 +309,7 @@ test('restart during the recheck probe: the probe launches once and the dependen
     await sleep(200);
     store.close();
     env.cleanup();
+    runtime.cleanup();
   });
   const first = serve();
   await waitFor(() => store.campaign(d.campaignId).status === 'blocked-owner-action');

@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { readJsonIfExists } from '../../src/supervisor/proc.mjs';
-import { CLI, declaration, environment, skipWithoutSqlite, sleep } from './helpers.mjs';
+import { declaration, environment, skipWithoutSqlite, sleep, runtimeCheckout } from './helpers.mjs';
 
 async function harness(t, { scenario, decl }) {
   const { Store } = await import('../../src/supervisor/store.mjs');
@@ -16,9 +16,11 @@ async function harness(t, { scenario, decl }) {
   const store = new Store(join(env.dataDir, 'supervisor.db'));
   const d = decl ?? declaration({ tasks: [declaration().tasks[0]] });
   campaignStart(store, d);
+  // `serve` starts new work only from code merged into origin/main (AW-005): run it from a merged runtime checkout.
+  const runtime = runtimeCheckout();
   const children = new Set();
   const serve = (extraEnv = {}) => {
-    const child = spawn(process.execPath, ['--no-warnings', CLI, 'serve', '--data', env.dataDir], {
+    const child = spawn(process.execPath, ['--no-warnings', runtime.cli, 'serve', '--data', env.dataDir], {
       env: { ...process.env, ...env.env, ...extraEnv }, stdio: 'ignore', windowsHide: true,
     });
     children.add(child);
@@ -42,6 +44,7 @@ async function harness(t, { scenario, decl }) {
     await sleep(200);
     store.close();
     env.cleanup();
+    runtime.cleanup();
   });
   return { env, store, d, id: d.campaignId, serve, waitFor, finished, stopOwnedRun };
 }

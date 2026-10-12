@@ -1,7 +1,6 @@
 // The governance root: AIWorks reads Engineering Platform's registry, policy catalog and roadmap docs from an explicit
 // read-only checkout. Configured, missing and invalid roots, for the library, the CLI, the controller and the dashboard.
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,7 +9,7 @@ import { campaignStart } from '../../src/supervisor/api.mjs';
 import { assertRegisteredTarget, projectGovernance } from '../../src/supervisor/campaign.mjs';
 import { configuredGovernanceRoot, GovernanceRootError, requireGovernanceRoot } from '../../src/supervisor/governance.mjs';
 import { RoadmapSource, readReleaseAuthorizations, readRoadmap } from '../../src/dashboard/roadmap.mjs';
-import { CLI, declaration, environment, GOVERNANCE, skipWithoutSqlite, SQLITE } from './helpers.mjs';
+import { declaration, environment, GOVERNANCE, runCli, runtimeCheckout, skipWithoutSqlite, SQLITE } from './helpers.mjs';
 const { Store } = SQLITE ? await import('../../src/supervisor/store.mjs') : {};
 const { Controller } = SQLITE ? await import('../../src/supervisor/controller.mjs') : {};
 
@@ -56,16 +55,13 @@ test('an invalid root fails closed with GOVERNANCE_ROOT_INVALID', (t) => {
   }
 });
 
-const cli = (data, args, { env = {} } = {}) => {
-  const childEnv = { ...process.env, AIWORKS_DATA: '', ...env };
-  delete childEnv.NODE_TEST_CONTEXT;
-  return spawnSync(process.execPath, ['--no-warnings', CLI, ...args, '--data', data], { env: childEnv, windowsHide: true, encoding: 'utf8' });
-};
-
 test('CLI start: --governance, config.json governanceRoot, or a coded refusal', { skip: !SQLITE }, (t) => {
   const root = temp(t, 'aiworks-governance-cli-');
-  const file = join(root, 'campaign.json');
-  writeFileSync(file, JSON.stringify(declaration({ campaignId: 'governed' })));
+  // The declaration is merged to main in a runtime checkout (AW-005), so only the governance root decides.
+  const runtime = runtimeCheckout({ declarations: { 'governed.json': declaration({ campaignId: 'governed' }) } });
+  t.after(() => runtime.cleanup());
+  const file = join(runtime.root, 'campaigns', 'governed.json');
+  const cli = (data, args) => runCli(runtime.cli, [...args, '--data', data]);
   const data = (name, config) => {
     const dir = join(root, name);
     mkdirSync(dir);

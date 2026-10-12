@@ -8,11 +8,11 @@ import { once } from 'node:events';
 import { request } from 'node:http';
 import { Store } from '../../src/supervisor/store.mjs';
 import { campaignStart, campaignPause } from '../../src/supervisor/api.mjs';
-import { declaration, environment } from '../supervisor/helpers.mjs';
+import { declaration, environment, runtimeCheckout } from '../supervisor/helpers.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
 import { pendingInstructions } from '../../src/supervisor/instructions.mjs';
 import { configuredGithubCommand, configuredRepositories, RoadmapSource, readRoadmap, packageIds, roadmapState, trackedEntries, safeText } from '../../src/dashboard/roadmap.mjs';
-import { applyCommand, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
+import { applyCommand, applyCommand as applyMain, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
 import { ownerView } from '../../src/dashboard/owner.mjs';
 
@@ -160,6 +160,10 @@ test('monitor snapshots omit raw errors, prompts, identity and local paths', (t)
 
 test('commands reuse registered authority, are audited and deduplicate exact retries', (t) => {
   const { dataDir, store, d, payload } = fixture(t);
+  // Resume needs the stored declaration in campaigns/ on origin/main (AW-005): here, a merged temp repository.
+  const runtime = runtimeCheckout({ declarations: { [`${d.campaignId}.json`]: d } });
+  t.after(() => runtime.cleanup());
+  const applyCommand = (dir, input) => applyMain(dir, input, Date.now(), { provenanceRoot: runtime.root });
   const before = store.campaign(d.campaignId);
   const pause = payload('pause');
   assert.equal(applyCommand(dataDir, pause).accepted, true);
@@ -211,6 +215,38 @@ test('stale, ABA, wrong-task and expanded-authority commands are rejected', (t) 
     assert.throws(() => applyCommand(dataDir, payload('recheck', extra)), /Invalid dashboard command/);
   }
   assert.throws(() => applyCommand(dataDir, payload('resume')), /paused campaign/);
+  assert.equal(store.campaign(d.campaignId).control, 'registered');
+});
+
+test('Resume refuses a stored declaration that was never committed in campaigns/ on main (AW-005)', (t) => {
+  const { dataDir, store, d, payload } = fixture(t);
+  campaignPause(store, d.campaignId);
+  const absent = runtimeCheckout(); // main holds only the committed campaigns, never this one
+  const differs = runtimeCheckout({ declarations: { [`${d.campaignId}.json`]: { ...d, constraints: ['A different committed constraint.'] } } });
+  t.after(() => { absent.cleanup(); differs.cleanup(); });
+  for (const root of [absent.root, differs.root]) {
+    assert.throws(() => applyMain(dataDir, payload('resume'), Date.now(), { provenanceRoot: root }),
+      (error) => error.status === 409 && /^Resume refused: .*is not committed in campaigns\/ in any revision merged to main/.test(error.message));
+    assert.equal(store.campaign(d.campaignId).control, 'paused');
+  }
+  // Committed only after origin/main (a local, unmerged commit) is still refused.
+  const local = runtimeCheckout();
+  t.after(() => local.cleanup());
+  writeFileSync(join(local.root, 'campaigns', `${d.campaignId}.json`), `${JSON.stringify(d, null, 2)}\n`);
+  local.git('add', '-A');
+  local.git('commit', '-q', '-m', 'local declaration, not merged');
+  assert.throws(() => applyMain(dataDir, payload('resume'), Date.now(), { provenanceRoot: local.root }), (error) => error.status === 409);
+  // Without an override the dashboard checks its own checkout, and this declaration was never on main there either.
+  assert.throws(() => applyCommand(dataDir, payload('resume')), (error) => error.status === 409 && /^Resume refused/.test(error.message));
+  assert.equal(store.campaign(d.campaignId).control, 'paused');
+  assert.equal(store.all("SELECT * FROM journal WHERE kind = 'dashboard-command'").length, 0, 'a refused resume records nothing');
+  // An older merged version is enough: main's tip is not required.
+  const older = runtimeCheckout({ declarations: { [`${d.campaignId}.json`]: d } });
+  t.after(() => older.cleanup());
+  writeFileSync(join(older.root, 'campaigns', `${d.campaignId}.json`), `${JSON.stringify({ ...d, constraints: ['Amended later on main.'] }, null, 2)}\n`);
+  older.git('commit', '-q', '-am', 'amend the declaration on main');
+  older.git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+  assert.equal(applyMain(dataDir, payload('resume'), Date.now(), { provenanceRoot: older.root }).accepted, true);
   assert.equal(store.campaign(d.campaignId).control, 'registered');
 });
 

@@ -9,10 +9,29 @@ Engineering Platform's governance files (project registry, policies, project-con
 ## 1. Boundary
 
 - It runs only campaigns the owner explicitly registered. A campaign declaration names the authorization, target repository, tasks and DAG, limits and executor. It never claims unassigned backlog.
+- **Merged code and declarations on main only ([AW-005](DECISIONS.md#aw-005---campaigns-run-only-from-merged-supervisor-code-and-a-declaration-on-main)).** A campaign runs only from supervisor code merged to main, with its declaration file in `campaigns/` on main.
+  - **"On main", exactly:** the declaration is committed in `campaigns/` in a revision merged to main and is used unmodified, at a runtime HEAD that is an ancestor of `origin/main`. "Main" is the main branch of `netbka/aiworks`, as the runtime checkout's `origin` names it.
+  - **Main's tip is not the rule.** An older merged runtime revision qualifies, and so does an older merged version of a declaration.
+  - **No bypass.** No flag, `config.json` key or environment variable skips these checks. They only read git: they never fetch, write the index or move a ref. They run the `git` on `PATH`, never `commands.git` from `config.json`.
+  - **`start <file>`** (registration, amendment and resume) accepts the declaration only when:
+    - the file resolves to `campaigns/<name>.json` of the checkout the CLI runs from;
+    - the file is committed and unmodified at that checkout's HEAD. A line-ending conversion alone is not a change. The declaration is read from the committed blob;
+    - that HEAD is an ancestor of `origin/main` (`git merge-base --is-ancestor`). Ancestry, not equality: `origin/main` moving ahead never fails a deploy.
+
+    Otherwise it refuses with `DECLARATION_NOT_ON_MAIN` (wrong place, untracked or changed file) or `RUNTIME_NOT_MERGED` (HEAD not on main, or no `origin/main`), and stores nothing. A new or amended declaration must therefore be merged and reach the runtime checkout before `start` accepts it. Run the runtime's own CLI on the runtime's own file (section 5).
+  - **The controller.** `serve` checks its own code revision against `origin/main` in its checkout, at start and then at most once a minute. While that revision is not merged:
+    - it starts no new work: no dispatch, no launch of a recorded but unlaunched operation, no publication, and no new coordinator read;
+    - each registered campaign gets a B2 `runtime-not-merged` blocker. A campaign that already has another blocker keeps that one;
+    - operations already running finish and their results are recorded. Nothing is killed. Leases, owner commands, status and blocker notes go on;
+    - the hold clears by itself once the revision is an ancestor of `origin/main`, after a deploy of merged code or a fetch. With the owner-intervention core on (section 10), its blocker record resolves at the same moment, and a recheck evaluates it without a worker run.
+
+    A blocker fits better than refusing to start: `keep` would restart a refused `serve` every 10 seconds, the campaigns would read as offline, and nobody would collect the results of running work.
+  - **Dashboard Resume** has no file. It resumes only when the stored declaration equals, canonically, a version of a `campaigns/` file committed anywhere in `origin/main`'s history of the dashboard's checkout, not only at the tip. Otherwise it answers 409 "Resume refused" and the campaign stays paused. The dashboard runs no work itself; the controller's own check governs the code that does.
+  - A campaign already running is checked again at its next `start` or Resume, not continuously.
 - **Registered targets only.** `start` registers a new campaign only when its `target.repository` equals, ignoring case, the `repository.github` of an entry in `registry/projects/` of the governance checkout (section 6). Otherwise it refuses with "is not a registered project".
   - The gate matches the repository only. It does not compare `target.projectId` with the registry `id`.
   - It reads the registry of the governance checkout configured for the data directory, not the AIWorks code. A new project's registry entry must be merged to Engineering Platform's main and pulled into the governance checkout before its first campaign can start.
-  - Only a new registration is checked. A campaign already in the store resumes, or takes an amendment, without the check. Dispatch has its own check (next item).
+  - Only a new registration is checked against the registry. A campaign already in the store resumes, or takes an amendment, without this registry check; the merged-declaration check above still applies. Dispatch has its own check (next item).
 - **The target project's rules in every packet.** Before each new worker dispatch the controller resolves the target the same way, from the same governance checkout: the one registry entry whose `repository.github` equals `target.repository`, ignoring case. The packet then carries a `governance` block of values, never file contents:
   - `project`: the registry `id`;
   - `policies`: the IDs of the portfolio policies in `policies/catalog.json`, in catalog order. A policy conditioned only on the `ui` boundary is left out for a project whose contract lacks the `ui` capability; every other condition depends on the change, so the policy stays;
@@ -145,6 +164,8 @@ This does not authorize implementation in Wiki,
 mutation of Dyk, merges or deployment. Cursor is a declared fallback, not proof of a
 working Cursor installation on this host.
 
+Run these from the runtime checkout, `D:/Git/aiworks/.local/runtime` on HomePc, so `start` takes that checkout's own merged `campaigns/` file (section 1). The development checkout's CLI refuses a runtime file, and the reverse, with `DECLARATION_NOT_ON_MAIN`.
+
 ```sh
 node src/supervisor/cli.mjs start campaigns/<campaign>.json --data D:/Git/aiworks/.local/supervisor
 node src/supervisor/cli.mjs status <campaign> --data D:/Git/aiworks/.local/supervisor
@@ -209,7 +230,7 @@ Keep AIWorks-owned local files under the AIWorks root, outside version control:
 | Path | Purpose |
 | --- | --- |
 | `D:/Git/aiworks` | AIWorks source and development checkout |
-| `D:/Git/aiworks/.local/runtime` | Detached checkout of the reviewed runtime commit; the supervisor and dashboard run from here |
+| `D:/Git/aiworks/.local/runtime` | Detached checkout of a merged, independently reviewed commit on main; the supervisor and dashboard run from here |
 | `D:/Git/aiworks/.local/supervisor` | Data directory: `config.json`, SQLite state, journal, log and run artifacts |
 | `D:/Git/aiworks/.local/worktrees/<repo>` | Supervisor-created implementation and verification worktrees; `aiworks/coordinator` is the coordinator's checkout (section 9) |
 | `D:/Git/aiworks/.local/governance` | Governance checkout: a plain clone of `netbka/engineering-platform` main, read-only to AIWorks |
@@ -217,7 +238,7 @@ Keep AIWorks-owned local files under the AIWorks root, outside version control:
 
 For Dyk, `config.json` keeps `repositories["netbka/Dyk"].path` at `D:/Git/Dyk` and sets `worktreeRoot` to `D:/Git/aiworks/.local/worktrees/Dyk`. Use the same layout for future targets. `.local/` is already ignored; never commit local state, logs, prompts or provider credentials.
 
-- **Pinned checkout.** Run from a detached worktree pinned to a reviewed commit, not from a development branch.
+- **Pinned checkout.** Run from a detached worktree pinned to a merged, independently reviewed commit on main, never from a development branch. Unmerged code starts no new work, and its `start` refuses every declaration (section 1).
 - **Data directory.** Holds `config.json`, which names the governance checkout, maps each target repository to a local checkout and a worktree root, and gives absolute executable paths. Execution requires Windows and Node 22.5 or newer (`node:sqlite`), with the repository dependencies installed.
 - **Install.** `scripts/supervisor/install-windows-task.ps1` registers the per-user logon task `AIWorks Supervisor`, which runs `cli.mjs keep` hidden. `keep` restarts `serve` after any exit. The dashboard runs as a separate per-user task, `AIWorks Dashboard`, from the same runtime checkout; `scripts/supervisor/install-dashboard-task.ps1` registers it.
 - **Single host.** If HomePc is off, nothing runs. On restart it resumes from the store without any owner message. This is not high availability.
@@ -260,7 +281,7 @@ The live runtime changes only through this procedure. The supervisor never upgra
 2. **Pause.** Pause each of those campaigns. A worker already running finishes and its result is recorded, but nothing new is dispatched or published. Wait until no operation is open. A paused campaign without a blocker then shows `nextAction` "Paused by the owner; start the campaign again to resume."
 3. **Choose the commit.** Fetch, then take the hash from `git rev-parse origin/main`. Never type a hash by hand. The commit must be merged to main, and a change to `src/supervisor` must have an independent review approving that exact commit.
 4. **Deploy.** Run `powershell -NoProfile -File scripts/supervisor/deploy.ps1 -Sha <hash>`. It writes `STOP` and waits until the old processes are gone, stops both tasks, points `.local/runtime` at exactly that commit (detached) and runs `npm ci`, fast-forwards the governance checkout, then removes `STOP` and starts `AIWorks Supervisor` and `AIWorks Dashboard` again. It stops at the first failure; because it stops the supervisor before the checkout, a bad hash leaves it down until fixed.
-5. **Resume.** For each paused campaign, run `start` with its declaration from `.local/runtime/campaigns/<campaign>.json`. An identical declaration returns the paused campaign to running. Any edit to a registered declaration, even the display-only `purpose` or `outcome`, needs `authorization.version` + 1. Without it, `start` refuses with `AUTHORIZATION_VERSION_REQUIRED` and the campaign stays paused.
+5. **Resume.** For each paused campaign, run the runtime's own CLI on the runtime's own file: `node .local/runtime/src/supervisor/cli.mjs start .local/runtime/campaigns/<campaign>.json --data .local/supervisor`. An identical declaration returns the paused campaign to running. Any other `cli.mjs`, or a file outside the runtime's `campaigns/`, is refused with `DECLARATION_NOT_ON_MAIN` and the campaign stays paused; rerun it as above. If `origin/main` in the shared repository is behind the deployed commit, `serve` holds every campaign with `runtime-not-merged` until a fetch (section 1). Any edit to a registered declaration, even the display-only `purpose` or `outcome`, needs `authorization.version` + 1. Without it, `start` refuses with `AUTHORIZATION_VERSION_REQUIRED` and the campaign stays paused.
 6. **Compare.** Run `status` again. Compared with the baseline, only the controller revision and lease generation should change.
 
 The old version and the journal stay in place for recovery.

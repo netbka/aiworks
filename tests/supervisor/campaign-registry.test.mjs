@@ -1,11 +1,10 @@
 // A new campaign may target only a registered portfolio project; stored campaigns are unaffected.
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { CLI, declaration, GOVERNANCE, ROOT, SQLITE } from './helpers.mjs';
+import { declaration, GOVERNANCE, ROOT, runCli, runtimeCheckout, SQLITE } from './helpers.mjs';
 import { assertRegisteredTarget } from '../../src/supervisor/campaign.mjs';
 import { campaignStart } from '../../src/supervisor/api.mjs';
 const Store = SQLITE ? (await import('../../src/supervisor/store.mjs')).Store : null;
@@ -46,18 +45,14 @@ test('every committed campaign declaration targets a registered project', () => 
   }
 });
 
-function start(dataDir, file, governance = GOVERNANCE) {
-  const env = { ...process.env, AIWORKS_DATA: '' };
-  delete env.NODE_TEST_CONTEXT;
-  return spawnSync(process.execPath, ['--no-warnings', CLI, 'start', file, '--data', dataDir, ...(governance ? ['--governance', governance] : [])], { env, windowsHide: true, encoding: 'utf8' });
-}
-
 test('CLI start refuses a new unregistered target but still resumes a stored campaign', { skip: !SQLITE }, () => {
   const root = mkdtempSync(join(tmpdir(), 'aiworks-campaign-registry-'));
+  // The declaration is merged to main in a runtime checkout (AW-005), so only the registry gate can refuse it.
+  const decl = unregistered();
+  const runtime = runtimeCheckout({ declarations: { 'unregistered-target.json': decl } });
+  const start = (dataDir, file) => runCli(runtime.cli, ['start', file, '--data', dataDir, '--governance', GOVERNANCE]);
   try {
-    const decl = unregistered();
-    const file = join(root, 'campaign.json');
-    writeFileSync(file, JSON.stringify(decl));
+    const file = join(runtime.root, 'campaigns', 'unregistered-target.json');
 
     const refusedData = join(root, 'refused');
     mkdirSync(refusedData);
@@ -73,5 +68,8 @@ test('CLI start refuses a new unregistered target but still resumes a stored cam
     try { campaignStart(store, decl); } finally { store.close(); }
     const resumed = start(storedData, file);
     assert.equal(resumed.status, 0, resumed.stderr);
-  } finally { rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
+  } finally {
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    runtime.cleanup();
+  }
 });
