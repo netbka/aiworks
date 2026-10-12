@@ -6,7 +6,7 @@ import { campaignStatus, campaignPause, campaignCancel, campaignRecheck, campaig
 import { DEFAULTS } from '../supervisor/controller.mjs';
 import { safeText } from './roadmap.mjs';
 import { pendingInstructions } from '../supervisor/instructions.mjs';
-import { roleUnavailableReason } from '../supervisor/adapters/executors.mjs';
+import { roleUnavailableReason, runNotCounted } from '../supervisor/adapters/executors.mjs';
 import { campaignLimits } from '../supervisor/campaign.mjs';
 import { coordinatorView, postOwnerMessage } from '../supervisor/coordinator.mjs';
 import { CODE_ROOT, storedDeclarationOnMain } from '../supervisor/provenance.mjs';
@@ -109,6 +109,56 @@ function stepHistories(store, campaignId) {
     if (events.length < HISTORY_LIMIT) events.push(event);
   }
   return histories;
+}
+
+const cents = (value) => Math.round(value * 10000) / 10000;
+const reportedCost = (outcome) => Number.isFinite(outcome?.receipt?.costUsd) && outcome.receipt.costUsd > 0 ? outcome.receipt.costUsd : 0;
+/**
+ * What each step cost (OWNER_WORKSPACE §4.10, slice S7), from the cost each run's own receipt reported: the same receipts
+ * the campaign total adds up, and the same rule as the budget for a run whose cost is not reported (a counted, finished
+ * run without a positive cost). Runs still in progress have no cost yet and are counted apart. A refunded run (the
+ * provider or executor refused before any work) is not a run of the step. Unknown stays unknown: it is never added as $0.
+ */
+function stepCosts(store, campaignId) {
+  const costs = new Map(), of = (taskId) => {
+    if (!costs.has(taskId)) costs.set(taskId, { runs: 0, reportedUsd: 0, unreportedRuns: 0, runningRuns: 0, retries: 0 });
+    return costs.get(taskId);
+  };
+  for (const op of store.all("SELECT task_id, state, outcome FROM operations WHERE campaign_id = ? AND state IN ('finished', 'recorded', 'dispatched')", campaignId)) {
+    const step = of(op.task_id);
+    if (op.state !== 'finished') { step.runningRuns++; continue; }
+    // A reported cost counts even on a refunded run: the campaign total adds it too.
+    step.reportedUsd = cents(step.reportedUsd + reportedCost(op.outcome));
+    if (runNotCounted(op.outcome)) continue;
+    step.runs++;
+    if (!reportedCost(op.outcome)) step.unreportedRuns++;
+    // A counted run that ended without a result (failed, timed out, invalid): the step had to run again.
+    if (op.outcome?.class !== 'result') step.retries++;
+  }
+  return costs;
+}
+
+/**
+ * Cost per project (OWNER_WORKSPACE §4.10, slice S7): today's per-campaign totals added up by repository, so a project's
+ * total is exactly the sum of its campaigns' recorded cost. Runs that reported no cost and runs still in progress are
+ * counted apart, never as $0.00. `reportedUsd` is null when nothing reported a cost; `empty` is the §7.1 copy when nothing ran.
+ */
+export function projectCosts(campaigns) {
+  const projects = new Map();
+  for (const c of campaigns) {
+    const key = String(c.repository).toLowerCase();
+    const project = projects.get(key) ?? { repository: c.repository, works: 0, runs: 0, reportedUsd: 0, unreportedRuns: 0, runningRuns: 0 };
+    project.works++;
+    project.runs += c.runsUsed;
+    project.reportedUsd = cents(project.reportedUsd + (c.cost.reportedUsd ?? 0));
+    project.unreportedRuns += c.cost.unreportedRuns;
+    project.runningRuns += c.cost.runningRuns;
+    projects.set(key, project);
+  }
+  return [...projects.values()].map((project) => {
+    const empty = !project.runs && !project.runningRuns && !project.unreportedRuns && !(project.reportedUsd > 0) ? stateCopy('cost-empty') : null;
+    return { ...project, reportedUsd: project.reportedUsd > 0 ? project.reportedUsd : null, empty: empty && { title: empty.title, text: empty.text } };
+  });
 }
 
 // The controller's own next action for a finished campaign is one of two fixed sentences naming the repository; it
@@ -226,7 +276,7 @@ function recentEvents(store, since, now) {
 
 export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
   const path = join(dataDir, 'supervisor.db');
-  if (!existsSync(path)) return { available: false, message: 'No supervisor store at the configured location.', campaigns: [], activity: [] };
+  if (!existsSync(path)) return { available: false, message: 'No supervisor store at the configured location.', campaigns: [], costs: [], activity: [] };
   let store;
   try {
     store = new Store(path, { readOnly: true });
@@ -243,6 +293,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
         if (op.outcome?.class === 'result' && (op.outcome.value?.verdict ?? op.outcome.value?.result) === 'rejected') rejections.set(op.task_id, (rejections.get(op.task_id) ?? 0) + 1);
       }
       const histories = stepHistories(store, id);
+      const costs = stepCosts(store, id);
       const paused = c.control === 'paused' ? store.get("SELECT at, detail FROM journal WHERE campaign_id = ? AND kind = 'paused' ORDER BY seq DESC LIMIT 1", id) : null;
       // Latest finished attempt per task: the worker's own verdict, not the protocol class alone.
       const lastOutcome = (taskId) => {
@@ -277,6 +328,8 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
         controls: workControls(c.control),
         slots: campaignLimits(c.declaration).slots, phase: status.phase,
         runsUsed: status.runsUsed, maxWorkerRuns: status.maxWorkerRuns, recordedCostUsd: status.costUsd,
+        // OWNER_WORKSPACE S7: today's totals, with unreported and running runs apart; null, never 0, when nothing reported a cost.
+        cost: { reportedUsd: status.costUsd > 0 ? status.costUsd : null, unreportedRuns: status.budget.unknownCostRuns, runningRuns: operations.length },
         executors: (c.declaration.executor.providers ?? [c.declaration.executor]).map((item) => code(item.kind)),
         providers: [...order, ...['codex-cli', 'claude-cli', 'cursor-cli'].filter((kind) => !order.includes(kind))].map((kind) => {
           const wait = status.executorWaits.find((item) => item.executor_kind === kind);
@@ -323,7 +376,10 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
           wait: stepWait(task, specs.get(task.task_id), specs, taskRows),
           stopped: stepStopped(task, safeText(specs.get(task.task_id)?.outcome ?? specs.get(task.task_id)?.title ?? task.task_id),
             `https://github.com/${c.declaration.target.repository}/issues/${specs.get(task.task_id)?.issue}`),
-          history: histories.get(task.task_id) ?? { attempts: [], events: [] } })),
+          history: histories.get(task.task_id) ?? { attempts: [], events: [] },
+          // OWNER_WORKSPACE S7: its runs and the cost they reported; null, never 0, when none reported one.
+          cost: (({ reportedUsd, ...rest }) => ({ ...rest, reportedUsd: reportedUsd > 0 ? reportedUsd : null, checkerRejections: rejections.get(task.task_id) ?? 0 }))(
+            costs.get(task.task_id) ?? { runs: 0, reportedUsd: 0, unreportedRuns: 0, runningRuns: 0, retries: 0 }) })),
         agents: operations.map((op) => {
           const beat = heartbeat(dataDir, op.run_dir);
           return { id: op.id, taskId: op.task_id, role: op.kind === 'verify' ? 'Verifier' : 'Implementer',
@@ -349,8 +405,8 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
           const run = view.runs.find((item) => item.id === m.runId);
           return run ? workerProgress(dataDir, { executor_kind: 'claude-cli', workspace: run.workspace, session_id: run.session_id, run_dir: run.run_dir }) : null;
         })() : null })) };
-    return { available: true, observedAt: new Date(now).toISOString(), controller, campaigns, activity, coordinator, recent };
-  } catch { return { available: false, message: 'Supervisor state is temporarily unavailable. Commands are disabled until it reconnects.', campaigns: [], activity: [] }; }
+    return { available: true, observedAt: new Date(now).toISOString(), controller, campaigns, costs: projectCosts(campaigns), activity, coordinator, recent };
+  } catch { return { available: false, message: 'Supervisor state is temporarily unavailable. Commands are disabled until it reconnects.', campaigns: [], costs: [], activity: [] }; }
   finally { store?.close(); }
 }
 
