@@ -83,3 +83,36 @@ export function pushVerified({ git, repoPath, branch, sha }) {
   const remote = must(exec(git, ['ls-remote', 'origin', `refs/heads/${branch}`], { cwd: repoPath }), 'read remote branch');
   if (!remote.startsWith(sha)) throw new Error(`remote ${branch} is not at verified ${sha}`);
 }
+
+/** Whether `ancestor` is reachable from `descendant`. Read-only. */
+export function isAncestor({ git, path, ancestor, descendant }) {
+  return exec(git, ['merge-base', '--is-ancestor', ancestor, descendant], { cwd: path }).ok;
+}
+
+/** Heads of the remote branches matching `pattern` (for example `refs/heads/campaign/<id>/*`), or null when unreadable. */
+export function remoteBranches({ git, repoPath, pattern }) {
+  const out = exec(git, ['ls-remote', 'origin', pattern], { cwd: repoPath, timeoutMs: 30_000 });
+  if (!out.ok) return null;
+  return new Map(out.stdout.split('\n').filter(Boolean).map((line) => line.split(/\s+/)).map(([sha, ref]) => [ref, sha]));
+}
+
+/**
+ * Local integration check (aiworks#27): would `sha` merge cleanly into `baseSha`? `git merge-tree --write-tree` (Git 2.38+)
+ * only writes objects: it never touches a worktree, the index or a ref, and makes no network or GitHub call.
+ * Returns { clean, tree, baseTree, paths }: `paths` are the conflicting files.
+ */
+export function mergeCheck({ git, repoPath, baseSha, sha }) {
+  if (!SHA.test(baseSha) || !SHA.test(sha)) throw new Error('merge check needs full SHAs');
+  const out = exec(git, ['merge-tree', '--write-tree', '--name-only', '--no-messages', baseSha, sha], { cwd: repoPath, timeoutMs: 60_000 });
+  if (out.status !== 0 && out.status !== 1) must(out, 'merge-tree');
+  const [tree, ...paths] = out.stdout.split('\n').map((line) => line.trim());
+  if (!SHA.test(tree ?? '')) throw new Error(`merge-tree returned no tree: ${out.stdout.slice(0, 200)}`);
+  const baseTree = must(exec(git, ['rev-parse', `${baseSha}^{tree}`], { cwd: repoPath }), 'read base tree');
+  return { clean: out.status === 0, tree, baseTree, paths: out.status === 0 ? [] : [...new Set(paths.filter(Boolean))] };
+}
+
+/** The base commits, absent from `sha`, that changed any of `paths` (newest first, at most `limit`). */
+export function siblingCommits({ git, repoPath, baseSha, sha, paths, limit = 10 }) {
+  const out = exec(git, ['log', `--max-count=${limit}`, '--format=%H %s', baseSha, `^${sha}`, '--', ...paths], { cwd: repoPath });
+  return out.ok ? out.stdout.split('\n').filter(Boolean).map((line) => ({ sha: line.slice(0, 40), subject: line.slice(41, 200) })) : [];
+}
