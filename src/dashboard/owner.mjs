@@ -2,6 +2,8 @@
 // with the merge state the dashboard reads from local git (merges.mjs); it never calls GitHub. Unknown or stale merge
 // state never reads as merged; every sentence is built from supervisor or local git fields, never from worker output.
 
+import { stateCopy } from './copy.mjs';
+
 const PR_URL = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)$/;
 const COMMENT_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+#issuecomment-\d+$/;
 /** Attempts at which a step is flagged for a closer look. Information only: it never limits work (AW-002). */
@@ -89,6 +91,79 @@ export function reviewEvidence(task) {
 }
 
 /**
+ * The check evidence of one result, in the Results words (OWNER_WORKSPACE §2.3): "Passed the check", never
+ * "accepted", which is kept for recorded acceptance (#4). `short` is the row line; `text` the sentence in its details.
+ */
+export function resultEvidence(task, pullRequest = true) {
+  const where = pullRequest ? ' This dashboard does not read CI checks or conflicts; see them on the pull request.' : '';
+  if (!task.verifiedSha) return { short: 'Independent check not recorded here', text: `The independent check is not recorded here.${where}` };
+  const sha7 = String(task.verifiedSha).toLowerCase().slice(0, 7);
+  return { short: `Passed the check at commit ${sha7}`, text: `Passed the independent check at commit ${sha7}.${where}` };
+}
+
+/**
+ * Results (OWNER_WORKSPACE §4.9, slice S6, build slice UI7): the groups in screen order, each with its §2.3 state word.
+ * "Closed without merging" has no source yet: the local merge check cannot tell a closed pull request from an open
+ * one, so such a result stays under "Waiting for your review" and is never merged. "Changes requested" is not built:
+ * it needs GitHub's review state, which the dashboard does not read (PROJECT_WORKSPACE_PLAN §6.12 C1, gap G3).
+ */
+export const RESULT_GROUPS = [
+  { key: 'review', title: 'Waiting for your review' },
+  { key: 'closed', title: 'Closed without merging' },
+  { key: 'reports', title: 'Reports to read' },
+  { key: 'merged', title: 'Merged' },
+  { key: 'unknown', title: 'Not known yet' },
+];
+
+/** One finished step as a Results row: its group, its state word, what it means, and the link to the result. */
+function resultRow(c, task, d, releases) {
+  const base = { campaignId: c.id, taskId: task.id, repository: c.repository, text: label(task), mergedAt: null, release: null, asOf: d.asOf ?? null };
+  if (d.state === 'report-posted') {
+    const evidence = task.verifiedSha ? resultEvidence(task, false) : null;
+    return { ...base, group: 'reports', word: 'Report posted · for you to read', note: null, link: { label: 'Read the report', url: d.url },
+      evidence: evidence?.short ?? null, detail: evidence?.text ?? null };
+  }
+  if (d.state === 'unknown') {
+    return { ...base, group: 'unknown', word: 'Not known yet', note: d.note, link: { label: `Open step issue (${task.id})`, url: task.issueUrl }, evidence: null, detail: null };
+  }
+  const evidence = resultEvidence(task), link = { label: `Pull request #${d.number}`, url: d.url }, number = d.number;
+  const proof = { evidence: evidence.short, detail: evidence.text, number };
+  // Merged only from a current merge check; what follows is the project's release rule, never "released" or "live".
+  if (d.state === 'merged') return { ...base, ...proof, group: 'merged', word: 'Merged', note: null, link, mergedAt: d.mergedAt ?? null,
+    release: `Release follows ${releaseRule(releases, c.repository)}.` };
+  // A merge check that can still come shortly: the state is not known yet, so it is neither waiting nor merged.
+  if (d.pending) return { ...base, ...proof, group: 'unknown', word: 'Not known yet', note: d.note, link };
+  return { ...base, ...proof, group: 'review', word: `Pull request #${number} · waiting for your review`,
+    note: d.reason ? d.note : 'The merge is not seen on the base branch yet', link };
+}
+
+/**
+ * Results per project, keyed by the lowercased repository: the non-empty groups in RESULT_GROUPS order, and at most one
+ * primary action, "Review pull request #N" for the oldest waiting review (the lowest pull request number). Rows keep
+ * the campaigns' order, except that reviews are oldest first.
+ */
+function resultsByProject(supervisor, campaigns, releases) {
+  const projects = new Map();
+  for (const c of supervisor.campaigns) for (const task of c.tasks) {
+    const d = campaigns[c.id].deliveries[task.id];
+    if (!d) continue;
+    const key = c.repository.toLowerCase();
+    if (!projects.has(key)) projects.set(key, { project: c.repository, rows: [] });
+    projects.get(key).rows.push(resultRow(c, task, d, releases));
+  }
+  return Object.fromEntries([...projects].map(([key, { project, rows }]) => {
+    const groups = RESULT_GROUPS.map((group) => {
+      const mine = rows.filter((row) => row.group === group.key);
+      if (group.key === 'review') mine.sort((a, b) => a.number - b.number);
+      return { ...group, count: mine.length, rows: mine };
+    }).filter((group) => group.count);
+    const oldest = groups.find((group) => group.key === 'review')?.rows[0];
+    return [key, { project, total: rows.length, groups,
+      primary: oldest ? { label: `Review pull request #${oldest.number}`, url: oldest.link.url } : null }];
+  }));
+}
+
+/**
  * Where merged work goes next in a repository. A standing deploy authorization recorded in the project registry
  * (Engineering Platform's CONSTITUTION §14, EP-029) is named; otherwise release follows the project's own policy. Neither says who acts.
  */
@@ -171,7 +246,9 @@ const agentWorking = (agent, now) => agent.heartbeatState === 'recent' || (agent
  * records (readReleaseAuthorizations); a repository without one is described only by its own release policy.
  */
 export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = Date.now(), releases = {} } = {}) {
-  if (!supervisor?.available) return { available: false, headline: null, items: [], groups: [], unknownResults: 0, also: null, layout: { cards: [], finished: [] }, reply: null, campaigns: {}, recent: null };
+  // Results with nothing finished in a project show the §7.1 empty copy, written once in copy.mjs.
+  const { title, text } = stateCopy('results-empty'), noResults = { title, text };
+  if (!supervisor?.available) return { available: false, headline: null, items: [], groups: [], unknownResults: 0, also: null, layout: { cards: [], finished: [] }, reply: null, campaigns: {}, results: {}, noResults, recent: null };
   const items = [], campaigns = {}, where = host ? `on ${host}` : 'on its computer';
   let unknownResults = 0;
   const entries = supervisor.campaigns.map((c) => ({ id: c.id, purpose: purpose(c) }));
@@ -279,7 +356,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
   const layout = { cards: [...supervisor.campaigns.filter((c) => listed.has(c.id)), ...supervisor.campaigns.filter((c) => !listed.has(c.id) && !terminal(c))].map((c) => c.id),
     finished: supervisor.campaigns.filter((c) => !listed.has(c.id) && terminal(c)).sort((a, b) => recency(b) - recency(a)).map((c) => c.id) };
   return { available: true, headline, items, groups: needsGroups(items), unknownResults, also: alsoForYou(supervisor, campaigns, releases), layout, campaigns,
-    recent: recentSummary(supervisor, campaigns), reply: answered ? { messageId: answered.id, answeredAt: answered.answeredAt, url: answered.replyUrl } : null };
+    results: resultsByProject(supervisor, campaigns, releases), noResults, recent: recentSummary(supervisor, campaigns), reply: answered ? { messageId: answered.id, answeredAt: answered.answeredAt, url: answered.replyUrl } : null };
 }
 
 export const SYSTEM_GROUP = 'AIWorks itself';

@@ -12,6 +12,7 @@ import { declaration } from '../supervisor/helpers.mjs';
 import { supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { ownerView, delivery, mergeCheck } from '../../src/dashboard/owner.mjs';
 import { readReleaseAuthorizations } from '../../src/dashboard/roadmap.mjs';
+import { stateCopy } from '../../src/dashboard/copy.mjs';
 
 const ROOT = resolve(import.meta.dirname, '../..');
 const GOVERNANCE = join(ROOT, 'tests/fixtures/governance');
@@ -370,4 +371,110 @@ test('release wording follows the project registry: a recorded standing authoriz
     assert.doesNotMatch(JSON.stringify(view), /your release|releasing it is your next step/i, 'the owner is never assumed to release');
   }
   assert.doesNotMatch(readFileSync(join(ROOT, 'src/dashboard/public/dashboard.js'), 'utf8'), /your release/i);
+});
+
+// Results (OWNER_WORKSPACE slice S6, build slice UI7). "Changes requested" is not built: it needs GitHub's review state,
+// which the dashboard does not read (PROJECT_WORKSPACE_PLAN §6.12 C1, gap G3).
+test('Results group finished steps by state in the screen order, with the oldest waiting review as the one primary action', (t) => {
+  const { dataDir, d, finish } = fixture(t, [task('T1', 'first'), task('T2', 'second'), task('T3', 'third'), task('T4', 'pilot report', { deliverable: 'report' }),
+    task('T5', 'fifth'), task('T6', 'sixth', { outcome: 'Sixth step delivers its outcome' }), task('T7', 'not finished')]);
+  finish('T1', 'https://github.com/netbka/Dyk/pull/470', { verified_sha: sha('T1') });
+  finish('T2', 'https://github.com/netbka/Dyk/pull/468', { verified_sha: sha('T2') });
+  finish('T3', 'https://github.com/netbka/Dyk/pull/463', { verified_sha: sha('T3') });
+  finish('T4', 'https://github.com/netbka/Dyk/issues/441#issuecomment-1');
+  finish('T5', 'https://github.com/netbka/Dyk/issues/442');
+  finish('T6', 'https://github.com/netbka/Dyk/pull/471', { verified_sha: sha('T6') });
+  const supervisor = supervisorSnapshot(dataDir);
+  const view = ownerView(supervisor, checked(results(d.campaignId, { T1: false, T2: false, T3: true, T6: null })));
+  assert.deepEqual(Object.keys(view.results), ['netbka/dyk'], 'one entry per project, by its lowercased repository');
+  const dyk = view.results['netbka/dyk'];
+  assert.equal(dyk.total, 6, 'every finished step is a result; an unfinished one is not');
+  // Waiting for your review, reports, merged, then not known yet. Nothing is closed without merging: the local merge
+  // check cannot see it, so the group is left out rather than shown empty.
+  assert.deepEqual(dyk.groups.map((group) => [group.title, group.count, group.rows.map((row) => row.taskId)]), [
+    ['Waiting for your review', 2, ['T2', 'T1']], ['Reports to read', 1, ['T4']], ['Merged', 1, ['T3']], ['Not known yet', 2, ['T5', 'T6']]]);
+  const row = (id) => dyk.groups.flatMap((group) => group.rows).find((item) => item.taskId === id);
+  assert.deepEqual([row('T2').word, row('T2').note, row('T2').link], ['Pull request #468 · waiting for your review', 'The merge is not seen on the base branch yet',
+    { label: 'Pull request #468', url: 'https://github.com/netbka/Dyk/pull/468' }]);
+  assert.deepEqual([row('T4').word, row('T4').link.url], ['Report posted · for you to read', 'https://github.com/netbka/Dyk/issues/441#issuecomment-1']);
+  assert.deepEqual([row('T5').word, row('T5').note, row('T5').link.label], ['Not known yet', 'No result link was recorded; check the step issue', 'Open step issue (T5)']);
+  // A merge check that can still come shortly is not known yet: neither waiting nor merged.
+  assert.deepEqual([row('T6').text, row('T6').word, row('T6').note], ['Sixth step delivers its outcome', 'Not known yet', 'Checking the base branch for the merge; check again shortly']);
+  assert.deepEqual(dyk.primary, { label: 'Review pull request #468', url: 'https://github.com/netbka/Dyk/pull/468' }, 'the oldest waiting review');
+  // Without a waiting review there is no primary action.
+  const settled = ownerView(supervisor, checked(results(d.campaignId, { T1: true, T2: true, T3: true, T6: true }))).results['netbka/dyk'];
+  assert.deepEqual([settled.primary, settled.groups.map((group) => group.key)], [null, ['reports', 'merged', 'unknown']]);
+  // No finished step: no results entry, and the page shows the §7.1 empty copy.
+  assert.deepEqual(ownerView({ ...supervisor, campaigns: supervisor.campaigns.map((c) => ({ ...c, tasks: c.tasks.filter((item) => item.state !== 'done') })) }, checked()).results, {});
+  assert.deepEqual(ownerView({ available: false }).results, {});
+  // There is no "Changes requested" state anywhere: the dashboard reads no review decision (C1, gap G3).
+  assert.doesNotMatch(JSON.stringify(view.results), /changes requested|reviewDecision/i);
+  const page = readFileSync(join(ROOT, 'src/dashboard/public/dashboard.js'), 'utf8');
+  assert.doesNotMatch(page, /changes requested|reviewDecision/i);
+  assert.match(page, /if \(route\.tab === 'results'\) return \[resultsScreen\(project\), finishedList\(finished\)\]/);
+  const none = stateCopy('results-empty');
+  assert.deepEqual(view.noResults, { title: none.title, text: none.text }, 'the §7.1 empty copy, written once in copy.mjs');
+  assert.match(page, /empty\(state\.owner\.noResults\.title, state\.owner\.noResults\.text\)/);
+  assert.match(page, /results\.primary \? link\(`\$\{results\.primary\.label\} ↗`, results\.primary\.url, 'button'\) : null/);
+});
+
+test('a merged result never reads released, deployed or live; stale merge data never reads merged', (t) => {
+  const releases = readReleaseAuthorizations(GOVERNANCE);
+  const { dataDir, d, finish } = fixture(t, [task('T1', 'first'), task('T2', 'second')]);
+  finish('T1', 'https://github.com/netbka/Dyk/pull/463', { verified_sha: sha('T1') });
+  finish('T2', 'https://github.com/netbka/Dyk/pull/464', { verified_sha: sha('T2') });
+  const supervisor = supervisorSnapshot(dataDir), now = Date.now(), mergedAt = now - 60 * 60_000;
+  const steps = Object.fromEntries(Object.entries(results(d.campaignId, { T1: true, T2: true })).map(([key, value]) => [key, { ...value, mergedAt }]));
+  const view = (options, repo = {}) => ownerView(supervisor, checked(steps, repo), { now, ...options }).results['netbka/dyk'];
+  const merged = (options) => view(options).groups.find((group) => group.key === 'merged').rows;
+  // The release line is the project's rule from the registry, else its own policy; it never says who acts.
+  assert.deepEqual(merged({ releases }).map((row) => [row.word, row.mergedAt, row.release]), [
+    ['Merged', mergedAt, 'Release follows Dyk\'s standing deploy authorization.'], ['Merged', mergedAt, 'Release follows Dyk\'s standing deploy authorization.']]);
+  assert.deepEqual(merged({}).map((row) => row.release), ['Release follows Dyk\'s release policy.', 'Release follows Dyk\'s release policy.']);
+  for (const options of [{ releases }, {}]) {
+    const text = JSON.stringify(view(options).groups.map((group) => [group.title, ...group.rows.map((row) => [row.word, row.note, row.release, row.evidence, row.detail])]));
+    assert.doesNotMatch(text, /releas(ed|ing)|deployed|\blive\b|accepted|\bdone\b/i, text);
+  }
+  // Old or never-fetched merge data: the merge is not claimed. A check that is due is not known yet, never merged.
+  for (const repo of [{ fetchedAt: now - 20 * 60_000 }, { fetchedAt: null }]) {
+    assert.deepEqual(view({ releases }, repo).groups.map((group) => [group.key, group.count]), [['unknown', 2]], JSON.stringify(repo));
+  }
+  // A failing fetch with an old last success: the merges are not seen, so both wait for the owner's review.
+  const failing = view({ releases }, { fetchedAt: now - 20 * 60_000, error: 'fetch-failed' });
+  assert.deepEqual(failing.groups.map((group) => [group.key, group.count]), [['review', 2]]);
+  assert.deepEqual([failing.groups[0].rows[0].note, failing.groups[0].rows[0].asOf], ['The last check of the base branch failed; showing the last known state',
+    { at: now - 20 * 60_000, reason: 'fetch-failed' }]);
+  // The page writes a merged row as "Merged <date>. <release rule>", and has no released state.
+  const page = readFileSync(join(ROOT, 'src/dashboard/public/dashboard.js'), 'utf8');
+  assert.match(page, /row\.group === 'merged' \? \[`Merged\$\{row\.mergedAt \? ` \$\{dateTime\(row\.mergedAt\)\}` : ''\}\.`, row\.release\]\.join\(' '\) : row\.word/);
+  assert.doesNotMatch(page, /'Released'|Released ·|released: \[/);
+});
+
+test('Results say "Passed the check" for the checked commit, and keep the ready-to-merge conditions unchanged', (t) => {
+  const { dataDir, d, finish } = fixture(t, [task('T1', 'first'), task('T2', 'second'), task('T3', 'pilot report', { deliverable: 'report' })]);
+  finish('T1', 'https://github.com/netbka/Dyk/pull/463', { verified_sha: 'a'.repeat(40) });
+  finish('T2', 'https://github.com/netbka/Dyk/pull/464');
+  finish('T3', 'https://github.com/netbka/Dyk/issues/440#issuecomment-1', { verified_sha: 'c'.repeat(40) });
+  const supervisor = supervisorSnapshot(dataDir), now = Date.now();
+  const steps = { [`${d.campaignId}/T1`]: { sha: 'a'.repeat(40), baseBranch: 'main', merged: false, mergedAt: null } };
+  for (const repo of [{}, { fetchedAt: now - 20 * 60_000, error: 'fetch-failed' }, { configured: false, fetchedAt: null }]) {
+    const rows = ownerView(supervisor, checked(steps, repo), { now }).results['netbka/dyk'].groups.flatMap((group) => group.rows);
+    const row = (id) => rows.find((item) => item.taskId === id);
+    assert.deepEqual([row('T1').evidence, row('T1').detail], ['Passed the check at commit aaaaaaa',
+      'Passed the independent check at commit aaaaaaa. This dashboard does not read CI checks or conflicts; see them on the pull request.'], JSON.stringify(repo));
+    // No verified commit: the check is not claimed.
+    assert.deepEqual([row('T2').evidence, row('T2').detail], ['Independent check not recorded here',
+      'The independent check is not recorded here. This dashboard does not read CI checks or conflicts; see them on the pull request.']);
+    // A report has no pull request to point to.
+    assert.deepEqual([row('T3').evidence, row('T3').detail], ['Passed the check at commit ccccccc', 'Passed the independent check at commit ccccccc.']);
+    // "Accepted" stays free for recorded acceptance (#4); no readiness claim is made (the dashboard reads no CI or conflicts).
+    const text = JSON.stringify(rows);
+    assert.doesNotMatch(text, /accepted/i);
+    assert.doesNotMatch(text, /Ready to merge|no conflicts|CI checks? passed/i);
+    assert.ok(rows.every((item) => item.ready === undefined), 'there is no readiness field');
+  }
+  // The checker's verdict in a step's history uses the same words.
+  const page = readFileSync(join(ROOT, 'src/dashboard/public/dashboard.js'), 'utf8');
+  assert.match(page, /const terminalLabels = \{ accepted: 'passed the check',/);
+  assert.match(page, /disclosure\(`results\/\$\{row\.campaignId\}\/\$\{row\.taskId\}`, el\('span', \{ class: 'evidence' \}, row\.evidence\),/);
 });
