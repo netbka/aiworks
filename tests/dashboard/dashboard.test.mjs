@@ -344,3 +344,31 @@ test('the address router is served like the other page files and refused cross-s
   // The page loads it as a module from its own origin.
   assert.match(readFileSync(resolve(import.meta.dirname, '../../src/dashboard/public/dashboard.js'), 'utf8'), /^import \{[^}]+\} from '\/router\.mjs';$/m);
 });
+
+test('every module the page imports is served by the real server, including the state copy module', async (t) => {
+  const { dataDir } = fixture(t);
+  const roadmap = { snapshot: () => ({ governance: { configured: true, code: null, reason: null }, entries: [] }) };
+  const server = createDashboardServer({ dataDir, roadmap });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
+  const base = `http://127.0.0.1:${server.address().port}`, source = resolve(import.meta.dirname, '../../src/dashboard');
+  const imports = [...readFileSync(resolve(source, 'public/dashboard.js'), 'utf8').matchAll(/^import \{[^}]+\} from '(\/[^']+)';$/gm)].map((m) => m[1]);
+  assert.deepEqual(imports, ['/router.mjs', '/copy.mjs']);
+  const script = await fetch(`${base}/dashboard.js`);
+  for (const path of imports) {
+    const module = await fetch(`${base}${path}`);
+    assert.equal(module.status, 200, path);
+    for (const header of ['content-security-policy', 'cross-origin-opener-policy', 'cross-origin-resource-policy', 'x-content-type-options', 'referrer-policy', 'cache-control', 'content-type']) {
+      assert.equal(module.headers.get(header), script.headers.get(header), `${path}: ${header} matches dashboard.js`);
+    }
+    // A served module imports nothing the server would refuse.
+    assert.doesNotMatch(await module.text(), /^\s*import\s/m, path);
+  }
+  const copy = await fetch(`${base}/copy.mjs`);
+  assert.equal(await copy.text(), readFileSync(resolve(source, 'copy.mjs'), 'utf8'));
+  assert.equal((await fetch(`${base}/copy.mjs`, { headers: { 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'no-cors', 'Sec-Fetch-Dest': 'script' } })).status, 403);
+  // Only that one file: no other name for it and no other file next to it.
+  for (const path of ['/public/copy.mjs', '/src/dashboard/copy.mjs', '/copy.mjs/', '/Copy.mjs', '/copy.js', '/projects.mjs']) {
+    assert.equal((await fetch(`${base}${path}`)).status, 404, path);
+  }
+});

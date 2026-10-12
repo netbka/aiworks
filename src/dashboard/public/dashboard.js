@@ -1,4 +1,6 @@
 import { formatRoute, globalOf, resolveRoute, tabOf } from '/router.mjs';
+// The state copy of OWNER_WORKSPACE §7 and the Now screen (slice S4); the server serves src/dashboard/copy.mjs here.
+import { nowView } from '/copy.mjs';
 
 const $ = (selector) => document.querySelector(selector);
 const names = { done: 'Done', blocked: 'Blocked', unknown: 'Unknown',
@@ -715,9 +717,46 @@ function settingsScreen() {
     el('li', {}, routeLink('Diagnostics', '#/settings/diagnostics'), el('div', { class: 'subtext' }, 'The full activity journal, every step with its issue and pull request, and the Engineering Platform roadmap.'))))];
 }
 
+/** The one primary action of a state (OWNER_WORKSPACE §4.4), or nothing: a screen link, a GitHub link or Resume. */
+function primaryAction(primary) {
+  if (!primary) return null;
+  if (primary.route) return routeLink(primary.label, primary.route, 'button');
+  if (primary.url) return link(`${primary.label} ↗`, primary.url, 'button');
+  const c = primary.command === 'resume' ? campaignById(primary.campaignId) : null;
+  if (!c) return null;
+  return button(primary.label, () => command(c, 'resume'), '', sending || offline || !state.supervisor.available);
+}
+
+/**
+ * Now (OWNER_WORKSPACE §4.4, slice S4): the project's goal, where it stands in one sentence with at most one primary
+ * action, progress in the owner's terms and what changed for this project since the last visit. The sentence is a
+ * polite live region, so a screen reader hears it only when its text changes.
+ */
+function nowScreen(project) {
+  const view = nowView(project, { ...state, offline }, { now: Date.now() }), { state: now, details } = view;
+  const goal = view.goal ? `${view.goal.text}${view.goal.variant ? ` (${view.goal.variant})` : ''}` : null;
+  const since = view.since?.length ? el('section', { class: 'since', 'aria-labelledby': 'since-title' },
+    el('h2', { id: 'since-title' }, previousVisit ? `Since you last looked (${dateTime(previousVisit)})` : 'In the last 24 hours'),
+    el('ul', {}, ...view.since.map((line) => el('li', { class: line.tone ?? '' }, `${line.text} `, ...line.links.map((item) => link(`${item.label} ↗`, item.url)))))) : null;
+  const others = details.others.map((item) => `${item.purpose ?? item.id} (campaign ${item.id})`);
+  return [el('section', { class: 'panel', 'data-focus-scope': `now/${project}` }, el('div', { class: 'panel-body' },
+    goal ? el('p', { class: 'eyebrow' }, goal) : null,
+    el('p', { role: 'status', 'aria-live': 'polite', 'data-state': now.key }, el('strong', {}, now.title), now.text ? ` ${now.text}` : ''),
+    primaryAction(now.primary),
+    view.progress ? el('p', { class: 'subtext' }, view.progress) : null,
+    view.note ? el('p', { class: 'subtext' }, `${view.note.title} ${view.note.text}`) : null,
+    details.workId || others.length ? disclosure(`now/${project}/details`, 'Details', el('div', { class: 'subtext' }, [
+      details.workId ? `Campaign ${details.workId}` : null, details.trackingUrl ? link(`tracking issue #${details.trackingIssue} ↗`, details.trackingUrl) : null,
+      others.length ? `Other work in this project: ${others.join(', ')}` : null].filter(Boolean).flatMap((part, index) => index ? [' · ', part] : [part]))) : null)),
+  since].filter(Boolean);
+}
+
 /** One project's screens. Campaign cards, step tables and costs are today's, limited to this project. */
 function projectScreen(route) {
   const project = route.project, all = projectCampaigns(project);
+  // Now from the state copy module, for a project this computer knows (or while its state cannot be read).
+  if (route.screen === 'project' && route.tab === 'now' && (offline || !state.supervisor.available || all.length ||
+    projectList().some((item) => sameProject(item.id, project)))) return nowScreen(project);
   if (!state.supervisor.available) return [unavailable()];
   // A repository this computer's settings list, with no work yet (OWNER_WORKSPACE §7.1). Starting work here is not built yet.
   if (!all.length && projectList().some((item) => sameProject(item.id, project))) return [empty('No work yet.', `Work in ${projectName(project)} appears here once it is registered on this computer. Starting work from this page is not built yet.`)];
