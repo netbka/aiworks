@@ -74,6 +74,23 @@ CREATE TABLE IF NOT EXISTS owner_notifications (
   key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, campaign_id TEXT NOT NULL, kind TEXT NOT NULL, class TEXT NOT NULL,
   message TEXT NOT NULL, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, delivered_at INTEGER);
+CREATE TABLE IF NOT EXISTS projects (
+  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, name TEXT NOT NULL, source_kind TEXT NOT NULL,
+  root_path TEXT NOT NULL, root_key TEXT NOT NULL, root_file_id TEXT, fingerprint TEXT,
+  github_repository TEXT, base_branch TEXT, local_branch TEXT, mirror_root TEXT, worktree_root TEXT,
+  exclusions TEXT NOT NULL DEFAULT '[]', governance TEXT NOT NULL, status TEXT NOT NULL, reason TEXT,
+  capabilities TEXT NOT NULL, current_baseline TEXT, last_preflight TEXT,
+  version INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, disconnected_at INTEGER);
+CREATE UNIQUE INDEX IF NOT EXISTS projects_live_root ON projects (root_key) WHERE disconnected_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS projects_live_github ON projects (lower(github_repository))
+  WHERE disconnected_at IS NULL AND github_repository IS NOT NULL;
+CREATE TABLE IF NOT EXISTS project_baselines (
+  project_id TEXT NOT NULL, seq INTEGER NOT NULL, commit_sha TEXT NOT NULL, manifest_digest TEXT NOT NULL,
+  files INTEGER NOT NULL, bytes INTEGER NOT NULL, excluded TEXT NOT NULL, created_at INTEGER NOT NULL,
+  PRIMARY KEY (project_id, seq));
+CREATE TABLE IF NOT EXISTS project_overlays (
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL UNIQUE, entry TEXT NOT NULL, digest TEXT NOT NULL,
+  approved_at INTEGER NOT NULL, revoked_at INTEGER);
 `;
 
 const JSON_COLUMNS = new Set(['declaration', 'blocker', 'failures', 'findings', 'result', 'verification',
@@ -180,6 +197,8 @@ export class Store {
   /** aiworks#1 blocker record by fingerprint. The owner-intervention tables are additive: CREATE IF NOT EXISTS on every
    * writer open migrates an older store, and older code ignores them, so the store version does not change. */
   blocker(fingerprint) { return this.get('SELECT * FROM blockers WHERE fingerprint = ?', fingerprint); }
+  // aiworks#7 project tables (projects, project_baselines, project_overlays) are additive in the same way; their rules
+  // and JSON fields live in projects.mjs (docs/design/PROJECT_CONNECTION.md section 3).
 
   journal(campaignId, kind, detail, now) {
     this.run('INSERT INTO journal (campaign_id, at, kind, detail) VALUES (?, ?, ?, ?)', campaignId, now, kind, detail ?? null);
