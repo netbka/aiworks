@@ -11,6 +11,7 @@ const staticFiles = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/dashboard.css', ['dashboard.css', 'text/css; charset=utf-8']],
   ['/dashboard.js', ['dashboard.js', 'text/javascript; charset=utf-8']],
+  ['/router.mjs', ['router.mjs', 'text/javascript; charset=utf-8']],
 ]);
 
 /**

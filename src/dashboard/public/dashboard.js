@@ -1,3 +1,5 @@
+import { formatRoute, globalOf, resolveRoute, tabOf } from '/router.mjs';
+
 const $ = (selector) => document.querySelector(selector);
 const names = { done: 'Done', blocked: 'Blocked', unknown: 'Unknown',
   pending: 'Not started', implementing: 'Being built', implemented: 'Waiting for the independent check', verifying: 'Being checked', verified: 'Checked; publishing',
@@ -28,9 +30,27 @@ const readLastSeen = () => { try { const value = Number(localStorage.getItem(LAS
 const writeLastSeen = () => { try { localStorage.setItem(LAST_SEEN_KEY, String(Date.now())); } catch { /* convenience only */ } };
 const previousVisit = readLastSeen();
 const since = previousVisit ?? Date.now() - 86_400_000;
-let state, csrf, offline = false, sending = false, pendingCancel, instructionCampaign, view = 'overview', workLimit = 80;
-const drafts = new Map();
+let state, csrf, offline = false, sending = false, pendingCancel, instructionCampaign, workLimit = 80;
+// The address is the state (OWNER_WORKSPACE §3.3): `current` is what the address bar names, already canonical.
+let current = resolveRoute(location.hash);
 const opened = new Set();
+
+// The last opened project, offered first on Projects; a per-browser convenience like "since you last looked".
+const LAST_PROJECT_KEY = 'aiworks-dashboard:last-project';
+const readLastProject = () => { try { return localStorage.getItem(LAST_PROJECT_KEY); } catch { return null; } };
+const writeLastProject = (project) => { try { localStorage.setItem(LAST_PROJECT_KEY, project); } catch { /* convenience only */ } };
+
+// Unsent drafts are kept per address in sessionStorage, so they survive the 5-second refresh, a reload and Back. They
+// are cleared only after the server returns an accepted receipt. Blocked storage falls back to this page's memory.
+const DRAFTS_KEY = 'aiworks-dashboard:drafts';
+let draftMemory = null;
+const readDrafts = () => { if (draftMemory) return draftMemory; try { return JSON.parse(sessionStorage.getItem(DRAFTS_KEY) ?? '{}') ?? {}; } catch { return (draftMemory = {}); } };
+const writeDrafts = (all) => { if (draftMemory) { draftMemory = all; return; } try { sessionStorage.setItem(DRAFTS_KEY, JSON.stringify(all)); } catch { draftMemory = all; } };
+const drafts = {
+  get: (address, key) => readDrafts()[`${address} ${key}`] ?? null,
+  set(address, key, value) { const all = readDrafts(); all[`${address} ${key}`] = value; writeDrafts(all); },
+  delete(address, key) { const all = readDrafts(); delete all[`${address} ${key}`]; writeDrafts(all); },
+};
 
 function el(tag, attributes = {}, ...children) {
   const node = document.createElement(tag);
@@ -67,29 +87,48 @@ const notice = (text, retry) => {
   if (retry) node.append(button('Retry same command', retry, 'secondary small'));
 };
 
-function setView(next) {
-  view = ['overview', 'roadmap', 'work', 'agents', 'messages', 'activity'].includes(next) ? next : 'overview';
-  location.hash = view;
-  const titles = { overview: ['Overview', 'What changed, what needs you, and how each project campaign is moving.'],
-    roadmap: ['Campaign plans & platform roadmap', 'Each project campaign’s steps first, then the Engineering Platform’s own roadmap.'],
-    work: ['Issues & pull requests', 'Each campaign step’s issue and its pull request or report, from the supervisor’s records.'],
-    agents: ['Agents', 'Which AI agents are working and how they are doing, and the AI providers each campaign can use.'],
-    messages: ['Messages', 'What you sent, when it was received, when an agent read it, and its answer.'],
-    activity: ['Recent activity', 'Agent results, AI provider switches, published steps and your commands.'] };
-  $('#view-title').textContent = titles[view][0]; $('#view-description').textContent = titles[view][1];
-  $('.breadcrumb strong').textContent = titles[view][0];
-  for (const node of document.querySelectorAll('[data-view]')) {
-    node.classList.toggle('active', node.dataset.view === view);
-    if (node.dataset.view === view) node.setAttribute('aria-current', 'page'); else node.removeAttribute('aria-current');
+/** A link to another screen of this page: a real link, so it opens in a new tab and Back works. */
+const routeLink = (text, route, cls = '') => el('a', { href: typeof route === 'string' ? route : formatRoute(route), class: cls }, text);
+const projectName = (project) => shortRepo(project) || project;
+// Each screen's heading and the one question it answers (OWNER_WORKSPACE §3.1).
+const screenText = { projects: ['Projects', 'Which project should I open?'], needs: ['Needs me', 'What is waiting for me, across projects?'],
+  settings: ['Settings', 'What can AIWorks use on this computer?'], messages: ['Messages', 'What did I ask AIWorks, and what did it answer?'],
+  diagnostics: ['Diagnostics', 'What exactly did the machine record?'], now: ['Now', 'Where are we now?'],
+  work: ['Work', 'What is running or waiting, and why?'], results: ['Results', 'What has been delivered, and what remains?'],
+  cost: ['Cost', 'What did this cost?'], step: ['Step', 'What is happening on this step?'], start: ['Start work', 'What should AIWorks do?'],
+  review: ['Review', 'Is this the right goal and limits?'], 'add-project': ['Add project', 'Which folder should AIWorks work on?'] };
+const screenKey = (route) => route.screen === 'settings' ? route.section ?? 'settings' : route.screen === 'project' ? route.tab : route.screen;
+const tabLabels = { now: 'Now', work: 'Work', results: 'Results', cost: 'Cost' };
+
+/** The frame for the current address: heading, page title, aria-current in the global bar and the project tabs. */
+function showRoute() {
+  const route = current.route, [title, question] = screenText[screenKey(route)];
+  const project = route.project ?? null;
+  $('#view-eyebrow').textContent = project ? `PROJECT · ${projectName(project).toUpperCase()}` : route.screen === 'settings' && route.section ? 'SETTINGS' : 'AIWORKS';
+  $('#view-title').textContent = project && route.screen === 'project' && route.tab === 'now' ? projectName(project) : title;
+  $('#view-description').textContent = question;
+  document.title = [title, project ? projectName(project) : null, 'AIWorks'].filter(Boolean).join(' · ');
+  const place = globalOf(route);
+  for (const node of document.querySelectorAll('[data-global]')) {
+    node.classList.toggle('active', node.dataset.global === place);
+    if (node.dataset.global === place) node.setAttribute('aria-current', 'page'); else node.removeAttribute('aria-current');
   }
-  $('#filters').hidden = !['roadmap', 'work'].includes(view);
-  $('#track').disabled = view === 'work';
-  $('#status').disabled = view !== 'work';
+  const messages = $('#messages-link');
+  if (route.screen === 'settings' && route.section === 'messages') messages.setAttribute('aria-current', 'page'); else messages.removeAttribute('aria-current');
+  // Project tabs are links, not an ARIA tablist: each has its own address.
+  const tabs = $('#project-tabs'), tab = tabOf(route);
+  tabs.hidden = !project;
+  tabs.replaceChildren(...(project ? Object.entries(tabLabels).map(([id, label]) => el('a', { href: formatRoute({ screen: 'project', project, tab: id }),
+    class: `tab${id === tab ? ' active' : ''}`, 'aria-current': id === tab && route.screen === 'project' ? 'page' : null }, label)) : []));
+  if (project && route.screen === 'project') writeLastProject(project);
+  $('#filters').hidden = !(route.screen === 'settings' && route.section === 'diagnostics');
   if (state) render();
 }
 
-function renderMetrics() {
-  const entries = state.roadmap.entries, campaigns = state.supervisor.campaigns;
+// Today's four summary cards, each on the screen that now answers it (OWNER_WORKSPACE §9): roadmap items on
+// Diagnostics, Needs you on Needs me, agents working on a project's Work, cost on its Cost tab.
+function renderMetrics(campaigns = state.supervisor.campaigns, shown = []) {
+  const entries = state.roadmap.entries;
   const agents = campaigns.flatMap((c) => c.agents);
   // Everything listed under "Needs you": owner reviews, decisions, stopped work, a stopped supervisor and an unreadable
   // inbox. A pause by itself is not listed: the campaign card shows it.
@@ -101,7 +140,7 @@ function renderMetrics() {
   // Unknown cost is never shown as $0: finished runs without a reported cost and runs still in progress are "not reported".
   const reported = campaigns.reduce((n, c) => n + c.recordedCostUsd, 0);
   const unreported = campaigns.reduce((n, c) => n + (c.budget?.unknownCostRuns ?? 0) + c.agents.length, 0);
-  const delivered = Object.values(owner.campaigns ?? {}).reduce((n, item) => n + item.counts.delivered, 0);
+  const delivered = campaigns.reduce((n, c) => n + (owner.campaigns?.[c.id]?.counts.delivered ?? 0), 0);
   const verdicts = agents.map((agent) => agentVerdict(agent)[0]);
   const metrics = [
     ['Platform roadmap items', entries.length, null, 'Definitions from the governance checkout; progress is tracked on GitHub', '☷'],
@@ -109,15 +148,16 @@ function renderMetrics() {
       : agents.length ? `${verdicts.filter((v) => v === 'recent').length} working normally${verdicts.some((v) => v === 'stale') ? ` · ${verdicts.filter((v) => v === 'stale').length} possibly stuck or not started` : ''}` : 'None right now', '◎'],
     ['Needs you', !available ? '—' : unknown && !attention ? '?' : attention, available && unknown && attention ? '+ ?' : null,
       !available ? 'Execution state unknown'
-        : `${attention ? `${plural(attention, 'item')} listed on Overview` : unknown ? 'Nothing confirmed yet' : 'Nothing is blocked on you'}${unknown ? ` · merge of ${plural(unknown, 'published step')} being checked` : ''}${owner.also ? ` · also ${owner.also.short}` : ''}`, '◈'],
+        : `${attention ? `${plural(attention, 'item')} listed below` : unknown ? 'Nothing confirmed yet' : 'Nothing is blocked on you'}${unknown ? ` · merge of ${plural(unknown, 'published step')} being checked` : ''}${owner.also ? ` · also ${owner.also.short}` : ''}`, '◈'],
     ['Cost so far', !available ? '—' : reported > 0 ? usd(reported) : 'not reported', null, !available ? 'Supervisor unavailable'
       : `${plural(used, 'run')} · ${delivered && reported > 0 ? `about ${usd(reported / delivered)} per delivered step` : 'no cost per step yet'}${unreported ? ` · ${plural(unreported, 'run')} not reported yet, so the real total is higher` : ''}`, '↗'],
   ];
-  $('#metrics').replaceChildren(...metrics.map(([title, value, total, foot, icon]) => el('div', { class: 'metric' },
+  $('#metrics').replaceChildren(...metrics.filter(([title]) => shown.includes(title)).map(([title, value, total, foot, icon]) => el('div', { class: 'metric' },
     el('div', { class: 'metric-title' }, title, el('span', { class: 'metric-icon', 'aria-hidden': 'true' }, icon)),
     el('div', { class: 'metric-value number' }, String(value), total ? el('small', {}, total) : null), el('div', { class: 'metric-foot' }, foot))));
-  $('#roadmap-count').textContent = entries.length;
-  $('#agent-count').textContent = agents.length || '';
+  $('#metrics').hidden = !shown.length;
+  // The Needs me count in the global bar: never zero while the supervisor state is unknown.
+  $('#needs-count').textContent = !state.supervisor.available ? '?' : attention ? String(attention) : unknown ? '?' : '';
 }
 
 // Engineering Platform's own roadmap (read from the governance checkout), kept apart from project campaigns; display names replace internal track labels.
@@ -135,8 +175,8 @@ function trackOverview() {
     const list = state.roadmap.entries.filter((item) => item.track === track);
     return el('div', { class: 'track-row' }, el('div', { class: 'row-line' }, el('span', { class: 'track-name' }, trackNames[track] ?? track), el('span', { class: 'track-count number' }, plural(list.length, 'item'))));
   });
-  return panel('Engineering Platform roadmap', 'The platform’s own work toward its product, the project control plane. This is separate from the project campaigns above. Its progress is tracked on GitHub, not read here.',
-    el('div', { class: 'panel-body' }, ...rows), button('View roadmap ↗', () => go('roadmap'), 'link'));
+  return panel('Engineering Platform roadmap', 'The platform’s own work toward its product, the project control plane. This is separate from your projects. Its progress is tracked on GitHub, not read here.',
+    el('div', { class: 'panel-body' }, ...rows));
 }
 
 /** A plain verdict per running agent: working normally, possibly stuck, starting or not started. */
@@ -307,6 +347,19 @@ function livenessBadge(c, liveness) {
   return badge(liveness === 'running' ? 'recent' : ['late', 'awaiting-pickup'].includes(liveness) ? 'pending' : 'stale', livenessNames[liveness]);
 }
 
+/** Runs, cost and the provider order of one campaign: detail on its card, and the body of the project's Cost tab. */
+function costNotes(c) {
+  // Unknown cost is "not reported", never $0.00.
+  const budget = c.budget, unreported = (budget?.unknownCostRuns ?? 0) + c.agents.length;
+  const cost = c.recordedCostUsd > 0 ? `${usd(c.recordedCostUsd)} reported${unreported ? ` + ${plural(unreported, 'run')} not reported yet` : ''}` : 'cost not reported yet';
+  return { cost, body: el('div', { class: 'notes' }, `AI providers in order of preference: ${c.executors.map(provider).join(' → ')}. `,
+    c.maxWorkerRuns === null ? `${plural(c.runsUsed, 'run')}; this campaign has no run limit. ` : `${c.runsUsed} of ${plural(c.maxWorkerRuns, 'run')} allowed. `,
+    `Cost: ${cost}. `,
+    budget?.maxCostUsd ? `${usd(budget.chargedCostUsd)} of the ${usd(budget.maxCostUsd)} ceiling is used, counting each unreported run at ${usd(budget.unknownRunCostUsd)}. `
+      : 'There is no cost ceiling: work pauses only when an AI provider reports its own subscription or usage limit, and resumes after the reset. ',
+    'Pause stops new work from starting. Recheck asks the supervisor to look again; it never skips the independent check.') };
+}
+
 function campaignCard(c, expanded = true) {
   // A finished or cancelled campaign has nothing to control: no disabled buttons and no "controls are off" note.
   const terminal = ['finished', 'cancelled'].includes(c.control);
@@ -332,16 +385,8 @@ function campaignCard(c, expanded = true) {
   // Provider detail matters only while the campaign can still start agents.
   if (expanded) card.append(...(terminal ? [] : [providerStatus(c)]), disclosure(`${c.id}/agent-steps`, `See all ${plural(c.tasks.length, 'step')}`, stepsTable(c)));
   else card.append(disclosure(c.id, `See all ${plural(c.tasks.length, 'step')}`, stepsTable(c)));
-  // Runs, cost and the provider order are detail. Unknown cost is "not reported", never $0.00.
-  const budget = c.budget, unreported = (budget?.unknownCostRuns ?? 0) + c.agents.length;
-  const cost = c.recordedCostUsd > 0 ? `${usd(c.recordedCostUsd)} reported${unreported ? ` + ${plural(unreported, 'run')} not reported yet` : ''}` : 'cost not reported yet';
-  card.append(disclosure(`${c.id}/costs`, `Runs, cost and AI providers · ${plural(c.runsUsed, 'run')} · ${cost}`,
-    el('div', { class: 'notes' }, `AI providers in order of preference: ${c.executors.map(provider).join(' → ')}. `,
-      c.maxWorkerRuns === null ? `${plural(c.runsUsed, 'run')}; this campaign has no run limit. ` : `${c.runsUsed} of ${plural(c.maxWorkerRuns, 'run')} allowed. `,
-      `Cost: ${cost}. `,
-      budget?.maxCostUsd ? `${usd(budget.chargedCostUsd)} of the ${usd(budget.maxCostUsd)} ceiling is used, counting each unreported run at ${usd(budget.unknownRunCostUsd)}. `
-        : 'There is no cost ceiling: work pauses only when an AI provider reports its own subscription or usage limit, and resumes after the reset. ',
-      'Pause stops new work from starting. Recheck asks the supervisor to look again; it never skips the independent check.')));
+  const { cost, body } = costNotes(c);
+  card.append(disclosure(`${c.id}/costs`, `Runs, cost and AI providers · ${plural(c.runsUsed, 'run')} · ${cost}`, body));
   if (c.instructions?.length) card.append(disclosure(`${c.id}/instructions`, `Your instructions to agents (${c.instructions.length})`,
     el('div', { class: 'instruction-list' }, ...c.instructions.map((item) => instructionReceipt(item)))));
   return card;
@@ -395,7 +440,7 @@ function messagesPanel(limit) {
     ? `Read-only coordinator agent · replies go to ${coordinator.reportTo ?? 'GitHub'} · ${coordinator.runsToday}${coordinator.maxRunsPerDay === null ? '' : `/${coordinator.maxRunsPerDay}`} runs in the last 24h${coordinator.blocked ? ` · not reading now: ${coordinator.blocked}` : ''}`
     : coordinator.configError ? `Coordinator configuration is invalid (${coordinator.configError}): messages are stored but nothing reads them`
       : 'No coordinator agent is configured: messages are stored but nothing reads them',
-  items.length ? el('div', { class: 'instruction-list' }, ...items.map((m) => messageReceipt(m, coordinator))) : empty('No messages yet', 'Use “Message coordinator” to ask for a review or a plan.'),
+  items.length ? el('div', { class: 'instruction-list' }, ...items.map((m) => messageReceipt(m, coordinator))) : empty('No messages yet', 'Use “New message” to ask for a review or a plan.'),
   button('✉ New message', openMessage, 'link'));
 }
 
@@ -428,7 +473,12 @@ function trackReceipts() {
 }
 const askNotifications = () => { try { if ('Notification' in window && Notification.permission === 'default') void Notification.requestPermission(); } catch { /* unsupported */ } };
 
-const messageDraft = { text: '' };
+// The message box lives on Settings › Messages, so its draft is kept under that address.
+const MESSAGES_ADDRESS = formatRoute({ screen: 'settings', section: 'messages' });
+const messageDraft = {
+  get text() { return drafts.get(MESSAGES_ADDRESS, 'message') ?? ''; },
+  set text(value) { if (value) drafts.set(MESSAGES_ADDRESS, 'message', value); else drafts.delete(MESSAGES_ADDRESS, 'message'); },
+};
 function openMessage() {
   const coordinator = state?.supervisor.coordinator;
   $('#message-target').textContent = coordinator?.configured ? `Replies are posted to ${coordinator.reportTo}.` : 'No coordinator agent is configured yet: the message will be stored, but nothing will read it.';
@@ -445,7 +495,7 @@ async function sendMessage(text) {
       const result = await post('/api/messages', { requestId, text });
       messageDraft.text = '';
       notice(result.duplicate ? `Message #${result.id} was already received; it was not stored twice.` : `Message #${result.id} received by the supervisor. You will see "Read" when the coordinator agent starts on it.`);
-      go('messages');
+      if (current.address !== MESSAGES_ADDRESS) go(MESSAGES_ADDRESS);
     } catch (error) {
       notice(error.known ? error.message : 'Delivery could not be confirmed. Retry: the same message is never stored twice.', error.known ? null : attempt);
     }
@@ -453,13 +503,15 @@ async function sendMessage(text) {
   try { await attempt(); } finally { sending = false; await poll(); }
 }
 
+// An instruction draft belongs to the address its dialog was opened from, and to its campaign.
+let instructionAddress = null;
 function saveDraft() {
-  if (instructionCampaign) drafts.set(instructionCampaign.id, { taskId: $('#instruction-task').value, role: $('#instruction-role').value, text: $('#instruction-text').value });
+  if (instructionCampaign) drafts.set(instructionAddress, `instruction:${instructionCampaign.id}`, { taskId: $('#instruction-task').value, role: $('#instruction-role').value, text: $('#instruction-text').value });
 }
 
 function openInstructions(c) {
-  instructionCampaign = c;
-  const draft = drafts.get(c.id);
+  instructionCampaign = c; instructionAddress = current.address;
+  const draft = drafts.get(instructionAddress, `instruction:${c.id}`);
   $('#instruction-campaign').textContent = c.id;
   $('#instruction-task').replaceChildren(...c.tasks.filter((t) => !['done', 'verified'].includes(t.state)).map((t) => el('option', { value: t.id }, `${t.id} — ${t.title}`)));
   if (draft && c.tasks.some((t) => t.id === draft.taskId && !['done', 'verified'].includes(t.state))) $('#instruction-task').value = draft.taskId;
@@ -512,21 +564,21 @@ function sinceSummary() {
     recent.supervisorErrors || recent.livenessProblems ? el('li', { class: 'warn' }, `The supervisor itself had problems (${[
       recent.supervisorErrors ? `its own check failed ${plural(recent.supervisorErrors, 'time')} and was retried` : null,
       recent.livenessProblems ? plural(recent.livenessProblems, 'liveness problem') : null].filter(Boolean).join('; ')}). Not an owner action: these are supervisor faults for AIWorks's maintainers. `,
-    link('Supervisor issue #2 ↗', 'https://github.com/netbka/aiworks/issues/2'), ' · ', button('When, in Activity', () => go('activity'), 'link small')) : null,
+    link('Supervisor issue #2 ↗', 'https://github.com/netbka/aiworks/issues/2'), ' · ', routeLink('When, in Diagnostics', '#/settings/diagnostics')) : null,
   ].filter(Boolean);
   return el('section', { class: 'since', 'aria-labelledby': 'since-title' }, el('h2', { id: 'since-title' }, when),
     facts.length ? el('ul', {}, ...facts) : el('p', {}, 'Nothing changed.'));
 }
 
-/** Search applies to both lists; the track filter to the platform roadmap, the status filter to campaign steps. */
-function filtered(items) {
+/** Diagnostics filters: search applies to both lists; the track filter to the platform roadmap, the status filter to campaign steps. */
+function filtered(items, kind) {
   const query = $('#search').value.trim().toLowerCase(), status = $('#status').value, track = $('#track').value;
   return items.filter((item) => (!query || `${item.id ?? ''} ${item.number ?? ''} ${item.title} ${item.repository} ${item.campaignId ?? ''}`.toLowerCase().includes(query)) &&
-    (view !== 'work' || !status || item.status === status) && (view === 'work' || !track || item.track === track));
+    (kind !== 'steps' || !status || item.status === status) && (kind === 'steps' || !track || item.track === track));
 }
 
 function roadmapView() {
-  const entries = filtered(state.roadmap.entries);
+  const entries = filtered(state.roadmap.entries, 'roadmap');
   const rows = entries.map((entry) => el('tr', { 'data-focus-scope': entry.id }, cell(el('span', { class: 'package-id' }, entry.id)), cell(link(entry.title, entry.source, 'task-name'),
       el('div', { class: 'subtext' }, `${trackNames[entry.track] ?? entry.track} · ${entry.repository?.split('/')[1] ?? 'Repository unassigned'}`),
       entry.dependencies.length ? el('div', { class: 'subtext' }, `Depends on ${entry.dependencies.join(', ')}`) : null),
@@ -558,17 +610,11 @@ function finishedList(list) {
       disclosure(`${c.id}/finished-steps`, `See all ${plural(c.tasks.length, 'step')}`, stepsTable(c))))));
 }
 
-function campaignRoadmaps() {
-  const { cards, finished } = campaignLayout();
-  return [...cards, ...finished].map((c) => panel(campaignTitle(c),
-    `Campaign ${c.id} · ${deliverySummary(c).text}. This is the work assigned to the campaign; the repository may have other backlog.`, stepsTable(c)));
-}
-
 /** When the merge check behind a step is not current, or its last fetch failed: when it is from, and what happens next. */
 const mergeAsOf = (check) => `Merge check from ${!check.at ? 'an unknown time' : new Date(check.at).toDateString() === new Date().toDateString() ? timeOnly(check.at) : dateTime(check.at)}; ${
   check.reason === 'fetch-failed' ? 'the last fetch failed, retrying within 5 minutes' : 'checking again'}`;
 
-/** The first thing on Overview: what is waiting for the owner, in plain words, each with the link to act on. */
+/** Needs me: what is waiting for the owner, in plain words, each with the link to act on. */
 function needsYou() {
   const owner = state.owner;
   if (!owner?.available) return null;
@@ -601,8 +647,8 @@ function needsYou() {
  * Every campaign step with its issue and its pull request or report, from the supervisor store: issue numbers and
  * titles come from the declarations. Issues and pull requests not tied to a campaign are not shown.
  */
-function campaignWork() {
-  return state.supervisor.campaigns.flatMap((c) => c.tasks.map((task) => {
+function campaignWork(campaigns = state.supervisor.campaigns) {
+  return campaigns.flatMap((c) => c.tasks.map((task) => {
     const delivery = deliveryOf(c, task);
     const status = delivery ? delivery.state === 'published' ? 'review' : delivery.state === 'unknown' ? 'unknown' : 'done' : task.blocked ? 'blocked' : 'in_progress';
     return { c, task, delivery, status, id: task.id, campaignId: c.id, repository: c.repository, title: `${task.outcome ?? ''} ${task.title}`,
@@ -610,43 +656,90 @@ function campaignWork() {
   }));
 }
 
-function workView() {
-  const work = filtered(campaignWork());
+function workView(work = filtered(campaignWork(), 'steps')) {
   const rows = work.slice(0, workLimit).map(({ c, task, delivery, number }) => el('tr', { 'data-focus-scope': `${c.id}/${task.id}` },
     cell(link(number ? `Issue #${number}` : task.id, task.issueUrl, 'package-id')),
     cell(el('span', { class: 'task-name' }, task.outcome ?? task.title), el('div', { class: 'subtext' }, `${task.id} · ${campaignTitle(c)}`)),
     cell(stepBadge(c, task), delivery?.note ? el('div', { class: 'subtext' }, delivery.note) : null),
     cell(task.resultUrl ? link(delivery?.number ? `PR #${delivery.number} ↗` : 'Report ↗', task.resultUrl) : el('span', { class: 'muted' }, 'Not published yet'))));
-  const body = el('div', {}, rows.length ? table(['Step issue', 'What it delivers', 'Where it stands', 'Pull request or report'], rows) : empty('No matching work', 'Try clearing the filters.'));
+  const body = el('div', {}, rows.length ? table(['Step issue', 'What it delivers', 'Where it stands', 'Pull request or report'], rows)
+    : empty('No matching work', current.route.screen === 'settings' ? 'Try clearing the filters.' : 'No step of this project is recorded yet.'));
   if (work.length > workLimit) body.append(el('div', { class: 'load-more' }, button(`Show more (${work.length - workLimit} remaining)`, () => { workLimit += 80; render(); }, 'secondary')));
   return panel('Campaign issues and pull requests', `${work.length} steps · from the supervisor's own records. Issues and pull requests that no campaign owns are not shown here; see them on GitHub`, body);
 }
 
+/** Projects from today's data: each repository that has work on this computer, in the owner view's order. */
+function projectList() {
+  const { cards, finished } = campaignLayout();
+  return [...new Set([...cards, ...finished, ...state.supervisor.campaigns].map((c) => c.repository).filter(Boolean))];
+}
+const projectCampaigns = (project) => state.supervisor.campaigns.filter((c) => c.repository === project);
+const unavailable = () => empty('Supervisor unavailable', state.supervisor.message ?? 'The supervisor state cannot be read right now. This is not the same as nothing happening.');
+
+function projectsScreen() {
+  if (!state.supervisor.available) return [unavailable()];
+  const projects = projectList(), last = readLastProject();
+  if (!projects.length) return [empty('No projects yet.', 'Projects appear here when work is registered for a repository on this computer. Adding a project from this page is not built yet.')];
+  const waiting = (project) => (state.owner?.items ?? []).filter((item) => campaignById(item.campaignId)?.repository === project).length;
+  return [last && projects.includes(last) ? el('p', { class: 'continue' }, routeLink(`Continue with ${projectName(last)} →`, { screen: 'project', project: last }, 'continue-link')) : null,
+    sinceSummary(),
+    panel('Your projects', 'One row per repository with work on this computer.', el('ul', { class: 'project-list' }, ...projects.map((project) => {
+      const count = projectCampaigns(project).length, mine = waiting(project);
+      return el('li', { class: 'project-row', 'data-focus-scope': project }, routeLink(projectName(project), { screen: 'project', project }, 'project-name'),
+        el('div', { class: 'subtext' }, `GitHub · ${project} · ${plural(count, 'piece of work', 'pieces of work')}${mine ? ` · ${plural(mine, 'item')} in Needs me` : ''}`));
+    })))].filter(Boolean);
+}
+
+function settingsScreen() {
+  const host = state.host ?? {};
+  return [panel('This computer', 'Each computer runs its own AIWorks. This page shows only this one.', el('div', { class: 'panel-body' },
+    el('p', {}, `${host.name ?? 'Unknown computer'} · dashboard version ${host.revision?.slice(0, 7) ?? 'unknown'}`))),
+  panel('More', null, el('ul', { class: 'settings-links' },
+    el('li', {}, routeLink('Messages', '#/settings/messages'), el('div', { class: 'subtext' }, 'What you asked AIWorks, and what it answered.')),
+    el('li', {}, routeLink('Diagnostics', '#/settings/diagnostics'), el('div', { class: 'subtext' }, 'The full activity journal, every step with its issue and pull request, and the Engineering Platform roadmap.'))))];
+}
+
+/** One project's screens. Campaign cards, step tables and costs are today's, limited to this project. */
+function projectScreen(route) {
+  const project = route.project, all = projectCampaigns(project);
+  if (!state.supervisor.available) return [unavailable()];
+  if (!all.length) return [empty('This project has no work on this computer', 'The address may be mistyped, or its work was removed.'), routeLink('All projects', '#/projects', 'button secondary')];
+  const layout = campaignLayout(), mine = (list) => list.filter((c) => c.repository === project);
+  // Campaigns with something for the owner and active ones get cards; finished ones are one line each, under Results.
+  const cards = mine(layout.cards), finished = mine(layout.finished);
+  if (route.screen === 'step') {
+    const c = all.find((item) => item.id === route.work), task = c?.tasks.find((item) => item.id === route.step);
+    if (!task) return [empty('This step is not recorded for this project', 'It may belong to another project, or the address is mistyped.'), routeLink('All work in this project', { screen: 'project', project, tab: 'work' }, 'button secondary')];
+    return [panel(task.outcome ?? task.title, `${campaignTitle(c)} · step ${task.id}`, el('div', { class: 'steps' }, table(['Step', 'What it delivers', 'Where it stands', 'Tries', ''], [taskRow(c, task)])))];
+  }
+  if (route.screen === 'start' || route.screen === 'review') return [empty('Starting work from this page is not built yet.', 'Today, work starts after its plan is merged into AIWorks and started on this computer.')];
+  if (route.tab === 'work') {
+    const agents = all.flatMap((c) => c.agents.map((a) => [c, a]));
+    return [...(agents.length ? [el('div', { class: 'agents-grid' }, ...agents.map(([c, a]) => agentCard(c, a))), verdictExplanation()] : []),
+      ...cards.map((c) => campaignCard(c)), cards.some((c) => !['finished', 'cancelled'].includes(c.control)) ? providerNote() : null,
+      cards.length ? null : empty('Nothing is running or waiting in this project', 'Finished work is under Results.')].filter(Boolean);
+  }
+  if (route.tab === 'results') return [finishedList(finished), workView(campaignWork(all))].filter(Boolean);
+  if (route.tab === 'cost') return all.map((c) => panel(campaignTitle(c), `Campaign ${c.id}`, costNotes(c).body));
+  return cards.length ? [...cards.map((c) => campaignCard(c, false))] : [empty('No work is running in this project', 'Finished work and its results are under Results.')];
+}
+
 function render() {
   if (!state) return;
-  const content = $('#content');
+  const content = $('#content'), route = current.route;
   const focusKey = (node) => JSON.stringify([node.closest('[data-focus-scope]')?.dataset.focusScope, node.tagName, node.getAttribute('href'), node.textContent]);
   const focused = content.contains(document.activeElement) ? focusKey(document.activeElement) : null;
-  renderMetrics();
-  $('#metrics').hidden = !['overview', 'roadmap'].includes(view);
-  const campaigns = state.supervisor.campaigns, agents = campaigns.flatMap((c) => c.agents.map((a) => [c, a]));
-  // Campaigns with something for the owner and active ones get cards; finished ones are one line each, further down.
-  const { cards, finished } = campaignLayout();
-  if (view === 'roadmap') content.replaceChildren(...campaignRoadmaps(), roadmapView());
-  else if (view === 'work') content.replaceChildren(workView());
-  else if (view === 'activity') content.replaceChildren(panel('Execution journal', 'Latest 80 events · raw agent transcripts and secrets are never shown', activityList()));
-  else if (view === 'messages') content.replaceChildren(messagesPanel(20));
-  else if (view === 'agents') content.replaceChildren(...(agents.length ? [el('div', { class: 'agents-grid' }, ...agents.map(([c, a]) => agentCard(c, a))), verdictExplanation()] : []),
-    ...(campaigns.length ? [...cards.map((c) => campaignCard(c)), finishedList(finished),
-      cards.some((c) => !['finished', 'cancelled'].includes(c.control)) ? providerNote() : null].filter(Boolean)
-      : [empty('No registered campaigns', state.supervisor.message ?? 'Register authorized work through the supervisor.')]));
-  else content.replaceChildren(...[sinceSummary(), needsYou()].filter(Boolean), ...cards.map((c) => campaignCard(c, false)), el('div', { class: 'overview-grid' },
-    panel('Live now', 'What the AI agents are doing right now', agents.length ? el('div', {}, ...agents.map(([c, a]) => agentCard(c, a)), verdictExplanation())
-      : empty(state.supervisor.available ? 'No agent is working right now' : 'Supervisor unavailable', state.supervisor.message ?? 'Work appears here when the supervisor starts an agent.'), button('View agents ↗', () => go('agents'), 'link')),
-    trackOverview()),
-    ...[finishedList(finished)].filter(Boolean),
-    panel('Latest activity', 'What happened recently, newest first', activityList(5), button('View all ↗', () => go('activity'), 'link')),
-  messagesPanel(3));
+  const diagnostics = route.screen === 'settings' && route.section === 'diagnostics';
+  renderMetrics(route.project ? projectCampaigns(route.project) : state.supervisor.campaigns, diagnostics ? ['Platform roadmap items']
+    : route.screen === 'project' && route.tab === 'work' ? ['Agents working'] : route.screen === 'project' && route.tab === 'cost' ? ['Cost so far'] : []);
+  if (route.screen === 'needs') content.replaceChildren(needsYou() ?? unavailable());
+  else if (route.screen === 'settings' && route.section === 'messages') content.replaceChildren(messagesPanel(20));
+  else if (diagnostics) content.replaceChildren(trackOverview(), roadmapView(), workView(),
+    panel('Execution journal', 'Latest 80 events · raw agent transcripts and secrets are never shown', activityList()));
+  else if (route.screen === 'settings') content.replaceChildren(...settingsScreen());
+  else if (route.screen === 'add-project') content.replaceChildren(empty('Adding a project from this page is not built yet.', 'Projects appear on Projects when work is registered for a repository on this computer.'));
+  else if (route.project) content.replaceChildren(...projectScreen(route));
+  else content.replaceChildren(...projectsScreen());
   if (focused) [...content.querySelectorAll('a, button, summary')].find((node) => focusKey(node) === focused)?.focus({ preventScroll: true });
   const repositories = state.merges?.repositories ?? [];
   const problems = repositories.filter((repo) => repo.error);
@@ -672,7 +765,7 @@ async function post(path, body) {
   return value;
 }
 
-async function deliver(payload) {
+async function deliver(payload, draftAddress = null) {
   sending = true; render();
   try {
     const result = await post('/api/commands', payload);
@@ -680,16 +773,16 @@ async function deliver(payload) {
       instruct: 'Instruction received by the supervisor. It is read by the selected role’s next run on this task; the receipt on the campaign card shows Received, Read and the worker’s outcome.',
       recheck: 'Recheck queued. The controller will reassess the selected work; limits and verification still apply.', cancel: 'Cancellation requested. The controller will stop its owned workers.' };
     notice(result.duplicate ? 'This command was already accepted; it was not applied again.' : messages[payload.action]);
-    if (payload.action === 'instruct') drafts.delete(payload.campaignId);
+    if (payload.action === 'instruct' && draftAddress) drafts.delete(draftAddress, `instruction:${payload.campaignId}`);
   } catch (error) {
-    notice(error.known ? error.message : 'Delivery could not be confirmed. Retry this same command safely.', error.known ? null : () => deliver(payload));
+    notice(error.known ? error.message : 'Delivery could not be confirmed. Retry this same command safely.', error.known ? null : () => deliver(payload, draftAddress));
   } finally { sending = false; await poll(); }
 }
 
-function command(c, action, task, extra = {}) {
+function command(c, action, task, extra = {}, draftAddress = null) {
   return deliver({ campaignId: c.id, action, requestId: crypto.randomUUID(), version: c.version,
     authorizationVersion: c.authorizationVersion, scopeDigest: c.scopeDigest,
-    ...(task ? { taskId: task.id, taskVersion: task.version } : {}), ...extra });
+    ...(task ? { taskId: task.id, taskVersion: task.version } : {}), ...extra }, draftAddress);
 }
 
 async function poll() {
@@ -711,14 +804,30 @@ async function poll() {
   }
 }
 
-// A new destination starts at its top; Back or Forward returns to where that view was left (UX-001 §8, preserve context).
+// A new destination starts at its top; Back or Forward returns to where that address was left (UX-001 §8, preserve
+// context). The page keeps scroll per address itself, so the browser's own restoration is switched off.
 const scrollMemory = new Map();
-function go(next, { restore = false } = {}) {
-  scrollMemory.set(view, window.scrollY);
-  setView(next);
-  window.scrollTo(0, restore ? scrollMemory.get(view) ?? 0 : 0);
+try { history.scrollRestoration = 'manual'; } catch { /* the browser restores by itself */ }
+function go(address, { restore = false } = {}) {
+  scrollMemory.set(current.address, window.scrollY);
+  const next = resolveRoute(address);
+  if (!restore) history.pushState(null, '', next.address);
+  else if (next.replace) history.replaceState(null, '', next.address);
+  current = next;
+  showRoute();
+  window.scrollTo(0, restore ? scrollMemory.get(current.address) ?? 0 : 0);
+  // Focus moves to the new screen's heading, so a screen reader starts there.
+  $('#view-title').focus({ preventScroll: true });
 }
-for (const node of document.querySelectorAll('[data-view]')) node.addEventListener('click', () => { if (node.dataset.view !== view) go(node.dataset.view); });
+// Destinations are links. A plain click opens the address here; a click that asks for a new tab or window is left to the browser.
+document.addEventListener('click', (event) => {
+  const anchor = event.target.closest?.('a[href^="#/"]');
+  if (!anchor || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  if (resolveRoute(anchor.getAttribute('href')).address !== current.address) go(anchor.getAttribute('href'));
+});
+// The skip link moves focus to the content without changing the address.
+$('.skip-link').addEventListener('click', (event) => { event.preventDefault(); $('#main').focus(); });
 for (const selector of ['#search', '#track', '#status']) $(selector).addEventListener('input', () => { workLimit = 80; render(); });
 $('#confirm-cancel').addEventListener('click', () => { $('#cancel-dialog').close(); if (pendingCancel) void command(pendingCancel, 'cancel'); pendingCancel = null; });
 $('#close-instruction').addEventListener('click', () => { saveDraft(); $('#instruction-dialog').close(); });
@@ -730,9 +839,11 @@ $('#instruction-form').addEventListener('submit', (event) => {
   const task = instructionCampaign.tasks.find((t) => t.id === $('#instruction-task').value);
   $('#instruction-dialog').close();
   askNotifications();
-  void command(instructionCampaign, 'instruct', task, { role: $('#instruction-role').value, text: $('#instruction-text').value });
+  void command(instructionCampaign, 'instruct', task, { role: $('#instruction-role').value, text: $('#instruction-text').value }, instructionAddress);
 });
-$('#open-message').addEventListener('click', openMessage);
+// Drafts are saved as they are typed, so a reload never loses them.
+for (const selector of ['#instruction-task', '#instruction-role', '#instruction-text']) $(selector).addEventListener('input', saveDraft);
+$('#message-text').addEventListener('input', () => { messageDraft.text = $('#message-text').value; });
 $('#close-message').addEventListener('click', () => { messageDraft.text = $('#message-text').value; $('#message-dialog').close(); });
 $('#message-dialog').addEventListener('cancel', () => { messageDraft.text = $('#message-text').value; });
 $('#message-form').addEventListener('submit', (event) => {
@@ -744,12 +855,14 @@ $('#message-form').addEventListener('submit', (event) => {
   askNotifications();
   void sendMessage(text);
 });
-// Our own navigation already set the hash; any other change (Back, Forward, an edited link) restores that view's position.
-window.addEventListener('hashchange', () => { if (location.hash.slice(1) !== view) go(location.hash.slice(1), { restore: true }); });
+// Our own navigation already set the address; any other change (Back, Forward, an edited address) restores that address's position.
+window.addEventListener('hashchange', () => { if (location.hash !== current.address) go(location.hash, { restore: true }); });
 // The visit ends when the page is hidden or closed; the next visit summarizes what changed after this point.
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') writeLastSeen(); });
 window.addEventListener('pagehide', writeLastSeen);
-setView(location.hash.slice(1));
+// An empty, legacy or unknown address is rewritten once, without a new history entry.
+if (current.replace) history.replaceState(null, '', current.address);
+showRoute();
 try { csrf = (await (await fetch('/api/session')).json()).csrf; } catch { notice('Command session unavailable. Reload when the dashboard reconnects.'); }
 await poll();
 setInterval(() => { if (!sending) void poll(); }, 5000);
