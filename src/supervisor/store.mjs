@@ -55,6 +55,21 @@ CREATE TABLE IF NOT EXISTS provider_waits (
 CREATE TABLE IF NOT EXISTS capacity (
   scope TEXT NOT NULL, id TEXT NOT NULL, value INTEGER NOT NULL, reason TEXT, updated_at INTEGER NOT NULL,
   PRIMARY KEY (scope, id));
+-- Auto Release (release/state.mjs, slice REL3; built switched off until netbka/aiworks#33). One row per release attempt
+-- of one exact verified revision to one destination. A step is recorded started, with no outcome, before it acts; such
+-- a row is unknown after a restart until a read-only look proves where the destination is. history is the step log.
+CREATE TABLE IF NOT EXISTS releases (
+  id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, project TEXT NOT NULL, destination TEXT NOT NULL,
+  campaign_id TEXT NOT NULL, task_id TEXT NOT NULL, verified_sha TEXT NOT NULL, attempt INTEGER NOT NULL,
+  grant_version INTEGER, grant_digest TEXT, eligibility TEXT, steps TEXT NOT NULL, state TEXT NOT NULL,
+  step TEXT, step_key TEXT, step_started_at INTEGER, step_outcome TEXT, history TEXT NOT NULL DEFAULT '[]',
+  merge_commit TEXT, deployed_digest TEXT, previous_digest TEXT, backup_path TEXT, reason TEXT,
+  instance_id TEXT NOT NULL, generation INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+-- One release per destination (<project>.<destination>) at a time. Freed only at accepted, rolled-back or refused:
+-- an unknown or rollback-failed release keeps it, so nothing lands on top of an unknown destination.
+CREATE TABLE IF NOT EXISTS release_locks (
+  destination TEXT PRIMARY KEY, release_id TEXT NOT NULL UNIQUE, instance_id TEXT NOT NULL, generation INTEGER NOT NULL,
+  acquired_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT NOT NULL, kind TEXT NOT NULL,
   dedup_key TEXT UNIQUE, payload TEXT, received_at INTEGER NOT NULL, processed_at INTEGER);
@@ -104,7 +119,8 @@ CREATE TABLE IF NOT EXISTS project_overlays (
 `;
 
 const JSON_COLUMNS = new Set(['declaration', 'blocker', 'failures', 'findings', 'result', 'verification',
-  'blocked', 'packet', 'outcome', 'payload', 'detail', 'message_ids', 'probe', 'last_evidence', 'resolution', 'message']);
+  'blocked', 'packet', 'outcome', 'payload', 'detail', 'message_ids', 'probe', 'last_evidence', 'resolution', 'message',
+  'eligibility', 'steps', 'history']);
 
 function decode(row) {
   if (!row) return null;
