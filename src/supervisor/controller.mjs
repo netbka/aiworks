@@ -510,8 +510,9 @@ export class Controller {
       { identity: 'no-eligible-executor' });
       return { state: back, retry_at: null, last_error: `${op.executor_kind}: ${v.class}: ${v.detail}` };
     }
+    // A single-provider campaign's failed login stays its own B2 blocker, whose recheck or probe resolution resumes it;
+    // an account row here would outlive that resolution. (A chain records it on the account above.)
     if (v.class === 'auth') {
-      setAccountWait(this.store, this.config, { kind: op.executor_kind, retryAt: null, reason: `auth: ${v.detail}`, campaignId: ctx.id, now });
       this.raiseBlocker(ctx, decl, { kind: 'auth', class: 'B2', reason: v.detail,
         requestedAction: `Re-authenticate the selected CLI on this PC, then run: supervisor recheck ${ctx.id}` }, now,
       { identity: op.executor_kind });
