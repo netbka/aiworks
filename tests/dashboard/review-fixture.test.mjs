@@ -112,6 +112,9 @@ test('the supervisor snapshot shows one piece of work for every owner state', (t
   const search = campaign('finished-open-and-merged');
   assert.deepEqual([search.control, search.recordedCostUsd, search.budget.measuredCostUsd, search.budget.unknownCostRuns], ['finished', 4.2, 4.2, 3]);
   assert.deepEqual(search.tasks.map((item) => item.state), ['done', 'done', 'done']);
+  const units = campaign('finished-all-merged');
+  assert.deepEqual([units.control, units.repository, units.tasks.map((item) => item.state)], ['finished', 'example/recipes', ['done', 'done']]);
+  assert.ok(units.tasks.every((item) => item.verifiedSha && item.resultUrl), 'every step has a verified commit and a result link');
   assert.deepEqual([campaign('no-runs').runsUsed, campaign('no-runs').recordedCostUsd, campaign('no-runs').budget.unknownCostRuns], [0, 0, 0]);
   assert.equal(campaign('cancelled').control, 'cancelled');
   assert.equal(campaign('finished-reports').control, 'finished');
@@ -132,6 +135,11 @@ test('the owner view, with the local merge check, says where every result stands
   // A pull request closed without merging cannot be told apart without GitHub (gap G3): it is never shown as merged.
   assert.deepEqual([search.T3.state, search.T3.note], ['published', 'Your review and merge']);
   assert.equal(owner('finished-open-and-merged').finished, 'All steps are finished · 2 steps wait for your review (merge not seen yet) · 1 merged');
+  // §7.8 Everything merged, all states known: the release follows the project's own rule, never assumed done.
+  const units = owner('finished-all-merged');
+  assert.deepEqual(Object.values(units.deliveries).map((d) => d.state), ['merged', 'merged']);
+  assert.equal(units.finished, "All steps are finished · the merged work is ready; release follows recipes's release policy");
+  assert.equal(units.releaseReady, true);
   assert.equal(owner('finished-reports').counts.reports, 2);
   assert.equal(owner('finished-reports').finished, 'All steps are finished · Planning reports published in example/notes-site; review recommendations before assigning implementation.');
   const links = owner('finished-unknown').deliveries;
@@ -153,15 +161,15 @@ test('the owner view, with the local merge check, says where every result stands
     ['notes-tags', 'controller', 'The supervisor on review-pc stopped while notes-tags was paused'],
   ]) assert.ok(items.some((item) => JSON.stringify(item) === JSON.stringify(expected)), `Needs me lists ${expected.join(' · ')}`);
   assert.equal(items.length, 12, JSON.stringify(items));
-  for (const quiet of ['shop-checkout', 'shop-reviews', 'shop-wishlist', 'recipes-import', 'recipes-tags', 'recipes-idle', 'recipes-share', 'recipes-print', 'notes-drafts', 'notes-audit']) {
+  for (const quiet of ['shop-checkout', 'shop-reviews', 'shop-wishlist', 'recipes-import', 'recipes-tags', 'recipes-idle', 'recipes-share', 'recipes-print', 'recipes-units', 'notes-drafts', 'notes-audit']) {
     assert.ok(!items.some(([id]) => id === quiet), `${quiet} is not listed for the owner`);
   }
   assert.equal(view.headline, 'Needs you (12)');
   assert.deepEqual(view.items.find((item) => item.text === 'Contracts import').points.map((p) => p.text).at(-1), 'T2 cannot start until you merge it.');
-  assert.equal(view.also.text, 'Also: 2 reports for you to read');
+  assert.equal(view.also.text, 'Also: 2 reports for you to read · merged work in recipes is ready; release follows its release policy');
   // Nothing claims more than the evidence: no deployed, released or live work, and notes-site is never merged.
   assert.doesNotMatch(JSON.stringify(view), /deployed|released|is live|ready to merge/i);
-  assert.ok(Object.values(view.campaigns).every((c) => c.releaseReady === false));
+  assert.deepEqual(Object.entries(view.campaigns).filter(([, c]) => c.releaseReady).map(([id]) => id), ['recipes-units']);
   assert.ok(!Object.values(links).some((d) => d.state === 'merged'));
   assert.equal(merged.steps['shop-search/T1'].sha, commits['example/shop-app']['search-page']);
 });

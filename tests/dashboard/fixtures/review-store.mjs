@@ -62,6 +62,7 @@ export const REVIEW_STATES = {
   'failed-attempts': { section: '7.7', campaignId: 'notes-search', taskId: 'T1' },
   'recorded-blocker': { section: '7.7', campaignId: 'notes-deploy' },
   'supervisor-fault': { section: '7.7', campaignId: 'notes-health' },
+  'finished-all-merged': { section: '7.8', campaignId: 'recipes-units' },
   'finished-open-and-merged': { section: '7.8', campaignId: 'shop-search' },
   'closed-without-merging': { section: '7.8', campaignId: 'shop-search', taskId: 'T3' },
   'finished-reports': { section: '7.8', campaignId: 'notes-audit' },
@@ -126,7 +127,8 @@ function fill(store, dataDir, root, now) {
     'example/shop-app': repository(root, 'shop-app', [
       { branch: 'search-page', merged: true }, { branch: 'search-filters', pushed: true }, { branch: 'sale-banner' },
       { branch: 'contracts-import', pushed: true }]),
-    'example/recipes': repository(root, 'recipes', [{ branch: 'print-card', merged: true }]),
+    'example/recipes': repository(root, 'recipes', [{ branch: 'print-card', merged: true },
+      { branch: 'unit-converter', merged: true }, { branch: 'metric-units', merged: true }]),
     'example/notes-site': repository(root, 'notes-site', [{ branch: 'sitemap' }], { origin: false }),
   };
   const sha = (repo, branch) => repos[repo].shas[branch];
@@ -199,7 +201,7 @@ function fill(store, dataDir, root, now) {
   setTask(id, 'T1', { state: 'done', attempts: 1, head_sha: sha(shop, 'contracts-import'), verified_sha: sha(shop, 'contracts-import'), pr_url: pull(shop, 104) });
   setTask(id, 'T2', { last_error: 'dependency-integration: T1 is not merged into main yet', retry_at: now + 10 * M });
 
-  // example/recipes: paused, waiting for a usage limit, idle, waiting to be picked up and cancelled.
+  // example/recipes: paused, waiting for a usage limit, idle, waiting to be picked up, cancelled, and everything merged.
   const recipes = 'example/recipes';
   id = start(declaration('recipes-import', recipes, 'Import recipes from a spreadsheet', 60, [task('T1', 61, 'spreadsheet import', 'Spreadsheet import')]), now - 9 * H);
   live(id);
@@ -221,6 +223,19 @@ function fill(store, dataDir, root, now) {
   setTask(id, 'T1', { state: 'done', attempts: 1, head_sha: sha(recipes, 'print-card'), verified_sha: sha(recipes, 'print-card'), pr_url: pull(recipes, 201) });
   setCampaign(id, { control: 'cancelled', status: 'cancelled' });
   lease(id, now - 40 * H);
+
+  // Every step finished and merged into main, so every state is known and only the release follows.
+  id = start(declaration('recipes-units', recipes, 'Convert recipe units', 105, [task('T1', 106, 'unit converter', 'Unit converter'),
+    task('T2', 107, 'metric units', 'Metric units')]), now - 30 * H);
+  for (const [taskId, branch, n] of [['T1', 'unit-converter', 202], ['T2', 'metric-units', 203]]) {
+    operation(id, taskId, 'implement', { state: 'finished', at: now - 29 * H, outcome: finished({ result: 'implemented' }, 1.2) });
+    operation(id, taskId, 'verify', { state: 'finished', at: now - 28 * H, outcome: finished({ verdict: 'accepted', findings: [] }, 0.5) });
+    setTask(id, taskId, { state: 'done', attempts: 1, head_sha: sha(recipes, branch), verified_sha: sha(recipes, branch), pr_url: pull(recipes, n) });
+    store.journal(id, 'published', { task: taskId, url: pull(recipes, n) }, now - 27 * H);
+  }
+  setCampaign(id, { control: 'finished', status: 'ready', cost_usd: 3.4, runs_used: 4,
+    next_action: 'Release gate: review campaign deliveries under example/recipes\'s own merge and release policy.' });
+  lease(id, now - 27 * H);
 
   // example/notes-site: stopped work, owner decisions, failures, a supervisor fault, and results whose state is unknown.
   const notes = 'example/notes-site';
