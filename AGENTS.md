@@ -40,9 +40,32 @@ Agent work in this repository itself is bound by the rules below.
 
 These rules apply in every phase.
 
+## When to stop for the owner
+
+AIWorks should deliver an authorized outcome end to end without the owner. EP's [Owner Intervention](https://github.com/netbka/engineering-platform/blob/main/docs/OWNER_INTERVENTION.md) contract classifies blockers; this section applies it here. It follows Dyk's stopper rule ([Dyk `AGENTS.md` §4](https://github.com/netbka/Dyk/blob/main/AGENTS.md#4-autonomy---act-unless-material-judgment-is-required)).
+
+Ask the owner only for:
+
+- an owner-reserved matter ([Constitution §2](https://github.com/netbka/engineering-platform/blob/main/docs/CONSTITUTION.md#2-owner-role)). Raise it as one `owner-reserved` issue with the options, a recommendation and a default that keeps current behaviour. Keep doing other work meanwhile. Silence keeps the default;
+- a destructive or hard-to-reverse action that is not already authorized;
+- access that only the owner can grant, after the allowed alternatives have failed.
+
+These are not owner stops in AIWorks. Decide them under existing authority and continue:
+
+- merging a PR that passed the supervisor's independent verification of its exact head (owner decision 2026-10-12, [#17](https://github.com/netbka/aiworks/issues/17));
+- declaring campaigns for an outcome the owner already authorized. The declaration only turns that authorization into campaigns;
+- provider limits, such as a usage limit or rate limit with a reset. Wait or fall back, then resume;
+- one failing tool or provider. Retry, or use another allowed route;
+- file overlap with another task. Wait for it or sequence the work.
+
+Never add a new blocking gate, lock, required approval or check that depends on something only the owner can provide (keys, credentials, accounts, provisioning or a new owner step), unless the owner approved that gate. Ship such hardening in report-only mode and raise one `owner-reserved` issue. Existing accepted gates (tests, independent review, deploy rules) still apply.
+
+Prove a blocker before pausing: the exact failing step, what was tried, why you cannot resolve it, and who can ([Prove the blocker](https://github.com/netbka/engineering-platform/blob/main/docs/DELIVERY_PRACTICES.md#prove-the-blocker)). Every unjustified interruption of the owner gets an issue, so the routing gap gets fixed ([Unjustified interruptions](https://github.com/netbka/engineering-platform/blob/main/docs/DELIVERY_PRACTICES.md#unjustified-interruptions)).
+
 ## Changing the supervisor
 
 - A change to `src/supervisor` needs an independent review that approves the exact head commit before merge. A green check alone is not enough. A merged PR is not proof of review: look for the approval on that exact SHA.
+- The supervisor's independent verification of the exact head counts as that review (owner decision 2026-10-12, [#17](https://github.com/netbka/aiworks/issues/17)).
 - Merging does not change what runs. The live runtime changes only through the upgrade procedure below.
 
 ## Upgrading the live runtime
