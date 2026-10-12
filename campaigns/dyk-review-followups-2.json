@@ -1,0 +1,157 @@
+{
+  "version": 1,
+  "campaignId": "dyk-review-followups-2",
+  "purpose": "Close the last findings of the #181/#399 fix reviews: finish the rejected Sources PR #526, repair the auth SQL suite and sign-in edges, remove first-person wording, and the remaining Summary and bug-report UI items.",
+  "authorization": {
+    "version": 1,
+    "grantedBy": "owner (netbka), delegated to the owner's main session",
+    "grantedAt": "2026-10-11",
+    "reference": "https://github.com/netbka/Dyk/issues/181#issuecomment-6112282463",
+    "text": "On 2026-10-11 the owner instructed in the controlling session: \"do all. complete all work. merge to main. clean worktrees. tell me when all issues in PR's are resolved.\" and earlier delegated product decisions to this session (\"Review the product and guidlines. Make own decision\"). On 2026-10-11 the owner repeated: \"turn #181/#399 report findings into fixes ... report to the owner when all PR issues are resolved.\" This last round closes what the independent reviews left after the merged fix PRs Dyk #521 (record 6111930782), #522 (6111964770), #523 (6111992321), #525 (6112198273) and #527 (6112248084), and finishes the rejected PR #526 (review record 6112281615), including the pre-existing broken auth SQL test suite. Design choices the reports left open are decided in the controller fix plan posted on Dyk #181 (comment 6112282463) with the reason for each. No owner-reserved item is touched (manual task editing stays as is per the owner). Bounded repairs under Dyk AGENTS.md section 4; visible changes are represented in Storybook and independently reviewed before merge. PRs only, never merge or deploy; no production access. No limits; provider subscription limits and the no-progress guard are the stops. Providers Claude then Codex (owner: \"Use codex or claude agent\")."
+  },
+  "target": {
+    "tenantId": "netbka",
+    "projectId": "dyk",
+    "environment": "research",
+    "repository": "netbka/Dyk",
+    "baseBranch": "main",
+    "trackingIssue": 181
+  },
+  "executor": {
+    "kind": "cli-chain",
+    "providers": [
+      {
+        "kind": "claude-cli",
+        "model": "opus",
+        "permissionMode": "auto"
+      },
+      {
+        "kind": "codex-cli",
+        "model": "gpt-6-astra"
+      }
+    ],
+    "implementerTimeoutMinutes": 240,
+    "verifierTimeoutMinutes": 90
+  },
+  "constraints": [
+    "No production access, deployment, GitHub Actions, paid services, or Playwright and other browser-driven tests (Dyk owner rule). Local disposable SQL only through the repository runners (npm run test:sql / npm run journeys with a selected scope) when a task changes a route or persistence; never the production database.",
+    "Keep the affected Storybook stories in sync with every renderer change (Storybook is not post-hoc documentation). RU/EN/HE, true Hebrew RTL, 320/390 widths, 44px hit areas, no horizontal overflow, truthful states (T2).",
+    "Never read .env contents, credentials, private conversations or real user data; fixtures are synthetic.",
+    "A Storybook build or passing tests is not visual acceptance; each PR lists the story ids for independent visual review and states that the visual verdict is pending.",
+    "Do not remove worktrees, delete branches or link another checkout's node_modules. Do not add any new blocking gate, lock, required approval or check that depends on owner-provisioned keys, credentials or setup (Dyk AGENTS.md section 4).",
+    "Never weaken an existing test, guard or assertion; never add a capability outside the accepted feature map unless the task names the owner decision that adds it.",
+    "Open PR #500 (another session) rewrites short copy in about 20 files, including task-board-ui.js and screen-copy.js. Change copy in those files only where an item needs it, keep each edit minimal, and say in the PR which #500 files you touched.",
+    "Do not change any task editing behavior (date, title, action, summary, Done/Undo, person correction): the owner decided to keep it as is.",
+    "Every return parameter goes through the existing safe-return validation (uiRoutes.returnPath); never widen what it accepts.",
+    "Authentication, session and CSRF validation must not change; every return goes through the existing appReturnPath/returnPath validation, never widened."
+  ],
+  "tasks": [
+    {
+      "id": "FU2-SOURCES",
+      "issue": 181,
+      "title": "Sources: finish PR #526 (filter button fits, hint never clipped, one reset, truthful no-JS state)",
+      "outcome": "The Sources toolbar keeps Filters beside the field when no filter is active and wraps it below a full-width field when one is, the hint is never clipped, there is never a second reset, and the no-JS page shows no filter summary over unfiltered rows.",
+      "deliverable": "commit",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "Every numbered item is fixed or reported not applicable with measured evidence on current main; affected focused tests, npm run check:ui, audit-principles, npm run storybook:build plus the storybook node tests pass, with exact commands; the PR lists the story ids for independent visual review in RU/EN/HE at 320 and 390 and states that the visual verdict is pending."
+      ],
+      "references": [
+        "AGENTS.md",
+        "app/AGENTS.md",
+        "app/test/AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/DECISIONS.md",
+        "docs/STORYBOOK.md",
+        "docs/UI_COMPONENTS.md",
+        "storybook/review-manifest.json",
+        "app/src/chats-page-ui.js",
+        "app/public/source-filters.js",
+        "app/public/source-filters.css"
+      ],
+      "goal": "Read the rejection record on Dyk PR #526 (gh api repos/netbka/Dyk/issues/comments/6112281615 --jq .body) and items 1-5 of the controller plan (gh api repos/netbka/Dyk/issues/comments/6112282463 --jq .body). First merge the branch campaign/dyk-review-followups/FU-SOURCES (PR #526, head 074f60e8) into your task branch so its accepted work is kept, then fix: (1) M1 at RU 320 with no filter Filters stays beside the field, measured in the built Storybook with the app's thin scrollbar (toolbar 252px), with a margin; (2) M2 with a filter active the button wraps below a full-width field and the hint is never clipped in any locale at 320/390 (the arithmetic test counts the input padding); (3) a test fails if the JS-drawn empty state renders a second reset; (4) without JS no active-filter summary over rows the server did not filter (filter rows server-side, or show the summary only when rows match); (5) ctrl/middle-click on the reset link keeps the browser default. Say in the PR that it supersedes #526. Re-check each item on current main first and report any already fixed. Keep Storybook stories in sync; add focused tests per item, each proven by a deliberate mutation recorded in the PR."
+    },
+    {
+      "id": "FU2-AUTH",
+      "issue": 181,
+      "title": "Sign-in edges and the auth SQL suite",
+      "outcome": "The auth SQL suite runs green on a disposable database, sign-in failures show no raw codes, and retries keep re-auth, next and language consistent, with no change to authentication logic.",
+      "deliverable": "commit",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "Every numbered item is fixed or reported not applicable with measured evidence on current main; affected focused tests, npm run check:ui, audit-principles, npm run storybook:build plus the storybook node tests pass, with exact commands; the PR lists the story ids for independent visual review in RU/EN/HE at 320 and 390 and states that the visual verdict is pending."
+      ],
+      "references": [
+        "AGENTS.md",
+        "app/AGENTS.md",
+        "app/test/AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/DECISIONS.md",
+        "docs/STORYBOOK.md",
+        "docs/UI_COMPONENTS.md",
+        "storybook/review-manifest.json",
+        "app/src/auth-pages.js",
+        "app/src/security.js",
+        "app/scripts/test-auth-sql.js"
+      ],
+      "goal": "Read the #521 integration record (gh api repos/netbka/Dyk/issues/comments/6111930782 --jq .body) and items 6-11 of the controller plan (gh api repos/netbka/Dyk/issues/comments/6112282463 --jq .body). Fix without changing authentication, session or CSRF validation: (6) app/scripts/test-auth-sql.js fails at check 5 on main because /app now sends a new user to /app/setup: update the expectation to the product truth and support DYK_DISPOSABLE_SQL=1 like the other SQL suites; run it to the end and paste the result; (7) sign-in-failed shows no raw status code; (8) a CSRF failure on the re-auth email form offers Try again back to re-auth; (9) the validated sign-in next survives a retry; (10) a garbage dyk_lang cookie gives one language for page and Try again (one resolver); (11) focus moves to Retry when the Mini App failure dialog appears. Re-check each item on current main first and report any already fixed. Keep Storybook stories in sync; add focused tests per item, each proven by a deliberate mutation recorded in the PR."
+    },
+    {
+      "id": "FU2-COPY",
+      "issue": 181,
+      "title": "Impersonal wording, natural punctuation, same-name labels, story coverage",
+      "outcome": "Routine status and helper text never speaks as I or we, accessible names read naturally, same-name people are distinguishable everywhere, and every Setup stage has a story.",
+      "deliverable": "commit",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "Every numbered item is fixed or reported not applicable with measured evidence on current main; affected focused tests, npm run check:ui, audit-principles, npm run storybook:build plus the storybook node tests pass, with exact commands; the PR lists the story ids for independent visual review in RU/EN/HE at 320 and 390 and states that the visual verdict is pending."
+      ],
+      "references": [
+        "AGENTS.md",
+        "app/AGENTS.md",
+        "app/test/AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/DECISIONS.md",
+        "docs/STORYBOOK.md",
+        "docs/UI_COMPONENTS.md",
+        "storybook/review-manifest.json",
+        "app/src/people-copy.js",
+        "app/src/assistant-data.js"
+      ],
+      "goal": "Read items 12-15 of the controller plan (gh api repos/netbka/Dyk/issues/comments/6112282463 --jq .body) and the #523, #525 and #526 records (gh api repos/netbka/Dyk/issues/comments/6111992321, 6112198273 and 6112281615 --jq .body). Decision (as for Setup and Summary): routine status/helper text is impersonal in RU/EN/HE; the owner's own voice in the bug-report sheet stays. Fix: (12) first person / \"we\" in the Telegram unavailable view (EN/HE), the ConnectionCard, the snooze reply, the assistant-data.js empty and retry lines (also the Telegram reply heading via outbox.js) and RU Tasks \"Сохраняю…\"; (13) accessible names without \"?:\" (\"Why?: …\") and no RU double colon, natural RU \"В работе 7 чатов…\"/\"Поиск по…\" and HE \"לא נמצא על כך דבר…\"; (14) Review per-person disclosures carry the context label for same-name people; (15) a story for the stageStarting (\"Подготовка\") state and 44px design-chats \"+\" buttons. Re-check each item on current main first and report any already fixed. Keep Storybook stories in sync; add focused tests per item, each proven by a deliberate mutation recorded in the PR."
+    },
+    {
+      "id": "FU2-UI",
+      "issue": 181,
+      "title": "Summary and bug-report UI: readable Sending, no raw fetch errors, history room, bidi composer, in-flight send",
+      "outcome": "Sending is readable, no raw network error ever shows, history keeps room on short screens, the Summary composer reads mixed-direction drafts correctly, and a closed bug-report sheet never shows a stale state.",
+      "deliverable": "commit",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "Every numbered item is fixed or reported not applicable with measured evidence on current main; affected focused tests, npm run check:ui, audit-principles, npm run storybook:build plus the storybook node tests pass, with exact commands; the PR lists the story ids for independent visual review in RU/EN/HE at 320 and 390 and states that the visual verdict is pending."
+      ],
+      "references": [
+        "AGENTS.md",
+        "app/AGENTS.md",
+        "app/test/AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/DECISIONS.md",
+        "docs/STORYBOOK.md",
+        "docs/UI_COMPONENTS.md",
+        "storybook/review-manifest.json",
+        "app/public/assistant.js",
+        "app/public/parent-ui.js",
+        "app/src/feedback-ui.js"
+      ],
+      "goal": "Read items 16-20 of the controller plan (gh api repos/netbka/Dyk/issues/comments/6112282463 --jq .body) and the #522 and #523 records (gh api repos/netbka/Dyk/issues/comments/6111964770 and 6111992321 --jq .body). Fix: (16) the visible \"Sending…\" label is readable (at least 4.5:1), not just disabled opacity; (17) a failed fetch while the browser says online never shows raw \"Failed to fetch\", only a plain sentence; (18) on 390-wide short screens (390x664) history keeps at least half the height with the 2x2 dock, or the dock compacts; (19) the Summary composer inherits the page direction and uses unicode-bidi:plaintext like the bug report, so an English draft reads correctly in HE stories; (20) a send still in flight when the bug-report sheet closes leaves no stale state or late message on the next open. Re-check each item on current main first and report any already fixed. Keep Storybook stories in sync; add focused tests per item, each proven by a deliberate mutation recorded in the PR."
+    }
+  ]
+}

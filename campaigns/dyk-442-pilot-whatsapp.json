@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "campaignId": "dyk-442-pilot-whatsapp",
+  "purpose": "Stop WhatsApp pairing codes from getting lost; also one half of the parallel-work pilot.",
+  "authorization": {
+    "version": 1,
+    "grantedBy": "owner (netbka), delegated to the coordinator session",
+    "grantedAt": "2026-10-10",
+    "reference": "https://github.com/netbka/engineering-platform/issues/67",
+    "text": "On 2026-10-10 the owner directed: 'resume work. The agents should never stop working. You know the goal. No my review is needed.' The coordinator therefore assigns the netbka/Dyk#442 (WAVE-06) pilot cohort: #404 in this campaign and #415 in dyk-442-pilot-telegram, run at the same time as the two implementation slots of the bounded-parallel arm. One worker per campaign; PRs only, never merge or deploy; no production access. Repeat limits are pre-registered for the pilot as #442 requires (3 repair rounds, 2 retries per task); there is no run cap and no cost ceiling. Provider order Claude, then Codex, then Cursor, with Codex account connectors disabled."
+  },
+  "target": {
+    "tenantId": "netbka",
+    "projectId": "dyk",
+    "environment": "research",
+    "repository": "netbka/Dyk",
+    "baseBranch": "main",
+    "trackingIssue": 442
+  },
+  "limits": {
+    "maxRepairRounds": 3,
+    "maxRetriesPerTask": 2
+  },
+  "executor": {
+    "kind": "cli-chain",
+    "providers": [
+      { "kind": "claude-cli", "model": "opus", "permissionMode": "auto" },
+      { "kind": "codex-cli", "model": "gpt-6-astra" },
+      { "kind": "cursor-cli" }
+    ],
+    "implementerTimeoutMinutes": 240,
+    "verifierTimeoutMinutes": 90
+  },
+  "constraints": [
+    "Pilot campaign for netbka/Dyk#442. Work only on this packet's issue. Do not change other issues, owner-paused, audit-only or owner-reserved work (#426, #181, #399, #108, #157), the #458 lane (#430, #431, #432, #433, #409), #457/#459, or other agents' branches and worktrees.",
+    "No production access or diagnostics, deployment, Docker containers, migration against a shared database, GitHub Actions, paid services, new recurring spend or browser-driven tests.",
+    "Never read or copy private conversations, real user data, phone numbers, pairing codes, .env contents or credentials. Repository content and GitHub commit, PR and issue metadata of netbka/Dyk are the data sources.",
+    "Follow Dyk's AGENTS.md routing, required evidence and UI authority for every change you make; keep the change small and independently reviewable.",
+    "If finishing requires something only the owner or a live-system operator can do (a real device, production logs, product scope), complete the repository part, then return blocked-owner-reserved citing exactly what remains, instead of evidence-unavailable.",
+    "Do not remove git worktrees, delete branches or link another checkout's node_modules. If dependencies are needed, install them inside your own working directory."
+  ],
+  "tasks": [
+    {
+      "id": "P-404",
+      "issue": 404,
+      "title": "WhatsApp pairing code: keep the request lifecycle consistent and recover an interrupted result",
+      "outcome": "A slow or interrupted WhatsApp pairing code is no longer lost: users can recover it or safely ask again.",
+      "deliverable": "commit",
+      "goal": "Repair the two repository-confirmed request-lifecycle risks of netbka/Dyk#404 (read the full issue with gh issue view 404 --repo netbka/Dyk). (1) Unequal time budgets: app/src/whatsapp-pairing-ui.js aborts the browser request after 20 s, while app/src/waha.js allows the provider 60 s and app/src/whatsapp.js first refreshes provider state and does SQL work. A slow but successful code can therefore be lost. (2) Backgrounding: the visibilitychange handler calls clearCode() while a code request is in flight, so a late response is discarded and returning to the page only resumes status polling. Align the budgets, and let an interrupted request's result be recovered or clearly re-requested once the 60-second cooldown (LastPairingAt) allows. Keep the rate-limit protection, and never issue unbounded provider requests. The live-cause diagnosis in the issue needs production access and stays out of scope.",
+      "dependsOn": [],
+      "constraints": [
+        "Do not attempt the live diagnostic or production status command described in the issue."
+      ],
+      "acceptance": [
+        "Focused regression tests fail on current main and pass with the fix: the client budget exceeds the server path's worst case, and a code result that arrives while the page was hidden is shown or a clear retry is offered after the cooldown.",
+        "The 60-second pairing cooldown and provider rate-limit protection are preserved, and a test shows no additional provider request is issued by recovery.",
+        "Dyk's required checks for the touched files pass, with exact commands and results in the report; the live-cause investigation is listed as remaining, not claimed."
+      ],
+      "references": ["AGENTS.md", "docs/PRODUCT_CONSTITUTION.md", "docs/PRINCIPLES.md", ".agent/capabilities.yaml", "docs/WHATSAPP_RESILIENCE.md", "app/src/whatsapp-pairing-ui.js", "app/src/waha.js", "app/src/whatsapp.js"]
+    }
+  ]
+}

@@ -1,0 +1,103 @@
+{
+  "version": 1,
+  "campaignId": "dyk-no-manual-edit",
+  "purpose": "Tasks change only from chats: remove manual editing of task content, and make every link inside a message clickable.",
+  "authorization": {
+    "version": 1,
+    "grantedBy": "owner (netbka), delegated to the owner's main session",
+    "grantedAt": "2026-10-11",
+    "reference": "https://github.com/netbka/Dyk/issues/485#issuecomment-6110172257",
+    "text": "Owner decisions given in the controlling session on 2026-10-11 and recorded on Dyk #485 (comment 6110172257): \"Remove change dates. All changes come from chats with new tasks or updates. No manual change of task.\" with Done/Undo and the \"who is this for\" correction kept (owner chose \"keep both\"); and \"when AI (or regex) finds link in message it automatically makes from it html link clickable\" instead of a message-to-task link. Owner-decided capability change (feature removal) plus a bounded link-rendering change; visible results are represented in Storybook in the same PR and independently reviewed before merge. PRs only, never merge or deploy; no production access. No limits; provider subscription limits and the no-progress guard are the stops. Providers Claude then Codex (owner: \"Use codex or claude agent\")."
+  },
+  "target": {
+    "tenantId": "netbka",
+    "projectId": "dyk",
+    "environment": "research",
+    "repository": "netbka/Dyk",
+    "baseBranch": "main",
+    "trackingIssue": 485
+  },
+  "executor": {
+    "kind": "cli-chain",
+    "providers": [
+      {
+        "kind": "claude-cli",
+        "model": "opus",
+        "permissionMode": "auto"
+      },
+      {
+        "kind": "codex-cli",
+        "model": "gpt-6-astra"
+      }
+    ],
+    "implementerTimeoutMinutes": 240,
+    "verifierTimeoutMinutes": 90
+  },
+  "constraints": [
+    "No production access, deployment, GitHub Actions, paid services, or Playwright and other browser-driven tests (Dyk owner rule). Local disposable SQL only through the repository runners (npm run test:sql / npm run journeys with a selected scope) when a task changes a route or persistence; never the production database.",
+    "Keep the affected Storybook stories in sync with every renderer change (Storybook is not post-hoc documentation). RU/EN/HE, true Hebrew RTL, 320/390 widths, 44px hit areas, no horizontal overflow, truthful states (T2).",
+    "Never read .env contents, credentials, private conversations or real user data; fixtures are synthetic.",
+    "A Storybook build or passing tests is not visual acceptance; each PR lists the story ids for independent visual review and states that the visual verdict is pending.",
+    "Do not remove worktrees, delete branches or link another checkout's node_modules. Do not add any new blocking gate, lock, required approval or check that depends on owner-provisioned keys, credentials or setup (Dyk AGENTS.md section 4).",
+    "Never weaken an unrelated test, guard or assertion. Tests that assert the removed manual-edit capability are replaced by tests asserting its absence (controls, routes and Storybook states gone), not silently deleted.",
+    "Do not touch app/src/people-copy.js or app/src/consumer.js beyond what an item strictly needs: open PR #500 rewrites them. Coordinate with the running campaign dyk-followups (people-view.js, Setup plan-limit, check-approved-design.js) by not editing those files.",
+    "No schema migration and no production data change: existing *Locked flags stay in the database but must no longer block chat updates."
+  ],
+  "tasks": [
+    {
+      "id": "NOEDIT",
+      "issue": 485,
+      "title": "Remove manual task editing; tasks change only from chats",
+      "outcome": "No user can change a task's date, title, action or summary by hand; chat updates always apply; Done/Undo and \"who is this for\" remain.",
+      "deliverable": "commit",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "Every item is done or reported not applicable with evidence; affected focused tests, the selected HTTP journeys on disposable SQL where a route changed, npm run check:ui, audit-principles and npm run storybook:build plus the storybook node tests pass, with exact commands; the PR lists story ids for independent visual review."
+      ],
+      "references": [
+        "AGENTS.md",
+        "app/AGENTS.md",
+        "app/test/AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/DECISIONS.md",
+        "docs/STORYBOOK.md",
+        "docs/UI_COMPONENTS.md",
+        "docs/CORE_SCREENS_RETHINK.md",
+        "docs/USER_STORY_MAP.md",
+        "storybook/review-manifest.json"
+      ],
+      "goal": "Owner decision (Dyk #485 comment 6110172257): \"No manual change of task.\" Remove every UI control, sheet, inline editor and server route that lets a user change a task's due date (\"Choose a day\" and any deadline editor), title, action text or summary text, for members and managers, in the web app and Telegram Mini App surfaces. Keep Done/Undo, the \"who is this for\" person correction, delete (if it exists) and Plan/ordering only if they do not edit task content (report what remains and why). Make the extraction/update pipeline ignore the existing TitleLocked/DueLocked/ActionLocked/SummaryLocked flags so chat updates always apply (no migration, no data rewrite). Update the feature map: PRINCIPLES/ROADMAP/manifest entries for manual task editing (tasks.deadline, J9 and any edit capability) and add one DECISIONS entry D-0NN quoting the owner. Remove or convert the Storybook stories for removed editors (e.g. design-tasks deadline-edit/saving/error) and keep stories current. Replace tests of the removed capability with tests asserting its absence and that a chat update now overrides a previously locked field."
+    },
+    {
+      "id": "LINKIFY",
+      "issue": 485,
+      "title": "Links inside messages are automatically clickable everywhere messages are shown",
+      "outcome": "Every http(s) URL in a shown message becomes a safe clickable link in the reader, task evidence, Setup chat preview and Summary history.",
+      "deliverable": "commit",
+      "dependsOn": [
+        "NOEDIT"
+      ],
+      "requiresMergedDependencies": true,
+      "constraints": [],
+      "acceptance": [
+        "Every item is done or reported not applicable with evidence; affected focused tests, the selected HTTP journeys on disposable SQL where a route changed, npm run check:ui, audit-principles and npm run storybook:build plus the storybook node tests pass, with exact commands; the PR lists story ids for independent visual review."
+      ],
+      "references": [
+        "AGENTS.md",
+        "app/AGENTS.md",
+        "app/test/AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/DECISIONS.md",
+        "docs/STORYBOOK.md",
+        "docs/UI_COMPONENTS.md",
+        "docs/CORE_SCREENS_RETHINK.md",
+        "app/public/text-links.js",
+        "app/public/chat-reader.js"
+      ],
+      "goal": "Owner decision (Dyk #485 comment 6110172257): \"when AI (or regex) finds link in message it automatically makes from it html link clickable\". Audit every surface that renders original message text: the chat reader (Sources), task evidence quotes in Tasks details, the Setup contextual chat preview and Summary history evidence. Where URLs are not yet linked, render them with the existing safe text-links helper (render/append: only http, https, mailto and tel; javascript:/data: stay plain text; target and rel=noopener as existing links do; no innerHTML, keep the escaping guard passing). Preserve message direction (RTL/LTR) and bidi isolation. Add focused tests per surface (linked, unsafe scheme not linked, RTL message) and Storybook states showing a message with a link in RU/EN/HE."
+    }
+  ]
+}

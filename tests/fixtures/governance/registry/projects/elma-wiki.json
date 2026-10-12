@@ -1,0 +1,116 @@
+{
+  "id": "elma-wiki",
+  "name": "ELMA Wiki",
+  "repository": {
+    "github": "netbka/elma_wiki"
+  },
+  "lifecycle": "active",
+  "capabilities": [
+    "ui",
+    "storybook",
+    "api",
+    "auth",
+    "email",
+    "docker"
+  ],
+  "environments": [
+    "local",
+    "prod"
+  ],
+  "resources": {
+    "compute": [
+      {
+        "name": "Wiki production container host (CT)",
+        "kind": "container-host",
+        "status": "observed",
+        "environment": "prod",
+        "notes": "Container elma-wiki under /opt/elma-wiki behind Caddy with a local CA; updated from a clean main checkout by npm run prod:update (deploy/README.md)."
+      }
+    ],
+    "databases": [],
+    "providers": [
+      {
+        "name": "VK Teams bot",
+        "kind": "messaging",
+        "status": "observed",
+        "notes": "Login bot polling and request bot (VK_* variable names in .env.example)."
+      },
+      {
+        "name": "SMTP/IMAP mailbox",
+        "kind": "email",
+        "status": "observed"
+      },
+      {
+        "name": "ELMA365 configuration servers",
+        "kind": "external-api",
+        "status": "observed",
+        "notes": "Source and Target connections for configuration comparison and delivery (docs/contracts/source-target-connections.md)."
+      },
+      {
+        "name": "GitHub bug-report repository",
+        "kind": "external-api",
+        "status": "observed",
+        "notes": "BUG_REPORT_GITHUB_REPOSITORY / BUG_REPORT_GITHUB_TOKEN variable names."
+      }
+    ],
+    "domains": [],
+    "backups": [
+      {
+        "name": "Pre-rollout private backup on the CT",
+        "kind": "host-backup",
+        "status": "observed",
+        "environment": "prod",
+        "notes": "Writes paused for a consistent backup before each rollout; restore is manual. Not recovery evidence."
+      },
+      {
+        "name": "Off-host backup",
+        "kind": "object-storage",
+        "status": "unknown"
+      }
+    ]
+  },
+  "secrets": {
+    "current": "Operator workstation .env (PROD_* SSH connection settings including a shared SSH/sudo password, VK, SMTP and GitHub tokens) and the runtime environment on the CT.",
+    "target": "Infisical-held SSH key for production updates, no shared sudo password (owner decision netbka/engineering-platform#82); other machine secrets in Infisical.",
+    "notes": "Variable names only. Do not copy values into the registry."
+  },
+  "notes": [
+    "Product: compare and merge parallel ELMA configuration changes into one installable release for an explicit target (docs/SOLUTION_FIRST_PRODUCT_PLAN.md).",
+    "Supervisor campaigns elma-wiki-planning and elma-wiki-execution (campaigns/ in this repository) target this project; they run on a second owner PC.",
+    "The repository adopts Dyk mechanics at pinned commits; it does not yet route agents to the portfolio Constitution."
+  ],
+  "governance": {
+    "observedAt": "netbka/elma_wiki@6324ae36886fa2e6942b0a2f35ebcb4bcf9b66b5",
+    "parentLink": "absent",
+    "authorities": [
+      { "role": "agent-contract", "path": "AGENTS.md" },
+      { "role": "product-constitution", "path": "docs/SOLUTION_FIRST_PRODUCT_PLAN.md" },
+      { "role": "decisions", "path": "docs/SOLUTION_FIRST_CONTRADICTIONS.md" },
+      { "role": "router", "path": ".agent/capabilities.yaml" },
+      { "role": "runtime-state", "path": "docs/STATE.md" },
+      { "role": "experience-review", "path": "docs/EXPERIENCE_REVIEW.md" },
+      { "role": "ui-authority", "path": "storybook/review-manifest.json" }
+    ],
+    "exceptions": [
+      {
+        "id": "prod-ssh-password",
+        "rule": "constitution#7",
+        "source": "deploy/README.md",
+        "approval": "https://github.com/netbka/engineering-platform/issues/82",
+        "reviewBy": "2026-11-30",
+        "summary": "Production updates read a shared SSH/sudo password from a local .env instead of an Infisical-held key. Review date proposed."
+      }
+    ],
+    "gaps": [
+      {
+        "id": "prod-root-credential",
+        "rule": "baseline:credential-boundaries",
+        "source": "deploy/README.md",
+        "request": "https://github.com/netbka/engineering-platform/issues/82",
+        "reviewBy": "2026-11-30",
+        "summary": "Shared sudo password in a local .env is a root-level credential agents can reach; no exception allowed. Asked: Infisical-held SSH key. Review date proposed."
+      }
+    ],
+    "independentVerificationGate": "not-enabled"
+  }
+}

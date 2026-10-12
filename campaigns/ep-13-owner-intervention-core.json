@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "campaignId": "ep-13-owner-intervention-core",
+  "purpose": "The supervisor notices work blocked on the owner, records it once, rechecks it and resumes after the fix.",
+  "authorization": {
+    "version": 2,
+    "grantedBy": "owner (netbka), delegated to the owner's main session",
+    "grantedAt": "2026-10-10",
+    "reference": "https://github.com/netbka/engineering-platform/issues/67",
+    "text": "On 2026-10-10 the owner directed: 'resume work. The agents should never stop working. You know the goal. No my review is needed.' This campaign takes netbka/engineering-platform#13 only: the owner-intervention core (blocker fingerprint, dedup, bounded recheck, resume of dependent tasks) on the existing supervisor store, with a fake transport only. No Telegram sending, bot, credentials or live provider. The live supervisor, its data directory and deployed runtime are never touched. One worker; a PR only, never merge or deploy. No run cap or cost ceiling; provider subscription limits and the no-progress guard are the stops. Provider order Claude, then Codex, then Cursor."
+  },
+  "target": {
+    "tenantId": "netbka",
+    "projectId": "engineering-platform",
+    "environment": "research",
+    "repository": "netbka/engineering-platform",
+    "baseBranch": "main",
+    "trackingIssue": 13
+  },
+  "executor": {
+    "kind": "cli-chain",
+    "providers": [
+      {
+        "kind": "claude-cli",
+        "model": "opus",
+        "permissionMode": "auto"
+      },
+      {
+        "kind": "codex-cli",
+        "model": "gpt-6-astra"
+      },
+      {
+        "kind": "cursor-cli"
+      }
+    ],
+    "implementerTimeoutMinutes": 240,
+    "verifierTimeoutMinutes": 120
+  },
+  "constraints": [
+    "Campaign for netbka/engineering-platform#13 only, authorized 2026-10-10. Do not change other issues' work, other agents' branches or worktrees, campaigns/*.json, registry, policy files, src/control-plane/** or the #76 package files.",
+    "Your assigned worktree is the only place you change files. Never touch anything else under D:/Git/engineering-platform/.local or the main checkout, and never start, stop or restart the supervisor, its scheduled tasks or the dashboard.",
+    "No production access, deployment, GitHub Actions changes, paid services, Telegram API calls or new recurring spend. Never read or copy .env contents or credentials.",
+    "Follow AGENTS.md: run npm install once in your worktree, then npm run check after changes.",
+    "Never weaken an assertion, delete or skip a test, or broaden a timeout to make the gate pass.",
+    "Make every claim reproducible: exact commands, pinned SHAs, pass/fail tallies, and remaining gaps listed instead of claiming completion."
+  ],
+  "tasks": [
+    {
+      "id": "CORE-13",
+      "issue": 13,
+      "title": "Owner-intervention core: blocker fingerprint, dedup, recheck and resume",
+      "outcome": "Each owner blocker is recorded once and rechecked; work resumes after the fix. Notices are drafted, not sent.",
+      "deliverable": "commit",
+      "goal": "Read #13 with all comments and docs/OWNER_INTERVENTION.md. Step 0: check on current main that the prerequisites #13 names exist (GOV-04/05 policy IDs, the #52 supervisor store, B0-B5 blocker handling in src/supervisor/controller.mjs). If a real prerequisite is missing, stop with blocked-owner-reserved and evidence; build no parallel state model. Otherwise extend the existing store and controller with a stable blocker fingerprint that holds no secret values, dedup, a category-bounded recheck schedule, and resume of dependent tasks only after recheck evidence passes (owner acknowledgement alone never resumes). Add a notification outbox recording what would be sent for B2-B5 per OWNER_INTERVENTION, with a transport interface and only a fake/no-op implementation, disabled by default.",
+      "dependsOn": [],
+      "constraints": [
+        "Change only src/supervisor/**, tests/** and docs/SUPERVISOR.md (plus docs/OWNER_INTERVENTION.md if it needs an implementation-status note). Existing B3/B4 behaviour stays the same with the outbox disabled.",
+        "Store changes must be additive and migrate older stores idempotently; state recheck and resume semantics against crash or restart."
+      ],
+      "acceptance": [
+        "The step-0 prerequisite check is reported with file and line evidence.",
+        "The same blocker raised repeatedly produces one fingerprint and one outbox entry; a changed cause produces a new one; no fingerprint or outbox field holds a secret value (tested).",
+        "Dependent tasks resume only after recheck evidence passes, survive a process restart without a duplicate dispatch, and B0/B1 never create an owner notification (tested).",
+        "With the feature disabled, existing supervisor tests pass unchanged; npm run check passes twice in a row with tallies in the report.",
+        "No network transport, Telegram code path or credential read exists; the report lists what owner-gated enablement still needs."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/OWNER_INTERVENTION.md",
+        "docs/SUPERVISOR.md",
+        "docs/CONTINUATION.md",
+        "src/supervisor/controller.mjs",
+        "src/supervisor/store.mjs",
+        "src/supervisor/api.mjs",
+        "tests/supervisor/helpers.mjs"
+      ]
+    }
+  ]
+}

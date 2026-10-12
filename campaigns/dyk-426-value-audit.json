@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "campaignId": "dyk-426-value-audit",
+  "purpose": "Find which Dyk features bring little user value and propose what to keep, simplify, hide or remove.",
+  "authorization": {
+    "version": 1,
+    "grantedBy": "owner (netbka), delegated to the owner's main session",
+    "grantedAt": "2026-10-11",
+    "reference": "https://github.com/netbka/Dyk/issues/426",
+    "text": "The owner opened netbka/Dyk#426 on 2026-10-08 as an audit-only task and, asked on 2026-10-11 whether to run it, answered '426 - yes' in the controlling session. Report-only: no code, branch, PR, label or issue-state change; the supervisor posts the verified report. No production, Docker, SQL, live providers or browsers. One worker; never merge or deploy. No limits (owner removed them); provider subscription limits and the no-progress guard are the stops. Provider order Claude, then Codex, then Cursor."
+  },
+  "target": {
+    "tenantId": "netbka",
+    "projectId": "dyk",
+    "environment": "research",
+    "repository": "netbka/Dyk",
+    "baseBranch": "main",
+    "trackingIssue": 426
+  },
+  "executor": {
+    "kind": "cli-chain",
+    "providers": [
+      {
+        "kind": "claude-cli",
+        "model": "opus",
+        "permissionMode": "auto"
+      },
+      {
+        "kind": "codex-cli",
+        "model": "gpt-6-astra"
+      },
+      {
+        "kind": "cursor-cli"
+      }
+    ],
+    "implementerTimeoutMinutes": 240,
+    "verifierTimeoutMinutes": 90
+  },
+  "constraints": [
+    "Report-only campaign for netbka/Dyk#426. Do not change files, branches, PRs, labels or issue state; do not comment yourself. The supervisor posts the verified report. The issue's explicit no-edit boundary overrides the bounded-repair handoff.",
+    "Use read-only gh commands and the repository at current main (code, Production Storybook stories as source, docs). No production access, Docker, SQL Server, live providers, browser tests, paid services or deploys.",
+    "Never read private conversations, real user data, .env contents or credentials.",
+    "Distinguish measured usage, observed behavior and inference; absence of analytics is not proof of no value. Cite file paths, story ids, principle IDs, issues and PRs for every claim. Do not restart the owner-stopped #181/#399 review; reuse its evidence and the #485 review findings and state their limits."
+  ],
+  "tasks": [
+    {
+      "id": "AUDIT-426",
+      "issue": 426,
+      "title": "Global user-value audit of Dyk's existing capabilities",
+      "outcome": "A ranked table of Dyk features: keep, simplify, disclose later or candidate for removal, with the evidence and the risk of each.",
+      "deliverable": "report",
+      "goal": "Deliver exactly what netbka/Dyk#426 asks (read it with gh issue view 426 --repo netbka/Dyk). Review the current reachable product and accepted feature map against docs/PRODUCT_CONSTITUTION.md and docs/PRINCIPLES.md, especially the real-life jobs, reduced cognitive work, U1/U2/U3/U5/U7/U13 and truthful evidence/correction. Cover Setup/Master overview, Tasks and task details, Sources/Reader, AI/Summary, Profile and supporting flows (sign-in, billing pages, bug report, language). For each feature or surface give: persona/situation and user job; concrete benefit and evidence; action/decision/maintenance cost; relevant principle; recommendation (keep / simplify / disclose later / candidate for removal); whether it changes a capability or only its presentation; likely loss or risk; confidence and missing evidence. Rank only supported opportunities by expected user benefit and cost, include counterarguments and an explicit keep rationale where appropriate, and preserve infrequent but necessary safety, consent, accessibility, recovery, provenance and correction functions. Keeping every feature is an acceptable conclusion. Reuse the blind-intent findings in netbka/Dyk#485 as evidence where relevant.",
+      "dependsOn": [],
+      "acceptance": [
+        "The report has the inventory table with every column #426 requires, covering every listed surface, and a ranked shortlist of supported opportunities.",
+        "Every claim cites a file, story id, principle, issue or PR; measured, observed and inferred evidence are labelled; no removal quota or assumed redesign.",
+        "The report makes no product, code or contract change and states that implementation needs a separate owner assignment."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/PRODUCT_RETHINK.md",
+        "docs/CORE_SCREENS_RETHINK.md",
+        "docs/USER_STORY_MAP.md",
+        "docs/ROADMAP.md",
+        "docs/STATE.md",
+        "storybook/review-manifest.json"
+      ]
+    }
+  ]
+}

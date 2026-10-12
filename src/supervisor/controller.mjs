@@ -1,0 +1,1268 @@
+// AIWorks campaign controller. Deterministic code owns leases, timers, dispatch,
+// reconciliation and publication; models are called only as bounded workers/verifiers.
+// Idle ticks do not call models. Explicit integration gates refresh read-only Git refs at bounded intervals.
+import { spawn } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { acceptsLease, packetDigest, planContext, validatePacket } from '../../scripts/lib/worker-context.mjs';
+import * as executors from './adapters/executors.mjs';
+import { researchContext } from './adapters/research-context.mjs';
+import * as gitA from './adapters/git.mjs';
+import * as github from './adapters/github.mjs';
+import { authorityDigest, campaignLimits, executorOrder, projectGovernance } from './campaign.mjs';
+import { campaignBudget } from './api.mjs';
+import { coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
+import { stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
+import { pendingInstructions, attachInstructions } from './instructions.mjs';
+import { ConflictError, FencedError } from './store.mjs';
+import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const POLICY = JSON.parse(readFileSync(resolve(here, '../../registry/worker-context-policy.json'), 'utf8'));
+const RUNNER = join(here, 'runner.mjs');
+// A task whose fresh sessions keep returning evidence-unavailable is not making progress. After this many
+// such results it stops with a B3 owner decision, whatever the retry limit (engineering-platform-archive#74): a no-progress guard, not
+// a spend cap. With the 2/10/30-minute backoff the fourth result comes at least ~42 minutes after the first,
+// so a short outage does not stop work. A resolved or accepted result, or a recheck naming the task, resets
+// the count.
+export const NO_PROGRESS_LIMIT = 4;
+// GitHub rejects issue/PR bodies and comments over 65,536 characters.
+const BODY_LIMIT = 65536;
+const RETRYABLE = new Set(['invalid-result', 'exit-without-result', 'timeout', 'spawn-failed', 'error', 'evidence-unavailable', 'lost']);
+export const dispatchBudget = (executor, role, prompt) => ({
+  inputTokens: Math.ceil(Buffer.byteLength(prompt) / 3) + (executor.researchOnly ? 20_000 : 40_000),
+  outputReserveTokens: executor.researchOnly && role === 'verification' ? 16_000 : 32_000,
+  safetyTokens: 16_000, windowTokens: 200_000,
+});
+const STATUS_FOR = { B2: 'blocked-owner-action', B3: 'blocked-owner-decision', B4: 'blocked-external' };
+const RUNNABLE = ['pending', 'implemented', 'verified'];
+// aiworks#1: dependencies whose recheck is a deterministic in-process probe. Any other dependency is rechecked by one
+// bounded probe run of a held parent task, which only an owner or recovery event (never a timer) starts.
+const DETERMINISTIC_PROBES = new Set(['budget', 'process-ownership']);
+const RECHECK_PROCEDURE = {
+  auth: 'Run the held task once with the same executor; a structured result proves the login works.',
+  executors: 'Select an eligible executor and run the held task once; a structured result proves availability.',
+  'research-context': 'Rebuild the read-only research context and run the held task once.',
+  'publication-size': 'Publish the held task again; a successful publication is the evidence.',
+  budget: 'Evaluate the campaign budget from durable state; resume when it is no longer exhausted.',
+  'process-ownership': 'Reconcile the recorded run; resume when the operation is no longer open.',
+  'owner-decision': 'Record the decision on the task issue, then run: supervisor recheck <campaign> --task <task>.',
+};
+const RECOVERY_TRIED = {
+  auth: 'the executor run failed authentication; no credential was read or refreshed by the supervisor',
+  executors: 'every authorized executor in the declared order was tried or is waiting',
+  'process-ownership': 'containment stop of the recorded run',
+  'owner-decision': 'none: the worker reported an owner-reserved decision',
+};
+const MAX_NOTIFY_ATTEMPTS = 5;
+// A task whose run raised the blocker resumes in the phase that run started from.
+const RESUME_PHASE = { implementing: 'pending', verifying: 'implemented' };
+// A provider usage limit belongs to the executor account, not to one task: the latest pending reset holds every dispatch.
+const quotaHoldUntil = (tasks, now) => Math.max(0, ...tasks
+  .filter((task) => task.retry_at > now && String(task.last_error ?? '').startsWith('quota:')).map((task) => task.retry_at));
+
+export const DEFAULTS = {
+  tickMs: 5_000, leaseMs: 90_000, pollMs: 30_000, heartbeatMs: 10_000, staleMs: 90_000,
+  startGraceMs: 30_000, dispatchWaitMs: 15_000, publishRetryMs: 5 * 60_000, outboxRetryMs: 60_000,
+  retryBackoffMs: [2 * 60_000, 10 * 60_000, 30 * 60_000],
+  integrationPollMs: 60_000,
+};
+
+const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+const runLease = (op, state, sessionId = op.session_id) => ({
+  tenantId: op.packet.tenantId, projectId: op.packet.projectId, environment: op.packet.environment,
+  taskId: op.packet.taskId, stageId: op.packet.stageId, runId: op.packet.runId, sessionId,
+  revision: op.packet.revision, authorityDigest: op.packet.authorityDigest,
+  generation: op.seq, state, expiresAtMs: Number.MAX_SAFE_INTEGER,
+});
+
+export class Controller {
+  // governanceRoot: the read-only Engineering Platform checkout whose registry/projects and policies/catalog.json resolve each
+  // target project's governance; the explicit argument, else config.json `governanceRoot`. With neither (or an invalid root) no
+  // worker is dispatched: dispatch fails closed with a project-governance blocker, never falling back to this checkout.
+  constructor({ store, config, dataDir, log = () => {}, now = () => Date.now(), instanceId = randomUUID(),
+    codeRevision = null, fault = process.env.AIWORKS_FAULT ?? null, notifier = noopTransport, probes = {},
+    governanceRoot = undefined }) {
+    Object.assign(this, { store, dataDir, log, now, instanceId, codeRevision, fault, notifier, probes, governanceRoot });
+    this.config = { ...DEFAULTS, ...config };
+    this.governanceRoot = governanceRoot ?? this.config.governanceRoot;
+    // aiworks#1 owner-intervention core: off unless the data-directory config enables it.
+    this.oi = this.config.ownerIntervention?.enabled === true;
+    const commands = config.commands ?? {};
+    this.cmd = { codex: commands.codex, cursor: commands.cursor, agy: commands.agy, chrome: commands.chrome,
+      claude: commands.claude ?? ['claude'], git: commands.git ?? ['git'], gh: commands.gh ?? ['gh'] };
+    this.held = new Map();
+  }
+
+  /** Crash rehearsal hook: terminate abruptly at a named point (AIWORKS_FAULT). */
+  injectFault(name) {
+    if (this.fault !== name) return;
+    this.log(`fault injected: ${name}`);
+    process.exit(86);
+  }
+
+  async tick() {
+    const ids = this.store.all(`SELECT id FROM campaigns WHERE control IN ('registered', 'paused', 'cancel-requested')
+      OR EXISTS (SELECT 1 FROM outbox WHERE campaign_id = campaigns.id AND state = 'pending')`).map((row) => row.id);
+    for (const id of ids) {
+      try {
+        await this.step(id);
+      } catch (error) {
+        if (error instanceof FencedError) {
+          this.held.delete(id);
+          this.log(`fenced: ${error.message}`);
+        } else if (error instanceof ConflictError) {
+          this.log(`conflict, retrying next tick: ${error.message}`);
+        } else {
+          this.log(`campaign ${id} step failed: ${error.stack || error}`);
+          try { this.store.journal(id, 'step-error', { message: String(error.message).slice(0, 500) }, this.now()); } catch { /* store unavailable */ }
+        }
+      }
+    }
+    // The owner's coordinator inbox is its own single-slot lane with its own lease; it never takes a campaign slot.
+    try {
+      await coordinatorTick(this);
+    } catch (error) {
+      if (error instanceof FencedError) { this.held.delete(COORDINATOR_LANE); this.log(`fenced: ${error.message}`); }
+      else if (!(error instanceof ConflictError)) this.log(`coordinator step failed: ${error.stack || error}`);
+    }
+    await this.drainOutbox();
+    await this.drainOwnerNotifications();
+  }
+
+  /** Graceful shutdown: expire held leases so a restarted instance takes over at once. */
+  release() {
+    for (const [id, generation] of this.held) this.store.releaseLease(id, this.instanceId, generation, this.now());
+    this.held.clear();
+  }
+
+  fenced(ctx, fn) {
+    return this.store.tx(() => {
+      this.store.assertLease(ctx.id, this.instanceId, ctx.generation, this.now());
+      const value = fn();
+      // Hold the write lock across external effects so expiry cannot admit a second writer.
+      this.store.run('UPDATE leases SET expires_at = ? WHERE campaign_id = ? AND instance_id = ? AND generation = ?',
+        this.now() + this.config.leaseMs, ctx.id, this.instanceId, ctx.generation);
+      return value;
+    });
+  }
+
+  async step(id) {
+    const lease = this.store.acquireLease(id, this.instanceId, this.now(), this.config.leaseMs, this.codeRevision);
+    if (!lease) { this.held.delete(id); return; }
+    if (!lease.renewed) this.log(`campaign ${id}: holding lease generation ${lease.generation}${lease.takeover ? ' after expiry of the previous holder' : ''}`);
+    this.held.set(id, lease.generation);
+    const ctx = { id, generation: lease.generation };
+    if (['finished', 'cancelled'].includes(this.store.campaign(id).control)) return;
+
+    this.processEvents(ctx);
+    if (this.oi) this.ownerInterventionTick(ctx);
+    for (const op of this.store.openOperations(id)) await this.reconcile(ctx, op);
+    const campaign = this.store.campaign(id);
+    if (campaign.control === 'cancel-requested') {
+      if (!this.store.openOperations(id).length) {
+        this.fenced(ctx, () => {
+          const c = this.store.campaign(id);
+          this.store.patch('campaigns', { id }, c.version, { control: 'cancelled', blocker: null, next_action: null, next_wakeup_at: null }, this.now());
+          this.store.journal(id, 'cancelled', null, this.now());
+        });
+      }
+      return;
+    }
+    if (campaign.control === 'registered') {
+      this.reconcileIntegration(ctx);
+      await this.schedule(ctx);
+    }
+    this.refreshStatus(ctx);
+  }
+
+  processEvents(ctx) {
+    for (const event of this.store.all('SELECT * FROM events WHERE campaign_id = ? AND processed_at IS NULL ORDER BY seq', ctx.id)) {
+      if (event.kind === 'agent-instruction') continue; // Dispatch owns the durable delivery receipt.
+      this.fenced(ctx, () => {
+        const now = this.now();
+        if (event.kind === 'recheck') {
+          const only = event.payload?.task ?? null;
+          if (!only) this.store.run('DELETE FROM executor_waits WHERE campaign_id = ?', ctx.id);
+          for (const task of this.store.tasks(ctx.id)) {
+            // A usage-limit wait is not a blocker, but recheck also ends it (the owner knows the limit lifted early).
+            const quotaWait = !task.blocked && task.retry_at &&
+              /^(quota:|waiting for executor availability:)/.test(String(task.last_error ?? ''));
+            if ((!task.blocked && !quotaWait) || (only && task.task_id !== only)) continue;
+            // An owner-reserved decision is cleared only by a recheck naming that task.
+            if (task.blocked?.class === 'B3' && !only) continue;
+            this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
+              quotaWait ? { retry_at: null, last_error: null } : { blocked: null, failures: {}, retry_at: null, last_error: null }, now);
+            // The owner's decision recorded against this task is the evidence an owner-decision blocker needs.
+            const record = this.oi && task.blocked?.fingerprint ? this.store.blocker(task.blocked.fingerprint) : null;
+            if (record && record.status !== 'resolved') {
+              this.resolveBlocker(ctx, record, { trigger: 'owner-decision', probe: 'decision', pass: true,
+                detail: redact(event.payload?.note ?? `recheck --task ${task.task_id}`), at: now }, now);
+            }
+          }
+          const c = this.store.campaign(ctx.id);
+          const record = this.oi && c.blocker?.fingerprint ? this.store.blocker(c.blocker.fingerprint) : null;
+          if (record && record.status === 'open') this.recheckBlocker(ctx, record, only ? `owner-recheck:${only}` : 'owner-recheck', now);
+          else if (record) { /* a recheck is already running, or ownerInterventionTick releases a resolved record */ }
+          else if (c.blocker && c.blocker.kind !== 'budget') this.store.patch('campaigns', { id: ctx.id }, c.version, { blocker: null }, now);
+        }
+        this.store.journal(ctx.id, `event-${event.kind}`, event.payload, now);
+        this.store.run('UPDATE events SET processed_at = ? WHERE seq = ?', now, event.seq);
+      });
+    }
+  }
+
+  async reconcile(ctx, op) {
+    const runner = readJsonIfExists(join(op.run_dir, 'runner.json'));
+    const result = readJsonIfExists(join(op.run_dir, 'result.json'));
+    const campaign = this.store.campaign(ctx.id);
+    if (campaign.control === 'cancel-requested' && !result) {
+      const stopped = this.fenced(ctx, () => runner ? stopOwnedRun(runner)
+        : existsSync(join(op.run_dir, 'run.lock')) || existsSync(join(op.run_dir, 'launch.json')) ? 'ownership-unavailable' : 'not-running');
+      if (!['stopped', 'not-running'].includes(stopped)) { this.blockOwnership(ctx, op, stopped); return; }
+      this.fenced(ctx, () => {
+        this.store.updateOperation(op.id, { state: 'abandoned', outcome: { class: 'cancelled', detail: stopped } }, this.now());
+        const task = this.store.task(ctx.id, op.task_id);
+        this.store.patch('tasks', { campaign_id: ctx.id, task_id: op.task_id }, task.version, { state: op.kind === 'verify' ? 'implemented' : 'pending' }, this.now());
+        this.store.journal(ctx.id, 'operation-abandoned', { op: op.id, reason: 'cancel' }, this.now());
+      });
+      return;
+    }
+    if (result) { this.consume(ctx, op, result); return; }
+    const now = this.now();
+    if (op.state === 'recorded') {
+      if (runner || existsSync(join(op.run_dir, 'run.lock'))) {
+        this.fenced(ctx, () => this.store.updateOperation(op.id, { state: 'dispatched' }, this.now()));
+      } else {
+        if (existsSync(join(op.run_dir, 'launch.json'))) {
+          if (now - op.updated_at >= this.config.startGraceMs) this.blockOwnership(ctx, op, 'launch receipt missing');
+          return;
+        }
+        // Checkpoint committed but never launched (controller died in between): launch the
+        // same operation. The runner's exclusive lock prevents a second agent for it.
+        this.log(`resuming recorded operation ${op.id}`);
+        await this.launch(ctx, op);
+      }
+      return;
+    }
+    const beat = Number(readTextIfExists(join(op.run_dir, 'heartbeat')) || 0);
+    const alive = beat ? now - beat < this.config.staleMs : now - op.updated_at < this.config.startGraceMs;
+    if (alive) return;
+    const stopped = this.fenced(ctx, () => runner ? stopOwnedRun(runner)
+      : existsSync(join(op.run_dir, 'run.lock')) || existsSync(join(op.run_dir, 'launch.json')) ? 'ownership-unavailable' : 'not-running');
+    if (!['stopped', 'not-running'].includes(stopped)) { this.blockOwnership(ctx, op, stopped); return; }
+    if (readJsonIfExists(join(op.run_dir, 'result.json'))) return; // finished meanwhile; consume next tick
+    this.applyOutcome(ctx, op, { class: 'lost', detail: `runner heartbeat stale; ${stopped}`, receipt: { measured: false } });
+  }
+
+  deliverable(ctx, taskId) {
+    return this.store.campaign(ctx.id).declaration.tasks.find((task) => task.id === taskId).deliverable;
+  }
+
+  consume(ctx, op, run) {
+    if (run.containment !== 'windows-job-v1' || run.containmentStopped !== true) {
+      const runner = readJsonIfExists(join(op.run_dir, 'runner.json'));
+      const stopped = this.fenced(ctx, () => runner ? stopOwnedRun(runner) : 'ownership-unavailable');
+      if (!['stopped', 'not-running'].includes(stopped)) {
+        this.blockOwnership(ctx, op, stopped);
+        return;
+      }
+      this.applyOutcome(ctx, op, { class: 'lost', detail: 'run has no confirmed process containment', receipt: { measured: false } });
+      return;
+    }
+    const executor = this.store.campaign(ctx.id).declaration.executor;
+    const outcome = executors.classify({
+      executorKind: op.executor_kind,
+      researchOnly: (executor.kind === 'cli-chain' ? executor.providers : [executor])
+        .find((provider) => provider.kind === op.executor_kind)?.researchOnly === true,
+      role: op.kind === 'verify' ? 'verification' : 'implementer', run,
+      // The browser worker's audit needs the whole event log, not the 4 MiB tail: a violation early in a long log would be cut.
+      stdoutText: readTextIfExists(join(op.run_dir, 'stdout.json'), op.executor_kind === 'agy-cli' ? executors.AGY_LOG_LIMIT : undefined),
+      logBytes: existsSync(join(op.run_dir, 'stdout.json')) ? statSync(join(op.run_dir, 'stdout.json')).size : 0,
+      stderrText: readTextIfExists(join(op.run_dir, 'stderr.log')),
+      expect: { deliverable: this.deliverable(ctx, op.task_id), targetSha: op.target_sha, reportDigest: op.report_digest,
+        sessionId: op.session_id, packetDigest: op.packet_digest },
+      now: this.now(),
+    });
+    this.applyOutcome(ctx, op, outcome);
+  }
+
+  applyOutcome(ctx, op, outcome) {
+    let verdict = outcome;
+    const before = this.store.task(ctx.id, op.task_id);
+    // Deterministic checks of the worker's claims, outside the write transaction.
+    if (verdict.class === 'result' && op.kind === 'implement' && verdict.value.result === 'resolved' &&
+        this.deliverable(ctx, op.task_id) === 'commit') {
+      const problem = gitA.checkImplementation({ git: this.cmd.git, path: op.workspace, baseSha: before.base_sha, headSha: verdict.value.headSha });
+      if (problem) verdict = { ...verdict, class: 'invalid-result', detail: problem };
+    }
+    if (verdict.class === 'result' && op.kind === 'verify' && before.head_sha !== op.target_sha) {
+      verdict = { ...verdict, class: 'invalid-result', detail: `stale verification: task head is ${before.head_sha}, verifier saw ${op.target_sha}` };
+    }
+    if (verdict.class === 'result' && op.kind === 'verify') {
+      const problem = gitA.checkVerification({ git: this.cmd.git, path: op.workspace, targetSha: op.target_sha });
+      if (problem) verdict = { ...verdict, class: 'invalid-result', detail: problem };
+    }
+    this.fenced(ctx, () => {
+      const now = this.now();
+      const fresh = this.store.get('SELECT * FROM operations WHERE id = ?', op.id);
+      if (!['recorded', 'dispatched'].includes(fresh.state)) return; // already applied
+      verdict = { ...verdict, executorKind: fresh.executor_kind };
+      // engineering-platform-archive#47 C0 predicate inside the authoritative commit: the result must come from the exact dispatched run.
+      if (verdict.class === 'result' && !acceptsLease(runLease(fresh, 'active'), runLease(fresh, 'active', verdict.receipt?.sessionId ?? ''), now)) {
+        verdict = { ...verdict, class: 'invalid-result', detail: `result session ${verdict.receipt?.sessionId} is not the dispatched session ${fresh.session_id}` };
+      }
+      if (executors.runNotCounted(verdict)) verdict = { ...verdict, refunded: true };
+      this.store.updateOperation(op.id, { state: 'finished', outcome: verdict }, now);
+      if (verdict.class === 'result') this.store.run('DELETE FROM executor_waits WHERE campaign_id = ? AND executor_kind = ?', ctx.id, op.executor_kind);
+      const blocked = this.store.campaign(ctx.id);
+      if (blocked.blocker?.kind === 'process-ownership') {
+        this.store.patch('campaigns', { id: ctx.id }, blocked.version, { blocker: null }, now);
+        const record = this.oi && blocked.blocker.fingerprint ? this.store.blocker(blocked.blocker.fingerprint) : null;
+        if (record && record.status !== 'resolved') this.resolveBlocker(ctx, record, { trigger: 'state-change', probe: 'deterministic', pass: true,
+          detail: `operation ${op.id} finished under confirmed containment`, operation: op.id, at: now }, now);
+      }
+      const campaign = this.store.campaign(ctx.id);
+      if (verdict.receipt?.costUsd) this.store.patch('campaigns', { id: ctx.id }, campaign.version, { cost_usd: campaign.cost_usd + verdict.receipt.costUsd }, now);
+      if (verdict.refunded) {
+        const c = this.store.campaign(ctx.id);
+        this.store.patch('campaigns', { id: ctx.id }, c.version, { runs_used: Math.max(0, c.runs_used - 1) }, now);
+        this.store.journal(ctx.id, 'run-refunded', { op: op.id, reason: verdict.class === 'unavailable'
+          ? 'executor was unavailable; no task attempt took place' : 'provider usage limit refused the run before any work' }, now);
+      }
+      const task = this.store.task(ctx.id, op.task_id);
+      const change = this.transition(ctx, task, op, verdict, campaign.declaration, now);
+      if (this.oi && OWNER_CLASSES.has(change.blocked?.class)) {
+        const reason = redact(change.blocked.reason);
+        const record = this.openBlocker(ctx, campaign.declaration, { dependency: 'owner-decision', cls: change.blocked.class,
+          identity: `${task.task_id}:${/^no progress:/.test(reason) ? 'no-progress' : reason}`, summary: `${task.task_id}: ${reason}`,
+          requestedAction: `Decide on ${campaign.declaration.target.repository}#${campaign.declaration.tasks.find((item) => item.id === task.task_id).issue}: ${reason}`,
+          parents: [{ ...task, state: change.state ?? task.state }], scope: 'task' }, now);
+        change.blocked = { ...change.blocked, reason, fingerprint: record.fingerprint };
+      }
+      this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version, change, now);
+      // A probe run that returned a structured result got past the failure that held its parents.
+      if (this.oi && verdict.class === 'result') this.probeSucceeded(ctx, op.task_id, { operation: op.id, detail: `${op.kind} run on ${op.executor_kind} returned a structured result` }, now);
+      this.store.journal(ctx.id, 'operation-finished', {
+        op: op.id, executor: op.executor_kind, class: verdict.class, detail: verdict.detail ?? null, session: verdict.receipt?.sessionId ?? null,
+        // The worker's own verdict: a valid `result` can still say rejected or evidence-unavailable.
+        terminal: verdict.class === 'result' ? verdict.value?.result ?? verdict.value?.verdict ?? null : null,
+        blocking: verdict.class === 'result' && Array.isArray(verdict.value?.findings) ? verdict.value.findings.filter((f) => f.severity === 'blocking').length : null,
+        nativeSession: verdict.receipt?.nativeSessionId ?? null,
+        costUsd: verdict.receipt?.costUsd ?? null, usage: verdict.receipt?.usage ?? null,
+      }, now);
+      if (change.blocked) {
+        this.enqueue(ctx.id, `${ctx.id}:${task.task_id}:blocked:${op.id}`, campaign.declaration,
+          `**${task.task_id}** is blocked (${change.blocked.class}): ${change.blocked.reason}\n\nThe campaign keeps ownership. After recovery or an owner decision recorded on the task issue, run \`supervisor recheck ${ctx.id} --task ${task.task_id}\`.`, now);
+      }
+    });
+  }
+
+  transition(ctx, task, op, v, decl, now) {
+    const limits = campaignLimits(decl);
+    const back = op.kind === 'verify' ? 'implemented' : 'pending';
+    const retry = (cls, detail, state) => {
+      const failures = { ...task.failures, [cls]: (task.failures?.[cls] ?? 0) + 1 };
+      const total = Object.entries(failures).filter(([key]) => RETRYABLE.has(key)).reduce((sum, [, n]) => sum + n, 0);
+      if (cls === 'evidence-unavailable' && failures[cls] >= NO_PROGRESS_LIMIT) {
+        return { state, failures, retry_at: null, last_error: `${cls}: ${detail}`,
+          blocked: { class: 'B3', reason: `no progress: ${failures[cls]} evidence-unavailable results; last: ${String(detail).slice(0, 300)}`, at: now } };
+      }
+      if (limits.maxRetriesPerTask !== null && total > limits.maxRetriesPerTask) {
+        return { state, failures, retry_at: null, last_error: `${cls}: ${detail}`,
+          blocked: { class: 'stalled', reason: `${total} failed attempts; last ${cls}: ${String(detail).slice(0, 300)}`, at: now } };
+      }
+      const backoff = this.config.retryBackoffMs;
+      return { state, failures, retry_at: now + backoff[Math.min(total - 1, backoff.length - 1)], last_error: `${cls}: ${detail}` };
+    };
+    // A worker that left its boundary is never retried on the same provider: the task waits for the owner.
+    if (v.violation) return { state: back, retry_at: null, last_error: `violation: ${v.detail}`,
+      blocked: { class: 'B3', reason: `boundary violation on ${op.executor_kind}: ${String(v.detail).slice(0, 300)}`, at: now } };
+    if (decl.executor.kind === 'cli-chain' && ['quota', 'auth', 'spawn-failed', 'unavailable'].includes(v.class)) {
+      // A timed wait (quota reset, or a host sandbox failure that may clear) re-admits the provider by itself;
+      // an untimed wait (auth, missing support) lasts until an explicit recheck.
+      this.store.run('INSERT OR REPLACE INTO executor_waits (campaign_id, executor_kind, retry_at, reason) VALUES (?, ?, ?, ?)',
+        ctx.id, op.executor_kind, ['quota', 'unavailable'].includes(v.class) ? v.retryAt ?? null : null, `${v.class}: ${v.detail}`);
+      const choice = this.executorChoice(decl, { ...task, state: back }, now);
+      if (choice.executor) {
+        this.store.journal(ctx.id, 'executor-fallback', { task: task.task_id, from: op.executor_kind,
+          executor: choice.executor.kind, reason: v.class, credits: /credits\/billing/.test(v.detail) }, now);
+        return { state: back, retry_at: now, last_error: `${op.executor_kind}: ${v.class}: ${v.detail}` };
+      }
+      if (choice.retryAt) return { state: back, retry_at: choice.retryAt, last_error: `waiting for executor availability: ${v.detail}` };
+      this.raiseBlocker(ctx, decl, { kind: 'executors', class: 'B2', reason: 'No authorized executor is available for this task role',
+        requestedAction: 'Restore an executor listed in status.executorWaits or its scoped role support, then recheck the campaign.' }, now,
+      { identity: 'no-eligible-executor' });
+      return { state: back, retry_at: null, last_error: `${op.executor_kind}: ${v.class}: ${v.detail}` };
+    }
+    if (v.class === 'auth') {
+      this.raiseBlocker(ctx, decl, { kind: 'auth', class: 'B2', reason: v.detail,
+        requestedAction: `Re-authenticate the selected CLI on this PC, then run: supervisor recheck ${ctx.id}` }, now,
+      { identity: op.executor_kind });
+      return { state: back, last_error: `auth: ${v.detail}` };
+    }
+    if (v.class === 'quota') return { state: back, retry_at: v.retryAt, last_error: `quota: ${v.detail}` };
+    if (v.class !== 'result') return retry(v.class, v.detail, back);
+    const value = v.value;
+    if (op.kind === 'implement') {
+      if (value.result === 'resolved') {
+        // A report deliverable is bound to the revision it was produced against.
+        const head = decl.tasks.find((item) => item.id === task.task_id).deliverable === 'commit' ? value.headSha : op.base_sha;
+        return { state: 'implemented', head_sha: head, result: value, retry_at: null, last_error: null, failures: {} };
+      }
+      if (value.result === 'blocked-owner-reserved') {
+        return { state: 'pending', result: value, blocked: { class: 'B3', reason: `owner-reserved: ${value.ownerTrigger}`, at: now } };
+      }
+      return retry('evidence-unavailable', value.tried || value.summary, 'pending');
+    }
+    if (value.verdict === 'accepted') return { state: 'verified', verified_sha: op.target_sha, verification: value, retry_at: null, last_error: null, failures: {} };
+    if (value.verdict === 'rejected') {
+      const blocking = value.findings.filter((finding) => finding.severity === 'blocking');
+      if (!blocking.length) return retry('invalid-result', 'rejected without a blocking finding', 'implemented');
+      if (limits.maxRepairRounds !== null && task.repair_rounds >= limits.maxRepairRounds) {
+        return { state: 'pending', verification: value, findings: blocking,
+          blocked: { class: 'stalled', reason: `verifier still rejects after ${task.repair_rounds} repair rounds`, at: now } };
+      }
+      return { state: 'pending', verification: value, findings: blocking, repair_rounds: task.repair_rounds + 1, retry_at: null, last_error: null };
+    }
+    return retry('evidence-unavailable', value.summary, 'implemented');
+  }
+
+  /** `identity` and `subject` name the failure for the aiworks#1 fingerprint; they are used only when the feature is enabled. */
+  raiseBlocker(ctx, decl, blocker, now, { identity = null, subject = null } = {}) {
+    const c = this.store.campaign(ctx.id);
+    if (c.blocker?.kind === blocker.kind) return;
+    let key = `${ctx.id}:blocker:${blocker.kind}:${now}`;
+    if (this.oi) {
+      blocker = { ...blocker, reason: redact(blocker.reason) };
+      const record = this.openBlocker(ctx, decl, { dependency: blocker.kind, cls: blocker.class, identity: identity ?? blocker.reason,
+        summary: blocker.reason, requestedAction: blocker.requestedAction, subject,
+        parents: this.store.tasks(ctx.id).filter((task) => task.state !== 'done')
+          .map((task) => ({ ...task, state: RESUME_PHASE[task.state] ?? task.state })), scope: 'campaign' }, now);
+      if (record) {
+        blocker = { ...blocker, fingerprint: record.fingerprint };
+        // One tracking-issue comment per blocker episode: a failed recheck updates the record, not the issue thread.
+        key = `${ctx.id}:blocker:${record.fingerprint}:${record.episode}`;
+      }
+    }
+    this.store.patch('campaigns', { id: ctx.id }, c.version, { blocker: { ...blocker, at: now } }, now);
+    this.store.journal(ctx.id, 'blocker-raised', blocker, now);
+    this.enqueue(ctx.id, key, decl,
+      `Campaign \`${ctx.id}\` is blocked (${blocker.class}): ${blocker.reason}\n\n**Requested owner action:** ${blocker.requestedAction}`, now);
+  }
+
+  blockOwnership(ctx, op, detail) {
+    this.fenced(ctx, () => this.raiseBlocker(ctx, this.store.campaign(ctx.id).declaration, {
+      kind: 'process-ownership', class: 'B4', reason: `process ownership is unresolved for ${op.id}: ${detail}`,
+      requestedAction: 'Reconcile the recorded run and prove its processes stopped before repairing its ownership receipt; do not dispatch a replacement from missing receipt files alone.',
+    }, this.now(), { identity: op.id, subject: op.id }));
+  }
+
+  missingIntegratedDependencies(decl, spec, tasks, revision, path) {
+    const specs = new Map(decl.tasks.map((t) => [t.id, t]));
+    const inRevision = (sha) => /^[0-9a-f]{40}$/.test(revision ?? '') &&
+      gitA.exec(this.cmd.git, ['merge-base', '--is-ancestor', sha, revision], { cwd: path }).ok;
+    return spec.dependsOn.filter((id) => {
+      const dep = tasks.find((t) => t.task_id === id);
+      if (dep?.state !== 'done') return true;
+      if (specs.get(id).deliverable === 'report') return false;
+      if (!dep.verified_sha) return true;
+      if (inRevision(dep.verified_sha)) return false;
+      const mergedSha = github.integratedPullRequest({ gh: this.cmd.gh, repository: decl.target.repository,
+        url: dep.pr_url, headSha: dep.verified_sha, baseBranch: decl.target.baseBranch });
+      return !mergedSha || !inRevision(mergedSha);
+    });
+  }
+
+  /** Publication is not integration. Refresh only when an explicitly gated task is due. */
+  reconcileIntegration(ctx) {
+    const c = this.store.campaign(ctx.id);
+    if (c.blocker || this.store.openOperations(ctx.id).length) return;
+    const tasks = this.store.tasks(ctx.id), specs = new Map(c.declaration.tasks.map((t) => [t.id, t]));
+    const due = tasks.filter((t) => t.state === 'pending' && !t.blocked && (!t.retry_at || t.retry_at <= this.now()) &&
+      specs.get(t.task_id).requiresMergedDependencies && specs.get(t.task_id).dependsOn.every((id) => tasks.find((d) => d.task_id === id)?.state === 'done'));
+    if (!due.length) return;
+    this.fenced(ctx, () => {
+      const repo = this.repo(c.declaration), base = c.declaration.target.baseBranch;
+      const fetched = gitA.exec(this.cmd.git, ['fetch', 'origin', base], { cwd: repo.path, timeoutMs: 30_000 });
+      const fetchedSha = fetched.ok ? gitA.exec(this.cmd.git, ['rev-parse', 'FETCH_HEAD'], { cwd: repo.path }).stdout : null;
+      for (const task of due) {
+        const missing = !fetched.ok ? specs.get(task.task_id).dependsOn
+          : this.missingIntegratedDependencies(c.declaration, specs.get(task.task_id), tasks, fetchedSha, repo.path);
+        const reason = missing.length ? `dependency-integration: waiting for ${missing.join(', ')} in ${base}${fetched.ok ? '' : ' (remote refresh unavailable)'}` : null;
+        if (!reason && !String(task.last_error ?? '').startsWith('dependency-integration:')) continue;
+        this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
+          { retry_at: reason ? this.now() + this.config.integrationPollMs : null, last_error: reason }, this.now());
+        if (reason !== task.last_error) this.store.journal(ctx.id, reason ? 'integration-wait' : 'integration-ready', { task: task.task_id }, this.now());
+      }
+    });
+  }
+
+  async schedule(ctx) {
+    if (this.store.openOperations(ctx.id).length) return; // one slot
+    const now = this.now();
+    let campaign = this.store.campaign(ctx.id);
+    const decl = campaign.declaration;
+    if (campaign.blocker?.kind === 'budget' && !campaignBudget(this.store, campaign).exhausted) {
+      this.fenced(ctx, () => {
+        const c = this.store.campaign(ctx.id);
+        this.store.patch('campaigns', { id: ctx.id }, c.version, { blocker: null }, this.now());
+        this.store.journal(ctx.id, 'blocker-cleared', { kind: 'budget', ...campaignBudget(this.store, c) }, this.now());
+        const record = this.oi && c.blocker.fingerprint ? this.store.blocker(c.blocker.fingerprint) : null;
+        if (record && record.status !== 'resolved') this.resolveBlocker(ctx, record, { trigger: 'state-change', probe: 'deterministic', pass: true,
+          detail: `budget available under authorization v${c.authorization_version}`, at: this.now() }, this.now());
+      });
+      campaign = this.store.campaign(ctx.id);
+      this.reconcileIntegration(ctx);
+    }
+    const tasks = this.store.tasks(ctx.id);
+    const done = new Set(tasks.filter((task) => task.state === 'done').map((task) => task.task_id));
+    const spec = new Map(decl.tasks.map((task) => [task.id, task]));
+    const hold = decl.executor.kind === 'cli-chain' ? 0 : quotaHoldUntil(tasks, now); // a chain holds only the exhausted account
+    const held = this.heldTasks(ctx.id);
+    const ready = tasks.find((task) => RUNNABLE.includes(task.state) && !task.blocked && !held.has(task.task_id) && (!task.retry_at || task.retry_at <= now) &&
+      (!hold || task.state === 'verified') && spec.get(task.task_id).dependsOn.every((dep) => done.has(dep)));
+    if (!ready) return;
+    if (ready.state === 'verified') { await this.publish(ctx, campaign, ready); return; }
+    if (campaign.blocker) return;
+    const budget = campaignBudget(this.store, campaign);
+    if (budget.exhausted) {
+      this.fenced(ctx, () => this.raiseBlocker(ctx, decl, {
+        kind: 'budget', class: 'B3',
+        reason: `${budget.exhausted} under authorization v${campaign.authorization_version}`,
+        requestedAction: 'Decide whether to raise limits.maxWorkerRuns or limits.maxCostUsd; if yes, start the campaign again with authorization.version + 1 and the new limits',
+      }, this.now(), { identity: `v${campaign.authorization_version}:${budget.exhausted.split(' (')[0]}` }));
+      return;
+    }
+    await this.dispatch(ctx, campaign, ready, ready.state === 'pending' ? 'implement' : 'verify');
+  }
+
+  repo(decl) {
+    const repo = this.config.repositories?.[decl.target.repository];
+    if (!repo?.path || !repo?.worktreeRoot) throw new Error(`no local checkout configured for ${decl.target.repository}`);
+    return repo;
+  }
+
+  /** The executor that produced this task's latest unaccepted attempt of the same kind, if any. */
+  lastFailedExecutor(decl, task) {
+    const kind = task.state === 'implemented' ? 'verify' : 'implement';
+    const last = this.store.get("SELECT executor_kind, outcome FROM operations WHERE campaign_id = ? AND task_id = ? AND kind = ? AND state = 'finished' ORDER BY created_at DESC LIMIT 1",
+      decl.campaignId, task.task_id, kind);
+    // Provider availability (quota, auth, launch, unavailable host) is governed by executor_waits: once that
+    // wait ends the preferred provider resumes. Only a task-level failure reroutes the next attempt.
+    if (!last?.outcome || ['admission-blocked', 'quota', 'auth', 'spawn-failed', 'unavailable'].includes(last.outcome.class)) return null;
+    // Never route around a denial: the next attempt keeps the declared provider order.
+    if (/denied|permission|no provider fallback|unexpected tool|sandbox violation/i.test(last.outcome.detail ?? '')) return null;
+    const terminal = last.outcome.value?.result ?? last.outcome.value?.verdict ?? null;
+    const failed = last.outcome.class !== 'result' || terminal === 'evidence-unavailable';
+    return failed ? last.executor_kind : null;
+  }
+
+  executorChoice(decl, task, now = this.now()) {
+    const waits = this.store.all('SELECT * FROM executor_waits WHERE campaign_id = ?', decl.campaignId);
+    // After a failed attempt the next eligible provider in the chain gets the task first; the one that
+    // failed remains the fallback when it is the only eligible provider. Denials and rejections are not
+    // routed around: this only reorders between providers the owner already authorized.
+    const avoid = decl.executor.kind === 'cli-chain' ? this.lastFailedExecutor(decl, task) : null;
+    let retryAt = null;
+    let fallback = null;
+    const spec = decl.tasks.find((item) => item.id === task.task_id);
+    for (const executor of executorOrder(decl.executor)) {
+      if (executor.researchOnly && spec.deliverable !== 'report') continue;
+      // Web acceptance belongs to the browser workers alone, so no other provider's wait can hold it, and AGY runs nothing else.
+      if (spec.web ? !executors.BROWSER_KINDS.includes(executor.kind) : executor.kind === 'agy-cli') continue;
+      if (!this.cmd[executor.kind.replace('-cli', '')]?.length) {
+        const wait = waits.find((item) => item.executor_kind === executor.kind);
+        const at = wait?.retry_at > now ? wait.retry_at : now + 15 * 60_000;
+        retryAt = retryAt === null ? at : Math.min(retryAt, at);
+        continue;
+      }
+      if (executors.roleUnavailableReason(executor, task.state === 'implemented' ? 'verification' : 'implementer',
+        spec.deliverable, process.platform, Boolean(spec.web))) continue;
+      const wait = waits.find((item) => item.executor_kind === executor.kind);
+      if (!wait || wait.retry_at !== null && wait.retry_at <= now) {
+        if (executor.kind === avoid) { fallback ??= executor; continue; }
+        return { executor, retryAt: null };
+      }
+      if (wait.retry_at !== null) retryAt = retryAt === null ? wait.retry_at : Math.min(retryAt, wait.retry_at);
+    }
+    return fallback ? { executor: fallback, retryAt: null } : { executor: null, retryAt };
+  }
+
+  async dispatch(ctx, campaign, task, kind) {
+    const op = this.fenced(ctx, () => {
+      const current = this.store.campaign(ctx.id);
+      if (current.control !== 'registered' || current.blocker || current.version !== campaign.version ||
+          this.store.openOperations(ctx.id).length || campaignBudget(this.store, current).exhausted) return null;
+      const decl = campaign.declaration;
+      // The target project's own rules (Engineering Platform governance inheritance), resolved from the registry exactly as the registration gate matches.
+      // Without them no new worker starts: there is no default project to fall back to.
+      let governance;
+      try { governance = projectGovernance(decl.target.repository, this.governanceRoot); }
+      catch (error) {
+        this.raiseBlocker(ctx, decl, { kind: 'project-governance', class: 'B2',
+          reason: `No new worker dispatched: the governance of ${decl.target.repository} cannot be resolved from the governance checkout (${error.code ? `${error.code}: ` : ''}${String(error.message).slice(0, 400)})`,
+          requestedAction: `Make sure governanceRoot in the supervisor config.json names a current Engineering Platform checkout in which exactly one registry/projects entry declares repository.github ${decl.target.repository}, then run: supervisor recheck ${ctx.id}` }, this.now());
+        return null;
+      }
+      for (const provider of executorOrder(decl.executor)) {
+        if (this.cmd[provider.kind.replace('-cli', '')]?.length) continue;
+        const wait = this.store.get('SELECT * FROM executor_waits WHERE campaign_id = ? AND executor_kind = ?', ctx.id, provider.kind);
+        if (!wait || wait.retry_at <= this.now()) {
+          this.store.run('INSERT OR REPLACE INTO executor_waits (campaign_id, executor_kind, retry_at, reason) VALUES (?, ?, ?, ?)',
+            ctx.id, provider.kind, this.now() + 15 * 60_000, 'unavailable: CLI command is not configured on this PC');
+          if (!wait) this.store.journal(ctx.id, 'executor-unavailable', { executor: provider.kind, reason: 'CLI command is not configured on this PC' }, this.now());
+        }
+      }
+      const choice = this.executorChoice(decl, task);
+      if (!choice.executor) {
+        if (choice.retryAt) this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
+          { retry_at: choice.retryAt, last_error: 'waiting for executor availability: all eligible providers are cooling down' }, this.now());
+        else this.raiseBlocker(ctx, decl, { kind: 'executors', class: 'B2', reason: 'No configured executor supports this task role',
+          requestedAction: 'Configure an authorized native CLI command and scoped role support, then recheck the campaign.' }, this.now(),
+        { identity: 'no-role-support' });
+        return null;
+      }
+      const executor = choice.executor;
+      const spec = decl.tasks.find((item) => item.id === task.task_id);
+      const repo = this.repo(decl);
+      const seq = task.attempts + 1;
+      const opId = `${ctx.id}.${task.task_id}.${kind}.${seq}`;
+      let workspace;
+      let revision;
+      let targetSha = null;
+      if (kind === 'implement') {
+        let integrationBase;
+        if (spec.requiresMergedDependencies) {
+          const fetched = gitA.exec(this.cmd.git, ['fetch', 'origin', decl.target.baseBranch], { cwd: repo.path, timeoutMs: 30_000 });
+          integrationBase = fetched.ok ? gitA.exec(this.cmd.git, ['rev-parse', 'FETCH_HEAD'], { cwd: repo.path }).stdout : null;
+          const missing = !fetched.ok ? spec.dependsOn : this.missingIntegratedDependencies(decl, spec, this.store.tasks(ctx.id), integrationBase, repo.path);
+          if (!/^[0-9a-f]{40}$/.test(integrationBase ?? '') || missing.length) {
+            this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
+              { retry_at: this.now() + this.config.integrationPollMs, last_error: `dependency-integration: waiting for ${missing.join(', ')} in ${decl.target.baseBranch}${fetched.ok ? '' : ' (remote refresh unavailable)'}` }, this.now());
+            return null;
+          }
+        }
+        const ws = gitA.prepareImplementWorkspace({ git: this.cmd.git, repoPath: repo.path, worktreeRoot: repo.worktreeRoot,
+          campaignId: ctx.id, taskId: task.task_id, baseBranch: decl.target.baseBranch, baseSha: integrationBase });
+        if (spec.requiresMergedDependencies && this.missingIntegratedDependencies(decl, spec, this.store.tasks(ctx.id), ws.head, ws.path).length) {
+          this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
+            { blocked: { class: 'stalled', reason: 'Existing implementation workspace lacks the integrated dependency revisions; preserve it and reconcile its base before recheck.', at: this.now() }, last_error: 'dependency-workspace: required integrated revisions absent' }, this.now());
+          this.store.journal(ctx.id, 'integration-workspace-blocked', { task: task.task_id }, this.now());
+          return null;
+        }
+        workspace = ws.path;
+        revision = ws.head;
+      } else {
+        targetSha = task.head_sha;
+        workspace = gitA.prepareVerifyWorkspace({ git: this.cmd.git, repoPath: repo.path, worktreeRoot: repo.worktreeRoot,
+          campaignId: ctx.id, taskId: task.task_id, targetSha, attempt: seq }).path;
+        revision = targetSha;
+      }
+      const baseSha = task.base_sha ?? revision;
+      const role = kind === 'verify' ? 'verification' : 'implementer';
+      const readOnly = kind === 'verify' || spec.deliverable === 'report';
+      // A verifier reviews the implementer's report; a repair implementer must also receive the rejected report,
+      // otherwise it is asked to fix findings against an artifact it has never seen.
+      const repairing = kind === 'implement' && Boolean(task.findings?.length);
+      const report = kind === 'verify' || repairing ? String(task.result?.report ?? '') : null;
+      const reportDigest = report !== null ? createHash('sha256').update(report, 'utf8').digest('hex') : null;
+      const findings = kind === 'implement' ? (task.findings ?? []).slice(0, 8)
+        .map((finding) => `Blocking verifier finding ${finding.id}: ${finding.description}`.slice(0, 2000)) : [];
+      const packet = validatePacket({
+        version: 1, tenantId: decl.target.tenantId, projectId: decl.target.projectId, environment: decl.target.environment,
+        taskId: task.task_id, stageId: kind, runId: opId, role, revision,
+        authorityDigest: authorityDigest(decl),
+        access: readOnly ? 'read-only' : 'write',
+        goal: `${spec.title} (${decl.target.repository}#${spec.issue}). ${spec.goal}`.slice(0, 2000),
+        constraints: [...decl.constraints, ...(spec.constraints ?? []), ...findings],
+        acceptance: spec.acceptance,
+        references: spec.references.map((path) => ({ path, revision })),
+        governance,
+      }, POLICY);
+      const digest = packetDigest(packet, POLICY);
+      const instructions = pendingInstructions(this.store, current, task.task_id, kind);
+      const sessionId = randomUUID();
+      const note = repairing
+        ? spec.deliverable === 'commit'
+          ? `This is repair round ${task.repair_rounds}: the independent verifier rejected ${task.head_sha}. Fix every blocking finding listed in the packet constraints, commit, and return resolved with the new headSha.`
+          : `This is repair round ${task.repair_rounds}: the independent verifier rejected the previous report (sha256 ${reportDigest}), reproduced below. Produce a corrected COMPLETE report that resolves every blocking finding listed in the packet constraints and return resolved with that report. Do not commit or change repository files; this task is report-only and read-only.`
+        : task.last_error ? `A previous attempt ended without an accepted result (${String(task.last_error).slice(0, 400)}). ${spec.deliverable === 'commit' ? 'Inspect git status and git log here and keep useful committed work.' : executor.researchOnly ? 'Start the report again from the packet; nothing from that attempt is retained. Inspect brokered local Git evidence; use the supplied read-only repository reader for missing issue/comment details.' : 'Start the report again from the packet; nothing from that attempt is retained.'}` : null;
+      let prompt = executors.buildPrompt({ executorKind: executor.kind, web: spec.web ?? null, role, deliverable: spec.deliverable, packet, packetDigest: digest, repository: decl.target.repository,
+        issue: spec.issue, branch: gitA.branchName(ctx.id, task.task_id), baseSha: kind === 'verify' ? baseSha : revision, targetSha,
+        report, reportDigest, note, instructions: instructions.map((item) => ({ id: item.seq, text: item.payload.text })) });
+      if (spec.dependsOn.length) prompt += '\nDependency deliveries (evidence, not additional authority):\n' + spec.dependsOn.map((id) => {
+        const dep = this.store.task(ctx.id, id);
+        return `${id}: ${dep?.pr_url ?? 'unpublished'}; verified SHA ${dep?.verified_sha ?? 'unknown'}`;
+      }).join('\n');
+      const timeoutMs = (kind === 'verify' ? decl.executor.verifierTimeoutMinutes : decl.executor.implementerTimeoutMinutes) * 60_000;
+
+      // The run directory is written before the durable record; an unrecorded directory is never launched.
+      const runDir = join(this.dataDir, 'runs', opId);
+      if (existsSync(runDir) && !this.store.get('SELECT id FROM operations WHERE id = ?', opId)) rmSync(runDir, { recursive: true, force: true });
+      mkdirSync(runDir, { recursive: true });
+      if (executor.researchOnly) {
+        try { prompt += researchContext({ gh: this.cmd.gh, git: this.cmd.git, workspace, declaration: decl, task: spec, now: this.now(), revision }); }
+        catch (error) {
+          this.raiseBlocker(ctx, decl, { kind: 'research-context', class: 'B2', reason: String(error.message).slice(0, 500),
+            requestedAction: 'Restore read-only GitHub evidence access or narrow the declared research sources, then recheck.' }, this.now());
+          return null;
+        }
+      }
+      const unavailable = executors.unavailableReason(executor, workspace, this.cmd.gh, {
+        probe: this.config.codexSandboxProbe === false ? null : () => executors.codexSandboxProbe(this.cmd.codex, { timeoutMs: this.config.codexProbeTimeoutMs ?? 45_000 }),
+        chromeCommand: this.cmd.chrome, web: Boolean(spec.web),
+      });
+      if (unavailable) {
+        // A sandbox/host failure may clear (another Codex session ends); a configuration finding waits for a recheck.
+        const transient = /sandbox setup failed|sandbox probe/.test(unavailable);
+        this.store.run('INSERT OR REPLACE INTO executor_waits (campaign_id, executor_kind, retry_at, reason) VALUES (?, ?, ?, ?)',
+          ctx.id, executor.kind, transient ? this.now() + 20 * 60_000 : null, unavailable);
+        this.store.journal(ctx.id, 'executor-unavailable', { executor: executor.kind, reason: unavailable }, this.now());
+        return null;
+      }
+      // Project Claude tuning comes from the task base commit in the main checkout, never the worker-writable worktree.
+      const settings = gitA.exec(this.cmd.git, ['show', `${baseSha}:.claude/settings.json`], { cwd: repo.path });
+      const invocation = executors.prepare({ executor, command: this.cmd[executor.kind.replace('-cli', '')], role,
+        deliverable: spec.deliverable, sessionId, digest, runDir, workspace, prompt,
+        repository: decl.target.repository, ghCommand: this.cmd.gh, projectSettings: settings.ok ? settings.stdout : null,
+        web: spec.web ?? null, chromeCommand: this.cmd.chrome, timeoutMs });
+      writeFileSync(join(runDir, 'prompt.txt'), invocation.prompt, 'utf8');
+      writeAtomic(join(runDir, 'spec.json'), JSON.stringify({
+        argv: invocation.argv, ...(invocation.env ? { env: invocation.env } : {}),
+        cwd: invocation.cwd ?? workspace, timeoutMs, heartbeatMs: this.config.heartbeatMs,
+      }));
+
+      const now = this.now();
+      const c = this.store.campaign(ctx.id);
+      const t = this.store.task(ctx.id, task.task_id);
+      if (t.version !== task.version) return null;
+      this.store.insert('operations', {
+        id: opId, campaign_id: ctx.id, task_id: task.task_id, kind, seq, idempotency_key: opId, lease_generation: ctx.generation,
+        state: 'recorded', session_id: sessionId, run_dir: runDir, workspace, base_sha: revision, target_sha: targetSha,
+        report_digest: reportDigest, packet, packet_digest: digest, outcome: null, created_at: now, updated_at: now,
+        executor_kind: executor.kind,
+      });
+      this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, t.version,
+        { attempts: seq, base_sha: baseSha, state: kind === 'implement' ? 'implementing' : 'verifying', retry_at: null }, now);
+      this.store.patch('campaigns', { id: ctx.id }, c.version, { runs_used: c.runs_used + 1 }, now);
+      this.store.journal(ctx.id, 'operation-recorded', { op: opId, kind, executor: executor.kind, session: sessionId, packetDigest: digest, generation: ctx.generation, run: c.runs_used + 1 }, now);
+
+      // This checkpoint and admission decision commit together before launch.
+      const plan = planContext({
+        packet, authorityCurrent: true, predecessorSafe: true, session: null,
+        checkpoint: { committed: true, packetDigest: digest, tenantId: packet.tenantId, projectId: packet.projectId, environment: packet.environment,
+          taskId: packet.taskId, stageId: packet.stageId, revision: packet.revision, authorityDigest: packet.authorityDigest },
+        budget: dispatchBudget(executor, role, prompt),
+        capabilities: { freshSession: 'verified' }, replacementAttempts: 0, quarantinedSessions: 0, capacityAvailable: true,
+      }, POLICY);
+      if (plan.action !== 'start-fresh') {
+        const c = this.store.campaign(ctx.id);
+        const t = this.store.task(ctx.id, task.task_id);
+        this.store.updateOperation(opId, { state: 'abandoned', outcome: { class: 'admission-blocked', detail: plan.reason } }, now);
+        this.store.patch('campaigns', { id: ctx.id }, c.version, { runs_used: c.runs_used - 1 }, now);
+        this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, t.version,
+          { state: kind === 'implement' ? 'pending' : 'implemented', blocked: { class: 'stalled', reason: `admission blocked: ${plan.reason}`, at: now } }, now);
+        return;
+      }
+      attachInstructions(this.store, instructions, opId, now);
+      return this.store.get('SELECT * FROM operations WHERE id = ?', opId);
+    });
+    if (!op) return;
+    this.injectFault('after-record');
+    await this.launch(ctx, op);
+  }
+
+  async launch(ctx, op) {
+    const child = this.fenced(ctx, () => {
+      const current = this.store.get('SELECT * FROM operations WHERE id = ?', op.id);
+      if (this.store.campaign(ctx.id).control !== 'registered' || current?.state !== 'recorded') return null;
+      if (existsSync(join(op.run_dir, 'launch.json'))) return null;
+      // shortcut: unknown spawn acceptance blocks recovery until an executor provides durable process acknowledgement.
+      writeAtomic(join(op.run_dir, 'launch.json'), JSON.stringify({ operationId: op.id, at: this.now() }));
+      return spawn(process.execPath, [RUNNER, op.run_dir], { detached: true, stdio: 'ignore', windowsHide: true });
+    });
+    if (!child) return;
+    child.on('error', (error) => {
+      this.log(`runner spawn for ${op.id} failed: ${error.message}`);
+      if (!child.pid) writeAtomic(join(op.run_dir, 'result.json'), JSON.stringify({
+        spawnError: String(error.code || error.message), containment: 'windows-job-v1', containmentStopped: true,
+      }));
+    });
+    child.unref();
+    const deadline = Date.now() + this.config.dispatchWaitMs;
+    while (Date.now() < deadline && !existsSync(join(op.run_dir, 'runner.json'))) await sleep(50);
+    this.injectFault('after-spawn');
+    const confirmed = existsSync(join(op.run_dir, 'runner.json'));
+    this.fenced(ctx, () => {
+      this.store.updateOperation(op.id, { state: 'dispatched' }, this.now());
+      this.store.journal(ctx.id, 'operation-dispatched', { op: op.id, runnerConfirmed: confirmed }, this.now());
+    });
+    this.log(`dispatched ${op.id} (session ${op.session_id})${confirmed ? '' : ' - runner not yet confirmed'}`);
+  }
+
+  async publish(ctx, campaign, task) {
+    const decl = campaign.declaration;
+    const spec = decl.tasks.find((item) => item.id === task.task_id);
+    const repo = this.repo(decl);
+    const branch = gitA.branchName(ctx.id, task.task_id);
+    const bodyFile = join(this.dataDir, 'runs', `${ctx.id}.${task.task_id}.publish.md`);
+    try {
+      this.fenced(ctx, () => {
+        const current = this.store.campaign(ctx.id);
+        const fresh = this.store.task(ctx.id, task.task_id);
+        if (current.control !== 'registered' || fresh.state !== 'verified' || fresh.version !== task.version) return;
+        let url;
+        if (spec.deliverable === 'commit') {
+          // Over GitHub's body limit, the verification moves to its own marked PR comment: nothing is truncated.
+          const split = this.prBody(decl, spec, task).length > BODY_LIMIT;
+          const body = this.prBody(decl, spec, task, { verificationElsewhere: split });
+          const verification = split ? this.verificationBody(decl, spec, task) : null;
+          const vKey = `${ctx.id}:${task.task_id}:verification:${task.verified_sha}`;
+          if (body.length > BODY_LIMIT || (verification && `${verification}\n\n${github.marker(vKey)}`.length > BODY_LIMIT)) {
+            this.raiseBlocker(ctx, decl, { kind: 'publication-size', class: 'B2', reason: 'Even split into a PR body and a verification comment, the verified report exceeds the GitHub limit; nothing was truncated or published.',
+              requestedAction: 'Provide an authorized publication format that preserves the verified report, then recheck.' }, this.now(),
+            { identity: task.task_id });
+            return;
+          }
+          gitA.pushVerified({ git: this.cmd.git, repoPath: repo.path, branch, sha: task.verified_sha });
+          this.injectFault('after-push');
+          url = github.openPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, baseBranch: decl.target.baseBranch, branch,
+            title: `${spec.id}: ${spec.title}`, body, bodyFile });
+          if (verification) {
+            const prefix = `https://github.com/${decl.target.repository}/pull/`;
+            const number = String(url).startsWith(prefix) ? /^(\d+)/.exec(String(url).slice(prefix.length))?.[1] : null;
+            if (!number) throw new Error(`cannot post the verification comment: no PR number in ${url}`);
+            const target = { gh: this.cmd.gh, repository: decl.target.repository, issue: Number(number), key: vKey };
+            if (!github.findMarkedComment(target)) github.postComment({ ...target, body: `${verification}\n\n${github.marker(vKey)}`, bodyFile });
+          }
+        } else {
+          // Reconcile before posting: a crash after an accepted post must not post twice.
+          const digest = createHash('sha256').update(String(task.result?.report ?? ''), 'utf8').digest('hex');
+          const key = `${ctx.id}:${task.task_id}:report:${digest}`;
+          const target = { gh: this.cmd.gh, repository: decl.target.repository, issue: spec.issue, key };
+          // Over GitHub's comment limit, the verification goes in a second marked comment: nothing is truncated.
+          const split = `${this.reportBody(decl, spec, task, digest)}\n\n${github.marker(key)}`.length > BODY_LIMIT;
+          const body = `${this.reportBody(decl, spec, task, digest, { verificationElsewhere: split })}\n\n${github.marker(key)}`;
+          const vTarget = { ...target, key: `${key}:verification` };
+          const verification = split ? `${this.verificationBody(decl, spec, task)}\n\n${github.marker(vTarget.key)}` : null;
+          if (body.length > BODY_LIMIT || (verification && verification.length > BODY_LIMIT)) {
+            this.raiseBlocker(ctx, decl, { kind: 'publication-size', class: 'B2', reason: 'Even split into a report comment and a verification comment, the verified report exceeds the GitHub limit; nothing was truncated or posted.',
+              requestedAction: 'Provide an authorized publication format that preserves the verified report, then recheck.' }, this.now(),
+            { identity: task.task_id });
+            return;
+          }
+          url = github.findMarkedComment(target);
+          if (!url) {
+            url = github.postComment({ ...target, body, bodyFile });
+            this.injectFault('after-report-post');
+          }
+          if (!url) url = github.findMarkedComment(target);
+          if (verification && !github.findMarkedComment(vTarget)) github.postComment({ ...vTarget, body: verification, bodyFile });
+        }
+        const now = this.now();
+        this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, fresh.version, { state: 'done', pr_url: url, retry_at: null, last_error: null }, now);
+        this.store.journal(ctx.id, 'published', { task: task.task_id, sha: task.verified_sha, url }, now);
+        if (this.oi) this.probeSucceeded(ctx, task.task_id, { detail: `publication of ${task.verified_sha} succeeded` }, now);
+        this.enqueue(ctx.id, `${ctx.id}:${task.task_id}:published:${task.verified_sha}`, decl, spec.deliverable === 'commit'
+          ? `**${task.task_id}** (#${spec.issue}) passed independent verification and is published for review: ${url} at \`${task.verified_sha}\`. Not merged; merge follows ${decl.target.repository}'s release gate.`
+          : `**${task.task_id}** (#${spec.issue}) passed independent verification; the verified report is posted: ${url} (revision \`${task.verified_sha}\`).`, now);
+        this.log(`published ${task.task_id}: ${url}`);
+      });
+    } catch (error) {
+      if (error instanceof FencedError) throw error;
+      this.log(`publish ${task.task_id} failed: ${error.message}`);
+      this.fenced(ctx, () => {
+        const t = this.store.task(ctx.id, task.task_id);
+        this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, t.version,
+          { retry_at: this.now() + this.config.publishRetryMs, last_error: `publish: ${String(error.message).slice(0, 500)}` }, this.now());
+      });
+    }
+  }
+
+  verificationLines(task) {
+    const v = task.verification ?? {};
+    const checks = (v.checks ?? []).map((check) => `- \`${check.command}\`: ${check.result}${check.detail ? ` - ${check.detail}` : ''}`);
+    const notes = (v.findings ?? []).filter((f) => f.severity !== 'blocking').map((f) => `- ${f.id}: ${f.description}`);
+    return [v.summary ?? '', ...(checks.length ? ['', 'Checks:', ...checks] : []), ...(notes.length ? ['', 'Non-blocking findings:', ...notes] : [])];
+  }
+
+  /** The independent verification alone, for publication split over GitHub's body limit. */
+  verificationBody(decl, spec, task) {
+    return [
+      `## ${spec.id}: independent verification`,
+      '',
+      `Campaign \`${decl.campaignId}\`, revision \`${task.verified_sha}\`. Continues the verified report above, which was too long for one GitHub body together with its verification.`,
+      '',
+      ...this.verificationLines(task),
+      '',
+      'Generated by the AIWorks delivery supervisor.',
+    ].join('\n');
+  }
+
+  reportBody(decl, spec, task, digest, { verificationElsewhere = false } = {}) {
+    return [
+      `## ${spec.id}: ${spec.title} (independently verified report)`,
+      '',
+      `Campaign \`${decl.campaignId}\` (#${decl.target.trackingIssue}), AIWorks supervisor (netbka/aiworks#2). Revision \`${task.verified_sha}\`, report sha256 \`${digest}\`.`,
+      '',
+      String(task.result?.report ?? ''),
+      '',
+      '### Independent verification',
+      '',
+      ...(verificationElsewhere ? ['Accepted. The full independent verification is posted as a separate supervisor comment on this issue (split to stay within the GitHub body limit).'] : this.verificationLines(task)),
+      '',
+      'Generated by the AIWorks delivery supervisor.',
+    ].join('\n');
+  }
+
+  prBody(decl, spec, task, { verificationElsewhere = false } = {}) {
+    return [
+      `## ${spec.id}: ${spec.title}`,
+      '',
+      `Refs #${spec.issue}. Campaign \`${decl.campaignId}\` (parent plan #${decl.target.trackingIssue}), run by the AIWorks supervisor (netbka/aiworks#2).`,
+      '',
+      `**Verified commit:** \`${task.verified_sha}\`. A separate fresh verifier session accepted exactly this SHA; the branch was pushed at that SHA.`,
+      '',
+      '### Implementer report',
+      '',
+      String(task.result?.report ?? ''),
+      '',
+      '### Independent verification',
+      '',
+      ...(verificationElsewhere ? ['Accepted. The full independent verification is posted as a separate supervisor comment on this PR (split to stay within the GitHub body limit).'] : this.verificationLines(task)),
+      '',
+      '### Gate',
+      '',
+      `Opened by the supervisor after independent verification. Not merged and not deployed: merge and release follow ${decl.target.repository}'s release gate.`,
+      '',
+      'Generated by the AIWorks delivery supervisor.',
+    ].join('\n');
+  }
+
+  refreshStatus(ctx) {
+    this.fenced(ctx, () => {
+      const now = this.now();
+      const c = this.store.campaign(ctx.id);
+      const decl = c.declaration;
+      const tasks = this.store.tasks(ctx.id);
+      const open = this.store.openOperations(ctx.id);
+      const spec = new Map(decl.tasks.map((task) => [task.id, task]));
+      const done = new Set(tasks.filter((task) => task.state === 'done').map((task) => task.task_id));
+      const waiting = tasks.filter((task) => task.state !== 'done');
+      const blockedTasks = waiting.filter((task) => task.blocked);
+      const held = this.heldTasks(ctx.id);
+      const runnable = waiting.filter((task) => !task.blocked && !held.has(task.task_id) && RUNNABLE.includes(task.state) &&
+        spec.get(task.task_id).dependsOn.every((dep) => done.has(dep)) && (task.state === 'verified' || !c.blocker));
+      let status = c.status;
+      let control = c.control;
+      let nextAction = null;
+      let wakeup = null;
+      if (!waiting.length) {
+        status = 'ready';
+        control = 'finished';
+        const reportsOnly = decl.tasks.every((task) => task.deliverable === 'report');
+        nextAction = reportsOnly ? `Planning reports published in ${decl.target.repository}; review recommendations before assigning implementation.`
+          : `Release gate: review campaign deliveries under ${decl.target.repository}'s own merge and release policy.`;
+        this.enqueue(ctx.id, `${ctx.id}:ready`, decl, `Campaign \`${ctx.id}\` (${decl.target.repository}): all ${tasks.length} tasks passed independent verification and their declared deliverables are published. Status \`ready\`; nothing was merged or deployed.`, now);
+      } else if (c.blocker) {
+        status = STATUS_FOR[c.blocker.class] ?? 'blocked-external';
+        nextAction = c.blocker.requestedAction;
+      } else if (open.length) {
+        status = open[0].kind === 'verify' ? 'verifying' : 'active';
+        nextAction = `${open[0].kind} ${open[0].task_id} running (operation ${open[0].id}, session ${open[0].session_id})`;
+        wakeup = c.next_wakeup_at && c.next_wakeup_at > now ? c.next_wakeup_at : now + this.config.pollMs;
+      } else if (c.control === 'paused') {
+        nextAction = 'Paused by the owner; start the campaign again to resume.';
+      } else if (runnable.length) {
+        const hold = c.declaration.executor.kind === 'cli-chain' || runnable.some((task) => task.state === 'verified') ? 0 : quotaHoldUntil(tasks, now);
+        const due = Math.max(hold, Math.min(...runnable.map((task) => task.retry_at ?? now)));
+        status = 'active';
+        nextAction = hold ? `waiting for the provider usage reset at ${new Date(hold).toISOString()}; no dispatch before then`
+          : due > now ? `retry ${runnable[0].task_id} after backoff (${runnable[0].last_error ?? 'wait'})`.slice(0, 1000) : `dispatch ${runnable[0].task_id}`;
+        wakeup = Math.max(due, now);
+      } else if (blockedTasks.length) {
+        status = blockedTasks.some((task) => task.blocked.class === 'B3') ? 'blocked-owner-decision' : 'blocked-child';
+        nextAction = `${blockedTasks.map((task) => `${task.task_id}: ${task.blocked.reason}`).join(' | ')}; run recheck after recovery`.slice(0, 1000);
+      } else if (held.size) {
+        status = 'blocked-child';
+        nextAction = `${[...held].join(', ')} held until blocker recheck evidence passes`;
+      }
+      // Liveness: a nonterminal campaign needs executable work, a durable wakeup, or an explicit pause/blocker.
+      const defect = control === 'registered' && !open.length && !wakeup && !c.blocker && !blockedTasks.length && !held.size ? 1 : 0;
+      if (defect && !c.liveness_defect) this.store.journal(ctx.id, 'liveness-defect', { tasks: waiting.map((task) => [task.task_id, task.state]) }, now);
+      const changes = { status, control, next_action: nextAction, next_wakeup_at: wakeup, liveness_defect: defect };
+      if (Object.entries(changes).some(([key, value]) => c[key] !== value)) this.store.patch('campaigns', { id: ctx.id }, c.version, changes, now);
+    });
+  }
+
+  // ---- aiworks#1 owner-intervention core. Every method below runs inside a fenced transaction and only when enabled. ----
+
+  /** Tasks that wait on an open or rechecking blocker; a rechecking blocker's single probe task is not held. */
+  heldTasks(campaignId) {
+    if (!this.oi) return new Set();
+    const rows = this.store.all(`SELECT p.task_id, b.status, b.probe FROM blocker_parents p JOIN blockers b ON b.fingerprint = p.fingerprint
+      WHERE p.campaign_id = ? AND p.released_at IS NULL AND b.status IN ('open', 'rechecking')`, campaignId);
+    const probing = new Set(rows.filter((row) => row.status === 'rechecking' && row.probe?.campaignId === campaignId).map((row) => row.probe.taskId));
+    return new Set(rows.map((row) => row.task_id).filter((id) => !probing.has(id)));
+  }
+
+  deterministic(dependency) { return typeof this.probes[dependency] === 'function' || DETERMINISTIC_PROBES.has(dependency); }
+
+  /** A deterministic recheck result `{ pass, evidence }`, or null when the evidence needs a probe run. */
+  probeOf(ctx, record) {
+    try {
+      if (typeof this.probes[record.dependency] === 'function') {
+        return this.probes[record.dependency]({ campaignId: ctx.id,
+          record: { fingerprint: record.fingerprint, dependency: record.dependency, class: record.class, subject: record.subject } });
+      }
+      if (record.dependency === 'budget') {
+        const budget = campaignBudget(this.store, this.store.campaign(ctx.id));
+        return { pass: !budget.exhausted, evidence: budget.exhausted ?? `budget available (${budget.runsUsed} runs used)` };
+      }
+      if (record.dependency === 'process-ownership') {
+        const open = this.store.openOperations(ctx.id).some((op) => op.id === record.subject);
+        return { pass: !open, evidence: open ? `operation ${record.subject} still has unresolved process ownership` : `operation ${record.subject} is no longer open` };
+      }
+    } catch (error) {
+      return { pass: false, evidence: `probe failed: ${error.message}` };
+    }
+    return null;
+  }
+
+  /**
+   * Create or deduplicate the durable record behind a B2-B5 blocker (OWNER_INTERVENTION §6-§7). The same
+   * fingerprint while open or rechecking is one record and one notification; a recurrence while rechecking is a
+   * failed recheck. A recurrence after resolution opens a new episode with its own notification. B0/B1: null.
+   */
+  openBlocker(ctx, decl, { dependency, cls, identity, summary, requestedAction = null, subject = null, parents, scope }, now) {
+    if (!OWNER_CLASSES.has(cls)) return null;
+    const project = decl.target.projectId, environment = decl.target.environment;
+    const fingerprint = blockerFingerprint({ project, environment, dependency, blockerClass: cls, identity });
+    const existing = this.store.blocker(fingerprint);
+    const timed = this.deterministic(dependency);
+    const action = requestedAction ? redact(requestedAction) : null;
+    let notify = false;
+    if (!existing) {
+      this.store.insert('blockers', { fingerprint, project, environment, dependency, class: cls, identity: redact(identity, 300), subject,
+        status: 'open', episode: 1, summary: redact(summary), requested_action: action,
+        recheck_procedure: RECHECK_PROCEDURE[dependency] ?? 'Run the held task once; a structured result is the evidence.',
+        first_detected_at: now, last_seen_at: now, occurrences: 1, recheck_attempts: 0,
+        next_recheck_at: timed ? nextRecheckAt(cls, 0, now) : null, reminders: 0, updated_at: now });
+      notify = true;
+      this.store.journal(ctx.id, 'blocker-opened', { fingerprint, class: cls, dependency }, now);
+    } else if (existing.status === 'resolved') {
+      this.store.run(`UPDATE blockers SET status = 'open', episode = episode + 1, summary = ?, requested_action = ?, probe = NULL,
+        last_seen_at = ?, occurrences = occurrences + 1, recheck_attempts = 0, next_recheck_at = ?, acknowledged_at = NULL,
+        resolution = NULL, resolved_at = NULL, last_notified_at = NULL, reminders = 0, updated_at = ? WHERE fingerprint = ?`,
+      redact(summary), action, now, timed ? nextRecheckAt(cls, 0, now) : null, now, fingerprint);
+      notify = true;
+      this.store.journal(ctx.id, 'blocker-reopened', { fingerprint, class: cls, dependency, episode: existing.episode + 1 }, now);
+    } else {
+      const failed = existing.status === 'rechecking';
+      const attempts = existing.recheck_attempts + (failed ? 1 : 0);
+      const evidence = failed ? { trigger: existing.probe?.trigger ?? null, probe: 'run', pass: false,
+        detail: 'the same failure recurred during the recheck run', at: now } : existing.last_evidence;
+      this.store.run(`UPDATE blockers SET status = 'open', summary = ?, probe = NULL, last_seen_at = ?, occurrences = occurrences + 1,
+        recheck_attempts = ?, next_recheck_at = ?, last_evidence = ?, updated_at = ? WHERE fingerprint = ?`,
+      redact(summary), now, attempts, failed && timed ? nextRecheckAt(cls, attempts, now) : existing.next_recheck_at, evidence, now, fingerprint);
+      this.store.journal(ctx.id, failed ? 'blocker-recheck-failed' : 'blocker-deduplicated', { fingerprint, class: cls, dependency }, now);
+    }
+    for (const task of parents) {
+      this.store.run(`INSERT INTO blocker_parents (fingerprint, campaign_id, task_id, phase, scope, attached_at) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT (fingerprint, campaign_id, task_id) DO UPDATE SET phase = excluded.phase, scope = excluded.scope, released_at = NULL`,
+      fingerprint, ctx.id, task.task_id, task.state, scope, now);
+    }
+    const record = this.store.blocker(fingerprint);
+    if (notify) this.recordNotification(ctx, decl, record, 'initial', now);
+    return this.store.blocker(fingerprint);
+  }
+
+  /** Outbox entry for what the owner would be told (§8, §10). The key makes repeats of the same notice no-ops. */
+  recordNotification(ctx, decl, record, kind, now) {
+    const parents = this.store.all('SELECT campaign_id, task_id FROM blocker_parents WHERE fingerprint = ? AND released_at IS NULL ORDER BY campaign_id, task_id', record.fingerprint);
+    const key = `${record.fingerprint}:${record.episode}:${kind}`;
+    const message = ownerMessage({ record, kind, parents, repository: decl.target.repository, trackingIssue: decl.target.trackingIssue,
+      tried: RECOVERY_TRIED[record.dependency] });
+    const info = this.store.run(`INSERT OR IGNORE INTO owner_notifications (key, fingerprint, campaign_id, kind, class, message, state, attempts, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`, key, record.fingerprint, ctx.id, kind, record.class, message, now, now);
+    if (!info.changes) return;
+    this.store.run('UPDATE blockers SET last_notified_at = ?, reminders = ? WHERE fingerprint = ?',
+      now, kind.startsWith('reminder-') ? Number(kind.slice('reminder-'.length)) : 0, record.fingerprint);
+    this.store.journal(ctx.id, 'owner-notification-recorded', { key, class: record.class, kind }, now);
+  }
+
+  releaseParents(ctx, record, now) {
+    const rows = this.store.all('SELECT task_id, phase FROM blocker_parents WHERE fingerprint = ? AND campaign_id = ? AND released_at IS NULL', record.fingerprint, ctx.id);
+    if (!rows.length) return;
+    this.store.run('UPDATE blocker_parents SET released_at = ? WHERE fingerprint = ? AND campaign_id = ? AND released_at IS NULL', now, record.fingerprint, ctx.id);
+    // Tasks keep their state while held, so each resumes in the phase it was blocked in (§11).
+    this.store.journal(ctx.id, 'parents-resumed', { fingerprint: record.fingerprint, tasks: rows.map((row) => [row.task_id, row.phase]) }, now);
+  }
+
+  /** Close a blocker on passing evidence only, release this campaign's parents and record the resolution. */
+  resolveBlocker(ctx, record, evidence, now) {
+    this.store.run(`UPDATE blockers SET status = 'resolved', resolution = ?, last_evidence = ?, resolved_at = ?, probe = NULL,
+      next_recheck_at = NULL, updated_at = ? WHERE fingerprint = ?`, evidence, evidence, now, now, record.fingerprint);
+    this.store.journal(ctx.id, 'blocker-resolved', { fingerprint: record.fingerprint, class: record.class, dependency: record.dependency, evidence }, now);
+    this.releaseParents(ctx, record, now);
+    const c = this.store.campaign(ctx.id);
+    if (c.blocker?.fingerprint === record.fingerprint) this.store.patch('campaigns', { id: ctx.id }, c.version, { blocker: null }, now);
+    this.enqueue(ctx.id, `${ctx.id}:blocker:${record.fingerprint}:${record.episode}:resolved`, c.declaration,
+      `Blocker \`${record.fingerprint.slice(0, 12)}\` (${record.class}, ${record.dependency}) resolved after recheck evidence: ${evidence.detail}. Held tasks resume in the phase they were blocked in.`, now);
+  }
+
+  /**
+   * Owner Recheck/Done or a due timer. A deterministic probe decides at once; otherwise one held parent task is
+   * released as the probe run and the others stay held until its evidence arrives. Acknowledgement never gets here.
+   */
+  recheckBlocker(ctx, record, trigger, now) {
+    const result = this.probeOf(ctx, record);
+    if (result) {
+      const evidence = { trigger, probe: 'deterministic', pass: result.pass === true, detail: redact(result.evidence ?? ''), at: now };
+      if (evidence.pass) { this.resolveBlocker(ctx, record, evidence, now); return; }
+      const attempts = record.recheck_attempts + 1;
+      this.store.run('UPDATE blockers SET last_evidence = ?, recheck_attempts = ?, next_recheck_at = ?, updated_at = ? WHERE fingerprint = ?',
+        evidence, attempts, nextRecheckAt(record.class, attempts, now), now, record.fingerprint);
+      this.store.journal(ctx.id, 'blocker-recheck-failed', { fingerprint: record.fingerprint, trigger, detail: evidence.detail }, now);
+      return;
+    }
+    // A timer never spends a worker run.
+    if (trigger === 'timer') { this.store.run('UPDATE blockers SET next_recheck_at = NULL WHERE fingerprint = ?', record.fingerprint); return; }
+    const tasks = this.store.tasks(ctx.id);
+    const done = new Set(tasks.filter((task) => task.state === 'done').map((task) => task.task_id));
+    const spec = new Map(this.store.campaign(ctx.id).declaration.tasks.map((task) => [task.id, task]));
+    const parents = new Set(this.store.all('SELECT task_id FROM blocker_parents WHERE fingerprint = ? AND campaign_id = ? AND released_at IS NULL',
+      record.fingerprint, ctx.id).map((row) => row.task_id));
+    const probe = tasks.find((task) => parents.has(task.task_id) && RUNNABLE.includes(task.state) && !task.blocked &&
+      spec.get(task.task_id).dependsOn.every((dep) => done.has(dep)));
+    if (!probe) {
+      const evidence = { trigger, probe: 'run', pass: false, detail: 'no runnable held task can carry the recheck run', at: now };
+      this.store.run('UPDATE blockers SET last_evidence = ?, updated_at = ? WHERE fingerprint = ?', evidence, now, record.fingerprint);
+      this.store.journal(ctx.id, 'blocker-recheck-failed', { fingerprint: record.fingerprint, trigger, detail: evidence.detail }, now);
+      return;
+    }
+    this.store.run("UPDATE blockers SET status = 'rechecking', probe = ?, updated_at = ? WHERE fingerprint = ?",
+      { campaignId: ctx.id, taskId: probe.task_id, trigger, at: now }, now, record.fingerprint);
+    const c = this.store.campaign(ctx.id);
+    if (c.blocker?.fingerprint === record.fingerprint) this.store.patch('campaigns', { id: ctx.id }, c.version, { blocker: null }, now);
+    this.store.journal(ctx.id, 'blocker-rechecking', { fingerprint: record.fingerprint, task: probe.task_id, trigger }, now);
+  }
+
+  /** The probe run for a rechecking blocker got past the failure: that is the recovery evidence. */
+  probeSucceeded(ctx, taskId, { operation = null, detail }, now) {
+    for (const record of this.store.all("SELECT * FROM blockers WHERE status = 'rechecking'")) {
+      if (record.probe?.campaignId !== ctx.id || record.probe?.taskId !== taskId) continue;
+      this.resolveBlocker(ctx, record, { trigger: record.probe.trigger, probe: 'run', pass: true, detail: redact(detail),
+        ...(operation ? { operation } : {}), at: now }, now);
+    }
+  }
+
+  /** Per tick: adopt resolutions proven by another campaign, run due timer rechecks and record due reminders. */
+  ownerInterventionTick(ctx) {
+    this.fenced(ctx, () => {
+      const now = this.now();
+      const c = this.store.campaign(ctx.id);
+      const mine = (status) => this.store.all(`SELECT DISTINCT b.* FROM blockers b JOIN blocker_parents p ON p.fingerprint = b.fingerprint
+        WHERE p.campaign_id = ? AND p.released_at IS NULL AND b.status = ? ORDER BY b.first_detected_at`, ctx.id, status);
+      const shared = c.blocker?.fingerprint ? this.store.blocker(c.blocker.fingerprint) : null;
+      if (shared?.status === 'resolved') {
+        this.store.patch('campaigns', { id: ctx.id }, c.version, { blocker: null }, now);
+        this.store.journal(ctx.id, 'blocker-resumed', { fingerprint: shared.fingerprint, resolution: shared.resolution }, now);
+      }
+      for (const record of mine('resolved')) this.releaseParents(ctx, record, now);
+      for (const record of mine('open')) {
+        if (record.next_recheck_at !== null && record.next_recheck_at <= now) this.recheckBlocker(ctx, record, 'timer', now);
+      }
+      for (const record of mine('open')) {
+        const reminder = reminderDue(record, now);
+        if (reminder) this.recordNotification(ctx, c.declaration, record, `reminder-${reminder}`, now);
+      }
+    });
+  }
+
+  /**
+   * Hand pending owner notifications to the transport, only when `ownerIntervention.deliver` is set and a live
+   * transport was injected. The attempt is counted before the effect, so a crash retries with the same key
+   * (at-least-once); the transport deduplicates by key. Failures back off and stop after MAX_NOTIFY_ATTEMPTS.
+   */
+  async drainOwnerNotifications() {
+    if (!this.oi || this.config.ownerIntervention?.deliver !== true || this.notifier?.live !== true) return;
+    const now = this.now();
+    const items = [...this.held.keys()].flatMap((id) => this.store.all(
+      "SELECT * FROM owner_notifications WHERE campaign_id = ? AND state = 'pending' ORDER BY created_at LIMIT 5", id))
+      .filter((item) => item.attempts === 0 || now - item.updated_at >= this.config.outboxRetryMs * item.attempts);
+    for (const item of items) {
+      const ctx = { id: item.campaign_id, generation: this.held.get(item.campaign_id) };
+      try {
+        const claimed = this.fenced(ctx, () => {
+          if (this.store.get('SELECT state FROM owner_notifications WHERE key = ?', item.key)?.state !== 'pending') return false;
+          this.store.run('UPDATE owner_notifications SET attempts = attempts + 1, updated_at = ? WHERE key = ?', this.now(), item.key);
+          return true;
+        });
+        if (!claimed) continue;
+        let receipt = null;
+        let failure = null;
+        try { receipt = await this.notifier.send({ key: item.key, message: item.message }); } catch (error) { failure = error; }
+        this.fenced(ctx, () => {
+          const at = this.now();
+          if (!failure && receipt?.delivered === true) {
+            this.store.run("UPDATE owner_notifications SET state = 'delivered', delivered_at = ?, last_error = NULL, updated_at = ? WHERE key = ?", at, at, item.key);
+            this.store.journal(item.campaign_id, 'owner-notification-delivered', { key: item.key, transport: this.notifier.name }, at);
+            return;
+          }
+          const detail = redact(failure ? failure.message : `not delivered: ${receipt?.receipt ?? 'no receipt'}`, 300);
+          const state = item.attempts + 1 >= MAX_NOTIFY_ATTEMPTS ? 'failed' : 'pending';
+          this.store.run('UPDATE owner_notifications SET state = ?, last_error = ?, updated_at = ? WHERE key = ?', state, detail, at, item.key);
+          if (state === 'failed') this.store.journal(item.campaign_id, 'owner-notification-failed', { key: item.key, detail }, at);
+        });
+        if (failure) this.log(`owner notification ${item.key}: ${redact(failure.message, 300)}`);
+      } catch (error) {
+        if (!(error instanceof FencedError)) throw error;
+        this.log(`owner notification ${item.key}: ${error.message}`);
+      }
+    }
+  }
+
+  enqueue(campaignId, key, decl, body, now) {
+    if (this.config.github?.comments === false) return;
+    this.store.run("INSERT OR IGNORE INTO outbox (key, campaign_id, target, body, state, attempts, updated_at) VALUES (?, ?, ?, ?, 'pending', 0, ?)",
+      key, campaignId, `${decl.target.repository}#${decl.target.trackingIssue}`, body, now);
+  }
+
+  /** At-least-once GitHub notes, reconciled by an embedded marker before any repost. */
+  async drainOutbox() {
+    const now = this.now();
+    const items = [...this.held.keys()].flatMap((id) => this.store.all(
+      "SELECT * FROM outbox WHERE campaign_id = ? AND state = 'pending' ORDER BY updated_at LIMIT 5", id))
+      .filter((item) => item.attempts === 0 || now - item.updated_at >= this.config.outboxRetryMs * item.attempts);
+    for (const item of items) {
+      const [repository, issue] = item.target.split('#');
+      try {
+        this.fenced({ id: item.campaign_id, generation: this.held.get(item.campaign_id) }, () => {
+          if (this.store.get('SELECT state FROM outbox WHERE key = ?', item.key)?.state !== 'pending') return;
+          if (github.findMarkedComment({ gh: this.cmd.gh, repository, issue, key: item.key })) {
+            this.store.run("UPDATE outbox SET state = 'posted', posted = 'reconciled', updated_at = ? WHERE key = ?", now, item.key);
+            return;
+          }
+          this.store.run('UPDATE outbox SET attempts = attempts + 1, updated_at = ? WHERE key = ?', now, item.key);
+          const url = github.postComment({ gh: this.cmd.gh, repository, issue, body: `${item.body}\n\n${github.marker(item.key)}`,
+            bodyFile: join(this.dataDir, 'runs', 'outbox.md') });
+          this.store.run("UPDATE outbox SET state = 'posted', posted = ?, updated_at = ? WHERE key = ?", url ?? 'posted', this.now(), item.key);
+        });
+      } catch (error) {
+        if (!(error instanceof FencedError)) {
+          try {
+            this.fenced({ id: item.campaign_id, generation: this.held.get(item.campaign_id) }, () =>
+              this.store.run("UPDATE outbox SET attempts = attempts + 1, updated_at = ? WHERE key = ? AND state = 'pending'", this.now(), item.key));
+          } catch (leaseError) {
+            if (!(leaseError instanceof FencedError)) throw leaseError;
+          }
+        }
+        this.log(`outbox ${item.key}: ${error.message}`);
+      }
+    }
+  }
+}

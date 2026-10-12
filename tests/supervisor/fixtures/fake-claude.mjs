@@ -1,0 +1,120 @@
+#!/usr/bin/env node
+// Synthetic stand-in for `claude -p` in supervisor tests. It makes no model or network calls.
+// Behaviour per call comes from <FAKE_CLAUDE_STATE>/scenario.json: { implement: [mode...], verify: [mode...] }.
+import { spawnSync } from 'node:child_process';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const args = process.argv.slice(2);
+const option = (flag) => { const index = args.indexOf(flag); return index >= 0 ? args[index + 1] : null; };
+const sessionId = option('--session-id');
+const prompt = readFileSync(0, 'utf8');
+const role = prompt.includes('INDEPENDENT VERIFIER') ? 'verify' : prompt.includes('AIWORKS COORDINATOR') ? 'coordinate' : 'implement';
+const stateDir = process.env.FAKE_CLAUDE_STATE;
+const scenario = JSON.parse(readFileSync(join(stateDir, 'scenario.json'), 'utf8'));
+const callsFile = join(stateDir, 'calls.jsonl');
+const previous = existsSync(callsFile)
+  ? readFileSync(callsFile, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)).filter((call) => call.role === role).length
+  : 0;
+let mode = scenario[role]?.[previous] ?? (role === 'implement' ? 'commit' : role === 'coordinate' ? 'coordinate' : 'accept');
+appendFileSync(callsFile, `${JSON.stringify({ role, sessionId, cwd: process.cwd(), mode, args,
+  autoMemoryDisabled: process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY === '1', subagentModel: process.env.CLAUDE_CODE_SUBAGENT_MODEL ?? null,
+  gitBashPath: process.env.CLAUDE_CODE_GIT_BASH_PATH ?? null, inheritedProbe: process.env.CLAUDE_CODE_PROBE_INHERITED ?? null, at: Date.now() })}\n`);
+
+const git = (...gitArgs) => spawnSync('git', gitArgs, { encoding: 'utf8', windowsHide: true }).stdout.trim();
+const emit = (body, code = 0) => { process.stdout.write(JSON.stringify(body)); process.exit(code); };
+const ok = (value) => emit({ type: 'result', subtype: 'success', is_error: false, session_id: sessionId, num_turns: 3,
+  total_cost_usd: 0.01, usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 50 },
+  permission_denials: [], structured_output: value, result: JSON.stringify(value) });
+const target = (/Target commit: ([0-9a-f]{40})/.exec(prompt) ?? /MUST carry targetSha ([0-9a-f]{40})/.exec(prompt))?.[1];
+const reportDigest = /reportDigest ([0-9a-f]{64})/.exec(prompt)?.[1];
+
+const sleep = /^sleep:(\d+):(.+)$/.exec(mode);
+if (sleep) {
+  await new Promise((done) => setTimeout(done, Number(sleep[1])));
+  mode = sleep[2];
+}
+
+switch (mode) {
+  case 'commit-settings': { // an implementer that tries to steer later workers through the project settings
+    mkdirSync(join(process.cwd(), '.claude'), { recursive: true });
+    writeFileSync(join(process.cwd(), '.claude', 'settings.json'), JSON.stringify({ env: { CLAUDE_CODE_SUBAGENT_MODEL: 'opus', CLAUDE_CODE_GIT_BASH_PATH: 'C:/evil/bash.exe' } }));
+    git('add', '-A');
+    git('commit', '-q', '-m', `settings ${sessionId}`);
+    ok({ result: 'resolved', summary: 'implemented', headSha: git('rev-parse', 'HEAD'), report: `# Report\n\nsession ${sessionId}` });
+    break;
+  }
+  case 'commit-big': { // a verified commit whose report fills most of a GitHub body
+    writeFileSync(join(process.cwd(), `work-${sessionId}.txt`), `work by ${sessionId}\n`);
+    git('add', '-A');
+    git('commit', '-q', '-m', `work ${sessionId}`);
+    ok({ result: 'resolved', summary: 'implemented', headSha: git('rev-parse', 'HEAD'), report: `# Report\n\n${'r'.repeat(50000)}` });
+    break;
+  }
+  case 'report-big':
+    ok({ result: 'resolved', summary: 'researched', report: `# Findings\n\n${'r'.repeat(50000)}` });
+    break;
+  case 'commit':
+  case 'dirty': {
+    writeFileSync(join(process.cwd(), `work-${sessionId}.txt`), `work by ${sessionId}\n`);
+    git('add', '-A');
+    git('commit', '-q', '-m', `work ${sessionId}`);
+    if (mode === 'dirty') writeFileSync(join(process.cwd(), 'uncommitted.txt'), 'left behind\n');
+    ok({ result: 'resolved', summary: 'implemented', headSha: git('rev-parse', 'HEAD'), report: `# Report\n\nsession ${sessionId}` });
+    break;
+  }
+  case 'report':
+    ok({ result: 'resolved', summary: 'researched', report: `# Findings\n\nsession ${sessionId}` });
+    break;
+  case 'leak': // a coordinator induced to put a credential into its reply
+    ok({ summary: 'leaked', reply: `found token ghp_${'A'.repeat(36)} in a file`, newWork: [], plan: 'none' });
+    break;
+  case 'tamper': // a misbehaving coordinator that writes into its checkout before answering
+    writeFileSync(join(process.cwd(), 'tampered.txt'), 'changed by the agent\n');
+  // falls through to a normal answer
+  case 'coordinate':
+    ok({ summary: 'two new items reviewed', reply: `Reviewed as asked (session ${sessionId}).`,
+      newWork: [{ repository: 'netbka/Dyk', number: 455, kind: 'issue', title: 'Telegram ingestion SQL contract', classification: 'new-campaign-candidate', reason: 'defect on main', wave: 1 },
+        { repository: 'netbka/Dyk', number: 461, kind: 'pr', title: 'Readable WhatsApp contacts', classification: 'needs-review-or-merge', reason: 'open PR awaiting review' }],
+      plan: 'Wave 1: #455 with independent verification.', proposedCampaign: '{"campaignId":"dyk-next"}' });
+    break;
+  case 'owner':
+    ok({ result: 'blocked-owner-reserved', summary: 'needs owner', ownerTrigger: 'Constitution 2: paid spend decision' });
+    break;
+  case 'owner-leak': // an owner-reserved result whose trigger text carries synthetic credential-shaped values (aiworks#1)
+    ok({ result: 'blocked-owner-reserved', summary: 'needs owner',
+      ownerTrigger: `Rotate key ${['sk', 'ant', 'api03', 'SYNTHETICfakeVALUE0123456789abcdef'].join('-')} with password=SYNTHETICfakePassphrase then decide` });
+    break;
+  case 'unavailable': // a worker that cannot proceed and says so (the WAVE-06 shape, engineering-platform-archive#74)
+    ok({ result: 'evidence-unavailable', summary: 'cannot proceed', tried: 'synthetic: no cohort assigned within the authorization' });
+    break;
+  case 'no-result':
+    emit({ type: 'result', subtype: 'success', is_error: false, session_id: sessionId, result: 'done' });
+    break;
+  case 'auth':
+    emit({ type: 'result', subtype: 'success', is_error: true, api_error_status: 401, session_id: sessionId, result: 'Invalid API key - Please run /login' }, 1);
+    break;
+  case 'accept-big': // an acceptance whose checks and notes push report + verification past 65,536 characters
+    ok({ verdict: 'accepted', targetSha: target, reportDigest, summary: `VERIFIED-SUMMARY ${'s'.repeat(3800)}`, checks: Array.from({ length: 12 }, (_, i) => ({ command: `check-${i}`, result: 'pass', detail: 'd'.repeat(1000) })),
+      findings: Array.from({ length: 3 }, (_, i) => ({ id: `N${i}`, severity: 'non-blocking', description: 'n'.repeat(1500) })) });
+    break;
+  case 'accept':
+    ok({ verdict: 'accepted', targetSha: target, reportDigest, summary: 'all acceptance criteria hold', findings: [], checks: [{ command: 'npm test', result: 'pass' }] });
+    break;
+  case 'reject':
+    ok({ verdict: 'rejected', targetSha: target, reportDigest, summary: 'criterion 1 fails', findings: [{ id: 'F1', severity: 'blocking', description: 'missing evidence for criterion 1' }], checks: [] });
+    break;
+  case 'wrong-target':
+    ok({ verdict: 'accepted', targetSha: '0'.repeat(40), reportDigest, summary: 'looked at something else', findings: [], checks: [] });
+    break;
+  case 'quota': // subscription limit refusal before any work, as the CLI reports it (no parseable reset here)
+    emit({ type: 'result', subtype: 'success', is_error: true, session_id: sessionId, num_turns: 1, total_cost_usd: 0, result: "You've hit your session limit" }, 1);
+    break;
+  case 'hang':
+    await new Promise((done) => setTimeout(done, 60_000));
+    ok({ result: 'resolved', summary: 'late', report: 'late' });
+    break;
+  default:
+    process.stderr.write(`unknown fake mode ${mode}\n`);
+    process.exit(9);
+}

@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "campaignId": "dyk-485-view-acceptance",
+  "purpose": "A browser worker checks in a real browser that Dyk's main signed-in screens look and read right in Russian, English and Hebrew, on desktop and phone, before the #485 fixes are judged.",
+  "authorization": {
+    "version": 1,
+    "grantedBy": "owner (netbka), delegated to the owner's main session",
+    "grantedAt": "2026-10-11",
+    "reference": "https://github.com/netbka/engineering-platform/pull/143#issuecomment-6108728891",
+    "text": "On 2026-10-11 the owner asked for AGY to do the final view acceptance in the web, tested before production, and then directed: 'you make the decisions', 'only finish my task' and 'make all decision yourself'. The first acceptance is Dyk's local Storybook (the current UI review authority, docs/STORYBOOK.md), not production: eight Production stories in Russian, English and Hebrew. The owner then said not to wait for AGY and to use another agent (no AGY until 19:00), so the browser worker is Claude with the same isolated browser as AGY, which can reach only http://127.0.0.1:6006. Reports post to netbka/Dyk#485. No code change, merge or deploy. No run cap or cost ceiling; provider limits are the stop."
+  },
+  "target": {
+    "tenantId": "netbka",
+    "projectId": "dyk",
+    "environment": "local",
+    "repository": "netbka/Dyk",
+    "baseBranch": "main",
+    "trackingIssue": 485
+  },
+  "executor": {
+    "kind": "claude-cli",
+    "model": "sonnet",
+    "permissionMode": "auto",
+    "implementerTimeoutMinutes": 45,
+    "verifierTimeoutMinutes": 45
+  },
+  "constraints": [
+    "Local Storybook only (http://127.0.0.1:6006), with synthetic data. Interact only as the criteria require; never use the Storybook review or comment tools.",
+    "Report each defect with the story id, the language, the viewport and what a user sees; do not propose code changes."
+  ],
+  "tasks": [
+    {
+      "id": "VIEW-RU",
+      "issue": 485,
+      "title": "Final view acceptance in Storybook: Russian",
+      "outcome": "The main signed-in screens (Tasks, Sources, Setup, Summary, Profile, Plans) look and read right in Russian on desktop and phone.",
+      "deliverable": "report",
+      "goal": "Final visual acceptance of Dyk's main signed-in screens in Russian, as rendered by their Production stories (the shared production renderers with synthetic data) in the local Storybook, on desktop and phone.",
+      "dependsOn": [],
+      "acceptance": [
+        "A1. Each story renders its screen with no error overlay or blank area, and the console shows no errors.",
+        "A2. Every visible text is in the story's language, with no untranslated strings or raw copy keys; in Hebrew the layout reads right to left.",
+        "A3. Text meets WCAG AA contrast against its background (4.5:1 for normal text, 3:1 for large text).",
+        "A4. On desktop (1366 px wide) and phone (390 px, emulated) no element overlaps or clips another, the bottom dock (where shown) covers no content, and the phone view has no horizontal scrolling.",
+        "A5. Every button, link and input is visible, has a readable label, and at phone width is at least 24 x 24 px (WCAG 2.2 AA target size).",
+        "A6. Images and icons that carry meaning have alternative text."
+      ],
+      "references": [
+        "docs/STORYBOOK.md",
+        "docs/STATE.md"
+      ],
+      "web": {
+        "urls": [
+          "http://127.0.0.1:6006/iframe.html?id=production-tasks--active&viewMode=story&globals=locale:ru",
+          "http://127.0.0.1:6006/iframe.html?id=production-tasks--details-with-evidence&viewMode=story&globals=locale:ru",
+          "http://127.0.0.1:6006/iframe.html?id=production-chats--list&viewMode=story&globals=locale:ru",
+          "http://127.0.0.1:6006/iframe.html?id=production-chats--reader&viewMode=story&globals=locale:ru",
+          "http://127.0.0.1:6006/iframe.html?id=production-master--sources&viewMode=story&globals=locale:ru",
+          "http://127.0.0.1:6006/iframe.html?id=production-master--completed-overview&viewMode=story&globals=locale:ru",
+          "http://127.0.0.1:6006/iframe.html?id=production-profile--default&viewMode=story&globals=locale:ru",
+          "http://127.0.0.1:6006/iframe.html?id=production-commercial--plans&viewMode=story&globals=locale:ru"
+        ]
+      }
+    },
+    {
+      "id": "VIEW-EN",
+      "issue": 485,
+      "title": "Final view acceptance in Storybook: English",
+      "outcome": "The main signed-in screens (Tasks, Sources, Setup, Summary, Profile, Plans) look and read right in English on desktop and phone.",
+      "deliverable": "report",
+      "goal": "Final visual acceptance of Dyk's main signed-in screens in English, as rendered by their Production stories (the shared production renderers with synthetic data) in the local Storybook, on desktop and phone.",
+      "dependsOn": [],
+      "acceptance": [
+        "A1. Each story renders its screen with no error overlay or blank area, and the console shows no errors.",
+        "A2. Every visible text is in the story's language, with no untranslated strings or raw copy keys; in Hebrew the layout reads right to left.",
+        "A3. Text meets WCAG AA contrast against its background (4.5:1 for normal text, 3:1 for large text).",
+        "A4. On desktop (1366 px wide) and phone (390 px, emulated) no element overlaps or clips another, the bottom dock (where shown) covers no content, and the phone view has no horizontal scrolling.",
+        "A5. Every button, link and input is visible, has a readable label, and at phone width is at least 24 x 24 px (WCAG 2.2 AA target size).",
+        "A6. Images and icons that carry meaning have alternative text."
+      ],
+      "references": [
+        "docs/STORYBOOK.md",
+        "docs/STATE.md"
+      ],
+      "web": {
+        "urls": [
+          "http://127.0.0.1:6006/iframe.html?id=production-tasks--active&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-tasks--details-with-evidence&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-chats--list&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-chats--reader&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-master--sources&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-master--completed-overview&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-profile--default&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-commercial--plans&viewMode=story&globals=locale:en"
+        ]
+      }
+    },
+    {
+      "id": "VIEW-HE",
+      "issue": 485,
+      "title": "Final view acceptance in Storybook: Hebrew",
+      "outcome": "The main signed-in screens (Tasks, Sources, Setup, Summary, Profile, Plans) look and read right in Hebrew on desktop and phone.",
+      "deliverable": "report",
+      "goal": "Final visual acceptance of Dyk's main signed-in screens in Hebrew, as rendered by their Production stories (the shared production renderers with synthetic data) in the local Storybook, on desktop and phone.",
+      "dependsOn": [],
+      "acceptance": [
+        "A1. Each story renders its screen with no error overlay or blank area, and the console shows no errors.",
+        "A2. Every visible text is in the story's language, with no untranslated strings or raw copy keys; in Hebrew the layout reads right to left.",
+        "A3. Text meets WCAG AA contrast against its background (4.5:1 for normal text, 3:1 for large text).",
+        "A4. On desktop (1366 px wide) and phone (390 px, emulated) no element overlaps or clips another, the bottom dock (where shown) covers no content, and the phone view has no horizontal scrolling.",
+        "A5. Every button, link and input is visible, has a readable label, and at phone width is at least 24 x 24 px (WCAG 2.2 AA target size).",
+        "A6. Images and icons that carry meaning have alternative text."
+      ],
+      "references": [
+        "docs/STORYBOOK.md",
+        "docs/STATE.md"
+      ],
+      "web": {
+        "urls": [
+          "http://127.0.0.1:6006/iframe.html?id=production-tasks--active&viewMode=story&globals=locale:he",
+          "http://127.0.0.1:6006/iframe.html?id=production-tasks--details-with-evidence&viewMode=story&globals=locale:he",
+          "http://127.0.0.1:6006/iframe.html?id=production-chats--list&viewMode=story&globals=locale:he",
+          "http://127.0.0.1:6006/iframe.html?id=production-chats--reader&viewMode=story&globals=locale:he",
+          "http://127.0.0.1:6006/iframe.html?id=production-master--sources&viewMode=story&globals=locale:he",
+          "http://127.0.0.1:6006/iframe.html?id=production-master--completed-overview&viewMode=story&globals=locale:he",
+          "http://127.0.0.1:6006/iframe.html?id=production-profile--default&viewMode=story&globals=locale:he",
+          "http://127.0.0.1:6006/iframe.html?id=production-commercial--plans&viewMode=story&globals=locale:he"
+        ]
+      }
+    }
+  ]
+}

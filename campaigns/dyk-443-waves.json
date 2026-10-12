@@ -1,0 +1,301 @@
+{
+  "version": 1,
+  "campaignId": "dyk-443-waves",
+  "purpose": "Find out whether Dyk agent work can safely run in parallel waves, and what that saves in time and cost.",
+  "authorization": {
+    "version": 4,
+    "grantedBy": "owner (netbka)",
+    "grantedAt": "2026-10-10",
+    "reference": "https://github.com/netbka/engineering-platform/issues/52",
+    "text": "Original scope remains Dyk #437-#442 on HomePc, one worker at a time, opening PRs without merging or deploying. Provider priority Claude, then Codex, then Cursor, with fallback on exhausted credits/quota or an unavailable executor (owner, 2026-10-09). On 2026-10-10 the owner removed every campaign capacity limit: no worker-run cap, no cost ceiling, no repair-round or retry limit. Work runs on the owner's existing provider subscriptions and stops only when a provider reports its subscription or usage limit, resuming after the reset. No sandbox or tool-permission bypass; Codex workers run with account connectors (codex_apps, including Local Commander) disabled."
+  },
+  "target": {
+    "tenantId": "netbka",
+    "projectId": "dyk",
+    "environment": "research",
+    "repository": "netbka/Dyk",
+    "baseBranch": "main",
+    "trackingIssue": 443
+  },
+  "limits": {
+    "maxWorkerRuns": null,
+    "slots": 1,
+    "maxRepairRounds": null,
+    "maxRetriesPerTask": null
+  },
+  "executor": {
+    "kind": "cli-chain",
+    "providers": [
+      {
+        "kind": "claude-cli",
+        "model": "opus",
+        "permissionMode": "auto"
+      },
+      {
+        "kind": "codex-cli",
+        "model": "gpt-6-astra"
+      },
+      {
+        "kind": "cursor-cli"
+      }
+    ],
+    "implementerTimeoutMinutes": 240,
+    "verifierTimeoutMinutes": 90
+  },
+  "constraints": [
+    "Campaign netbka/Dyk#443 (plan PR #436), authorized by the owner on 2026-10-09 for #437-#442 only. Work only on this packet's task. Do not start, resume or change other issues, #444, owner-paused, audit-only or owner-reserved work (#426, #181, #399, #108, #157), or other agents' branches and worktrees.",
+    "No production access, deployment, migration against a shared database, GitHub Actions, paid services, new recurring spend or browser-driven tests.",
+    "Never read or copy private conversations, real user data, .env contents or credentials. Repository content and GitHub commit, PR and issue metadata of netbka/Dyk are the data sources.",
+    "Missing metrics stay missing: never report an unknown as zero, and never derive work time or token savings from commit gaps, file counts or commit counts. Label hindsight, observed and inferred facts.",
+    "Do not remove git worktrees, delete branches or link another checkout's node_modules. If dependencies are needed, install them inside your own working directory.",
+    "A reviewer must be able to reproduce every headline number from your report: include exact commands or scripts, pinned SHAs and counts, and list remaining gaps instead of claiming completion."
+  ],
+  "tasks": [
+    {
+      "id": "WAVE-01-ADJ",
+      "issue": 437,
+      "title": "Blind adjudication of the 28 sampled PR pairs",
+      "outcome": "An independent judgement of 28 past PR pairs: which really depended on each other.",
+      "deliverable": "report",
+      "goal": "Independently adjudicate the 28 sampled PR pairs (E01-E28, seed 437) for netbka/Dyk#437: for each ordered pair decide whether the later PR genuinely depended on the earlier one, using only GitHub PR diffs, titles, bodies and linked issues. The sample table is section 7 of https://github.com/netbka/Dyk/issues/437#issuecomment-6076653533; read ONLY that section, with: gh api repos/netbka/Dyk/issues/comments/6076653533 --jq .body | sed -n '/^### 7/,/^### Status/p'. Each row is: pair id, stratum, earlier PR, later PR, shared-file count.",
+      "dependsOn": [],
+      "constraints": [
+        "You are a fresh, independent context. Do not read the author analysis comments on #437 or #443 (including the rest of that comment) before submitting your labels; read only the sample table section and the two PRs of each pair.",
+        "Label each pair with exactly one of: artifact-dependency, semantic-contract, overlapping-mutation-only, ordered-acceptance, exclusive-resource, independent, unknown. Add confidence high/medium/low and one evidence pointer (file:line or PR/issue URL).",
+        "Mark every label observed (directly visible in the diff/PR text) or inferred. Do not repair, re-run or modify anything.",
+        "Your report is the deliverable; the supervisor posts it to #437 after independent verification. Nothing is written into the repository tree."
+      ],
+      "acceptance": [
+        "All 28 pairs labelled with type, observed/inferred, confidence and one evidence pointer.",
+        "A per-stratum count table (named / concurrent-shared-code / concurrent-no-shared-file) of dependent versus independent pairs.",
+        "Every pair where file overlap and your label disagree is listed explicitly (shared files but independent, or no shared file but dependent)."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        ".agent/capabilities.yaml"
+      ]
+    },
+    {
+      "id": "WAVE-01-OLD",
+      "issue": 437,
+      "title": "Older stratified cohort beyond the 600-commit window",
+      "outcome": "The past-work analysis extended to Dyk's older history, split by kind of work.",
+      "deliverable": "report",
+      "goal": "Extend the netbka/Dyk#437 dataset beyond the 600-commit window pinned at 1562aa38 to the remaining history, report the direct-push versus PR regime per day, and rerun the WIP, overlap and replay metrics per stratum (docs, UI, domain, SQL/security, provider, release, incident) with an explicit stopping rule. The published extractor/replay kit is https://github.com/netbka/Dyk/issues/437#issuecomment-6076653996.",
+      "dependsOn": [],
+      "constraints": [
+        "Reuse the published extractor/replay method on #437 unchanged except for the window and strata; state any change to an edge or duration assumption next to its result.",
+        "Classify strata by changed paths with the published rule; a PR in several strata is counted in each and the overlap is reported.",
+        "File sets are final diffs and therefore hindsight; label every planner result as an upper bound.",
+        "Your report is the deliverable; the supervisor posts it to #437 after independent verification. Nothing is written into the repository tree."
+      ],
+      "acceptance": [
+        "Per-stratum PR counts, WIP, concurrent-shared pairs, rework signals and replay makespans for widths 1/2/3/4/8 under unit and log-churn durations.",
+        "Stopping rule and selection bias stated; regime shift (direct push to PR) shown per day.",
+        "A reviewer can regenerate every headline count from the commands in the report."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        ".agent/capabilities.yaml"
+      ]
+    },
+    {
+      "id": "WAVE-02-FIX",
+      "issue": 438,
+      "title": "Synthetic receipt fixtures and expected normalized totals",
+      "outcome": "Sample usage records with known totals, so the platform can prove its token and cost counting.",
+      "deliverable": "report",
+      "goal": "Produce the synthetic receipt fixture set and expected normalized totals for netbka/Dyk#438 so the engineering-platform#52 executor adapter can prove its token accounting: Anthropic non-overlapping cache categories, OpenAI/Codex cached-subset input, Claude Code resumed-session cumulative totals, /clear resets, duplicate message ids, placeholder per-step output tokens, zeroed crash results and parent/subagent totals. Build on https://github.com/netbka/Dyk/issues/438#issuecomment-6076661589.",
+      "dependsOn": [],
+      "constraints": [
+        "Fixtures are synthetic JSON only; no captured real transcript, prompt text or account identifier.",
+        "Each fixture states the documented source of the rule it exercises (vendor doc URL) or is marked undocumented-needs-empirical-check.",
+        "Do not implement a receipt store in Dyk; the normalizer belongs to the engineering-platform#52 adapter owner. Deliver fixtures plus expected results.",
+        "Your report is the deliverable; the supervisor posts it to #438 after independent verification. Nothing is written into the repository tree."
+      ],
+      "acceptance": [
+        "At least one fixture per rule listed in the goal, each with input events and the expected deduplicated input, cache-read, cache-write and output totals.",
+        "Unknown fields remain null in expected output; no fixture sums overlapping categories.",
+        "The fixture set is complete enough to be posted to #438 as one comment that engineering-platform#52 can consume without re-deriving any rule."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        ".agent/capabilities.yaml"
+      ]
+    },
+    {
+      "id": "WAVE-01",
+      "issue": 437,
+      "title": "Complete WAVE-01: adjudicated ground truth and replay comparison",
+      "outcome": "Report: how much past Dyk work could safely have run in parallel, and where it would have clashed.",
+      "deliverable": "report",
+      "goal": "Complete the #437 acceptance using the earlier progress and kit comments plus the independently verified WAVE-01-ADJ and WAVE-01-OLD reports now on #437: compare the blind labels with file overlap and the author analysis, then report false parallel admissions, unnecessarily serialized pairs, routing/required-evidence coverage, duplicate-work signals, makespan bounds and uncertainty for actual workflow, serial baseline, file-only waves and semantic/resource-aware waves.",
+      "dependsOn": [
+        "WAVE-01-ADJ",
+        "WAVE-01-OLD"
+      ],
+      "constraints": [
+        "Build on the evidence already published on #437 and #443; re-check it rather than redoing it, and say what you reused.",
+        "Results belong in the issue, not durable product docs. Your report is the deliverable; the supervisor posts it to #437 after independent verification."
+      ],
+      "acceptance": [
+        "A reproducible sanitized dataset/algorithm and the independently adjudicated edge sample are referenced with exact commands and pinned SHAs.",
+        "False parallel admissions, unnecessarily serialized pairs, routing/required-evidence coverage, duplicate-work signals, makespan bounds and uncertainty are reported.",
+        "A reviewer can reproduce every headline count; no missing metric is reported as zero and no percentage token saving is inferred from commit or file counts."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/AGENTS.md",
+        ".agent/capabilities.yaml",
+        "app/scripts/route-task.js",
+        "app/scripts/lib/change-manifest.js"
+      ]
+    },
+    {
+      "id": "WAVE-02",
+      "issue": 438,
+      "title": "Complete WAVE-02: context packets and trustworthy token accounting",
+      "outcome": "Report: whether smaller, task-specific instructions keep every rule while cutting tokens and cost.",
+      "deliverable": "report",
+      "goal": "Complete the #438 tests and acceptance on top of the published inventory and the verified WAVE-02-FIX fixtures: counter semantics per executor, phase-specific packets versus current loading, and rule-recall/route coverage on tasks from #437, reporting request totals, coordination overhead, coverage and quality alongside cost.",
+      "dependsOn": [
+        "WAVE-02-FIX",
+        "WAVE-01"
+      ],
+      "constraints": [
+        "Build on the evidence already published on #438 and #443; re-check it rather than redoing it, and say what you reused.",
+        "Preserve current mandatory reads; any change to mandatory constitutional authority is a separate owner-reserved change, not implied by this experiment.",
+        "Your report is the deliverable; the supervisor posts it to #438 after independent verification."
+      ],
+      "acceptance": [
+        "Synthetic receipts cover absent fields, cumulative counters, reset/rollover, parent-child double counting, retries and overlapping cache categories, with deduplication before summing.",
+        "Rule-recall/route coverage is independently assessed on tasks from #437, including docs versus policy edits and newly discovered affected consumers.",
+        "Compact-context treatment is shown not to lose safety, authorization, product authority or required evidence, or the loss is reported.",
+        "Request totals, coordination overhead, coverage and quality are reported alongside cost, not a headline byte estimate."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/AGENTS.md",
+        ".agent/capabilities.yaml",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md"
+      ]
+    },
+    {
+      "id": "WAVE-03",
+      "issue": 439,
+      "title": "Report-only dependency and resource wave planner",
+      "outcome": "A report-only planner that groups Dyk tasks into waves that can safely run side by side.",
+      "deliverable": "commit",
+      "goal": "Design and implement the report-only wave planner for netbka/Dyk#439, reusing app/scripts/route-task.js, .agent/capabilities.yaml and app/scripts/lib/change-manifest.js, with deterministic report tests from the #437 fixtures and the #438 packet/accounting contract.",
+      "dependsOn": [
+        "WAVE-01",
+        "WAVE-02"
+      ],
+      "constraints": [
+        "Report-only: no automatic dispatch, auto-claim-next, merge or deployment. Do not repurpose the production jobs.js queue or add a competing planner state database.",
+        "The strict change manifest v1 rejects new keys: use a referenced scheduling envelope or a reviewed versioned schema extension with compatibility tests.",
+        "Admission never revives paused, audit-only, owner-reserved or unassigned work; never infer semantic independence from non-overlapping paths."
+      ],
+      "acceptance": [
+        "Deterministic ready/deferred packets with dependency reasons, shared-owner collision warnings, critical-path priority, aging/max-wait, slot allocation, predicted overhead and missing information, for a one-worker fast path and a bounded rolling wavefront.",
+        "Tests cover #437 fixtures plus cycles, absent predecessors, changing heads, shared paths, different-file client/server coupling, common release contract, read-only research, nested work, scope expansion, starvation, cancelled/failed dependencies and resource limits.",
+        "Conservative file-only versus semantic/resource-aware scheduling is compared, exposing false admissions and over-serialization, with exact inputs, outputs and uncertainty.",
+        "Focused tests pass in the worktree and the report lists the exact commands."
+      ],
+      "references": [
+        "AGENTS.md",
+        "app/scripts/route-task.js",
+        "app/scripts/lib/change-manifest.js",
+        ".agent/capabilities.yaml"
+      ]
+    },
+    {
+      "id": "WAVE-04",
+      "issue": 440,
+      "title": "Falsification suite for evidence reuse and independent acceptance",
+      "outcome": "Tests proving stale or invalid evidence is always rejected while valid reuse still passes.",
+      "deliverable": "commit",
+      "goal": "Build the independent falsification suite and acceptance report for netbka/Dyk#440: every intentionally stale or invalid required-evidence case across waves is rejected while valid scoped reuse remains possible, extending or testing app/scripts/lib/change-manifest.js deliberately.",
+      "dependsOn": [
+        "WAVE-01",
+        "WAVE-02",
+        "WAVE-03"
+      ],
+      "constraints": [
+        "Use synthetic fixtures and existing focused Node/tooling tests, not production or private data, and no browser-driven automation.",
+        "Do not infer required provenance from a commit title or add an alternate passing cache; this never reduces the number of required independent reviews."
+      ],
+      "acceptance": [
+        "Every intentionally stale or invalid required-evidence case is rejected and valid scoped reuse remains possible.",
+        "False rejections, false accepts and reviewer effort are reported, bound to exact implementation, schema and policy versions.",
+        "Focused tests pass in the worktree and the report lists the exact commands."
+      ],
+      "references": [
+        "AGENTS.md",
+        "app/scripts/lib/change-manifest.js",
+        ".agent/capabilities.yaml"
+      ]
+    },
+    {
+      "id": "WAVE-05",
+      "issue": 441,
+      "title": "Bounded local parallelism benchmark",
+      "outcome": "Measures whether running 2-4 agents at once on HomePc finishes work faster or only causes contention.",
+      "deliverable": "commit",
+      "goal": "Implement the bounded benchmark for netbka/Dyk#441: does raising implementation/check concurrency from 1 to 2, 3 or 4 on HomePc improve accepted-outcome latency, or only increase contention, retries and tokens? Use a representative set of tooling tasks and focused synthetic Node/SQL workloads.",
+      "dependsOn": [
+        "WAVE-02",
+        "WAVE-03"
+      ],
+      "constraints": [
+        "No production containers or data, no cross-database interference with the shared dev SQL container, no unrelated process termination, no change to Local Commander security configuration and no second local executor.",
+        "Run benchmark workloads only inside your own working directory and disposable resources you create and clean up yourself."
+      ],
+      "acceptance": [
+        "Reproducible inputs, actual execution receipts and a width-versus-throughput/token/quality table, including a serial fallback recommendation.",
+        "No lost edits, duplicate effects, cross-database interference, unrelated process termination or evidence bypass.",
+        "Focused tests pass in the worktree and the report lists the exact commands."
+      ],
+      "references": [
+        "AGENTS.md",
+        ".agent/capabilities.yaml"
+      ]
+    },
+    {
+      "id": "WAVE-06",
+      "issue": 442,
+      "title": "Controlled parallel-wave pilot and adoption decision",
+      "outcome": "Pilot report: adopt, reject or inconclusive on parallel waves, with a recommended policy.",
+      "deliverable": "report",
+      "goal": "Run or precisely block the controlled pilot of netbka/Dyk#442 using the verified outputs of WAVE-01 to WAVE-05: pre-register thresholds, compare the treatments that are authorized and feasible, and return ACCEPT, REJECT or INCONCLUSIVE with evidence and a recommended width/context policy.",
+      "dependsOn": [
+        "WAVE-01",
+        "WAVE-02",
+        "WAVE-03",
+        "WAVE-04",
+        "WAVE-05"
+      ],
+      "constraints": [
+        "Do not dispatch other agents, start recurring services or add paid model calls to complete a factorial design. If the pilot cannot run within the existing authorization and budget, return blocked-owner-reserved or evidence-unavailable with the exact blocker.",
+        "Do not enable portfolio-wide auto-dispatch from a successful pilot; propose the smallest subsequent change through its canonical owner."
+      ],
+      "acceptance": [
+        "Thresholds were set before the run and safety, authorization, rule coverage and independent acceptance were not weakened.",
+        "Actual input/output/cache usage, time to accepted outcome, overheads, first-pass acceptance, escaped defects and stale-evidence false accepts are reported, with unknowns kept unknown.",
+        "The decision is an observed pilot verdict or a precisely evidenced official blocker, not another plan described as measured success."
+      ],
+      "references": [
+        "AGENTS.md",
+        ".agent/capabilities.yaml"
+      ]
+    }
+  ]
+}

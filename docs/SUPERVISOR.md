@@ -1,0 +1,434 @@
+# AIWorks delivery supervisor
+
+Work-state authority: [netbka/aiworks#2](https://github.com/netbka/aiworks/issues/2). This runbook covers slice A: a durable store, one explicit campaign, controller lease and fencing, one bounded headless worker, an independent verifier, and restart recovery. Slices B (GitHub webhooks plus owner-notification recovery, [netbka/aiworks#1](https://github.com/netbka/aiworks/issues/1)), C (project release adapter) and D (install evidence and canary on an approved host) remain open.
+
+The supervisor applies the portfolio [CONTINUATION.md](https://github.com/netbka/engineering-platform/blob/main/docs/CONTINUATION.md) contract and this repository's [WORKER_CONTEXT_LIFECYCLE.md](WORKER_CONTEXT_LIFECYCLE.md). It does not redefine them. It reuses the C0 helpers in `scripts/lib/worker-context.mjs` (`validatePacket`, `packetDigest`, `planContext`, `acceptsLease`) and keeps no second packet or lease model.
+
+Engineering Platform's governance files (project registry, policies, project-contract schema) are read from the governance checkout described in [section 6](#governance-checkout).
+
+## 1. Boundary
+
+- It runs only campaigns the owner explicitly registered. A campaign declaration names the authorization, target repository, tasks and DAG, limits and executor. It never claims unassigned backlog.
+- **Registered targets only.** `start` registers a new campaign only when its `target.repository` equals, ignoring case, the `repository.github` of an entry in `registry/projects/` of the governance checkout (section 6). Otherwise it refuses with "is not a registered project".
+  - The gate matches the repository only. It does not compare `target.projectId` with the registry `id`.
+  - It reads the registry of the governance checkout configured for the data directory, not the AIWorks code. A new project's registry entry must be merged to Engineering Platform's main and pulled into the governance checkout before its first campaign can start.
+  - Only a new registration is checked. A campaign already in the store resumes, or takes an amendment, without the check. Dispatch has its own check (next item).
+- **The target project's rules in every packet.** Before each new worker dispatch the controller resolves the target the same way, from the same governance checkout: the one registry entry whose `repository.github` equals `target.repository`, ignoring case. The packet then carries a `governance` block of values, never file contents:
+  - `project`: the registry `id`;
+  - `policies`: the IDs of the portfolio policies in `policies/catalog.json`, in catalog order. A policy conditioned only on the `ui` boundary is left out for a project whose contract lacks the `ui` capability; every other condition depends on the change, so the policy stays;
+  - `authorities`: the project's declared `governance.authorities`, as role and repository-relative path;
+  - `exceptions` and `gaps`: the declared entries as `id` and `rule` only.
+
+  The prompt names the project and tells the worker to read those authorities in its own checkout of the target. It must not take project rules or files from any other project's repository; the listed portfolio policies are inherited and apply. No worker starts, and there is no default project, when:
+  - no entry matches, or more than one does;
+  - no governance checkout is configured, or it has no `registry/projects`;
+  - the registry or catalog cannot be read;
+  - the entry fails `schemas/project-contract.schema.json`. A field the schema leaves optional may be absent and counts as empty, but a malformed one (for example `authorities` that is not a list) is never read as empty.
+  - an authority is secret-like: a `.env*`, `.git`, `.ssh` or `.gnupg` segment, an `id_rsa*`, `id_ed25519*`, `credential(s)` or `secret(s)` segment, or a key, certificate or keystore file. The registry schema refuses such a path in every pointer field, so a registry entry cannot declare one.
+
+  The campaign instead gets a B2 `project-governance` blocker naming the repository and the reason, and a `recheck` evaluates it again.
+  - Operations recorded before this change keep the packet, digest and prompt they were recorded with; the controller never rebuilds them. The field is optional in the packet schema, so those packets stay valid.
+  - The packet digest binds the new field like every other. The lease binding (tenant, project, environment, task, stage, run, session, revision and `authorityDigest`) is unchanged, as are `scopeDigest` and `authorityDigest` of a declaration, so a resumed campaign matches its stored scope.
+- **Owner wording (optional).** A declaration may add a campaign `purpose` and a per-task `outcome`, each a plain-language sentence of up to 300 characters saying what the work delivers and for whom. The [operations dashboard](OPERATIONS_DASHBOARD.md) shows them before IDs and slice titles.
+  - They never enter a worker packet and are excluded from the immutable scope digest. Adding or changing them on a registered campaign therefore needs only a higher `authorization.version`, not a new campaign.
+- In the target repository it may create worktrees and `campaign/<campaign>/<task>` branches, push a verified commit to that branch, open a PR, and post issue comments ([AW-001](DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception)). It never merges, deploys, removes worktrees or deletes branches. Merge and release follow the project's own gate.
+  - Git cannot hold both a `campaign/<campaign>` branch and `campaign/<campaign>/<task>` branches. A declaration branch named `campaign/<campaign>` in the target repository makes every dispatch fail with "cannot lock ref", so declaration branches are named `declare/<campaign>`.
+- Workers use the declared executor or ordered CLI chain. The `dyk-443-waves` campaign uses **Claude → Codex → Cursor** for supported roles (authorization v3). Usage/rate limits and exhausted credits or billing limits move to the next eligible provider; when every eligible provider is waiting, the campaign waits for the earliest reset and continues. Each attempt is a fresh, separately recorded and charged operation; the runner contains its process tree before accepting output or trying another provider. Permission denials never cause fallback. The CLI controls and remaining platform limits are described in section 8.
+- **Web acceptance tasks** run only on a browser worker, AGY (`agy-cli`) or Claude given the same isolated browser; AGY runs nothing else (section 11).
+- Wiki's native workers are restricted to the brokered research mode described below; their terminal envelopes must bind the exact fresh run nonce and packet digest, and unknown usage/cost stays unknown.
+- No GitHub Actions, no new paid service, no Telegram workflow of its own (owner notification belongs to the owner-intervention core, section 10, [netbka/aiworks#1](https://github.com/netbka/aiworks/issues/1)). Blockers and status are written to the store and posted on the campaign's tracking issue.
+
+## 2. State and ownership
+
+| Concern | Owner |
+| --- | --- |
+| Campaign scope, assignment, findings, published status | GitHub issues/PRs; the declaration file in `campaigns/` |
+| Controller lease, operations journal, checkpoints, retry timers | `supervisor.db` (SQLite, WAL, `synchronous=FULL`) in the data directory |
+| Worker packet contract, admission, stale-run predicate | C0 helpers (`scripts/lib/worker-context.mjs`) |
+| Project registry, portfolio policies, project-contract schema | Engineering Platform, read from the governance checkout (section 6) |
+| Project acceptance and release | the project's router, manifest and release gate |
+
+Every controller write runs in `BEGIN IMMEDIATE` and first checks that this instance still holds the campaign lease generation (`assertLease`). Workspace preparation, runner launch, publication and outbox effects hold that same write lock, so lease expiry cannot admit a conflicting controller while an external command is in progress. Commands remain bounded by adapter timeouts; competing owner actions can temporarily receive SQLite's busy error. A lease is taken over only after it expires, with generation + 1. Owner actions (start, pause, cancel, recheck) use compare-and-swap on the row version.
+
+## 3. Lifecycle of one task
+
+1. **Implement.** The supervisor prepares the isolated worktree, builds and validates the packet, writes the run directory, then commits the operation record (idempotency key `<campaign>.<task>.<kind>.<seq>`, session UUID, packet and digest) and counts the run against `maxWorkerRuns`. Only after that commit does it launch a detached runner.
+2. **Runner.** `runner.mjs` takes an exclusive `run.lock`, records process creation identity, heartbeats and enforces the time bound. On Windows it contains the worker and descendants in a non-breakaway Job Object. All members must stop before an atomic `result.json` can release the operation. Unsupported platforms fail closed. It never interprets model output.
+3. **Result.** The controller classifies stdout. Possible classes: `result`, `invalid-result`, `exit-without-result`, `timeout`, `auth`, `quota`, `spawn-failed`, `error`, or `lost` (heartbeat stale). A normal exit or the word "done" is not a result.
+   - A `result` is accepted only after process containment has settled, its local JSON schema validates, the process exits successfully, and the session matches the dispatched run (`acceptsLease`).
+   - For a commit deliverable, the worktree head must equal `headSha` and be a clean, new descendant of the task base.
+4. **Verify.** A different fresh session runs in a separate detached checkout of the exact target, read-only. Its result must echo the target SHA and the sha256 of the implementer report. Acceptance also requires the verifier checkout to remain clean at that SHA and rejects failed checks or blocking findings. Rejection with blocking findings becomes a bounded repair round, and the findings travel in the next packet's constraints.
+5. **Publish.**
+   - `commit` deliverable: push exactly the verified SHA and open one PR, looking up an existing PR first.
+   - `report` deliverable: post the verified report to the task issue once, reconciled by an embedded marker.
+   - Both: a note goes to the tracking issue through the outbox.
+
+Report terminal output is capped at 52,000 characters before verification and publication
+preserves it exactly. When the report and its verification together exceed GitHub's 65,536-character
+body limit, the verification is published as a separate marked supervisor comment (on the task issue
+for a report, on the PR for a commit); each part is found by its marker before posting, so a retry
+never posts twice. Nothing is truncated; a publication blocker is raised only if a part alone still
+exceeds the limit. Completion guidance names the actual target and
+deliverable. SQLite uses FULL synchronization; atomic file writes fsync their contents,
+but Windows rename metadata persistence under power loss remains unverified. Missing
+process ownership proof fails closed; these tests do not establish power-loss durability.
+
+When every task is published, the campaign becomes `ready` with control `finished`, and the next action is the project's release gate.
+
+## 4. Liveness and failure semantics
+
+Idle ticks read local files and SQLite; no model is called for polling. Tasks explicitly declaring `requiresMergedDependencies: true` also refresh read-only Git base refs at a bounded one-minute interval after dependency publication. Direct ancestry or an exact reviewed-head GitHub merge receipt (including squash/rebase) must be present in the freshly fetched base before admission. Failed reads retain the wait. Independent eligible tasks continue; the supervisor never merges. Every nonterminal campaign has one of: an open operation, a durable `next_wakeup_at`, an owner pause, or an explicit blocker. A campaign with none is recorded as `liveness-defect`.
+
+| Event | Handling |
+| --- | --- |
+| Controller dies after the checkpoint, before launch | The replacement launches the same recorded operation. `run.lock` guarantees at most one runner. |
+| Spawn was attempted but no ownership receipt exists | A durable launch marker prevents a duplicate. After the startup grace period the campaign records an explicit process-ownership blocker; an operator must reconcile the unknown process outcome. A missing receipt never proves that no process exists. |
+| Controller dies while a worker runs | The replacement adopts the run through its heartbeat and consumes the result. No second dispatch. |
+| Host reboot (runner and agent lost) | The runner's Job Object closes with it and stops descendants. Recovery checks the exact process creation identity and job before a fresh session can retry within budget. Legacy runs without ownership evidence remain blocked for operator reconciliation. |
+| Exit without a result, invalid result, timeout, error | Bounded retries with backoff (`maxRetriesPerTask`). The task then stalls as `blocked-child` until `recheck`. |
+| Authentication failure | A single-provider campaign records B2. An explicitly authorized CLI chain marks that provider unavailable and tries the next eligible provider. The wait is untimed: a failed login does not heal by itself, and every re-dispatch would consume a counted run. A campaign `recheck` after the owner restores the login ends it. When no eligible provider remains, the campaign raises the B2 `executors` blocker. |
+| Provider usage limit | A single-provider campaign waits account-wide; a chain waits that provider out and selects the first eligible alternative. Reset evidence (epoch, ISO timestamp, Retry-After, or a zoned wall-clock reset such as `resets 1:50pm (Asia/Jerusalem)`) is recorded with a one-minute margin. Unknown reset times wait 30 minutes. If all providers wait, persist the earliest reset. State survives restart and the original provider becomes eligible again after reset. Claude's measured zero-work refusals retain the existing refund rule; Codex/Cursor's unknown dollar cost is never treated as zero. A campaign `recheck` ends the waits. No model calls for polling. The wait is silent. Under the provider-limit exception in [OWNER_INTERVENTION.md](https://github.com/netbka/engineering-platform/blob/main/docs/OWNER_INTERVENTION.md#rate-limits--quotas) ([AW-002](DECISIONS.md#aw-002---campaigns-have-no-capacity-limits-by-default), no capacity limits by default), an owner-accepted subscription usage limit is a B4 external wait with no owner notification, whatever the reset time. A paid upgrade remains B3. |
+| Missing CLI or failed launch | A chain records the provider and reason, tries the next provider, and rechecks after 15 minutes for an unconfigured command (no run is consumed). A failed launch waits untimed until a campaign `recheck`, like an authentication failure. Installation/authentication is never inferred from a declared fallback. |
+| Permission denial or invalid/rejected result | Keep the existing bounded repair/blocker path. Never switch providers to route around a denial or failed verification. |
+| Executor unavailable (Codex sandbox helper cannot start any process, Cursor sandbox unsupported) | Class `unavailable`: the run is refunded (no task attempt took place), the provider enters a 20-minute timed wait for host failures (untimed for configuration findings), and the task goes to the next eligible provider. A Codex worker whose every `command_execution` failed with `Failed to create unified exec process` is classified this way even when it returned a valid `evidence-unavailable` envelope; a worker whose commands ran keeps its own verdict. Before each Codex dispatch the controller runs a token-free `codex sandbox` echo probe (`config.codexSandboxProbe: false` disables it in synthetic tests). |
+| Failed attempt on a chain | The next eligible provider gets the retry first; the provider that failed remains the fallback when it is the only one eligible. Denials and verifier rejections are not rerouted; only the choice among already authorized providers changes. |
+| Report repair | The repair packet carries the blocking findings as constraints and the prompt carries the rejected report inside `<rejected-report>`, with a report-only instruction (produce a corrected complete report; no commit). Commit deliverables keep the commit-and-return-headSha instruction. |
+| Worker returns `blocked-owner-reserved` | B3 on that task only. Independent tasks continue. Only `recheck --task <id>` clears it. |
+| No progress | A task whose fresh sessions return `evidence-unavailable` four times (at least ~42 minutes apart, given the backoff) stops with a B3 owner decision naming the last reason, whatever the retry limit. This is a no-progress guard, not a spend cap. A resolved or accepted result resets the count; `recheck --task <id>` clears the block and the count. Workers must report authorization-scope or owner-decision blockers as `blocked-owner-reserved`, which stops at once. |
+| Worker-run cap or cost ceiling reached | B3 budget decision. **By default a campaign has no budget limits.** Every key in `limits` is optional, and an omitted or `null` limit means no limit; the whole `limits` object may be left out. `slots` defaults to 1, the only supported value. With no limits, the only stop is the providers' own subscription or usage limits, which the campaign waits out. A failing task keeps retrying with the 2/10/30-minute backoff, and a rejected deliverable keeps getting repair rounds. A budget exists only when the owner declares one: `maxWorkerRuns` (1..100), `maxRepairRounds` (0..5), `maxRetriesPerTask` (0..5) and `maxCostUsd` bind when set. An amendment that raises or removes a limit releases the stalls that only that limit caused (`stall-released`); owner-reserved and admission stalls are never released this way. An optional `limits.maxCostUsd` adds a dollar ceiling: measured provider cost plus `limits.unknownRunCostUsd` (required with the ceiling, never zero) for every counted run whose provider reported no cost. `status.budget` shows the charged total. A start with `authorization.version + 1` and higher limits resumes without losing work. The amendment also recounts runs from the stored operations: every recorded run counts except an admission-blocked one, a refusal that did no work, and an unavailable executor. The recount is idempotent, so a count corrected earlier is never reduced twice. The journal records `runs-recounted` when the number changes. |
+| Crash between push and PR, or after a report post | The lookup before create/post reconciles. There is no exactly-once promise. |
+
+## 5. Commands
+
+An ordered executor may be declared as `cli-chain` with `providers` in priority order:
+`codex-cli`, `claude-cli` (model and permission mode required), then `cursor-cli`; `agy-cli`
+(model required) may be added as a fourth provider for web acceptance tasks (section 11).
+Each native command must be configured in local `config.json`; Windows uses the native
+executable rather than a `.cmd` shim. Changing executors requires a paused, drained
+campaign and a higher authorization version. Target, tasks and acceptance remain immutable.
+The amendment preserves operations, results and spent runs. `status` and the dashboard
+show the selected executor and durable `executorWaits`; `recheck` clears those waits.
+The dashboard uses `commands.gh` from the selected data directory, so a newly installed
+or hidden login process does not depend on an interactive shell's GitHub CLI PATH.
+An explicit owner-authorized `limits.maxWorkerRuns: null` removes the run cap while
+retaining accounting, one slot, per-run timeouts and bounded task retries. Omission or
+invalid values are rejected; existing numeric caps continue to apply unchanged.
+
+The `elma-wiki-planning` declaration assigns only a planning report for Wiki #91.
+The separate `elma-wiki-execution` declaration records the owner's subsequent request for continuous execution of that independently verified plan. It assigns P1–P9, preserves A/B/C/I reservations and uses uncapped runs with bounded per-task retries and independent verification. The prior planning campaign remains complete. Implementation progresses automatically through eligible tasks and provider recovery; publication is not integration or native acceptance. Native/materialization, isolated Target and promotion evidence remain required gates. The supervisor does not mutate elma365, merge, deploy or revive deferred human work/provider execution. A blocked release task keeps this execution parent open rather than reporting planning completion.
+
+Planning campaign isolation:
+All its providers set `researchOnly: true`: the controller captures declared checkout
+references, open issues/PRs, recent PR metadata and recent coordination comments using
+read-only GitHub APIs, plus explicitly authorized `authorization.readSources` paths at
+pinned external revisions. Secret paths and escaping symlinks are refused. Capture is
+bounded at 320KB; issue/comment truncation and omitted history are explicitly labelled.
+Required missing evidence remains unknown and can block acceptance. Workers receive
+that snapshot in empty scratch directories; Codex shell/hooks/plugins/apps/skill MCP installation/web search and
+Claude built-in tools and inherited MCP are disabled. Cursor uses ask mode, sandbox and explicit read/write/shell
+denials; an unavailable sandbox fails closed. Project/global extension configurations
+without an adapter policy are refused.
+Codex account-linked apps are explicitly disabled even when user configuration is ignored;
+an unexpected native research tool invocation rejects the result without provider fallback.
+The installed Codex build still exposes a patch tool through its code-mode host; the
+read-only sandbox remains required, and any reported file-change/tool event rejects
+the report except the explicitly supplied `aiworks_repository.read` capability. This existing
+GET-only broker is fixed to the campaign's target repository and allows complete issue
+bodies and paginated coordination comments without restoring account-linked apps.
+Claude safe mode also suppresses explicitly supplied MCP servers in the installed
+build; its fallback uses the controller snapshot only and must report missing details
+as evidence blockers. Safe mode is not weakened to enable additional tools.
+Local Git status and recent commit metadata are captured by the trusted controller.
+Failed broker reads reject the result without provider fallback. Disabling feature flags
+is not evidence that every built-in tool is absent.
+This does not authorize implementation in Wiki,
+mutation of Dyk, merges or deployment. Cursor is a declared fallback, not proof of a
+working Cursor installation on this host.
+
+```sh
+node src/supervisor/cli.mjs start campaigns/<campaign>.json --data D:/Git/aiworks/.local/supervisor
+node src/supervisor/cli.mjs status <campaign> --data D:/Git/aiworks/.local/supervisor
+node src/supervisor/cli.mjs pause <campaign> "reason" --data D:/Git/aiworks/.local/supervisor
+node src/supervisor/cli.mjs cancel <campaign> "reason" --data D:/Git/aiworks/.local/supervisor
+node src/supervisor/cli.mjs recheck <campaign> --task <task> "note" --data D:/Git/aiworks/.local/supervisor
+node src/supervisor/cli.mjs stop --data D:/Git/aiworks/.local/supervisor
+```
+
+`start` reads `governanceRoot` from the data directory's `config.json`, or takes `--governance <path>` (section 6).
+
+`status` reports readiness:
+- `ACTIVE` only while a live controller holds the lease;
+- `BOOTSTRAP_REQUIRED` before the first controller lease; `CONTROLLER_OFFLINE` after lease expiry;
+- `PAUSED`, `CANCELLING`, `CANCELLED` or `COMPLETE` otherwise.
+
+
+### Read-only diagnosis
+
+Use the installed task's data directory, not an old example or the shell's current directory.
+On HomePc the task uses `D:/Git/aiworks/.local/supervisor`.
+Inspect `(Get-ScheduledTask -TaskName 'AIWorks Supervisor').Actions` before assuming a location.
+Use the absolute CLI path and absolute `--data` path from a separate shell; alternatively set
+`AIWORKS_DATA` to that same directory. An explicit `--data .` is also valid.
+
+`status` opens an existing database read-only, takes a consistent SQLite read snapshot, and
+never creates a directory, database, schema, campaign or controller. It returns:
+
+- `store.path`: the canonical SQLite path; `store.id`: a hash of its file identity and path,
+  stable during WAL updates (not a content checksum or a persistent identity across relocation).
+- `dataSource`, observation time, campaign, controller instance, generation and controller code
+  revision recorded by the lease. The invoking CLI checkout may have a different revision.
+- `phase`, task states, operation IDs/task IDs, run cap/usage, blocker, next wakeup, quota wait,
+  last progress time and last journal event metadata. Journal details, packets, worker output,
+  session IDs and workspaces are excluded from the operation/event summaries.
+
+`ACTIVE` means an unexpired controller lease was observed, not that a model worker is running.
+The controller renews this lease while polling. A killed controller can appear active until
+that lease expires; status does not probe/kill processes or take over leases.
+`CONTROLLER_OFFLINE` means a previously acquired lease expired (including orderly release).
+`BOOTSTRAP_REQUIRED` means no lease has ever been acquired. With no live controller,
+`recordedStatus` retains the historical campaign status while `status` says `controller-offline`;
+paused/terminal control states retain their own readiness. `lastProgressAt` excludes lease
+acquisition, so a heartbeat alone cannot masquerade as task progress.
+
+Errors are evidence-specific:
+
+| Result | Meaning / next action |
+| --- | --- |
+| `STORE_NOT_FOUND` | No database at the selected path. Inspect the installed task; do not register a replacement campaign. |
+| `CAMPAIGN_NOT_FOUND` | The existing selected store has no such campaign. Compare its path with the task; this alone does not prove the controller is down. |
+| `DATA_DIR_MISMATCH` | Explicit `--data` and `AIWORKS_DATA` resolve to different directories. Correct/unset the stale shell value before retrying status. |
+| `CONTROLLER_OFFLINE` readiness | Lease expired. Inspect the actual process and open operation ownership before considering recovery. |
+
+Explicit selection is required; status never searches for another store and silently switches to it.
+It does not reset run counts, replay operations, resume a campaign, or bypass provider waits.
+
+## 6. Running on HomePc
+
+Keep AIWorks-owned local files under the AIWorks root, outside version control:
+
+| Path | Purpose |
+| --- | --- |
+| `D:/Git/aiworks` | AIWorks source and development checkout |
+| `D:/Git/aiworks/.local/runtime` | Detached checkout of the reviewed runtime commit; the supervisor and dashboard run from here |
+| `D:/Git/aiworks/.local/supervisor` | Data directory: `config.json`, SQLite state, journal, log and run artifacts |
+| `D:/Git/aiworks/.local/worktrees/<repo>` | Supervisor-created implementation and verification worktrees; `aiworks/coordinator` is the coordinator's checkout (section 9) |
+| `D:/Git/aiworks/.local/governance` | Governance checkout: a plain clone of `netbka/engineering-platform` main, read-only to AIWorks |
+| `D:/Git/<project>` | Target repository checkout, outside AIWorks |
+
+For Dyk, `config.json` keeps `repositories["netbka/Dyk"].path` at `D:/Git/Dyk` and sets `worktreeRoot` to `D:/Git/aiworks/.local/worktrees/Dyk`. Use the same layout for future targets. `.local/` is already ignored; never commit local state, logs, prompts or provider credentials.
+
+- **Pinned checkout.** Run from a detached worktree pinned to a reviewed commit, not from a development branch.
+- **Data directory.** Holds `config.json`, which names the governance checkout, maps each target repository to a local checkout and a worktree root, and gives absolute executable paths. Execution requires Windows and Node 22.5 or newer (`node:sqlite`), with the repository dependencies installed.
+- **Install.** `scripts/supervisor/install-windows-task.ps1` registers the per-user logon task `AIWorks Supervisor`, which runs `cli.mjs keep` hidden. `keep` restarts `serve` after any exit. The dashboard runs as a separate per-user task, `AIWorks Dashboard`, from the same runtime checkout; `scripts/supervisor/install-dashboard-task.ps1` registers it.
+- **Single host.** If HomePc is off, nothing runs. On restart it resumes from the store without any owner message. This is not high availability.
+- **Other machines.** The owner's second PC (HOMELENOVO) runs its own older supervisor and dashboard from the build used before AIWorks was split out. AIWorks does not manage it ([AW-006](DECISIONS.md#aw-006---no-cross-machine-dashboard-view), [AW-007](DECISIONS.md#aw-007---aiworks-is-a-standalone-product-separate-from-engineering-platform)).
+
+### Governance checkout
+
+AIWorks does not carry the portfolio registry or policies. It reads them from Engineering Platform through a governance checkout: a plain clone of `netbka/engineering-platform` at main. These are the only files read from it:
+
+- `registry/projects/*.json`: registered targets (section 1), each project's governance block and its release authorization;
+- `policies/catalog.json` and the policy files it lists;
+- `registry/agents.json`;
+- `schemas/project-contract.schema.json`;
+- `docs/PRODUCT_ROADMAP.md` and `docs/AUTONOMOUS_ROLLOUT.md`, the dashboard's roadmap sources.
+
+Configuration:
+
+- The supervisor reads `"governanceRoot": "<absolute path>"` from the data directory's `config.json`.
+- `start` reads the same `config.json` from `--data` or `AIWORKS_DATA` when it exists, and also accepts `--governance <path>`.
+- The dashboard takes `--governance <path>`, defaulting to `governanceRoot` in the data directory's `config.json`.
+
+Anything that needs the governance checkout fails closed without a valid one, and never falls back to the AIWorks code:
+
+| Error | Meaning |
+| --- | --- |
+| `GOVERNANCE_ROOT_REQUIRED` | Nothing is configured: no `governanceRoot` in `config.json` and no `--governance`. |
+| `GOVERNANCE_ROOT_INVALID` | The path is not absolute, or it has no `registry/projects` directory. |
+
+`start` then refuses to register a new campaign. Dispatch raises the B2 `project-governance` blocker (section 1). The dashboard's roadmap panel says "governance checkout not configured".
+
+The worker-context runtime is part of AIWorks: `scripts/lib/worker-context.mjs`, `registry/worker-context-policy.json` and the two worker schemas are read from the AIWorks code, not from the governance checkout.
+
+AIWorks never writes to the governance checkout. The operator updates it by pulling Engineering Platform's main; `scripts/supervisor/deploy.ps1` does this on every deploy (fast-forward only, refusing local changes). A registry change takes effect for new registrations and dispatches once pulled. The dashboard reads release authorizations once at start, so restart it to pick up such a change.
+
+### Upgrade
+
+The live runtime changes only through this procedure. The supervisor never upgrades itself. Only one session restarts the runtime at a time.
+
+1. **Baseline.** Run `status` for every campaign that is not finished, from `.local/runtime` with the live data directory, and keep the output.
+2. **Pause.** Pause each of those campaigns. A worker already running finishes and its result is recorded, but nothing new is dispatched or published. Wait until no operation is open. A paused campaign without a blocker then shows `nextAction` "Paused by the owner; start the campaign again to resume."
+3. **Choose the commit.** Fetch, then take the hash from `git rev-parse origin/main`. Never type a hash by hand. The commit must be merged to main, and a change to `src/supervisor` must have an independent review approving that exact commit.
+4. **Deploy.** Run `powershell -NoProfile -File scripts/supervisor/deploy.ps1 -Sha <hash>`. It writes `STOP` and waits until the old processes are gone, stops both tasks, points `.local/runtime` at exactly that commit (detached) and runs `npm ci`, fast-forwards the governance checkout, then removes `STOP` and starts `AIWorks Supervisor` and `AIWorks Dashboard` again. It stops at the first failure; because it stops the supervisor before the checkout, a bad hash leaves it down until fixed.
+5. **Resume.** For each paused campaign, run `start` with its declaration from `.local/runtime/campaigns/<campaign>.json`. An identical declaration returns the paused campaign to running. Any edit to a registered declaration, even the display-only `purpose` or `outcome`, needs `authorization.version` + 1. Without it, `start` refuses with `AUTHORIZATION_VERSION_REQUIRED` and the campaign stays paused.
+6. **Compare.** Run `status` again. Compared with the baseline, only the controller revision and lease generation should change.
+
+The old version and the journal stay in place for recovery.
+
+Relocation is an operator maintenance action, not worker cleanup: pause admissions, drain open operations, stop the supervisor and dashboard, and verify the old processes are gone. Move registered worktrees with `git worktree move`, preserving HEADs and dirty files. Update repository configuration and the SQLite operation `workspace`/`run_dir` addresses, then move the closed state directory and update the scheduled-task action and dashboard launcher. Preserve declarations, task outcomes, scope/packet digests, authorization versions, budgets, retry timers and historical prompt/spec contents; paths inside historical text remain evidence of the original run. Resume only campaigns that were registered before maintenance. Verify Git worktree registrations, database integrity, artifact existence, service paths and dashboard connectivity before considering the move complete.
+
+## 7. Evidence and remaining gates
+
+`tests/supervisor/` cover the following with synthetic `claude`/`gh` executables and disposable git repositories:
+- validation and immutable scope;
+- `BOOTSTRAP_REQUIRED` versus `ACTIVE`;
+- lease fencing;
+- the serial DAG, repair rounds, retry/stall, auth, budget, owner-reserved, stale target, pause and cancel cases;
+- real-process crash rehearsals: after checkpoint, after launch, during the worker, whole-tree loss, between push and PR, after a report post, and two concurrent controllers;
+- the owner-intervention core (section 10), including a restart during a recheck probe run.
+
+They make no model, network or GitHub calls. They read governance files from a small fixture governance checkout under `tests/fixtures/governance/`, never from a real Engineering Platform checkout.
+
+Not yet implemented:
+- GitHub webhook intake and conditional-GET reconciliation (slice B);
+- Telegram (or any real) notification transport, snooze, and reminders/incident timing beyond the section 10 defaults ([netbka/aiworks#1](https://github.com/netbka/aiworks/issues/1));
+- more than one slot;
+- a project release adapter (slice C);
+- a host other than HomePc.
+
+The `claude -p` output shape was checked against Claude Code 2.1.295; the first live run is the canary for the real adapter.
+
+## 8. Ordered CLI execution
+
+`executor.kind: "cli-chain"` declares a `providers` array in priority order, with kinds `codex-cli`, `cursor-cli`, and `claude-cli`. Model names are optional for Codex/Cursor and explicit for Claude; Claude also declares its existing `permissionMode`. Configure absolute native command arrays under `config.json.commands.codex`, `.cursor`, and `.claude`. PowerShell/npm launch scripts must be resolved to their native executable and script arguments on Windows. No credentials are copied into the declaration or service config.
+
+- **Codex:** `--no-daemon`, a fresh `exec`, `--ignore-user-config`, approval policy `never`, and the `read-only` or `workspace-write` sandbox. `--ignore-user-config` does **not** remove account-level connectors: verified on HomePc with codex-cli 0.162.0, a worker without `--disable apps` sees every `mcp__codex_apps__*` tool, including the owner's Local Commander connector (a Dyk run on 2026-10-09 called `local_commander_production.workspace_list`). Every worker therefore runs with `--disable apps`, `multi_agent`, `multi_agent_v2`, `computer_use`, `browser_use`, `browser_use_external` and `image_generation`; `aiworks_repository` is the only MCP server. Windows explicitly selects the provisioned `windows.sandbox="elevated"` backend: ignoring user config must not disable native enforcement. Sandbox commands still run without administrator privileges; managed requirements and command rules remain enforced. The controller supplies a per-command Git trust reset plus the exact assigned checkout's canonical path with forward slashes, needed by Git 2.38.1 for the separate sandbox account; no global Git trust is written. No sandbox bypass, resumed conversation, or ignored denial rules. JSONL must contain one native thread and a successful terminal event; the final schema binds the supervisor nonce and packet digest. Unreported cost stays unknown. Its cached-input count is marked as a subset of total input rather than added twice.
+- **Cursor:** sandboxed `ask` mode for report/verification roles. `--trust` applies only to the controller-created checkout of the explicitly authorized repository; it does not enable force/yolo or MCP auto-approval. Commit implementation is skipped until a scoped publication-denial adapter is available. Detected project/global extensions that cannot be scoped per invocation make the provider unavailable.
+- **Claude:** the existing fresh `--session-id`, scoped permission mode, denied approval prompts, JSON schema, and publication/deployment deny list remain. Verifiers also deny edit/write/commit tools. Every Claude worker runs isolated from the host and the target project's Claude setup:
+
+  - `--setting-sources ""`: no user, project or local settings, so none of their allow rules (Dyk's include `ssh netcup:*`, `git push origin main` and issue comments) or hooks apply. Admin-managed policy settings still apply by design.
+  - `--strict-mcp-config`: no MCP servers or claude.ai connectors such as Local Commander.
+  - `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`: no saved memories. `--setting-sources` alone does not stop them: a Dyk worker otherwise received the project memory naming its production ssh host.
+  - Commands run in the foreground. `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` removes background commands: in a headless run with a JSON schema, ending a turn while one runs makes the CLI demand the final result at once, so a verifier that backgrounded a 10-minute `npm run check` had to return `evidence-unavailable` after one pass. `BASH_MAX_TIMEOUT_MS=3600000` and `BASH_DEFAULT_TIMEOUT_MS=1800000` keep such a gate from hitting the 10-minute foreground cap. The prompt says so too. The operation timeout still bounds the whole run.
+  - The `Skill` tool is denied (host skills, including the synced user skills folder, are unreviewed instructions). Remote shells (`ssh`, `scp`, `sftp`, `rsync`, also through the PowerShell tool) and cross-session, scheduling and orchestration tools are denied.
+  - The target project's own Claude Code tuning is kept, and nothing else: exactly `CLAUDE_CODE_SUBAGENT_MODEL` and `CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY`, with validated values, from the `env` of its tracked `.claude/settings.json` as committed at the task base (read with `git show` from the main checkout, never the worktree a worker can change). Dyk: subagent model `haiku`, tool concurrency 3. Its permissions and any other variable (executable paths, provider or endpoint switches, credentials) are not passed, so one worker cannot steer the next worker or the verifier.
+  - Isolated sessions load neither `CLAUDE.md` nor the project's `.claude/agents`; only Claude's built-in subagents remain (`claude`, `Explore`, `general-purpose`, `Plan`, `statusline-setup`). A probe with a planted project agent confirmed it appears only without isolation. So agent-frontmatter hooks or MCP servers that a worker commits cannot reach the next worker or the verifier, and `--settings {"disableAllHooks":true}` switches off any remaining hook source as well. Every worker prompt names `AGENTS.md` and the nearest nested `AGENTS.md` explicitly, and routes the worker to the target project's declared authorities from the packet (section 1).
+  - Workers never inherit the supervisor's own `CLAUDE_CODE_*` session variables (relevant if the supervisor is ever started from a Claude Code terminal); the runner adds only what the controller put in the run spec.
+
+Dated verification evidence for these rules lives in Git history and the PRs that introduced them, not in this runbook. For work before the split, that history is in the private archive `netbka/engineering-platform-archive`. Current status is in [STATUS.md](STATUS.md).
+
+Changing only the executor chain requires a higher authorization version, a paused campaign and no open operation. Target, tasks and constraints remain immutable. The amendment journals both executor declarations and scope digests; existing tasks, costs, operation history and consumed budget are retained. An exhausted campaign does not resume merely because its executor changes.
+
+Headless Codex with the elevated Windows sandbox cannot be relied on while the owner uses Codex interactively on the same host. The sandbox setup rewrites the ACL of Codex's runtime binary `node_repl.exe` before each command, and it fails with a sharing violation (`os error 32`) whenever another Codex process holds that file. The `dyk-443-waves` campaign therefore runs Claude first and Codex second. The adapter explicitly selects the already configured elevated sandbox backend; without that selection, restricted commands are refused under approval policy `never`.
+
+The sandbox shell's `gh api repos/netbka/Dyk --jq .full_name` check returned HTTP 404 while the owner-context command succeeded; the precise authentication/access cause remains unknown. Codex now receives an explicit read-only repository MCP capability backed by the trusted host GitHub CLI. The controller fixes the repository, run nonce, packet digest and absolute executable before dispatch. Only repository/issue/PR/comment metadata GET routes and bounded pagination are exposed; there are no model-supplied commands, URLs, credentials or mutations. Repository identity must succeed first, canonical response URLs must match, and upstream failures stop the reader without retry. Failed reader tools and denied native commands cannot turn into quota fallback. The reader and its CLI descendants remain inside the owned run containment. A contained HomePc probe successfully read Dyk identity and issue #438 through this capability. This verifies the explicit reader, not shell `gh` access.
+
+A contained Windows commit probe failed creating the linked worktree's shared Git `index.lock` with permission denied. Codex commit implementation is therefore unavailable before admission on Windows; report and verification roles remain eligible. No Git-directory ACLs or sandbox write roots are broadened. Cursor commit roles also remain unavailable pending a scoped publication-denial adapter. Cursor Agent 2026.10.01 explicitly rejects enabled native sandbox mode on Windows, requiring macOS or Linux; the adapter records unavailability and never disables the sandbox. Its current global configuration also needs scoped review before use. Configured priority does not assert that all three providers support every role or host. These probes do not consume campaign worker runs.
+
+Runner heartbeat and terminal receipts use atomic replacement. Windows readers can briefly lock a destination against rename, so replacement retries sharing/permission errors for at most one second. Exhaustion remains an error and preserves the previous complete receipt; no delete-and-rewrite fallback is used.
+
+CLI references: [Codex non-interactive execution](https://learn.chatgpt.com/docs/non-interactive-mode), [Cursor parameters](https://cursor.com/docs/cli/reference/parameters), and [Cursor permissions](https://cursor.com/docs/cli/reference/permissions).
+
+## 9. Owner messages and the coordinator
+
+The dashboard's **Message coordinator** button, and `cli.mjs message "<text>"`, send the owner's free-text request to a coordinator agent. Task instructions remain the separate per-task channel (section 3, delivered with the next matching worker run).
+
+Each message carries a durable receipt in `owner_messages`, shown in the dashboard's **Messages** view and by `cli.mjs messages`:
+
+| Receipt | Meaning |
+| --- | --- |
+| Received | The supervisor stored the message (idempotent per request id; at most ten waiting). |
+| Read | A fresh coordinator session started with the message in its prompt (the contained runner confirmed the process). Its live turn and tool-call counts are shown while it works. |
+| Answered | The coordinator returned a valid result; the supervisor posts the reply, the reviewed-work table, the plan and any draft campaign to `coordinator.reportTo` and links it. |
+| Retrying / Not answered | A read ended without a valid answer. It is retried once with a fresh session (quota and authentication waits retry after 30 minutes); after that the receipt says so and nothing is posted. |
+
+While a dashboard tab is open, every receipt change (message received, read, answered; task instruction read; the worker that read it finished) shows a notice and, when the browser allows it, a desktop notification. Permission is requested when you send. There is no notification without an open tab until the owner notification channel is delivered ([netbka/aiworks#1](https://github.com/netbka/aiworks/issues/1)).
+
+The coordinator is a single-slot lane with its own lease (`_coordinator`), separate from campaign slots and budgets. It runs Claude headless with the same isolation as campaign workers, in Claude's `dontAsk` mode: every tool call not on an explicit allowlist is denied without a prompt.
+
+- **Reads are confined to its own checkout.** The allowlist is `Read(./**)`, `Grep(./**)` and `Glob(./**)`. A HomePc probe showed these allow the working directory and deny everything outside it, including the supervisor data directory, other repositories and `~/.claude`. Absolute denies such as `Read(//D:/...)` are not honoured on Windows, so confinement does not rely on them. Home-relative denies for credential stores (`~/.claude`, `~/.codex`, `~/.ssh`, `~/.config`, `~/AppData`) and `.env`/key patterns are defence in depth.
+- **Commands are read-only GitHub and git queries:** `gh issue|pr list/view`, `gh pr diff/checks`, `gh search issues/prs`, `git status`, `git rev-parse` and `git ls-files`. There is no `gh api`, whose write flags can appear anywhere in a command, and no `git log/show/diff/grep`, whose output-file and external diff/pager options can write files or run programs. `git -C`, `curl`, `node`, `npm`, shells and web tools are denied.
+- **Replies are gated before posting.** A reply containing a high-confidence credential format (GitHub, OpenAI or Anthropic tokens, AWS keys, private-key blocks, JWTs, Slack tokens) is withheld and the message is marked *Not answered* (`reply-withheld`).
+- **Probe evidence (HomePc, 2026-10-10):** `.env` reads, reads outside the checkout, `gh api`, `git -C`, `ssh`, `curl`, `gh issue comment` and writes were denied; `gh issue view/list` and reads inside the checkout were allowed.
+
+The coordinator never runs in the live runtime checkout. It uses its own detached worktree of AIWorks at the deployed revision (`.local/worktrees/aiworks/coordinator`, reused across runs). AIWorks is where campaigns are declared, so that is the checkout it reads. Before each read the supervisor checks that this checkout and the live runtime are clean at the deployed commit, and it checks again after each run. If the agent changed either, nothing it produced is posted, its messages are marked **Not answered** (`boundary-violation`), and the lane stays blocked even after the checkout is restored, until the owner runs `node src/supervisor/cli.mjs coordinator-clear --data <dir>`. The dashboard shows the reason. Invalid coordinator configuration also keeps the lane idle and is shown; it never falls back to defaults. `permissionMode` is fixed to `dontAsk`. Because only the coordinator's own checkout is readable, it reads other repositories only through `gh` and says what it could not check.
+It reviews, classifies and plans; it never comments, registers or starts a campaign. The supervisor alone posts its answer. `config.json` enables it:
+
+```json
+"coordinator": {
+  "repositories": ["netbka/aiworks", "netbka/engineering-platform", "netbka/Dyk"],
+  "reportTo": "netbka/aiworks#3",
+  "model": "opus", "timeoutMinutes": 60
+}
+```
+
+`reportTo` is the issue where the supervisor posts the coordinator's answers ([netbka/aiworks#3](https://github.com/netbka/aiworks/issues/3)).
+
+Without that block, messages stay **Received** and the dashboard says that no coordinator is configured. There is no daily cap unless `maxRunsPerDay` is set; then waiting messages are read when the 24-hour window frees a run. A read refused by a provider usage limit is retried after 30 minutes.
+
+## 10. Owner-intervention core
+
+Tracked in [netbka/aiworks#1](https://github.com/netbka/aiworks/issues/1). Implements the store/controller half of the portfolio [OWNER_INTERVENTION.md](https://github.com/netbka/engineering-platform/blob/main/docs/OWNER_INTERVENTION.md) contract (OPS-001 invariants `b0`-`b5`, `dedup-anti-spam`, `owner-done-triggers-recheck`, `reminder-limits`, `blocker-record-sensitive-data-exclusion`). It is **off by default**: with no `ownerIntervention` block in `config.json` the controller behaves exactly as sections 3-4 describe. Enable it with:
+
+```json
+"ownerIntervention": { "enabled": true }
+```
+
+Durable state (additive SQLite tables, created idempotently whenever a writer opens the store; the store version is unchanged, older code ignores them, and read-only status of an unmigrated store simply shows no blockers):
+
+- `blockers`: one row per fingerprint, `sha256(project, environment, dependency, class, failure-identity)` over redacted text. The identity is structured where possible (executor kind for `auth`, operation id for `process-ownership`, authorization version and cap for `budget`, task and redacted trigger for an owner decision). Summary, requested action, identity and evidence are passed through `redact()` (tokens, keys, bearer/basic values, `name=value` secrets, URL credentials, PEM blocks, opaque mixed-case runs); Git SHAs stay readable. No secret value is stored or hashed.
+- `blocker_parents`: every task the blocker holds, per campaign, with the phase it resumes in.
+- `owner_notifications`: the notification outbox — what would be sent under section 8 of the contract, keyed `<fingerprint>:<episode>:<initial|reminder-n>`.
+
+Semantics:
+
+| Event | Effect |
+| --- | --- |
+| B0/B1 (usage-limit wait, retry/backoff, provider fallback, evidence-unavailable rerun) | Unchanged; never a record or notification. |
+| B2-B5 raised (campaign blocker, or a task's owner-reserved / no-progress B3) | Open the record, attach parents, record one `initial` notification. B4 is recorded as awareness without an action; B5 has no timer. |
+| Same fingerprint while open or rechecking | Same record: occurrences + 1, parents attached, no new notification, no new tracking-issue comment. |
+| Changed cause (class, dependency, identity, project or environment) | New fingerprint, record and notification. Recurrence after resolution opens a new episode of the same fingerprint with its own notification. |
+| `blockerAcknowledge` (API) | Records `acknowledged_at`. Never rechecks, resolves or resumes. |
+| `recheck` (owner Done) or a due timer | Deterministic probe (`budget`, `process-ownership`, or a synchronous probe injected as `probes[dependency]`) decides at once. Otherwise one held parent task is released as the probe run and the others stay held. A timer never starts a probe run. |
+| Probe passes (deterministic evidence, a structured result from the probe run, a successful publication, or the owner decision recorded by `recheck --task`) | Record resolved with its evidence, parents released in the phase they were blocked in, tracking-issue resolution comment. Other campaigns holding the same fingerprint adopt the resolution on their next tick. |
+| Probe fails (same failure recurs, probe says no, no runnable parent) | Same record stays open with the new evidence and `recheck_attempts + 1`; no new notification. |
+
+Recheck schedule (deterministic probes only): B2 15 min, 60 min, 4 h, then owner-triggered only; B4 1, 5, 15 min, repeating at 15 min; B3 and B5 none. Reminders: B2/B3 one after 60 min, then at most once per 24 h; none for B4/B5.
+
+Crash and restart: every record, parent, probe and notification change commits in the same fenced transaction as the campaign/task change it belongs to. A probe run is an ordinary recorded operation, so a restart between checkpoint and launch launches the same operation once (`tests/supervisor/owner-intervention.test.mjs`); held tasks stay held until the probe's result is applied. A `rechecking` record whose probe task is waiting (backoff or usage limit) keeps holding the others.
+
+Notification delivery: a transport is `{ name, live, send({ key, message }) }`. Only the no-op transport ships (`live: false`), so entries stay `pending` and nothing leaves the host. With `"deliver": true` and an injected live transport (tests use an in-memory fake), the attempt is counted before `send`, delivery is at-least-once with the stable key for deduplication, failures back off by `outboxRetryMs` × attempts and stop as `failed` after 5 attempts. There is no network, Telegram or credential code path.
+
+Owner-gated before enabling on HomePc: choose the bot/transport and its secret reference (Infisical/runtime, never this repository) and the owner chat reference; implement and review that adapter; decide snooze policy and the B5 incident path; confirm the schedule defaults; then turn on `enabled` and later `deliver` for one campaign as a canary.
+
+## 11. Web acceptance by the AGY browser worker
+
+A task that declares `web` is a web acceptance task: a browser worker opens the declared pages, checks every acceptance criterion as a user would see it, and reports. The task must be a `report` deliverable, and the campaign's executor must include a browser worker: `agy-cli` (the Antigravity CLI, `agy`) with a pinned `model`, or `claude-cli` without `researchOnly`.
+
+```json
+"web": { "urls": ["http://127.0.0.1:6006/?path=/story/checkout"], "resourceOrigins": ["https://fonts.gstatic.com"] }
+```
+
+- **Scope.** `urls` lists 1-8 http(s) pages, without credentials. The browser can load only their origins and the optional `resourceOrigins` (fonts, CDNs), and the agent can navigate only to their hosts. Both belong to the immutable scope, so a new page or origin needs a new campaign. Any http(s) origin may be declared, public sites included, except the ports of the owner's control planes on this host: port 4318 (supervisor dashboard) or 17321 (Local Commander) is refused on any host, because loopback has too many spellings to list (`localhost.`, `foo.localhost.`, `[::ffff:127.0.0.1]` all reached a loopback service).
+- **Routing.** Only the browser workers run a web task, for acceptance and for its independent verification, in the declared order. With `agy-cli` before `claude-cli`, AGY reviews when it can. When AGY waits on a usage or credit limit, is not configured, or failed its last attempt, Claude takes the task instead of the campaign waiting. `agy-cli` runs no other task. The verifier is a fresh browser-worker session that re-opens the pages and re-checks each claim of the report; a false pass or a false fail is a blocking finding and starts a repair round.
+- **Report.** Its first line is `**Visual acceptance: ACCEPTED**`, `REJECTED` or `INCOMPLETE`, followed by a table of criterion, result and evidence. Publication posts it to the task issue like any report; a rejected view is a completed review, not a failed task.
+- **Isolation.** Every per-user folder of a run is inside its run directory: `USERPROFILE`/`HOME` (its own AGY profile home), `APPDATA` and `LOCALAPPDATA` (empty folders under that home), and `TEMP`/`TMP`. The owner's AGY settings, grants, MCP servers, memories and conversations never load, and neither the owner's `%TEMP%` nor the Antigravity app's storage is reachable; the login comes from the OS keyring. The runner's PowerShell helper resolves its known folders inside the same home, so nothing is written to the runner's working directory. The settings deny shell commands, file reads and writes, AGY's own URL reader and the browser's `upload_file`, and allow only the `browser` MCP server and the declared hosts. The working directory is an empty scratch directory, so no repository checkout is reachable. The prompt spells out the run's `runId` and `packetDigest`, which the result schema binds.
+- **Claude as browser worker.** On a web task Claude keeps the usual worker isolation (no setting sources, `--strict-mcp-config`, no hooks, no auto-memory) and additionally gets:
+  - `--tools ""`: no built-in tool at all, so no shell, files, web search or subagents;
+  - the run's browser server as its only MCP server;
+  - `dontAsk` permission mode with only the browser tools listed, and `upload_file` denied;
+  - an empty scratch working directory.
+
+  A HomePc probe confirmed that such a session lists only `mcp__browser__*` tools. Its declared `permissionMode` applies to its other tasks only.
+- **Browser.** The only MCP server is `src/supervisor/browser-mcp.mjs`. It sets the run's own temporary folder before chrome-devtools-mcp loads; the package adds `os.tmpdir()` to the folders its file tools may use, so together with `--workspace` no file tool reaches outside the run directory. It starts a headless Chrome with a fresh profile in the run directory and a loopback debugging port, under the same run-local environment, with WebRTC limited to proxied UDP (`--webrtc-ip-handling-policy=disable_non_proxied_udp`): URL patterns do not govern STUN/TURN traffic, and with no proxy WebRTC gets no UDP path. It refuses to continue unless the running Chrome is version 149 or newer, which `--allowedUrlPattern` needs. It then runs the pinned `chrome-devtools-mcp` with `--allowedUrlPattern` for each declared origin, the memory (heap snapshot) tools off, usage statistics off and network headers redacted. `evaluate_script` is available for measurement only. That limit, like "view only" and "never submit", is a prompt rule, not an enforced one: the click, fill and script tools can act on a page. What is enforced is where the browser can reach. So a web task should point at pages where an interaction can do no harm, such as Storybook or a test environment.
+- **Audit.** AGY has built-in tools no rule can deny (web search, messages, subagents, its own browser), so the audit runs before any other classification and fails closed:
+  - a result is accepted only from a stream with exactly one `init` event in `request-review` mode;
+  - every update of every step is judged, whatever its state, so a disallowed tool counts even when it started without a terminal update, and a later update cannot rename it;
+  - a step type other than the four seen in AGY 1.3.3 (`user_input`, `agent_response`, `tool`, `finish`) voids the run;
+  - only the browser tools listed in the prompt and AGY's own `finish` (which submits the result) are accepted. Any other tool, including the browser server's upload, heap-snapshot, extension and DevTools-comment tools, rejects the result without provider fallback, unless the step never reached `DONE` and ended in an error showing it never ran (a permission denial or a call rejected before running, matched at the start of the message);
+  - the controller reads AGY's whole event log, up to 64 MiB, instead of the 4 MiB tail it keeps for other providers. A log it cannot fully audit, because it has an unreadable line or is over 64 MiB, counts as a violation: what it hides might have been one. It is never read as a quota wait.
+
+  A disallowed tool, a tool that needed approval, or a permission mode other than `request-review` is a **boundary violation**, and a violation is never hidden behind a timeout. The task is held as a B3 owner decision, with no retry on AGY and no other provider. After review, `recheck --task <id>` releases it. Quota and login waits are read only from AGY's own error report and its `error:` lines on stderr.
+- **Configuration.** `config.json` sets `commands.agy` (the native `agy.exe`, not the `.cmd` shim) and `commands.chrome` (an absolute Chrome executable). Without them the provider waits as unconfigured. A missing or older-than-149 Chrome (judged by the version folder beside `chrome.exe`), or a missing `chrome-devtools-mcp` install, makes it unavailable until a recheck. Validation also requires a provider for every task: a web task needs `agy-cli`, and any other task needs a provider other than `agy-cli`.
+
+Probe findings behind these rules (agy 1.3.3, chrome-devtools-mcp 1.10.1, Chrome 155, HomePc, 2026-10-11):
+- In print mode, a tool that falls to "ask" ends the turn without output. An explicit deny returns a tool error and the session continues.
+- With chrome-devtools-mcp's own Chrome launch, every browser call timed out after 3 minutes when AGY was the MCP host. The wrapper therefore owns Chrome; a Chrome it starts runs normally under the fully run-local environment. A direct check of the wrapper under that environment confirmed that an off-origin navigation is blocked, that a screenshot into the real `%TEMP%` is refused and that no heap-snapshot tool is offered.
+- Escape probe against a decoy local service on another loopback port (which stands in for the dashboard at 4318 and Local Commander at 17321). It drove the wrapper under the run-local environment, from a page on the declared origin and from `evaluate_script`. The decoy received **no** request:
+  - from `fetch` to `127.0.0.1`, `localhost`, `[::1]`, `0.0.0.0`, `127.1`, `2130706433` or `foo.localhost`;
+  - from XHR, image, WebSocket, `sendBeacon`, iframe or Web Worker `fetch`;
+  - from scripted `location.href` or `window.open`;
+  - from `navigate_page` or `new_page` to any of those addresses.
+- A WebRTC page asked for a STUN server on this PC's LAN address. With the policy flag it gathered no candidate at all.
+- A headless window cannot be narrower than about 500 px, so phone checks use `emulate`.
+- On a page with planted defects, a first probe found every planted defect but passed a phone-width criterion that measurement showed failing. The prompt therefore requires measured evidence and phone checks through `emulate`. Through this adapter and the contained runner, AGY then judged all eight criteria correctly (about 4.5 minutes), and a fresh AGY verifier re-measured every claim and accepted the report (about 3 minutes).

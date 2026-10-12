@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://engineering-platform.local/schemas/project-contract.schema.json",
+  "title": "Portfolio Project Contract",
+  "type": "object",
+  "required": ["id", "name", "repository", "lifecycle", "capabilities", "environments"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$" },
+    "name": { "type": "string", "minLength": 1 },
+    "repository": {
+      "type": "object",
+      "required": ["github"],
+      "properties": {
+        "github": { "type": "string", "pattern": "^[^/]+/[^/]+$" },
+        "localRoot": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "lifecycle": {
+      "type": "string",
+      "enum": ["active", "support", "experimental", "parked", "archive-candidate", "archived"]
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "ui", "storybook", "public-web", "api", "worker", "database",
+          "docker", "ai", "payments", "auth", "seo", "email",
+          "mcp", "npm-package", "browser-extension", "data-pipeline"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "environments": {
+      "type": "array",
+      "items": { "enum": ["local", "dev", "staging", "prod"] },
+      "uniqueItems": true
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "compute": { "type": "array", "items": { "$ref": "#/$defs/resource" } },
+        "databases": { "type": "array", "items": { "$ref": "#/$defs/resource" } },
+        "providers": { "type": "array", "items": { "$ref": "#/$defs/resource" } },
+        "domains": { "type": "array", "items": { "$ref": "#/$defs/resource" } },
+        "backups": { "type": "array", "items": { "$ref": "#/$defs/resource" } }
+      },
+      "additionalProperties": true
+    },
+    "secrets": {
+      "type": "object",
+      "properties": {
+        "current": { "type": "string" },
+        "target": { "type": "string" },
+        "notes": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "notes": { "type": "array", "items": { "type": "string" } },
+    "governance": { "$ref": "#/$defs/governance" }
+  },
+  "$defs": {
+    "governance": {
+      "$comment": "Inheritance state. Semantics: docs/GOVERNANCE_INHERITANCE.md section 9. Absent means implicit inheritance.",
+      "type": "object",
+      "required": ["observedAt", "parentLink", "independentVerificationGate"],
+      "properties": {
+        "observedAt": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+@[0-9a-f]{7,40}$"
+        },
+        "parentLink": { "enum": ["linked", "absent", "unknown"] },
+        "authorities": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/projectAuthority" },
+          "allOf": [
+            { "contains": { "$ref": "#/$defs/authorityRole/$defs/agent-contract" }, "minContains": 0, "maxContains": 1 },
+            { "contains": { "$ref": "#/$defs/authorityRole/$defs/product-constitution" }, "minContains": 0, "maxContains": 1 },
+            { "contains": { "$ref": "#/$defs/authorityRole/$defs/principles" }, "minContains": 0, "maxContains": 1 },
+            { "contains": { "$ref": "#/$defs/authorityRole/$defs/decisions" }, "minContains": 0, "maxContains": 1 },
+            { "contains": { "$ref": "#/$defs/authorityRole/$defs/router" }, "minContains": 0, "maxContains": 1 },
+            { "contains": { "$ref": "#/$defs/authorityRole/$defs/runtime-state" }, "minContains": 0, "maxContains": 1 },
+            { "contains": { "$ref": "#/$defs/authorityRole/$defs/experience-review" }, "minContains": 0, "maxContains": 1 },
+            { "contains": { "$ref": "#/$defs/authorityRole/$defs/ui-authority" }, "minContains": 0, "maxContains": 1 }
+          ]
+        },
+        "ownerReserved": { "type": "array", "items": { "$ref": "#/$defs/ownerReservedTrigger" } },
+        "stricter": { "type": "array", "items": { "$ref": "#/$defs/stricterRule" } },
+        "exceptions": { "type": "array", "items": { "$ref": "#/$defs/governanceException" } },
+        "gaps": { "type": "array", "items": { "$ref": "#/$defs/governanceGap" } },
+        "releaseAuthorization": { "$ref": "#/$defs/releaseAuthorization" },
+        "independentVerificationGate": { "enum": ["not-enabled", "enabled"] }
+      },
+      "additionalProperties": false
+    },
+    "releaseAuthorization": {
+      "$comment": "A standing deploy authorization the owner granted as the project's manual release transition (CONSTITUTION section 14, EP-029): assigned changes and the project's own release targets only, every release gate binding. Absent means none is recorded.",
+      "type": "object",
+      "required": ["source", "approval", "summary"],
+      "properties": {
+        "source": { "$ref": "#/$defs/projectPath" },
+        "approval": { "type": "string", "pattern": "^https://github\\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/(issues|pull)/[0-9]+$" },
+        "summary": { "$ref": "#/$defs/label" }
+      },
+      "additionalProperties": false
+    },
+    "projectAuthority": {
+      "type": "object",
+      "required": ["role", "path"],
+      "properties": {
+        "role": {
+          "enum": [
+            "agent-contract", "product-constitution", "principles", "decisions", "router",
+            "runtime-state", "capability-contract", "workflow-contract", "experience-review", "ui-authority"
+          ]
+        },
+        "path": { "$ref": "#/$defs/projectPath" }
+      },
+      "additionalProperties": false
+    },
+    "authorityRole": {
+      "$comment": "Selectors for the single-owner authority roles.",
+      "$defs": {
+        "agent-contract": { "type": "object", "required": ["role"], "properties": { "role": { "const": "agent-contract" } } },
+        "product-constitution": { "type": "object", "required": ["role"], "properties": { "role": { "const": "product-constitution" } } },
+        "principles": { "type": "object", "required": ["role"], "properties": { "role": { "const": "principles" } } },
+        "decisions": { "type": "object", "required": ["role"], "properties": { "role": { "const": "decisions" } } },
+        "router": { "type": "object", "required": ["role"], "properties": { "role": { "const": "router" } } },
+        "runtime-state": { "type": "object", "required": ["role"], "properties": { "role": { "const": "runtime-state" } } },
+        "experience-review": { "type": "object", "required": ["role"], "properties": { "role": { "const": "experience-review" } } },
+        "ui-authority": { "type": "object", "required": ["role"], "properties": { "role": { "const": "ui-authority" } } }
+      }
+    },
+    "ownerReservedTrigger": {
+      "type": "object",
+      "required": ["id", "kind", "source", "summary"],
+      "properties": {
+        "id": { "$ref": "#/$defs/localId" },
+        "kind": { "enum": ["permanent", "transitional"] },
+        "source": { "$ref": "#/$defs/projectPath" },
+        "summary": { "$ref": "#/$defs/label" },
+        "retiresWhen": { "$ref": "#/$defs/label" }
+      },
+      "if": { "type": "object", "required": ["kind"], "properties": { "kind": { "const": "transitional" } } },
+      "then": { "required": ["retiresWhen"] },
+      "else": { "not": { "required": ["retiresWhen"] } },
+      "additionalProperties": false
+    },
+    "stricterRule": {
+      "type": "object",
+      "required": ["rule", "source", "summary"],
+      "properties": {
+        "rule": {
+          "anyOf": [
+            { "$ref": "#/$defs/baselineRef" },
+            { "enum": ["constitution#3", "constitution#4", "constitution#7", "constitution#8", "constitution#14", "constitution#17"] },
+            { "$ref": "#/$defs/policyClauseRef" }
+          ]
+        },
+        "source": { "$ref": "#/$defs/projectPath" },
+        "summary": { "$ref": "#/$defs/label" }
+      },
+      "additionalProperties": false
+    },
+    "governanceException": {
+      "$comment": "Exceptionable Constitution sections or resolved exceptionable non-baseline policy clauses. Policy resolution is checked by scripts/check-policies.mjs.",
+      "type": "object",
+      "required": ["id", "rule", "source", "approval", "reviewBy", "summary"],
+      "properties": {
+        "id": { "$ref": "#/$defs/localId" },
+        "rule": { "anyOf": [{ "enum": ["constitution#7", "constitution#8", "constitution#17"] }, { "$ref": "#/$defs/policyClauseRef" }] },
+        "source": { "$ref": "#/$defs/projectPath" },
+        "approval": {
+          "anyOf": [
+            { "type": "string", "pattern": "^https://github\\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/(issues|pull)/[0-9]+$" },
+            { "allOf": [{ "$ref": "#/$defs/projectPath" }, { "type": "string", "pattern": "#" }] }
+          ]
+        },
+        "reviewBy": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "summary": { "$ref": "#/$defs/label" }
+      },
+      "additionalProperties": false
+    },
+    "governanceGap": {
+      "$comment": "A recorded deviation that cannot be an exception (baseline or stricter-only rule, or not yet owner-approved). It never relaxes anything: the generic rule applies until the project repository changes. 'request' is where the change was decided or asked for; the conformance report flags gaps past reviewBy.",
+      "type": "object",
+      "required": ["id", "rule", "source", "request", "reviewBy", "summary"],
+      "properties": {
+        "id": { "$ref": "#/$defs/localId" },
+        "rule": {
+          "anyOf": [
+            { "$ref": "#/$defs/baselineRef" },
+            { "type": "string", "pattern": "^constitution#([1-9]|1[0-8])$" },
+            { "$ref": "#/$defs/policyClauseRef" }
+          ]
+        },
+        "source": { "$ref": "#/$defs/projectPath" },
+        "request": { "type": "string", "pattern": "^https://github\\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/(issues|pull)/[0-9]+(#[A-Za-z0-9._-]+)?$" },
+        "reviewBy": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "summary": { "$ref": "#/$defs/label" }
+      },
+      "additionalProperties": false
+    },
+    "policyClauseRef": {
+      "type": "string",
+      "pattern": "^policy:[A-Z][A-Z0-9]*-[0-9]{3}#[a-z][a-z0-9-]*$"
+    },
+    "baselineRef": {
+      "enum": [
+        "baseline:owner-reserved",
+        "baseline:credential-boundaries",
+        "baseline:evidence-truth",
+        "baseline:isolation",
+        "baseline:irreversible-risk",
+        "baseline:zero-recurring-spend",
+        "baseline:incident-escalation",
+        "baseline:independent-verification",
+        "baseline:permission-boundaries"
+      ]
+    },
+    "projectPath": {
+      "$comment": "Relative to the project repository root, optional #anchor; no absolute paths, backslashes or . / .. segments, and never a secret-like path (a .env* segment, a .git/.ssh/.gnupg segment, an id_rsa*/id_ed25519*/credential(s)/secret(s) segment, or a key, certificate or keystore file), because agents are told to read these pointers. The `not` pattern is SECRET_LIKE_PATH_PATTERN in scripts/lib/worker-context.mjs, identical in the worker packet schema.",
+      "type": "string",
+      "pattern": "^(?!(?:[^#]*/)?\\.{1,2}(?:[/#]|$))[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*(?:#[A-Za-z0-9._-]+)?$",
+      "not": { "pattern": "(?:^|/)(?:\\.[Ee][Nn][Vv][^/#]*|\\.[Gg][Ii][Tt]|\\.[Ss][Ss][Hh]|\\.[Gg][Nn][Uu][Pp][Gg]|[Ii][Dd]_[Rr][Ss][Aa][^/#]*|[Ii][Dd]_[Ee][Dd]25519[^/#]*|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll][Ss]?(?:\\.[^/#]*)?|[Ss][Ee][Cc][Rr][Ee][Tt][Ss]?(?:\\.[^/#]*)?)(?:[/#]|$)|\\.(?:[Pp][Ee][Mm]|[Kk][Ee][Yy]|[Pp]12|[Pp][Ff][Xx]|[Jj][Kk][Ss]|[Kk][Ee][Yy][Ss][Tt][Oo][Rr][Ee]|[Cc][Rr][Tt]|[Cc][Ee][Rr]|[Dd][Ee][Rr])(?:#|$)" }
+    },
+    "localId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+    "label": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "resource": {
+      "type": "object",
+      "required": ["name", "status"],
+      "properties": {
+        "name": { "type": "string" },
+        "kind": { "type": "string" },
+        "status": { "enum": ["observed", "verified", "planned", "unknown", "off", "parked"] },
+        "environment": { "type": "string" },
+        "notes": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

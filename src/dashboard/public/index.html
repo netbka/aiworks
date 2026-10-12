@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Operations · AIWorks</title>
+  <link rel="stylesheet" href="/dashboard.css">
+  <script src="/dashboard.js" type="module"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <aside class="sidebar">
+    <a class="brand" href="#overview"><span class="brand-mark" aria-hidden="true">aw<span>↗</span></span><span>AI<strong>Works</strong></span></a>
+    <div class="workspace-label">WORKSPACE</div>
+    <nav aria-label="Main navigation">
+      <button data-view="overview" class="nav-item active"><span aria-hidden="true">◫</span> Overview</button>
+      <button data-view="roadmap" class="nav-item"><span aria-hidden="true">☷</span> Plans <span id="roadmap-count" class="nav-count"></span></button>
+      <button data-view="work" class="nav-item"><span aria-hidden="true">▤</span> Issues & PRs</button>
+      <button data-view="agents" class="nav-item"><span aria-hidden="true">◎</span> Agents <span id="agent-count" class="nav-count"></span></button>
+      <button data-view="messages" class="nav-item"><span aria-hidden="true">✉</span> Messages <span id="message-count" class="nav-count"></span></button>
+      <button data-view="activity" class="nav-item"><span aria-hidden="true">↳</span> Activity</button>
+    </nav>
+    <div class="sidebar-bottom"><span class="local-dot"></span><div><strong id="host-name" aria-busy="true">…</strong><small id="host-detail">&nbsp;</small></div></div>
+  </aside>
+  <div class="shell">
+    <header class="topbar"><div class="breadcrumb">Workspace <span>/</span> <strong>Operations</strong></div><div class="topbar-actions"><span id="connection" role="status" class="connection">Connecting…</span><button id="open-message" class="button">✉ Message coordinator</button><button id="refresh" class="button secondary" title="Re-fetch GitHub issues and PRs now (also automatic every minute). Agent state updates every 5 seconds without it.">↻ Refresh GitHub</button></div></header>
+    <main id="main" tabindex="-1">
+      <div class="page-heading"><div><div class="eyebrow">AIWORKS</div><h1 id="view-title">Overview</h1><p id="view-description">What changed, what needs you, and how each project campaign is moving.</p></div></div>
+      <div id="notice" class="notice" role="status" hidden></div>
+      <div id="source-warning" class="notice warning" hidden></div>
+      <section id="metrics" class="metrics" aria-label="Workspace summary"></section>
+      <div id="filters" class="filters" hidden>
+        <label class="search-label"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search packages, issues, or PRs" aria-label="Search work"></label>
+        <label><span class="sr-only">Filter by track</span><select id="track"><option value="">All tracks</option><option value="Product control plane">Control plane: first release</option><option value="Product · next">Control plane: after the first release</option><option value="Autonomous governance">Portfolio rules rollout</option><option value="Tracked extensions">Other tracked platform work</option></select></label>
+        <label><span class="sr-only">Filter by status</span><select id="status"><option value="">All statuses</option><option value="done">Done / merged</option><option value="in_progress">In progress / open</option><option value="review">In review</option><option value="blocked">Blocked</option><option value="planned">Planned</option><option value="unknown">Unknown</option></select></label>
+      </div>
+      <div id="content"><div class="empty-state">Connecting to roadmap and supervisor sources…</div></div>
+      <footer class="page-footer"><span>GitHub owns roadmap work. The supervisor owns execution state.</span><span id="updated"></span></footer>
+    </main>
+  </div>
+  <dialog id="cancel-dialog" aria-labelledby="cancel-title"><form method="dialog"><div class="dialog-icon" aria-hidden="true">!</div><h2 id="cancel-title">Cancel this campaign?</h2><p id="cancel-description"></p><p>New work will stop and the controller will terminate its owned running workers. Completed results stay available. A cancelled campaign cannot be resumed.</p><div class="dialog-actions"><button class="button secondary" value="close" autofocus>Keep campaign</button><button id="confirm-cancel" type="button" class="button danger">Cancel campaign</button></div></form></dialog>
+  <dialog id="instruction-dialog" aria-labelledby="instruction-title"><form id="instruction-form">
+    <h2 id="instruction-title">Send instructions</h2><p id="instruction-campaign"></p>
+    <label>Task<select id="instruction-task" required></select></label>
+    <label>Recipient<select id="instruction-role"><option value="implement">Builder — its next run</option><option value="verify">Independent checker — its next run</option></select></label>
+    <label>Instruction<textarea id="instruction-text" rows="5" maxlength="2000" required aria-describedby="instruction-help" placeholder="What should the agent focus on?"></textarea></label>
+    <p id="instruction-help">Queued for this task's next run by the selected role. Running workers are not interrupted. Existing scope, acceptance and budget still apply. No secrets; up to 2,000 characters.</p>
+    <div class="dialog-actions"><button id="close-instruction" class="button secondary" type="button">Keep draft</button><button id="send-instruction" class="button" type="submit">Queue instruction</button></div>
+  </form></dialog>
+  <dialog id="message-dialog" aria-labelledby="message-title"><form id="message-form">
+    <h2 id="message-title">Message the coordinator</h2>
+    <p id="message-target"></p>
+    <label>Message<textarea id="message-text" rows="6" maxlength="4000" required aria-describedby="message-help" placeholder="For example: review new PRs and issues and plan their execution."></textarea></label>
+    <p id="message-help">You get a receipt at each step: <strong>Received</strong> when the supervisor stores it, <strong>Read</strong> when the coordinator agent starts with it, and <strong>Answered</strong> with a link to its reply. This page shows a notice and a desktop notification for each step while it is open. The coordinator is read-only: it reviews and plans, and never starts work by itself. No secrets; up to 4,000 characters.</p>
+    <div class="dialog-actions"><button id="close-message" class="button secondary" type="button">Keep draft</button><button id="send-message" class="button" type="submit">Send message</button></div>
+  </form></dialog>
+</body>
+</html>

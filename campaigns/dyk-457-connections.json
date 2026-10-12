@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "campaignId": "dyk-457-connections",
+  "authorization": {
+    "version": 1,
+    "grantedBy": "owner (netbka), delegated to the owner's main session",
+    "grantedAt": "2026-10-10",
+    "reference": "https://github.com/netbka/Dyk/pull/476#issuecomment-6101849722",
+    "text": "On 2026-10-10 the owner delegated the D-040 decision for netbka/Dyk#457 ('D-40 Review the product and guidelines. Make own decision') and asked for the work to be released ('Release to prod I will check there'). The delegated D-040 decision approved the #476 composition with seven required corrections and allowed the #457 runtime wiring once the corrected Storybook passes independent visual review and is merged. This campaign applies the corrections, then wires the runtime. Two tasks, one worker at a time; PRs only, never merge or deploy; no production access. No limits (owner removed them); provider subscription limits and the no-progress guard are the stops. Provider order Claude, Codex, Cursor."
+  },
+  "target": {
+    "tenantId": "netbka",
+    "projectId": "dyk",
+    "environment": "research",
+    "repository": "netbka/Dyk",
+    "baseBranch": "main",
+    "trackingIssue": 457
+  },
+  "executor": {
+    "kind": "cli-chain",
+    "providers": [
+      {
+        "kind": "claude-cli",
+        "model": "opus",
+        "permissionMode": "auto"
+      },
+      {
+        "kind": "codex-cli",
+        "model": "gpt-6-astra"
+      },
+      {
+        "kind": "cursor-cli"
+      }
+    ],
+    "implementerTimeoutMinutes": 240,
+    "verifierTimeoutMinutes": 90
+  },
+  "constraints": [
+    "Campaign for netbka/Dyk#457 only. Do not start or change #469, #475, #477, #433, #430, #181, #399, #426, #157 or other agents' branches.",
+    "No production access, deployment, GitHub Actions, paid services, or Playwright and other browser-driven tests (Dyk owner rule). Local disposable SQL is allowed only through the repository runners (npm run test:sql / npm run journeys with a selected scope) when a task changes a route or persistence; never the production database.",
+    "Never read .env contents, credentials, private conversations or real user data; fixtures are synthetic.",
+    "A Storybook build or passing tests is not visual acceptance. Do not remove worktrees, delete branches or link another checkout's node_modules.",
+    "Do not add any new blocking gate, lock, required approval or check that depends on owner-provisioned keys, credentials or setup (owner, 2026-10-10)."
+  ],
+  "tasks": [
+    {
+      "id": "FIX-476",
+      "issue": 457,
+      "title": "Apply the D-040 corrections to the #457 Storybook stage",
+      "deliverable": "commit",
+      "goal": "Start from PR netbka/Dyk#476 (branch campaign/dyk-457-storybook-stage/STORYBOOK-457, head bbd9be06): merge that branch into your task branch first, so the new PR supersedes #476. Then apply all seven required corrections from the delegated D-040 decision (gh pr view 476 --repo netbka/Dyk --comments, comment 6101849722): (1) express the overview connection rows with the shared ConnectionCard contract (app/src/connection-card-ui.js, docs/UI_COMPONENTS.md), extending it rather than forking, with no action on an outage and Connect/Reconnect primary; (2) give the states that need action (needs reconnecting, disconnected) a tone distinct from temporarily unavailable, matching production Profile; (3) use production wording ('Try again' / 'ניסיון נוסף', 'Set up again') and a natural RU title; (4) render the Sources stories with the production Chats renderer and its per-row sourceProblem() notice, with no duplicate list-level entry; (5) make a My people row lead to selecting or inspecting that person's chats; (6) add the Telegram-only one-source state; (7) give every interactive control at least a 44x44 px hit area at 320 px. Apply the listed nice-to-haves if they are cheap. RU/EN/HE at 320 and 390 with Hebrew/mixed names, synthetic fixtures.",
+      "dependsOn": [],
+      "constraints": [
+        "Change files under storybook/ only, plus app/src/connection-card-ui.js and its existing tests if the shared ConnectionCard contract must be extended (keep production behavior identical for current Profile consumers).",
+        "Faithfully apply the decision; do not introduce a new visual language. Keep exactly four dock destinations."
+      ],
+      "acceptance": [
+        "Each of the seven corrections is addressed, with the story ids that show it; npm run storybook:build and the storybook node tests pass, with exact commands; any ConnectionCard change keeps its existing tests green.",
+        "The PR body says it supersedes #476 and lists, for the independent visual review, the story ids, locales and widths to check; it states the visual verdict is pending."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/AGENTS.md",
+        "docs/PRINCIPLES.md",
+        "docs/PRODUCT_RETHINK.md",
+        "docs/DECISIONS.md",
+        "docs/UI_COMPONENTS.md",
+        "docs/STORYBOOK.md",
+        "docs/STORYBOOK_VISUAL_REVIEW.md",
+        "app/src/connection-card-ui.js",
+        "app/src/chats-page-ui.js",
+        "storybook/stories/production/Master.stories.js",
+        "storybook/stories/production/Chats.stories.js"
+      ]
+    },
+    {
+      "id": "WIRE-457",
+      "issue": 457,
+      "title": "Wire the approved Master overview connections into the product",
+      "deliverable": "commit",
+      "requiresMergedDependencies": true,
+      "goal": "Implement netbka/Dyk#457 in the production app exactly as the merged, corrected Storybook stage (FIX-476) shows it: the completed Master overview with Connections rows (shared ConnectionCard, real WhatsApp/Telegram status, one literal action), My people rows that lead to that person's chats, a low-emphasis 'Set up again', and the contextual source entry in Chats through the existing per-row notice. Reuse existing status owners (WhatsApp/Telegram connection state, Profile's ConnectionCard consumers); add no new provider calls, schema or capability. Keep the Storybook Production stories in sync with the renderer in the same change (Storybook is not post-hoc documentation). RU/EN/HE, true Hebrew RTL, 320/390 widths, 44px hit areas.",
+      "dependsOn": ["FIX-476"],
+      "constraints": [
+        "Faithful implementation of the approved Storybook result only (D-040): no new visible behavior beyond it. If something cannot be implemented as shown, stop and report blocked with the exact difference.",
+        "Truthful states (T2): sign-in-only Telegram is never shown as connected, a pending unlink never offers Connect, an outage is never shown as disconnected."
+      ],
+      "acceptance": [
+        "Focused node/UI contracts for the changed renderers and routes pass (npm run check -- <feature> or --files=..., exact commands); if a route or persistence read changed, the selected HTTP journey or SQL contract passes on disposable local SQL.",
+        "Production Storybook stories for the changed surfaces render the runtime renderer and the storybook build passes; the PR lists the story ids for independent visual review and states the visual verdict is pending.",
+        "git diff main --stat shows no migrations, provider adapters or deploy changes."
+      ],
+      "references": [
+        "AGENTS.md",
+        "app/AGENTS.md",
+        "app/test/AGENTS.md",
+        "docs/PRINCIPLES.md",
+        "docs/PRODUCT_RETHINK.md",
+        "docs/DECISIONS.md",
+        "docs/UI_COMPONENTS.md",
+        "docs/USER_STORY_MAP.md",
+        "app/src/connection-card-ui.js",
+        "app/src/chats-page-ui.js"
+      ]
+    }
+  ]
+}

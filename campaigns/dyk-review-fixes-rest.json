@@ -1,0 +1,148 @@
+{
+  "version": 1,
+  "campaignId": "dyk-review-fixes-rest",
+  "purpose": "Fix the defects that the independent #181/#399 reviews confirmed on Profile, plans and providers, sign-in and re-authentication, the bug report and menus, plus the #513 review follow-ups.",
+  "authorization": {
+    "version": 1,
+    "grantedBy": "owner (netbka), delegated to the owner's main session",
+    "grantedAt": "2026-10-11",
+    "reference": "https://github.com/netbka/Dyk/issues/181#issuecomment-6111164175",
+    "text": "On 2026-10-11 the owner instructed in the controlling session: \"do all. complete all work. merge to main. clean worktrees. tell me when all issues in PR's are resolved.\" and earlier delegated product decisions to this session (\"Review the product and guidlines. Make own decision\"). On 2026-10-11 the owner repeated the instruction to turn the #181/#399 report findings into fixes. This campaign repairs the defects confirmed by the independently verified review reports R6-PROFILE (Dyk #181 comment 6110906108), R7-AUTH (comment 6111045485) and R8-BUGREPORT (comment 6111148491) of campaign dyk-181-399-review, and the non-blocking follow-ups of the independent review of Dyk PR #513 (comment 6111150229). Design choices the reports left open are decided in the controller fix plan posted on Dyk #181 (comment 6111164175) with the reason for each. No owner-reserved item is touched (manual task editing stays as is per the owner). Bounded repairs under Dyk AGENTS.md section 4; visible changes are represented in Storybook and independently reviewed before merge. PRs only, never merge or deploy; no production access. No limits; provider subscription limits and the no-progress guard are the stops. Providers Claude then Codex (owner: \"Use codex or claude agent\")."
+  },
+  "target": {
+    "tenantId": "netbka",
+    "projectId": "dyk",
+    "environment": "research",
+    "repository": "netbka/Dyk",
+    "baseBranch": "main",
+    "trackingIssue": 181
+  },
+  "executor": {
+    "kind": "cli-chain",
+    "providers": [
+      {
+        "kind": "claude-cli",
+        "model": "opus",
+        "permissionMode": "auto"
+      },
+      {
+        "kind": "codex-cli",
+        "model": "gpt-6-astra"
+      }
+    ],
+    "implementerTimeoutMinutes": 240,
+    "verifierTimeoutMinutes": 90
+  },
+  "constraints": [
+    "No production access, deployment, GitHub Actions, paid services, or Playwright and other browser-driven tests (Dyk owner rule). Local disposable SQL only through the repository runners (npm run test:sql / npm run journeys with a selected scope) when a task changes a route or persistence; never the production database.",
+    "Keep the affected Storybook stories in sync with every renderer change (Storybook is not post-hoc documentation). RU/EN/HE, true Hebrew RTL, 320/390 widths, 44px hit areas, no horizontal overflow, truthful states (T2).",
+    "Never read .env contents, credentials, private conversations or real user data; fixtures are synthetic.",
+    "A Storybook build or passing tests is not visual acceptance; each PR lists the story ids for independent visual review and states that the visual verdict is pending.",
+    "Do not remove worktrees, delete branches or link another checkout's node_modules. Do not add any new blocking gate, lock, required approval or check that depends on owner-provisioned keys, credentials or setup (Dyk AGENTS.md section 4).",
+    "Never weaken an existing test, guard or assertion; never add a capability outside the accepted feature map unless the task names the owner decision that adds it.",
+    "Open PR #500 (another session) rewrites short copy in about 20 files, including task-board-ui.js and screen-copy.js. Change copy in those files only where an item needs it, keep each edit minimal, and say in the PR which #500 files you touched.",
+    "Do not change any task editing behavior (date, title, action, summary, Done/Undo, person correction): the owner decided to keep it as is.",
+    "Campaigns dyk-review-fixes (Summary, Sources, chat reader, tooling) and dyk-review-fixes-setup (Setup) are changing those surfaces at the same time; do not edit them here.",
+    "Authentication, session, CSRF validation and redirect safety must not change: sign-in fixes are limited to UI, copy and link targets; every return or language parameter goes through the existing safe-return validation, and the existing auth security tests keep passing unchanged."
+  ],
+  "tasks": [
+    {
+      "id": "FIX-PROFILE",
+      "issue": 181,
+      "title": "Profile and providers: safe destructive spacing, one exit per destination, truthful trial date, natural wording",
+      "outcome": "Disconnect can never be hit by a slightly low tap on Reconnect, provider screens opened from Profile return to Profile, the trial date is truthful, and the wording is natural.",
+      "deliverable": "commit",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "Every numbered item is fixed or reported not applicable with measured evidence on current main; affected focused tests, npm run check:ui, audit-principles, npm run storybook:build plus the storybook node tests pass, with exact commands; the PR lists the story ids for independent visual review in RU/EN/HE at 320 and 390 and states that the visual verdict is pending."
+      ],
+      "references": [
+        "AGENTS.md",
+        "app/AGENTS.md",
+        "app/test/AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/DECISIONS.md",
+        "docs/STORYBOOK.md",
+        "docs/UI_COMPONENTS.md",
+        "storybook/review-manifest.json"
+      ],
+      "goal": "Read the verified report R6-PROFILE (gh api repos/netbka/Dyk/issues/comments/6110906108 --jq .body) and the controller fix plan with its decisions (gh api repos/netbka/Dyk/issues/comments/6111164175 --jq .body). Fix plan items 1-4: (1) F1 high: Disconnect never touches Reconnect (spacing token, divider, destructive style kept); (2) F2 decision: a provider screen opened from Profile returns to Profile and Profile's Open in Setup carries the return; Continue without connecting only inside the Setup flow; never two exits to one URL; WhatsApp and Telegram reconnect consistent; (3) F3: story fixtures use dates relative to the story clock, and a past trial end is described as ended in the product copy; (4) F4: the row label names the thing and the button the action, RU natural \"open in Setup\" and an em dash, HE consistent button forms. The report saw b190bf26: re-check each item on current main first and report any already fixed. Keep Storybook stories in sync; add focused tests per item."
+    },
+    {
+      "id": "FIX-AUTH",
+      "issue": 181,
+      "title": "Sign-in and re-auth: 44px links, one action per page, truthful states, LTR email fields, language kept",
+      "outcome": "Every sign-in and re-authentication state offers one clear, truthful action with 44px targets, email fields are LTR, and every link keeps the language, with no change to authentication logic.",
+      "deliverable": "commit",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "Every numbered item is fixed or reported not applicable with measured evidence on current main; affected focused tests, npm run check:ui, audit-principles, npm run storybook:build plus the storybook node tests pass, with exact commands; the PR lists the story ids for independent visual review in RU/EN/HE at 320 and 390 and states that the visual verdict is pending."
+      ],
+      "references": [
+        "AGENTS.md",
+        "app/AGENTS.md",
+        "app/test/AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/DECISIONS.md",
+        "docs/STORYBOOK.md",
+        "docs/UI_COMPONENTS.md",
+        "storybook/review-manifest.json",
+        "app/src/auth-pages.js",
+        "app/test/auth-web.test.js"
+      ],
+      "goal": "Read the verified report R7-AUTH (gh api repos/netbka/Dyk/issues/comments/6111045485 --jq .body) and the controller fix plan with its decisions (gh api repos/netbka/Dyk/issues/comments/6111164175 --jq .body). Fix plan items 5-16 without changing authentication, session, CSRF validation or redirect safety: 44px tap areas for the text links and the session-expired header link; decision: the divider says only \"or\"; the magic-link text states the address, the button stays Continue, and the missing space is fixed; one sign-in link on session-expired; CSRF-expired offers one truthful Try again to the safe same-origin origin page (else home) and no duplicate exits; the Mini App failure overlay is a labelled modal and the page behind is inert; no join hint on re-auth; no raw 401/403; consistent terms between sign-in and re-auth; email inputs dir=ltr; every auth link keeps the language through the existing safe mechanism; the minor layout items. The report saw b190bf26: re-check each item on current main first and report any already fixed. Keep Storybook stories in sync; add focused tests per item."
+    },
+    {
+      "id": "FIX-BUGREPORT",
+      "issue": 181,
+      "title": "Bug report: in-app validation, clear sending and failure states, bidi-safe field, focus after close",
+      "outcome": "The bug report tells the truth in every state in the UI language, Latin drafts read correctly in Hebrew, and closing it returns the user to a closed menu with focus on its trigger.",
+      "deliverable": "commit",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "Every numbered item is fixed or reported not applicable with measured evidence on current main; affected focused tests, npm run check:ui, audit-principles, npm run storybook:build plus the storybook node tests pass, with exact commands; the PR lists the story ids for independent visual review in RU/EN/HE at 320 and 390 and states that the visual verdict is pending."
+      ],
+      "references": [
+        "AGENTS.md",
+        "app/AGENTS.md",
+        "app/test/AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/DECISIONS.md",
+        "docs/STORYBOOK.md",
+        "docs/UI_COMPONENTS.md",
+        "storybook/review-manifest.json"
+      ],
+      "goal": "Read the verified report R8-BUGREPORT (gh api repos/netbka/Dyk/issues/comments/6111148491 --jq .body) and the controller fix plan with its decisions (gh api repos/netbka/Dyk/issues/comments/6111164175 --jq .body). Fix plan items 17-22: an in-app validation message in the UI language with aria-invalid and aria-describedby instead of the browser bubble (field stays required); the failure reads as an error (error colour token, icon, spacing) and keeps the draft; Sending is stated (label/status, aria-busy, field read-only while sending); the textarea uses dir=auto; after Sent and Close the account menu closes and focus returns to its trigger; and the advisories (one help sentence, sheet title matches the menu item, Thank you as a heading, mirrored HE log-out arrow, language-code column on one side, helper text at the smallest readable type step). The report saw 09072f8f: re-check each item on current main first and report any already fixed. Keep Storybook stories in sync; add focused tests per item."
+    },
+    {
+      "id": "FIX-TASKS-NITS",
+      "issue": 181,
+      "title": "Tasks follow-ups from the #513 review",
+      "outcome": "The Tasks evidence page behaviour merged in #513 is fully guarded by unit tests, and no control name or HE note is malformed.",
+      "deliverable": "commit",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "Every numbered item is fixed or reported not applicable with measured evidence on current main; affected focused tests, npm run check:ui, audit-principles, npm run storybook:build plus the storybook node tests pass, with exact commands; the PR lists the story ids for independent visual review in RU/EN/HE at 320 and 390 and states that the visual verdict is pending."
+      ],
+      "references": [
+        "AGENTS.md",
+        "app/AGENTS.md",
+        "app/test/AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/DECISIONS.md",
+        "docs/STORYBOOK.md",
+        "docs/UI_COMPONENTS.md",
+        "storybook/review-manifest.json"
+      ],
+      "goal": "Read the controller integration record on Dyk PR #513 (gh api repos/netbka/Dyk/issues/comments/6111150229 --jq .body) and plan items 23-26 (gh api repos/netbka/Dyk/issues/comments/6111164175 --jq .body). Fix: a unit test that fails if web.js stops passing the viewer's done flag (Boolean(task.MyDone)) to the evidence page; an explicit assertion on the evidence metadata row direction; the grip, Choose a day and All saved messages names never end in \": \" for an empty title (same guard as the completion control); the details and evidence fixtures agree on message 2's sender; the HE \"(this link cannot be opened)\" note keeps its parentheses together inside an LTR message (bidi isolation). Prove each new test with a deliberate mutation recorded in the PR. re-check each item on current main first and report any already fixed. Keep Storybook stories in sync; add focused tests per item."
+    }
+  ]
+}

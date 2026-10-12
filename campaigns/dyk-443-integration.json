@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "campaignId": "dyk-443-integration",
+  "purpose": "Bring the verified evidence checks onto Dyk's current main without weakening any rule.",
+  "authorization": {
+    "version": 1,
+    "grantedBy": "owner (netbka), delegated to the owner's main session",
+    "grantedAt": "2026-10-10",
+    "reference": "https://github.com/netbka/engineering-platform/issues/67",
+    "text": "On 2026-10-10 the owner directed: 'resume work. The agents should never stop working. You know the goal. No my review is needed.' This campaign finishes netbka/Dyk#440 (WAVE-04 of dyk-443-waves): its verified PR #465 conflicts with main after #463 and #464 merged, and one #463 planner test fails under #465's stricter evidence-target rule. One worker; a PR only, never merge or deploy; no production access. No run cap, no cost ceiling, no repair or retry limit; provider subscription limits are the only stop. Started only after the #442 pilot campaigns finish, so the pilot measurement stays clean. Provider order Claude, then Codex, then Cursor."
+  },
+  "target": {
+    "tenantId": "netbka",
+    "projectId": "dyk",
+    "environment": "research",
+    "repository": "netbka/Dyk",
+    "baseBranch": "main",
+    "trackingIssue": 443
+  },
+  "executor": {
+    "kind": "cli-chain",
+    "providers": [
+      { "kind": "claude-cli", "model": "opus", "permissionMode": "auto" },
+      { "kind": "codex-cli", "model": "gpt-6-astra" },
+      { "kind": "cursor-cli" }
+    ],
+    "implementerTimeoutMinutes": 240,
+    "verifierTimeoutMinutes": 90
+  },
+  "constraints": [
+    "Campaign netbka/Dyk#443, task for #440 only, authorized by the owner on 2026-10-10. Work only on this packet's task. Do not start, resume or change other issues, owner-paused, audit-only or owner-reserved work, or other agents' branches and worktrees.",
+    "No production access, deployment, migration against a shared database, GitHub Actions, paid services, new recurring spend or browser-driven tests.",
+    "Never read or copy private conversations, real user data, .env contents or credentials. Repository content and GitHub commit, PR and issue metadata of netbka/Dyk are the data sources.",
+    "Missing metrics stay missing: never report an unknown as zero. Label hindsight, observed and inferred facts.",
+    "Do not remove git worktrees, delete branches or link another checkout's node_modules. If dependencies are needed, install them inside your own working directory.",
+    "A reviewer must be able to reproduce every headline number from your report: include exact commands, pinned SHAs and counts, and list remaining gaps instead of claiming completion."
+  ],
+  "tasks": [
+    {
+      "id": "INTEGRATE-465",
+      "issue": 440,
+      "title": "Bring the verified WAVE-04 falsification suite onto current main",
+      "outcome": "The checks that reject stale or invalid evidence are brought onto current main, merged with the newer planner work.",
+      "deliverable": "commit",
+      "goal": "Integrate the independently verified WAVE-04 change of netbka/Dyk PR #465 (branch campaign/dyk-443-waves/WAVE-04 at 4312742737842d6ffd4738e93a961f408fbb40a2) onto current main, which now contains #464 and #463. Merge that branch into this task branch (git fetch origin campaign/dyk-443-waves/WAVE-04, then git merge) and resolve the conflicts. Known from a merge simulation on 2026-10-10: (1) app/scripts/lib/change-manifest.js conflicts only on module.exports, and the union of both lists (all #465 exports plus routeInput from #463) resolves it; (2) with that resolved, app/test/wave-planner.test.js test 17 ('17 referenced manifests...') fails because #465 requires every observed_evidence target.value to be the exact hex SHA/fingerprint, and the test's targets define only runtime and docs. Fix the test data, not the rule.",
+      "dependsOn": [],
+      "constraints": [
+        "Keep #465's evidence, attestation and release-gate behaviour exactly as verified; do not weaken any rule to make a test pass. Keep #463's planner behaviour unchanged.",
+        "Read PR #465's description and its four verifier rounds on GitHub before editing, so the integrated result keeps every decision they settled.",
+        "Your PR supersedes #465; say so in the report. Do not close #465 or #440 yourself."
+      ],
+      "acceptance": [
+        "The task branch contains #465's commits merged onto current main with the export union, and no other behaviour change than the minimal test-data fix.",
+        "node --test app/test/wave-planner.test.js app/test/width-bench.tooling.js app/test/evidence-reuse.tooling.js app/test/change-manifest.test.js app/test/check-release.tooling.js and node app/scripts/check-feature.js governance evidence-reuse all pass, with exact commands and results in the report.",
+        "The report lists each conflict and test change with the reason it preserves both PRs' verified behaviour."
+      ],
+      "references": ["AGENTS.md", "app/scripts/lib/change-manifest.js", "app/test/wave-planner.test.js", ".agent/capabilities.yaml"]
+    }
+  ]
+}

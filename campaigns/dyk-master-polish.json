@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "campaignId": "dyk-master-polish",
+  "purpose": "Fix the open review findings in the Master/Setup design stage so first setup and changes are clear.",
+  "authorization": {
+    "version": 2,
+    "grantedBy": "owner (netbka), delegated to the owner's main session",
+    "grantedAt": "2026-10-11",
+    "reference": "https://github.com/netbka/Dyk/issues/485",
+    "text": "On 2026-10-11 the owner instructed in the controlling session: \"do all. complete all work. merge to main. clean worktrees.\" after being offered the #426 audit shortlist (https://github.com/netbka/Dyk/issues/426#issuecomment-6107132436) and the open #485 review findings and PR-review follow-ups. Scope: the Master/Setup design-stage items of #485 and #426 audit item 8. Basis: the chat instruction from the owner quoted above (given in the controlling session, not recorded on GitHub until the controller posts it on Dyk #426), which explicitly asks for the offered work to be done and merged; the controller treats it as the owner approval that D-040 requires for the audit presentation changes, including removals and the moved prompt. Every visible change is represented in Storybook in the same PR and independently reviewed before merge; bounded repairs also follow Dyk AGENTS.md section 4. PRs only, never merge or deploy; no production access. No limits (owner removed them); provider subscription limits and the no-progress guard are the stops. Provider order Claude, Codex, Cursor."
+  },
+  "target": {
+    "tenantId": "netbka",
+    "projectId": "dyk",
+    "environment": "research",
+    "repository": "netbka/Dyk",
+    "baseBranch": "main",
+    "trackingIssue": 485
+  },
+  "executor": {
+    "kind": "cli-chain",
+    "providers": [
+      {
+        "kind": "claude-cli",
+        "model": "opus",
+        "permissionMode": "auto"
+      },
+      {
+        "kind": "codex-cli",
+        "model": "gpt-6-astra"
+      },
+      {
+        "kind": "cursor-cli"
+      }
+    ],
+    "implementerTimeoutMinutes": 240,
+    "verifierTimeoutMinutes": 90
+  },
+  "constraints": [
+    "No production access, deployment, GitHub Actions, paid services, or Playwright and other browser-driven tests (Dyk owner rule). Local disposable SQL only through the repository runners (npm run test:sql / npm run journeys with a selected scope) when a task changes a route or persistence; never the production database.",
+    "Keep the affected Storybook stories in sync with every renderer change (Storybook is not post-hoc documentation). RU/EN/HE, true Hebrew RTL, 320/390 widths, 44px hit areas, no horizontal overflow, truthful states (T2).",
+    "Never read .env contents, credentials, private conversations or real user data; fixtures are synthetic.",
+    "A Storybook build or passing tests is not visual acceptance; each PR lists the story ids for independent visual review and states that the visual verdict is pending.",
+    "Do not remove worktrees, delete branches or link another checkout's node_modules. Do not add any new blocking gate, lock, required approval or check that depends on owner-provisioned keys, credentials or setup (Dyk AGENTS.md section 4).",
+    "Never weaken an existing test, guard or assertion; never add a capability outside the accepted feature map unless the task names the owner decision that adds it.",
+    "Only this campaign edits storybook/src/master-overview.js, the design and production Master stories, app/public/setup-view.js and setup.js; other concurrent campaigns own Master/Setup (storybook/src/master-overview.js, design Master stories, setup-view), Chats (chats-page-ui, chat-reader, Chats stories), Tasks/Assistant (task-card, task-board-ui, assistant.js), Profile (profile-page-ui, connection-card-ui) and safety tooling; do not edit their files beyond a one-line import if unavoidable."
+  ],
+  "tasks": [
+    {
+      "id": "MASTER-1",
+      "issue": 485,
+      "title": "Setup discovery, confirmation and save: open #485 findings",
+      "outcome": "During first setup a parent can answer and correct every chat where Dyk shows it, sees progress, and recovers from errors.",
+      "deliverable": "commit",
+      "goal": "Read gh issue view 485 --repo netbka/Dyk. Repair in the Master/Setup design stage (and the production renderer only where the same defect exists there): #5 (No on a likely relation can say it belongs to the other child instead of dropping the chat), #6 (a reading error offers a way forward besides Try again, without locking the app), #7 (unlink reachable on the card; \"Not about anyone you follow\" chats can be linked), #8 (counts add up: header, \"Check N chats\" and the listed chats agree), #9 (likely chats answerable on their own cards; a visible counter for the check flow), #10 (reading and saving show honest progress), #14 (plan limit says which chat is dropped and offers the choice; See Plans does not look disabled), #30 (the resume screen lets the parent answer the open question), #28 (the Linked card states the question it asks). Keep the approved composition; these are principle-governed repairs (D-040 correction class).",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "Every listed item is addressed or explicitly reported as not applicable with evidence; affected focused tests, npm run check:ui and npm run storybook:build pass, with exact commands; the PR lists story ids for visual review."
+      ],
+      "references": [
+        "AGENTS.md",
+        "app/AGENTS.md",
+        "app/test/AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/DECISIONS.md",
+        "docs/STORYBOOK.md",
+        "docs/UI_COMPONENTS.md",
+        "docs/PRODUCT_RETHINK.md"
+      ]
+    },
+    {
+      "id": "MASTER-2",
+      "issue": 485,
+      "title": "Setup overview, rebuild and people: open #485 findings and audit item 8",
+      "outcome": "The completed overview, Set up again and people editing behave as a parent expects, with clear names and compact cards.",
+      "deliverable": "commit",
+      "goal": "Read gh issue view 485 --repo netbka/Dyk and the #426 audit comment. Repair: #426 item 8 = #485 #13 (a person with 0 chats gets an action to give Dyk that child's chat, using the existing Sources/assign path), #11 (English tab and copy naming consistent with production: Setup/Sources, no Master/Chats mismatch), #12 (disconnected/failed states say since when and which chats are affected; Connect vs Reconnect consistent), #15 (profile-source-return copy states plainly where the parent lands), #16 (an open Set up again draft or late messenger does not lock Tasks/Sources/Summary), #17 (the Set up again people step allows add/edit/remove), #27 (header title not squeezed), #29 (no repeated labels such as \"Katalina - Katalina - theatre\"), #31 (the English class example hint is not garbled by mixed Hebrew/Latin), #32 (compact person cards; Continue visible with two children at 390); follow-ups: the simulate-only \"Start over\" button squeezed at RU 390 (#479 review), after switching to Completed the empty copy is not \"No open tasks\", and fixture message dates match the relative due dates (#489 review).",
+      "dependsOn": [
+        "MASTER-1"
+      ],
+      "requiresMergedDependencies": true,
+      "constraints": [],
+      "acceptance": [
+        "Every listed item is addressed or explicitly reported as not applicable with evidence; affected focused tests, npm run check:ui and npm run storybook:build pass, with exact commands; the PR lists story ids for visual review."
+      ],
+      "references": [
+        "AGENTS.md",
+        "app/AGENTS.md",
+        "app/test/AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/DECISIONS.md",
+        "docs/STORYBOOK.md",
+        "docs/UI_COMPONENTS.md",
+        "docs/PRODUCT_RETHINK.md"
+      ]
+    }
+  ]
+}

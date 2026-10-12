@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "campaignId": "dyk-profile-polish",
+  "purpose": "Shorten Profile: one link to Setup connections instead of duplicates, remove the unreachable compact panel, fix hit areas.",
+  "authorization": {
+    "version": 2,
+    "grantedBy": "owner (netbka), delegated to the owner's main session",
+    "grantedAt": "2026-10-11",
+    "reference": "https://github.com/netbka/Dyk/issues/485",
+    "text": "On 2026-10-11 the owner instructed in the controlling session: \"do all. complete all work. merge to main. clean worktrees.\" after being offered the #426 audit shortlist (https://github.com/netbka/Dyk/issues/426#issuecomment-6107132436) and the open #485 review findings and PR-review follow-ups. Scope: #426 audit items 3 and 7 and the Profile hit-area findings. Basis: the chat instruction from the owner quoted above (given in the controlling session, not recorded on GitHub until the controller posts it on Dyk #426), which explicitly asks for the offered work to be done and merged; the controller treats it as the owner approval that D-040 requires for the audit presentation changes, including removals and the moved prompt. Every visible change is represented in Storybook in the same PR and independently reviewed before merge; bounded repairs also follow Dyk AGENTS.md section 4. PRs only, never merge or deploy; no production access. No limits (owner removed them); provider subscription limits and the no-progress guard are the stops. Provider order Claude, Codex, Cursor."
+  },
+  "target": {
+    "tenantId": "netbka",
+    "projectId": "dyk",
+    "environment": "research",
+    "repository": "netbka/Dyk",
+    "baseBranch": "main",
+    "trackingIssue": 426
+  },
+  "executor": {
+    "kind": "cli-chain",
+    "providers": [
+      {
+        "kind": "claude-cli",
+        "model": "opus",
+        "permissionMode": "auto"
+      },
+      {
+        "kind": "codex-cli",
+        "model": "gpt-6-astra"
+      },
+      {
+        "kind": "cursor-cli"
+      }
+    ],
+    "implementerTimeoutMinutes": 240,
+    "verifierTimeoutMinutes": 90
+  },
+  "constraints": [
+    "No production access, deployment, GitHub Actions, paid services, or Playwright and other browser-driven tests (Dyk owner rule). Local disposable SQL only through the repository runners (npm run test:sql / npm run journeys with a selected scope) when a task changes a route or persistence; never the production database.",
+    "Keep the affected Storybook stories in sync with every renderer change (Storybook is not post-hoc documentation). RU/EN/HE, true Hebrew RTL, 320/390 widths, 44px hit areas, no horizontal overflow, truthful states (T2).",
+    "Never read .env contents, credentials, private conversations or real user data; fixtures are synthetic.",
+    "A Storybook build or passing tests is not visual acceptance; each PR lists the story ids for independent visual review and states that the visual verdict is pending.",
+    "Do not remove worktrees, delete branches or link another checkout's node_modules. Do not add any new blocking gate, lock, required approval or check that depends on owner-provisioned keys, credentials or setup (Dyk AGENTS.md section 4).",
+    "Never weaken an existing test, guard or assertion; never add a capability outside the accepted feature map unless the task names the owner decision that adds it.",
+    "Only this campaign edits app/src/profile-page-ui.js, app/src/connection-card-ui.js (Profile consumer only), the Profile stories and the compact Profile route/client; other concurrent campaigns own Master/Setup (storybook/src/master-overview.js, design Master stories, setup-view), Chats (chats-page-ui, chat-reader, Chats stories), Tasks/Assistant (task-card, task-board-ui, assistant.js), Profile (profile-page-ui, connection-card-ui) and safety tooling; do not edit their files beyond a one-line import if unavoidable."
+  ],
+  "tasks": [
+    {
+      "id": "PROFILE-1",
+      "issue": 426,
+      "title": "Profile: one Setup connections link, delete the unreachable compact panel, 44px controls",
+      "outcome": "Profile has one low-emphasis link to Setup connections instead of duplicated cards and Set up again, the unreachable compact panel is gone, and its controls are at least 44px.",
+      "deliverable": "commit",
+      "goal": "Read the #426 audit comment. Implement: #426 item 3 (replace the duplicated Profile connection cards and \"Set up again\" with one low-emphasis link to the Setup Connections section, PRODUCT_RETHINK, D-066; keep account, privacy, export, deletion, session and sign-in functions); #426 item 7 (delete the unreachable compact Profile panel: route, client, its 3 stories and manifest entry, after proving it is unreachable); the Profile \"Back\" (33px) and \"Download my data\" (19px tall) controls become at least 44x44 at 320 (#479 review).",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "Every listed item is addressed or explicitly reported as not applicable with evidence; affected focused tests, npm run check:ui and npm run storybook:build pass, with exact commands; the PR lists story ids for visual review."
+      ],
+      "references": [
+        "AGENTS.md",
+        "app/AGENTS.md",
+        "app/test/AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/DECISIONS.md",
+        "docs/STORYBOOK.md",
+        "docs/UI_COMPONENTS.md",
+        "docs/PRODUCT_RETHINK.md"
+      ]
+    }
+  ]
+}

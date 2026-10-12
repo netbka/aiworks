@@ -1,0 +1,24 @@
+{
+  "id": "GOV-001",
+  "version": "1.0.0",
+  "scope": "portfolio",
+  "applies_when": {},
+  "invariants": [
+    { "id": "authority-precedence", "source": "docs/CONSTITUTION.md#1-authority-model", "constitution_section": 1, "baseline": [], "exception_mode": "forbidden" },
+    { "id": "owner-reserved-boundary", "source": "docs/CONSTITUTION.md#2-owner-role", "constitution_section": 2, "baseline": ["baseline:owner-reserved"], "exception_mode": "forbidden" },
+    { "id": "bounded-autonomous-maintenance", "source": "docs/CONSTITUTION.md#4-bounded-autonomous-maintenance", "constitution_section": 4, "baseline": [], "exception_mode": "forbidden" }
+  ],
+  "owner_reserved_when": [
+    { "trigger": "product-scope-change", "when": { "capability_classes": ["D"] } }
+  ],
+  "detect": [
+    { "id": "policy-metadata", "kind": "schema", "invariants": ["owner-reserved-boundary"] },
+    { "id": "constitutional-review", "kind": "review", "invariants": ["authority-precedence", "owner-reserved-boundary", "bounded-autonomous-maintenance"] }
+  ],
+  "required_evidence": [
+    { "kind": "constitutional-review", "reviewer": "independent-verifier", "when": { "material": true } },
+    { "kind": "project-product-authority", "authority_role": "product-constitution", "when": { "capability_classes": ["D"] } }
+  ],
+  "blocking": { "mode": "enforce", "missing_evidence": "block" },
+  "exceptions": { "mode": "clause-only" }
+}

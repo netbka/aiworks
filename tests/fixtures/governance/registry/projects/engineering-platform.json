@@ -1,0 +1,111 @@
+{
+  "id": "engineering-platform",
+  "name": "Engineering Platform",
+  "repository": {
+    "github": "netbka/engineering-platform",
+    "localRoot": "D:\\Git\\engineering-platform"
+  },
+  "lifecycle": "active",
+  "capabilities": [
+    "ui",
+    "api",
+    "mcp",
+    "auth",
+    "database",
+    "worker"
+  ],
+  "environments": [
+    "local"
+  ],
+  "resources": {
+    "compute": [
+      {
+        "name": "Owner Windows workstation (HomePc)",
+        "kind": "local-runtime",
+        "status": "observed",
+        "notes": "Delivery supervisor and operations dashboard run from a detached checkout under .local/runtime."
+      },
+      {
+        "name": "Second owner PC",
+        "kind": "local-runtime",
+        "status": "observed",
+        "notes": "Runs its own supervisor and dashboard (ELMA campaigns); owner-confirmed 2026-10-10. No shared portfolio view yet (#79)."
+      }
+    ],
+    "databases": [
+      {
+        "name": "Supervisor SQLite store",
+        "kind": "sqlite",
+        "status": "observed",
+        "environment": "local",
+        "notes": ".local/supervisor/supervisor.db; one store per PC."
+      },
+      {
+        "name": "Control-plane project store",
+        "kind": "sqlite",
+        "status": "planned",
+        "notes": "Product control plane persistence (PRODUCT_ROADMAP P1-P5); not deployed."
+      }
+    ],
+    "providers": [
+      {
+        "name": "GitHub (gh CLI)",
+        "kind": "source-control",
+        "status": "observed",
+        "notes": "Owner-authenticated CLI used for metadata reads and supervisor PRs/comments."
+      },
+      {
+        "name": "Engineering Platform GitHub App",
+        "kind": "github-app",
+        "status": "planned",
+        "notes": "Required by the control-plane MVP; not registered (docs/GITHUB_APP_SETUP.md)."
+      },
+      {
+        "name": "Infisical",
+        "kind": "secrets",
+        "status": "planned"
+      },
+      {
+        "name": "Agent CLIs (Claude, Codex, Cursor)",
+        "kind": "ai",
+        "status": "observed",
+        "notes": "Supervisor executor chain; Cursor's native sandbox is unavailable on Windows."
+      },
+      {
+        "name": "Telegram owner notifications",
+        "kind": "messaging",
+        "status": "planned",
+        "notes": "#13"
+      }
+    ],
+    "domains": [],
+    "backups": [
+      {
+        "name": "Supervisor store backup",
+        "kind": "backup",
+        "status": "unknown"
+      }
+    ]
+  },
+  "secrets": {
+    "current": "Owner's local gh and agent CLI logins on each PC; no secret values in this repository.",
+    "target": "Infisical machine identities per environment; GitHub App installation tokens minted on demand, never stored (docs/PRODUCT_ROADMAP.md).",
+    "notes": "Do not copy values into the registry."
+  },
+  "notes": [
+    "Primary product: the project control plane (owner decision #77, 2026-10-10), internal first. The delivery supervisor, dashboard and portfolio governance are supporting tooling.",
+    "The dashboard and the planned portal are the ui boundary; the platform has no UI review authority yet (#78, #80)."
+  ],
+  "governance": {
+    "observedAt": "netbka/engineering-platform@b411e1cec7fd6ca7de6e58236dccd1a332dbc82f",
+    "parentLink": "linked",
+    "authorities": [
+      { "role": "agent-contract", "path": "AGENTS.md" },
+      { "role": "product-constitution", "path": "docs/PRODUCT_CONSTITUTION.md" },
+      { "role": "decisions", "path": "docs/DECISIONS.md" },
+      { "role": "capability-contract", "path": "docs/PLATFORM_MCP.md" },
+      { "role": "workflow-contract", "path": "docs/SUPERVISOR.md" }
+    ],
+    "independentVerificationGate": "not-enabled"
+  }
+}

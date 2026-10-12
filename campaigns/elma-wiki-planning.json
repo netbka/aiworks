@@ -1,0 +1,103 @@
+{
+  "version": 1,
+  "campaignId": "elma-wiki-planning",
+  "purpose": "A product-first plan for finishing ELMA Wiki, using how Dyk plans its work.",
+  "authorization": {
+    "version": 3,
+    "grantedBy": "owner (netbka), current conversation",
+    "grantedAt": "2026-10-09",
+    "reference": "https://github.com/netbka/elma_wiki/issues/91",
+    "text": "The owner requested supervisor setup for C:/git/elma_wiki on HOMELENOVO and assigned the first task: study planning in netbka/Dyk, learn Wiki's product definition, review open PRs and issues, and produce an optimized execution plan. Planning/report only; no implementation backlog, merge, deployment or provider mutation is assigned. The owner requested no budget limit. This amendment explicitly removes the worker-run cap while retaining one slot, per-run timeouts, accounting and bounded retries. The owner additionally requested Codex first, Claude second, Cursor third, durable availability records, automatic retry after provider reset and pushing this platform change. Workers and independent verifiers run one at a time using brokered, tool-free report context. Missing CLIs are recorded, never claimed available.",
+    "readSources": [
+      {
+        "repository": "netbka/Dyk",
+        "paths": [
+          "AGENTS.md",
+          "docs/PRODUCT_CONSTITUTION.md",
+          "docs/PRINCIPLES.md",
+          "docs/AGENTS.md",
+          ".agent/capabilities.yaml",
+          "app/scripts/route-task.js",
+          "app/scripts/lib/change-manifest.js"
+        ]
+      }
+    ]
+  },
+  "target": {
+    "tenantId": "netbka",
+    "projectId": "elma-wiki",
+    "environment": "planning",
+    "repository": "netbka/elma_wiki",
+    "baseBranch": "main",
+    "trackingIssue": 91
+  },
+  "limits": {
+    "maxWorkerRuns": null,
+    "slots": 1,
+    "maxRepairRounds": 1,
+    "maxRetriesPerTask": 1
+  },
+  "executor": {
+    "kind": "cli-chain",
+    "providers": [
+      {
+        "kind": "codex-cli",
+        "researchOnly": true
+      },
+      {
+        "kind": "claude-cli",
+        "model": "opus",
+        "permissionMode": "auto",
+        "researchOnly": true
+      },
+      {
+        "kind": "cursor-cli",
+        "researchOnly": true
+      }
+    ],
+    "implementerTimeoutMinutes": 240,
+    "verifierTimeoutMinutes": 90
+  },
+  "constraints": [
+    "This assignment is investigate/design and a report deliverable. Read repository code/docs and GitHub metadata only. Do not modify Dyk, Wiki source or another project's source, claim implementation backlog, create implementation PRs, merge, deploy, start product daemons or change provider resources.",
+    "Study netbka/Dyk's AGENTS.md, docs/PRODUCT_CONSTITUTION.md, docs/PRINCIPLES.md, docs/AGENTS.md, .agent/capabilities.yaml and its report-only router/change manifest using gh read APIs. Pin the inspected revision and cite sources. Adapt planning mechanisms; Dyk's product, privacy and deployment permissions do not govern Wiki.",
+    "Wiki's Solution-first product authority and #94 working-configuration correction govern the outcome. Reuse the existing reducer/store, native elma365#60 adapters and #11 delivery coordinator. Review acceptance is an intermediate milestone, not the full working-release endpoint.",
+    "Refresh current main, all open issues and PRs and #91 coordination before reporting. Preserve existing lane claims, branches, worktrees and private evidence; do not remove worktrees or copy private artifacts. A GO note is an assignment, not proof of ACK or execution.",
+    "Keep #59/#41 human work deferred and #19 provider execution disabled unless independently changed by explicit current owner authority. Planning does not select a live Source/Target, candidate, license or production operation.",
+    "Never open .env/credential files, print secret values or inspect customer exports, private messages or participant records. Store only sanitized metadata and use synthetic examples.",
+    "Distinguish observed source/metadata, verified provider metadata, planned packages and unknown runtime/native/human evidence. Required evidence is not observed evidence; a merged PR or green CI is not native or owner acceptance.",
+    "Optimize for accepted outcomes using dependency, semantic-contract and resource constraints. Do not infer independence from disjoint paths or invent time/token savings. Future implementation packages remain proposed until specifically assigned."
+  ],
+  "tasks": [
+    {
+      "id": "PLAN-01",
+      "issue": 91,
+      "title": "Product-first Wiki execution plan adapted from Dyk",
+      "outcome": "A plan ordering all open Wiki work by what the product needs next, with owners, dependencies and blockers.",
+      "deliverable": "report",
+      "goal": "Study how netbka/Dyk plans and routes assigned work, then learn netbka/elma_wiki's current product definition. Review every open Wiki issue and PR and recent integrated work, reconcile the current #91 lane assignments, and deliver a product-first optimized execution plan. Include a complete backlog disposition, bounded packages with owners/dependencies/resource reservations, critical path and feasible waves, acceptance/evidence requirements and concrete blockers. Separate recommendations from execution authorization; this planning report is the only assigned work. The supervisor publishes the independently verified report to #91.",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "Pinned Dyk/Wiki revisions, observation time and primary-source links support the planning-method comparison and a concise audience/problem/lifecycle/working-release product definition.",
+        "Every currently open issue and PR is accounted for with current state, remaining outcome, canonical owner and keep/continue/defer/superseded disposition; historical issue text cannot revive completed or deferred work.",
+        "A topologically ordered package DAG identifies the smallest Contracts vertical slice, critical path, independent work, existing lane overlap, serial integration and cross-repository/native prerequisites.",
+        "Each proposed package has input contract, owning capability/issue, concrete acceptance including failure/stale/concurrency cases, evidence layer and exact readiness blockers. Required reviews remain independent and target-bound.",
+        "Optimization explains evidence/context reuse and contention reduction without unmeasured time/token promises; #59/#41, #19 and live/production boundaries remain explicit.",
+        "The report identifies stale summaries and missing runtime/native facts without changing product authority, silently declaring parent completion or assigning implementation beyond the owner's planning request."
+      ],
+      "references": [
+        "AGENTS.md",
+        ".agent/capabilities.yaml",
+        "docs/SOLUTION_FIRST_PRODUCT_PLAN.md",
+        "docs/SOLUTION_FIRST_EXECUTION.md",
+        "docs/SOLUTION_FIRST_CONTRADICTIONS.md",
+        "docs/plans/working-configuration-release.md",
+        "docs/contracts/release-scope-planner.md",
+        "docs/contracts/managed-workspace.md",
+        "docs/contracts/target-deployment.md",
+        "docs/workflows/agent-execution.md"
+      ]
+    }
+  ]
+}

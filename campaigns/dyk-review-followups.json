@@ -1,0 +1,152 @@
+{
+  "version": 1,
+  "campaignId": "dyk-review-followups",
+  "purpose": "Close the non-blocking findings from the independent reviews of the merged #181/#399 fix PRs (#516-#519).",
+  "authorization": {
+    "version": 1,
+    "grantedBy": "owner (netbka), delegated to the owner's main session",
+    "grantedAt": "2026-10-11",
+    "reference": "https://github.com/netbka/Dyk/issues/181#issuecomment-6111613226",
+    "text": "On 2026-10-11 the owner instructed in the controlling session: \"do all. complete all work. merge to main. clean worktrees. tell me when all issues in PR's are resolved.\" and earlier delegated product decisions to this session (\"Review the product and guidlines. Make own decision\"). On 2026-10-11 the owner repeated: \"turn #181/#399 report findings into fixes ... report to the owner when all PR issues are resolved.\" This campaign closes the non-blocking findings that the independent reviews recorded in the controller integration records of the merged fix PRs Dyk #516 (comment 6111469235), #517 (6111437631), #518 (6111606177) and #519 (6111575104), including the R6 F2 return-to-Profile item that #519 could not finish. Design choices the reports left open are decided in the controller fix plan posted on Dyk #181 (comment 6111613226) with the reason for each. No owner-reserved item is touched (manual task editing stays as is per the owner). Bounded repairs under Dyk AGENTS.md section 4; visible changes are represented in Storybook and independently reviewed before merge. PRs only, never merge or deploy; no production access. No limits; provider subscription limits and the no-progress guard are the stops. Providers Claude then Codex (owner: \"Use codex or claude agent\")."
+  },
+  "target": {
+    "tenantId": "netbka",
+    "projectId": "dyk",
+    "environment": "research",
+    "repository": "netbka/Dyk",
+    "baseBranch": "main",
+    "trackingIssue": 181
+  },
+  "executor": {
+    "kind": "cli-chain",
+    "providers": [
+      {
+        "kind": "claude-cli",
+        "model": "opus",
+        "permissionMode": "auto"
+      },
+      {
+        "kind": "codex-cli",
+        "model": "gpt-6-astra"
+      }
+    ],
+    "implementerTimeoutMinutes": 240,
+    "verifierTimeoutMinutes": 90
+  },
+  "constraints": [
+    "No production access, deployment, GitHub Actions, paid services, or Playwright and other browser-driven tests (Dyk owner rule). Local disposable SQL only through the repository runners (npm run test:sql / npm run journeys with a selected scope) when a task changes a route or persistence; never the production database.",
+    "Keep the affected Storybook stories in sync with every renderer change (Storybook is not post-hoc documentation). RU/EN/HE, true Hebrew RTL, 320/390 widths, 44px hit areas, no horizontal overflow, truthful states (T2).",
+    "Never read .env contents, credentials, private conversations or real user data; fixtures are synthetic.",
+    "A Storybook build or passing tests is not visual acceptance; each PR lists the story ids for independent visual review and states that the visual verdict is pending.",
+    "Do not remove worktrees, delete branches or link another checkout's node_modules. Do not add any new blocking gate, lock, required approval or check that depends on owner-provisioned keys, credentials or setup (Dyk AGENTS.md section 4).",
+    "Never weaken an existing test, guard or assertion; never add a capability outside the accepted feature map unless the task names the owner decision that adds it.",
+    "Open PR #500 (another session) rewrites short copy in about 20 files, including task-board-ui.js and screen-copy.js. Change copy in those files only where an item needs it, keep each edit minimal, and say in the PR which #500 files you touched.",
+    "Do not change any task editing behavior (date, title, action, summary, Done/Undo, person correction): the owner decided to keep it as is.",
+    "Campaign dyk-review-fixes-rest is changing sign-in/re-auth pages, the bug report and menus, and Tasks evidence tests at the same time; do not edit those surfaces here.",
+    "Every return parameter goes through the existing safe-return validation (uiRoutes.returnPath); never widen what it accepts."
+  ],
+  "tasks": [
+    {
+      "id": "FU-SUMMARY",
+      "issue": 181,
+      "title": "Summary follow-ups: chip never cut at 390, one offline sentence, fresh request ids, impersonal RU",
+      "outcome": "The Summary dock shows every chip whole at 390, a truly offline browser shows one sentence, a new question always gets a new request id, and RU status lines are impersonal.",
+      "deliverable": "commit",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "Every numbered item is fixed or reported not applicable with measured evidence on current main; affected focused tests, npm run check:ui, audit-principles, npm run storybook:build plus the storybook node tests pass, with exact commands; the PR lists the story ids for independent visual review in RU/EN/HE at 320 and 390 and states that the visual verdict is pending."
+      ],
+      "references": [
+        "AGENTS.md",
+        "app/AGENTS.md",
+        "app/test/AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/DECISIONS.md",
+        "docs/STORYBOOK.md",
+        "docs/UI_COMPONENTS.md",
+        "storybook/review-manifest.json"
+      ],
+      "goal": "Read the controller follow-up plan (gh api repos/netbka/Dyk/issues/comments/6111613226 --jq .body), section \"Summary\", items 1-5, and the #516 integration record (gh api repos/netbka/Dyk/issues/comments/6111469235 --jq .body). Fix: (1) the What's new chip is never cut at 390 (2x2 or tighter single row; scrolling row only at 320); (2) a test that fails when the TaskDone fixture goes stale; (3) a really offline browser shows one sentence, not the #connection banner plus the send status; (4) a genuinely new question never reuses an old requestId even with identical text, and a curly-apostrophe What’s new counts as the chip; (5) Dyk never speaks in the first person in Summary status lines (RU \"Смотрю…\", \"Я не нашел…\"). Re-check each item on current main first and report any already fixed. Keep Storybook stories in sync; add focused tests per item."
+    },
+    {
+      "id": "FU-SETUP",
+      "issue": 181,
+      "title": "Setup follow-ups: return to Profile, distinct same-name controls, one Telegram Back, guarded design copy",
+      "outcome": "A user who opens Setup from Profile comes back to Profile, same-name people have distinct control names, Telegram failure views have one Back, and the design-flow copy is guarded by tests.",
+      "deliverable": "commit",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "Every numbered item is fixed or reported not applicable with measured evidence on current main; affected focused tests, npm run check:ui, audit-principles, npm run storybook:build plus the storybook node tests pass, with exact commands; the PR lists the story ids for independent visual review in RU/EN/HE at 320 and 390 and states that the visual verdict is pending."
+      ],
+      "references": [
+        "AGENTS.md",
+        "app/AGENTS.md",
+        "app/test/AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/DECISIONS.md",
+        "docs/STORYBOOK.md",
+        "docs/UI_COMPONENTS.md",
+        "storybook/review-manifest.json",
+        "app/public/setup-view.js",
+        "app/src/telegram-ui.js"
+      ],
+      "goal": "Read the controller follow-up plan (gh api repos/netbka/Dyk/issues/comments/6111613226 --jq .body), section \"Setup and Telegram\", items 6-10, and the #517 and #519 integration records (gh api repos/netbka/Dyk/issues/comments/6111437631 and 6111575104 --jq .body). Fix: (6) Profile's Open in Setup carries a safe return and Setup honours it through the existing uiRoutes.returnPath validation, with tests for the return and for an unsafe value; (7) same-name people get distinct Edit/Remove names with their context label; (8) Telegram failure and unavailable views keep only the shell Back (drop #tg-unavailable-back), EN \"Try again\", impersonal RU; (9) a test guards the design-flow copy (Save setup, impersonal RU); (10) natural RU \"Чтение: 5 чатов…\"/\"Начало\", People note spacing at 320, chat name in the Link/Unlink/Why? accessible names, \"Anna · 0 chats\" spacing. Re-check each item on current main first and report any already fixed. Keep Storybook stories in sync; add focused tests per item."
+    },
+    {
+      "id": "FU-SOURCES",
+      "issue": 181,
+      "title": "Sources follow-ups: no-JS reset, RU filter wrap, distinct names, kept Likely label, impersonal RU",
+      "outcome": "Sources keeps one reset control that also works without JavaScript, fits at RU 320, names its search controls distinctly, keeps the Likely label, and speaks impersonally in RU.",
+      "deliverable": "commit",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "Every numbered item is fixed or reported not applicable with measured evidence on current main; affected focused tests, npm run check:ui, audit-principles, npm run storybook:build plus the storybook node tests pass, with exact commands; the PR lists the story ids for independent visual review in RU/EN/HE at 320 and 390 and states that the visual verdict is pending."
+      ],
+      "references": [
+        "AGENTS.md",
+        "app/AGENTS.md",
+        "app/test/AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/DECISIONS.md",
+        "docs/STORYBOOK.md",
+        "docs/UI_COMPONENTS.md",
+        "storybook/review-manifest.json",
+        "app/src/chats-page-ui.js",
+        "app/public/source-filters.js"
+      ],
+      "goal": "Read the controller follow-up plan (gh api repos/netbka/Dyk/issues/comments/6111613226 --jq .body), section \"Sources and Chats\", items 11-13, and the #518 integration record (gh api repos/netbka/Dyk/issues/comments/6111606177 --jq .body). Fix: (11) without JavaScript a filtered empty list still offers a reset, with one reset control rendered server-side and enhanced by JS, never two; (12) at RU 320 the Filters button does not take its own line when no filter is active; (13) the Sources search field and button have distinct names, the read-only sheet keeps the Likely label, the source-problems row does not repeat its verb, and Chats status lines are impersonal in RU (\"Загружаю людей…\"). Re-check each item on current main first and report any already fixed. Keep Storybook stories in sync; add focused tests per item."
+    },
+    {
+      "id": "FU-PROFILE",
+      "issue": 181,
+      "title": "Profile follow-ups: relative day-pass fixture, safe request view, dash and line-break wording",
+      "outcome": "Plans stories never show a past time, the WhatsApp page receives a well-defined request view, and dates and dashes read naturally in RU/EN/HE.",
+      "deliverable": "commit",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "Every numbered item is fixed or reported not applicable with measured evidence on current main; affected focused tests, npm run check:ui, audit-principles, npm run storybook:build plus the storybook node tests pass, with exact commands; the PR lists the story ids for independent visual review in RU/EN/HE at 320 and 390 and states that the visual verdict is pending."
+      ],
+      "references": [
+        "AGENTS.md",
+        "app/AGENTS.md",
+        "app/test/AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/DECISIONS.md",
+        "docs/STORYBOOK.md",
+        "docs/UI_COMPONENTS.md",
+        "storybook/review-manifest.json",
+        "app/src/profile-page-ui.js",
+        "app/src/commercial-routes.js"
+      ],
+      "goal": "Read the controller follow-up plan (gh api repos/netbka/Dyk/issues/comments/6111613226 --jq .body), section \"Profile and plans\", items 14-16, and the #519 integration record (gh api repos/netbka/Dyk/issues/comments/6111575104 --jq .body). Fix: (14) the day-pass fixture is relative to the story clock so it never shows a past time; (15) web.js whatsappPage no longer copies the request with {...req} (which drops Express getters): pass the request or an explicit, tested view object; (16) EN/HE \"waiting\" text uses a dash, RU never leaves \"г.\" alone on a line (no-break space), and the RU Telegram row is not squeezed at 320. Re-check each item on current main first and report any already fixed. Keep Storybook stories in sync; add focused tests per item."
+    }
+  ]
+}

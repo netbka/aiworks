@@ -1,0 +1,21 @@
+{
+  "name": "aiworks",
+  "private": true,
+  "type": "module",
+  "description": "AIWorks: the AI delivery machine (delivery supervisor, operations dashboard and campaigns).",
+  "scripts": {
+    "test": "node scripts/run-tests.mjs",
+    "check": "node scripts/check-campaigns.mjs && npm test",
+    "dashboard": "node src/dashboard/main.mjs",
+    "supervisor": "node src/supervisor/cli.mjs"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.3.0",
+    "ajv": "^8.20.0",
+    "chrome-devtools-mcp": "1.10.1",
+    "zod": "^4.6.5"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "id": "otp",
+  "name": "OTP Browser Extension",
+  "repository": {
+    "github": "netbka/OTP",
+    "localRoot": "D:\\Git\\OTP"
+  },
+  "lifecycle": "support",
+  "capabilities": [
+    "browser-extension"
+  ],
+  "environments": [
+    "local"
+  ],
+  "resources": {
+    "compute": [],
+    "databases": [],
+    "providers": [],
+    "domains": [],
+    "backups": [
+      {
+        "name": "Source/package recovery",
+        "kind": "backup",
+        "status": "unknown"
+      }
+    ]
+  },
+  "secrets": {
+    "current": "End-user encrypted extension data; no central application secret inventory verified",
+    "target": "No central secret dependency unless future publishing automation requires scoped credentials",
+    "notes": "User TOTP material must never enter the portfolio platform."
+  },
+  "notes": [
+    "Treat user OTP material as explicitly out of scope for central secret management."
+  ]
+}

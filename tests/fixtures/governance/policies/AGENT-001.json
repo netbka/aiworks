@@ -1,0 +1,27 @@
+{
+  "id": "AGENT-001",
+  "version": "1.0.0",
+  "scope": "portfolio",
+  "applies_when": {},
+  "invariants": [
+    { "id": "single-task-controller", "source": "docs/CONTINUATION.md#1-task-controller-ownership", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "system-resolvable-questions", "source": "docs/CONTINUATION.md#2-question-classes", "baseline": ["baseline:owner-reserved"], "exception_mode": "forbidden" },
+    { "id": "no-question-ping-pong", "source": "docs/CONTINUATION.md#3-no-question-ping-pong", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "bounded-handoff", "source": "docs/CONTINUATION.md#4-bounded-handoff-contract", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "finding-becomes-parent-work", "source": "docs/CONTINUATION.md#5-findings-become-parent-work", "baseline": ["baseline:independent-verification"], "exception_mode": "forbidden" },
+    { "id": "completion-gate", "source": "docs/CONTINUATION.md#6-completion-gate", "baseline": ["baseline:evidence-truth"], "exception_mode": "forbidden" },
+    { "id": "continuation-triggers", "source": "docs/CONTINUATION.md#7-continuation-triggers-and-anti-bureaucracy", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "owner-action-separate", "source": "docs/CONTINUATION.md#8-owner-action-is-separate", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "implementer-verifier-separation", "source": "docs/AUTONOMOUS_OPERATING_MODEL.md#agent---agent-execution", "baseline": ["baseline:independent-verification"], "exception_mode": "forbidden" }
+  ],
+  "owner_reserved_when": [],
+  "detect": [
+    { "id": "policy-metadata", "kind": "schema", "invariants": ["system-resolvable-questions", "completion-gate"] },
+    { "id": "continuation-review", "kind": "review", "invariants": ["single-task-controller", "system-resolvable-questions", "no-question-ping-pong", "bounded-handoff", "finding-becomes-parent-work", "completion-gate", "continuation-triggers", "owner-action-separate", "implementer-verifier-separation"] }
+  ],
+  "required_evidence": [
+    { "kind": "continuation-review", "reviewer": "independent-verifier", "when": { "material": true } }
+  ],
+  "blocking": { "mode": "enforce", "missing_evidence": "block" },
+  "exceptions": { "mode": "clause-only" }
+}

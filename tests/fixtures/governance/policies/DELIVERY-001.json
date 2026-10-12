@@ -1,0 +1,42 @@
+{
+  "id": "DELIVERY-001",
+  "version": "1.0.0",
+  "scope": "portfolio",
+  "applies_when": {},
+  "invariants": [
+    { "id": "evidence-levels", "source": "docs/DELIVERY_PRACTICES.md#evidence-levels", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "result-states-no-rounding-up", "source": "docs/DELIVERY_PRACTICES.md#result-states", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "check-labels", "source": "docs/DELIVERY_PRACTICES.md#check-labels", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "blocked-is-not-green", "source": "docs/DELIVERY_PRACTICES.md#blocked-is-not-green", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "release-blockers", "source": "docs/DELIVERY_PRACTICES.md#release-blockers", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "artifact-identity-and-rollback-artifact", "source": "docs/DELIVERY_PRACTICES.md#artifact-identity-and-rollback-artifact", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "no-republished-versions", "source": "docs/DELIVERY_PRACTICES.md#versions-are-never-republished", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "no-blind-replay", "source": "docs/DELIVERY_PRACTICES.md#no-blind-replay", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "action-risk-classes", "source": "docs/DELIVERY_PRACTICES.md#action-risk-classes", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "generated-commands-are-data", "source": "docs/DELIVERY_PRACTICES.md#generated-commands-are-data", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "prove-the-blocker", "source": "docs/DELIVERY_PRACTICES.md#prove-the-blocker", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "unjustified-interruption-recorded", "source": "docs/DELIVERY_PRACTICES.md#unjustified-interruptions", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "durable-decisions", "source": "docs/DELIVERY_PRACTICES.md#durable-decisions", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "ownership-and-git-hygiene", "source": "docs/DELIVERY_PRACTICES.md#ownership-and-git-hygiene", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "incident-first-actions", "source": "docs/DELIVERY_PRACTICES.md#incident-first-actions", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "shared-host-blast-radius", "source": "docs/DELIVERY_PRACTICES.md#shared-host-blast-radius", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "migration-identity-and-kill-switches", "source": "docs/DELIVERY_PRACTICES.md#migration-identity-and-kill-switches", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "pull-request-record", "source": "docs/DELIVERY_PRACTICES.md#pull-request-record", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "contradiction-register", "source": "docs/DELIVERY_PRACTICES.md#contradiction-register", "baseline": [], "exception_mode": "forbidden" },
+    { "id": "repository-leak-scan", "source": "docs/DELIVERY_PRACTICES.md#repository-leak-scan", "baseline": [], "exception_mode": "forbidden" }
+  ],
+  "owner_reserved_when": [],
+  "detect": [
+    { "id": "evidence-ledger-review", "kind": "review", "invariants": ["evidence-levels", "result-states-no-rounding-up", "check-labels", "blocked-is-not-green", "pull-request-record"] },
+    { "id": "release-practice-review", "kind": "review", "invariants": ["release-blockers", "artifact-identity-and-rollback-artifact", "no-republished-versions", "no-blind-replay"] },
+    { "id": "agent-conduct-review", "kind": "review", "invariants": ["action-risk-classes", "generated-commands-are-data", "prove-the-blocker", "unjustified-interruption-recorded", "durable-decisions", "ownership-and-git-hygiene", "contradiction-register"] },
+    { "id": "operations-practice-review", "kind": "review", "invariants": ["incident-first-actions", "shared-host-blast-radius", "migration-identity-and-kill-switches", "no-blind-replay"] },
+    { "id": "repository-leak-scan", "kind": "static", "invariants": ["repository-leak-scan"] }
+  ],
+  "required_evidence": [
+    { "kind": "evidence-ledger", "when": { "material": true } },
+    { "kind": "release-artifact-identity", "when": { "intents": ["operate"], "material": true } }
+  ],
+  "blocking": { "mode": "report", "missing_evidence": "block" },
+  "exceptions": { "mode": "clause-only" }
+}

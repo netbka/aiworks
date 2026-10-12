@@ -1,0 +1,23 @@
+{
+  "id": "VERIFY-001",
+  "version": "1.0.0",
+  "scope": "portfolio",
+  "applies_when": {},
+  "invariants": [
+    { "id": "evidence-matches-change", "source": "docs/AUTONOMOUS_OPERATING_MODEL.md#verify---verificationevidence", "baseline": ["baseline:evidence-truth"], "exception_mode": "forbidden" },
+    { "id": "no-false-evidence-claims", "source": "docs/CONSTITUTION.md#5-evidence-over-confidence", "constitution_section": 5, "baseline": ["baseline:evidence-truth"], "exception_mode": "forbidden" },
+    { "id": "independent-verifier-context", "source": "docs/CONSTITUTION.md#13-verification-independence", "constitution_section": 13, "baseline": ["baseline:independent-verification"], "exception_mode": "forbidden" },
+    { "id": "implementer-not-sole-acceptance", "source": "docs/CONSTITUTION.md#13-verification-independence", "constitution_section": 13, "baseline": ["baseline:independent-verification"], "exception_mode": "forbidden" },
+    { "id": "missing-evidence-blocks", "source": "docs/CONSTITUTION.md#5-evidence-over-confidence", "constitution_section": 5, "baseline": ["baseline:evidence-truth"], "exception_mode": "forbidden" }
+  ],
+  "owner_reserved_when": [],
+  "detect": [
+    { "id": "policy-metadata", "kind": "schema", "invariants": ["missing-evidence-blocks"] },
+    { "id": "independent-verification", "kind": "review", "invariants": ["evidence-matches-change", "no-false-evidence-claims", "independent-verifier-context", "implementer-not-sole-acceptance", "missing-evidence-blocks"] }
+  ],
+  "required_evidence": [
+    { "kind": "independent-verification", "reviewer": "independent-verifier", "when": { "material": true } }
+  ],
+  "blocking": { "mode": "enforce", "missing_evidence": "block" },
+  "exceptions": { "mode": "clause-only" }
+}

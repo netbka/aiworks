@@ -1,0 +1,304 @@
+{
+  "version": 1,
+  "campaignId": "dyk-181-399-review",
+  "purpose": "Independent browser review of every Dyk surface on current main (#181 blind and constitutional audit, #399 final navigation/evidence/catalog review).",
+  "authorization": {
+    "version": 1,
+    "grantedBy": "owner (netbka), delegated to the owner's main session",
+    "grantedAt": "2026-10-11",
+    "reference": "https://github.com/netbka/Dyk/issues/181",
+    "text": "On 2026-10-11 the owner asked in the controlling session to check whether #181 and #399 can be done by browser agents and then \"do all. complete all work\", and said \"dont use AGY till 19:00. Use codex or claude agent to do the work.\" This campaign restarts the owner-stopped #181/#399 reviews on current Dyk main (Storybook on 127.0.0.1:6006 at fa3c2bc6) with the supervisor Claude browser worker only. Report-only web acceptance tasks: no code, branch, PR or issue-state change; the supervisor posts verified reports. Local Storybook only. No limits; provider subscription limits and the no-progress guard are the stops."
+  },
+  "target": {
+    "tenantId": "netbka",
+    "projectId": "dyk",
+    "environment": "research",
+    "repository": "netbka/Dyk",
+    "baseBranch": "main",
+    "trackingIssue": 181
+  },
+  "executor": {
+    "kind": "cli-chain",
+    "providers": [
+      {
+        "kind": "claude-cli",
+        "model": "opus",
+        "permissionMode": "auto"
+      }
+    ],
+    "implementerTimeoutMinutes": 120,
+    "verifierTimeoutMinutes": 90
+  },
+  "constraints": [
+    "Report only: no file, branch, PR, label or issue-state change; the supervisor posts the verified report.",
+    "Browse only the declared local Storybook pages; never pidyk.app, a real account or another site; never submit forms with real data.",
+    "Never read .env contents, credentials or real user data; all stories use synthetic fixtures.",
+    "Measured evidence for layout claims (getBoundingClientRect via evaluate_script, emulate for phone widths); evaluate_script is for measurement only."
+  ],
+  "tasks": [
+    {
+      "id": "R1-TASKS",
+      "issue": 181,
+      "title": "Tasks and task details",
+      "outcome": "Independent browser acceptance of the tasks and task details for Dyk #181/#399: ACCEPTED, or findings with evidence.",
+      "deliverable": "report",
+      "goal": "Surface: Tasks. #399 focus: Tasks -> evidence -> Back returns to the same task and scroll; corrected evidence single heading; RTL metadata. Open each declared story (switch globals locale:en|ru|he in the URL; use emulate for 320x568 and 390x844 phone widths). Act as a working parent of two school-age children (blind intent first: where am I, what brought me here, the 1-3 plausible next actions, can I complete them here without learning Dyk internals), then judge against the Constitution and PRINCIPLES U3/U6/U10/U12/U13/U14 and T2 (truthful states): no dead ends, no duplicate controls or repeated labels, 44px targets, no horizontal overflow, true Hebrew RTL, natural RU/EN/HE wording. Measure, do not guess. Interact only with Storybook controls; never submit real data. Report ACCEPTED only if every criterion passes in all three locales at both widths; list each failing criterion with story id, locale, width and evidence.",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "The report starts with the Visual acceptance verdict and has a criterion/result/evidence table covering every declared story in RU/EN/HE at 320 and 390.",
+        "Every finding names story id, locale, width, the observed result and the violated principle; no finding is claimed without measured or visible evidence."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/EXPERIENCE_REVIEW.md",
+        "docs/STORYBOOK_VISUAL_REVIEW.md"
+      ],
+      "web": {
+        "urls": [
+          "http://127.0.0.1:6006/iframe.html?id=production-tasks--active&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-tasks--expanded&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-tasks--details-with-evidence&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-tasks--details-evidence-hidden&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-tasks--evidence-messages&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-tasks--evidence-from-summary&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-tasks--completed&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-tasks--search&viewMode=story&globals=locale:en"
+        ]
+      }
+    },
+    {
+      "id": "R2-SUMMARY",
+      "issue": 181,
+      "title": "Summary assistant",
+      "outcome": "Independent browser acceptance of the summary assistant for Dyk #181/#399: ACCEPTED, or findings with evidence.",
+      "deliverable": "report",
+      "goal": "Surface: Summary. #399 focus: Tasks/Summary-selected dock; evidence in history cards. If history renders empty because the page is hidden, report INCOMPLETE for that criterion rather than failing the product. Open each declared story (switch globals locale:en|ru|he in the URL; use emulate for 320x568 and 390x844 phone widths). Act as a working parent of two school-age children (blind intent first: where am I, what brought me here, the 1-3 plausible next actions, can I complete them here without learning Dyk internals), then judge against the Constitution and PRINCIPLES U3/U6/U10/U12/U13/U14 and T2 (truthful states): no dead ends, no duplicate controls or repeated labels, 44px targets, no horizontal overflow, true Hebrew RTL, natural RU/EN/HE wording. Measure, do not guess. Interact only with Storybook controls; never submit real data. Report ACCEPTED only if every criterion passes in all three locales at both widths; list each failing criterion with story id, locale, width and evidence.",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "The report starts with the Visual acceptance verdict and has a criterion/result/evidence table covering every declared story in RU/EN/HE at 320 and 390.",
+        "Every finding names story id, locale, width, the observed result and the violated principle; no finding is claimed without measured or visible evidence."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/EXPERIENCE_REVIEW.md",
+        "docs/STORYBOOK_VISUAL_REVIEW.md"
+      ],
+      "web": {
+        "urls": [
+          "http://127.0.0.1:6006/iframe.html?id=production-assistant--existing-conversation&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-assistant--initial&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-assistant--task-done&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-assistant--send-failed&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-assistant--offline&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-assistant--source-reconnect&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-assistant--older-messages&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-assistant--session-expired&viewMode=story&globals=locale:en"
+        ]
+      }
+    },
+    {
+      "id": "R3-SOURCES",
+      "issue": 181,
+      "title": "Sources list",
+      "outcome": "Independent browser acceptance of the sources list for Dyk #181/#399: ACCEPTED, or findings with evidence.",
+      "deliverable": "report",
+      "goal": "Surface: Sources. Account-level messenger problems shown once; plan-limit and read-only states truthful with a next step. Open each declared story (switch globals locale:en|ru|he in the URL; use emulate for 320x568 and 390x844 phone widths). Act as a working parent of two school-age children (blind intent first: where am I, what brought me here, the 1-3 plausible next actions, can I complete them here without learning Dyk internals), then judge against the Constitution and PRINCIPLES U3/U6/U10/U12/U13/U14 and T2 (truthful states): no dead ends, no duplicate controls or repeated labels, 44px targets, no horizontal overflow, true Hebrew RTL, natural RU/EN/HE wording. Measure, do not guess. Interact only with Storybook controls; never submit real data. Report ACCEPTED only if every criterion passes in all three locales at both widths; list each failing criterion with story id, locale, width and evidence.",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "The report starts with the Visual acceptance verdict and has a criterion/result/evidence table covering every declared story in RU/EN/HE at 320 and 390.",
+        "Every finding names story id, locale, width, the observed result and the violated principle; no finding is claimed without measured or visible evidence."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/EXPERIENCE_REVIEW.md",
+        "docs/STORYBOOK_VISUAL_REVIEW.md"
+      ],
+      "web": {
+        "urls": [
+          "http://127.0.0.1:6006/iframe.html?id=production-chats--list&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-chats--source-problems&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-chats--over-limit&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-chats--read-only&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-chats--none&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-chats--telegram-empty&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-chats--many-people&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-chats--connection-restored&viewMode=story&globals=locale:en"
+        ]
+      }
+    },
+    {
+      "id": "R4-READER",
+      "issue": 181,
+      "title": "Chat reader",
+      "outcome": "Independent browser acceptance of the chat reader for Dyk #181/#399: ACCEPTED, or findings with evidence.",
+      "deliverable": "report",
+      "goal": "Surface: Reader. #399 focus: Sources -> Reader / search / older / Clear and Back. Open each declared story (switch globals locale:en|ru|he in the URL; use emulate for 320x568 and 390x844 phone widths). Act as a working parent of two school-age children (blind intent first: where am I, what brought me here, the 1-3 plausible next actions, can I complete them here without learning Dyk internals), then judge against the Constitution and PRINCIPLES U3/U6/U10/U12/U13/U14 and T2 (truthful states): no dead ends, no duplicate controls or repeated labels, 44px targets, no horizontal overflow, true Hebrew RTL, natural RU/EN/HE wording. Measure, do not guess. Interact only with Storybook controls; never submit real data. Report ACCEPTED only if every criterion passes in all three locales at both widths; list each failing criterion with story id, locale, width and evidence.",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "The report starts with the Visual acceptance verdict and has a criterion/result/evidence table covering every declared story in RU/EN/HE at 320 and 390.",
+        "Every finding names story id, locale, width, the observed result and the violated principle; no finding is claimed without measured or visible evidence."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/EXPERIENCE_REVIEW.md",
+        "docs/STORYBOOK_VISUAL_REVIEW.md"
+      ],
+      "web": {
+        "urls": [
+          "http://127.0.0.1:6006/iframe.html?id=production-chats--reader&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-chats--reader-earlier&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-chats--reader-long&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-chats--reader-older-failure&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-chats--reader-search-failure&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-chats--reader-search-none&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-chats--reader-problem&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-chats--empty-reader&viewMode=story&globals=locale:en"
+        ]
+      }
+    },
+    {
+      "id": "R5-SETUP",
+      "issue": 181,
+      "title": "Setup and Master overview",
+      "outcome": "Independent browser acceptance of the setup and master overview for Dyk #181/#399: ACCEPTED, or findings with evidence.",
+      "deliverable": "report",
+      "goal": "Surface: Setup. Walk the first-setup flow and the overview connection flow end to end. Open each declared story (switch globals locale:en|ru|he in the URL; use emulate for 320x568 and 390x844 phone widths). Act as a working parent of two school-age children (blind intent first: where am I, what brought me here, the 1-3 plausible next actions, can I complete them here without learning Dyk internals), then judge against the Constitution and PRINCIPLES U3/U6/U10/U12/U13/U14 and T2 (truthful states): no dead ends, no duplicate controls or repeated labels, 44px targets, no horizontal overflow, true Hebrew RTL, natural RU/EN/HE wording. Measure, do not guess. Interact only with Storybook controls; never submit real data. Report ACCEPTED only if every criterion passes in all three locales at both widths; list each failing criterion with story id, locale, width and evidence.",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "The report starts with the Visual acceptance verdict and has a criterion/result/evidence table covering every declared story in RU/EN/HE at 320 and 390.",
+        "Every finding names story id, locale, width, the observed result and the violated principle; no finding is claimed without measured or visible evidence."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/EXPERIENCE_REVIEW.md",
+        "docs/STORYBOOK_VISUAL_REVIEW.md"
+      ],
+      "web": {
+        "urls": [
+          "http://127.0.0.1:6006/iframe.html?id=production-master--sources&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-master--people&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-master--reading&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-master--review&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-master--completed-overview&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-master--saving&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=design-master--first-setup-flow&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=design-master--overview-connection-flow&viewMode=story&globals=locale:en"
+        ]
+      }
+    },
+    {
+      "id": "R6-PROFILE",
+      "issue": 181,
+      "title": "Profile, plans and providers",
+      "outcome": "Independent browser acceptance of the profile, plans and providers for Dyk #181/#399: ACCEPTED, or findings with evidence.",
+      "deliverable": "report",
+      "goal": "Surface: Profile/Plans/providers. #399 focus: Profile -> provider and Plans returns. Open each declared story (switch globals locale:en|ru|he in the URL; use emulate for 320x568 and 390x844 phone widths). Act as a working parent of two school-age children (blind intent first: where am I, what brought me here, the 1-3 plausible next actions, can I complete them here without learning Dyk internals), then judge against the Constitution and PRINCIPLES U3/U6/U10/U12/U13/U14 and T2 (truthful states): no dead ends, no duplicate controls or repeated labels, 44px targets, no horizontal overflow, true Hebrew RTL, natural RU/EN/HE wording. Measure, do not guess. Interact only with Storybook controls; never submit real data. Report ACCEPTED only if every criterion passes in all three locales at both widths; list each failing criterion with story id, locale, width and evidence.",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "The report starts with the Visual acceptance verdict and has a criterion/result/evidence table covering every declared story in RU/EN/HE at 320 and 390.",
+        "Every finding names story id, locale, width, the observed result and the violated principle; no finding is claimed without measured or visible evidence."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/EXPERIENCE_REVIEW.md",
+        "docs/STORYBOOK_VISUAL_REVIEW.md"
+      ],
+      "web": {
+        "urls": [
+          "http://127.0.0.1:6006/iframe.html?id=production-profile--default&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-profile--from-summary&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-profile--telegram-delivery&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-commercial--plans&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-commercial--plans-from-summary&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-whatsapp--reconnect&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-telegram--reconnect&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-profile--setup-connection&viewMode=story&globals=locale:en"
+        ]
+      }
+    },
+    {
+      "id": "R7-AUTH",
+      "issue": 181,
+      "title": "Sign-in and re-authentication",
+      "outcome": "Independent browser acceptance of the sign-in and re-authentication for Dyk #181/#399: ACCEPTED, or findings with evidence.",
+      "deliverable": "report",
+      "goal": "Surface: signed-out auth. #399 focus: Auth GET/login, explicit re-authentication, language preservation, Mini App alternate sign-in. Do not claim email or provider redemption verified. Open each declared story (switch globals locale:en|ru|he in the URL; use emulate for 320x568 and 390x844 phone widths). Act as a working parent of two school-age children (blind intent first: where am I, what brought me here, the 1-3 plausible next actions, can I complete them here without learning Dyk internals), then judge against the Constitution and PRINCIPLES U3/U6/U10/U12/U13/U14 and T2 (truthful states): no dead ends, no duplicate controls or repeated labels, 44px targets, no horizontal overflow, true Hebrew RTL, natural RU/EN/HE wording. Measure, do not guess. Interact only with Storybook controls; never submit real data. Report ACCEPTED only if every criterion passes in all three locales at both widths; list each failing criterion with story id, locale, width and evidence.",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "The report starts with the Visual acceptance verdict and has a criterion/result/evidence table covering every declared story in RU/EN/HE at 320 and 390.",
+        "Every finding names story id, locale, width, the observed result and the violated principle; no finding is claimed without measured or visible evidence."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/EXPERIENCE_REVIEW.md",
+        "docs/STORYBOOK_VISUAL_REVIEW.md"
+      ],
+      "web": {
+        "urls": [
+          "http://127.0.0.1:6006/iframe.html?id=production-public--sign-in&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-auth--reauth&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-auth--sign-in-notice&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-auth--email-sent&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-auth--magic-link-verify&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-auth--session-expired&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-auth--csrf-expired&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-auth--mini-app-failed&viewMode=story&globals=locale:en"
+        ]
+      }
+    },
+    {
+      "id": "R8-BUGREPORT",
+      "issue": 181,
+      "title": "Bug report and menus",
+      "outcome": "Independent browser acceptance of the bug report and menus for Dyk #181/#399: ACCEPTED, or findings with evidence.",
+      "deliverable": "report",
+      "goal": "Surface: bug report and shell menus. #399 focus: complete the Validation and Failed states. Open each declared story (switch globals locale:en|ru|he in the URL; use emulate for 320x568 and 390x844 phone widths). Act as a working parent of two school-age children (blind intent first: where am I, what brought me here, the 1-3 plausible next actions, can I complete them here without learning Dyk internals), then judge against the Constitution and PRINCIPLES U3/U6/U10/U12/U13/U14 and T2 (truthful states): no dead ends, no duplicate controls or repeated labels, 44px targets, no horizontal overflow, true Hebrew RTL, natural RU/EN/HE wording. Measure, do not guess. Interact only with Storybook controls; never submit real data. Report ACCEPTED only if every criterion passes in all three locales at both widths; list each failing criterion with story id, locale, width and evidence.",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "The report starts with the Visual acceptance verdict and has a criterion/result/evidence table covering every declared story in RU/EN/HE at 320 and 390.",
+        "Every finding names story id, locale, width, the observed result and the violated principle; no finding is claimed without measured or visible evidence."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PRINCIPLES.md",
+        "docs/EXPERIENCE_REVIEW.md",
+        "docs/STORYBOOK_VISUAL_REVIEW.md"
+      ],
+      "web": {
+        "urls": [
+          "http://127.0.0.1:6006/iframe.html?id=production-bugreport--open&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-bugreport--input&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-bugreport--validation&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-bugreport--sending&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-bugreport--sent&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-bugreport--failed&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-tasks--account-menu&viewMode=story&globals=locale:en",
+          "http://127.0.0.1:6006/iframe.html?id=production-tasks--language-menu&viewMode=story&globals=locale:en"
+        ]
+      }
+    }
+  ]
+}

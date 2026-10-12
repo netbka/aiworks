@@ -1,0 +1,52 @@
+// Dashboard path for owner messages: CSRF-protected endpoint, idempotent receipt, and receipt states in the snapshot.
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { once } from 'node:events';
+import { randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { Store } from '../../src/supervisor/store.mjs';
+import { campaignStart } from '../../src/supervisor/api.mjs';
+import { declaration } from '../supervisor/helpers.mjs';
+import { createDashboardServer } from '../../src/dashboard/server.mjs';
+import { supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
+
+test('owner messages are accepted only from the dashboard origin, stored once and shown with receipts', async (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'aiworks-messages-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ coordinator: { repositories: ['netbka/aiworks'], reportTo: 'netbka/aiworks#3', maxRunsPerDay: 6 } }));
+  const store = new Store(join(dataDir, 'supervisor.db'));
+  campaignStart(store, declaration());
+  const server = createDashboardServer({ dataDir, roadmap: { snapshot: () => ({ entries: [], sources: [], work: [] }), refresh: async () => {} } });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(() => { store.close(); rmSync(dataDir, { recursive: true, force: true }); resolve(); }); }));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const csrf = (await (await fetch(`${base}/api/session`)).json()).csrf;
+  const headers = { Origin: base, 'Content-Type': 'application/json', 'X-Dashboard-CSRF': csrf };
+  const send = (body, extra = {}) => fetch(`${base}/api/messages`, { method: 'POST', headers: { ...headers, ...extra }, body: JSON.stringify(body) });
+  const requestId = randomUUID();
+  const text = 'Review new PR and issues.\nPlan their execution.';
+  assert.equal((await send({ requestId, text }, { 'X-Dashboard-CSRF': 'wrong' })).status, 403);
+  assert.equal((await send({ requestId, text }, { Origin: 'https://evil.example' })).status, 403);
+  const first = await send({ requestId, text });
+  assert.equal(first.status, 202);
+  const receipt = await first.json();
+  assert.equal(receipt.state, 'received');
+  assert.equal((await (await send({ requestId, text })).json()).duplicate, true);
+  assert.equal((await send({ requestId, text: 'changed' })).status, 409);
+  assert.equal((await send({ requestId: randomUUID(), text: 'token ghp_abcdefghijklmnopqrstuvwxyz0123456789' })).status, 400, 'secrets are refused');
+  assert.equal((await send({ requestId: randomUUID(), text, extra: 1 })).status, 400);
+  assert.equal(store.all('SELECT * FROM owner_messages').length, 1);
+  // Receipt states and the reply link as the dashboard sees them.
+  const now = Date.now();
+  store.run("UPDATE owner_messages SET state = 'answered', read_at = ?, answered_at = ?, response_key = 'k' WHERE id = ?", now + 1, now + 2, receipt.id);
+  store.run("INSERT INTO outbox (key, campaign_id, target, body, state, attempts, posted, updated_at) VALUES ('k', '_coordinator', 'netbka/aiworks#3', 'secret-marker', 'posted', 1, 'https://github.com/netbka/aiworks/issues/3#issuecomment-1', ?)", now);
+  const view = supervisorSnapshot(dataDir).coordinator;
+  assert.equal(view.configured, true);
+  assert.equal(view.reportTo, 'netbka/aiworks#3');
+  const message = view.messages[0];
+  assert.deepEqual([message.state, message.text, message.source], ['answered', text, 'owner (dashboard)']);
+  assert.ok(message.receivedAt <= message.readAt && message.readAt <= message.answeredAt);
+  assert.equal(message.replyUrl, 'https://github.com/netbka/aiworks/issues/3#issuecomment-1');
+  assert.ok(!JSON.stringify(view).includes('secret-marker'), 'the posted body is not exposed');
+});
