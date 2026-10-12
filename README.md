@@ -46,8 +46,8 @@ Portfolio rules that AIWorks follows live in [Engineering Platform](https://gith
 | `registry/worker-context-policy.json` | Worker-context policy defaults |
 | `schemas/` | Schemas for the worker-context policy and the worker task packet |
 | `scripts/check-campaigns.mjs` | Parses every campaign declaration |
-| `scripts/supervisor/install-windows-task.ps1` | Registers the supervisor as a Windows logon task |
-| `scripts/supervisor/install-dashboard-task.ps1` | Registers the dashboard as a Windows logon task |
+| `scripts/supervisor/install-windows-task.ps1` | Registers the supervisor as a Windows task: at logon, and every 5 minutes if it stopped |
+| `scripts/supervisor/install-dashboard-task.ps1` | Registers the dashboard as a Windows task: at logon, and every 5 minutes if it stopped |
 | `scripts/supervisor/deploy.ps1` | Deploys a reviewed commit to `.local/runtime` and refreshes the governance checkout |
 | `tests/` | Supervisor, dashboard and worker-context tests; `tests/fixtures/governance/` is a small governance checkout for tests |
 
@@ -116,6 +116,8 @@ powershell -NoProfile -File scripts\supervisor\install-windows-task.ps1 -Checkou
 ```
 
 This registers the per-user logon task `AIWorks Supervisor`, which runs `keep` hidden. The dashboard runs as a separate task, `AIWorks Dashboard`, registered by `scripts/supervisor/install-dashboard-task.ps1` with the same arguments.
+
+If either stops, it comes back within 5 minutes: both tasks also start every 5 minutes, and do nothing while they already run. `cli.mjs stop` keeps the supervisor stopped until its STOP file is removed. `keep` writes why it ended to `supervisor.log`. When every controller lease has expired, `status` and the dashboard lead with "supervisor stopped" and the time of the last lease renewal. Details: [SUPERVISOR.md §6](docs/SUPERVISOR.md#6-running-on-homepc).
 
 ## HomePc layout
 

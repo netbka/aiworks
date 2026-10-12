@@ -6,6 +6,9 @@ param(
 # Upgrade the pinned AIWorks runtime to a reviewed commit (default: origin/main), refresh the governance
 # checkout, and restart the supervisor and dashboard tasks. Follows docs/SUPERVISOR.md section 6.
 # Campaigns are not touched: pause them before and resume them after (see AGENTS.md).
+# Both tasks repeat every 5 minutes (aiworks#18), so they are disabled for the whole deploy: no trigger can start the
+# keeper or the dashboard from a half-updated runtime. A failed deploy leaves them disabled and STOP in place, so the
+# supervisor stays stopped (and status says so) until the next deploy succeeds.
 $ErrorActionPreference = 'Stop'
 $data = "$Root/.local/supervisor"
 $runtime = "$Root/.local/runtime"
@@ -18,6 +21,11 @@ if (-not $Sha) {
 }
 if ($Sha -notmatch '^[0-9a-f]{40}$') { throw "not a full commit SHA: $Sha" }
 Note "deploying $Sha"
+
+# 0. Disable both tasks so their triggers cannot start anything until step 5. A running instance keeps running.
+Disable-ScheduledTask -TaskName 'AIWorks Supervisor' -ErrorAction SilentlyContinue | Out-Null
+Disable-ScheduledTask -TaskName 'AIWorks Dashboard' -ErrorAction SilentlyContinue | Out-Null
+Note 'scheduled tasks disabled'
 
 # 1. Ask the running supervisor to stop (STOP file) and wait for serve and keep to exit.
 if (Test-Path "$runtime/src/supervisor/cli.mjs") { & $Node "$runtime/src/supervisor/cli.mjs" stop --data $data | Out-Null; Note 'STOP written' }
@@ -63,8 +71,10 @@ if (Test-Path "$governance/.git") {
   Note "governance checkout at $((& git -C $governance rev-parse HEAD).Trim())"
 } else { Note "WARNING: no governance checkout at $governance" }
 
-# 5. Remove STOP and start the tasks again.
+# 5. Remove STOP, enable the tasks and start them again.
 Remove-Item -LiteralPath "$data/STOP" -Force -ErrorAction SilentlyContinue
+Enable-ScheduledTask -TaskName 'AIWorks Supervisor' | Out-Null
+Enable-ScheduledTask -TaskName 'AIWorks Dashboard' | Out-Null
 Start-ScheduledTask -TaskName 'AIWorks Supervisor'
 Start-ScheduledTask -TaskName 'AIWorks Dashboard'
 Note 'done: open http://127.0.0.1:4318'

@@ -1,12 +1,16 @@
 # AIWorks registers the operations dashboard as a per-user Windows scheduled task.
-# It starts at logon and serves http://127.0.0.1:<Port> hidden from the pinned runtime checkout. The governance
-# checkout comes from <DataDir>/config.json (governanceRoot). Output goes to <Checkout>/../dashboard-task.*.log.
+# It starts at logon and serves http://127.0.0.1:<Port> hidden from the pinned runtime checkout. A second trigger repeats
+# every 5 minutes, so a dashboard that died is started again (aiworks#18); while one runs, MultipleInstances IgnoreNew
+# skips it. The governance checkout comes from <DataDir>/config.json (governanceRoot). Output goes to
+# <Checkout>/../dashboard-task.*.log.
 # Usage: powershell -NoProfile -File scripts\supervisor\install-dashboard-task.ps1 -Checkout D:\Git\aiworks\.local\runtime -DataDir D:\Git\aiworks\.local\supervisor
+# -DefinitionOnly prints the task definition as JSON and changes nothing.
 param(
   [Parameter(Mandatory = $true)] [string] $Checkout,
   [Parameter(Mandatory = $true)] [string] $DataDir,
   [int] $Port = 4318,
-  [string] $TaskName = 'AIWorks Dashboard'
+  [string] $TaskName = 'AIWorks Dashboard',
+  [switch] $DefinitionOnly
 )
 $ErrorActionPreference = 'Stop'
 $node = (Get-Command node).Source
@@ -28,10 +32,22 @@ exit `$dash.ExitCode
 "@
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand $encoded" -WorkingDirectory $Checkout
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$logon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+# No repetition duration means indefinitely; never stop the running dashboard when a repetition ends.
+$repeat = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5)
+$repeat.Repetition.StopAtDurationEnd = $false
+$trigger = @($logon, $repeat)
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable `
   -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+if ($DefinitionOnly) {
+  [ordered]@{ taskName = $TaskName; execute = $action.Execute; arguments = $action.Arguments
+    triggers = @($trigger | ForEach-Object { [ordered]@{ kind = $_.CimClass.CimClassName; startBoundary = $_.StartBoundary
+      interval = $_.Repetition.Interval; duration = $_.Repetition.Duration; stopAtDurationEnd = $_.Repetition.StopAtDurationEnd } })
+    multipleInstances = "$($settings.MultipleInstances)"; executionTimeLimit = $settings.ExecutionTimeLimit
+    restartCount = $settings.RestartCount; restartInterval = $settings.RestartInterval } | ConvertTo-Json -Depth 4
+  return
+}
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
 Start-ScheduledTask -TaskName $TaskName
 Get-ScheduledTask -TaskName $TaskName | Select-Object TaskName, State
