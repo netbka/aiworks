@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
 import { supervisorSnapshot, applyCommand, postMessage } from './supervisor.mjs';
 import { ownerView } from './owner.mjs';
+import { configuredRepositories, projectsView } from './projects.mjs';
 import { safeText } from './roadmap.mjs';
 
 const staticFiles = new Map([
@@ -59,9 +60,11 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
           // Merge checks run while someone looks at the page; the answer never waits for them.
           if (merges) void merges.refresh();
           const merged = merges?.snapshot() ?? { refreshing: false, repositories: [], steps: {} };
+          const owner = ownerView(supervisor, merged, { host: machine.name, now, releases });
           return send(200, { observedAt: new Date(now).toISOString(), host: machine, supervisor, roadmap: roadmap.snapshot(),
-            merges: { refreshing: merged.refreshing, repositories: merged.repositories },
-            owner: ownerView(supervisor, merged, { host: machine.name, now, releases }) });
+            merges: { refreshing: merged.refreshing, repositories: merged.repositories }, owner,
+            // Projects: campaign repositories and the repositories config.json lists, by name only (never a path).
+            projects: projectsView(supervisor, owner, { repositories: configuredRepositories(dataDir) }) });
         }
         return send(404, { error: 'Not found.' });
       }

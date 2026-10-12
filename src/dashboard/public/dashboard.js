@@ -668,26 +668,30 @@ function workView(work = filtered(campaignWork(), 'steps')) {
   return panel('Campaign issues and pull requests', `${work.length} steps · from the supervisor's own records. Issues and pull requests that no campaign owns are not shown here; see them on GitHub`, body);
 }
 
-/** Projects from today's data: each repository that has work on this computer, in the owner view's order. */
-function projectList() {
-  const { cards, finished } = campaignLayout();
-  return [...new Set([...cards, ...finished, ...state.supervisor.campaigns].map((c) => c.repository).filter(Boolean))];
-}
-const projectCampaigns = (project) => state.supervisor.campaigns.filter((c) => c.repository === project);
+/** Projects from today's data (OWNER_WORKSPACE S2): built by the server, in its order, each with one state and one action. */
+const projectList = () => state.projects?.projects ?? [];
+// GitHub repository names are case-insensitive: an address in any spelling opens the same project.
+const sameProject = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
+const projectCampaigns = (project) => state.supervisor.campaigns.filter((c) => sameProject(c.repository, project));
 const unavailable = () => empty('Supervisor unavailable', state.supervisor.message ?? 'The supervisor state cannot be read right now. This is not the same as nothing happening.');
+const stateTones = { 'needs-you': 'attention', running: 'in_progress', paused: 'pending', finished: 'done', cancelled: 'pending', 'no-work': 'pending' };
+const stateWords = { 'needs-you': 'Needs you', running: 'Running', paused: 'Paused', finished: 'Finished', cancelled: 'Cancelled', 'no-work': 'No work yet' };
+const projectAction = (action) => action.url ? link(`${action.label} ↗`, action.url, 'project-action') : routeLink(action.label, action.route, 'project-action');
 
 function projectsScreen() {
   if (!state.supervisor.available) return [unavailable()];
-  const projects = projectList(), last = readLastProject();
-  if (!projects.length) return [empty('No projects yet.', 'Projects appear here when work is registered for a repository on this computer. Adding a project from this page is not built yet.')];
-  const waiting = (project) => (state.owner?.items ?? []).filter((item) => campaignById(item.campaignId)?.repository === project).length;
-  return [last && projects.includes(last) ? el('p', { class: 'continue' }, routeLink(`Continue with ${projectName(last)} →`, { screen: 'project', project: last }, 'continue-link')) : null,
+  const projects = projectList(), saved = readLastProject(), last = projects.find((project) => sameProject(project.id, saved))?.id;
+  if (!projects.length) return [empty('No projects yet.', 'Projects appear here when this computer’s AIWorks settings list a repository. Adding a project from this page is not built yet.')];
+  return [last ? el('p', { class: 'continue' }, routeLink(`Continue with ${projectName(last)} →`, { screen: 'project', project: last }, 'continue-link')) : null,
     sinceSummary(),
-    panel('Your projects', 'One row per repository with work on this computer.', el('ul', { class: 'project-list' }, ...projects.map((project) => {
-      const count = projectCampaigns(project).length, mine = waiting(project);
-      return el('li', { class: 'project-row', 'data-focus-scope': project }, routeLink(projectName(project), { screen: 'project', project }, 'project-name'),
-        el('div', { class: 'subtext' }, `GitHub · ${project} · ${plural(count, 'piece of work', 'pieces of work')}${mine ? ` · ${plural(mine, 'item')} in Needs me` : ''}`));
-    })))].filter(Boolean);
+    panel('Your projects', 'One row per repository this computer works on. Those that need you come first, then those with work running.',
+      el('ul', { class: 'project-list' }, ...projects.map((project) => el('li', { class: 'project-row', 'data-focus-scope': project.id },
+        el('div', { class: 'row-line' }, routeLink(project.name, { screen: 'project', project: project.id }, 'project-name'), el('span', { class: 'subtext' }, project.kind)),
+        // One state, said in words (never by colour alone), and one next action.
+        el('div', { class: 'row-line' }, badge(stateTones[project.state.key] ?? 'unknown', stateWords[project.state.key] ?? 'Not known'), el('span', {}, project.state.text)),
+        projectAction(project.action),
+        disclosure(`project/${project.id}`, 'Details', el('div', { class: 'subtext' }, [`Repository ${project.repository}`, `owner ${project.details.owner}`,
+          plural(project.details.work, 'piece of work', 'pieces of work'), project.details.configured ? 'listed in this computer’s settings' : null].filter(Boolean).join(' · ')))))))].filter(Boolean);
 }
 
 function settingsScreen() {
@@ -703,8 +707,10 @@ function settingsScreen() {
 function projectScreen(route) {
   const project = route.project, all = projectCampaigns(project);
   if (!state.supervisor.available) return [unavailable()];
+  // A repository this computer's settings list, with no work yet (OWNER_WORKSPACE §7.1). Starting work here is not built yet.
+  if (!all.length && projectList().some((item) => sameProject(item.id, project))) return [empty('No work yet.', `Work in ${projectName(project)} appears here once it is registered on this computer. Starting work from this page is not built yet.`)];
   if (!all.length) return [empty('This project has no work on this computer', 'The address may be mistyped, or its work was removed.'), routeLink('All projects', '#/projects', 'button secondary')];
-  const layout = campaignLayout(), mine = (list) => list.filter((c) => c.repository === project);
+  const layout = campaignLayout(), mine = (list) => list.filter((c) => sameProject(c.repository, project));
   // Campaigns with something for the owner and active ones get cards; finished ones are one line each, under Results.
   const cards = mine(layout.cards), finished = mine(layout.finished);
   if (route.screen === 'step') {
@@ -737,7 +743,7 @@ function render() {
   else if (diagnostics) content.replaceChildren(trackOverview(), roadmapView(), workView(),
     panel('Execution journal', 'Latest 80 events · raw agent transcripts and secrets are never shown', activityList()));
   else if (route.screen === 'settings') content.replaceChildren(...settingsScreen());
-  else if (route.screen === 'add-project') content.replaceChildren(empty('Adding a project from this page is not built yet.', 'Projects appear on Projects when work is registered for a repository on this computer.'));
+  else if (route.screen === 'add-project') content.replaceChildren(empty('Adding a project from this page is not built yet.', 'Projects appear on Projects when this computer’s AIWorks settings list a repository.'));
   else if (route.project) content.replaceChildren(...projectScreen(route));
   else content.replaceChildren(...projectsScreen());
   if (focused) [...content.querySelectorAll('a, button, summary')].find((node) => focusKey(node) === focused)?.focus({ preventScroll: true });
