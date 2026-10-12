@@ -10,7 +10,7 @@ This page decodes the terms and IDs used in AIWorks. It defines no rules; the li
 - **Controller.** The long-running `serve` process that steps every campaign. `keep` restarts it after any exit.
 - **Lease.** The right of one controller instance to act for a campaign, with a generation number. Every controller write checks it first. An expired lease is taken over with generation + 1 ([SUPERVISOR.md §2](SUPERVISOR.md#2-state-and-ownership)).
 - **Task packet.** The bounded, revision-pinned input a worker gets, bound by its digest ([WORKER_CONTEXT_LIFECYCLE.md §3](WORKER_CONTEXT_LIFECYCLE.md#3-task-packet-and-durable-checkpoint)).
-- **Executor, provider chain.** The worker CLI, or ordered list of CLIs, a campaign may use: Claude, Codex, Cursor, AGY ([SUPERVISOR.md §8](SUPERVISOR.md#8-ordered-cli-execution)).
+- **Executor, provider chain.** The worker CLI, or ordered list of CLIs, a campaign may use: Claude, Codex, Cursor, AGY ([SUPERVISOR.md §8](SUPERVISOR.md#8-ordered-cli-execution)). The default order is Claude, then Codex, then Cursor ([AW-008](DECISIONS.md#aw-008---workers-run-on-claude-then-codex-then-cursor)).
 - **Verifier.** A separate fresh session that checks a result read-only at the exact commit before anything is published.
 - **Coordinator.** A read-only agent that answers the owner's messages and plans work. It never registers or starts a campaign; the supervisor posts its answers ([AW-004](DECISIONS.md#aw-004---owner-messages-go-to-a-read-only-coordinator-agent)).
 - **Governance checkout (governance root).** A plain clone of `netbka/engineering-platform` main. AIWorks reads the project registry, policies and schemas from it and never writes to it ([SUPERVISOR.md §6](SUPERVISOR.md#governance-checkout)).

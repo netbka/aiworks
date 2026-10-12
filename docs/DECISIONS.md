@@ -56,3 +56,21 @@ The AI delivery machine leaves the Engineering Platform repository and becomes i
 - **Second PC.** The owner's second PC (HOMELENOVO, which runs the elma-wiki campaigns) stays on the old Engineering Platform build, unchanged. AIWorks does not manage it.
 - **Decisions.** Archived EP-032 to EP-036 and EP-038 continue here as AW-001 to AW-006.
 - **History.** The full earlier history stays in the private archive `netbka/engineering-platform-archive`. The open machine issues moved to `netbka/aiworks` (#1 to #5).
+
+## AW-008 - Workers run on Claude, then Codex, then Cursor
+
+Status: accepted 2026-10-09 by the owner; restated 2026-10-10; recorded 2026-10-12 ([netbka/aiworks#6](https://github.com/netbka/aiworks/issues/6))
+
+Campaign workers run on Claude first, Codex second and Cursor third. A campaign declares this order in its `executor.providers` list ([SUPERVISOR.md §8](SUPERVISOR.md#8-ordered-cli-execution)).
+
+Owner authority, as recorded in the authorization text of two campaign declarations:
+
+- [`campaigns/dyk-443-waves.json`](../campaigns/dyk-443-waves.json): "Provider priority Claude, then Codex, then Cursor, with fallback on exhausted credits/quota or an unavailable executor (owner, 2026-10-09)."
+- [`campaigns/ep-13-owner-intervention-core.json`](../campaigns/ep-13-owner-intervention-core.json): the owner's direction of 2026-10-10 to keep agents working, ending "Provider order Claude, then Codex, then Cursor."
+
+Limits:
+
+- **What moves work to the next provider.** Only a provider problem: a usage or subscription limit, exhausted credits, or a provider that is unavailable on this host or for this role. When the limit resets or the provider is back, work returns to the earlier provider.
+- **What never moves work.** A denied tool or command, a sandbox or permission refusal, a boundary violation, and a failed verification. These are not routed around to another provider. A failed verification goes back for repair; a boundary violation waits for the owner.
+- **No new power.** The chain only orders providers the owner already authorized in that campaign. It adds no provider, widens no permission or sandbox, and keeps every isolation rule of each provider.
+- **A campaign may declare a shorter chain or a different order.** Changing it follows the executor amendment rule in [SUPERVISOR.md §8](SUPERVISOR.md#8-ordered-cli-execution).
