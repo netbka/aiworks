@@ -1,0 +1,113 @@
+{
+  "version": 1,
+  "campaignId": "aw-ux-review-1",
+  "purpose": "Find out, without coaching, whether a person can use the new owner dashboard, and what must change before #11 is accepted.",
+  "authorization": {
+    "version": 1,
+    "grantedBy": "owner (netbka), delegated to the owner's main session",
+    "grantedAt": "2026-10-12",
+    "reference": "https://github.com/netbka/aiworks/issues/14",
+    "text": "On 2026-10-12 the owner directed: \"take this as starting point and deliver till end. Delivery this work with the AIWorks environment.\" The starting point is docs/PROJECT_WORKSPACE_PLAN.md (PR #12), with owner decisions D1, D3, D5 (direction only) and D9 recorded in its section 8. This campaign runs the UX-002 blind review gate of docs/PROJECT_WORKSPACE_PLAN.md section 6.7 (OWNER_WORKSPACE.md section 13) on disposable dashboards with synthetic data, after UI10. It changes no repository file; findings become fix slices in lane UI."
+  },
+  "target": {
+    "tenantId": "netbka",
+    "projectId": "aiworks",
+    "environment": "research",
+    "repository": "netbka/aiworks",
+    "baseBranch": "main",
+    "trackingIssue": 11
+  },
+  "executor": {
+    "kind": "cli-chain",
+    "providers": [
+      {
+        "kind": "claude-cli",
+        "model": "opus",
+        "permissionMode": "auto"
+      }
+    ],
+    "implementerTimeoutMinutes": 120,
+    "verifierTimeoutMinutes": 90
+  },
+  "constraints": [
+    "Everything on the pages is made-up test data on this computer only. Open only http://127.0.0.1:4319 and http://127.0.0.1:4320; never any other address.",
+    "You may press buttons and send forms when a situation asks for it: they change only that throwaway test copy. An earlier visit may already have changed it (a paused project resumed, a plan request sent); that is expected, not a fault.",
+    "Write for the owner: plain English, short sentences, what you saw before what you think.",
+    "No production access, deployment, credentials, paid services or changes to any repository."
+  ],
+  "tasks": [
+    {
+      "id": "BLIND-FIRST",
+      "issue": 11,
+      "title": "A first look after installing",
+      "deliverable": "report",
+      "outcome": "A first-time user's honest account of trying to get things done on this page.",
+      "goal": "You build several small apps on your own PC. You use an AI tool that works on them for you. You opened its page to see how things are going. Before acting in each situation, answer: Where am I? What likely brought me here? Which one to three things would I try? Which thing on the screen would I use? Can I finish here? If not, where am I sent and why? Did I have to learn how the tool works inside to succeed? Then try it. Situations: S1. \"You just installed it. Get started.\"",
+      "dependsOn": [],
+      "acceptance": [
+        "For every situation, the report first gives your answers to the questions in the goal, written before you acted.",
+        "For every situation, the report says what you tried, in order, what the page showed (quote the visible words you relied on) and whether you think you finished.",
+        "For every screen you reached, the report says in your own words the one question that screen answers for you."
+      ],
+      "references": [
+        "AGENTS.md"
+      ],
+      "web": {
+        "urls": [
+          "http://127.0.0.1:4320/"
+        ]
+      }
+    },
+    {
+      "id": "BLIND-DAY",
+      "issue": 11,
+      "title": "A day with the tool",
+      "deliverable": "report",
+      "outcome": "A first-time user's honest account of trying to get things done on this page.",
+      "goal": "You build several small apps on your own PC. You use an AI tool that works on them for you. You opened its page to see how things are going. Before acting in each situation, answer: Where am I? What likely brought me here? Which one to three things would I try? Which thing on the screen would I use? Can I finish here? If not, where am I sent and why? Did I have to learn how the tool works inside to succeed? Then try it. Situations: S2. \"You have ten minutes. What needs you today?\" S3. \"Is the change for 'Search page' in shop-app live for users?\" S4. \"Ask the tool to plan a new feature for recipes. Don't let it change anything yet.\" S5. \"What is the tool doing on shop-app right now?\" S6. \"Something in notes-site is stuck. What should you do?\" S7. \"How much did shop-app's finished work cost?\" S8. \"recipes was paused for an update. Start it again.\" S9. Repeat S2 at 320 px wide, using the keyboard only. S10. Switch from shop-app to recipes and back while you are half-way through writing a plan request.",
+      "dependsOn": [],
+      "acceptance": [
+        "For every situation, the report first gives your answers to the questions in the goal, written before you acted.",
+        "For every situation, the report says what you tried, in order, what the page showed (quote the visible words you relied on) and whether you think you finished.",
+        "For every screen you reached, the report says in your own words the one question that screen answers for you.",
+        "Situation S9 is done at 320 px wide with the keyboard only; the report says whether you ever had to scroll sideways and whether you could always see where the keyboard focus was.",
+        "Situation S10 says whether your half-written request, the screen you were on and your scroll position were still there when you came back."
+      ],
+      "references": [
+        "AGENTS.md"
+      ],
+      "web": {
+        "urls": [
+          "http://127.0.0.1:4319/"
+        ]
+      }
+    },
+    {
+      "id": "SCORE",
+      "issue": 11,
+      "title": "Score the blind review and run the constitutional pass",
+      "deliverable": "report",
+      "outcome": "The owner knows whether the new dashboard passes UX-002 pass A and pass B, and which findings must be fixed first.",
+      "goal": "Score UX-002 pass A of the owner dashboard (#11) from the two blind reports (the dependency deliveries BLIND-FIRST and BLIND-DAY) against the hidden success checks in docs/design/OWNER_WORKSPACE.md section 13.3 (S1 to S10 are T1 to T10) and the screen questions of its section 4; then run pass B, the constitutional pass, against docs/PRODUCT_CONSTITUTION.md and OWNER_WORKSPACE.md sections 2 to 7 for every screen the reviewers reached. Use the finding record, severities and experience codes of Engineering Platform docs/EXPERIENCE_REVIEW.md section 4 (read it with gh api repos/netbka/engineering-platform/contents/docs/EXPERIENCE_REVIEW.md; REST only). Judge only from the reports and the code at the reviewed revision named in the owner instruction; do not open the dashboards yourself.",
+      "dependsOn": [
+        "BLIND-FIRST",
+        "BLIND-DAY"
+      ],
+      "constraints": [
+        "Read GitHub with REST only (gh api ...), never gh issue view or gh pr view (#16, #21). Change no file and open no pull request: this task only reports."
+      ],
+      "acceptance": [
+        "For each of S1 to S10, a verdict (succeeded, failed or not reached) against its hidden check, quoting the blind report as evidence.",
+        "For each screen a reviewer reached, the reviewer's own question set against the question OWNER_WORKSPACE.md section 4 gives that screen; each mismatch is a finding.",
+        "Every failure and mismatch, and every pass B issue, is a finding in the EXPERIENCE_REVIEW.md section 4 record: intent, observed and expected, interaction cost, experience code, severity (blocker, must, should or nit), pass, capability class, the clauses involved, scope (screen, state, viewport, revision) and why it matters.",
+        "The report ends with the pass rule of OWNER_WORKSPACE.md section 13.4 and says plainly whether pass A and pass B pass, listing every open blocker and must finding first."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/design/OWNER_WORKSPACE.md",
+        "docs/PRODUCT_CONSTITUTION.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md"
+      ]
+    }
+  ]
+}
