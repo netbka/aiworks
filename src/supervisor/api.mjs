@@ -5,6 +5,7 @@ import { runNotCounted } from './adapters/executors.mjs';
 import { authorityDigest, campaignLimits, canonicalJson, executorOrder, scopeDigest, validateDeclaration } from './campaign.mjs';
 import { findWorkConflict } from './work-ownership.mjs';
 import { laterWait } from './accounts.mjs';
+import { releaseStatus } from './release/eligibility.mjs';
 
 export class CampaignError extends Error {
   constructor(code, message) { super(message); this.name = 'CampaignError'; this.code = code; }
@@ -201,6 +202,8 @@ export function campaignStatus(store, id, now = Date.now()) {
     executorWaits: executorWaitsView(store, c),
     costUsd: Math.round(c.cost_usd * 10000) / 10000,
     ci: ci.summary,
+    // Auto Release is built switched off (AUTO_RELEASE.md slice R2): report only, per done task. It never acts.
+    release: releaseStatus({ project: c.declaration.target.projectId, tasks }),
     tasks: tasks.map((t) => ({
       id: t.task_id, state: t.state, attempts: t.attempts, repairRounds: t.repair_rounds,
       headSha: t.head_sha, verifiedSha: t.verified_sha, prUrl: t.pr_url,
