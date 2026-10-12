@@ -4,6 +4,8 @@
 // command (gh pr ..., gh issue comment, gh api graphql) is refused, so a supervisor path that still uses one fails its test.
 // <FAKE_GH_STATE>/rate-limit.json ({ route: 'POST pulls', times: 1, retryAfter: 2 } or { ..., reset: <epoch s> }) makes
 // that route refuse with a 403 rate-limit response carrying the reset headers, `times` times.
+// <FAKE_GH_STATE>/check-runs.json ({ "<sha>": [{ name, status, conclusion }] }) holds the CI check runs of each commit; a
+// commit it does not list has none yet.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -49,7 +51,8 @@ const respond = (status, body, extra = {}) => {
 const pulls = /^repos\/([^/]+\/[^/]+)\/pulls$/.exec(path);
 const pull = /^repos\/([^/]+\/[^/]+)\/pulls\/(\d+)$/.exec(path);
 const issueComments = /^repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/comments$/.exec(path);
-const route = `${method} ${pulls ? 'pulls' : pull ? 'pull' : issueComments ? 'comments' : path}`;
+const checkRuns = /^repos\/([^/]+\/[^/]+)\/commits\/([0-9a-f]{40})\/check-runs$/.exec(path);
+const route = `${method} ${pulls ? 'pulls' : pull ? 'pull' : issueComments ? 'comments' : checkRuns ? 'check-runs' : path}`;
 
 const limit = existsSync(limitFile) ? JSON.parse(readFileSync(limitFile, 'utf8')) : null;
 if (limit && limit.times > 0 && (limit.route === route || limit.route === '*')) {
@@ -85,6 +88,12 @@ if (pulls && method === 'GET') {
   const needle = /contains\((".*")\)/.exec(option('--jq') ?? '')?.[1];
   const text = needle ? JSON.parse(needle) : null;
   for (const comment of comments.filter((c) => c.issue === issueComments[2] && (!text || c.body.includes(text)))) process.stdout.write(`${comment.url}\n`);
+} else if (checkRuns && method === 'GET') {
+  const runsFile = join(state, 'check-runs.json');
+  const runs = (existsSync(runsFile) ? JSON.parse(readFileSync(runsFile, 'utf8')) : {})[checkRuns[2]] ?? [];
+  respond(200, { total_count: runs.length, check_runs: runs.slice(0, Number(fields.per_page ?? 30)).map((run, index) => ({ id: index + 1,
+    name: run.name, status: run.status, conclusion: run.conclusion ?? null, head_sha: checkRuns[2],
+    html_url: `https://github.com/${checkRuns[1]}/actions/runs/${index + 1}` })) });
 } else {
   refuse(`unsupported gh ${args.join(' ')}`);
 }

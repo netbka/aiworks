@@ -139,6 +139,7 @@ export function campaignStatus(store, id, now = Date.now()) {
   const providerWaitUntil = c.declaration.executor.kind === 'cli-chain'
     ? chainWaiting ? Math.min(...runnable.map((t) => t.retry_at)) : 0 : legacyWaitUntil;
   const ownerBlockers = ownerBlockerView(store, id);
+  const ci = ciView(store, c, tasks);
   return {
     campaignId: c.id,
     store: store.identity,
@@ -177,15 +178,43 @@ export function campaignStatus(store, id, now = Date.now()) {
     executorWaits: store.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'executor_waits'")
       ? store.all('SELECT executor_kind, retry_at, reason FROM executor_waits WHERE campaign_id = ?', id) : [],
     costUsd: Math.round(c.cost_usd * 10000) / 10000,
+    ci: ci.summary,
     tasks: tasks.map((t) => ({
       id: t.task_id, state: t.state, attempts: t.attempts, repairRounds: t.repair_rounds,
       headSha: t.head_sha, verifiedSha: t.verified_sha, prUrl: t.pr_url,
       retryAt: t.retry_at ? new Date(t.retry_at).toISOString() : null, blocked: t.blocked, lastError: t.last_error,
+      ci: ci.tasks.get(t.task_id) ?? null,
     })),
     openOperations: operations.map((op) => ({ id: op.id, taskId: op.task_id, kind: op.kind, executor: op.executor_kind ?? 'claude-cli', state: op.state,
       createdAt: new Date(op.created_at).toISOString(), updatedAt: new Date(op.updated_at).toISOString() })),
     ...(ownerBlockers.length ? { ownerBlockers } : {}),
   };
+}
+
+const CI_STATE = { 'ci-pending': 'pending', 'ci-passed': 'success', 'ci-failed': 'failure', 'ci-inconclusive': 'inconclusive', 'ci-none': 'none' };
+
+/**
+ * CI of each published commit head, from the controller's journal only (aiworks#42): status never calls GitHub. A head
+ * whose CI was never read is `unknown`, also while CI repair is switched off. Only `success` means CI passed; the
+ * campaign summary is `success` only when every published head passed, and `failure` when any failed.
+ */
+function ciView(store, c, tasks) {
+  const specs = new Map(c.declaration.tasks.map((spec) => [spec.id, spec]));
+  const latest = new Map();
+  for (const row of store.all(`SELECT kind, detail, at FROM journal WHERE campaign_id = ? AND kind IN (${Object.keys(CI_STATE).map(() => '?').join(', ')}) ORDER BY seq`, c.id, ...Object.keys(CI_STATE))) {
+    latest.set(`${row.detail?.task}:${row.detail?.sha}`, row);
+  }
+  const view = new Map();
+  for (const t of tasks) {
+    if (specs.get(t.task_id)?.deliverable !== 'commit' || !t.pr_url || !t.verified_sha) continue;
+    const row = latest.get(`${t.task_id}:${t.verified_sha}`);
+    view.set(t.task_id, row ? { state: CI_STATE[row.kind], sha: t.verified_sha, checkedAt: new Date(row.at).toISOString(), checks: row.detail.checks ?? [] }
+      : { state: 'unknown', sha: t.verified_sha, checkedAt: null, checks: [] });
+  }
+  const states = [...view.values()].map((item) => item.state);
+  const summary = !states.length ? null : states.includes('failure') ? 'failure' : states.every((state) => state === 'success') ? 'success'
+    : states.includes('pending') ? 'pending' : 'unknown';
+  return { tasks: view, summary };
 }
 
 /**
