@@ -69,9 +69,16 @@ export const DEFAULTS = {
   startGraceMs: 30_000, dispatchWaitMs: 15_000, publishRetryMs: 5 * 60_000, outboxRetryMs: 60_000,
   retryBackoffMs: [2 * 60_000, 10 * 60_000, 30 * 60_000],
   integrationPollMs: 60_000,
+  // aiworks#42: a published head's CI is read at most once per ciPollMs; a head with no check run ciNoChecksMs after its
+  // publication is recorded as having no CI, and its polling stops.
+  ciPollMs: 60_000, ciNoChecksMs: 30 * 60_000,
   // A GitHub rate-limit refusal waits for its reported reset plus this margin, instead of publishRetryMs (aiworks#21).
   rateLimitMarginMs: 5_000,
 };
+// Findings that reopen a published task as a repair round on its own branch and PR (aiworks#27, aiworks#42).
+const REPAIR_FINDINGS = new Set(['integration-conflict', 'ci-failure']);
+// Journal kinds that settle a published head's CI result; its polling stops after one of them (aiworks#42).
+const CI_SETTLED = ['ci-passed', 'ci-failed', 'ci-inconclusive', 'ci-none'];
 // GitHub resets its rate limits within the hour: a reset time further out is treated as an hour.
 const RATE_LIMIT_MAX_WAIT_MS = 60 * 60_000;
 // AW-005: how often a controller re-reads whether its own revision is merged. A constant, not a config.json key.
@@ -105,6 +112,11 @@ export class Controller {
     // only: after a restart every published task is checked once more, which is harmless.
     this.ir = this.config.integrationRepair?.enabled === true;
     this.integrationCheckedAt = new Map();
+    // aiworks#42 CI repair: off unless the data-directory config enables it. Poll times are kept in memory only: after a
+    // restart each published head whose CI is not yet settled is read once more. Settled results are in the journal.
+    this.ci = this.config.ciRepair?.enabled === true;
+    this.ciNextAt = new Map();
+    this.ciPolledAt = new Map();
     const commands = config.commands ?? {};
     this.cmd = { codex: commands.codex, cursor: commands.cursor, agy: commands.agy, chrome: commands.chrome,
       claude: commands.claude ?? ['claude'], git: commands.git ?? ['git'], gh: commands.gh ?? ['gh'] };
@@ -125,6 +137,12 @@ export class Controller {
     if (this.ir) {
       for (const { id } of this.store.all("SELECT id FROM campaigns WHERE control = 'finished'")) {
         if (!ids.includes(id) && this.integrationDue(id)) ids.push(id);
+      }
+    }
+    // Likewise while CI repair is on and a published head's CI is due a read.
+    if (this.ci) {
+      for (const { id } of this.store.all("SELECT id FROM campaigns WHERE control = 'finished'")) {
+        if (!ids.includes(id) && (this.ciNextAt.get(id) ?? -Infinity) <= this.now()) ids.push(id);
       }
     }
     for (const id of ids) {
@@ -178,6 +196,8 @@ export class Controller {
     const ctx = { id, generation: lease.generation };
     // A conflicting published PR reopens its task and with it the finished campaign (aiworks#27).
     if (this.ir && this.store.campaign(id).control === 'finished') this.checkPublishedIntegration(ctx);
+    // A published head whose CI fails reopens its task the same way (aiworks#42).
+    if (this.ci && this.store.campaign(id).control === 'finished') this.checkPublishedCi(ctx);
     if (['finished', 'cancelled'].includes(this.store.campaign(id).control)) return;
 
     this.processEvents(ctx);
@@ -200,6 +220,7 @@ export class Controller {
       else {
         this.releaseUnmergedHold(ctx);
         if (this.ir) this.checkPublishedIntegration(ctx);
+        if (this.ci) this.checkPublishedCi(ctx);
         this.reconcileIntegration(ctx);
         await this.schedule(ctx);
       }
@@ -499,9 +520,9 @@ export class Controller {
     if (value.verdict === 'rejected') {
       const blocking = value.findings.filter((finding) => finding.severity === 'blocking');
       if (!blocking.length) return retry('invalid-result', 'rejected without a blocking finding', 'implemented');
-      // The integration finding stays with the task until its repaired head is published.
-      const integration = this.integrationFinding(task);
-      const findings = integration ? [...blocking, integration] : blocking;
+      // The integration or CI finding stays with the task until its repaired head is published.
+      const repair = this.publishedRepair(task);
+      const findings = repair ? [...blocking, repair] : blocking;
       if (limits.maxRepairRounds !== null && task.repair_rounds >= limits.maxRepairRounds) {
         return { state: 'pending', verification: value, findings,
           blocked: { class: 'stalled', reason: `verifier still rejects after ${task.repair_rounds} repair rounds`, at: now } };
@@ -648,6 +669,114 @@ export class Controller {
     return (task.findings ?? []).find((finding) => finding.id === 'integration-conflict') ?? null;
   }
 
+  /**
+   * The finding that reopened a published task as a repair round on its own branch and PR: an integration conflict
+   * (aiworks#27) or a CI failure (aiworks#42). Its `verified` head must stay an ancestor of the repair. Null otherwise.
+   */
+  publishedRepair(task) {
+    return (task.findings ?? []).find((finding) => REPAIR_FINDINGS.has(finding.id)) ?? null;
+  }
+
+  /** Published heads whose CI result is settled (passed, failed, inconclusive or none), as `<task>:<sha>` keys. */
+  ciSettled(id) {
+    return new Set(this.store.all(`SELECT detail FROM journal WHERE campaign_id = ? AND kind IN (${CI_SETTLED.map(() => '?').join(', ')})`, id, ...CI_SETTLED)
+      .map((row) => `${row.detail?.task}:${row.detail?.sha}`));
+  }
+
+  /**
+   * aiworks#42: after publication, the PR head's CI is read through REST (GET repos/{repo}/commits/{sha}/check-runs) at
+   * most once per ciPollMs per published task, until it completes; then its polling stops. A failure reopens the task as
+   * a repair round on the same branch and PR, carrying the failing check names, unless its PR is no longer open at that
+   * head. Every result is journaled; status reads it from there, so a published head never shows green before CI does.
+   */
+  checkPublishedCi(ctx) {
+    const now = this.now();
+    if ((this.ciNextAt.get(ctx.id) ?? -Infinity) > now) return;
+    const c = this.store.campaign(ctx.id);
+    const decl = c.declaration, specs = new Map(decl.tasks.map((t) => [t.id, t]));
+    const settled = this.ciSettled(ctx.id);
+    const watched = this.store.tasks(ctx.id).filter((t) => t.state === 'done' && !t.blocked && t.pr_url &&
+      specs.get(t.task_id)?.deliverable === 'commit' && /^[0-9a-f]{40}$/.test(t.verified_sha ?? '') && !settled.has(`${t.task_id}:${t.verified_sha}`));
+    // A finished campaign with nothing left to read is not visited again until a restart or a new publication.
+    let next = !watched.length && c.control === 'finished' ? Infinity : now + this.config.ciPollMs;
+    for (const task of watched) {
+      const key = `${ctx.id}:${task.task_id}:${task.verified_sha}`;
+      const due = (this.ciPolledAt.get(key) ?? -Infinity) + this.config.ciPollMs;
+      if (due > now) { next = Math.min(next, due); continue; }
+      this.ciPolledAt.set(key, now);
+      let read;
+      try {
+        read = github.commitChecks({ gh: this.cmd.gh, repository: decl.target.repository, sha: task.verified_sha });
+        // A PR merged, closed or pushed by someone else since publication is not repaired: its head is no longer ours to fix.
+        if (read.state === 'failure') read.pr = github.findOpenPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, branch: gitA.branchName(ctx.id, task.task_id) });
+      } catch (error) {
+        // A rate-limit refusal waits for its reset; any other failure is read again after ciPollMs. CI stays unknown.
+        if (error instanceof github.RateLimitError && Number.isFinite(error.resetAt)) {
+          this.ciPolledAt.set(key, Math.min(Math.max(error.resetAt, now), now + RATE_LIMIT_MAX_WAIT_MS) + this.config.rateLimitMarginMs - this.config.ciPollMs);
+        }
+        next = Math.min(next, this.ciPolledAt.get(key) + this.config.ciPollMs);
+        this.log(`CI read of ${task.task_id} at ${task.verified_sha} failed: ${error.message}`);
+        continue;
+      }
+      if (this.recordCi(ctx, task, read)) next = Math.min(next, now + this.config.ciPollMs);
+    }
+    this.ciNextAt.set(ctx.id, next);
+  }
+
+  /** Journal one CI read; reopen the task on a failure. Returns whether the head's CI is to be read again. */
+  recordCi(ctx, task, { state, checks, pr = null }) {
+    return this.fenced(ctx, () => {
+      const fresh = this.store.task(ctx.id, task.task_id), now = this.now();
+      if (fresh.version !== task.version) return false;
+      const decl = this.store.campaign(ctx.id).declaration, spec = decl.tasks.find((item) => item.id === task.task_id);
+      const sha = task.verified_sha, names = (list) => list.map((check) => check.name);
+      if (state === 'pending') {
+        if (!checks.length && now - task.updated_at >= this.config.ciNoChecksMs) {
+          this.store.journal(ctx.id, 'ci-none', { task: task.task_id, sha }, now);
+          return false;
+        }
+        const seen = this.store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'ci-pending'", ctx.id)
+          .some((row) => row.detail?.task === task.task_id && row.detail?.sha === sha);
+        if (!seen) this.store.journal(ctx.id, 'ci-pending', { task: task.task_id, sha, checks: names(checks) }, now);
+        return true;
+      }
+      if (state === 'success' || state === 'inconclusive') {
+        this.store.journal(ctx.id, state === 'success' ? 'ci-passed' : 'ci-inconclusive',
+          { task: task.task_id, sha, checks: checks.map((check) => `${check.name}: ${check.conclusion}`) }, now);
+        return false;
+      }
+      const failed = checks.filter((check) => !['success', 'neutral', 'skipped'].includes(check.conclusion)).slice(0, 20);
+      const repairable = pr?.url === task.pr_url && pr.headRefOid === sha;
+      const limits = campaignLimits(decl);
+      const stalled = repairable && limits.maxRepairRounds !== null && task.repair_rounds >= limits.maxRepairRounds;
+      this.store.journal(ctx.id, 'ci-failed', { task: task.task_id, sha, checks: names(failed), url: task.pr_url,
+        repair: repairable, stalled, ...(repairable ? {} : { reason: pr ? `the open PR is at ${pr.headRefOid}` : 'no open PR' }) }, now);
+      if (!repairable) return false;
+      const list = failed.map((check) => `${check.name} (${check.conclusion}${check.url ? `, ${check.url}` : ''})`).join('; ');
+      const finding = {
+        id: 'ci-failure', severity: 'blocking', verified: sha, checks: failed,
+        description: `CI failure: repository CI failed on the verified, published commit ${sha} (${task.pr_url}). Failing checks: ${list}. ` +
+          'CI may run on another platform than this computer: reproduce the failure from the check output, fix its cause on top of this branch, ' +
+          'guard platform-specific behaviour with a skip that names the reason without weakening what it checks, run the full gate and commit. ' +
+          `Never rebase, reset or amend: ${sha} must stay an ancestor of the new head. Never weaken, skip or delete a test to make CI pass.`,
+      };
+      this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, fresh.version, {
+        state: 'pending', base_sha: sha, findings: [finding], failures: {}, retry_at: null,
+        last_error: `ci-failure: ${names(failed).join(', ')} failed on ${sha}`.slice(0, 1000),
+        ...(stalled ? { blocked: { class: 'stalled', reason: `CI failure on ${sha} after ${task.repair_rounds} repair rounds`, at: now } }
+          : { repair_rounds: task.repair_rounds + 1 }),
+      }, now);
+      const campaign = this.store.campaign(ctx.id);
+      if (campaign.control === 'finished') {
+        this.store.patch('campaigns', { id: ctx.id }, campaign.version, { control: 'registered', status: 'active', next_action: null }, now);
+      }
+      this.enqueue(ctx.id, `${ctx.id}:${task.task_id}:ci-failed:${sha}`, decl, `**${task.task_id}** (#${spec.issue}): CI failed on the published head \`${sha}\` (${task.pr_url}) in ${names(failed).join(', ')}. ` +
+        (stalled ? 'The repair-round limit is reached, so the task stalls until a recheck.' : 'The task is reopened as a repair round; a fresh independent verification precedes any push to the same PR.') +
+        ' Nothing was merged or deployed.', now);
+      return false;
+    });
+  }
+
   async schedule(ctx) {
     if (this.store.openOperations(ctx.id).length) return; // one slot
     const now = this.now();
@@ -781,7 +910,9 @@ export class Controller {
       let workspace;
       let revision;
       let targetSha = null;
-      const integration = spec.deliverable === 'commit' ? this.integrationFinding(task) : null;
+      const repair = spec.deliverable === 'commit' ? this.publishedRepair(task) : null;
+      const integration = repair?.id === 'integration-conflict' ? repair : null;
+      const ci = repair?.id === 'ci-failure' ? repair : null;
       if (kind === 'implement') {
         let integrationBase;
         if (spec.requiresMergedDependencies) {
@@ -794,14 +925,15 @@ export class Controller {
             return null;
           }
         }
-        // An integration repair continues the published branch: a missing worktree and branch are recreated at the verified head.
+        // An integration or CI repair continues the published branch: a missing worktree and branch are recreated at the verified head.
         const ws = gitA.prepareImplementWorkspace({ git: this.cmd.git, repoPath: repo.path, worktreeRoot: repo.worktreeRoot,
-          campaignId: ctx.id, taskId: task.task_id, baseBranch: decl.target.baseBranch, baseSha: integration ? integration.verified : integrationBase });
-        if (integration && !gitA.isAncestor({ git: this.cmd.git, path: ws.path, ancestor: integration.verified, descendant: ws.head })) {
+          campaignId: ctx.id, taskId: task.task_id, baseBranch: decl.target.baseBranch, baseSha: repair ? repair.verified : integrationBase });
+        if (repair && !gitA.isAncestor({ git: this.cmd.git, path: ws.path, ancestor: repair.verified, descendant: ws.head })) {
+          const prefix = ci ? 'ci' : 'integration';
           this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
-            { blocked: { class: 'stalled', reason: `Implementation workspace ${ws.head} does not contain the published verified head ${integration.verified}; preserve it and reconcile the branch before recheck.`, at: this.now() },
-              last_error: 'integration-workspace: verified head absent' }, this.now());
-          this.store.journal(ctx.id, 'integration-workspace-blocked', { task: task.task_id }, this.now());
+            { blocked: { class: 'stalled', reason: `Implementation workspace ${ws.head} does not contain the published verified head ${repair.verified}; preserve it and reconcile the branch before recheck.`, at: this.now() },
+              last_error: `${prefix}-workspace: verified head absent` }, this.now());
+          this.store.journal(ctx.id, `${prefix}-workspace-blocked`, { task: task.task_id }, this.now());
           return null;
         }
         if (spec.requiresMergedDependencies && this.missingIntegratedDependencies(decl, spec, this.store.tasks(ctx.id), ws.head, ws.path).length) {
@@ -827,7 +959,7 @@ export class Controller {
       const report = kind === 'verify' || repairing ? String(task.result?.report ?? '') : null;
       const reportDigest = report !== null ? createHash('sha256').update(report, 'utf8').digest('hex') : null;
       const findings = kind === 'implement' ? (task.findings ?? []).slice(0, 8)
-        .map((finding) => `Blocking ${finding.id === 'integration-conflict' ? 'integration' : 'verifier'} finding ${finding.id}: ${finding.description}`.slice(0, 2000)) : [];
+        .map((finding) => `Blocking ${finding.id === 'integration-conflict' ? 'integration' : finding.id === 'ci-failure' ? 'CI' : 'verifier'} finding ${finding.id}: ${finding.description}`.slice(0, 2000)) : [];
       const packet = validatePacket({
         version: 1, tenantId: decl.target.tenantId, projectId: decl.target.projectId, environment: decl.target.environment,
         taskId: task.task_id, stageId: kind, runId: opId, role, revision,
@@ -846,6 +978,10 @@ export class Controller {
         ? `This head is an integration repair round: it must merge ${integration.base} (the current ${decl.target.baseBranch}) into the previously verified ${integration.verified} to resolve conflicts in ${integration.paths.join(', ')}. Check that both are ancestors of the target, review the resolution with git show --remerge-diff ${targetSha}, and run the full gate.`
         : integration && task.findings.length === 1
           ? `This is repair round ${task.repair_rounds}, an integration repair: the verified, published commit ${integration.verified} conflicts with ${decl.target.baseBranch} at ${integration.base} after a sibling merge. Merge that base into this branch, resolve the conflicts listed in the packet constraints, run the full gate, commit, and return resolved with the new headSha. Never rebase, reset or amend the verified commit.`
+          : ci && kind === 'verify'
+            ? `This head is a CI repair round: repository CI failed on the previously verified ${ci.verified} in ${ci.checks.map((check) => check.name).join(', ')}. Check that ${ci.verified} is an ancestor of the target, that the change fixes the cause of the failing checks without weakening, skipping or deleting a test, that platform-specific behaviour is guarded for the platform CI runs on, and run the full gate.`
+            : ci && task.findings.length === 1
+              ? `This is repair round ${task.repair_rounds}, a CI repair: repository CI failed on the verified, published commit ${ci.verified} in ${ci.checks.map((check) => check.name).join(', ')}. The failing checks and their links are in the packet constraints. Fix the cause on top of this branch, run the full gate, commit, and return resolved with the new headSha. Never rebase, reset or amend the verified commit.`
           : repairing
         ? spec.deliverable === 'commit'
           ? `This is repair round ${task.repair_rounds}: the independent verifier rejected ${task.head_sha}. Fix every blocking finding listed in the packet constraints, commit, and return resolved with the new headSha.`
@@ -976,14 +1112,16 @@ export class Controller {
         const fresh = this.store.task(ctx.id, task.task_id);
         if (current.control !== 'registered' || fresh.state !== 'verified' || fresh.version !== task.version) return;
         let url;
-        const integration = spec.deliverable === 'commit' ? this.integrationFinding(fresh) : null;
-        if (integration) {
-          // aiworks#27: the repaired head goes to the same branch and PR. The push is a plain fast-forward (the earlier
-          // verified head is an ancestor), never a force-push; without an open PR nothing is pushed and no PR is opened.
-          const key = `${ctx.id}:${task.task_id}:integration:${task.verified_sha}`;
-          const comment = `${this.integrationBody(decl, spec, task, integration)}\n\n${github.marker(key)}`;
+        const repair = spec.deliverable === 'commit' ? this.publishedRepair(fresh) : null;
+        const integration = repair?.id === 'integration-conflict' ? repair : null;
+        const repairKind = integration ? 'integration' : 'ci';
+        if (repair) {
+          // aiworks#27, aiworks#42: the repaired head goes to the same branch and PR. The push is a plain fast-forward (the
+          // earlier verified head is an ancestor), never a force-push; without an open PR nothing is pushed and no PR is opened.
+          const key = `${ctx.id}:${task.task_id}:${repairKind}:${task.verified_sha}`;
+          const comment = `${integration ? this.integrationBody(decl, spec, task, integration) : this.ciBody(decl, spec, task, repair)}\n\n${github.marker(key)}`;
           if (comment.length > BODY_LIMIT) {
-            this.raiseBlocker(ctx, decl, { kind: 'publication-size', class: 'B2', reason: 'The integration repair verification exceeds the GitHub comment limit; nothing was truncated or pushed.',
+            this.raiseBlocker(ctx, decl, { kind: 'publication-size', class: 'B2', reason: `The ${repairKind === 'ci' ? 'CI' : 'integration'} repair verification exceeds the GitHub comment limit; nothing was truncated or pushed.`,
               requestedAction: 'Provide an authorized publication format that preserves the verification, then recheck.' }, this.now(),
             { identity: task.task_id });
             return;
@@ -992,8 +1130,8 @@ export class Controller {
           if (!existing) {
             const now = this.now();
             this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, fresh.version, { retry_at: null,
-              blocked: { class: 'stalled', reason: `integration repair ${task.verified_sha} verified, but ${branch} has no open PR; nothing was pushed or opened`, at: now } }, now);
-            this.store.journal(ctx.id, 'integration-repair-unpublished', { task: task.task_id, sha: task.verified_sha }, now);
+              blocked: { class: 'stalled', reason: `${repairKind === 'ci' ? 'CI' : 'integration'} repair ${task.verified_sha} verified, but ${branch} has no open PR; nothing was pushed or opened`, at: now } }, now);
+            this.store.journal(ctx.id, `${repairKind}-repair-unpublished`, { task: task.task_id, sha: task.verified_sha }, now);
             return;
           }
           gitA.pushVerified({ git: this.cmd.git, repoPath: repo.path, branch, sha: task.verified_sha });
@@ -1001,7 +1139,7 @@ export class Controller {
           url = existing.url;
           const prefix = `https://github.com/${decl.target.repository}/pull/`;
           const number = String(url).startsWith(prefix) ? /^(\d+)/.exec(String(url).slice(prefix.length))?.[1] : null;
-          if (!number) throw new Error(`cannot post the integration repair comment: no PR number in ${url}`);
+          if (!number) throw new Error(`cannot post the ${repairKind} repair comment: no PR number in ${url}`);
           const target = { gh: this.cmd.gh, repository: decl.target.repository, issue: Number(number), key };
           if (!github.findMarkedComment(target)) github.postComment({ ...target, body: comment, bodyFile });
         } else if (spec.deliverable === 'commit') {
@@ -1053,15 +1191,20 @@ export class Controller {
         }
         const now = this.now();
         this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, fresh.version,
-          { state: 'done', pr_url: url, retry_at: null, last_error: null, ...(integration ? { findings: null } : {}) }, now);
+          { state: 'done', pr_url: url, retry_at: null, last_error: null, ...(repair ? { findings: null } : {}) }, now);
         this.store.journal(ctx.id, 'published', { task: task.task_id, sha: task.verified_sha, url }, now);
         if (integration) this.store.journal(ctx.id, 'integration-repaired', { task: task.task_id, from: integration.verified, base: integration.base, sha: task.verified_sha, url }, now);
+        else if (repair) this.store.journal(ctx.id, 'ci-repaired', { task: task.task_id, from: repair.verified, checks: repair.checks.map((check) => check.name), sha: task.verified_sha, url }, now);
         if (this.oi) this.probeSucceeded(ctx, task.task_id, { detail: `publication of ${task.verified_sha} succeeded` }, now);
-        this.enqueue(ctx.id, `${ctx.id}:${task.task_id}:published:${task.verified_sha}`, decl, integration
+        // With CI repair on, a published head is never announced as if its CI had passed (aiworks#42).
+        const ciNote = this.ci && spec.deliverable === 'commit' ? ' CI on this head is not known yet; the supervisor reads it and reopens the task if it fails.' : '';
+        this.enqueue(ctx.id, `${ctx.id}:${task.task_id}:published:${task.verified_sha}`, decl, (integration
           ? `**${task.task_id}** (#${spec.issue}) conflicted with ${decl.target.baseBranch} after a sibling merge. The supervisor merged the base, a fresh independent verification accepted \`${task.verified_sha}\`, and it is pushed to the same PR: ${url}. Not merged; merge follows ${decl.target.repository}'s release gate.`
+          : repair
+          ? `**${task.task_id}** (#${spec.issue}) failed CI at \`${repair.verified}\`. A repair round fixed it, a fresh independent verification accepted \`${task.verified_sha}\`, and it is pushed to the same PR: ${url}. Not merged; merge follows ${decl.target.repository}'s release gate.`
           : spec.deliverable === 'commit'
           ? `**${task.task_id}** (#${spec.issue}) passed independent verification and is published for review: ${url} at \`${task.verified_sha}\`. Not merged; merge follows ${decl.target.repository}'s release gate.`
-          : `**${task.task_id}** (#${spec.issue}) passed independent verification; the verified report is posted: ${url} (revision \`${task.verified_sha}\`).`, now);
+          : `**${task.task_id}** (#${spec.issue}) passed independent verification; the verified report is posted: ${url} (revision \`${task.verified_sha}\`).`) + ciNote, now);
         this.log(`published ${task.task_id}: ${url}`);
       });
     } catch (error) {
@@ -1109,6 +1252,21 @@ export class Controller {
       `The verified commit \`${integration.verified}\` stopped merging into \`${decl.target.baseBranch}\` at \`${integration.base}\` after a sibling merge. Conflicting paths: ${integration.paths.map((path) => `\`${path}\``).join(', ')}.`,
       '',
       `The base was merged into this branch and the conflicts resolved. A separate fresh verifier session accepted exactly \`${task.verified_sha}\`, which was pushed here as a fast-forward: \`${integration.verified}\` stays an ancestor.`,
+      '',
+      ...this.verificationLines(task),
+      '',
+      `Not merged and not deployed: merge and release follow ${decl.target.repository}'s release gate. Generated by the AIWorks delivery supervisor.`,
+    ].join('\n');
+  }
+
+  /** PR comment for a CI repair pushed to its already open PR (aiworks#42). */
+  ciBody(decl, spec, task, repair) {
+    return [
+      `## ${spec.id}: CI repair, independently verified`,
+      '',
+      `Repository CI failed on the verified commit \`${repair.verified}\`. Failing checks: ${repair.checks.map((check) => `\`${check.name}\` (${check.conclusion})`).join(', ')}.`,
+      '',
+      `A repair round fixed it on this branch. A separate fresh verifier session accepted exactly \`${task.verified_sha}\`, which was pushed here as a fast-forward: \`${repair.verified}\` stays an ancestor. CI on this head is not known yet; the supervisor reads it again.`,
       '',
       ...this.verificationLines(task),
       '',

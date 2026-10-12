@@ -240,6 +240,7 @@ The declared tasks R2-KEEPER, F2-DUPLICATE and F3-CARRYOVER are not repeated in 
 | ID | Outcome | Owns | Depends on | Tests | Owner decision |
 | --- | --- | --- | --- | --- | --- |
 | **RUN1** | A published, unmerged commit task that conflicts with its base after a sibling merge becomes an integration repair round: merge the base, resolve, fresh verification, push the new verified head to the same branch and PR. | `sup/controller.mjs` (integration check, repair round), `sup/adapters/git.mjs` (`git merge-tree --write-tree`), `ts/integration-repair.test.mjs` (new), `ts/helpers.mjs`, SUPERVISOR.md (publication) | R1-REST-PUBLISH (merged), R2-KEEPER, F3-CARRYOVER (SUPERVISOR.md) | From #27: two campaigns, sibling PRs touching one file; after the first merges the second is repaired, verified and still mergeable; no duplicate PR; never a force-push over a verified head; no resolution without verification; journal `integration-conflict`, `integration-repaired` | No |
+| **RUN1B** | A published commit whose CI fails goes back for repair: the supervisor reads the PR head's check runs through REST, a failure reopens the task as a repair round carrying the failing check names, and the verified fix is pushed to the same branch and PR. Status shows CI per published step and never shows one as passed while CI is red or unknown. Built behind `ciRepair.enabled` (default off). | `sup/controller.mjs` (publication follow-up), `sup/adapters/github.mjs` (`GET repos/{repo}/commits/{sha}/check-runs`), `sup/api.mjs` (`ci` in status), `ts/ci-repair.test.mjs` (new), `ts/fixtures/fake-gh.mjs`, SUPERVISOR.md (publication) | RUN1 | From #42: a failed run reopens a repair round with the failing check names; fix verified and pushed as a fast-forward to the same PR, no duplicate PR; at most one CI read per minute per published task, none once CI completes; no repair of a PR no longer open at that head; bounded by `maxRepairRounds`; rate limit waits for the reset; status `ci` never `success` while CI is red or unknown; off by default, no CI read | No to build. Turning it on live is a runtime config change through the upgrade procedure. |
 | **RUN2** | The controller is correct with several open operations; bases come from an explicit ref, not `FETCH_HEAD`. Behaviour with one slot unchanged. | `sup/controller.mjs`, `sup/store.mjs` (one open operation per task), `sup/api.mjs` (cost reservation, all open operations), `ts/multi-op.test.mjs` (new) | RUN1, STA1 (store), F2-DUPLICATE, R2-KEEPER | SCH S2 tests | No |
 | **RUN3** | One provider-account cooldown holds every campaign on that account. | `sup/accounts.mjs` (new), `sup/store.mjs` (`provider_waits`), `sup/controller.mjs`, `sup/api.mjs`, SUPERVISOR.md §4, `ts/provider-accounts.test.mjs` (new) | RUN2, MOD1 (SUPERVISOR.md) | SCH S1 tests | No (SCH Q1 refines accounts; the default ships) |
 | **RUN4** | Tasks may declare `writes`; ownership lasts until integration; out-of-domain commits are refused; `limits.slots` accepts `1..8` and `"auto"`. | `sup/campaign.mjs`, `sup/work-ownership.mjs`, `sup/adapters/git.mjs` (`changedPaths`), `sup/controller.mjs`, SUPERVISOR.md §1, `ts/write-domain.test.mjs` (new) | RUN3, F2-DUPLICATE | SCH S3 tests; old declarations digest unchanged | No |
@@ -334,28 +335,28 @@ REL8 to REL11 wait for decisions; REL9 does not wait for REL8.
 
 Files touched by one lane only (for example `sup/scheduler.mjs`, `sup/router.mjs`, `sup/release/*`, `sup/adapters/mirror.mjs`, everything under `src/dashboard/`) follow the lane order. Files touched by more than one lane, or by a declared task and a lane, follow this global turn order. A slice starts only after every earlier slice in the list that touches the same file is merged:
 
-**Turn order:** R2-KEEPER → F2-DUPLICATE → F3-CARRYOVER → RUN1 → STA1 → MOD1 → RUN2 → RUN3 → REL2 → RUN4 → RUN5 → REL3 → REL4 → RUN6 → RUN9 → STA3 → MOD2 → MOD3 → STA6 → STA7 → STA8 → STA9 → MOD5 → MOD6 → STA10 → STA11 → STA12 → STA13 → REL6 → STA14 → RUN10 → MOD7 → STA15 → STA16 → STA17 → REL9 → REL11.
+**Turn order:** R2-KEEPER → F2-DUPLICATE → F3-CARRYOVER → RUN1 → RUN1B → STA1 → MOD1 → RUN2 → RUN3 → REL2 → RUN4 → RUN5 → REL3 → REL4 → RUN6 → RUN9 → STA3 → MOD2 → MOD3 → STA6 → STA7 → STA8 → STA9 → MOD5 → MOD6 → STA10 → STA11 → STA12 → STA13 → REL6 → STA14 → RUN10 → MOD7 → STA15 → STA16 → STA17 → REL9 → REL11.
 
 | Shared file | Writers, in order |
 | --- | --- |
-| `sup/controller.mjs` | RUN1, RUN2, RUN3, RUN4, RUN5, RUN6, STA3, MOD2, STA6, STA8, STA9, MOD5, STA10, STA14 |
+| `sup/controller.mjs` | RUN1, RUN1B, RUN2, RUN3, RUN4, RUN5, RUN6, STA3, MOD2, STA6, STA8, STA9, MOD5, STA10, STA14 |
 | `sup/store.mjs` | F2-DUPLICATE, STA1, RUN2, RUN3, RUN5, REL3, MOD2, STA6, STA12 |
-| `sup/api.mjs` | R2-KEEPER, F2-DUPLICATE, RUN2, RUN3, REL2, REL4, RUN9, MOD3, STA6, MOD6 |
+| `sup/api.mjs` | R2-KEEPER, F2-DUPLICATE, RUN1B, RUN2, RUN3, REL2, REL4, RUN9, MOD3, STA6, MOD6 |
 | `sup/campaign.mjs` | F2-DUPLICATE, RUN4, STA3, MOD3, STA7, STA15 |
 | `sup/cli.mjs` | R2-KEEPER, MOD1, REL4, STA11 |
 | `sup/work-ownership.mjs` | F2-DUPLICATE (creates), RUN4, STA8 |
-| `sup/adapters/github.mjs` | R1-REST-PUBLISH (merged), STA13, REL6 |
+| `sup/adapters/github.mjs` | R1-REST-PUBLISH (merged), RUN1B, STA13, REL6 |
 | `sup/adapters/executors.mjs` | MOD5, STA10 |
 | `ts/helpers.mjs` | R2-KEEPER, RUN1, STA13 |
 | `ts/status.test.mjs` | RUN9, MOD6 |
 | `dash/supervisor.mjs` | R2-KEEPER, then lane UI only |
-| `docs/SUPERVISOR.md` | R2-KEEPER, F2-DUPLICATE, F3-CARRYOVER, RUN1, MOD1, RUN3, RUN4, RUN5, REL4, MOD3, STA7, RUN10, MOD7, STA17, REL11 |
+| `docs/SUPERVISOR.md` | R2-KEEPER, F2-DUPLICATE, F3-CARRYOVER, RUN1, RUN1B, MOD1, RUN3, RUN4, RUN5, REL4, MOD3, STA7, RUN10, MOD7, STA17, REL11 |
 | `docs/STATUS.md` | F3-CARRYOVER, RUN10, MOD7, REL9, REL11 |
 | `docs/DECISIONS.md` | F3-CARRYOVER, STA17, REL9 |
 
 Two cases need the order spelled out:
 
-- **`controller.mjs` is the bottleneck.** Fourteen slices change it, one at a time. RUN goes first because parallel work and conflict repair speed up every later slice. Meanwhile the other lanes do their slices that avoid it: STA1, STA2, MOD1, MOD4, REL1 to REL5, REL7 and all of lane UI.
+- **`controller.mjs` is the bottleneck.** Fifteen slices change it, one at a time. RUN goes first because parallel work and conflict repair speed up every later slice. Meanwhile the other lanes do their slices that avoid it: STA1, STA2, MOD1, MOD4, REL1 to REL5, REL7 and all of lane UI.
 - **STA17 and REL9 both append a decision** after an owner answer whose timing is unknown. The listed order holds; if #33 is answered first, REL9 may go first, and STA17 then starts after REL9 is merged. Both only append a new record.
 
 ### 6.10 What waits for #24, #32 and #33

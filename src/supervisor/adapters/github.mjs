@@ -69,6 +69,30 @@ export function integratedPullRequest({ gh, repository, url, headSha, baseBranch
   } catch { return null; }
 }
 
+const CI_PASSED = new Set(['success', 'neutral', 'skipped']);
+const CI_FAILED = new Set(['failure', 'timed_out', 'startup_failure']);
+
+/**
+ * The CI result of one commit from a check-runs response (aiworks#42). `pending`: no run yet, or a run not completed.
+ * `failure`: every run completed and one failed, timed out or could not start. `success`: every run completed as success,
+ * neutral or skipped. `inconclusive`: completed otherwise (for example cancelled), or more runs than the page holds.
+ * `checks` are { name, status, conclusion, url }.
+ */
+export function ciState(body) {
+  if (!Array.isArray(body?.check_runs)) throw new Error('GET check-runs returned no check_runs');
+  const checks = body.check_runs.map((run) => ({ name: String(run.name ?? 'unnamed').slice(0, 200), status: run.status ?? null,
+    conclusion: run.conclusion ?? null, url: typeof run.html_url === 'string' ? run.html_url : null }));
+  if (!checks.length || checks.some((check) => check.status !== 'completed')) return { state: 'pending', checks };
+  if (checks.some((check) => CI_FAILED.has(check.conclusion))) return { state: 'failure', checks };
+  if (Number(body.total_count) > checks.length) return { state: 'inconclusive', checks };
+  return { state: checks.every((check) => CI_PASSED.has(check.conclusion)) ? 'success' : 'inconclusive', checks };
+}
+
+/** Read-only CI result of a pushed commit: GET repos/{repo}/commits/{sha}/check-runs (REST, one page of 100). */
+export function commitChecks({ gh, repository, sha }) {
+  return ciState(rest(gh, 'GET check-runs', ['--method', 'GET', `repos/${repository}/commits/${sha}/check-runs`, '-f', 'per_page=100'], { timeoutMs: 30_000 }));
+}
+
 export function openPullRequest({ gh, repository, baseBranch, branch, title, body, bodyFile }) {
   const existing = findOpenPullRequest({ gh, repository, branch });
   if (existing) return existing.url;
