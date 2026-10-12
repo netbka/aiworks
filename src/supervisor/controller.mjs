@@ -123,11 +123,15 @@ export class Controller {
     // ADAPTIVE_SCHEDULER (slice RUN5): off unless the data-directory config enables it. Off, every campaign keeps one
     // operation at a time and nothing below changes behaviour. On, campaigns only collect candidates while they settle,
     // and one admission pass per tick starts at most one of them. Candidates, the campaigns that waited for fan-out and
-    // the last wait reasons are per-tick memory only; every admission input is a store row.
+    // the last wait reasons are per-tick memory only; every admission input is a store row or a local git ref. The base
+    // check times and the PRs found merged at their exact head are caches: a restart reads them again.
     this.sched = schedulerEnabled(this.config);
     this.candidates = [];
     this.fanoutWaited = new Set();
     this.waitReasons = new Map();
+    this.domainWaits = [];
+    this.baseCheckedAt = new Map();
+    this.mergedHeads = new Set();
     const commands = config.commands ?? {};
     this.cmd = { codex: commands.codex, cursor: commands.cursor, agy: commands.agy, chrome: commands.chrome,
       claude: commands.claude ?? ['claude'], git: commands.git ?? ['git'], gh: commands.gh ?? ['gh'] };
@@ -884,6 +888,9 @@ export class Controller {
     if (!ready) return;
     if (campaign.blocker) return;
     const budget = campaignBudget(this.store, campaign);
+    // Open runs are reserved against a cost ceiling while they last: with work still running, an exhausted budget is a
+    // wait for those results, not yet the owner's budget decision (the one-slot path never gets here with a run open).
+    if (this.sched && budget.exhausted && this.store.openOperations(ctx.id).length) return;
     if (this.sched && !budget.exhausted) {
       // Settle only: every runnable task without an open operation becomes a candidate; admit() starts at most one.
       const running = new Set(this.store.openOperations(ctx.id).map((op) => op.task_id));
@@ -913,8 +920,47 @@ export class Controller {
         const task = this.store.task(candidate.campaignId, candidate.taskId);
         return !this.executorChoice(candidate.declaration, task).executor;
       },
-      integrated: (campaignId, row, decl) => this.inBase(decl, row.verified_sha),
+      integrated: (campaignId, row, decl) => this.inBase(decl, row.verified_sha) || this.mergedHeads.has(`${row.pr_url}#${row.verified_sha}`),
     };
+  }
+
+  /**
+   * Published but unmerged work holds its write domain until it is in its base (ADAPTIVE_SCHEDULER 4.3). For each base
+   * where the last pass refused a step because of such a holder, refresh the base ref at most every integrationPollMs
+   * (inside the fenced transaction, like every fetch) and, for a holder whose verified head is not in it, read its PR
+   * once (REST): a merge at that exact head whose merge commit is in the base releases the domain too (squash or rebase
+   * merges leave the head itself out of the base). Without such a refusal nothing is fetched or read.
+   */
+  refreshPublished(refusals) {
+    const now = this.now();
+    const due = new Map();
+    for (const { candidate, refusal } of refusals) {
+      for (const holder of refusal.detail?.holders ?? []) {
+        if (holder.reason !== 'published-unmerged') continue;
+        const decl = this.store.campaign(holder.campaignId).declaration;
+        const key = `${decl.target.repository.toLowerCase()}\u0000${decl.target.baseBranch}`;
+        if ((this.baseCheckedAt.get(key) ?? -Infinity) + this.config.integrationPollMs > now) continue;
+        // The fetch is fenced by a lease this instance holds now: the refusal came from the last pass, its lease may be gone.
+        const ctx = this.candidates.find((item) => item.campaignId === candidate.campaignId)?.ctx;
+        if (!ctx) continue;
+        if (!due.has(key)) due.set(key, { ctx, decl, holders: new Map() });
+        due.get(key).holders.set(`${holder.campaignId}/${holder.taskId}`, holder);
+      }
+    }
+    for (const [key, { ctx, decl, holders }] of due) {
+      this.baseCheckedAt.set(key, now);
+      const repo = this.config.repositories?.[decl.target.repository];
+      if (!repo?.path) continue;
+      const fetched = this.fenced(ctx, () => this.fetchBase(repo.path, decl.target.baseBranch));
+      if (!fetched?.ok) continue;
+      for (const holder of holders.values()) {
+        const row = this.store.task(holder.campaignId, holder.taskId);
+        if (!row?.pr_url || !row.verified_sha || this.inBase(decl, row.verified_sha)) continue;
+        const merged = github.integratedPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, url: row.pr_url,
+          headSha: row.verified_sha, baseBranch: decl.target.baseBranch });
+        if (merged && this.inBase(decl, merged)) this.mergedHeads.add(`${row.pr_url}#${row.verified_sha}`);
+      }
+    }
   }
 
   /** Is this commit in the base as last fetched into refs/aiworks/base/<base>? Local read only; unknown counts as no. */
@@ -931,8 +977,10 @@ export class Controller {
    * its next useful result may raise the fan-out. Every other candidate keeps exactly one reason (status shows it, RUN9).
    */
   async admit() {
+    this.refreshPublished(this.domainWaits);
     const inputs = this.admissionInputs();
     const reasons = new Map();
+    const domainWaits = [];
     let launched = false;
     for (const candidate of orderCandidates(this.store, this.candidates)) {
       const key = `${candidate.campaignId}/${candidate.taskId}`;
@@ -940,6 +988,7 @@ export class Controller {
       if (refusal) {
         reasons.set(key, refusal);
         if (refusal.reason === 'campaign-fanout') this.fanoutWaited.add(candidate.campaignId);
+        if (refusal.reason === 'write-domain') domainWaits.push({ candidate, refusal });
         continue;
       }
       // Admissible, but this tick already started one: it is next (one launch per tick keeps leases renewed on time).
@@ -950,6 +999,7 @@ export class Controller {
       launched = Boolean(op);
     }
     this.waitReasons = reasons;
+    this.domainWaits = domainWaits;
   }
 
   repo(decl) {
