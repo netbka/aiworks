@@ -14,6 +14,13 @@ const Store = SQLITE ? (await import('../../src/supervisor/store.mjs')).Store : 
 
 const PRELOAD = pathToFileURL(join(ROOT, 'tests', 'supervisor', 'fixtures', 'keep-preload.mjs')).href;
 const LEASE_MS = 120_000;
+// CI runs on ubuntu-latest (aiworks#42); HomePc runs Windows. AIWORKS_TEST_PLATFORM=linux runs the non-Windows branch
+// of these tests on Windows, so the Linux path can be checked locally.
+const WINDOWS = (process.env.AIWORKS_TEST_PLATFORM || process.platform) === 'win32';
+const WINDOWS_ONLY = !WINDOWS && 'Windows only: Task Scheduler and powershell.exe';
+// A closed console reaches keep as SIGBREAK on Windows. SIGBREAK does not exist elsewhere; there SIGHUP is the
+// console-close signal. keep handles both the same way (one listener per signal), so the test checks the same path.
+const CONSOLE_SIGNAL = WINDOWS ? 'SIGBREAK' : 'SIGHUP';
 
 function dataDir(t, { before = () => {} } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'aiworks-keeper-'));
@@ -50,16 +57,17 @@ test('keep logs a console signal and its exit code before it ends, naming the se
   const { root, data } = dataDir(t);
   const ready = join(root, 'child.pid'), trigger = join(root, 'signal');
   const child = `require('node:fs').writeFileSync(${JSON.stringify(ready)}, String(process.pid)); setInterval(() => {}, 1000)`;
-  const pending = keep(data, { child, signal: 'SIGBREAK', trigger });
+  const pending = keep(data, { child, signal: CONSOLE_SIGNAL, trigger });
   let pid = null;
   t.after(() => { if (pid) try { process.kill(pid); } catch { /* already gone */ } });
   for (let waited = 0; !existsSync(ready) && waited < 20_000; waited += 50) await sleep(50);
   pid = Number(readFileSync(ready, 'utf8'));
   writeFileSync(trigger, '');
   const out = await pending;
-  const code = 128 + (await import('node:os')).constants.signals.SIGBREAK;
+  const code = 128 + (await import('node:os')).constants.signals[CONSOLE_SIGNAL];
+  assert.ok(Number.isInteger(code), `${CONSOLE_SIGNAL} has a signal number on this platform`);
   assert.equal(out.code, code, out.stderr);
-  assert.match(out.log.at(-1), new RegExp(`\\[keep\\] keeper ending \\(pid \\d+\\): received SIGBREAK; exit code ${code}; serve \\(pid ${pid}\\) stops on its own signal or the STOP file$`));
+  assert.match(out.log.at(-1), new RegExp(`\\[keep\\] keeper ending \\(pid \\d+\\): received ${CONSOLE_SIGNAL}; exit code ${code}; serve \\(pid ${pid}\\) stops on its own signal or the STOP file$`));
 });
 
 test('keep started while STOP exists exits at once and writes nothing to the log', async (t) => {
@@ -162,7 +170,7 @@ test('status and the dashboard API lead with a stopped supervisor and its last l
   assert.equal(status().supervisor.stopped, false);
 });
 
-test('both task scripts register a logon trigger and a 5-minute repeating trigger with MultipleInstances IgnoreNew', { skip: process.platform !== 'win32' && 'Windows Task Scheduler scripts' }, (t) => {
+test('both task scripts register a logon trigger and a 5-minute repeating trigger with MultipleInstances IgnoreNew', { skip: WINDOWS_ONLY }, (t) => {
   const { root, data } = dataDir(t);
   const checkout = join(root, 'runtime');
   for (const path of ['src/supervisor/cli.mjs', 'src/dashboard/main.mjs']) { mkdirSync(join(checkout, path, '..'), { recursive: true }); writeFileSync(join(checkout, path), ''); }
@@ -195,7 +203,7 @@ test('deploy.ps1 disables both tasks before the stop and enables them only after
     return index;
   };
   const steps = [
-    at(/Disable-ScheduledTask -TaskName 'AIWorks Supervisor'/), at(/Disable-ScheduledTask -TaskName 'AIWorks Dashboard'/),
+    at(/\nDisable-Task 'AIWorks Supervisor'/), at(/\nDisable-Task 'AIWorks Dashboard'/),
     at(/cli\.mjs" stop --data/), at(/supervisor processes still running/),
     at(/Stop-ScheduledTask -TaskName 'AIWorks Supervisor'/), at(/git -C \$runtime checkout/), at(/npm ci/),
     at(/Remove-Item -LiteralPath "\$data\/STOP"/),
@@ -204,4 +212,66 @@ test('deploy.ps1 disables both tasks before the stop and enables them only after
   ];
   assert.deepEqual(steps, [...steps].sort((a, b) => a - b));
   assert.equal(script.match(/Enable-ScheduledTask/g).length, 2, 'the tasks are enabled only at the end');
+  // aiworks#42: a failed disable is never silently ignored.
+  const disables = script.match(/Disable-ScheduledTask[^\n]*/g);
+  assert.equal(disables.length, 1);
+  assert.match(disables[0], /-ErrorAction Stop/);
+});
+
+/**
+ * Run deploy.ps1 on a disposable root with every scheduled-task and process cmdlet it calls replaced by a recording
+ * stub, so the real tasks are never touched. `disable` maps a task name to the error category its Disable-ScheduledTask
+ * raises. Get-CimInstance (step 1's wait for the old processes) throws a marker, so a deploy that passes step 0 ends there.
+ */
+function deploy(t, disable) {
+  const { root } = dataDir(t);
+  const data = join(root, '.local', 'supervisor');
+  mkdirSync(data, { recursive: true });
+  writeFileSync(join(data, 'STOP'), 'earlier failed deploy');
+  const calls = join(root, 'calls.txt');
+  writeFileSync(calls, '');
+  const q = (value) => `'${String(value).replaceAll("'", "''")}'`;
+  const recorded = ['Enable-ScheduledTask', 'Start-ScheduledTask', 'Stop-ScheduledTask', 'Stop-Process'];
+  const stubs = ['Disable-ScheduledTask', ...recorded, 'Get-CimInstance', 'Start-Sleep'];
+  const command = [
+    `$calls = ${q(calls)}`,
+    `$fail = @{ ${Object.entries(disable).map(([name, category]) => `${q(name)} = ${q(category)}`).join('; ')} }`,
+    'function global:Disable-ScheduledTask { [CmdletBinding()] param([string]$TaskName)',
+    '  Add-Content -LiteralPath $calls "Disable-ScheduledTask $TaskName"',
+    '  if ($fail[$TaskName]) { $PSCmdlet.WriteError((New-Object System.Management.Automation.ErrorRecord ((New-Object Exception "test: $($fail[$TaskName])"), \'test\', $fail[$TaskName], $TaskName))) } }',
+    ...recorded.map((name) => `function global:${name} { Add-Content -LiteralPath $calls '${name}' }`),
+    "function global:Get-CimInstance { Add-Content -LiteralPath $calls 'Get-CimInstance'; throw 'test: reached step 1' }",
+    'function global:Start-Sleep { }',
+    // Refuse to run unless every stub is in place: the real cmdlets would act on the live tasks.
+    `foreach ($name in ${stubs.map(q).join(', ')}) { if ((Get-Command $name).CommandType -ne 'Function') { [Console]::Error.WriteLine("stub missing: $name"); exit 99 } }`,
+    `& ${q(join(ROOT, 'scripts', 'supervisor', 'deploy.ps1'))} -Sha ${q('a'.repeat(40))} -Root ${q(root)} -Node ${q(process.execPath)}`,
+  ].join('\n');
+  const out = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], { encoding: 'utf8', windowsHide: true });
+  assert.notEqual(out.status, 99, out.stderr);
+  return { ...out, calls: readFileSync(calls, 'utf8').trim().split(/\r?\n/).filter(Boolean), stop: readFileSync(join(data, 'STOP'), 'utf8') };
+}
+
+test('deploy.ps1 stops before writing STOP or stopping anything when a task cannot be disabled, and leaves STOP in place', { skip: WINDOWS_ONLY }, (t) => {
+  const denied = deploy(t, { 'AIWorks Supervisor': 'PermissionDenied' });
+  assert.notEqual(denied.status, 0, denied.stdout);
+  assert.match(denied.stderr, /deploy stopped: could not disable task 'AIWorks Supervisor': test: PermissionDenied/);
+  assert.doesNotMatch(denied.stderr, /Already disabled/);
+  assert.deepEqual(denied.calls, ['Disable-ScheduledTask AIWorks Supervisor']);
+  assert.equal(denied.stop, 'earlier failed deploy');
+  // When the second task fails, the message names the first, which stays disabled.
+  const second = deploy(t, { 'AIWorks Dashboard': 'ResourceUnavailable' });
+  assert.notEqual(second.status, 0, second.stdout);
+  assert.match(second.stderr, /deploy stopped: could not disable task 'AIWorks Dashboard': test: ResourceUnavailable/);
+  assert.match(second.stderr, /Already disabled: AIWorks Supervisor\./);
+  assert.deepEqual(second.calls, ['Disable-ScheduledTask AIWorks Supervisor', 'Disable-ScheduledTask AIWorks Dashboard']);
+  assert.equal(second.stop, 'earlier failed deploy');
+});
+
+test('deploy.ps1 goes on past a task that does not exist', { skip: WINDOWS_ONLY }, (t) => {
+  const out = deploy(t, { 'AIWorks Supervisor': 'ObjectNotFound', 'AIWorks Dashboard': 'ObjectNotFound' });
+  assert.match(out.stdout, /no task 'AIWorks Supervisor' to disable/);
+  assert.match(out.stdout, /no task 'AIWorks Dashboard' to disable/);
+  assert.match(out.stdout, /scheduled tasks disabled/);
+  assert.match(out.stderr, /test: reached step 1/);
+  assert.deepEqual(out.calls, ['Disable-ScheduledTask AIWorks Supervisor', 'Disable-ScheduledTask AIWorks Dashboard', 'Get-CimInstance']);
 });

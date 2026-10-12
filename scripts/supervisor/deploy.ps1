@@ -23,8 +23,19 @@ if ($Sha -notmatch '^[0-9a-f]{40}$') { throw "not a full commit SHA: $Sha" }
 Note "deploying $Sha"
 
 # 0. Disable both tasks so their triggers cannot start anything until step 5. A running instance keeps running.
-Disable-ScheduledTask -TaskName 'AIWorks Supervisor' -ErrorAction SilentlyContinue | Out-Null
-Disable-ScheduledTask -TaskName 'AIWorks Dashboard' -ErrorAction SilentlyContinue | Out-Null
+# A missing task is fine (nothing to trigger). Any other failure (access denied, Task Scheduler down) would leave a live
+# 5-minute trigger, so the deploy stops here, before STOP is written or any process is stopped; an existing STOP stays.
+$disabled = @()
+function Disable-Task([string]$name) {
+  try { Disable-ScheduledTask -TaskName $name -ErrorAction Stop | Out-Null; $script:disabled += $name }
+  catch {
+    if ($_.CategoryInfo.Category -eq 'ObjectNotFound') { Note "no task '$name' to disable"; return }
+    $already = if ($script:disabled) { " Already disabled: $($script:disabled -join ', ')." } else { '' }
+    throw "deploy stopped: could not disable task '$name': $($_.Exception.Message). Its 5-minute trigger is still live, so no process was stopped and the runtime is unchanged; STOP is left as it was.$already Fix the cause and run deploy.ps1 again."
+  }
+}
+Disable-Task 'AIWorks Supervisor'
+Disable-Task 'AIWorks Dashboard'
 Note 'scheduled tasks disabled'
 
 # 1. Ask the running supervisor to stop (STOP file) and wait for serve and keep to exit.
