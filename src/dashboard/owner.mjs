@@ -171,7 +171,7 @@ const agentWorking = (agent, now) => agent.heartbeatState === 'recent' || (agent
  * records (readReleaseAuthorizations); a repository without one is described only by its own release policy.
  */
 export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = Date.now(), releases = {} } = {}) {
-  if (!supervisor?.available) return { available: false, headline: null, items: [], unknownResults: 0, also: null, layout: { cards: [], finished: [] }, reply: null, campaigns: {}, recent: null };
+  if (!supervisor?.available) return { available: false, headline: null, items: [], groups: [], unknownResults: 0, also: null, layout: { cards: [], finished: [] }, reply: null, campaigns: {}, recent: null };
   const items = [], campaigns = {}, where = host ? `on ${host}` : 'on its computer';
   let unknownResults = 0;
   const entries = supervisor.campaigns.map((c) => ({ id: c.id, purpose: purpose(c) }));
@@ -247,7 +247,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     // running supervisor, which renews its lease too, so a stopped or absent supervisor is listed, worded for the pause.
     const paused = c.control === 'paused';
     if (c.livenessDefect) {
-      items.push({ ...base, kind: 'controller', text: `The supervisor ${where} reports an internal problem with ${c.id}`,
+      items.push({ ...base, kind: 'controller', system: true, text: `The supervisor ${where} reports an internal problem with ${c.id}`,
         points: [{ link: { label: 'Supervisor issue #2', url: SUPERVISOR_ISSUE },
           text: 'Not an owner action: this is a supervisor fault for AIWorks\'s maintainers. Work in this campaign may not progress until it is fixed.' }] });
     } else if (campaigns[c.id].liveness === 'agent-working-supervisor-silent') {
@@ -266,7 +266,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
   const coordinator = supervisor.coordinator;
   if (coordinator && (coordinator.configError || coordinator.blocked)) {
     const waiting = coordinator.messages.filter((m) => m.state === 'received').length;
-    items.push({ kind: 'coordinator', campaignId: null, repository: null, text: 'The coordinator cannot read your messages',
+    items.push({ kind: 'coordinator', system: true, campaignId: null, repository: null, text: 'The coordinator cannot read your messages',
       points: [{ link: null, text: `${coordinator.configError ?? coordinator.blocked}${waiting ? ` · ${plural(waiting, 'message')} waiting` : ''}. This is a supervisor configuration fix for whoever maintains AIWorks.` }] });
   }
   const answered = (coordinator?.messages ?? []).filter((m) => m.state === 'answered' && m.replyUrl).sort((a, b) => b.answeredAt - a.answeredAt)[0];
@@ -278,8 +278,33 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
   const terminal = (c) => ['finished', 'cancelled'].includes(c.control), recency = (c) => Date.parse(c.lastProgressAt ?? '') || 0;
   const layout = { cards: [...supervisor.campaigns.filter((c) => listed.has(c.id)), ...supervisor.campaigns.filter((c) => !listed.has(c.id) && !terminal(c))].map((c) => c.id),
     finished: supervisor.campaigns.filter((c) => !listed.has(c.id) && terminal(c)).sort((a, b) => recency(b) - recency(a)).map((c) => c.id) };
-  return { available: true, headline, items, unknownResults, also: alsoForYou(supervisor, campaigns, releases), layout, campaigns, recent: recentSummary(supervisor, campaigns),
-    reply: answered ? { messageId: answered.id, answeredAt: answered.answeredAt, url: answered.replyUrl } : null };
+  return { available: true, headline, items, groups: needsGroups(items), unknownResults, also: alsoForYou(supervisor, campaigns, releases), layout, campaigns,
+    recent: recentSummary(supervisor, campaigns), reply: answered ? { messageId: answered.id, answeredAt: answered.answeredAt, url: answered.replyUrl } : null };
+}
+
+export const SYSTEM_GROUP = 'AIWorks itself';
+
+/**
+ * Needs me (OWNER_WORKSPACE slice S3): the same items, grouped by project. One group per repository (case-insensitive,
+ * in the order its first item is listed), named by its short name, or `owner/name` when two share one; then "AIWorks
+ * itself" last. That group holds the items marked `system`, which say they are not owner actions (a supervisor fault,
+ * an unreadable coordinator inbox). A stopped supervisor stays with the project whose work it stops: restarting it is
+ * the owner's action, and the Projects screen counts it for that project. Grouping only: no item is added, dropped or
+ * reworded, so the group counts add up to the headline count.
+ */
+function needsGroups(items) {
+  const groups = new Map(), system = [];
+  for (const item of items) {
+    if (item.system || !item.repository) { system.push(item); continue; }
+    const key = item.repository.toLowerCase();
+    if (!groups.has(key)) groups.set(key, { key, project: item.repository, name: short(item.repository), items: [] });
+    groups.get(key).items.push(item);
+  }
+  const projects = [...groups.values()];
+  const shared = projects.filter((group) => projects.some((other) => other !== group && other.name.toLowerCase() === group.name.toLowerCase()));
+  for (const group of shared) group.name = group.project;
+  if (system.length) projects.push({ key: 'aiworks-itself', project: null, name: SYSTEM_GROUP, items: system });
+  return projects.map((group) => ({ ...group, count: group.items.length }));
 }
 
 /**
