@@ -77,6 +77,11 @@ export function environment({ scenario = {}, config = {} } = {}) {
     prs: () => (existsSync(join(stateGh, 'prs.json')) ? JSON.parse(readFileSync(join(stateGh, 'prs.json'), 'utf8')) : []),
     comments: () => (existsSync(join(stateGh, 'comments.jsonl'))
       ? readFileSync(join(stateGh, 'comments.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []),
+    // Every synthetic gh call, in order: { args, at }. The fake refuses GraphQL-backed commands (gh pr ..., gh api graphql).
+    ghCalls: () => (existsSync(join(stateGh, 'gh-calls.jsonl'))
+      ? readFileSync(join(stateGh, 'gh-calls.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []),
+    // Make one REST route ('GET pulls', 'POST pulls', 'GET pull', 'POST comments', or '*') refuse with a rate limit `times` times.
+    rateLimit: (limit) => writeFileSync(join(stateGh, 'rate-limit.json'), JSON.stringify(limit)),
     remoteHead: (branch) => spawnSync('git', ['ls-remote', origin, `refs/heads/${branch}`], { encoding: 'utf8', windowsHide: true }).stdout.split(/\s/)[0] || null,
     setScenario: (next) => writeFileSync(join(stateClaude, 'scenario.json'), JSON.stringify(next)),
     cleanup: () => {
