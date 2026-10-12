@@ -48,6 +48,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS operations_one_open_per_task ON operations (ca
 CREATE TABLE IF NOT EXISTS executor_waits (
   campaign_id TEXT NOT NULL, executor_kind TEXT NOT NULL, retry_at INTEGER,
   reason TEXT NOT NULL, PRIMARY KEY (campaign_id, executor_kind));
+-- One wait per real provider account (accounts.mjs): a usage limit, failed login or unavailable host holds every campaign
+-- that uses the account. retry_at NULL is untimed. campaign_id names the campaign whose run found it (evidence only).
+CREATE TABLE IF NOT EXISTS provider_waits (
+  account TEXT NOT NULL, executor_kind TEXT NOT NULL, retry_at INTEGER, reason TEXT NOT NULL,
+  campaign_id TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (account, executor_kind));
 CREATE TABLE IF NOT EXISTS events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT NOT NULL, kind TEXT NOT NULL,
   dedup_key TEXT UNIQUE, payload TEXT, received_at INTEGER NOT NULL, processed_at INTEGER);

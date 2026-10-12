@@ -4,6 +4,7 @@
 import { runNotCounted } from './adapters/executors.mjs';
 import { authorityDigest, campaignLimits, canonicalJson, executorOrder, scopeDigest, validateDeclaration } from './campaign.mjs';
 import { findWorkConflict } from './work-ownership.mjs';
+import { laterWait } from './accounts.mjs';
 
 export class CampaignError extends Error {
   constructor(code, message) { super(message); this.name = 'CampaignError'; this.code = code; }
@@ -119,6 +120,23 @@ export function campaignBudget(store, c) {
     reservedRuns, unknownRunCostUsd, chargedCostUsd: charged, maxCostUsd, exhausted };
 }
 
+const hasTable = (store, name) => Boolean(store.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", name));
+
+/**
+ * This campaign's provider waits: its own rows and the account rows of the executor kinds it uses (accounts.mjs), the later
+ * one per kind. Status has no config.json, so an account row is matched by executor kind. Read-only: an unmigrated store
+ * simply has no account rows.
+ */
+function executorWaitsView(store, c) {
+  const own = hasTable(store, 'executor_waits') ? store.all('SELECT executor_kind, retry_at, reason FROM executor_waits WHERE campaign_id = ?', c.id) : [];
+  const kinds = new Set(executorOrder(c.declaration.executor).map((provider) => provider.kind));
+  const shared = hasTable(store, 'provider_waits') ? store.all('SELECT account, executor_kind, retry_at, reason FROM provider_waits')
+    .filter((row) => kinds.has(row.executor_kind)) : [];
+  const byKind = new Map();
+  for (const row of [...own, ...shared]) byKind.set(row.executor_kind, laterWait(byKind.get(row.executor_kind), row));
+  return [...byKind.values()];
+}
+
 export function campaignStatus(store, id, now = Date.now()) {
   const c = store.campaign(id);
   if (!c) throw new CampaignError('CAMPAIGN_NOT_FOUND', `campaign ${id} is not registered in the selected store; check the installed task --data argument`);
@@ -178,8 +196,7 @@ export function campaignStatus(store, id, now = Date.now()) {
     maxCostUsd: campaignLimits(c.declaration).maxCostUsd,
     budget: campaignBudget(store, c),
     executorOrder: executorOrder(c.declaration.executor).map((executor) => executor.kind),
-    executorWaits: store.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'executor_waits'")
-      ? store.all('SELECT executor_kind, retry_at, reason FROM executor_waits WHERE campaign_id = ?', id) : [],
+    executorWaits: executorWaitsView(store, c),
     costUsd: Math.round(c.cost_usd * 10000) / 10000,
     ci: ci.summary,
     tasks: tasks.map((t) => ({

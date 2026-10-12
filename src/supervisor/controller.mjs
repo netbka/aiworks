@@ -13,6 +13,7 @@ import * as gitA from './adapters/git.mjs';
 import * as github from './adapters/github.mjs';
 import { authorityDigest, campaignLimits, executorOrder, projectGovernance } from './campaign.mjs';
 import { campaignBudget } from './api.mjs';
+import { ACCOUNT_SCOPED, accountWait, clearAccountWait, laterWait, setAccountWait } from './accounts.mjs';
 import { coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
 import { stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions } from './instructions.mjs';
@@ -277,7 +278,10 @@ export class Controller {
         const now = this.now();
         if (event.kind === 'recheck') {
           const only = event.payload?.task ?? null;
-          if (!only) this.store.run('DELETE FROM executor_waits WHERE campaign_id = ?', ctx.id);
+          if (!only) {
+            this.store.run('DELETE FROM executor_waits WHERE campaign_id = ?', ctx.id);
+            this.clearAccountWaitsFor(ctx.id, now);
+          }
           for (const task of this.store.tasks(ctx.id)) {
             // A usage-limit wait is not a blocker, but recheck also ends it (the owner knows the limit lifted early).
             const quotaWait = !task.blocked && task.retry_at &&
@@ -415,7 +419,11 @@ export class Controller {
       }
       if (executors.runNotCounted(verdict)) verdict = { ...verdict, refunded: true };
       this.store.updateOperation(op.id, { state: 'finished', outcome: verdict }, now);
-      if (verdict.class === 'result') this.store.run('DELETE FROM executor_waits WHERE campaign_id = ? AND executor_kind = ?', ctx.id, op.executor_kind);
+      if (verdict.class === 'result') {
+        this.store.run('DELETE FROM executor_waits WHERE campaign_id = ? AND executor_kind = ?', ctx.id, op.executor_kind);
+        // The account works again: its wait ends for every campaign that uses it.
+        if (clearAccountWait(this.store, this.config, op.executor_kind)) this.store.journal(ctx.id, 'provider-wait-cleared', { executor: op.executor_kind, by: op.id }, now);
+      }
       const blocked = this.store.campaign(ctx.id);
       // Only the operation whose ownership was unresolved clears its blocker; another operation finishing proves nothing
       // about it. A blocker recorded before the operation id was kept (no `operation`) keeps the old behaviour.
@@ -484,8 +492,12 @@ export class Controller {
     if (decl.executor.kind === 'cli-chain' && ['quota', 'auth', 'spawn-failed', 'unavailable'].includes(v.class)) {
       // A timed wait (quota reset, or a host sandbox failure that may clear) re-admits the provider by itself;
       // an untimed wait (auth, missing support) lasts until an explicit recheck.
+      // This campaign's row stays as before. A usage limit, a failed login or an unavailable host also belongs to the
+      // account, so its row holds every other campaign on it too; a failed launch stays with this campaign only.
+      const waitUntil = ['quota', 'unavailable'].includes(v.class) ? v.retryAt ?? null : null;
       this.store.run('INSERT OR REPLACE INTO executor_waits (campaign_id, executor_kind, retry_at, reason) VALUES (?, ?, ?, ?)',
-        ctx.id, op.executor_kind, ['quota', 'unavailable'].includes(v.class) ? v.retryAt ?? null : null, `${v.class}: ${v.detail}`);
+        ctx.id, op.executor_kind, waitUntil, `${v.class}: ${v.detail}`);
+      if (ACCOUNT_SCOPED.has(v.class)) setAccountWait(this.store, this.config, { kind: op.executor_kind, retryAt: waitUntil, reason: `${v.class}: ${v.detail}`, campaignId: ctx.id, now });
       const choice = this.executorChoice(decl, { ...task, state: back }, now);
       if (choice.executor) {
         this.store.journal(ctx.id, 'executor-fallback', { task: task.task_id, from: op.executor_kind,
@@ -499,12 +511,16 @@ export class Controller {
       return { state: back, retry_at: null, last_error: `${op.executor_kind}: ${v.class}: ${v.detail}` };
     }
     if (v.class === 'auth') {
+      setAccountWait(this.store, this.config, { kind: op.executor_kind, retryAt: null, reason: `auth: ${v.detail}`, campaignId: ctx.id, now });
       this.raiseBlocker(ctx, decl, { kind: 'auth', class: 'B2', reason: v.detail,
         requestedAction: `Re-authenticate the selected CLI on this PC, then run: supervisor recheck ${ctx.id}` }, now,
       { identity: op.executor_kind });
       return { state: back, last_error: `auth: ${v.detail}` };
     }
-    if (v.class === 'quota') return { state: back, retry_at: v.retryAt, last_error: `quota: ${v.detail}` };
+    if (v.class === 'quota') {
+      setAccountWait(this.store, this.config, { kind: op.executor_kind, retryAt: v.retryAt ?? null, reason: `quota: ${v.detail}`, campaignId: ctx.id, now });
+      return { state: back, retry_at: v.retryAt, last_error: `quota: ${v.detail}` };
+    }
     if (v.class !== 'result') return retry(v.class, v.detail, back);
     const value = v.value;
     if (op.kind === 'implement') {
@@ -808,9 +824,13 @@ export class Controller {
     const tasks = this.store.tasks(ctx.id);
     const done = new Set(tasks.filter((task) => task.state === 'done').map((task) => task.task_id));
     const spec = new Map(decl.tasks.map((task) => [task.id, task]));
-    const hold = decl.executor.kind === 'cli-chain' ? 0 : quotaHoldUntil(tasks, now); // a chain holds only the exhausted account
+    const hold = decl.executor.kind === 'cli-chain' ? 0 : Math.max(quotaHoldUntil(tasks, now), this.accountHoldUntil(decl.executor.kind, now)); // a chain holds only the exhausted account
     const held = this.heldTasks(ctx.id);
-    const runnable = tasks.filter((task) => RUNNABLE.includes(task.state) && !task.blocked && !held.has(task.task_id) && (!task.retry_at || task.retry_at <= now) &&
+    // A task that waits only for an executor is due again as soon as one is free: another campaign's success or recheck
+    // can end the account's wait before this task's own timer (a store read, no model call).
+    const executorFree = (task) => task.retry_at > now && /^waiting for executor availability/.test(String(task.last_error ?? '')) &&
+      Boolean(this.executorChoice(decl, task, now).executor);
+    const runnable = tasks.filter((task) => RUNNABLE.includes(task.state) && !task.blocked && !held.has(task.task_id) && (!task.retry_at || task.retry_at <= now || executorFree(task)) &&
       (!hold || task.state === 'verified') && spec.get(task.task_id).dependsOn.every((dep) => done.has(dep)));
     // Publication is not a worker and takes no capacity: every verified task publishes this tick, whatever else is
     // running (ADAPTIVE_SCHEDULER row 2). Dependents see the new state on the next tick.
@@ -855,6 +875,23 @@ export class Controller {
     return failed ? last.executor_kind : null;
   }
 
+  /** A timed account wait for a single-provider campaign, as an epoch, or 0. An untimed one (a failed login) is that campaign's B2 blocker. */
+  accountHoldUntil(kind, now = this.now()) {
+    const wait = accountWait(this.store, this.config, kind);
+    return wait && wait.retry_at !== null && wait.retry_at > now ? wait.retry_at : 0;
+  }
+
+  /** A campaign recheck (the owner says the limit lifted) ends the waits of every account it uses, once for all campaigns. */
+  clearAccountWaitsFor(campaignId, now) {
+    const decl = this.store.campaign(campaignId).declaration;
+    for (const { kind } of executorOrder(decl.executor)) {
+      if (!clearAccountWait(this.store, this.config, kind)) continue;
+      const users = this.store.all("SELECT id, declaration FROM campaigns WHERE control NOT IN ('finished', 'cancelled')")
+        .filter((c) => executorOrder(c.declaration.executor).some((provider) => provider.kind === kind)).map((c) => c.id);
+      for (const id of new Set([campaignId, ...users])) this.store.journal(id, 'provider-wait-cleared', { executor: kind, by: `recheck of ${campaignId}` }, now);
+    }
+  }
+
   executorChoice(decl, task, now = this.now()) {
     const waits = this.store.all('SELECT * FROM executor_waits WHERE campaign_id = ?', decl.campaignId);
     // After a failed attempt the next eligible provider in the chain gets the task first; the one that
@@ -876,7 +913,8 @@ export class Controller {
       }
       if (executors.roleUnavailableReason(executor, task.state === 'implemented' ? 'verification' : 'implementer',
         spec.deliverable, process.platform, Boolean(spec.web))) continue;
-      const wait = waits.find((item) => item.executor_kind === executor.kind);
+      // The later of this campaign's own wait and the account's wait (ADAPTIVE_SCHEDULER 4.5).
+      const wait = laterWait(waits.find((item) => item.executor_kind === executor.kind), accountWait(this.store, this.config, executor.kind));
       if (!wait || wait.retry_at !== null && wait.retry_at <= now) {
         if (executor.kind === avoid) { fallback ??= executor; continue; }
         return { executor, retryAt: null };
@@ -1033,8 +1071,10 @@ export class Controller {
       if (unavailable) {
         // A sandbox/host failure may clear (another Codex session ends); a configuration finding waits for a recheck.
         const transient = /sandbox setup failed|sandbox probe/.test(unavailable);
+        const until = transient ? this.now() + 20 * 60_000 : null;
         this.store.run('INSERT OR REPLACE INTO executor_waits (campaign_id, executor_kind, retry_at, reason) VALUES (?, ?, ?, ?)',
-          ctx.id, executor.kind, transient ? this.now() + 20 * 60_000 : null, unavailable);
+          ctx.id, executor.kind, until, unavailable);
+        setAccountWait(this.store, this.config, { kind: executor.kind, retryAt: until, reason: unavailable, campaignId: ctx.id, now: this.now() });
         this.store.journal(ctx.id, 'executor-unavailable', { executor: executor.kind, reason: unavailable }, this.now());
         return null;
       }
@@ -1368,7 +1408,8 @@ export class Controller {
       } else if (c.control === 'paused') {
         nextAction = 'Paused by the owner; start the campaign again to resume.';
       } else if (runnable.length) {
-        const hold = c.declaration.executor.kind === 'cli-chain' || runnable.some((task) => task.state === 'verified') ? 0 : quotaHoldUntil(tasks, now);
+        const hold = c.declaration.executor.kind === 'cli-chain' || runnable.some((task) => task.state === 'verified') ? 0
+          : Math.max(quotaHoldUntil(tasks, now), this.accountHoldUntil(c.declaration.executor.kind, now));
         const due = Math.max(hold, Math.min(...runnable.map((task) => task.retry_at ?? now)));
         status = 'active';
         nextAction = hold ? `waiting for the provider usage reset at ${new Date(hold).toISOString()}; no dispatch before then`
