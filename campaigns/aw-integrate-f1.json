@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "campaignId": "aw-integrate-f1",
+  "purpose": "Bring the verified F1-AW005 work back into main after a sibling change made its pull request conflict.",
+  "authorization": {
+    "version": 1,
+    "grantedBy": "owner (netbka), delegated to the owner's main session",
+    "grantedAt": "2026-10-12",
+    "reference": "https://github.com/netbka/aiworks/issues/14",
+    "text": "On 2026-10-12 the owner directed: \"take this as starting point and deliver till end. Delivery this work with the AIWorks environment.\" The starting point is docs/PROJECT_WORKSPACE_PLAN.md (PR #12), with owner decisions D1, D3, D5 (direction only) and D9 recorded in its section 8. This campaign integrates the independently verified F1-AW005 commit 983278f9ba28 (PR #26), which conflicts with main after a sibling merge (#27), and supersedes that PR. Commits are published as PRs only: the supervisor never merges or deploys, and the live runtime, its data directory, the governance checkout and the scheduled tasks are never touched. No run cap or cost ceiling (AW-002); provider limits are waited out. Provider order Claude, then Codex."
+  },
+  "target": {
+    "tenantId": "netbka",
+    "projectId": "aiworks",
+    "environment": "research",
+    "repository": "netbka/aiworks",
+    "baseBranch": "main",
+    "trackingIssue": 27
+  },
+  "executor": {
+    "kind": "cli-chain",
+    "providers": [
+      {
+        "kind": "claude-cli",
+        "model": "opus",
+        "permissionMode": "auto"
+      },
+      {
+        "kind": "codex-cli",
+        "model": "gpt-6-astra"
+      }
+    ],
+    "implementerTimeoutMinutes": 240,
+    "verifierTimeoutMinutes": 120
+  },
+  "constraints": [
+    "Program netbka/aiworks#14: deliver docs/PROJECT_WORKSPACE_PLAN.md through supervisor campaigns. Change only the files your task names. Other campaigns change other files at the same time: never edit their files, other agents' branches or worktrees, or campaigns/*.json.",
+    "Your assigned worktree is the only place you change files. Never touch D:/Git/aiworks/.local (live runtime, supervisor data directory, governance checkout, other worktrees) or the main checkout, and never start, stop or restart the supervisor, its scheduled tasks or the dashboard.",
+    "No production access, deployment, GitHub Actions changes, paid services, Telegram or other provider API calls, or new recurring spend. Never read .env contents, credentials or secret files. Read Engineering Platform only with read-only gh commands; never write the governance checkout or open changes in another repository: EP-side changes are proposed as text.",
+    "Follow AGENTS.md: run npm ci once in your worktree, then npm run check after changes. Report exact commands and pass/fail tallies.",
+    "Never weaken an assertion, delete or skip a test, or broaden a timeout to make the gate pass. Tests make no model, network or GitHub calls: synthetic executables and disposable git repositories, as tests/supervisor/helpers.mjs does.",
+    "Keep AW-001 to AW-007 as written. Do not enable a power whose decision is still open (GitHub-free local admission, Auto Release, Telegram delivery): design it, or build it switched off, and name the decision it waits for.",
+    "Label every claim about the running system observed, verified, planned or unknown (AGENTS.md evidence rule); merged is not deployed. Do not comment on GitHub, merge, close issues or change labels: the supervisor publishes your verified commit. Write \"Refs #N\", never \"Closes\".",
+    "Write for the owner first: plain English, short sentences, the outcome before the mechanism. Link Engineering Platform policies instead of copying them."
+  ],
+  "tasks": [
+    {
+      "id": "I1-F1-AW005",
+      "issue": 27,
+      "title": "Integrate verified F1-AW005 (PR #26) with current main",
+      "outcome": "The verified F1-AW005 work reaches main unchanged except for the conflict resolution, so the tasks waiting on it can continue.",
+      "deliverable": "commit",
+      "goal": "PR #26 (branch campaign/aw-foundation/F1-AW005) carries F1-AW005, independently verified at 983278f9ba28839ad31b56cd6a097a31c9acfede, but it now conflicts with main (read gh api repos/netbka/aiworks/pulls/26 and #27 with gh api repos/netbka/aiworks/issues/27 --jq .body; use REST gh api calls, not gh pr view or gh issue view). In your worktree, which starts at current main: git fetch origin campaign/aw-foundation/F1-AW005, then git merge --no-ff 983278f9ba28839ad31b56cd6a097a31c9acfede (the exact verified SHA, not the branch tip). Resolve every conflict so that both sides keep their behaviour: main's merged changes stay exactly as they are, and F1-AW005's verified changes stay as verified apart from what the resolution needs. Change nothing else. Commit the merge, run npm ci once and npm run check, and in the PR: say it supersedes #26, list each conflicting path with the resolution and why it keeps both behaviours, and include the output of git show --remerge-diff HEAD.",
+      "dependsOn": [],
+      "constraints": [
+        "The result must keep 983278f9ba28839ad31b56cd6a097a31c9acfede as an ancestor (git merge-base --is-ancestor 983278f9ba28839ad31b56cd6a097a31c9acfede HEAD). No change beyond the merge resolution; any further defect you notice goes in the PR as a finding, not into the commit."
+      ],
+      "acceptance": [
+        "HEAD is a merge commit whose parents are the task base (current main) and exactly 983278f9ba28839ad31b56cd6a097a31c9acfede.",
+        "git show --remerge-diff HEAD shows only conflict resolutions, each explained in the PR, and every resolution keeps the behaviour of both sides.",
+        "npm run check passes on the merged tree with exact tallies; no test was weakened, skipped or removed by the resolution."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/SUPERVISOR.md",
+        "tests/dashboard/dashboard.test.mjs",
+        "src/dashboard/roadmap.mjs",
+        "src/dashboard/supervisor.mjs"
+      ]
+    }
+  ]
+}
