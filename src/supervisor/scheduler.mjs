@@ -9,8 +9,11 @@ import { campaignLimits } from './campaign.mjs';
 import { domainHolders, domainOf } from './work-ownership.mjs';
 import { runNotCounted } from './adapters/executors.mjs';
 
-/** The wait reasons, in the order they are checked. A waiting step always has exactly one: the first that applies. */
-export const WAIT_REASONS = Object.freeze(['already-running', 'campaign-fanout', 'host-capacity', 'host-pressure', 'write-domain', 'provider-cooldown']);
+/**
+ * The wait reasons, in the order they are checked. A waiting step always has exactly one: the first that applies.
+ * 'launch-turn' is the controller's, after the checks: admissible, but this tick already started one operation.
+ */
+export const WAIT_REASONS = Object.freeze(['already-running', 'campaign-fanout', 'host-capacity', 'host-pressure', 'write-domain', 'provider-cooldown', 'launch-turn']);
 
 export const schedulerEnabled = (config) => config?.scheduler?.enabled === true;
 

@@ -369,10 +369,19 @@ Relocation is an operator maintenance action, not worker cleanup: pause admissio
 
 They make no model, network or GitHub calls. They read governance files from a small fixture governance checkout under `tests/fixtures/governance/`, never from a real Engineering Platform checkout.
 
+**Several operations at once (built, off by default).** With `"scheduler": { "enabled": true }` in the data directory's `config.json`, campaigns only collect candidates while they settle, and one admission pass per tick starts at most one operation across all campaigns (`src/supervisor/scheduler.mjs`). The pass orders candidates by least recently served project, then campaign, verify before implement, and admits the first that passes every check, from store rows only and again inside the recording transaction:
+- one open operation per task;
+- the campaign's learned fan-out: it starts at 1, rises by 1 after a useful result while its work waited, falls by 1 on a failed run and drops to 1 on thrash, within the declared `limits.slots` (1..8, or `"auto"` up to the host ceiling);
+- the host ceiling: `scheduler.maxWorkers`, default a quarter of the cores between 1 and 4. This is host safety, not an AW-002 limit;
+- write domains (section 1);
+- provider accounts (section 4).
+
+Every waiting step has exactly one reason. With the switch off (the default) every campaign runs one operation at a time, exactly as before. Turning it on at HomePc is a configuration change made through the upgrade procedure (section 6).
+
 Not yet implemented:
 - GitHub webhook intake and conditional-GET reconciliation (slice B);
 - Telegram (or any real) notification transport, snooze, and reminders/incident timing beyond the section 10 defaults ([netbka/aiworks#1](https://github.com/netbka/aiworks/issues/1));
-- more than one slot;
+- host pressure sampling and per-account concurrency for the scheduler (slices RUN7 and RUN8);
 - a project release adapter (slice C);
 - a host other than HomePc.
 
