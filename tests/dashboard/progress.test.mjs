@@ -20,10 +20,11 @@ test('agent cards show turns, tool calls and last activity from the worker trans
   t.after(() => { store.close(); if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = previous; rmSync(dataDir, { recursive: true, force: true }); });
   const now = Date.now();
   const workspace = join(dataDir, 'worktrees', 'task one');
-  const op = (id, executor, session) => {
+  // One open operation per task (the store refuses a second): each open operation below has its own task.
+  const op = (id, executor, session, task = 'T1') => {
     const runDir = join(dataDir, 'runs', id); mkdirSync(runDir, { recursive: true });
     writeFileSync(join(runDir, 'heartbeat'), String(now));
-    store.insert('operations', { id, campaign_id: d.campaignId, task_id: 'T1', kind: 'implement', seq: 1, idempotency_key: id, lease_generation: 1,
+    store.insert('operations', { id, campaign_id: d.campaignId, task_id: task, kind: 'implement', seq: 1, idempotency_key: id, lease_generation: 1,
       state: 'dispatched', session_id: session, run_dir: runDir, workspace, packet: {}, packet_digest: 'p', created_at: now, updated_at: now, executor_kind: executor });
     return runDir;
   };
@@ -42,7 +43,7 @@ test('agent cards show turns, tool calls and last activity from the worker trans
   assert.deepEqual([agent.progress.source, agent.progress.turns, agent.progress.toolCalls, agent.progress.lastTool], ['session-transcript', 2, 2, 'Write']);
   assert.ok(Math.abs(agent.progress.lastActivityAt - (now - 20_000)) < 1000);
   // Codex: streamed JSONL in the run directory.
-  const runDir = op('codex-op', 'codex-cli', 'codex-session');
+  const runDir = op('codex-op', 'codex-cli', 'codex-session', 'T2');
   writeFileSync(join(runDir, 'stdout.json'), [
     { type: 'thread.started', thread_id: 'secret-marker' },
     { type: 'item.completed', item: { type: 'agent_message', text: 'secret-marker' } },
@@ -53,7 +54,8 @@ test('agent cards show turns, tool calls and last activity from the worker trans
   agent = state.campaigns[0].agents.find((item) => item.id === 'codex-op');
   assert.deepEqual([agent.progress.source, agent.progress.turns, agent.progress.toolCalls, agent.progress.lastTool], ['streamed-output', 1, 2, 'aiworks_repository.read']);
   assert.ok(!JSON.stringify(state).includes('secret-marker'));
-  // No record yet: progress is null, not an error.
+  // No record yet: progress is null, not an error. The Claude run on T1 has finished, so T1 takes a new operation.
+  store.run("UPDATE operations SET state = 'finished' WHERE id = 'claude-op'");
   op('silent-op', 'claude-cli', '99999999-2222-4333-8444-555555555555');
   assert.equal(supervisorSnapshot(dataDir).campaigns[0].agents.find((item) => item.id === 'silent-op').progress, null);
 });
