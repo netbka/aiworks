@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS operations (
   base_sha TEXT, target_sha TEXT, report_digest TEXT, packet TEXT NOT NULL, packet_digest TEXT NOT NULL,
   outcome TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
   executor_kind TEXT NOT NULL DEFAULT 'claude-cli');
+-- One open operation per task, whatever the campaign's parallelism: a second worker on the same task is a store error.
+CREATE UNIQUE INDEX IF NOT EXISTS operations_one_open_per_task ON operations (campaign_id, task_id)
+  WHERE state IN ('recorded', 'dispatched');
 CREATE TABLE IF NOT EXISTS executor_waits (
   campaign_id TEXT NOT NULL, executor_kind TEXT NOT NULL, retry_at INTEGER,
   reason TEXT NOT NULL, PRIMARY KEY (campaign_id, executor_kind));
