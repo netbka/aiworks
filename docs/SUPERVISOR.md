@@ -265,6 +265,8 @@ The live runtime changes only through this procedure. The supervisor never upgra
 
 The old version and the journal stay in place for recovery.
 
+Campaign ids used before the split from Engineering Platform must not be registered again. Their reports and comments on GitHub carry the earlier comment marker, which the AIWorks supervisor does not look for, so it would post them a second time.
+
 Relocation is an operator maintenance action, not worker cleanup: pause admissions, drain open operations, stop the supervisor and dashboard, and verify the old processes are gone. Move registered worktrees with `git worktree move`, preserving HEADs and dirty files. Update repository configuration and the SQLite operation `workspace`/`run_dir` addresses, then move the closed state directory and update the scheduled-task action and dashboard launcher. Preserve declarations, task outcomes, scope/packet digests, authorization versions, budgets, retry timers and historical prompt/spec contents; paths inside historical text remain evidence of the original run. Resume only campaigns that were registered before maintenance. Verify Git worktree registrations, database integrity, artifact existence, service paths and dashboard connectivity before considering the move complete.
 
 ## 7. Evidence and remaining gates

@@ -37,14 +37,19 @@ foreach ($p in $dash) { Stop-Process -Id $p.ProcessId -Force -ErrorAction Silent
 Note 'scheduled tasks stopped'
 
 # 3. Pin the runtime worktree at the reviewed commit and install its locked dependencies.
-if (-not (Test-Path $runtime)) { & git -C $Root worktree add --detach $runtime $Sha | Out-Null }
+if (-not (Test-Path $runtime)) {
+  & git -C $Root worktree add --detach $runtime $Sha | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "git worktree add failed (exit $LASTEXITCODE)" }
+}
 $dirty = & git -C $runtime status --porcelain
 if ($dirty) { throw "runtime worktree is dirty: $dirty" }
 & git -C $runtime checkout -q --detach $Sha
+if ($LASTEXITCODE -ne 0) { throw "git checkout failed (exit $LASTEXITCODE)" }
 $head = (& git -C $runtime rev-parse HEAD).Trim()
 if ($head -ne $Sha) { throw "runtime HEAD is $head, expected $Sha" }
 # npm ci never rewrites package-lock.json, so the runtime stays clean for the coordinator's integrity check.
-Push-Location $runtime; try { & npm ci --no-audit --no-fund --silent | Out-Null } finally { Pop-Location }
+Push-Location $runtime; try { & npm ci --no-audit --no-fund --silent | Out-Null; $npmExit = $LASTEXITCODE } finally { Pop-Location }
+if ($npmExit -ne 0) { throw "npm ci failed (exit $npmExit); the supervisor stays stopped" }
 $after = & git -C $runtime status --porcelain
 if ($after) { Note "WARNING: runtime checkout is not clean after install: $after" }
 Note "runtime pinned at $head"
@@ -54,6 +59,7 @@ if (Test-Path "$governance/.git") {
   $gdirty = & git -C $governance status --porcelain
   if ($gdirty) { throw "governance checkout has local changes: $gdirty" }
   & git -C $governance pull -q --ff-only
+  if ($LASTEXITCODE -ne 0) { throw "governance pull failed (exit $LASTEXITCODE); the supervisor stays stopped" }
   Note "governance checkout at $((& git -C $governance rev-parse HEAD).Trim())"
 } else { Note "WARNING: no governance checkout at $governance" }
 

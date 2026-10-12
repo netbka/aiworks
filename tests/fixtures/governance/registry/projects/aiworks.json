@@ -1,0 +1,91 @@
+{
+  "id": "aiworks",
+  "name": "AIWorks",
+  "repository": {
+    "github": "netbka/aiworks",
+    "localRoot": "D:\\Git\\aiworks"
+  },
+  "lifecycle": "active",
+  "capabilities": [
+    "ui",
+    "worker"
+  ],
+  "environments": [
+    "local"
+  ],
+  "resources": {
+    "compute": [
+      {
+        "name": "HomePc AIWorks supervisor and dashboard",
+        "kind": "local-runtime",
+        "status": "observed",
+        "notes": "Runs from a detached checkout under .local/runtime. The dashboard listens on 127.0.0.1:4318 and is local only."
+      },
+      {
+        "name": "Second owner PC (HOMELENOVO) supervisor",
+        "kind": "local-runtime",
+        "status": "observed",
+        "notes": "Older build. Runs its own campaigns; there is no shared view across PCs."
+      }
+    ],
+    "databases": [
+      {
+        "name": "AIWorks supervisor store",
+        "kind": "sqlite",
+        "status": "observed",
+        "environment": "local",
+        "notes": ".local/supervisor/supervisor.db; one store per PC."
+      }
+    ],
+    "providers": [
+      {
+        "name": "GitHub (gh CLI)",
+        "kind": "source-control",
+        "status": "observed",
+        "notes": "Owner-authenticated CLI used for pull requests and issue comments."
+      },
+      {
+        "name": "Agent CLIs (Claude, Codex, Cursor, AGY)",
+        "kind": "ai",
+        "status": "observed",
+        "notes": "Executor chain for workers; Cursor's native sandbox is unavailable on Windows."
+      },
+      {
+        "name": "Telegram owner notifications",
+        "kind": "messaging",
+        "status": "off",
+        "notes": "Owner-intervention notifications; off by default."
+      }
+    ],
+    "domains": [],
+    "backups": []
+  },
+  "secrets": {
+    "current": "Owner's local gh and agent CLI logins on each PC; no secret values in this repository.",
+    "target": "Infisical machine identities per environment.",
+    "notes": "Do not copy values into the registry."
+  },
+  "notes": [
+    "Operations dashboard is local only (127.0.0.1) and the platform has no UI review authority over it."
+  ],
+  "governance": {
+    "observedAt": "netbka/aiworks@fab681884df2f2990e05ae1c30d9062c1c3f8165",
+    "parentLink": "linked",
+    "authorities": [
+      { "role": "agent-contract", "path": "AGENTS.md" },
+      { "role": "product-constitution", "path": "docs/PRODUCT_CONSTITUTION.md" },
+      { "role": "decisions", "path": "docs/DECISIONS.md" }
+    ],
+    "exceptions": [
+      {
+        "id": "campaign-external-write",
+        "rule": "constitution#8",
+        "source": "AGENTS.md",
+        "approval": "docs/DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception",
+        "reviewBy": "2027-04-12",
+        "summary": "For an owner-registered campaign the supervisor creates worktrees, branches, PRs and issue comments in the target repo; never merges or deploys."
+      }
+    ],
+    "independentVerificationGate": "not-enabled"
+  }
+}

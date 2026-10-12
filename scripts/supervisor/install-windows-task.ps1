@@ -12,6 +12,7 @@ $node = (Get-Command node).Source
 $cli = Join-Path $Checkout 'src\supervisor\cli.mjs'
 if (-not (Test-Path $cli)) { throw "missing $cli" }
 if (-not (Test-Path (Join-Path $DataDir 'config.json'))) { throw "missing config.json in $DataDir" }
+if (-not (Get-Content -Raw (Join-Path $DataDir 'config.json') | ConvertFrom-Json).governanceRoot) { Write-Warning 'config.json has no governanceRoot: new campaigns will be refused and the roadmap panel stays empty (docs/SUPERVISOR.md section 6)' }
 $stop = Join-Path $DataDir 'STOP'
 if (Test-Path $stop) { Remove-Item $stop }
 
