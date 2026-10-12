@@ -24,19 +24,19 @@
     <div class="sidebar-bottom"><span class="local-dot"></span><div><strong id="host-name" aria-busy="true">…</strong><small id="host-detail">&nbsp;</small></div></div>
   </aside>
   <div class="shell">
-    <header class="topbar"><div class="breadcrumb">Workspace <span>/</span> <strong>Operations</strong></div><div class="topbar-actions"><span id="connection" role="status" class="connection">Connecting…</span><button id="open-message" class="button">✉ Message coordinator</button><button id="refresh" class="button secondary" title="Re-fetch GitHub issues and PRs now (also automatic every minute). Agent state updates every 5 seconds without it.">↻ Refresh GitHub</button></div></header>
+    <header class="topbar"><div class="breadcrumb">Workspace <span>/</span> <strong>Operations</strong></div><div class="topbar-actions"><span id="connection" role="status" class="connection">Connecting…</span><button id="open-message" class="button">✉ Message coordinator</button></div></header>
     <main id="main" tabindex="-1">
       <div class="page-heading"><div><div class="eyebrow">AIWORKS</div><h1 id="view-title">Overview</h1><p id="view-description">What changed, what needs you, and how each project campaign is moving.</p></div></div>
       <div id="notice" class="notice" role="status" hidden></div>
       <div id="source-warning" class="notice warning" hidden></div>
       <section id="metrics" class="metrics" aria-label="Workspace summary"></section>
       <div id="filters" class="filters" hidden>
-        <label class="search-label"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search packages, issues, or PRs" aria-label="Search work"></label>
+        <label class="search-label"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search steps, campaigns or roadmap items" aria-label="Search work"></label>
         <label><span class="sr-only">Filter by track</span><select id="track"><option value="">All tracks</option><option value="Product control plane">Control plane: first release</option><option value="Product · next">Control plane: after the first release</option><option value="Autonomous governance">Portfolio rules rollout</option><option value="Tracked extensions">Other tracked platform work</option></select></label>
-        <label><span class="sr-only">Filter by status</span><select id="status"><option value="">All statuses</option><option value="done">Done / merged</option><option value="in_progress">In progress / open</option><option value="review">In review</option><option value="blocked">Blocked</option><option value="planned">Planned</option><option value="unknown">Unknown</option></select></label>
+        <label><span class="sr-only">Filter by status</span><select id="status"><option value="">All steps</option><option value="done">Merged or report posted</option><option value="review">Published, merge not seen yet</option><option value="in_progress">In progress</option><option value="blocked">Stopped</option><option value="unknown">Result not known</option></select></label>
       </div>
       <div id="content"><div class="empty-state">Connecting to roadmap and supervisor sources…</div></div>
-      <footer class="page-footer"><span>GitHub owns roadmap work. The supervisor owns execution state.</span><span id="updated"></span></footer>
+      <footer class="page-footer"><span>The supervisor owns execution state. Merges are read from local git; this page makes no GitHub API call.</span><span id="updated"></span></footer>
     </main>
   </div>
   <dialog id="cancel-dialog" aria-labelledby="cancel-title"><form method="dialog"><div class="dialog-icon" aria-hidden="true">!</div><h2 id="cancel-title">Cancel this campaign?</h2><p id="cancel-description"></p><p>New work will stop and the controller will terminate its owned running workers. Completed results stay available. A cancelled campaign cannot be resumed.</p><div class="dialog-actions"><button class="button secondary" value="close" autofocus>Keep campaign</button><button id="confirm-cancel" type="button" class="button danger">Cancel campaign</button></div></form></dialog>

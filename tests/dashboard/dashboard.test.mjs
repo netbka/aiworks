@@ -11,21 +11,10 @@ import { campaignStart, campaignPause } from '../../src/supervisor/api.mjs';
 import { declaration, environment } from '../supervisor/helpers.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
 import { pendingInstructions } from '../../src/supervisor/instructions.mjs';
-import { configuredGithubCommand, configuredRepositories, RoadmapSource, readRoadmap, packageIds, roadmapState, trackedEntries, safeText } from '../../src/dashboard/roadmap.mjs';
+import { RoadmapSource, readRoadmap, safeText } from '../../src/dashboard/roadmap.mjs';
 import { applyCommand, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
 import { ownerView } from '../../src/dashboard/owner.mjs';
-
-test('dashboard selects the installed data directory GitHub CLI independently of shell PATH', (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'aiworks-dashboard-gh-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  assert.deepEqual(configuredGithubCommand(dir), ['gh']);
-  const command = ['C:/local tools/gh.exe', '--hostname', 'github.com'];
-  writeFileSync(join(dir, 'config.json'), JSON.stringify({ commands: { gh: command } }));
-  assert.deepEqual(configuredGithubCommand(dir), command);
-  writeFileSync(join(dir, 'config.json'), JSON.stringify({ commands: { gh: [] } }));
-  assert.throws(() => configuredGithubCommand(dir), /commands.gh/);
-});
 
 test('completed campaigns do not appear offline or request controller recovery', (t) => {
   const { dataDir, store, d } = fixture(t);
@@ -35,45 +24,25 @@ test('completed campaigns do not appear offline or request controller recovery',
   assert.equal(snapshot.campaigns[0].readiness, 'COMPLETE');
   assert.equal(snapshot.campaigns[0].controllerLive, false);
   // The owner view (which replaced the unused public/status.mjs helpers) neither badges it offline nor asks for a restart.
-  const view = ownerView(snapshot, [], { now: Date.now() + 60 * 60_000 });
+  const view = ownerView(snapshot, { repositories: [], steps: {} }, { now: Date.now() + 60 * 60_000 });
   assert.equal(view.campaigns[d.campaignId].liveness, 'finished');
   assert.ok(!view.items.some((item) => item.kind === 'controller'));
   assert.deepEqual(snapshot.campaigns[0].tasks.map((task) => task.deliverable), ['commit', 'commit']);
 });
 
-test('configured project backlog is included without inventing roadmap completion', (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'aiworks-project-dashboard-'));
+test('the platform roadmap is definitions from the governance checkout, with no GitHub work state or cache', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'aiworks-dashboard-roadmap-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  writeFileSync(join(dir, 'config.json'), JSON.stringify({ repositories: { 'netbka/elma_wiki': {}, 'invalid path': {} } }));
-  assert.deepEqual(configuredRepositories(dir), ['netbka/elma_wiki']);
-  const source = new RoadmapSource({ root: resolve(import.meta.dirname, '../fixtures/governance'), cacheDir: dir, repositories: configuredRepositories(dir) });
-  assert.ok(source.repositories.includes('netbka/elma_wiki'));
-  source.sources = [{ repository: 'netbka/elma_wiki', fetchedAt: new Date().toISOString(), items: [
-    { kind: 'issue', number: 94, repository: 'netbka/elma_wiki', state: 'OPEN', packages: [], updatedAt: '2026-10-09' },
-  ] }];
-  assert.equal(source.snapshot().work[0].number, 94);
-  assert.ok(!source.snapshot().entries.some((e) => e.repository === 'netbka/elma_wiki' && e.status === 'done'));
-});
-
-test('the startup cache serves only configured and tracked repositories, and is marked as a cache', async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'aiworks-dashboard-cache-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const cached = (repository) => ({ repository, fetchedAt: new Date().toISOString(), partial: false, error: null,
-    items: [{ kind: 'issue', number: 7, repository, title: 'cached issue', state: 'OPEN', packages: ['GOV-08'], labels: [], assignees: [], updatedAt: '2026-10-10' }] });
-  writeFileSync(join(dir, 'roadmap-cache.json'), JSON.stringify({ version: 1,
-    sources: ['netbka/engineering-platform', 'netbka/elma_wiki', 'netbka/unrelated', 'netbka/campaign-target'].map(cached) }));
-  // A gh that always fails: nothing reaches GitHub, and a failed fetch keeps the cached metadata.
-  const source = new RoadmapSource({ root: resolve(import.meta.dirname, '../fixtures/governance'), cacheDir: dir, gh: [process.execPath, '-e', 'process.exit(1)'], repositories: ['netbka/elma_wiki'] });
-  const served = () => source.sources.map((item) => item.repository).sort();
-  assert.deepEqual(served(), ['netbka/elma_wiki', 'netbka/engineering-platform'], 'a cached repository that is neither configured nor tracked is not served');
-  assert.ok(source.sources.every((item) => item.cached === true), 'cached metadata is marked until the first successful fetch');
-  assert.ok(!source.snapshot().work.some((item) => item.repository === 'netbka/unrelated'));
-  assert.equal(roadmapState([{ id: 'GOV-01', repository: 'netbka/engineering-platform' }], source.sources)[0].sourceStale, true, 'a startup cache is never fresh evidence');
-  source.track(['netbka/campaign-target']);
-  assert.deepEqual(served(), ['netbka/campaign-target', 'netbka/elma_wiki', 'netbka/engineering-platform'], 'a tracked campaign repository is served from the cache until fetched');
-  await source.refreshing;
-  assert.ok(!served().includes('netbka/unrelated'));
-  assert.ok(source.sources.filter((item) => item.items.length).every((item) => item.cached && item.error), 'a failed refresh keeps the cache marked and failing');
+  // A GitHub snapshot left in an old cache directory is never read or served.
+  writeFileSync(join(dir, 'roadmap-cache.json'), JSON.stringify({ version: 1, sources: [{ repository: 'netbka/engineering-platform', fetchedAt: new Date().toISOString(),
+    items: [{ kind: 'issue', number: 7, title: 'GOV-08: cached issue', state: 'CLOSED', packages: ['GOV-08'] }] }] }));
+  const source = new RoadmapSource({ root: resolve(import.meta.dirname, '../fixtures/governance'), cacheDir: dir, repositories: ['netbka/elma_wiki'] });
+  const snapshot = source.snapshot();
+  assert.deepEqual(Object.keys(snapshot).sort(), ['entries', 'governance']);
+  assert.equal(snapshot.entries.length, 6);
+  assert.ok(snapshot.entries.every((entry) => !('status' in entry) && !('items' in entry)), 'no progress is claimed for roadmap items');
+  assert.ok(!JSON.stringify(snapshot).includes('cached issue'));
+  assert.ok(!snapshot.entries.some((entry) => entry.repository === 'netbka/elma_wiki'), 'a configured repository adds no backlog');
 });
 
 function fixture(t) {
@@ -98,36 +67,9 @@ test('roadmap includes every product phase, next increment and rollout package',
   assert.equal(entries.filter((e) => e.track === 'Autonomous governance').length, 3);
   assert.equal(entries.find((e) => e.id === 'GOV-08').repository, 'netbka/Dyk');
   assert.match(entries.find((e) => e.id === 'GOV-08').title, /manifest/);
-  assert.deepEqual(packageIds('PCTRL-02..07: combined implementation'), ['PCTRL-02', 'PCTRL-03', 'PCTRL-04', 'PCTRL-05', 'PCTRL-06', 'PCTRL-07']);
-  assert.deepEqual(packageIds('GOV-03B: follow-up'), ['GOV-03B']);
-});
-
-test('open issues, merged code, missing evidence and closed work remain distinct', () => {
-  const entries = [{ id: 'PCTRL-02', repository: 'netbka/example' }];
-  const issue = { kind: 'issue', packages: ['PCTRL-02'], title: 'PCTRL-02: identity', state: 'OPEN', labels: [] };
-  const merged = { kind: 'pr', packages: ['PCTRL-02'], title: 'PCTRL-02: code', state: 'MERGED' };
-  const make = (items) => roadmapState(entries, [{ repository: 'netbka/example', fetchedAt: new Date().toISOString(), items }])[0];
-  assert.equal(make([issue, merged]).status, 'in_progress');
-  assert.match(make([issue, merged]).evidence, /Code merged/);
-  assert.equal(make([{ ...issue, state: 'CLOSED' }, merged]).status, 'done');
-  assert.equal(make([{ ...issue, labels: ['blocked'] }]).status, 'blocked');
-  assert.equal(make([]).status, 'planned');
-  assert.equal(roadmapState(entries, [])[0].status, 'unknown');
-  const combined = { ...issue, title: 'PCTRL-02..07: combined delivery', packages: packageIds('PCTRL-02..07') };
-  const range = combined.packages.map((id) => ({ id, repository: 'netbka/example' }));
-  for (const state of ['OPEN', 'CLOSED']) {
-    const statuses = roadmapState(range, [{ repository: 'netbka/example', fetchedAt: new Date().toISOString(), items: [{ ...combined, state }] }]);
-    assert.ok(statuses.every((entry) => entry.status === (state === 'CLOSED' ? 'done' : 'in_progress')));
-  }
-  assert.equal(make([{ ...issue, title: 'Follow-up mentioning PCTRL-02', state: 'CLOSED' }]).status, 'planned');
+  assert.deepEqual(entries.find((e) => e.id === 'GOV-21').dependencies, ['GOV-01', 'GOV-08']);
+  assert.equal(entries.find((e) => e.id === 'PCTRL-01').owner, 'product-architect');
   assert.equal(safeText('Bearer synthetic-sensitive-value'), '[sensitive content omitted]');
-  const extensions = trackedEntries([{ id: 'GOV-21' }], [{ repository: 'netbka/engineering-platform', items: [
-    { kind: 'issue', number: 52, title: 'GOV-21B: persistent delivery', url: 'https://github.com/netbka/engineering-platform/issues/5' },
-    { kind: 'issue', number: 58, title: 'GOV-21B: another issue in the same package' },
-  ] }]);
-  assert.equal(extensions.length, 2);
-  assert.deepEqual(extensions[1].dependencies, []);
-  assert.equal(extensions[1].parentPackage, 'GOV-21');
 });
 
 test('snapshots never bootstrap a store and cannot mutate an existing store', (t) => {
@@ -274,7 +216,7 @@ test('real dispatch atomically attaches only the matching role instruction to th
 
 test('HTTP controls require exact loopback Host, Origin, CSRF and bounded JSON', async (t) => {
   const { dataDir, payload, store, d } = fixture(t);
-  const roadmap = { snapshot: () => ({ entries: [], sources: [], work: [] }), refresh: async () => {} };
+  const roadmap = { snapshot: () => ({ governance: { configured: true, code: null, reason: null }, entries: [] }) };
   const server = createDashboardServer({ dataDir, roadmap });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
@@ -312,6 +254,7 @@ test('HTTP controls require exact loopback Host, Origin, CSRF and bounded JSON',
   assert.equal(page.headers.get('access-control-allow-origin'), null);
   assert.match(await page.text(), /<h1 id="view-title">Overview<\/h1>/);
   assert.equal((await fetch(`${base}/api/session`, { method: 'PUT' })).status, 405);
+  assert.equal((await fetch(`${base}/api/refresh`, { method: 'POST', headers: goodHeaders, body: '{}' })).status, 404, 'there is no GitHub refresh route');
   // Every response isolates its window from cross-origin openers, alongside the existing headers.
   const refused = await fetch(`${base}/api/state`, { headers: { Origin: 'https://evil.example' } });
   for (const response of [page, await fetch(`${base}/api/state`), await fetch(`${base}/dashboard.js`), refused]) {

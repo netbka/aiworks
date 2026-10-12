@@ -1,14 +1,14 @@
 const $ = (selector) => document.querySelector(selector);
-const names = { done: 'Done', in_progress: 'In progress', review: 'In review', blocked: 'Blocked', planned: 'Not started', unknown: 'Unknown',
+const names = { done: 'Done', blocked: 'Blocked', unknown: 'Unknown',
   pending: 'Not started', implementing: 'Being built', implemented: 'Waiting for the independent check', verifying: 'Being checked', verified: 'Checked; publishing',
-  recent: 'Working', stale: 'No recent sign of life', OPEN: 'Open', CLOSED: 'Closed', MERGED: 'Merged' };
+  recent: 'Working', stale: 'No recent sign of life' };
 const provider = (kind) => ({ 'claude-cli': 'Claude', 'codex-cli': 'Codex', 'cursor-cli': 'Cursor Agent', 'agy-cli': 'AGY (Antigravity) browser' })[kind] ?? 'Unknown AI provider';
 // Owner-facing role names: the agent that builds a step, and the separate agent that checks it.
 const roleName = (role) => ({ Verifier: 'Independent checker', Implementer: 'Builder', verify: 'independent checker', implement: 'builder' })[role] ?? role;
-// What a finished step means for the owner: merged into the project, or still waiting for the owner's review. The
-// line under it (what it means for the owner, or why it is unknown) comes from the owner view as `delivery.note`.
-const deliveryNames = { merged: ['done', 'Merged'], 'awaiting-review': ['attention', 'Waiting for your review'], 'closed-unmerged': ['blocked', 'Closed without merging'],
-  'report-posted': ['done', 'Report posted'], unknown: ['unknown', 'GitHub state not known yet'] };
+// What a finished step means for the owner: merged into the project (seen in local git), or published with its merge
+// not seen yet. The line under it (what it means for the owner, or why the merge is not seen) is `delivery.note`.
+const deliveryNames = { merged: ['done', 'Merged'], published: ['attention', 'Published, merge not seen yet'],
+  'report-posted': ['done', 'Report posted'], unknown: ['unknown', 'Result not known'] };
 const CHURN_ATTEMPTS = 5;
 const STUCK_MINUTES = 15;
 const ownerCampaign = (c) => state.owner?.campaigns?.[c.id] ?? null;
@@ -72,7 +72,7 @@ function setView(next) {
   location.hash = view;
   const titles = { overview: ['Overview', 'What changed, what needs you, and how each project campaign is moving.'],
     roadmap: ['Campaign plans & platform roadmap', 'Each project campaign’s steps first, then the Engineering Platform’s own roadmap.'],
-    work: ['Issues & pull requests', 'Platform work on GitHub, plus linked work in the projects.'],
+    work: ['Issues & pull requests', 'Each campaign step’s issue and its pull request or report, from the supervisor’s records.'],
     agents: ['Agents', 'Which AI agents are working and how they are doing, and the AI providers each campaign can use.'],
     messages: ['Messages', 'What you sent, when it was received, when an agent read it, and its answer.'],
     activity: ['Recent activity', 'Agent results, AI provider switches, published steps and your commands.'] };
@@ -84,15 +84,16 @@ function setView(next) {
   }
   $('#filters').hidden = !['roadmap', 'work'].includes(view);
   $('#track').disabled = view === 'work';
+  $('#status').disabled = view !== 'work';
   if (state) render();
 }
 
 function renderMetrics() {
   const entries = state.roadmap.entries, campaigns = state.supervisor.campaigns;
-  const agents = campaigns.flatMap((c) => c.agents), done = entries.filter((e) => e.status === 'done').length;
+  const agents = campaigns.flatMap((c) => c.agents);
   // Everything listed under "Needs you": owner reviews, decisions, stopped work, a stopped supervisor and an unreadable
   // inbox. A pause by itself is not listed: the campaign card shows it.
-  // A finished step whose GitHub state is not known yet is never counted as nothing.
+  // A published step whose merge is still being checked is never counted as nothing.
   // "Nothing" is only about what blocks on the owner: reports to read and releases are named after it.
   const owner = state.owner ?? { items: [], unknownResults: 0, also: null }, attention = owner.items.length, unknown = owner.unknownResults;
   const available = state.supervisor.available;
@@ -103,12 +104,12 @@ function renderMetrics() {
   const delivered = Object.values(owner.campaigns ?? {}).reduce((n, item) => n + item.counts.delivered, 0);
   const verdicts = agents.map((agent) => agentVerdict(agent)[0]);
   const metrics = [
-    ['Platform roadmap items', entries.length, null, `${done} done · ${entries.length - done} remaining`, '☷'],
+    ['Platform roadmap items', entries.length, null, 'Definitions from the governance checkout; progress is tracked on GitHub', '☷'],
     ['Agents working', available ? agents.length : '—', null, !available ? 'Supervisor unavailable'
       : agents.length ? `${verdicts.filter((v) => v === 'recent').length} working normally${verdicts.some((v) => v === 'stale') ? ` · ${verdicts.filter((v) => v === 'stale').length} possibly stuck or not started` : ''}` : 'None right now', '◎'],
     ['Needs you', !available ? '—' : unknown && !attention ? '?' : attention, available && unknown && attention ? '+ ?' : null,
       !available ? 'Execution state unknown'
-        : `${attention ? `${plural(attention, 'item')} listed on Overview` : unknown ? 'Nothing confirmed yet' : 'Nothing is blocked on you'}${unknown ? ` · GitHub state of ${plural(unknown, 'finished step')} not known yet` : ''}${owner.also ? ` · also ${owner.also.short}` : ''}`, '◈'],
+        : `${attention ? `${plural(attention, 'item')} listed on Overview` : unknown ? 'Nothing confirmed yet' : 'Nothing is blocked on you'}${unknown ? ` · merge of ${plural(unknown, 'published step')} being checked` : ''}${owner.also ? ` · also ${owner.also.short}` : ''}`, '◈'],
     ['Cost so far', !available ? '—' : reported > 0 ? usd(reported) : 'not reported', null, !available ? 'Supervisor unavailable'
       : `${plural(used, 'run')} · ${delivered && reported > 0 ? `about ${usd(reported / delivered)} per delivered step` : 'no cost per step yet'}${unreported ? ` · ${plural(unreported, 'run')} not reported yet, so the real total is higher` : ''}`, '↗'],
   ];
@@ -129,18 +130,13 @@ function governanceMissing() {
 function trackOverview() {
   const missing = governanceMissing();
   if (missing) return panel('Engineering Platform roadmap', 'Read from the Engineering Platform governance checkout.', missing);
+  // Definitions only: the dashboard does not read GitHub, so it shows no progress for these items.
   const rows = [...new Set(state.roadmap.entries.map((entry) => entry.track))].map((track) => {
-    const list = state.roadmap.entries.filter((item) => item.track === track), done = list.filter((item) => item.status === 'done').length;
-    const progressing = list.filter((item) => ['in_progress', 'review', 'blocked'].includes(item.status)).length;
-    const bar = el('div', { class: 'bar', 'aria-label': `${done} of ${list.length} done` }, el('span', { class: 'done' }), el('span', { class: 'progress' }));
-    bar.children[0].style.width = `${100 * done / list.length}%`; bar.children[1].style.width = `${100 * progressing / list.length}%`;
-    return el('div', { class: 'track-row' }, el('div', { class: 'row-line' }, el('span', { class: 'track-name' }, trackNames[track] ?? track), el('span', { class: 'track-count number' }, `${done} of ${list.length} done`)),
-      bar, el('div', { class: 'track-caption' }, `${progressing} in progress · ${list.length - done - progressing} not started or not confirmed`));
+    const list = state.roadmap.entries.filter((item) => item.track === track);
+    return el('div', { class: 'track-row' }, el('div', { class: 'row-line' }, el('span', { class: 'track-name' }, trackNames[track] ?? track), el('span', { class: 'track-count number' }, plural(list.length, 'item'))));
   });
-  return panel('Engineering Platform roadmap', 'The platform’s own work toward its product, the project control plane. This is separate from the project campaigns above.',
-    el('div', {}, el('div', { class: 'panel-body' }, ...rows),
-      el('div', { class: 'legend' }, el('span', { class: 'done' }, 'Done'), el('span', { class: 'progress' }, 'In progress or in review'), el('span', {}, 'Not started or not confirmed'))),
-    button('View roadmap ↗', () => go('roadmap'), 'link'));
+  return panel('Engineering Platform roadmap', 'The platform’s own work toward its product, the project control plane. This is separate from the project campaigns above. Its progress is tracked on GitHub, not read here.',
+    el('div', { class: 'panel-body' }, ...rows), button('View roadmap ↗', () => go('roadmap'), 'link'));
 }
 
 /** A plain verdict per running agent: working normally, possibly stuck, starting or not started. */
@@ -207,7 +203,7 @@ function outcomeText(o) {
   return `${roleName(o.role)} (${provider(o.executor)}): ${what}`;
 }
 
-// Owner-facing state: a finished step shows where it stands on GitHub (waiting for your review, merged, ...).
+// Owner-facing state: a finished step shows whether its merge is seen (merged, published with the merge not seen yet, ...).
 function stepBadge(c, task) {
   const delivery = deliveryOf(c, task);
   if (!delivery && !task.blocked && task.waitingReason && task.state !== 'done') return badge('pending', /dependencies in main/.test(task.waitingReason) ? 'Waiting for merges' : 'Waiting');
@@ -236,7 +232,7 @@ function taskRow(c, task) {
     td('c-state', stepBadge(c, task),
       delivery?.state === 'merged' && delivery.mergedAt ? el('div', { class: 'subtext' }, `Merged ${dateTime(delivery.mergedAt)}`)
         : delivery?.note ? el('div', { class: 'subtext' }, delivery.note) : null,
-      delivery?.stale ? el('div', { class: 'subtext' }, 'GitHub refresh failing; last known state') : null,
+      delivery?.asOf ? el('div', { class: 'subtext' }, mergeAsOf(delivery.asOf)) : null,
       // Supervisor-authored wait (for example, dependencies that must be merged first); never worker text.
       task.waitingReason && !task.blocked && task.state !== 'done' ? el('div', { class: 'subtext' }, task.waitingReason) : null,
       task.retryAt ? el('div', { class: 'subtext' }, `Next check ${timeOnly(task.retryAt)}`) : null,
@@ -258,8 +254,8 @@ function deliverySummary(c) {
   if (counts?.merged) parts.push(`${counts.merged} merged`);
   if (counts?.awaiting) parts.push(`${counts.awaiting} waiting for your review`);
   if (counts?.reports) parts.push(`${plural(counts.reports, 'report')} for you to read`);
-  if (counts?.closed) parts.push(`${counts.closed} closed without merging`);
-  if (counts?.unknown) parts.push(`${counts.unknown} not yet confirmed on GitHub`);
+  if (counts?.checking) parts.push(`merge of ${counts.checking} being checked`);
+  if (counts?.unknown) parts.push(`${counts.unknown} without a recorded result`);
   return { delivered, text: parts.join(' · '), short: `${delivered}/${c.tasks.length} done${counts?.awaiting ? ` · ${counts.awaiting} for you` : ''}` };
 }
 
@@ -284,7 +280,7 @@ function campaignNext(c) {
   }
   if (c.control === 'cancel-requested') return 'Cancellation requested · waiting for the supervisor';
   if (c.control === 'cancelled') return 'Cancelled';
-  // Built by the owner view: calm only when every step's GitHub state is known and settled.
+  // Built by the owner view: calm only when every step is merged or a report.
   if (c.control === 'finished') return owner?.finished ?? 'All steps are finished';
   if (owner?.liveness === 'late') return `The supervisor on ${host} is late checking in (last at about ${timeOnly(owner.lastCheckIn)}); no action yet: this is normal for a few minutes during a restart or an upgrade`;
   if (owner?.liveness === 'awaiting-pickup') return `Registered at about ${timeOnly(owner.registeredAt)}; waiting for the supervisor on ${host} to pick it up · no action yet`;
@@ -522,32 +518,23 @@ function sinceSummary() {
     facts.length ? el('ul', {}, ...facts) : el('p', {}, 'Nothing changed.'));
 }
 
+/** Search applies to both lists; the track filter to the platform roadmap, the status filter to campaign steps. */
 function filtered(items) {
   const query = $('#search').value.trim().toLowerCase(), status = $('#status').value, track = $('#track').value;
-  return items.filter((item) => (!query || `${item.id ?? ''} ${item.number ?? ''} ${item.title} ${item.repository}`.toLowerCase().includes(query)) &&
-    (!status || (view === 'work' ? status === 'done' ? ['CLOSED', 'MERGED'].includes(item.state) : status === 'in_progress' ? item.state === 'OPEN'
-      : status === 'review' ? item.kind === 'pr' && item.state === 'OPEN' && !item.draft : false : item.status === status)) &&
-    (view === 'work' || !track || item.track === track));
+  return items.filter((item) => (!query || `${item.id ?? ''} ${item.number ?? ''} ${item.title} ${item.repository} ${item.campaignId ?? ''}`.toLowerCase().includes(query)) &&
+    (view !== 'work' || !status || item.status === status) && (view === 'work' || !track || item.track === track));
 }
 
 function roadmapView() {
   const entries = filtered(state.roadmap.entries);
-  const rows = entries.map((entry) => {
-    const refs = entry.items.filter((item) => item.kind === 'issue').slice(0, 2);
-    const prs = entry.items.filter((item) => item.kind === 'pr').slice(0, 2);
-    return el('tr', { 'data-focus-scope': entry.id }, cell(el('span', { class: 'package-id' }, entry.id)), cell(link(entry.title, entry.source, 'task-name'),
+  const rows = entries.map((entry) => el('tr', { 'data-focus-scope': entry.id }, cell(el('span', { class: 'package-id' }, entry.id)), cell(link(entry.title, entry.source, 'task-name'),
       el('div', { class: 'subtext' }, `${trackNames[entry.track] ?? entry.track} · ${entry.repository?.split('/')[1] ?? 'Repository unassigned'}`),
       entry.dependencies.length ? el('div', { class: 'subtext' }, `Depends on ${entry.dependencies.join(', ')}`) : null),
-    cell(badge(entry.status), el('div', { class: 'subtext' }, entry.evidence), entry.sourceStale ? el('div', { class: 'subtext' }, 'Source stale / unavailable') : null),
-    cell(el('div', { class: 'subtext' }, entry.owner ? `Responsible role: ${entry.owner}` : 'See linked work'),
-      ...[...refs, ...prs].map((item) => el('div', { class: 'subtext' }, link(`${item.kind === 'pr' ? 'PR' : 'Issue'} #${item.number} · ${item.state.toLowerCase()}`, item.url)))));
-  });
+    cell(el('div', { class: 'subtext' }, entry.owner ? `Responsible role: ${entry.owner}` : 'No role assigned in the registry'))));
   const missingRoadmap = governanceMissing();
   if (missingRoadmap) return panel('Engineering Platform roadmap items', 'Read from the Engineering Platform governance checkout.', missingRoadmap);
-  return panel('Engineering Platform roadmap items', `${entries.length} of ${state.roadmap.entries.length} items · the platform’s own work toward the project control plane; future work stays visible`,
-    el('div', {}, rows.length ? table(['Item', 'Outcome', 'Progress', 'Evidence'], rows) : empty('No matching items', 'Try another search or status filter.'),
-      el('div', { class: 'source-list' }, ...state.roadmap.sources.map((source) => el('div', { class: 'source-row' }, source.repository,
-        el('span', {}, source.fetchedAt ? `Last synced ${timeAgo(source.fetchedAt)}${source.error ? ' · stale' : ''}` : 'Not yet available'))))));
+  return panel('Engineering Platform roadmap items', `${entries.length} of ${state.roadmap.entries.length} items · the platform’s own work toward the project control plane. Definitions only: progress is tracked on GitHub and not read here`,
+    rows.length ? table(['Item', 'Outcome', 'Role'], rows) : empty('No matching items', 'Try another search or track filter.'));
 }
 
 const campaignById = (id) => state.supervisor.campaigns.find((c) => c.id === id);
@@ -577,9 +564,9 @@ function campaignRoadmaps() {
     `Campaign ${c.id} · ${deliverySummary(c).text}. This is the work assigned to the campaign; the repository may have other backlog.`, stepsTable(c)));
 }
 
-/** When the GitHub data behind a "Needs you" item is not fresh: when it is from, and that it is being refreshed. */
-const githubAsOf = (stale) => `GitHub data from ${!stale.at ? 'an unknown time' : new Date(stale.at).toDateString() === new Date().toDateString() ? timeOnly(stale.at) : dateTime(stale.at)}; ${
-  stale.reason === 'refresh-failed' ? 'the last refresh failed, retrying' : 'refreshing'}`;
+/** When the merge check behind a step is not current, or its last fetch failed: when it is from, and what happens next. */
+const mergeAsOf = (check) => `Merge check from ${!check.at ? 'an unknown time' : new Date(check.at).toDateString() === new Date().toDateString() ? timeOnly(check.at) : dateTime(check.at)}; ${
+  check.reason === 'fetch-failed' ? 'the last fetch failed, retrying within 5 minutes' : 'checking again'}`;
 
 /** The first thing on Overview: what is waiting for the owner, in plain words, each with the link to act on. */
 function needsYou() {
@@ -588,7 +575,7 @@ function needsYou() {
   const { headline, items, unknownResults: unknown, also, reply } = owner;
   return el('section', { class: `needs${items.length ? '' : unknown ? ' checking' : ' calm'}`, 'aria-labelledby': 'needs-title' },
     el('div', { class: 'needs-head' }, el('h2', { id: 'needs-title' }, headline),
-      unknown ? el('span', { class: 'needs-unknown' }, `GitHub state of ${unknown} finished step${unknown === 1 ? '' : 's'} not known yet`) : null),
+      unknown ? el('span', { class: 'needs-unknown' }, `Merge of ${unknown} published step${unknown === 1 ? '' : 's'} being checked`) : null),
     // Not blocking, never "nothing": posted reports and merged work ready for release.
     also ? el('p', { class: 'needs-also' }, also.text) : null,
     items.length ? el('ul', { class: 'needs-list' }, ...items.map((item) => el('li', { class: `needs-item ${item.kind}` },
@@ -597,8 +584,8 @@ function needsYou() {
       // A time, when known, completes the sentence: "…stopped checking in at about 12:31".
       el('div', { class: 'needs-text' }, el('span', {}, `${item.text}${item.at ? ` at about ${timeOnly(item.at)}` : ''}`),
         item.link ? link(`${item.link.label} ↗`, item.link.url, 'needs-link') : null),
-      item.github ? el('div', { class: 'needs-stale' }, githubAsOf(item.github)) : null,
-      item.evidence ? disclosure(`needs/${item.link?.url ?? item.text}`, el('span', { class: item.ready ? 'evidence ready' : 'evidence' }, item.evidence),
+      item.mergeCheck ? el('div', { class: 'needs-stale' }, mergeAsOf(item.mergeCheck)) : null,
+      item.evidence ? disclosure(`needs/${item.link?.url ?? item.text}`, el('span', { class: 'evidence' }, item.evidence),
         el('p', { class: 'needs-detail' }, item.detail)) : null,
       ...item.points.map((point) => el('div', { class: 'needs-point' }, point.link ? link(`${point.link.label} ↗`, point.link.url, 'needs-link') : null, el('span', {}, point.text))),
       el('div', { class: 'subtext' }, item.campaignId ? campaignContext(item.campaignId) : '')))) : null,
@@ -606,15 +593,29 @@ function needsYou() {
       link('Read its “What needs you” ↗', reply.url)) : null);
 }
 
+/**
+ * Every campaign step with its issue and its pull request or report, from the supervisor store: issue numbers and
+ * titles come from the declarations. Issues and pull requests not tied to a campaign are not shown.
+ */
+function campaignWork() {
+  return state.supervisor.campaigns.flatMap((c) => c.tasks.map((task) => {
+    const delivery = deliveryOf(c, task);
+    const status = delivery ? delivery.state === 'published' ? 'review' : delivery.state === 'unknown' ? 'unknown' : 'done' : task.blocked ? 'blocked' : 'in_progress';
+    return { c, task, delivery, status, id: task.id, campaignId: c.id, repository: c.repository, title: `${task.outcome ?? ''} ${task.title}`,
+      number: /\/issues\/(\d+)$/.exec(task.issueUrl ?? '')?.[1] ?? null };
+  }));
+}
+
 function workView() {
-  const work = filtered(state.roadmap.work);
-  const rows = work.slice(0, workLimit).map((item) => el('tr', {}, cell(el('span', { class: 'package-id' }, `${item.kind === 'pr' ? 'PR' : 'ISSUE'} #${item.number}`)),
-    cell(link(item.title, item.url, 'task-name'), el('div', { class: 'subtext' }, item.repository)),
-    cell(badge(item.state, item.draft ? 'Draft PR' : null)), cell(item.assignees.length ? item.assignees.join(', ') : el('span', { class: 'muted' }, 'Unassigned')),
-    cell(el('span', { class: 'muted' }, timeAgo(item.updatedAt)))));
-  const body = el('div', {}, rows.length ? table(['Work', 'Title', 'GitHub state', 'Assignee', 'Updated'], rows) : empty('No matching work', 'Try clearing the filters.'));
+  const work = filtered(campaignWork());
+  const rows = work.slice(0, workLimit).map(({ c, task, delivery, number }) => el('tr', { 'data-focus-scope': `${c.id}/${task.id}` },
+    cell(link(number ? `Issue #${number}` : task.id, task.issueUrl, 'package-id')),
+    cell(el('span', { class: 'task-name' }, task.outcome ?? task.title), el('div', { class: 'subtext' }, `${task.id} · ${campaignTitle(c)}`)),
+    cell(stepBadge(c, task), delivery?.note ? el('div', { class: 'subtext' }, delivery.note) : null),
+    cell(task.resultUrl ? link(delivery?.number ? `PR #${delivery.number} ↗` : 'Report ↗', task.resultUrl) : el('span', { class: 'muted' }, 'Not published yet'))));
+  const body = el('div', {}, rows.length ? table(['Step issue', 'What it delivers', 'Where it stands', 'Pull request or report'], rows) : empty('No matching work', 'Try clearing the filters.'));
   if (work.length > workLimit) body.append(el('div', { class: 'load-more' }, button(`Show more (${work.length - workLimit} remaining)`, () => { workLimit += 80; render(); }, 'secondary')));
-  return panel('Issues and pull requests', `${work.length} items · an open issue or an assigned role does not mean an agent is working on it`, body);
+  return panel('Campaign issues and pull requests', `${work.length} steps · from the supervisor's own records. Issues and pull requests that no campaign owns are not shown here; see them on GitHub`, body);
 }
 
 function render() {
@@ -643,12 +644,14 @@ function render() {
     panel('Latest activity', 'What happened recently, newest first', activityList(5), button('View all ↗', () => go('activity'), 'link')),
   messagesPanel(3));
   if (focused) [...content.querySelectorAll('a, button, summary')].find((node) => focusKey(node) === focused)?.focus({ preventScroll: true });
-  const problems = state.roadmap.sources.filter((source) => source.error || source.partial);
+  const repositories = state.merges?.repositories ?? [];
+  const problems = repositories.filter((repo) => repo.error);
   const warning = $('#source-warning');
   warning.hidden = !problems.length && state.supervisor.available;
-  warning.textContent = [!state.supervisor.available ? state.supervisor.message : '', ...problems.map((s) => `${s.repository}: ${s.error ? 'GitHub unavailable; showing last successful snapshot.' : 'Source reached its 1,000-item limit; history may be incomplete.'}`)].filter(Boolean).join(' ');
-  const timestamps = state.roadmap.sources.map((source) => source.fetchedAt).filter(Boolean).sort();
-  $('#updated').textContent = `${state.host?.name ? `${state.host.name} · ` : ''}Checked ${timeOnly(state.observedAt)} · GitHub ${timestamps.length ? `synced ${timeAgo(timestamps[0])}` : 'not synced yet'}`;
+  warning.textContent = [!state.supervisor.available ? state.supervisor.message : '', ...problems.map((repo) => `${repo.repository}: the last fetch of its base branch failed; ${
+    repo.fetchedAt ? `merge state is from ${dateTime(repo.fetchedAt)}` : 'its merges are not seen yet'}.`)].filter(Boolean).join(' ');
+  const fetched = repositories.map((repo) => repo.fetchedAt).filter(Boolean).sort((a, b) => a - b);
+  $('#updated').textContent = `${state.host?.name ? `${state.host.name} · ` : ''}Checked ${timeOnly(state.observedAt)} · merges ${fetched.length ? `checked ${timeAgo(fetched[0])}` : 'not checked yet'}`;
   // Which machine this is: each computer runs its own supervisor and campaigns.
   if (state.host) {
     // The page starts with a neutral "…" so it never names the wrong computer before the first answer.
@@ -690,9 +693,8 @@ async function poll() {
     const response = await fetch(`/api/state?since=${since}`, { signal: AbortSignal.timeout(6000) });
     if (!response.ok) throw new Error('state unavailable');
     state = await response.json(); offline = false;
-    const staleGithub = state.roadmap.sources.some((s) => s.error || s.cached || !s.fetchedAt || Date.now() - Date.parse(s.fetchedAt) > 120_000);
-    $('#connection').textContent = state.roadmap.refreshing ? 'Execution live · syncing GitHub…'
-      : staleGithub ? 'Execution live · GitHub evidence stale' : 'Live · updates every 5s';
+    $('#connection').textContent = state.merges?.refreshing ? 'Live · checking for merges…'
+      : (state.merges?.repositories ?? []).some((repo) => repo.error) ? 'Live · a merge check failed' : 'Live · updates every 5s';
     $('#connection').className = 'connection online';
     trackReceipts();
     if (!document.querySelector('dialog[open]')) render();
@@ -714,7 +716,6 @@ function go(next, { restore = false } = {}) {
 }
 for (const node of document.querySelectorAll('[data-view]')) node.addEventListener('click', () => { if (node.dataset.view !== view) go(node.dataset.view); });
 for (const selector of ['#search', '#track', '#status']) $(selector).addEventListener('input', () => { workLimit = 80; render(); });
-$('#refresh').addEventListener('click', async () => { try { await post('/api/refresh', {}); notice('GitHub refresh requested. Execution state continues updating automatically.'); await poll(); } catch (error) { notice(error.message); } });
 $('#confirm-cancel').addEventListener('click', () => { $('#cancel-dialog').close(); if (pendingCancel) void command(pendingCancel, 'cancel'); pendingCancel = null; });
 $('#close-instruction').addEventListener('click', () => { saveDraft(); $('#instruction-dialog').close(); });
 $('#instruction-dialog').addEventListener('cancel', saveDraft);

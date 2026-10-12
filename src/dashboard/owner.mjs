@@ -1,6 +1,6 @@
-// Owner view: what needs the owner, and where each finished campaign step stands on GitHub. It joins the
-// supervisor snapshot with the GitHub metadata the dashboard already fetches. Unknown GitHub state stays unknown;
-// every sentence is built from supervisor or GitHub fields, never from worker output.
+// Owner view: what needs the owner, and where each finished campaign step stands. It joins the supervisor snapshot
+// with the merge state the dashboard reads from local git (merges.mjs); it never calls GitHub. Unknown or stale merge
+// state never reads as merged; every sentence is built from supervisor or local git fields, never from worker output.
 
 const PR_URL = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)$/;
 const COMMENT_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+#issuecomment-\d+$/;
@@ -16,88 +16,76 @@ export const RESTART_ACTION = 'If nobody is upgrading it right now, restart it t
  */
 export const RESTART_GRACE_MS = 5 * 60_000;
 /**
- * GitHub data is fresh for this long (it refreshes every minute). Older data, a cache read at startup before the first
- * successful fetch, or data kept after a failed refresh never supports "ready to merge", and "Needs you" items built
- * from it say when the data is from.
+ * The merge check is current for this long after a successful fetch of the base branch (fetched at most every 5
+ * minutes). Older data, or no successful fetch yet, never shows a step as merged: it reads "published, merge not seen
+ * yet", and "Needs you" items built from it say when the check is from. A failed fetch keeps the last result and its time.
  */
-export const GITHUB_FRESH_MS = 5 * 60_000;
+export const MERGE_FRESH_MS = 15 * 60_000;
 /** Where the supervisor's own faults are tracked (docs/SUPERVISOR.md). */
 export const SUPERVISOR_ISSUE = 'https://github.com/netbka/aiworks/issues/2';
 /** The supervisor's own next action for a finished campaign whose steps are all reports. */
 const REPORTS_ACTION = /review recommendations before assigning implementation\.?$/;
 
-const sourceFor = (sources, repository) => sources.find((source) => source.repository?.toLowerCase() === repository.toLowerCase());
 const short = (repository) => repository.split('/')[1] ?? repository;
 const list = (values) => values.length <= 2 ? values.join(' and ') : `${values.slice(0, -1).join(', ')} and ${values.at(-1)}`;
 const plural = (n, word, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
 const label = (task) => task.outcome ?? task.title ?? task.id;
+const NO_MERGES = { repositories: [], steps: {} };
 
 /**
- * Why a repository's GitHub data is not fresh, with when it was fetched, or null when it is fresh. Never fetched is
- * not "stale": steps without data are unknown and say so themselves.
+ * How current the merge check of a repository is: `fresh` after a successful fetch under 15 minutes old; `at` is when
+ * that fetch ran (null before the first one) and `reason` says why it is not current, or that the last fetch failed.
+ * `reason` is 'no-checkout' when this computer has no checkout of the repository configured.
  */
-export function githubStale(source, now = Date.now()) {
-  if (!source?.fetchedAt) return null;
-  const at = Date.parse(source.fetchedAt);
-  const reason = source.error ? 'refresh-failed' : source.cached ? 'startup-cache' : !(now - at < GITHUB_FRESH_MS) ? 'old' : null;
-  return reason ? { at: Number.isFinite(at) ? at : null, reason } : null;
+export function mergeCheck(merges, repository, now = Date.now()) {
+  const repo = (merges?.repositories ?? []).find((item) => item.repository?.toLowerCase() === repository.toLowerCase());
+  if (repo && !repo.configured) return { fresh: false, at: null, reason: 'no-checkout' };
+  const at = Number.isSafeInteger(repo?.fetchedAt) ? repo.fetchedAt : null;
+  const fresh = at !== null && now - at < MERGE_FRESH_MS;
+  return { fresh, at, reason: repo?.error ? 'fetch-failed' : fresh ? null : at === null ? 'not-checked' : 'old' };
 }
-/** The oldest stale GitHub data behind a set of pull requests, or null when all of it is fresh. */
-const stalest = (sources, repositories, now) => repositories.map((repository) => githubStale(sourceFor(sources, repository), now))
-  .filter(Boolean).sort((a, b) => (a.at ?? 0) - (b.at ?? 0))[0] ?? null;
 
-/** The line under a finished step's state: what it means for the owner. Unknown says why it is unknown. */
-const NOTES = { 'awaiting-review': 'Your review and merge', 'report-posted': 'For you to read and decide on',
-  'not-loaded': 'Not loaded from GitHub yet; check again shortly', 'github-unavailable': 'GitHub could not be read; check it on GitHub',
-  'not-found': 'Not in the GitHub data the dashboard has; check it on GitHub', 'no-link': 'No result link was recorded; check the step issue' };
+/** The line under a finished step's state: what it means for the owner, or why the merge is not seen. */
+const NOTES = { published: 'Your review and merge', 'report-posted': 'For you to read and decide on',
+  checking: 'Checking the base branch for the merge; check again shortly',
+  'fetch-failed': 'The last check of the base branch failed; showing the last known state',
+  'no-checkout': 'This computer has no checkout of the repository configured, so the merge cannot be seen here; check the pull request',
+  'no-verified-sha': 'No verified commit is recorded, so the merge cannot be checked here; check the pull request',
+  'no-link': 'No result link was recorded; check the step issue' };
 
 /**
- * Owner-facing state of a published step: merged, waiting for review, closed unmerged, report posted or unknown.
- * Unknown carries its reason: GitHub not loaded yet, GitHub unavailable, the pull request not found, or no
- * recognisable result link. A step is never "published" or settled on a link the dashboard cannot read.
+ * Owner-facing state of a finished step: merged, published (merge not seen yet), report posted, or unknown when no
+ * result link was recorded. Merged only when a current check found the verified commit on the base branch. A published
+ * step carries why its merge is not seen: `pending` when a check that can still come shortly is running or due.
+ * `asOf` is the time of a merge check that is not current, or that is current but whose last fetch failed.
  */
-export function delivery(task, sources, now = Date.now()) {
+export function delivery(task, merges = NO_MERGES, now = Date.now(), campaignId = null) {
   if (task.state !== 'done') return null;
   const url = task.resultUrl ?? '';
   if (COMMENT_URL.test(url)) return { state: 'report-posted', url, note: NOTES['report-posted'] };
   const pr = PR_URL.exec(url);
   if (!pr) return { state: 'unknown', reason: 'no-link', note: NOTES['no-link'] };
   const repository = pr[1], number = Number(pr[2]);
-  const source = sourceFor(sources, repository);
-  const item = source?.items?.find((entry) => entry.kind === 'pr' && entry.number === number);
-  if (!item) {
-    const reason = source?.fetchedAt ? 'not-found' : source?.error ? 'github-unavailable' : 'not-loaded';
-    return { state: 'unknown', reason, repository, number, url, note: NOTES[reason], stale: Boolean(source?.error) };
-  }
-  const state = item.state === 'MERGED' ? 'merged' : item.state === 'OPEN' ? 'awaiting-review' : 'closed-unmerged';
-  return { state, repository, number, url, note: NOTES[state] ?? null, mergedAt: item.mergedAt ? Date.parse(item.mergedAt) : null, stale: Boolean(source.error),
-    ...(state === 'awaiting-review' ? { readiness: mergeReadiness(task, item, source, now) } : {}) };
+  const check = mergeCheck(merges, repository, now);
+  const step = merges?.steps?.[`${campaignId}/${task.id}`];
+  const result = task.verifiedSha && step?.sha === task.verifiedSha ? step.merged : null;
+  const asOf = check.reason && check.reason !== 'no-checkout' && check.at !== null ? { at: check.at, reason: check.reason } : null;
+  const base = { repository, number, url, asOf };
+  if (result === true && check.fresh) return { state: 'merged', ...base, note: null, mergedAt: step.mergedAt ?? null };
+  const reason = !task.verifiedSha ? 'no-verified-sha' : check.reason === 'no-checkout' ? 'no-checkout'
+    : check.reason === 'fetch-failed' && !check.fresh ? 'fetch-failed' : !check.fresh || result === null ? 'checking' : null;
+  return { state: 'published', ...base, reason, pending: reason === 'checking', note: NOTES[reason ?? 'published'] };
 }
 
 /**
- * Whether the owner can merge without checking further. "Ready to merge" only when fresh GitHub data shows the pull
- * request still at the commit the independent checker accepted, no conflicts and every CI check passed. Otherwise
- * the sentence says what is accepted and what is not confirmed. `short` is the same evidence in one compact line;
- * `text` is the full sentence, one click away on the page.
+ * What the owner can know before merging. The dashboard does not read CI checks or conflicts: it names the commit the
+ * independent checker accepted and points to the pull request. `short` is one compact line; `text` the full sentence.
  */
-export function mergeReadiness(task, item, source, now = Date.now()) {
-  if (!task.verifiedSha) return { ready: false, short: 'Independent check not recorded here', text: 'Published by the supervisor; the independent check is not recorded here.' };
-  const sha = String(task.verifiedSha).toLowerCase(), sha7 = sha.slice(0, 7), accepted = `An independent checker accepted commit ${sha7}`;
-  const merge = item?.merge;
-  const not = (short, text) => ({ ready: false, short, text });
-  if (!merge || !source?.fetchedAt || githubStale(source, now)) return not(`Checker accepted ${sha7} · conflicts and CI not confirmed`, `${accepted}; check conflicts and CI on GitHub before merging.`);
-  if (merge.head !== sha) return not(`Checker accepted ${sha7} · the pull request now points at ${merge.head ? merge.head.slice(0, 7) : 'another commit'}`,
-    `${accepted}, but the pull request now points at ${merge.head ? `commit ${merge.head.slice(0, 7)}` : 'another commit'}; check what changed before merging.`);
-  if (item.draft) return not(`Checker accepted ${sha7} · still a draft`, `${accepted}, but the pull request is still a draft; check it on GitHub before merging.`);
-  if (merge.mergeable === 'CONFLICTING') return not('Checker accepted the head · conflicts with the base branch', `${accepted}, but GitHub reports conflicts with the base branch; they must be resolved before merging.`);
-  if (merge.mergeable !== 'MERGEABLE') return not('Checker accepted the head · conflict check not finished', `${accepted}; GitHub has not finished checking it for conflicts, so check conflicts and CI on GitHub before merging.`);
-  const { total, failed, pending } = merge.checks;
-  const clean = `${accepted}, it is still the pull request's head and GitHub reports no conflicts`, cleanShort = 'Checker accepted the head · no conflicts';
-  if (failed) return not(`${cleanShort} · ${plural(failed, 'CI check')} failed`, `${clean}, but ${plural(failed, 'CI check')} failed; check ${failed === 1 ? 'it' : 'them'} on GitHub before merging.`);
-  if (pending) return not(`${cleanShort} · ${plural(pending, 'CI check')} not passed yet`, `${clean}, but ${plural(pending, 'CI check')} ${pending === 1 ? 'has' : 'have'} not passed yet; check again before merging.`);
-  if (!total) return not(`${cleanShort} · no CI checks ran`, `${clean}; no CI checks ran on it, so nothing else has tested it.`);
-  return { ready: true, short: `Ready to merge · checker accepted the head · no conflicts · ${total === 1 ? 'CI check passed' : `all ${total} CI checks passed`}`,
-    text: `Ready to merge: an independent checker accepted commit ${sha7}, it is still the pull request's head, GitHub reports no conflicts and ${total === 1 ? 'its CI check' : `all ${total} CI checks`} passed.` };
+export function reviewEvidence(task) {
+  if (!task.verifiedSha) return { short: 'Independent check not recorded here', text: 'Published by the supervisor; the independent check is not recorded here. See CI checks and conflicts on the pull request before merging.' };
+  const sha7 = String(task.verifiedSha).toLowerCase().slice(0, 7);
+  return { short: `Checker accepted ${sha7} · CI and conflicts on the PR`,
+    text: `An independent checker accepted commit ${sha7}. This dashboard does not read CI checks or conflicts; see them on the pull request before merging.` };
 }
 
 /**
@@ -108,28 +96,24 @@ const releaseRule = (releases, repository, whose = `${short(repository)}'s`) =>
   `${whose} ${releases?.[repository.toLowerCase()] ? 'standing deploy authorization' : 'release policy'}`;
 
 /**
- * A finished campaign in one sentence. "Nothing waits for you" only when every step's GitHub state is known and
- * settled; unknown states, closed pull requests, reviews and reports to read are each said plainly. `releaseReady`
- * is the same claim as "the merged work is ready", and `line` is the sentence without its "All steps are finished".
+ * A finished campaign in one sentence. "Nothing waits for you" only when every step is merged or a report; merge
+ * checks still running, published steps whose merge is not seen yet and reports to read are each said plainly.
+ * `releaseReady` is the same claim as "the merged work is ready", and `line` is the sentence without its "All steps are finished".
  */
 function finishedSummary(c, steps, releases) {
   const count = (test) => steps.filter(test).length;
   const state = (name) => count((step) => step.delivery?.state === name);
-  const unknown = (reason) => count((step) => step.delivery?.state === 'unknown' && step.delivery.reason === reason);
-  const has = (n) => n === 1 ? 'has' : 'have', them = (n) => n === 1 ? 'it' : 'them';
-  const missing = count((step) => !step.delivery), notLoaded = unknown('not-loaded'), unreadable = unknown('github-unavailable'),
-    notFound = unknown('not-found'), noLink = unknown('no-link'), closed = state('closed-unmerged'), awaiting = state('awaiting-review'),
+  const has = (n) => n === 1 ? 'has' : 'have';
+  const missing = count((step) => !step.delivery), noLink = state('unknown'),
+    checking = count((step) => step.delivery?.pending), published = state('published') - checking,
     reports = state('report-posted'), merged = state('merged');
-  // Merged work is ready for release only when no other step is unknown, closed or still under review.
-  const releaseReady = merged > 0 && !(missing + notLoaded + unreadable + notFound + noLink + closed + awaiting);
+  // Merged work is ready for release only when every other step is a report: none unknown, being checked or unmerged.
+  const releaseReady = merged > 0 && !(missing + noLink + checking + published);
   const parts = [
     missing ? `${plural(missing, 'step')} ${has(missing)} no recorded result` : null,
-    notLoaded ? `GitHub state of ${plural(notLoaded, 'step')} not loaded yet; check again shortly` : null,
-    unreadable ? `GitHub could not be read, so the state of ${plural(unreadable, 'step')} is unknown; check ${them(unreadable)} on GitHub` : null,
-    notFound ? `the GitHub state of ${plural(notFound, 'step')} is not known; check ${them(notFound)} on GitHub` : null,
+    checking ? `the merge of ${plural(checking, 'step')} is being checked; check again shortly` : null,
     noLink ? `${plural(noLink, 'step')} ${has(noLink)} no recorded result link; check ${noLink === 1 ? 'its issue' : 'their issues'}` : null,
-    closed ? `${plural(closed, 'pull request')} ${closed === 1 ? 'was' : 'were'} closed without merging` : null,
-    awaiting ? `${plural(awaiting, 'step')} ${awaiting === 1 ? 'waits' : 'wait'} for your review` : null,
+    published ? `${plural(published, 'step')} ${published === 1 ? 'waits' : 'wait'} for your review (merge not seen yet)` : null,
     // A report is for the owner to read and decide on. A campaign of reports only shows the supervisor's own next action.
     reports ? reports === steps.length && REPORTS_ACTION.test(c.nextAction ?? '') ? c.nextAction : `${plural(reports, 'report')} posted for you to read` : null,
     merged ? releaseReady ? `the merged work is ready; release follows ${releaseRule(releases, c.repository)}` : `${merged} merged` : null,
@@ -142,16 +126,15 @@ const capital = (text) => text.charAt(0).toUpperCase() + text.slice(1);
 
 /**
  * The campaign's title. Declared wording first: the campaign's `purpose`, or for a campaign of one step that step's
- * `outcome`, else its title (what the campaign delivers). Otherwise its tracking issue title without a leading ID.
+ * `outcome`, else its title (what the campaign delivers). Otherwise null: the page shows the campaign id. Issue titles
+ * are not read from GitHub.
  */
-export function purpose(campaign, sources) {
+export function purpose(campaign) {
   if (campaign.purpose) return { text: campaign.purpose, from: 'declaration' };
   const only = campaign.tasks?.length === 1 ? campaign.tasks[0] : null;
   if (only?.outcome) return { text: only.outcome, from: 'step-outcome' };
   if (only?.title) return { text: capital(only.title), from: 'step-title' };
-  const issue = sourceFor(sources, campaign.repository)?.items?.find((item) => item.kind === 'issue' && item.number === campaign.trackingIssue);
-  if (!issue?.title) return null;
-  return { text: capital(issue.title.replace(/^[A-Z][A-Z0-9]*-\d+[A-Za-z0-9-]*:\s*/, '')), from: 'tracking-issue' };
+  return null;
 }
 
 /** Words that keep their capitals in a name built from an id. */
@@ -187,21 +170,20 @@ const agentWorking = (agent, now) => agent.heartbeatState === 'recent' || (agent
  * The owner view. `releases` maps a lowercased repository to the standing deploy authorization its registry entry
  * records (readReleaseAuthorizations); a repository without one is described only by its own release policy.
  */
-export function ownerView(supervisor, sources = [], { host = null, now = Date.now(), releases = {} } = {}) {
+export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = Date.now(), releases = {} } = {}) {
   if (!supervisor?.available) return { available: false, headline: null, items: [], unknownResults: 0, also: null, layout: { cards: [], finished: [] }, reply: null, campaigns: {}, recent: null };
   const items = [], campaigns = {}, where = host ? `on ${host}` : 'on its computer';
   let unknownResults = 0;
-  const entries = supervisor.campaigns.map((c) => ({ id: c.id, purpose: purpose(c, sources) }));
+  const entries = supervisor.campaigns.map((c) => ({ id: c.id, purpose: purpose(c) }));
   distinguish(entries);
   for (const c of supervisor.campaigns) {
-    const steps = c.tasks.map((task) => ({ task, delivery: delivery(task, sources, now) }));
+    const steps = c.tasks.map((task) => ({ task, delivery: delivery(task, merges, now, c.id) }));
     const by = (state) => steps.filter((step) => step.delivery?.state === state);
-    const awaiting = by('awaiting-review'), closed = by('closed-unmerged'), unknown = by('unknown');
-    // "Checking GitHub" only for state a refresh can still bring. No recorded link, or a pull request missing from data
-    // GitHub did return, stays unknown until someone looks: those become "check on GitHub" items instead.
-    const transient = unknown.filter((step) => ['not-loaded', 'github-unavailable'].includes(step.delivery.reason));
-    const permanent = unknown.filter((step) => !transient.includes(step));
-    unknownResults += transient.length;
+    // "Checking for merges" only while a merge check that can still come shortly is running or due. Every other
+    // published step waits for the owner's review: its merge is not seen, whatever the reason.
+    const checking = by('published').filter((step) => step.delivery.pending);
+    const awaiting = by('published').filter((step) => !step.delivery.pending), unknown = by('unknown');
+    unknownResults += checking.length;
     const working = c.agents.filter((agent) => agentWorking(agent, now)).length;
     const leaseEnded = c.leaseExpiresAt ? Date.parse(c.leaseExpiresAt) : null;
     // A lease that lapsed minutes ago is usually a restart or an upgrade in progress: late, not yet stopped.
@@ -222,7 +204,7 @@ export function ownerView(supervisor, sources = [], { host = null, now = Date.no
       // One line for the compact list of finished and cancelled campaigns.
       outcome: finished?.line ?? (c.control === 'cancelled' ? `Cancelled · ${delivered} of ${plural(c.tasks.length, 'step')} delivered` : null),
       counts: { total: c.tasks.length, delivered, merged: by('merged').length,
-        awaiting: awaiting.length, closed: closed.length, unknown: unknown.length, reports: by('report-posted').length } };
+        awaiting: awaiting.length, checking: checking.length, unknown: unknown.length, reports: by('report-posted').length } };
     const base = { campaignId: c.id, repository: c.repository };
     // One item per step, led by what the step delivers. The evidence is one compact line; the full sentence is one click away.
     for (const { task, delivery: d } of awaiting) {
@@ -234,9 +216,12 @@ export function ownerView(supervisor, sources = [], { host = null, now = Date.no
       // Steps declared to require merged dependencies cannot start at all until the owner merges.
       const gated = pending.filter((other) => other.requiresMergedDependencies).map((other) => other.id);
       const churn = task.attempts >= CHURN_ATTEMPTS || task.verifierRejections > 0;
+      const evidence = reviewEvidence(task);
       items.push({ ...base, kind: 'review', action: 'Review and merge', text: label(task), link: { label: `Open PR #${d.number}`, url: d.url },
-        evidence: d.readiness.short, detail: d.readiness.text, ready: d.readiness.ready, github: stalest(sources, [d.repository], now),
+        evidence: evidence.short, detail: evidence.text, mergeCheck: d.asOf,
         points: [
+          // Why the merge cannot be seen at all on this computer, when that is the case.
+          ['no-checkout', 'no-verified-sha'].includes(d.reason) ? `${d.note}.` : null,
           churn ? `Check its review history first: it took ${plural(task.attempts, 'try', 'tries')}${task.verifierRejections ? ` and the checker rejected it ${plural(task.verifierRejections, 'time')}` : ''} before it was accepted.` : null,
           gated.length ? `${list(gated)} cannot start until you merge it.` : pending.length ? `Merging lets ${list(pending.map((other) => other.id))} build on it.`
             : started.length ? `${list(started)} already started without it, so merging now does not change ${started.length === 1 ? 'that step' : 'those steps'}.`
@@ -244,17 +229,9 @@ export function ownerView(supervisor, sources = [], { host = null, now = Date.no
               : `Nothing else in this campaign waits on it; after merging, release follows ${releaseRule(releases, d.repository)}.`,
         ].filter(Boolean).map((text) => ({ link: null, text })) });
     }
-    for (const step of closed) {
-      items.push({ ...base, kind: 'closed', action: 'Closed without merging', text: label(step.task), link: { label: `Open PR #${step.delivery.number}`, url: step.delivery.url },
-        github: stalest(sources, [step.delivery.repository], now),
-        points: [{ link: null, text: `It was checked and published, but its pull request was closed, so that work is not in ${short(c.repository)}. Reopen it or re-plan the step.` }] });
-    }
-    for (const { task, delivery: d } of permanent) {
-      items.push({ ...base, kind: 'check', action: 'Check on GitHub', text: label(task), link: { label: `Open step issue (${task.id})`, url: task.issueUrl },
-        github: d.reason === 'not-found' ? stalest(sources, [d.repository], now) : null,
-        points: [d.reason === 'not-found'
-          ? { link: { label: `PR #${d.number}`, url: d.url }, text: 'This step finished, but its pull request is not in the GitHub data the dashboard has, so where it stands is unknown.' }
-          : { link: null, text: 'This step finished, but no result link was recorded, so the dashboard cannot tell where it stands.' }] });
+    for (const { task } of unknown) {
+      items.push({ ...base, kind: 'check', action: 'Check on GitHub', text: label(task), link: { label: `Open step issue (${task.id})`, url: task.issueUrl }, mergeCheck: null,
+        points: [{ link: null, text: 'This step finished, but no result link was recorded, so the dashboard cannot tell where it stands.' }] });
     }
     if (c.blocker) {
       items.push({ ...base, kind: c.blockerClass === 'B3' ? 'decision' : 'stopped', text: `${c.id} is stopped`,
@@ -294,7 +271,7 @@ export function ownerView(supervisor, sources = [], { host = null, now = Date.no
   }
   const answered = (coordinator?.messages ?? []).filter((m) => m.state === 'answered' && m.replyUrl).sort((a, b) => b.answeredAt - a.answeredAt)[0];
   // Calm only about what blocks on the owner; reports and releases are said apart, never as "nothing".
-  const headline = items.length ? `Needs you (${items.length})` : unknownResults ? 'Checking GitHub for anything that needs you' : 'Nothing is blocked on you right now';
+  const headline = items.length ? `Needs you (${items.length})` : unknownResults ? 'Checking for merges before listing what needs you' : 'Nothing is blocked on you right now';
   // Page order: campaigns with something listed for the owner, then the other active ones. Finished or cancelled
   // campaigns with nothing listed collapse into a compact list, most recent first.
   const listed = new Set(items.map((item) => item.campaignId).filter(Boolean));
@@ -329,7 +306,7 @@ function recentSummary(supervisor, campaigns) {
   for (const c of supervisor.campaigns) for (const task of c.tasks) {
     const d = campaigns[c.id].deliveries[task.id];
     if (d?.state === 'merged' && d.mergedAt >= recent.since) merged.push({ campaignId: c.id, taskId: task.id, number: d.number, url: d.url, at: d.mergedAt });
-    if (d?.state === 'awaiting-review' && recent.published.some((p) => p.campaignId === c.id && p.taskId === task.id)) {
+    if (d?.state === 'published' && recent.published.some((p) => p.campaignId === c.id && p.taskId === task.id)) {
       waiting.push({ campaignId: c.id, taskId: task.id, number: d.number, url: d.url });
     }
   }

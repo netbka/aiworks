@@ -17,7 +17,7 @@ test('owner messages are accepted only from the dashboard origin, stored once an
   writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ coordinator: { repositories: ['netbka/aiworks'], reportTo: 'netbka/aiworks#3', maxRunsPerDay: 6 } }));
   const store = new Store(join(dataDir, 'supervisor.db'));
   campaignStart(store, declaration());
-  const server = createDashboardServer({ dataDir, roadmap: { snapshot: () => ({ entries: [], sources: [], work: [] }), refresh: async () => {} } });
+  const server = createDashboardServer({ dataDir, roadmap: { snapshot: () => ({ governance: { configured: true, code: null, reason: null }, entries: [] }) } });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(() => { store.close(); rmSync(dataDir, { recursive: true, force: true }); resolve(); }); }));
   const base = `http://127.0.0.1:${server.address().port}`;

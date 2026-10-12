@@ -12,28 +12,31 @@ const page = (file) => readFileSync(join(ROOT, 'src/dashboard/public', file), 'u
 const campaign = (id, tasks = [], extra = {}) => ({ id, repository: 'netbka/Dyk', trackingIssue: 458, trackingUrl: 'https://github.com/netbka/Dyk/issues/458', purpose: null,
   control: 'finished', readiness: 'COMPLETE', controllerLive: false, livenessDefect: false, leaseExpiresAt: null, blocker: null, tasks, agents: [], lastProgressAt: null, ...extra });
 const step = (id, title, outcome = null) => ({ id, title, outcome, state: 'pending', resultUrl: null, dependsOn: [], attempts: 0, verifierRejections: 0, verifiedSha: null });
-const view = (campaigns) => ownerView({ available: true, campaigns, coordinator: null, recent: null },
-  [{ repository: 'netbka/Dyk', fetchedAt: new Date().toISOString(), error: null, items: [{ kind: 'issue', number: 458, title: 'P-458: Design PR inventory reconciliation' }] }]);
+const view = (campaigns) => ownerView({ available: true, campaigns, coordinator: null, recent: null });
+// Issue titles are not read from GitHub: campaigns that share a declared purpose are told apart by their ids.
+const shared = { purpose: 'Design PR inventory reconciliation' };
 
 test('campaign titles prefer declared wording; names built from ids are humanized, without issue numbers or a dash', () => {
   const v = view([
     campaign('dyk-455-telegram-ingest', [step('FIX-455', 'Telegram ingestion: analysed messages must not be sent again')]),
     campaign('dyk-442-pilot-whatsapp', [step('P-404', 'WhatsApp pairing code', 'WhatsApp pairing recovers an interrupted result')]),
-    campaign('dyk-458-design-contracts', [step('A', 'a'), step('B', 'b')]),
-    campaign('dyk-458-task-details', [step('A', 'a'), step('B', 'b')]),
-    campaign('dyk-closeout-458-405', [step('A', 'a'), step('B', 'b')]),
-    campaign('dyk-open-runtime-prs', [step('A', 'a'), step('B', 'b')]),
+    campaign('dyk-458-design-contracts', [step('A', 'a'), step('B', 'b')], shared),
+    campaign('dyk-458-task-details', [step('A', 'a'), step('B', 'b')], shared),
+    campaign('dyk-closeout-458-405', [step('A', 'a'), step('B', 'b')], shared),
+    campaign('dyk-open-runtime-prs', [step('A', 'a'), step('B', 'b')], shared),
     campaign('declared', [step('A', 'a'), step('B', 'b')], { purpose: 'One accountable delivery' }),
+    campaign('undeclared', [step('A', 'a'), step('B', 'b')]),
   ]);
   const titles = Object.fromEntries(Object.entries(v.campaigns).map(([id, c]) => [id, c.purpose]));
   assert.deepEqual(titles['dyk-455-telegram-ingest'], { text: 'Telegram ingestion: analysed messages must not be sent again', from: 'step-title' }, 'one step: what it delivers');
   assert.deepEqual(titles['dyk-442-pilot-whatsapp'], { text: 'WhatsApp pairing recovers an interrupted result', from: 'step-outcome' }, 'its declared outcome first');
   assert.deepEqual(titles.declared, { text: 'One accountable delivery', from: 'declaration' });
+  assert.equal(titles.undeclared, null, 'several steps and no declared purpose: the page shows the campaign id; no issue title is fetched');
   assert.deepEqual(['dyk-458-design-contracts', 'dyk-458-task-details', 'dyk-closeout-458-405', 'dyk-open-runtime-prs'].map((id) => [titles[id].text, titles[id].variant]), [
     ['Design PR inventory reconciliation', 'Design contracts'], ['Design PR inventory reconciliation', 'Task details'],
     ['Design PR inventory reconciliation', 'Closeout'], ['Design PR inventory reconciliation', 'Open runtime PRs']]);
   // Numbers come back only when the names would otherwise be the same.
-  const same = view([campaign('dyk-458-fix', [step('A', 'a'), step('B', 'b')]), campaign('dyk-459-fix', [step('A', 'a'), step('B', 'b')])]);
+  const same = view([campaign('dyk-458-fix', [step('A', 'a'), step('B', 'b')], shared), campaign('dyk-459-fix', [step('A', 'a'), step('B', 'b')], shared)]);
   assert.deepEqual(Object.values(same.campaigns).map((c) => c.purpose.variant), ['458 fix', '459 fix']);
   assert.match(page('dashboard.js'), /purpose\?\.variant \? ` \(\$\{purpose\.variant\}\)` : ''/);
   assert.doesNotMatch(page('dashboard.js'), / — \$\{purpose\.variant\}/, 'no dash before the distinguishing name');
