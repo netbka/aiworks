@@ -336,10 +336,14 @@ test('a plain-folder scan leaves out secrets, links, nested repositories, node_m
 
 test('names that differ only in case are refused', options, (t) => {
   const dir = base(t);
-  // NTFS cannot hold both names without per-directory case sensitivity, so the listing is injected.
+  // NTFS cannot hold both names without per-directory case sensitivity, so the listing is injected. Its lstat is
+  // injected too: only Readme.md exists, and a case-sensitive file system would report README.md as vanished (ENOENT)
+  // instead of folding it to Readme.md as NTFS does, so the entry would never reach the collision check.
   const plain = folder(dir, 'plain', { 'Readme.md': 'a', 'docs/x.md': 'x' });
   const listing = (path) => (rootKey(path) === rootKey(plain) ? ['Readme.md', 'README.md', 'docs'] : readdirSync(path));
-  const injected = check(pf.preflight(plain, defaults({ io: { readdir: listing } })), 'CASE_COLLISION');
+  const phantom = join(plain, 'README.md');
+  const lstat = (path) => lstatSync(path === phantom ? join(plain, 'Readme.md') : path, { bigint: true });
+  const injected = check(pf.preflight(plain, defaults({ io: { readdir: listing, lstat } })), 'CASE_COLLISION');
   assert.deepEqual(injected.detail, { a: 'Readme.md', b: 'README.md' });
 });
 
