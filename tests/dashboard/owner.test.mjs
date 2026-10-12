@@ -1,5 +1,5 @@
-// Owner view (engineering-platform-archive#78/#79): what needs the owner, finished steps joined with GitHub state, plain-language wording,
-// host identity and link navigation. Disposable stores and synthetic GitHub metadata only.
+// Owner view (engineering-platform-archive#78/#79): what needs the owner, finished steps joined with their merge state from local
+// git, plain-language wording, host identity and link navigation. Disposable stores and synthetic merge state only.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -34,8 +34,10 @@ function fixture(t, d = declaration({ tasks: three() })) {
   return { dataDir, store, d, finish };
 }
 
-const source = (items, extra = {}) => ({ repository: 'netbka/Dyk', fetchedAt: new Date().toISOString(), error: null, items, ...extra });
-const pr = (number, state, extra = {}) => ({ kind: 'pr', number, state, url: `https://github.com/netbka/Dyk/pull/${number}`, mergedAt: state === 'MERGED' ? '2026-10-10T08:49:00Z' : null, ...extra });
+/** Merge state as the local merge check reports it: netbka/Dyk fetched just now, and a result per campaign step. */
+const checked = (steps = {}, repo = {}) => ({ repositories: [{ repository: 'netbka/Dyk', configured: true, fetchedAt: Date.now(), attemptedAt: Date.now(), error: null, ...repo }], steps });
+const result = (sha, merged, mergedAt = null) => ({ sha, baseBranch: 'main', merged, mergedAt });
+const A = 'a'.repeat(40), B = 'b'.repeat(40);
 
 test('plain-language purpose and outcomes are optional, bounded and never change the immutable scope', () => {
   const d = declaration();
@@ -60,68 +62,93 @@ test('changing the owner wording of a registered campaign needs a higher authori
   assert.equal(after.declaration.tasks[0].outcome, 'Plain result of T1');
 });
 
-test('finished steps show where they stand on GitHub; unknown stays unknown', () => {
-  const task = (url) => ({ id: 'T1', state: 'done', resultUrl: url });
-  const sources = [source([pr(463, 'OPEN'), pr(464, 'MERGED'), pr(465, 'CLOSED')])];
-  assert.equal(delivery(task('https://github.com/netbka/Dyk/pull/463'), sources).state, 'awaiting-review');
-  assert.equal(delivery(task('https://github.com/netbka/dyk/pull/464'), sources).state, 'merged', 'repository names match case-insensitively');
-  assert.equal(delivery(task('https://github.com/netbka/Dyk/pull/465'), sources).state, 'closed-unmerged');
-  assert.equal(delivery(task('https://github.com/netbka/Dyk/pull/999'), sources).state, 'unknown');
-  assert.equal(delivery(task('https://github.com/netbka/elma_wiki/pull/111'), sources).state, 'unknown', 'a repository not fetched yet is unknown, not fine');
-  assert.equal(delivery(task('https://github.com/netbka/Dyk/issues/437#issuecomment-1'), sources).state, 'report-posted');
-  assert.equal(delivery({ id: 'T1', state: 'verifying', resultUrl: null }, sources), null);
-  assert.equal(delivery(task('https://github.com/netbka/Dyk/pull/463'), [source([pr(463, 'OPEN')], { error: 'refresh failed' })]).stale, true);
-  assert.deepEqual(purpose({ purpose: null, repository: 'netbka/Dyk', trackingIssue: 443 },
-    [source([{ kind: 'issue', number: 443, title: 'WAVE-00: one accountable delivery campaign from bootstrap to verified release' }])]),
-  { text: 'One accountable delivery campaign from bootstrap to verified release', from: 'tracking-issue' });
+test('a finished step is merged only when a current local git check saw it; otherwise it is published, merge not seen yet', () => {
+  const now = Date.now(), pr = 'https://github.com/netbka/Dyk/pull/463';
+  const task = (url = pr, extra = {}) => ({ id: 'T1', state: 'done', resultUrl: url, verifiedSha: A, ...extra });
+  const seen = (merged, repo) => checked({ 'c1/T1': result(A, merged) }, repo);
+  const say = (t, merges) => { const d = delivery(t, merges, now, 'c1'); return [d.state, d.reason ?? null, d.pending ?? null]; };
+  assert.deepEqual(say(task(), seen(true)), ['merged', null, null]);
+  assert.equal(delivery(task('https://github.com/netbka/dyk/pull/463'), seen(true), now, 'c1').state, 'merged', 'repository names match case-insensitively');
+  assert.deepEqual(say(task(), seen(false)), ['published', null, false], 'not reachable from origin/main: published, merge not seen yet');
+  assert.equal(delivery(task(), seen(false), now, 'c1').note, 'Your review and merge');
+  // Missing data never reads as merged.
+  assert.deepEqual(say(task(), seen(null)), ['published', 'checking', true], 'a commit not checked yet is being checked');
+  assert.deepEqual(say(task(), checked()), ['published', 'checking', true]);
+  assert.deepEqual(say(task(), { repositories: [], steps: {} }), ['published', 'checking', true], 'a repository not checked yet is not fine');
+  assert.deepEqual(say(task(), checked({ 'c1/T1': result(B, true) })), ['published', 'checking', true], 'a result for another commit says nothing about this one');
+  assert.deepEqual(say(task('https://github.com/netbka/Dyk/pull/463', { verifiedSha: null }), seen(true)), ['published', 'no-verified-sha', false]);
+  assert.deepEqual(say(task(), seen(true, { configured: false, fetchedAt: null })), ['published', 'no-checkout', false]);
+  // Stale data never reads as merged, and says when the check is from.
+  const old = now - 20 * 60_000;
+  assert.deepEqual(say(task(), seen(true, { fetchedAt: old })), ['published', 'checking', true]);
+  assert.deepEqual(delivery(task(), seen(true, { fetchedAt: old }), now, 'c1').asOf, { at: old, reason: 'old' });
+  assert.deepEqual(say(task(), seen(true, { fetchedAt: old, error: 'fetch-failed' })), ['published', 'fetch-failed', false]);
+  // A failed fetch keeps the last state while it is current, and shows its age.
+  const recent = now - 2 * 60_000, kept = delivery(task(), seen(true, { fetchedAt: recent, error: 'fetch-failed' }), now, 'c1');
+  assert.deepEqual([kept.state, kept.asOf], ['merged', { at: recent, reason: 'fetch-failed' }]);
+  assert.equal(delivery(task('https://github.com/netbka/Dyk/issues/437#issuecomment-1'), seen(true), now, 'c1').state, 'report-posted');
+  assert.equal(delivery({ id: 'T1', state: 'verifying', resultUrl: null }, seen(true), now, 'c1'), null);
+  // Campaign titles come from the declaration only; no issue title is fetched.
+  assert.equal(purpose({ purpose: null, repository: 'netbka/Dyk', trackingIssue: 443, tasks: [{}, {}] }), null);
 });
 
-test('each review says what to check, whether it is ready and what merging unlocks', (t) => {
+test('each review names the accepted commit, points to the pull request for CI and conflicts, and says what merging unlocks', (t) => {
   const { dataDir, store, d, finish } = fixture(t);
-  finish('T1', 'https://github.com/netbka/Dyk/pull/463', { attempts: 10, verified_sha: 'a'.repeat(40) });
-  finish('T2', 'https://github.com/netbka/Dyk/pull/464', { verified_sha: 'b'.repeat(40) });
+  finish('T1', 'https://github.com/netbka/Dyk/pull/463', { attempts: 10, verified_sha: A });
+  finish('T2', 'https://github.com/netbka/Dyk/pull/464', { verified_sha: B });
   const now = Date.now();
   store.insert('operations', { id: 'v1', campaign_id: d.campaignId, task_id: 'T1', kind: 'verify', seq: 1, idempotency_key: 'v1', lease_generation: 1,
     state: 'finished', session_id: 's', run_dir: join(dataDir, 'runs', 'v1'), workspace: 'w', packet: {}, packet_digest: 'p',
     outcome: { class: 'result', value: { verdict: 'rejected', summary: 'worker-secret' } }, created_at: now, updated_at: now, executor_kind: 'claude-cli' });
   const supervisor = supervisorSnapshot(dataDir);
   assert.equal(supervisor.campaigns[0].tasks[0].verifierRejections, 1);
-  const view = ownerView(supervisor, [source([pr(463, 'OPEN'), pr(464, 'MERGED'), { kind: 'issue', number: 443, title: 'WAVE-00: deliver the waves' }])], { host: 'HomePc' });
+  const merges = checked({ [`${d.campaignId}/T1`]: result(A, false), [`${d.campaignId}/T2`]: result(B, true) });
+  const view = ownerView(supervisor, merges, { host: 'HomePc' });
   assert.deepEqual(view.items.map((item) => item.kind), ['review', 'controller'], 'no live controller lease in this store: that needs the owner too');
   const [review, controller] = view.items;
   // Led by what the step delivers; the action and the pull request link sit beside it, the PR number appears once.
   assert.deepEqual([review.action, review.text, review.link], ['Review and merge', 'first task', { label: 'Open PR #463', url: 'https://github.com/netbka/Dyk/pull/463' }]);
-  assert.equal(review.evidence, 'Checker accepted aaaaaaa · conflicts and CI not confirmed');
-  assert.equal(review.detail, 'An independent checker accepted commit aaaaaaa; check conflicts and CI on GitHub before merging.',
-    'without GitHub merge data the acceptance is not "ready to merge"');
+  assert.equal(review.evidence, 'Checker accepted aaaaaaa · CI and conflicts on the PR');
+  assert.equal(review.detail, 'An independent checker accepted commit aaaaaaa. This dashboard does not read CI checks or conflicts; see them on the pull request before merging.',
+    'the dashboard reads no merge readiness: it never says "ready to merge"');
+  assert.equal(review.mergeCheck, null, 'a current merge check needs no note');
+  assert.ok(!/ready to merge/i.test(JSON.stringify(view)));
   assert.deepEqual(review.points.map((point) => point.text), ['Check its review history first: it took 10 tries and the checker rejected it 1 time before it was accepted.',
     'Merging lets T3 build on it.']);
   assert.equal(controller.text, `The supervisor on HomePc has not started ${d.campaignId} yet`, 'this store never had a controller lease');
   assert.match(controller.points[0].text, /no supervisor has picked it up\. If nobody is upgrading it right now, restart it there: .*“AIWorks Supervisor”/);
   const lapsed = { ...supervisor, campaigns: supervisor.campaigns.map((c) => ({ ...c, readiness: 'CONTROLLER_OFFLINE', leaseExpiresAt: new Date(now - 10 * 60_000).toISOString() })) };
-  const stopped = ownerView(lapsed, [], { host: 'HomePc', now }).items.find((item) => item.kind === 'controller');
+  const stopped = ownerView(lapsed, merges, { host: 'HomePc', now }).items.find((item) => item.kind === 'controller');
   assert.equal(stopped.text, `The supervisor on HomePc stopped running ${d.campaignId}`);
   assert.equal(stopped.at, now - 10 * 60_000);
-  assert.deepEqual(view.campaigns[d.campaignId].counts, { total: 3, delivered: 2, merged: 1, awaiting: 1, closed: 0, unknown: 0, reports: 0 });
-  assert.equal(view.campaigns[d.campaignId].purpose.text, 'Deliver the waves');
+  assert.deepEqual(view.campaigns[d.campaignId].counts, { total: 3, delivered: 2, merged: 1, awaiting: 1, checking: 0, unknown: 0, reports: 0 });
+  assert.equal(view.campaigns[d.campaignId].purpose, null, 'no declared purpose and several steps: the page shows the campaign id');
   assert.ok(!JSON.stringify(view).includes('worker-secret'));
-  const unknown = ownerView(supervisor, []);
+  const unknown = ownerView(supervisor, { repositories: [], steps: {} });
   assert.deepEqual(unknown.items.map((item) => item.kind), ['controller']);
-  assert.equal(unknown.unknownResults, 2, 'without GitHub metadata the two finished steps are unknown, not "nothing needs you"');
-  // When nothing else waits on the step, the owner's next gate is the release.
-  const done = { ...supervisor, campaigns: supervisor.campaigns.map((c) => ({ ...c, tasks: c.tasks.map((task) => task.id === 'T3' ? { ...task, state: 'done', resultUrl: null } : task) })) };
+  assert.equal(unknown.unknownResults, 2, 'before the first merge check the two finished steps are being checked, not "nothing needs you"');
+  // A step whose merge this computer cannot see is listed, and says why.
+  const unseen = ownerView(supervisor, checked({}, { configured: false, fetchedAt: null })).items.filter((item) => item.kind === 'review');
+  assert.equal(unseen.length, 2);
+  assert.equal(unseen[0].points[0].text, 'This computer has no checkout of the repository configured, so the merge cannot be seen here; check the pull request.');
+  // A stale check behind a review item says when it is from.
+  const old = now - 20 * 60_000;
+  const failing = ownerView(supervisor, checked(merges.steps, { fetchedAt: old, error: 'fetch-failed' }), { now }).items.filter((item) => item.kind === 'review');
+  assert.deepEqual(failing.map((item) => [item.text, item.mergeCheck]), [['first task', { at: old, reason: 'fetch-failed' }], ['second task', { at: old, reason: 'fetch-failed' }]],
+    'a merge seen before the fetch started failing is not shown as merged once the check is old');
   // When nothing else waits on the step, release follows the project's rule; the owner is not assumed to release.
-  assert.equal(ownerView(done, [source([pr(463, 'OPEN'), pr(464, 'MERGED')])]).items[0].points.at(-1).text,
+  const done = { ...supervisor, campaigns: supervisor.campaigns.map((c) => ({ ...c, tasks: c.tasks.map((task) => task.id === 'T3' ? { ...task, state: 'done', resultUrl: null } : task) })) };
+  assert.equal(ownerView(done, merges).items[0].points.at(-1).text,
     'Nothing else in this campaign waits on it; after merging, release follows Dyk\'s release policy.');
 });
 
 test('a working agent with a silent supervisor is said plainly, and same-titled campaigns are told apart', () => {
   const now = Date.now();
-  const campaign = (id) => ({ id, repository: 'netbka/Dyk', trackingIssue: 442, trackingUrl: 'https://github.com/netbka/Dyk/issues/442', purpose: null, control: 'registered',
+  const campaign = (id) => ({ id, repository: 'netbka/Dyk', trackingIssue: 442, trackingUrl: 'https://github.com/netbka/Dyk/issues/442', purpose: 'Run a controlled pilot', control: 'registered',
     controllerLive: false, livenessDefect: false, leaseExpiresAt: new Date(now - 10 * 60_000).toISOString(), blocker: null, tasks: [],
     agents: [{ heartbeatState: 'unknown', progress: { lastActivityAt: now - 30_000 } }] });
   const supervisor = { available: true, campaigns: [campaign('dyk-442-pilot-telegram'), campaign('dyk-442-pilot-whatsapp')], coordinator: null, recent: null };
-  const view = ownerView(supervisor, [source([{ kind: 'issue', number: 442, title: 'WAVE-06: run a controlled pilot' }])], { host: 'HomePc', now });
+  const view = ownerView(supervisor, checked(), { host: 'HomePc', now });
   assert.equal(view.items[0].text, 'An agent is still working, but the supervisor on HomePc stopped checking in');
   assert.equal(view.items[0].at, now - 10 * 60_000);
   assert.match(view.items[0].points[0].text, /result is collected and checked only when the supervisor runs again/);
@@ -134,8 +161,9 @@ test('campaigns with something for the owner and active ones come first; finishe
   const campaign = (id, control, extra = {}) => ({ id, repository: 'netbka/Dyk', trackingIssue: 443, trackingUrl: 'https://github.com/netbka/Dyk/issues/443',
     purpose: `Purpose of ${id}`, control, readiness: control === 'registered' ? 'ACTIVE' : control === 'finished' ? 'COMPLETE' : 'CANCELLED',
     controllerLive: control === 'registered', livenessDefect: false, leaseExpiresAt: null, blocker: null, tasks: [], agents: [], lastProgressAt: null, ...extra });
+  const sha = (number) => String(number).padStart(40, '0');
   const done = (id, number) => ({ id, title: `${id} title`, outcome: null, state: 'done', resultUrl: `https://github.com/netbka/Dyk/pull/${number}`, dependsOn: [],
-    attempts: 1, verifierRejections: 0, verifiedSha: null });
+    attempts: 1, verifierRejections: 0, verifiedSha: sha(number) });
   // Snapshot order: active first, then finished and cancelled campaigns by creation.
   const supervisor = { available: true, coordinator: null, recent: null, campaigns: [
     campaign('active', 'registered', { tasks: [{ ...done('A1', 1), state: 'pending', resultUrl: null }] }),
@@ -144,10 +172,12 @@ test('campaigns with something for the owner and active ones come first; finishe
     campaign('cancelled', 'cancelled', { tasks: [done('C1', 462), { ...done('C2', 0), state: 'pending', resultUrl: null }], lastProgressAt: hours(2) }),
     campaign('finished-new', 'finished', { tasks: [done('N1', 464)], lastProgressAt: hours(1) }),
   ] };
-  const view = ownerView(supervisor, [source([pr(461, 'MERGED'), pr(462, 'MERGED'), pr(463, 'OPEN'), pr(464, 'MERGED')])], { now });
+  const view = ownerView(supervisor, checked({ 'finished-old/O1': result(sha(461), true), 'cancelled/C1': result(sha(462), true),
+    'finished-review/R1': result(sha(463), false), 'finished-new/N1': result(sha(464), true) }), { now });
   assert.deepEqual(view.items.map((item) => item.campaignId), ['finished-review']);
   assert.deepEqual(view.layout, { cards: ['finished-review', 'active'], finished: ['finished-new', 'cancelled', 'finished-old'] });
   assert.equal(view.campaigns['finished-new'].outcome, 'The merged work is ready; release follows Dyk\'s release policy');
+  assert.equal(view.campaigns['finished-review'].finished, 'All steps are finished · 1 step waits for your review (merge not seen yet)');
   assert.equal(view.campaigns.cancelled.outcome, 'Cancelled · 1 of 2 steps delivered');
   assert.equal(view.campaigns.active.outcome, null);
   // The page follows that order, gives finished campaigns one line each, and shows no controls on a finished card.
@@ -161,8 +191,8 @@ test('campaigns with something for the owner and active ones come first; finishe
 test('the summary since the last visit counts merged, delivered, newly waiting and failed runs', (t) => {
   const { dataDir, store, d, finish } = fixture(t);
   const before = Date.now() - 60_000;
-  finish('T1', 'https://github.com/netbka/Dyk/pull/463');
-  finish('T2', 'https://github.com/netbka/Dyk/pull/464');
+  finish('T1', 'https://github.com/netbka/Dyk/pull/463', { verified_sha: A });
+  finish('T2', 'https://github.com/netbka/Dyk/pull/464', { verified_sha: B });
   store.journal(d.campaignId, 'published', { task: 'T1', url: 'https://github.com/netbka/Dyk/pull/463' }, Date.now());
   store.journal(d.campaignId, 'operation-finished', { op: 'x', class: 'result', terminal: 'rejected' }, Date.now());
   store.journal(d.campaignId, 'operation-finished', { op: 'y', class: 'timeout' }, Date.now());
@@ -172,10 +202,13 @@ test('the summary since the last visit counts merged, delivered, newly waiting a
   for (let i = 0; i < 3; i++) store.journal(d.campaignId, 'step-error', { message: 'raw error text' }, Date.now());
   store.journal(d.campaignId, 'liveness-defect', { tasks: [] }, Date.now());
   const supervisor = supervisorSnapshot(dataDir, Date.now(), { since: before });
-  const view = ownerView(supervisor, [source([pr(463, 'OPEN'), pr(464, 'MERGED', { mergedAt: new Date().toISOString() })])]);
+  // The merge time is the merge commit's time in local git.
+  const view = ownerView(supervisor, checked({ [`${d.campaignId}/T1`]: result(A, false), [`${d.campaignId}/T2`]: result(B, true, Date.now()) }));
   assert.equal(view.recent.delivered.length, 1, 'only publications since the last visit');
   assert.deepEqual(view.recent.waiting.map((item) => item.number), [463]);
   assert.deepEqual(view.recent.merged.map((item) => item.number), [464]);
+  const unknownTime = ownerView(supervisor, checked({ [`${d.campaignId}/T2`]: result(B, true, null) }));
+  assert.deepEqual(unknownTime.recent.merged, [], 'a merge without a known time (a fast-forward) is not claimed as recent');
   assert.equal(view.recent.failures, 2, 'a provider limit is a wait, not a failure, and supervisor errors are not agent runs');
   assert.equal(view.recent.rejected, 1);
   assert.deepEqual([view.recent.supervisorErrors, view.recent.livenessProblems], [3, 1]);
@@ -183,7 +216,7 @@ test('the summary since the last visit counts merged, delivered, newly waiting a
   assert.equal(supervisorSnapshot(dataDir).recent, null, 'no since: no summary');
 });
 
-test('stops, decisions, closed pull requests and an unreadable inbox need the owner; a pause by itself does not', (t) => {
+test('stops, decisions, unchecked merges and an unreadable inbox need the owner; a pause by itself does not', (t) => {
   const { dataDir, store, d, finish } = fixture(t, declaration({ tasks: three().map((task) => ({ ...task, outcome: `Owners get ${task.title}` })) }));
   finish('T1', 'https://github.com/netbka/Dyk/pull/465');
   const t2 = store.task(d.campaignId, 'T2');
@@ -193,13 +226,13 @@ test('stops, decisions, closed pull requests and an unreadable inbox need the ow
   const supervisor = supervisorSnapshot(dataDir);
   assert.equal(supervisor.campaigns[0].tasks[0].outcome, 'Owners get first task');
   assert.equal(supervisor.campaigns[0].pausedReason, 'Supervisor upgrade');
-  const view = ownerView(supervisor, [source([pr(465, 'CLOSED')])]);
+  const view = ownerView(supervisor, checked());
   const kinds = view.items.map((item) => item.kind);
   // No pause item: the pause is shown on the campaign card. This store never had a supervisor, though, and a paused
   // campaign still needs one, so that is listed.
-  assert.deepEqual(kinds, ['closed', 'decision', 'controller', 'coordinator']);
-  assert.deepEqual([view.items[0].action, view.items[0].text, view.items[0].link.label], ['Closed without merging', 'Owners get first task', 'Open PR #465']);
-  assert.match(view.items[0].points[0].text, /^It was checked and published, but its pull request was closed/);
+  assert.deepEqual(kinds, ['review', 'decision', 'controller', 'coordinator']);
+  assert.deepEqual([view.items[0].action, view.items[0].text, view.items[0].link.label], ['Review and merge', 'Owners get first task', 'Open PR #465']);
+  assert.equal(view.items[0].points[0].text, 'No verified commit is recorded, so the merge cannot be checked here; check the pull request.');
   assert.deepEqual([view.items[1].action, view.items[1].text], ['Decision needed', 'Owners get second task']);
   assert.ok(!view.items[1].points[0].text.includes('worker text'), 'stop reasons are supervisor words, never worker output');
   assert.equal(view.items[2].text, `The supervisor on its computer has not started ${d.campaignId} yet (it is paused)`);
@@ -215,9 +248,10 @@ const raw = (base, path, headers, method = 'GET') => new Promise((resolve, rejec
 
 test('a dashboard link opened from another site loads the page, while data and commands stay same-origin only', async (t) => {
   const { dataDir, d } = fixture(t);
-  const tracked = [];
-  const roadmap = { snapshot: () => ({ entries: [], sources: [], work: [] }), refresh: async () => {}, track: (repos) => tracked.push(...repos), sources: [] };
-  const server = createDashboardServer({ dataDir, roadmap, host: { name: 'TestPc', revision: 'abc1234def56' } });
+  let checks = 0;
+  const roadmap = { snapshot: () => ({ governance: { configured: true, code: null, reason: null }, entries: [] }) };
+  const merges = { refresh: () => { checks++; return Promise.resolve(); }, snapshot: () => ({ refreshing: false, repositories: [], steps: {} }) };
+  const server = createDashboardServer({ dataDir, roadmap, merges, host: { name: 'TestPc', revision: 'abc1234def56' } });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -234,5 +268,7 @@ test('a dashboard link opened from another site loads the page, while data and c
   const state = await (await fetch(`${base}/api/state`)).json();
   assert.deepEqual(state.host, { name: 'TestPc', revision: 'abc1234def56' });
   assert.equal(state.owner.available, true);
-  assert.deepEqual(tracked, [d.target.repository], 'campaign target repositories are always fetched');
+  assert.equal(checks, 1, 'only a same-origin state request starts a local merge check');
+  assert.deepEqual(state.merges, { refreshing: false, repositories: [] });
+  assert.ok(d.campaignId in state.owner.campaigns);
 });
