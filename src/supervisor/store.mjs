@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS executor_waits (
 CREATE TABLE IF NOT EXISTS provider_waits (
   account TEXT NOT NULL, executor_kind TEXT NOT NULL, retry_at INTEGER, reason TEXT NOT NULL,
   campaign_id TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (account, executor_kind));
+-- The scheduler's learned fan-out per campaign (scheduler.mjs): starts at 1, grows on useful results while work waited,
+-- shrinks on failures. Survives restart and takeover; the host ceiling and pressure gate still apply.
+CREATE TABLE IF NOT EXISTS capacity (
+  scope TEXT NOT NULL, id TEXT NOT NULL, value INTEGER NOT NULL, reason TEXT, updated_at INTEGER NOT NULL,
+  PRIMARY KEY (scope, id));
 CREATE TABLE IF NOT EXISTS events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT NOT NULL, kind TEXT NOT NULL,
   dedup_key TEXT UNIQUE, payload TEXT, received_at INTEGER NOT NULL, processed_at INTEGER);

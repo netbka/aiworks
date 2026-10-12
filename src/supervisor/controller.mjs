@@ -15,6 +15,7 @@ import { authorityDigest, campaignLimits, executorOrder, projectGovernance } fro
 import { campaignBudget } from './api.mjs';
 import { ACCOUNT_SCOPED, accountOf, accountWait, clearAccountWait, laterWait, setAccountWait } from './accounts.mjs';
 import { domainOf, pathsOutside, writeDomainConstraint } from './work-ownership.mjs';
+import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
 import { coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
 import { stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions } from './instructions.mjs';
@@ -119,6 +120,18 @@ export class Controller {
     this.ci = this.config.ciRepair?.enabled === true;
     this.ciNextAt = new Map();
     this.ciPolledAt = new Map();
+    // ADAPTIVE_SCHEDULER (slice RUN5): off unless the data-directory config enables it. Off, every campaign keeps one
+    // operation at a time and nothing below changes behaviour. On, campaigns only collect candidates while they settle,
+    // and one admission pass per tick starts at most one of them. Candidates, the campaigns that waited for fan-out and
+    // the last wait reasons are per-tick memory only; every admission input is a store row or a local git ref. The base
+    // check times and the PRs found merged at their exact head are caches: a restart reads them again.
+    this.sched = schedulerEnabled(this.config);
+    this.candidates = [];
+    this.fanoutWaited = new Set();
+    this.waitReasons = new Map();
+    this.domainWaits = [];
+    this.baseCheckedAt = new Map();
+    this.mergedHeads = new Set();
     const commands = config.commands ?? {};
     this.cmd = { codex: commands.codex, cursor: commands.cursor, agy: commands.agy, chrome: commands.chrome,
       claude: commands.claude ?? ['claude'], git: commands.git ?? ['git'], gh: commands.gh ?? ['gh'] };
@@ -147,6 +160,7 @@ export class Controller {
         if (!ids.includes(id) && (this.ciNextAt.get(id) ?? -Infinity) <= this.now()) ids.push(id);
       }
     }
+    this.candidates = [];
     for (const id of ids) {
       try {
         await this.step(id);
@@ -160,6 +174,14 @@ export class Controller {
           this.log(`campaign ${id} step failed: ${error.stack || error}`);
           try { this.store.journal(id, 'step-error', { message: String(error.message).slice(0, 500) }, this.now()); } catch { /* store unavailable */ }
         }
+      }
+    }
+    // Admission: at most one launch per tick across every campaign this instance holds (ADAPTIVE_SCHEDULER 4.1).
+    if (this.sched) {
+      try { await this.admit(); }
+      catch (error) {
+        if (error instanceof FencedError || error instanceof ConflictError) this.log(`admission retried next tick: ${error.message}`);
+        else this.log(`admission failed: ${error.stack || error}`);
       }
     }
     // The owner's coordinator inbox is its own single-slot lane with its own lease; it never takes a campaign slot.
@@ -469,6 +491,15 @@ export class Controller {
         change.blocked = { ...change.blocked, reason, fingerprint: record.fingerprint };
       }
       this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version, change, now);
+      // The learned fan-out follows real results (ADAPTIVE_SCHEDULER 4.4): +1 for a useful result while work of this
+      // campaign waited for fan-out, -1 for a failed run, back to 1 on thrash. Neutral and refunded runs change nothing.
+      if (this.sched) {
+        const run = classifyRun(op.kind, verdict);
+        const window = Math.max(...this.config.retryBackoffMs);
+        adjustFanout(this.store, { campaignId: ctx.id, bound: fanoutBound(campaign.declaration, hostCeiling(this.config)), run,
+          waited: this.fanoutWaited.has(ctx.id), thrash: run === 'failed' && thrashing(this.store, ctx.id, now, window), now });
+        if (run === 'useful') this.fanoutWaited.delete(ctx.id);
+      }
       // A probe run that returned a structured result got past the failure that held its parents.
       if (this.oi && verdict.class === 'result') this.probeSucceeded(ctx, op.task_id, { operation: op.id, detail: `${op.kind} run on ${op.executor_kind} returned a structured result` }, now);
       this.store.journal(ctx.id, 'operation-finished', {
@@ -851,12 +882,24 @@ export class Controller {
     const verified = runnable.filter((task) => task.state === 'verified');
     for (const task of verified) await this.publish(ctx, this.store.campaign(ctx.id), task);
     if (verified.length) return;
-    // One worker at a time per campaign until the scheduler admission pass replaces this check (slice RUN5).
-    if (this.store.openOperations(ctx.id).length) return;
+    // Without the scheduler: one worker at a time per campaign, as before. With it, the admission pass decides.
+    if (!this.sched && this.store.openOperations(ctx.id).length) return;
     const ready = runnable[0];
     if (!ready) return;
     if (campaign.blocker) return;
     const budget = campaignBudget(this.store, campaign);
+    // Open runs are reserved against a cost ceiling while they last: with work still running, an exhausted budget is a
+    // wait for those results, not yet the owner's budget decision (the one-slot path never gets here with a run open).
+    if (this.sched && budget.exhausted && this.store.openOperations(ctx.id).length) return;
+    if (this.sched && !budget.exhausted) {
+      // Settle only: every runnable task without an open operation becomes a candidate; admit() starts at most one.
+      const running = new Set(this.store.openOperations(ctx.id).map((op) => op.task_id));
+      for (const task of runnable.filter((item) => !running.has(item.task_id))) {
+        this.candidates.push({ ctx, campaignId: ctx.id, taskId: task.task_id, kind: task.state === 'pending' ? 'implement' : 'verify',
+          ord: task.ord, declaration: decl, createdAt: campaign.created_at });
+      }
+      return;
+    }
     if (budget.exhausted) {
       this.fenced(ctx, () => this.raiseBlocker(ctx, decl, {
         kind: 'budget', class: 'B3',
@@ -866,6 +909,97 @@ export class Controller {
       return;
     }
     await this.dispatch(ctx, campaign, ready, ready.state === 'pending' ? 'implement' : 'verify');
+  }
+
+  /** Admission inputs, all from store rows or local refs (ADAPTIVE_SCHEDULER 4.1). Host pressure is slice RUN7. */
+  admissionInputs() {
+    return {
+      ceiling: hostCeiling(this.config),
+      pressure: null,
+      providerWaiting: (candidate) => {
+        const task = this.store.task(candidate.campaignId, candidate.taskId);
+        return !this.executorChoice(candidate.declaration, task).executor;
+      },
+      integrated: (campaignId, row, decl) => this.inBase(decl, row.verified_sha) || this.mergedHeads.has(`${row.pr_url}#${row.verified_sha}`),
+    };
+  }
+
+  /**
+   * Published but unmerged work holds its write domain until it is in its base (ADAPTIVE_SCHEDULER 4.3). For each base
+   * where the last pass refused a step because of such a holder, refresh the base ref at most every integrationPollMs
+   * (inside the fenced transaction, like every fetch) and, for a holder whose verified head is not in it, read its PR
+   * once (REST): a merge at that exact head whose merge commit is in the base releases the domain too (squash or rebase
+   * merges leave the head itself out of the base). Without such a refusal nothing is fetched or read.
+   */
+  refreshPublished(refusals) {
+    const now = this.now();
+    const due = new Map();
+    for (const { candidate, refusal } of refusals) {
+      for (const holder of refusal.detail?.holders ?? []) {
+        if (holder.reason !== 'published-unmerged') continue;
+        const decl = this.store.campaign(holder.campaignId).declaration;
+        const key = `${decl.target.repository.toLowerCase()}\u0000${decl.target.baseBranch}`;
+        if ((this.baseCheckedAt.get(key) ?? -Infinity) + this.config.integrationPollMs > now) continue;
+        // The fetch is fenced by a lease this instance holds now: the refusal came from the last pass, its lease may be gone.
+        const ctx = this.candidates.find((item) => item.campaignId === candidate.campaignId)?.ctx;
+        if (!ctx) continue;
+        if (!due.has(key)) due.set(key, { ctx, decl, holders: new Map() });
+        due.get(key).holders.set(`${holder.campaignId}/${holder.taskId}`, holder);
+      }
+    }
+    for (const [key, { ctx, decl, holders }] of due) {
+      this.baseCheckedAt.set(key, now);
+      const repo = this.config.repositories?.[decl.target.repository];
+      if (!repo?.path) continue;
+      const fetched = this.fenced(ctx, () => this.fetchBase(repo.path, decl.target.baseBranch));
+      if (!fetched?.ok) continue;
+      for (const holder of holders.values()) {
+        const row = this.store.task(holder.campaignId, holder.taskId);
+        if (!row?.pr_url || !row.verified_sha || this.inBase(decl, row.verified_sha)) continue;
+        const merged = github.integratedPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, url: row.pr_url,
+          headSha: row.verified_sha, baseBranch: decl.target.baseBranch });
+        if (merged && this.inBase(decl, merged)) this.mergedHeads.add(`${row.pr_url}#${row.verified_sha}`);
+      }
+    }
+  }
+
+  /** Is this commit in the base as last fetched into refs/aiworks/base/<base>? Local read only; unknown counts as no. */
+  inBase(decl, sha) {
+    if (!/^[0-9a-f]{40}$/.test(sha ?? '')) return false;
+    const repo = this.config.repositories?.[decl.target.repository];
+    if (!repo?.path) return false;
+    return gitA.exec(this.cmd.git, ['merge-base', '--is-ancestor', sha, `refs/aiworks/base/${decl.target.baseBranch}`], { cwd: repo.path }).ok;
+  }
+
+  /**
+   * One admission pass (ADAPTIVE_SCHEDULER 4.1): order this tick's candidates fairly and start the first admissible one,
+   * at most one launch per tick. A candidate refused only by its campaign's fan-out marks that campaign as waiting, so
+   * its next useful result may raise the fan-out. Every other candidate keeps exactly one reason (status shows it, RUN9).
+   */
+  async admit() {
+    this.refreshPublished(this.domainWaits);
+    const inputs = this.admissionInputs();
+    const reasons = new Map();
+    const domainWaits = [];
+    let launched = false;
+    for (const candidate of orderCandidates(this.store, this.candidates)) {
+      const key = `${candidate.campaignId}/${candidate.taskId}`;
+      const refusal = admissionCheck(this.store, candidate, inputs);
+      if (refusal) {
+        reasons.set(key, refusal);
+        if (refusal.reason === 'campaign-fanout') this.fanoutWaited.add(candidate.campaignId);
+        if (refusal.reason === 'write-domain') domainWaits.push({ candidate, refusal });
+        continue;
+      }
+      // Admissible, but this tick already started one: it is next (one launch per tick keeps leases renewed on time).
+      if (launched || !this.held.has(candidate.campaignId)) { reasons.set(key, { reason: 'launch-turn' }); continue; }
+      const op = await this.dispatch(candidate.ctx, this.store.campaign(candidate.campaignId), this.store.task(candidate.campaignId, candidate.taskId),
+        candidate.kind, { admission: () => admissionCheck(this.store, candidate, inputs) });
+      // null means the recording transaction refused it (a race): the next candidate may still go this tick.
+      launched = Boolean(op);
+    }
+    this.waitReasons = reasons;
+    this.domainWaits = domainWaits;
   }
 
   repo(decl) {
@@ -961,11 +1095,14 @@ export class Controller {
     return fallback ? { executor: fallback, retryAt: null } : { executor: null, retryAt };
   }
 
-  async dispatch(ctx, campaign, task, kind) {
+  async dispatch(ctx, campaign, task, kind, { admission = null } = {}) {
     const op = this.fenced(ctx, () => {
       const current = this.store.campaign(ctx.id);
+      // The one-slot check, or with the scheduler the full admission predicate again, inside the transaction that
+      // records the operation: two instances admitting at once serialise here (ADAPTIVE_SCHEDULER 4.1).
+      const busy = admission ? Boolean(admission()) : this.store.openOperations(ctx.id).length > 0;
       if (current.control !== 'registered' || current.blocker || current.version !== campaign.version ||
-          this.store.openOperations(ctx.id).length || campaignBudget(this.store, current).exhausted) return null;
+          busy || campaignBudget(this.store, current).exhausted) return null;
       const decl = campaign.declaration;
       // The target project's own rules (Engineering Platform governance inheritance), resolved from the registry exactly as the registration gate matches.
       // Without them no new worker starts: there is no default project to fall back to.
@@ -1169,9 +1306,10 @@ export class Controller {
       attachInstructions(this.store, instructions, opId, now);
       return this.store.get('SELECT * FROM operations WHERE id = ?', opId);
     });
-    if (!op) return;
+    if (!op) return null;
     this.injectFault('after-record');
     await this.launch(ctx, op);
+    return op;
   }
 
   async launch(ctx, op) {
