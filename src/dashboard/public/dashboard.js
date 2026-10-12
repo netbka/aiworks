@@ -127,8 +127,8 @@ function showRoute() {
   if (state) render();
 }
 
-// Today's four summary cards, each on the screen that now answers it (OWNER_WORKSPACE §9): roadmap items on
-// Diagnostics, Needs you on Needs me, agents working on a project's Work, cost on its Cost tab.
+// Today's summary cards, each on the screen that now answers it (OWNER_WORKSPACE §9): roadmap items on Diagnostics,
+// Needs you on Needs me, agents working on a project's Work. Cost so far is the headline of a project's Cost tab (S7).
 function renderMetrics(campaigns = state.supervisor.campaigns, shown = []) {
   const entries = state.roadmap.entries;
   const agents = campaigns.flatMap((c) => c.agents);
@@ -138,11 +138,6 @@ function renderMetrics(campaigns = state.supervisor.campaigns, shown = []) {
   // "Nothing" is only about what blocks on the owner: reports to read and releases are named after it.
   const owner = state.owner ?? { items: [], unknownResults: 0, also: null }, attention = owner.items.length, unknown = owner.unknownResults;
   const available = state.supervisor.available;
-  const used = campaigns.reduce((n, c) => n + c.runsUsed, 0);
-  // Unknown cost is never shown as $0: finished runs without a reported cost and runs still in progress are "not reported".
-  const reported = campaigns.reduce((n, c) => n + c.recordedCostUsd, 0);
-  const unreported = campaigns.reduce((n, c) => n + (c.budget?.unknownCostRuns ?? 0) + c.agents.length, 0);
-  const delivered = campaigns.reduce((n, c) => n + (owner.campaigns?.[c.id]?.counts.delivered ?? 0), 0);
   const verdicts = agents.map((agent) => agentVerdict(agent)[0]);
   const metrics = [
     ['Platform roadmap items', entries.length, null, 'Definitions from the governance checkout; progress is tracked on GitHub', '☷'],
@@ -151,8 +146,6 @@ function renderMetrics(campaigns = state.supervisor.campaigns, shown = []) {
     ['Needs you', !available ? '—' : unknown && !attention ? '?' : attention, available && unknown && attention ? '+ ?' : null,
       !available ? 'Execution state unknown'
         : `${attention ? `${plural(attention, 'item')} listed below` : unknown ? 'Nothing confirmed yet' : 'Nothing is blocked on you'}${unknown ? ` · merge of ${plural(unknown, 'published step')} being checked` : ''}${owner.also ? ` · also ${owner.also.short}` : ''}`, '◈'],
-    ['Cost so far', !available ? '—' : reported > 0 ? usd(reported) : 'not reported', null, !available ? 'Supervisor unavailable'
-      : `${plural(used, 'run')} · ${delivered && reported > 0 ? `about ${usd(reported / delivered)} per delivered step` : 'no cost per step yet'}${unreported ? ` · ${plural(unreported, 'run')} not reported yet, so the real total is higher` : ''}`, '↗'],
   ];
   $('#metrics').replaceChildren(...metrics.filter(([title]) => shown.includes(title)).map(([title, value, total, foot, icon]) => el('div', { class: 'metric' },
     el('div', { class: 'metric-title' }, title, el('span', { class: 'metric-icon', 'aria-hidden': 'true' }, icon)),
@@ -862,6 +855,44 @@ function resultsScreen(project) {
       el('ul', { class: 'needs-list' }, ...group.rows.map(resultRow)))));
 }
 
+/**
+ * What a step or a piece of work cost, in words. Unknown cost is "not reported", never $0.00: a run that reported no cost
+ * is counted apart, and a run still in progress has no cost yet.
+ */
+function costText({ runs, reportedUsd, unreportedRuns, runningRuns }) {
+  if (!runs && !runningRuns && !unreportedRuns && reportedUsd === null) return 'Nothing has run';
+  const parts = [reportedUsd !== null ? `${usd(reportedUsd)} reported${unreportedRuns ? ` + ${plural(unreportedRuns, 'run')} not reported` : ''}`
+    : unreportedRuns ? `not reported (${plural(unreportedRuns, 'run')})` : null, runningRuns ? `${plural(runningRuns, 'run')} still running` : null];
+  return parts.filter(Boolean).join(' · ');
+}
+
+/**
+ * A project's Cost tab (OWNER_WORKSPACE §4.10, slice S7). First the project's reported total, from today's per-campaign
+ * totals, with the runs that reported no cost counted apart; then "See the breakdown": per piece of work and per step,
+ * its runs, reported cost, unreported runs, retries and checker rejections. No primary action.
+ */
+function costScreen(project, all) {
+  const total = state.supervisor.costs?.find((item) => sameProject(item.repository, project));
+  // Nothing has run: the §7.1 copy, which the server takes from the state copy module.
+  if (!total) return [unavailable()];
+  if (total.empty) return [empty(total.empty.title, total.empty.text)];
+  const withResult = all.reduce((n, c) => n + (ownerCampaign(c)?.counts.delivered ?? 0), 0);
+  const headline = total.reportedUsd !== null ? `${usd(total.reportedUsd)} reported for this project${withResult ? ` · about ${usd(total.reportedUsd / withResult)} per step with a result` : ''}`
+    : 'No cost reported for this project yet';
+  const lines = [total.unreportedRuns ? `${plural(total.unreportedRuns, 'run')} did not report a cost, so the real total is ${total.reportedUsd !== null ? 'higher' : 'not known'}.` : null,
+    total.runningRuns ? `${plural(total.runningRuns, 'run')} still running; ${total.runningRuns === 1 ? 'its' : 'their'} cost is not known yet.` : null,
+    `${plural(total.runs, 'run')} in ${plural(total.works, 'piece')} of work.`].filter(Boolean);
+  const work = (c) => el('section', { class: 'panel', 'data-focus-scope': `cost/${c.id}` },
+    el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, campaignTitle(c)),
+      el('p', {}, `${plural(c.runsUsed, 'run')} · ${costText({ runs: c.runsUsed, ...c.cost })}`))),
+    el('div', { class: 'steps' }, table(['Step', 'Runs', 'Cost', 'Retries', 'Checker rejections'], runOrder(c).map((task) => el('tr', { 'data-focus-scope': `cost/${c.id}/${task.id}` },
+      el('td', { class: 'c-work' }, routeLink(task.outcome ?? task.title, { screen: 'step', project, work: c.id, step: task.id }, 'task-name')),
+      cell(String(task.cost.runs)), cell(costText(task.cost)), cell(String(task.cost.retries)), cell(String(task.cost.checkerRejections)))))),
+    costNotes(c).body);
+  return [el('section', { class: 'panel' }, el('h2', {}, headline), ...lines.map((line) => el('p', {}, line))),
+    disclosure(`cost/${project}`, 'See the breakdown', el('div', {}, ...all.map(work)))];
+}
+
 /** One project's screens. Campaign cards, step tables and costs are today's, limited to this project. */
 function projectScreen(route) {
   const project = route.project, all = projectCampaigns(project);
@@ -887,7 +918,7 @@ function projectScreen(route) {
       cards.length ? null : empty('Nothing is running or waiting in this project', 'Finished work is under Results.')].filter(Boolean);
   }
   if (route.tab === 'results') return [resultsScreen(project), finishedList(finished)].filter(Boolean);
-  if (route.tab === 'cost') return all.map((c) => panel(campaignTitle(c), `Campaign ${c.id}`, costNotes(c).body));
+  if (route.tab === 'cost') return costScreen(project, all);
   return cards.length ? [...cards.map((c) => campaignCard(c, false))] : [empty('No work is running in this project', 'Finished work and its results are under Results.')];
 }
 
@@ -898,7 +929,7 @@ function render() {
   const focused = content.contains(document.activeElement) ? focusKey(document.activeElement) : null;
   const diagnostics = route.screen === 'settings' && route.section === 'diagnostics';
   renderMetrics(route.project ? projectCampaigns(route.project) : state.supervisor.campaigns, diagnostics ? ['Platform roadmap items']
-    : route.screen === 'project' && route.tab === 'work' ? ['Agents working'] : route.screen === 'project' && route.tab === 'cost' ? ['Cost so far'] : []);
+    : route.screen === 'project' && route.tab === 'work' ? ['Agents working'] : []);
   if (route.screen === 'needs') content.replaceChildren(needsYou() ?? unavailable());
   else if (route.screen === 'settings' && route.section === 'messages') content.replaceChildren(messagesPanel(20));
   else if (diagnostics) content.replaceChildren(trackOverview(), roadmapView(), workView(),
