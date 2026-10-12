@@ -5,7 +5,9 @@ import { test } from 'node:test';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { campaignPause, campaignRecheck, campaignStart, campaignStatus } from '../../src/supervisor/api.mjs';
-import { classify, prepare, refusedBeforeWork, unavailableReason, roleUnavailableReason } from '../../src/supervisor/adapters/executors.mjs';
+import { buildPrompt, classify, GATE_RULES, prepare, refusedBeforeWork, unavailableReason, roleUnavailableReason, VERIFIER_TALLY_RULE } from '../../src/supervisor/adapters/executors.mjs';
+import * as agy from '../../src/supervisor/adapters/agy.mjs';
+import * as claude from '../../src/supervisor/adapters/claude.mjs';
 import { scopeDigest, validateDeclaration } from '../../src/supervisor/campaign.mjs';
 import { declaration, environment, SQLITE, skipWithoutSqlite } from './helpers.mjs';
 
@@ -413,4 +415,36 @@ test('completed planning campaigns name their actual target without claiming PR 
   assert.equal(c.control, 'finished');
   assert.match(c.next_action, /Planning reports published in test\/wiki/);
   assert.doesNotMatch(c.next_action, /Dyk|merge the campaign PRs/);
+});
+
+const promptArgs = (role, deliverable, changes = {}) => ({ executorKind: 'claude-cli', web: null, role, deliverable,
+  packet: { taskId: 'T1', goal: 'synthetic', governance: { project: 'demo', policies: [], authorities: [], exceptions: [], gaps: [] } },
+  packetDigest: digest, repository: 'owner/demo', issue: 7, branch: 'campaign/c/T1', baseSha: 'b'.repeat(40), targetSha: 'c'.repeat(40),
+  report: role === 'verification' ? 'Report: # tests 3, # pass 3' : null, reportDigest: 'd'.repeat(64), note: null, instructions: [], ...changes });
+
+test('commit and report prompts tell workers CI runs on Linux and to copy tallies; verifiers block a mismatched tally (#42, #43)', () => {
+  for (const deliverable of ['commit', 'report']) {
+    for (const role of ['implementer', 'verification']) {
+      const args = promptArgs(role, deliverable);
+      const prompt = buildPrompt(args);
+      assert.match(prompt, /CI runs npm run check on ubuntu-latest/);
+      assert.match(prompt, /guard itself with a skip that names the reason.*without weakening what it checks on Windows/);
+      assert.match(prompt, /Copy test summary lines verbatim.*# tests, # pass, # fail, # skipped.*never retype/);
+      assert.equal(prompt.includes(VERIFIER_TALLY_RULE), role === 'verification', `${role} ${deliverable}`);
+      if (role === 'verification') assert.match(prompt, /does not match your own re-run of the same gate at the same head is a blocking finding/);
+      // Every existing line stays, in order: removing the added rules gives the unchanged base prompt.
+      const added = [...GATE_RULES, ...(role === 'verification' ? [VERIFIER_TALLY_RULE] : [])];
+      assert.equal(prompt.split('\n').filter((line) => !added.includes(line)).join('\n'), claude.buildPrompt(args));
+      assert.ok(prompt.indexOf(GATE_RULES[0]) < prompt.indexOf('Task packet (sha256 '), 'the rules precede the packet');
+    }
+  }
+});
+
+test('web-task prompts are the unchanged browser prompt and carry no gate rules', () => {
+  for (const role of ['implementer', 'verification']) {
+    const args = promptArgs(role, 'report', { web: { urls: ['https://example.test/'] } });
+    const prompt = buildPrompt(args);
+    assert.equal(prompt, agy.buildPrompt(args));
+    for (const rule of [...GATE_RULES, VERIFIER_TALLY_RULE]) assert.ok(!prompt.includes(rule));
+  }
 });
