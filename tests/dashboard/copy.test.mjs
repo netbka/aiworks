@@ -232,11 +232,21 @@ test('the copy module runs in the page as it is, and the Now screen takes its se
   const module = readFileSync(join(ROOT, 'src/dashboard/copy.mjs'), 'utf8'), page = readFileSync(join(ROOT, 'src/dashboard/public/dashboard.js'), 'utf8');
   // No imports and no Node or DOM globals: the browser and Node load the same file.
   assert.doesNotMatch(module, /^\s*import\s|require\(|\bprocess\.|\bdocument\.|\bwindow\.|\blocalStorage\b/m);
-  // The page loads it, and today's view stays while it cannot (the server serves it at /copy.mjs).
-  assert.match(page, /const copy = await import\('\/copy\.mjs'\)\.catch\(\(\) => null\);/);
-  assert.match(page, /copy\.nowView\(project, \{ \.\.\.state, offline \}/);
-  // §7 sentences are written once, in the module.
-  for (const sentence of ['Can’t reach AIWorks on this computer.', 'AIWorks is a few minutes late checking in.', 'Waiting for an AI worker to be free.',
+  // The page imports it like the router (the server serves it at /copy.mjs) and takes Now from it.
+  assert.match(page, /^import \{ nowView \} from '\/copy\.mjs';$/m);
+  assert.match(page, /nowView\(project, \{ \.\.\.state, offline \}/);
+  // Two exceptions: the empty states of Projects and of a project's other tabs (§7.1) stay written in the page as
+  // well, because UI3's test in projects.test.mjs reads them there. The module's 'projects-empty' and 'no-work' have
+  // the same words.
+  const kept = ['No projects yet.', 'Projects appear here when this computer’s AIWorks settings list a repository. Adding a project from this page is not built yet.', 'No work yet.'];
+  assert.deepEqual([stateCopy('projects-empty').title, stateCopy('projects-empty').text, stateCopy('no-work').title], kept);
+  assert.ok(page.includes(`empty('${kept[0]}', '${kept[1]}')`));
+  assert.ok(page.includes("empty('No work yet.', `Work in ${projectName(project)} appears here once it is registered on this computer. Starting work from this page is not built yet.`)"));
+  assert.equal(stateCopy('no-work', { project: 'example/notes-site' }).text, 'Work in notes-site appears here once it is registered on this computer. Starting work from this page is not built yet.');
+  // Every other §7 sentence is written once, in the module: no whole sentence of the module's copy appears in the page.
+  const sentences = [...module.matchAll(/'([A-Z][^'\n]*[.…])'/g)].map((m) => m[1]).filter((sentence) => !kept.includes(sentence));
+  assert.ok(sentences.length > 30, `found ${sentences.length} sentences`);
+  for (const sentence of [...sentences, 'Can’t reach AIWorks on this computer.', 'AIWorks is a few minutes late checking in.', 'Waiting for an AI worker to be free.',
     'One step is stopped; the others continue.', 'All steps are finished and merged.', 'Stopped: needs your decision.']) {
     assert.ok(module.includes(sentence), sentence);
     assert.ok(!page.includes(sentence), `dashboard.js repeats: ${sentence}`);

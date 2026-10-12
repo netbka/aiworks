@@ -1,8 +1,6 @@
 import { formatRoute, globalOf, resolveRoute, tabOf } from '/router.mjs';
-
-// The state copy of OWNER_WORKSPACE §7 and the Now screen live in src/dashboard/copy.mjs (slice S4). The page loads it
-// from /copy.mjs once the server serves it there; until then the import fails and Now shows today's view.
-const copy = await import('/copy.mjs').catch(() => null);
+// The state copy of OWNER_WORKSPACE §7 and the Now screen (slice S4); the server serves src/dashboard/copy.mjs here.
+import { nowView } from '/copy.mjs';
 
 const $ = (selector) => document.querySelector(selector);
 const names = { done: 'Done', blocked: 'Blocked', unknown: 'Unknown',
@@ -735,7 +733,7 @@ function primaryAction(primary) {
  * polite live region, so a screen reader hears it only when its text changes.
  */
 function nowScreen(project) {
-  const view = copy.nowView(project, { ...state, offline }, { now: Date.now() }), { state: now, details } = view;
+  const view = nowView(project, { ...state, offline }, { now: Date.now() }), { state: now, details } = view;
   const goal = view.goal ? `${view.goal.text}${view.goal.variant ? ` (${view.goal.variant})` : ''}` : null;
   const since = view.since?.length ? el('section', { class: 'since', 'aria-labelledby': 'since-title' },
     el('h2', { id: 'since-title' }, previousVisit ? `Since you last looked (${dateTime(previousVisit)})` : 'In the last 24 hours'),
@@ -757,7 +755,7 @@ function nowScreen(project) {
 function projectScreen(route) {
   const project = route.project, all = projectCampaigns(project);
   // Now from the state copy module, for a project this computer knows (or while its state cannot be read).
-  if (copy && route.screen === 'project' && route.tab === 'now' && (offline || !state.supervisor.available || all.length ||
+  if (route.screen === 'project' && route.tab === 'now' && (offline || !state.supervisor.available || all.length ||
     projectList().some((item) => sameProject(item.id, project)))) return nowScreen(project);
   if (!state.supervisor.available) return [unavailable()];
   // A repository this computer's settings list, with no work yet (OWNER_WORKSPACE §7.1). Starting work here is not built yet.

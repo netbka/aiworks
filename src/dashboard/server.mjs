@@ -13,6 +13,8 @@ const staticFiles = new Map([
   ['/dashboard.css', ['dashboard.css', 'text/css; charset=utf-8']],
   ['/dashboard.js', ['dashboard.js', 'text/javascript; charset=utf-8']],
   ['/router.mjs', ['router.mjs', 'text/javascript; charset=utf-8']],
+  // The state copy module (OWNER_WORKSPACE S4): one file that both the page and Node load.
+  ['/copy.mjs', ['../copy.mjs', 'text/javascript; charset=utf-8']],
 ]);
 
 /**
