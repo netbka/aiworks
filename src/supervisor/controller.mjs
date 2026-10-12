@@ -1054,7 +1054,7 @@ export class Controller {
       const c = this.store.campaign(ctx.id);
       const t = this.store.task(ctx.id, task.task_id);
       if (t.version !== task.version) return null;
-      this.store.insert('operations', {
+      this.store.recordOperation({
         id: opId, campaign_id: ctx.id, task_id: task.task_id, kind, seq, idempotency_key: opId, lease_generation: ctx.generation,
         state: 'recorded', session_id: sessionId, run_dir: runDir, workspace, base_sha: revision, target_sha: targetSha,
         report_digest: reportDigest, packet, packet_digest: digest, outcome: null, created_at: now, updated_at: now,

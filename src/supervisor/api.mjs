@@ -104,13 +104,14 @@ export function campaignStart(store, declaration, now = Date.now()) {
 export function campaignBudget(store, c) {
   const limits = campaignLimits(c.declaration);
   const measured = Math.round(c.cost_usd * 10000) / 10000;
-  const unknownRuns = store.all("SELECT outcome FROM operations WHERE campaign_id = ? AND state = 'finished'", c.id)
-    .filter((op) => !runNotCounted(op.outcome) && !(op.outcome?.receipt?.costUsd > 0)).length;
+  const rows = store.all("SELECT state, outcome FROM operations WHERE campaign_id = ? AND state IN ('finished', 'recorded', 'dispatched')", c.id);
+  const open = (op) => op.state === 'recorded' || op.state === 'dispatched';
+  const unknownRuns = rows.filter((op) => !open(op) && !runNotCounted(op.outcome) && !(op.outcome?.receipt?.costUsd > 0)).length;
   const maxCostUsd = limits.maxCostUsd ?? null;
   const unknownRunCostUsd = limits.unknownRunCostUsd ?? null;
   // Under a declared ceiling every open run is reserved at the declared unknown-run price until it finishes, so runs
   // that overlap cannot together overshoot it (ADAPTIVE_SCHEDULER row 13). Without a ceiling nothing is reserved.
-  const reservedRuns = maxCostUsd !== null ? store.openOperations(c.id).length : 0;
+  const reservedRuns = maxCostUsd !== null ? rows.filter(open).length : 0;
   const charged = maxCostUsd !== null ? Math.round((measured + (unknownRuns + reservedRuns) * (unknownRunCostUsd ?? 0)) * 10000) / 10000 : null;
   const exhausted = limits.maxWorkerRuns !== null && c.runs_used >= limits.maxWorkerRuns ? `worker-run cap reached (${c.runs_used}/${limits.maxWorkerRuns})`
     : maxCostUsd !== null && charged >= maxCostUsd ? `cost ceiling reached ($${charged.toFixed(2)} charged of $${maxCostUsd.toFixed(2)}; ${unknownRuns} run(s) with unreported cost and ${reservedRuns} open run(s) priced at $${(unknownRunCostUsd ?? 0).toFixed(2)})`
@@ -147,8 +148,9 @@ export function campaignStatus(store, id, now = Date.now()) {
     campaignId: c.id,
     store: store.identity,
     observedAt: new Date(now).toISOString(),
+    // With several open operations the phase reads `verify` only while every one of them verifies.
     phase: !live ? readiness : c.control !== 'registered' ? readiness
-      : c.blocker ? c.status : operations.length ? (operations.every((op) => op.kind === operations[0].kind) ? operations[0].kind : 'implement')
+      : c.blocker ? c.status : operations.length ? (operations.find((op) => op.kind !== 'verify') ?? operations[0]).kind
         : providerWaitUntil ? 'provider-wait' : c.status,
     providerWaitUntil: providerWaitUntil ? new Date(providerWaitUntil).toISOString() : null,
     lastProgressAt: progress?.at ? new Date(progress.at).toISOString() : null,

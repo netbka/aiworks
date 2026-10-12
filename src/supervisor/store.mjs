@@ -42,9 +42,6 @@ CREATE TABLE IF NOT EXISTS operations (
   base_sha TEXT, target_sha TEXT, report_digest TEXT, packet TEXT NOT NULL, packet_digest TEXT NOT NULL,
   outcome TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
   executor_kind TEXT NOT NULL DEFAULT 'claude-cli');
--- One open operation per task, whatever the campaign's parallelism: a second worker on the same task is a store error.
-CREATE UNIQUE INDEX IF NOT EXISTS operations_one_open_per_task ON operations (campaign_id, task_id)
-  WHERE state IN ('recorded', 'dispatched');
 CREATE TABLE IF NOT EXISTS executor_waits (
   campaign_id TEXT NOT NULL, executor_kind TEXT NOT NULL, retry_at INTEGER,
   reason TEXT NOT NULL, PRIMARY KEY (campaign_id, executor_kind));
@@ -172,6 +169,16 @@ export class Store {
   insert(table, row) {
     const keys = Object.keys(row);
     this.run(`INSERT INTO ${table} (${keys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`, ...keys.map((key) => row[key]));
+  }
+
+  /**
+   * Record an operation. One task has at most one open operation, whatever the campaign's parallelism: its implementer
+   * and its verifier never overlap. Called inside the dispatch transaction, so the check and the insert commit together.
+   */
+  recordOperation(row) {
+    const open = this.get("SELECT id FROM operations WHERE campaign_id = ? AND task_id = ? AND state IN ('recorded', 'dispatched')", row.campaign_id, row.task_id);
+    if (open) throw new ConflictError(`task ${row.task_id} of ${row.campaign_id} already has the open operation ${open.id}`);
+    this.insert('operations', row);
   }
 
   /** Compare-and-swap update for versioned rows (campaigns, tasks). */

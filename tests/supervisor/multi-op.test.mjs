@@ -1,18 +1,17 @@
 // RUN2 (ADAPTIVE_SCHEDULER slice S2): the controller stays correct when more than one operation is open, before the
 // scheduler (RUN5) admits a second worker. Publication runs while a worker runs, the base comes from an explicit ref,
-// a process-ownership blocker belongs to its own operation, status names every open operation, the store refuses a
-// second open operation for one task, and a declared cost ceiling reserves open runs. Workers are played by the test
-// through the controller's own result path (applyOutcome), so nothing is spawned and the tests run on Linux CI too.
-// No model, network or GitHub call: a disposable git origin and the synthetic gh of helpers.mjs.
+// an unknown launch's process-ownership blocker belongs to its own operation, status names every open operation, the
+// store refuses a second open operation for one task, and a declared cost ceiling reserves open runs. Workers are
+// played by the test through the controller's own result path (applyOutcome), so nothing is spawned and the tests run
+// on Linux CI too. No model, network or GitHub call: a disposable git origin and the synthetic gh of helpers.mjs.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../../src/supervisor/store.mjs';
-import { campaignBudget, campaignStart } from '../../src/supervisor/api.mjs';
-import { validateDeclaration } from '../../src/supervisor/campaign.mjs';
+import { campaignBudget, campaignStart, campaignStatus } from '../../src/supervisor/api.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
 import { branchName } from '../../src/supervisor/adapters/git.mjs';
 import { declaration, environment } from './helpers.mjs';
@@ -67,7 +66,7 @@ function rig(t, { tasks, limits = {}, gitCommand = null, config = {} } = {}) {
   };
 }
 
-test('a verified task publishes while another task of the same campaign runs', async (t) => {
+test('a verified task publishes while another task runs', async (t) => {
   // The stubbed T2 worker writes no runner receipt; a long start grace keeps that from raising an ownership blocker
   // while the clock jumps past GitHub's reset.
   const r = rig(t, { tasks: [commitTask('T1', 701), commitTask('T2', 702)], config: { startGraceMs: 60 * 60_000, staleMs: 60 * 60_000 } });
@@ -92,7 +91,7 @@ test('a verified task publishes while another task of the same campaign runs', a
   assert.equal(r.env.prs().filter((pr) => pr.head === branchName(r.id, 'T1')).length, 1, 'exactly one PR for T1');
 });
 
-test('a base is read from its own ref, never from FETCH_HEAD that another fetch overwrote', async (t) => {
+test('stale FETCH_HEAD never becomes a task base', async (t) => {
   // A git wrapper that, after every fetch, fetches a decoy branch as a concurrent fetch in the same checkout would:
   // that leaves FETCH_HEAD at the decoy's tip.
   const dir = mkdtempSync(join(tmpdir(), 'aiworks-git-wrapper-'));
@@ -138,77 +137,102 @@ test('a base is read from its own ref, never from FETCH_HEAD that another fetch 
   assert.equal(git(op.workspace, 'rev-parse', 'HEAD'), merged);
 });
 
-test('a process-ownership blocker is cleared only by the operation it names', async (t) => {
-  const r = rig(t, { tasks: [commitTask('T1', 721)] });
-  await r.tick();
-  const block = (operation) => {
-    const c = r.store.campaign(r.id);
-    r.store.patch('campaigns', { id: r.id }, c.version, { blocker: { kind: 'process-ownership', class: 'B4', operation,
-      reason: `process ownership is unresolved for ${operation}`, requestedAction: 'reconcile', at: Date.now() } }, Date.now());
-  };
-  block('another-operation');
-  r.implement('T1');
-  assert.equal(r.store.campaign(r.id).blocker?.operation, 'another-operation', 'a different operation finishing proves nothing about it');
+/**
+ * An open operation row as dispatch records it (through the store's one-open-operation rule), for a task the one-slot
+ * controller would not start yet. Its run directory exists, as dispatch writes it before the record.
+ */
+const openRow = (r, taskId, kind, { seq = 1, state = 'dispatched' } = {}) => {
+  const now = Date.now(), id = `${r.id}.${taskId}.${kind}.${seq}`, runDir = join(r.env.dataDir, 'runs', id);
+  mkdirSync(runDir, { recursive: true });
+  r.store.recordOperation({ id, campaign_id: r.id, task_id: taskId, kind, seq, idempotency_key: id, lease_generation: 1, state,
+    session_id: `session-${taskId}-${seq}`, run_dir: runDir, workspace: `ws-${id}`, packet: {}, packet_digest: 'digest', created_at: now, updated_at: now });
+  return { id, runDir };
+};
 
-  const c = r.store.campaign(r.id);
-  r.store.patch('campaigns', { id: r.id }, c.version, { blocker: null }, Date.now());
+test('an unknown launch holds its domain and capacity', async (t) => {
+  // Blocker part (S2): a launch marker without a runner receipt raises a process-ownership blocker for that operation
+  // only. Another operation's success does not clear it, and the unknown operation stays open, so it keeps counting.
+  const r = rig(t, { tasks: [commitTask('T1', 721), commitTask('T2', 722)] });
   await r.tick();
-  const verify = r.openOp('T1', 'verify');
-  block(verify.id);
-  r.verify('T1');
+  r.openOp('T1', 'implement');
+  const unknown = openRow(r, 'T2', 'implement', { state: 'recorded' });
+  writeFileSync(join(unknown.runDir, 'launch.json'), JSON.stringify({ operationId: unknown.id, at: Date.now() }));
+  r.advance(r.controller.config.startGraceMs + 60_000); // the row was stamped with the real clock, a little after the rig clock started
+  await r.tick();
+  assert.equal(r.store.campaign(r.id).blocker?.kind, 'process-ownership');
+  assert.equal(r.store.campaign(r.id).blocker.operation, unknown.id, 'the blocker names the operation whose launch is unknown');
+
+  r.implement('T1');
+  assert.equal(r.store.task(r.id, 'T1').state, 'implemented', 'T1 succeeded');
+  assert.equal(r.store.campaign(r.id).blocker?.operation, unknown.id, 'another operation succeeding proves nothing about the unknown launch');
+  await r.tick();
+  assert.deepEqual(r.store.openOperations(r.id).map((op) => op.id), [unknown.id], 'the unknown launch stays open and nothing replaces it');
+  assert.equal(r.store.campaign(r.id).blocker?.operation, unknown.id);
+
+  // Its own settlement clears it.
+  r.controller.applyOutcome(r.ctx(), r.store.openOperations(r.id)[0], { class: 'lost', detail: 'containment confirmed the run stopped' });
   assert.equal(r.store.campaign(r.id).blocker, null, 'its own operation settling clears it');
 });
-
-/** An open operation row as dispatch records it, for a task the one-slot controller would not start yet. */
-const openRow = (store, campaignId, taskId, kind, seq = 1) => {
-  const now = Date.now(), id = `${campaignId}.${taskId}.${kind}.${seq}`;
-  store.run(`INSERT INTO operations (id, campaign_id, task_id, kind, seq, idempotency_key, lease_generation, state, session_id,
-    run_dir, workspace, packet, packet_digest, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, 'dispatched', ?, ?, ?, '{}', 'digest', ?, ?)`,
-  id, campaignId, taskId, kind, seq, id, `session-${taskId}-${seq}`, `run-${id}`, `ws-${id}`, now, now);
-  return id;
-};
 
 test('status names every open operation and reads verifying only while all of them verify', async (t) => {
   const r = rig(t, { tasks: [commitTask('T1', 731), commitTask('T2', 732)] });
   await r.tick();
   const first = r.openOp('T1', 'implement');
-  const second = openRow(r.store, r.id, 'T2', 'verify');
+  const second = openRow(r, 'T2', 'verify').id;
   r.controller.refreshStatus(r.ctx());
   let c = r.store.campaign(r.id);
   assert.equal(c.status, 'active', 'one implementer still runs');
   assert.match(c.next_action, new RegExp(`operation ${first.id}`));
   assert.match(c.next_action, new RegExp(`operation ${second}`));
+  let status = campaignStatus(r.store, r.id);
+  assert.deepEqual(status.openOperations.map((op) => op.id).sort(), [first.id, second].sort());
+  assert.equal(status.phase, 'implement', 'the phase is not verify while an implementer runs');
 
   r.implement('T1');
   r.controller.refreshStatus(r.ctx());
   c = r.store.campaign(r.id);
   assert.equal(c.status, 'verifying', 'the only open operation verifies');
   assert.match(c.next_action, /^verify T2 running/);
+  status = campaignStatus(r.store, r.id);
+  assert.deepEqual([status.phase, status.openOperations.length], ['verify', 1]);
 });
 
 test('the store refuses a second open operation for one task', async (t) => {
-  const r = rig(t, { tasks: [commitTask('T1', 741)] });
+  const r = rig(t, { tasks: [commitTask('T1', 741), commitTask('T2', 742)] });
   await r.tick();
-  r.openOp('T1', 'implement');
-  assert.throws(() => openRow(r.store, r.id, 'T1', 'verify', 2), /UNIQUE constraint failed/);
-  // A finished operation does not count: the next attempt of the same task is admitted.
+  const running = r.openOp('T1', 'implement');
+  assert.throws(() => openRow(r, 'T1', 'verify', { seq: 2 }), (error) => error.message.includes(`already has the open operation ${running.id}`));
+  assert.doesNotThrow(() => openRow(r, 'T2', 'implement'), 'another task of the campaign may have its own open operation');
+  // A finished operation does not count: the next attempt of the same task is recorded.
   r.implement('T1');
-  assert.doesNotThrow(() => openRow(r.store, r.id, 'T1', 'verify', 2));
+  assert.doesNotThrow(() => openRow(r, 'T1', 'verify', { seq: 2 }));
 });
 
-test('a declared cost ceiling reserves every open run at the unknown-run price', () => {
-  const d = declaration();
-  const ceiling = validateDeclaration({ ...d, limits: { ...d.limits, maxCostUsd: 10, unknownRunCostUsd: 3 } });
-  const fake = (finished, open) => ({ all: () => finished, openOperations: () => open });
-  const campaign = { id: 'c', cost_usd: 4, runs_used: 3, declaration: ceiling };
-  const measured = { outcome: { class: 'result', receipt: { costUsd: 4 } } };
-  const unknown = { outcome: { class: 'result', receipt: { costUsd: null } } };
-  assert.equal(campaignBudget(fake([measured, unknown], []), campaign).exhausted, null, '4 + 3 < 10');
-  const reserving = campaignBudget(fake([measured, unknown], [{ id: 'open-1' }]), campaign);
-  assert.equal(reserving.reservedRuns, 1);
-  assert.equal(reserving.chargedCostUsd, 10, '4 measured + 3 unknown + 3 reserved');
-  assert.match(reserving.exhausted, /cost ceiling reached .*1 open run/);
-  const noCeiling = { ...campaign, declaration: { ...ceiling, limits: { maxWorkerRuns: null } } };
-  const free = campaignBudget(fake([], [{ id: 'open-1' }, { id: 'open-2' }]), noCeiling);
-  assert.deepEqual([free.reservedRuns, free.chargedCostUsd, free.exhausted], [0, null, null], 'nothing is reserved without a declared ceiling');
+test('cost ceiling reserves open runs', async (t) => {
+  // Ceiling $10; each run without a reported cost is priced at $3. Measured spend is $4.
+  const r = rig(t, { tasks: [commitTask('T1', 751), commitTask('T2', 752), commitTask('T3', 753)], limits: { maxCostUsd: 10, unknownRunCostUsd: 3 } });
+  const c = r.store.campaign(r.id);
+  r.store.patch('campaigns', { id: r.id }, c.version, { cost_usd: 4 }, Date.now());
+  assert.equal(campaignBudget(r.store, r.store.campaign(r.id)).exhausted, null, '$4 with nothing open');
+  await r.tick();
+  r.openOp('T1', 'implement');
+  let budget = campaignBudget(r.store, r.store.campaign(r.id));
+  assert.deepEqual([budget.reservedRuns, budget.chargedCostUsd, budget.exhausted], [1, 7, null], '$4 plus one open run at $3');
+  openRow(r, 'T2', 'implement');
+  budget = campaignBudget(r.store, r.store.campaign(r.id));
+  assert.deepEqual([budget.reservedRuns, budget.chargedCostUsd], [2, 10]);
+  assert.match(budget.exhausted, /cost ceiling reached .*2 open run\(s\)/, 'no third run: the two open runs could reach the ceiling');
+  // A finished run without a reported cost is charged, no longer reserved: it is not counted twice.
+  r.implement('T1');
+  budget = campaignBudget(r.store, r.store.campaign(r.id));
+  assert.deepEqual([budget.unknownCostRuns, budget.reservedRuns, budget.chargedCostUsd], [1, 1, 10]);
+  assert.equal(campaignStatus(r.store, r.id).budget.reservedRuns, 1, 'status shows the reservation');
+});
+
+test('without a declared cost ceiling open runs reserve nothing', async (t) => {
+  const r = rig(t, { tasks: [commitTask('T1', 761), commitTask('T2', 762)] });
+  await r.tick();
+  openRow(r, 'T2', 'implement');
+  const budget = campaignBudget(r.store, r.store.campaign(r.id));
+  assert.deepEqual([budget.reservedRuns, budget.chargedCostUsd, budget.exhausted], [0, null, null]);
 });

@@ -119,7 +119,7 @@ test('the cost ceiling binds with unreported costs priced conservatively and mus
   assert.throws(() => validateDeclaration({ ...d, limits: { ...d.limits, unknownRunCostUsd: 2 } }), /requires maxCostUsd/);
   assert.throws(() => validateDeclaration({ ...d, limits: { ...d.limits, maxCostUsd: 100, unknownRunCostUsd: 0 } }), /never treated as zero/);
   const ok = validateDeclaration({ ...d, limits: { ...d.limits, maxCostUsd: 10, unknownRunCostUsd: 3 } });
-  const fakeStore = (ops, open = []) => ({ all: () => ops, openOperations: () => open });
+  const fakeStore = (ops) => ({ all: () => ops });
   const campaign = { id: 'c', cost_usd: 4, runs_used: 3, declaration: ok };
   const measured = { class: 'result', receipt: { costUsd: 4 } };
   const unknown = { class: 'result', receipt: { costUsd: null } };
