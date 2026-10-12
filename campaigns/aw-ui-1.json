@@ -1,0 +1,282 @@
+{
+  "version": 1,
+  "campaignId": "aw-ui-1",
+  "purpose": "The owner dashboard becomes project first: Projects, Needs me and Settings, with one question per screen.",
+  "authorization": {
+    "version": 1,
+    "grantedBy": "owner (netbka), delegated to the owner's main session",
+    "grantedAt": "2026-10-12",
+    "reference": "https://github.com/netbka/aiworks/issues/14",
+    "text": "On 2026-10-12 the owner directed: \"take this as starting point and deliver till end. Delivery this work with the AIWorks environment.\" The starting point is docs/PROJECT_WORKSPACE_PLAN.md (PR #12), with owner decisions D1, D3, D5 (direction only) and D9 recorded in its section 8. This campaign builds lane UI slices UI1 to UI10 of docs/PROJECT_WORKSPACE_PLAN.md section 6.7, in order. Only lane UI changes dashboard files. Commits are published as PRs only: the supervisor never merges or deploys, and the live runtime, its data directory, the governance checkout and the scheduled tasks are never touched. No run cap or cost ceiling (AW-002); provider limits are waited out. Provider order Claude, then Codex."
+  },
+  "target": {
+    "tenantId": "netbka",
+    "projectId": "aiworks",
+    "environment": "research",
+    "repository": "netbka/aiworks",
+    "baseBranch": "main",
+    "trackingIssue": 11
+  },
+  "executor": {
+    "kind": "cli-chain",
+    "providers": [
+      {
+        "kind": "claude-cli",
+        "model": "opus",
+        "permissionMode": "auto"
+      },
+      {
+        "kind": "codex-cli",
+        "model": "gpt-6-astra"
+      }
+    ],
+    "implementerTimeoutMinutes": 240,
+    "verifierTimeoutMinutes": 120
+  },
+  "constraints": [
+    "Program netbka/aiworks#14: deliver docs/PROJECT_WORKSPACE_PLAN.md through supervisor campaigns. Change only the files your task names. Other campaigns change other files at the same time: never edit their files, other agents' branches or worktrees, or campaigns/*.json.",
+    "Your assigned worktree is the only place you change files. Never touch D:/Git/aiworks/.local (live runtime, supervisor data directory, governance checkout, other worktrees) or the main checkout, and never start, stop or restart the supervisor, its scheduled tasks or the dashboard.",
+    "No production access, deployment, GitHub Actions changes, paid services, Telegram or other provider API calls, or new recurring spend. Never read .env contents, credentials or secret files. Read Engineering Platform only with read-only gh commands; never write the governance checkout or open changes in another repository: EP-side changes are proposed as text.",
+    "Follow AGENTS.md: run npm ci once in your worktree, then npm run check after changes. Report exact commands and pass/fail tallies.",
+    "Never weaken an assertion, delete or skip a test, or broaden a timeout to make the gate pass. Tests make no model, network or GitHub calls: synthetic executables and disposable git repositories, as tests/supervisor/helpers.mjs does.",
+    "Keep AW-001 to AW-007 as written. Do not enable a power whose decision is still open (GitHub-free local admission, Auto Release, Telegram delivery): design it, or build it switched off, and name the decision it waits for.",
+    "Label every claim about the running system observed, verified, planned or unknown (AGENTS.md evidence rule); merged is not deployed. Do not comment on GitHub, merge, close issues or change labels: the supervisor publishes your verified commit. Write \"Refs #N\", never \"Closes\".",
+    "Write for the owner first: plain English, short sentences, the outcome before the mechanism. Link Engineering Platform policies instead of copying them.",
+    "Read GitHub with REST only (gh api repos/netbka/aiworks/issues/<n> --jq .body, .../comments, gh api repos/netbka/aiworks/pulls/<n>), never gh issue view or gh pr view: the account GraphQL quota is shared (#16, #21).",
+    "Repository CI runs npm ci and npm run check on ubuntu-latest (.github/workflows/check.yml). Every test you add or change must pass there and on Windows: guard platform-specific behaviour with a skip that names the reason, without weakening what it checks on Windows (#42). Copy the node:test summary lines (# tests, # pass, # fail, # skipped) verbatim from the output; never retype a tally (#43).",
+    "A task named after a build-order slice of docs/PROJECT_WORKSPACE_PLAN.md section 6 builds exactly that slice: its outcome, its tests and the files it lists under Owns. Section 6 decides order and file ownership; the design slice it maps to (section 6.11) decides behaviour and tests. A needed change outside the slice's files is reported as a finding, not made. Anything the slice builds switched off ships off, and with it off the full existing suite passes unchanged."
+  ],
+  "tasks": [
+    {
+      "id": "UI1",
+      "issue": 11,
+      "title": "A synthetic store that shows every owner state, for a disposable review dashboard",
+      "outcome": "A synthetic store and a disposable local git repository show every owner state for a disposable review dashboard, with no GitHub at all.",
+      "deliverable": "commit",
+      "goal": "Build slice UI1 of docs/PROJECT_WORKSPACE_PLAN.md section 6 (read 6.2 rules, the UI1 row, 6.9 turn order and 6.12 resolutions). Outcome: A synthetic store and a disposable local git repository show every owner state for a disposable review dashboard, with no GitHub at all. Behaviour and tests: docs/design/OWNER_WORKSPACE.md slice S0, with resolution C1 (no fake gh); read that slice and the design sections it cites first. Include a documented command that starts a disposable dashboard from the fixture on port 4319 (never 4318) so a browser reviewer can open it later; do not run a review here. Change only the files the plan lists for UI1 under Owns. Run npm ci once, add the slice's tests, make each fail on the task base where possible (say how in the PR), then npm run check. In the PR: the slice id, what the owner gets, the tests with verbatim tallies, what stays switched off, and \"Refs #11\".",
+      "dependsOn": [],
+      "acceptance": [
+        "Every test the plan and docs/design/OWNER_WORKSPACE.md slice S0, with resolution C1 (no fake gh) list for UI1 exists and passes; the PR says which fail on the task base and how that was shown.",
+        "Only files the plan lists for UI1 under Owns change; the PR shows the diff stat.",
+        "Switches the slice adds are off by default; with them off the full existing suite passes unchanged, and new tests are correct on Linux CI and Windows.",
+        "npm run check passes; the PR copies the node:test summary lines verbatim and states that nothing is deployed."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md",
+        "docs/SUPERVISOR.md",
+        "tests/dashboard",
+        "src/dashboard/main.mjs"
+      ]
+    },
+    {
+      "id": "UI2",
+      "issue": 11,
+      "title": "Navigation shell: Projects, Needs me, Settings",
+      "outcome": "Navigation shell with Projects, Needs me and Settings, project tabs, hash addresses, old addresses redirected and a 320px layout.",
+      "deliverable": "commit",
+      "goal": "Build slice UI2 of docs/PROJECT_WORKSPACE_PLAN.md section 6 (read 6.2 rules, the UI2 row, 6.9 turn order and 6.12 resolutions). Outcome: Navigation shell with Projects, Needs me and Settings, project tabs, hash addresses, old addresses redirected and a 320px layout. Behaviour and tests: docs/design/OWNER_WORKSPACE.md slice S1; read that slice and the design sections it cites first. Change only the files the plan lists for UI2 under Owns. Run npm ci once, add the slice's tests, make each fail on the task base where possible (say how in the PR), then npm run check. In the PR: the slice id, what the owner gets, the tests with verbatim tallies, what stays switched off, and \"Refs #11\".",
+      "dependsOn": [
+        "UI1"
+      ],
+      "requiresMergedDependencies": true,
+      "acceptance": [
+        "Every test the plan and docs/design/OWNER_WORKSPACE.md slice S1 list for UI2 exists and passes; the PR says which fail on the task base and how that was shown.",
+        "Only files the plan lists for UI2 under Owns change; the PR shows the diff stat.",
+        "Switches the slice adds are off by default; with them off the full existing suite passes unchanged, and new tests are correct on Linux CI and Windows.",
+        "npm run check passes; the PR copies the node:test summary lines verbatim and states that nothing is deployed."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md",
+        "docs/SUPERVISOR.md",
+        "src/dashboard/public",
+        "src/dashboard/server.mjs"
+      ]
+    },
+    {
+      "id": "UI3",
+      "issue": 11,
+      "title": "Projects screen",
+      "outcome": "A Projects screen from today's data: one row per repository, one state, one action.",
+      "deliverable": "commit",
+      "goal": "Build slice UI3 of docs/PROJECT_WORKSPACE_PLAN.md section 6 (read 6.2 rules, the UI3 row, 6.9 turn order and 6.12 resolutions). Outcome: A Projects screen from today's data: one row per repository, one state, one action. Behaviour and tests: docs/design/OWNER_WORKSPACE.md slice S2, with resolution C5; read that slice and the design sections it cites first. Change only the files the plan lists for UI3 under Owns. Run npm ci once, add the slice's tests, make each fail on the task base where possible (say how in the PR), then npm run check. In the PR: the slice id, what the owner gets, the tests with verbatim tallies, what stays switched off, and \"Refs #11\".",
+      "dependsOn": [
+        "UI2"
+      ],
+      "requiresMergedDependencies": true,
+      "acceptance": [
+        "Every test the plan and docs/design/OWNER_WORKSPACE.md slice S2, with resolution C5 list for UI3 exists and passes; the PR says which fail on the task base and how that was shown.",
+        "Only files the plan lists for UI3 under Owns change; the PR shows the diff stat.",
+        "Switches the slice adds are off by default; with them off the full existing suite passes unchanged, and new tests are correct on Linux CI and Windows.",
+        "npm run check passes; the PR copies the node:test summary lines verbatim and states that nothing is deployed."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md",
+        "docs/SUPERVISOR.md"
+      ]
+    },
+    {
+      "id": "UI4",
+      "issue": 11,
+      "title": "Needs me, grouped by project",
+      "outcome": "Needs me shows today's items grouped by project, with \"AIWorks itself\" last.",
+      "deliverable": "commit",
+      "goal": "Build slice UI4 of docs/PROJECT_WORKSPACE_PLAN.md section 6 (read 6.2 rules, the UI4 row, 6.9 turn order and 6.12 resolutions). Outcome: Needs me shows today's items grouped by project, with \"AIWorks itself\" last. Behaviour and tests: docs/design/OWNER_WORKSPACE.md slice S3; read that slice and the design sections it cites first. Change only the files the plan lists for UI4 under Owns. Run npm ci once, add the slice's tests, make each fail on the task base where possible (say how in the PR), then npm run check. In the PR: the slice id, what the owner gets, the tests with verbatim tallies, what stays switched off, and \"Refs #11\".",
+      "dependsOn": [
+        "UI3"
+      ],
+      "requiresMergedDependencies": true,
+      "acceptance": [
+        "Every test the plan and docs/design/OWNER_WORKSPACE.md slice S3 list for UI4 exists and passes; the PR says which fail on the task base and how that was shown.",
+        "Only files the plan lists for UI4 under Owns change; the PR shows the diff stat.",
+        "Switches the slice adds are off by default; with them off the full existing suite passes unchanged, and new tests are correct on Linux CI and Windows.",
+        "npm run check passes; the PR copies the node:test summary lines verbatim and states that nothing is deployed."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md",
+        "docs/SUPERVISOR.md"
+      ]
+    },
+    {
+      "id": "UI5",
+      "issue": 11,
+      "title": "Now screen and one module for all state wording",
+      "outcome": "The Now screen exists and all state copy lives in one module.",
+      "deliverable": "commit",
+      "goal": "Build slice UI5 of docs/PROJECT_WORKSPACE_PLAN.md section 6 (read 6.2 rules, the UI5 row, 6.9 turn order and 6.12 resolutions). Outcome: The Now screen exists and all state copy lives in one module. Behaviour and tests: docs/design/OWNER_WORKSPACE.md slice S4; read that slice and the design sections it cites first. Change only the files the plan lists for UI5 under Owns. Run npm ci once, add the slice's tests, make each fail on the task base where possible (say how in the PR), then npm run check. In the PR: the slice id, what the owner gets, the tests with verbatim tallies, what stays switched off, and \"Refs #11\".",
+      "dependsOn": [
+        "UI4"
+      ],
+      "requiresMergedDependencies": true,
+      "acceptance": [
+        "Every test the plan and docs/design/OWNER_WORKSPACE.md slice S4 list for UI5 exists and passes; the PR says which fail on the task base and how that was shown.",
+        "Only files the plan lists for UI5 under Owns change; the PR shows the diff stat.",
+        "Switches the slice adds are off by default; with them off the full existing suite passes unchanged, and new tests are correct on Linux CI and Windows.",
+        "npm run check passes; the PR copies the node:test summary lines verbatim and states that nothing is deployed."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md",
+        "docs/SUPERVISOR.md"
+      ]
+    },
+    {
+      "id": "UI6",
+      "issue": 11,
+      "title": "Work and Step screens with pause, check again, cancel and resume",
+      "outcome": "Work and Step screens with step history and Pause, Check again, Cancel and Resume.",
+      "deliverable": "commit",
+      "goal": "Build slice UI6 of docs/PROJECT_WORKSPACE_PLAN.md section 6 (read 6.2 rules, the UI6 row, 6.9 turn order and 6.12 resolutions). Outcome: Work and Step screens with step history and Pause, Check again, Cancel and Resume. Behaviour and tests: docs/design/OWNER_WORKSPACE.md slice S5, with resolutions C6 and C7; read that slice and the design sections it cites first. Change only the files the plan lists for UI6 under Owns. Run npm ci once, add the slice's tests, make each fail on the task base where possible (say how in the PR), then npm run check. In the PR: the slice id, what the owner gets, the tests with verbatim tallies, what stays switched off, and \"Refs #11\".",
+      "dependsOn": [
+        "UI5"
+      ],
+      "requiresMergedDependencies": true,
+      "acceptance": [
+        "Every test the plan and docs/design/OWNER_WORKSPACE.md slice S5, with resolutions C6 and C7 list for UI6 exists and passes; the PR says which fail on the task base and how that was shown.",
+        "Only files the plan lists for UI6 under Owns change; the PR shows the diff stat.",
+        "Switches the slice adds are off by default; with them off the full existing suite passes unchanged, and new tests are correct on Linux CI and Windows.",
+        "npm run check passes; the PR copies the node:test summary lines verbatim and states that nothing is deployed."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md",
+        "docs/SUPERVISOR.md"
+      ]
+    },
+    {
+      "id": "UI7",
+      "issue": 11,
+      "title": "Results grouped by state; merged never reads as released",
+      "outcome": "Results grouped by state with \"Passed the check\" wording; merged never reads as released.",
+      "deliverable": "commit",
+      "goal": "Build slice UI7 of docs/PROJECT_WORKSPACE_PLAN.md section 6 (read 6.2 rules, the UI7 row, 6.9 turn order and 6.12 resolutions). Outcome: Results grouped by state with \"Passed the check\" wording; merged never reads as released. Behaviour and tests: docs/design/OWNER_WORKSPACE.md slice S6, with resolution C1 and gap G3 (no Changes requested); read that slice and the design sections it cites first. Change only the files the plan lists for UI7 under Owns. Run npm ci once, add the slice's tests, make each fail on the task base where possible (say how in the PR), then npm run check. In the PR: the slice id, what the owner gets, the tests with verbatim tallies, what stays switched off, and \"Refs #11\".",
+      "dependsOn": [
+        "UI6"
+      ],
+      "requiresMergedDependencies": true,
+      "acceptance": [
+        "Every test the plan and docs/design/OWNER_WORKSPACE.md slice S6, with resolution C1 and gap G3 (no Changes requested) list for UI7 exists and passes; the PR says which fail on the task base and how that was shown.",
+        "Only files the plan lists for UI7 under Owns change; the PR shows the diff stat.",
+        "Switches the slice adds are off by default; with them off the full existing suite passes unchanged, and new tests are correct on Linux CI and Windows.",
+        "npm run check passes; the PR copies the node:test summary lines verbatim and states that nothing is deployed."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md",
+        "docs/SUPERVISOR.md"
+      ]
+    },
+    {
+      "id": "UI8",
+      "issue": 11,
+      "title": "Cost per project and per step",
+      "outcome": "Cost per project and per step, with unreported runs counted apart and never shown as $0.00.",
+      "deliverable": "commit",
+      "goal": "Build slice UI8 of docs/PROJECT_WORKSPACE_PLAN.md section 6 (read 6.2 rules, the UI8 row, 6.9 turn order and 6.12 resolutions). Outcome: Cost per project and per step, with unreported runs counted apart and never shown as $0.00. Behaviour and tests: docs/design/OWNER_WORKSPACE.md slice S7; read that slice and the design sections it cites first. Change only the files the plan lists for UI8 under Owns. Run npm ci once, add the slice's tests, make each fail on the task base where possible (say how in the PR), then npm run check. In the PR: the slice id, what the owner gets, the tests with verbatim tallies, what stays switched off, and \"Refs #11\".",
+      "dependsOn": [
+        "UI7"
+      ],
+      "requiresMergedDependencies": true,
+      "acceptance": [
+        "Every test the plan and docs/design/OWNER_WORKSPACE.md slice S7 list for UI8 exists and passes; the PR says which fail on the task base and how that was shown.",
+        "Only files the plan lists for UI8 under Owns change; the PR shows the diff stat.",
+        "Switches the slice adds are off by default; with them off the full existing suite passes unchanged, and new tests are correct on Linux CI and Windows.",
+        "npm run check passes; the PR copies the node:test summary lines verbatim and states that nothing is deployed."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md",
+        "docs/SUPERVISOR.md"
+      ]
+    },
+    {
+      "id": "UI9",
+      "issue": 11,
+      "title": "Settings and Diagnostics",
+      "outcome": "Settings and Diagnostics: this computer, AI workers, connections, Release mode as text, Messages, journal, roadmap and merge-check freshness.",
+      "deliverable": "commit",
+      "goal": "Build slice UI9 of docs/PROJECT_WORKSPACE_PLAN.md section 6 (read 6.2 rules, the UI9 row, 6.9 turn order and 6.12 resolutions). Outcome: Settings and Diagnostics: this computer, AI workers, connections, Release mode as text, Messages, journal, roadmap and merge-check freshness. Behaviour and tests: docs/design/OWNER_WORKSPACE.md slice S8, with resolution C1 (merge-check freshness, no Refresh GitHub); read that slice and the design sections it cites first. Change only the files the plan lists for UI9 under Owns. Run npm ci once, add the slice's tests, make each fail on the task base where possible (say how in the PR), then npm run check. In the PR: the slice id, what the owner gets, the tests with verbatim tallies, what stays switched off, and \"Refs #11\".",
+      "dependsOn": [
+        "UI8"
+      ],
+      "requiresMergedDependencies": true,
+      "acceptance": [
+        "Every test the plan and docs/design/OWNER_WORKSPACE.md slice S8, with resolution C1 (merge-check freshness, no Refresh GitHub) list for UI9 exists and passes; the PR says which fail on the task base and how that was shown.",
+        "Only files the plan lists for UI9 under Owns change; the PR shows the diff stat.",
+        "Switches the slice adds are off by default; with them off the full existing suite passes unchanged, and new tests are correct on Linux CI and Windows.",
+        "npm run check passes; the PR copies the node:test summary lines verbatim and states that nothing is deployed."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md",
+        "docs/SUPERVISOR.md"
+      ]
+    },
+    {
+      "id": "UI10",
+      "issue": 11,
+      "title": "Start work: Plan only",
+      "outcome": "Start work offers Plan only, sent as a structured coordinator message that never changes a file or registers work.",
+      "deliverable": "commit",
+      "goal": "Build slice UI10 of docs/PROJECT_WORKSPACE_PLAN.md section 6 (read 6.2 rules, the UI10 row, 6.9 turn order and 6.12 resolutions). Outcome: Start work offers Plan only, sent as a structured coordinator message that never changes a file or registers work. Behaviour and tests: docs/design/OWNER_WORKSPACE.md slice S9; read that slice and the design sections it cites first. Change only the files the plan lists for UI10 under Owns. Run npm ci once, add the slice's tests, make each fail on the task base where possible (say how in the PR), then npm run check. In the PR: the slice id, what the owner gets, the tests with verbatim tallies, what stays switched off, and \"Refs #11\".",
+      "dependsOn": [
+        "UI9"
+      ],
+      "requiresMergedDependencies": true,
+      "acceptance": [
+        "Every test the plan and docs/design/OWNER_WORKSPACE.md slice S9 list for UI10 exists and passes; the PR says which fail on the task base and how that was shown.",
+        "Only files the plan lists for UI10 under Owns change; the PR shows the diff stat.",
+        "Switches the slice adds are off by default; with them off the full existing suite passes unchanged, and new tests are correct on Linux CI and Windows.",
+        "npm run check passes; the PR copies the node:test summary lines verbatim and states that nothing is deployed."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md",
+        "docs/SUPERVISOR.md"
+      ]
+    }
+  ]
+}
