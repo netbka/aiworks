@@ -288,7 +288,8 @@ test('HTTP controls require exact loopback Host, Origin, CSRF and bounded JSON',
   assert.equal(store.get("SELECT payload FROM events WHERE kind = 'agent-instruction' ORDER BY seq DESC LIMIT 1").payload.text, splitInstruction.text);
   assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'none'/);
   assert.equal(page.headers.get('access-control-allow-origin'), null);
-  assert.match(await page.text(), /<h1 id="view-title">Overview<\/h1>/);
+  // The page opens on Projects; the heading takes focus on a route change (OWNER_WORKSPACE §6.2).
+  assert.match(await page.text(), /<h1 id="view-title" tabindex="-1">Projects<\/h1>/);
   assert.equal((await fetch(`${base}/api/session`, { method: 'PUT' })).status, 405);
   assert.equal((await fetch(`${base}/api/refresh`, { method: 'POST', headers: goodHeaders, body: '{}' })).status, 404, 'there is no GitHub refresh route');
   // Every response isolates its window from cross-origin openers, alongside the existing headers.
@@ -302,4 +303,44 @@ test('HTTP controls require exact loopback Host, Origin, CSRF and bounded JSON',
   }
   assert.equal(refused.status, 403);
   assert.equal((await fetch(`${base}/status.mjs`)).status, 404, 'the unused status helper is no longer served');
+});
+
+test('the address router is served like the other page files and refused cross-site; no directory is served', async (t) => {
+  const { dataDir } = fixture(t);
+  const roadmap = { snapshot: () => ({ governance: { configured: true, code: null, reason: null }, entries: [] }) };
+  const server = createDashboardServer({ dataDir, roadmap });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const router = await fetch(`${base}/router.mjs`), script = await fetch(`${base}/dashboard.js`);
+  assert.equal(router.status, 200);
+  assert.equal(await router.text(), readFileSync(resolve(import.meta.dirname, '../../src/dashboard/public/router.mjs'), 'utf8'));
+  // A module script needs a JavaScript type; with nosniff, any other type would be refused by the browser.
+  assert.equal(router.headers.get('content-type'), 'text/javascript; charset=utf-8');
+  for (const header of ['content-security-policy', 'cross-origin-opener-policy', 'cross-origin-resource-policy', 'x-content-type-options', 'referrer-policy', 'cache-control', 'content-type']) {
+    assert.equal(router.headers.get(header), script.headers.get(header), `${header} matches dashboard.js`);
+  }
+  assert.equal(router.headers.get('access-control-allow-origin'), null);
+  // Cross-site: another site's script tag, fetch or even a top-level navigation gets nothing; same-origin loads work.
+  const refusals = [{ 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'no-cors', 'Sec-Fetch-Dest': 'script' }, { Origin: 'https://evil.example' },
+    { 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document' }];
+  for (const headers of refusals) {
+    const refused = await fetch(`${base}/router.mjs`, { headers });
+    assert.equal(refused.status, 403, JSON.stringify(headers));
+    assert.doesNotMatch(await refused.text(), /resolveRoute/);
+    assert.equal(refused.headers.get('cross-origin-resource-policy'), 'same-origin');
+  }
+  assert.equal((await fetch(`${base}/router.mjs`, { headers: { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'script', Origin: base } })).status, 200);
+  const wrongHost = await new Promise((done, fail) => {
+    const req = request(`${base}/router.mjs`, { headers: { Host: 'evil.example' } }, (res) => { res.resume(); done(res.statusCode); });
+    req.on('error', fail); req.end();
+  });
+  assert.equal(wrongHost, 403);
+  // Only listed files are served: no directory, no source path and no other name for the same file.
+  for (const path of ['/public/router.mjs', '/src/dashboard/public/router.mjs', '/router.mjs/', '/Router.mjs', '/router.js', '/public/', '/server.mjs', '/owner.mjs', '/%2e%2e/server.mjs']) {
+    assert.equal((await fetch(`${base}${path}`)).status, 404, path);
+  }
+  assert.equal((await fetch(`${base}/router.mjs`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: '{}' })).status, 403, 'no command without the CSRF token');
+  // The page loads it as a module from its own origin.
+  assert.match(readFileSync(resolve(import.meta.dirname, '../../src/dashboard/public/dashboard.js'), 'utf8'), /^import \{[^}]+\} from '\/router\.mjs';$/m);
 });

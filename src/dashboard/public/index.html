@@ -4,32 +4,31 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>Operations · AIWorks</title>
+  <title>Projects · AIWorks</title>
   <link rel="stylesheet" href="/dashboard.css">
   <script src="/dashboard.js" type="module"></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
   <aside class="sidebar">
-    <a class="brand" href="#overview"><span class="brand-mark" aria-hidden="true">aw<span>↗</span></span><span>AI<strong>Works</strong></span></a>
-    <div class="workspace-label">WORKSPACE</div>
-    <nav aria-label="Main navigation">
-      <button data-view="overview" class="nav-item active"><span aria-hidden="true">◫</span> Overview</button>
-      <button data-view="roadmap" class="nav-item"><span aria-hidden="true">☷</span> Plans <span id="roadmap-count" class="nav-count"></span></button>
-      <button data-view="work" class="nav-item"><span aria-hidden="true">▤</span> Issues & PRs</button>
-      <button data-view="agents" class="nav-item"><span aria-hidden="true">◎</span> Agents <span id="agent-count" class="nav-count"></span></button>
-      <button data-view="messages" class="nav-item"><span aria-hidden="true">✉</span> Messages <span id="message-count" class="nav-count"></span></button>
-      <button data-view="activity" class="nav-item"><span aria-hidden="true">↳</span> Activity</button>
+    <nav class="global-nav" aria-label="Main navigation">
+      <a href="#/projects" data-global="projects" class="nav-item"><span aria-hidden="true">◫</span> <span>Projects</span></a>
+      <a href="#/needs" data-global="needs" class="nav-item"><span aria-hidden="true">◈</span> <span>Needs me</span> <span id="needs-count" class="nav-count"></span></a>
+      <a href="#/settings" data-global="settings" class="nav-item"><span aria-hidden="true">⚙</span> <span>Settings</span></a>
     </nav>
-    <div class="sidebar-bottom"><span class="local-dot"></span><div><strong id="host-name" aria-busy="true">…</strong><small id="host-detail">&nbsp;</small></div></div>
   </aside>
   <div class="shell">
-    <header class="topbar"><div class="breadcrumb">Workspace <span>/</span> <strong>Operations</strong></div><div class="topbar-actions"><span id="connection" role="status" class="connection">Connecting…</span><button id="open-message" class="button">✉ Message coordinator</button></div></header>
+    <header class="topbar">
+      <a class="brand" href="#/projects"><span class="brand-mark" aria-hidden="true">aw<span>↗</span></span><span>AI<strong>Works</strong></span></a>
+      <div class="host"><span class="local-dot" aria-hidden="true"></span><div><strong id="host-name" aria-busy="true">…</strong><small id="host-detail">&nbsp;</small></div></div>
+      <div class="topbar-actions"><span id="connection" role="status" class="connection">Connecting…</span><a id="messages-link" class="messages-link" href="#/settings/messages">✉ Messages <span id="message-count" class="nav-count"></span></a></div>
+    </header>
     <main id="main" tabindex="-1">
-      <div class="page-heading"><div><div class="eyebrow">AIWORKS</div><h1 id="view-title">Overview</h1><p id="view-description">What changed, what needs you, and how each project campaign is moving.</p></div></div>
+      <div class="page-heading"><div><div id="view-eyebrow" class="eyebrow">AIWORKS</div><h1 id="view-title" tabindex="-1">Projects</h1><p id="view-description">Which project should I open?</p></div></div>
+      <nav id="project-tabs" class="project-tabs" aria-label="Project" hidden></nav>
       <div id="notice" class="notice" role="status" hidden></div>
       <div id="source-warning" class="notice warning" hidden></div>
-      <section id="metrics" class="metrics" aria-label="Workspace summary"></section>
+      <section id="metrics" class="metrics" aria-label="Summary" hidden></section>
       <div id="filters" class="filters" hidden>
         <label class="search-label"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search steps, campaigns or roadmap items" aria-label="Search work"></label>
         <label><span class="sr-only">Filter by track</span><select id="track"><option value="">All tracks</option><option value="Product control plane">Control plane: first release</option><option value="Product · next">Control plane: after the first release</option><option value="Autonomous governance">Portfolio rules rollout</option><option value="Tracked extensions">Other tracked platform work</option></select></label>
