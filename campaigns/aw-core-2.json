@@ -1,0 +1,281 @@
+{
+  "version": 1,
+  "campaignId": "aw-core-2",
+  "purpose": "Projects connect, work routes to the right model, and AIWorks can add the steps an authorized outcome needs by itself, in the order that keeps shared files conflict-free.",
+  "authorization": {
+    "version": 1,
+    "grantedBy": "owner (netbka), delegated to the owner's main session",
+    "grantedAt": "2026-10-12",
+    "reference": "https://github.com/netbka/aiworks/issues/14",
+    "text": "On 2026-10-12 the owner directed: \"take this as starting point and deliver till end. Delivery this work with the AIWorks environment.\" The starting point is docs/PROJECT_WORKSPACE_PLAN.md (PR #12), with owner decisions D1, D3, D5 (direction only) and D9 recorded in its section 8. This campaign builds, after aw-core-1 and in the turn order of docs/PROJECT_WORKSPACE_PLAN.md section 6.9, the next slices that change shared supervisor files: STA3, MOD2, MOD3, STA6, STA7, STA8, STA9, MOD5, MOD6 and STA10. It starts only after aw-core-1 has finished. Nothing in it enables Auto Release, local admission or any owner-reserved power (#24, #32, #33)."
+  },
+  "target": {
+    "tenantId": "netbka",
+    "projectId": "aiworks",
+    "environment": "research",
+    "repository": "netbka/aiworks",
+    "baseBranch": "main",
+    "trackingIssue": 8
+  },
+  "executor": {
+    "kind": "cli-chain",
+    "providers": [
+      {
+        "kind": "claude-cli",
+        "model": "opus",
+        "permissionMode": "auto"
+      },
+      {
+        "kind": "codex-cli",
+        "model": "gpt-6-astra"
+      }
+    ],
+    "implementerTimeoutMinutes": 240,
+    "verifierTimeoutMinutes": 120
+  },
+  "constraints": [
+    "Program netbka/aiworks#14: deliver docs/PROJECT_WORKSPACE_PLAN.md through supervisor campaigns. Change only the files your task names. Other campaigns change other files at the same time: never edit their files, other agents' branches or worktrees, or campaigns/*.json.",
+    "Your assigned worktree is the only place you change files. Never touch D:/Git/aiworks/.local (live runtime, supervisor data directory, governance checkout, other worktrees) or the main checkout, and never start, stop or restart the supervisor, its scheduled tasks or the dashboard.",
+    "No production access, deployment, GitHub Actions changes, paid services, Telegram or other provider API calls, or new recurring spend. Never read .env contents, credentials or secret files. Read Engineering Platform only with read-only gh commands; never write the governance checkout or open changes in another repository: EP-side changes are proposed as text.",
+    "Follow AGENTS.md: run npm ci once in your worktree, then npm run check after changes. Report exact commands and pass/fail tallies.",
+    "Never weaken an assertion, delete or skip a test, or broaden a timeout to make the gate pass. Tests make no model, network or GitHub calls: synthetic executables and disposable git repositories, as tests/supervisor/helpers.mjs does.",
+    "Keep AW-001 to AW-007 as written. Do not enable a power whose decision is still open (GitHub-free local admission, Auto Release, Telegram delivery): design it, or build it switched off, and name the decision it waits for.",
+    "Label every claim about the running system observed, verified, planned or unknown (AGENTS.md evidence rule); merged is not deployed. Do not comment on GitHub, merge, close issues or change labels: the supervisor publishes your verified commit. Write \"Refs #N\", never \"Closes\".",
+    "Write for the owner first: plain English, short sentences, the outcome before the mechanism. Link Engineering Platform policies instead of copying them.",
+    "Read GitHub with REST only (gh api repos/netbka/aiworks/issues/<n> --jq .body, .../comments, gh api repos/netbka/aiworks/pulls/<n>), never gh issue view or gh pr view: the account GraphQL quota is shared (#16, #21).",
+    "Repository CI runs npm ci and npm run check on ubuntu-latest (.github/workflows/check.yml). Every test you add or change must pass there and on Windows: guard platform-specific behaviour with a skip that names the reason, without weakening what it checks on Windows (#42). Copy the node:test summary lines (# tests, # pass, # fail, # skipped) verbatim from the output; never retype a tally (#43).",
+    "A task named after a build-order slice of docs/PROJECT_WORKSPACE_PLAN.md section 6 builds exactly that slice: its outcome, its tests and the files it lists under Owns. Section 6 decides order and file ownership; the design slice it maps to (section 6.11) decides behaviour and tests. A needed change outside the slice's files is reported as a finding, not made. Anything the slice builds switched off ships off, and with it off the full existing suite passes unchanged.",
+    "Verifiers: a check that behaves as intended is reported as pass, including a mutation or base comparison whose expected failure was observed (say so in its detail); report fail only for a check whose outcome shows a defect, and never return accepted with a check marked fail (#59). Implementers: if the outcome cannot work without changing a file the plan does not list under Owns (for example the dashboard server allowlist for a new browser module), change the smallest part of it and name the file and the reason in the PR. The verifier judges whether it was needed; such a file is not a finding by itself."
+  ],
+  "tasks": [
+    {
+      "id": "STA3",
+      "issue": 7,
+      "title": "GitHub projects connect; campaigns resolve their checkout through them",
+      "outcome": "GitHub projects connect, and campaigns resolve their checkout through the project record (repo() only in the controller); with no project record everything works as today.",
+      "deliverable": "commit",
+      "goal": "Build slice STA3 of docs/PROJECT_WORKSPACE_PLAN.md section 6 (read 6.2 rules, the STA3 row, 6.9 turn order, 6.10 and 6.12 resolutions). Outcome: GitHub projects connect, and campaigns resolve their checkout through the project record (repo() only in the controller); with no project record everything works as today. Behaviour and tests: docs/design/PROJECT_CONNECTION.md slice S3; read that slice and the design sections it cites first. Change only what the slice needs; switches it adds stay off by default.",
+      "dependsOn": [],
+      "acceptance": [
+        "Every test the plan and docs/design/PROJECT_CONNECTION.md slice S3 list for STA3 exists and passes; the PR says which fail on the task base and how that was shown.",
+        "Only files the plan lists for STA3 under Owns change, plus any file named in the PR with the reason the outcome needs it; the PR shows the diff stat.",
+        "Switches the slice adds are off by default; with them off the full existing suite passes unchanged, and new tests are correct on Linux CI and Windows.",
+        "npm run check passes; the PR copies the node:test summary lines verbatim and states that nothing is deployed."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md",
+        "docs/SUPERVISOR.md",
+        "src/supervisor/projects.mjs",
+        "src/supervisor/project-preflight.mjs"
+      ]
+    },
+    {
+      "id": "MOD2",
+      "issue": 10,
+      "title": "Every new operation stores a static routing receipt",
+      "outcome": "Every new operation stores a static routing receipt naming today's executor choice and model; dispatch behaviour is unchanged.",
+      "deliverable": "commit",
+      "goal": "Build slice MOD2 of docs/PROJECT_WORKSPACE_PLAN.md section 6 (read 6.2 rules, the MOD2 row, 6.9 turn order, 6.10 and 6.12 resolutions). Outcome: Every new operation stores a static routing receipt naming today's executor choice and model; dispatch behaviour is unchanged. Behaviour and tests: docs/design/MODEL_ROUTING.md slice R2; read that slice and the design sections it cites first. Change only what the slice needs; switches it adds stay off by default.",
+      "dependsOn": [
+        "STA3"
+      ],
+      "requiresMergedDependencies": true,
+      "acceptance": [
+        "Every test the plan and docs/design/MODEL_ROUTING.md slice R2 list for MOD2 exists and passes; the PR says which fail on the task base and how that was shown.",
+        "Only files the plan lists for MOD2 under Owns change, plus any file named in the PR with the reason the outcome needs it; the PR shows the diff stat.",
+        "Switches the slice adds are off by default; with them off the full existing suite passes unchanged, and new tests are correct on Linux CI and Windows.",
+        "npm run check passes; the PR copies the node:test summary lines verbatim and states that nothing is deployed."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md",
+        "docs/SUPERVISOR.md"
+      ]
+    },
+    {
+      "id": "MOD3",
+      "issue": 10,
+      "title": "Routing, role, risk and complexity validate",
+      "outcome": "Declarations may carry routing and per-task role, risk and complexity, validated; roles come from EP's catalog in the read-only governance checkout; nothing routes yet.",
+      "deliverable": "commit",
+      "goal": "Build slice MOD3 of docs/PROJECT_WORKSPACE_PLAN.md section 6 (read 6.2 rules, the MOD3 row, 6.9 turn order, 6.10 and 6.12 resolutions). Outcome: Declarations may carry routing and per-task role, risk and complexity, validated; roles come from EP's catalog in the read-only governance checkout; nothing routes yet. Behaviour and tests: docs/design/MODEL_ROUTING.md slice R3; read that slice and the design sections it cites first. Read the catalog from the governance checkout only; never write to it. Change only what the slice needs; switches it adds stay off by default.",
+      "dependsOn": [
+        "MOD2"
+      ],
+      "requiresMergedDependencies": true,
+      "acceptance": [
+        "Every test the plan and docs/design/MODEL_ROUTING.md slice R3 list for MOD3 exists and passes; the PR says which fail on the task base and how that was shown.",
+        "Only files the plan lists for MOD3 under Owns change, plus any file named in the PR with the reason the outcome needs it; the PR shows the diff stat.",
+        "Switches the slice adds are off by default; with them off the full existing suite passes unchanged, and new tests are correct on Linux CI and Windows.",
+        "npm run check passes; the PR copies the node:test summary lines verbatim and states that nothing is deployed."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md",
+        "docs/SUPERVISOR.md"
+      ]
+    },
+    {
+      "id": "STA6",
+      "issue": 8,
+      "title": "Task specs come from one accessor",
+      "outcome": "Task specs come from one accessor (plan.mjs), ready for child tasks; no behaviour change and existing digests unchanged.",
+      "deliverable": "commit",
+      "goal": "Build slice STA6 of docs/PROJECT_WORKSPACE_PLAN.md section 6 (read 6.2 rules, the STA6 row, 6.9 turn order, 6.10 and 6.12 resolutions). Outcome: Task specs come from one accessor (plan.mjs), ready for child tasks; no behaviour change and existing digests unchanged. Behaviour and tests: docs/design/WORK_ENVELOPE.md slice E1; read that slice and the design sections it cites first. Change only what the slice needs; switches it adds stay off by default.",
+      "dependsOn": [
+        "MOD3"
+      ],
+      "requiresMergedDependencies": true,
+      "acceptance": [
+        "Every test the plan and docs/design/WORK_ENVELOPE.md slice E1 list for STA6 exists and passes; the PR says which fail on the task base and how that was shown.",
+        "Only files the plan lists for STA6 under Owns change, plus any file named in the PR with the reason the outcome needs it; the PR shows the diff stat.",
+        "Switches the slice adds are off by default; with them off the full existing suite passes unchanged, and new tests are correct on Linux CI and Windows.",
+        "npm run check passes; the PR copies the node:test summary lines verbatim and states that nothing is deployed."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md",
+        "docs/SUPERVISOR.md"
+      ]
+    },
+    {
+      "id": "STA7",
+      "issue": 8,
+      "title": "Version 2 declarations with an envelope validate",
+      "outcome": "Version 2 declarations with an envelope block validate; release.mode accepts only review-only; version 1 digests are unchanged.",
+      "deliverable": "commit",
+      "goal": "Build slice STA7 of docs/PROJECT_WORKSPACE_PLAN.md section 6 (read 6.2 rules, the STA7 row, 6.9 turn order, 6.10 and 6.12 resolutions). Outcome: Version 2 declarations with an envelope block validate; release.mode accepts only review-only; version 1 digests are unchanged. Behaviour and tests: docs/design/WORK_ENVELOPE.md slice E2; read that slice and the design sections it cites first. auto-release is refused until #33 is decided (plan resolution C10). Change only what the slice needs; switches it adds stay off by default.",
+      "dependsOn": [
+        "STA6"
+      ],
+      "requiresMergedDependencies": true,
+      "acceptance": [
+        "Every test the plan and docs/design/WORK_ENVELOPE.md slice E2 list for STA7 exists and passes; the PR says which fail on the task base and how that was shown.",
+        "Only files the plan lists for STA7 under Owns change, plus any file named in the PR with the reason the outcome needs it; the PR shows the diff stat.",
+        "Switches the slice adds are off by default; with them off the full existing suite passes unchanged, and new tests are correct on Linux CI and Windows.",
+        "npm run check passes; the PR copies the node:test summary lines verbatim and states that nothing is deployed."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md",
+        "docs/SUPERVISOR.md"
+      ]
+    },
+    {
+      "id": "STA8",
+      "issue": 8,
+      "title": "Child tasks are admitted inside the envelope, idempotently",
+      "outcome": "Child tasks are admitted, chained to the envelope and idempotent across crash and retry; every widening is refused with its code.",
+      "deliverable": "commit",
+      "goal": "Build slice STA8 of docs/PROJECT_WORKSPACE_PLAN.md section 6 (read 6.2 rules, the STA8 row, 6.9 turn order, 6.10 and 6.12 resolutions). Outcome: Child tasks are admitted, chained to the envelope and idempotent across crash and retry; every widening is refused with its code. Behaviour and tests: docs/design/WORK_ENVELOPE.md slice E3; read that slice and the design sections it cites first. Change only what the slice needs; switches it adds stay off by default.",
+      "dependsOn": [
+        "STA7"
+      ],
+      "requiresMergedDependencies": true,
+      "acceptance": [
+        "Every test the plan and docs/design/WORK_ENVELOPE.md slice E3 list for STA8 exists and passes; the PR says which fail on the task base and how that was shown.",
+        "Only files the plan lists for STA8 under Owns change, plus any file named in the PR with the reason the outcome needs it; the PR shows the diff stat.",
+        "Switches the slice adds are off by default; with them off the full existing suite passes unchanged, and new tests are correct on Linux CI and Windows.",
+        "npm run check passes; the PR copies the node:test summary lines verbatim and states that nothing is deployed."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md",
+        "docs/SUPERVISOR.md"
+      ]
+    },
+    {
+      "id": "STA9",
+      "issue": 8,
+      "title": "Children run with their own packet binding",
+      "outcome": "Child tasks run with their own packet binding, re-checked before every dispatch; declared tasks' packets stay byte-identical.",
+      "deliverable": "commit",
+      "goal": "Build slice STA9 of docs/PROJECT_WORKSPACE_PLAN.md section 6 (read 6.2 rules, the STA9 row, 6.9 turn order, 6.10 and 6.12 resolutions). Outcome: Child tasks run with their own packet binding, re-checked before every dispatch; declared tasks' packets stay byte-identical. Behaviour and tests: docs/design/WORK_ENVELOPE.md slice E4; read that slice and the design sections it cites first. Change only what the slice needs; switches it adds stay off by default.",
+      "dependsOn": [
+        "STA8"
+      ],
+      "requiresMergedDependencies": true,
+      "acceptance": [
+        "Every test the plan and docs/design/WORK_ENVELOPE.md slice E4 list for STA9 exists and passes; the PR says which fail on the task base and how that was shown.",
+        "Only files the plan lists for STA9 under Owns change, plus any file named in the PR with the reason the outcome needs it; the PR shows the diff stat.",
+        "Switches the slice adds are off by default; with them off the full existing suite passes unchanged, and new tests are correct on Linux CI and Windows.",
+        "npm run check passes; the PR copies the node:test summary lines verbatim and states that nothing is deployed."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md",
+        "docs/SUPERVISOR.md"
+      ]
+    },
+    {
+      "id": "MOD5",
+      "issue": 10,
+      "title": "Campaigns with routing auto dispatch with the router's model",
+      "outcome": "Campaigns with routing.mode auto dispatch with the router's model and escalate only from recorded outcomes; campaigns without it are unchanged.",
+      "deliverable": "commit",
+      "goal": "Build slice MOD5 of docs/PROJECT_WORKSPACE_PLAN.md section 6 (read 6.2 rules, the MOD5 row, 6.9 turn order, 6.10 and 6.12 resolutions). Outcome: Campaigns with routing.mode auto dispatch with the router's model and escalate only from recorded outcomes; campaigns without it are unchanged. Behaviour and tests: docs/design/MODEL_ROUTING.md slice R5; read that slice and the design sections it cites first. No model call is made to decide routing. Change only what the slice needs; switches it adds stay off by default.",
+      "dependsOn": [
+        "STA9"
+      ],
+      "requiresMergedDependencies": true,
+      "acceptance": [
+        "Every test the plan and docs/design/MODEL_ROUTING.md slice R5 list for MOD5 exists and passes; the PR says which fail on the task base and how that was shown.",
+        "Only files the plan lists for MOD5 under Owns change, plus any file named in the PR with the reason the outcome needs it; the PR shows the diff stat.",
+        "Switches the slice adds are off by default; with them off the full existing suite passes unchanged, and new tests are correct on Linux CI and Windows.",
+        "npm run check passes; the PR copies the node:test summary lines verbatim and states that nothing is deployed."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md",
+        "docs/SUPERVISOR.md"
+      ]
+    },
+    {
+      "id": "MOD6",
+      "issue": 10,
+      "title": "Status shows model, tier, cost by unit and escalation reason",
+      "outcome": "Status carries model, tier, cost by unit, the unknown-cost count and the escalation reason per step (supervisor half of MR R6); units are never summed and unknown stays unknown.",
+      "deliverable": "commit",
+      "goal": "Build slice MOD6 of docs/PROJECT_WORKSPACE_PLAN.md section 6 (read 6.2 rules, the MOD6 row, 6.9 turn order, 6.10 and 6.12 resolutions). Outcome: Status carries model, tier, cost by unit, the unknown-cost count and the escalation reason per step (supervisor half of MR R6); units are never summed and unknown stays unknown. Behaviour and tests: docs/design/MODEL_ROUTING.md slice R6 (supervisor half); read that slice and the design sections it cites first. Change only what the slice needs; switches it adds stay off by default.",
+      "dependsOn": [
+        "MOD5"
+      ],
+      "requiresMergedDependencies": true,
+      "acceptance": [
+        "Every test the plan and docs/design/MODEL_ROUTING.md slice R6 (supervisor half) list for MOD6 exists and passes; the PR says which fail on the task base and how that was shown.",
+        "Only files the plan lists for MOD6 under Owns change, plus any file named in the PR with the reason the outcome needs it; the PR shows the diff stat.",
+        "Switches the slice adds are off by default; with them off the full existing suite passes unchanged, and new tests are correct on Linux CI and Windows.",
+        "npm run check passes; the PR copies the node:test summary lines verbatim and states that nothing is deployed."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md",
+        "docs/SUPERVISOR.md"
+      ]
+    },
+    {
+      "id": "STA10",
+      "issue": 8,
+      "title": "AIWorks adds steps by itself and closes the outcome",
+      "outcome": "Inside a declared envelope AIWorks adds steps by itself and closes the outcome with a generated closing check.",
+      "deliverable": "commit",
+      "goal": "Build slice STA10 of docs/PROJECT_WORKSPACE_PLAN.md section 6 (read 6.2 rules, the STA10 row, 6.9 turn order, 6.10 and 6.12 resolutions). Outcome: Inside a declared envelope AIWorks adds steps by itself and closes the outcome with a generated closing check. Behaviour and tests: docs/design/WORK_ENVELOPE.md slice E5; read that slice and the design sections it cites first. This is the acceptance of issue #8 (\"one start ... finish without the owner\"); prove it with the end-to-end test the design names. Change only what the slice needs; switches it adds stay off by default.",
+      "dependsOn": [
+        "MOD6"
+      ],
+      "requiresMergedDependencies": true,
+      "acceptance": [
+        "Every test the plan and docs/design/WORK_ENVELOPE.md slice E5 list for STA10 exists and passes; the PR says which fail on the task base and how that was shown.",
+        "Only files the plan lists for STA10 under Owns change, plus any file named in the PR with the reason the outcome needs it; the PR shows the diff stat.",
+        "Switches the slice adds are off by default; with them off the full existing suite passes unchanged, and new tests are correct on Linux CI and Windows.",
+        "npm run check passes; the PR copies the node:test summary lines verbatim and states that nothing is deployed."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md",
+        "docs/SUPERVISOR.md"
+      ]
+    }
+  ]
+}
