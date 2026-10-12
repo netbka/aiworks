@@ -63,7 +63,7 @@ A **project is a local directory**, not a GitHub repository. Support three input
 | Local Git | Absent | Yes | Local commit/revision graph, isolated worktrees, local review and independent evidence; no pretend remote PR. |
 | Plain local folder | Absent | Absent | Owner-selected source folder; AIWorks manages its own isolated, revisioned mirror/workspaces **outside the source**, with an explicit apply/publish operation and reversible snapshot/backup. Never run `git init` or overwrite user files silently. |
 
-**Governance gap:** Today project admission depends on an EP registry entry keyed by GitHub repository. Before local-only dispatch, review and extend EP's project-identity/registration contract to authorize a local project by stable owner-scoped ID and approved local authority pointers. AIWorks must consume that contract from the read-only governance checkout (or another formally approved read-only inherited-governance mechanism); do not bypass policies because a remote does not exist.
+**Governance gap:** Today project admission depends on an EP registry entry keyed by GitHub repository. Before local-only dispatch, review and extend EP's project-identity/registration contract to authorize a local project by stable owner-scoped ID and approved local authority pointers. **Prefer a one-time EP contract extension with an owner-authorized local project registry overlay** validated against inherited EP policies, so adding each ordinary folder does not require a new GitHub PR. The local overlay may never waive an EP policy or overwrite the governance checkout. Do not bypass governance because a remote does not exist.
 
 A local connection references:
 - stable owner-scoped project ID, source kind, canonical local root, selected source revision/snapshot, isolated worktree or managed mirror root, machine identity and optional GitHub identity/base branch;
@@ -85,7 +85,7 @@ Required: project identity/source kind, request type (`goal`, `issue`, `pr`, `pl
 
 **Plan and execute:** coordinator researches and proposes a bounded, independently checkable plan. The owner approves the **outcome envelope once**; AIWorks then chooses, creates, revises, routes and executes internal tasks and repairs **without asking again for each task**. The Task Controller remains accountable for the entire outcome.
 
-The initial campaign declaration and supervisor code still need AW-005's merged-main gate. Plan an explicit **versioned autonomous task-graph amendment** inside the already approved authorization envelope, with a durable audit/decision record, admission checks and existing fencing, rather than a new owner approval/PR for each micro-task. No change can widen project files, capabilities, permissions, destination, cost cap (when set), release mode or acceptance goal. Any such scope change pauses only the affected work and asks for new owner authority.
+The **currently running** supervisor still requires AW-005's merged-main gate. To make a fully local project usable without a GitHub login, first separately review a **narrow AW-005 amendment**: executable supervisor code must remain trusted, reviewed and pinned, while a local-only project may register a signed or equivalently tamper-evident owner-approved campaign record **without GitHub**. This is a proposed gate, not a bypass available today. GitHub-backed campaigns keep the current main-declaration route. Plan a **versioned autonomous task-graph amendment** within each approved envelope, with durable audit/admission/fencing, rather than a new approval or PR for each child. No change can widen project files, capabilities, permissions, destination, cost cap (when set), release mode or acceptance goal. Any such scope change pauses only the affected work and asks for new owner authority.
 
 Approval preview remains short:
 1. Outcome and verifiable success criteria.
@@ -105,7 +105,7 @@ GitHub project: `PR published -> PR approved/merged (if authorized) -> release e
 
 Local Git / plain folder: `Local revision + verifier evidence -> staged result -> compare against changed original -> explicitly authorized apply or Auto Release to a configured local target -> post-apply verification`. There is no PR or merge status unless a real GitHub remote is later connected.
 
-The **initial** main-only campaign declaration remains immutable under AW-005 unless an explicitly reviewed internal versioned-amendment mechanism preserves its approved scope and provenance. Ordinary in-scope decomposition/repair must not repeatedly interrupt the owner. Invalid or uncertain local file application is never silently replayed after a crash; reconcile the actual target.
+The existing **main-only** campaign declaration remains immutable under AW-005. A local-only owner-signed admission alternative and internal versioned task-graph amendment require a formally reviewed narrow AW-005 update preserving trusted reviewed executable code, immutable scope, provenance, audit and fencing. Ordinary in-scope decomposition/repair must not repeatedly interrupt the owner. Invalid or uncertain local file application is never silently replayed after a crash; reconcile the actual target.
 
 Project status distinguishes planned, executing, paused, provider-wait, blocked-owner, blocked-environment, independently verified, delivered candidate, released, accepted, cancelled and **unknown**, with links to source-appropriate evidence. Model output alone is not acceptance.
 
@@ -139,11 +139,11 @@ Keep a maximum of one obvious primary button per state; do not show inactive tec
 
 ### 5.1 Planning and task breakdown - autonomous inside one approval
 
-- The read-only coordinator reads relevant project authority, local files, known campaigns and, only when configured, GitHub issue/PR metadata. A local project must not fail simply because `gh` is missing.
+- The read-only coordinator reads relevant project authority, local files, known campaigns and, only when configured, GitHub issue/PR metadata. Once the reviewed local project admission adapter exists, a local project must not fail simply because `gh` is missing.
 - One accountable Task Controller owns the whole approved outcome. Build the smallest useful dependency graph, with real acceptance criteria. Split only when it adds useful independent work.
 - After one owner approval of the **outcome + scope + permissions + project + optional spending caps + release mode**, the controller may add or revise internal child tasks/repair work **inside that envelope**, with a durable versioned plan and verified admission against unchanged boundaries. Do not ask for each child step.
 - No accidental backlog claiming, duplicate fixes, role-generated scope expansion, new project, credential exposure or permission grant. If scope needs to expand, seek a separately recorded decision.
-- Existing supervisor `campaign.mjs` treats tasks/declaration as immutable; implementation needs a reviewed schema/lease-safe amendment design reusing current SQLite, controller, packet digest, AW-005 and process ownership. New child-plan versions must be bound to actual merged runtime/code and approved envelope. New task admission must be idempotent after crash/retry.
+- Existing supervisor `campaign.mjs` treats tasks/declaration as immutable; implementation needs a reviewed schema/lease-safe amendment design reusing current SQLite, controller, packet digest, AW-005 and process ownership. A separate **locally authorized admission gate** for GitHub-free projects requires an owner-approved AW-005 amendment; it must not run unreviewed code or unapproved plans. New child-plan versions must be bound to actual merged runtime/code and approved envelope. New task admission must be idempotent after crash/retry.
 - An independent verifier remains separate from the implementer. For a local folder use managed staging and local evidence; no GitHub URL is required to prove local work.
 - Once registered, continue automatically on independent completion, review finding, provider reset and bounded recovery; route only genuine owner-reserved blockers to the owner.
 
@@ -201,8 +201,8 @@ Reuse [#1](https://github.com/netbka/aiworks/issues/1) for blocker dedup/Telegra
 | Wave | Work package | Source/issues | Exit evidence and blocker |
 | --- | --- | --- | --- |
 | **0 - settle authority and correctness** | Review product journey in this PR; measure baseline; selective port of archived #139 (AW-005 main-only) and #126 duplicate admission; reconcile coordinator/dashboard evidence and governance pointers. No competing repairs. | #2, #4, #5, #6 | Focused regression/independent review. If AW-005 or duplicate ownership remains unimplemented, **no one-click execution**. |
-| **1 - project connection** | Connect GitHub repo, local Git or plain folder; revisioned managed mirror for non-Git; guided EP local identity contract. | #7 | GitHub and GitHub-less examples, including non-Git folder, independently isolated; no mutation on connect. |
-| **2 - define/start work** | Goal/issue/PR/local-plan intake, one owner-approved envelope, main-only campaign creation and versioned in-scope task amendments. | #8, #3, #2 | New children/repairs continue without per-task approval; no scope expansion or unauthorized dispatch. |
+| **1 - project connection** | Connect GitHub repo, local Git or plain folder; managed mirror for non-Git; reviewed EP-compatible local project registration. | #7 | GitHub and no-GitHub examples isolated; no mutation on connect; local dispatch waits for reviewed contract. |
+| **2 - define/start work** | Goal/issue/PR/local-plan intake, one approved envelope, existing main-only registration or a **separately approved GitHub-free local admission gate**, and versioned child amendments. | #8, #3, #2 | New children continue without per-task approval; local projects need no GitHub login after reviewed admission; no unauthorized dispatch. |
 | **3 - owner workspace** | Replace global technical layout with project selector, project status/work/results, Needs me, detail views and compact meaningful wording. | #11, #4, #6 | Independent blind journey review, behavioral review and responsive keyboard/mobile acceptance. |
 | **4 - multiple useful workers** | Scheduler admission/fairness/resource safety with cross-campaign work ownership and shared-provider cooldown. | #9, #5, #2 | Two independent tasks and two projects concurrently execute; race and failure cases pass. |
 | **5 - model economics** | Capability/role routing, recorded provider costs/unknown values, post-verification efficiency measurement and escalation. | #10, #5 | Cost/quality baseline and before/after evidence, no misleading claimed savings. |
@@ -215,7 +215,7 @@ Waves are **dependency-oriented**, not a mandate to have five idle agents or for
 
 - `src/supervisor/`: durable campaign/admission, coordination and concurrency. The existing audit-fix owner on #5 has priority over overlapping edits to `api.mjs`/`campaign.mjs`.
 - `src/dashboard/`: new local UI/interaction and presentation adapters; preserve security headers, origin checks and CSRF, and never serve raw prompts/secrets/paths.
-- `campaigns/`: initial approved declarations committed on main; versioned in-scope task-plan amendments stay bound to that approved authority and need a separately reviewed schema/contract before use.
+- `campaigns/`: initial approved declarations on main in the existing path; a proposed separately reviewed owner-approved local admission ledger for truly GitHub-free projects, plus versioned in-scope amendments bound to the original authorization. Do not execute either change before the corresponding AW-005 decision.
 - `docs/`: AIWorks-specific product flow, decisions and operations. EP portfolio standards only linked, not copied. Separate narrowly scoped AW release decision and EP project/identity contract changes must be reviewed outside this planning PR before local-only execution and Auto Release are activated.
 - `tests/`: new synthetic first-run/GitHub-less managed-mirror/multi-project/autonomous-child-plan/parallelism/model-router/release-rollback/unknown-state/UX review evidence; never use real customer data.
 
@@ -248,8 +248,8 @@ Acceptance must use source-appropriate evidence: L0 plan, L1 interactive UI revi
 
 | ID | Still-open detailed design/authority question | Proposed resolution pending proper review | Dependency |
 | --- | --- | --- | --- |
-| **D2** | How does a **local-only project** inherit and register EP governance with no GitHub identity? | Extend EP project registry/contract for a stable owner-scoped local project identity and project authority pointers, with a reviewable local-only project contract. AIWorks consumes this read-only. Do not silently bypass the current registration check. | EP scoped contract PR + #7 |
-| **D4** | How can a one-time approved outcome produce new executable child tasks while **AW-005** requires declarations and runtime on main? | Initial campaign declaration is merged and pinned; define a versioned append-only child-plan/amendment record, formally bounded by the originally approved scope, verified before admission and resistant to stale/replayed updates. Separate schema/policy compatibility review, no unmerged code. | #2, #5, #6, #8 |
+| **D2** | How does a **local-only project** inherit governance without per-folder GitHub PRs? | A reviewed EP contract extension to allow owner-approved, locally recorded project identities validated against inherited policies; do not let a local overlay weaken EP rules. | EP scoped contract PR + #7 |
+| **D4** | How can fully local projects authorize campaigns and produce new child tasks while AW-005 requires an AIWorks main declaration? | Retain trusted reviewed/pinned code; introduce a **separately approved AW-005 local admission exception** using signed/tamper-evident owner authorizations, plus append-only child-plan records constrained by the original approved scope. The normal GitHub main path remains available. | AW-005 decision, #2, #5, #6, #8 |
 | **D5-gate** | Exactly which releases can **Auto Release** perform, and to which destinations? | Default OFF. Separate owner-approved standing capability scoped to project/environment/change classes/target, independent exact-revision verifier, eligibility/rollback/health gates; narrowly amend AW-001 via a separate reviewed change. | #13 + EP release governance |
 | **D6** | Cross-machine aggregation? | Keep the existing AW-006 single-machine dashboard. Multiple projects on the same machine do not require a second-PC view. No change requested. | none |
 | **D7** | Worker count? | Adaptive Auto with an optional manual resource concurrency setting. Do not introduce default campaign run/cost ceilings under AW-002. | #9 |
@@ -266,7 +266,7 @@ Acceptance must use source-appropriate evidence: L0 plan, L1 interactive UI revi
 - [ ] EP policies are linked, not copied, and the current main-only/external-write/local-only boundaries are preserved.
 - [ ] Existing runtime evidence is correctly labeled as code/docs observation; no new deployment or UI walkthrough is claimed.
 - [x] D1, D3, D5 (product direction), D9 received explicit owner decisions on 2026-10-12 and are recorded above.
-- [ ] D2, D4 and the D5 implementation-specific authority changes are designed/reviewed before relevant new runtime powers are enabled.
+- [ ] D2 local inheritance, D4 GitHub-free admission/AW-005 amendment, and D5 release/AW-001 amendment are designed and independently approved before the associated runtime powers are enabled.
 - [ ] Implementation proceeds through small independently reviewable PRs, not by merging an entire code rewrite as one branch.
 
 **Out of scope of this draft:** runtime file changes, production upgrade, agent dispatch, new account connections, provider secrets, EP registry writes, actual release/merge/deployment and budget increases. Auto Release and local-only execution are planned capabilities, not currently enabled permissions.
