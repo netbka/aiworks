@@ -268,6 +268,21 @@ Errors are evidence-specific:
 Explicit selection is required; status never searches for another store and silently switches to it.
 It does not reset run counts, replay operations, resume a campaign, or bypass provider waits.
 
+### Cost and outcome baseline
+
+`baseline` prints what the supervisor's work has cost and how often it was accepted, from any store, without changing it ([MODEL_ROUTING.md §8](design/MODEL_ROUTING.md#8-baseline-before-any-saving-is-claimed)). No routing saving may be claimed before this baseline is recorded.
+
+```sh
+node src/supervisor/cli.mjs baseline --data D:/Git/aiworks/.local/supervisor [--since 2026-10-12] [--json]
+```
+
+- It opens the store read-only in one snapshot, like `status`, and makes no model, network or GitHub call. A store of another version is refused (`Unsupported store version`); a missing one is `STORE_NOT_FOUND`.
+- It prints a short table, then the JSON report (`--json` prints the report only). Rows are per stage, risk, size, provider and model; accepted outcomes are per class and per implementing provider and model.
+- Dollars are shown as the CLI reported them, never as spent. Tokens stay per provider. A run with no reported dollars counts as unknown, never zero, and dollars and tokens are never added together.
+- Refunded runs (refused before any work) are left out and listed separately.
+- The model is not stored on an operation yet. It is inferred from the declaration and its `executor-amended` journal entries; a provider without a declared model shows `cli-default (unknown)`.
+- What it cannot measure is listed in the report (`cannotMeasure`).
+
 ## 6. Running on HomePc
 
 Keep AIWorks-owned local files under the AIWorks root, outside version control:

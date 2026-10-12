@@ -7,6 +7,7 @@ import { appendFileSync, existsSync, readFileSync, realpathSync, writeFileSync }
 import { constants as osConstants } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { baselineReport, formatBaseline } from './baseline.mjs';
 import { CampaignError, campaignCancel, campaignPause, campaignRecheck, campaignStart, campaignStatus, supervisorLiveness } from './api.mjs';
 import { assertRegisteredTarget } from './campaign.mjs';
 import { Controller, DEFAULTS } from './controller.mjs';
@@ -30,6 +31,7 @@ const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--go
   message <text>                        send a message to the coordinator agent; prints its receipt
   messages                              list coordinator message receipts (received, read, answered)
   coordinator-clear                     after inspecting a boundary violation, let the coordinator read again
+  baseline [--since <date>] [--json]    print the cost and outcome baseline (read-only; --json prints the report only)
 The data directory defaults to AIWORKS_DATA and holds config.json, supervisor.db, runs/ and supervisor.log.
 The governance checkout (a read-only clone of netbka/engineering-platform) is --governance, else config.json "governanceRoot".`;
 
@@ -45,6 +47,8 @@ const selectedData = explicitData ?? process.env.AIWORKS_DATA;
 const dataDir = resolve(selectedData ?? '');
 const taskFlag = take('--task');
 const explicitGovernance = take('--governance');
+const sinceFlag = take('--since');
+const jsonOnly = args.includes('--json') ? Boolean(args.splice(args.indexOf('--json'), 1)) : false;
 const [command, ...rest] = args;
 if (!command || !selectedData) {
   console.error(USAGE);
@@ -65,7 +69,7 @@ try {
   if (command === 'status' && explicitData && environmentData && canonical(explicitData) !== canonical(environmentData)) {
     throw new CampaignError('DATA_DIR_MISMATCH', '--data differs from AIWORKS_DATA; confirm the installed task path and unset or correct the stale value');
   }
-  store = new Store(join(dataDir, 'supervisor.db'), { readOnly: command === 'status' || command === 'messages' });
+  store = new Store(join(dataDir, 'supervisor.db'), { readOnly: ['status', 'messages', 'baseline'].includes(command) });
   if (command === 'serve') await serve();
   else if (command === 'start') {
     // AW-005: registration, amendment and resume all take the declaration committed in this checkout's campaigns/,
@@ -86,6 +90,19 @@ try {
       const now = Date.now();
       const supervisor = supervisorLiveness(store, { now, leaseMs: config.leaseMs ?? DEFAULTS.leaseMs, stopRequested: existsSync(STOP) });
       print({ supervisor, ...campaignStatus(store, rest[0], now), dataSource: explicitData ? '--data' : 'AIWORKS_DATA' });
+    }
+    finally { store.db.exec('ROLLBACK'); }
+  }
+  else if (command === 'baseline') {
+    // docs/design/MODEL_ROUTING.md section 8: a read-only snapshot of the store; no model, network or GitHub call.
+    const since = sinceFlag === null ? null : Date.parse(sinceFlag);
+    if (Number.isNaN(since)) throw new CampaignError('BASELINE_SINCE_INVALID', `--since ${sinceFlag} is not a date`);
+    store.db.exec('BEGIN');
+    try {
+      const report = baselineReport(store, { since });
+      if (!jsonOnly) console.log(`${formatBaseline(report)}
+`);
+      print(report);
     }
     finally { store.db.exec('ROLLBACK'); }
   }
