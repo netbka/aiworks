@@ -73,7 +73,7 @@ test('one row per repository, grouped case-insensitively; the configured spellin
   start('shop-checkout', 'example/shop-app');
   const { projects } = view(dataDir);
   assert.equal(projects.available, true);
-  assert.deepEqual(projects.projects.map((project) => project.id).sort(), ['example/shop-app', 'example-org/sampleapp']);
+  assert.deepEqual(projects.projects.map((project) => project.id).sort(), ['example-org/sampleapp', 'example/shop-app']);
   const sampleapp = projects.projects.find((project) => project.id === 'example-org/sampleapp');
   assert.deepEqual([sampleapp.name, sampleapp.kind, sampleapp.details], ['sampleapp', 'GitHub', { owner: 'example-org', work: 2, configured: true, needsYou: 0 }]);
   const shop = projects.projects.find((project) => project.id === 'example/shop-app');
@@ -83,11 +83,11 @@ test('one row per repository, grouped case-insensitively; the configured spellin
 test('without configuration, the first campaign’s spelling names the project; two owners of one name keep the owner', () => {
   const snapshot = { available: true, campaigns: [
     { id: 'a', repository: 'example-org/sampleapp', control: 'finished', tasks: [], agents: [] },
-    { id: 'b', repository: 'example-org/sampleapp', control: 'finished', tasks: [], agents: [] },
+    { id: 'b', repository: 'EXAMPLE-ORG/SAMPLEAPP', control: 'finished', tasks: [], agents: [] },
     { id: 'c', repository: 'example/sampleapp', control: 'finished', tasks: [], agents: [] }] };
   const { projects } = projectsView(snapshot, { items: [], campaigns: {} });
   assert.deepEqual(projects.map((project) => [project.id, project.name, project.details.work]).sort(),
-    [['example/sampleapp', 'example/sampleapp', 1], ['example-org/sampleapp', 'example-org/sampleapp', 2]]);
+    [['example-org/sampleapp', 'example-org/sampleapp', 2], ['example/sampleapp', 'example/sampleapp', 1]]);
 });
 
 test('order: needs you, then work running, then the rest by last activity; one state and one action each', (t) => {
