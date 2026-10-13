@@ -101,3 +101,67 @@ export function accountAfterRun(store, config, { kind, opId, quota = false, run 
   if (before === null || !wasWaiting) return before;
   return setLimit(store, config, kind, { from: before, to: before + 1, reason: 'a useful result while work waited for this account', campaignId, now });
 }
+
+// ---- Profile selection (docs/design/ACCOUNT_ADAPTER_CAAM.md section 3.3, slice CAAM3). ----
+// With the adapter on, an executor kind runs under one of several CAAM profiles, each its own account: its id
+// ("claude/work-a") keys its provider_waits row, its capacity row and operations.account_identity. AIWorks chooses the
+// profile itself before launch and never wraps a worker in `caam run` (section 1.2 rule 1).
+
+// A profile that is unhealthy, expired or has an untimed wait gives no reset time: the kind is read again after this.
+export const PROFILE_RECHECK_MS = 15 * 60_000;
+
+/**
+ * Is profile selection on? Only when config.json says "caam": { "enabled": true } and the controller was given a CAAM
+ * inventory. Off, every operation keeps the one static account of accountOf and records no account_identity.
+ */
+export const profilesEnabled = (config, inventory) => config?.caam?.enabled === true && typeof inventory === 'function';
+
+/** Open worker operations bound to this profile, in any campaign. */
+export function openOnProfile(store, account) {
+  return store.get("SELECT COUNT(*) AS n FROM operations WHERE account_identity = ? AND state IN ('recorded', 'dispatched')", account).n;
+}
+
+/**
+ * Choose the profile for the next run on `kind` from CAAM's `profiles` (caam.mjs caamRobotStatus records: id, eligible,
+ * cooldown). A profile is skipped when CAAM marks it not eligible, when its provider_waits row is untimed or not yet due,
+ * or when it is at a learned concurrency limit. Among the rest the least recently used wins: the one whose newest
+ * operation is oldest, a never-used one first, ties in CAAM's order. So consecutive dispatches rotate A, B, A, B.
+ * Returns { account } or, when no profile may run, { account: null, retryAt, reason }: the earliest reset among the
+ * cooling-down profiles, else a re-read after PROFILE_RECHECK_MS. Reads rows only; it records nothing.
+ */
+export function selectProfile(store, kind, profiles, now) {
+  const resets = [];
+  const skipped = [];
+  const eligible = [];
+  for (const profile of Array.isArray(profiles) ? profiles : []) {
+    const id = profile?.id;
+    if (typeof id !== 'string' || id === '') continue;
+    if (profile.eligible !== true) {
+      const until = profile.cooldown?.until;
+      if (Number.isFinite(until) && until > now) resets.push(until);
+      skipped.push(`${id}: ${profile.reasons?.join(', ') || 'not eligible in CAAM'}`);
+      continue;
+    }
+    const wait = store.get('SELECT * FROM provider_waits WHERE account = ? AND executor_kind = ?', id, kind);
+    if (wait && (wait.retry_at === null || wait.retry_at > now)) {
+      if (wait.retry_at !== null) resets.push(wait.retry_at);
+      skipped.push(`${id}: ${wait.reason}`);
+      continue;
+    }
+    const limit = store.get("SELECT value FROM capacity WHERE scope = 'account' AND id = ?", id)?.value ?? null;
+    if (limit !== null && openOnProfile(store, id) >= limit) {
+      skipped.push(`${id}: ${limit} run(s) open, its limit`);
+      continue;
+    }
+    eligible.push({ id, order: eligible.length });
+  }
+  if (eligible.length) {
+    const last = new Map(store.all(`SELECT account_identity AS id, MAX(created_at) AS at, MAX(rowid) AS seq FROM operations
+      WHERE account_identity IS NOT NULL GROUP BY account_identity`).map((row) => [row.id, row]));
+    const used = (id) => last.get(id) ?? { at: -Infinity, seq: -Infinity };
+    eligible.sort((a, b) => used(a.id).at - used(b.id).at || used(a.id).seq - used(b.id).seq || a.order - b.order);
+    return { account: eligible[0].id };
+  }
+  const reason = skipped.length ? `every ${kind} profile waits (${skipped.join('; ')})`.slice(0, 500) : `CAAM lists no ${kind} profile`;
+  return { account: null, retryAt: resets.length ? Math.min(...resets) : now + PROFILE_RECHECK_MS, reason };
+}
