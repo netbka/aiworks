@@ -1,4 +1,4 @@
-// The committed Dyk campaign must validate and every task must fit the engineering-platform-archive#47 C0 packet budget
+// The committed sampleapp campaign must validate and every task must fit the historical regression C0 packet budget
 // for both roles, including room for the maximum number of carried verifier findings and the
 // target project's governance block.
 import assert from 'node:assert/strict';
@@ -16,7 +16,7 @@ const policy = JSON.parse(readFileSync(join(ROOT, 'registry/worker-context-polic
 const { authorityDigest, validateDeclaration } = campaign;
 
 test('Wiki broker maximum and a full accepted report fit real implementer/verifier admission', () => {
-  const decl = validateDeclaration(JSON.parse(readFileSync(join(ROOT, 'campaigns/elma-wiki-planning.json'))));
+  const decl = validateDeclaration(JSON.parse(readFileSync(join(ROOT, 'tests/fixtures/campaigns/sample-report.json'))));
   const task = decl.tasks[0], sha = 'a'.repeat(40);
   for (const role of ['implementer', 'verification']) {
     const packet = validatePacket({ version: 1, tenantId: decl.target.tenantId, projectId: decl.target.projectId,
@@ -29,7 +29,7 @@ test('Wiki broker maximum and a full accepted report fit real implementer/verifi
     const prompt = buildPrompt({ role, deliverable: 'report', packet, packetDigest: digest, repository: decl.target.repository,
       // The verifier always carries the full report. The implementer carries it only in a report-repair round
       // (main's <rejected-report>); a repair with both a maximum broker capture and a maximum report exceeds
-      // the hard budget and is refused at admission without consuming a run (follow-up on engineering-platform-archive#64).
+      // the hard budget and is refused at admission without consuming a run (follow-up on historical regression).
       issue: task.issue, branch: 'synthetic', baseSha: sha, targetSha: sha,
       report: role === 'verification' ? 'x'.repeat(52000) : null, reportDigest: role === 'verification' ? 'b'.repeat(64) : null }) + 's'.repeat(320000);
     const result = planContext({ packet, authorityCurrent: true, predecessorSafe: true, session: null,
@@ -39,12 +39,12 @@ test('Wiki broker maximum and a full accepted report fit real implementer/verifi
   }
 });
 
-for (const name of readdirSync(join(ROOT, 'campaigns')).filter((file) => file.endsWith('.json'))) {
+for (const name of readdirSync(join(ROOT, 'tests/fixtures/campaigns')).filter((file) => file.endsWith('.json'))) {
   test(`campaign ${name} validates and every packet fits the context policy`, () => {
-    const decl = validateDeclaration(JSON.parse(readFileSync(join(ROOT, 'campaigns', name), 'utf8')));
+    const decl = validateDeclaration(JSON.parse(readFileSync(join(ROOT, 'tests/fixtures/campaigns', name), 'utf8')));
     assert.ok(!JSON.stringify(decl.executor).includes('bypassPermissions'));
     const sha = 'a'.repeat(40);
-    // The packet carries the target project's governance, resolved as at dispatch (engineering-platform-archive#84).
+    // The packet carries the target project's governance, resolved as at dispatch (historical regression).
     const governance = campaign.projectGovernance(decl.target.repository, GOVERNANCE);
     for (const task of decl.tasks) {
       for (const role of ['implementer', 'verification']) {

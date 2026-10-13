@@ -60,7 +60,7 @@ test('the full fixture is three made-up projects in local git repositories, conf
   assert.doesNotMatch(readFileSync(join(dataDir, 'config.json'), 'utf8'), /token|secret|password|"gh"/i);
 });
 
-test('F2: the review dashboard runs from a disposable runtime checkout whose origin/main holds every synthetic declaration', (t) => {
+test('F2: the review dashboard runs from a disposable runtime checkout whose declarations stay private and whose code is merged', (t) => {
   const { root, dataDir, runtime } = fixture(t);
   assert.ok(inside(root, runtime), 'the runtime checkout is inside the disposable directory');
   const origin = git(runtime, 'remote', 'get-url', 'origin').stdout.trim();
@@ -69,7 +69,8 @@ test('F2: the review dashboard runs from a disposable runtime checkout whose ori
   assert.equal(git(runtime, 'merge-base', '--is-ancestor', 'HEAD', 'refs/remotes/origin/main').status, 0, 'its HEAD is merged');
   const onMain = git(runtime, 'ls-tree', '--name-only', 'refs/remotes/origin/main', 'campaigns/').stdout.trim().split('\n');
   const ids = supervisorSnapshot(dataDir).campaigns.map((c) => c.id);
-  assert.deepEqual(onMain.sort(), ids.map((id) => `campaigns/${id}.json`).sort());
+  assert.deepEqual(onMain.filter(Boolean), []);
+  assert.ok(ids.length > 0, 'private declarations still register every synthetic campaign');
   assert.ok(existsSync(join(runtime, 'src', 'dashboard', 'main.mjs')), 'the dashboard code is in it');
 });
 
@@ -206,7 +207,7 @@ test('F26: the supervisor-fault item links a made-up issue, never one of AIWorks
   const view = ownerView(supervisorSnapshot(dataDir));
   const fault = view.items.find((item) => item.campaignId === REVIEW_STATES['supervisor-fault'].campaignId);
   assert.deepEqual(fault.points[0].link, { label: 'AIWorks issue #2', url: 'https://github.com/example/aiworks/issues/2' });
-  assert.doesNotMatch(JSON.stringify(view), /netbka\//i);
+  assert.doesNotMatch(JSON.stringify(view), /example-org\//i);
 });
 
 test('F11: Settings › Messages shows every receipt of OWNER_WORKSPACE §5.4: received, read and answered', (t) => {
@@ -372,7 +373,7 @@ test('F2: Resume on the paused recipes work succeeds in the review dashboard, ch
   assert.equal((await call()).body.supervisor.campaigns.find((c) => c.id === paused.id).control, 'registered');
 });
 
-test('F2: AW-005 still refuses the same Resume against a checkout whose main does not hold the declaration', (t) => {
+test('F2: private Resume still refuses unmerged runtime code', (t) => {
   const { dataDir, runtime } = fixture(t);
   const paused = supervisorSnapshot(dataDir).campaigns.find((c) => c.id === REVIEW_STATES.paused.campaignId);
   const command = () => ({ campaignId: paused.id, action: 'resume', requestId: randomUUID(), version: paused.version,
@@ -385,7 +386,7 @@ test('F2: AW-005 still refuses the same Resume against a checkout whose main doe
 
 // AIWorks' own issue link, fixed in src/dashboard: the Auto Release decision (#33, supervisor.mjs). It is the tool's own
 // state, not a project. The supervisor-fault item links the fixture's made-up issue (F26).
-const OWN_LINKS = /https:\/\/github\.com\/netbka\/aiworks\/issues\/33(?!\d)/g;
+const OWN_LINKS = /https:\/\/github\.com\/example-org\/aiworks\/issues\/33(?!\d)/g;
 /** Every string a `repository` or `about` key holds anywhere in `value`. */
 function repositoriesIn(value, found = []) {
   if (Array.isArray(value)) for (const item of value) repositoriesIn(item, found);
@@ -413,7 +414,7 @@ test('the review dashboard shows only made-up projects, for the full, empty and 
     const outside = repositoriesIn(state.body).filter((name) => !name.startsWith('example/'));
     assert.deepEqual(outside, [], `${store}: no repository outside example/`);
     const text = state.text.replace(OWN_LINKS, '');
-    assert.doesNotMatch(text, /netbka\//i, `${store}: nothing of the owner's beyond the Auto Release decision link`);
+    assert.doesNotMatch(text, /example-org\//i, `${store}: nothing of the owner's beyond the Auto Release decision link`);
     for (const [, owner] of text.matchAll(/github\.com\/([\w.-]+)\//g)) assert.equal(owner, 'example', `${store}: links point at made-up projects`);
   }
 });

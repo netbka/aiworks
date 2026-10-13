@@ -13,17 +13,16 @@ import { assertRegisteredTarget } from './campaign.mjs';
 import { Controller, DEFAULTS } from './controller.mjs';
 import { configuredGovernanceRoot, requireGovernanceRoot } from './governance.mjs';
 import { clearCoordinatorViolation, coordinatorView, postOwnerMessage } from './coordinator.mjs';
-import { CODE_ROOT, declarationFromMain, revisionNotMerged } from './provenance.mjs';
+import { CODE_ROOT, declarationFromFile, revisionNotMerged } from './provenance.mjs';
 import { Store } from './store.mjs';
 import { RELEASE_STOP, REVIEW_ONLY, releaseNarrowings, setReviewOnly } from './release/state.mjs';
 
-const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--governance <engineering-platform-checkout>] ...
+const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--governance <governance-checkout>] ...
   serve                                 run the controller loop (exits cleanly when <data>/STOP exists)
   keep                                  OS-supervision helper: run serve and restart it after any exit until STOP
   stop                                  create <data>/STOP so serve and keep exit cleanly
-  start <declaration.json>              register, amend (authorization.version + 1) or resume a campaign. The file must be
-                                        campaigns/<name>.json of this checkout, committed unmodified at a HEAD merged into
-                                        origin/main (DECLARATION_NOT_ON_MAIN / RUNTIME_NOT_MERGED); registering a new one also
+  start <declaration.json>              register, amend (authorization.version + 1) or resume a private local campaign.
+                                        Runtime code must be merged into origin/main (RUNTIME_NOT_MERGED). A new registration
                                         needs the governance checkout (GOVERNANCE_ROOT_REQUIRED / GOVERNANCE_ROOT_INVALID)
   status <campaignId>
   pause <campaignId> [reason]
@@ -39,7 +38,7 @@ const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--go
                                         narrow one destination to Review only. review-only is the only mode accepted:
                                         no command switches a destination to Auto Release, only a newer valid grant does
 The data directory defaults to AIWORKS_DATA and holds config.json, supervisor.db, runs/ and supervisor.log.
-The governance checkout (a read-only clone of netbka/engineering-platform) is --governance, else config.json "governanceRoot".`;
+The governance checkout (an operator-configured read-only directory) is --governance, else config.json "governanceRoot".`;
 
 const args = process.argv.slice(2);
 const take = (flag) => {
@@ -90,9 +89,8 @@ try {
   store = new Store(join(dataDir, 'supervisor.db'), { readOnly: ['status', 'messages', 'baseline'].includes(command) });
   if (command === 'serve') await serve();
   else if (command === 'start') {
-    // AW-005: registration, amendment and resume all take the declaration committed in this checkout's campaigns/,
-    // unmodified, at a HEAD merged into origin/main. There is no flag to skip this.
-    const declaration = declarationFromMain(rest[0], { root: CODE_ROOT });
+    // Explicit operator registration reads private data; executable code must still be merged.
+    const declaration = declarationFromFile(rest[0], { root: CODE_ROOT });
     // Only a new registration is gated on the registry; resuming or amending a stored campaign is unaffected.
     if (!store.campaign(declaration?.campaignId)) {
       assertRegisteredTarget(declaration, explicitGovernance ? resolve(explicitGovernance) : configuredGovernanceRoot(dataDir));

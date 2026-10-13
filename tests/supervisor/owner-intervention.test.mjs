@@ -43,7 +43,7 @@ const independent = () => {
 
 test('fingerprint: stable for one cause, new for a changed cause, never derived from a secret value', async () => {
   const { oi } = await load();
-  const base = { project: 'dyk', environment: 'research', dependency: 'auth', blockerClass: 'B2', identity: 'claude-cli' };
+  const base = { project: 'sampleapp', environment: 'research', dependency: 'auth', blockerClass: 'B2', identity: 'claude-cli' };
   assert.equal(oi.blockerFingerprint(base), oi.blockerFingerprint({ ...base }));
   assert.match(oi.blockerFingerprint(base), /^[0-9a-f]{64}$/);
   for (const change of [{ identity: 'codex-cli' }, { blockerClass: 'B5' }, { dependency: 'research-context' }, { environment: 'production' }, { project: 'other' }]) {

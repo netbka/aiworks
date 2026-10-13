@@ -67,27 +67,27 @@ function assertAgreesWithNeedsMe({ owner, projects }) {
 }
 
 test('one row per repository, grouped case-insensitively; the configured spelling names it', (t) => {
-  const { dataDir, start } = fixture(t, { 'netbka/dyk': { path: 'C:/work/dyk' } });
-  start('dyk-443-waves', 'netbka/Dyk');
-  start('dyk-455-telegram-ingest', 'NETBKA/DYK');
+  const { dataDir, start } = fixture(t, { 'example-org/sampleapp': { path: 'C:/work/sampleapp' } });
+  start('sampleapp-443-waves', 'example-org/sampleapp');
+  start('sampleapp-455-telegram-ingest', 'EXAMPLE-ORG/SAMPLEAPP');
   start('shop-checkout', 'example/shop-app');
   const { projects } = view(dataDir);
   assert.equal(projects.available, true);
-  assert.deepEqual(projects.projects.map((project) => project.id).sort(), ['example/shop-app', 'netbka/dyk']);
-  const dyk = projects.projects.find((project) => project.id === 'netbka/dyk');
-  assert.deepEqual([dyk.name, dyk.kind, dyk.details], ['dyk', 'GitHub', { owner: 'netbka', work: 2, configured: true, needsYou: 0 }]);
+  assert.deepEqual(projects.projects.map((project) => project.id).sort(), ['example/shop-app', 'example-org/sampleapp']);
+  const sampleapp = projects.projects.find((project) => project.id === 'example-org/sampleapp');
+  assert.deepEqual([sampleapp.name, sampleapp.kind, sampleapp.details], ['sampleapp', 'GitHub', { owner: 'example-org', work: 2, configured: true, needsYou: 0 }]);
   const shop = projects.projects.find((project) => project.id === 'example/shop-app');
   assert.deepEqual([shop.name, shop.details.configured, shop.details.work], ['shop-app', false, 1], 'work without configuration is still a project');
 });
 
 test('without configuration, the first campaign’s spelling names the project; two owners of one name keep the owner', () => {
   const snapshot = { available: true, campaigns: [
-    { id: 'a', repository: 'netbka/Dyk', control: 'finished', tasks: [], agents: [] },
-    { id: 'b', repository: 'netbka/dyk', control: 'finished', tasks: [], agents: [] },
-    { id: 'c', repository: 'example/dyk', control: 'finished', tasks: [], agents: [] }] };
+    { id: 'a', repository: 'example-org/sampleapp', control: 'finished', tasks: [], agents: [] },
+    { id: 'b', repository: 'example-org/sampleapp', control: 'finished', tasks: [], agents: [] },
+    { id: 'c', repository: 'example/sampleapp', control: 'finished', tasks: [], agents: [] }] };
   const { projects } = projectsView(snapshot, { items: [], campaigns: {} });
   assert.deepEqual(projects.map((project) => [project.id, project.name, project.details.work]).sort(),
-    [['example/dyk', 'example/dyk', 1], ['netbka/Dyk', 'netbka/Dyk', 2]]);
+    [['example/sampleapp', 'example/sampleapp', 1], ['example-org/sampleapp', 'example-org/sampleapp', 2]]);
 });
 
 test('order: needs you, then work running, then the rest by last activity; one state and one action each', (t) => {
@@ -100,15 +100,15 @@ test('order: needs you, then work running, then the rest by last activity; one s
   // Running: registered just now, so AIWorks still has its grace to pick it up (nothing for the owner yet).
   start('shop-checkout', 'example/shop-app');
   // Needs you: a published pull request the current merge check does not see merged.
-  start('dyk-443-waves', 'netbka/Dyk', [task('T1', 'waves', { outcome: 'Telegram waves are sent once' })]);
-  finish('dyk-443-waves', 'T1', 'https://github.com/netbka/Dyk/pull/465', { verified_sha: sha('T1') });
-  const merges = { repositories: [{ repository: 'netbka/Dyk', configured: true, fetchedAt: Date.now(), attemptedAt: Date.now(), error: null }],
-    steps: { 'dyk-443-waves/T1': { sha: sha('T1'), baseBranch: 'main', merged: false, mergedAt: null } } };
+  start('sampleapp-443-waves', 'example-org/sampleapp', [task('T1', 'waves', { outcome: 'Telegram waves are sent once' })]);
+  finish('sampleapp-443-waves', 'T1', 'https://github.com/example-org/sampleapp/pull/465', { verified_sha: sha('T1') });
+  const merges = { repositories: [{ repository: 'example-org/sampleapp', configured: true, fetchedAt: Date.now(), attemptedAt: Date.now(), error: null }],
+    steps: { 'sampleapp-443-waves/T1': { sha: sha('T1'), baseBranch: 'main', merged: false, mergedAt: null } } };
   const seen = view(dataDir, merges);
   assert.deepEqual(seen.projects.projects.map((project) => [project.id, project.state.key]), [
-    ['netbka/Dyk', 'needs-you'], ['example/shop-app', 'running'], ['example/recipes', 'finished'], ['example/notes-site', 'no-work']]);
-  const [dyk, shop, recipes, notes] = seen.projects.projects;
-  assert.deepEqual([dyk.state.text, dyk.action], ['One thing needs you.', { label: 'Review pull request #465', url: 'https://github.com/netbka/Dyk/pull/465' }]);
+    ['example-org/sampleapp', 'needs-you'], ['example/shop-app', 'running'], ['example/recipes', 'finished'], ['example/notes-site', 'no-work']]);
+  const [sampleapp, shop, recipes, notes] = seen.projects.projects;
+  assert.deepEqual([sampleapp.state.text, sampleapp.action], ['One thing needs you.', { label: 'Review pull request #465', url: 'https://github.com/example-org/sampleapp/pull/465' }]);
   assert.deepEqual([shop.state.text, shop.action], ['No AI worker is busy on this project right now.',
     { label: 'Open current work', route: { screen: 'project', project: 'example/shop-app', tab: 'work' } }]);
   assert.deepEqual([recipes.state.text, recipes.action], ['All steps are finished · 1 report posted for you to read.',
@@ -125,9 +125,9 @@ test('order: needs you, then work running, then the rest by last activity; one s
   start('notes-search', 'example/notes-site', null, old);
   const stopped = view(dataDir, merges);
   assertAgreesWithNeedsMe(stopped);
-  assert.deepEqual(stopped.owner.groups.map((group) => [group.name, group.count]), [['Dyk', 1], ['AIWorks itself', 1]]);
+  assert.deepEqual(stopped.owner.groups.map((group) => [group.name, group.count]), [['SampleApp', 1], ['AIWorks itself', 1]]);
   assert.deepEqual(stopped.projects.projects.map((project) => [project.id, project.state.key, project.details.needsYou]).slice(0, 2),
-    [['netbka/Dyk', 'needs-you', 1], ['example/shop-app', 'running', 0]]);
+    [['example-org/sampleapp', 'needs-you', 1], ['example/shop-app', 'running', 0]]);
 });
 
 test('a configured repository with no work shows "No work yet" and opens the project', (t) => {
@@ -140,7 +140,7 @@ test('a configured repository with no work shows "No work yet" and opens the pro
   const empty = mkdtempSync(join(tmpdir(), 'aiworks-projects-config-'));
   t.after(() => rmSync(empty, { recursive: true, force: true }));
   assert.deepEqual(configuredRepositories(empty), []);
-  for (const content of ['{', '[]', '{"repositories":["netbka/Dyk"]}', '{"repositories":null}']) {
+  for (const content of ['{', '[]', '{"repositories":["example-org/sampleapp"]}', '{"repositories":null}']) {
     writeFileSync(join(empty, 'config.json'), content);
     assert.deepEqual(configuredRepositories(empty), [], content);
   }
@@ -173,7 +173,7 @@ test('running work says who is working on which step; paused and cancelled work 
 test('no campaign id at the primary level: name, state and action never show one', (t) => {
   const old = Date.now() - RESTART_GRACE_MS - 60_000;
   const { dataDir, start, finish, close } = fixture(t, { 'example/notes-site': { path: 'C:/work/notes' } });
-  start('dyk-443-waves', 'netbka/Dyk', [task('T1', 'waves')], old);
+  start('sampleapp-443-waves', 'example-org/sampleapp', [task('T1', 'waves')], old);
   start('notes-search', 'example/notes-site');
   start('recipes-print', 'example/recipes', [task('T1', 'print'), task('T2', 'share')]);
   finish('recipes-print', 'T1', 'https://github.com/example/recipes/pull/7', { verified_sha: sha('T1') });
@@ -193,7 +193,7 @@ test('no campaign id at the primary level: name, state and action never show one
 });
 
 test('an unreadable supervisor store lists no projects rather than calm ones', () => {
-  assert.deepEqual(projectsView({ available: false, campaigns: [] }, { items: [] }, { repositories: ['netbka/Dyk'] }), { available: false, projects: [] });
+  assert.deepEqual(projectsView({ available: false, campaigns: [] }, { items: [] }, { repositories: ['example-org/sampleapp'] }), { available: false, projects: [] });
 });
 
 test('/api/state carries the Projects screen, with repository names and never a configured path', async (t) => {

@@ -1,6 +1,6 @@
 // The release runner: one release command in its own clean process (docs/design/AUTO_RELEASE.md section 6, slice REL5).
 // Built switched off: with `release.enabled` not true in config.json the runner is never started, and no release
-// credential exists until the owner answers netbka/aiworks#33 item 2. How one step runs:
+// credential exists until the owner answers example-org/aiworks#33 item 2. How one step runs:
 // 1. the supervisor (runReleaseCommand) writes a packet that names the command, its working directory and the
 //    credential by reference only, then starts `node runner.mjs --release-step <packet>` with a clean environment:
 //    only PATH and SystemRoot, never the supervisor's own variables (workerEnv copies them; this does not). On Windows,

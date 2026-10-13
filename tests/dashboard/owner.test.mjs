@@ -1,4 +1,4 @@
-// Owner view (engineering-platform-archive#78/#79): what needs the owner, finished steps joined with their merge state from local
+// Owner view (governance-archive#78/#79): what needs the owner, finished steps joined with their merge state from local
 // git, plain-language wording, host identity and link navigation. Disposable stores and synthetic merge state only.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -36,8 +36,8 @@ function fixture(t, d = declaration({ tasks: three() })) {
   return { dataDir, store, d, finish };
 }
 
-/** Merge state as the local merge check reports it: netbka/Dyk fetched just now, and a result per campaign step. */
-const checked = (steps = {}, repo = {}) => ({ repositories: [{ repository: 'netbka/Dyk', configured: true, fetchedAt: Date.now(), attemptedAt: Date.now(), error: null, ...repo }], steps });
+/** Merge state as the local merge check reports it: example-org/sampleapp fetched just now, and a result per campaign step. */
+const checked = (steps = {}, repo = {}) => ({ repositories: [{ repository: 'example-org/sampleapp', configured: true, fetchedAt: Date.now(), attemptedAt: Date.now(), error: null, ...repo }], steps });
 const result = (sha, merged, mergedAt = null) => ({ sha, baseBranch: 'main', merged, mergedAt });
 const A = 'a'.repeat(40), B = 'b'.repeat(40);
 
@@ -65,12 +65,12 @@ test('changing the owner wording of a registered campaign needs a higher authori
 });
 
 test('a finished step is merged only when a current local git check saw it; otherwise it is published, merge not seen yet', () => {
-  const now = Date.now(), pr = 'https://github.com/netbka/Dyk/pull/463';
+  const now = Date.now(), pr = 'https://github.com/example-org/sampleapp/pull/463';
   const task = (url = pr, extra = {}) => ({ id: 'T1', state: 'done', resultUrl: url, verifiedSha: A, ...extra });
   const seen = (merged, repo) => checked({ 'c1/T1': result(A, merged) }, repo);
   const say = (t, merges) => { const d = delivery(t, merges, now, 'c1'); return [d.state, d.reason ?? null, d.pending ?? null]; };
   assert.deepEqual(say(task(), seen(true)), ['merged', null, null]);
-  assert.equal(delivery(task('https://github.com/netbka/dyk/pull/463'), seen(true), now, 'c1').state, 'merged', 'repository names match case-insensitively');
+  assert.equal(delivery(task('https://github.com/example-org/sampleapp/pull/463'), seen(true), now, 'c1').state, 'merged', 'repository names match case-insensitively');
   assert.deepEqual(say(task(), seen(false)), ['published', null, false], 'not reachable from origin/main: published, merge not seen yet');
   assert.equal(delivery(task(), seen(false), now, 'c1').note, 'Your review and merge');
   // Missing data never reads as merged.
@@ -78,7 +78,7 @@ test('a finished step is merged only when a current local git check saw it; othe
   assert.deepEqual(say(task(), checked()), ['published', 'checking', true]);
   assert.deepEqual(say(task(), { repositories: [], steps: {} }), ['published', 'checking', true], 'a repository not checked yet is not fine');
   assert.deepEqual(say(task(), checked({ 'c1/T1': result(B, true) })), ['published', 'checking', true], 'a result for another commit says nothing about this one');
-  assert.deepEqual(say(task('https://github.com/netbka/Dyk/pull/463', { verifiedSha: null }), seen(true)), ['published', 'no-verified-sha', false]);
+  assert.deepEqual(say(task('https://github.com/example-org/sampleapp/pull/463', { verifiedSha: null }), seen(true)), ['published', 'no-verified-sha', false]);
   assert.deepEqual(say(task(), seen(true, { configured: false, fetchedAt: null })), ['published', 'no-checkout', false]);
   // Stale data never reads as merged, and says when the check is from.
   const old = now - 20 * 60_000;
@@ -88,16 +88,16 @@ test('a finished step is merged only when a current local git check saw it; othe
   // A failed fetch keeps the last state while it is current, and shows its age.
   const recent = now - 2 * 60_000, kept = delivery(task(), seen(true, { fetchedAt: recent, error: 'fetch-failed' }), now, 'c1');
   assert.deepEqual([kept.state, kept.asOf], ['merged', { at: recent, reason: 'fetch-failed' }]);
-  assert.equal(delivery(task('https://github.com/netbka/Dyk/issues/437#issuecomment-1'), seen(true), now, 'c1').state, 'report-posted');
+  assert.equal(delivery(task('https://github.com/example-org/sampleapp/issues/437#issuecomment-1'), seen(true), now, 'c1').state, 'report-posted');
   assert.equal(delivery({ id: 'T1', state: 'verifying', resultUrl: null }, seen(true), now, 'c1'), null);
   // Campaign titles come from the declaration only; no issue title is fetched.
-  assert.equal(purpose({ purpose: null, repository: 'netbka/Dyk', trackingIssue: 443, tasks: [{}, {}] }), null);
+  assert.equal(purpose({ purpose: null, repository: 'example-org/sampleapp', trackingIssue: 443, tasks: [{}, {}] }), null);
 });
 
 test('each review names the accepted commit, points to the pull request for CI and conflicts, and says what merging unlocks', (t) => {
   const { dataDir, store, d, finish } = fixture(t);
-  finish('T1', 'https://github.com/netbka/Dyk/pull/463', { attempts: 10, verified_sha: A });
-  finish('T2', 'https://github.com/netbka/Dyk/pull/464', { verified_sha: B });
+  finish('T1', 'https://github.com/example-org/sampleapp/pull/463', { attempts: 10, verified_sha: A });
+  finish('T2', 'https://github.com/example-org/sampleapp/pull/464', { verified_sha: B });
   const now = Date.now();
   store.insert('operations', { id: 'v1', campaign_id: d.campaignId, task_id: 'T1', kind: 'verify', seq: 1, idempotency_key: 'v1', lease_generation: 1,
     state: 'finished', session_id: 's', run_dir: join(dataDir, 'runs', 'v1'), workspace: 'w', packet: {}, packet_digest: 'p',
@@ -105,11 +105,11 @@ test('each review names the accepted commit, points to the pull request for CI a
   const supervisor = supervisorSnapshot(dataDir);
   assert.equal(supervisor.campaigns[0].tasks[0].verifierRejections, 1);
   const merges = checked({ [`${d.campaignId}/T1`]: result(A, false), [`${d.campaignId}/T2`]: result(B, true) });
-  const view = ownerView(supervisor, merges, { host: 'HomePc' });
+  const view = ownerView(supervisor, merges, { host: 'workstation' });
   assert.deepEqual(view.items.map((item) => item.kind), ['review', 'controller'], 'no live controller lease in this store: that needs the owner too');
   const [review, controller] = view.items;
   // Led by what the step delivers; the action and the pull request link sit beside it, the PR number appears once.
-  assert.deepEqual([review.action, review.text, review.link], ['Review and merge', 'first task', { label: 'Open PR #463', url: 'https://github.com/netbka/Dyk/pull/463' }]);
+  assert.deepEqual([review.action, review.text, review.link], ['Review and merge', 'first task', { label: 'Open PR #463', url: 'https://github.com/example-org/sampleapp/pull/463' }]);
   assert.equal(review.evidence, 'Passed the check at aaaaaaa · CI and conflicts on the PR');
   assert.equal(review.detail, 'Passed the independent check at commit aaaaaaa. This dashboard does not read CI checks or conflicts; see them on the pull request before merging.',
     'the dashboard reads no merge readiness: it never says "ready to merge"');
@@ -120,7 +120,7 @@ test('each review names the accepted commit, points to the pull request for CI a
   assert.equal(controller.text, 'AIWorks on this computer has not picked up this work yet', 'this store never had a controller lease');
   assert.match(controller.points[0].text, /AIWorks has not picked it up\. If nobody is updating it right now, restart it on this computer: .*“AIWorks Supervisor”/);
   const lapsed = { ...supervisor, campaigns: supervisor.campaigns.map((c) => ({ ...c, readiness: 'CONTROLLER_OFFLINE', leaseExpiresAt: new Date(now - 10 * 60_000).toISOString() })) };
-  const stopped = ownerView(lapsed, merges, { host: 'HomePc', now }).items.find((item) => item.kind === 'controller');
+  const stopped = ownerView(lapsed, merges, { host: 'workstation', now }).items.find((item) => item.kind === 'controller');
   assert.equal(stopped.text, 'AIWorks stopped on this computer');
   assert.equal(stopped.at, now - 10 * 60_000);
   assert.deepEqual(view.campaigns[d.campaignId].counts, { total: 3, delivered: 2, merged: 1, awaiting: 1, checking: 0, unknown: 0, reports: 0 });
@@ -141,33 +141,33 @@ test('each review names the accepted commit, points to the pull request for CI a
   // When nothing else waits on the step, release follows the project's rule; the owner is not assumed to release.
   const done = { ...supervisor, campaigns: supervisor.campaigns.map((c) => ({ ...c, tasks: c.tasks.map((task) => task.id === 'T3' ? { ...task, state: 'done', resultUrl: null } : task) })) };
   assert.equal(ownerView(done, merges).items[0].points.at(-1).text,
-    'Nothing else in this work waits on it; after merging, release follows Dyk\'s release policy.');
+    'Nothing else in this work waits on it; after merging, release follows SampleApp\'s release policy.');
 });
 
 test('a working agent with a silent supervisor is said plainly, and same-titled campaigns are told apart', () => {
   const now = Date.now();
-  const campaign = (id) => ({ id, repository: 'netbka/Dyk', trackingIssue: 442, trackingUrl: 'https://github.com/netbka/Dyk/issues/442', purpose: 'Run a controlled pilot', control: 'registered',
+  const campaign = (id) => ({ id, repository: 'example-org/sampleapp', trackingIssue: 442, trackingUrl: 'https://github.com/example-org/sampleapp/issues/442', purpose: 'Run a controlled pilot', control: 'registered',
     controllerLive: false, livenessDefect: false, leaseExpiresAt: new Date(now - 10 * 60_000).toISOString(), blocker: null, tasks: [],
     agents: [{ heartbeatState: 'unknown', progress: { lastActivityAt: now - 30_000 } }] });
-  const supervisor = { available: true, campaigns: [campaign('dyk-442-pilot-telegram'), campaign('dyk-442-pilot-whatsapp')], coordinator: null, recent: null };
-  const view = ownerView(supervisor, checked(), { host: 'HomePc', now });
+  const supervisor = { available: true, campaigns: [campaign('sampleapp-442-pilot-telegram'), campaign('sampleapp-442-pilot-whatsapp')], coordinator: null, recent: null };
+  const view = ownerView(supervisor, checked(), { host: 'workstation', now });
   // One item for AIWorks stopped on this computer, however many pieces of work it holds up (review F9).
   assert.equal(view.items.length, 1);
   assert.equal(view.items[0].text, 'An AI worker is still working, but AIWorks stopped checking in on this computer');
   assert.equal(view.items[0].at, now - 10 * 60_000);
   assert.match(view.items[0].points[0].text, /result is collected and checked only when AIWorks runs again/);
-  assert.equal(view.items[0].points[1].text, 'Held up in Dyk: “Run a controlled pilot (Telegram)”, “Run a controlled pilot (Whatsapp)”.');
-  assert.equal(view.campaigns['dyk-442-pilot-telegram'].liveness, 'agent-working-supervisor-silent');
-  assert.deepEqual(['dyk-442-pilot-telegram', 'dyk-442-pilot-whatsapp'].map((id) => view.campaigns[id].purpose.variant), ['Telegram', 'Whatsapp']);
+  assert.equal(view.items[0].points[1].text, 'Held up in SampleApp: “Run a controlled pilot (Telegram)”, “Run a controlled pilot (Whatsapp)”.');
+  assert.equal(view.campaigns['sampleapp-442-pilot-telegram'].liveness, 'agent-working-supervisor-silent');
+  assert.deepEqual(['sampleapp-442-pilot-telegram', 'sampleapp-442-pilot-whatsapp'].map((id) => view.campaigns[id].purpose.variant), ['Telegram', 'Whatsapp']);
 });
 
 test('campaigns with something for the owner and active ones come first; finished ones collapse to one line, newest first', () => {
   const now = Date.now(), hours = (n) => new Date(now - n * 3600_000).toISOString();
-  const campaign = (id, control, extra = {}) => ({ id, repository: 'netbka/Dyk', trackingIssue: 443, trackingUrl: 'https://github.com/netbka/Dyk/issues/443',
+  const campaign = (id, control, extra = {}) => ({ id, repository: 'example-org/sampleapp', trackingIssue: 443, trackingUrl: 'https://github.com/example-org/sampleapp/issues/443',
     purpose: `Purpose of ${id}`, control, readiness: control === 'registered' ? 'ACTIVE' : control === 'finished' ? 'COMPLETE' : 'CANCELLED',
     controllerLive: control === 'registered', livenessDefect: false, leaseExpiresAt: null, blocker: null, tasks: [], agents: [], lastProgressAt: null, ...extra });
   const sha = (number) => String(number).padStart(40, '0');
-  const done = (id, number) => ({ id, title: `${id} title`, outcome: null, state: 'done', resultUrl: `https://github.com/netbka/Dyk/pull/${number}`, dependsOn: [],
+  const done = (id, number) => ({ id, title: `${id} title`, outcome: null, state: 'done', resultUrl: `https://github.com/example-org/sampleapp/pull/${number}`, dependsOn: [],
     attempts: 1, verifierRejections: 0, verifiedSha: sha(number) });
   // Snapshot order: active first, then finished and cancelled campaigns by creation.
   const supervisor = { available: true, coordinator: null, recent: null, campaigns: [
@@ -181,7 +181,7 @@ test('campaigns with something for the owner and active ones come first; finishe
     'finished-review/R1': result(sha(463), false), 'finished-new/N1': result(sha(464), true) }), { now });
   assert.deepEqual(view.items.map((item) => item.campaignId), ['finished-review']);
   assert.deepEqual(view.layout, { cards: ['finished-review', 'active'], finished: ['finished-new', 'cancelled', 'finished-old'] });
-  assert.equal(view.campaigns['finished-new'].outcome, 'The merged work is ready; release follows Dyk\'s release policy');
+  assert.equal(view.campaigns['finished-new'].outcome, 'The merged work is ready; release follows SampleApp\'s release policy');
   assert.equal(view.campaigns['finished-review'].finished, 'All steps are finished · 1 step waits for your review (merge not seen yet)');
   assert.equal(view.campaigns.cancelled.outcome, 'Cancelled · 1 of 2 steps delivered');
   assert.equal(view.campaigns.active.outcome, null);
@@ -196,13 +196,13 @@ test('campaigns with something for the owner and active ones come first; finishe
 test('the summary since the last visit counts merged, delivered, newly waiting and failed runs', (t) => {
   const { dataDir, store, d, finish } = fixture(t);
   const before = Date.now() - 60_000;
-  finish('T1', 'https://github.com/netbka/Dyk/pull/463', { verified_sha: A });
-  finish('T2', 'https://github.com/netbka/Dyk/pull/464', { verified_sha: B });
-  store.journal(d.campaignId, 'published', { task: 'T1', url: 'https://github.com/netbka/Dyk/pull/463' }, Date.now());
+  finish('T1', 'https://github.com/example-org/sampleapp/pull/463', { verified_sha: A });
+  finish('T2', 'https://github.com/example-org/sampleapp/pull/464', { verified_sha: B });
+  store.journal(d.campaignId, 'published', { task: 'T1', url: 'https://github.com/example-org/sampleapp/pull/463' }, Date.now());
   store.journal(d.campaignId, 'operation-finished', { op: 'x', class: 'result', terminal: 'rejected' }, Date.now());
   store.journal(d.campaignId, 'operation-finished', { op: 'y', class: 'timeout' }, Date.now());
   store.journal(d.campaignId, 'operation-finished', { op: 'z', class: 'quota' }, Date.now());
-  store.journal(d.campaignId, 'published', { task: 'T0', url: 'https://github.com/netbka/Dyk/pull/1' }, before - 3_600_000);
+  store.journal(d.campaignId, 'published', { task: 'T0', url: 'https://github.com/example-org/sampleapp/pull/1' }, before - 3_600_000);
   // A failing supervisor step is journaled on every tick: it is the supervisor's problem, not a failed agent run.
   for (let i = 0; i < 3; i++) store.journal(d.campaignId, 'step-error', { message: 'raw error text' }, Date.now());
   store.journal(d.campaignId, 'liveness-defect', { tasks: [] }, Date.now());
@@ -223,11 +223,11 @@ test('the summary since the last visit counts merged, delivered, newly waiting a
 
 test('stops, decisions, unchecked merges and an unreadable inbox need the owner; a pause by itself does not', (t) => {
   const { dataDir, store, d, finish } = fixture(t, declaration({ tasks: three().map((task) => ({ ...task, outcome: `Owners get ${task.title}` })) }));
-  finish('T1', 'https://github.com/netbka/Dyk/pull/465');
+  finish('T1', 'https://github.com/example-org/sampleapp/pull/465');
   const t2 = store.task(d.campaignId, 'T2');
   store.patch('tasks', { campaign_id: d.campaignId, task_id: 'T2' }, t2.version, { blocked: { class: 'B3', reason: 'owner-reserved: worker text' } }, Date.now());
   campaignPause(store, d.campaignId, 'Supervisor upgrade', Date.now());
-  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ coordinator: { enabled: true, permissionMode: 'auto', reportTo: 'netbka/aiworks#3' } }));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ coordinator: { enabled: true, permissionMode: 'auto', reportTo: 'example-org/aiworks#3' } }));
   const supervisor = supervisorSnapshot(dataDir);
   assert.equal(supervisor.campaigns[0].tasks[0].outcome, 'Owners get first task');
   assert.equal(supervisor.campaigns[0].pausedReason, 'Supervisor upgrade');
@@ -255,25 +255,25 @@ test('Needs me groups today\'s items by project, case-insensitively, with "AIWor
   const decision = (id, repository) => ({ id, title: `${id} title`, outcome: `${id} outcome`, state: 'pending', resultUrl: null, dependsOn: [], attempts: 1, verifierRejections: 0,
     blocked: 'B3', blockedReason: 'owner-reserved decision; see the task issue', issueUrl: `https://github.com/${repository}/issues/9` });
   const supervisor = { available: true, recent: null, campaigns: [
-    campaign('dyk-a', 'netbka/Dyk', { tasks: [review('A1', 'netbka/Dyk', 463)] }),
+    campaign('sampleapp-a', 'example-org/sampleapp', { tasks: [review('A1', 'example-org/sampleapp', 463)] }),
     // A supervisor fault says it is not an owner action: it belongs to AIWorks itself, still naming its project.
     campaign('shop-fault', 'example/shop', { livenessDefect: true, tasks: [decision('S1', 'example/shop')] }),
-    campaign('dyk-b', 'netbka/dyk', { tasks: [review('B1', 'netbka/dyk', 464)] }),
+    campaign('sampleapp-b', 'example-org/sampleapp', { tasks: [review('B1', 'example-org/sampleapp', 464)] }),
     // Another owner's repository with the same short name keeps its owner in the group name.
-    campaign('other-dyk', 'example/Dyk', { tasks: [review('O1', 'example/Dyk', 7)] }),
+    campaign('other-sampleapp', 'example/SampleApp', { tasks: [review('O1', 'example/SampleApp', 7)] }),
     // A stopped supervisor is one fact about this computer and restarting it is the owner's action: it is counted under
     // AIWorks itself, never under the project (review F9).
     campaign('notes-stopped', 'example/notes', { controllerLive: false, leaseExpiresAt: new Date(now - 60 * 60_000).toISOString() }),
     // Waiting for an AI worker's usage limit to reset is never listed (AW-002).
     campaign('notes-wait', 'example/notes', { waitingReason: 'provider-availability', tasks: [{ ...decision('W1', 'example/notes'), blocked: null, blockedReason: null }] }),
   ], coordinator: { configError: 'coordinator.reportTo is missing', blocked: null, messages: [] } };
-  const merges = { repositories: ['netbka/Dyk', 'example/Dyk'].map((repository) => ({ repository, configured: true, fetchedAt: now, attemptedAt: now, error: null })),
-    steps: { 'dyk-a/A1': result(sha(463), false), 'dyk-b/B1': result(sha(464), false), 'other-dyk/O1': result(sha(7), false) } };
-  const view = ownerView(supervisor, merges, { host: 'HomePc', now });
+  const merges = { repositories: ['example-org/sampleapp', 'example/SampleApp'].map((repository) => ({ repository, configured: true, fetchedAt: now, attemptedAt: now, error: null })),
+    steps: { 'sampleapp-a/A1': result(sha(463), false), 'sampleapp-b/B1': result(sha(464), false), 'other-sampleapp/O1': result(sha(7), false) } };
+  const view = ownerView(supervisor, merges, { host: 'workstation', now });
   assert.deepEqual(view.groups.map((group) => [group.name, group.project, group.count]), [
-    ['netbka/Dyk', 'netbka/Dyk', 2], ['shop', 'example/shop', 1], ['example/Dyk', 'example/Dyk', 1], [SYSTEM_GROUP, null, 1]]);
+    ['example-org/sampleapp', 'example-org/sampleapp', 2], ['shop', 'example/shop', 1], ['example/SampleApp', 'example/SampleApp', 1], [SYSTEM_GROUP, null, 1]]);
   assert.equal(SYSTEM_GROUP, 'AIWorks itself');
-  assert.deepEqual(view.groups[0].items.map((item) => item.campaignId), ['dyk-a', 'dyk-b'], 'one project whatever the spelling of its name');
+  assert.deepEqual(view.groups[0].items.map((item) => item.campaignId), ['sampleapp-a', 'sampleapp-b'], 'one project whatever the spelling of its name');
   // The fault and the unreadable inbox are listed but not counted (review F17); the stop is counted.
   assert.deepEqual(view.groups.at(-1).items.map((item) => [item.kind, item.repository, item.about, item.text, Boolean(item.system)]), [
     ['controller', null, 'example/shop', 'AIWorks has a problem of its own with this work', true],

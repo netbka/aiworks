@@ -24,7 +24,7 @@ function envelope({ envelope: changes = {}, tasks, ...top } = {}) {
     ...v1, version: 2,
     envelope: {
       scopeVersion: 1,
-      request: { route: 'issue', reference: 'netbka/Dyk#512', pinned: { base: BASE, issueUpdatedAt: '2026-10-19T08:00:00Z' } },
+      request: { route: 'issue', reference: 'example-org/sampleapp#512', pinned: { base: BASE, issueUpdatedAt: '2026-10-19T08:00:00Z' } },
       outcome: 'People can search the text of their chats and open the matching message.',
       acceptance: ['Searching a word shows every chat message containing it, newest first'],
       writes: ['src/chat/', 'src/search/', 'tests/chat/'],
@@ -103,7 +103,7 @@ test('every envelope field rule of WORK_ENVELOPE 4.1', () => {
     { web: { urls: ['https://a.example/x'], resourceOrigins: ['https://fonts.example'] } },
     { scopeVersion: 2, supersedes: { campaignId: 'older', scopeDigest: 'b'.repeat(64) } },
     { request: { route: 'goal', pinned: { base: BASE } } },
-    { request: { route: 'pr', reference: 'netbka/Dyk#7', pinned: { base: BASE, headSha: 'c'.repeat(40) } } },
+    { request: { route: 'pr', reference: 'example-org/sampleapp#7', pinned: { base: BASE, headSha: 'c'.repeat(40) } } },
     { request: { route: 'plan-file', reference: 'docs/PLAN.md', pinned: { base: 'd'.repeat(64), path: 'docs/PLAN.md', blob: 'e'.repeat(40) } } },
   ]) {
     const tasks = changes.deliverables?.length === 1 ? [report] : undefined;
@@ -181,14 +181,14 @@ const frozen = (value) => createHash('sha256').update(canonical(value), 'utf8').
 const frozenScope = (d) => frozen({ ...d, authorization: undefined, limits: undefined, purpose: undefined,
   tasks: d.tasks.map((task) => ({ ...task, outcome: undefined })) });
 
-test('version 1 digests of every committed campaigns/*.json are unchanged', () => {
-  // Values computed on the task base c49b91f, before this change, for the synthetic declaration every supervisor test uses.
-  assert.equal(scopeDigest(declaration()), '409bb2f8dbf2451ef4f80dddf4d8d509b3ee1412bc0eace3f0896919315c4d75');
-  assert.equal(authorityDigest(declaration()), '3c2dc9a98d7398440a433b2a417a0bd4eadc342d9616204d43139f7a0d38d37a');
-  const names = readdirSync(join(ROOT, 'campaigns')).filter((name) => name.endsWith('.json'));
+test('version 1 digests of every synthetic fixture declaration are unchanged', () => {
+  // Recomputed with the frozen version 1 formulas after replacing private fixture identities with synthetic ones.
+  assert.equal(scopeDigest(declaration()), '1124d02ea14c2eb0413eb8fb70c853198acb347c41d631764af37a476f9fdcc5');
+  assert.equal(authorityDigest(declaration()), 'f8e340d704ae818867ac7a7ef2cca9fa809fbb6d18d5b177afe8cd1514285c04');
+  const names = readdirSync(join(ROOT, 'tests/fixtures/campaigns')).filter((name) => name.endsWith('.json'));
   assert.ok(names.length > 0);
   for (const name of names) {
-    const raw = readFileSync(join(ROOT, 'campaigns', name), 'utf8');
+    const raw = readFileSync(join(ROOT, 'tests/fixtures/campaigns', name), 'utf8');
     const decl = JSON.parse(raw);
     if (decl.version !== 1) continue;
     assert.equal(decl.envelope, undefined, name);

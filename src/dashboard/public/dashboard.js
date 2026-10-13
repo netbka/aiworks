@@ -166,7 +166,7 @@ function renderMetrics(campaigns = state.supervisor.campaigns, shown = []) {
   $('#needs-count').textContent = !state.supervisor.available ? '?' : attention ? String(attention) : unknown ? '?' : '';
 }
 
-// Engineering Platform's own roadmap (read from the governance checkout), kept apart from project campaigns; display names replace internal track labels.
+// governance provider's own roadmap (read from the governance checkout), kept apart from project campaigns; display names replace internal track labels.
 const trackNames = { 'Product control plane': 'Control plane: first release', 'Product · next': 'Control plane: after the first release',
   'Autonomous governance': 'Portfolio rules rollout', 'Tracked extensions': 'Other tracked platform work' };
 function governanceMissing() {
@@ -175,13 +175,13 @@ function governanceMissing() {
 }
 function trackOverview() {
   const missing = governanceMissing();
-  if (missing) return panel('Engineering Platform roadmap', 'Read from the Engineering Platform governance checkout.', missing);
+  if (missing) return panel('governance provider roadmap', 'Read from the governance provider governance checkout.', missing);
   // Definitions only: the dashboard does not read GitHub, so it shows no progress for these items.
   const rows = [...new Set(state.roadmap.entries.map((entry) => entry.track))].map((track) => {
     const list = state.roadmap.entries.filter((item) => item.track === track);
     return el('div', { class: 'track-row' }, el('div', { class: 'row-line' }, el('span', { class: 'track-name' }, trackNames[track] ?? track), el('span', { class: 'track-count number' }, plural(list.length, 'item'))));
   });
-  return panel('Engineering Platform roadmap', 'The platform’s own work toward its product, the project control plane. This is separate from your projects. Its progress is tracked on GitHub, not read here.',
+  return panel('governance provider roadmap', 'The platform’s own work toward its product, the project control plane. This is separate from your projects. Its progress is tracked on GitHub, not read here.',
     el('div', { class: 'panel-body' }, ...rows));
 }
 
@@ -537,7 +537,7 @@ async function sendMessage(text) {
  * any owner message, so the receipt (Received, Read, Answered) shows here in place. Plan only never changes a project
  * file or registers work. Plan and do is shown but cannot be chosen until slice S10 and the admission API (#8).
  */
-const PLAN_AND_DO_OFF = ['Starting work from this page is not built yet.', 'Today, work starts after its plan is merged into AIWorks and started on this computer.'];
+const PLAN_AND_DO_OFF = ['Starting work from this page is not built yet.', 'Today, work starts when an authorized private plan is registered on this computer.'];
 const START_FROM = [['description', 'Just my description'], ['issue', 'A GitHub issue'], ['pull', 'A GitHub pull request']];
 const startBlocked = () => sending || offline || !state.supervisor.available;
 // The unsent goal and source, kept per address like every draft, and the message id of the last request sent from here.
@@ -679,7 +679,7 @@ function sinceSummary() {
     recent.supervisorErrors || recent.livenessProblems ? el('li', { class: 'warn' }, `The supervisor itself had problems (${[
       recent.supervisorErrors ? `its own check failed ${plural(recent.supervisorErrors, 'time')} and was retried` : null,
       recent.livenessProblems ? plural(recent.livenessProblems, 'liveness problem') : null].filter(Boolean).join('; ')}). Not an owner action: these are supervisor faults for AIWorks's maintainers. `,
-    link('Supervisor issue #2 ↗', 'https://github.com/netbka/aiworks/issues/2'), ' · ', routeLink('When, in Diagnostics', '#/settings/diagnostics')) : null,
+    link('Supervisor issue #2 ↗', 'https://github.com/example-org/aiworks/issues/2'), ' · ', routeLink('When, in Diagnostics', '#/settings/diagnostics')) : null,
   ].filter(Boolean);
   return el('section', { class: 'since', 'aria-labelledby': 'since-title' }, el('h2', { id: 'since-title' }, when),
     facts.length ? el('ul', {}, ...facts) : el('p', {}, 'Nothing changed.'));
@@ -699,13 +699,13 @@ function roadmapView() {
       entry.dependencies.length ? el('div', { class: 'subtext' }, `Depends on ${entry.dependencies.join(', ')}`) : null),
     cell(el('div', { class: 'subtext' }, entry.owner ? `Responsible role: ${entry.owner}` : 'No role assigned in the registry'))));
   const missingRoadmap = governanceMissing();
-  if (missingRoadmap) return panel('Engineering Platform roadmap items', 'Read from the Engineering Platform governance checkout.', missingRoadmap);
-  return panel('Engineering Platform roadmap items', `${entries.length} of ${state.roadmap.entries.length} items · the platform’s own work toward the project control plane. Definitions only: progress is tracked on GitHub and not read here`,
+  if (missingRoadmap) return panel('governance provider roadmap items', 'Read from the governance provider governance checkout.', missingRoadmap);
+  return panel('governance provider roadmap items', `${entries.length} of ${state.roadmap.entries.length} items · the platform’s own work toward the project control plane. Definitions only: progress is tracked on GitHub and not read here`,
     rows.length ? table(['Item', 'Outcome', 'Role'], rows) : empty('No matching items', 'Try another search or track filter.'));
 }
 
 const campaignById = (id) => state.supervisor.campaigns.find((c) => c.id === id);
-/** "Dyk: <purpose>": the work a row belongs to. Its ID is in the work's Details on Now and in Diagnostics. */
+/** "SampleApp: <purpose>": the work a row belongs to. Its ID is in the work's Details on Now and in Diagnostics. */
 const campaignContext = (id) => { const c = campaignById(id); return c ? campaignTitle(c) : id; };
 /** Campaign order from the owner view: cards for campaigns with something for the owner, then active ones; then finished ones. */
 function campaignLayout() {
@@ -914,7 +914,7 @@ function settingsScreen() {
 function settingsLinks() {
   return panel('More', null, el('ul', { class: 'settings-links' },
     el('li', {}, routeLink('Messages', '#/settings/messages'), el('div', { class: 'subtext' }, 'What you asked AIWorks, and what it answered.')),
-    el('li', {}, routeLink('Diagnostics', '#/settings/diagnostics'), el('div', { class: 'subtext' }, 'The full activity journal, every step with its issue and pull request, the Engineering Platform roadmap and how fresh each merge check is.'))));
+    el('li', {}, routeLink('Diagnostics', '#/settings/diagnostics'), el('div', { class: 'subtext' }, 'The full activity journal, every step with its issue and pull request, the governance provider roadmap and how fresh each merge check is.'))));
 }
 
 /** The one primary action of a state (OWNER_WORKSPACE §4.4), or nothing: a screen link, a GitHub link or Resume. */

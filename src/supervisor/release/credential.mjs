@@ -1,7 +1,7 @@
 // The release credential, by reference only (docs/design/AUTO_RELEASE.md section 6, slice REL5). Built switched off:
-// no release credential exists until the owner answers netbka/aiworks#33 item 2, and nothing outside the release
+// no release credential exists until the owner answers example-org/aiworks#33 item 2, and nothing outside the release
 // runner fetches one. The rules:
-// - a grant names a credential by reference (`destinations[].credential.ref`, for example `aiworks-release/dyk`), never
+// - a grant names a credential by reference (`destinations[].credential.ref`, for example `aiworks-release/sampleapp`), never
 //   by value. AIWorks stores, logs and journals only that reference;
 // - the supervisor may ask whether a reference resolves (eligibility check E12). That question reads presence only and
 //   never the value;
@@ -48,7 +48,7 @@ if ($null -eq $value) { exit 3 }
 exit 0`;
 
 /**
- * The Windows Credential Manager, generic credentials named by the reference (`cmdkey /generic:aiworks-release/dyk`).
+ * The Windows Credential Manager, generic credentials named by the reference (`cmdkey /generic:aiworks-release/sampleapp`).
  * `has` lists the target with cmdkey, which never prints a password. `get` reads it with CredRead in a PowerShell child
  * and is called only by the release runner process. `exec` is injectable for tests; no test reads the real store.
  */

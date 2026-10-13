@@ -258,7 +258,7 @@ test('with the scheduler on, status names the admission check that refuses each 
   assert.equal(wait.M.code, decided('M'));
   assert.equal(waits(store, 'narrow', now).N.code, 'ready', 'off means today: no write domains without the scheduler');
   store.run("UPDATE operations SET state = 'finished'");
-  patchTask(store, 'wide', 'W', { state: 'done', verified_sha: 'b'.repeat(40), pr_url: 'https://github.com/netbka/Dyk/pull/41' }, now);
+  patchTask(store, 'wide', 'W', { state: 'done', verified_sha: 'b'.repeat(40), pr_url: 'https://github.com/example-org/sampleapp/pull/41' }, now);
   wait = waits(store, 'narrow', now, { config });
   assert.equal(wait.N.text, 'Another step ("Dashboard") is changing src/ (PR #41 not merged yet)');
   assert.equal(wait.N.holder.reason, 'published-unmerged');

@@ -17,7 +17,7 @@ const { specOf, specsOf } = SQLITE ? await import('../../src/supervisor/plan.mjs
 
 const read = (path) => JSON.parse(readFileSync(join(ROOT, path), 'utf8'));
 const POLICY = read('registry/worker-context-policy.json');
-const COMMITTED = readdirSync(join(ROOT, 'campaigns')).filter((name) => name.endsWith('.json')).sort();
+const COMMITTED = readdirSync(join(ROOT, 'tests/fixtures/campaigns')).filter((name) => name.endsWith('.json')).sort();
 const CHILD_TABLES = ['plan_amendments', 'task_specs'];
 const tables = (store) => store.all("SELECT name FROM sqlite_master WHERE type = 'table'").map((row) => row.name);
 const columns = (store, table) => store.all(`PRAGMA table_info(${table})`).map((column) => column.name);
@@ -84,7 +84,7 @@ test('specOf returns the declared spec of every task of every committed campaign
   for (const name of COMMITTED) {
     const store = new Store(join(root, name.replace(/\.json$/, ''), 'supervisor.db'));
     try {
-      const file = read(`campaigns/${name}`);
+      const file = read(`tests/fixtures/campaigns/${name}`);
       campaignStart(store, file);
       for (const task of file.tasks) {
         assert.deepEqual(specOf(store, file.campaignId, task.id), task, `${name} ${task.id}`);
@@ -154,7 +154,7 @@ test('no packet digest of any committed campaign changes when specs come from th
   for (const name of COMMITTED) {
     const store = new Store(join(root, name.replace(/\.json$/, ''), 'supervisor.db'));
     try {
-      const file = read(`campaigns/${name}`);
+      const file = read(`tests/fixtures/campaigns/${name}`);
       campaignStart(store, file);
       const stored = store.campaign(file.campaignId).declaration;
       assert.equal(authorityDigest(stored), authorityDigest(file), `${name}: the packet authority digest`);
@@ -181,7 +181,7 @@ test('a dispatched packet is the one built from the declared spec, digest includ
   await controller.tick();
   const op = store.get('SELECT * FROM operations WHERE campaign_id = ?', decl.campaignId);
   assert.ok(op, 'a worker operation was recorded');
-  const expected = packetFor(decl, decl.tasks[0], { runId: op.id, revision: op.packet.revision, governance: projectGovernance('netbka/Dyk', GOVERNANCE) });
+  const expected = packetFor(decl, decl.tasks[0], { runId: op.id, revision: op.packet.revision, governance: projectGovernance('example-org/sampleapp', GOVERNANCE) });
   assert.deepEqual(op.packet, expected);
   assert.equal(op.packet_digest, packetDigest(expected, POLICY));
 });

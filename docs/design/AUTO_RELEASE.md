@@ -1,10 +1,12 @@
 # Opt-in automatic release with per-project authorization
 
-**Status:** design only. Nothing in this document is built, enabled or deployed, and nothing here grants a release. The AW-008 decision and the Engineering Platform changes in section 10 are **proposals**. Refs [#13](https://github.com/netbka/aiworks/issues/13), [#14](https://github.com/netbka/aiworks/issues/14).
+**Privacy boundary:** this is a design proposal, not a live installation record. Campaign declarations and approval records stay private under [AW-009](../DECISIONS.md#aw-009---public-commits-contain-no-installation-data). Any proposal to publish declarations through source branches or pull requests is superseded. Merged executable code, explicit owner authorization, scope binding and independent verification remain required.
 
-**Basis:** `netbka/aiworks` at `143208c3f62d37040de3f1b145b41957de62f868` (the task base) and `netbka/engineering-platform` main at `4c3eede9fb3ce470ba155da0150a6498ec824630`, read with `gh`. Every "today" statement is **observed** in those revisions and cites `file:line` at the AIWorks task base, or names the Engineering Platform (EP) file. Nothing was checked on HomePc: how the live runtime behaves is **unknown** to this document. Proposed behaviour is **planned**.
+**Status:** design only. Nothing in this document is built, enabled or deployed, and nothing here grants a release. The AW-008 decision and the governance provider changes in section 10 are **proposals**. Refs #13, #14.
 
-**Inputs:** [PROJECT_WORKSPACE_PLAN.md §5.5](../PROJECT_WORKSPACE_PLAN.md#55-separate-auto-release-mode-owner-approved-d5-tracked-13) and decision D5, [#13](https://github.com/netbka/aiworks/issues/13), [DECISIONS.md](../DECISIONS.md) (AW-001, AW-005), [SUPERVISOR.md](../SUPERVISOR.md), [PRODUCT_CONSTITUTION.md](../PRODUCT_CONSTITUTION.md). EP rules are linked, not repeated: [Constitution §14 Release authority](https://github.com/netbka/engineering-platform/blob/main/docs/CONSTITUTION.md#14-release-authority), [§15 Incident escalation](https://github.com/netbka/engineering-platform/blob/main/docs/CONSTITUTION.md#15-incident-escalation), [§2 Owner role](https://github.com/netbka/engineering-platform/blob/main/docs/CONSTITUTION.md#2-owner-role), [RELEASE-001](https://github.com/netbka/engineering-platform/blob/main/policies/RELEASE-001.json), [EP-029 standing deploy authorization](https://github.com/netbka/engineering-platform/blob/main/docs/DECISIONS.md#ep-029---standing-production-deploy-authorization-keeps-every-release-gate), [Delivery Practices §2 Release](https://github.com/netbka/engineering-platform/blob/main/docs/DELIVERY_PRACTICES.md#2-release), the `release-agent` and `production-observer` roles in [registry/agents.json](https://github.com/netbka/engineering-platform/blob/main/registry/agents.json), and the [RELEASE target flow](https://github.com/netbka/engineering-platform/blob/main/docs/AUTONOMOUS_OPERATING_MODEL.md#release---mergereleaserollback).
+**Basis:** design notes; implementation status must be checked against the selected runtime revision.
+
+**Inputs:** [PROJECT_WORKSPACE_PLAN.md §5.5](../PROJECT_WORKSPACE_PLAN.md#55-separate-auto-release-mode-owner-approved-d5-tracked-13) and decision D5, #13, [DECISIONS.md](../DECISIONS.md) (AW-001, AW-005), [SUPERVISOR.md](../SUPERVISOR.md), [PRODUCT_CONSTITUTION.md](../PRODUCT_CONSTITUTION.md). governance rules are linked, not repeated: Constitution §14 Release authority, §15 Incident escalation, §2 Owner role, RELEASE-001, governance-029 standing deploy authorization, Delivery Practices §2 Release, the `release-agent` and `production-observer` roles in registry/agents.json, and the RELEASE target flow.
 
 ## 1. What the owner gets
 
@@ -15,8 +17,8 @@ Each project has a **Release mode** for each place it can be released to (a *des
 
 A grant is a short written record that answers four questions in plain words:
 
-1. **What may be released?** For example: "documentation and ordinary code changes in Dyk; never database migrations".
-2. **Where?** One destination, for example "merge to `main` of netbka/Dyk, then deploy to Dyk production".
+1. **What may be released?** For example: "documentation and ordinary code changes in sampleapp; never database migrations".
+2. **Where?** One destination, for example "merge to `main` of example-org/sampleapp, then deploy to sampleapp production".
 3. **What must pass first?** The independent check of that exact version, the project's own release checks, and a working way back.
 4. **How do I stop it?** One switch stops all releases at once; switching a project back to Review only stops that project. The grant also expires by itself.
 
@@ -38,8 +40,8 @@ What it does **not** do:
 - It does not release anything the grant does not name: no new destination, no new environment, no database migration that cannot be undone, no new paid service, no new permission. Those still come to you.
 - It never repeats a release step whose outcome it does not know. After a crash it looks at the destination first.
 - It never copies over files you changed in your own folder.
-- It never releases AIWorks into its own live runtime. That stays the manual upgrade procedure in [AGENTS.md](../../AGENTS.md#upgrading-the-live-runtime).
-- It is not on today. Section 11 says which parts can be built switched off now and which wait for you or for Engineering Platform.
+- It never releases AIWorks into its own live runtime. That stays the manual upgrade procedure in [AGENTS.md](../../AGENTS.md#review-and-runtime-maintenance).
+- It is not on today. Section 11 says which parts can be built switched off now and which wait for you or for governance provider.
 
 ## 2. How it works today (observed)
 
@@ -47,9 +49,9 @@ What it does **not** do:
 
 - AW-001: the supervisor "never merges, deploys or changes provider resources" (`docs/DECISIONS.md:11`). The agent contract repeats it (`AGENTS.md:19`), and so does the product constitution: "No merging, deploying or changing provider resources ... Merge and release follow each project's own gate" (`docs/PRODUCT_CONSTITUTION.md:35`).
 - The runbook says the same for the target repository: "It never merges, deploys, removes worktrees or deletes branches" (`docs/SUPERVISOR.md:34`). Slices C (project release adapter) and D (install evidence and canary) are named as open (`docs/SUPERVISOR.md:3`).
-- EP's registry entry for AIWorks records this as the exception `campaign-external-write` against `constitution#8`, summary "...never merges or deploys", review by 2027-04-12 (`registry/projects/aiworks.json` in EP).
+- the governance contract's registry entry for AIWorks records this as the exception `campaign-external-write` against `constitution#8`, summary "...never merges or deploys", review by 2027-04-12 (`registry/projects/aiworks.json` in governance).
 - The plan records D5 as product direction only: "This is **not** immediate authorization to merge/deploy" (`docs/PROJECT_WORKSPACE_PLAN.md:246`). §5.5 sets the shape this document details (`docs/PROJECT_WORKSPACE_PLAN.md:182-197`).
-- Separately, the owner decided that **an agent** merging a PR whose exact head passed the supervisor's independent verification is not an owner stop (`AGENTS.md:55`, [#17](https://github.com/netbka/aiworks/issues/17)). That is about agent sessions working in this repository. It does not change AW-001 for the supervisor runtime.
+- Separately, the owner decided that **an agent** merging a PR whose exact head passed the supervisor's independent verification is not an owner stop (`AGENTS.md:55`, #17). That is about agent sessions working in this repository. It does not change AW-001 for the supervisor runtime.
 
 ### 2.2 Where today's flow stops
 
@@ -65,9 +67,9 @@ What it does **not** do:
 - **Lookup before create.** The GitHub adapter checks before it creates, "so a retry after an unknown outcome reconciles instead of duplicating" (`github.mjs:1-3`). Report comments do the same with a marker (`controller.mjs:842-862`). The release steps follow the same rule.
 - **Fenced writes and idempotency keys.** Every controller write runs inside `BEGIN IMMEDIATE` after `assertLease`, and the lease is extended while an external effect runs (`controller.mjs:141-150`, `src/supervisor/store.mjs:134`, `store.mjs:224`). Each operation has a unique `idempotency_key` (`store.mjs:40`, `controller.mjs:743`).
 - **Fault injection for restart tests.** Named fault points such as `after-push` already exist (`controller.mjs:100`, `controller.mjs:831`).
-- **Worker deny list.** Claude workers are denied `git push`, `gh pr merge`, `gh release`, `npm run deploy`, `ssh` and others (`src/supervisor/adapters/claude.mjs:67-71`). This is a tool allowlist, not an operating-system boundary ([EP Constitution §9](https://github.com/netbka/engineering-platform/blob/main/docs/CONSTITUTION.md#9-security-boundaries-do-not-weaken-for-convenience)).
-- **Standing deploy authorizations are already read.** The dashboard reads `governance.releaseAuthorization` from each EP registry entry (`src/dashboard/roadmap.mjs:31-50`) and names it in the owner view (`src/dashboard/owner.mjs:103-108`). The runbook lists it among the governance files read (`docs/SUPERVISOR.md:230`). It is display only.
-- **The record EP accepts today is thin.** EP's schema allows `releaseAuthorization` with exactly `source`, `approval` (a GitHub issue or PR URL) and `summary` (`schemas/project-contract.schema.json`, `$defs.releaseAuthorization`, in EP). Of the eleven EP registry entries, only Dyk has one: "Standing deploy authorization for assigned changes to Dyk's own target", source `deploy/AGENTS.md` (`registry/projects/dyk.json` in EP). It names no destination list, change classes, expiry or kill switch in machine-readable form.
+- **Worker deny list.** Claude workers are denied `git push`, `gh pr merge`, `gh release`, `npm run deploy`, `ssh` and others (`src/supervisor/adapters/claude.mjs:67-71`). This is a tool allowlist, not an operating-system boundary (governance Constitution §9).
+- **Standing deploy authorizations are already read.** The dashboard reads `governance.releaseAuthorization` from each governance registry entry (`src/dashboard/roadmap.mjs:31-50`) and names it in the owner view (`src/dashboard/owner.mjs:103-108`). The runbook lists it among the governance files read (`docs/SUPERVISOR.md:230`). It is display only.
+- **The record governance accepts today is thin.** the governance contract's schema allows `releaseAuthorization` with exactly `source`, `approval` (a GitHub issue or PR URL) and `summary` (`schemas/project-contract.schema.json`, `$defs.releaseAuthorization`, in governance). Of the eleven governance registry entries, only sampleapp has one: "Standing deploy authorization for assigned changes to sampleapp's own target", source `deploy/AGENTS.md` (`registry/projects/sampleapp.json` in governance). It names no destination list, change classes, expiry or kill switch in machine-readable form.
 
 ### 2.4 Two facts that shape the release role
 
@@ -87,7 +89,7 @@ What it does **not** do:
 
 Rules:
 
-- The mode is per **project and destination**, not per campaign. A campaign's approval preview shows which mode applies ([plan §3.2](../PROJECT_WORKSPACE_PLAN.md#32-work-request---one-authorization-autonomous-execution-inside-its-scope-owner-approved-d3)), but approving a campaign never turns Auto Release on. An approval for running code or adding child tasks is not a release permission ([#13](https://github.com/netbka/aiworks/issues/13)).
+- The mode is per **project and destination**, not per campaign. A campaign's approval preview shows which mode applies ([plan §3.2](../PROJECT_WORKSPACE_PLAN.md#32-work-request---one-authorization-autonomous-execution-inside-its-scope-owner-approved-d3)), but approving a campaign never turns Auto Release on. An approval for running code or adding child tasks is not a release permission (#13).
 - Narrowing is always free: switching to Review only, pressing the kill switch, or letting a grant expire needs nobody's approval and takes effect before the next release step.
 - Widening always needs a new grant version: a new destination, change class, environment or longer expiry.
 - With Auto Release unavailable for any reason (no grant, expired, revoked, kill switch, release role not installed, `release.enabled` false), the project behaves exactly as Review only. Nothing else in the supervisor changes. This is the "mode OFF means exactly today" acceptance of #13.
@@ -96,9 +98,9 @@ Rules:
 
 ### 4.1 Where it lives
 
-EP-029 says a standing deploy authorization is "recorded in the project". So the record lives **in the target project**, and EP's registry points to it:
+governance-029 says a standing deploy authorization is "recorded in the project". So the record lives **in the target project**, and the governance contract's registry points to it:
 
-- **GitHub-backed project:** a JSON file in the project's repository, on its base branch, for example `release/aiworks-release.json`. EP's registry entry names it in `releaseAuthorization` (the proposed `record` field, section 10.2). AIWorks reads it from the **base branch head fetched at evaluation time**, records the commit SHA and the file's sha256, and binds every release to that digest. A grant on an unmerged branch does not count.
+- **GitHub-backed project:** a JSON file in the project's repository, on its base branch, for example `release/aiworks-release.json`. the governance contract's registry entry names it in `releaseAuthorization` (the proposed `record` field, section 10.2). AIWorks reads it from the **base branch head fetched at evaluation time**, records the commit SHA and the file's sha256, and binds every release to that digest. A grant on an unmerged branch does not count.
 - **Local-only project** (D1): the record lives in the owner-approved local project overlay that D2 will define ([plan §3.1](../PROJECT_WORKSPACE_PLAN.md#31-project-connection---github-optional-owner-approved-d1-2026-10-12)). Until D2 is settled, a local-only project cannot hold a valid grant, so local Auto Release stays unavailable. Local apply in Review only (an explicit owner "Apply" click) does not need a grant and is part of #7.
 
 The record holds no secrets. It names a credential by reference only.
@@ -110,20 +112,20 @@ All fields are required unless marked optional. An unknown field, a missing fiel
 | Field | Meaning | Example |
 | --- | --- | --- |
 | `schema` | Record format version | `"aiworks-release-authorization/1"` |
-| `project` | EP registry id of the project; must equal the entry that points here | `"dyk"` |
+| `project` | governance registry id of the project; must equal the entry that points here | `"sampleapp"` |
 | `version` | Grant version, a positive integer that only goes up | `3` |
-| `approval` | The owner's approval: a GitHub issue or PR URL (same form as EP's `approval`) | `https://github.com/netbka/Dyk/issues/120` |
+| `approval` | The owner's approval: a GitHub issue or PR URL (same form as the governance contract's `approval`) | `https://github.com/example-org/example-repository` |
 | `grantedAt`, `expiresAt` | ISO dates. `expiresAt` is required and at most 90 days after `grantedAt` | `2026-11-01`, `2027-01-30` |
 | `revoked` | `true` stops the grant at once; a revoked version is never revived | `false` |
 | `destinations[]` | One or more destinations, each with the fields below | |
 | `destinations[].id` | Stable destination id | `"production"` |
-| `destinations[].environment` | The EP environment name | `"production"` |
+| `destinations[].environment` | The governance environment name | `"production"` |
 | `destinations[].kind` | `merge`, `merge-then-deploy`, `local-git-apply` or `local-folder-apply` | `"merge-then-deploy"` |
 | `destinations[].baseBranch` | For `merge` kinds: the only branch that may be merged into | `"main"` |
 | `destinations[].mergeMethod` | For `merge` kinds: `merge`, `squash` or `rebase` | `"squash"` |
 | `destinations[].changeClasses[]` | The classes this destination accepts (4.3) | `["docs", "app-code"]` |
 | `destinations[].commands` | For deploy and local kinds: paths in the project to its own `deploy`, `observe`, `check` and `rollback` commands (4.4) | `{ "deploy": "deploy/release.ps1", ... }` |
-| `destinations[].credential` | Name of the release credential and who owns it; never a value | `{ "ref": "aiworks-release/dyk", "owner": "netbka" }` |
+| `destinations[].credential` | Name of the release credential and who owns it; never a value | `{ "ref": "aiworks-release/sampleapp", "owner": "example-org" }` |
 | `destinations[].rollback` | `automatic` or `report-only`; `automatic` needs a `rollback` command and a retained previous artifact | `"automatic"` |
 | `destinations[].checkWindowMinutes` | How long post-release checks may take before the result counts as failed | `10` |
 | `classes` | The path rules that put a changed file in a class (4.3) | |
@@ -136,7 +138,7 @@ A release is allowed only when **every** changed file between the base and the c
 - The project declares path rules: `classes: { "docs": ["docs/**", "*.md"], "app-code": ["src/**"], "migration": ["db/migrations/**"], ... }`. Rules are glob patterns over repository paths.
 - A file matched by no rule is `unclassified`. `unclassified` blocks.
 - A file matched by two rules takes the **stricter** class, in this order (strictest first): `migration`, `infrastructure`, `permissions`, `dependency-update`, `app-code`, `tests`, `docs`.
-- These classes can **never** be accepted by an AIWorks grant in this version, whatever the record says: `migration`, `infrastructure`, `permissions`. A record that lists one is invalid. They are the plan's "irreversible migrations, new recurring spend, new environments/permissions" ([plan §5.5](../PROJECT_WORKSPACE_PLAN.md#55-separate-auto-release-mode-owner-approved-d5-tracked-13)) and stay with the owner-reserved gates ([EP Constitution §2](https://github.com/netbka/engineering-platform/blob/main/docs/CONSTITUTION.md#2-owner-role)). Widening this list later is an AW decision, not a record change.
+- These classes can **never** be accepted by an AIWorks grant in this version, whatever the record says: `migration`, `infrastructure`, `permissions`. A record that lists one is invalid. They are the plan's "irreversible migrations, new recurring spend, new environments/permissions" ([plan §5.5](../PROJECT_WORKSPACE_PLAN.md#55-separate-auto-release-mode-owner-approved-d5-tracked-13)) and stay with the owner-reserved gates (governance Constitution §2). Widening this list later is an AW decision, not a record change.
 - Classification is deterministic code over `git diff --name-status base..candidate`. No model decides a class.
 
 ### 4.4 Project commands
@@ -150,7 +152,7 @@ AIWorks does not invent how a project deploys. The project names its own command
 | `check` | Read-only post-release checks (health, journeys) | 0 passed; 1 failed; anything else unknown |
 | `rollback` | Restore the retained previous artifact and print its digest | 0 done; non-zero failed |
 
-A `merge-then-deploy` destination without an `observe` command is invalid: without a read-only way to see what is live, a restart could not reconcile, and section 8 forbids guessing. EP already requires a named revision, artifact digest, drift check and retained rollback artifact for every release ([Delivery Practices, artifact identity](https://github.com/netbka/engineering-platform/blob/main/docs/DELIVERY_PRACTICES.md#artifact-identity-and-rollback-artifact)); these commands are how a project supplies that evidence to AIWorks.
+A `merge-then-deploy` destination without an `observe` command is invalid: without a read-only way to see what is live, a restart could not reconcile, and section 8 forbids guessing. governance already requires a named revision, artifact digest, drift check and retained rollback artifact for every release (Delivery Practices, artifact identity); these commands are how a project supplies that evidence to AIWorks.
 
 ### 4.5 The kill switches
 
@@ -172,12 +174,12 @@ The eligibility evaluator is deterministic code. It takes one candidate (project
 | --- | --- | --- | --- |
 | E1 | Auto Release is on for this destination | `release.enabled` true; no `RELEASE-STOP`; project mode is Auto Release | Any switch off; config unreadable |
 | E2 | The grant is valid now | Record parses, matches schema, `project` matches, not revoked, `expiresAt` in the future, its digest is recorded | Record missing, invalid, expired, revoked; base branch fetch failed |
-| E3 | The authority exists | AW-008 accepted in `docs/DECISIONS.md` of the running revision; the EP registry entry points to this record | Either missing |
+| E3 | The authority exists | AW-008 accepted in `docs/DECISIONS.md` of the running revision; the governance registry entry points to this record | Either missing |
 | E4 | The candidate was independently checked | Task `done`; a verify operation with verdict `accepted` and `target_sha == verified_sha` (`controller.mjs:420`); its session differs from every implement session of the task | No accepted verify op for this exact SHA; same session |
 | E5 | The candidate is the published one | GitHub: PR open, not draft, `headRefOid == verified_sha`, base equals `destinations[].baseBranch`. Local: staged revision equals `verified_sha` | Head moved, PR closed, read failed |
 | E6 | The candidate is current | GitHub: the freshly fetched base head is an ancestor of `verified_sha`. Local: the target's baseline manifest equals the manifest the work started from, for every path the release writes or deletes | Base moved since verification; owner edited a file the release would overwrite |
 | E7 | Every changed file is in an accepted class | Classification of `base..verified_sha` (4.3) is non-empty and every class is in `changeClasses` and not in `ownerConfirm` | `unclassified`, `migration`, a class not granted |
-| E8 | Required project checks passed on this exact SHA | GitHub: every required status check on `verified_sha` is `success`. The project's release-preflight evidence, reviewed by the independent verifier, exists ([RELEASE-001](https://github.com/netbka/engineering-platform/blob/main/policies/RELEASE-001.json) `required_evidence`) | A check pending, failed or unreadable; preflight evidence absent |
+| E8 | Required project checks passed on this exact SHA | GitHub: every required status check on `verified_sha` is `success`. The project's release-preflight evidence, reviewed by the independent verifier, exists (RELEASE-001 `required_evidence`) | A check pending, failed or unreadable; preflight evidence absent |
 | E9 | There is a way back | `merge`: always (revert, see 7.3). Deploy: `rollback` command present and `observe` reports a previous known-good digest. Local: free space for the backup and every target path readable | `observe` unknown; no previous artifact; backup impossible |
 | E10 | Dependencies are released | Every task this one depends on is released to this destination, or the campaign declares it independent | A dependency only published |
 | E11 | The destination is free | No other release holds the destination lock, and no release to this destination is in `unknown` | Lock held; an earlier release unresolved |
@@ -188,11 +190,11 @@ Rules around the table:
 
 - The evaluator records the full input it used (record digest, PR snapshot, check results, classification) in the release row. A later step that finds any of it changed stops and re-evaluates; it does not carry an old "eligible" forward.
 - Not eligible is not a failure of the work. The result stays published, the project behaves as Review only for it, and the owner view says why in one line, for example "Not released: `db/migrations/0042.sql` is a database migration. Release it yourself or ask for a grant."
-- An E-check never asks the owner. If a missing piece only the owner can provide (E3, E12, a grant), the result simply stays in Review only, with that reason. This keeps to [AGENTS.md](../../AGENTS.md#when-to-stop-for-the-owner): no new blocking gate on today's behaviour.
+- An E-check never asks the owner. If a missing piece only the owner can provide (E3, E12, a grant), the result simply stays in Review only, with that reason. This keeps to [AGENTS.md](../../AGENTS.md#owner-intervention): no new blocking gate on today's behaviour.
 
 ## 6. The release role
 
-The release role is the EP `release-agent` role (`evaluate-release`, `deploy-eligible`, `rollback`; must not `deploy-ineligible`, `deploy-stale-sha`; [registry/agents.json](https://github.com/netbka/engineering-platform/blob/main/registry/agents.json)). In AIWorks it is **deterministic code, not a model**. Releasing needs no judgment that code cannot make from evidence, and a model would add cost and a new way to be wrong.
+The release role is the governance `release-agent` role (`evaluate-release`, `deploy-eligible`, `rollback`; must not `deploy-ineligible`, `deploy-stale-sha`; registry/agents.json). In AIWorks it is **deterministic code, not a model**. Releasing needs no judgment that code cannot make from evidence, and a model would add cost and a new way to be wrong.
 
 Separation from implementer and verifier:
 
@@ -203,7 +205,7 @@ Separation from implementer and verifier:
 - **Cannot release its own result.** The release role never produces content. E4 proves the verifier session is not an implementer session for this task. The release role cannot mark anything verified.
 - **Audited.** Every step writes intent, command (without secrets), start, end, exit code and output digest to the journal and the release row.
 
-Honest limit (observed, section 2.4): the owner's `gh` login on HomePc can technically merge, and the deny list is a tool allowlist, not an operating-system sandbox. This design does not narrow that login. It makes the release identity separate and auditable; narrowing the supervisor's own login is a separate hardening question (not in this scope).
+Honest limit (observed, section 2.4): the owner's `gh` login on workstation can technically merge, and the deny list is a tool allowlist, not an operating-system sandbox. This design does not narrow that login. It makes the release identity separate and auditable; narrowing the supervisor's own login is a separate hardening question (not in this scope).
 
 ## 7. Releasing
 
@@ -240,7 +242,7 @@ Rules:
 3. **Confirm the merge.** Read the receipt with `integratedPullRequest` (`github.mjs:15-26`). Then fetch the base and check that the merge commit's tree equals `verified_sha`'s tree (`git rev-parse <merge>^{tree}` and `<verified_sha>^{tree}`). E6 makes this true for every merge method; if it is not, the merged code is not the checked code: state `merged`, deploy **refused**, owner told. Nothing is rolled back automatically, because nothing was deployed.
 4. **Merge-only destinations stop here** and go to checks (step 7) with the project's merge checks, if any.
 5. **Deploy.** In a clean detached release checkout at the merge commit, run `observe` (records the previous digest), then `deploy`. The deployed revision is the merge commit, whose tree is the verified tree.
-6. **Confirm the deploy.** Run `observe`. It must report the merge commit and the digest `deploy` printed (the drift check of [Delivery Practices](https://github.com/netbka/engineering-platform/blob/main/docs/DELIVERY_PRACTICES.md#artifact-identity-and-rollback-artifact)). Anything else is `unknown` (section 8).
+6. **Confirm the deploy.** Run `observe`. It must report the merge commit and the digest `deploy` printed (the drift check of Delivery Practices). Anything else is `unknown` (section 8).
 7. **Check.** Run `check` until it passes or `checkWindowMinutes` ends. A pass → `accepted`. A fail, or still unknown at the end of the window, counts as failed → rollback (7.4).
 
 ### 7.3 Rolling back a merge
@@ -249,14 +251,14 @@ A merge is not undone by force-pushing a branch. When a merge-only release fails
 
 ### 7.4 Rolling back a deployment
 
-- With `rollback: automatic`, a failed check runs the project's `rollback` command to the retained previous digest, then `observe` must report that digest, then `check` runs again. Pass → `rolled-back`. This is [RELEASE-001](https://github.com/netbka/engineering-platform/blob/main/policies/RELEASE-001.json) `automatic-rollback-where-safe`.
+- With `rollback: automatic`, a failed check runs the project's `rollback` command to the retained previous digest, then `observe` must report that digest, then `check` runs again. Pass → `rolled-back`. This is RELEASE-001 `automatic-rollback-where-safe`.
 - With `rollback: report-only`, nothing is run; the owner is told at once and the lock stays held.
-- **A failed rollback is an incident.** `rollback-failed` keeps the lock, stops every further release to that destination and goes to the owner immediately through the owner queue of [#1](https://github.com/netbka/aiworks/issues/1) ([EP Constitution §15](https://github.com/netbka/engineering-platform/blob/main/docs/CONSTITUTION.md#15-incident-escalation): failed rollback).
+- **A failed rollback is an incident.** `rollback-failed` keeps the lock, stops every further release to that destination and goes to the owner immediately through the owner queue of #1 (governance Constitution §15: failed rollback).
 - A rollback is never repeated blindly either: it follows the same intent-before-effect and reconciliation rules.
 
 ### 7.5 Local: apply with a reversible backup
 
-There is no PR and no merge. The plan forbids fabricating either (`docs/PROJECT_WORKSPACE_PLAN.md:25`, `:106`). This needs the local project model of [#7](https://github.com/netbka/aiworks/issues/7) and D2.
+There is no PR and no merge. The plan forbids fabricating either (`docs/PROJECT_WORKSPACE_PLAN.md:25`, `:106`). This needs the local project model of #7 and D2.
 
 **Local Git** (`local-git-apply`), target: one named branch in the owner's repository.
 
@@ -277,7 +279,7 @@ There is no PR and no merge. The plan forbids fabricating either (`docs/PROJECT_
 
 ## 8. Restart: reconcile, never repeat
 
-A controller crash, a takeover, a lost network or a killed release runner can leave a step started with no recorded outcome. The rule ([Delivery Practices, no blind replay](https://github.com/netbka/engineering-platform/blob/main/docs/DELIVERY_PRACTICES.md#no-blind-replay)):
+A controller crash, a takeover, a lost network or a killed release runner can leave a step started with no recorded outcome. The rule (Delivery Practices, no blind replay):
 
 > **On restart, every release with a started step and no outcome is `unknown` until a read-only look at the destination proves where it is. AIWorks never runs the step again until that look proves the step did not happen.**
 
@@ -294,8 +296,8 @@ Further rules:
 
 - A read failure is never evidence. "I could not read GitHub" is `unknown`, not "not merged".
 - `unknown` keeps the destination lock, so no other release lands on top of it.
-- The owner sees one line: "Release of `abc1234` to Dyk production: outcome unknown since 14:05. AIWorks is checking the destination and will not deploy again until it knows." The **Stop** button still works while it reconciles.
-- An `unknown` deploy is not by itself an incident. It becomes one under [EP Constitution §15](https://github.com/netbka/engineering-platform/blob/main/docs/CONSTITUTION.md#15-incident-escalation) when its checks show an outage that automatic recovery does not fix within 5 minutes, or when a rollback fails.
+- The owner sees one line: "Release of `abc1234` to sampleapp production: outcome unknown since 14:05. AIWorks is checking the destination and will not deploy again until it knows." The **Stop** button still works while it reconciles.
+- An `unknown` deploy is not by itself an incident. It becomes one under governance Constitution §15 when its checks show an outage that automatic recovery does not fix within 5 minutes, or when a rollback fails.
 
 ## 9. Owner view
 
@@ -316,13 +318,13 @@ Nothing below is accepted. Each is the exact text proposed for the owner's revie
 
 > **AW-008 - Auto Release is a separate release role under a standing per-project grant**
 >
-> Status: proposed (netbka/aiworks#13). Narrows the scope of AW-001; does not replace it.
+> Status: proposed (AIWorks design work). Narrows the scope of AW-001; does not replace it.
 >
 > AW-001 stays: the supervisor that runs campaigns never merges, deploys or changes provider resources.
 >
 > A separate **release role** may merge or deploy one result, or apply it to a local target, only when all of these hold:
 >
-> - the target project records a standing release authorization ([EP-029](https://github.com/netbka/engineering-platform/blob/main/docs/DECISIONS.md#ep-029---standing-production-deploy-authorization-keeps-every-release-gate)) that names AIWorks, the destination, the change classes and an expiry, and it is valid, unexpired and not revoked;
+> - the target project records a standing release authorization (governance-029) that names AIWorks, the destination, the change classes and an expiry, and it is valid, unexpired and not revoked;
 > - an independent verifier accepted that exact revision;
 > - every eligibility check in `docs/design/AUTO_RELEASE.md` section 5 passes on positive evidence;
 > - the release role uses its own credential, which no implementer, verifier or coordinator process holds;
@@ -336,9 +338,9 @@ Proposed one-line additions, also text only:
 - `docs/PRODUCT_CONSTITUTION.md:35`: append "The only exception is the separate release role of AW-008, under a standing per-project grant."
 - `AGENTS.md:19`: append "The separate release role of AW-008 is the only exception."
 
-### 10.2 Proposed Engineering Platform changes
+### 10.2 Proposed governance provider changes
 
-These are proposed for an EP pull request opened by EP's own process, never from AIWorks. No EP constitution change is needed: [§14](https://github.com/netbka/engineering-platform/blob/main/docs/CONSTITUTION.md#14-release-authority) already allows a standing deploy authorization "limited to assigned changes and the project's own release targets", and AW-008 stays inside that.
+These are proposed for a governance pull request opened by the governance contract's own process, never from AIWorks. No governance constitution change is needed: §14 already allows a standing deploy authorization "limited to assigned changes and the project's own release targets", and AW-008 stays inside that.
 
 1. **Schema** (`schemas/project-contract.schema.json`, `$defs.releaseAuthorization`): add two optional properties, keeping `additionalProperties: false`:
 
@@ -362,14 +364,14 @@ These are proposed for an EP pull request opened by EP's own process, never from
    }
    ```
 
-3. **Per project, when the owner grants it** (not now): the project's `releaseAuthorization` gains `"executor": "aiworks"` and `"record": "<path>"`, with `approval` pointing to the owner's grant issue. This is the owner's grant act for that project, made in that project's and EP's own PRs.
+3. **Per project, when the owner grants it** (not now): the project's `releaseAuthorization` gains `"executor": "aiworks"` and `"record": "<path>"`, with `approval` pointing to the owner's grant issue. This is the owner's grant act for that project, made in that project's and the governance contract's own PRs.
 
 ## 11. Implementation slices
 
-Each slice is one reviewable PR in `netbka/aiworks` unless marked. Tests are synthetic: temporary directories, disposable Git repositories, synthetic `gh` and project-command executables, as `tests/supervisor/helpers.mjs` does. No network, model or GitHub calls.
+Each slice is one reviewable PR in `example-org/aiworks` unless marked. Tests are synthetic: temporary directories, disposable Git repositories, synthetic `gh` and project-command executables, as `tests/supervisor/helpers.mjs` does. No network, model or GitHub calls.
 
 **Build switched off now:** R1 to R7 and R9. Every one ships with `release.enabled: false` and no release credential; with that default the full existing suite passes unchanged and no release can run.
-**Wait for a decision:** R8 (D2), R10 (owner Q1), R11 (EP review and owner Q1), R12 (owner Q1, Q2, Q3).
+**Wait for a decision:** R8 (D2), R10 (owner Q1), R11 (governance review and owner Q1), R12 (owner Q1, Q2, Q3).
 
 **R1. Release authorization record: format and validator**
 
@@ -448,7 +450,7 @@ Each slice is one reviewable PR in `netbka/aiworks` unless marked. Tests are syn
 - Outcome: the release-mode row, the five-step ladder per result, unknown and failure lines in Needs me, and **Stop all releases**.
 - Files: `src/dashboard/supervisor.mjs`, `src/dashboard/owner.mjs` (replace the display-only `releaseRule` wording when a record exists), `src/dashboard/public/` files owned by the #11 design at that time, `tests/dashboard/`.
 - Tests: `unknown is never shown as success`; `a local project shows no PR or merge step`; `Auto Release shows its exact missing condition`; `Stop all releases writes RELEASE-STOP through the existing CSRF-checked command path`.
-- Acceptance: blind owner review per [UX-002](https://github.com/netbka/engineering-platform/blob/main/docs/EXPERIENCE_REVIEW.md).
+- Acceptance: blind owner review per UX-002.
 - Depends on: R2, R4; the #11 workspace screens and their file owner (this slice does not edit those files while another campaign owns them).
 - Waits for: nothing owner-reserved.
 
@@ -461,21 +463,21 @@ Each slice is one reviewable PR in `netbka/aiworks` unless marked. Tests are syn
 - Depends on: nothing.
 - Waits for: **owner Q1**.
 
-**R11. Engineering Platform schema and AIWorks exception** (EP pull request, by EP's process)
+**R11. governance provider schema and AIWorks exception** (governance pull request, by the governance contract's process)
 
-- Outcome: EP's schema accepts `executor` and `record`; AIWorks's registry entry carries `release-executor`.
-- Files (in `netbka/engineering-platform`): `schemas/project-contract.schema.json`, `registry/projects/aiworks.json`.
-- Tests: EP's own registry and schema validation.
-- Acceptance: EP review merges it; AIWorks reads it from the governance checkout (`docs/SUPERVISOR.md:230`).
+- Outcome: the governance contract's schema accepts `executor` and `record`; AIWorks's registry entry carries `release-executor`.
+- Files (in `example-org/governance`): `schemas/project-contract.schema.json`, `registry/projects/aiworks.json`.
+- Tests: the governance contract's own registry and schema validation.
+- Acceptance: governance review merges it; AIWorks reads it from the governance checkout (`docs/SUPERVISOR.md:230`).
 - Depends on: R10.
-- Waits for: **Engineering Platform review** and owner Q1.
+- Waits for: **governance provider review** and owner Q1.
 
 **R12. Disposable rehearsal, then a canary** (runbook, no new code)
 
-- Outcome: on HomePc, a full release cycle on a disposable destination, then one granted canary.
+- Outcome: on workstation, a full release cycle on a disposable destination, then one granted canary.
 - Files: `docs/SUPERVISOR.md` (enablement and rollback: delete the grant or write `RELEASE-STOP`), `docs/STATUS.md`.
-- Tests: the full suite at the deployed SHA; then, on a disposable repository and a disposable local folder: release, forced check failure with rollback, controller killed mid-merge and mid-deploy with reconciliation. Status before and after per [AGENTS.md](../../AGENTS.md#upgrading-the-live-runtime).
-- Acceptance: observed on HomePc and labelled verified only there: one merge per release, no deploy over an unknown state, rollback restores the previous digest.
+- Tests: the full suite at the deployed SHA; then, on a disposable repository and a disposable local folder: release, forced check failure with rollback, controller killed mid-merge and mid-deploy with reconciliation. Status before and after per [AGENTS.md](../../AGENTS.md#review-and-runtime-maintenance).
+- Acceptance: observed on workstation and labelled verified only there: one merge per release, no deploy over an unknown state, rollback restores the previous digest.
 - Depends on: R1 to R7, R10, R11 merged and deployed (R8 for a local canary, R9 recommended).
 - Waits for: **owner Q1, Q2, Q3**.
 
@@ -485,9 +487,9 @@ Only these need the owner. Everything else above is decided under existing autho
 
 | # | Question | Why it is the owner's | Recommended answer | Unblocks |
 | --- | --- | --- | --- | --- |
-| Q1 | Accept AW-008 (section 10.1) as written? | It widens the supervisor's execution authority beyond AW-001 ([EP Constitution §2](https://github.com/netbka/engineering-platform/blob/main/docs/CONSTITUTION.md#2-owner-role): "security defaults that materially widen execution authority") | **Accept as written.** It keeps AW-001 for the supervisor, limits releases to per-project grants that expire, and excludes migrations, infrastructure, permissions and new spend. Default if unanswered: Review only everywhere, as today. | R10, R11, R12 |
-| Q2 | Which identity does the release role use on GitHub? | Third-party account and credential ownership is owner-reserved ([§2](https://github.com/netbka/engineering-platform/blob/main/docs/CONSTITUTION.md#2-owner-role)); only the owner can create it | **One fine-grained personal access token per granted repository**, owned by the owner's account, with only `contents: write` and `pull_requests: write` on that one repository, 90-day expiry matching the grant, stored in Windows Credential Manager as `aiworks-release/<project>`. A GitHub App is cleaner but needs a new app registration; start with the token. Default: none, so Auto Release stays unavailable. | Running R5 to R7 on a real repository; R12 |
-| Q3 | Which destination is the first canary? | Granting a project a standing release authorization is the owner's act (EP-029) | **First a disposable repository and folder for the rehearsal; then `merge` (not deploy) of `docs` and `tests` changes to `netbka/aiworks` `main`**, a 30-day grant. Merges of verified AIWorks PRs are already not an owner stop for agents (`AGENTS.md:55`), deployment of AIWorks stays manual, and nothing reaches a production user. A deploy canary on Dyk follows only after that has run cleanly. | R12 |
+| Q1 | Accept AW-008 (section 10.1) as written? | It widens the supervisor's execution authority beyond AW-001 (governance Constitution §2: "security defaults that materially widen execution authority") | **Accept as written.** It keeps AW-001 for the supervisor, limits releases to per-project grants that expire, and excludes migrations, infrastructure, permissions and new spend. Default if unanswered: Review only everywhere, as today. | R10, R11, R12 |
+| Q2 | Which identity does the release role use on GitHub? | Third-party account and credential ownership is owner-reserved (§2); only the owner can create it | **One fine-grained personal access token per granted repository**, owned by the owner's account, with only `contents: write` and `pull_requests: write` on that one repository, 90-day expiry matching the grant, stored in Windows Credential Manager as `aiworks-release/<project>`. A GitHub App is cleaner but needs a new app registration; start with the token. Default: none, so Auto Release stays unavailable. | Running R5 to R7 on a real repository; R12 |
+| Q3 | Which destination is the first canary? | Granting a project a standing release authorization is the owner's act (governance-029) | **First a disposable repository and folder for the rehearsal; then `merge` (not deploy) of `docs` and `tests` changes to `example-org/aiworks` `main`**, a 30-day grant. Merges of verified AIWorks PRs are already not an owner stop for agents (`AGENTS.md:55`), deployment of AIWorks stays manual, and nothing reaches a production user. A deploy canary on sampleapp follows only after that has run cleanly. | R12 |
 
 Decided here, not asked (engineering decisions under existing authority):
 

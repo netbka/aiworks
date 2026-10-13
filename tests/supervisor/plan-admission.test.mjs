@@ -31,11 +31,11 @@ function approved({ envelope = {}, campaignId = 'envelope-campaign', constraints
     ...v1, version: 2, ...(constraints ? { constraints } : {}),
     envelope: {
       scopeVersion: 1,
-      request: { route: 'issue', reference: 'netbka/Dyk#512', pinned: { base: BASE, issueUpdatedAt: '2026-10-19T08:00:00Z' } },
+      request: { route: 'issue', reference: 'example-org/sampleapp#512', pinned: { base: BASE, issueUpdatedAt: '2026-10-19T08:00:00Z' } },
       outcome: 'People can search the text of their chats and open the matching message.',
       acceptance: ['Searching a word shows every chat message containing it, newest first'],
       writes: ['src/chat/', 'src/search/', 'tests/chat/'], denyWrites: ['src/chat/migrations/'],
-      deliverables: ['commit', 'report'], issues: [512], web: { urls: ['https://dyk.example/chat'], resourceOrigins: ['https://fonts.example'] },
+      deliverables: ['commit', 'report'], issues: [512], web: { urls: ['https://sampleapp.example/chat'], resourceOrigins: ['https://fonts.example'] },
       release: { mode: 'review-only' }, planning: 'adaptive', ...envelope,
     },
   });
@@ -92,9 +92,9 @@ test('matrix 6.8, capabilities: a deliverable, a browser origin or a reference t
   assert.equal(verdict([add(report())], { decl: commitOnly }), 'WIDEN_CAPABILITY');
   assert.equal(verdict([add(report())]), 'admitted');
   assert.equal(verdict([add(report({ web: { urls: ['https://elsewhere.example/'] } }))]), 'WIDEN_CAPABILITY', 'a new page origin');
-  assert.equal(verdict([add(report({ web: { urls: ['https://dyk.example/search'], resourceOrigins: ['https://cdn.example'] } }))]), 'WIDEN_CAPABILITY', 'a new resource origin');
-  assert.equal(verdict([add(report({ web: { urls: ['https://dyk.example/search'], resourceOrigins: ['https://fonts.example'] } }))]), 'admitted');
-  assert.equal(verdict([add(report({ web: { urls: ['https://dyk.example/search'] } }))], { decl: approved({ envelope: { web: null } }) }), 'WIDEN_CAPABILITY', 'no browser at all');
+  assert.equal(verdict([add(report({ web: { urls: ['https://sampleapp.example/search'], resourceOrigins: ['https://cdn.example'] } }))]), 'WIDEN_CAPABILITY', 'a new resource origin');
+  assert.equal(verdict([add(report({ web: { urls: ['https://sampleapp.example/search'], resourceOrigins: ['https://fonts.example'] } }))]), 'admitted');
+  assert.equal(verdict([add(report({ web: { urls: ['https://sampleapp.example/search'] } }))], { decl: approved({ envelope: { web: null } }) }), 'WIDEN_CAPABILITY', 'no browser at all');
   assert.equal(verdict([add(child('C1', { references: ['AGENTS.md', 'config/secrets.json'] }))]), 'WIDEN_CAPABILITY');
 });
 
@@ -107,7 +107,7 @@ test('matrix 6.8, permissions and providers: refused by name, and any key that i
 });
 
 test('matrix 6.8, destination: another repository, branch, project or an issue the approval does not list', () => {
-  for (const extra of [{ repository: 'netbka/other' }, { baseBranch: 'release' }, { target: { repository: 'netbka/other' } }, { projectId: 'other' }, { environment: 'production' }]) {
+  for (const extra of [{ repository: 'example-org/other' }, { baseBranch: 'release' }, { target: { repository: 'example-org/other' } }, { projectId: 'other' }, { environment: 'production' }]) {
     assert.equal(verdict([add(child('C1', extra))]), 'WIDEN_DESTINATION', JSON.stringify(extra));
   }
   assert.equal(verdict([add(child('C1', { issue: 999 }))]), 'WIDEN_DESTINATION');
@@ -214,8 +214,8 @@ test('property: every admitted amendment stays inside every boundary of the enve
   const decl = approved();
   const envelope = decl.envelope;
   const PATHS = ['src/chat/ui/', 'src/search/x/', 'tests/chat/', 'src/billing/', 'SRC/Chat/Migrations/', 'src/chat/migrations/x.sql', 'docs/', '.env', 'src/', 'src/search/'];
-  const EXTRAS = [{}, {}, {}, { permissionMode: 'bypassPermissions' }, { repository: 'netbka/other' }, { issue: 999 }, { limits: { slots: 8 } },
-    { deploy: true }, { role: 'x' }, { deliverable: 'report', writes: undefined }, { deliverable: 'report', writes: undefined, web: { urls: [pick(['https://dyk.example/a', 'https://evil.example/'])] } },
+  const EXTRAS = [{}, {}, {}, { permissionMode: 'bypassPermissions' }, { repository: 'example-org/other' }, { issue: 999 }, { limits: { slots: 8 } },
+    { deploy: true }, { role: 'x' }, { deliverable: 'report', writes: undefined }, { deliverable: 'report', writes: undefined, web: { urls: [pick(['https://sampleapp.example/a', 'https://evil.example/'])] } },
     { references: ['config/secrets.json'] }, { dependsOn: ['T2'] }, { dependsOn: ['C404'] }, { goal: 'token=abcdefgh12345' }];
   const folded = (path) => path.replace(/\/+$/, '').toLowerCase();
   const inside = (outer, inner) => inner === outer || inner.startsWith(`${outer}/`);

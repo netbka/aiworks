@@ -1,5 +1,5 @@
 // A new campaign may target only a registered portfolio project; stored campaigns are unaffected. Task roles must be in
-// Engineering Platform's role catalog, and campaign `routing` validates (docs/design/MODEL_ROUTING.md slice R3).
+// governance provider's role catalog, and campaign `routing` validates (docs/design/MODEL_ROUTING.md slice R3).
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -15,14 +15,14 @@ const Store = SQLITE ? (await import('../../src/supervisor/store.mjs')).Store : 
 const REGISTRY = GOVERNANCE;
 const unregistered = () => {
   const decl = declaration({ campaignId: 'unregistered-target' });
-  decl.target = { ...decl.target, projectId: 'nowhere', repository: 'netbka/not-a-registered-project' };
+  decl.target = { ...decl.target, projectId: 'nowhere', repository: 'example-org/not-a-registered-project' };
   return decl;
 };
 
 test('registered targets pass, case-insensitively; unregistered targets are refused', () => {
   assert.doesNotThrow(() => assertRegisteredTarget(declaration(), REGISTRY));
   const upper = declaration();
-  upper.target = { ...upper.target, repository: 'NETBKA/dyk' };
+  upper.target = { ...upper.target, repository: 'EXAMPLE-ORG/sampleapp' };
   assert.doesNotThrow(() => assertRegisteredTarget(upper, REGISTRY));
   assert.throws(() => assertRegisteredTarget(unregistered(), REGISTRY), /not a registered project/);
 });
@@ -36,12 +36,12 @@ test('the check reads only the given governance root registry', () => {
     const decl = declaration();
     decl.target = { ...decl.target, repository: 'owner/one' };
     assert.doesNotThrow(() => assertRegisteredTarget(decl, dir));
-    assert.throws(() => assertRegisteredTarget(declaration(), dir), /netbka\/Dyk is not a registered project/);
+    assert.throws(() => assertRegisteredTarget(declaration(), dir), /example-org\/sampleapp is not a registered project/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('every committed campaign declaration targets a registered project', () => {
-  const dir = join(ROOT, 'campaigns');
+  const dir = join(ROOT, 'tests/fixtures/campaigns');
   for (const name of readdirSync(dir).filter((file) => file.endsWith('.json'))) {
     const decl = JSON.parse(readFileSync(join(dir, name), 'utf8'));
     assert.doesNotThrow(() => assertRegisteredTarget(decl, REGISTRY), `${name} targets an unregistered repository`);
@@ -171,7 +171,7 @@ test('an unknown role fails closed at registration; tasks without a role need no
   const dir = mkdtempSync(join(tmpdir(), 'aiworks-catalog-'));
   try {
     mkdirSync(join(dir, 'registry', 'projects'), { recursive: true });
-    writeFileSync(join(dir, 'registry', 'projects', 'dyk.json'), JSON.stringify({ id: 'dyk', repository: { github: 'netbka/Dyk' } }));
+    writeFileSync(join(dir, 'registry', 'projects', 'sampleapp.json'), JSON.stringify({ id: 'sampleapp', repository: { github: 'example-org/sampleapp' } }));
     // No registry/agents.json: a declaration without a role still registers; one with a role is refused.
     assert.doesNotThrow(() => assertRegisteredTarget(routed(), dir));
     const withRole = withTask(routed(), { role: 'backend-engineer' });
@@ -188,10 +188,10 @@ test('an unknown role fails closed at registration; tasks without a role need no
 });
 
 test('declarations without the new keys validate and digest exactly as before', () => {
-  // Digests of this literal declaration as computed by the task base (c65df3e), before routing existed.
+  // Synthetic identities replace installation names. Pins use the frozen pre-routing hash formulas.
   const decl = { version: 1, campaignId: 'digest-pin',
-    authorization: { version: 1, grantedBy: 'owner', grantedAt: '2026-10-09', reference: 'https://github.com/netbka/aiworks/issues/2', text: 'Synthetic test authorization.' },
-    target: { tenantId: 'netbka', projectId: 'dyk', environment: 'research', repository: 'netbka/Dyk', baseBranch: 'main', trackingIssue: 443 },
+    authorization: { version: 1, grantedBy: 'owner', grantedAt: '2026-10-09', reference: 'https://github.com/example-org/aiworks/issues/2', text: 'Synthetic test authorization.' },
+    target: { tenantId: 'example-org', projectId: 'sampleapp', environment: 'research', repository: 'example-org/sampleapp', baseBranch: 'main', trackingIssue: 443 },
     limits: { maxWorkerRuns: 12, slots: 1, maxRepairRounds: 2, maxRetriesPerTask: 2 },
     executor: { kind: 'claude-cli', model: 'opus', permissionMode: 'auto', implementerTimeoutMinutes: 1, verifierTimeoutMinutes: 1 },
     constraints: ['Synthetic test constraint: no network, no production.'],
@@ -200,13 +200,13 @@ test('declarations without the new keys validate and digest exactly as before', 
       { id: 'T2', issue: 438, title: 'second task', deliverable: 'commit', goal: 'Produce the second artifact.', dependsOn: ['T1'], acceptance: ['artifact exists'], references: ['AGENTS.md'] },
     ] };
   assert.doesNotThrow(() => validateDeclaration(decl));
-  assert.equal(scopeDigest(decl), '6871bda4cac61ac73a58bf33013705c84cbc0d62c4b2cdb806ae9dad9cc86414');
-  assert.equal(authorityDigest(decl), '76929fe2d4d5f8b2cde36a9c9167376e6519f34b599bdfd0d7dc80b3b3a85efe');
+  assert.equal(scopeDigest(decl), '8be3e164c24bb4d577c55dfab9ce9ce65629aced4646aa09caf66b12bed8fb7f');
+  assert.equal(authorityDigest(decl), '76736ce25f9d949d2c5c2ad679e01c03d4a19ef23d18a6dfc7ad995c887d48aa');
   // Every committed campaign still validates, and its scope digest is the pre-routing formula: nothing routing adds
   // (no default `routing`, no default task `role`) enters the digest of a declaration that does not declare it.
   const before = (d) => createHash('sha256').update(canonicalJson({ ...d, authorization: undefined, limits: undefined, purpose: undefined,
     tasks: d.tasks.map((task) => ({ ...task, outcome: undefined })) }), 'utf8').digest('hex');
-  const dir = join(ROOT, 'campaigns');
+  const dir = join(ROOT, 'tests/fixtures/campaigns');
   for (const name of readdirSync(dir).filter((file) => file.endsWith('.json'))) {
     const committed = JSON.parse(readFileSync(join(dir, name), 'utf8'));
     assert.doesNotThrow(() => validateDeclaration(structuredClone(committed)), name);

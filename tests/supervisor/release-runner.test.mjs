@@ -1,7 +1,7 @@
 // REL5 (AUTO_RELEASE slice R5): a release step runs in its own clean process and fetches its credential by reference
 // only. The runner's environment holds no supervisor variable; workers never see the credential; the credential never
 // reaches the journal, a release row, a log or a packet; a missing credential fails E12 and runs nothing; with
-// release.enabled off the runner is never started. Built switched off until netbka/aiworks#33. The credential is a
+// release.enabled off the runner is never started. Built switched off until example-org/aiworks#33. The credential is a
 // synthetic string served by a synthetic helper; no test reads a real credential store, the network or GitHub.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -19,7 +19,7 @@ import {
 import { RELEASE_ENV_KEEP, releaseEnv, runReleaseCommand } from '../../src/supervisor/release/runner.mjs';
 
 const SHA = 'c'.repeat(40);
-const REF = 'aiworks-release/dyk';
+const REF = 'aiworks-release/sampleapp';
 // On Windows, libuv gives every child it starts these system variables from the parent's own environment when the
 // given one lacks them (uv_spawn's required set). They name the machine and user, never the supervisor's configuration.
 const LIBUV_WINDOWS = ['homedrive', 'homepath', 'logonserver', 'path', 'systemdrive', 'systemroot', 'temp', 'userdomain', 'username', 'userprofile', 'windir'];
@@ -72,7 +72,7 @@ test("the release runner's environment contains no supervisor variables", async 
   const r = rig(t);
   const inherited = { ...process.env, AIWORKS_SUPERVISOR_PROBE: 'supervisor-only', CLAUDE_CODE_ENTRYPOINT: 'cli', FAKE_GH_STATE: 'x',
     GH_TOKEN: 'the-supervisor-own-gh-login', HOME: 'h', USERPROFILE: 'u', APPDATA: 'a' };
-  const result = await runReleaseCommand({ config: r.config, dataDir: r.dataDir, stepKey: 'dyk.prod.x.1.merge.1', command: r.gh, cwd: r.work,
+  const result = await runReleaseCommand({ config: r.config, dataDir: r.dataDir, stepKey: 'sampleapp.prod.x.1.merge.1', command: r.gh, cwd: r.work,
     credential: { ref: REF }, inherited });
   assert.equal(result.ran, true);
   assert.equal(result.exitCode, 0, result.output);
@@ -92,14 +92,14 @@ test("the release runner's environment contains no supervisor variables", async 
   // The same boundary as a pure function: only PATH and SystemRoot survive, whatever their case.
   assert.deepEqual(releaseEnv({ Path: 'p', systemroot: 's', AIWORKS_X: 'x', GH_TOKEN: 't', CLAUDECODE: '1' }), { PATH: 'p', SystemRoot: 's' });
   // A step without a credential gets no GH_TOKEN at all, not the supervisor's.
-  const bare = await runReleaseCommand({ config: r.config, dataDir: r.dataDir, stepKey: 'dyk.prod.x.1.check.1', command: r.gh, cwd: r.work, inherited });
+  const bare = await runReleaseCommand({ config: r.config, dataDir: r.dataDir, stepKey: 'sampleapp.prod.x.1.check.1', command: r.gh, cwd: r.work, inherited });
   assert.equal(JSON.parse(bare.output.split('\n')[0]).GH_TOKEN, undefined);
 });
 
 test('worker environments never contain the release credential', async (t) => {
   const r = rig(t);
   const before = JSON.stringify(process.env);
-  const result = await runReleaseCommand({ config: r.config, dataDir: r.dataDir, stepKey: 'dyk.prod.x.1.merge.1', command: r.gh, cwd: r.work, credential: { ref: REF } });
+  const result = await runReleaseCommand({ config: r.config, dataDir: r.dataDir, stepKey: 'sampleapp.prod.x.1.merge.1', command: r.gh, cwd: r.work, credential: { ref: REF } });
   assert.equal(result.exitCode, 0, result.output);
   assert.equal(JSON.stringify(process.env), before, "running a release step leaves the supervisor's environment unchanged");
   // A worker's environment is the supervisor's (workerEnv) plus its spec: neither holds the value or the reference.
@@ -116,7 +116,7 @@ test('the credential never appears in the journal, row, log or packet', async (t
   t.after(() => { if (open) store.close(); });
   const now = Date.parse('2026-11-05T10:00:00Z');
   const lease = { instanceId: 'first', generation: store.acquireLease('c', 'first', now, 60_000).generation };
-  const { id } = createRelease(store, { project: 'dyk', destination: 'prod', campaignId: 'c', taskId: 'T1', verifiedSha: SHA, grantVersion: 1,
+  const { id } = createRelease(store, { project: 'sampleapp', destination: 'prod', campaignId: 'c', taskId: 'T1', verifiedSha: SHA, grantVersion: 1,
     grantDigest: 'g'.repeat(64), steps: ['merge', 'check'], lease, now });
   assert.equal(acquireLock(store, id, { lease, now, recheck: () => ({ eligible: true, failed: [], inputs: { grantDigest: 'g'.repeat(64) } }) }).locked, true);
   const grant = { record: { version: 1, grantedAt: '2026-11-01', destinations: [{ id: 'prod' }] }, digest: 'g'.repeat(64) };
@@ -156,7 +156,7 @@ test('the credential never appears in the journal, row, log or packet', async (t
 
 test('a missing credential makes E12 fail', async (t) => {
   const r = rig(t, { present: false });
-  const candidate = { project: 'dyk', destinationId: 'prod', taskId: 'T1', verifiedSha: SHA };
+  const candidate = { project: 'sampleapp', destinationId: 'prod', taskId: 'T1', verifiedSha: SHA };
   const e12 = (role) => evaluateEligibility(candidate, { role }).failed.find((item) => item.check === 'E12');
   assert.equal(e12(releaseRoleReader({ store: r.helper, refFor: () => REF })).reason, 'the release credential reference does not resolve');
   assert.equal(e12(releaseRoleReader({ store: r.helper, refFor: () => null })).reason, 'the release credential reference does not resolve', 'no reference at all');
@@ -170,9 +170,9 @@ test('a missing credential makes E12 fail', async (t) => {
   assert.equal(gets, 0, 'E12 asks for presence only');
   assert.equal(credentialResolves(watched, 'not a ref'), false);
   // The runner refuses to run a command whose credential does not resolve.
-  const result = await runReleaseCommand({ config: r.config, dataDir: r.dataDir, stepKey: 'dyk.prod.x.1.merge.1', command: r.gh, cwd: r.work, credential: { ref: REF } });
+  const result = await runReleaseCommand({ config: r.config, dataDir: r.dataDir, stepKey: 'sampleapp.prod.x.1.merge.1', command: r.gh, cwd: r.work, credential: { ref: REF } });
   assert.equal(result.ran, false);
-  assert.match(result.reason, /aiworks-release\/dyk does not resolve/);
+  assert.match(result.reason, /aiworks-release\/sampleapp does not resolve/);
   assert.equal(existsSync(join(r.work, 'ran')), false, 'nothing ran without its credential');
   assert.equal(fetchCredential(r.helper, REF), null);
 });
@@ -210,10 +210,10 @@ test('a runner that gives no result is an unknown outcome, and a command past it
 test('the Windows Credential Manager adapter reads by reference, and presence without the value', () => {
   const calls = [];
   const answer = (out) => (file, args) => { calls.push({ file, args }); return out; };
-  const listing = '\r\nCurrently stored credentials for aiworks-release/dyk:\r\n\r\n    Target: LegacyGeneric:target=aiworks-release/dyk\r\n    Type: Generic\r\n';
+  const listing = '\r\nCurrently stored credentials for aiworks-release/sampleapp:\r\n\r\n    Target: LegacyGeneric:target=aiworks-release/sampleapp\r\n    Type: Generic\r\n';
   assert.equal(windowsCredentialStore({ exec: answer({ status: 0, stdout: listing }), powershell: 'ps.exe' }).has(REF), true);
   assert.deepEqual(calls.at(-1), { file: 'cmdkey', args: [`/list:${REF}`] }, 'presence comes from cmdkey, which never prints a password');
-  assert.equal(windowsCredentialStore({ exec: answer({ status: 0, stdout: listing.replaceAll('dyk', 'dyk2') }), powershell: 'ps.exe' }).has(REF), false);
+  assert.equal(windowsCredentialStore({ exec: answer({ status: 0, stdout: listing.replaceAll('sampleapp', 'sampleapp2') }), powershell: 'ps.exe' }).has(REF), false);
   assert.equal(windowsCredentialStore({ exec: answer({ status: 0, stdout: '\r\n* NONE *\r\n' }), powershell: 'ps.exe' }).has(REF), false);
   assert.throws(() => windowsCredentialStore({ exec: answer({ status: 5 }), powershell: 'ps.exe' }).has(REF), /could not list/);
   const reader = windowsCredentialStore({ exec: answer({ status: 0, stdout: 'synthetic' }), powershell: 'ps.exe' });

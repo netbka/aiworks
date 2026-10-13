@@ -115,7 +115,7 @@ test('release mode is text: Review only on, Auto Release off and not available, 
     const auto = release.modes[1];
     assert.equal(auto.available, false);
     assert.equal(auto.text, 'Not available. Turning this on needs your separate release approval for this project, which has not been given.');
-    assert.equal(auto.waitsFor, 'https://github.com/netbka/aiworks/issues/33');
+    assert.equal(auto.waitsFor, 'https://github.com/example-org/aiworks/issues/33');
     for (const mode of release.modes) assert.deepEqual(Object.keys(mode).filter((key) => /control|toggle|switch|action|enabl/i.test(key)), [], 'nothing a page could turn into a control');
   }
   // The page renders it with no button, input, select or switch, and nothing clickable but the link to the decision.
@@ -127,7 +127,7 @@ test('release mode is text: Review only on, Auto Release off and not available, 
   walk(tree);
   assert.deepEqual(nodes.filter((node) => ['button', 'input', 'select', 'textarea', 'form'].includes(node.tag) || node.attributes.role === 'switch' ||
     Object.keys(node.attributes).some((key) => key.startsWith('on') || key === 'disabled')), []);
-  assert.deepEqual(nodes.filter((node) => node.tag === 'a').map((node) => node.attributes.href), releases.map(() => 'https://github.com/netbka/aiworks/issues/33'));
+  assert.deepEqual(nodes.filter((node) => node.tag === 'a').map((node) => node.attributes.href), releases.map(() => 'https://github.com/example-org/aiworks/issues/33'));
   const text = JSON.stringify(tree);
   assert.match(text, /Review only · On/);
   assert.match(text, /Auto Release · Off/);

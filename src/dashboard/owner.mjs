@@ -24,7 +24,7 @@ export const RESTART_GRACE_MS = 5 * 60_000;
  */
 export const MERGE_FRESH_MS = 15 * 60_000;
 /** Where the supervisor's own faults are tracked (docs/SUPERVISOR.md). */
-export const SUPERVISOR_ISSUE = 'https://github.com/netbka/aiworks/issues/2';
+export const SUPERVISOR_ISSUE = 'https://github.com/example-org/aiworks/issues/2';
 /** The supervisor's own next action for a finished campaign whose steps are all reports. */
 const REPORTS_ACTION = /review recommendations before assigning implementation\.?$/;
 
@@ -175,7 +175,7 @@ function resultsByProject(supervisor, campaigns, releases) {
 
 /**
  * Where merged work goes next in a repository. A standing deploy authorization recorded in the project registry
- * (Engineering Platform's CONSTITUTION §14, EP-029) is named; otherwise release follows the project's own policy. Neither says who acts.
+ * (governance provider's CONSTITUTION §14, EP-029) is named; otherwise release follows the project's own policy. Neither says who acts.
  */
 const releaseRule = (releases, repository, whose = `${short(repository)}'s`) =>
   `${whose} ${releases?.[repository.toLowerCase()] ? 'standing deploy authorization' : 'release policy'}`;

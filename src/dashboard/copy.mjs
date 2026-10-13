@@ -498,7 +498,7 @@ export const COMMANDS = {
   retry: 'Retry same command',
   details: 'Details',
   // aiworks#11 review F3: what happened, that nothing changed, and what the owner can do. The rule and the files are in Details.
-  resumeRefused: 'AIWorks did not resume this work. Nothing changed: it is still paused. It resumes only work whose plan is merged into AIWorks, and this work’s plan is not. Merge its plan into AIWorks, then press Resume again.',
+  resumeRefused: 'AIWorks did not resume this work. Nothing changed: it is still paused. The AIWorks software here is not merged yet. Update AIWorks to a reviewed version, then press Resume again.',
   notFound: 'This work is not recorded on this computer any more. Refresh the page to see what is.',
   closed: 'This work is finished or cancelled, so it takes no more commands. Refresh the page to see where it stands.',
   notPaused: 'Only paused work can resume. Refresh the page to see where it stands.',
@@ -517,7 +517,7 @@ export const NOT_READ = {
   invalid: 'AIWorks on this computer cannot read requests: the part of its configuration file that sets up reading them is not valid.',
   instead: 'What you can do instead: keep your text here, it is not lost, and set up request reading in the AIWorks configuration file on this computer. Then send it.',
   setUp: 'How to set it up',
-  setUpUrl: 'https://github.com/netbka/aiworks/blob/main/docs/SUPERVISOR.md#9-owner-messages-and-the-coordinator',
+  setUpUrl: 'https://github.com/example-org/aiworks/blob/main/docs/SUPERVISOR.md#9-owner-messages-and-the-coordinator',
   receipt: 'nothing on this computer is set up to read requests yet',
 };
 

@@ -8,9 +8,9 @@ Not read.
 
 | ID | Repository | Purpose | Depends on |
 | --- | --- | --- | --- |
-| GOV-01 | engineering-platform | Constitution and decision rights | current PR |
-| GOV-08 | Dyk | Dyk review manifest | GOV-01 |
-| GOV-21 | engineering-platform + Dyk | Persistent delivery | GOV-01, GOV-08 |
+| GOV-01 | governance | Constitution and decision rights | current PR |
+| GOV-08 | sampleapp | sampleapp review manifest | GOV-01 |
+| GOV-21 | governance + sampleapp | Persistent delivery | GOV-01, GOV-08 |
 
 ## 20. Next section
 

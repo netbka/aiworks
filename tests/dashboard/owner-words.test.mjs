@@ -73,13 +73,13 @@ test('F3: a refused Resume says what happened, that nothing changed and what to 
   await page.settle();
   const notice = page.$('#notice'), said = visibleText(notice);
   assert.equal(notice.hidden, false);
-  assert.equal(said, 'AIWorks did not resume this work. Nothing changed: it is still paused. It resumes only work whose plan is merged into AIWorks, and this work’s plan is not. Merge its plan into AIWorks, then press Resume again. Details');
+  assert.equal(said, 'AIWorks did not resume this work. Nothing changed: it is still paused. The AIWorks software here is not merged yet. Update AIWorks to a reviewed version, then press Resume again. Details');
   assert.deepEqual(internalWords(said), []);
   assert.doesNotMatch(said, /cli\.mjs|campaigns\/|AW-005|declaration/);
   // The machine's reason is one click away, unchanged.
   const [details] = notice.querySelectorAll('details');
   assert.equal(details.querySelector('summary').textContent, 'Details');
-  assert.match(details.textContent, /Resume refused: .*campaigns\//);
+  assert.match(details.textContent, /Resume refused: .*not merged/);
   // Nothing changed: the work is still paused.
   assert.equal(supervisorSnapshot(page.dataDir).campaigns.find((c) => c.id === 'recipes-import').control, 'paused');
 });

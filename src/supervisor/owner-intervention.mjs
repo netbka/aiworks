@@ -1,4 +1,4 @@
-// aiworks#1 owner-intervention core (Engineering Platform's docs/OWNER_INTERVENTION.md, OPS-001). Pure helpers the controller uses to
+// aiworks#1 owner-intervention core (governance provider's docs/OWNER_INTERVENTION.md, OPS-001). Pure helpers the controller uses to
 // fingerprint, deduplicate and recheck B2-B5 blockers and to record what an owner notification would say.
 // Nothing here reads credentials or talks to a network: the only transport is the no-op one below.
 import { createHash } from 'node:crypto';
@@ -41,7 +41,7 @@ const PATTERNS = [
   [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, REDACTED],
   [/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, REDACTED],
   [/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, `$1 ${REDACTED}`],
-  [/\b(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|client[_-]?secret|otp|mfa[_-]?code)(\s*[:=]\s*)("[^"]*"|'[^']*'|\S+)/gi, `$1$2${REDACTED}`],
+  [/\b(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|client[_-]?secret|service|mfa[_-]?code)(\s*[:=]\s*)("[^"]*"|'[^']*'|\S+)/gi, `$1$2${REDACTED}`],
   // Opaque mixed-case alphanumeric runs look like credentials; lowercase hex (Git SHAs, digests) stays readable.
   [/[A-Za-z0-9_+/=-]{32,}/g, (run) => /[a-z]/.test(run) && /[A-Z]/.test(run) && /\d/.test(run) ? REDACTED : run],
 ];

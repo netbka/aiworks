@@ -42,7 +42,7 @@ test('every limit is optional and defaults to no limit', () => {
   assert.throws(() => validateDeclaration({ ...d, limits: { slots: 9 } }), /slots/); // 1..8 or "auto" since RUN4
   assert.throws(() => validateDeclaration({ ...d, limits: null }), /limits must be an object/);
   assert.throws(() => validateDeclaration({ ...d, limits: { maxRuns: 3 } }), /unknown limits key/);
-  const live = validateDeclaration(JSON.parse(readFileSync(new URL('../../campaigns/dyk-443-waves.json', import.meta.url), 'utf8')));
+  const live = validateDeclaration(JSON.parse(readFileSync(new URL('../../tests/fixtures/campaigns/sample-chain.json', import.meta.url), 'utf8')));
   assert.deepEqual(campaignLimits(live), UNLIMITED);
   assert.equal(live.authorization.version, 4);
 });
@@ -95,7 +95,7 @@ test('an amendment that removes the limits releases stalls caused only by those 
   await runUntil(controller, store, id, () => store.task(id, 'T1').state === 'done', { timeoutMs: 120_000 });
 });
 
-test('a task that keeps returning evidence-unavailable stops for an owner decision even without limits (engineering-platform-archive#74)', { skip: skipWithoutSqlite }, async (t) => {
+test('a task that keeps returning evidence-unavailable stops for an owner decision even without limits (historical regression)', { skip: skipWithoutSqlite }, async (t) => {
   const { limits: _omitted, ...decl } = declaration({ tasks: [declaration().tasks[0]] });
   const { env, store, controller, id } = setup(t, { decl, scenario: { implement: ['unavailable', 'unavailable', 'unavailable', 'unavailable', 'commit'] } });
   const blocked = await runUntil(controller, store, id, (c) => c.status === 'blocked-owner-decision', { timeoutMs: 120_000 });
@@ -112,10 +112,10 @@ test('a task that keeps returning evidence-unavailable stops for an owner decisi
   assert.equal(env.calls().filter((c) => c.role === 'implement').length, 5, 'a recheck naming the task resets the count and resumes it');
 });
 
-test('the worker contract routes authorization and owner-decision blockers to blocked-owner-reserved (engineering-platform-archive#74)', async () => {
+test('the worker contract routes authorization and owner-decision blockers to blocked-owner-reserved (historical regression)', async () => {
   const { buildPrompt } = await import('../../src/supervisor/adapters/claude.mjs');
   const packet = { goal: 'g', constraints: [], acceptance: ['a'], references: [] };
-  const prompt = buildPrompt({ role: 'implementer', deliverable: 'commit', packet, packetDigest: 'd'.repeat(64), repository: 'netbka/Dyk',
+  const prompt = buildPrompt({ role: 'implementer', deliverable: 'commit', packet, packetDigest: 'd'.repeat(64), repository: 'example-org/sampleapp',
     issue: 1, branch: 'b', baseSha: 'a'.repeat(40), targetSha: null, report: null, reportDigest: null, note: null, instructions: [] });
   assert.match(prompt, /authorization scope or a decision only the owner can make, return blocked-owner-reserved instead/);
 });
