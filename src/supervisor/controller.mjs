@@ -21,6 +21,7 @@ import { coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
 import { stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions } from './instructions.mjs';
 import { priorAttempt, receiptInputs, staticReceipt } from './router.mjs';
+import { specOf, specsOf } from './plan.mjs';
 import { ConflictError, FencedError } from './store.mjs';
 import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
 
@@ -382,7 +383,7 @@ export class Controller {
   }
 
   deliverable(ctx, taskId) {
-    return this.store.campaign(ctx.id).declaration.tasks.find((task) => task.id === taskId).deliverable;
+    return specOf(this.store, ctx.id, taskId).deliverable;
   }
 
   consume(ctx, op, run) {
@@ -430,7 +431,7 @@ export class Controller {
       // violation, held for the owner and never retried on another provider. An integration repair is measured from the
       // base it merged, so the sibling changes it brought in are not counted as its own.
       const decl = this.store.campaign(ctx.id).declaration;
-      const spec = decl.tasks.find((item) => item.id === op.task_id);
+      const spec = specOf(this.store, ctx.id, op.task_id, decl);
       const domain = verdict.class === 'result' ? domainOf(decl, spec) : null;
       if (domain && !domain.whole) {
         const changed = gitA.changedPaths({ git: this.cmd.git, path: op.workspace, from: integration ? integration.base : before.base_sha, to: verdict.value.headSha });
@@ -488,7 +489,7 @@ export class Controller {
         const reason = redact(change.blocked.reason);
         const record = this.openBlocker(ctx, campaign.declaration, { dependency: 'owner-decision', cls: change.blocked.class,
           identity: `${task.task_id}:${/^no progress:/.test(reason) ? 'no-progress' : reason}`, summary: `${task.task_id}: ${reason}`,
-          requestedAction: `Decide on ${campaign.declaration.target.repository}#${campaign.declaration.tasks.find((item) => item.id === task.task_id).issue}: ${reason}`,
+          requestedAction: `Decide on ${campaign.declaration.target.repository}#${specOf(this.store, ctx.id, task.task_id, campaign.declaration).issue}: ${reason}`,
           parents: [{ ...task, state: change.state ?? task.state }], scope: 'task' }, now);
         change.blocked = { ...change.blocked, reason, fingerprint: record.fingerprint };
       }
@@ -577,7 +578,7 @@ export class Controller {
     if (op.kind === 'implement') {
       if (value.result === 'resolved') {
         // A report deliverable is bound to the revision it was produced against.
-        const head = decl.tasks.find((item) => item.id === task.task_id).deliverable === 'commit' ? value.headSha : op.base_sha;
+        const head = specOf(this.store, ctx.id, task.task_id, decl).deliverable === 'commit' ? value.headSha : op.base_sha;
         return { state: 'implemented', head_sha: head, result: value, retry_at: null, last_error: null, failures: {} };
       }
       if (value.result === 'blocked-owner-reserved') {
@@ -632,7 +633,7 @@ export class Controller {
   }
 
   missingIntegratedDependencies(decl, spec, tasks, revision, path) {
-    const specs = new Map(decl.tasks.map((t) => [t.id, t]));
+    const specs = specsOf(this.store, decl.campaignId, decl);
     const inRevision = (sha) => /^[0-9a-f]{40}$/.test(revision ?? '') &&
       gitA.exec(this.cmd.git, ['merge-base', '--is-ancestor', sha, revision], { cwd: path }).ok;
     return spec.dependsOn.filter((id) => {
@@ -662,7 +663,7 @@ export class Controller {
   reconcileIntegration(ctx) {
     const c = this.store.campaign(ctx.id);
     if (c.blocker) return;
-    const tasks = this.store.tasks(ctx.id), specs = new Map(c.declaration.tasks.map((t) => [t.id, t]));
+    const tasks = this.store.tasks(ctx.id), specs = specsOf(this.store, ctx.id, c.declaration);
     const due = tasks.filter((t) => t.state === 'pending' && !t.blocked && (!t.retry_at || t.retry_at <= this.now()) &&
       specs.get(t.task_id).requiresMergedDependencies && specs.get(t.task_id).dependsOn.every((id) => tasks.find((d) => d.task_id === id)?.state === 'done'));
     if (!due.length) return;
@@ -698,7 +699,7 @@ export class Controller {
     if (!this.integrationDue(ctx.id)) return;
     const c = this.store.campaign(ctx.id);
     if (c.blocker) return;
-    const decl = c.declaration, specs = new Map(decl.tasks.map((t) => [t.id, t]));
+    const decl = c.declaration, specs = specsOf(this.store, ctx.id, decl);
     const published = (tasks) => tasks.filter((t) => t.state === 'done' && !t.blocked && t.pr_url &&
       specs.get(t.task_id)?.deliverable === 'commit' && /^[0-9a-f]{40}$/.test(t.verified_sha ?? ''));
     const candidates = published(this.store.tasks(ctx.id)).length;
@@ -775,7 +776,7 @@ export class Controller {
     const now = this.now();
     if ((this.ciNextAt.get(ctx.id) ?? -Infinity) > now) return;
     const c = this.store.campaign(ctx.id);
-    const decl = c.declaration, specs = new Map(decl.tasks.map((t) => [t.id, t]));
+    const decl = c.declaration, specs = specsOf(this.store, ctx.id, decl);
     const settled = this.ciSettled(ctx.id);
     const watched = this.store.tasks(ctx.id).filter((t) => t.state === 'done' && !t.blocked && t.pr_url &&
       specs.get(t.task_id)?.deliverable === 'commit' && /^[0-9a-f]{40}$/.test(t.verified_sha ?? '') && !settled.has(`${t.task_id}:${t.verified_sha}`));
@@ -810,7 +811,7 @@ export class Controller {
     return this.fenced(ctx, () => {
       const fresh = this.store.task(ctx.id, task.task_id), now = this.now();
       if (fresh.version !== task.version) return false;
-      const decl = this.store.campaign(ctx.id).declaration, spec = decl.tasks.find((item) => item.id === task.task_id);
+      const decl = this.store.campaign(ctx.id).declaration, spec = specOf(this.store, ctx.id, task.task_id, decl);
       const sha = task.verified_sha, names = (list) => list.map((check) => check.name);
       if (state === 'pending') {
         if (!checks.length && now - task.updated_at >= this.config.ciNoChecksMs) {
@@ -877,7 +878,7 @@ export class Controller {
     }
     const tasks = this.store.tasks(ctx.id);
     const done = new Set(tasks.filter((task) => task.state === 'done').map((task) => task.task_id));
-    const spec = new Map(decl.tasks.map((task) => [task.id, task]));
+    const spec = specsOf(this.store, ctx.id, decl);
     const hold = decl.executor.kind === 'cli-chain' ? 0 : Math.max(quotaHoldUntil(tasks, now), this.accountHoldUntil(decl.executor.kind, now)); // a chain holds only the exhausted account
     const held = this.heldTasks(ctx.id);
     const runnable = tasks.filter((task) => RUNNABLE.includes(task.state) && !task.blocked && !held.has(task.task_id) && (!task.retry_at || task.retry_at <= now) &&
@@ -1091,7 +1092,7 @@ export class Controller {
     };
     const receipt = staticReceipt(receiptInputs({
       stage: task.state === 'implemented' ? 'verify' : 'implement', chain: decl.executor.kind === 'cli-chain',
-      spec: decl.tasks.find((item) => item.id === task.task_id), providers: executorOrder(decl.executor),
+      spec: specOf(this.store, decl.campaignId, task.task_id, decl), providers: executorOrder(decl.executor),
       platform: process.platform, facts, priorAttempts: this.priorAttempts(decl, task),
     }));
     const chosen = receipt.decision.chosen;
@@ -1149,7 +1150,7 @@ export class Controller {
         return null;
       }
       const executor = choice.executor;
-      const spec = decl.tasks.find((item) => item.id === task.task_id);
+      const spec = specOf(this.store, ctx.id, task.task_id, decl);
       const repo = this.repo(decl);
       const seq = task.attempts + 1;
       const opId = `${ctx.id}.${task.task_id}.${kind}.${seq}`;
@@ -1353,7 +1354,7 @@ export class Controller {
 
   async publish(ctx, campaign, task) {
     const decl = campaign.declaration;
-    const spec = decl.tasks.find((item) => item.id === task.task_id);
+    const spec = specOf(this.store, ctx.id, task.task_id, decl);
     const repo = this.repo(decl);
     const branch = gitA.branchName(ctx.id, task.task_id);
     const bodyFile = join(this.dataDir, 'runs', `${ctx.id}.${task.task_id}.publish.md`);
@@ -1572,7 +1573,7 @@ export class Controller {
       const decl = c.declaration;
       const tasks = this.store.tasks(ctx.id);
       const open = this.store.openOperations(ctx.id);
-      const spec = new Map(decl.tasks.map((task) => [task.id, task]));
+      const spec = specsOf(this.store, ctx.id, decl);
       const done = new Set(tasks.filter((task) => task.state === 'done').map((task) => task.task_id));
       const waiting = tasks.filter((task) => task.state !== 'done');
       const blockedTasks = waiting.filter((task) => task.blocked);
@@ -1762,7 +1763,7 @@ export class Controller {
     if (trigger === 'timer') { this.store.run('UPDATE blockers SET next_recheck_at = NULL WHERE fingerprint = ?', record.fingerprint); return; }
     const tasks = this.store.tasks(ctx.id);
     const done = new Set(tasks.filter((task) => task.state === 'done').map((task) => task.task_id));
-    const spec = new Map(this.store.campaign(ctx.id).declaration.tasks.map((task) => [task.id, task]));
+    const spec = specsOf(this.store, ctx.id);
     const parents = new Set(this.store.all('SELECT task_id FROM blocker_parents WHERE fingerprint = ? AND campaign_id = ? AND released_at IS NULL',
       record.fingerprint, ctx.id).map((row) => row.task_id));
     const probe = tasks.find((task) => parents.has(task.task_id) && RUNNABLE.includes(task.state) && !task.blocked &&

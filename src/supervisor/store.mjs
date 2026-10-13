@@ -70,6 +70,20 @@ CREATE TABLE IF NOT EXISTS releases (
 CREATE TABLE IF NOT EXISTS release_locks (
   destination TEXT PRIMARY KEY, release_id TEXT NOT NULL UNIQUE, instance_id TEXT NOT NULL, generation INTEGER NOT NULL,
   acquired_at INTEGER NOT NULL);
+-- Child tasks inside an approved envelope (docs/design/WORK_ENVELOPE.md section 6.4; accessor plan.mjs). Additive like
+-- every table above: CREATE IF NOT EXISTS migrates an older store and the store version stays 1. Append-only: an
+-- amendment row is only inserted, a revised child is a new task_specs revision, a cancel only sets cancelled_at.
+-- Nothing writes them until child admission (slice E3), so every spec is still the declared one.
+CREATE TABLE IF NOT EXISTS plan_amendments (
+  campaign_id TEXT NOT NULL, seq INTEGER NOT NULL, parent_digest TEXT NOT NULL, digest TEXT NOT NULL UNIQUE,
+  idempotency_key TEXT NOT NULL UNIQUE, scope_digest TEXT NOT NULL, authorization_version INTEGER NOT NULL,
+  source_operation TEXT NOT NULL, source_packet_digest TEXT NOT NULL, lease_generation INTEGER NOT NULL,
+  code_revision TEXT, ops TEXT NOT NULL, created_at INTEGER NOT NULL,
+  PRIMARY KEY (campaign_id, seq));
+CREATE TABLE IF NOT EXISTS task_specs (
+  campaign_id TEXT NOT NULL, task_id TEXT NOT NULL, revision INTEGER NOT NULL, amendment_seq INTEGER NOT NULL,
+  spec TEXT NOT NULL, spec_digest TEXT NOT NULL, fingerprint TEXT NOT NULL, cancelled_at INTEGER, created_at INTEGER NOT NULL,
+  PRIMARY KEY (campaign_id, task_id, revision));
 CREATE TABLE IF NOT EXISTS events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT NOT NULL, kind TEXT NOT NULL,
   dedup_key TEXT UNIQUE, payload TEXT, received_at INTEGER NOT NULL, processed_at INTEGER);
@@ -120,7 +134,7 @@ CREATE TABLE IF NOT EXISTS project_overlays (
 
 const JSON_COLUMNS = new Set(['declaration', 'blocker', 'failures', 'findings', 'result', 'verification',
   'blocked', 'packet', 'outcome', 'payload', 'detail', 'message_ids', 'probe', 'last_evidence', 'resolution', 'message',
-  'eligibility', 'steps', 'history', 'routing']);
+  'eligibility', 'steps', 'history', 'routing', 'ops', 'spec']);
 
 function decode(row) {
   if (!row) return null;

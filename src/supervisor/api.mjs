@@ -4,6 +4,7 @@
 import { runNotCounted } from './adapters/executors.mjs';
 import { authorityDigest, campaignLimits, canonicalJson, executorOrder, scopeDigest, validateDeclaration } from './campaign.mjs';
 import { findWorkConflict } from './work-ownership.mjs';
+import { specOf, specsOf } from './plan.mjs';
 import { accountFull, laterWait } from './accounts.mjs';
 import { admissionCheck, hostCeiling, schedulerEnabled } from './scheduler.mjs';
 import { releaseStatus } from './release/eligibility.mjs';
@@ -176,8 +177,10 @@ export function campaignStatus(store, id, now = Date.now(), { releaseStop = fals
     .filter((t) => !t.blocked && String(t.last_error ?? '').startsWith('quota:') && t.retry_at > now)
     .map((t) => t.retry_at));
   const done = new Set(tasks.filter((t) => t.state === 'done').map((t) => t.task_id));
+  const specs = specsOf(store, id, c.declaration);
+  // A task row with no spec (neither declared nor a live child) is shown but never counted as runnable.
   const runnable = tasks.filter((t) => !t.blocked && ['pending', 'implemented', 'verified'].includes(t.state) &&
-    c.declaration.tasks.find((spec) => spec.id === t.task_id).dependsOn.every((dep) => done.has(dep)));
+    specs.get(t.task_id)?.dependsOn.every((dep) => done.has(dep)));
   const chainWaiting = !operations.length && runnable.length && runnable.every((t) => t.state !== 'verified' && t.retry_at > now &&
     /^(quota:|waiting for executor availability:)/.test(String(t.last_error ?? '')));
   const providerWaitUntil = c.declaration.executor.kind === 'cli-chain'
@@ -289,7 +292,7 @@ function admissionReason(store, refusal) {
     case 'write-domain': {
       const first = refusal.detail.holders[0];
       const owner = store.campaign(first.campaignId);
-      const spec = owner?.declaration?.tasks?.find((task) => task.id === first.taskId);
+      const spec = owner ? specOf(store, first.campaignId, first.taskId, owner.declaration) : undefined;
       const prUrl = store.task(first.campaignId, first.taskId)?.pr_url ?? null;
       const pr = first.reason === 'published-unmerged' && /\/pull\/(\d+)$/.exec(prUrl ?? '');
       const where = Array.isArray(spec?.writes) ? spec.writes.join(', ') : 'the same repository';
@@ -324,8 +327,9 @@ export function waitReason(task, { store, campaign: c, tasks, open, held = new M
   }
   if (c.blocker) return reason('owner', BLOCKER_TEXT[c.blocker.kind] ?? 'Needs you: this work program is stopped', OWNER_NEXT);
   const decl = c.declaration;
-  const spec = decl.tasks.find((item) => item.id === task.task_id);
-  const title = (id) => decl.tasks.find((item) => item.id === id)?.title ?? id;
+  const specs = specsOf(store, c.id, decl);
+  const spec = specs.get(task.task_id) ?? { dependsOn: [] };
+  const title = (id) => specs.get(id)?.title ?? id;
   const state = (id) => tasks.find((row) => row.task_id === id)?.state;
   const unfinished = spec.dependsOn.filter((id) => state(id) !== 'done');
   if (unfinished.length) return reason('dependency', `Waiting for "${title(unfinished[0])}" to finish`, 'Starts when that step is done');
@@ -350,7 +354,7 @@ export function waitReason(task, { store, campaign: c, tasks, open, held = new M
   if (!schedulerEnabled(config) || !hasTable(store, 'capacity')) {
     // Scheduler off: one worker at a time per campaign, the first runnable task in declaration order first.
     const first = tasks.find((row) => RUNNABLE.includes(row.state) && row.state !== 'verified' && !row.blocked && !held.has(row.task_id) &&
-      !(row.retry_at > now) && decl.tasks.find((item) => item.id === row.task_id).dependsOn.every((id) => state(id) === 'done'));
+      !(row.retry_at > now) && specs.get(row.task_id)?.dependsOn.every((id) => state(id) === 'done'));
     return open.length || first?.task_id !== task.task_id ? admissionReason(store, { reason: 'campaign-fanout' }) : admissionReason(store, { reason: null });
   }
   if (budget.exhausted) return admissionReason(store, { reason: 'campaign-fanout' });
@@ -371,7 +375,7 @@ const CI_STATE = { 'ci-pending': 'pending', 'ci-passed': 'success', 'ci-failed':
  * campaign summary is `success` only when every published head passed, and `failure` when any failed.
  */
 function ciView(store, c, tasks) {
-  const specs = new Map(c.declaration.tasks.map((spec) => [spec.id, spec]));
+  const specs = specsOf(store, c.id, c.declaration);
   const latest = new Map();
   for (const row of store.all(`SELECT kind, detail, at FROM journal WHERE campaign_id = ? AND kind IN (${Object.keys(CI_STATE).map(() => '?').join(', ')}) ORDER BY seq`, c.id, ...Object.keys(CI_STATE))) {
     latest.set(`${row.detail?.task}:${row.detail?.sha}`, row);
