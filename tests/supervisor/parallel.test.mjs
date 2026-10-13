@@ -212,3 +212,52 @@ test('with the scheduler off a campaign keeps one operation at a time, whatever 
   assert.equal(r.open().length, 1, 'one slot, as before');
   assert.equal(r.store.all('SELECT * FROM capacity').length, 0, 'no fan-out is learned while the scheduler is off');
 });
+
+test('an unknown launch holds its domain and capacity', async (t) => {
+  // RUN6 (ADAPTIVE_SCHEDULER 4.8): a launch marker without a runner receipt is an unknown launch. Its operation keeps
+  // counting against the ceiling and keeps its write domain, and only its own end clears its blocker: suspicion is not
+  // proof that nothing runs.
+  const r = rig(t, { scheduler: { enabled: true, maxWorkers: 3 } });
+  r.register('unknown', [commitTask('P', 61, { writes: ['p/'] }), commitTask('U', 62, { writes: ['src/'] }),
+    commitTask('V', 63, { writes: ['docs/'] })], { limits: { slots: 'auto' } });
+  await r.tick();
+  r.finish('unknown', 'P'); // a useful result while U and V waited: fan-out 2
+  await r.tick();
+  await r.tick();
+  assert.deepEqual(r.open(), ['unknown/P:verify', 'unknown/U:implement']);
+  r.finish('unknown', 'P'); // fan-out 3
+  await r.tick(); // publishes P
+  await r.tick();
+  assert.deepEqual(r.open(), ['unknown/U:implement', 'unknown/V:implement']);
+  // U's launch marker exists, but no runner receipt, lock or result ever appears.
+  const op = r.store.openOperations('unknown').find((item) => item.task_id === 'U');
+  mkdirSync(op.run_dir, { recursive: true });
+  writeFileSync(join(op.run_dir, 'launch.json'), JSON.stringify({ operationId: op.id, at: r.clock() }));
+  r.advance(r.controller.config.startGraceMs);
+  await r.tick();
+  const blocker = () => r.store.campaign('unknown').blocker;
+  assert.equal(blocker()?.kind, 'process-ownership', 'launch receipt missing');
+  assert.equal(blocker()?.operation, op.id);
+  r.register('overlap', [commitTask('O', 64, { writes: ['src/x/'] })]);
+  r.register('free', [commitTask('F', 65, { writes: ['lib/'] })]);
+  r.register('later', [commitTask('L', 66, { writes: ['tests/'] })]);
+  await r.tick();
+  assert.equal(r.reason('overlap', 'O'), 'write-domain', 'the unknown run still holds src/');
+  assert.deepEqual(r.open(), ['unknown/U:implement', 'unknown/V:implement', 'free/F:implement'], 'disjoint work still runs');
+  await r.tick();
+  assert.equal(r.reason('later', 'L'), 'host-capacity', 'the unknown run still counts against the ceiling of three');
+  // Another operation of the same campaign succeeds: that proves nothing about U.
+  const raised = () => r.store.all("SELECT seq FROM journal WHERE campaign_id = 'unknown' AND kind = 'blocker-raised'").length;
+  const raisedBefore = raised();
+  r.finish('unknown', 'V');
+  assert.equal(blocker()?.operation, op.id, "another operation's success does not clear the blocker");
+  await r.tick();
+  await r.tick();
+  assert.equal(blocker()?.kind, 'process-ownership');
+  assert.equal(blocker()?.operation, op.id);
+  assert.equal(raised(), raisedBefore, 'nor ends it to raise it again');
+  assert.deepEqual(r.open(), ['unknown/U:implement', 'free/F:implement', 'later/L:implement'], 'only the freed slot was reused');
+  assert.equal(r.store.all("SELECT id FROM operations WHERE campaign_id = 'overlap'").length, 0, 'src/ was never written by another step');
+  assert.deepEqual(r.store.all("SELECT id FROM operations WHERE campaign_id = 'unknown' AND task_id = 'U'").map((row) => row.id), [op.id],
+    'no replacement was dispatched from missing files alone');
+});
