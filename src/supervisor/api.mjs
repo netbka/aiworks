@@ -37,12 +37,17 @@ export function campaignStart(store, declaration, now = Date.now()) {
       return;
     }
     const executorChanged = canonicalJson(existing.declaration.executor) !== canonicalJson(decl.executor);
+    // `routing` (MODEL_ROUTING 4.1) is amended like `executor`: the only scope fields an amendment may change.
+    const routingChanged = canonicalJson(existing.declaration.routing ?? null) !== canonicalJson(decl.routing ?? null);
     if (existing.scope_digest !== scope &&
-        scopeDigest({ ...decl, executor: existing.declaration.executor }) !== existing.scope_digest) {
+        scopeDigest({ ...decl, executor: existing.declaration.executor, routing: existing.declaration.routing }) !== existing.scope_digest) {
       throw new CampaignError('SCOPE_CONFLICT', `campaign ${decl.campaignId} exists with a different immutable scope; register a new campaign id`);
     }
     if (executorChanged && (existing.control !== 'paused' || store.openOperations(decl.campaignId).length)) {
       throw new CampaignError('EXECUTOR_HANDOVER_REQUIRED', 'executor amendment requires a paused campaign with no open operations');
+    }
+    if (routingChanged && (existing.control !== 'paused' || store.openOperations(decl.campaignId).length)) {
+      throw new CampaignError('ROUTING_HANDOVER_REQUIRED', 'routing amendment requires a paused campaign with no open operations');
     }
     if (decl.authorization.version < existing.authorization_version) {
       throw new CampaignError('STALE_AUTHORIZATION', `authorization v${decl.authorization.version} is older than recorded v${existing.authorization_version}`);
@@ -53,6 +58,9 @@ export function campaignStart(store, declaration, now = Date.now()) {
       store.journal(decl.campaignId, 'authorization-amended', { from: existing.authorization_version, to: decl.authorization.version, limits: decl.limits }, now);
       if (executorChanged) store.journal(decl.campaignId, 'executor-amended', {
         from: existing.declaration.executor, to: decl.executor, previousScopeDigest: existing.scope_digest, scopeDigest: scope,
+      }, now);
+      if (routingChanged) store.journal(decl.campaignId, 'routing-amended', {
+        from: existing.declaration.routing ?? null, to: decl.routing ?? null, previousScopeDigest: existing.scope_digest, scopeDigest: scope,
       }, now);
       if (executorChanged && decl.executor.kind === 'cli-chain' && existing.declaration.executor.kind !== 'cli-chain') {
         // A former single-account hold must not prevent a newly authorized provider

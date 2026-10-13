@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { validGovernance } from '../../scripts/lib/worker-context.mjs';
 import { safeResearchPath } from './adapters/research-context.mjs';
-import { requireGovernanceRoot } from './governance.mjs';
+import { requireGovernanceRoot, roleCatalog } from './governance.mjs';
 
 // The registry's own schema (Engineering Platform's schemas/project-contract.schema.json, read from the governance root),
 // compiled once per root on first use: it alone decides which registry fields are legal.
@@ -46,6 +46,10 @@ const safePath = (path) => text(path, 512) && !path.startsWith('/') && !/[\\:%\u
 // A write-domain entry: a safe path prefix (a trailing slash marks a directory) or a named exclusive resource.
 const writeEntry = (entry) => typeof entry === 'string' && (/^resource:[a-z0-9][a-z0-9._-]{0,63}$/.test(entry) ||
   safePath(entry.endsWith('/') ? entry.slice(0, -1) : entry));
+const pathPrefix = (entry) => typeof entry === 'string' && safePath(entry.endsWith('/') ? entry.slice(0, -1) : entry);
+// An Engineering Platform role id (registry/agents.json); whether it exists is checked against the catalog at registration.
+const ROLE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const plainObject = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
 export function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -90,7 +94,7 @@ export function validateDeclaration(declaration) {
   const bad = (message) => errors.push(message);
   const d = declaration;
   if (!d || typeof d !== 'object' || Array.isArray(d)) throw new TypeError('campaign declaration must be an object');
-  const allowed = ['version', 'campaignId', 'purpose', 'authorization', 'target', 'limits', 'executor', 'constraints', 'tasks'];
+  const allowed = ['version', 'campaignId', 'purpose', 'authorization', 'target', 'limits', 'executor', 'routing', 'constraints', 'tasks'];
   for (const key of Object.keys(d)) if (!allowed.includes(key)) bad(`unknown key ${key}`);
   if (d.version !== 1) bad('version must be 1');
   if (!ID.test(d.campaignId ?? '')) bad('campaignId must match [A-Za-z0-9._-], max 64');
@@ -160,6 +164,7 @@ export function validateDeclaration(declaration) {
   }
   if (!int(e.implementerTimeoutMinutes, 1, 720)) bad('executor.implementerTimeoutMinutes must be 1..720');
   if (!int(e.verifierTimeoutMinutes, 1, 360)) bad('executor.verifierTimeoutMinutes must be 1..360');
+  if (d.routing !== undefined) validateRouting(d.routing, kinds, bad);
 
   const constraints = d.constraints;
   if (!Array.isArray(constraints) || constraints.length < 1 || constraints.length > 12 || !constraints.every((c) => text(c, 2000))) {
@@ -173,7 +178,7 @@ export function validateDeclaration(declaration) {
     const where = `tasks[${index}]`;
     if (!task || typeof task !== 'object') { bad(`${where} must be an object`); continue; }
     for (const key of Object.keys(task)) {
-      if (!['id', 'issue', 'title', 'outcome', 'workKey', 'writes', 'deliverable', 'goal', 'dependsOn', 'requiresMergedDependencies', 'constraints', 'acceptance', 'references', 'web'].includes(key)) bad(`${where} unknown key ${key}`);
+      if (!['id', 'issue', 'title', 'outcome', 'workKey', 'writes', 'deliverable', 'goal', 'dependsOn', 'requiresMergedDependencies', 'constraints', 'acceptance', 'references', 'web', 'role', 'routing'].includes(key)) bad(`${where} unknown key ${key}`);
     }
     if (!ID.test(task.id ?? '')) bad(`${where}.id invalid`);
     // commit: a verified commit is published as a PR. report: a verified report is posted to the task issue.
@@ -224,6 +229,14 @@ export function validateDeclaration(declaration) {
       }
       if (task.deliverable !== 'report') bad(`${where}.web requires deliverable report`);
     }
+    // Routing indicators (MODEL_ROUTING 3.1-3.3). They are part of scopeDigest; absent keys change no digest.
+    if (task.role !== undefined && !(typeof task.role === 'string' && ROLE.test(task.role))) bad(`${where}.role must be a role id from registry/agents.json`);
+    if (task.routing !== undefined) {
+      const r = task.routing;
+      // A declaration may only raise a computed level, never lower it, so "high" is the one value.
+      if (!plainObject(r) || !Object.keys(r).length || Object.keys(r).some((key) => !['risk', 'complexity'].includes(key)) ||
+          Object.values(r).some((value) => value !== 'high')) bad(`${where}.routing must be { risk?: "high", complexity?: "high" } with at least one key`);
+    }
     seen.add(task.id);
   }
   if (Array.isArray(tasks) && tasks.some((task) => task?.web !== undefined) &&
@@ -238,6 +251,50 @@ export function validateDeclaration(declaration) {
 }
 
 /**
+ * The optional campaign `routing` (MODEL_ROUTING 4.1 and 6): the models the owner authorizes per declared provider, with a
+ * tier each, sensitive path prefixes and an optional pin. It is part of scopeDigest, like `executor`. Validated only;
+ * nothing routes on it yet (slice R5).
+ */
+function validateRouting(routing, kinds, bad) {
+  if (!plainObject(routing)) { bad('routing must be an object'); return; }
+  for (const key of Object.keys(routing)) if (!['mode', 'candidates', 'sensitivePaths', 'pin'].includes(key)) bad(`unknown routing key ${key}`);
+  if (routing.mode !== 'auto') bad('routing.mode must be "auto"');
+  const candidates = Array.isArray(routing.candidates) ? routing.candidates : [];
+  if (!Array.isArray(routing.candidates) || candidates.length < 1 || candidates.length > 16) bad('routing.candidates must contain 1..16 candidates');
+  const declared = new Set();
+  const tiers = new Set();
+  for (const [index, candidate] of candidates.entries()) {
+    const where = `routing.candidates[${index}]`;
+    if (!plainObject(candidate) || Object.keys(candidate).some((key) => !['kind', 'model', 'tier'].includes(key))) { bad(`${where} must be { kind, model, tier }`); continue; }
+    // A candidate adds a model, never a provider: its kind must already be an authorized executor provider.
+    if (!kinds.has(candidate.kind)) bad(`${where}.kind ${candidate.kind} is not a declared executor provider`);
+    if (!text(candidate.model, 80)) bad(`${where}.model required (max 80)`);
+    if (!int(candidate.tier, 1, 3)) bad(`${where}.tier must be 1, 2 or 3`);
+    const key = JSON.stringify([candidate.kind, candidate.model]);
+    if (declared.has(key)) bad(`${where} duplicates ${candidate.kind} ${candidate.model}`);
+    declared.add(key);
+    tiers.add(candidate.tier);
+  }
+  if (routing.sensitivePaths !== undefined && (!Array.isArray(routing.sensitivePaths) || routing.sensitivePaths.length > 32 ||
+      !routing.sensitivePaths.every(pathPrefix))) bad('routing.sensitivePaths must be 0..32 repository-relative path prefixes');
+  const pin = routing.pin;
+  if (pin === undefined || pin === null) return;
+  if (!plainObject(pin) || !Object.keys(pin).length || Object.keys(pin).some((key) => !['implementer', 'verifier'].includes(key))) {
+    bad('routing.pin must be null or { implementer?, verifier? }');
+    return;
+  }
+  // A pin names one declared candidate or one declared tier; it never adds a model, a provider or a permission.
+  for (const [stage, value] of Object.entries(pin)) {
+    const keys = plainObject(value) ? Object.keys(value).sort().join(',') : '';
+    if (keys === 'kind,model') {
+      if (!declared.has(JSON.stringify([value.kind, value.model]))) bad(`routing.pin.${stage} ${value.kind} ${value.model} is not a declared candidate`);
+    } else if (keys === 'tier') {
+      if (!tiers.has(value.tier)) bad(`routing.pin.${stage} tier ${value.tier} has no declared candidate`);
+    } else bad(`routing.pin.${stage} must be { kind, model } or { tier }`);
+  }
+}
+
+/**
  * A new campaign may target only a registered portfolio project: registry membership is the governance
  * inheritance (Engineering Platform's docs/GOVERNANCE_INHERITANCE.md section 1). Checked when a campaign is first
  * registered; a campaign already in the store keeps resuming and running unaffected. The registry is Engineering
@@ -248,6 +305,22 @@ export function assertRegisteredTarget(declaration, governanceRoot) {
   const repository = String(declaration?.target?.repository ?? '');
   if (!registryEntries(registryDir, repository).length) {
     throw new TypeError(`campaign target ${repository || '(none)'} is not a registered project: add registry/projects/<id>.json to the governance checkout before registering a campaign`);
+  }
+  assertKnownRoles(declaration, governanceRoot);
+}
+
+/**
+ * Every task `role` must be a role id in Engineering Platform's catalog (registry/agents.json in the governance root),
+ * checked when the campaign is first registered. A missing or malformed catalog, or an unknown id, throws: registration
+ * fails closed. Tasks without `role` do not read the catalog.
+ */
+export function assertKnownRoles(declaration, governanceRoot) {
+  const declared = (Array.isArray(declaration?.tasks) ? declaration.tasks : []).filter((task) => task?.role !== undefined);
+  if (!declared.length) return;
+  const known = new Set(roleCatalog(governanceRoot).roles.map((role) => role.id));
+  const unknown = declared.filter((task) => !known.has(task.role));
+  if (unknown.length) {
+    throw new TypeError(`task role ${unknown.map((task) => `${task.id}: ${task.role}`).join(', ')} is not in the governance checkout's registry/agents.json`);
   }
 }
 

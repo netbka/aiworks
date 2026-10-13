@@ -2,6 +2,7 @@
 // schemas/project-contract.schema.json, docs/PRODUCT_ROADMAP.md, docs/AUTONOMOUS_ROLLOUT.md) from an explicit governance
 // root: a read-only checkout of netbka/engineering-platform. There is no default and no fallback to AIWorks's own tree:
 // without a valid root every code path that needs governance fails closed with a coded error.
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 
@@ -36,4 +37,36 @@ export function requireGovernanceRoot(candidate) {
   try { directory = statSync(join(root, 'registry', 'projects')).isDirectory(); } catch { /* reported below */ }
   if (!directory) throw new GovernanceRootError('GOVERNANCE_ROOT_INVALID', `governanceRoot ${root} has no registry/projects directory: it is not a checkout of netbka/engineering-platform`);
   return root;
+}
+
+/**
+ * Engineering Platform's agent-role catalog (registry/agents.json in the governance root), read, never copied
+ * (docs/design/MODEL_ROUTING.md section 7). Returns the role ids with their `independent_from` lists, and the file's git
+ * blob id (of the bytes read; it equals EP's blob id where the checkout keeps
+ * LF line endings), so a routing receipt can show which catalog it read. EP publishes no schema for the file, so only the shape
+ * read here is checked: `roles[]` with a string `id` and an optional string-array `independent_from`. A missing or
+ * malformed catalog throws ROLE_CATALOG_INVALID: the caller fails closed.
+ */
+export function roleCatalog(governanceRoot) {
+  const path = join(requireGovernanceRoot(governanceRoot), 'registry', 'agents.json');
+  let bytes, catalog;
+  try {
+    bytes = readFileSync(path);
+    catalog = JSON.parse(bytes.toString('utf8'));
+  } catch (error) {
+    throw new GovernanceRootError('ROLE_CATALOG_INVALID', `the governance checkout has no readable registry/agents.json (${error.code ?? error.message})`);
+  }
+  const ids = new Set();
+  const roles = Array.isArray(catalog?.roles) ? catalog.roles.map((role) => {
+    const independentFrom = role?.independent_from ?? [];
+    if (!role || typeof role.id !== 'string' || !role.id || ids.has(role.id) ||
+        !Array.isArray(independentFrom) || !independentFrom.every((id) => typeof id === 'string')) return null;
+    ids.add(role.id);
+    return { id: role.id, independentFrom: [...independentFrom] };
+  }) : null;
+  if (!roles || roles.includes(null)) {
+    throw new GovernanceRootError('ROLE_CATALOG_INVALID', 'registry/agents.json must list roles[] with a unique string id and an optional string-array independent_from');
+  }
+  const digest = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+  return { digest, roles };
 }
