@@ -122,7 +122,7 @@ Open any step to see its latest result and its history. From the dashboard you c
 
 ### 5. Ask for the next thing
 
-**Start work** takes a plain description ("what should be true when this is finished?"), a GitHub issue or a pull request, and asks the planning assistant for a plan. You can follow the request and open the answer from **Messages**. Nothing in your project changes at this stage.
+**Start work** takes a plain description ("what should be true when this is finished?"), a GitHub issue or a pull request, and asks the planning assistant for a plan. The plan appears in the dashboard under **Messages**. Nothing is posted to GitHub, and nothing in your project changes at this stage.
 
 <p align="center"><img src="docs/assets/readme/start-work.png" alt="The Start work form: describe the result, choose where to start from, Plan only" width="100%"></p>
 
@@ -153,7 +153,7 @@ Everything ends up in GitHub, next to the rest of your project:
 | Staying in its lane | A step that changes files outside its agreed area stops and waits for your decision. |
 | Dashboard | Projects, Needs me, Now, Work, Results, Cost, Step, Settings, Messages and Diagnostics screens. |
 | Controls | Pause, Resume, Check again, Cancel and Send guidance. |
-| Planning assistant | Answers your messages and proposes plans. It can read your projects but never changes them. |
+| Planning assistant | Answers your messages and proposes plans, right in the dashboard. It can read your projects but never changes them, and it posts nothing to GitHub. |
 | Cost tracking | Cost per project and per step, taken from each run's own record. |
 
 ### 🔧 Built, off by default
@@ -226,7 +226,7 @@ The assistant runs the commands below. You handle any sign-in it cannot do for y
 | **Supervisor** | The always-on loop. It reads approved plans (campaigns), starts worker runs, records every step in a local SQLite store and publishes results through the GitHub REST API. Idle checks never call an AI model. |
 | **Workers** | Headless runs of Claude Code, Codex or Cursor in an isolated Git worktree, without personal settings, hooks, MCP servers or memory. The provider order is Claude, then Codex, then Cursor. Only a provider problem (a usage limit, a failed login, an unavailable tool) moves work to the next one. |
 | **Checker** | A fresh, read-only worker session on a separate checkout of the exact commit. It must echo that commit and the fingerprint of the builder's report. A failed check or a blocking finding starts a repair round. |
-| **Coordinator** | A read-only planning agent that answers owner messages. It never registers or starts work. |
+| **Coordinator** | A read-only planning agent that answers owner messages in the dashboard. It never registers or starts work, and posts nothing to GitHub. |
 | **Dashboard** | A local web app at `http://127.0.0.1:4318`. It reads the local store and Git and makes no GitHub API calls. |
 | **Background tasks** | Two Windows scheduled tasks start the supervisor and the dashboard at sign-in, and again every 5 minutes if either has stopped. |
 
