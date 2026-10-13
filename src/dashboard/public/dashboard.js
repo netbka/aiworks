@@ -54,11 +54,13 @@ const drafts = {
   delete(address, key) { const all = readDrafts(); delete all[`${address} ${key}`]; writeDrafts(all); },
 };
 
+// Elements that act when used (a click or submit handler): the refresh keeps one only while it shows exactly the same.
+const acting = new WeakSet();
 function el(tag, attributes = {}, ...children) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(attributes)) {
     if (key === 'class') node.className = value;
-    else if (key.startsWith('on')) node.addEventListener(key.slice(2), value);
+    else if (key.startsWith('on')) { node.addEventListener(key.slice(2), value); acting.add(node); }
     else if (value !== false && value !== null && value !== undefined) node.setAttribute(key, value === true ? '' : String(value));
   }
   node.append(...children.filter((child) => child !== null && child !== undefined));
@@ -83,8 +85,11 @@ const panel = (title, description, body, action) => el('section', { class: 'pane
 const table = (headers, rows) => el('div', { class: 'table-scroll' }, el('table', {},
   el('thead', {}, el('tr', {}, ...headers.map((text) => el('th', { scope: 'col' }, text)))), el('tbody', {}, ...rows)));
 const cell = (...children) => el('td', {}, ...children);
-const notice = (text, retry, detail = null) => {
-  const node = $('#notice'); node.hidden = false;
+// A notice belongs to the screen of the action it acknowledges: it is shown only at that address, so it never follows the
+// owner to another project (aiworks#11 review F20). Back to that address shows it again. A null address is page-wide.
+let noticeAddress = null;
+const notice = (text, retry, detail = null, address = current.address) => {
+  const node = $('#notice'); noticeAddress = address; node.hidden = false;
   node.replaceChildren(document.createTextNode(text));
   if (retry) node.append(button(COMMANDS.retry, retry, 'secondary small'));
   if (detail) node.append(el('details', {}, el('summary', {}, COMMANDS.details), el('p', { class: 'subtext' }, detail)));
@@ -124,6 +129,7 @@ function showRoute() {
   tabs.replaceChildren(...(project ? Object.entries(tabLabels).map(([id, label]) => el('a', { href: formatRoute({ screen: 'project', project, tab: id }),
     class: `tab${id === tab ? ' active' : ''}`, 'aria-current': id === tab && route.screen === 'project' ? 'page' : null }, label)) : []));
   if (project && route.screen === 'project') writeLastProject(project);
+  $('#notice').hidden = !$('#notice').childNodes.length || noticeAddress !== null && noticeAddress !== current.address;
   $('#filters').hidden = !(route.screen === 'settings' && route.section === 'diagnostics');
   if (state) render();
 }
@@ -246,9 +252,14 @@ const watchChip = (task) => task.attempts >= CHURN_ATTEMPTS || task.verifierReje
   ? el('span', { class: 'badge watch', title: 'Information only: this step took many tries. It does not limit work.' },
     `Took ${plural(task.attempts, 'try', 'tries')}${task.verifierRejections ? ` · rejected ${task.verifierRejections}×` : ''}`) : null;
 
-/** A remembered open/closed disclosure (survives the 5-second refresh). */
-const disclosure = (key, summary, body, openByDefault = false) => el('details', { open: opened.has(key) || openByDefault && !opened.has(`${key}:closed`),
-  ontoggle: (event) => { if (event.target.open) { opened.add(key); opened.delete(`${key}:closed`); } else { opened.delete(key); opened.add(`${key}:closed`); } } }, el('summary', {}, summary), body);
+/** A remembered open/closed disclosure (survives the 5-second refresh). Its toggle is heard once, on the document. */
+const disclosure = (key, summary, body, openByDefault = false) => el('details', { 'data-disclosure': key, open: opened.has(key) || openByDefault && !opened.has(`${key}:closed`) },
+  el('summary', {}, summary), body);
+document.addEventListener('toggle', (event) => {
+  const key = event.target.dataset?.disclosure;
+  if (!key) return;
+  if (event.target.open) { opened.add(key); opened.delete(`${key}:closed`); } else { opened.delete(key); opened.add(`${key}:closed`); }
+}, true);
 
 // Step rows: on a phone, CSS turns each row into a stacked card (name, where it stands, link) with no clipped columns.
 function taskRow(c, task) {
@@ -455,15 +466,15 @@ function openMessage() {
 
 async function sendMessage(text) {
   sending = true; render();
-  const requestId = crypto.randomUUID();
+  const requestId = crypto.randomUUID(), from = current.address;
   const attempt = async () => {
     try {
       const result = await post('/api/messages', { requestId, text });
       messageDraft.text = '';
-      notice(result.duplicate ? `Message #${result.id} was already received; it was not stored twice.` : `Message #${result.id} received by the supervisor. You will see "Read" when the coordinator agent starts on it.`);
+      notice(result.duplicate ? `Message #${result.id} was already received; it was not stored twice.` : `Message #${result.id} received by the supervisor. You will see "Read" when the coordinator agent starts on it.`, null, null, MESSAGES_ADDRESS);
       if (current.address !== MESSAGES_ADDRESS) go(MESSAGES_ADDRESS);
     } catch (error) {
-      notice(error.known ? error.message : 'Delivery could not be confirmed. Retry: the same message is never stored twice.', error.known ? null : attempt);
+      notice(error.known ? error.message : 'Delivery could not be confirmed. Retry: the same message is never stored twice.', error.known ? null : attempt, null, from);
     }
   };
   try { await attempt(); } finally { sending = false; await poll(); }
@@ -501,17 +512,18 @@ function startScreen(project) {
   goal.value = draft.goal;
   const number = el('input', { id: 'start-number', type: 'number', min: 1, step: 1, inputmode: 'numeric', required: draft.from !== 'description', oninput: save });
   number.value = draft.number;
-  const numberLabel = el('label', { hidden: draft.from === 'description' }, 'Number ', number);
-  const from = ([value, label]) => el('label', {}, el('input', { type: 'radio', name: 'start-from', value, checked: draft.from === value,
+  const numberLabel = el('label', { class: 'field', hidden: draft.from === 'description' }, 'Number', number);
+  const from = ([value, label]) => el('label', { class: 'choice' }, el('input', { type: 'radio', name: 'start-from', value, checked: draft.from === value,
     onchange: () => { numberLabel.hidden = value === 'description'; number.required = value !== 'description'; save(); } }), ` ${label}`);
-  const form = el('form', { class: 'panel-body', 'data-start-form': project, 'data-focus-scope': `start/${project}`,
+  // The form wears the dialogs' styles: each box inside its label, and the choices in framed groups (aiworks#11 review F25).
+  const form = el('form', { class: 'panel-body start-form', 'data-start-form': project, 'data-focus-scope': `start/${project}`,
     onsubmit: (event) => { event.preventDefault(); save(); void askForPlan(project, address); } },
-    el('label', { for: 'start-goal' }, el('strong', {}, 'What should be true when this is finished?')), goal,
+    el('label', { class: 'field' }, el('strong', {}, 'What should be true when this is finished?'), goal),
     el('fieldset', {}, el('legend', {}, 'Start from'), ...START_FROM.map(from), numberLabel),
     el('fieldset', {}, el('legend', {}, 'How far AIWorks goes'),
-      el('label', {}, el('input', { type: 'radio', name: 'start-mode', value: 'plan-only', checked: true }), ' Plan only'),
+      el('label', { class: 'choice' }, el('input', { type: 'radio', name: 'start-mode', value: 'plan-only', checked: true }), ' Plan only'),
       el('p', { class: 'subtext' }, 'AIWorks looks and proposes a plan. Nothing in your project changes.'),
-      el('label', {}, el('input', { type: 'radio', name: 'start-mode', value: 'plan-and-do', disabled: true, 'aria-describedby': 'plan-and-do-note' }), ' Plan and do'),
+      el('label', { class: 'choice' }, el('input', { type: 'radio', name: 'start-mode', value: 'plan-and-do', disabled: true, 'aria-describedby': 'plan-and-do-note' }), ' Plan and do'),
       el('p', { class: 'subtext', id: 'plan-and-do-note' }, 'AIWorks proposes a plan. After you approve it once, it does the work. ', PLAN_AND_DO_OFF.join(' '))),
     el('p', { class: 'subtext' }, coordinator?.configured ? `The plan is posted to ${coordinator.reportTo ?? 'GitHub'}. No secrets; up to 2,000 characters.`
       : 'No coordinator agent is configured yet: the request will be stored, but nothing will read it.'),
@@ -526,7 +538,7 @@ function refreshStart(content, project) {
   if (!form || form.dataset.startForm !== project || !state.supervisor.available) return false;
   form.querySelector('button[type="submit"]').disabled = startBlocked();
   const receipt = startReceipt(formatRoute({ screen: 'start', project }));
-  form.querySelector('#start-receipt').replaceChildren(...(receipt ? [receipt] : []));
+  patch(form.querySelector('#start-receipt'), receipt ? [receipt] : []);
   return true;
 }
 
@@ -541,9 +553,9 @@ async function askForPlan(project, address) {
       // Accepted: an empty form for the next request, with this request's receipt under it.
       drafts.set(address, 'start', { sent: result.id });
       document.querySelector('form[data-start-form]')?.remove();
-      notice(result.duplicate ? `Plan request #${result.id} was already received; it was not stored twice.` : `Plan request #${result.id} received by the supervisor. You will see "Read" when the coordinator agent starts on it.`);
+      notice(result.duplicate ? `Plan request #${result.id} was already received; it was not stored twice.` : `Plan request #${result.id} received by the supervisor. You will see "Read" when the coordinator agent starts on it.`, null, null, address);
     } catch (error) {
-      notice(error.known ? error.message : 'Delivery could not be confirmed. Retry: the same request is never stored twice.', error.known ? null : attempt);
+      notice(error.known ? error.message : 'Delivery could not be confirmed. Retry: the same request is never stored twice.', error.known ? null : attempt, null, address);
     }
   };
   try { await attempt(); } finally { sending = false; await poll(); }
@@ -556,6 +568,7 @@ function saveDraft() {
 }
 
 function openInstructions(c, task = null) {
+  c = campaignById(c.id) ?? c;
   instructionCampaign = c; instructionAddress = current.address;
   const draft = drafts.get(instructionAddress, `instruction:${c.id}`);
   $('#instruction-campaign').textContent = campaignTitle(c);
@@ -907,9 +920,11 @@ const resumeButton = (c) => c.controls?.primary === 'resume' ? button('Resume', 
  * The More menu (OWNER_WORKSPACE §4.7): Pause, Check again and Cancel work, as the supervisor allows them for this work
  * now. Finished and cancelled work allows none, so it has no menu. On a step, Check again rechecks that step only.
  */
+const canCheckAgain = (c, task) => (c.controls?.more ?? []).includes('recheck') && task.state !== 'done' && Boolean(task.blocked || task.retryAt || task.errorClass);
 function moreMenu(c, task = null) {
   const allowed = c.controls?.more ?? [];
-  const actions = task ? allowed.filter((action) => action === 'recheck' && task.state !== 'done' && Boolean(task.blocked || task.retryAt || task.errorClass)) : allowed;
+  // A stopped step tells the owner to check it again, so its Check again is shown beside that sentence, not in More.
+  const actions = task ? task.stopped || !canCheckAgain(c, task) ? [] : ['recheck'] : allowed;
   if (!actions.length) return null;
   const labels = { pause: 'Pause', recheck: 'Check again' };
   return disclosure(`${c.id}/${task?.id ?? ''}/more`, 'More', el('div', { class: 'campaign-controls' }, ...actions.map((action) => action === 'cancel'
@@ -965,7 +980,8 @@ function stepScreen(project, c, task) {
       task.stopped ? el('p', {}, task.stopped.text) : null,
       p ? el('p', { class: 'subtext' }, `From the worker’s own record: ${plural(p.turns, 'turn')} · ${plural(p.toolCalls, 'action')} · last activity ${timeAgo(p.lastActivityAt)}`) : null,
       last ? el('p', { class: 'subtext' }, `Last result: ${last}`) : null,
-      primary,
+      // The recovery the stop sentence names is shown beside its primary action, never only under More (aiworks#11 review F12).
+      task.stopped && canCheckAgain(c, task) ? el('div', { class: 'campaign-controls' }, primary, button('Check again', () => command(c, 'recheck', task), 'secondary', commandsOff())) : primary,
       guidance.length ? el('div', { class: 'instruction-list' }, el('h3', { class: 'section-title' }, 'Guidance you sent'), ...guidance.map((item) => instructionReceipt(item, c))) : null,
       disclosure(`step/${c.id}/${task.id}/details`, `Details · ${plural(attempts.length, 'attempt')}`, el('div', {},
         attempts.length ? el('ol', { class: 'receipt-steps' }, ...attempts.map((a) => el('li', {}, attemptText(a), a.id ? el('div', { class: 'subtext' }, `Run ${a.id}`) : null)))
@@ -1070,6 +1086,33 @@ function projectScreen(route) {
   return cards.length ? [...cards.map((c) => campaignCard(c, false))] : [empty('No work is running in this project', 'Finished work and its results are under Results.')];
 }
 
+/** What a node shows: its tag, attributes and text, all the way down. */
+const shows = (node) => node.nodeType !== 1 ? `#${node.data ?? ''}`
+  : `<${node.tagName}${node.getAttributeNames().sort().map((name) => ` ${name}="${node.getAttribute(name)}"`).join('')}>${[...node.childNodes].map(shows).join('')}</>`;
+/**
+ * The 5-second refresh changes only what changed (aiworks#11 review F21): a node that shows the same stays the same node,
+ * so a pointer on it, focus, scroll and an open disclosure are kept. Text and attributes are updated in place; an element
+ * that acts (a button) is kept only while it shows exactly the same, otherwise the new one with its new action replaces it.
+ */
+function patch(parent, next) {
+  const before = [...parent.childNodes];
+  next.forEach((node, index) => {
+    const old = before[index];
+    if (!old) parent.append(node);
+    else if (!reuse(old, node)) parent.replaceChild(node, old);
+  });
+  for (const old of before.slice(next.length)) old.remove();
+}
+function reuse(old, node) {
+  if (old.nodeType !== 1 && node.nodeType !== 1) { if (old.data !== node.data) old.data = node.data; return true; }
+  if (old.nodeType !== 1 || node.nodeType !== 1 || old.tagName !== node.tagName) return false;
+  if (acting.has(old) || acting.has(node)) return shows(old) === shows(node);
+  for (const name of old.getAttributeNames()) if (!node.hasAttribute(name)) old.removeAttribute(name);
+  for (const name of node.getAttributeNames()) if (old.getAttribute(name) !== node.getAttribute(name)) old.setAttribute(name, node.getAttribute(name));
+  patch(old, [...node.childNodes]);
+  return true;
+}
+
 function render() {
   if (!state) return;
   const content = $('#content'), route = current.route;
@@ -1078,24 +1121,23 @@ function render() {
   const diagnostics = route.screen === 'settings' && route.section === 'diagnostics';
   renderMetrics(route.project ? projectCampaigns(route.project) : state.supervisor.campaigns, diagnostics ? ['Platform roadmap items']
     : route.screen === 'project' && route.tab === 'work' ? ['Agents working'] : []);
-  if (route.screen === 'needs') content.replaceChildren(needsYou() ?? unavailable());
-  else if (route.screen === 'settings' && route.section === 'messages') content.replaceChildren(messagesPanel(20));
-  else if (diagnostics) content.replaceChildren(trackOverview(), roadmapView(), workView(), mergeChecksPanel(),
-    panel('Execution journal', 'Latest 80 events · raw agent transcripts and secrets are never shown', activityList()));
-  else if (route.screen === 'settings') content.replaceChildren(...settingsScreen());
-  else if (route.screen === 'add-project') content.replaceChildren(empty('Adding a project from this page is not built yet.', 'Projects appear on Projects when the AIWorks configuration file on this computer lists a repository.'));
+  if (route.screen === 'needs') patch(content, [needsYou() ?? unavailable()]);
+  else if (route.screen === 'settings' && route.section === 'messages') patch(content, [messagesPanel(20)]);
+  else if (diagnostics) patch(content, [trackOverview(), roadmapView(), workView(), mergeChecksPanel(),
+    panel('Execution journal', 'Latest 80 events · raw agent transcripts and secrets are never shown', activityList())]);
+  else if (route.screen === 'settings') patch(content, settingsScreen());
+  else if (route.screen === 'add-project') patch(content, [empty('Adding a project from this page is not built yet.', 'Projects appear on Projects when the AIWorks configuration file on this computer lists a repository.')]);
   else if (route.screen === 'start' && refreshStart(content, route.project)) { /* the form stays as the owner typed it */ }
-  else if (route.project) content.replaceChildren(...projectScreen(route));
-  else content.replaceChildren(...projectsScreen());
-  if (focused) [...content.querySelectorAll('a, button, summary')].find((node) => focusKey(node) === focused)?.focus({ preventScroll: true });
-  const repositories = state.merges?.repositories ?? [];
-  const problems = repositories.filter((repo) => repo.error);
+  else if (route.project) patch(content, projectScreen(route));
+  else patch(content, projectsScreen());
+  // Focus stays where it was; only when its element was replaced does it move to the one that took its place.
+  if (focused && !content.contains(document.activeElement)) [...content.querySelectorAll('a, button, summary')].find((node) => focusKey(node) === focused)?.focus({ preventScroll: true });
+  // How fresh a merge check is, and whether its last fetch failed, is said on the row that uses it (a step, a result, a
+  // Needs me item, Settings and Diagnostics), never page-wide (OWNER_WORKSPACE §7.4; aiworks#11 review F8).
   const warning = $('#source-warning');
-  warning.hidden = !problems.length && state.supervisor.available;
-  warning.textContent = [!state.supervisor.available ? state.supervisor.message : '', ...problems.map((repo) => `${repo.repository}: the last fetch of its base branch failed; ${
-    repo.fetchedAt ? `merge state is from ${dateTime(repo.fetchedAt)}` : 'its merges are not seen yet'}.`)].filter(Boolean).join(' ');
-  const fetched = repositories.map((repo) => repo.fetchedAt).filter(Boolean).sort((a, b) => a - b);
-  $('#updated').textContent = `${state.host?.name ? `${state.host.name} · ` : ''}Checked ${timeOnly(state.observedAt)} · merges ${fetched.length ? `checked ${timeAgo(fetched[0])}` : 'not checked yet'}`;
+  warning.hidden = state.supervisor.available;
+  warning.textContent = state.supervisor.available ? '' : state.supervisor.message ?? '';
+  $('#updated').textContent = `${state.host?.name ? `${state.host.name} · ` : ''}Checked ${timeOnly(state.observedAt)}`;
   // Which machine this is: each computer runs its own supervisor and campaigns.
   if (state.host) {
     // The page starts with a neutral "…" so it never names the wrong computer before the first answer.
@@ -1112,19 +1154,21 @@ async function post(path, body) {
   return value;
 }
 
-async function deliver(payload, draftAddress = null) {
+async function deliver(payload, draftAddress = null, from = current.address) {
   sending = true; render();
   try {
     const result = await post('/api/commands', payload);
-    notice(result.duplicate ? COMMANDS.duplicate : COMMANDS.accepted[payload.action]);
+    notice(result.duplicate ? COMMANDS.duplicate : COMMANDS.accepted[payload.action], null, null, from);
     if (payload.action === 'instruct' && draftAddress) drafts.delete(draftAddress, `instruction:${payload.campaignId}`);
   } catch (error) {
     // A refusal says what happened and what to do; the machine's reason is behind Details.
-    notice(error.known ? error.message : COMMANDS.unconfirmed, error.known ? null : () => deliver(payload, draftAddress), error.known ? error.detail : null);
+    notice(error.known ? error.message : COMMANDS.unconfirmed, error.known ? null : () => deliver(payload, draftAddress, from), error.known ? error.detail : null, from);
   } finally { sending = false; await poll(); }
 }
 
 function command(c, action, task, extra = {}, draftAddress = null) {
+  // The refresh keeps a button that still shows the same, so the versions come from the state it shows now.
+  c = campaignById(c.id) ?? c; task = task ? c.tasks.find((item) => item.id === task.id) ?? task : task;
   return deliver({ campaignId: c.id, action, requestId: crypto.randomUUID(), version: c.version,
     authorizationVersion: c.authorizationVersion, scopeDigest: c.scopeDigest,
     ...(task ? { taskId: task.id, taskVersion: task.version } : {}), ...extra }, draftAddress);
@@ -1135,8 +1179,8 @@ async function poll() {
     const response = await fetch(`/api/state?since=${since}`, { signal: AbortSignal.timeout(6000) });
     if (!response.ok) throw new Error('state unavailable');
     state = await response.json(); offline = false;
-    $('#connection').textContent = state.merges?.refreshing ? 'Live · checking for merges…'
-      : (state.merges?.repositories ?? []).some((repo) => repo.error) ? 'Live · a merge check failed' : 'Live · updates every 5s';
+    // The header keeps only "Connected" or the disconnected text (OWNER_WORKSPACE §7.4; aiworks#11 review F8).
+    $('#connection').textContent = 'Connected';
     $('#connection').className = 'connection online';
     trackReceipts();
     if (!document.querySelector('dialog[open]')) render();
@@ -1164,6 +1208,16 @@ function go(address, { restore = false } = {}) {
   // Focus moves to the new screen's heading, so a screen reader starts there.
   $('#view-title').focus({ preventScroll: true });
 }
+// At narrow widths navigation is a bar fixed to the bottom of the window. Keyboard focus is kept above it, never under it
+// (OWNER_WORKSPACE §6.2; aiworks#11 review F4); the stylesheet's scroll-padding does the same where the browser applies it.
+// On wide screens the bar is a full-height sidebar that starts at the top of the window, and nothing moves.
+const FOCUS_GAP = 8;
+document.addEventListener('focusin', (event) => {
+  const bar = $('.sidebar'), target = event.target;
+  if (!bar || !target?.getBoundingClientRect || bar.contains(target) || target.closest?.('dialog')) return;
+  const edge = bar.getBoundingClientRect().top, bottom = target.getBoundingClientRect().bottom;
+  if (edge > 0 && bottom > edge - FOCUS_GAP) window.scrollBy(0, bottom - edge + FOCUS_GAP);
+});
 // Destinations are links. A plain click opens the address here; a click that asks for a new tab or window is left to the browser.
 document.addEventListener('click', (event) => {
   const anchor = event.target.closest?.('a[href^="#/"]');
@@ -1212,6 +1266,6 @@ window.addEventListener('pagehide', writeLastSeen);
 // An empty, legacy or unknown address is rewritten once, without a new history entry.
 if (current.replace) history.replaceState(null, '', current.address);
 showRoute();
-try { csrf = (await (await fetch('/api/session')).json()).csrf; } catch { notice('Command session unavailable. Reload when the dashboard reconnects.'); }
+try { csrf = (await (await fetch('/api/session')).json()).csrf; } catch { notice('Command session unavailable. Reload when the dashboard reconnects.', null, null, null); }
 await poll();
 setInterval(() => { if (!sending) void poll(); }, 5000);

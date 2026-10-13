@@ -5,8 +5,18 @@ body{margin:0;font-size:14px;background:var(--page);color:#1d2839}
 @media(prefers-color-scheme:dark){:root,body{background:var(--page);color:#1d2839}}
 button,input,select{font:inherit}
 textarea{font:inherit;resize:vertical}
-dialog label{display:grid;gap:7px;font-size:12px;margin-top:16px}
-dialog select,dialog textarea{width:100%;border:1px solid #ccd5e3;border-radius:7px;padding:10px;background:#fff;color:#24324a}
+dialog label,.start-form .field{display:grid;gap:7px;font-size:12px;margin-top:16px}
+dialog select,dialog textarea,.start-form textarea,.start-form input[type=number]{width:100%;border:1px solid #ccd5e3;border-radius:7px;padding:10px;background:#fff;color:#24324a}
+/* Start work is a form on the page, styled like the dialogs (aiworks#11 review F25). */
+.start-form .field[hidden]{display:none}
+.start-form .field strong{font-size:13px;color:#24324a}
+.start-form textarea:focus-visible,.start-form input:focus-visible,dialog textarea:focus-visible,dialog select:focus-visible{outline:3px solid #96b1ff}
+.start-form fieldset{border:1px solid var(--line);border-radius:10px;padding:8px 16px 12px;margin:16px 0 0;min-width:0}
+.start-form legend{font-size:12px;font-weight:600;color:#465b80;padding:0 6px}
+.start-form .choice{display:flex;align-items:center;gap:8px;min-height:44px;font-size:13px;color:#24324a}
+.start-form .choice input{margin:0;width:18px;height:18px}
+.start-form fieldset>.subtext{font-size:12px;margin:0 0 6px 26px}
+.start-form>.button{margin-top:16px}
 .instruction-list{padding:0 24px 16px;display:grid;gap:12px;font-size:12px}
 .instruction-list p{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}
 .receipt{border:1px solid var(--line);border-radius:10px;padding:12px 14px}
@@ -268,7 +278,9 @@ td,th{padding-left:18px;padding-right:18px}
 .filters>label:not(.search-label){flex:1}
 h1{font-size:25px}
 .campaign-banner{flex-direction:column;align-items:flex-start}
-/* Navigation becomes a labelled bottom bar: Projects, Needs me and Settings. */
+/* Navigation becomes a labelled bottom bar: Projects, Needs me and Settings. Focus scrolls clear of it: the bar is 61px
+   (a 52px destination, 4px padding above and below, a 1px border), plus room for the focus ring (aiworks#11 review F4). */
+html{scroll-padding-bottom:76px}
 .sidebar{inset:auto 0 0 0;width:auto;height:auto;flex-direction:row;padding:4px 4px calc(4px + env(safe-area-inset-bottom, 0px));border-right:0;border-top:1px solid var(--line)}
 nav{margin-top:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px;width:100%}
 .nav-item{font-size:11px;flex-direction:column;justify-content:center;gap:3px;padding:6px 2px;min-height:52px;text-align:center;line-height:1.2;position:relative}

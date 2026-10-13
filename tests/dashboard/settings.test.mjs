@@ -170,7 +170,7 @@ test('Diagnostics shows how fresh each merge check is, in place of Refresh GitHu
   assert.match(js, /^async function post\(path, body\) \{\r?\n  const response = await fetch\(path,/m);
   assert.deepEqual([...js.matchAll(/\bpost\(([^,)]+)/g)].map((m) => m[1]).filter((target) => !/^'\/api\//.test(target) && target !== 'path'), []);
   // Diagnostics keeps every fact of today's Plans, Issues & PRs and Activity views, and adds the merge checks.
-  assert.match(js, /else if \(diagnostics\) content\.replaceChildren\(trackOverview\(\), roadmapView\(\), workView\(\), mergeChecksPanel\(\),\r?\n\s+panel\('Execution journal'/);
+  assert.match(js, /else if \(diagnostics\) patch\(content, \[trackOverview\(\), roadmapView\(\), workView\(\), mergeChecksPanel\(\),\r?\n\s+panel\('Execution journal'/);
 });
 
 test('Settings shows this computer, AI workers, project connections and release mode, then Messages and Diagnostics', (t) => {
@@ -181,7 +181,7 @@ test('Settings shows this computer, AI workers, project connections and release 
   assert.match(screen, /settings\.workers\.map/);
   assert.ok(!/providerStatus\(/.test(screen));
   // Messages keeps its own screen; the links stay.
-  assert.match(js, /else if \(route\.screen === 'settings' && route\.section === 'messages'\) content\.replaceChildren\(messagesPanel\(20\)\);/);
+  assert.match(js, /else if \(route\.screen === 'settings' && route\.section === 'messages'\) patch\(content, \[messagesPanel\(20\)\]\);/);
   for (const target of ['#/settings/messages', '#/settings/diagnostics']) assert.match(js, new RegExp(`routeLink\\('[^']+', '${target}'\\)`));
   // An unavailable store has no settings; an empty one has workers and no projects.
   const root = mkdtempSync(join(tmpdir(), 'aiworks-settings-empty-'));
