@@ -42,3 +42,62 @@ export function laterWait(a, b) {
   if (b.retry_at === null) return b;
   return a.retry_at >= b.retry_at ? a : b;
 }
+
+// ---- Concurrency per account (section 4.5, slice RUN8). No limit until the provider throttles. ----
+
+/** Open worker operations whose executor uses the account behind `kind`, in any campaign; `alsoId` counts that one too. */
+export function openOnAccount(store, config, kind, alsoId = null) {
+  const account = accountOf(config, kind);
+  return store.all("SELECT executor_kind FROM operations WHERE state IN ('recorded', 'dispatched') OR id = ?", alsoId)
+    .filter((op) => accountOf(config, op.executor_kind) === account).length;
+}
+
+/** The account's concurrency limit, or null: an account that never throttled has no limit at all. */
+export function accountLimit(store, config, kind) {
+  return store.get("SELECT value FROM capacity WHERE scope = 'account' AND id = ?", accountOf(config, kind))?.value ?? null;
+}
+
+function setLimit(store, config, kind, { from, to, reason, campaignId, now }) {
+  const account = accountOf(config, kind);
+  store.run(`INSERT INTO capacity (scope, id, value, reason, updated_at) VALUES ('account', ?, ?, ?, ?)
+    ON CONFLICT (scope, id) DO UPDATE SET value = excluded.value, reason = excluded.reason, updated_at = excluded.updated_at`, account, to, reason, now);
+  store.journal(campaignId, to < (from ?? Infinity) ? 'account-concurrency-lowered' : 'account-concurrency-raised',
+    { account, executor: kind, from, to, reason }, now);
+  return to;
+}
+
+/**
+ * Is the account behind `kind` at its learned limit? Returns null, or { account, limit, open } for a
+ * 'provider-concurrency' wait. Only an account that throttled earlier can be full. A refusal adds the account to
+ * `waited`, so its next useful result may raise the limit.
+ */
+export function accountFull(store, config, kind, waited = null) {
+  const limit = accountLimit(store, config, kind);
+  if (limit === null) return null;
+  const open = openOnAccount(store, config, kind);
+  if (open < limit) return null;
+  const account = accountOf(config, kind);
+  waited?.add(account);
+  return { account, limit, open };
+}
+
+/**
+ * After run `opId` on `kind` finished (scheduler on). A quota outcome sets the account's limit to half of the runs open
+ * on it at that moment, this one included, minimum 1; a repeat halves again from what is open then, and a throttle never
+ * raises a limit, so repeated refusals converge on one run instead of a retry storm. A useful result while another
+ * candidate waited for the account (`waited`) raises its limit by 1. Every change is journalled. Returns the limit.
+ */
+export function accountAfterRun(store, config, { kind, opId, quota = false, run = 'neutral', waited = null, campaignId, now }) {
+  const account = accountOf(config, kind);
+  const before = accountLimit(store, config, kind);
+  if (quota) {
+    const open = openOnAccount(store, config, kind, opId);
+    const to = Math.max(1, Math.floor(open / 2));
+    if (before !== null && before <= to) return before;
+    return setLimit(store, config, kind, { from: before, to, reason: `the provider refused a run for its usage limit with ${open} run(s) open`, campaignId, now });
+  }
+  if (run !== 'useful') return before;
+  const wasWaiting = waited?.delete(account) ?? false;
+  if (before === null || !wasWaiting) return before;
+  return setLimit(store, config, kind, { from: before, to: before + 1, reason: 'a useful result while work waited for this account', campaignId, now });
+}

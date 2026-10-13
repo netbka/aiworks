@@ -11,7 +11,8 @@ import { join } from 'node:path';
 import { Store } from '../../src/supervisor/store.mjs';
 import { campaignRecheck, campaignStart, campaignStatus } from '../../src/supervisor/api.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
-import { accountOf, accountWait, laterWait } from '../../src/supervisor/accounts.mjs';
+import { accountAfterRun, accountFull, accountLimit, accountOf, accountWait, laterWait, openOnAccount } from '../../src/supervisor/accounts.mjs';
+import { WAIT_REASONS, admissionCheck, classifyRun } from '../../src/supervisor/scheduler.mjs';
 import { declaration, environment } from './helpers.mjs';
 
 const git = (cwd, ...args) => {
@@ -30,12 +31,12 @@ const campaign = (campaignId, issue, { executor = null, deliverable = 'commit' }
   return executor ? { ...d, executor } : d;
 };
 
-function rig(t, config = {}) {
+function rig(t, config = {}, { Ctl = Controller, now = undefined } = {}) {
   const env = environment();
   Object.assign(env.config, config, { commands: { ...env.config.commands, ...config.commands } });
   const store = new Store(join(env.dataDir, 'supervisor.db'));
   t.after(() => { store.close(); env.cleanup(); });
-  const controller = new Controller({ store, config: env.config, dataDir: env.dataDir, fault: null });
+  const controller = new Ctl({ store, config: env.config, dataDir: env.dataDir, fault: null, now });
   controller.launch = async () => {}; // the test plays the worker; nothing is spawned
   const open = (id) => store.openOperations(id)[0] ?? null;
   const ctx = (id) => ({ id, generation: controller.held.get(id) });
@@ -187,4 +188,131 @@ test('the later wait wins, and an untimed wait beats any time', () => {
   assert.deepEqual(laterWait(null, at(5)), at(5));
   assert.deepEqual(laterWait(at(5), at(9)), at(9));
   assert.deepEqual(laterWait(at(9), at(null)), at(null));
+});
+
+// ---- RUN8 (ADAPTIVE_SCHEDULER slice S6): a usage-limit refusal lowers the account's concurrency; useful results raise it. ----
+
+/**
+ * The controller with the RUN8 wiring this slice proposes for controller.mjs, which RUN8 does not own (see the PR's
+ * finding): admission asks accountFull about the provider the candidate would get, and every finished run is passed to
+ * accountAfterRun with its stored outcome. The live controller calls neither yet.
+ */
+class Wired extends Controller {
+  constructor(options) { super(options); this.accountWaited = new Set(); }
+  admissionInputs() {
+    return { ...super.admissionInputs(), accountFull: (candidate) => {
+      const executor = this.executorChoice(candidate.declaration, this.store.task(candidate.campaignId, candidate.taskId)).executor;
+      return executor ? accountFull(this.store, this.config, executor.kind, this.accountWaited) : null;
+    } };
+  }
+  applyOutcome(ctx, op, outcome) {
+    const open = ['recorded', 'dispatched'].includes(this.store.get('SELECT state FROM operations WHERE id = ?', op.id)?.state);
+    super.applyOutcome(ctx, op, outcome);
+    const done = this.store.get('SELECT state, outcome FROM operations WHERE id = ?', op.id);
+    if (!this.sched || !open || done.state !== 'finished') return;
+    accountAfterRun(this.store, this.config, { kind: op.executor_kind, opId: op.id, quota: done.outcome.class === 'quota',
+      run: classifyRun(op.kind, done.outcome), waited: this.accountWaited, campaignId: ctx.id, now: this.now() });
+  }
+}
+
+const SCHED = { scheduler: { enabled: true, maxWorkers: 4 } };
+/** One-task campaigns on the default claude-cli account, each in its own project, writing only the file r.succeed commits. */
+function startMany(r, ids, issue) {
+  ids.forEach((id, i) => {
+    const d = campaign(id, issue + i);
+    campaignStart(r.store, { ...d, target: { ...d.target, projectId: `p-${id}` }, tasks: d.tasks.map((task) => ({ ...task, writes: [`${id}.txt`] })) });
+  });
+}
+const limitRow = (r) => r.store.get("SELECT value FROM capacity WHERE scope = 'account' AND id = 'claude-cli'")?.value ?? null;
+const accountRuns = (r) => r.store.all("SELECT id, outcome FROM operations WHERE executor_kind = 'claude-cli' ORDER BY created_at, id");
+
+test('a throttle lowers account concurrency without a retry storm', async (t) => {
+  let clock = Date.now();
+  const r = rig(t, SCHED, { Ctl: Wired, now: () => clock });
+  const ids = ['camp-a', 'camp-b', 'camp-c', 'camp-d'];
+  startMany(r, ids, 861);
+  for (let i = 0; i < 4; i += 1) { await r.tick(); clock += 1; }
+  assert.equal(ids.filter((id) => r.open(id)).length, 4, 'four runs open on one Claude account');
+  assert.equal(limitRow(r), null, 'no limit before the provider complained');
+
+  // The provider refuses camp-a's run for its usage limit: the account cools down until the reset, and from then on may
+  // run half of the four that were open when it refused.
+  const resetAt = clock + HOUR;
+  r.quota('camp-a', resetAt);
+  assert.equal(limitRow(r), 2, 'half of the four runs open at the refusal');
+  assert.equal(openOnAccount(r.store, r.env.config, 'claude-cli'), 3, 'running work continues: nothing is stopped');
+
+  // Every tick from here: a new run may start on the account only while fewer runs than its limit are open on it.
+  const seen = new Set(accountRuns(r).map((op) => op.id));
+  const tickAndCheck = async (label) => {
+    const openBefore = openOnAccount(r.store, r.env.config, 'claude-cli');
+    const limit = accountLimit(r.store, r.env.config, 'claude-cli');
+    await r.tick();
+    clock += 1;
+    const started = accountRuns(r).filter((op) => !seen.has(op.id));
+    for (const op of started) seen.add(op.id);
+    if (started.length) assert.ok(openBefore < limit, `${label}: a run started while ${openBefore} were open under a limit of ${limit}`);
+    return started.length;
+  };
+
+  // Inside the wait nothing is sent to the account: no retry storm.
+  for (let i = 0; i < 3; i += 1) assert.equal(await tickAndCheck('inside the wait'), 0, 'no run starts during the cooldown');
+
+  // After the reset camp-a is due again, but three runs still use the account: it waits for concurrency, not cooldown.
+  clock = resetAt + 1;
+  assert.equal(await tickAndCheck('after the reset'), 0);
+  assert.equal(r.controller.waitReasons.get('camp-a/T1')?.reason, 'provider-concurrency');
+  assert.deepEqual(r.controller.waitReasons.get('camp-a/T1')?.detail, { account: 'claude-cli', limit: 2, open: 3 });
+  assert.ok(WAIT_REASONS.includes('provider-concurrency'));
+
+  // A run that was already open ends with a useful result while camp-a waited for the account: the limit grows by one,
+  // and camp-a starts again, still only while the account is under its limit.
+  r.succeed('camp-b');
+  assert.equal(limitRow(r), 3, 'a useful result while work waited raises the limit by one');
+  for (let i = 0; i < 4; i += 1) await tickAndCheck('after a useful result');
+  assert.ok(r.open('camp-a'), 'camp-a runs again once the account has room');
+  assert.ok(openOnAccount(r.store, r.env.config, 'claude-cli') <= 3, 'never more runs than the limit');
+  assert.equal(accountRuns(r).filter((op) => op.outcome?.class === 'quota').length, 1, 'one usage-limit refusal, no repeat');
+  assert.deepEqual(r.store.all("SELECT kind FROM journal WHERE kind LIKE 'account-concurrency-%' ORDER BY seq").map((row) => row.kind),
+    ['account-concurrency-lowered', 'account-concurrency-raised'], 'every change is journalled, once');
+});
+
+test('a repeated throttle halves again from the runs open then, never below one; growth needs waiting work', async (t) => {
+  let clock = Date.now();
+  const r = rig(t, SCHED, { Ctl: Wired, now: () => clock });
+  startMany(r, ['camp-e', 'camp-f', 'camp-g', 'camp-h'], 871);
+  for (let i = 0; i < 4; i += 1) { await r.tick(); clock += 1; }
+  r.quota('camp-e', clock + HOUR);
+  assert.equal(limitRow(r), 2, 'four open: two');
+  r.quota('camp-f', clock + HOUR);
+  assert.equal(limitRow(r), 1, 'a second refusal halves again: three open, one');
+  r.quota('camp-g', clock + HOUR);
+  assert.equal(limitRow(r), 1, 'never below one, and a throttle never raises the limit');
+  r.succeed('camp-h');
+  assert.equal(limitRow(r), 1, 'a useful result with no work waiting for the account changes nothing');
+  assert.equal(r.store.all("SELECT kind FROM journal WHERE kind LIKE 'account-concurrency-%'").length, 2, 'only real changes are journalled');
+});
+
+test('no limit appears for an account that never throttled', async (t) => {
+  let clock = Date.now();
+  const r = rig(t, { ...SCHED, providerAccounts: { 'codex-cli': 'codex-main' } }, { Ctl: Wired, now: () => clock });
+  startMany(r, ['calm-a', 'calm-b', 'calm-c'], 881);
+  for (let i = 0; i < 3; i += 1) { await r.tick(); clock += 1; }
+  const op = r.open('calm-a');
+  r.controller.applyOutcome({ id: 'calm-a', generation: r.controller.held.get('calm-a') }, op, { class: 'timeout', detail: 'slow', receipt: { sessionId: op.session_id } });
+  r.succeed('calm-b');
+  for (let i = 0; i < 3; i += 1) { await r.tick(); clock += 1; }
+  assert.equal(r.store.all("SELECT * FROM capacity WHERE scope = 'account'").length, 0, 'failures and successes alone never add a limit');
+  assert.equal(accountLimit(r.store, r.env.config, 'claude-cli'), null);
+  assert.equal(accountFull(r.store, r.env.config, 'claude-cli'), null, 'an unlimited account is never full');
+
+  // A throttle on one account limits that account only.
+  accountAfterRun(r.store, r.env.config, { kind: 'codex-cli', opId: null, quota: true, campaignId: 'calm-c', now: clock });
+  assert.equal(accountLimit(r.store, r.env.config, 'codex-cli'), 1);
+  assert.equal(accountLimit(r.store, r.env.config, 'claude-cli'), null, 'claude-cli never complained, so it stays unlimited');
+  // A new campaign on claude-cli is admitted, with the account input and without it (the controller as it is today).
+  startMany(r, ['calm-d'], 884);
+  const candidate = { campaignId: 'calm-d', taskId: 'T1', kind: 'implement', ord: 0, declaration: r.store.campaign('calm-d').declaration };
+  assert.equal(admissionCheck(r.store, candidate, { ...r.controller.admissionInputs(), ceiling: 8 }), null);
+  assert.equal(admissionCheck(r.store, candidate, { ceiling: 8 }), null);
 });
