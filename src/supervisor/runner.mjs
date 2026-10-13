@@ -21,7 +21,7 @@ const startedAt = Date.now();
 writeAtomic(file('runner.json'), JSON.stringify({ pid: process.pid, startedAt }));
 // A reader, scanner or indexer holding `heartbeat` makes the Windows rename fail (EPERM). Skip that beat
 // without retrying: the next one follows within heartbeatMs, and the controller only declares a run lost
-// after staleMs without any beat. Throwing here killed the runner, its job and the worker (engineering-platform-archive#58).
+// after staleMs without any beat. Throwing here killed the runner, its job and the worker (historical regression).
 const beat = () => {
   try { writeAtomic(file('heartbeat'), String(Date.now()), { retries: 0 }); } catch { /* missed beat */ }
 };

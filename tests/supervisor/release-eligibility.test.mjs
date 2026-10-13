@@ -19,25 +19,25 @@ import { declaration } from './helpers.mjs';
 const NOW = Date.parse('2026-11-15T12:00:00Z');
 const SHA = 'c'.repeat(40);
 const BASE = 'b'.repeat(40);
-const candidate = { project: 'dyk', destinationId: 'main-merge', taskId: 'T1', verifiedSha: SHA };
+const candidate = { project: 'sampleapp', destinationId: 'main-merge', taskId: 'T1', verifiedSha: SHA };
 const record = (change = (value) => value) => change({
   schema: 'aiworks-release-authorization/1',
-  project: 'dyk', version: 3, approval: 'https://github.com/netbka/Dyk/issues/120',
+  project: 'sampleapp', version: 3, approval: 'https://github.com/example-org/sampleapp/issues/120',
   grantedAt: '2026-11-01', expiresAt: '2027-01-30', revoked: false,
   destinations: [
     {
       id: 'main-merge', environment: 'production', kind: 'merge', baseBranch: 'main', mergeMethod: 'squash',
-      changeClasses: ['docs', 'tests', 'app-code'], credential: { ref: 'aiworks-release/dyk', owner: 'netbka' }, rollback: 'automatic', checkWindowMinutes: 5,
+      changeClasses: ['docs', 'tests', 'app-code'], credential: { ref: 'aiworks-release/sampleapp', owner: 'example-org' }, rollback: 'automatic', checkWindowMinutes: 5,
     },
     {
       id: 'production', environment: 'production', kind: 'merge-then-deploy', baseBranch: 'main', mergeMethod: 'squash',
       changeClasses: ['docs', 'tests', 'app-code'],
       commands: { deploy: 'deploy/release.ps1', observe: 'deploy/observe.ps1', check: 'deploy/check.ps1', rollback: 'deploy/rollback.ps1' },
-      credential: { ref: 'aiworks-release/dyk', owner: 'netbka' }, rollback: 'automatic', checkWindowMinutes: 10,
+      credential: { ref: 'aiworks-release/sampleapp', owner: 'example-org' }, rollback: 'automatic', checkWindowMinutes: 10,
     },
     {
       id: 'folder', environment: 'local', kind: 'local-folder-apply', changeClasses: ['docs', 'tests', 'app-code'],
-      commands: { check: 'scripts/check.ps1' }, credential: { ref: 'aiworks-release/dyk', owner: 'netbka' }, rollback: 'report-only', checkWindowMinutes: 5,
+      commands: { check: 'scripts/check.ps1' }, credential: { ref: 'aiworks-release/sampleapp', owner: 'example-org' }, rollback: 'report-only', checkWindowMinutes: 5,
     },
   ],
   classes: { docs: ['docs/**', '*.md'], tests: ['tests/**'], 'app-code': ['src/**'], migration: ['db/migrations/**'] },
@@ -118,7 +118,7 @@ test('negative values fail too, each with a plain reason', () => {
     ['E1', { switches: () => ({ enabled: true, stop: false, mode: 'review-only' }) }, /review-only mode/],
     ['E2', { grant: () => ({ bytes: bytesOf(record((r) => ({ ...r, revoked: true }))), commit: BASE }) }, /revoked/],
     ['E2', { grant: () => ({ bytes: bytesOf(record((r) => ({ ...r, expiresAt: '2026-11-10' }))), commit: BASE }) }, /expired/],
-    ['E2', { grant: () => ({ bytes: bytesOf(record((r) => ({ ...r, project: 'other' }))), commit: BASE }) }, /for project other, not dyk/],
+    ['E2', { grant: () => ({ bytes: bytesOf(record((r) => ({ ...r, project: 'other' }))), commit: BASE }) }, /for project other, not sampleapp/],
     ['E2', { grant: () => ({ bytes: '{ not json', commit: BASE }) }, /not valid JSON/],
     ['E2', { grant: () => ({ bytes: bytesOf(record()), commit: 'main' }) }, /commit the grant was read from is unknown/],
     ['E3', { authority: () => ({ decisionAccepted: false, registryPointsHere: true }) }, /not accepted/],

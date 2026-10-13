@@ -1,8 +1,10 @@
 # Design: approve an outcome once and let AIWorks grow its task graph inside it
 
-**Status:** design only, for [netbka/aiworks#8](https://github.com/netbka/aiworks/issues/8). Nothing here is built, enabled or deployed. It implements sections 3.2, 3.3 and 5.1 of [PROJECT_WORKSPACE_PLAN.md](../PROJECT_WORKSPACE_PLAN.md) under the owner's decision D3 (section 8 there). It builds on the merged [PROJECT_CONNECTION.md](PROJECT_CONNECTION.md) (#7) and [ADAPTIVE_SCHEDULER.md](ADAPTIVE_SCHEDULER.md) (#9). It proposes decision D4 (section 8) and does not enable it.
+**Privacy boundary:** this is a design proposal, not a live installation record. Campaign declarations and approval records stay private under [AW-009](../DECISIONS.md#aw-009---public-commits-contain-no-installation-data). Any proposal to publish declarations through source branches or pull requests is superseded. Merged executable code, explicit owner authorization, scope binding and independent verification remain required.
 
-**Basis:** `netbka/aiworks` at `d24af9ea4dac53b12f17baca7dfd838114d4531f`. Engineering Platform (EP) was read only, with `gh api`, at main `4c3eede9fb3ce470ba155da0150a6498ec824630`. Every statement about current behaviour cites `file:line` at that AIWorks revision and is **observed**: it was read in code or docs. Nothing here was checked on the live HomePc runtime, so nothing is **verified**. Everything that is not current behaviour is **planned**. Work that other campaigns are porting or designing (AW-005 enforcement, duplicate-work admission, write domains, project records) is **planned**, not merged, at this revision.
+**Status:** design only, for AIWorks design work. Nothing here is built, enabled or deployed. It implements sections 3.2, 3.3 and 5.1 of [PROJECT_WORKSPACE_PLAN.md](../PROJECT_WORKSPACE_PLAN.md) under the owner's decision D3 (section 8 there). It builds on the merged [PROJECT_CONNECTION.md](PROJECT_CONNECTION.md) (#7) and [ADAPTIVE_SCHEDULER.md](ADAPTIVE_SCHEDULER.md) (#9). It proposes decision D4 (section 8) and does not enable it.
+
+**Basis:** design notes; implementation status must be checked against the selected runtime revision.
 
 Refs #8, Refs #14, Refs #5.
 
@@ -13,7 +15,7 @@ Refs #8, Refs #14, Refs #5.
 - **Approve once.** After you approve, AIWorks plans, splits, assigns, checks, repairs and retries on its own. It adds new steps when the work needs them. It does not ask you to approve each step.
 - **It can't quietly do more than you approved.** A new step may never change files outside what you allowed, use a provider or permission you did not allow, publish somewhere else, release, raise your limits, or change what "done" means. If the work needs any of that, only the affected step stops, and you get one clear question.
 - **Honest states.** For a GitHub project you see the real steps before work starts: plan file opened for review, checked, merged, started. For a project without GitHub you never see a fake pull request. Starting work there waits for two decisions that are not taken yet (D2 and D4), and the dashboard says so.
-- **Nothing is merged, deployed or copied into your folder by this design.** Results stop at a verified pull request, or at a verified local candidate. Release is a separate, separately approved mode ([#13](https://github.com/netbka/aiworks/issues/13)).
+- **Nothing is merged, deployed or copied into your folder by this design.** Results stop at a verified pull request, or at a verified local candidate. Release is a separate, separately approved mode (#13).
 
 ## 2. Where things stand today (observed)
 
@@ -23,9 +25,9 @@ Refs #8, Refs #14, Refs #5.
 | Immutable scope | `scopeDigest` covers everything except `authorization`, `limits`, `purpose` and task `outcome`. `authorityDigest` covers the whole declaration. | `src/supervisor/campaign.mjs:56-63` |
 | Changing a campaign | A different scope is refused with `SCOPE_CONFLICT`. The executor may change only while paused with no open operation. A lower authorization version is refused. Any other edit needs `authorization.version + 1`, which replaces the stored declaration. | `src/supervisor/api.mjs:29-43`, `:80-81`; `docs/SUPERVISOR.md:108`, `:312` |
 | GitHub assumptions | `authorization.reference` must be a GitHub URL, `target.repository` must be `owner/name`, and every campaign and task needs an issue number. | `src/supervisor/campaign.mjs:100`, `:109`, `:111`, `:178` |
-| Registration | `cli.mjs start <file>` reads a declaration from any path. Only a **new** campaign is checked against the EP registry. Dashboard Resume restarts a paused campaign from its stored declaration. | `src/supervisor/cli.mjs:66-72`; `src/supervisor/campaign.mjs:230-236`; `src/dashboard/supervisor.mjs:326-328` |
-| AW-005 | Decided: campaigns run only from merged code and a declaration on main. **Not enforced in code yet**; the port of archived EP PR #139 is planned as `aw-foundation/F1-AW005`. | `docs/DECISIONS.md:31-39`; `docs/STATUS.md:22` |
-| Duplicate work (#5) | Not enforced in code yet; scope A (archived EP PR #126) is planned as `aw-foundation/F2-DUPLICATE`. | `docs/STATUS.md:23`; `docs/design/ADAPTIVE_SCHEDULER.md:59-62` |
+| Registration | `cli.mjs start <file>` reads a declaration from any path. Only a **new** campaign is checked against the governance registry. Dashboard Resume restarts a paused campaign from its stored declaration. | `src/supervisor/cli.mjs:66-72`; `src/supervisor/campaign.mjs:230-236`; `src/dashboard/supervisor.mjs:326-328` |
+| AW-005 | Decided: campaigns run only from merged code and a private approved declaration. **Not enforced in code yet**; the port of archived governance PR #139 is planned as `example-foundation/F1-AW005`. | `docs/DECISIONS.md:31-39`; `docs/STATUS.md:22` |
+| Duplicate work (#5) | Not enforced in code yet; scope A (archived governance PR #126) is planned as `example-foundation/F2-DUPLICATE`. | `docs/STATUS.md:23`; `docs/design/ADAPTIVE_SCHEDULER.md:59-62` |
 | Coordinator | Read-only by allowlist. It answers owner messages and may return a draft declaration as a **string** (`proposedCampaign`), which the supervisor posts to a GitHub issue as "draft, not registered". It reads only its own AIWorks checkout; other repositories only through `gh`. A changed checkout is a boundary violation. Its prompt asks for a run cap and a cost ceiling in drafts. | `src/supervisor/coordinator.mjs:1-4`, `:24-47`, `:56-70`, `:131-147`, `:196-200`, `:245-247`, `:360-366`, `:392-398` |
 | Coordinator config | Needs 1 to 10 GitHub `owner/name` repositories and a GitHub `reportTo` issue. | `src/supervisor/coordinator.mjs:105-107` |
 | Task specs | Every controller path reads a task's spec from the stored declaration (`decl.tasks.find`), including status. A task that is not in the declaration would break them. | `src/supervisor/controller.mjs:261`, `:522`, `:571`, `:629`, `:808`; `src/supervisor/api.mjs:129-130` |
@@ -77,19 +79,19 @@ The envelope is a **version 2 campaign declaration**. Version 1 declarations sta
 ```json
 {
   "version": 2,
-  "campaignId": "dyk-chat-search",
+  "campaignId": "sampleapp-chat-search",
   "purpose": "Search inside chats",
   "authorization": { "version": 1, "grantedBy": "owner", "grantedAt": "2026-10-20",
-    "reference": "https://github.com/netbka/Dyk/issues/512", "text": "Approved in the AIWorks dashboard: ..." },
-  "target": { "tenantId": "netbka", "projectId": "dyk", "environment": "development",
-    "repository": "netbka/Dyk", "baseBranch": "main", "trackingIssue": 512 },
+    "reference": "https://github.com/example-org/example-repository "text": "Approved in the AIWorks dashboard: ..." },
+  "target": { "tenantId": "example-org", "projectId": "sampleapp", "environment": "development",
+    "repository": "example-org/sampleapp", "baseBranch": "main", "trackingIssue": 512 },
   "limits": { "maxCostUsd": 40, "unknownRunCostUsd": 2 },
   "executor": { "kind": "cli-chain", "providers": [ { "kind": "claude-cli", "model": "opus", "permissionMode": "auto" } ],
     "implementerTimeoutMinutes": 240, "verifierTimeoutMinutes": 120 },
   "constraints": [ "..." ],
   "envelope": {
     "scopeVersion": 1,
-    "request": { "route": "issue", "reference": "netbka/Dyk#512", "pinned": { "base": "<40 hex>", "issueUpdatedAt": "2026-10-19T08:00:00Z" } },
+    "request": { "route": "issue", "reference": "example-org/sampleapp#512", "pinned": { "base": "<40 hex>", "issueUpdatedAt": "2026-10-19T08:00:00Z" } },
     "outcome": "People can search the text of their chats and open the matching message.",
     "acceptance": [ "Searching a word shows every chat message containing it, newest first", "..." ],
     "writes": [ "src/chat/", "src/search/", "tests/chat/" ],
@@ -123,14 +125,14 @@ The envelope is a **version 2 campaign declaration**. Version 1 declarations sta
 **Relaxed for version 2:**
 
 - `target.trackingIssue` and task `issue` are optional. Without an issue, only `commit` deliverables are allowed on a GitHub project, because a report needs a place to be posted (`src/supervisor/controller.mjs:842-863`). A local project never has issues; its reports go to the local evidence ledger (slice E10).
-- `authorization.reference` is the request's issue or PR URL. For a goal without an issue it is the declaration's future URL on main, `https://github.com/netbka/aiworks/blob/main/campaigns/<campaignId>.json`. For a local project it is `aiworks-local:<approvalId>` (section 8), accepted only while local admission is on.
+- `authorization.reference` is the request's issue or PR URL. For a goal without an issue it is an explicitly authorized request reference; a future local-reference contract remains a design proposal. For a local project it is `aiworks-local:<approvalId>` (section 8), accepted only while local admission is on.
 - A local target replaces `repository`, `baseBranch` and `trackingIssue` with `{ source: "local-git" | "folder", baseline: { seq, commit } }`, and `projectId` must be the project's D2 overlay id (`lp-…`).
 
 **Every initial commit task must declare `writes` within `envelope.writes`.** The same admission check as for children applies (section 6.3), so the owner-approved plan and later steps obey one rule.
 
 ### 4.2 What the owner sees on Review
 
-The Review screen follows the plan's short preview ([PROJECT_WORKSPACE_PLAN.md §3.2](../PROJECT_WORKSPACE_PLAN.md#32-work-request---one-authorization-autonomous-execution-inside-its-scope-owner-approved-d3)): outcome and checks; main steps and how each is reviewed; conflicts with other work; what may change (`writes`, `denyWrites`), which providers, optional limits and release mode; then **Approve work** or **Revise**. JSON is under details only. Screen layout and copy belong to the owner-workspace design ([#11](https://github.com/netbka/aiworks/issues/11)); this design supplies the fields and the state copy (section 7).
+The Review screen follows the plan's short preview ([PROJECT_WORKSPACE_PLAN.md §3.2](../PROJECT_WORKSPACE_PLAN.md#32-work-request---one-authorization-autonomous-execution-inside-its-scope-owner-approved-d3)): outcome and checks; main steps and how each is reviewed; conflicts with other work; what may change (`writes`, `denyWrites`), which providers, optional limits and release mode; then **Approve work** or **Revise**. JSON is under details only. Screen layout and copy belong to the owner-workspace design (#11); this design supplies the fields and the state copy (section 7).
 
 The owner may narrow `writes`, add `denyWrites`, remove providers, set limits and edit wording. Editing creates a new draft version and a new digest. The owner may not hand-edit `request`.
 
@@ -148,28 +150,20 @@ No new digest function. `scopeDigest` and `authorityDigest` (`src/supervisor/cam
 
 - **Envelope digest** = `scopeDigest(declaration)`. It covers `envelope`, `target`, `executor`, `constraints` and the initial tasks, and is stored as `campaigns.scope_digest` (`src/supervisor/store.mjs:21-27`). Because the existing rules refuse a changed scope (`src/supervisor/api.mjs:29-33`), the envelope cannot change for a registered campaign.
 - **Approval digest** = `authorityDigest(declaration)`, which adds `authorization` and `limits`. The owner's approval record binds this value (sections 5 and 8). The dashboard shows its first 12 characters as the plan's fingerprint, under details.
-- Version 1 declarations do not contain `envelope`, so their digests do not change. Slice E2 tests every committed declaration in `campaigns/` against its digest before the change.
+- Version 1 declarations do not contain `envelope`, so their digests do not change. Slice E2 tests every synthetic fixture declaration in `tests/fixtures/campaigns/` against its digest before the change.
 
-## 5. GitHub projects: approved, then through AW-005's main gate
+## 5. Private approval and registration
 
-An approved envelope for a GitHub project still reaches main. Nothing here weakens [AW-005](../DECISIONS.md#aw-005---campaigns-run-only-from-merged-supervisor-code-and-a-declaration-on-main). It only removes hand work and adds a digest check, so the merged file must be the approved one.
+An approved work envelope stays in the installation's private approval store. Its declaration and authorization text never enter AIWorks source branches or pull requests. Merged runtime code remains required under AW-005.
 
-| Step | What happens | Owner-facing state (section 7) |
+| Step | What happens | Owner-facing state |
 | --- | --- | --- |
-| 1. Approve | The owner approves draft version N. The supervisor stores an `envelope_approvals` row: `{ campaignId, draftVersion, authorityDigest, approvedAt, method, requestId }`. | *Approved* |
-| 2. Declaration file | The supervisor renders `campaigns/<campaignId>.json` from the approved declaration, byte for byte (2-space JSON, LF, final newline). `npm run check` validates it as it validates every committed declaration. | *Approved* |
-| 3. Declaration PR | Branch `declare/<campaignId>` in `netbka/aiworks`, never `campaign/<campaignId>` ([AGENTS.md](../../AGENTS.md#campaign-declaration-branches)). Who opens it is owner question Q3. Until it is answered, the dashboard shows the exact file and the owner's session opens the PR, as today. | *Plan file in review* |
-| 4. Review | The declaration PR gets the same independent verification as any other PR. A deterministic check also compares `authorityDigest` of the file at the PR head with the approval. The dashboard reads PR state, head SHA and checks with read-only `gh` and never invents them. | *Plan file in review*, *Ready to merge* or *Plan file differs from your approval* |
-| 5. Merge | The supervisor never merges ([AW-001](../DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception)). The PR is merged by whoever holds merge authority for AIWorks. A PR that passed independent verification of its exact head may be merged without asking the owner again (AGENTS.md, [#17](https://github.com/netbka/aiworks/issues/17)). | *Ready to merge*, then *Starting* |
-| 6. Start | When the file is on main, the supervisor registers it from the blob in `origin/main` history, not from a working-tree file. This is the same rule as AW-005 enforcement's Resume path (planned, F1-AW005, port of archived PR #139). It runs `campaignStart` only if `authorityDigest(blob)` equals the approval's digest, under the existing registry gate (`src/supervisor/campaign.mjs:230-236`) and duplicate-work gate (F2). | *Starting*, then *Running*, or *Couldn't start* with the reason |
+| Approve | Bind the explicit operator approval to the draft version, authority digest, timestamp and request identity. | Approved |
+| Persist | Store the exact declaration privately, outside the public commit scope. Validate its shape, target governance and authorized bounds. | Approved |
+| Verify authority | Compare the approved digest with the private declaration. A mismatch requires an authorized amendment; no source PR is created. | Ready to start, or approval differs |
+| Register | Explicit operator registration uses the private declaration and the existing registry, immutable-scope, authorization-version and duplicate-work gates. | Starting, then Running |
 
-Notes:
-
-- **Who registers.** The approval in step 1 is the owner's explicit registration of that exact digest; step 6 carries it out once the main gate passes. Whether a dashboard confirmation counts as that approval is owner question Q2. Until Q2 is answered, step 6 waits for the owner's `cli.mjs start`, as today, and the dashboard shows *Ready to start*.
-- **Digest mismatch.** If the merged file differs from the approval, nothing starts (`DECLARATION_DIFFERS_FROM_APPROVAL`). The owner sees what differs and can approve the merged version or discard it. This stops a declaration edited during review from running under an approval it never had.
-- **Closed PR.** A PR closed without merging leaves the approval unused. Nothing starts.
-- **Executable code.** The supervisor that registers and runs the campaign must itself be merged (F1-AW005's controller check). Nothing in an envelope is executable: tasks are packet text, validated by merged code.
-- **Child amendments do not go through main.** Section 6 explains why that is still within AW-005: the declaration on main is the envelope, and children are bounded by it.
+Dashboard-generated envelope approval remains a proposed feature; it must preserve the same authority binding before it is enabled. The existing CLI already registers a private local declaration. Restart and Resume use stored authority without publishing it. Task implementation and verification continue through isolated worktrees and target-project pull requests; campaign declarations remain private.
 
 ## 6. Child tasks inside the envelope
 
@@ -221,7 +215,7 @@ Admission is one pure function, `admitAmendment({ envelope, specs, holders, ops,
 **Refusal handling:**
 
 - *replan*: the amendment is not admitted, the journal records `amendment-refused` with the code, and the next planning step gets the refusal as a constraint. After 4 refusals in a row with no task finished in between (the existing `NO_PROGRESS_LIMIT`, `src/supervisor/controller.mjs:30`), the campaign raises B3 *stalled*.
-- *owner*: a widening is never retried and never admitted in part. The supervisor raises one B3 owner decision ([OWNER_INTERVENTION.md](https://github.com/netbka/engineering-platform/blob/main/docs/OWNER_INTERVENTION.md)) with the exact widening, such as "wants to change `src/billing/`", and two actions: *Approve wider scope* (section 6.7) or *Keep current scope*. Other in-scope work keeps running. Only the steps that would depend on the refused child wait.
+- *owner*: a widening is never retried and never admitted in part. The supervisor raises one B3 owner decision (OWNER_INTERVENTION.md) with the exact widening, such as "wants to change `src/billing/`", and two actions: *Approve wider scope* (section 6.7) or *Keep current scope*. Other in-scope work keeps running. Only the steps that would depend on the refused child wait.
 
 **What no check can prove:** whether a child's *goal text* stays faithful to the outcome. That is bounded three ways instead. A child can only change files inside `writes`. Every child packet carries the approved outcome as a constraint (6.5). And the changed paths of each commit are checked after the run: a path outside the child's `writes` is a boundary violation (B3, `src/supervisor/controller.mjs:380-382`; the changed-path check is the scheduler's S3). The closing check `ACCEPT` and its independent verifier judge the outcome against the original acceptance.
 
@@ -277,7 +271,7 @@ Each row is a test in `tests/supervisor/plan-admission.test.mjs` (pure, no proce
 | Files, after the run (controller test with disposable Git repository) | Implementer commits a file outside its `writes` | Boundary violation, B3, not retried on that provider |
 | Capabilities | `deliverable: "report"` when only `commit` is allowed; `web.urls` with a new origin; a reference to `config/secrets.json` | `WIDEN_CAPABILITY` |
 | Permissions and providers | `permissionMode: "bypassPermissions"`; `executor: {...}`; `model: "x"`; `access: "write"` on a report | `WIDEN_PERMISSION` |
-| Destination | `repository: "netbka/other"`; `baseBranch: "release"`; `issue: 999` not in `envelope.issues` | `WIDEN_DESTINATION` |
+| Destination | `repository: "example-org/other"`; `baseBranch: "release"`; `issue: 999` not in `envelope.issues` | `WIDEN_DESTINATION` |
 | Release mode | `release: { mode: "auto-release" }`; `deploy: true` | `WIDEN_RELEASE` |
 | Limits | `limits: { maxCostUsd: 1000 }`; a 129th task | `WIDEN_LIMITS`; `SCOPE_GROWTH` |
 | Acceptance | `revise` of `ACCEPT`; `cancel` of declared `T1`; `revise` of a child already implementing | `WIDEN_ACCEPTANCE`; `INVALID_TASK` for the started child |
@@ -330,30 +324,30 @@ The copy is exact owner-facing English (D9). `{…}` are placeholders. Screens a
 
 ### 8.1 The problem
 
-AW-005 says a campaign runs only with its declaration on `netbka/aiworks` main. For a project without GitHub, every new outcome would then need a GitHub PR in AIWorks. That defeats D1 for the owner, who wants to work on a folder without GitHub. Skipping the gate is not allowed. Section 6 already removes the per-step PR: children are bounded by the envelope. What remains is the **initial approval** of a local envelope.
+AW-005 requires merged executable code and an explicitly authorized private declaration. Projects without GitHub still need a separate governed project-identity contract before local execution is supported. Any additional signed local-approval mechanism below is a design proposal; it is not a new gate on current CLI registration.
 
 ### 8.2 Threat model
 
-- AIWorks, its workers and the owner's own tools run under the **same Windows account**. Anything that account can write, a misbehaving worker could in principle write, including the supervisor store (`supervisor.db`). Claude's deny rules are not an operating-system boundary ([EP Constitution §9](https://github.com/netbka/engineering-platform/blob/main/docs/CONSTITUTION.md#9-security-boundaries-do-not-weaken-for-convenience)).
+- AIWorks, its workers and the owner's own tools run under the **same Windows account**. Anything that account can write, a misbehaving worker could in principle write, including the supervisor store (`supervisor.db`). Claude's deny rules are not an operating-system boundary (governance Constitution §9).
 - So a hash chain in the store alone is **not** tamper-evident against that account: a full rewrite can recompute it. The approval must rest on something no process can use without the owner present, and on a trust root that is itself reviewed.
-- Executable code is the other risk AW-005 answered: on 2026-10-10 campaigns ran from an unmerged controller ([AW-005](../DECISIONS.md#aw-005---campaigns-run-only-from-merged-supervisor-code-and-a-declaration-on-main)). D4 must not reopen that.
+- Executable code is the other risk AW-005 answered: unmerged controller code must never admit new execution ([AW-005](../DECISIONS.md#aw-005---runtime-code-must-be-merged-declarations-remain-private)). D4 must not reopen that.
 
 ### 8.3 Proposed decision text
 
 > **AW-005 amendment (proposed, D4) - Local projects may start a campaign from an owner-signed local approval**
 >
-> Status: proposed in `docs/design/WORK_ENVELOPE.md` for [#8](https://github.com/netbka/aiworks/issues/8); takes the next free AW number when the owner accepts it.
+> Status: proposed in `docs/design/WORK_ENVELOPE.md` for #8; takes the next free AW number when the owner accepts it.
 >
-> AW-005 is unchanged for every project that has a GitHub repository. Their campaigns run only from merged supervisor code and a declaration on `netbka/aiworks` main.
+> All campaign declarations remain private. Merged, reviewed executable code and explicit owner authority stay required for every project.
 >
-> In addition, a campaign whose target is a connected **local project** (Local Git or plain folder, D1) may be registered **without** a declaration on main when all of the following hold. The supervisor checks each one at registration, at resume and before every dispatch, and fails closed:
+> In addition, a campaign whose target is a connected **local project** (Local Git or plain folder, D1) may use an optional owner-signed **private approval** when all of the following hold. The supervisor checks each one at registration, at resume and before every dispatch, and fails closed:
 >
-> 1. **Merged, reviewed, pinned code.** The supervisor runs from a revision that is an ancestor of `netbka/aiworks` `origin/main`, deployed by the documented upgrade procedure. Any change to `src/supervisor` had independent approval of its exact head. Nothing in a local approval or declaration is executed as code. It is data validated by that merged code under the same declaration rules as main-path campaigns.
-> 2. **Reviewed trust root.** The public keys that may approve local campaigns are listed in one file committed on `netbka/aiworks` main. Adding or removing a key is a reviewed PR. No `config.json` key, environment variable or flag adds one.
+> 1. **Merged, reviewed, pinned code.** The supervisor runs from a revision that is an ancestor of `example-org/aiworks` `origin/main`, deployed by the documented upgrade procedure. Any change to `src/supervisor` had independent approval of its exact head. Nothing in a local approval or declaration is executed as code. It is data validated by that merged code under the same private declaration and scope rules as other campaigns.
+> 2. **Private installation trust root.** If this optional approval design is accepted, permitted signing keys and revocations are installation data. They are not committed to the public source repository. Adding this stronger admission gate requires explicit operator authority.
 > 3. **Owner signature with presence.** The owner signs the canonical approval record (8.4) with one of those keys. The signature is made in a way that needs the owner's physical action, such as touching a security key or typing a passphrase. The private key is never given to the supervisor, the dashboard, the coordinator or any worker.
 > 4. **Governed project.** The target has an admissible D2 local overlay entry, and the approval binds that entry's digest. A project with a GitHub remote can never use this path.
 > 5. **Append-only ledger.** The approval, every child amendment of that campaign and every revocation are appended to a local hash-chained ledger. Each entry binds the previous entry's hash. A break, a missing entry or a signature that no longer verifies stops new dispatches for the affected campaigns (B2) until the owner signs again.
-> 6. **Same limits as every campaign.** Child tasks follow the same envelope admission. The supervisor still never merges, deploys or writes the owner's folder ([AW-001](../DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception)). A local result is a verified local candidate. Applying it is separately governed ([#13](https://github.com/netbka/aiworks/issues/13)).
+> 6. **Same limits as every campaign.** Child tasks follow the same envelope admission. The supervisor still never merges, deploys or writes the owner's folder ([AW-001](../DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception)). A local result is a verified local candidate. Applying it is separately governed (#13).
 > 7. **Revocation.** Removing the key from main, revoking or expiring the project's overlay entry, or the owner's *Revoke* action stops new dispatches at the next check. Running operations finish and are recorded, as with a pause.
 >
 > This amendment changes where an owner approval may come from, for local projects only. It does not let unmerged code run, and it does not change the GitHub main path.
@@ -364,7 +358,7 @@ AW-005 says a campaign runs only with its declaration on `netbka/aiworks` main. 
 | --- | --- | --- |
 | **Approval record** `aiworks-envelope-approval@1`: `{ approvalId (UUID), campaignId, projectId (lp-…), overlayDigest, declarationDigest = authorityDigest(declaration), codeRevision, approvedAt, startBy (≤ 30 days), nonce }`, as `canonicalJson` | The exact plan, project, rules and code revision at approval | A different plan, project or rules set reusing the approval |
 | **Signature** over the record, OpenSSH `SSHSIG` with namespace `aiworks-envelope`, verified by `ssh-keygen -Y verify` against the trust-root file | That the owner, holding the key, approved this record | A worker or agent writing an approval: it cannot sign without the owner's key and presence |
-| **Trust-root file** on `netbka/aiworks` main, read from the merged runtime revision (the `allowed_signers` format) | Which keys count | A key planted in the data directory |
+| **Trust-root file** on `example-org/aiworks` main, read from the merged runtime revision (the `allowed_signers` format) | Which keys count | A key planted in the data directory |
 | **Ledger** table `local_ledger(seq, kind, campaign_id, payload, payload_digest, signature, prev_hash, hash, created_at)`: `kind` is `approval`, `amendment` or `revocation`; `hash = sha256(prev_hash ‖ kind ‖ payload_digest ‖ signature)` | The order and completeness of approvals and amendments | Silently removing, reordering or adding entries, as far as the signed approvals reach. Unsigned amendments stay bounded by the signed envelope (section 6). |
 | **Journal and status** | `local-approval-verified` with the record digest, key fingerprint and ledger head; status shows the key fingerprint and approval date | Unexplained state; it gives the owner something to check |
 
@@ -376,7 +370,7 @@ The signing step for the owner (planned): the dashboard shows the approval recor
 ssh-keygen -Y sign -f <your AIWorks key> -n aiworks-envelope approval-<id>.json
 ```
 
-The owner runs it in their own terminal and pastes or drops the `.sig` file. Which kind of key is owner question Q4. Whether `ssh-keygen` on HomePc supports security-key (`-sk`) signatures is **unknown**. Slice E11 probes it.
+The owner runs it in their own terminal and pastes or drops the `.sig` file. Which kind of key is owner question Q4. Whether `ssh-keygen` on workstation supports security-key (`-sk`) signatures is **unknown**. Slice E11 probes it.
 
 ### 8.5 What stays the same
 
@@ -401,7 +395,7 @@ All tests are synthetic: temporary stores, disposable Git repositories, and synt
 | Exact-revision verifier independence | A child's verifier gets the child's head SHA in a separate checkout, as today; the closing check's verifier is a fresh session | E5 |
 | No automatic merge or deploy; no new recurring spend | `auto-release` refused; no code path calls a merge; planning steps are event-driven only (a test asserts no planning operation without a trigger) | E2, E5 |
 | A plain folder without a remote can plan, and implement after D2 and D4 | Planning works with `LOCAL_ADMISSION = false`; registration is refused with `LOCAL_START_OFF`; with the constant flipped in-process and a synthetic signer, a folder project runs to a local candidate | E6, E11 |
-| Approval tampering | A changed declaration byte, a wrong key, a key not on main, an expired `startBy`, a removed ledger entry and a reordered ledger each block dispatch | E11 |
+| Approval tampering | A changed declaration byte, a wrong key, a key not trusted by the private installation, an expired `startBy`, a removed ledger entry and a reordered ledger each block dispatch | E11 |
 
 ## 10. Decisions taken here (not owner-reserved)
 
@@ -421,7 +415,7 @@ All tests are synthetic: temporary stores, disposable Git repositories, and synt
 
 D1, D3, D5 and D9 are settled and are not asked again. D2 is asked in [PROJECT_CONNECTION.md §9](PROJECT_CONNECTION.md#9-owner-reserved-questions). Each question below keeps current behaviour until it is answered, and other work continues.
 
-1. **Accept D4 as written in section 8.3?** It changes AW-005, an owner decision, and how a campaign may be authorized ([EP Constitution §2](https://github.com/netbka/engineering-platform/blob/main/docs/CONSTITUTION.md#2-owner-role)).
+1. **Accept D4 as written in section 8.3?** It changes AW-005, an owner decision, and how a campaign may be authorized (governance Constitution §2).
    *Recommended answer:* **yes.** Code stays merged and pinned, the trust root is reviewed on main, and the GitHub path is unchanged.
    *Default until answered:* projects without GitHub can be planned but not started (`LOCAL_START_OFF`).
    *Unblocks:* slice E12, together with D2 and Q4.
@@ -429,8 +423,8 @@ D1, D3, D5 and D9 are settled and are not asked again. D2 is asked in [PROJECT_C
    *Recommended answer:* **yes**, with the approval bound to the plan's digest. The dashboard is local-only with origin and CSRF checks ([AW-003](../DECISIONS.md#aw-003---the-operations-dashboard-is-local-only)). Answer it together with PROJECT_CONNECTION question 2, which asks the same about a project's rules.
    *Default until answered:* after the merge, the dashboard shows *Ready to start* and the owner's `cli.mjs start` registers the campaign, as today.
    *Unblocks:* slice E8, a true one-approval start.
-3. **May the supervisor open, but never merge, the declaration PR in `netbka/aiworks` for a plan you approved?** This is a new external write outside AW-001's "campaign's target repository" scope.
-   *Recommended answer:* **yes, narrowly**: only `campaigns/<id>.json` with the exact approved bytes, on branch `declare/<id>`, with no merge, no other file and no comment beyond the PR body.
+3. **May campaign declarations be published through AIWorks branches or pull requests?** No. AW-009 keeps them private. The initial approval and any authorized amendments use private installation storage.
+   *Recommended answer:* **yes, narrowly**: only a private local declaration with the exact approved bytes; never a declaration branch or public pull request.
    *Default until answered:* the dashboard shows the file (`DECLARATION_TO_OPEN`), and the owner's session opens the PR, as today.
    *Unblocks:* slice E9.
 4. **Which key signs local approvals?** It is the owner's own credential.
@@ -441,21 +435,21 @@ D1, D3, D5 and D9 are settled and are not asked again. D2 is asked in [PROJECT_C
 
 ## 12. Implementation slices
 
-Each slice is one reviewable PR. Every change under `src/supervisor/` needs an independent review that approves the exact head before merge ([AGENTS.md](../../AGENTS.md#changing-the-supervisor)). The owners of #5 and `aw-foundation` (F1-AW005, F2-DUPLICATE) have priority on `api.mjs` and `campaign.mjs`. Slices that touch `controller.mjs` are sequenced against the scheduler slices S2 to S4 and PROJECT_CONNECTION S3 so that two campaigns never edit it at once. All tests are synthetic, with no network, model or GitHub calls. Each slice ends with `npm run check`. Merged is not deployed: the live runtime changes only through the upgrade procedure ([SUPERVISOR.md §6](../SUPERVISOR.md#6-running-on-homepc)).
+Each slice is one reviewable PR. Every change under `src/supervisor/` needs an independent review that approves the exact head before merge ([AGENTS.md](../../AGENTS.md#review-and-runtime-maintenance)). The owners of #5 and `example-foundation` (F1-AW005, F2-DUPLICATE) have priority on `api.mjs` and `campaign.mjs`. Slices that touch `controller.mjs` are sequenced against the scheduler slices S2 to S4 and PROJECT_CONNECTION S3 so that two campaigns never edit it at once. All tests are synthetic, with no network, model or GitHub calls. Each slice ends with `npm run check`. Merged is not deployed: the live runtime changes only through the upgrade procedure ([SUPERVISOR.md §6](../SUPERVISOR.md#6-installation-and-maintenance)).
 
 | # | Outcome | Files it owns | Tests | Acceptance | Depends on | Waits for a decision |
 | --- | --- | --- | --- | --- | --- | --- |
-| **E1** | Task specs come from one accessor, ready for children; no behaviour change | `src/supervisor/plan.mjs` (new: `specOf`); `src/supervisor/store.mjs` (additive DDL: `task_specs`, `plan_amendments`); `src/supervisor/controller.mjs` and `src/supervisor/api.mjs` (replace `decl.tasks.find`) | `tests/supervisor/plan-specs.test.mjs`: an old store gains the tables with store version 1; `specOf` returns declared specs; status works for a task row absent from the declaration; every existing test passes unchanged | No packet digest of any existing campaign changes (asserted over committed declarations) | F1-AW005, F2-DUPLICATE merged; scheduler S2 sequenced | No |
-| **E2** | Version 2 declarations with an `envelope` block validate | `src/supervisor/campaign.mjs` (`validateTask` extracted unchanged; v2 branch; reserved ids; `release.mode`); `docs/SUPERVISOR.md` §1 | `tests/supervisor/envelope-schema.test.mjs`: every field rule of 4.1; `auto-release` refused; v1 digests of every `campaigns/*.json` unchanged; initial commit tasks need `writes` within the envelope | v1 behaviour identical; v2 registers through the existing `start` | E1; scheduler S3 (task `writes`) | No |
+| **E1** | Task specs come from one accessor, ready for children; no behaviour change | `src/supervisor/plan.mjs` (new: `specOf`); `src/supervisor/store.mjs` (additive DDL: `task_specs`, `plan_amendments`); `src/supervisor/controller.mjs` and `src/supervisor/api.mjs` (replace `decl.tasks.find`) | `tests/supervisor/plan-specs.test.mjs`: an old store gains the tables with store version 1; `specOf` returns declared specs; status works for a task row absent from the declaration; every existing test passes unchanged | No packet digest of any existing campaign changes (asserted over synthetic fixture declarations) | F1-AW005, F2-DUPLICATE merged; scheduler S2 sequenced | No |
+| **E2** | Version 2 declarations with an `envelope` block validate | `src/supervisor/campaign.mjs` (`validateTask` extracted unchanged; v2 branch; reserved ids; `release.mode`); `docs/SUPERVISOR.md` §1 | `tests/supervisor/envelope-schema.test.mjs`: every field rule of 4.1; `auto-release` refused; v1 digests of every synthetic campaign fixture unchanged; initial commit tasks need `writes` within the envelope | v1 behaviour identical; v2 registers through the existing `start` | E1; scheduler S3 (task `writes`) | No |
 | **E3** | Children are admitted, chained and idempotent | `src/supervisor/plan.mjs` (`admitAmendment`, chain); `src/supervisor/controller.mjs` (settle `plan` operations); `src/supervisor/work-ownership.mjs` (read `task_specs`) | `tests/supervisor/plan-admission.test.mjs` (matrix of 6.8 + property test); `tests/supervisor/plan-crash.test.mjs` (fault at `before-plan-settle` and `after-plan-settle`; stale lease generation writes nothing; same idempotency key returns the earlier amendment) | Every widening refused with its code; nothing admitted twice after crash or retry | E2; F2-DUPLICATE | No |
 | **E4** | Children run with their own packet binding, re-checked before every dispatch | `src/supervisor/controller.mjs` (child packet `authorityDigest`, envelope constraint, `plan-integrity` B2, real `authorityCurrent`) | Controller tests: an edited spec row or a removed amendment blocks dispatch; a revised child gets a new packet digest and a fresh session; out-of-`writes` commit is a boundary violation; `requiresMergedDependencies` child waits like a declared one | Declared tasks' packets byte-identical to before | E3; scheduler S3 (changed-path check) | No |
 | **E5** | AIWorks adds steps by itself and closes the outcome | `src/supervisor/adapters/executors.mjs` (plan-stage schema, optional `followUps`); `src/supervisor/controller.mjs` (planning triggers, `PLAN`, `ACCEPT`) | `tests/supervisor/envelope-e2e.test.mjs` (section 9 row 2); no planning operation without a trigger; two identical uncovered closing checks raise B3 | #8 acceptance "one start, child, verify, restart, finish without the owner" passes | E4 | No |
 | **E6** | The owner can ask for work by goal, issue, PR or plan file, or plan only | `src/supervisor/intake.mjs` (new: requests, drafts, staleness, conflicts); `src/supervisor/coordinator.mjs` (intake mode, schema, target checkout); `src/supervisor/store.mjs` (additive `work_requests`, `work_drafts`) | `tests/supervisor/intake.test.mjs`: each route; plan-only writes no campaign; injection cases; staleness for each pinned item; fork PR refused; local project without `gh` drafts | Drafts are never scheduled; coordinator checkouts stay clean | E2; PROJECT_CONNECTION S1, S4 (project records, mirror) | No |
-| **E7** | An approved GitHub plan can only start as approved | `src/supervisor/approvals.mjs` (new: `envelope_approvals`, declaration rendering, digest compare); `src/supervisor/provenance.mjs` (register from `origin/main` blob, shared with F1); `src/supervisor/cli.mjs` | `tests/supervisor/approval-main.test.mjs` with a disposable `origin/main`: identical file starts; one changed byte gives `DECLARATION_DIFFERS_FROM_APPROVAL`; unmerged file is not started; closed PR leaves nothing; PR state read from synthetic `gh` only | No start without a matching approval and a file on main | E2, F1-AW005 | No |
+| **E7** | An approved GitHub plan can only start as approved | `src/supervisor/approvals.mjs` (new: `envelope_approvals`, declaration rendering, digest compare); `src/supervisor/provenance.mjs` (load the private declaration, retaining merged-runtime enforcement); `src/supervisor/cli.mjs` | `tests/supervisor/approval-private.test.mjs` with a disposable `origin/main`: identical file starts; one changed byte gives `DECLARATION_DIFFERS_FROM_APPROVAL`; unmerged file is not started; revoked private approval starts nothing | No start without matching private approval and merged runtime code | E2, F1-AW005 | No |
 | **E8** | The owner approves once in the dashboard and sees each real step | `src/dashboard/work.mjs` (new); `src/dashboard/server.mjs` (routes with origin, CSRF, 16 KiB); `src/dashboard/public/*` (Start work and Review areas only); `docs/OPERATIONS_DASHBOARD.md` | `tests/dashboard/work.test.mjs`: route security; exact copy for every code of section 7; no fabricated PR state; keyboard and 320px checks per UX-001/UX-002 | Approve-to-start needs no CLI when Q2 is yes; *Ready to start* otherwise | E6, E7; the #11 design and its file owner | **Yes:** Q2 for automatic start (screens ship without it) |
-| **E9** | The supervisor opens the declaration PR, built off | `src/supervisor/approvals.mjs` (publisher behind `DECLARATION_PR = false`); `src/supervisor/adapters/github.mjs` (only if the REST port R1 has merged) | Synthetic `gh`: branch `declare/<id>`, one file, exact bytes, never a merge call; lookup-before-create on retry | With the constant off nothing is pushed | E7; aw-reliability R1 | **Yes:** Q3 to turn it on |
+| **E9** | Private declaration persistence and idempotent registration | Private approval store and local declaration loader | Restart preserves the approved digest and registers only once; no declaration branch, PR or upload is created | Campaign data never enters source Git | E7 | No publication authority |
 | **E10** | Local projects get verified candidates, never a fake PR | `src/supervisor/local-candidates.mjs` (new ledger of verified revisions and reports); `src/supervisor/controller.mjs` (publish branch for local kinds) | `tests/supervisor/local-candidates.test.mjs`: a verified local task records `{ sha, verifier evidence, baseline }`; `pushVerified` and `gh` are never called; status shows *Ready for your review* | Inert until local admission is on | E4; PROJECT_CONNECTION S4, S5 | No (used after E12) |
-| **E11** | D4 built and tested, switched off | `src/supervisor/local-admission.mjs` (new: record, `ssh-keygen -Y verify` adapter, ledger, revocation); trust-root reader | `tests/supervisor/local-admission.test.mjs` with a synthetic `ssh-keygen`: every tampering case of section 9; GitHub project refused; `LOCAL_ADMISSION` false refuses all; HomePc `-sk` support probe documented as a manual runbook step | `LOCAL_ADMISSION` stays `false`; no key file on main yet | E3, E7, E10; PROJECT_CONNECTION S7 | No to build; **yes** to use (D4) |
-| **E12** | Start work on projects without GitHub | `src/supervisor/local-admission.mjs` (`LOCAL_ADMISSION = true`); trust-root file on main; `docs/DECISIONS.md` (record the accepted D4); `docs/SUPERVISOR.md` | Full local end-to-end with a synthetic signer: plain folder → signed approval → child → verified candidate → restart → finish | A plain folder without a remote runs to a verified local candidate; GitHub projects unchanged | E11; PROJECT_CONNECTION S7, S8 | **Yes:** D4 (Q1), D2 (EP merge and PROJECT_CONNECTION Q1, Q2), Q4 |
+| **E11** | D4 built and tested, switched off | `src/supervisor/local-admission.mjs` (new: record, `ssh-keygen -Y verify` adapter, ledger, revocation); trust-root reader | `tests/supervisor/local-admission.test.mjs` with a synthetic `ssh-keygen`: every tampering case of section 9; GitHub project refused; `LOCAL_ADMISSION` false refuses all; workstation `-sk` support probe documented as a manual runbook step | `LOCAL_ADMISSION` stays `false`; no installation trust key provisioned yet | E3, E7, E10; PROJECT_CONNECTION S7 | No to build; **yes** to use (D4) |
+| **E12** | Start work on projects without GitHub | `src/supervisor/local-admission.mjs` (`LOCAL_ADMISSION = true`); private installation trust-root file; `docs/DECISIONS.md` (record the accepted D4); `docs/SUPERVISOR.md` | Full local end-to-end with a synthetic signer: plain folder → signed approval → child → verified candidate → restart → finish | A plain folder without a remote runs to a verified local candidate; GitHub projects unchanged | E11; PROJECT_CONNECTION S7, S8 | **Yes:** D4 (Q1), D2 (governance merge and PROJECT_CONNECTION Q1, Q2), Q4 |
 
-Applying a local candidate to the owner's folder and any Auto Release belong to [#13](https://github.com/netbka/aiworks/issues/13), not to these slices.
+Applying a local candidate to the owner's folder and any Auto Release belong to #13, not to these slices.

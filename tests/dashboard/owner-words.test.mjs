@@ -73,13 +73,13 @@ test('F3: a refused Resume says what happened, that nothing changed and what to 
   await page.settle();
   const notice = page.$('#notice'), said = visibleText(notice);
   assert.equal(notice.hidden, false);
-  assert.equal(said, 'AIWorks did not resume this work. Nothing changed: it is still paused. It resumes only work whose plan is merged into AIWorks, and this work’s plan is not. Merge its plan into AIWorks, then press Resume again. Details');
+  assert.equal(said, 'AIWorks did not resume this work. Nothing changed: it is still paused. The AIWorks software here is not merged yet. Update AIWorks to a reviewed version, then press Resume again. Details');
   assert.deepEqual(internalWords(said), []);
   assert.doesNotMatch(said, /cli\.mjs|campaigns\/|AW-005|declaration/);
   // The machine's reason is one click away, unchanged.
   const [details] = notice.querySelectorAll('details');
   assert.equal(details.querySelector('summary').textContent, 'Details');
-  assert.match(details.textContent, /Resume refused: .*campaigns\//);
+  assert.match(details.textContent, /Resume refused: .*not merged/);
   // Nothing changed: the work is still paused.
   assert.equal(supervisorSnapshot(page.dataDir).campaigns.find((c) => c.id === 'recipes-import').control, 'paused');
 });
@@ -88,12 +88,14 @@ test('F7: Needs me, Work, Step and notices use owner words: no stop class, step 
   const page = await openPage(t);
   await page.go(address('example/notes-site', '/work'));
   const notes = screen(page);
-  assert.match(notes, /notes-site: Publish the site preview Stopped: No AI worker on this computer can do this step /);
+  // Inside a project's own Work screen the work is not prefixed with the project's name again.
+  assert.match(notes, /Publish the site preview Stopped: No AI worker on this computer can do this step /);
+  assert.doesNotMatch(notes, /notes-site: Publish the site preview/);
   assert.doesNotMatch(notes, /Stopped \(B2\)|executor/);
   await page.go(address('example/shop-app', '/work'));
   const shop = screen(page);
-  assert.match(shop, /shop-app: Let customers pay at checkout Being built: Checkout form /);
-  assert.match(shop, /shop-app: Show product reviews Being checked: Product review list /);
+  assert.match(shop, /Let customers pay at checkout Being built: Checkout form /);
+  assert.match(shop, /Show product reviews Being checked: Product review list /);
   assert.doesNotMatch(shop, /Building T\d|checking T\d/i);
   await page.go('#/needs');
   const needs = screen(page);
@@ -161,7 +163,7 @@ test('F23: one time for one event: the pause has its date, the stop its time, th
   const now = screen(page);
   await page.go(address('example/notes-site', '/work'));
   const work = screen(page);
-  assert.ok(work.includes(`notes-site: Tag notes Paused since ${paused} · `), work);
+  assert.ok(work.includes(`Tag notes Paused since ${paused} · `), work);
   assert.ok(work.includes(`· AIWorks stopped on this computer at about ${stopped} Resume`), work);
   await page.go('#/needs');
   const needs = screen(page);

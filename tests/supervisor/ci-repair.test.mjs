@@ -104,7 +104,7 @@ test('a failing CI run reopens the published task as a repair round carrying the
   const reads = r.ciReads();
   assert.equal(reads.length, 1);
   assert.deepEqual(reads[0].args.slice(0, 4), ['api', '--include', '--method', 'GET'], 'CI is read through REST');
-  assert.ok(reads[0].args.includes(`repos/netbka/Dyk/commits/${sha}/check-runs`));
+  assert.ok(reads[0].args.includes(`repos/example-org/sampleapp/commits/${sha}/check-runs`));
   assert.deepEqual(r.journal('ci-failed'), [{ task: 'T1', sha, checks: ['check'], url: pr, repair: true, stalled: false }]);
   assert.equal(r.status().tasks[0].ci.state, 'failure');
   assert.equal(r.status().ci, 'failure');

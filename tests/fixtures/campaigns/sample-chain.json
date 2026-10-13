@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "campaignId": "sample-chain",
+  "authorization": {
+    "version": 4,
+    "grantedBy": "owner",
+    "grantedAt": "2026-10-09",
+    "reference": "https://github.com/example-org/aiworks/issues/new",
+    "text": "Synthetic test authorization."
+  },
+  "target": {
+    "tenantId": "example-org",
+    "projectId": "sampleapp",
+    "environment": "research",
+    "repository": "example-org/sampleapp",
+    "baseBranch": "main",
+    "trackingIssue": 443
+  },
+  "executor": {
+    "kind": "cli-chain",
+    "providers": [
+      {
+        "kind": "claude-cli",
+        "model": "opus",
+        "permissionMode": "auto"
+      },
+      {
+        "kind": "codex-cli"
+      },
+      {
+        "kind": "cursor-cli"
+      }
+    ],
+    "implementerTimeoutMinutes": 60,
+    "verifierTimeoutMinutes": 30
+  },
+  "constraints": [
+    "Synthetic test constraint: no network, no production."
+  ],
+  "tasks": [
+    {
+      "id": "T1",
+      "issue": 437,
+      "title": "first task",
+      "deliverable": "commit",
+      "goal": "Produce the first artifact.",
+      "dependsOn": [],
+      "acceptance": [
+        "artifact exists"
+      ],
+      "references": [
+        "AGENTS.md"
+      ]
+    },
+    {
+      "id": "T2",
+      "issue": 438,
+      "title": "second task",
+      "deliverable": "commit",
+      "goal": "Produce the second artifact.",
+      "dependsOn": [
+        "T1"
+      ],
+      "acceptance": [
+        "artifact exists"
+      ],
+      "references": [
+        "AGENTS.md"
+      ]
+    }
+  ]
+}

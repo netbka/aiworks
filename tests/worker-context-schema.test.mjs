@@ -50,9 +50,9 @@ test('shape validation alone is insufficient for packet byte budget and policy o
   assert.throws(() => validatePolicy(unordered), TypeError);
 });
 
-// engineering-platform-archive#84: the target project's inherited governance, as values only.
+// historical regression: the target project's inherited governance, as values only.
 const governance = {
-  project: 'elma-wiki', policies: ['GOV-001', 'UX-001', 'VERIFY-001'],
+  project: 'sample-wiki', policies: ['GOV-001', 'UX-001', 'VERIFY-001'],
   authorities: [{ role: 'agent-contract', path: 'AGENTS.md' }, { role: 'principles', path: 'docs/PRINCIPLES.md#owner-reserved-matters' }],
   exceptions: [{ id: 'prod-ssh-password', rule: 'constitution#7' }],
   gaps: [{ id: 'prod-root-credential', rule: 'baseline:credential-boundaries' }, { id: 'clause-gap', rule: 'policy:UX-001#preserve-context' }],
@@ -66,10 +66,10 @@ test('packet governance is optional, digest-bound and values only; schema and he
   for (const [label, change] of [
     ['copied summary', (g) => { g.exceptions[0].summary = 'Production updates read a shared password.'; }],
     ['file contents', (g) => { g.authorities[0].content = '# Agent rules'; }],
-    ['another repository', (g) => { g.authorities[0].path = '../Dyk/AGENTS.md'; }],
+    ['another repository', (g) => { g.authorities[0].path = '../sampleapp/AGENTS.md'; }],
     ['absolute path', (g) => { g.authorities[0].path = '/etc/AGENTS.md'; }],
-    ['local path', (g) => { g.authorities[0].path = 'D:\\Git\\Dyk\\AGENTS.md'; }],
-    ['URL', (g) => { g.authorities[0].path = 'https://github.com/netbka/Dyk/blob/main/AGENTS.md'; }],
+    ['local path', (g) => { g.authorities[0].path = 'C:\\example\\sampleapp\\AGENTS.md'; }],
+    ['URL', (g) => { g.authorities[0].path = 'https://github.com/example-org/sampleapp/blob/main/AGENTS.md'; }],
     ['dot segment', (g) => { g.authorities[1].path = 'docs/./PRINCIPLES.md'; }],
     ['policy id', (g) => { g.policies.push('ux-001'); }],
     ['duplicate policy', (g) => { g.policies.push('GOV-001'); }],
@@ -86,7 +86,7 @@ test('packet governance is optional, digest-bound and values only; schema and he
   assert.throws(() => validatePacket({ ...packet, governance: null }, policy), TypeError);
 });
 
-// engineering-platform-archive#132 review: workers are told to read the authorities, so no authority may point at a secret-like file.
+// historical regression review: workers are told to read the authorities, so no authority may point at a secret-like file.
 const SECRET_LIKE = ['.env', '.env.production', 'deploy/.env.local', '.envrc', '.ENV', '.git/config', '.git', 'tools/.git/HEAD',
   '.ssh/id_rsa', 'home/.gnupg/pubring.kbx', 'secrets/prod.pem', 'secrets', 'config/Secrets.yaml', 'secret/token.txt',
   'credentials', 'credentials.json', 'aws/credential', 'keys/id_rsa', 'id_rsa.pub', 'id_ed25519', 'certs/server.key',

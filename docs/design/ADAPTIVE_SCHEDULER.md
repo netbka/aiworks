@@ -1,10 +1,12 @@
 # Adaptive worker concurrency across tasks and projects
 
-**Status:** design only. Nothing in this document is built, merged into the runtime or deployed. Refs [#9](https://github.com/netbka/aiworks/issues/9), [#5](https://github.com/netbka/aiworks/issues/5), [#14](https://github.com/netbka/aiworks/issues/14).
+**Privacy boundary:** this is a design proposal, not a live installation record. Campaign declarations and approval records stay private under [AW-009](../DECISIONS.md#aw-009---public-commits-contain-no-installation-data). Any proposal to publish declarations through source branches or pull requests is superseded. Merged executable code, explicit owner authorization, scope binding and independent verification remain required.
 
-**Basis:** `netbka/aiworks` at `acb9e66a35980a68bf0bfacfbb01f6bfaa902261` (the task base). Every "today" statement below is **observed** in that revision's code or documents and cites `file:line` there. Nothing here was checked on HomePc; how the live runtime behaves is **unknown** to this document. Proposed behaviour is **planned**.
+**Status:** design only. Nothing in this document is built, merged into the runtime or deployed. Refs #9, #5, #14.
 
-**Inputs:** [PROJECT_WORKSPACE_PLAN.md §5.2](../PROJECT_WORKSPACE_PLAN.md#52-adaptive-parallelism), [#9](https://github.com/netbka/aiworks/issues/9), [#5](https://github.com/netbka/aiworks/issues/5) scopes A, B and D, [SUPERVISOR.md](../SUPERVISOR.md), [WORKER_CONTEXT_LIFECYCLE.md](../WORKER_CONTEXT_LIFECYCLE.md), [DECISIONS.md](../DECISIONS.md) (AW-001, AW-002, AW-005). Engineering Platform rules apply through [AGENTS.md](../../AGENTS.md) and are linked, not repeated: [Owner Intervention, rate limits](https://github.com/netbka/engineering-platform/blob/main/docs/OWNER_INTERVENTION.md#rate-limits--quotas), [Continuation](https://github.com/netbka/engineering-platform/blob/main/docs/CONTINUATION.md), [Agent Operating Model](https://github.com/netbka/engineering-platform/blob/main/docs/AGENT_OPERATING_MODEL.md).
+**Basis:** design notes; implementation status must be checked against the selected runtime revision.
+
+**Inputs:** [PROJECT_WORKSPACE_PLAN.md §5.2](../PROJECT_WORKSPACE_PLAN.md#52-adaptive-parallelism), #9, #5 scopes A, B and D, [SUPERVISOR.md](../SUPERVISOR.md), [WORKER_CONTEXT_LIFECYCLE.md](../WORKER_CONTEXT_LIFECYCLE.md), [DECISIONS.md](../DECISIONS.md) (AW-001, AW-002, AW-005). governance provider rules apply through [AGENTS.md](../../AGENTS.md) and are linked, not repeated: Owner Intervention, rate limits, Continuation, Agent Operating Model.
 
 ## 1. What the owner gets
 
@@ -20,7 +22,7 @@ What it does **not** do:
 - It sets **no** run cap or cost ceiling ([AW-002](../DECISIONS.md#aw-002---campaigns-have-no-capacity-limits-by-default)). The only new limits protect this computer: how many worker processes it can host safely. They delay work; they never end it.
 - It adds no model calls for waiting or scheduling. All decisions are deterministic code.
 - It adds no new lock service, no second state store and no second supervisor.
-- It does not enable GitHub-free admission ([D4](../PROJECT_WORKSPACE_PLAN.md#8-owner-decisions-and-remaining-implementation-design-gates)), Auto Release ([D5-gate](../PROJECT_WORKSPACE_PLAN.md#8-owner-decisions-and-remaining-implementation-design-gates), #13) or Telegram delivery ([#1](https://github.com/netbka/aiworks/issues/1)). Section 9 says what waits for which decision.
+- It does not enable GitHub-free admission ([D4](../PROJECT_WORKSPACE_PLAN.md#8-owner-decisions-and-remaining-implementation-design-gates)), Auto Release ([D5-gate](../PROJECT_WORKSPACE_PLAN.md#8-owner-decisions-and-remaining-implementation-design-gates), #13) or Telegram delivery (#1). Section 9 says what waits for which decision.
 
 ## 2. How it works today (observed)
 
@@ -54,12 +56,12 @@ There is **no** limit across campaigns. Ten registered campaigns can run ten wor
 
 - `executor_waits` is keyed by `(campaign_id, executor_kind)` (`store.mjs:45-47`). It is written per campaign on quota, auth, launch failure or an unavailable host (`controller.mjs:386-387`, `controller.mjs:612-615`, `controller.mjs:721-722`), read per campaign (`controller.mjs:564`), cleared per campaign by a recheck (`controller.mjs:188`) and by a successful result (`controller.mjs:319`).
 - A single-provider campaign holds all its dispatches until the latest quota reset recorded on **its own** tasks (`controller.mjs:62-64`, `controller.mjs:523`, `controller.mjs:406`).
-- So when campaign A finds the Claude account exhausted, campaign B on the same account still dispatches to it, fails, and records its own wait. [#5](https://github.com/netbka/aiworks/issues/5) scope D names this as a review risk; it is not a reproduced incident.
+- So when campaign A finds the Claude account exhausted, campaign B on the same account still dispatches to it, fails, and records its own wait. #5 scope D names this as a review risk; it is not a reproduced incident.
 
 ### 2.5 Work ownership across campaigns
 
 - At this base there is **no** cross-campaign ownership check: `src/supervisor/work-ownership.mjs` does not exist and `campaignStart` inserts a new campaign without one (`src/supervisor/api.mjs:11-28`).
-- Scope A of #5 is planned as the port of archived [engineering-platform-archive#126](https://github.com/netbka/engineering-platform-archive/pull/126) by campaign task `aw-foundation/F2-DUPLICATE`. That PR adds an optional task `workKey`, an exact task fingerprint and `findWorkConflict(store, declaration)`. The check runs inside the registration transaction and derives ownership from the `campaigns` and `operations` rows, with no lock table. This design builds on that shape (section 4.3). It is **planned**, not merged.
+- Scope A of #5 is planned as the port of archived historical regression by campaign task `example-foundation/F2-DUPLICATE`. That PR adds an optional task `workKey`, an exact task fingerprint and `findWorkConflict(store, declaration)`. The check runs inside the registration transaction and derives ownership from the `campaigns` and `operations` rows, with no lock table. This design builds on that shape (section 4.3). It is **planned**, not merged.
 
 ## 3. Every place that assumes one slot, and what replaces it
 
@@ -79,7 +81,7 @@ There is **no** limit across campaigns. Ten registered campaigns can run ten wor
 | 12 | `campaign.mjs:66-73`, `campaign.mjs:118` | `slots` is 1 and only 1. | `limits.slots` accepts `1..8` or `"auto"`. Omitted still means 1, so no registered campaign changes behaviour (section 4.4). | S3 |
 | 13 | `api.mjs:98-111` | The cost check counts finished operations only; with one slot it can overshoot by at most one run. | When the owner declared `maxCostUsd`, each open operation is reserved at `unknownRunCostUsd` until it finishes. Nothing changes when no ceiling is declared. | S2 |
 | 14 | `api.mjs:125-134`, `api.mjs:141` | Status derives provider waits from this campaign's tasks and the phase from `operations[0]`. | Status reads account waits and returns every open operation plus a wait reason per step (section 6). | S1, S7 |
-| 15 | `src/dashboard/supervisor.mjs:39`, `:191`, `:197`; `src/dashboard/public/dashboard.js:185` | The dashboard shows the first open operation, the `slots` number and campaign-scoped quota waits. | Show every running step and each waiting step's plain reason (S8, owned with [#11](https://github.com/netbka/aiworks/issues/11)). | S8 |
+| 15 | `src/dashboard/supervisor.mjs:39`, `:191`, `:197`; `src/dashboard/public/dashboard.js:185` | The dashboard shows the first open operation, the `slots` number and campaign-scoped quota waits. | Show every running step and each waiting step's plain reason (S8, owned with #11). | S8 |
 | 16 | `controller.mjs:489-490`, `controller.mjs:639-640` | The base is read from `FETCH_HEAD`, which any other fetch in the same checkout overwrites. | Fetch into an explicit ref (`+refs/heads/<base>:refs/aiworks/base/<base>`) and read that ref. | S2 |
 | 17 | `docs/SUPERVISOR.md:98`, `:114`, `:287` | The runbook says one slot is the only supported value and "more than one slot" is not implemented. | Updated in the slice that changes the behaviour. | S4 |
 
@@ -136,7 +138,7 @@ When the host has room for several workers, the round goes on across ticks, so e
 A **write domain** is the part of a project one implement step may change.
 
 - **Declared:** a commit task may list `writes`: repository-relative path prefixes (`src/dashboard/`, `docs/SUPERVISOR.md`) and named exclusive resources (`resource:port-4318`, for steps whose tests bind a fixed port). It is part of the immutable scope digest (`campaign.mjs:60-61`), like `workKey`.
-- **Derived:** a commit task without `writes` owns the **whole repository**. This is the safe default: such a step never runs alongside another writer in the same repository. Child tasks created inside an approved envelope ([#8](https://github.com/netbka/aiworks/issues/8), `docs/design/WORK_ENVELOPE.md`) carry `writes` in their versioned plan; the scheduler treats them exactly like declared ones.
+- **Derived:** a commit task without `writes` owns the **whole repository**. This is the safe default: such a step never runs alongside another writer in the same repository. Child tasks created inside an approved envelope (#8, `docs/design/WORK_ENVELOPE.md`) carry `writes` in their versioned plan; the scheduler treats them exactly like declared ones.
 - **None:** report tasks and all verifiers are read-only (`controller.mjs:666`). They never hold or wait for a write domain. A report's issue comment is an external write, but it is idempotent by marker (`controller.mjs:842-863`).
 - **Key:** a domain belongs to `tenantId + repository` (as scope A matches, case-insensitive). Different repositories never conflict. Two tasks with the same `workKey` always conflict, whatever their paths.
 
@@ -189,11 +191,11 @@ The current value lives in a new additive table `capacity(scope, id, value, reas
 - **One wait per account.** New table `provider_waits(account, executor_kind, retry_at, reason, campaign_id, updated_at)`. Quota, auth and host-unavailable outcomes write the account's row instead of a campaign row. `executorChoice` reads it for every campaign. A single-provider campaign's hold (`controller.mjs:62-64`) becomes this same row. During migration, reads take the later of `provider_waits` and the old `executor_waits` row, so a wait recorded before the upgrade is still honoured.
 - **Who may clear it.** A successful result on that account clears it (the account works). A campaign `recheck` clears the waits of the accounts that campaign uses and journals that in every campaign that uses them. The owner's "the limit lifted" is about the account, not one campaign.
 - **Concurrency per account.** No limit until the provider throttles. On a `quota` outcome, the account's concurrency limit is set to half of the operations open on it at that moment, with a minimum of 1. It then grows by 1 per useful result on that account while another candidate waited for it. This adds no cap where the provider never complained.
-- **Fallback order is unchanged.** A cli-chain still moves to the next authorized provider (`controller.mjs:383-399`). Permission denials are still never routed around (`controller.mjs:557`). AW-002 still holds: an accepted usage limit is a silent external wait ([OWNER_INTERVENTION rate limits](https://github.com/netbka/engineering-platform/blob/main/docs/OWNER_INTERVENTION.md#rate-limits--quotas)).
+- **Fallback order is unchanged.** A cli-chain still moves to the next authorized provider (`controller.mjs:383-399`). Permission denials are still never routed around (`controller.mjs:557`). AW-002 still holds: an accepted usage limit is a silent external wait (OWNER_INTERVENTION rate limits).
 
 ### 4.6 Host safety: ceiling and pressure
 
-These protect HomePc. They are **not** AW-002 limits: they never stop a campaign, never count runs or money, and never notify the owner. They only decide "not now".
+These protect workstation. They are **not** AW-002 limits: they never stop a campaign, never count runs or money, and never notify the owner. They only decide "not now".
 
 - **Host ceiling.** At most `scheduler.maxWorkers` worker operations at once, across all campaigns. It is set in the data directory's `config.json` (local machine config, not a campaign declaration). Default: `clamp(floor(os.availableParallelism() / 4), 1, 4)`. Workers run full test suites, which are CPU heavy. The coordinator does not count against it (owner messages must not queue behind work), but it does count in the pressure sample.
 - **Pressure sample.** Taken at most once per tick, in-process, without model calls:
@@ -307,21 +309,21 @@ None of these re-opens D1, D3, D5 or D9.
 
 | # | Question | Recommended answer | What it unblocks |
 | --- | --- | --- | --- |
-| Q1 | On HomePc, does any CLI (Claude, Codex, Cursor, AGY) run under more than one provider account? Accounts are the owner's provider resources, and this document cannot see them (unknown). | Treat each CLI kind as one account (the default). Add `providerAccounts` names only if the owner actually has separate accounts. | Correct cooldown grouping in S1. With the recommended default S1 ships without waiting. |
-| Q2 | May the live HomePc runtime turn on `scheduler.enabled` after S1 to S7 are merged, reviewed on their exact heads and rehearsed? Changing the live runtime's configuration is a production change agents may not make ([AGENTS.md](../../AGENTS.md#agents-must-not)). | Yes. Use the documented upgrade procedure ([SUPERVISOR.md §6](../SUPERVISOR.md#6-running-on-homepc)), enable with the default ceiling, and compare `status` before and after. | Slice S9: real parallel work on HomePc. |
-| Q3 | How much of HomePc may workers use while the owner also works on it? | Default ceiling `clamp(cores / 4, 1, 4)` plus the pressure gate; the owner can lower or raise `scheduler.maxWorkers` at any time. | The default value S9 enables with. S4 to S7 do not wait for it. |
+| Q1 | On workstation, does any CLI (Claude, Codex, Cursor, AGY) run under more than one provider account? Accounts are the owner's provider resources, and this document cannot see them (unknown). | Treat each CLI kind as one account (the default). Add `providerAccounts` names only if the owner actually has separate accounts. | Correct cooldown grouping in S1. With the recommended default S1 ships without waiting. |
+| Q2 | May the live workstation runtime turn on `scheduler.enabled` after S1 to S7 are merged, reviewed on their exact heads and rehearsed? Changing the live runtime's configuration is a production change agents may not make ([AGENTS.md](../../AGENTS.md#authorized-work)). | Yes. Use the documented upgrade procedure ([SUPERVISOR.md §6](../SUPERVISOR.md#6-installation-and-maintenance)), enable with the default ceiling, and compare `status` before and after. | Slice S9: real parallel work on workstation. |
+| Q3 | How much of workstation may workers use while the owner also works on it? | Default ceiling `clamp(cores / 4, 1, 4)` plus the pressure gate; the owner can lower or raise `scheduler.maxWorkers` at any time. | The default value S9 enables with. S4 to S7 do not wait for it. |
 
 Waiting on decisions already open elsewhere (not asked again here):
 
-- Running fully local projects in the scheduler waits for **D2** (EP local project identity contract) and **D4** (AW-005 local admission). The interfaces in section 4.3 are built for them now and stay unused for local projects until then.
+- Running fully local projects in the scheduler waits for **D2** (governance local project identity contract) and **D4** (AW-005 local admission). The interfaces in section 4.3 are built for them now and stay unused for local projects until then.
 - Auto Release (**D5-gate**, #13) is not touched. The scheduler never merges, applies or deploys.
 - Telegram delivery (#1) is not touched. Wait reasons are local status only.
 
-Engineering Platform: no EP change is needed for slices S1 to S8. The account-scoped cooldown applies the existing EP rate-limit exception; it does not change it.
+governance provider: no governance change is needed for slices S1 to S8. The account-scoped cooldown applies the existing governance rate-limit exception; it does not change it.
 
 ## 10. Implementation slices
 
-Every slice is one reviewable PR. Every slice that changes `src/supervisor` needs an independent review that approves its exact head before merge ([AGENTS.md](../../AGENTS.md#changing-the-supervisor)). Merged is not deployed: nothing reaches HomePc before S9. Each runs `npm run check`.
+Every slice is one reviewable PR. Every slice that changes `src/supervisor` needs an independent review that approves its exact head before merge ([AGENTS.md](../../AGENTS.md#review-and-runtime-maintenance)). Merged is not deployed: nothing reaches workstation before S9. Each runs `npm run check`.
 
 **S1. One cooldown per provider account** (#5 scope D)
 
@@ -391,15 +393,15 @@ Every slice is one reviewable PR. Every slice that changes `src/supervisor` need
 - Outcome: the owner sees every running step and one plain reason, with the next automatic action, for each waiting step.
 - Files: `src/supervisor/api.mjs` (`wait` per task), `src/dashboard/supervisor.mjs`, `src/dashboard/public/dashboard.js` (row 15), `tests/dashboard/` and `tests/supervisor/status.test.mjs`.
 - Tests: status returns one reason per waiting task built only from supervisor-known fields; the dashboard never renders worker text in a reason.
-- Acceptance: blind owner review of the work view per [UX-002](https://github.com/netbka/engineering-platform/blob/main/docs/EXPERIENCE_REVIEW.md).
+- Acceptance: blind owner review of the work view per UX-002.
 - Depends on: S4. The dashboard part follows the #11 work view design (`docs/design/` from the experience campaign) and its file owner; it does not change those files while another campaign owns them.
 - Waits for: nothing owner-reserved.
 
-**S9. HomePc rehearsal and enablement** (runbook, no code)
+**S9. workstation rehearsal and enablement** (runbook, no code)
 
 - Outcome: the live runtime runs the merged scheduler with `scheduler.enabled: true`.
 - Files: `docs/SUPERVISOR.md` §6 (enablement and rollback: set `enabled: false`), `docs/STATUS.md`.
-- Tests: the full suite at the deployed SHA; then a disposable two-project campaign pair on HomePc, compared serial and parallel. Status before and after, per [AGENTS.md](../../AGENTS.md#upgrading-the-live-runtime).
-- Acceptance: observed on HomePc and labelled verified only there: independent steps overlap, conflicting ones do not, and no duplicate PR or comment appears.
+- Tests: the full suite at the deployed SHA; then a disposable two-project campaign pair on workstation, compared serial and parallel. Status before and after, per [AGENTS.md](../../AGENTS.md#review-and-runtime-maintenance).
+- Acceptance: observed on workstation and labelled verified only there: independent steps overlap, conflicting ones do not, and no duplicate PR or comment appears.
 - Depends on: S1 to S7 merged (S8 recommended).
 - Waits for: **owner** Q2 (and Q3 for a non-default ceiling).

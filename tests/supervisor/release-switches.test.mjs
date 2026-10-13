@@ -1,7 +1,7 @@
 // REL4 (AUTO_RELEASE slice R4): the kill switches and the mode, checked before every step. RELEASE-STOP stops the next
 // step of every release; a stop after deploy still runs checks and rollback; switching to Review only needs no grant;
 // release.enabled absent means off; no command can switch a destination to Auto Release. Built switched off until
-// netbka/aiworks#33. No model, network or GitHub call: the adapter is a fake and the CLI runs on a temporary data dir.
+// example-org/aiworks#33. No model, network or GitHub call: the adapter is a fake and the CLI runs on a temporary data dir.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
@@ -32,7 +32,7 @@ function rig(t) {
   const lease = { instanceId: 'first', generation: store.acquireLease('c', 'first', now, TTL).generation };
   const at = { lease, now };
   const locked = (destination, steps = ['merge', 'deploy', 'check']) => {
-    const { id } = createRelease(store, { project: 'dyk', destination, campaignId: 'c', taskId: 'T1', verifiedSha: SHA, grantVersion: 3,
+    const { id } = createRelease(store, { project: 'sampleapp', destination, campaignId: 'c', taskId: 'T1', verifiedSha: SHA, grantVersion: 3,
       grantDigest: 'g'.repeat(64), steps, lease, now });
     assert.equal(acquireLock(store, id, { ...at, recheck: () => ({ eligible: true, failed: [], inputs: { grantDigest: 'g'.repeat(64) } }) }).locked, true);
     return id;
@@ -64,7 +64,7 @@ test('RELEASE-STOP stops the next step of every release', async (t) => {
     assert.equal(after.state, before.state, 'the release stays where it was');
     assert.equal(after.step_key, before.step_key, 'no step was started: no intent recorded');
     assert.match(after.reason, /RELEASE-STOP is set/);
-    assert.equal(destinationState(r.store, 'dyk', after.destination).releaseId, id, 'it keeps its lock: nothing lands on top of it');
+    assert.equal(destinationState(r.store, 'sampleapp', after.destination).releaseId, id, 'it keeps its lock: nothing lands on top of it');
   }
   assert.deepEqual(adapter.runs, ['prod:merge'], 'no further step of any release ran');
   assert.equal(stoppedJournal(r.store).length, 2, 'each stop is journalled');
@@ -72,7 +72,7 @@ test('RELEASE-STOP stops the next step of every release', async (t) => {
   rmSync(join(r.dir, RELEASE_STOP));
   const unreadable = await runStep(r.store, adapter, staging, { ...r.at, gate: () => { throw new Error('disk gone'); } });
   assert.match(unreadable.reason, /could not be read: disk gone/);
-  assert.equal(releaseGate({ dataDir: r.dir, config: ON, store: r.store, project: 'dyk', destination: 'prod', grant: grant(), exists: () => { throw new Error('EACCES'); } }),
+  assert.equal(releaseGate({ dataDir: r.dir, config: ON, store: r.store, project: 'sampleapp', destination: 'prod', grant: grant(), exists: () => { throw new Error('EACCES'); } }),
     'whether RELEASE-STOP is set is unknown');
   assert.deepEqual(adapter.runs, ['prod:merge']);
   // Once the owner removes the file the release continues from where it stopped, never repeating a step.
@@ -110,27 +110,27 @@ test('a stop after deploy still runs checks and rollback', async (t) => {
 
 test('switching to review-only needs no grant', async (t) => {
   const r = rig(t);
-  assert.equal(releaseMode(r.store, { project: 'dyk', destination: 'prod', grant: null }), REVIEW_ONLY, 'no grant: Review only, the default');
-  assert.equal(releaseMode(r.store, { project: 'dyk', destination: 'prod', grant: { reason: 'the grant expired on 2026-10-01' } }), REVIEW_ONLY, 'an invalid grant: Review only');
-  assert.equal(releaseMode(r.store, { project: 'dyk', destination: 'other', grant: grant() }), REVIEW_ONLY, 'a destination the grant does not name: Review only');
-  assert.equal(releaseMode(r.store, { project: 'dyk', destination: 'prod', grant: grant() }), AUTO_RELEASE, 'only a valid grant makes Auto Release available');
+  assert.equal(releaseMode(r.store, { project: 'sampleapp', destination: 'prod', grant: null }), REVIEW_ONLY, 'no grant: Review only, the default');
+  assert.equal(releaseMode(r.store, { project: 'sampleapp', destination: 'prod', grant: { reason: 'the grant expired on 2026-10-01' } }), REVIEW_ONLY, 'an invalid grant: Review only');
+  assert.equal(releaseMode(r.store, { project: 'sampleapp', destination: 'other', grant: grant() }), REVIEW_ONLY, 'a destination the grant does not name: Review only');
+  assert.equal(releaseMode(r.store, { project: 'sampleapp', destination: 'prod', grant: grant() }), AUTO_RELEASE, 'only a valid grant makes Auto Release available');
   // Narrowing with no grant at all, and with no approval: allowed, immediate, and it holds against the current grant.
-  setReviewOnly(r.store, { project: 'dyk', destination: 'prod', now: r.now });
-  assert.equal(releaseMode(r.store, { project: 'dyk', destination: 'prod', grant: grant() }), REVIEW_ONLY);
-  assert.equal(releaseMode(r.store, { project: 'dyk', destination: 'prod', grant: grant({ version: 4, grantedAt: '2026-11-05' }) }), REVIEW_ONLY,
+  setReviewOnly(r.store, { project: 'sampleapp', destination: 'prod', now: r.now });
+  assert.equal(releaseMode(r.store, { project: 'sampleapp', destination: 'prod', grant: grant() }), REVIEW_ONLY);
+  assert.equal(releaseMode(r.store, { project: 'sampleapp', destination: 'prod', grant: grant({ version: 4, grantedAt: '2026-11-05' }) }), REVIEW_ONLY,
     'a grant from the day of the narrowing, before it, does not widen');
-  assert.equal(releaseMode(r.store, { project: 'dyk', destination: 'prod', grant: grant({ version: 4, grantedAt: '2026-11-06' }) }), AUTO_RELEASE,
+  assert.equal(releaseMode(r.store, { project: 'sampleapp', destination: 'prod', grant: grant({ version: 4, grantedAt: '2026-11-06' }) }), AUTO_RELEASE,
     'only a grant made after the narrowing widens again');
-  assert.equal(releaseMode(r.store, { project: 'dyk', destination: 'staging', grant: grant() }), AUTO_RELEASE, 'the narrowing is per destination');
+  assert.equal(releaseMode(r.store, { project: 'sampleapp', destination: 'staging', grant: grant() }), AUTO_RELEASE, 'the narrowing is per destination');
   // Narrowing that knows the grant in force: the same or a lower version stays Review only; a higher version widens.
-  setReviewOnly(r.store, { project: 'dyk', destination: 'staging', grantVersion: 3, now: r.now });
-  assert.equal(releaseMode(r.store, { project: 'dyk', destination: 'staging', grant: grant({ version: 3, grantedAt: '2026-12-01' }) }), REVIEW_ONLY);
-  assert.equal(releaseMode(r.store, { project: 'dyk', destination: 'staging', grant: grant({ version: 4 }) }), AUTO_RELEASE);
+  setReviewOnly(r.store, { project: 'sampleapp', destination: 'staging', grantVersion: 3, now: r.now });
+  assert.equal(releaseMode(r.store, { project: 'sampleapp', destination: 'staging', grant: grant({ version: 3, grantedAt: '2026-12-01' }) }), REVIEW_ONLY);
+  assert.equal(releaseMode(r.store, { project: 'sampleapp', destination: 'staging', grant: grant({ version: 4 }) }), AUTO_RELEASE);
   // The narrowing takes effect before the next step of a release already under way.
   const id = r.locked('qa');
   const adapter = fake();
   await runStep(r.store, adapter, id, { ...r.at, gate: r.gate({ held: grant({ destinations: ['qa'] }) }) });
-  setReviewOnly(r.store, { project: 'dyk', destination: 'qa', now: r.now });
+  setReviewOnly(r.store, { project: 'sampleapp', destination: 'qa', now: r.now });
   const after = await runStep(r.store, adapter, id, { ...r.at, gate: r.gate({ held: grant({ destinations: ['qa'] }) }) });
   assert.equal(after.reason, 'the destination is in Review only');
   assert.deepEqual(adapter.runs, ['qa:merge']);
@@ -140,12 +140,12 @@ test('switching to review-only needs no grant', async (t) => {
 test('release.enabled absent means off', async (t) => {
   const r = rig(t);
   for (const config of [undefined, {}, { release: {} }, { release: { enabled: 'true' } }, { release: { enabled: 1 } }, { release: true }]) {
-    const switches = releaseSwitches({ dataDir: r.dir, config, store: r.store, project: 'dyk', destination: 'prod', grant: grant() });
+    const switches = releaseSwitches({ dataDir: r.dir, config, store: r.store, project: 'sampleapp', destination: 'prod', grant: grant() });
     assert.equal(switches.enabled, false, JSON.stringify(config));
-    assert.equal(releaseGate({ dataDir: r.dir, config, store: r.store, project: 'dyk', destination: 'prod', grant: grant() }),
+    assert.equal(releaseGate({ dataDir: r.dir, config, store: r.store, project: 'sampleapp', destination: 'prod', grant: grant() }),
       'Auto Release is switched off (release.enabled is not true)');
     // Eligibility check E1 reads the same switches and agrees.
-    const result = evaluateEligibility({ project: 'dyk', destinationId: 'prod', taskId: 'T1', verifiedSha: SHA }, { switches: () => switches });
+    const result = evaluateEligibility({ project: 'sampleapp', destinationId: 'prod', taskId: 'T1', verifiedSha: SHA }, { switches: () => switches });
     assert.equal(result.failed.find((item) => item.check === 'E1')?.reason, 'Auto Release is switched off (release.enabled is not true)');
   }
   const id = r.locked('prod');
@@ -154,10 +154,10 @@ test('release.enabled absent means off', async (t) => {
   assert.equal(after.state, 'locked');
   assert.deepEqual(adapter.runs, [], 'with release.enabled absent, no step runs');
   // Every switch on, no stop, a valid grant and an unnarrowed destination: only then does the gate allow a step, and E1 passes.
-  const on = { dataDir: r.dir, config: ON, store: r.store, project: 'dyk', destination: 'prod', grant: grant() };
+  const on = { dataDir: r.dir, config: ON, store: r.store, project: 'sampleapp', destination: 'prod', grant: grant() };
   assert.equal(releaseGate(on), null);
   assert.deepEqual(releaseSwitches(on), { enabled: true, stop: false, mode: AUTO_RELEASE });
-  assert.equal(evaluateEligibility({ project: 'dyk', destinationId: 'prod', taskId: 'T1', verifiedSha: SHA }, { switches: () => releaseSwitches(on) })
+  assert.equal(evaluateEligibility({ project: 'sampleapp', destinationId: 'prod', taskId: 'T1', verifiedSha: SHA }, { switches: () => releaseSwitches(on) })
     .failed.some((item) => item.check === 'E1'), false);
   assert.equal(releaseGate({ ...on, grant: null }), 'the destination is in Review only', 'enabled without a grant is still Review only');
 });
@@ -166,8 +166,8 @@ test('no command can switch a project to Auto Release; release-stop and release-
   const dir = mkdtempSync(join(tmpdir(), 'aiworks-release-cli-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const cli = (...args) => spawnSync(process.execPath, [CLI, ...args, '--data', dir], { encoding: 'utf8', windowsHide: true, env: { ...process.env, AIWORKS_DATA: '' } });
-  for (const args of [['dyk', 'prod', 'auto-release'], ['dyk', 'prod', 'auto'], ['dyk', 'prod', 'Auto Release'], ['dyk', 'prod'], ['dyk', 'prod', 'review-only', 'auto-release'],
-    ['dyk', '', 'review-only'], []]) {
+  for (const args of [['sampleapp', 'prod', 'auto-release'], ['sampleapp', 'prod', 'auto'], ['sampleapp', 'prod', 'Auto Release'], ['sampleapp', 'prod'], ['sampleapp', 'prod', 'review-only', 'auto-release'],
+    ['sampleapp', '', 'review-only'], []]) {
     const refused = cli('release-mode', ...args);
     assert.equal(refused.status, 2, `release-mode ${args.join(' ')} is refused`);
     assert.match(refused.stderr, /RELEASE_MODE_REFUSED: release-mode only narrows/);
@@ -176,10 +176,10 @@ test('no command can switch a project to Auto Release; release-stop and release-
   const usage = cli();
   assert.doesNotMatch(usage.stderr, /release-mode[^\n]*auto-release/i, 'the usage offers no Auto Release mode');
 
-  const narrowed = cli('release-mode', 'dyk', 'prod', 'review-only');
+  const narrowed = cli('release-mode', 'sampleapp', 'prod', 'review-only');
   assert.equal(narrowed.status, 0, narrowed.stderr);
   const printed = JSON.parse(narrowed.stdout);
-  assert.equal(printed.project, 'dyk');
+  assert.equal(printed.project, 'sampleapp');
   assert.equal(printed.narrowed.destination, 'prod');
   assert.equal(printed.narrowed.mode, REVIEW_ONLY);
   const stopped = cli('release-stop');

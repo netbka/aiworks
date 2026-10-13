@@ -34,7 +34,7 @@ function rig(t, { scheduler = { enabled: true, maxWorkers: 4 } } = {}) {
   let clock = Date.now();
   const controller = new Controller({ store, config: env.config, dataDir: env.dataDir, fault: null, now: () => clock });
   controller.launch = async () => {}; // the test plays the worker; nothing is spawned
-  const register = (campaignId, tasks, { projectId = 'dyk', limits = {} } = {}) => {
+  const register = (campaignId, tasks, { projectId = 'sampleapp', limits = {} } = {}) => {
     const d = declaration({ campaignId, tasks, limits });
     campaignStart(store, { ...d, target: { ...d.target, projectId } });
   };

@@ -35,15 +35,15 @@ test('the platform roadmap is definitions from the governance checkout, with no 
   const dir = mkdtempSync(join(tmpdir(), 'aiworks-dashboard-roadmap-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   // A GitHub snapshot left in an old cache directory is never read or served.
-  writeFileSync(join(dir, 'roadmap-cache.json'), JSON.stringify({ version: 1, sources: [{ repository: 'netbka/engineering-platform', fetchedAt: new Date().toISOString(),
+  writeFileSync(join(dir, 'roadmap-cache.json'), JSON.stringify({ version: 1, sources: [{ repository: 'example-org/governance', fetchedAt: new Date().toISOString(),
     items: [{ kind: 'issue', number: 7, title: 'GOV-08: cached issue', state: 'CLOSED', packages: ['GOV-08'] }] }] }));
-  const source = new RoadmapSource({ root: resolve(import.meta.dirname, '../fixtures/governance'), cacheDir: dir, repositories: ['netbka/elma_wiki'] });
+  const source = new RoadmapSource({ root: resolve(import.meta.dirname, '../fixtures/governance'), cacheDir: dir, repositories: ['example-org/sample-wiki'] });
   const snapshot = source.snapshot();
   assert.deepEqual(Object.keys(snapshot).sort(), ['entries', 'governance']);
   assert.equal(snapshot.entries.length, 6);
   assert.ok(snapshot.entries.every((entry) => !('status' in entry) && !('items' in entry)), 'no progress is claimed for roadmap items');
   assert.ok(!JSON.stringify(snapshot).includes('cached issue'));
-  assert.ok(!snapshot.entries.some((entry) => entry.repository === 'netbka/elma_wiki'), 'a configured repository adds no backlog');
+  assert.ok(!snapshot.entries.some((entry) => entry.repository === 'example-org/sample-wiki'), 'a configured repository adds no backlog');
 });
 
 function fixture(t) {
@@ -66,7 +66,7 @@ test('roadmap includes every product phase, next increment and rollout package',
   assert.equal(entries.filter((e) => e.track === 'Product control plane').length, 2);
   assert.equal(entries.filter((e) => e.track === 'Product · next').length, 1);
   assert.equal(entries.filter((e) => e.track === 'Autonomous governance').length, 3);
-  assert.equal(entries.find((e) => e.id === 'GOV-08').repository, 'netbka/Dyk');
+  assert.equal(entries.find((e) => e.id === 'GOV-08').repository, 'example-org/sampleapp');
   assert.match(entries.find((e) => e.id === 'GOV-08').title, /manifest/);
   assert.deepEqual(entries.find((e) => e.id === 'GOV-21').dependencies, ['GOV-01', 'GOV-08']);
   assert.equal(entries.find((e) => e.id === 'PCTRL-01').owner, 'product-architect');
@@ -161,39 +161,24 @@ test('stale, ABA, wrong-task and expanded-authority commands are rejected', (t) 
   assert.equal(store.campaign(d.campaignId).control, 'registered');
 });
 
-test('Resume refuses a stored declaration that was never committed in campaigns/ on main (AW-005)', (t) => {
+test('Resume preserves private stored authority and refuses unmerged runtime code', (t) => {
   const { dataDir, store, d, payload } = fixture(t);
   campaignPause(store, d.campaignId);
-  const absent = runtimeCheckout(); // main holds only the committed campaigns, never this one
-  const differs = runtimeCheckout({ declarations: { [`${d.campaignId}.json`]: { ...d, constraints: ['A different committed constraint.'] } } });
-  t.after(() => { absent.cleanup(); differs.cleanup(); });
-  for (const root of [absent.root, differs.root]) {
-    assert.throws(() => applyMain(dataDir, payload('resume'), Date.now(), { provenanceRoot: root }),
-      // The owner reads what happened and what to do (aiworks#11 review F3); the machine's reason is kept as its detail.
-      (error) => error.status === 409 && error.message === COMMANDS.resumeRefused && /^Resume refused: .*is not committed in campaigns\/ in any revision merged to main/.test(error.detail));
-    assert.equal(store.campaign(d.campaignId).control, 'paused');
-  }
-  // Committed only after origin/main (a local, unmerged commit) is still refused.
-  const local = runtimeCheckout();
-  t.after(() => local.cleanup());
-  writeFileSync(join(local.root, 'campaigns', `${d.campaignId}.json`), `${JSON.stringify(d, null, 2)}\n`);
-  local.git('add', '-A');
-  local.git('commit', '-q', '-m', 'local declaration, not merged');
-  assert.throws(() => applyMain(dataDir, payload('resume'), Date.now(), { provenanceRoot: local.root }), (error) => error.status === 409);
-  // Without an override the dashboard checks its own checkout, and this declaration was never on main there either.
-  assert.throws(() => applyCommand(dataDir, payload('resume')), (error) => error.status === 409 && error.message === COMMANDS.resumeRefused && /^Resume refused/.test(error.detail));
+  const before = store.campaign(d.campaignId);
+  const merged = runtimeCheckout(), unmerged = runtimeCheckout({ unmerged: true });
+  t.after(() => { merged.cleanup(); unmerged.cleanup(); });
+  assert.throws(() => applyMain(dataDir, payload('resume'), Date.now(), { provenanceRoot: unmerged.root }),
+    (error) => error.status === 409 && error.message === COMMANDS.resumeRefused && /not merged/.test(error.detail));
   assert.equal(store.campaign(d.campaignId).control, 'paused');
-  assert.equal(store.all("SELECT * FROM journal WHERE kind = 'dashboard-command'").length, 0, 'a refused resume records nothing');
-  // An older merged version is enough: main's tip is not required.
-  const older = runtimeCheckout({ declarations: { [`${d.campaignId}.json`]: d } });
-  t.after(() => older.cleanup());
-  writeFileSync(join(older.root, 'campaigns', `${d.campaignId}.json`), `${JSON.stringify({ ...d, constraints: ['Amended later on main.'] }, null, 2)}\n`);
-  older.git('commit', '-q', '-am', 'amend the declaration on main');
-  older.git('update-ref', 'refs/remotes/origin/main', 'HEAD');
-  assert.equal(applyMain(dataDir, payload('resume'), Date.now(), { provenanceRoot: older.root }).accepted, true);
-  assert.equal(store.campaign(d.campaignId).control, 'registered');
+  assert.equal(store.all("SELECT * FROM journal WHERE kind = 'dashboard-command'").length, 0);
+  assert.equal(applyMain(dataDir, payload('resume'), Date.now(), { provenanceRoot: merged.root }).accepted, true);
+  const after = store.campaign(d.campaignId);
+  assert.equal(after.control, 'registered');
+  assert.deepEqual(after.declaration, before.declaration);
+  assert.equal(after.scope_digest, before.scope_digest);
+  assert.equal(after.authorization_version, before.authorization_version);
+  assert.equal(after.runs_used, before.runs_used);
 });
-
 test('instruction validation, role binding, exact retries and bounded queue preserve authority', (t) => {
   const { dataDir, store, d, payload } = fixture(t);
   const extra = { taskId: 'T1', taskVersion: 1, role: 'implement', text: 'Explain the edge cases in the report.' };

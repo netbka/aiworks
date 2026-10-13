@@ -9,7 +9,7 @@ import { pendingInstructions } from '../supervisor/instructions.mjs';
 import { roleUnavailableReason, runNotCounted } from '../supervisor/adapters/executors.mjs';
 import { campaignLimits } from '../supervisor/campaign.mjs';
 import { coordinatorView, postOwnerMessage } from '../supervisor/coordinator.mjs';
-import { CODE_ROOT, storedDeclarationOnMain } from '../supervisor/provenance.mjs';
+import { CODE_ROOT, revisionNotMerged } from '../supervisor/provenance.mjs';
 import { COMMANDS, stateCopy, stopReasonWords } from './copy.mjs';
 import { configuredRepositories } from './projects.mjs';
 
@@ -37,10 +37,19 @@ function publicTaskWait(task, spec) {
  * by ID, and only supervisor-known fields are read (stored errors can quote worker text). `retryAt` is when AIWorks
  * tries again by itself. Built from today's fields; the status `wait` field replaces it later (plan §6.12 C7, UI11).
  */
+const shortName = (text, max = 80) => {
+  const safe = safeText(String(text), 200);
+  if (safe.length <= max) return safe;
+  const cut = safe.slice(0, max);
+  return `${cut.slice(0, Math.max(cut.lastIndexOf(' '), max / 2)).replace(/[s,;:.]+$/, '')}…`;
+};
 function stepWait(task, spec, specs, taskRows) {
   if (task.blocked || ['done', 'verified'].includes(task.state)) return null;
   const names = (ids) => {
-    const quoted = ids.map((id) => `“${safeText(specs.get(id)?.outcome ?? specs.get(id)?.title ?? 'an earlier step', 120)}”`);
+    // A step is named by its outcome; a long outcome sentence gives way to the short title instead of being cut mid-word
+    // (owner review 2026-10-13).
+    const named = (spec) => spec?.outcome && (spec.outcome.length <= 80 || !spec.title) ? spec.outcome : spec?.title ?? spec?.outcome ?? 'an earlier step';
+    const quoted = ids.map((id) => `“${shortName(named(specs.get(id)))}”`);
     return quoted.length > 1 ? `${quoted.slice(0, -1).join(', ')} and ${quoted.at(-1)}` : quoted[0];
   };
   const be = (ids) => ids.length === 1 ? 'is' : 'are';
@@ -491,7 +500,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
 // changes work and never touches a project's files. "Plan and do" waits for the admission API (#8) and slice S10.
 export const PLAN_GOAL_LIMIT = 2000;
 export const PLAN_SOURCES = Object.freeze({ description: 'Just my description', issue: 'A GitHub issue', pull: 'A GitHub pull request' });
-const PLAN_AND_DO_OFF = 'Plan and do is not built yet. Today, work starts after its plan is merged into AIWorks and started on this computer.';
+const PLAN_AND_DO_OFF = 'Plan and do is not built yet. Today, work starts when an authorized private plan is registered on this computer.';
 
 /** The coordinator message for a checked Plan only request: project, where it starts from, the goal and the limits. */
 export function planRequestText({ project, goal, from, number }) {
@@ -570,12 +579,11 @@ export function applyCommand(dataDir, input, now = Date.now(), { provenanceRoot 
   if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'Supervisor is unavailable.');
   const store = new Store(join(dataDir, 'supervisor.db'));
   try {
-    // AW-005: Resume restarts work from the stored declaration, so that declaration must be one committed in campaigns/
-    // on origin/main. Checked before the write transaction (git reads), then pinned inside it by the campaign version.
+    // Private Resume uses the registered declaration; executable code must still be merged.
     const before = input.action === 'resume' ? store.campaign(input.campaignId) : null;
     if (before?.control === 'paused') {
-      try { storedDeclarationOnMain(before.declaration, { root: provenanceRoot }); }
-      catch (error) { throw fail(409, COMMANDS.resumeRefused, `Resume refused: ${error.message}`); }
+      const notMerged = revisionNotMerged({ root: provenanceRoot });
+      if (notMerged) throw fail(409, COMMANDS.resumeRefused, `Resume refused: ${notMerged}`);
     }
     return store.tx(() => {
       const id = input.campaignId;

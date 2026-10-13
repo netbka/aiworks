@@ -11,7 +11,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const args = process.argv.slice(2);
 const options = {};
 for (let i = 0; i < args.length; i += 2) {
-  if (!['--data', '--port', '--cache', '--governance'].includes(args[i]) || !args[i + 1] || options[args[i]]) throw new Error('Usage: npm run dashboard -- --data <supervisor-directory> [--port 4318] [--governance <engineering-platform-checkout>]');
+  if (!['--data', '--port', '--cache', '--governance'].includes(args[i]) || !args[i + 1] || options[args[i]]) throw new Error('Usage: npm run dashboard -- --data <supervisor-directory> [--port 4318] [--governance <governance-checkout>]');
   options[args[i]] = args[i + 1];
 }
 // --cache is still accepted so existing launch commands keep working; the dashboard no longer keeps a GitHub cache.
@@ -19,7 +19,7 @@ if (!options['--data']) throw new Error('--data must name the existing superviso
 const port = Number(options['--port'] ?? 4318);
 if (!Number.isSafeInteger(port) || port < 1024 || port > 65535) throw new Error('port must be 1024..65535');
 const dataDir = resolve(options['--data']);
-// The governance root is a read-only checkout of netbka/engineering-platform: --governance, else config.json governanceRoot.
+// The governance root is an operator-configured read-only directory: --governance, else config.json governanceRoot.
 // Without a valid one the roadmap panels say so; the dashboard still serves the campaigns.
 const configuredGovernance = options['--governance'] ? resolve(options['--governance']) : configuredGovernanceRoot(dataDir);
 const roadmap = new RoadmapSource({ root: configuredGovernance });
