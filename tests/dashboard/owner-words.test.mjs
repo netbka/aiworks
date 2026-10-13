@@ -142,7 +142,8 @@ test('F22: AIWorks stopped "on this computer", with the restart on this computer
     await page.go(where);
     const text = screen(page);
     assert.doesNotMatch(text, /\bthere\b|that computer|on review-pc|on its computer/, where);
-    if (where !== address('example/notes-site', '/work')) assert.ok(text.includes(restart), `${where} says where to restart`);
+    // notes-site's Now leads with its own Needs me items (review F16); AIWorks stopped is said once, on Needs me (F9).
+    if (where === '#/needs') assert.ok(text.includes(restart), `${where} says where to restart`);
   }
   await page.go('#/needs');
   assert.ok(screen(page).includes('AIWorks stopped on this computer at about '));
@@ -155,16 +156,18 @@ test('F23: one time for one event: the pause has its date, the stop its time, th
   const tags = supervisorSnapshot(page.dataDir).campaigns.find((c) => c.id === 'notes-tags');
   const paused = dateTime(tags.pausedAt), stopped = time(Date.parse(tags.leaseExpiresAt));
   assert.notEqual(time(tags.pausedAt), stopped, 'the fixture paused it an hour before AIWorks stopped');
+  // notes-site's Now leads with its Needs me items (review F16), so the stop is said on Work and Needs me.
   await page.go(address('example/notes-site'));
   const now = screen(page);
-  assert.ok(now.includes(`Tag notes Paused since ${paused}, and AIWorks has stopped on this computer at about ${stopped}.`), now);
   await page.go(address('example/notes-site', '/work'));
   const work = screen(page);
   assert.ok(work.includes(`notes-site: Tag notes Paused since ${paused} · `), work);
   assert.ok(work.includes(`· AIWorks stopped on this computer at about ${stopped} Resume`), work);
   await page.go('#/needs');
   const needs = screen(page);
-  assert.ok(needs.includes(`This work was paused, then AIWorks stopped on this computer at about ${stopped} `), needs);
+  // One item for the stop (review F9): its time once, and the pause named on the work it holds up.
+  assert.ok(needs.includes(`AIWorks stopped on this computer at about ${stopped} `), needs);
+  assert.ok(needs.includes('“Tag notes” (paused; it can’t resume until AIWorks runs again)'), needs);
   for (const text of [now, work, needs]) {
     // The stop's time never reads as the pause's: every "at about <time>" follows "stopped on this computer".
     assert.doesNotMatch(text, /paused at about|last check-in about/i);

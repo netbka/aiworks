@@ -151,9 +151,12 @@ test('a working agent with a silent supervisor is said plainly, and same-titled 
     agents: [{ heartbeatState: 'unknown', progress: { lastActivityAt: now - 30_000 } }] });
   const supervisor = { available: true, campaigns: [campaign('dyk-442-pilot-telegram'), campaign('dyk-442-pilot-whatsapp')], coordinator: null, recent: null };
   const view = ownerView(supervisor, checked(), { host: 'HomePc', now });
+  // One item for AIWorks stopped on this computer, however many pieces of work it holds up (review F9).
+  assert.equal(view.items.length, 1);
   assert.equal(view.items[0].text, 'An AI worker is still working, but AIWorks stopped checking in on this computer');
   assert.equal(view.items[0].at, now - 10 * 60_000);
   assert.match(view.items[0].points[0].text, /result is collected and checked only when AIWorks runs again/);
+  assert.equal(view.items[0].points[1].text, 'Held up in Dyk: “Run a controlled pilot (Telegram)”, “Run a controlled pilot (Whatsapp)”.');
   assert.equal(view.campaigns['dyk-442-pilot-telegram'].liveness, 'agent-working-supervisor-silent');
   assert.deepEqual(['dyk-442-pilot-telegram', 'dyk-442-pilot-whatsapp'].map((id) => view.campaigns[id].purpose.variant), ['Telegram', 'Whatsapp']);
 });
@@ -258,7 +261,8 @@ test('Needs me groups today\'s items by project, case-insensitively, with "AIWor
     campaign('dyk-b', 'netbka/dyk', { tasks: [review('B1', 'netbka/dyk', 464)] }),
     // Another owner's repository with the same short name keeps its owner in the group name.
     campaign('other-dyk', 'example/Dyk', { tasks: [review('O1', 'example/Dyk', 7)] }),
-    // A stopped supervisor stops this project's work and restarting it is the owner's action: it stays with the project.
+    // A stopped supervisor is one fact about this computer and restarting it is the owner's action: it is counted under
+    // AIWorks itself, never under the project (review F9).
     campaign('notes-stopped', 'example/notes', { controllerLive: false, leaseExpiresAt: new Date(now - 60 * 60_000).toISOString() }),
     // Waiting for an AI worker's usage limit to reset is never listed (AW-002).
     campaign('notes-wait', 'example/notes', { waitingReason: 'provider-availability', tasks: [{ ...decision('W1', 'example/notes'), blocked: null, blockedReason: null }] }),
@@ -267,11 +271,15 @@ test('Needs me groups today\'s items by project, case-insensitively, with "AIWor
     steps: { 'dyk-a/A1': result(sha(463), false), 'dyk-b/B1': result(sha(464), false), 'other-dyk/O1': result(sha(7), false) } };
   const view = ownerView(supervisor, merges, { host: 'HomePc', now });
   assert.deepEqual(view.groups.map((group) => [group.name, group.project, group.count]), [
-    ['netbka/Dyk', 'netbka/Dyk', 2], ['shop', 'example/shop', 1], ['example/Dyk', 'example/Dyk', 1], ['notes', 'example/notes', 1], [SYSTEM_GROUP, null, 2]]);
+    ['netbka/Dyk', 'netbka/Dyk', 2], ['shop', 'example/shop', 1], ['example/Dyk', 'example/Dyk', 1], [SYSTEM_GROUP, null, 1]]);
   assert.equal(SYSTEM_GROUP, 'AIWorks itself');
   assert.deepEqual(view.groups[0].items.map((item) => item.campaignId), ['dyk-a', 'dyk-b'], 'one project whatever the spelling of its name');
-  assert.deepEqual(view.groups.at(-1).items.map((item) => [item.kind, item.repository]), [['controller', 'example/shop'], ['coordinator', null]]);
-  assert.deepEqual(view.groups[3].items.map((item) => [item.kind, item.text]), [['controller', 'AIWorks stopped on this computer']]);
+  // The fault and the unreadable inbox are listed but not counted (review F17); the stop is counted.
+  assert.deepEqual(view.groups.at(-1).items.map((item) => [item.kind, item.repository, item.about, item.text, Boolean(item.system)]), [
+    ['controller', null, 'example/shop', 'AIWorks has a problem of its own with this work', true],
+    ['controller', null, 'example/notes', 'AIWorks stopped on this computer', false],
+    ['coordinator', null, undefined, 'The coordinator cannot read your messages', true]]);
+  assert.equal(view.groups.at(-1).notCounted, 2);
   // Grouping only: the same items, in today's order within each group, and the count is today's headline count.
   const grouped = view.groups.flatMap((group) => group.items);
   assert.equal(grouped.length, view.items.length);
@@ -292,25 +300,28 @@ test('on the review fixture, Needs me lists the same items and count as before, 
   await watcher.refresh();
   const now = Date.now(), view = ownerView(supervisorSnapshot(dataDir, now), watcher.snapshot(), { host: 'review-pc', now });
   assert.ok(view.items.length > 0);
-  assert.equal(view.headline, `Needs you (${view.items.length})`);
+  // Listed items that are not owner actions are not counted (review F17).
+  assert.equal(view.headline, `Needs you (${view.items.filter((item) => !item.system).length})`);
+  assert.equal(view.count, view.groups.reduce((n, group) => n + group.count, 0));
   const grouped = view.groups.flatMap((group) => group.items);
   assert.deepEqual(new Set(grouped), new Set(view.items));
   assert.equal(grouped.length, view.items.length);
   assert.deepEqual(view.groups.map((group) => group.name), ['notes-site', 'shop-app', SYSTEM_GROUP], 'projects in the order of their first item, AIWorks itself last');
   for (const group of view.groups.slice(0, -1)) assert.ok(group.items.every((item) => item.repository.toLowerCase() === group.project.toLowerCase() && !item.system), group.name);
-  // The supervisor fault in notes-site says it is not an owner action, so it is listed under AIWorks itself.
-  assert.deepEqual(view.groups.at(-1).items.map((item) => item.campaignId), [REVIEW_STATES['supervisor-fault'].campaignId]);
+  // The supervisor fault in notes-site says it is not an owner action, so it is listed under AIWorks itself, and so is
+  // the one item for AIWorks stopped on this computer (review F9).
+  assert.deepEqual(view.groups.at(-1).items.map((item) => [item.campaignId, item.about]), [[REVIEW_STATES['supervisor-fault'].campaignId, 'example/notes-site'], [null, undefined]]);
   // Neither the usage-limit wait nor a pause with a running supervisor is listed.
   for (const state of ['provider-wait', 'paused']) assert.ok(!view.items.some((item) => item.campaignId === REVIEW_STATES[state].campaignId), state);
 });
 
 test('the Needs me page shows one headed group per project, linked to it, and "AIWorks itself" with the project its item is about', () => {
   const page = readFileSync(join(resolve(import.meta.dirname, '../..'), 'src/dashboard/public/dashboard.js'), 'utf8');
-  assert.match(page, /const \{ headline, items, groups = \[\], unknownResults: unknown, also, reply \} = owner;/);
+  assert.match(page, /const \{ headline, count, groups = \[\], unknownResults: unknown, also, reply \} = owner;/);
   assert.match(page, /\.\.\.groups\.map\(needsGroup\),/);
-  assert.match(page, /el\('h3', \{ id: `needs-group-\$\{group\.key\}`, class: 'section-title' \}, group\.project \? routeLink\(group\.name, \{ screen: 'project', project: group\.project \}\) : group\.name, ` \(\$\{group\.count\}\)`\)/);
+  assert.match(page, /el\('h3', \{ id: `needs-group-\$\{group\.key\}`, class: 'section-title' \}, group\.project \? routeLink\(group\.name, \{ screen: 'project', project: group\.project \}\) : group\.name, NEEDS\.groupCount\(group\.count, group\.notCounted\)\)/);
   assert.match(page, /el\('ul', \{ class: 'needs-list' \}, \.\.\.group\.items\.map\(needsItem\)\)/);
-  assert.match(page, /item\.system && item\.repository \? `Project \$\{projectName\(item\.repository\)\}` : null/);
+  assert.match(page, /item\.about \? `Project \$\{projectName\(item\.about\)\}` : null/);
   assert.doesNotMatch(page, /\.\.\.items\.map\(\(item\) => el\('li', \{ class: `needs-item/, 'no ungrouped list is left on the page');
 });
 

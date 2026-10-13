@@ -158,14 +158,17 @@ test('the owner view, with the local merge check, says where every result stands
     ['notes-links', 'check', 'Link redirects'], ['notes-links', 'review', 'Footer links'], ['notes-links', 'review', 'Sitemap'],
     ['notes-theme', 'decision', 'Dark theme'], ['notes-search', 'stopped', 'Notes search'], ['notes-deploy', 'stopped', 'This work is stopped'],
     ['notes-health', 'controller', 'AIWorks has a problem of its own with this work'],
-    ['notes-archive', 'controller', 'AIWorks stopped on this computer'],
-    ['notes-tags', 'controller', 'This work was paused, then AIWorks stopped on this computer'],
+    // AIWorks stopped on this computer is one item for both pieces of work it holds up (aiworks#11 review F9).
+    [null, 'controller', 'AIWorks stopped on this computer'],
   ]) assert.ok(items.some((item) => JSON.stringify(item) === JSON.stringify(expected)), `Needs me lists ${expected.join(' · ')}`);
-  assert.equal(items.length, 12, JSON.stringify(items));
+  assert.equal(items.length, 11, JSON.stringify(items));
+  assert.equal(view.items.find((item) => item.kind === 'controller' && !item.system).points[1].text,
+    'Held up in notes-site: “Tag notes” (paused; it can’t resume until AIWorks runs again), “Archive old notes”.');
   for (const quiet of ['shop-checkout', 'shop-reviews', 'shop-wishlist', 'recipes-import', 'recipes-tags', 'recipes-idle', 'recipes-share', 'recipes-print', 'recipes-units', 'notes-drafts', 'notes-audit']) {
     assert.ok(!items.some(([id]) => id === quiet), `${quiet} is not listed for the owner`);
   }
-  assert.equal(view.headline, 'Needs you (12)');
+  // The supervisor fault is listed but not counted: it is not the owner's to do (review F17).
+  assert.equal(view.headline, 'Needs you (10)');
   assert.deepEqual(view.items.find((item) => item.text === 'Contracts import').points.map((p) => p.text).at(-1), '“Price sync” cannot start until you merge it.');
   assert.equal(view.also.text, 'Also: 2 reports for you to read · merged work in recipes is ready; release follows its release policy');
   // Nothing claims more than the evidence: no deployed, released or live work, and notes-site is never merged.
@@ -243,7 +246,7 @@ test('the review command serves today\'s dashboard from the fixture on the port 
   const get = await serveReview(t, 'full');
   // Every answer starts the local merge check and never waits for it (each says it is refreshing); ask again until the
   // owner view settles on the checked results, at most for 30 seconds.
-  const settled = (body) => body.owner.headline === 'Needs you (12)';
+  const settled = (body) => body.owner.headline === 'Needs you (10)';
   let state = await get();
   for (let i = 0; i < 120 && !settled(state.body); i++) {
     await new Promise((done) => setTimeout(done, 250));
@@ -254,18 +257,18 @@ test('the review command serves today\'s dashboard from the fixture on the port 
   assert.deepEqual([...new Set(state.body.supervisor.campaigns.map((c) => c.repository))].sort(), [...PROJECTS].sort());
   assert.deepEqual(state.body.merges.repositories.map((r) => [r.repository, r.error]).sort(),
     [['example/notes-site', 'fetch-failed'], ['example/recipes', null], ['example/shop-app', null]]);
-  assert.equal(state.body.owner.headline, 'Needs you (12)');
+  assert.equal(state.body.owner.headline, 'Needs you (10)');
 });
 
 // AIWorks' own issue links, fixed in src/dashboard: the Auto Release decision (#33, supervisor.mjs) and the supervisor
 // fault issue (#2, owner.mjs, shown for the supervisor-fault state). They are the tool's own state, not a project.
 const OWN_LINKS = /https:\/\/github\.com\/netbka\/aiworks\/issues\/(?:33|2)(?!\d)/g;
-/** Every string a `repository` key holds anywhere in `value`. */
+/** Every string a `repository` or `about` key holds anywhere in `value`. */
 function repositoriesIn(value, found = []) {
   if (Array.isArray(value)) for (const item of value) repositoriesIn(item, found);
   else if (value && typeof value === 'object') {
     for (const [key, item] of Object.entries(value)) {
-      if (key === 'repository' && typeof item === 'string') found.push(item);
+      if (['repository', 'about'].includes(key) && typeof item === 'string') found.push(item);
       else repositoriesIn(item, found);
     }
   }

@@ -133,11 +133,11 @@ function showRoute() {
 function renderMetrics(campaigns = state.supervisor.campaigns, shown = []) {
   const entries = state.roadmap.entries;
   const agents = campaigns.flatMap((c) => c.agents);
-  // Everything listed under "Needs you": owner reviews, decisions, stopped work, a stopped supervisor and an unreadable
-  // inbox. A pause by itself is not listed: the campaign card shows it.
+  // The owner actions under "Needs you": reviews, decisions, stopped work and a stopped supervisor. A supervisor fault and an
+  // unreadable inbox are listed but not counted: they are not the owner's to do. A pause by itself is not listed.
   // A published step whose merge is still being checked is never counted as nothing.
   // "Nothing" is only about what blocks on the owner: reports to read and releases are named after it.
-  const owner = state.owner ?? { items: [], unknownResults: 0, also: null }, attention = owner.items.length, unknown = owner.unknownResults;
+  const owner = state.owner ?? { count: 0, unknownResults: 0, also: null }, attention = owner.count, unknown = owner.unknownResults;
   const available = state.supervisor.available;
   const verdicts = agents.map((agent) => agentVerdict(agent)[0]);
   const metrics = [
@@ -671,8 +671,8 @@ const needsItem = (item) => el('li', { class: `needs-item ${item.kind}` },
   item.evidence ? disclosure(`needs/${item.link?.url ?? item.text}`, el('span', { class: 'evidence' }, item.evidence),
     el('p', { class: 'needs-detail' }, item.detail)) : null,
   ...item.points.map((point) => el('div', { class: 'needs-point' }, point.link ? link(`${point.link.label} ↗`, point.link.url, 'needs-link') : null, el('span', {}, point.text))),
-  // Under "AIWorks itself", an item about one project's work still names that project.
-  el('div', { class: 'subtext' }, [item.system && item.repository ? `Project ${projectName(item.repository)}` : null,
+  // Under "AIWorks itself", an item about one project's work still names that project (`about`, never counted for it).
+  el('div', { class: 'subtext' }, [item.about ? `Project ${projectName(item.about)}` : null,
     item.campaignId ? campaignContext(item.campaignId) : null].filter(Boolean).join(' · ')));
 
 /**
@@ -680,17 +680,17 @@ const needsItem = (item) => el('li', { class: `needs-item ${item.kind}` },
  * last), with its count and its items in today's order.
  */
 const needsGroup = (group) => el('section', { class: 'needs-group', 'aria-labelledby': `needs-group-${group.key}`, 'data-focus-scope': `needs/${group.key}` },
-  el('h3', { id: `needs-group-${group.key}`, class: 'section-title' }, group.project ? routeLink(group.name, { screen: 'project', project: group.project }) : group.name, ` (${group.count})`),
+  el('h3', { id: `needs-group-${group.key}`, class: 'section-title' }, group.project ? routeLink(group.name, { screen: 'project', project: group.project }) : group.name, NEEDS.groupCount(group.count, group.notCounted)),
   el('ul', { class: 'needs-list' }, ...group.items.map(needsItem)));
 
 /** Needs me: what is waiting for the owner, grouped by project, in plain words, each with the link to act on. */
 function needsYou() {
   const owner = state.owner;
   if (!owner?.available) return null;
-  const { headline, items, groups = [], unknownResults: unknown, also, reply } = owner;
+  const { headline, count, groups = [], unknownResults: unknown, also, reply } = owner;
   // aiworks#18: a stopped supervisor leads, with the time it last renewed its leases.
   const controller = state.supervisor.controller;
-  return el('section', { class: `needs${items.length ? '' : unknown ? ' checking' : ' calm'}`, 'aria-labelledby': 'needs-title' },
+  return el('section', { class: `needs${count ? '' : unknown ? ' checking' : ' calm'}`, 'aria-labelledby': 'needs-title' },
     controller?.stopped ? el('p', { class: 'needs-stopped' }, NEEDS.banner(controller.lastLeaseRenewalAt, { dateTime }, controller.stopRequested)) : null,
     el('div', { class: 'needs-head' }, el('h2', { id: 'needs-title' }, headline),
       unknown ? el('span', { class: 'needs-unknown' }, `Merge of ${unknown} published step${unknown === 1 ? '' : 's'} being checked`) : null),
