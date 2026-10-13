@@ -134,11 +134,12 @@ export function treeCounts({ git = ['git'], mirrorRoot, sha, gitEnv }) {
 // AIWorks owns; its work tree is AIWorks's copy, never the source. Import reads the owner's folder (directory listings,
 // lstat and file content) and writes only the copy: no Git command runs in the source or is given it as a work tree,
 // and the folder's `.gitignore` files are matched inside the copy (`git check-ignore --no-index`). Commits use plumbing
-// (`write-tree`, `commit-tree`, `update-ref`), so no hook can run; the repository is created with no template and so
-// has no hooks either.
+// (`write-tree`, `commit-tree`), so no hook can run, and the repository is created with no template, so it has no hooks.
+// The copy's HEAD names a branch that is never created, so `git branch -f` can move aiworks/baseline to each commit.
 export const SNAPSHOT_DIR = 'snapshot';
 export const BASELINE_BRANCH = 'aiworks/baseline';
 const BASELINE_REF = `refs/heads/${BASELINE_BRANCH}`;
+const IMPORT_HEAD = 'refs/heads/aiworks/import';
 const MANIFESTS_DIR = 'manifests';
 // The copy's own attributes win over any .gitattributes in the folder: content is stored byte for byte (design 5.2).
 const SNAPSHOT_ATTRIBUTES = '* -text -eol -filter -ident\n';
@@ -196,10 +197,10 @@ function ensureSnapshot(git, mirrorRoot, gitEnv) {
   if (!existsSync(join(snapshot, '.git'))) {
     mkdirSync(snapshot, { recursive: true });
     mustGit(git, ['init', '-q', '--template=', snapshot], { gitEnv }, 'create the copy');
-    mustGit(git, ['-C', snapshot, 'symbolic-ref', 'HEAD', BASELINE_REF], { gitEnv }, 'name the copy branch');
   } else if (mustGit(git, ['-C', snapshot, 'rev-parse', '--is-bare-repository'], { gitEnv }, 'read the copy').trim() !== 'false') {
     throw new MirrorError('MIRROR_FAILED', 'the managed copy is not a normal repository');
   }
+  mustGit(git, ['-C', snapshot, 'symbolic-ref', 'HEAD', IMPORT_HEAD], { gitEnv }, 'point the copy HEAD away from aiworks/baseline');
   mkdirSync(join(snapshot, '.git', 'info'), { recursive: true });
   writeFileSync(join(snapshot, '.git', 'info', 'attributes'), SNAPSHOT_ATTRIBUTES);
   mustGit(git, ['-C', snapshot, 'config', 'core.autocrlf', 'false'], { gitEnv }, 'configure the copy');
@@ -336,6 +337,6 @@ export function syncFolderSnapshot({ git = ['git'], mirrorRoot, sourceRoot, pare
     { gitEnv }, 'commit the copy').trim();
   mkdirSync(join(mirrorRoot, MANIFESTS_DIR), { recursive: true });
   writeFileSync(join(mirrorRoot, MANIFESTS_DIR, `${head}.json`), JSON.stringify(rows));
-  mustGit(git, [...repo, 'update-ref', BASELINE_REF, head], { gitEnv }, 'move aiworks/baseline');
+  mustGit(git, [...repo, 'branch', '-f', BASELINE_BRANCH, head], { gitEnv }, 'move aiworks/baseline');
   return { snapshotPath: snapshot, head, committed: true, ...counts };
 }

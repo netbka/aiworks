@@ -126,7 +126,7 @@ test('a plain folder connects: the copy holds the included files byte for byte, 
   assert.ok(!inside(saved.mirror_root, r.root) && !inside(r.root, saved.mirror_root), 'the copy and the folder never contain each other');
   const repo = snapshotRepo(saved);
   assert.equal(git(repo, 'rev-parse', '--is-bare-repository'), 'false');
-  assert.equal(git(repo, 'symbolic-ref', 'HEAD'), `refs/heads/${BASELINE_BRANCH}`);
+  assert.equal(git(repo, 'for-each-ref', '--format=%(refname)', 'refs/heads'), `refs/heads/${BASELINE_BRANCH}`, 'the one branch is aiworks/baseline');
   assert.equal(git(repo, 'rev-parse', BASELINE_BRANCH), saved.current_baseline.commit);
   assert.equal(git(repo, 'remote'), '', 'the copy has no remote');
   assert.equal(existsSync(join(repo, '.git', 'hooks')), false, 'the copy has no hooks');
@@ -375,6 +375,7 @@ test('tampering with aiworks/baseline gives MIRROR_CHANGED until Rebuild copy', 
   writeFileSync(join(repo, 'planted.txt'), 'planted\n');
   git(repo, 'add', 'planted.txt');
   git(repo, '-c', 'user.name=X', '-c', 'user.email=x@example.invalid', 'commit', '-q', '-m', 'tamper');
+  git(repo, 'branch', '-f', BASELINE_BRANCH, 'HEAD');
   const checked = r.check(saved.id);
   assert.equal(checked.code, 'MIRROR_CHANGED');
   assert.equal(checked.status, 'needs-setup');
