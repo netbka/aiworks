@@ -162,7 +162,7 @@ test('CONFIG_CONFLICT raises the B2 blocker and does not dispatch', async (t) =>
   assert.equal(blocker?.kind, 'project-connection');
   assert.equal(blocker.class, 'B2');
   assert.equal(blocker.code, 'CONFIG_CONFLICT');
-  assert.match(blocker.reason, /Settings point example-org\/SampleApp to .*, but this project is at .*other-checkout/);
+  assert.match(blocker.reason, /Settings point example-org\/sampleapp to .*, but this project is at .*other-checkout/);
   assert.equal(store.all('SELECT id FROM operations').length, 0);
   assert.equal(controller.inBase(decl, 'a'.repeat(40)), false, 'local base reads skip a conflicting checkout');
 
