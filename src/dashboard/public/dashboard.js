@@ -1,6 +1,6 @@
 import { formatRoute, globalOf, resolveRoute, tabOf } from '/router.mjs';
 // The state copy of OWNER_WORKSPACE §7 and the Now screen (slice S4); the server serves src/dashboard/copy.mjs here.
-import { nowView } from '/copy.mjs';
+import { COMMANDS, DIALOGS, NEEDS, costRunsLine, nowView, workLine } from '/copy.mjs';
 
 const $ = (selector) => document.querySelector(selector);
 const names = { done: 'Done', blocked: 'Blocked', unknown: 'Unknown',
@@ -83,10 +83,11 @@ const panel = (title, description, body, action) => el('section', { class: 'pane
 const table = (headers, rows) => el('div', { class: 'table-scroll' }, el('table', {},
   el('thead', {}, el('tr', {}, ...headers.map((text) => el('th', { scope: 'col' }, text)))), el('tbody', {}, ...rows)));
 const cell = (...children) => el('td', {}, ...children);
-const notice = (text, retry) => {
+const notice = (text, retry, detail = null) => {
   const node = $('#notice'); node.hidden = false;
   node.replaceChildren(document.createTextNode(text));
-  if (retry) node.append(button('Retry same command', retry, 'secondary small'));
+  if (retry) node.append(button(COMMANDS.retry, retry, 'secondary small'));
+  if (detail) node.append(el('details', {}, el('summary', {}, COMMANDS.details), el('p', { class: 'subtext' }, detail)));
 };
 
 /** A link to another screen of this page: a real link, so it opens in a new tab and Back works. */
@@ -200,7 +201,7 @@ const verdictExplanation = () => el('details', { class: 'explain' }, el('summary
 /** Shown once per page: what provider waits mean and what they never do. */
 const providerNote = () => el('div', { class: 'notes' }, 'Provider account balances are not queried: a provider failure is observed evidence, not a measured balance. ',
   'Switching to the next AI provider never overrides a permission denial',
-  state.supervisor.campaigns.some((c) => c.maxWorkerRuns !== null) ? ' or raises a campaign’s run cap.' : '.');
+  state.supervisor.campaigns.some((c) => c.maxWorkerRuns !== null) ? ' or raises the run limit of a piece of work.' : '.');
 
 function providerStatus(c) {
   const labels = { running: 'In use now', idle: 'Not in use', cooldown: 'Waiting', unavailable: 'Unavailable',
@@ -293,38 +294,12 @@ function controlsNote(c) {
   if (!state.supervisor.available) return 'Controls are off: the supervisor state is unavailable right now.';
   if (offline) return 'Controls are off: this page lost its connection to the dashboard.';
   if (sending) return 'Sending your command…';
-  return { finished: 'Controls are off: every step of this campaign is finished.', cancelled: 'Controls are off: this campaign was cancelled.',
+  return { finished: 'Controls are off: every step of this work is finished.', cancelled: 'Controls are off: this work was cancelled.',
     'cancel-requested': 'Controls are off: cancellation is in progress.' }[c.control] ?? null;
 }
 
-/** The campaign's state in one sentence, with the host named and liveness reconciled with the agents' own records. */
-function campaignNext(c) {
-  const owner = ownerCampaign(c), host = state.host?.name ?? 'its computer';
-  const active = c.agents[0], activeTask = active ? c.tasks.find((task) => task.id === active.taskId) : null;
-  // A neutral state, not an owner item: who paused is not recorded, so the reason is shown as given and nothing is inferred.
-  if (c.control === 'paused') {
-    const supervisor = ['stopped', 'agent-working-supervisor-silent'].includes(owner?.liveness)
-      ? ` · the supervisor on ${host} is not running${owner.lastCheckIn ? ` (last check-in about ${timeOnly(owner.lastCheckIn)})` : ''}` : '';
-    return `Paused${c.pausedAt ? ` since ${dateTime(c.pausedAt)}` : ''} · no new work starts; a running agent may finish${c.pausedReason ? ` · reason given: “${c.pausedReason}”` : ''}${supervisor}`;
-  }
-  if (c.control === 'cancel-requested') return 'Cancellation requested · waiting for the supervisor';
-  if (c.control === 'cancelled') return 'Cancelled';
-  // Built by the owner view: calm only when every step is merged or a report.
-  if (c.control === 'finished') return owner?.finished ?? 'All steps are finished';
-  if (owner?.liveness === 'late') return `The supervisor on ${host} is late checking in (last at about ${timeOnly(owner.lastCheckIn)}); no action yet: this is normal for a few minutes during a restart or an upgrade`;
-  if (owner?.liveness === 'awaiting-pickup') return `Registered at about ${timeOnly(owner.registeredAt)}; waiting for the supervisor on ${host} to pick it up · no action yet`;
-  if (owner?.liveness === 'agent-working-supervisor-silent') return `An agent is still working, but the supervisor on ${host} stopped checking in at about ${timeOnly(owner.lastCheckIn)}`;
-  if (!c.controllerLive) return `The supervisor on ${host} is not running this campaign${owner?.lastCheckIn ? ` (last check-in about ${timeOnly(owner.lastCheckIn)})` : ''}`;
-  if (c.blocker) return `Stopped (${c.blockerClass ?? c.blocker}): ${c.blockerReason ?? c.blocker}`;
-  if (active) return `${active.role === 'Verifier' ? 'Independently checking' : 'Building'} ${active.taskId}: ${activeTask?.outcome ?? activeTask?.title ?? ''}`;
-  if (['provider-quota', 'provider-availability'].includes(c.waitingReason)) return `Waiting for an AI provider to become available again · next check ${dateTime(c.nextWakeupAt)} · no action needed`;
-  if (['blocked-child', 'blocked-owner-decision', 'blocked-owner-action', 'blocked-external'].includes(c.status)) {
-    return `Stopped · no agent will start until you act. ${c.stopReasons?.length ? c.stopReasons.join(' | ') : 'A step is blocked; see the steps.'}`;
-  }
-  // The supervisor's own next action (for example, waiting for dependencies to be merged), when it has one.
-  if (c.nextAction) return c.nextAction;
-  return c.nextWakeupAt ? `Next check ${dateTime(c.nextWakeupAt)}` : 'Waiting for the next step to become ready';
-}
+/** The work's state in one sentence, in owner words (the copy module), with liveness reconciled with the agents' own records. */
+const campaignNext = (c) => workLine(c, ownerCampaign(c), { time: timeOnly, dateTime });
 
 const livenessNames = { running: 'Supervisor running', late: 'Supervisor checking in late', 'awaiting-pickup': 'Waiting for the supervisor',
   'agent-working-supervisor-silent': 'Agent working · supervisor silent', stopped: 'Supervisor not running' };
@@ -376,21 +351,24 @@ function campaignCard(c, expanded = true) {
   const { cost, body } = costNotes(c);
   card.append(disclosure(`${c.id}/costs`, `Runs, cost and AI providers · ${plural(c.runsUsed, 'run')} · ${cost}`, body));
   if (c.instructions?.length) card.append(disclosure(`${c.id}/instructions`, `Your instructions to agents (${c.instructions.length})`,
-    el('div', { class: 'instruction-list' }, ...c.instructions.map((item) => instructionReceipt(item)))));
+    el('div', { class: 'instruction-list' }, ...c.instructions.map((item) => instructionReceipt(item, c)))));
   return card;
 }
 
-function instructionReceipt(item) {
-  const role = roleName(item.role);
+/** A step named by what it delivers, for receipts and notices: never its ID. */
+const stepName = (campaignId, taskId) => { const task = campaignById(campaignId)?.tasks.find((t) => t.id === taskId); return task ? `“${task.outcome ?? task.title}”` : 'this step'; };
+
+function instructionReceipt(item, c) {
+  const role = roleName(item.role), step = stepName(c.id, item.taskId);
   const steps = [
     receiptStep(true, 'Received', `stored by the supervisor ${dateTime(item.at)}`),
     item.status === 'attached' ? receiptStep(true, 'Read', `by the ${role} (${provider(item.executor)}) ${dateTime(item.attachedAt)}; it is in that agent's instructions`)
-      : item.status === 'queued' ? receiptStep(false, 'Waiting', `delivered to the next ${role} run of ${item.taskId}; a running agent is not interrupted`)
-        : receiptStep(false, 'Not delivered', item.status === 'outdated' ? 'the campaign authorization changed before an agent ran' : 'no further run of this step is scheduled', 'failed'),
+      : item.status === 'queued' ? receiptStep(false, 'Waiting', `delivered to the next ${role} run of ${step}; a running AI worker is not interrupted`)
+        : receiptStep(false, 'Not delivered', item.status === 'outdated' ? 'the approved goal or limits changed before an AI worker ran' : 'no further run of this step is scheduled', 'failed'),
     item.status === 'attached' ? receiptStep(item.runState === 'finished', item.runState === 'finished' ? 'Agent finished' : 'Agent working',
       item.runState === 'finished' ? `outcome: ${terminalLabels[item.runOutcome] ?? outcomeLabels[item.runOutcome] ?? item.runOutcome ?? 'unknown'}` : 'its result will appear here') : null,
   ];
-  return el('article', { class: 'receipt' }, el('strong', {}, `${item.taskId} · ${role}`), el('p', {}, item.text), el('ol', { class: 'receipt-steps' }, ...steps));
+  return el('article', { class: 'receipt' }, el('strong', {}, `${step} · ${role}`), el('p', {}, item.text), el('ol', { class: 'receipt-steps' }, ...steps));
 }
 
 function receiptStep(done, label, detail, tone) {
@@ -442,7 +420,7 @@ function announce(title, body) {
 function trackReceipts() {
   const current = new Map();
   for (const m of state.supervisor.coordinator?.messages ?? []) current.set(`m${m.id}`, [m.state, m]);
-  for (const c of state.supervisor.campaigns) for (const i of c.instructions ?? []) current.set(`i${c.id}:${i.id}`, [i.status === 'attached' ? `attached:${i.runState}` : i.status, i]);
+  for (const c of state.supervisor.campaigns) for (const i of c.instructions ?? []) current.set(`i${c.id}:${i.id}`, [i.status === 'attached' ? `attached:${i.runState}` : i.status, { ...i, step: stepName(c.id, i.taskId) }]);
   if (receiptsPrimed) for (const [key, [now, item]] of current) {
     const before = seenReceipts.get(key);
     if (before === now) continue;
@@ -451,8 +429,8 @@ function trackReceipts() {
       else if (now === 'read') announce(`Message #${item.id} read`, 'The coordinator agent started working on it.');
       else if (now === 'answered') announce(`Message #${item.id} answered`, item.replyUrl ? 'The reply is posted.' : 'The reply is being posted.');
       else if (now === 'failed') announce(`Message #${item.id} not answered`, 'Two reads ended without an answer.');
-    } else if (now === 'attached:dispatched' || now === 'attached:recorded') announce(`Instruction for ${item.taskId} read`, `The ${roleName(item.role)} (${provider(item.executor)}) received it.`);
-    else if (now === 'attached:finished') announce(`The agent that read your ${item.taskId} instruction finished`, `Outcome: ${terminalLabels[item.runOutcome] ?? outcomeLabels[item.runOutcome] ?? item.runOutcome ?? 'unknown'}.`);
+    } else if (now === 'attached:dispatched' || now === 'attached:recorded') announce(`Guidance for ${item.step} read`, `The ${roleName(item.role)} (${provider(item.executor)}) received it.`);
+    else if (now === 'attached:finished') announce(`The AI worker that read your guidance for ${item.step} finished`, `Outcome: ${terminalLabels[item.runOutcome] ?? outcomeLabels[item.runOutcome] ?? item.runOutcome ?? 'unknown'}.`);
   }
   for (const [key, [value]] of current) seenReceipts.set(key, value);
   receiptsPrimed = true;
@@ -580,8 +558,8 @@ function saveDraft() {
 function openInstructions(c, task = null) {
   instructionCampaign = c; instructionAddress = current.address;
   const draft = drafts.get(instructionAddress, `instruction:${c.id}`);
-  $('#instruction-campaign').textContent = c.id;
-  $('#instruction-task').replaceChildren(...c.tasks.filter((t) => !['done', 'verified'].includes(t.state)).map((t) => el('option', { value: t.id }, `${t.id} — ${t.title}`)));
+  $('#instruction-campaign').textContent = campaignTitle(c);
+  $('#instruction-task').replaceChildren(...c.tasks.filter((t) => !['done', 'verified'].includes(t.state)).map((t) => el('option', { value: t.id }, t.outcome ?? t.title)));
   if (draft && c.tasks.some((t) => t.id === draft.taskId && !['done', 'verified'].includes(t.state))) $('#instruction-task').value = draft.taskId;
   else if (task) $('#instruction-task').value = task.id;
   $('#instruction-role').value = draft?.role ?? (c.tasks.find((t) => t.id === $('#instruction-task').value)?.state === 'implemented' ? 'verify' : 'implement');
@@ -659,8 +637,8 @@ function roadmapView() {
 }
 
 const campaignById = (id) => state.supervisor.campaigns.find((c) => c.id === id);
-/** "Dyk: <purpose> · campaign <id>", without repeating the id when the title is the id. */
-const campaignContext = (id) => { const c = campaignById(id), title = c ? campaignTitle(c) : id; return title.includes(id) ? title : `${title} · campaign ${id}`; };
+/** "Dyk: <purpose>": the work a row belongs to. Its ID is in the work's Details on Now and in Diagnostics. */
+const campaignContext = (id) => { const c = campaignById(id); return c ? campaignTitle(c) : id; };
 /** Campaign order from the owner view: cards for campaigns with something for the owner, then active ones; then finished ones. */
 function campaignLayout() {
   const layout = state.owner?.layout;
@@ -672,7 +650,7 @@ function campaignLayout() {
 /** Finished and cancelled campaigns with nothing listed for the owner: one line each, their steps one click away. */
 function finishedList(list) {
   if (!list.length) return null;
-  return panel(`Finished campaigns (${list.length})`, 'Most recent first. Each line says where that campaign’s results stand.',
+  return panel(`Finished work (${list.length})`, 'Most recent first. Each line says where that work’s results stand.',
     el('div', { class: 'finished-list' }, ...list.map((c) => el('div', { class: 'finished-row', 'data-focus-scope': c.id },
       el('div', { class: 'row-line' }, el('strong', { class: 'finished-title' }, campaignTitle(c)), link(`tracking issue #${c.trackingIssue ?? ''} ↗`, c.trackingUrl)),
       el('div', { class: 'subtext' }, ownerCampaign(c)?.outcome ?? (c.control === 'cancelled' ? 'Cancelled' : 'All steps are finished')),
@@ -713,8 +691,7 @@ function needsYou() {
   // aiworks#18: a stopped supervisor leads, with the time it last renewed its leases.
   const controller = state.supervisor.controller;
   return el('section', { class: `needs${items.length ? '' : unknown ? ' checking' : ' calm'}`, 'aria-labelledby': 'needs-title' },
-    controller?.stopped ? el('p', { class: 'needs-stopped' }, `Supervisor stopped. Last lease renewal ${dateTime(controller.lastLeaseRenewalAt)}${
-      controller.stopRequested ? ' (STOP file present: an upgrade or an operator stop)' : ''}.`) : null,
+    controller?.stopped ? el('p', { class: 'needs-stopped' }, NEEDS.banner(controller.lastLeaseRenewalAt, { dateTime }, controller.stopRequested)) : null,
     el('div', { class: 'needs-head' }, el('h2', { id: 'needs-title' }, headline),
       unknown ? el('span', { class: 'needs-unknown' }, `Merge of ${unknown} published step${unknown === 1 ? '' : 's'} being checked`) : null),
     // Not blocking, never "nothing": posted reports and merged work ready for release.
@@ -762,7 +739,8 @@ const projectAction = (action) => action.url ? link(`${action.label} ↗`, actio
 function projectsScreen() {
   if (!state.supervisor.available) return [unavailable()];
   const projects = projectList(), saved = readLastProject(), last = projects.find((project) => sameProject(project.id, saved))?.id;
-  if (!projects.length) return [empty('No projects yet.', 'Projects appear here when this computer’s AIWorks settings list a repository. Adding a project from this page is not built yet.')];
+  // "Configuration file", never "settings": the Settings screen cannot list a repository (aiworks#11 review F18).
+  if (!projects.length) return [empty('No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository. Adding a project from this page is not built yet.')];
   return [last ? el('p', { class: 'continue' }, routeLink(`Continue with ${projectName(last)} →`, { screen: 'project', project: last }, 'continue-link')) : null,
     sinceSummary(),
     panel('Your projects', 'One row per repository this computer works on. Those that need you come first, then those with work running.',
@@ -772,7 +750,7 @@ function projectsScreen() {
         el('div', { class: 'row-line' }, badge(stateTones[project.state.key] ?? 'unknown', stateWords[project.state.key] ?? 'Not known'), el('span', {}, project.state.text)),
         projectAction(project.action),
         disclosure(`project/${project.id}`, 'Details', el('div', { class: 'subtext' }, [`Repository ${project.repository}`, `owner ${project.details.owner}`,
-          plural(project.details.work, 'piece of work', 'pieces of work'), project.details.configured ? 'listed in this computer’s settings' : null].filter(Boolean).join(' · ')))))))].filter(Boolean);
+          plural(project.details.work, 'piece of work', 'pieces of work'), project.details.configured ? 'listed in the AIWorks configuration file on this computer' : null].filter(Boolean).join(' · ')))))))].filter(Boolean);
 }
 
 /**
@@ -787,8 +765,8 @@ function workerLine(w) {
       : `${w.credits ? 'It reported exhausted credits or a billing limit. ' : ''}AIWorks tries it again at ${timeOnly(w.retryAt)}. No action needed.` : null,
     w.state === 'unavailable' ? `${w.availabilityReason ?? 'The supervisor recorded it as unavailable'}.` : null,
     w.state === 'host-unavailable' ? 'Its native sandbox does not support Windows. Work runs without it here; no action needed.' : null,
-    w.state === 'not-set-up' ? 'This computer’s AIWorks settings set no command for it, so no work runs on it here.' : null,
-    w.setUp === 'default' && w.state !== 'host-unavailable' ? 'Uses the claude command on this computer’s PATH; AIWorks’ settings set none.' : null,
+    w.state === 'not-set-up' ? 'The AIWorks configuration file on this computer sets no command for it, so no work runs on it here.' : null,
+    w.setUp === 'default' && w.state !== 'host-unavailable' ? 'Uses the claude command on this computer’s PATH; the AIWorks configuration file sets none.' : null,
     w.buildLimit === 'checks-only' && !['host-unavailable', 'not-set-up'].includes(w.state) ? 'Can check and report here, but cannot build code here.' : null,
     w.buildLimit === 'web-only' ? 'Runs only browser checks of web pages.' : null,
     w.usedBy ? `Allowed in ${plural(w.usedBy, 'piece')} of work.` : 'No current work allows it.'].filter(Boolean);
@@ -816,7 +794,7 @@ const whenAt = (time) => new Date(time).toDateString() === new Date().toDateStri
  */
 function mergeFreshness(repo, now = Date.now()) {
   if (!repo) return 'No published step to check yet.';
-  if (!repo.configured) return 'Merges are not checked: this computer’s settings set no local checkout for it.';
+  if (!repo.configured) return 'Merges are not checked: the AIWorks configuration file on this computer sets no local checkout for it.';
   if (repo.error) return repo.fetchedAt ? `Merge check from ${whenAt(repo.fetchedAt)}; the last fetch failed, retrying within 5 minutes.`
     : 'Merges not checked yet: the first fetch failed, retrying within 5 minutes.';
   if (!repo.fetchedAt) return 'Merges not checked yet; the first check is running.';
@@ -854,14 +832,14 @@ function settingsScreen() {
     active.length ? disclosure('settings/workers', 'Details', el('ul', { class: 'settings-links' }, ...active.map((c) => el('li', {}, el('strong', {}, campaignTitle(c)),
       el('div', { class: 'subtext' }, `Tried in this order: ${c.executors.map(provider).join(' → ')}`),
       el('div', { class: 'subtext' }, `Supervisor version ${c.controllerRevision ? String(c.controllerRevision).slice(0, 7) : 'not known (not running)'}`))))) : null,
-    el('p', { class: 'subtext' }, `Commands set in this computer’s AIWorks settings: ${settings.commands.length ? settings.commands.join(', ') : 'none'}.`)));
+    el('p', { class: 'subtext' }, `Commands set in the AIWorks configuration file on this computer: ${settings.commands.length ? settings.commands.join(', ') : 'none'}.`)));
   const projects = projectList();
   const connections = panel('Projects', 'Each project’s kind and whether this computer is connected to it.', projects.length
     ? el('ul', { class: 'settings-links' }, ...projects.map((project) => el('li', { 'data-focus-scope': `connection/${project.id}` },
       el('strong', {}, `${project.name} · ${project.kind}`),
-      el('div', { class: 'subtext' }, project.details.configured ? 'Listed in this computer’s AIWorks settings.' : 'Has work on this computer, but its AIWorks settings do not list it.'),
+      el('div', { class: 'subtext' }, project.details.configured ? 'Listed in the AIWorks configuration file on this computer.' : 'Has work on this computer, but the AIWorks configuration file does not list it.'),
       el('div', { class: 'subtext' }, mergeFreshness(mergeRow(project.repository))))))
-    : empty('No projects yet.', 'Projects appear here when this computer’s AIWorks settings list a repository.'));
+    : empty('No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository.'));
   return [computer, workers, connections, releasePanel(settings.releases), settingsLinks()];
 }
 
@@ -921,7 +899,7 @@ function runOrder(c) {
 const waitLine = (wait) => wait ? `${wait.text}${wait.retryAt ? ` · next try ${timeOnly(wait.retryAt)}` : ''}` : null;
 const commandsOff = () => sending || offline || !state.supervisor.available;
 function askCancel(c) {
-  pendingCancel = c; $('#cancel-description').textContent = `${c.id} · ${c.repository}`; $('#cancel-dialog').showModal();
+  pendingCancel = c; $('#cancel-description').textContent = campaignTitle(c); $('#cancel-dialog').showModal();
 }
 const resumeButton = (c) => c.controls?.primary === 'resume' ? button('Resume', () => command(c, 'resume'), '', commandsOff()) : null;
 
@@ -988,7 +966,7 @@ function stepScreen(project, c, task) {
       p ? el('p', { class: 'subtext' }, `From the worker’s own record: ${plural(p.turns, 'turn')} · ${plural(p.toolCalls, 'action')} · last activity ${timeAgo(p.lastActivityAt)}`) : null,
       last ? el('p', { class: 'subtext' }, `Last result: ${last}`) : null,
       primary,
-      guidance.length ? el('div', { class: 'instruction-list' }, el('h3', { class: 'section-title' }, 'Guidance you sent'), ...guidance.map((item) => instructionReceipt(item))) : null,
+      guidance.length ? el('div', { class: 'instruction-list' }, el('h3', { class: 'section-title' }, 'Guidance you sent'), ...guidance.map((item) => instructionReceipt(item, c))) : null,
       disclosure(`step/${c.id}/${task.id}/details`, `Details · ${plural(attempts.length, 'attempt')}`, el('div', {},
         attempts.length ? el('ol', { class: 'receipt-steps' }, ...attempts.map((a) => el('li', {}, attemptText(a), a.id ? el('div', { class: 'subtext' }, `Run ${a.id}`) : null)))
           : el('p', { class: 'subtext' }, 'No attempt has run yet.'),
@@ -1050,7 +1028,7 @@ function costScreen(project, all) {
     : 'No cost reported for this project yet';
   const lines = [total.unreportedRuns ? `${plural(total.unreportedRuns, 'run')} did not report a cost, so the real total is ${total.reportedUsd !== null ? 'higher' : 'not known'}.` : null,
     total.runningRuns ? `${plural(total.runningRuns, 'run')} still running; ${total.runningRuns === 1 ? 'its' : 'their'} cost is not known yet.` : null,
-    `${plural(total.runs, 'run')} in ${plural(total.works, 'piece')} of work.`].filter(Boolean);
+    costRunsLine(total)].filter(Boolean);
   const work = (c) => el('section', { class: 'panel', 'data-focus-scope': `cost/${c.id}` },
     el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, campaignTitle(c)),
       el('p', {}, `${plural(c.runsUsed, 'run')} · ${costText({ runs: c.runsUsed, ...c.cost })}`))),
@@ -1105,7 +1083,7 @@ function render() {
   else if (diagnostics) content.replaceChildren(trackOverview(), roadmapView(), workView(), mergeChecksPanel(),
     panel('Execution journal', 'Latest 80 events · raw agent transcripts and secrets are never shown', activityList()));
   else if (route.screen === 'settings') content.replaceChildren(...settingsScreen());
-  else if (route.screen === 'add-project') content.replaceChildren(empty('Adding a project from this page is not built yet.', 'Projects appear on Projects when this computer’s AIWorks settings list a repository.'));
+  else if (route.screen === 'add-project') content.replaceChildren(empty('Adding a project from this page is not built yet.', 'Projects appear on Projects when the AIWorks configuration file on this computer lists a repository.'));
   else if (route.screen === 'start' && refreshStart(content, route.project)) { /* the form stays as the owner typed it */ }
   else if (route.project) content.replaceChildren(...projectScreen(route));
   else content.replaceChildren(...projectsScreen());
@@ -1130,7 +1108,7 @@ function render() {
 async function post(path, body) {
   const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Dashboard-CSRF': csrf }, body: JSON.stringify(body) });
   const value = await response.json();
-  if (!response.ok) throw Object.assign(new Error(value.error), { known: true });
+  if (!response.ok) throw Object.assign(new Error(value.error), { known: true, detail: value.detail ?? null });
   return value;
 }
 
@@ -1138,13 +1116,11 @@ async function deliver(payload, draftAddress = null) {
   sending = true; render();
   try {
     const result = await post('/api/commands', payload);
-    const messages = { pause: 'Campaign paused. New dispatch is stopped; running work may finish.', resume: 'Campaign resumed with its existing scope and budget.',
-      instruct: 'Instruction received by the supervisor. It is read by the selected role’s next run on this task; the receipt on the campaign card shows Received, Read and the worker’s outcome.',
-      recheck: 'Recheck queued. The controller will reassess the selected work; limits and verification still apply.', cancel: 'Cancellation requested. The controller will stop its owned workers.' };
-    notice(result.duplicate ? 'This command was already accepted; it was not applied again.' : messages[payload.action]);
+    notice(result.duplicate ? COMMANDS.duplicate : COMMANDS.accepted[payload.action]);
     if (payload.action === 'instruct' && draftAddress) drafts.delete(draftAddress, `instruction:${payload.campaignId}`);
   } catch (error) {
-    notice(error.known ? error.message : 'Delivery could not be confirmed. Retry this same command safely.', error.known ? null : () => deliver(payload, draftAddress));
+    // A refusal says what happened and what to do; the machine's reason is behind Details.
+    notice(error.known ? error.message : COMMANDS.unconfirmed, error.known ? null : () => deliver(payload, draftAddress), error.known ? error.detail : null);
   } finally { sending = false; await poll(); }
 }
 
@@ -1195,6 +1171,10 @@ document.addEventListener('click', (event) => {
   event.preventDefault();
   if (resolveRoute(anchor.getAttribute('href')).address !== current.address) go(anchor.getAttribute('href'));
 });
+// The Cancel and guidance dialogs, worded in the copy module.
+$('#cancel-title').textContent = DIALOGS.cancelTitle; $('#cancel-text').textContent = DIALOGS.cancelText;
+$('#keep-work').textContent = DIALOGS.cancelKeep; $('#confirm-cancel').textContent = DIALOGS.cancelConfirm;
+$('#instruction-step-label').textContent = DIALOGS.guidanceStep;
 // The skip link moves focus to the content without changing the address.
 $('.skip-link').addEventListener('click', (event) => { event.preventDefault(); $('#main').focus(); });
 for (const selector of ['#search', '#track', '#status']) $(selector).addEventListener('input', () => { workLimit = 80; render(); });

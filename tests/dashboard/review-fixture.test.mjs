@@ -101,11 +101,11 @@ test('the supervisor snapshot shows one piece of work for every owner state', (t
     assert.equal(now - Date.parse(campaign(state).leaseExpiresAt) >= ago - 5000, true, state);
   }
   // §7.7 Blocked: an owner decision while another step continues, failed attempts, a recorded blocker, a supervisor fault.
-  assert.deepEqual([step('needs-decision').blocked, step('needs-decision').blockedReason], ['B3', 'the worker reported an owner-reserved decision; see the task issue']);
+  assert.deepEqual([step('needs-decision').blocked, step('needs-decision').blockedReason], ['B3', 'the AI worker needs your decision; see the step issue']);
   assert.deepEqual([step('others-continue').blocked, step('others-continue').state], [null, 'pending']);
-  assert.deepEqual(campaign('needs-decision').stopReasons, ['T1: the worker reported an owner-reserved decision; see the task issue']);
+  assert.deepEqual(campaign('needs-decision').stopReasons, ['T1: the AI worker needs your decision; see the step issue']);
   assert.deepEqual([step('failed-attempts').blocked, step('failed-attempts').attempts, step('failed-attempts').blockedReason],
-    ['stalled', 5, '5 failed attempts (last: invalid-result); recheck after fixing the cause']);
+    ['stalled', 5, '5 failed attempts (last: invalid result); check it again after fixing the cause']);
   const blocker = campaign('recorded-blocker');
   assert.deepEqual([blocker.blocker, blocker.blockerClass, blocker.blockerReason], ['executors', 'B2', 'No configured executor supports this task role']);
   assert.equal(campaign('supervisor-fault').livenessDefect, true);
@@ -156,17 +156,17 @@ test('the owner view, with the local merge check, says where every result stands
   for (const expected of [
     ['shop-search', 'review', 'Search filters'], ['shop-search', 'review', 'Sale banner'], ['shop-contracts', 'review', 'Contracts import'],
     ['notes-links', 'check', 'Link redirects'], ['notes-links', 'review', 'Footer links'], ['notes-links', 'review', 'Sitemap'],
-    ['notes-theme', 'decision', 'Dark theme'], ['notes-search', 'stopped', 'Notes search'], ['notes-deploy', 'stopped', 'notes-deploy is stopped'],
-    ['notes-health', 'controller', 'The supervisor on review-pc reports an internal problem with notes-health'],
-    ['notes-archive', 'controller', 'The supervisor on review-pc stopped running notes-archive'],
-    ['notes-tags', 'controller', 'The supervisor on review-pc stopped while notes-tags was paused'],
+    ['notes-theme', 'decision', 'Dark theme'], ['notes-search', 'stopped', 'Notes search'], ['notes-deploy', 'stopped', 'This work is stopped'],
+    ['notes-health', 'controller', 'AIWorks has a problem of its own with this work'],
+    ['notes-archive', 'controller', 'AIWorks stopped on this computer'],
+    ['notes-tags', 'controller', 'This work was paused, then AIWorks stopped on this computer'],
   ]) assert.ok(items.some((item) => JSON.stringify(item) === JSON.stringify(expected)), `Needs me lists ${expected.join(' · ')}`);
   assert.equal(items.length, 12, JSON.stringify(items));
   for (const quiet of ['shop-checkout', 'shop-reviews', 'shop-wishlist', 'recipes-import', 'recipes-tags', 'recipes-idle', 'recipes-share', 'recipes-print', 'recipes-units', 'notes-drafts', 'notes-audit']) {
     assert.ok(!items.some(([id]) => id === quiet), `${quiet} is not listed for the owner`);
   }
   assert.equal(view.headline, 'Needs you (12)');
-  assert.deepEqual(view.items.find((item) => item.text === 'Contracts import').points.map((p) => p.text).at(-1), 'T2 cannot start until you merge it.');
+  assert.deepEqual(view.items.find((item) => item.text === 'Contracts import').points.map((p) => p.text).at(-1), '“Price sync” cannot start until you merge it.');
   assert.equal(view.also.text, 'Also: 2 reports for you to read · merged work in recipes is ready; release follows its release policy');
   // Nothing claims more than the evidence: no deployed, released or live work, and notes-site is never merged.
   assert.doesNotMatch(JSON.stringify(view), /deployed|released|is live|ready to merge/i);

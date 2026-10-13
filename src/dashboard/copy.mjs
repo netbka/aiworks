@@ -39,7 +39,11 @@ const review = (number, url) => ({ label: `Review pull request #${number}`, url 
 // Locale-neutral English times, whatever the computer's own locale: "12:31" and "10 Oct 22:58".
 const TIME = (value) => new Date(value).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 const DATE_TIME = (value) => new Date(value).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).replace(',', '');
-const RESTART = 'If nobody is updating it right now, restart it there: sign in on that computer, or start the task “AIWorks Supervisor”.';
+// The dashboard reads the AIWorks records of the computer it runs on (AW-006), so the computer AIWorks runs on is always
+// "this computer"; its name is in the page header (aiworks#11 review F22).
+const RESTART = 'If nobody is updating it right now, restart it on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.';
+/** What restarts AIWorks when it has stopped (docs/SUPERVISOR.md §6), in the owner's words. */
+export const RESTART_ADVICE = RESTART;
 
 /**
  * Every state of §7, by key. `d` is the data the sentence is filled from; `f` the time formatters. Keys a slice has
@@ -50,7 +54,8 @@ const STATES = {
   'projects-empty': { section: '7.1', needsYou: false, copy: (d) => d.addProject
     // After Add project exists (OW S11, build slice UI13).
     ? ['No projects yet.', 'Add a folder on this computer. It can be a GitHub repository, a local Git repository or an ordinary folder.', { label: 'Add project', route: { screen: 'add-project' } }]
-    : ['No projects yet.', 'Projects appear here when this computer’s AIWorks settings list a repository. Adding a project from this page is not built yet.', null] },
+    // "Configuration file", never "settings": the Settings screen cannot list a repository (aiworks#11 review F18).
+    : ['No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository. Adding a project from this page is not built yet.', null] },
   'no-work': { section: '7.1', needsYou: false, copy: (d) => d.startWork
     // After Start work exists (OW S9, build slice UI10).
     ? ['No work yet.', `Tell AIWorks what you want done in ${shortName(d.project)}.`, { label: 'Start work', route: { screen: 'start', project: d.project } }]
@@ -63,15 +68,15 @@ const STATES = {
     `${d.loadedAt ? `Showing what was loaded at ${f.time(d.loadedAt)}.` : 'No state has been loaded yet.'} Buttons are off until it reconnects. Trying again every 5 seconds.`, null] },
   'unreadable': { section: '7.2', needsYou: null, copy: () => ['AIWorks can’t read its work records right now.',
     'What you see may be out of date. Buttons are off until it can read them again.', null] },
-  'supervisor-stopped': { section: '7.2', needsYou: true, copy: (d) => [`AIWorks has stopped on ${d.host ?? 'its computer'}.`, `No new step starts. ${RESTART}`, null] },
+  'supervisor-stopped': { section: '7.2', needsYou: true, copy: (d, f) => [`AIWorks has stopped on this computer${stoppedAt(d.stoppedAt, f)}.`, `No new step starts. ${RESTART}`, null] },
   'supervisor-late': { section: '7.2', needsYou: false, copy: () => ['AIWorks is a few minutes late checking in.',
     'This is normal during a restart or an update. Nothing for you to do yet.', null] },
   // §7.3 No worker
   'provider-wait': { section: '7.3', needsYou: false, copy: (d, f) => ['Waiting for an AI worker to be free.',
     `${d.retryAt ? `${providerName(d.provider)} can start again at ${f.time(d.retryAt)}. ` : ''}Work continues by itself. Nothing for you to do.`, null] },
   // "See Settings › AI workers" waits for that screen (OW S8, build slice UI9); until then the sentence says where the fix is.
-  'no-worker-can-run': { section: '7.3', needsYou: true, copy: (d) => [`No AI worker can run this work on ${d.host ?? 'this computer'}.`,
-    `${(d.reasons ?? []).map(sentence).join(' ')}${d.reasons?.length ? ' ' : ''}AIWorks can’t fix this by itself: it needs a change on that computer.`, null] },
+  'no-worker-can-run': { section: '7.3', needsYou: true, copy: (d) => ['No AI worker can run this work on this computer.',
+    `${(d.reasons ?? []).map(sentence).join(' ')}${d.reasons?.length ? ' ' : ''}AIWorks can’t fix this by itself: it needs a change on this computer.`, null] },
   'nothing-running': { section: '7.3', needsYou: false, copy: (d) => ['No AI worker is busy on this project right now.',
     `${d.next ? `“${d.next}”` : 'The next step'} starts when it is ready.`, openWork(d.project)] },
   // §7.4 became the local merge-check copy (C1). A note on the screen that uses the data; no primary action.
@@ -83,7 +88,8 @@ const STATES = {
   // §7.5 Paused: neutral, never a Needs me item by itself.
   'paused': { section: '7.5', needsYou: false, copy: (d, f) => [d.pausedAt ? `Paused since ${f.dateTime(d.pausedAt)}.` : 'Paused.',
     `No new step starts. A step already running may finish.${d.reason ? ` Reason given: “${d.reason}”.` : ''}`, { label: 'Resume', command: 'resume', campaignId: d.campaignId }] },
-  'paused-stopped': { section: '7.5', needsYou: true, copy: (d) => [`Paused, and AIWorks has stopped on ${d.host ?? 'its computer'}.`,
+  // One time per event, written the same on every screen: the pause with its date, the stop "at about" its time (F23).
+  'paused-stopped': { section: '7.5', needsYou: true, copy: (d, f) => [`${d.pausedAt ? `Paused since ${f.dateTime(d.pausedAt)}` : 'Paused'}, and AIWorks has stopped on this computer${stoppedAt(d.stoppedAt, f)}.`,
     `Nothing can resume until it runs again. ${RESTART}`, null] },
   // §7.6 Running
   'builder-working': { section: '7.6', needsYou: false, copy: (d, f) => [`Working on: ${sentence(d.step)}`,
@@ -129,6 +135,9 @@ const STATES = {
     'The checked result is ready to apply. Nothing in your folder has changed yet.', seeResults(d.project)] },
   'cancelled': { section: '7.8', needsYou: false, copy: (d) => ['Cancelled.', `${d.delivered} of ${plural(d.total, 'step')} had results before it stopped.`, seeResults(d.project)] },
 };
+
+/** "at about 02:24": when AIWorks stopped, the same words wherever that stop is said. */
+const stoppedAt = (at, f) => at ? ` at about ${f.time(at)}` : '';
 
 /** Every state key, in §7 order. */
 export const STATE_KEYS = Object.freeze(Object.keys(STATES));
@@ -186,7 +195,7 @@ const taskBy = (c, key, url) => url ? c?.tasks.find((task) => task[key] === url)
 /** The state for one Needs me item of this project. */
 function itemState(item, c, d) {
   if (item.kind === 'controller' && item.system) return ['supervisor-fault', {}];
-  if (item.kind === 'controller') return [c?.control === 'paused' ? 'paused-stopped' : 'supervisor-stopped', {}];
+  if (item.kind === 'controller') return [c?.control === 'paused' ? 'paused-stopped' : 'supervisor-stopped', { stoppedAt: item.at ?? null, pausedAt: c?.pausedAt ?? null }];
   if (item.kind === 'review') {
     const task = taskBy(c, 'resultUrl', item.link?.url), number = PR.exec(item.link?.url ?? '')?.[1];
     if (task && number) {
@@ -211,7 +220,7 @@ function itemState(item, c, d) {
         const reasons = [...new Set((c.providers ?? []).filter((p) => p.priority !== null).map((p) => p.hostLimit ?? p.availabilityReason).filter(Boolean))];
         return ['no-worker-can-run', { reasons }];
       }
-      return ['recorded-blocker', { reason: c.blockerReason ?? 'A recorded blocker stops this work', action: c.blockerAction }];
+      return ['recorded-blocker', blockerWords(c.blocker)];
     }
   }
   const [, number] = PR.exec(item.link?.url ?? '') ?? [];
@@ -319,4 +328,138 @@ export function nowView(project, data = {}, { now = Date.now(), format = {}, sta
   }
   const latest = [...campaigns].sort((a, b) => recency(b) - recency(a))[0];
   return result(make(...finishedState(latest, d)), latest);
+}
+
+/*
+ * Owner words outside the §7 states (aiworks#11 review F3, F7, F14, F22, F23 and F24): Needs me items, a piece of work's
+ * one-line state on Work, refusals and notices of commands, and the Cost summary. The machine's own words (the stop
+ * class, the AI worker's internal name, step and work IDs, the rule a refusal cites) stay in Details or Diagnostics.
+ */
+
+/** Why work is stopped by a recorded blocker, by its kind: what happened and what to do. Never the stored text. */
+export function blockerWords(kind) {
+  if (kind === 'executors') return { reason: 'No AI worker on this computer can do this step',
+    action: 'Set up an AI worker that can do it on this computer (see Settings), then choose Check again under More' };
+  if (kind === 'budget') return { reason: 'This work has used all the runs or cost it was approved for',
+    action: 'Decide whether to allow more. If you do, approve it again with higher limits' };
+  return { reason: 'AIWorks stopped this work and needs a fix on this computer',
+    action: 'See Settings › Diagnostics for what it recorded, fix it, then choose Check again under More' };
+}
+
+/**
+ * Why a step stopped, from the supervisor-known stop record of the step only (`blocked`: { class, reason }), never its
+ * free text, which may quote a worker. `rounds` is the step's repair rounds.
+ */
+export function stopReasonWords(blocked, rounds = 0) {
+  const reason = String(blocked?.reason ?? '');
+  const stuck = /^no progress: (\d+)/.exec(reason);
+  if (blocked?.class === 'B3' && stuck) return `no progress after ${plural(Number(stuck[1]), 'attempt')} that could not go on; see the step issue, then check it again`;
+  if (blocked?.class === 'B3') return /^owner-reserved/.test(reason) ? 'the AI worker needs your decision; see the step issue' : 'it needs your decision';
+  if (/^verifier still rejects/.test(reason)) return `the independent checker still rejects it after ${plural(rounds, 'repair round')}; decide whether to accept the gap, narrow the step or allow more rounds, then check it again`;
+  if (/^admission blocked/.test(reason)) return 'the rules for AI workers on this computer did not let it start';
+  const failed = /^(\d+) failed attempts; last ([a-z-]+)/.exec(reason);
+  if (failed) return `${failed[1]} failed attempts (last: ${failed[2].replaceAll('-', ' ')}); check it again after fixing the cause`;
+  return 'it stopped; see Settings › Diagnostics for what AIWorks recorded';
+}
+
+/** Needs me items about AIWorks itself and about stopped work, in the owner's words. */
+export const NEEDS = {
+  stepIssue: 'Open the step issue',
+  workStopped: 'This work is stopped',
+  recorded: 'What AIWorks recorded',
+  fault: { text: 'AIWorks has a problem of its own with this work', link: 'AIWorks issue #2',
+    point: 'Not yours to fix: it is tracked for AIWorks’ maintainers. This work may not move until it is fixed.' },
+  // The page adds "at about <time>" after the text, so the time always follows the stop, never the pause (F23).
+  silent: { text: 'An AI worker is still working, but AIWorks stopped checking in on this computer',
+    point: `Its result is collected and checked only when AIWorks runs again. ${RESTART}` },
+  notPickedUp: (paused) => ({ text: `AIWorks on this computer has not picked up this work yet${paused ? ' (it is paused)' : ''}`,
+    point: `It is approved${paused ? ' and paused' : ''}, but AIWorks has not picked it up. ${RESTART}` }),
+  stopped: (paused) => paused
+    ? { text: 'This work was paused, then AIWorks stopped on this computer', point: `No step starts while it is paused, and it can’t resume until AIWorks runs again. ${RESTART}` }
+    : { text: 'AIWorks stopped on this computer', point: `No new step starts. ${RESTART}` },
+  /** The banner when this computer's AIWorks has stopped; `at` is its last check-in. */
+  banner: (at, f, onPurpose) => `AIWorks has stopped on this computer. It last checked in ${at ? f.dateTime(at) : 'at a time not known'}${onPurpose ? ' (it was stopped on purpose: an update or its operator)' : ''}.`,
+  /** The check evidence of a step waiting for review (§2.3: "Passed the check", never "accepted"). */
+  evidence: (sha7) => ({ short: `Passed the check at ${sha7} · CI and conflicts on the PR`,
+    text: `Passed the independent check at commit ${sha7}. This dashboard does not read CI checks or conflicts; see them on the pull request before merging.` }),
+  noEvidence: { short: 'Independent check not recorded here',
+    text: 'Published by AIWorks; the independent check is not recorded here. See CI checks and conflicts on the pull request before merging.' },
+  churn: (attempts, rejections) => `Check its review history first: it took ${plural(attempts, 'try', 'tries')}${rejections ? ` and the independent checker rejected it ${plural(rejections, 'time')}` : ''} before it passed the check.`,
+  gated: (names) => `${names} cannot start until you merge it.`,
+  buildsOn: (names) => `Merging lets ${names} build on it.`,
+  startedWithout: (names, n) => `${names} already started without it, so merging now does not change ${n === 1 ? 'that step' : 'those steps'}.`,
+  nothingWaits: (rule) => `Nothing else in this work waits on it; after merging, release follows ${rule}.`,
+};
+
+/**
+ * A piece of work's state in one line, for its panel on Work. `c` is the supervisor snapshot of the work and `owner`
+ * the owner view's entry for it. Steps are named by their outcome, never by ID.
+ */
+export function workLine(c, owner = null, format = {}) {
+  const f = { time: format.time ?? TIME, dateTime: format.dateTime ?? DATE_TIME };
+  // A neutral state, not an owner item: who paused is not recorded, so the reason is shown as given and nothing is inferred.
+  if (c.control === 'paused') {
+    const stopped = ['stopped', 'agent-working-supervisor-silent'].includes(owner?.liveness) ? ` · AIWorks stopped on this computer${stoppedAt(owner.lastCheckIn, f)}` : '';
+    return `${c.pausedAt ? `Paused since ${f.dateTime(c.pausedAt)}` : 'Paused'} · no new step starts; a step already running may finish${c.pausedReason ? ` · reason given: “${c.pausedReason}”` : ''}${stopped}`;
+  }
+  if (c.control === 'cancel-requested') return 'Cancelling: waiting for running AI workers to stop';
+  if (c.control === 'cancelled') return 'Cancelled';
+  if (c.control === 'finished') return owner?.finished ?? 'All steps are finished';
+  if (owner?.liveness === 'late') return `AIWorks on this computer is a few minutes late checking in (last check-in${stoppedAt(owner.lastCheckIn, f)}); nothing for you to do yet: this is normal during a restart or an update`;
+  if (owner?.liveness === 'awaiting-pickup') return `Approved at about ${f.time(owner.registeredAt)}; waiting for AIWorks on this computer to pick it up · nothing for you to do yet`;
+  if (owner?.liveness === 'agent-working-supervisor-silent') return `${NEEDS.silent.text}${stoppedAt(owner.lastCheckIn, f)}`;
+  if (!c.controllerLive) return `AIWorks stopped on this computer${stoppedAt(owner?.lastCheckIn, f)}; this work does not move until it runs again`;
+  if (c.blocker) return `Stopped: ${blockerWords(c.blocker).reason}`;
+  const agent = c.agents?.[0], task = agent ? c.tasks.find((item) => item.id === agent.taskId) : null;
+  if (agent) return `${agent.role === 'Verifier' ? 'Being checked' : 'Being built'}: ${label(task)}`;
+  if (['provider-quota', 'provider-availability'].includes(c.waitingReason)) return `Waiting for an AI worker to be free${c.nextWakeupAt ? ` · next check ${f.dateTime(c.nextWakeupAt)}` : ''} · nothing for you to do`;
+  const stopped = c.tasks.filter((item) => item.blocked && item.state !== 'done');
+  if (['blocked-child', 'blocked-owner-decision', 'blocked-owner-action', 'blocked-external'].includes(c.status)) {
+    return `Stopped · no AI worker starts until you act. ${stopped.length ? stopped.map((item) => `${capital(label(item))}: ${item.blockedReason}`).join(' | ') : 'A step is stopped; see the steps.'}`;
+  }
+  const done = (id) => c.tasks.find((item) => item.id === id)?.state === 'done';
+  const ready = c.tasks.find((item) => item.state !== 'done' && !item.blocked && item.dependsOn.every(done));
+  if (ready) return ready.wait?.text ?? `Next step: “${label(ready)}”`;
+  if (stopped.length) return c.tasks.some((item) => item.state !== 'done' && !item.blocked) ? 'Some steps are stopped; the others continue'
+    : `Stopped · no AI worker starts until you act on ${stopped.length === 1 ? 'the stopped step' : 'the stopped steps'}`;
+  return c.nextWakeupAt ? `Next check ${f.dateTime(c.nextWakeupAt)}` : 'Waiting for the next step to become ready';
+}
+
+/** What the page says after a command: accepted (by action), or refused, with what to do. */
+export const COMMANDS = {
+  accepted: { pause: 'Paused. No new step starts; a step already running may finish.', resume: 'Resumed with the goal and limits you approved.',
+    instruct: 'Guidance received. The AI worker you chose reads it at its next run on this step; the receipt shows Received, Read and what the worker did.',
+    recheck: 'Check again requested. AIWorks looks at this work again; its limits and the independent check still apply.',
+    cancel: 'Cancel requested. AIWorks stops the AI workers running on this work.' },
+  duplicate: 'This command was already accepted; it was not applied again.',
+  unconfirmed: 'Delivery could not be confirmed. Retry this same command safely.',
+  retry: 'Retry same command',
+  details: 'Details',
+  // aiworks#11 review F3: what happened, that nothing changed, and what the owner can do. The rule and the files are in Details.
+  resumeRefused: 'AIWorks did not resume this work. Nothing changed: it is still paused. It resumes only work whose plan is merged into AIWorks, and this work’s plan is not. Merge its plan into AIWorks, then press Resume again.',
+  notFound: 'This work is not recorded on this computer any more. Refresh the page to see what is.',
+  closed: 'This work is finished or cancelled, so it takes no more commands. Refresh the page to see where it stands.',
+  notPaused: 'Only paused work can resume. Refresh the page to see where it stands.',
+  stepChanged: 'This step changed or is already finished. Refresh the page and try again.',
+  noNextRun: 'No AI worker runs this step again, so it cannot get guidance. Refresh the page to see where it stands.',
+};
+
+/** The Cancel dialog and the guidance dialog, in the owner's words. */
+export const DIALOGS = {
+  cancelTitle: 'Cancel this work?',
+  cancelText: 'No new step starts, and AIWorks stops the AI workers running on it. Results already finished stay available. Cancelled work cannot be resumed.',
+  cancelKeep: 'Keep the work',
+  cancelConfirm: 'Cancel the work',
+  guidanceStep: 'Step',
+};
+
+/**
+ * The Cost summary of a project (§4.10): its counted runs, and in how many of its pieces of work they ran, so the
+ * sentence matches the breakdown under it, which lists every piece (aiworks#11 review F14). `total` is the server's
+ * project total; null when no run is counted yet (runs still running are said apart).
+ */
+export function costRunsLine(total) {
+  if (!total.runs) return null;
+  const ran = total.worksWithRuns ?? total.works;
+  return `${plural(total.runs, 'run')} in ${ran === total.works ? plural(ran, 'piece') : `${ran} of ${plural(total.works, 'piece')}`} of work.`;
 }

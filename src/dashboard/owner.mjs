@@ -2,7 +2,7 @@
 // with the merge state the dashboard reads from local git (merges.mjs); it never calls GitHub. Unknown or stale merge
 // state never reads as merged; every sentence is built from supervisor or local git fields, never from worker output.
 
-import { stateCopy } from './copy.mjs';
+import { NEEDS, RESTART_ADVICE, blockerWords, stateCopy } from './copy.mjs';
 
 const PR_URL = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)$/;
 const COMMENT_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+#issuecomment-\d+$/;
@@ -10,8 +10,8 @@ const COMMENT_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+#issue
 export const CHURN_ATTEMPTS = 5;
 /** A running agent whose own record shows activity within this window is treated as still working. */
 export const ACTIVE_WINDOW_MS = 15 * 60_000;
-/** The concrete action that restarts a stopped supervisor (docs/SUPERVISOR.md §6). */
-export const RESTART_ACTION = 'If nobody is upgrading it right now, restart it there: sign in on that computer (it starts at logon) or start the scheduled task “AIWorks Supervisor”.';
+/** The concrete action that restarts a stopped supervisor (docs/SUPERVISOR.md §6), worded in the copy module. */
+export const RESTART_ACTION = RESTART_ADVICE;
 /**
  * After the controller lease lapses, a restart or upgrade usually brings it back within this window: no restart advice
  * yet. A newly registered campaign that no supervisor has picked up gets the same window from its registration.
@@ -32,6 +32,8 @@ const short = (repository) => repository.split('/')[1] ?? repository;
 const list = (values) => values.length <= 2 ? values.join(' and ') : `${values.slice(0, -1).join(', ')} and ${values.at(-1)}`;
 const plural = (n, word, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
 const label = (task) => task.outcome ?? task.title ?? task.id;
+/** Steps named by what they deliver, never by ID: “Price sync” and “Search page”. */
+const named = (tasks) => list(tasks.map((task) => `“${label(task)}”`));
 const NO_MERGES = { repositories: [], steps: {} };
 
 /**
@@ -84,10 +86,8 @@ export function delivery(task, merges = NO_MERGES, now = Date.now(), campaignId 
  * independent checker accepted and points to the pull request. `short` is one compact line; `text` the full sentence.
  */
 export function reviewEvidence(task) {
-  if (!task.verifiedSha) return { short: 'Independent check not recorded here', text: 'Published by the supervisor; the independent check is not recorded here. See CI checks and conflicts on the pull request before merging.' };
-  const sha7 = String(task.verifiedSha).toLowerCase().slice(0, 7);
-  return { short: `Checker accepted ${sha7} · CI and conflicts on the PR`,
-    text: `An independent checker accepted commit ${sha7}. This dashboard does not read CI checks or conflicts; see them on the pull request before merging.` };
+  if (!task.verifiedSha) return { ...NEEDS.noEvidence };
+  return NEEDS.evidence(String(task.verifiedSha).toLowerCase().slice(0, 7));
 }
 
 /**
@@ -124,7 +124,7 @@ function resultRow(c, task, d, releases) {
       evidence: evidence?.short ?? null, detail: evidence?.text ?? null };
   }
   if (d.state === 'unknown') {
-    return { ...base, group: 'unknown', word: 'Not known yet', note: d.note, link: { label: `Open step issue (${task.id})`, url: task.issueUrl }, evidence: null, detail: null };
+    return { ...base, group: 'unknown', word: 'Not known yet', note: d.note, link: { label: NEEDS.stepIssue, url: task.issueUrl }, evidence: null, detail: null };
   }
   const evidence = resultEvidence(task), link = { label: `Pull request #${d.number}`, url: d.url }, number = d.number;
   const proof = { evidence: evidence.short, detail: evidence.text, number };
@@ -249,7 +249,8 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
   // Results with nothing finished in a project show the §7.1 empty copy, written once in copy.mjs.
   const { title, text } = stateCopy('results-empty'), noResults = { title, text };
   if (!supervisor?.available) return { available: false, headline: null, items: [], groups: [], unknownResults: 0, also: null, layout: { cards: [], finished: [] }, reply: null, campaigns: {}, results: {}, noResults, recent: null };
-  const items = [], campaigns = {}, where = host ? `on ${host}` : 'on its computer';
+  // `host` names this computer in the page header; the items say "this computer" (aiworks#11 review F22).
+  const items = [], campaigns = {};
   let unknownResults = 0;
   const entries = supervisor.campaigns.map((c) => ({ id: c.id, purpose: purpose(c) }));
   distinguish(entries);
@@ -289,9 +290,9 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       // A step starts from the base branch as it is at its first run and keeps that base (its worktree is created
       // once), so only steps that have not started yet can build on the merge.
       const notStarted = (other) => other.state === 'pending' && !other.attempts;
-      const pending = waitingOn.filter(notStarted), started = waitingOn.filter((other) => !notStarted(other)).map((other) => other.id);
+      const pending = waitingOn.filter(notStarted), started = waitingOn.filter((other) => !notStarted(other));
       // Steps declared to require merged dependencies cannot start at all until the owner merges.
-      const gated = pending.filter((other) => other.requiresMergedDependencies).map((other) => other.id);
+      const gated = pending.filter((other) => other.requiresMergedDependencies);
       const churn = task.attempts >= CHURN_ATTEMPTS || task.verifierRejections > 0;
       const evidence = reviewEvidence(task);
       items.push({ ...base, kind: 'review', action: 'Review and merge', text: label(task), link: { label: `Open PR #${d.number}`, url: d.url },
@@ -299,45 +300,45 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
         points: [
           // Why the merge cannot be seen at all on this computer, when that is the case.
           ['no-checkout', 'no-verified-sha'].includes(d.reason) ? `${d.note}.` : null,
-          churn ? `Check its review history first: it took ${plural(task.attempts, 'try', 'tries')}${task.verifierRejections ? ` and the checker rejected it ${plural(task.verifierRejections, 'time')}` : ''} before it was accepted.` : null,
-          gated.length ? `${list(gated)} cannot start until you merge it.` : pending.length ? `Merging lets ${list(pending.map((other) => other.id))} build on it.`
-            : started.length ? `${list(started)} already started without it, so merging now does not change ${started.length === 1 ? 'that step' : 'those steps'}.`
+          churn ? NEEDS.churn(task.attempts, task.verifierRejections) : null,
+          gated.length ? NEEDS.gated(named(gated)) : pending.length ? NEEDS.buildsOn(named(pending))
+            : started.length ? NEEDS.startedWithout(named(started), started.length)
               // Who releases is the project's rule (registry), never assumed to be the owner.
-              : `Nothing else in this campaign waits on it; after merging, release follows ${releaseRule(releases, d.repository)}.`,
+              : NEEDS.nothingWaits(releaseRule(releases, d.repository)),
         ].filter(Boolean).map((text) => ({ link: null, text })) });
     }
     for (const { task } of unknown) {
-      items.push({ ...base, kind: 'check', action: 'Check on GitHub', text: label(task), link: { label: `Open step issue (${task.id})`, url: task.issueUrl }, mergeCheck: null,
+      items.push({ ...base, kind: 'check', action: 'Check on GitHub', text: label(task), link: { label: NEEDS.stepIssue, url: task.issueUrl }, mergeCheck: null,
         points: [{ link: null, text: 'This step finished, but no result link was recorded, so the dashboard cannot tell where it stands.' }] });
     }
     if (c.blocker) {
-      items.push({ ...base, kind: c.blockerClass === 'B3' ? 'decision' : 'stopped', text: `${c.id} is stopped`,
-        points: [{ link: { label: 'Tracking issue', url: c.trackingUrl }, text: [c.blockerReason, c.blockerAction ? `What to do: ${c.blockerAction}` : null].filter(Boolean).join(' · ') }] });
+      // What happened and what to do in owner words; what the supervisor recorded is one click away.
+      const words = blockerWords(c.blocker);
+      items.push({ ...base, kind: c.blockerClass === 'B3' ? 'decision' : 'stopped', text: NEEDS.workStopped,
+        evidence: NEEDS.recorded, detail: [c.blockerClass, c.blockerReason, c.blockerAction].filter(Boolean).join(' · '),
+        points: [{ link: { label: 'Tracking issue', url: c.trackingUrl }, text: `${words.reason}. What to do: ${words.action}.` }] });
     }
     for (const task of c.tasks.filter((item) => item.blocked && item.state !== 'done')) {
       items.push({ ...base, kind: task.blocked === 'B3' ? 'decision' : 'stopped', action: task.blocked === 'B3' ? 'Decision needed' : 'Stopped; will not retry by itself',
-        text: label(task), link: { label: `Open step issue (${task.id})`, url: task.issueUrl },
+        text: label(task), link: { label: NEEDS.stepIssue, url: task.issueUrl },
         points: [{ link: null, text: `${task.blockedReason.charAt(0).toUpperCase()}${task.blockedReason.slice(1)}.` }] });
     }
     // A pause by itself is not for the owner: the campaign card shows it in a neutral state, with the reason given (the
     // store does not record who paused, so nothing is inferred from the reason text). A paused campaign still needs a
     // running supervisor, which renews its lease too, so a stopped or absent supervisor is listed, worded for the pause.
     const paused = c.control === 'paused';
+    // The work itself is named on the item's context line; `at` is when AIWorks stopped, which the page says after the text.
     if (c.livenessDefect) {
-      items.push({ ...base, kind: 'controller', system: true, text: `The supervisor ${where} reports an internal problem with ${c.id}`,
-        points: [{ link: { label: 'Supervisor issue #2', url: SUPERVISOR_ISSUE },
-          text: 'Not an owner action: this is a supervisor fault for AIWorks\'s maintainers. Work in this campaign may not progress until it is fixed.' }] });
+      items.push({ ...base, kind: 'controller', system: true, text: NEEDS.fault.text,
+        points: [{ link: { label: NEEDS.fault.link, url: SUPERVISOR_ISSUE }, text: NEEDS.fault.point }] });
     } else if (campaigns[c.id].liveness === 'agent-working-supervisor-silent') {
-      items.push({ ...base, kind: 'controller', at: leaseEnded, text: `An agent is still working, but the supervisor ${where} stopped checking in`,
-        points: [{ link: null, text: `The agent's result is collected and checked only when the supervisor runs again. ${RESTART_ACTION}` }] });
+      items.push({ ...base, kind: 'controller', at: leaseEnded, text: NEEDS.silent.text, points: [{ link: null, text: NEEDS.silent.point }] });
     } else if (campaigns[c.id].liveness === 'stopped' && neverLeased) {
-      items.push({ ...base, kind: 'controller', text: `The supervisor ${where} has not started ${c.id} yet${paused ? ' (it is paused)' : ''}`,
-        points: [{ link: null, text: `It is registered${paused ? ' and paused' : ''}, but no supervisor has picked it up. ${RESTART_ACTION}` }] });
+      const words = NEEDS.notPickedUp(paused);
+      items.push({ ...base, kind: 'controller', text: words.text, points: [{ link: null, text: words.point }] });
     } else if (campaigns[c.id].liveness === 'stopped') {
-      items.push({ ...base, kind: 'controller', at: leaseEnded,
-        text: paused ? `The supervisor ${where} stopped while ${c.id} was paused` : `The supervisor ${where} stopped running ${c.id}`,
-        points: [{ link: null, text: paused ? `No work starts while it is paused, and none can resume until a supervisor runs again. ${RESTART_ACTION}`
-          : `No new work starts. ${RESTART_ACTION}` }] });
+      const words = NEEDS.stopped(paused);
+      items.push({ ...base, kind: 'controller', at: leaseEnded, text: words.text, points: [{ link: null, text: words.point }] });
     }
   }
   const coordinator = supervisor.coordinator;

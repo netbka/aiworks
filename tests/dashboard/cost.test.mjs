@@ -98,7 +98,7 @@ test('a project’s cost is exactly the sum of its work’s totals today, with u
   for (const project of state.costs) {
     const mine = state.campaigns.filter((c) => c.repository === project.repository);
     const reported = round(mine.reduce((n, c) => n + c.recordedCostUsd, 0));
-    assert.deepEqual(project, { repository: project.repository, works: mine.length, runs: mine.reduce((n, c) => n + c.runsUsed, 0),
+    assert.deepEqual(project, { repository: project.repository, works: mine.length, worksWithRuns: mine.filter((c) => c.runsUsed > 0).length, runs: mine.reduce((n, c) => n + c.runsUsed, 0),
       reportedUsd: reported > 0 ? reported : null, unreportedRuns: mine.reduce((n, c) => n + c.budget.unknownCostRuns, 0),
       runningRuns: mine.reduce((n, c) => n + c.agents.length, 0), empty: null });
   }
@@ -115,11 +115,11 @@ test('a project’s cost is exactly the sum of its work’s totals today, with u
   const empty = { title: stateCopy('cost-empty').title, text: stateCopy('cost-empty').text };
   assert.deepEqual(empty, { title: 'No cost yet.', text: 'Nothing has run for this project.' });
   assert.deepEqual(costs, [
-    { repository: 'Example/App', works: 2, runs: 3, reportedUsd: 1.25, unreportedRuns: 2, runningRuns: 1, empty: null },
-    { repository: 'example/other', works: 1, runs: 3, reportedUsd: null, unreportedRuns: 3, runningRuns: 0, empty: null },
-    { repository: 'example/new', works: 1, runs: 0, reportedUsd: null, unreportedRuns: 0, runningRuns: 0, empty },
-    { repository: 'example/starting', works: 1, runs: 0, reportedUsd: null, unreportedRuns: 0, runningRuns: 1, empty: null },
-    { repository: 'example/recounted', works: 1, runs: 0, reportedUsd: null, unreportedRuns: 2, runningRuns: 0, empty: null }]);
+    { repository: 'Example/App', works: 2, worksWithRuns: 2, runs: 3, reportedUsd: 1.25, unreportedRuns: 2, runningRuns: 1, empty: null },
+    { repository: 'example/other', works: 1, worksWithRuns: 1, runs: 3, reportedUsd: null, unreportedRuns: 3, runningRuns: 0, empty: null },
+    { repository: 'example/new', works: 1, worksWithRuns: 0, runs: 0, reportedUsd: null, unreportedRuns: 0, runningRuns: 0, empty },
+    { repository: 'example/starting', works: 1, worksWithRuns: 0, runs: 0, reportedUsd: null, unreportedRuns: 0, runningRuns: 1, empty: null },
+    { repository: 'example/recounted', works: 1, worksWithRuns: 0, runs: 0, reportedUsd: null, unreportedRuns: 2, runningRuns: 0, empty: null }]);
   // Without a readable store there is no cost, not a zero cost.
   const root = mkdtempSync(join(tmpdir(), 'aiworks-cost-none-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

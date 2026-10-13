@@ -35,13 +35,13 @@
         <label><span class="sr-only">Filter by status</span><select id="status"><option value="">All steps</option><option value="done">Merged or report posted</option><option value="review">Published, merge not seen yet</option><option value="in_progress">In progress</option><option value="blocked">Stopped</option><option value="unknown">Result not known</option></select></label>
       </div>
       <div id="content"><div class="empty-state">Connecting to roadmap and supervisor sources…</div></div>
-      <footer class="page-footer"><span>The supervisor owns execution state. Merges are read from local git; this page makes no GitHub API call.</span><span id="updated"></span></footer>
+      <footer class="page-footer"><span id="updated"></span></footer>
     </main>
   </div>
-  <dialog id="cancel-dialog" aria-labelledby="cancel-title"><form method="dialog"><div class="dialog-icon" aria-hidden="true">!</div><h2 id="cancel-title">Cancel this campaign?</h2><p id="cancel-description"></p><p>New work will stop and the controller will terminate its owned running workers. Completed results stay available. A cancelled campaign cannot be resumed.</p><div class="dialog-actions"><button class="button secondary" value="close" autofocus>Keep campaign</button><button id="confirm-cancel" type="button" class="button danger">Cancel campaign</button></div></form></dialog>
+  <dialog id="cancel-dialog" aria-labelledby="cancel-title"><form method="dialog"><div class="dialog-icon" aria-hidden="true">!</div><h2 id="cancel-title"></h2><p id="cancel-description"></p><p id="cancel-text"></p><div class="dialog-actions"><button id="keep-work" class="button secondary" value="close" autofocus></button><button id="confirm-cancel" type="button" class="button danger"></button></div></form></dialog>
   <dialog id="instruction-dialog" aria-labelledby="instruction-title"><form id="instruction-form">
     <h2 id="instruction-title">Send instructions</h2><p id="instruction-campaign"></p>
-    <label>Task<select id="instruction-task" required></select></label>
+    <label><span id="instruction-step-label"></span><select id="instruction-task" required></select></label>
     <label>Recipient<select id="instruction-role"><option value="implement">Builder — its next run</option><option value="verify">Independent checker — its next run</option></select></label>
     <label>Instruction<textarea id="instruction-text" rows="5" maxlength="2000" required aria-describedby="instruction-help" placeholder="What should the agent focus on?"></textarea></label>
     <p id="instruction-help">Queued for this task's next run by the selected role. Running workers are not interrupted. Existing scope, acceptance and budget still apply. No secrets; up to 2,000 characters.</p>
