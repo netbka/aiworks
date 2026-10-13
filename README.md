@@ -1,8 +1,44 @@
 # AIWorks
 
-Give your AI a job. Spend less time managing every step.
+You wanted AI to help with your projects. You did not plan to spend your day managing it.
 
-AIWorks helps you work on projects with AI without constantly telling each agent what to do next. It keeps approved tasks moving, sends the results to a separate check, and shows what is finished or needs your attention. It runs on your Windows computer.
+I started using AI to build my own applications. It helped me write code, investigate bugs and work through ideas. But as the work grew, I found myself doing a different job: keeping all those AI helpers moving.
+
+One needed the next instruction. Another had stopped. A third said the task was finished, but I still had to work out what had changed and whether it solved the original problem. Switching between projects meant piecing the story back together from conversations, files and unfinished work.
+
+I was getting help with the tasks, but I was still carrying the whole process in my head.
+
+That is where AIWorks came from. I wanted to say what needed doing, agree on a plan and come back to a clear account of the work, instead of spending the day asking, "What happened?", "Did you check it?" and "Why did you stop?"
+
+## What AIWorks does for you
+
+AIWorks runs on your computer and organizes work for the AI tools you already use. It keeps track of assigned tasks, sends work to an AI helper, passes the result to a separate checking session and records what happened. When a check finds a problem, the work can go back for another attempt. Recoverable interruptions do not have to mean starting the whole conversation again.
+
+For you, that means a place to see what is being worked on, what has been checked and what still needs your decision. You should not have to read every conversation just to find out where your project stands.
+
+**The goal is to give you back the attention you spend coordinating AI work.** You choose what is worth doing and what a useful result looks like. AIWorks is being built to handle more of the follow-through, so you can focus on your product and the people you are building it for.
+
+A separate check can still miss something. AIWorks makes the work and its checks visible; it does not replace your judgment about whether the result is right for your project.
+
+## Who it is for
+
+AIWorks is for people building and maintaining projects with AI: an independent developer, a founder working on their own application, or someone looking after several small products.
+
+You might be comfortable asking AI to change a page or fix a bug while still being new to everything around it. The starting point here is your project and what you want to improve, not learning how to manage a collection of agents.
+
+It is especially relevant when work takes more than one conversation, has several steps or needs another pair of eyes before you trust it.
+
+## What it can help you work on
+
+**Fixing something that is not working.** A sign-in flow fails or a change breaks an existing feature. The assignment can include finding the cause, making a focused repair and checking that the reported problem is addressed.
+
+**Improving an existing application.** You want to simplify a form, add a small feature or make a screen easier to use. You describe the intended result instead of manually passing each step between AI helpers.
+
+**Understanding and documenting a project.** Sometimes you need a report rather than a code change: explain how something works, find gaps in the setup instructions or propose an improvement plan. AIWorks can organize report tasks as well as changes to code.
+
+**Continuing an agreed plan.** You have a list of fixes and want to move through it without reconstructing the context each time. AIWorks keeps a record of assigned work and results across the projects configured on your computer.
+
+These are examples of work to assign, not promises that every task or tool is supported. Start with one small, useful outcome. Your AI client can help with setup and check what your installed version is ready to do.
 
 ## Start with your AI assistant
 
