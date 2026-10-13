@@ -227,7 +227,7 @@ The items are today's "Needs you" items, unchanged in meaning (observed: built i
 - **Primary action.** "Ask for a plan".
 - **In details.** Which AI workers may be used, optional spending limit, how results are published.
 
-**Today and after.** Plan only uses the existing message path: the dashboard sends the coordinator the selected project, goal and chosen issue or pull request. The coordinator is read-only; its checked final reply stays in the local dashboard and creates no GitHub issue, PR or comment (AW-004, amended 2026-10-13). "Plan and do" is shown but not selectable until slice S10 ([§11](#11-implementation-slices)). Its line reads: "Starting work from this page is not built yet. Today, work starts after its plan is merged into AIWorks and started on this computer." Projects without GitHub still need the local intake contract in S12; storing replies locally alone does not enable their planning.
+**Today and after.** Plan only uses the existing message path: the dashboard sends the coordinator the selected project, goal and chosen issue or pull request. The coordinator is read-only; its checked final reply stays in the local dashboard and creates no GitHub issue, PR or comment (AW-004, amended 2026-10-13). "Plan and do" is shown but not selectable until slice S10 ([§11](#11-implementation-slices)). Its line reads: "Starting work from this page is not built yet. Today, work starts when an authorized private plan is registered on this computer." Projects without GitHub still need the local intake contract in S12; storing replies locally alone does not enable their planning.
 
 ### 4.6 Review
 
