@@ -695,13 +695,100 @@ function projectsScreen() {
           plural(project.details.work, 'piece of work', 'pieces of work'), project.details.configured ? 'listed in this computer’s settings' : null].filter(Boolean).join(' · ')))))))].filter(Boolean);
 }
 
+/**
+ * One AI worker of this computer in plain words (OWNER_WORKSPACE §4.3, slice S8): "Claude · ready", "Codex · not set up on
+ * this computer", "Cursor · not available on Windows", with what it means in the lines under it.
+ */
+function workerLine(w) {
+  const status = { ready: 'ready', running: 'in use now', 'not-set-up': 'not set up on this computer', 'host-unavailable': 'not available on Windows',
+    unavailable: 'unavailable', waiting: w.overdue ? 'retry due' : 'waiting for its usage limit' }[w.state] ?? 'state not known';
+  const notes = [
+    w.state === 'waiting' ? w.overdue ? `The retry was due at ${timeOnly(w.retryAt)}; it happens at the supervisor's next check. No action needed.`
+      : `${w.credits ? 'It reported exhausted credits or a billing limit. ' : ''}AIWorks tries it again at ${timeOnly(w.retryAt)}. No action needed.` : null,
+    w.state === 'unavailable' ? `${w.availabilityReason ?? 'The supervisor recorded it as unavailable'}.` : null,
+    w.state === 'host-unavailable' ? 'Its native sandbox does not support Windows. Work runs without it here; no action needed.' : null,
+    w.state === 'not-set-up' ? 'This computer’s AIWorks settings set no command for it, so no work runs on it here.' : null,
+    w.setUp === 'default' && w.state !== 'host-unavailable' ? 'Uses the claude command on this computer’s PATH; AIWorks’ settings set none.' : null,
+    w.buildLimit === 'checks-only' && !['host-unavailable', 'not-set-up'].includes(w.state) ? 'Can check and report here, but cannot build code here.' : null,
+    w.buildLimit === 'web-only' ? 'Runs only browser checks of web pages.' : null,
+    w.usedBy ? `Allowed in ${plural(w.usedBy, 'piece')} of work.` : 'No current work allows it.'].filter(Boolean);
+  return { text: `${provider(w.kind)} · ${status}`, notes };
+}
+
+/**
+ * Release mode per project (OWNER_WORKSPACE §10.3): Review only is on, Auto Release is off and not available. Text only:
+ * there is no switch and no disabled control until the owner's release decision (#33) and a grant for the project exist.
+ */
+function releasePanel(releases) {
+  return panel('Release mode', 'Per project. AIWorks never merges or releases by itself.', releases.length
+    ? el('ul', { class: 'settings-links' }, ...releases.map((r) => el('li', { 'data-focus-scope': `release/${r.repository}` }, el('strong', {}, projectName(r.repository)),
+      ...r.modes.map((m) => el('div', {}, el('div', {}, `${m.label} · ${m.on ? 'On' : 'Off'}`), el('div', { class: 'subtext' }, m.text,
+        m.waitsFor ? ' It waits for the release decision in ' : null, m.waitsFor ? link('issue #33 ↗', m.waitsFor) : null, m.waitsFor ? '.' : null))))))
+    : empty('No projects yet.', 'Release mode is shown per project once this computer has one.'));
+}
+
+/** A time today as "12:31", an older one with its date. */
+const whenAt = (time) => new Date(time).toDateString() === new Date().toDateString() ? timeOnly(time) : dateTime(time);
+/**
+ * How fresh a project's merge check is (plan §6.12 C1, slice S8). Merges are read from the project's local checkout with
+ * `git fetch`, at most once every 5 minutes while this page is open; the dashboard never calls GitHub, so there is no
+ * "Refresh GitHub" button. `repo` is the merge watcher's row for the project, or undefined when it has nothing to check.
+ */
+function mergeFreshness(repo, now = Date.now()) {
+  if (!repo) return 'No published step to check yet.';
+  if (!repo.configured) return 'Merges are not checked: this computer’s settings set no local checkout for it.';
+  if (repo.error) return repo.fetchedAt ? `Merge check from ${whenAt(repo.fetchedAt)}; the last fetch failed, retrying within 5 minutes.`
+    : 'Merges not checked yet: the first fetch failed, retrying within 5 minutes.';
+  if (!repo.fetchedAt) return 'Merges not checked yet; the first check is running.';
+  return now - repo.fetchedAt < 5 * 60_000 ? `Merges checked at ${whenAt(repo.fetchedAt)}; next check after ${timeOnly(repo.fetchedAt + 5 * 60_000)}.`
+    : `Merge check from ${whenAt(repo.fetchedAt)}; checking again.`;
+}
+const mergeRow = (repository) => (state.merges?.repositories ?? []).find((repo) => sameProject(repo.repository, repository));
+
+/** Diagnostics: how fresh each project's merge check is, in place of "Refresh GitHub" (plan §6.12 C1). */
+function mergeChecksPanel() {
+  const projects = projectList();
+  return panel('Merge checks', `Read from each project’s local checkout with git, at most every 5 minutes while this page is open. No GitHub API call is made, so there is no refresh button: the check runs by itself.${state.merges?.refreshing ? ' Checking now…' : ''}`,
+    projects.length ? el('ul', { class: 'settings-links' }, ...projects.map((project) => el('li', { 'data-focus-scope': `merges/${project.id}` },
+      el('strong', {}, project.name), el('div', { class: 'subtext' }, mergeFreshness(mergeRow(project.repository))))))
+      : empty('No projects yet.', 'Merge checks appear here once this computer has a project.'));
+}
+
+/**
+ * Settings (OWNER_WORKSPACE §4.3, slice S8): this computer, its AI workers once, each project's kind and connection, and
+ * release mode as text. No primary action: Settings only shows what the machine has. Messages and Diagnostics are linked.
+ */
 function settingsScreen() {
   const host = state.host ?? {};
-  return [panel('This computer', 'Each computer runs its own AIWorks. This page shows only this one.', el('div', { class: 'panel-body' },
-    el('p', {}, `${host.name ?? 'Unknown computer'} · dashboard version ${host.revision?.slice(0, 7) ?? 'unknown'}`))),
-  panel('More', null, el('ul', { class: 'settings-links' },
+  const computer = panel('This computer', 'Each computer runs its own AIWorks. This page shows only this one.', el('div', { class: 'panel-body' },
+    el('p', {}, `${host.name ?? 'Unknown computer'} · dashboard version ${host.revision?.slice(0, 7) ?? 'unknown'}`)));
+  const settings = state.supervisor.settings;
+  if (!state.supervisor.available || !settings) return [computer, unavailable(), settingsLinks()];
+  const active = state.supervisor.campaigns.filter((c) => !['finished', 'cancelled'].includes(c.control));
+  const workers = panel('AI workers', `Once for ${host.name ?? 'this computer'}, whatever the work.`, el('div', {},
+    el('ul', { class: 'settings-links' }, ...settings.workers.map((w) => {
+      const { text, notes } = workerLine(w);
+      return el('li', { 'data-focus-scope': `worker/${w.kind}` }, el('strong', {}, text), ...notes.map((note) => el('div', { class: 'subtext' }, note)));
+    })),
+    // Details: provider order per piece of work and the supervisor version running it.
+    active.length ? disclosure('settings/workers', 'Details', el('ul', { class: 'settings-links' }, ...active.map((c) => el('li', {}, el('strong', {}, campaignTitle(c)),
+      el('div', { class: 'subtext' }, `Tried in this order: ${c.executors.map(provider).join(' → ')}`),
+      el('div', { class: 'subtext' }, `Supervisor version ${c.controllerRevision ? String(c.controllerRevision).slice(0, 7) : 'not known (not running)'}`))))) : null,
+    el('p', { class: 'subtext' }, `Commands set in this computer’s AIWorks settings: ${settings.commands.length ? settings.commands.join(', ') : 'none'}.`)));
+  const projects = projectList();
+  const connections = panel('Projects', 'Each project’s kind and whether this computer is connected to it.', projects.length
+    ? el('ul', { class: 'settings-links' }, ...projects.map((project) => el('li', { 'data-focus-scope': `connection/${project.id}` },
+      el('strong', {}, `${project.name} · ${project.kind}`),
+      el('div', { class: 'subtext' }, project.details.configured ? 'Listed in this computer’s AIWorks settings.' : 'Has work on this computer, but its AIWorks settings do not list it.'),
+      el('div', { class: 'subtext' }, mergeFreshness(mergeRow(project.repository))))))
+    : empty('No projects yet.', 'Projects appear here when this computer’s AIWorks settings list a repository.'));
+  return [computer, workers, connections, releasePanel(settings.releases), settingsLinks()];
+}
+
+function settingsLinks() {
+  return panel('More', null, el('ul', { class: 'settings-links' },
     el('li', {}, routeLink('Messages', '#/settings/messages'), el('div', { class: 'subtext' }, 'What you asked AIWorks, and what it answered.')),
-    el('li', {}, routeLink('Diagnostics', '#/settings/diagnostics'), el('div', { class: 'subtext' }, 'The full activity journal, every step with its issue and pull request, and the Engineering Platform roadmap.'))))];
+    el('li', {}, routeLink('Diagnostics', '#/settings/diagnostics'), el('div', { class: 'subtext' }, 'The full activity journal, every step with its issue and pull request, the Engineering Platform roadmap and how fresh each merge check is.'))));
 }
 
 /** The one primary action of a state (OWNER_WORKSPACE §4.4), or nothing: a screen link, a GitHub link or Resume. */
@@ -932,7 +1019,7 @@ function render() {
     : route.screen === 'project' && route.tab === 'work' ? ['Agents working'] : []);
   if (route.screen === 'needs') content.replaceChildren(needsYou() ?? unavailable());
   else if (route.screen === 'settings' && route.section === 'messages') content.replaceChildren(messagesPanel(20));
-  else if (diagnostics) content.replaceChildren(trackOverview(), roadmapView(), workView(),
+  else if (diagnostics) content.replaceChildren(trackOverview(), roadmapView(), workView(), mergeChecksPanel(),
     panel('Execution journal', 'Latest 80 events · raw agent transcripts and secrets are never shown', activityList()));
   else if (route.screen === 'settings') content.replaceChildren(...settingsScreen());
   else if (route.screen === 'add-project') content.replaceChildren(empty('Adding a project from this page is not built yet.', 'Projects appear on Projects when this computer’s AIWorks settings list a repository.'));
