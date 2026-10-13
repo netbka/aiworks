@@ -529,6 +529,47 @@ test('a failed login on profile A waits untimed on A, moves the task to B, and a
   assert.deepEqual(waitRows(r), [], 'the recheck ends the profile wait');
 });
 
+test('an unavailable host without a reset time waits on its profile, so the task never retries it at once', async (t) => {
+  let clock = Date.now();
+  let list = [profile('work-a'), profile('work-b')];
+  const r = rig(t, CAAM, { now: () => clock, profiles: inventory(() => list) });
+  const unavailable = (id) => r.controller.applyOutcome({ id, generation: r.controller.held.get(id) }, r.open(id),
+    { receipt: { sessionId: r.open(id).session_id }, class: 'unavailable', detail: 'host failure' });
+  const [first, second] = r.env.config.retryBackoffMs;
+
+  // With a sibling: A waits for one backoff step and the task moves to B at once.
+  campaignStart(r.store, campaign('down-1', 1011));
+  await r.tick();
+  assert.equal(r.open('down-1')?.account_identity, 'claude/work-a');
+  unavailable('down-1');
+  assert.deepEqual(waitRows(r), [{ account: 'claude/work-a', retry_at: clock + first }], 'the wait is on profile A only, and timed');
+  assert.equal(r.store.task('down-1', 'T1').retry_at, clock, 'the task is due again at once, on another profile');
+  clock += 1;
+  await r.tick();
+  assert.equal(r.open('down-1')?.account_identity, 'claude/work-b', 'the retry goes to B, not back to A');
+
+  // With A the only profile: the task and A both wait for the backoff, then A runs again by itself.
+  list = [profile('work-a')];
+  campaignStart(r.store, campaign('down-2', 1012));
+  clock += first;
+  await r.tick();
+  assert.equal(r.open('down-2')?.account_identity, 'claude/work-a');
+  unavailable('down-2');
+  assert.deepEqual(waitRows(r).find((row) => row.account === 'claude/work-a'), { account: 'claude/work-a', retry_at: clock + first });
+  assert.equal(r.store.task('down-2', 'T1').retry_at, clock + first, 'the task waits for its backoff');
+  assert.equal(r.store.campaign('down-2').blocker, null);
+  const due = clock + first;
+  clock += 1;
+  await r.tick();
+  assert.equal(r.open('down-2'), null, 'no immediate run on the failed profile');
+  clock = due;
+  await r.tick();
+  assert.equal(r.open('down-2')?.account_identity, 'claude/work-a', 'A runs again once its wait ends');
+  // A second failure in a row waits for the next backoff step.
+  unavailable('down-2');
+  assert.deepEqual(waitRows(r).find((row) => row.account === 'claude/work-a'), { account: 'claude/work-a', retry_at: clock + second });
+});
+
 test('a success clears the wait of its own profile only', async (t) => {
   let clock = Date.now();
   const r = rig(t, CAAM, { now: () => clock, profiles: inventory(() => [profile('work-a'), profile('work-b')]) });

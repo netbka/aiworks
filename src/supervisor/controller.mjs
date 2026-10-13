@@ -588,8 +588,9 @@ export class Controller {
         return { state, failures, retry_at: null, last_error: `${cls}: ${detail}`,
           blocked: { class: 'stalled', reason: `${total} failed attempts; last ${cls}: ${String(detail).slice(0, 300)}`, at: now } };
       }
+      // A class outside the retry budget (an unavailable host) still waits for the first backoff step, never 0 ms.
       const backoff = this.config.retryBackoffMs;
-      return { state, failures, retry_at: now + backoff[Math.min(total - 1, backoff.length - 1)], last_error: `${cls}: ${detail}` };
+      return { state, failures, retry_at: now + backoff[Math.min(Math.max(total, 1) - 1, backoff.length - 1)], last_error: `${cls}: ${detail}` };
     };
     // A worker that left its boundary is never retried on the same provider: the task waits for the owner.
     if (v.violation) return { state: back, retry_at: null, last_error: `violation: ${v.detail}`,
@@ -618,15 +619,16 @@ export class Controller {
       { identity: 'no-eligible-executor' });
       return { state: back, retry_at: null, last_error: `${op.executor_kind}: ${v.class}: ${v.detail}` };
     }
-    // A single-provider run bound to a CAAM profile: a usage limit, a failed login or a timed host failure waits on that
-    // profile only. While a sibling profile may run, the task goes back at once with no blocker and no wait; otherwise
-    // it falls through to the single-account handling below (a recheck also ends the profile rows).
+    // A single-provider run bound to a CAAM profile: a usage limit, a failed login or a host failure waits on that
+    // profile only. A host failure without a reset time waits for the task's next retry backoff, so the same profile is
+    // not chosen again at once. While a sibling profile may run, the task goes back at once with no blocker and no
+    // wait; otherwise it falls through to the single-account handling below (a recheck also ends the profile rows).
     const profile = ACCOUNT_SCOPED.has(v.class) ? op.account_identity ?? null : null;
     if (profile) {
-      const until = v.class === 'auth' ? null : v.retryAt ?? null;
-      if (v.class !== 'unavailable' || until !== null) {
-        setAccountWait(this.store, this.config, { kind: op.executor_kind, account: profile, retryAt: until, reason: `${v.class}: ${v.detail}`, campaignId: ctx.id, now });
-      }
+      const backoff = this.config.retryBackoffMs;
+      const until = v.class === 'auth' ? null : v.retryAt ?? (v.class === 'unavailable'
+        ? now + backoff[Math.min(task.failures?.unavailable ?? 0, backoff.length - 1)] : null);
+      setAccountWait(this.store, this.config, { kind: op.executor_kind, account: profile, retryAt: until, reason: `${v.class}: ${v.detail}`, campaignId: ctx.id, now });
       const next = this.profileChoice(op.executor_kind, now);
       if (next?.account) {
         this.store.journal(ctx.id, 'profile-fallback', { task: task.task_id, executor: op.executor_kind, from: profile, to: next.account, reason: v.class }, now);
