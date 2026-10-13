@@ -438,12 +438,13 @@ function messageReceipt(m, coordinator) {
   if (m.state === 'read') {
     steps.push(receiptStep(false, 'Working', m.progress ? `${m.progress.turns} turns · ${m.progress.toolCalls} tool calls · last activity ${timeAgo(m.progress.lastActivityAt)}${m.progress.lastTool ? ` (${m.progress.lastTool})` : ''}` : 'reviewing and planning'));
   } else if (m.state === 'answered') {
-    steps.push(receiptStep(true, 'Answered', m.replyUrl ? `${dateTime(m.answeredAt)} · ` : `${dateTime(m.answeredAt)} · posting the reply to ${coordinator.reportTo ?? 'GitHub'}…`));
+    steps.push(receiptStep(true, 'Answered', `${dateTime(m.answeredAt)} · ${m.replyBody ? 'the reply is below' : m.replyUrl ? '' : 'reply unavailable'}`));
     if (m.replyUrl) steps.at(-1).append(link('Open the reply ↗', m.replyUrl));
   } else if (m.state === 'failed') {
     steps.push(receiptStep(false, 'Not answered', `two reads ended without an answer (${outcomeLabels[m.failure] ?? m.failure}). Send it again or check the supervisor log.`, 'failed'));
   }
-  return el('article', { class: 'receipt' }, el('strong', {}, `Message #${m.id} · ${m.source}`), el('p', {}, m.text), el('ol', { class: 'receipt-steps' }, ...steps));
+  return el('article', { class: 'receipt' }, el('strong', {}, `Message #${m.id} · ${m.source}`), el('p', {}, m.text), el('ol', { class: 'receipt-steps' }, ...steps),
+    m.replyBody ? disclosure(`message/${m.id}/reply`, 'Read the plan', el('pre', { class: 'coordinator-reply' }, m.replyBody)) : null);
 }
 
 // Whether anything reads requests: yes, no, or not with an invalid configuration.
@@ -466,7 +467,7 @@ function messagesPanel(limit) {
   const items = coordinator.messages.slice(0, limit);
   // Sending is offered only while something reads messages; otherwise the panel says so and what to do instead.
   return panel('Messages to the coordinator', coordinator.configured
-    ? `Read-only coordinator agent · replies go to ${coordinator.reportTo ?? 'GitHub'} · ${coordinator.runsToday}${coordinator.maxRunsPerDay === null ? '' : `/${coordinator.maxRunsPerDay}`} runs in the last 24h${coordinator.blocked ? ` · not reading now: ${coordinator.blocked}` : ''}`
+    ? `Read-only coordinator agent · replies stay in this dashboard · ${coordinator.runsToday}${coordinator.maxRunsPerDay === null ? '' : `/${coordinator.maxRunsPerDay}`} runs in the last 24h${coordinator.blocked ? ` · not reading now: ${coordinator.blocked}` : ''}`
     : null,
   el('div', {}, notRead(coordinator), items.length ? el('div', { class: 'instruction-list' }, ...items.map((m) => messageReceipt(m, coordinator)))
     : empty('No messages yet', coordinator.configured ? 'Use “New message” to ask for a review or a plan.' : '')),
@@ -490,7 +491,7 @@ function trackReceipts() {
     if (key.startsWith('m')) {
       if (now === 'received' && !before) announce(`Message #${item.id} received`, 'The supervisor stored it.');
       else if (now === 'read') announce(`Message #${item.id} read`, 'The coordinator agent started working on it.');
-      else if (now === 'answered') announce(`Message #${item.id} answered`, item.replyUrl ? 'The reply is posted.' : 'The reply is being posted.');
+      else if (now === 'answered') announce(`Message #${item.id} answered`, item.replyBody ? 'The reply is ready in Messages.' : item.replyUrl ? 'The reply is posted.' : 'Check Messages for the reply.');
       else if (now === 'failed') announce(`Message #${item.id} not answered`, 'Two reads ended without an answer.');
     } else if (now === 'attached:dispatched' || now === 'attached:recorded') announce(`Guidance for ${item.step} read`, `The ${roleName(item.role)} (${provider(item.executor)}) received it.`);
     else if (now === 'attached:finished') announce(`The AI worker that read your guidance for ${item.step} finished`, `Outcome: ${terminalLabels[item.runOutcome] ?? outcomeLabels[item.runOutcome] ?? item.runOutcome ?? 'unknown'}.`);
@@ -510,7 +511,7 @@ const messageDraft = {
 };
 function openMessage() {
   const coordinator = state?.supervisor.coordinator;
-  $('#message-target').textContent = coordinator?.configured ? `Replies are posted to ${coordinator.reportTo}.` : `${NOT_READ.title} ${NOT_READ.text}`;
+  $('#message-target').textContent = coordinator?.configured ? 'Replies stay in this dashboard. Nothing is posted to GitHub.' : `${NOT_READ.title} ${NOT_READ.text}`;
   $('#message-text').value = messageDraft.text;
   $('#message-dialog').showModal();
   $('#message-text').focus();
@@ -554,10 +555,9 @@ function startReceipt(address) {
 
 function startScreen(project) {
   const address = formatRoute({ screen: 'start', project }), draft = startDraft(address), coordinator = state.supervisor.coordinator;
-  // Every project this computer has today is a GitHub repository; the coordinator posts its plan there (AW-004).
-  // A project without GitHub waits for a local place for the reply (OWNER_WORKSPACE §14, plan gap G4).
+  // Local project planning still needs an intake contract; local reply storage alone does not enable it.
   if (!projectCampaigns(project).length && projectList().find((item) => sameProject(item.id, project))?.kind !== 'GitHub') {
-    return [empty('Plan only is not available for this project yet.', 'AIWorks posts its plan on GitHub, and this project has no GitHub repository.')];
+    return [empty('Plan only is not available for this project yet.', 'Planning for projects without a GitHub repository is not available yet.')];
   }
   const save = () => drafts.set(address, 'start', { goal: goal.value, from: form.elements['start-from'].value, number: number.value, sent: startDraft(address).sent });
   const goal = el('textarea', { id: 'start-goal', rows: 5, maxlength: 2000, required: true, oninput: save });
@@ -579,7 +579,7 @@ function startScreen(project) {
       el('p', { class: 'subtext' }, 'AIWorks looks and proposes a plan. Nothing in your project changes.'),
       el('label', { class: 'choice' }, el('input', { type: 'radio', name: 'start-mode', value: 'plan-and-do', disabled: true, 'aria-describedby': 'plan-and-do-note' }), ' Plan and do'),
       el('p', { class: 'subtext', id: 'plan-and-do-note' }, 'AIWorks proposes a plan. After you approve it once, it does the work. ', PLAN_AND_DO_OFF.join(' '))),
-    reads ? el('p', { class: 'subtext' }, `The plan is posted to ${coordinator.reportTo ?? 'GitHub'}. No secrets; up to 2,000 characters.`) : notRead(coordinator),
+    reads ? el('p', { class: 'subtext' }, 'The plan appears here. Nothing is posted to GitHub. No secrets; up to 2,000 characters.') : notRead(coordinator),
     reads ? el('button', { class: 'button', type: 'submit', disabled: startBlocked() }, 'Ask for a plan') : null,
     el('div', { id: 'start-receipt', 'aria-live': 'polite' }, startReceipt(address)));
   return [el('section', { class: 'panel' }, form)];
@@ -766,7 +766,7 @@ function needsYou() {
     // Only owner actions here (owner, 2026-10-13): posted reports and merged work ready for release are on Results.
     ...groups.map(needsGroup),
     reply ? el('div', { class: 'needs-reply' }, `The coordinator answered your message #${reply.messageId} (${dateTime(reply.answeredAt)}). `,
-      link('Read its “What needs you” ↗', reply.url)) : null);
+      reply.url ? link('Read its “What needs you” ↗', reply.url) : routeLink('Read the plan', MESSAGES_ADDRESS)) : null);
 }
 
 /**

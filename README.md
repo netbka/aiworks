@@ -76,7 +76,6 @@ The supervisor's data directory holds `config.json`. Its shape, with example pat
   },
   "coordinator": {
     "repositories": ["netbka/aiworks", "netbka/engineering-platform", "netbka/Dyk"],
-    "reportTo": "netbka/aiworks#3",
     "model": "opus", "timeoutMinutes": 60
   }
 }
@@ -86,6 +85,7 @@ The supervisor's data directory holds `config.json`. Its shape, with example pat
 - `repositories` maps each target repository to its local checkout and a worktree root.
 - `commands` gives each tool as an absolute native executable in an array. `cursor`, `agy` and `chrome` are optional ([SUPERVISOR.md §8 and §11](docs/SUPERVISOR.md#8-ordered-cli-execution)).
 - `coordinator` is optional; without it, owner messages are stored but not read ([SUPERVISOR.md §9](docs/SUPERVISOR.md#9-owner-messages-and-the-coordinator)).
+- Coordinator plans and replies stay in the local dashboard. Planning never creates GitHub issues, PRs or comments.
 - `ownerIntervention` is optional and off by default ([SUPERVISOR.md §10](docs/SUPERVISOR.md#10-owner-intervention-core)).
 
 No credentials go into `config.json`.

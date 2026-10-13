@@ -1,5 +1,7 @@
 # Operations dashboard
 
+Coordinator plans and replies stay in the local dashboard, under their message receipt and the requesting project's Start work receipt. "Read the plan" shows the checked final answer as text. Planning creates no GitHub issue, PR or comment. Each plan request retains its selected repository and runs separately; only registered campaign work publishes to its declared target repository ([AW-004](DECISIONS.md#aw-004---owner-messages-go-to-a-read-only-coordinator-agent)).
+
 Owner request, 2026-10-09: see the entire roadmap, completed and ongoing work, and send basic commands to agents. First delivered in Engineering Platform ([#60](https://github.com/netbka/engineering-platform-archive/issues/60)); the owner view is tracked in [netbka/aiworks#4](https://github.com/netbka/aiworks/issues/4). This is the local operations surface for the AIWorks delivery supervisor. It is not Engineering Platform's project portal.
 
 ## Run

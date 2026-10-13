@@ -26,7 +26,9 @@ The dashboard binds to `127.0.0.1` on the owner's machine. It is not exposed thr
 
 Status: accepted by the owner (PRs [#68](https://github.com/netbka/engineering-platform-archive/issues/68), [#71](https://github.com/netbka/engineering-platform-archive/issues/71)); recorded 2026-10-10 (archived as EP-035 in netbka/engineering-platform-archive)
 
-A coordinator agent reads the messages the owner sends from the dashboard, using allowlisted read-only tools. It posts its replies to GitHub and never runs inside the live supervisor runtime. It plans and explains; it does not merge, deploy or register campaigns.
+A coordinator agent reads the messages the owner sends from the dashboard, using allowlisted read-only tools, and never runs inside the live supervisor runtime. It plans and explains; it does not merge, deploy or register campaigns.
+
+Amended by the owner's 2026-10-13 routing correction: Dyk work must not appear in the AIWorks repository; only AIWorks work belongs there. Coordinator replies stay local and are shown in the dashboard, including Plan only requests. Planning creates no GitHub issue, pull request or comment. A plan request retains its selected repository and is processed separately from other requests. Campaign publication remains confined to the campaign's declared target repository under AW-001. Incident evidence: [Dyk plan incorrectly posted to AIWorks](https://github.com/netbka/aiworks/issues/3#issuecomment-6146547013).
 
 ## AW-005 - Campaigns run only from merged supervisor code and a declaration on main
 

@@ -483,6 +483,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
       blocked: view.blocked ? safeText(view.blocked, 300) : null, reportTo: view.reportTo ?? null, runsToday: view.runsToday ?? 0, maxRunsPerDay: view.maxRunsPerDay ?? null,
       messages: view.messages.map((m) => ({ id: m.id, text: safeText(m.text, 4000), source: safeText(m.source, 80), state: code(m.state),
         receivedAt: m.receivedAt, readAt: m.readAt, answeredAt: m.answeredAt, failure: code(m.failure), retryAt: m.retryAt, attempts: m.attempts,
+        repository: m.repository, replyBody: m.replyBody ? safeText(m.replyBody, 61000) : null,
         replyState: code(m.replyState), replyUrl: githubLink(m.replyUrl),
         progress: m.state === 'read' ? (() => {
           const run = view.runs.find((item) => item.id === m.runId);
@@ -553,8 +554,10 @@ export function postMessage(dataDir, input, now = Date.now()) {
   if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'Supervisor is unavailable.');
   const store = new Store(join(dataDir, 'supervisor.db'));
   try {
-    const text = isPlan ? planRequestText(planRequest(store, dataDir, input.plan)) : input.text;
-    return postOwnerMessage(store, { text, requestId: input.requestId, source: isPlan ? 'owner (Start work: Plan only)' : 'owner (dashboard)' }, now);
+    const plan = isPlan ? planRequest(store, dataDir, input.plan) : null;
+    const text = plan ? planRequestText(plan) : input.text;
+    return postOwnerMessage(store, { text, repository: plan?.project ?? null, requestId: input.requestId,
+      source: isPlan ? 'owner (Start work: Plan only)' : 'owner (dashboard)' }, now);
   } catch (error) {
     if (error.code === 'INVALID_MESSAGE') throw fail(400, error.message);
     if (error.code === 'CONFLICT') throw fail(409, error.message);

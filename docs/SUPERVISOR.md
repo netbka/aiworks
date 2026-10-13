@@ -450,7 +450,7 @@ Each message carries a durable receipt in `owner_messages`, shown in the dashboa
 | --- | --- |
 | Received | The supervisor stored the message (idempotent per request id; at most ten waiting). |
 | Read | A fresh coordinator session started with the message in its prompt (the contained runner confirmed the process). Its live turn and tool-call counts are shown while it works. |
-| Answered | The coordinator returned a valid result; the supervisor posts the reply, the reviewed-work table, the plan and any draft campaign to `coordinator.reportTo` and links it. |
+| Answered | The coordinator returned a valid, secret-checked result; the supervisor saves the reply, reviewed-work table, plan and any draft campaign locally and shows them in the dashboard. No GitHub write occurs. |
 | Retrying / Not answered | A read ended without a valid answer. It is retried once with a fresh session (quota and authentication waits retry after 30 minutes); after that the receipt says so and nothing is posted. |
 
 While a dashboard tab is open, every receipt change (message received, read, answered; task instruction read; the worker that read it finished) shows a notice and, when the browser allows it, a desktop notification. Permission is requested when you send. There is no notification without an open tab until the owner notification channel is delivered ([netbka/aiworks#1](https://github.com/netbka/aiworks/issues/1)).
@@ -459,21 +459,20 @@ The coordinator is a single-slot lane with its own lease (`_coordinator`), separ
 
 - **Reads are confined to its own checkout.** The allowlist is `Read(./**)`, `Grep(./**)` and `Glob(./**)`. A HomePc probe showed these allow the working directory and deny everything outside it, including the supervisor data directory, other repositories and `~/.claude`. Absolute denies such as `Read(//D:/...)` are not honoured on Windows, so confinement does not rely on them. Home-relative denies for credential stores (`~/.claude`, `~/.codex`, `~/.ssh`, `~/.config`, `~/AppData`) and `.env`/key patterns are defence in depth.
 - **Commands are read-only GitHub and git queries:** `gh issue|pr list/view`, `gh pr diff/checks`, `gh search issues/prs`, `git status`, `git rev-parse` and `git ls-files`. There is no `gh api`, whose write flags can appear anywhere in a command, and no `git log/show/diff/grep`, whose output-file and external diff/pager options can write files or run programs. `git -C`, `curl`, `node`, `npm`, shells and web tools are denied.
-- **Replies are gated before posting.** A reply containing a high-confidence credential format (GitHub, OpenAI or Anthropic tokens, AWS keys, private-key blocks, JWTs, Slack tokens) is withheld and the message is marked *Not answered* (`reply-withheld`).
+- **Replies are gated before storage and display.** A reply containing a high-confidence credential format (GitHub, OpenAI or Anthropic tokens, AWS keys, private-key blocks, JWTs, Slack tokens) is withheld and the message is marked *Not answered* (`reply-withheld`).
 - **What the policy must deny and allow.** It denies `.env` reads, reads outside the checkout, `gh api`, `git -C`, `ssh`, `curl`, `gh issue comment` and writes. It allows `gh issue view/list` and reads inside the checkout. Probe evidence: archived [PR #71](https://github.com/netbka/engineering-platform-archive/pull/71).
 
 The coordinator never runs in the live runtime checkout. It uses its own detached worktree of AIWorks at the deployed revision (`.local/worktrees/aiworks/coordinator`, reused across runs). AIWorks is where campaigns are declared, so that is the checkout it reads. Before each read the supervisor checks that this checkout and the live runtime are clean at the deployed commit, and it checks again after each run. If the agent changed either, nothing it produced is posted, its messages are marked **Not answered** (`boundary-violation`), and the lane stays blocked even after the checkout is restored, until the owner runs `node src/supervisor/cli.mjs coordinator-clear --data <dir>`. The dashboard shows the reason. Invalid coordinator configuration also keeps the lane idle and is shown; it never falls back to defaults. `permissionMode` is fixed to `dontAsk`. Because only the coordinator's own checkout is readable, it reads other repositories only through `gh` and says what it could not check.
-It reviews, classifies and plans; it never comments, registers or starts a campaign. The supervisor alone posts its answer. `config.json` enables it:
+It reviews, classifies and plans; it never comments, registers or starts a campaign. The supervisor saves its checked final answer in `coordinator_replies`, in the same transaction as the answered receipt. Each run handles one request. Dashboard plan requests retain their selected repository in `owner_messages.repository`; requests queued before this field existed recover it from the fixed dashboard header. The prompt scopes its inventory and proposed campaign to that project. `config.json` enables it:
 
 ```json
 "coordinator": {
   "repositories": ["netbka/aiworks", "netbka/engineering-platform", "netbka/Dyk"],
-  "reportTo": "netbka/aiworks#3",
   "model": "opus", "timeoutMinutes": 60
 }
 ```
 
-`reportTo` is the issue where the supervisor posts the coordinator's answers ([netbka/aiworks#3](https://github.com/netbka/aiworks/issues/3)).
+`reportTo` is optional and accepted only for compatibility with old configurations. No new coordinator answer uses it. Old posted reply links remain readable; pending coordinator outbox entries are retained locally instead of sent to GitHub. Campaign comments and PRs still use their declared target repository. The store migration is additive, and read-only dashboard access also works before migration.
 
 Without that block, messages stay **Received** and the dashboard says that no coordinator is configured. There is no daily cap unless `maxRunsPerDay` is set; then waiting messages are read when the 24-hour window frees a run. A read refused by a provider usage limit is retried after 30 minutes.
 
