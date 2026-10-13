@@ -1,6 +1,12 @@
 {
   "version": 1,
-  "roles": [],
+  "roles": [
+    { "id": "orchestrator", "purpose": "Synthetic test role." },
+    { "id": "backend-engineer", "purpose": "Synthetic test role." },
+    { "id": "infrastructure-sre", "purpose": "Synthetic test role." },
+    { "id": "security-reviewer", "purpose": "Synthetic test role.", "independent_from": ["backend-engineer", "infrastructure-sre"] },
+    { "id": "verification-agent", "purpose": "Synthetic test role.", "independent_from": ["backend-engineer"] }
+  ],
   "programs": [
     {
       "id": "product-control-plane",
