@@ -1,5 +1,5 @@
 // Release state, the destination lock and reconciliation (docs/design/AUTO_RELEASE.md sections 7.1 and 8, slice REL3).
-// Built switched off: nothing outside the tests calls this module until the owner decides netbka/aiworks#33. The rules:
+// Built switched off: nothing outside the tests calls this module until the owner decides example-org/aiworks#33. The rules:
 // - one release per destination: the lock is taken in the same fenced transaction that re-checks eligibility and moves
 //   the release to `locked`. It is freed only at accepted, rolled-back or refused; `unknown` and `rollback-failed` keep it;
 // - intent before effect: a step is recorded started, with its key and no outcome, and committed before the adapter acts;

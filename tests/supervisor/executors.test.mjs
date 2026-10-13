@@ -107,7 +107,7 @@ test('credit exhaustion falls back for each provider; permission denial and reco
 });
 
 test('owner campaign priority and role support are explicit', () => {
-  const campaign = JSON.parse(readFileSync(new URL('../../campaigns/dyk-443-waves.json', import.meta.url)));
+  const campaign = JSON.parse(readFileSync(new URL('../../tests/fixtures/campaigns/sample-chain.json', import.meta.url)));
   validateDeclaration(campaign);
   assert.deepEqual(campaign.executor.providers.map((p) => p.kind), ['claude-cli', 'codex-cli', 'cursor-cli']);
   assert.match(roleUnavailableReason({ kind: 'codex-cli' }, 'implementer', 'commit', 'win32'), /shared Git/);
@@ -154,7 +154,7 @@ test('Codex gets one required repository reader with immutable scope and no glob
   assert.ok(claudeResearch.argv.includes('--safe-mode'));
 });
 
-function fixture(t, maxWorkerRuns = 12, tasks, repository = 'netbka/Dyk') {
+function fixture(t, maxWorkerRuns = 12, tasks, repository = 'example-org/sampleapp') {
   const env = environment();
   const oldHomes = { CODEX_HOME: process.env.CODEX_HOME, CURSOR_CONFIG_DIR: process.env.CURSOR_CONFIG_DIR };
   for (const key of Object.keys(oldHomes)) process.env[key] = join(env.tmp, key);
@@ -166,7 +166,7 @@ function fixture(t, maxWorkerRuns = 12, tasks, repository = 'netbka/Dyk') {
   const store = new Store(join(env.dataDir, 'supervisor.db'));
   const d = declaration({ tasks: tasks ?? [{ ...declaration().tasks[0], deliverable: 'report' }], limits: { maxWorkerRuns } });
   d.target.repository = repository;
-  env.config.repositories[repository] = env.config.repositories['netbka/Dyk'];
+  env.config.repositories[repository] = env.config.repositories['example-org/sampleapp'];
   d.executor = structuredClone(chain);
   campaignStart(store, d);
   const controller = new Controller({ store, config: env.config, dataDir: env.dataDir });
@@ -393,7 +393,7 @@ test('explicit uncapped authorization permits runs above numeric caps without lo
   assert.equal(store.openOperations(id)[0].executor_kind, 'codex-cli');
   assert.equal(store.campaign(id).runs_used, 102);
   assert.equal(store.campaign(id).blocker, null);
-  // Since engineering-platform-archive#72 an omitted cap also means no run cap; out-of-range values still fail.
+  // Since historical regression an omitted cap also means no run cap; out-of-range values still fail.
   assert.doesNotThrow(() => validateDeclaration({ ...d, limits: { ...d.limits, maxWorkerRuns: undefined } }));
   assert.throws(() => validateDeclaration({ ...d, limits: { ...d.limits, maxWorkerRuns: 0 } }), /maxWorkerRuns/);
 });
@@ -414,7 +414,7 @@ test('completed planning campaigns name their actual target without claiming PR 
   const c = store.campaign(id);
   assert.equal(c.control, 'finished');
   assert.match(c.next_action, /Planning reports published in test\/wiki/);
-  assert.doesNotMatch(c.next_action, /Dyk|merge the campaign PRs/);
+  assert.doesNotMatch(c.next_action, /sampleapp|merge the campaign PRs/);
 });
 
 const promptArgs = (role, deliverable, changes = {}) => ({ executorKind: 'claude-cli', web: null, role, deliverable,

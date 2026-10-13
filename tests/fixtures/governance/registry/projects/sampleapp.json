@@ -1,0 +1,123 @@
+{
+  "id": "sampleapp",
+  "name": "sampleapp",
+  "repository": {
+    "github": "example-org/sampleapp"
+  },
+  "lifecycle": "active",
+  "capabilities": [
+    "ui",
+    "storybook",
+    "public-web",
+    "api",
+    "worker",
+    "database",
+    "docker",
+    "ai",
+    "payments",
+    "auth",
+    "seo",
+    "email"
+  ],
+  "environments": [
+    "local",
+    "dev",
+    "prod"
+  ],
+  "governance": {
+    "observedAt": "example-org/sampleapp@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "parentLink": "linked",
+    "authorities": [
+      {
+        "role": "agent-contract",
+        "path": "AGENTS.md"
+      },
+      {
+        "role": "product-constitution",
+        "path": "docs/PRODUCT_CONSTITUTION.md"
+      },
+      {
+        "role": "principles",
+        "path": "docs/PRINCIPLES.md"
+      },
+      {
+        "role": "decisions",
+        "path": "docs/DECISIONS.md"
+      },
+      {
+        "role": "router",
+        "path": ".agent/capabilities.yaml"
+      },
+      {
+        "role": "runtime-state",
+        "path": "docs/STATE.md"
+      },
+      {
+        "role": "workflow-contract",
+        "path": "testing/workflows"
+      },
+      {
+        "role": "experience-review",
+        "path": "docs/EXPERIENCE_REVIEW.md"
+      },
+      {
+        "role": "ui-authority",
+        "path": "storybook/review-manifest.json"
+      }
+    ],
+    "ownerReserved": [
+      {
+        "id": "product-authority-change",
+        "kind": "permanent",
+        "source": "docs/PRINCIPLES.md#owner-reserved-matters",
+        "summary": "Synthetic fixture requirement."
+      },
+      {
+        "id": "billing-provider",
+        "kind": "permanent",
+        "source": "docs/PRINCIPLES.md#owner-reserved-matters",
+        "summary": "Synthetic fixture requirement."
+      },
+      {
+        "id": "visible-result-approval",
+        "kind": "transitional",
+        "source": "docs/DECISIONS.md#d-040",
+        "summary": "Synthetic fixture requirement.",
+        "retiresWhen": "Synthetic fixture requirement."
+      }
+    ],
+    "stricter": [
+      {
+        "rule": "baseline:evidence-truth",
+        "source": "docs/PRODUCT_CONSTITUTION.md#5-trust-is-a-hard-product-boundary",
+        "summary": "Synthetic fixture requirement."
+      },
+      {
+        "rule": "baseline:isolation",
+        "source": "docs/PRINCIPLES.md#s---safety-and-privacy",
+        "summary": "Synthetic fixture requirement."
+      },
+      {
+        "rule": "constitution#4",
+        "source": "AGENTS.md#2-route-only-the-selected-context",
+        "summary": "Synthetic fixture requirement."
+      },
+      {
+        "rule": "policy:UX-001#interaction-cost-not-click-count",
+        "source": "docs/PRINCIPLES.md#u---user-effort",
+        "summary": "Synthetic fixture requirement."
+      },
+      {
+        "rule": "policy:UX-001#familiar-control-semantics",
+        "source": "docs/PRINCIPLES.md#u---user-effort",
+        "summary": "Synthetic fixture requirement."
+      }
+    ],
+    "releaseAuthorization": {
+      "source": "deploy/AGENTS.md",
+      "approval": "https://github.com/example-org/governance-archive/issues/82",
+      "summary": "Synthetic fixture authorization."
+    },
+    "independentVerificationGate": "not-enabled"
+  }
+}

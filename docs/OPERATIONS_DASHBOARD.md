@@ -1,23 +1,25 @@
 # Operations dashboard
 
-Owner request, 2026-10-09: see the entire roadmap, completed and ongoing work, and send basic commands to agents. First delivered in Engineering Platform ([#60](https://github.com/netbka/engineering-platform-archive/issues/60)); the owner view is tracked in [netbka/aiworks#4](https://github.com/netbka/aiworks/issues/4). This is the local operations surface for the AIWorks delivery supervisor. It is not Engineering Platform's project portal.
+Coordinator plans and replies stay in the local dashboard, under their message receipt and the requesting project's Start work receipt. "Read the plan" shows the checked final answer as text. Planning creates no GitHub issue, PR or comment. Each plan request retains its selected repository and runs separately; only registered campaign work publishes to its declared target repository ([AW-004](DECISIONS.md#aw-004---the-coordinator-is-read-only)).
+
+Owner request, 2026-10-09: see the entire roadmap, completed and ongoing work, and send basic commands to agents. First delivered in governance provider (#60); the owner view is tracked in AIWorks design work. This is the local operations surface for the AIWorks delivery supervisor. It is not governance provider's project portal.
 
 ## Run
 
-Requires Node 22.5 or newer and `git`. The dashboard needs no `gh` sign-in: it makes no GitHub API call ([netbka/aiworks#16](https://github.com/netbka/aiworks/issues/16)). From this checkout:
+Requires Node 22.5 or newer and `git`. The dashboard needs no `gh` sign-in: it makes no GitHub API call (AIWorks design work). From this checkout:
 
 ```sh
 npm install
-npm run dashboard -- --data D:/Git/aiworks/.local/supervisor --governance D:/Git/aiworks/.local/governance
+npm run dashboard -- --data C:/example/aiworks/.local/supervisor --governance C:/example/aiworks/.local/governance
 ```
 
-Open **http://127.0.0.1:4318**. Optional arguments are `--port` and `--governance`. `--cache` is still accepted so existing launch commands keep working, but nothing is cached: an old `.local/dashboard-cache/roadmap-cache.json` is no longer read and can be deleted. `--governance` names the governance checkout and defaults to `governanceRoot` in the data directory's `config.json` ([SUPERVISOR.md §6](SUPERVISOR.md#governance-checkout)). Without one, the roadmap panel says "governance checkout not configured". Launch background instances with a hidden process, as required by the Windows command-window rule. On HomePc it runs as the per-user task `AIWorks Dashboard`. Starting the dashboard does not start, pause, resume, upgrade or restart the supervisor.
+Open **http://127.0.0.1:4318**. Optional arguments are `--port` and `--governance`. `--cache` is still accepted so existing launch commands keep working, but nothing is cached: an old `.local/dashboard-cache/roadmap-cache.json` is no longer read and can be deleted. `--governance` names the governance checkout and defaults to `governanceRoot` in the data directory's `config.json` ([SUPERVISOR.md §6](SUPERVISOR.md#governance-checkout)). Without one, the roadmap panel says "governance checkout not configured". Launch background instances with a hidden process, as required by the Windows command-window rule. On workstation it runs as the per-user task `AIWorks Dashboard`. Starting the dashboard does not start, pause, resume, upgrade or restart the supervisor.
 
 ## Ownership and updates
 
 The dashboard (`src/dashboard`) and delivery supervisor (`src/supervisor`) belong to the AIWorks repository. GitHub branches and PRs hold unmerged work; merge status remains in GitHub rather than this runbook.
 
-The active local service uses a detached checkout of a merged, independently reviewed commit on main at `D:/Git/aiworks/.local/runtime`. Updating the main development checkout does not change that running version; upgrade the pin using the [supervisor procedure](SUPERVISOR.md#upgrade). Local state lives at `.local/supervisor`, generated target worktrees at `.local/worktrees/<repo>` and the governance checkout at `.local/governance`, relative to the AIWorks root. `.local/` is ignored by Git and is not part of a source update. Target checkouts remain at `D:/Git/<project>`. See the [supervisor layout and relocation procedure](SUPERVISOR.md#6-running-on-homepc).
+The active local service uses a detached checkout of a merged, independently reviewed commit on main at `C:/example/aiworks/.local/runtime`. Updating the main development checkout does not change that running version; upgrade the pin using the [supervisor procedure](SUPERVISOR.md#upgrade). Local state lives at `.local/supervisor`, generated target worktrees at `.local/worktrees/<repo>` and the governance checkout at `.local/governance`, relative to the AIWorks root. `.local/` is ignored by Git and is not part of a source update. Target checkouts remain at `C:/example/<project>`. See the [supervisor layout and relocation procedure](SUPERVISOR.md#6-installation-and-maintenance).
 
 ## What the owner sees
 
@@ -39,10 +41,10 @@ The active local service uses a detached checkout of a merged, independently rev
       - *The supervisor on &lt;host&gt; has not started &lt;campaign&gt; yet (it is paused)*.
 
       The card's chip then uses the warning tone, and the banner names the stopped supervisor.
-  - **Calm text covers only blocking items.** With no item and no merge check pending, the heading says *Nothing is blocked on you right now*, never "nothing needs you". Reports to read and finished campaigns whose merged work is ready are not blocking. When they exist, a line names them, for example *Also: 2 reports for you to read · merged work in Dyk is ready; release follows its standing deploy authorization*. The metric says the same in short form.
+  - **Calm text covers only blocking items.** With no item and no merge check pending, the heading says *Nothing is blocked on you right now*, never "nothing needs you". Reports to read and finished campaigns whose merged work is ready are not blocking. When they exist, a line names them, for example *Also: 2 reports for you to read · merged work in sampleapp is ready; release follows its standing deploy authorization*. The metric says the same in short form.
     - The dashboard has no read or release state. The line counts reports that were posted and merged work that is ready, not what is still unread or unreleased.
   - **Release follows the project's registry entry.** The dashboard does not assume the owner releases.
-    - Where a project records a standing deploy authorization (`governance.releaseAuthorization`, [GOVERNANCE_INHERITANCE §9](https://github.com/netbka/engineering-platform/blob/main/docs/GOVERNANCE_INHERITANCE.md#9-machine-readable-inheritance-state), [EP-029](https://github.com/netbka/engineering-platform/blob/main/docs/DECISIONS.md#ep-029---standing-production-deploy-authorization-keeps-every-release-gate)), release sentences say *release follows Dyk's standing deploy authorization*.
+    - Where a project records a standing deploy authorization (`governance.releaseAuthorization`, GOVERNANCE_INHERITANCE §9, governance-029), release sentences say *release follows sampleapp's standing deploy authorization*.
     - Otherwise they say *release follows &lt;repository&gt;'s release policy*.
     - The registry is read once at dashboard start from the governance checkout.
   - **Finished campaigns** with nothing listed for the owner collapse into *Finished campaigns (N)*, most recent first. Each has one line saying where its results stand and a *See all steps* disclosure. A finished or cancelled campaign card shows no controls. The Agents page uses the same order.
@@ -81,11 +83,11 @@ The active local service uses a detached checkout of a merged, independently rev
     - the progress line shortens;
     - navigation becomes a labeled bottom bar.
   - **Dates** are English (`10 Oct 12:23`) whatever the computer's locale.
-  - **Navigation.** Choosing a view opens it at its top. Back and Forward return to where that view was left ([UX-001](https://github.com/netbka/engineering-platform/blob/main/policies/UX-001.json) preserve-context).
+  - **Navigation.** Choosing a view opens it at its top. Back and Forward return to where that view was left (UX-001 preserve-context).
   - **Large screens.** From 1900px wide the whole page is scaled by 1.12. From 2300px it is scaled by 1.25 and the column is wider, so text is not 10–12px on a 2560px screen.
   - **Background.** The page is light only, and its background is explicit, so a dark system preference never shows through.
-  - **Supervisor faults** say they are not an owner action and link the supervisor issue ([netbka/aiworks#2](https://github.com/netbka/aiworks/issues/2)). The "since you last looked" line also links to Activity, which shows when they happened.
-- Roadmap: registered project campaign plans and their results, followed by the Engineering Platform roadmap from the governance checkout: its product phases, post-MVP increments and governance rollout packages, with their roles and dependencies. These are definitions only: their progress is tracked on GitHub and not read here. Search and the track filter apply to the platform packages. A campaign plan is its authorized scope, not the target repository's entire backlog.
+  - **Supervisor faults** say they are not an owner action and link the supervisor issue (AIWorks design work). The "since you last looked" line also links to Activity, which shows when they happened.
+- Roadmap: registered project campaign plans and their results, followed by the governance provider roadmap from the governance checkout: its product phases, post-MVP increments and governance rollout packages, with their roles and dependencies. These are definitions only: their progress is tracked on GitHub and not read here. Search and the track filter apply to the platform packages. A campaign plan is its authorized scope, not the target repository's entire backlog.
 - Issues & PRs: every campaign step with its issue, its pull request or report and where it stands, from the supervisor's own records (issue numbers and titles come from the declarations). Search and the status filter apply. Issues and pull requests that no campaign owns are not shown.
 - Agents & tasks: running implementer/verifier operations; for active campaigns only, configured provider priority, waiting reasons and retry times, worker slot limit, role restrictions, queue/dependencies, outcomes and result links. A heartbeat proves the runner is alive, not that the task is progressing. Last output time is file metadata only; providers emitting only a terminal receipt may have no output until completion.
 - Activity: worker starts/outcomes, provider switches with their reason, verified publications and owner commands. Duplicate dashboard processing and lease-renewal bookkeeping are omitted.
@@ -94,7 +96,7 @@ The sidebar and footer name the computer and the dashboard revision. Until the f
 
 ## Where the data comes from
 
-The dashboard makes no GitHub API call: no `gh`, GraphQL or REST ([netbka/aiworks#16](https://github.com/netbka/aiworks/issues/16)).
+The dashboard makes no GitHub API call: no `gh`, GraphQL or REST (AIWorks design work).
 
 - **Campaigns, steps, published pull request and report links, verified commits:** the supervisor store, read-only.
 - **Issue numbers and step titles:** the stored campaign declarations.
@@ -108,13 +110,13 @@ The dashboard makes no GitHub API call: no `gh`, GraphQL or REST ([netbka/aiwork
 
 ### Merging delegated by the owner
 
-The owner decided that a pull request which passed the supervisor's independent check of its exact head is merged without an owner step ([#17](https://github.com/netbka/aiworks/issues/17), AGENTS.md "When to stop for the owner"). The dashboard learns this from one setting. It is absent by default:
+The owner decided that a pull request which passed the supervisor's independent check of its exact head is merged without an owner step ([#17](https://github.com/example-org/aiworks/issues/17), AGENTS.md "When to stop for the owner"). The dashboard learns this from one setting. It is absent by default:
 
 ```json
 "merges": {
   "delegatedTo": "monitor",
   "decision": "#17",
-  "held": { "https://github.com/netbka/aiworks/pull/88": "newer-work" }
+  "held": { "https://github.com/example-org/aiworks/pull/88": "newer-work" }
 }
 ```
 
@@ -130,21 +132,21 @@ With the setting:
 
 Without the setting, nothing changes: every verified, unmerged pull request is a *Review and merge* item.
 
-The dashboard only reads this setting. It never merges, and the supervisor never merges ([AW-001](DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception)). Setting it on HomePc is a configuration change for the owner or the upgrade procedure ([SUPERVISOR.md §6](SUPERVISOR.md#6-running-on-homepc)).
+The dashboard only reads this setting. It never merges, and the supervisor never merges ([AW-001](DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception)). Setting it on workstation is a configuration change for the owner or the upgrade procedure ([SUPERVISOR.md §6](SUPERVISOR.md#6-installation-and-maintenance)).
 
 ### What the dashboard no longer shows
 
 - CI check results and merge conflicts of pull requests, and so *Ready to merge*. Each review item points to the pull request instead.
 - Pull requests closed without merging. They read *Published, merge not seen yet*.
-- Issues and pull requests that no campaign owns, including Engineering Platform's issue list and tracked extensions.
-- Progress of Engineering Platform roadmap items (done, in progress, in review).
+- Issues and pull requests that no campaign owns, including governance provider's issue list and tracked extensions.
+- Progress of governance provider roadmap items (done, in progress, in review).
 - Tracking-issue titles as campaign headings.
 
 These are on GitHub.
 
 Provider credit/rate failures come from execution receipts. Account balances are not queried, and unknown balances are never displayed as zero. Fallback retains the authorized cap and never overrides a permission denial. “Not running” means no operation currently uses that provider; it is not proof of native readiness. A campaign allows one worker slot, so three configured providers do not mean three simultaneous agents. Attempts include recorded refused attempts, while counted runs apply the explicit zero-work refund rule.
 
-Definitions come from Engineering Platform's `docs/PRODUCT_ROADMAP.md`, the PR program in its `docs/AUTONOMOUS_ROLLOUT.md`, and its agent-role catalog `registry/agents.json`, all read from the governance checkout. GitHub owns their work state, and the dashboard does not read it. A planned role is not a running process. Merged is not deployed.
+Definitions come from governance provider's `docs/PRODUCT_ROADMAP.md`, the PR program in its `docs/AUTONOMOUS_ROLLOUT.md`, and its agent-role catalog `registry/agents.json`, all read from the governance checkout. GitHub owns their work state, and the dashboard does not read it. A planned role is not a running process. Merged is not deployed.
 
 Supervisor state is read from its existing SQLite store with a read-only connection; GET requests never bootstrap a missing store. Runtime refresh is every 5 seconds. Merge checks follow the rules in [Where the data comes from](#where-the-data-comes-from); missing evidence stays unknown and never reads as merged.
 
@@ -155,7 +157,7 @@ Controls apply to existing **supervisor-managed campaigns**. Other chat/IDE agen
 | Command | Effect |
 | --- | --- |
 | Pause | Stops new dispatch; an existing worker can finish. |
-| Resume | Resumes the recorded declaration with its existing authorization and run cap. The declaration must equal a version committed in `campaigns/` in a revision merged to main, not necessarily main's tip ([AW-005](DECISIONS.md#aw-005---campaigns-run-only-from-merged-supervisor-code-and-a-declaration-on-main)). Otherwise the dashboard answers "Resume refused" and the campaign stays paused ([SUPERVISOR.md §1](SUPERVISOR.md#1-boundary)). |
+| Resume | Resumes the private stored declaration with its existing authorization and limits. Current version, scope and authorization are checked atomically. No declaration commit is required; the controller separately checks merged runtime code (AW-005). |
 | Recheck | Queues the existing recovery event, for a campaign or a selected unfinished task. It does not force acceptance or bypass owner-reserved conditions. |
 | Cancel | Requires a confirmation explaining that the controller terminates its owned workers and that cancelled campaigns cannot resume. Completed results remain available. |
 | Send instructions | Select an unfinished task and implementer/verifier role. Up to 2,000 characters are queued for that role's next run on the task; an already running worker is not interrupted. |
@@ -214,7 +216,7 @@ Completed/cancelled campaigns do not appear as controller failures when their hi
 - each Needs-you item leads with what its step delivers, with the evidence in one line;
 - release wording follows the registry: a recorded standing deploy authorization, else the project's own release policy, and never "your release".
 
-`tests/dashboard/presentation.test.mjs` checks the presentation follow-ups from the live reviews ([netbka/aiworks#4](https://github.com/netbka/aiworks/issues/4)):
+`tests/dashboard/presentation.test.mjs` checks the presentation follow-ups from the live reviews (AIWorks design work):
 - campaign titles from declared wording, and humanized distinguishing names;
 - views that open at their top, with Back restoring the position;
 - provider detail for active campaigns only;

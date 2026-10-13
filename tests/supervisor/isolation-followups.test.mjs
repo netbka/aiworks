@@ -1,4 +1,4 @@
-// Follow-ups from the engineering-platform-archive#71 review: hooks off, broader reply secret gate, no inherited Claude session variables,
+// Follow-ups from the historical regression review: hooks off, broader reply secret gate, no inherited Claude session variables,
 // and no stale coordinator block while idle. Synthetic workers only; no model, network or GitHub access.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -28,7 +28,7 @@ test('the reply gate catches common credential formats but not placeholders or p
     'postgres://app:s3cretPass@db.internal:5432/app', 'API_KEY=Zx81Kq0pLm2Nb7Rt', 'DB_PASSWORD: "hunter2hunter2"', `token ghp_${'A'.repeat(36)}`];
   for (const text of real) assert.equal(coordinator.containsSecret(`see ${text} here`), true, text);
   const benign = ['API_KEY=<your-key>', 'API_KEY=xxxxxxxx', 'API_KEY=${API_KEY}', 'DB_PASSWORD: changeme', 'rotate the deploy token next week',
-    'https://github.com/netbka/Dyk/pull/465', 'postgres://db.internal:5432/app', 'set SECRET_NAME in Infisical'];
+    'https://github.com/example-org/sampleapp/pull/465', 'postgres://db.internal:5432/app', 'set SECRET_NAME in Infisical'];
   for (const text of benign) assert.equal(coordinator.containsSecret(text), false, text);
 });
 
@@ -54,7 +54,7 @@ test('an inherited session variable does not reach a real contained worker proce
 
 test('an idle coordinator with valid configuration clears a stale blocked reason', { skip: skipWithoutSqlite }, async (t) => {
   const env = environment();
-  env.config.coordinator = { repositories: ['netbka/aiworks'], reportTo: 'netbka/aiworks#3', sourceRepo: env.repo,
+  env.config.coordinator = { repositories: ['example-org/aiworks'], reportTo: 'example-org/aiworks#3', sourceRepo: env.repo,
     worktreeRoot: join(env.tmp, 'coordinator-worktrees') };
   const store = new Store(join(env.dataDir, 'supervisor.db'));
   const controller = new Controller({ store, config: env.config, dataDir: env.dataDir, fault: null });

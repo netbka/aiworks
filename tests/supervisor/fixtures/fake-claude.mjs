@@ -74,9 +74,9 @@ switch (mode) {
   // falls through to a normal answer
   case 'coordinate':
     ok({ summary: 'two new items reviewed', reply: `Reviewed as asked (session ${sessionId}).`,
-      newWork: [{ repository: 'netbka/Dyk', number: 455, kind: 'issue', title: 'Telegram ingestion SQL contract', classification: 'new-campaign-candidate', reason: 'defect on main', wave: 1 },
-        { repository: 'netbka/Dyk', number: 461, kind: 'pr', title: 'Readable WhatsApp contacts', classification: 'needs-review-or-merge', reason: 'open PR awaiting review' }],
-      plan: 'Wave 1: #455 with independent verification.', proposedCampaign: '{"campaignId":"dyk-next"}' });
+      newWork: [{ repository: 'example-org/sampleapp', number: 455, kind: 'issue', title: 'Telegram ingestion SQL contract', classification: 'new-campaign-candidate', reason: 'defect on main', wave: 1 },
+        { repository: 'example-org/sampleapp', number: 461, kind: 'pr', title: 'Readable WhatsApp contacts', classification: 'needs-review-or-merge', reason: 'open PR awaiting review' }],
+      plan: 'Wave 1: #455 with independent verification.', proposedCampaign: '{"campaignId":"sampleapp-next"}' });
     break;
   case 'owner':
     ok({ result: 'blocked-owner-reserved', summary: 'needs owner', ownerTrigger: 'Constitution 2: paid spend decision' });
@@ -85,7 +85,7 @@ switch (mode) {
     ok({ result: 'blocked-owner-reserved', summary: 'needs owner',
       ownerTrigger: `Rotate key ${['sk', 'ant', 'api03', 'SYNTHETICfakeVALUE0123456789abcdef'].join('-')} with password=SYNTHETICfakePassphrase then decide` });
     break;
-  case 'unavailable': // a worker that cannot proceed and says so (the WAVE-06 shape, engineering-platform-archive#74)
+  case 'unavailable': // a worker that cannot proceed and says so (the WAVE-06 shape, historical regression)
     ok({ result: 'evidence-unavailable', summary: 'cannot proceed', tried: 'synthetic: no cohort assigned within the authorization' });
     break;
   case 'no-result':

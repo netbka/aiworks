@@ -43,7 +43,7 @@ const independent = () => {
 
 test('fingerprint: stable for one cause, new for a changed cause, never derived from a secret value', async () => {
   const { oi } = await load();
-  const base = { project: 'dyk', environment: 'research', dependency: 'auth', blockerClass: 'B2', identity: 'claude-cli' };
+  const base = { project: 'sampleapp', environment: 'research', dependency: 'auth', blockerClass: 'B2', identity: 'claude-cli' };
   assert.equal(oi.blockerFingerprint(base), oi.blockerFingerprint({ ...base }));
   assert.match(oi.blockerFingerprint(base), /^[0-9a-f]{64}$/);
   for (const change of [{ identity: 'codex-cli' }, { blockerClass: 'B5' }, { dependency: 'research-context' }, { environment: 'production' }, { project: 'other' }]) {
@@ -54,6 +54,7 @@ test('fingerprint: stable for one cause, new for a changed cause, never derived 
     oi.blockerFingerprint({ ...base, identity: `key ${keyShape('OTHERfakeVALUE9876543210zyxwvu')} rejected` }));
   const text = `Rotate ${SECRETS[0]} token=${SECRETS[1]} Bearer abcDEF1234567890xyz https://user:pa55@host/x 123456789:AAHsyntheticBotTokenValue_abcdefghijklmn`;
   const clean = oi.redact(text);
+  assert.equal(oi.redact('otp=123456'), 'otp=[redacted]', 'one-time passwords remain credential material');
   for (const value of [...SECRETS, 'pa55', 'abcDEF1234567890xyz', 'AAHsyntheticBotTokenValue']) assert.ok(!clean.includes(value), `${value} survived: ${clean}`);
   assert.equal(oi.redact('verified a1b2c3d4e5f60718293a4b5c6d7e8f9012345678'), 'verified a1b2c3d4e5f60718293a4b5c6d7e8f9012345678', 'Git SHAs stay readable');
 });

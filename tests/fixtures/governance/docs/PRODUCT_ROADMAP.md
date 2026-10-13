@@ -1,6 +1,6 @@
 # Fixture product roadmap
 
-Two tiny roadmap docs stand in for Engineering Platform's: only the `### P<n> - title` and `### R<n> - title` headings are read.
+Two tiny roadmap docs stand in for governance provider's: only the `### P<n> - title` and `### R<n> - title` headings are read.
 
 ### P0 - Product contract and schemas
 

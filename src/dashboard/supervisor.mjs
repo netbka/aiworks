@@ -9,7 +9,7 @@ import { pendingInstructions } from '../supervisor/instructions.mjs';
 import { roleUnavailableReason, runNotCounted } from '../supervisor/adapters/executors.mjs';
 import { campaignLimits } from '../supervisor/campaign.mjs';
 import { coordinatorView, postOwnerMessage } from '../supervisor/coordinator.mjs';
-import { CODE_ROOT, storedDeclarationOnMain } from '../supervisor/provenance.mjs';
+import { CODE_ROOT, revisionNotMerged } from '../supervisor/provenance.mjs';
 import { COMMANDS, stateCopy, stopReasonWords } from './copy.mjs';
 import { configuredRepositories } from './projects.mjs';
 
@@ -483,6 +483,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
       blocked: view.blocked ? safeText(view.blocked, 300) : null, reportTo: view.reportTo ?? null, runsToday: view.runsToday ?? 0, maxRunsPerDay: view.maxRunsPerDay ?? null,
       messages: view.messages.map((m) => ({ id: m.id, text: safeText(m.text, 4000), source: safeText(m.source, 80), state: code(m.state),
         receivedAt: m.receivedAt, readAt: m.readAt, answeredAt: m.answeredAt, failure: code(m.failure), retryAt: m.retryAt, attempts: m.attempts,
+        repository: m.repository, replyBody: m.replyBody ? safeText(m.replyBody, 61000) : null,
         replyState: code(m.replyState), replyUrl: githubLink(m.replyUrl),
         progress: m.state === 'read' ? (() => {
           const run = view.runs.find((item) => item.id === m.runId);
@@ -500,7 +501,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
 // changes work and never touches a project's files. "Plan and do" waits for the admission API (#8) and slice S10.
 export const PLAN_GOAL_LIMIT = 2000;
 export const PLAN_SOURCES = Object.freeze({ description: 'Just my description', issue: 'A GitHub issue', pull: 'A GitHub pull request' });
-const PLAN_AND_DO_OFF = 'Plan and do is not built yet. Today, work starts after its plan is merged into AIWorks and started on this computer.';
+const PLAN_AND_DO_OFF = 'Plan and do is not built yet. Today, work starts when an authorized private plan is registered on this computer.';
 
 /** The coordinator message for a checked Plan only request: project, where it starts from, the goal and the limits. */
 export function planRequestText({ project, goal, from, number }) {
@@ -553,8 +554,10 @@ export function postMessage(dataDir, input, now = Date.now()) {
   if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'Supervisor is unavailable.');
   const store = new Store(join(dataDir, 'supervisor.db'));
   try {
-    const text = isPlan ? planRequestText(planRequest(store, dataDir, input.plan)) : input.text;
-    return postOwnerMessage(store, { text, requestId: input.requestId, source: isPlan ? 'owner (Start work: Plan only)' : 'owner (dashboard)' }, now);
+    const plan = isPlan ? planRequest(store, dataDir, input.plan) : null;
+    const text = plan ? planRequestText(plan) : input.text;
+    return postOwnerMessage(store, { text, repository: plan?.project ?? null, requestId: input.requestId,
+      source: isPlan ? 'owner (Start work: Plan only)' : 'owner (dashboard)' }, now);
   } catch (error) {
     if (error.code === 'INVALID_MESSAGE') throw fail(400, error.message);
     if (error.code === 'CONFLICT') throw fail(409, error.message);
@@ -579,12 +582,11 @@ export function applyCommand(dataDir, input, now = Date.now(), { provenanceRoot 
   if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'Supervisor is unavailable.');
   const store = new Store(join(dataDir, 'supervisor.db'));
   try {
-    // AW-005: Resume restarts work from the stored declaration, so that declaration must be one committed in campaigns/
-    // on origin/main. Checked before the write transaction (git reads), then pinned inside it by the campaign version.
+    // Private Resume uses the registered declaration; executable code must still be merged.
     const before = input.action === 'resume' ? store.campaign(input.campaignId) : null;
     if (before?.control === 'paused') {
-      try { storedDeclarationOnMain(before.declaration, { root: provenanceRoot }); }
-      catch (error) { throw fail(409, COMMANDS.resumeRefused, `Resume refused: ${error.message}`); }
+      const notMerged = revisionNotMerged({ root: provenanceRoot });
+      if (notMerged) throw fail(409, COMMANDS.resumeRefused, `Resume refused: ${notMerged}`);
     }
     return store.tx(() => {
       const id = input.campaignId;
