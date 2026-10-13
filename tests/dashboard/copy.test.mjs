@@ -27,7 +27,7 @@ const ISSUE = 'https://github.com/example/shop-app/issues/441';
 const SAMPLE = { project: 'example/shop-app', host: 'HomePc', now: NOW, loadedAt: NOW - 3 * M, at: NOW - 20 * M, count: 3, pausedAt: NOW - 60 * M, stoppedAt: NOW - 30 * M,
   reason: 'Paused for an update', campaignId: 'shop-search', step: 'Search page', next: 'Price sync', provider: 'claude-cli', startedAt: NOW - 10 * M,
   lastActivityAt: NOW - 2 * M, minutes: 25, number: 465, url: PR, registeredAt: NOW - 2 * M, attempts: 5, action: 'Review and merge', text: 'Search page',
-  linkLabel: 'Review pull request #465', reasons: ['Codex is not set up on this computer'], awaiting: 2, merged: 0, reports: 2, closed: 1, delivered: 4,
+  linkLabel: 'Review pull request #465', reasons: ['Codex is not set up on this computer'], awaiting: 2, delegated: 2, merged: 0, reports: 2, closed: 1, delivered: 4,
   total: 9, standing: false, decision: true, retryAt: NOW + 65 * M, also: 'Also: 2 reports for you to read' };
 const all = (data = SAMPLE) => STATE_KEYS.map((key) => stateCopy(key, data, FORMAT));
 const words = (copy) => [copy.title, copy.text, copy.primary?.label ?? ''].join(' ');
@@ -59,7 +59,7 @@ test('every state of §7 has its text in the copy module', () => {
     '7.4': ['merge-old', 'merge-failed', 'merge-never'], '7.5': ['paused', 'paused-stopped'],
     '7.6': ['builder-working', 'checker-working', 'possibly-stuck', 'waiting-for-merge', 'awaiting-pickup', 'cancelling'],
     '7.7': ['needs-decision', 'failed-attempts', 'recorded-blocker', 'others-continue', 'supervisor-fault'],
-    '7.8': ['finished-open', 'finished-merged', 'finished-unknown', 'finished-reports', 'finished-closed', 'finished-local', 'cancelled'],
+    '7.8': ['finished-open', 'finished-delegated', 'finished-merged', 'finished-unknown', 'finished-reports', 'finished-closed', 'finished-local', 'cancelled'],
     '4.4': ['review', 'one-thing', 'several'] };
   assert.deepEqual([...STATE_KEYS].sort(), Object.values(cases).flat().sort(), 'one key per case, none missing and none extra');
   for (const [section, keys] of Object.entries(cases)) for (const key of keys) {

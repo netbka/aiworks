@@ -1,6 +1,6 @@
 import { formatRoute, globalOf, resolveRoute, tabOf } from '/router.mjs';
 // The state copy of OWNER_WORKSPACE §7 and the Now screen (slice S4); the server serves src/dashboard/copy.mjs here.
-import { COMMANDS, DIALOGS, NEEDS, NOT_READ, busyOnCommand, costRunsLine, nowView, workLine } from '/copy.mjs';
+import { COMMANDS, DELEGATED, DIALOGS, NEEDS, NOT_READ, busyOnCommand, costRunsLine, nowView, workLine } from '/copy.mjs';
 
 const $ = (selector) => document.querySelector(selector);
 const names = { done: 'Done', blocked: 'Blocked', unknown: 'Unknown',
@@ -9,9 +9,10 @@ const names = { done: 'Done', blocked: 'Blocked', unknown: 'Unknown',
 const provider = (kind) => ({ 'claude-cli': 'Claude', 'codex-cli': 'Codex', 'cursor-cli': 'Cursor Agent', 'agy-cli': 'AGY (Antigravity) browser' })[kind] ?? 'Unknown AI provider';
 // Owner-facing role names: the agent that builds a step, and the separate agent that checks it.
 const roleName = (role) => ({ Verifier: 'Independent checker', Implementer: 'Builder', verify: 'independent checker', implement: 'builder' })[role] ?? role;
-// What a finished step means for the owner: merged into the project (seen in local git), or published with its merge
-// not seen yet. The line under it (what it means for the owner, or why the merge is not seen) is `delivery.note`.
-const deliveryNames = { merged: ['done', 'Merged'], published: ['attention', 'Published, merge not seen yet'],
+// What a finished step means for the owner: merged into the project (seen in local git), published with its merge
+// not seen yet, or passed the check and merged for the owner when merging is delegated (#97). The line under it (what
+// it means for the owner, why the merge is not seen, or why it is held) is `delivery.note`.
+const deliveryNames = { merged: ['done', 'Merged'], published: ['attention', 'Published, merge not seen yet'], delegated: ['in_progress', DELEGATED.word],
   'report-posted': ['done', 'Report posted'], unknown: ['unknown', 'Result not known'] };
 const CHURN_ATTEMPTS = 5;
 const STUCK_MINUTES = 15;
@@ -300,6 +301,7 @@ function deliverySummary(c) {
   const parts = [`${delivered} of ${plural(c.tasks.length, 'step')} delivered`];
   if (counts?.merged) parts.push(`${counts.merged} merged`);
   if (counts?.awaiting) parts.push(`${counts.awaiting} waiting for your review`);
+  if (counts?.delegated) parts.push(DELEGATED.progress(counts.delegated));
   if (counts?.reports) parts.push(`${plural(counts.reports, 'report')} for you to read`);
   if (counts?.checking) parts.push(`merge of ${counts.checking} being checked`);
   if (counts?.unknown) parts.push(`${counts.unknown} without a recorded result`);
@@ -746,7 +748,7 @@ function needsYou() {
 function campaignWork(campaigns = state.supervisor.campaigns) {
   return campaigns.flatMap((c) => c.tasks.map((task) => {
     const delivery = deliveryOf(c, task);
-    const status = delivery ? delivery.state === 'published' ? 'review' : delivery.state === 'unknown' ? 'unknown' : 'done' : task.blocked ? 'blocked' : 'in_progress';
+    const status = delivery ? delivery.state === 'published' ? 'review' : delivery.state === 'delegated' ? 'in_progress' : delivery.state === 'unknown' ? 'unknown' : 'done' : task.blocked ? 'blocked' : 'in_progress';
     return { c, task, delivery, status, id: task.id, campaignId: c.id, repository: c.repository, title: `${task.outcome ?? ''} ${task.title}`,
       number: /\/issues\/(\d+)$/.exec(task.issueUrl ?? '')?.[1] ?? null };
   }));
@@ -962,13 +964,16 @@ function moreMenu(c, task = null) {
  * its outcome, one state, who is on it and why it waits; Resume as the one primary action when it is paused, and Pause,
  * Check again and Cancel under More. Dependencies, attempts, AI workers and cost are in Details.
  */
+const delegatedNote = (c, task) => { const delivery = deliveryOf(c, task); return delivery?.state === 'delegated' ? delivery.note : null; };
 function workPanel(project, c) {
   const terminal = ['finished', 'cancelled'].includes(c.control), note = terminal ? null : controlsNote(c);
   const rows = runOrder(c).map((task) => el('tr', { 'data-focus-scope': `${c.id}/${task.id}` },
     el('td', { class: 'c-work' }, routeLink(task.outcome ?? task.title, { screen: 'step', project, work: c.id, step: task.id }, 'task-name'),
       task.outcome ? el('div', { class: 'subtext' }, task.title) : null),
     el('td', { class: 'c-state' }, stepBadge(c, task),
-      ...[whoIsOn(c, task), task.stopped?.title, waitLine(task.wait)].filter(Boolean).map((text) => el('div', { class: 'subtext' }, text)))));
+      ...[whoIsOn(c, task), task.stopped?.title, waitLine(task.wait)].filter(Boolean).map((text) => el('div', { class: 'subtext' }, text)),
+      // Merging delegated by the owner: merged for them after CI, or why it is held (#97).
+      delegatedNote(c, task) ? el('div', { class: 'subtext' }, delegatedNote(c, task)) : null)));
   const { cost, body } = costNotes(c);
   return el('section', { class: 'panel', 'data-focus-scope': `work/${c.id}` },
     el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, campaignTitle(c)), el('p', {}, campaignNext(c)), note ? el('p', { class: 'controls-note' }, note) : null),

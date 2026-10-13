@@ -23,7 +23,7 @@ The active local service uses a detached checkout of a merged, independently rev
 
 - Overview: **Needs you** first, then a card for each campaign that has something listed for the owner or is still active, then live agents and roadmap progress. Finished and cancelled campaigns with nothing listed come after that, as one line each.
   - **Needs you** is built from supervisor fields and local git, never from worker output or the GitHub API. It lists:
-    - published steps whose merge is not seen yet, for the owner's review and merge, with the steps that build on them and any step that took many tries;
+    - published steps whose merge is not seen yet, for the owner's review and merge, with the steps that build on them and any step that took many tries. When the owner delegated merging, verified ones are not listed ([Merging delegated by the owner](#merging-delegated-by-the-owner));
     - owner decisions and stopped steps;
     - a supervisor that is not running;
     - a coordinator that cannot read messages;
@@ -104,6 +104,33 @@ The dashboard makes no GitHub API call: no `gh`, GraphQL or REST ([netbka/aiwork
   - Fetches happen only while a dashboard page is open: each state request starts a check, and the answer never waits for it.
   - Otherwise the step reads *Published, merge not seen yet*, never merged. That includes a repository with no configured checkout, a step with no recorded verified commit, and a squash or rebase merge, which rewrites the commit so it is never reachable.
   - A failed fetch keeps the last result and shows its time. A check older than 15 minutes never shows a step as merged.
+- **Who merges:** the `merges` setting in the supervisor's `config.json`, read on every page refresh. See [Merging delegated by the owner](#merging-delegated-by-the-owner).
+
+### Merging delegated by the owner
+
+The owner decided that a pull request which passed the supervisor's independent check of its exact head is merged without an owner step ([#17](https://github.com/netbka/aiworks/issues/17), AGENTS.md "When to stop for the owner"). The dashboard learns this from one setting. It is absent by default:
+
+```json
+"merges": {
+  "delegatedTo": "monitor",
+  "decision": "#17",
+  "held": { "https://github.com/netbka/aiworks/pull/88": "newer-work" }
+}
+```
+
+- `delegatedTo` names who merges for the owner. `decision` is the owner decision that delegated it, as `#<issue>`. Both are required; without them the setting is ignored.
+- `held` is optional. It lists pull requests held from merging, with the reason: `newer-work` reads *Held: waiting to be combined with newer work*. Any other reason reads *Held for now; the pull request says why*. Whoever holds a pull request records it here and removes it when the hold ends.
+
+With the setting:
+
+- a verified pull request whose merge is not seen is **not** a Needs me item. No count, project or headline counts it as an owner action;
+- the project's Work shows it as *Passed the check*, with *Will be merged for you after CI passes. Nothing for you to do.* or its held reason;
+- Results lists it under *Being merged for you*, as *Pull request #N · passed the check · will be merged for you after CI*, or with its held reason;
+- it reads *merged* only once the merge check sees it on the base branch, as before. A step with no recorded verified commit stays a Needs me item.
+
+Without the setting, nothing changes: every verified, unmerged pull request is a *Review and merge* item.
+
+The dashboard only reads this setting. It never merges, and the supervisor never merges ([AW-001](DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception)). Setting it on HomePc is a configuration change for the owner or the upgrade procedure ([SUPERVISOR.md §6](SUPERVISOR.md#6-running-on-homepc)).
 
 ### What the dashboard no longer shows
 

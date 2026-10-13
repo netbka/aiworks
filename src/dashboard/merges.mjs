@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
+import { DELEGATED } from './copy.mjs';
 
 /** At most one fetch of a repository's base branches per this interval, whether the last one succeeded or failed. */
 export const FETCH_INTERVAL_MS = 5 * 60_000;
@@ -35,6 +36,27 @@ export function configuredCheckouts(dataDir) {
     if (REPOSITORY.test(repository) && typeof entry?.path === 'string' && entry.path) checkouts[repository.toLowerCase()] = entry.path;
   }
   return checkouts;
+}
+
+const DELEGATE = /^[A-Za-z][\w .-]{0,63}$/;
+const DECISION = /^#\d{1,9}$/;
+
+/**
+ * Who merges verified pull requests, from config.json `merges` (absent by default). `delegatedTo` names who the owner
+ * delegated merging to and `decision` the owner decision that did it (#17). `held` maps a pull request URL to why it
+ * is held from merging (a DELEGATED.held key in copy.mjs; any other reason reads as `other`). The dashboard only reads this: it never merges. Missing, unreadable or
+ * malformed: null, and every verified, unmerged pull request stays the owner's to review and merge.
+ */
+export function configuredMergeDelegation(dataDir) {
+  let merges;
+  try { merges = readConfig(dataDir).merges; } catch { return null; }
+  const text = (value, pattern) => typeof value === 'string' && pattern.test(value);
+  if (!merges || typeof merges !== 'object' || !text(merges.delegatedTo, DELEGATE) || !text(merges.decision, DECISION)) return null;
+  const held = {};
+  if (merges.held && typeof merges.held === 'object' && !Array.isArray(merges.held)) {
+    for (const [url, reason] of Object.entries(merges.held)) if (PULL.test(url)) held[url.toLowerCase()] = Object.hasOwn(DELEGATED.held, reason) ? reason : 'other';
+  }
+  return { delegatedTo: merges.delegatedTo, decision: merges.decision, held };
 }
 
 /**

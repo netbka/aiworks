@@ -134,6 +134,9 @@ const STATES = {
   // §7.8 Finished. "Merged" only with a current merge check; unknown is said, never counted as nothing.
   'finished-open': { section: '7.8', needsYou: true, copy: (d) => ['All steps are finished.',
     `${plural(d.awaiting, 'pull request')} ${d.awaiting === 1 ? 'waits' : 'wait'} for your review${d.merged ? ` · ${d.merged} merged` : ''}.`, seeResults(d.project)] },
+  // Merging delegated by the owner (#97): the pull requests still open are merged for them, so nothing waits for them.
+  'finished-delegated': { section: '7.8', needsYou: false, copy: (d) => ['All steps are finished.',
+    `${plural(d.delegated, 'pull request')} passed the check and ${d.delegated === 1 ? 'is' : 'are'} to be merged for you after CI${d.merged ? ` · ${d.merged} merged` : ''}.`, seeResults(d.project)] },
   'finished-merged': { section: '7.8', needsYou: false, copy: (d) => ['All steps are finished and merged.',
     `Release follows ${whose(d.project)} ${d.standing ? 'standing deploy authorization' : 'release policy'}.`, seeResults(d.project)] },
   'finished-unknown': { section: '7.8', needsYou: false, copy: (d) => ['All steps are finished.',
@@ -177,6 +180,7 @@ export function progressText(counts) {
   const parts = [`${counts.delivered ?? 0} of ${counts.total} ${counts.total === 1 ? 'step has' : 'steps have'} results`];
   if (counts.merged) parts.push(`${counts.merged} merged`);
   if (counts.awaiting) parts.push(`${counts.awaiting} waiting for your review`);
+  if (counts.delegated) parts.push(DELEGATED.progress(counts.delegated));
   if (counts.reports) parts.push(`${plural(counts.reports, 'report')} for you to read`);
   if (counts.checking) parts.push(`the merge of ${counts.checking} is being checked`);
   if (counts.unknown) parts.push(`${counts.unknown} without a recorded result link`);
@@ -278,7 +282,9 @@ function finishedState(c, d) {
   const unknown = counts.total - counts.delivered + counts.checking + counts.unknown;
   if (unknown) return ['finished-unknown', { count: unknown }];
   if (counts.awaiting) return ['finished-open', { awaiting: counts.awaiting, merged: counts.merged }];
+  // Reports are the owner's to read, so they are said before pull requests merged for the owner.
   if (counts.reports) return ['finished-reports', { reports: counts.reports, merged: counts.merged }];
+  if (counts.delegated) return ['finished-delegated', { delegated: counts.delegated, merged: counts.merged }];
   return ['finished-merged', { standing: /standing deploy authorization/.test(view.finished ?? '') }];
 }
 
@@ -286,7 +292,7 @@ function finishedState(c, d) {
 function mergeNote(project, merges, counts, now) {
   const repo = (merges?.repositories ?? []).find((item) => same(item.repository, project));
   // Only work with pull requests depends on the merge check; reports do not.
-  if (!repo || repo.configured === false || !(counts?.merged || counts?.awaiting || counts?.checking)) return null;
+  if (!repo || repo.configured === false || !(counts?.merged || counts?.awaiting || counts?.delegated || counts?.checking)) return null;
   const at = Number.isSafeInteger(repo.fetchedAt) ? repo.fetchedAt : null;
   if (repo.error) return ['merge-failed', { at }];
   if (at === null) return counts?.checking ? ['merge-never', { count: counts.checking }] : null;
@@ -386,6 +392,22 @@ export function stopReasonWords(blocked, rounds = 0) {
   if (failed) return `${failed[1]} failed attempts (last: ${failed[2].replaceAll('-', ' ')}); check it again after fixing the cause`;
   return 'it stopped; see Settings › Diagnostics for what AIWorks recorded';
 }
+
+/**
+ * A verified pull request whose merge the owner delegated (config.json `merges`, #17, #97): not a Needs me item, never
+ * called merged before it is. `held` is why one is held from merging, by the reason key config.json records.
+ */
+export const DELEGATED = {
+  word: 'Passed the check',
+  note: 'Will be merged for you after CI passes. Nothing for you to do.',
+  row: (number) => `Pull request #${number} · passed the check · will be merged for you after CI`,
+  heldRow: (number, reason) => `Pull request #${number} · ${reason.charAt(0).toLowerCase()}${reason.slice(1)}`,
+  progress: (n) => `${n} to be merged for you after CI`,
+  held: {
+    'newer-work': 'Held: waiting to be combined with newer work',
+    other: 'Held for now; the pull request says why',
+  },
+};
 
 /** Needs me items about AIWorks itself and about stopped work, in the owner's words. */
 export const NEEDS = {
