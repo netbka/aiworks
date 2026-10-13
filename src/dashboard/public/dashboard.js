@@ -21,9 +21,10 @@ const deliveryOf = (c, task) => ownerCampaign(c)?.deliveries?.[task.id] ?? null;
 const shortRepo = (repository) => repository?.split('/')[1] ?? repository ?? '';
 const plural = (n, word, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
 const usd = (value) => `$${value.toFixed(2)}`;
-const campaignTitle = (c) => {
+const campaignTitle = (c, { inProject = false } = {}) => {
   const purpose = ownerCampaign(c)?.purpose;
-  return `${shortRepo(c.repository)}: ${purpose?.text ?? c.id}${purpose?.variant ? ` (${purpose.variant})` : ''}`;
+  const text = `${purpose?.text ?? c.id}${purpose?.variant ? ` (${purpose.variant})` : ''}`;
+  return inProject ? text : `${shortRepo(c.repository)}: ${text}`;
 };
 
 // "Since you last looked": the last visit is a per-viewer convenience in this browser only. Reads and writes may
@@ -148,7 +149,8 @@ function renderMetrics(campaigns = state.supervisor.campaigns, shown = []) {
   // The owner actions under "Needs you": reviews, decisions, stopped work and a stopped supervisor. A supervisor fault and an
   // unreadable inbox are listed but not counted: they are not the owner's to do. A pause by itself is not listed.
   // A published step whose merge is still being checked is never counted as nothing.
-  // "Nothing" is only about what blocks on the owner: reports to read and releases are named after it.
+  // Needs you counts and names only what the owner must do (owner, 2026-10-13: "only notifications where I am really
+  // needed"); reports to read and work ready for release are on Results, not here.
   const owner = state.owner ?? { count: 0, unknownResults: 0, also: null }, attention = owner.count, unknown = owner.unknownResults;
   const available = state.supervisor.available;
   const verdicts = agents.map((agent) => agentVerdict(agent)[0]);
@@ -158,7 +160,7 @@ function renderMetrics(campaigns = state.supervisor.campaigns, shown = []) {
       : agents.length ? `${verdicts.filter((v) => v === 'recent').length} working normally${verdicts.some((v) => v === 'stale') ? ` · ${verdicts.filter((v) => v === 'stale').length} possibly stuck or not started` : ''}` : 'None right now', '◎'],
     ['Needs you', !available ? '—' : unknown && !attention ? '?' : attention, available && unknown && attention ? '+ ?' : null,
       !available ? 'Execution state unknown'
-        : `${attention ? `${plural(attention, 'item')} listed below` : unknown ? 'Nothing confirmed yet' : 'Nothing is blocked on you'}${unknown ? ` · merge of ${plural(unknown, 'published step')} being checked` : ''}${owner.also ? ` · also ${owner.also.short}` : ''}`, '◈'],
+        : `${attention ? `${plural(attention, 'item')} listed below` : unknown ? 'Nothing confirmed yet' : 'Nothing is blocked on you'}${unknown ? ` · merge of ${plural(unknown, 'published step')} being checked` : ''}`, '◈'],
   ];
   $('#metrics').replaceChildren(...metrics.filter(([title]) => shown.includes(title)).map(([title, value, total, foot, icon]) => el('div', { class: 'metric' },
     el('div', { class: 'metric-title' }, title, el('span', { class: 'metric-icon', 'aria-hidden': 'true' }, icon)),
@@ -206,6 +208,33 @@ function whoIsOn(c, task) {
   if (!agent) return null;
   const [, verdict] = agentVerdict(agent), last = agent.progress?.lastActivityAt ?? agent.outputAt ?? null;
   return `${roleName(agent.role)} (${provider(agent.executor)}) · ${verdict.charAt(0).toLowerCase()}${verdict.slice(1)}${last ? ` · last activity ${timeAgo(last)}` : ''}`;
+}
+
+/**
+ * How a step is named in a row (OWNER_WORKSPACE §4.7: by its outcome): a short outcome leads; a long one (a whole
+ * sentence) gives way to the step's short title and becomes the line under it. The same words twice are shown once.
+ */
+const OUTCOME_LEAD_MAX = 100;
+function stepLabels(task) {
+  const outcome = task.outcome ?? null, title = task.title ?? null;
+  const lead = outcome && (outcome.length <= OUTCOME_LEAD_MAX || !title) ? outcome : title ?? outcome ?? task.id;
+  const other = lead === outcome ? title : outcome;
+  return { lead, more: other && other.toLowerCase() !== lead.toLowerCase() ? other : null };
+}
+
+/** Who is on a step, without the verdict: "Independent checker (Claude) · last activity 24m ago". */
+function whoLine(c, task) {
+  const agent = c.agents.find((item) => item.taskId === task.id);
+  if (!agent) return null;
+  const last = agent.progress?.lastActivityAt ?? agent.outputAt ?? null;
+  return `${roleName(agent.role)} (${provider(agent.executor)})${last ? ` · last activity ${timeAgo(last)}` : ''}`;
+}
+/** The verdict as its own label, placed under the text it describes ("Possibly stuck: no progress for 25 min"). */
+function verdictLabel(c, task) {
+  const agent = c.agents.find((item) => item.taskId === task.id);
+  if (!agent) return null;
+  const [cls, verdict] = agentVerdict(agent);
+  return el('div', { class: 'cell-labels' }, badge(cls, verdict));
 }
 
 /** How the verdicts are decided, shown once rather than on every card. */
@@ -730,15 +759,14 @@ const needsGroup = (group) => el('section', { class: 'needs-group', 'aria-labell
 function needsYou() {
   const owner = state.owner;
   if (!owner?.available) return null;
-  const { headline, count, groups = [], unknownResults: unknown, also, reply } = owner;
+  const { headline, count, groups = [], unknownResults: unknown, reply } = owner;
   // aiworks#18: a stopped supervisor leads, with the time it last renewed its leases.
   const controller = state.supervisor.controller;
   return el('section', { class: `needs${count ? '' : unknown ? ' checking' : ' calm'}`, 'aria-labelledby': 'needs-title' },
     controller?.stopped ? el('p', { class: 'needs-stopped' }, NEEDS.banner(controller.lastLeaseRenewalAt, { dateTime }, controller.stopRequested)) : null,
     el('div', { class: 'needs-head' }, el('h2', { id: 'needs-title' }, headline),
       unknown ? el('span', { class: 'needs-unknown' }, `Merge of ${unknown} published step${unknown === 1 ? '' : 's'} being checked`) : null),
-    // Not blocking, never "nothing": posted reports and merged work ready for release.
-    also ? el('p', { class: 'needs-also' }, also.text) : null,
+    // Only owner actions here (owner, 2026-10-13): posted reports and merged work ready for release are on Results.
     ...groups.map(needsGroup),
     reply ? el('div', { class: 'needs-reply' }, `The coordinator answered your message #${reply.messageId} (${dateTime(reply.answeredAt)}). `,
       link('Read its “What needs you” ↗', reply.url)) : null);
@@ -971,15 +999,16 @@ const delegatedNote = (c, task) => { const delivery = deliveryOf(c, task); retur
 function workPanel(project, c) {
   const terminal = ['finished', 'cancelled'].includes(c.control), note = terminal ? null : controlsNote(c);
   const rows = runOrder(c).map((task) => el('tr', { 'data-focus-scope': `${c.id}/${task.id}` },
-    el('td', { class: 'c-work' }, routeLink(task.outcome ?? task.title, { screen: 'step', project, work: c.id, step: task.id }, 'task-name'),
-      task.outcome ? el('div', { class: 'subtext' }, task.title) : null),
-    el('td', { class: 'c-state' }, stepBadge(c, task),
-      ...[whoIsOn(c, task), task.stopped?.title, waitLine(task.wait)].filter(Boolean).map((text) => el('div', { class: 'subtext' }, text)),
+    el('td', { class: 'c-work' }, routeLink(stepLabels(task).lead, { screen: 'step', project, work: c.id, step: task.id }, 'task-name'),
+      stepLabels(task).more ? el('div', { class: 'subtext' }, stepLabels(task).more) : null),
+    el('td', { class: 'c-state' }, el('div', { class: 'cell-labels' }, stepBadge(c, task)),
+      ...[whoLine(c, task), task.stopped?.title, waitLine(task.wait)].filter(Boolean).map((text) => el('div', { class: 'subtext' }, text)),
+      verdictLabel(c, task),
       // Merging delegated by the owner: merged for them after CI, or why it is held (#97).
       delegatedNote(c, task) ? el('div', { class: 'subtext' }, delegatedNote(c, task)) : null)));
   const { cost, body } = costNotes(c);
   return el('section', { class: 'panel', 'data-focus-scope': `work/${c.id}` },
-    el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, campaignTitle(c)), el('p', {}, campaignNext(c)), note ? el('p', { class: 'controls-note' }, note) : null),
+    el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, campaignTitle(c, { inProject: true })), el('p', {}, campaignNext(c)), note ? el('p', { class: 'controls-note' }, note) : null),
       el('div', {}, resumeButton(c), moreMenu(c))),
     el('div', { class: 'steps' }, table(['What it delivers', 'Where it stands'], rows)),
     disclosure(`${c.id}/work-details`, `Details · ${plural(c.tasks.length, 'step')} · ${plural(c.runsUsed, 'run')} · ${cost}`,
@@ -1006,7 +1035,7 @@ function stepScreen(project, c, task) {
   const guidance = (c.instructions ?? []).filter((item) => item.taskId === task.id);
   const { attempts, events } = task.history ?? { attempts: [], events: [] };
   return [el('section', { class: 'panel', 'data-focus-scope': `step/${c.id}/${task.id}` },
-    el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, task.outcome ?? task.title), el('p', {}, `${campaignTitle(c)} · project ${projectName(project)}`)),
+    el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, task.outcome ?? task.title), el('p', {}, `${campaignTitle(c, { inProject: true })} · project ${projectName(project)}`)),
       moreMenu(c, task)),
     el('div', { class: 'panel-body' },
       el('p', { role: 'status', 'aria-live': 'polite' }, stepBadge(c, task), ' ', task.stopped ? el('strong', {}, task.stopped.title) : whoIsOn(c, task) ?? waitLine(task.wait) ?? ''),

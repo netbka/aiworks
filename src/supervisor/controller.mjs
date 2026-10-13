@@ -14,14 +14,14 @@ import * as github from './adapters/github.mjs';
 import { authorityDigest, campaignLimits, executorOrder, projectGovernance } from './campaign.mjs';
 import { resolveCheckout } from './project-connect.mjs';
 import { campaignBudget } from './api.mjs';
-import { ACCOUNT_SCOPED, accountOf, accountWait, clearAccountWait, laterWait, setAccountWait } from './accounts.mjs';
+import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountOf, accountWait, clearAccountWait, laterWait, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
 import { domainOf, pathsOutside, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
 import { coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
 import { stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions } from './instructions.mjs';
 import { priorAttempt, receiptInputs, staticReceipt } from './router.mjs';
-import { specOf, specsOf } from './plan.mjs';
+import { PLAN_TASK, settleAmendment, specOf, specsOf } from './plan.mjs';
 import { ConflictError, FencedError } from './store.mjs';
 import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
 
@@ -105,11 +105,15 @@ export class Controller {
   // revisionCheck (AW-005): returns null while this code is merged into origin/main, else the reason. `cli.mjs serve` always
   // supplies it from git; only an in-process embedding (the tests) constructs a controller without it. revisionCheckMs
   // is likewise an in-process seam, never read from config.json.
+  // profiles (ACCOUNT_ADAPTER_CAAM.md section 3.3, slice CAAM3): `(kind, now) => profiles`, CAAM's inventory for an executor
+  // kind (caam.mjs caamRobotStatus records), or null for a kind CAAM does not manage; it may throw. Selection runs only
+  // with it and config.json "caam": { "enabled": true }. cli.mjs supplies none yet, so it stays off: a chosen profile must
+  // also be the one the worker launches under, which waits for the CAAM4 launch slice and the owner's Phase 2 pilot.
   constructor({ store, config, dataDir, log = () => {}, now = () => Date.now(), instanceId = randomUUID(),
     codeRevision = null, fault = process.env.AIWORKS_FAULT ?? null, notifier = noopTransport, probes = {},
-    governanceRoot = undefined, revisionCheck = null, revisionCheckMs = REVISION_CHECK_MS }) {
+    governanceRoot = undefined, revisionCheck = null, revisionCheckMs = REVISION_CHECK_MS, profiles = null }) {
     Object.assign(this, { store, dataDir, log, now, instanceId, codeRevision, fault, notifier, probes, governanceRoot,
-      revisionCheck, revisionCheckMs });
+      revisionCheck, revisionCheckMs, profiles });
     this.config = { ...DEFAULTS, ...config };
     this.governanceRoot = governanceRoot ?? this.config.governanceRoot;
     // aiworks#1 owner-intervention core: off unless the data-directory config enables it.
@@ -383,7 +387,8 @@ export class Controller {
   }
 
   deliverable(ctx, taskId) {
-    return specOf(this.store, ctx.id, taskId).deliverable;
+    // A planning step is read-only report work (WORK_ENVELOPE 6.2); it has no spec of its own.
+    return taskId === PLAN_TASK ? 'report' : specOf(this.store, ctx.id, taskId).deliverable;
   }
 
   consume(ctx, op, run) {
@@ -415,6 +420,7 @@ export class Controller {
   }
 
   applyOutcome(ctx, op, outcome) {
+    if (op.kind === 'plan') return this.settlePlan(ctx, op, outcome);
     let verdict = outcome;
     const before = this.store.task(ctx.id, op.task_id);
     // Deterministic checks of the worker's claims, outside the write transaction.
@@ -518,6 +524,40 @@ export class Controller {
           `**${task.task_id}** is blocked (${change.blocked.class}): ${change.blocked.reason}\n\nThe campaign keeps ownership. After recovery or an owner decision recorded on the task issue, run \`supervisor recheck ${ctx.id} --task ${task.task_id}\`.`, now);
       }
     });
+  }
+
+  /**
+   * Settle a planning operation (WORK_ENVELOPE 6.3 and 6.4, slice E3). The operation finishes and its amendment is admitted,
+   * with its task rows, in one fenced transaction: both commit or neither does. A controller whose lease generation is stale
+   * gets FencedError and writes nothing. After a crash before the commit the operation is still open and is settled again
+   * with the same idempotency key; after the commit it is finished and nothing is applied twice. Code admits, never a model.
+   * Nothing records a planning operation yet: planning triggers and the plan-stage result are slice E5.
+   */
+  settlePlan(ctx, op, outcome) {
+    const merged = !this.unmergedRevision();
+    const settled = this.fenced(ctx, () => {
+      const now = this.now();
+      const fresh = this.store.get('SELECT * FROM operations WHERE id = ?', op.id);
+      if (!['recorded', 'dispatched'].includes(fresh.state)) return null; // already settled
+      let verdict = { ...outcome, executorKind: fresh.executor_kind };
+      if (verdict.class === 'result' && !acceptsLease(runLease(fresh, 'active'), runLease(fresh, 'active', verdict.receipt?.sessionId ?? ''), now)) {
+        verdict = { ...verdict, class: 'invalid-result', detail: `result session ${verdict.receipt?.sessionId} is not the dispatched session ${fresh.session_id}` };
+      }
+      this.store.updateOperation(op.id, { state: 'finished', outcome: verdict }, now);
+      const campaign = this.store.campaign(ctx.id);
+      if (verdict.receipt?.costUsd) this.store.patch('campaigns', { id: ctx.id }, campaign.version, { cost_usd: campaign.cost_usd + verdict.receipt.costUsd }, now);
+      this.store.journal(ctx.id, 'operation-finished', { op: op.id, executor: fresh.executor_kind, class: verdict.class, detail: verdict.detail ?? null,
+        session: verdict.receipt?.sessionId ?? null, costUsd: verdict.receipt?.costUsd ?? null }, now);
+      if (verdict.class !== 'result') return null;
+      const admission = settleAmendment(this.store, { campaign: this.store.campaign(ctx.id), operation: fresh, amendment: verdict.value?.amendment,
+        merged, leaseGeneration: ctx.generation, codeRevision: this.codeRevision, now });
+      const kind = { admitted: 'amendment-admitted', repeated: 'amendment-repeated', none: 'plan-no-change', refused: 'amendment-refused' }[admission.outcome];
+      this.store.journal(ctx.id, kind, { op: op.id, ...admission, ops: admission.ops?.length }, now);
+      this.injectFault('before-plan-settle');
+      return admission;
+    });
+    this.injectFault('after-plan-settle');
+    return settled;
   }
 
   transition(ctx, task, op, v, decl, now) {
@@ -1063,6 +1103,18 @@ export class Controller {
     return true;
   }
 
+  /**
+   * The CAAM profile the next run on `kind` would get (accounts.mjs selectProfile), or null when profile selection is off
+   * or CAAM does not manage `kind`. An inventory that cannot be read fails closed: no profile, and a re-read later.
+   */
+  profileChoice(kind, now = this.now()) {
+    if (!profilesEnabled(this.config, this.profiles)) return null;
+    let profiles;
+    try { profiles = this.profiles(kind, now); }
+    catch (error) { return { account: null, retryAt: now + PROFILE_RECHECK_MS, reason: `the CAAM inventory for ${kind} cannot be read (${error.code ?? 'error'})` }; }
+    return profiles == null ? null : selectProfile(this.store, kind, profiles, now);
+  }
+
   /** The first untimed account wait (a failed login, or a host finding that needs a recheck) on a provider of `decl`, or null. */
   untimedAccountWait(decl) {
     for (const { kind } of executorOrder(decl.executor)) {
@@ -1088,7 +1140,10 @@ export class Controller {
       // The later of this campaign's own wait and the account's wait (ADAPTIVE_SCHEDULER 4.5); an elapsed timed wait is none.
       const wait = laterWait(own, accountWait(this.store, this.config, kind));
       const active = wait && (wait.retry_at === null || wait.retry_at > now);
-      return { cliConfigured: true, hostUnavailable: null, wait: active ? { retryAt: wait.retry_at, reason: wait.reason } : null };
+      if (active) return { cliConfigured: true, hostUnavailable: null, wait: { retryAt: wait.retry_at, reason: wait.reason } };
+      // With profile selection, a kind waits when none of its profiles may run, until the earliest reset among them.
+      const profile = this.profileChoice(kind, now);
+      return { cliConfigured: true, hostUnavailable: null, wait: profile && !profile.account ? { retryAt: profile.retryAt, reason: profile.reason } : null };
     };
     const receipt = staticReceipt(receiptInputs({
       stage: task.state === 'implemented' ? 'verify' : 'implement', chain: decl.executor.kind === 'cli-chain',
@@ -1150,6 +1205,14 @@ export class Controller {
         return null;
       }
       const executor = choice.executor;
+      // The profile is chosen again here and bound by recordOperation below, in this one transaction: two dispatches
+      // never take the same free profile, and a run that waits records nothing and spends no attempt (section 3.3).
+      const profile = this.profileChoice(executor.kind);
+      if (profile && !profile.account) {
+        this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
+          { retry_at: profile.retryAt, last_error: `waiting for executor availability: ${profile.reason}` }, this.now());
+        return null;
+      }
       const spec = specOf(this.store, ctx.id, task.task_id, decl);
       const repo = this.repo(decl);
       const seq = task.attempts + 1;
@@ -1291,12 +1354,12 @@ export class Controller {
         id: opId, campaign_id: ctx.id, task_id: task.task_id, kind, seq, idempotency_key: opId, lease_generation: ctx.generation,
         state: 'recorded', session_id: sessionId, run_dir: runDir, workspace, base_sha: revision, target_sha: targetSha,
         report_digest: reportDigest, packet, packet_digest: digest, outcome: null, created_at: now, updated_at: now,
-        executor_kind: executor.kind, routing: choice.receipt,
+        executor_kind: executor.kind, routing: choice.receipt, ...(profile ? { account_identity: profile.account } : {}),
       });
       this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, t.version,
         { attempts: seq, base_sha: baseSha, state: kind === 'implement' ? 'implementing' : 'verifying', retry_at: null }, now);
       this.store.patch('campaigns', { id: ctx.id }, c.version, { runs_used: c.runs_used + 1 }, now);
-      this.store.journal(ctx.id, 'operation-recorded', { op: opId, kind, executor: executor.kind, model: choice.receipt.decision.chosen.model, session: sessionId, packetDigest: digest, generation: ctx.generation, run: c.runs_used + 1 }, now);
+      this.store.journal(ctx.id, 'operation-recorded', { op: opId, kind, executor: executor.kind, model: choice.receipt.decision.chosen.model, ...(profile ? { account: profile.account } : {}), session: sessionId, packetDigest: digest, generation: ctx.generation, run: c.runs_used + 1 }, now);
 
       // This checkpoint and admission decision commit together before launch.
       const plan = planContext({
@@ -1575,7 +1638,8 @@ export class Controller {
       const open = this.store.openOperations(ctx.id);
       const spec = specsOf(this.store, ctx.id, decl);
       const done = new Set(tasks.filter((task) => task.state === 'done').map((task) => task.task_id));
-      const waiting = tasks.filter((task) => task.state !== 'done');
+      // A cancelled child task (WORK_ENVELOPE 6.4) is settled: it never runs and keeps no campaign open.
+      const waiting = tasks.filter((task) => !['done', 'cancelled'].includes(task.state));
       const blockedTasks = waiting.filter((task) => task.blocked);
       const held = this.heldTasks(ctx.id);
       const runnable = waiting.filter((task) => !task.blocked && !held.has(task.task_id) && RUNNABLE.includes(task.state) &&

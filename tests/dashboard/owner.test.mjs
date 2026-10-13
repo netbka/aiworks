@@ -317,7 +317,7 @@ test('on the review fixture, Needs me lists the same items and count as before, 
 
 test('the Needs me page shows one headed group per project, linked to it, and "AIWorks itself" with the project its item is about', () => {
   const page = readFileSync(join(resolve(import.meta.dirname, '../..'), 'src/dashboard/public/dashboard.js'), 'utf8');
-  assert.match(page, /const \{ headline, count, groups = \[\], unknownResults: unknown, also, reply \} = owner;/);
+  assert.match(page, /const \{ headline, count, groups = \[\], unknownResults: unknown, reply \} = owner;/);
   assert.match(page, /\.\.\.groups\.map\(needsGroup\),/);
   assert.match(page, /el\('h3', \{ id: `needs-group-\$\{group\.key\}`, class: 'section-title' \}, group\.project \? routeLink\(group\.name, \{ screen: 'project', project: group\.project \}\) : group\.name, NEEDS\.groupCount\(group\.count, group\.notCounted\)\)/);
   assert.match(page, /el\('ul', \{ class: 'needs-list' \}, \.\.\.group\.items\.map\(needsItem\)\)/);
