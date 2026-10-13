@@ -12,7 +12,7 @@ import { declaration } from '../supervisor/helpers.mjs';
 import { supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { ownerView, delivery, mergeCheck } from '../../src/dashboard/owner.mjs';
 import { readReleaseAuthorizations } from '../../src/dashboard/roadmap.mjs';
-import { stateCopy } from '../../src/dashboard/copy.mjs';
+import { stateCopy, workLine } from '../../src/dashboard/copy.mjs';
 
 const ROOT = resolve(import.meta.dirname, '../..');
 const GOVERNANCE = join(ROOT, 'tests/fixtures/governance');
@@ -111,7 +111,7 @@ test('a finished step with a missing or unrecognised result link is unknown, nev
   const view = ownerView(supervisor, checked(results(d.campaignId, { T1: true })));
   // A missing link never clears by itself, so it is not "checking": it is an item to check, never nothing.
   assert.equal(view.unknownResults, 0);
-  assert.deepEqual(view.items.map((item) => [item.kind, item.action, item.text, item.link.label]), [['check', 'Check on GitHub', 'second', 'Open step issue (T2)']]);
+  assert.deepEqual(view.items.map((item) => [item.kind, item.action, item.text, item.link.label]), [['check', 'Check on GitHub', 'second', 'Open the step issue']]);
   assert.equal(view.items[0].points[0].text, 'This step finished, but no result link was recorded, so the dashboard cannot tell where it stands.');
   assert.equal(view.headline, 'Needs you (1)');
   assert.equal(view.campaigns[d.campaignId].finished, 'All steps are finished · 1 step has no recorded result link; check its issue · 1 merged');
@@ -132,7 +132,7 @@ test('the dashboard never says "ready to merge": it names the accepted commit an
   const supervisor = supervisorSnapshot(dataDir), now = Date.now();
   const steps = { [`${d.campaignId}/T1`]: { sha: 'a'.repeat(40), baseBranch: 'main', merged: false, mergedAt: null } };
   const review = (repo = {}) => ownerView(supervisor, checked(steps, repo), { now }).items.find((entry) => entry.kind === 'review');
-  const expected = /^first\. An independent checker accepted commit aaaaaaa\. This dashboard does not read CI checks or conflicts; see them on the pull request before merging\. Merging lets T2 build on it\.$/;
+  const expected = /^first\. Passed the independent check at commit aaaaaaa\. This dashboard does not read CI checks or conflicts; see them on the pull request before merging\. Merging lets “second” build on it\.$/;
   // Fresh, old and failing merge data alike: no readiness claim is ever made.
   for (const repo of [{}, { fetchedAt: now - 20 * 60_000, error: 'fetch-failed' }, { fetchedAt: now - 60_000, error: 'fetch-failed' }, { configured: false, fetchedAt: null }]) {
     const item = review(repo);
@@ -140,8 +140,8 @@ test('the dashboard never says "ready to merge": it names the accepted commit an
     assert.equal(item.ready, undefined, 'there is no readiness field');
   }
   assert.match(whole(review()), expected);
-  assert.deepEqual([review().evidence, review().detail], ['Checker accepted aaaaaaa · CI and conflicts on the PR',
-    'An independent checker accepted commit aaaaaaa. This dashboard does not read CI checks or conflicts; see them on the pull request before merging.']);
+  assert.deepEqual([review().evidence, review().detail], ['Passed the check at aaaaaaa · CI and conflicts on the PR',
+    'Passed the independent check at commit aaaaaaa. This dashboard does not read CI checks or conflicts; see them on the pull request before merging.']);
   // The page has no readiness styling or wording left.
   const page = readFileSync(join(ROOT, 'src/dashboard/public/dashboard.js'), 'utf8');
   assert.doesNotMatch(page, /Ready to merge|item\.ready|statusCheckRollup|mergeable/);
@@ -161,7 +161,7 @@ test('restart advice waits a few minutes after the controller lease lapses', () 
   }
   const stopped = view(campaign(10 * 60_000));
   assert.equal(stopped.campaigns.c1.liveness, 'stopped');
-  assert.match(stopped.items[0].points[0].text, /restart it there/);
+  assert.equal(stopped.items[0].points[0].text, 'No new step starts. If nobody is updating it right now, restart it on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.');
 });
 
 test('a campaign no supervisor has picked up yet gets the same grace from its registration', (t) => {
@@ -177,8 +177,8 @@ test('a campaign no supervisor has picked up yet gets the same grace from its re
   assert.deepEqual(fresh.items, [], 'just registered: no restart advice yet');
   const late = view(registered + 6 * 60_000);
   assert.equal(late.campaigns[d.campaignId].liveness, 'stopped');
-  assert.equal(late.items[0].text, `The supervisor on HomePc has not started ${d.campaignId} yet`);
-  assert.match(late.items[0].points[0].text, /no supervisor has picked it up\. If nobody is upgrading it right now, restart it there/);
+  assert.equal(late.items[0].text, 'AIWorks on this computer has not picked up this work yet');
+  assert.match(late.items[0].points[0].text, /^It is approved, but AIWorks has not picked it up\. If nobody is updating it right now, restart it on this computer: /);
   // A campaign that had a lease uses the lease, not its registration.
   const lapsed = { ...supervisor, campaigns: supervisor.campaigns.map((c) => ({ ...c, readiness: 'CONTROLLER_OFFLINE', leaseExpiresAt: new Date(registered - 60 * 60_000).toISOString() })) };
   assert.equal(ownerView(lapsed, [], { now: registered + 60_000 }).campaigns[d.campaignId].liveness, 'stopped');
@@ -195,12 +195,12 @@ test('"Merging lets X build on it" names only steps that have not started; a sta
   };
   const merges = checked({ [`${d.campaignId}/T1`]: { sha: 'a'.repeat(40), baseBranch: 'main', merged: false, mergedAt: null } });
   const say = () => ownerView(supervisorSnapshot(dataDir), merges).items.find((item) => item.kind === 'review').points[0].text;
-  assert.match(say(), /Merging lets T2 and T3 build on it\.$/, 'neither has started');
+  assert.match(say(), /Merging lets “second” and “third” build on it\.$/, 'neither has started');
   start('T3', { state: 'implementing', attempts: 1 });
-  assert.match(say(), /Merging lets T2 build on it\.$/, 'a running dependent already has its base');
+  assert.match(say(), /Merging lets “second” build on it\.$/, 'a running dependent already has its base');
   // A step back in "pending" after a failed attempt keeps the worktree, and so the base, it started with.
   start('T2', { attempts: 1, retry_at: Date.now() + 60_000, last_error: 'timeout: synthetic' });
-  assert.match(say(), /T2 and T3 already started without it, so merging now does not change those steps\.$/);
+  assert.match(say(), /“second” and “third” already started without it, so merging now does not change those steps\.$/);
   assert.doesNotMatch(say(), /build on it|releasing it is your next step/, 'started dependents are not unblocked, and the campaign is not ready for release');
 });
 
@@ -279,7 +279,7 @@ test('a pause by itself is a neutral campaign state, never a "Needs you" item', 
   // The card reads neutral and consistent: "Supervisor running · campaign paused", with the reason as plain text.
   const page = readFileSync(join(ROOT, 'src/dashboard/public/dashboard.js'), 'utf8');
   assert.match(page, /if \(c\.control === 'paused'\) return badge\(\['running', 'late', 'awaiting-pickup'\]\.includes\(liveness\) \? 'unknown' : 'stale', `\$\{livenessNames\[liveness\] \?\? 'Supervisor state unknown'\} · campaign paused`\);/);
-  assert.match(page, /reason given: “\$\{c\.pausedReason\}”/);
+  assert.match(workLine(supervisor.campaigns[0], view.campaigns[d.campaignId]), /^Paused since .+ · no new step starts; a step already running may finish · reason given: “runtime upgrade window to a9e2402”$/);
 });
 
 test('a paused campaign whose supervisor stopped, or never started, is listed with the restart action', (t) => {
@@ -294,19 +294,20 @@ test('a paused campaign whose supervisor stopped, or never started, is listed wi
   // An upgrade paused the campaign and the restart failed: the lease lapsed past the grace period, so no supervisor runs.
   const stopped = ownerView(paused(new Date(now - 10 * 60_000).toISOString()), [], { host: 'HomePc', now });
   assert.equal(stopped.campaigns[d.campaignId].liveness, 'stopped');
-  assert.deepEqual(stopped.items.map((item) => [item.kind, item.text, item.at]), [['controller', `The supervisor on HomePc stopped while ${d.campaignId} was paused`, now - 10 * 60_000]]);
-  assert.match(stopped.items[0].points[0].text, /^No work starts while it is paused, and none can resume until a supervisor runs again\. If nobody is upgrading it right now, restart it there/);
+  assert.deepEqual(stopped.items.map((item) => [item.kind, item.text, item.at]), [['controller', 'This work was paused, then AIWorks stopped on this computer', now - 10 * 60_000]]);
+  assert.match(stopped.items[0].points[0].text, /^No step starts while it is paused, and it can’t resume until AIWorks runs again\. If nobody is updating it right now, restart it on this computer: /);
   assert.equal(stopped.headline, 'Needs you (1)', 'never "nothing is blocked" while the supervisor is down');
   // Within the grace period it is a restart in progress: late, not yet listed.
   const late = ownerView(paused(new Date(now - 2 * 60_000).toISOString()), [], { host: 'HomePc', now });
   assert.deepEqual([late.campaigns[d.campaignId].liveness, late.items], ['late', []]);
   // Paused before any supervisor picked it up, registered an hour ago: not started, with the restart action.
   const never = ownerView(paused(null), [], { host: 'HomePc', now });
-  assert.deepEqual(never.items.map((item) => item.text), [`The supervisor on HomePc has not started ${d.campaignId} yet (it is paused)`]);
-  assert.match(never.items[0].points[0].text, /^It is registered and paused, but no supervisor has picked it up\. If nobody is upgrading it right now, restart it there/);
-  // The card is not calm either: the chip uses the warning tone and the banner names the stopped supervisor.
-  const page = readFileSync(join(ROOT, 'src/dashboard/public/dashboard.js'), 'utf8');
-  assert.match(page, /` · the supervisor on \$\{host\} is not running\$\{owner\.lastCheckIn \?/);
+  assert.deepEqual(never.items.map((item) => item.text), ['AIWorks on this computer has not picked up this work yet (it is paused)']);
+  assert.match(never.items[0].points[0].text, /^It is approved and paused, but AIWorks has not picked it up\. If nobody is updating it right now, restart it on this computer: /);
+  // The work's line is not calm either: it says AIWorks stopped on this computer, and when.
+  const c = paused(new Date(now - 10 * 60_000).toISOString()).campaigns[0];
+  assert.match(workLine(c, stopped.campaigns[d.campaignId], { time: () => '12:31', dateTime: () => '13 Oct 11:31' }),
+    /^Paused since 13 Oct 11:31 · .* · reason given: “runtime upgrade window” · AIWorks stopped on this computer at about 12:31$/);
 });
 
 test('each "Needs you" item leads with what its step delivers, with the evidence in one line', (t) => {
@@ -322,7 +323,7 @@ test('each "Needs you" item leads with what its step delivers, with the evidence
     ['Review and merge', 'WhatsApp pairing recovers an interrupted result', { label: 'Open PR #464', url: 'https://github.com/netbka/Dyk/pull/464' }]]);
   for (const item of view.items) {
     assert.ok(item.evidence.length <= 60, `compact evidence: ${item.evidence}`);
-    assert.match(item.detail, /^An independent checker accepted commit [ab]{7}\. This dashboard does not read CI checks or conflicts; see them on the pull request before merging\.$/);
+    assert.match(item.detail, /^Passed the independent check at commit [ab]{7}\. This dashboard does not read CI checks or conflicts; see them on the pull request before merging\.$/);
     assert.ok(item.points.every((point) => !point.text.includes(item.detail)), 'the full evidence sentence is not repeated in the body');
   }
   // The page shows the evidence line as a disclosure whose body is the full sentence.
@@ -345,8 +346,8 @@ test('"AIWorks itself" holds only items that say they are not owner actions; a p
   assert.deepEqual([project.name, project.items.map((item) => item.kind)], ['Dyk', ['review']]);
   assert.deepEqual(system.items.map((item) => item.kind), ['controller', 'coordinator']);
   assert.deepEqual([system.items[0].system, system.items[0].repository], [true, 'netbka/Dyk'], 'the fault still names the project whose work it holds up');
-  for (const item of system.items) assert.match(whole(item), /Not an owner action|for whoever maintains AIWorks/, item.text);
-  for (const item of project.items) assert.doesNotMatch(whole(item), /Not an owner action|for whoever maintains AIWorks/, item.text);
+  for (const item of system.items) assert.match(whole(item), /Not yours to fix|for whoever maintains AIWorks/, item.text);
+  for (const item of project.items) assert.doesNotMatch(whole(item), /Not yours to fix|for whoever maintains AIWorks/, item.text);
   assert.equal(faulty.headline, 'Needs you (3)', 'the same count as the ungrouped list');
   assert.ok(faulty.groups.every((group) => !group.name.includes(d.campaignId)), 'groups are named by project, never by campaign');
 });
@@ -362,8 +363,8 @@ test('release wording follows the project registry: a recorded standing authoriz
   const supervisor = supervisorSnapshot(dataDir);
   const oneOpen = checked(results(d.campaignId, { T1: false, T2: true }));
   const open = (options) => ownerView(supervisor, oneOpen, options).items[0].points.at(-1).text;
-  assert.equal(open({ releases }), 'Nothing else in this campaign waits on it; after merging, release follows Dyk\'s standing deploy authorization.');
-  assert.equal(open({}), 'Nothing else in this campaign waits on it; after merging, release follows Dyk\'s release policy.', 'nothing recorded: no one is named');
+  assert.equal(open({ releases }), 'Nothing else in this work waits on it; after merging, release follows Dyk\'s standing deploy authorization.');
+  assert.equal(open({}), 'Nothing else in this work waits on it; after merging, release follows Dyk\'s release policy.', 'nothing recorded: no one is named');
   const merged = ownerView(supervisor, checked(results(d.campaignId, { T1: true, T2: true })), { releases });
   assert.equal(merged.campaigns[d.campaignId].finished, 'All steps are finished · the merged work is ready; release follows Dyk\'s standing deploy authorization');
   assert.equal(merged.also.text, 'Also: merged work in Dyk is ready; release follows its standing deploy authorization');
@@ -397,7 +398,7 @@ test('Results group finished steps by state in the screen order, with the oldest
   assert.deepEqual([row('T2').word, row('T2').note, row('T2').link], ['Pull request #468 · waiting for your review', 'The merge is not seen on the base branch yet',
     { label: 'Pull request #468', url: 'https://github.com/netbka/Dyk/pull/468' }]);
   assert.deepEqual([row('T4').word, row('T4').link.url], ['Report posted · for you to read', 'https://github.com/netbka/Dyk/issues/441#issuecomment-1']);
-  assert.deepEqual([row('T5').word, row('T5').note, row('T5').link.label], ['Not known yet', 'No result link was recorded; check the step issue', 'Open step issue (T5)']);
+  assert.deepEqual([row('T5').word, row('T5').note, row('T5').link.label], ['Not known yet', 'No result link was recorded; check the step issue', 'Open the step issue']);
   // A merge check that can still come shortly is not known yet: neither waiting nor merged.
   assert.deepEqual([row('T6').text, row('T6').word, row('T6').note], ['Sixth step delivers its outcome', 'Not known yet', 'Checking the base branch for the merge; check again shortly']);
   assert.deepEqual(dyk.primary, { label: 'Review pull request #468', url: 'https://github.com/netbka/Dyk/pull/468' }, 'the oldest waiting review');

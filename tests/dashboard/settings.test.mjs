@@ -144,7 +144,7 @@ test('each AI worker is one plain line: “Claude · ready”, “Codex · not s
   assert.equal(waiting.text, 'Claude · waiting for its usage limit');
   assert.match(waiting.notes[0], /^AIWorks tries it again at \d\d:\d\d\. No action needed\.$/);
   assert.match(worker('codex-cli', 'unavailable', { availabilityReason: 'Native sandbox is unavailable on this host' }).notes[0], /^Native sandbox is unavailable on this host\.$/);
-  assert.ok(worker('claude-cli', 'ready', { setUp: 'default' }).notes.includes('Uses the claude command on this computer’s PATH; AIWorks’ settings set none.'));
+  assert.ok(worker('claude-cli', 'ready', { setUp: 'default' }).notes.includes('Uses the claude command on this computer’s PATH; the AIWorks configuration file sets none.'));
   assert.ok(worker('codex-cli', 'ready', { buildLimit: 'checks-only' }).notes.includes('Can check and report here, but cannot build code here.'));
   assert.ok(worker('codex-cli', 'ready', { usedBy: 0 }).notes.includes('No current work allows it.'));
   // A usage-limit wait is never an owner task (AW-002), and no line names a path.
@@ -155,7 +155,7 @@ test('Diagnostics shows how fresh each merge check is, in place of Refresh GitHu
   const { mergeFreshness } = fromPage(['timeOnly', 'dateTime', 'whenAt', 'function mergeFreshness(']);
   const now = Date.now(), fetched = now - 2 * M;
   assert.equal(mergeFreshness(undefined, now), 'No published step to check yet.');
-  assert.equal(mergeFreshness({ configured: false, fetchedAt: null, error: null }, now), 'Merges are not checked: this computer’s settings set no local checkout for it.');
+  assert.equal(mergeFreshness({ configured: false, fetchedAt: null, error: null }, now), 'Merges are not checked: the AIWorks configuration file on this computer sets no local checkout for it.');
   assert.equal(mergeFreshness({ configured: true, fetchedAt: null, error: null }, now), 'Merges not checked yet; the first check is running.');
   assert.equal(mergeFreshness({ configured: true, fetchedAt: null, error: 'fetch-failed' }, now), 'Merges not checked yet: the first fetch failed, retrying within 5 minutes.');
   assert.match(mergeFreshness({ configured: true, fetchedAt: fetched, error: null }, now), /^Merges checked at (\d\d:\d\d|\d{1,2} \w{3,4} \d\d:\d\d); next check after \d\d:\d\d\.$/);

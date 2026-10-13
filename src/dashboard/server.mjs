@@ -90,7 +90,8 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       return send(404, { error: 'Not found.' });
     } catch (error) {
       const status = error.status ?? (error.code === 'INVALID_STATE' || error.name === 'ConflictError' ? 409 : 503);
-      send(status, { error: error.status ? error.message : 'The supervisor is busy or unavailable. Refresh before trying again.' });
+      // `detail`: the machine's reason behind a refusal, which the page keeps in a Details disclosure (aiworks#11 review F3).
+      send(status, { error: error.status ? error.message : 'The supervisor is busy or unavailable. Refresh before trying again.', ...(error.status && error.detail ? { detail: error.detail } : {}) });
     }
   });
   server.requestTimeout = 10_000;

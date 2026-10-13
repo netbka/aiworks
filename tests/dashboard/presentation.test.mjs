@@ -78,8 +78,8 @@ test('the page background is explicit under a dark preference, and large screens
 
 test('supervisor faults say they are not an owner action and point to where they are tracked', () => {
   const v = view([campaign('owner-intervention-core', [step('CORE-13', 'Owner-intervention core')], { control: 'registered', readiness: 'ACTIVE', controllerLive: true, livenessDefect: true })]);
-  assert.deepEqual(v.items.map((item) => item.points[0]), [{ link: { label: 'Supervisor issue #2', url: SUPERVISOR_ISSUE },
-    text: 'Not an owner action: this is a supervisor fault for AIWorks\'s maintainers. Work in this campaign may not progress until it is fixed.' }]);
+  assert.deepEqual(v.items.map((item) => item.points[0]), [{ link: { label: 'AIWorks issue #2', url: SUPERVISOR_ISSUE },
+    text: 'Not yours to fix: it is tracked for AIWorks’ maintainers. This work may not move until it is fixed.' }]);
   const js = page('dashboard.js');
   // The journal moved from Activity to Settings › Diagnostics; the link goes there.
   assert.match(js, /Not an owner action: these are supervisor faults for AIWorks's maintainers\. `,\r?\n    link\('Supervisor issue #2 ↗', 'https:\/\/github\.com\/netbka\/aiworks\/issues\/2'\), ' · ', routeLink\('When, in Diagnostics', '#\/settings\/diagnostics'\)\)/);

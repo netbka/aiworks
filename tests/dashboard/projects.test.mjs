@@ -214,7 +214,7 @@ test('the page draws Projects from the server’s list: one state in words and o
   assert.match(screen, /badge\(stateTones\[project\.state\.key\] \?\? 'unknown', stateWords\[project\.state\.key\] \?\? 'Not known'\)/, 'the state has its word, not colour alone');
   assert.doesNotMatch(screen, /\.campaignId|c\.id\b/, 'no campaign id at the primary level');
   // OWNER_WORKSPACE §7.1, before Add project exists.
-  assert.match(screen, /'No projects yet\.', 'Projects appear here when this computer’s AIWorks settings list a repository\. Adding a project from this page is not built yet\.'/);
+  assert.match(screen, /'No projects yet\.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository\. Adding a project from this page is not built yet\.'/);
   // A project address in any spelling opens the same project.
   assert.match(js, /const projectCampaigns = \(project\) => state\.supervisor\.campaigns\.filter\(\(c\) => sameProject\(c\.repository, project\)\);/);
   assert.match(js, /empty\('No work yet\.', `Work in \$\{projectName\(project\)\} appears here once it is registered on this computer\./);

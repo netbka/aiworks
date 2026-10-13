@@ -10,14 +10,15 @@ import { roleUnavailableReason, runNotCounted } from '../supervisor/adapters/exe
 import { campaignLimits } from '../supervisor/campaign.mjs';
 import { coordinatorView, postOwnerMessage } from '../supervisor/coordinator.mjs';
 import { CODE_ROOT, storedDeclarationOnMain } from '../supervisor/provenance.mjs';
-import { stateCopy } from './copy.mjs';
+import { COMMANDS, stateCopy, stopReasonWords } from './copy.mjs';
 import { configuredRepositories } from './projects.mjs';
 
 const readConfig = (dataDir) => {
   try { return JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { return {}; }
 };
 
-const fail = (status, message) => Object.assign(new Error(message), { status });
+// `detail` is the machine's own reason, for the page's Details disclosure; `message` is what the owner reads.
+const fail = (status, message, detail = null) => Object.assign(new Error(message), { status, ...(detail ? { detail } : {}) });
 const identifier = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const githubLink = (value) => /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(?:issues|pull)\/\d+(?:#issuecomment-\d+)?$/.test(value ?? '') ? value : null;
 const code = (value) => /^[a-z][a-z0-9-]{0,60}$/i.test(value ?? '') ? value : null;
@@ -148,8 +149,10 @@ export function projectCosts(campaigns) {
   const projects = new Map();
   for (const c of campaigns) {
     const key = String(c.repository).toLowerCase();
-    const project = projects.get(key) ?? { repository: c.repository, works: 0, runs: 0, reportedUsd: 0, unreportedRuns: 0, runningRuns: 0 };
+    const project = projects.get(key) ?? { repository: c.repository, works: 0, worksWithRuns: 0, runs: 0, reportedUsd: 0, unreportedRuns: 0, runningRuns: 0 };
     project.works++;
+    // Pieces of work with counted runs, so the summary matches the breakdown's run counts (aiworks#11 review F14).
+    if (c.runsUsed > 0) project.worksWithRuns++;
     project.runs += c.runsUsed;
     project.reportedUsd = cents(project.reportedUsd + (c.cost.reportedUsd ?? 0));
     project.unreportedRuns += c.cost.unreportedRuns;
@@ -305,19 +308,8 @@ function workerProgress(dataDir, op) {
   } catch { return null; }
 }
 
-/** A task's stop reason in supervisor words; never the stored free text, which may quote a worker. */
-function stopReason(task) {
-  const reason = String(task.blocked?.reason ?? '');
-  if (task.blocked?.class === 'B3' && /^no progress: (\d+)/.test(reason)) {
-    return `no progress after ${/^no progress: (\d+)/.exec(reason)[1]} attempts that could not proceed; see the task issue, then recheck the task`;
-  }
-  if (task.blocked?.class === 'B3') return /^owner-reserved/.test(reason) ? 'the worker reported an owner-reserved decision; see the task issue' : 'owner decision required';
-  if (/^verifier still rejects/.test(reason)) return `the independent checker still rejects it after ${task.repair_rounds} repair rounds; decide whether to accept the gap, narrow the step or allow more rounds, then recheck it`;
-  if (/^admission blocked/.test(reason)) return 'the worker context policy refused admission';
-  const failed = /^(\d+) failed attempts; last ([a-z-]+)/.exec(reason);
-  if (failed) return `${failed[1]} failed attempts (last: ${failed[2]}); recheck after fixing the cause`;
-  return 'stalled; see the supervisor status for details';
-}
+/** A task's stop reason in the owner's words (the copy module); never the stored free text, which may quote a worker. */
+const stopReason = (task) => stopReasonWords(task.blocked, task.repair_rounds);
 
 /**
  * What happened since a point in time, for the owner's "since you last looked" summary: published steps,
@@ -566,12 +558,12 @@ export function applyCommand(dataDir, input, now = Date.now(), { provenanceRoot 
     const before = input.action === 'resume' ? store.campaign(input.campaignId) : null;
     if (before?.control === 'paused') {
       try { storedDeclarationOnMain(before.declaration, { root: provenanceRoot }); }
-      catch (error) { throw fail(409, `Resume refused: ${error.message}`); }
+      catch (error) { throw fail(409, COMMANDS.resumeRefused, `Resume refused: ${error.message}`); }
     }
     return store.tx(() => {
       const id = input.campaignId;
       const c = store.campaign(id);
-      if (!c) throw fail(404, 'Campaign was not found.');
+      if (!c) throw fail(404, COMMANDS.notFound);
       const payload = { campaignId: id, action: input.action, taskId: input.taskId ?? null, taskVersion: input.taskVersion ?? null,
         version: input.version, authorizationVersion: input.authorizationVersion, scopeDigest: input.scopeDigest,
         ...(input.action === 'instruct' ? { text: input.text, role: input.role } : {}) };
@@ -584,14 +576,14 @@ export function applyCommand(dataDir, input, now = Date.now(), { provenanceRoot 
       if (c.version !== input.version || c.authorization_version !== input.authorizationVersion || c.scope_digest !== input.scopeDigest) {
         throw fail(409, 'Work changed since this view was loaded. Refresh and try again.');
       }
-      if (!['registered', 'paused'].includes(c.control)) throw fail(409, 'This campaign no longer accepts commands.');
+      if (!['registered', 'paused'].includes(c.control)) throw fail(409, COMMANDS.closed);
       if (input.taskId) {
         const task = store.task(id, input.taskId);
-        if (!task || task.version !== input.taskVersion || task.state === 'done') throw fail(409, 'The selected task changed or is already complete.');
-        if (input.action === 'instruct' && task.state === 'verified') throw fail(409, 'This task has no further worker scheduled.');
+        if (!task || task.version !== input.taskVersion || task.state === 'done') throw fail(409, COMMANDS.stepChanged);
+        if (input.action === 'instruct' && task.state === 'verified') throw fail(409, COMMANDS.noNextRun);
       }
       if (input.action === 'resume') {
-        if (c.control !== 'paused') throw fail(409, 'Only a paused campaign can resume.');
+        if (c.control !== 'paused') throw fail(409, COMMANDS.notPaused);
         if (c.version !== before?.version) throw fail(409, 'Work changed since this view was loaded. Refresh and try again.');
         campaignStart(store, c.declaration, now);
       } else if (input.action === 'instruct') {

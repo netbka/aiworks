@@ -15,6 +15,7 @@ import { RoadmapSource, readRoadmap, safeText } from '../../src/dashboard/roadma
 import { applyCommand, applyCommand as applyMain, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
 import { ownerView } from '../../src/dashboard/owner.mjs';
+import { COMMANDS } from '../../src/dashboard/copy.mjs';
 
 test('completed campaigns do not appear offline or request controller recovery', (t) => {
   const { dataDir, store, d } = fixture(t);
@@ -152,11 +153,11 @@ test('stale, ABA, wrong-task and expanded-authority commands are rejected', (t) 
   campaignPause(store, d.campaignId);
   campaignStart(store, d);
   assert.throws(() => applyCommand(dataDir, stale), /Work changed/);
-  assert.throws(() => applyCommand(dataDir, payload('recheck', { taskId: 'absent', taskVersion: 1 })), /selected task/);
+  assert.throws(() => applyCommand(dataDir, payload('recheck', { taskId: 'absent', taskVersion: 1 })), /^Error: This step changed or is already finished\. Refresh the page and try again\.$/);
   for (const extra of [{ cap: 100 }, { command: 'git push' }, { declaration: d }, { action: 'start' }]) {
     assert.throws(() => applyCommand(dataDir, payload('recheck', extra)), /Invalid dashboard command/);
   }
-  assert.throws(() => applyCommand(dataDir, payload('resume')), /paused campaign/);
+  assert.throws(() => applyCommand(dataDir, payload('resume')), /^Error: Only paused work can resume\. Refresh the page to see where it stands\.$/);
   assert.equal(store.campaign(d.campaignId).control, 'registered');
 });
 
@@ -168,7 +169,8 @@ test('Resume refuses a stored declaration that was never committed in campaigns/
   t.after(() => { absent.cleanup(); differs.cleanup(); });
   for (const root of [absent.root, differs.root]) {
     assert.throws(() => applyMain(dataDir, payload('resume'), Date.now(), { provenanceRoot: root }),
-      (error) => error.status === 409 && /^Resume refused: .*is not committed in campaigns\/ in any revision merged to main/.test(error.message));
+      // The owner reads what happened and what to do (aiworks#11 review F3); the machine's reason is kept as its detail.
+      (error) => error.status === 409 && error.message === COMMANDS.resumeRefused && /^Resume refused: .*is not committed in campaigns\/ in any revision merged to main/.test(error.detail));
     assert.equal(store.campaign(d.campaignId).control, 'paused');
   }
   // Committed only after origin/main (a local, unmerged commit) is still refused.
@@ -179,7 +181,7 @@ test('Resume refuses a stored declaration that was never committed in campaigns/
   local.git('commit', '-q', '-m', 'local declaration, not merged');
   assert.throws(() => applyMain(dataDir, payload('resume'), Date.now(), { provenanceRoot: local.root }), (error) => error.status === 409);
   // Without an override the dashboard checks its own checkout, and this declaration was never on main there either.
-  assert.throws(() => applyCommand(dataDir, payload('resume')), (error) => error.status === 409 && /^Resume refused/.test(error.message));
+  assert.throws(() => applyCommand(dataDir, payload('resume')), (error) => error.status === 409 && error.message === COMMANDS.resumeRefused && /^Resume refused/.test(error.detail));
   assert.equal(store.campaign(d.campaignId).control, 'paused');
   assert.equal(store.all("SELECT * FROM journal WHERE kind = 'dashboard-command'").length, 0, 'a refused resume records nothing');
   // An older merged version is enough: main's tip is not required.

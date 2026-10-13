@@ -110,18 +110,18 @@ test('each review names the accepted commit, points to the pull request for CI a
   const [review, controller] = view.items;
   // Led by what the step delivers; the action and the pull request link sit beside it, the PR number appears once.
   assert.deepEqual([review.action, review.text, review.link], ['Review and merge', 'first task', { label: 'Open PR #463', url: 'https://github.com/netbka/Dyk/pull/463' }]);
-  assert.equal(review.evidence, 'Checker accepted aaaaaaa · CI and conflicts on the PR');
-  assert.equal(review.detail, 'An independent checker accepted commit aaaaaaa. This dashboard does not read CI checks or conflicts; see them on the pull request before merging.',
+  assert.equal(review.evidence, 'Passed the check at aaaaaaa · CI and conflicts on the PR');
+  assert.equal(review.detail, 'Passed the independent check at commit aaaaaaa. This dashboard does not read CI checks or conflicts; see them on the pull request before merging.',
     'the dashboard reads no merge readiness: it never says "ready to merge"');
   assert.equal(review.mergeCheck, null, 'a current merge check needs no note');
   assert.ok(!/ready to merge/i.test(JSON.stringify(view)));
-  assert.deepEqual(review.points.map((point) => point.text), ['Check its review history first: it took 10 tries and the checker rejected it 1 time before it was accepted.',
-    'Merging lets T3 build on it.']);
-  assert.equal(controller.text, `The supervisor on HomePc has not started ${d.campaignId} yet`, 'this store never had a controller lease');
-  assert.match(controller.points[0].text, /no supervisor has picked it up\. If nobody is upgrading it right now, restart it there: .*“AIWorks Supervisor”/);
+  assert.deepEqual(review.points.map((point) => point.text), ['Check its review history first: it took 10 tries and the independent checker rejected it 1 time before it passed the check.',
+    'Merging lets “third task” build on it.']);
+  assert.equal(controller.text, 'AIWorks on this computer has not picked up this work yet', 'this store never had a controller lease');
+  assert.match(controller.points[0].text, /AIWorks has not picked it up\. If nobody is updating it right now, restart it on this computer: .*“AIWorks Supervisor”/);
   const lapsed = { ...supervisor, campaigns: supervisor.campaigns.map((c) => ({ ...c, readiness: 'CONTROLLER_OFFLINE', leaseExpiresAt: new Date(now - 10 * 60_000).toISOString() })) };
   const stopped = ownerView(lapsed, merges, { host: 'HomePc', now }).items.find((item) => item.kind === 'controller');
-  assert.equal(stopped.text, `The supervisor on HomePc stopped running ${d.campaignId}`);
+  assert.equal(stopped.text, 'AIWorks stopped on this computer');
   assert.equal(stopped.at, now - 10 * 60_000);
   assert.deepEqual(view.campaigns[d.campaignId].counts, { total: 3, delivered: 2, merged: 1, awaiting: 1, checking: 0, unknown: 0, reports: 0 });
   assert.equal(view.campaigns[d.campaignId].purpose, null, 'no declared purpose and several steps: the page shows the campaign id');
@@ -141,7 +141,7 @@ test('each review names the accepted commit, points to the pull request for CI a
   // When nothing else waits on the step, release follows the project's rule; the owner is not assumed to release.
   const done = { ...supervisor, campaigns: supervisor.campaigns.map((c) => ({ ...c, tasks: c.tasks.map((task) => task.id === 'T3' ? { ...task, state: 'done', resultUrl: null } : task) })) };
   assert.equal(ownerView(done, merges).items[0].points.at(-1).text,
-    'Nothing else in this campaign waits on it; after merging, release follows Dyk\'s release policy.');
+    'Nothing else in this work waits on it; after merging, release follows Dyk\'s release policy.');
 });
 
 test('a working agent with a silent supervisor is said plainly, and same-titled campaigns are told apart', () => {
@@ -151,9 +151,9 @@ test('a working agent with a silent supervisor is said plainly, and same-titled 
     agents: [{ heartbeatState: 'unknown', progress: { lastActivityAt: now - 30_000 } }] });
   const supervisor = { available: true, campaigns: [campaign('dyk-442-pilot-telegram'), campaign('dyk-442-pilot-whatsapp')], coordinator: null, recent: null };
   const view = ownerView(supervisor, checked(), { host: 'HomePc', now });
-  assert.equal(view.items[0].text, 'An agent is still working, but the supervisor on HomePc stopped checking in');
+  assert.equal(view.items[0].text, 'An AI worker is still working, but AIWorks stopped checking in on this computer');
   assert.equal(view.items[0].at, now - 10 * 60_000);
-  assert.match(view.items[0].points[0].text, /result is collected and checked only when the supervisor runs again/);
+  assert.match(view.items[0].points[0].text, /result is collected and checked only when AIWorks runs again/);
   assert.equal(view.campaigns['dyk-442-pilot-telegram'].liveness, 'agent-working-supervisor-silent');
   assert.deepEqual(['dyk-442-pilot-telegram', 'dyk-442-pilot-whatsapp'].map((id) => view.campaigns[id].purpose.variant), ['Telegram', 'Whatsapp']);
 });
@@ -237,7 +237,7 @@ test('stops, decisions, unchecked merges and an unreadable inbox need the owner;
   assert.equal(view.items[0].points[0].text, 'No verified commit is recorded, so the merge cannot be checked here; check the pull request.');
   assert.deepEqual([view.items[1].action, view.items[1].text], ['Decision needed', 'Owners get second task']);
   assert.ok(!view.items[1].points[0].text.includes('worker text'), 'stop reasons are supervisor words, never worker output');
-  assert.equal(view.items[2].text, `The supervisor on its computer has not started ${d.campaignId} yet (it is paused)`);
+  assert.equal(view.items[2].text, 'AIWorks on this computer has not picked up this work yet (it is paused)');
   assert.ok(!view.items.some((item) => /is paused$|Supervisor upgrade/.test(item.text)), 'the pause reason is never an owner item');
   assert.equal(view.items[3].text, 'The coordinator cannot read your messages');
   assert.ok(view.layout.cards.includes(d.campaignId), 'a paused campaign keeps its card');
@@ -271,7 +271,7 @@ test('Needs me groups today\'s items by project, case-insensitively, with "AIWor
   assert.equal(SYSTEM_GROUP, 'AIWorks itself');
   assert.deepEqual(view.groups[0].items.map((item) => item.campaignId), ['dyk-a', 'dyk-b'], 'one project whatever the spelling of its name');
   assert.deepEqual(view.groups.at(-1).items.map((item) => [item.kind, item.repository]), [['controller', 'example/shop'], ['coordinator', null]]);
-  assert.deepEqual(view.groups[3].items.map((item) => [item.kind, item.text]), [['controller', 'The supervisor on HomePc stopped running notes-stopped']]);
+  assert.deepEqual(view.groups[3].items.map((item) => [item.kind, item.text]), [['controller', 'AIWorks stopped on this computer']]);
   // Grouping only: the same items, in today's order within each group, and the count is today's headline count.
   const grouped = view.groups.flatMap((group) => group.items);
   assert.equal(grouped.length, view.items.length);

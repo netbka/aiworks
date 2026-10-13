@@ -24,7 +24,7 @@ const FORMAT = { time: (value) => `T${(NOW - value) / M}`, dateTime: (value) => 
 const PR = 'https://github.com/example/shop-app/pull/465';
 const ISSUE = 'https://github.com/example/shop-app/issues/441';
 /** Data that fills every placeholder of every state. */
-const SAMPLE = { project: 'example/shop-app', host: 'HomePc', now: NOW, loadedAt: NOW - 3 * M, at: NOW - 20 * M, count: 3, pausedAt: NOW - 60 * M,
+const SAMPLE = { project: 'example/shop-app', host: 'HomePc', now: NOW, loadedAt: NOW - 3 * M, at: NOW - 20 * M, count: 3, pausedAt: NOW - 60 * M, stoppedAt: NOW - 30 * M,
   reason: 'Paused for an update', campaignId: 'shop-search', step: 'Search page', next: 'Price sync', provider: 'claude-cli', startedAt: NOW - 10 * M,
   lastActivityAt: NOW - 2 * M, minutes: 25, number: 465, url: PR, registeredAt: NOW - 2 * M, attempts: 5, action: 'Review and merge', text: 'Search page',
   linkLabel: 'Review pull request #465', reasons: ['Codex is not set up on this computer'], awaiting: 2, merged: 0, reports: 2, closed: 1, delivered: 4,
@@ -75,7 +75,9 @@ test('every state of §7 has its text in the copy module', () => {
   // The exact sentences of §7, filled from data.
   const exact = (key, data = {}) => { const copy = stateCopy(key, { ...SAMPLE, ...data }, FORMAT); return `${copy.title} ${copy.text}`.trim(); };
   assert.equal(exact('page-disconnected'), 'Can’t reach AIWorks on this computer. Showing what was loaded at T3. Buttons are off until it reconnects. Trying again every 5 seconds.');
-  assert.equal(exact('supervisor-stopped'), 'AIWorks has stopped on HomePc. No new step starts. If nobody is updating it right now, restart it there: sign in on that computer, or start the task “AIWorks Supervisor”.');
+  assert.equal(exact('supervisor-stopped'), 'AIWorks has stopped on this computer at about T30. No new step starts. If nobody is updating it right now, restart it on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.');
+  assert.equal(exact('supervisor-stopped', { stoppedAt: null }), 'AIWorks has stopped on this computer. No new step starts. If nobody is updating it right now, restart it on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.');
+  assert.equal(exact('paused-stopped'), 'Paused since D60, and AIWorks has stopped on this computer at about T30. Nothing can resume until it runs again. If nobody is updating it right now, restart it on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.');
   assert.equal(exact('provider-wait'), 'Waiting for an AI worker to be free. Claude can start again at T-65. Work continues by itself. Nothing for you to do.');
   assert.equal(exact('paused'), 'Paused since D60. No new step starts. A step already running may finish. Reason given: “Paused for an update”.');
   assert.equal(exact('builder-working'), 'Working on: Search page. The builder (Claude) started at T10 · last activity 2 minutes ago.');
@@ -233,12 +235,12 @@ test('the copy module runs in the page as it is, and the Now screen takes its se
   // No imports and no Node or DOM globals: the browser and Node load the same file.
   assert.doesNotMatch(module, /^\s*import\s|require\(|\bprocess\.|\bdocument\.|\bwindow\.|\blocalStorage\b/m);
   // The page imports it like the router (the server serves it at /copy.mjs) and takes Now from it.
-  assert.match(page, /^import \{ nowView \} from '\/copy\.mjs';$/m);
+  assert.match(page, /^import \{ [\w, ]*\bnowView\b[\w, ]* \} from '\/copy\.mjs';$/m);
   assert.match(page, /nowView\(project, \{ \.\.\.state, offline \}/);
   // Two exceptions: the empty states of Projects and of a project's other tabs (§7.1) stay written in the page as
   // well, because UI3's test in projects.test.mjs reads them there. The module's 'projects-empty' and 'no-work' have
   // the same words.
-  const kept = ['No projects yet.', 'Projects appear here when this computer’s AIWorks settings list a repository. Adding a project from this page is not built yet.', 'No work yet.'];
+  const kept = ['No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository. Adding a project from this page is not built yet.', 'No work yet.'];
   assert.deepEqual([stateCopy('projects-empty').title, stateCopy('projects-empty').text, stateCopy('no-work').title], kept);
   assert.ok(page.includes(`empty('${kept[0]}', '${kept[1]}')`));
   assert.ok(page.includes("empty('No work yet.', `Work in ${projectName(project)} appears here once it is registered on this computer. Starting work from this page is not built yet.`)"));

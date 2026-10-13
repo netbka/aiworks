@@ -143,9 +143,9 @@ test('a stopped step reads as in §7.7, with the step issue as its one primary a
   const decision = step('notes-theme', 'T1'), rejected = step('notes-theme', 'T2'), failed = step('notes-search', 'T1');
   const issue = (repo, n) => ({ label: 'Open the step issue', url: `https://github.com/${repo}/issues/${n}` });
   assert.deepEqual(decision.stopped, { key: 'needs-decision', title: 'Stopped: needs your decision.',
-    text: 'Dark theme: the worker reported an owner-reserved decision; see the task issue.', primary: issue('example/notes-site', 111) });
+    text: 'Dark theme: the AI worker needs your decision; see the step issue.', primary: issue('example/notes-site', 111) });
   assert.deepEqual(rejected.stopped, { key: 'needs-decision', title: 'Stopped: needs your decision.',
-    text: 'Theme switch: the independent checker still rejects it after 3 repair rounds; decide whether to accept the gap, narrow the step or allow more rounds, then recheck it.',
+    text: 'Theme switch: the independent checker still rejects it after 3 repair rounds; decide whether to accept the gap, narrow the step or allow more rounds, then check it again.',
     primary: issue('example/notes-site', 112) });
   assert.deepEqual(failed.stopped, { key: 'failed-attempts', title: 'Stopped: 5 attempts failed.',
     text: 'Notes search. It will not retry by itself. Fix the cause, then check it again.', primary: issue('example/notes-site', 121) });
@@ -179,7 +179,7 @@ test('the More menu offers Pause, Check again and Cancel, Resume leads when paus
   assert.match(js, /el\('div', \{\}, resumeButton\(c\), moreMenu\(c\)\)\),/);
   assert.match(js, /return \[\.\.\.cards\.map\(\(c\) => workPanel\(project, c\)\),/);
   // Cancel keeps today's confirmation dialog.
-  assert.match(js, /function askCancel\(c\) \{\r?\n  pendingCancel = c; \$\('#cancel-description'\)\.textContent = `\$\{c\.id\} · \$\{c\.repository\}`; \$\('#cancel-dialog'\)\.showModal\(\);/);
+  assert.match(js, /function askCancel\(c\) \{\r?\n  pendingCancel = c; \$\('#cancel-description'\)\.textContent = campaignTitle\(c\); \$\('#cancel-dialog'\)\.showModal\(\);/);
 });
 
 test('every command the menu offers is one the supervisor accepts, still bound to the version seen and its request ID', (t) => {
