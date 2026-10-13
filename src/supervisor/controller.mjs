@@ -11,7 +11,7 @@ import * as executors from './adapters/executors.mjs';
 import { researchContext } from './adapters/research-context.mjs';
 import * as gitA from './adapters/git.mjs';
 import * as github from './adapters/github.mjs';
-import { authorityDigest, campaignLimits, executorOrder, projectGovernance } from './campaign.mjs';
+import { authorityDigest, campaignLimits, canonicalJson, executorOrder, projectGovernance } from './campaign.mjs';
 import { resolveCheckout } from './project-connect.mjs';
 import { campaignBudget } from './api.mjs';
 import { ACCOUNT_SCOPED, accountOf, accountWait, clearAccountWait, laterWait, setAccountWait } from './accounts.mjs';
@@ -21,7 +21,7 @@ import { coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
 import { stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions } from './instructions.mjs';
 import { priorAttempt, receiptInputs, staticReceipt } from './router.mjs';
-import { PLAN_TASK, settleAmendment, specOf, specsOf } from './plan.mjs';
+import { PLAN_TASK, admitAmendment, settleAmendment, specOf, specsOf, verifyChain } from './plan.mjs';
 import { ConflictError, FencedError } from './store.mjs';
 import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
 
@@ -56,6 +56,7 @@ const RECHECK_PROCEDURE = {
   'process-ownership': 'Reconcile the recorded run; resume when the operation is no longer open.',
   'runtime-not-merged': 'Compare the supervisor code revision with origin/main in its checkout; resume once it is an ancestor.',
   'owner-decision': 'Record the decision on the task issue, then run: supervisor recheck <campaign> --task <task>.',
+  'plan-integrity': 'Dispatch the held task again: the plan chain and its admission checks are recomputed from the rows first, and nothing runs while they fail.',
 };
 const RECOVERY_TRIED = {
   auth: 'the executor run failed authentication; no credential was read or refreshed by the supervisor',
@@ -701,7 +702,7 @@ export class Controller {
     if (c.blocker) return;
     const tasks = this.store.tasks(ctx.id), specs = specsOf(this.store, ctx.id, c.declaration);
     const due = tasks.filter((t) => t.state === 'pending' && !t.blocked && (!t.retry_at || t.retry_at <= this.now()) &&
-      specs.get(t.task_id).requiresMergedDependencies && specs.get(t.task_id).dependsOn.every((id) => tasks.find((d) => d.task_id === id)?.state === 'done'));
+      specs.get(t.task_id)?.requiresMergedDependencies && specs.get(t.task_id).dependsOn.every((id) => tasks.find((d) => d.task_id === id)?.state === 'done'));
     if (!due.length) return;
     // A project and config.json that disagree: refresh nothing, so dispatch raises the CONFIG_CONFLICT blocker.
     if (resolveCheckout(this.store, this.config, c.declaration.target.repository)?.conflict) return;
@@ -918,7 +919,7 @@ export class Controller {
     const hold = decl.executor.kind === 'cli-chain' ? 0 : Math.max(quotaHoldUntil(tasks, now), this.accountHoldUntil(decl.executor.kind, now)); // a chain holds only the exhausted account
     const held = this.heldTasks(ctx.id);
     const runnable = tasks.filter((task) => RUNNABLE.includes(task.state) && !task.blocked && !held.has(task.task_id) && (!task.retry_at || task.retry_at <= now) &&
-      (!hold || task.state === 'verified') && spec.get(task.task_id).dependsOn.every((dep) => done.has(dep)));
+      (!hold || task.state === 'verified') && (spec.get(task.task_id)?.dependsOn ?? []).every((dep) => done.has(dep)));
     // Publication is not a worker and takes no capacity: every verified task publishes this tick, whatever else is
     // running (ADAPTIVE_SCHEDULER row 2). Dependents see the new state on the next tick.
     const verified = runnable.filter((task) => task.state === 'verified');
@@ -1136,6 +1137,42 @@ export class Controller {
       retryAt: receipt.decision.retryAt, receipt };
   }
 
+  /**
+   * The packet binding of one task, recomputed from the rows before every dispatch (WORK_ENVELOPE 6.5, slice E4): the
+   * plan chain verifies, and a child's live spec still passes admission (A3 to A11, and A13) against the unchanged
+   * envelope. A declared task binds to the approval itself, `authorityDigest(decl)`, exactly as before. A child binds to
+   * the approval and the amendment that set its live revision, so a revised child gets a new digest and a fresh session.
+   * Returns `{ current: true, authority, envelope }`, where `envelope` is a child's extra constraint (null for a declared
+   * task), or `{ current: false, problem }`.
+   */
+  planBinding(campaign, taskId) {
+    const decl = campaign.declaration;
+    const chain = verifyChain(this.store, campaign.id);
+    if (!chain.ok) return { current: false, problem: chain.problem };
+    if (decl.tasks.some((spec) => spec.id === taskId)) return { current: true, authority: authorityDigest(decl), envelope: null };
+    const row = this.store.get(`SELECT s.spec, s.cancelled_at, a.digest FROM task_specs s
+      JOIN plan_amendments a ON a.campaign_id = s.campaign_id AND a.seq = s.amendment_seq
+      WHERE s.campaign_id = ? AND s.task_id = ? ORDER BY s.revision DESC LIMIT 1`, campaign.id, taskId);
+    if (!row || row.cancelled_at !== null) return { current: false, problem: `${taskId} has no live approved spec` };
+    // The live spec proposed again as an addition to the plan without it: one rule for admission and for dispatch.
+    const specs = specsOf(this.store, campaign.id, decl);
+    specs.delete(taskId);
+    const others = this.store.all('SELECT task_id, cancelled_at FROM task_specs WHERE campaign_id = ? AND task_id != ?', campaign.id, taskId);
+    const check = admitAmendment({ declaration: decl, head: chain.head, specs,
+      stored: { scopeDigest: campaign.scope_digest, authorizationVersion: campaign.authorization_version },
+      retired: new Set(others.filter((other) => other.cancelled_at !== null).map((other) => other.task_id)),
+      childIds: new Set(others.map((other) => other.task_id)),
+      amendment: { basis: chain.head, ops: [{ op: 'add', task: row.spec }] } });
+    if (!check.admitted) return { current: false, problem: `${taskId} no longer passes admission: ${check.code}: ${check.detail}` };
+    const envelope = decl.envelope;
+    const deny = envelope.denyWrites ?? [];
+    return {
+      current: true,
+      authority: createHash('sha256').update(canonicalJson({ authority: authorityDigest(decl), amendment: row.digest }), 'utf8').digest('hex'),
+      envelope: `Approved outcome: ${envelope.outcome}${/[.!?]$/.test(envelope.outcome) ? '' : '.'} Change only: ${envelope.writes.length ? envelope.writes.join(', ') : 'no repository path'}${deny.length ? ` (never ${deny.join(', ')})` : ''}; anything else is a boundary violation.`.slice(0, 2000),
+    };
+  }
+
   async dispatch(ctx, campaign, task, kind, { admission = null } = {}) {
     const op = this.fenced(ctx, () => {
       const current = this.store.campaign(ctx.id);
@@ -1145,6 +1182,15 @@ export class Controller {
       if (current.control !== 'registered' || current.blocker || current.version !== campaign.version ||
           busy || campaignBudget(this.store, current).exhausted) return null;
       const decl = campaign.declaration;
+      // The task's packet binding, checked again from the rows before anything is recorded (WORK_ENVELOPE 6.5, slice E4).
+      const binding = this.planBinding(current, task.task_id);
+      if (!binding.current) {
+        this.raiseBlocker(ctx, decl, { kind: 'plan-integrity', class: 'B2',
+          reason: `No worker dispatched for ${task.task_id}: the approved plan does not verify (${String(binding.problem).slice(0, 400)})`,
+          requestedAction: `Restore the plan rows of ${ctx.id} (plan_amendments, task_specs) from a backup of the supervisor store, or cancel the campaign; then run: supervisor recheck ${ctx.id}` },
+        this.now(), { identity: binding.problem });
+        return null;
+      }
       // The target project's own rules (Engineering Platform governance inheritance), resolved from the registry exactly as the registration gate matches.
       // Without them no new worker starts: there is no default project to fall back to.
       let governance;
@@ -1246,11 +1292,13 @@ export class Controller {
       const packet = validatePacket({
         version: 1, tenantId: decl.target.tenantId, projectId: decl.target.projectId, environment: decl.target.environment,
         taskId: task.task_id, stageId: kind, runId: opId, role, revision,
-        authorityDigest: authorityDigest(decl),
+        authorityDigest: binding.authority,
         access: readOnly ? 'read-only' : 'write',
         goal: `${spec.title} (${decl.target.repository}#${spec.issue}). ${spec.goal}`.slice(0, 2000),
         // A declared write domain is enforced on the commit, so the worker and its verifier are told it first.
-        constraints: [...decl.constraints, ...(spec.constraints ?? []), ...(spec.writes ? [writeDomainConstraint(spec.writes)] : []), ...findings],
+        // A child also carries the approved outcome and files (WORK_ENVELOPE 6.5); a declared task's packet is unchanged.
+        constraints: [...decl.constraints, ...(binding.envelope ? [binding.envelope] : []), ...(spec.constraints ?? []),
+          ...(spec.writes ? [writeDomainConstraint(spec.writes)] : []), ...findings],
         acceptance: spec.acceptance,
         references: spec.references.map((path) => ({ path, revision })),
         governance,
@@ -1336,7 +1384,7 @@ export class Controller {
 
       // This checkpoint and admission decision commit together before launch.
       const plan = planContext({
-        packet, authorityCurrent: true, predecessorSafe: true, session: null,
+        packet, authorityCurrent: binding.current, predecessorSafe: true, session: null,
         checkpoint: { committed: true, packetDigest: digest, tenantId: packet.tenantId, projectId: packet.projectId, environment: packet.environment,
           taskId: packet.taskId, stageId: packet.stageId, revision: packet.revision, authorityDigest: packet.authorityDigest },
         budget: dispatchBudget(executor, role, prompt),
@@ -1616,7 +1664,7 @@ export class Controller {
       const blockedTasks = waiting.filter((task) => task.blocked);
       const held = this.heldTasks(ctx.id);
       const runnable = waiting.filter((task) => !task.blocked && !held.has(task.task_id) && RUNNABLE.includes(task.state) &&
-        spec.get(task.task_id).dependsOn.every((dep) => done.has(dep)) && (task.state === 'verified' || !c.blocker));
+        (spec.get(task.task_id)?.dependsOn ?? []).every((dep) => done.has(dep)) && (task.state === 'verified' || !c.blocker));
       let status = c.status;
       let control = c.control;
       let nextAction = null;
@@ -1804,7 +1852,7 @@ export class Controller {
     const parents = new Set(this.store.all('SELECT task_id FROM blocker_parents WHERE fingerprint = ? AND campaign_id = ? AND released_at IS NULL',
       record.fingerprint, ctx.id).map((row) => row.task_id));
     const probe = tasks.find((task) => parents.has(task.task_id) && RUNNABLE.includes(task.state) && !task.blocked &&
-      spec.get(task.task_id).dependsOn.every((dep) => done.has(dep)));
+      (spec.get(task.task_id)?.dependsOn ?? []).every((dep) => done.has(dep)));
     if (!probe) {
       const evidence = { trigger, probe: 'run', pass: false, detail: 'no runnable held task can carry the recheck run', at: now };
       this.store.run('UPDATE blockers SET last_evidence = ?, updated_at = ? WHERE fingerprint = ?', evidence, now, record.fingerprint);
