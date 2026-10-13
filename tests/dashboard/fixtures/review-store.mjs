@@ -10,14 +10,15 @@
 // Options: `--store full` (default; every state), `--store empty` (the first run: no projects) or `--store unreadable`
 // (AIWorks can't read its work records). `--dir <new or empty directory>` builds there instead of a temporary directory
 // and leaves it in place. Port 4318 is refused: it is the live dashboard's port. Never point --dir at .local.
-// Then open http://127.0.0.1:4319. It runs the unchanged dashboard (src/dashboard/main.mjs) against the fixture, with the
-// test governance checkout. Commands sent from the page change only the synthetic store.
+// Then open http://127.0.0.1:4319. It runs the unchanged dashboard (src/dashboard/main.mjs) against the fixture, with its
+// own governance copy: the test governance checkout with a made-up roadmap and project registry (review-governance/), so
+// the page names no real project. Commands sent from the page change only the synthetic store.
 //
 // Times are fixed when the fixture is built. "A few minutes late" turns into "stopped" and "waiting to be picked up"
 // turns into "not started" after 5 minutes, as they would live; restart the command to see them again. The serving
 // process keeps the heartbeat of the two working agents current, so "working normally" holds for the whole review.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -26,6 +27,8 @@ import { campaignStart, campaignPause } from '../../../src/supervisor/api.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('../../..', import.meta.url)));
 export const GOVERNANCE = join(ROOT, 'tests', 'fixtures', 'governance');
+/** What the review copy of GOVERNANCE replaces: the documents the dashboard roadmap reads (src/dashboard/roadmap.mjs). */
+export const REVIEW_GOVERNANCE = fileURLToPath(new URL('review-governance', import.meta.url));
 /** The review dashboard's port. 4318 is the live dashboard's and is never used. */
 export const REVIEW_PORT = 4319;
 export const LIVE_PORT = 4318;
@@ -294,7 +297,8 @@ function fill(store, dataDir, root, now) {
 /**
  * Builds a review fixture under `root` (a new or empty directory) and returns its paths. `store`: 'full' (every
  * state), 'empty' (first run, no projects) or 'unreadable'. Writes `<root>/data/supervisor.db` and
- * `<root>/data/config.json` with only `repositories` (no commands, no credentials, no `gh`).
+ * `<root>/data/config.json` with only `repositories` (no commands, no credentials, no `gh`), and `<root>/governance`: a
+ * copy of GOVERNANCE whose roadmap documents and project registry are REVIEW_GOVERNANCE's. GOVERNANCE is not changed.
  */
 export function buildReviewFixture(root, { now = Date.now(), store: kind = 'full' } = {}) {
   if (!['full', 'empty', 'unreadable'].includes(kind)) throw new Error('store must be full, empty or unreadable');
@@ -309,7 +313,11 @@ export function buildReviewFixture(root, { now = Date.now(), store: kind = 'full
     finally { store.close(); }
   }
   writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ repositories: built.repositories }, null, 2));
-  return { root, dataDir, now, ...built };
+  const governance = join(root, 'governance');
+  cpSync(GOVERNANCE, governance, { recursive: true });
+  rmSync(join(governance, 'registry', 'projects'), { recursive: true });
+  cpSync(REVIEW_GOVERNANCE, governance, { recursive: true });
+  return { root, dataDir, governance, now, ...built };
 }
 
 /** Command-line entry: build a fixture, then run the unchanged dashboard against it in this process. */
@@ -331,7 +339,7 @@ async function serve(args) {
   setInterval(() => { for (const dir of fixture.heartbeats) writeFileSync(join(dir, 'heartbeat'), String(Date.now())); }, 30_000).unref();
   console.log(`Review fixture (${options['--store']}): ${fixture.dataDir}`);
   process.argv = [process.argv[0], join(ROOT, 'src', 'dashboard', 'main.mjs'),
-    '--data', fixture.dataDir, '--port', String(port), '--governance', GOVERNANCE];
+    '--data', fixture.dataDir, '--port', String(port), '--governance', fixture.governance];
   await import(pathToFileURL(join(ROOT, 'src', 'dashboard', 'main.mjs')).href);
 }
 
