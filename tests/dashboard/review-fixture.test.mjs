@@ -386,7 +386,7 @@ test('F2: private Resume still refuses unmerged runtime code', (t) => {
 
 // AIWorks' own issue link, fixed in src/dashboard: the Auto Release decision (#33, supervisor.mjs). It is the tool's own
 // state, not a project. The supervisor-fault item links the fixture's made-up issue (F26).
-const OWN_LINKS = /https:\/\/github\.com\/example-org\/aiworks\/issues\/33(?!\d)/g;
+const OWN_LINKS = /https:\/\/github\.com\/netbka\/aiworks\/issues\/33(?!\d)/g;
 /** Every string a `repository` or `about` key holds anywhere in `value`. */
 function repositoriesIn(value, found = []) {
   if (Array.isArray(value)) for (const item of value) repositoriesIn(item, found);

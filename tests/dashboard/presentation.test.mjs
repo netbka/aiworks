@@ -83,7 +83,7 @@ test('supervisor faults say they are not an owner action and point to where they
     text: 'Not yours to fix: it is tracked for AIWorks’ maintainers. This work may not move until it is fixed.' }]);
   const js = page('dashboard.js');
   // The journal moved from Activity to Settings › Diagnostics; the link goes there.
-  assert.match(js, /Not an owner action: these are supervisor faults for AIWorks's maintainers\. `,\r?\n    link\('Supervisor issue #2 ↗', 'https:\/\/github\.com\/example-org\/aiworks\/issues\/2'\), ' · ', routeLink\('When, in Diagnostics', '#\/settings\/diagnostics'\)\)/);
+  assert.match(js, /Not an owner action: these are supervisor faults for AIWorks's maintainers\. `,\r?\n    link\('Supervisor issue #2 ↗', 'https:\/\/github\.com\/netbka\/aiworks\/issues\/2'\), ' · ', routeLink\('When, in Diagnostics', '#\/settings\/diagnostics'\)\)/);
   assert.doesNotMatch(js, /for whoever maintains AIWorks, not an owner action/);
 });
 

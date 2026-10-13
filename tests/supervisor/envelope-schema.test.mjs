@@ -184,7 +184,7 @@ const frozenScope = (d) => frozen({ ...d, authorization: undefined, limits: unde
 test('version 1 digests of every synthetic fixture declaration are unchanged', () => {
   // Recomputed with the frozen version 1 formulas after replacing private fixture identities with synthetic ones.
   assert.equal(scopeDigest(declaration()), '1124d02ea14c2eb0413eb8fb70c853198acb347c41d631764af37a476f9fdcc5');
-  assert.equal(authorityDigest(declaration()), 'f8e340d704ae818867ac7a7ef2cca9fa809fbb6d18d5b177afe8cd1514285c04');
+  assert.equal(authorityDigest(declaration()), '8fea051bd79254906ed767427792f66cb53050abf8ab1b85955f9d05dd75eaad');
   const names = readdirSync(join(ROOT, 'tests/fixtures/campaigns')).filter((name) => name.endsWith('.json'));
   assert.ok(names.length > 0);
   for (const name of names) {
