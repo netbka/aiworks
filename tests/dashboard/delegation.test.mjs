@@ -167,6 +167,7 @@ test('the page: with the setting, Needs me, Work and Results say it in owner wor
   await page.go(`#/p/${encodeURIComponent(shop)}/work`);
   const work = visibleText(page.$('#main'));
   // The verified step whose merge the next step waits for: passed the check, and why it is held.
-  assert.match(work, /Contracts import contracts import Passed the check Held: waiting to be combined with newer work/);
+  // The step's name once (its title only repeats the outcome here, so it is not shown twice), then where it stands.
+  assert.match(work, /Contracts import Passed the check Held: waiting to be combined with newer work/);
   for (const [where, text] of [['needs', after], ['results', resultsText], ['work', work]]) assert.deepEqual(internalWords(text), [], where);
 });
