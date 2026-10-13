@@ -21,9 +21,10 @@ const deliveryOf = (c, task) => ownerCampaign(c)?.deliveries?.[task.id] ?? null;
 const shortRepo = (repository) => repository?.split('/')[1] ?? repository ?? '';
 const plural = (n, word, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
 const usd = (value) => `$${value.toFixed(2)}`;
-const campaignTitle = (c) => {
+const campaignTitle = (c, { inProject = false } = {}) => {
   const purpose = ownerCampaign(c)?.purpose;
-  return `${shortRepo(c.repository)}: ${purpose?.text ?? c.id}${purpose?.variant ? ` (${purpose.variant})` : ''}`;
+  const text = `${purpose?.text ?? c.id}${purpose?.variant ? ` (${purpose.variant})` : ''}`;
+  return inProject ? text : `${shortRepo(c.repository)}: ${text}`;
 };
 
 // "Since you last looked": the last visit is a per-viewer convenience in this browser only. Reads and writes may
@@ -203,6 +204,33 @@ function whoIsOn(c, task) {
   if (!agent) return null;
   const [, verdict] = agentVerdict(agent), last = agent.progress?.lastActivityAt ?? agent.outputAt ?? null;
   return `${roleName(agent.role)} (${provider(agent.executor)}) · ${verdict.charAt(0).toLowerCase()}${verdict.slice(1)}${last ? ` · last activity ${timeAgo(last)}` : ''}`;
+}
+
+/**
+ * How a step is named in a row (OWNER_WORKSPACE §4.7: by its outcome): a short outcome leads; a long one (a whole
+ * sentence) gives way to the step's short title and becomes the line under it. The same words twice are shown once.
+ */
+const OUTCOME_LEAD_MAX = 100;
+function stepLabels(task) {
+  const outcome = task.outcome ?? null, title = task.title ?? null;
+  const lead = outcome && (outcome.length <= OUTCOME_LEAD_MAX || !title) ? outcome : title ?? outcome ?? task.id;
+  const other = lead === outcome ? title : outcome;
+  return { lead, more: other && other.toLowerCase() !== lead.toLowerCase() ? other : null };
+}
+
+/** Who is on a step, without the verdict: "Independent checker (Claude) · last activity 24m ago". */
+function whoLine(c, task) {
+  const agent = c.agents.find((item) => item.taskId === task.id);
+  if (!agent) return null;
+  const last = agent.progress?.lastActivityAt ?? agent.outputAt ?? null;
+  return `${roleName(agent.role)} (${provider(agent.executor)})${last ? ` · last activity ${timeAgo(last)}` : ''}`;
+}
+/** The verdict as its own label, placed under the text it describes ("Possibly stuck: no progress for 25 min"). */
+function verdictLabel(c, task) {
+  const agent = c.agents.find((item) => item.taskId === task.id);
+  if (!agent) return null;
+  const [cls, verdict] = agentVerdict(agent);
+  return el('div', { class: 'cell-labels' }, badge(cls, verdict));
 }
 
 /** How the verdicts are decided, shown once rather than on every card. */
@@ -968,15 +996,16 @@ const delegatedNote = (c, task) => { const delivery = deliveryOf(c, task); retur
 function workPanel(project, c) {
   const terminal = ['finished', 'cancelled'].includes(c.control), note = terminal ? null : controlsNote(c);
   const rows = runOrder(c).map((task) => el('tr', { 'data-focus-scope': `${c.id}/${task.id}` },
-    el('td', { class: 'c-work' }, routeLink(task.outcome ?? task.title, { screen: 'step', project, work: c.id, step: task.id }, 'task-name'),
-      task.outcome ? el('div', { class: 'subtext' }, task.title) : null),
-    el('td', { class: 'c-state' }, stepBadge(c, task),
-      ...[whoIsOn(c, task), task.stopped?.title, waitLine(task.wait)].filter(Boolean).map((text) => el('div', { class: 'subtext' }, text)),
+    el('td', { class: 'c-work' }, routeLink(stepLabels(task).lead, { screen: 'step', project, work: c.id, step: task.id }, 'task-name'),
+      stepLabels(task).more ? el('div', { class: 'subtext' }, stepLabels(task).more) : null),
+    el('td', { class: 'c-state' }, el('div', { class: 'cell-labels' }, stepBadge(c, task)),
+      ...[whoLine(c, task), task.stopped?.title, waitLine(task.wait)].filter(Boolean).map((text) => el('div', { class: 'subtext' }, text)),
+      verdictLabel(c, task),
       // Merging delegated by the owner: merged for them after CI, or why it is held (#97).
       delegatedNote(c, task) ? el('div', { class: 'subtext' }, delegatedNote(c, task)) : null)));
   const { cost, body } = costNotes(c);
   return el('section', { class: 'panel', 'data-focus-scope': `work/${c.id}` },
-    el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, campaignTitle(c)), el('p', {}, campaignNext(c)), note ? el('p', { class: 'controls-note' }, note) : null),
+    el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, campaignTitle(c, { inProject: true })), el('p', {}, campaignNext(c)), note ? el('p', { class: 'controls-note' }, note) : null),
       el('div', {}, resumeButton(c), moreMenu(c))),
     el('div', { class: 'steps' }, table(['What it delivers', 'Where it stands'], rows)),
     disclosure(`${c.id}/work-details`, `Details · ${plural(c.tasks.length, 'step')} · ${plural(c.runsUsed, 'run')} · ${cost}`,
@@ -1003,7 +1032,7 @@ function stepScreen(project, c, task) {
   const guidance = (c.instructions ?? []).filter((item) => item.taskId === task.id);
   const { attempts, events } = task.history ?? { attempts: [], events: [] };
   return [el('section', { class: 'panel', 'data-focus-scope': `step/${c.id}/${task.id}` },
-    el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, task.outcome ?? task.title), el('p', {}, `${campaignTitle(c)} · project ${projectName(project)}`)),
+    el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, task.outcome ?? task.title), el('p', {}, `${campaignTitle(c, { inProject: true })} · project ${projectName(project)}`)),
       moreMenu(c, task)),
     el('div', { class: 'panel-body' },
       el('p', { role: 'status', 'aria-live': 'polite' }, stepBadge(c, task), ' ', task.stopped ? el('strong', {}, task.stopped.title) : whoIsOn(c, task) ?? waitLine(task.wait) ?? ''),

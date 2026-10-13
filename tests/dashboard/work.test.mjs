@@ -128,7 +128,8 @@ test('wait sentences name the steps they wait for by outcome, never by ID, and s
   }
   // The page shows the wait on each Work row and on the Step, with the retry time.
   assert.match(page(), /const waitLine = \(wait\) => wait \? `\$\{wait\.text\}\$\{wait\.retryAt \? ` · next try \$\{timeOnly\(wait\.retryAt\)\}` : ''\}` : null;/);
-  assert.match(page(), /\.\.\.\[whoIsOn\(c, task\), task\.stopped\?\.title, waitLine\(task\.wait\)\]/);
+  // Who is on it, why it stops or waits, then the agent's verdict as a label under that text (owner review 2026-10-13).
+  assert.match(page(), /\.\.\.\[whoLine\(c, task\), task\.stopped\?\.title, waitLine\(task\.wait\)\]\.filter\(Boolean\)\.map\(\(text\) => el\('div', \{ class: 'subtext' \}, text\)\),\r?\n\s+verdictLabel\(c, task\),/);
 });
 
 test('a stopped step reads as in §7.7, with the step issue as its one primary action', (t) => {
@@ -214,4 +215,24 @@ test('every command the menu offers is one the supervisor accepts, still bound t
   // The page sends every menu command through command(), which carries the version, authorization, scope and a new request ID.
   assert.match(page(), /: button\(labels\[action\], \(\) => command\(c, action, task \?\? undefined\), 'secondary small', commandsOff\(\)\)/);
   assert.match(page(), /return deliver\(\{ campaignId: c\.id, action, requestId: crypto\.randomUUID\(\), version: c\.version,\r?\n    authorizationVersion: c\.authorizationVersion, scopeDigest: c\.scopeDigest,/);
+});
+
+test('a long outcome gives way to the short step title in wait sentences, never cut mid-word (owner review 2026-10-13)', async (t) => {
+  const { campaignStart } = await import('../../src/supervisor/api.mjs');
+  const { declaration } = await import('../supervisor/helpers.mjs');
+  const dataDir = mkdtempSync(join(tmpdir(), 'aiworks-long-outcome-'));
+  const store = new Store(join(dataDir, 'supervisor.db'));
+  t.after(() => { store.close(); rmSync(dataDir, { recursive: true, force: true }); });
+  const long = 'Child tasks are admitted, chained to the envelope and idempotent across crash and retry; every widening is refused with its code.';
+  const base = declaration().tasks[0];
+  campaignStart(store, declaration({ tasks: [
+    { ...base, id: 'T1', title: 'Child tasks are admitted inside the envelope', outcome: long },
+    { ...base, id: 'T2', issue: base.issue + 1, title: 'Children run with their own packet binding', outcome: 'Short outcome', dependsOn: ['T1'] },
+  ] }));
+  const t2 = supervisorSnapshot(dataDir).campaigns[0].tasks.find((task) => task.id === 'T2');
+  assert.equal(t2.wait.text, 'Starts after “Child tasks are admitted inside the envelope” is finished');
+  assert.doesNotMatch(t2.wait.text, /widening|refused with ”/, 'the long sentence is not quoted, so nothing is cut mid-word');
+  // The page's row rule: a short outcome leads; a long one gives way to the title and becomes the line under it.
+  assert.match(page(), /const OUTCOME_LEAD_MAX = 100;/);
+  assert.match(page(), /const lead = outcome && \(outcome\.length <= OUTCOME_LEAD_MAX \|\| !title\) \? outcome : title \?\? outcome \?\? task\.id;/);
 });

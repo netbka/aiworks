@@ -37,10 +37,19 @@ function publicTaskWait(task, spec) {
  * by ID, and only supervisor-known fields are read (stored errors can quote worker text). `retryAt` is when AIWorks
  * tries again by itself. Built from today's fields; the status `wait` field replaces it later (plan §6.12 C7, UI11).
  */
+const shortName = (text, max = 80) => {
+  const safe = safeText(String(text), 200);
+  if (safe.length <= max) return safe;
+  const cut = safe.slice(0, max);
+  return `${cut.slice(0, Math.max(cut.lastIndexOf(' '), max / 2)).replace(/[s,;:.]+$/, '')}…`;
+};
 function stepWait(task, spec, specs, taskRows) {
   if (task.blocked || ['done', 'verified'].includes(task.state)) return null;
   const names = (ids) => {
-    const quoted = ids.map((id) => `“${safeText(specs.get(id)?.outcome ?? specs.get(id)?.title ?? 'an earlier step', 120)}”`);
+    // A step is named by its outcome; a long outcome sentence gives way to the short title instead of being cut mid-word
+    // (owner review 2026-10-13).
+    const named = (spec) => spec?.outcome && (spec.outcome.length <= 80 || !spec.title) ? spec.outcome : spec?.title ?? spec?.outcome ?? 'an earlier step';
+    const quoted = ids.map((id) => `“${shortName(named(specs.get(id)))}”`);
     return quoted.length > 1 ? `${quoted.slice(0, -1).join(', ')} and ${quoted.at(-1)}` : quoted[0];
   };
   const be = (ids) => ids.length === 1 ? 'is' : 'are';
