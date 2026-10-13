@@ -324,8 +324,9 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     // running supervisor, which renews its lease too, so a stopped or absent supervisor is listed, worded for the pause.
     const paused = c.control === 'paused';
     if (c.livenessDefect) {
+      const issue = supervisor.settings?.supervisorIssue ?? SUPERVISOR_ISSUE;
       items.push({ ...base, kind: 'controller', system: true, text: `The supervisor ${where} reports an internal problem with ${c.id}`,
-        points: [{ link: { label: 'Supervisor issue #2', url: SUPERVISOR_ISSUE },
+        points: [{ link: { label: `Supervisor issue #${issue.split('/').at(-1)}`, url: issue },
           text: 'Not an owner action: this is a supervisor fault for AIWorks\'s maintainers. Work in this campaign may not progress until it is fixed.' }] });
     } else if (campaigns[c.id].liveness === 'agent-working-supervisor-silent') {
       items.push({ ...base, kind: 'controller', at: leaseEnded, text: `An agent is still working, but the supervisor ${where} stopped checking in`,
