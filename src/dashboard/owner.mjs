@@ -330,8 +330,9 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     // A supervisor fault is not an owner action (aiworks#11 review F6, F17): it is listed under AIWorks itself, names the
     // project it holds up in `about`, and no project or headline counts it.
     if (c.livenessDefect) {
+      const issue = supervisor.settings?.supervisorIssue ?? SUPERVISOR_ISSUE;
       items.push({ campaignId: c.id, repository: null, about: c.repository, kind: 'controller', system: true, text: NEEDS.fault.text,
-        points: [{ link: { label: NEEDS.fault.link, url: SUPERVISOR_ISSUE }, text: NEEDS.fault.point }] });
+        points: [{ link: { label: NEEDS.fault.link.replace(/\d+$/, issue.split('/').at(-1)), url: issue }, text: NEEDS.fault.point }] });
     } else if (campaigns[c.id].liveness === 'agent-working-supervisor-silent') {
       halted.push({ c, at: leaseEnded, how: 'silent', paused });
     } else if (campaigns[c.id].liveness === 'stopped') {
