@@ -19,7 +19,7 @@ function markdownFiles(path) {
   });
 }
 
-// These are documentation/shape regressions, not real provider or runtime acceptance.
+// Documentation/shape regressions, not real provider or runtime acceptance.
 test('first-report example passes the production declaration validator and remains inert', () => {
   assert.doesNotThrow(() => validateDeclaration(campaign));
   assert.match(campaign.authorization.text, /EXAMPLE ONLY/);
@@ -30,9 +30,7 @@ test('first-report example passes the production declaration validator and remai
 });
 
 test('example coordinator configuration has a valid cross-platform shape, but is disabled', () => {
-  // The distributed example uses Windows absolute paths. The validator uses the
-  // host's isAbsolute, so replace only these path fields with this checkout's
-  // absolute paths for shape validation on Linux CI; do not claim Windows execution.
+  // Validate absolute path shape on the test host; this is not Windows execution.
   const coordinator = { ...config.coordinator,
     sourceRepo: root,
     runtimeRoot: resolve(root, '.local/runtime'),
@@ -83,12 +81,13 @@ test('documented CLI verbs exist; planning is not represented as campaign dispat
   for (const verb of ['serve', 'keep', 'stop', 'start', 'status', 'pause', 'cancel', 'recheck', 'message', 'messages', 'baseline']) {
     assert.ok(cli.includes(`command === '${verb}'`), `missing CLI command: ${verb}`);
   }
-  const guide = read('docs/guides/AI_ASSISTED_START.md');
-  assert.match(guide, /read-only planning request/);
-  assert.match(guide, /does not expose a public `campaign_start` MCP tool/);
-  assert.match(guide, /prepared.*queued.*dispatched: false/);
-  assert.match(guide, /reconcile/i);
-  assert.match(read('docs/guides/FIRST_PROJECT.md'), /successful start response alone does not prove work has begun/);
+  // Execution contracts moved out of the beginner guide, not out of the product.
+  const instructions = read('docs/guides/ASSISTANT_SETUP.md');
+  assert.match(instructions, /read-only planning request/);
+  assert.match(instructions, /does not expose a public `campaign_start` MCP tool/);
+  assert.match(instructions, /prepared.*queued.*dispatched: false/);
+  assert.match(instructions, /reconcile/i);
+  assert.match(read('docs/guides/CLI_REFERENCE.md'), /successful start response alone does not prove work has begun/);
 });
 
 test('showcase documentation explicitly defers implementation until dashboard acceptance', () => {
@@ -97,4 +96,38 @@ test('showcase documentation explicitly defers implementation until dashboard ac
   assert.match(checklist, /independent UX acceptance/);
   assert.match(checklist, /issue #99/);
   assert.match(checklist, /public deployment additionally requires/);
+});
+
+test('README puts a short AI setup prompt and first task before optional shell commands', () => {
+  const text = read('README.md');
+  const manual = text.indexOf('## Prefer commands?');
+  assert.ok(manual > 0, 'manual commands need an explicit secondary section');
+  const intro = text.slice(0, manual);
+  const prompt = /```text\n([\s\S]*?)```/.exec(intro)?.[1];
+  assert.ok(prompt, 'a copyable AI message comes before commands');
+  assert.ok(prompt.trim().split(/\s+/).length <= 100, 'the first message stays short');
+  assert.match(prompt, /https:\/\/github\.com\/netbka\/aiworks/);
+  assert.match(prompt, /docs\/guides\/ASSISTANT_SETUP\.md/);
+  assert.doesNotMatch(prompt, /<[^>]+>/, 'no technical fields for the beginner to fill in');
+  assert.doesNotMatch(intro, /```(?:powershell|bash|sh|shell|json)\b|\bnpm\s+(?:ci|install|run)\b/);
+  assert.doesNotMatch(intro, /\b(?:governanceRoot|campaignId|SQLite|DAG|AW-005)\b/);
+  assert.ok(intro.indexOf('## Give it your first task') > intro.indexOf('## Start with your AI assistant'));
+  assert.match(text.slice(manual), /npm ci/);
+  assert.match(text, /## Start here\n/, 'preserve the engineering reading-list anchor');
+});
+
+test('beginner pages use prompts; Gemini setup is not advertised as a built-in worker', () => {
+  const guide = read('docs/guides/AI_ASSISTED_START.md');
+  for (const client of ['Codex', 'Claude Code', 'Cursor', 'Gemini CLI']) assert.ok(guide.includes(client));
+  assert.match(guide, /Gemini CLI is a setup assistant here, not a built-in AIWorks worker/);
+  assert.match(guide, /not a claim that every client\/version has passed/);
+  assert.match(guide, /web chat cannot start a program.*without an authorized connection/);
+  for (const path of ['docs/guides/README.md', 'docs/guides/AI_ASSISTED_START.md',
+    'docs/guides/INSTALLATION.md', 'docs/guides/FIRST_PROJECT.md']) {
+    const text = read(path);
+    assert.doesNotMatch(text, /```(?:powershell|bash|sh|shell|json)\b/, `${path}: keep shell setup in the manual guides`);
+  }
+  assert.match(read('docs/guides/INSTALLATION.md'), /not yet a one-click public installer/);
+  assert.match(read('docs/guides/MANUAL_INSTALLATION.md'), /npm ci/);
+  assert.match(read('docs/guides/CLI_REFERENCE.md'), /cli\.mjs start/);
 });

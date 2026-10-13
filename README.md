@@ -1,104 +1,112 @@
 # AIWorks
 
-Keep assigned AI work moving, and check what it actually delivered.
+Give your AI a job. Spend less time managing every step.
 
-AIWorks runs on your Windows PC around coding tools such as Claude Code and Codex. A persistent supervisor dispatches approved work, gives the result to a separate verification session, handles recoverable waits and records the outcome. A local dashboard shows progress and what needs your attention.
+AIWorks helps you work on projects with AI without constantly telling each agent what to do next. It keeps approved tasks moving, sends the results to a separate check, and shows what is finished or needs your attention. It runs on your Windows computer.
 
-**Current stage: internal preview; preparing for a public release.** The running product serves the owner's projects. A real installation still needs approved Engineering Platform governance and project registration. Public self-service setup, licensing and external-contribution safeguards must be completed before a public release. This documentation does not change repository visibility or grant an open-source license. See the [release checklist](docs/publication/RELEASE_CHECKLIST.md).
+## Start with your AI assistant
 
-## Install and use
+Open **Codex, Claude Code, Cursor Agent or Gemini CLI** on your computer. Use a session that can work with local files and run commands, not a chat-only window. You do not need to type the installation commands yourself.
 
-| I want to... | Start here |
-| --- | --- |
-| Understand the workflow and choose a setup path | [User documentation](docs/guides/README.md) |
-| Look around without AI accounts or real projects | [Local demo](docs/guides/INSTALLATION.md#try-the-demo-without-worker-credentials) |
-| Install a real local supervisor | [Windows installation](docs/guides/INSTALLATION.md#install-for-real-project-work) |
-| Start work myself with a command | [First project and CLI walkthrough](docs/guides/FIRST_PROJECT.md) |
-| Ask an AI assistant to start project work | [AI-assisted startup and copyable prompts](docs/guides/AI_ASSISTED_START.md) |
-| Understand settings, providers and credentials | [Configuration](docs/guides/CONFIGURATION.md) |
-| Diagnose a wait or failed start | [Troubleshooting](docs/guides/TROUBLESHOOTING.md) |
-| Suggest or contribute a change | [Contributing](CONTRIBUTING.md) |
-| Report a security problem privately | [Security](SECURITY.md) |
+**This is an early preview.** Setup still needs access to the project and its required services. Your assistant should check that first and tell you if anything is missing.
 
-### Three commands with different jobs
+Copy this into your AI client:
 
-Run these from an installed runtime checkout, with its actual data directory. Replace the example names; do not run another owner's campaign.
+```text
+Help me set up and start AIWorks on this Windows computer:
+https://github.com/netbka/aiworks
 
-```powershell
-# Keep the controller running in this terminal. This does not assign a task.
-node src/supervisor/cli.mjs serve --data C:/Work/aiworks/.local/supervisor
+Read the README and follow docs/guides/ASSISTANT_SETUP.md.
+Check what is already installed and do the setup you are allowed to do.
+Open AIWorks when it is ready.
+
+If you need me to sign in or approve access, explain just that step.
+Do not change my project files yet.
 ```
 
-In another terminal, in the same runtime checkout:
+The assistant can handle the commands and settings. You handle any sign-in or permission it cannot complete for you. [Choose your client and see the steps](docs/guides/AI_ASSISTED_START.md).
+
+## Give it your first task
+
+Once setup is ready, tell the same assistant which project to use and what you need:
+
+```text
+Use AIWorks for my project in C:/Work/my-project.
+I want to fix the sign-in error.
+Show me a short plan first. After I approve it, start the work through
+AIWorks and show me where to follow its progress.
+```
+
+Replace the folder and task with your own. A bug, an existing task or a written plan is enough to begin the conversation. The assistant checks whether the installed version can work on that project; it should not promise that every folder is supported yet.
+
+After approval, the assistant starts the work through AIWorks rather than doing the whole job in the chat. AIWorks handles the supported steps and separate checks. You can follow the result in its local dashboard. [Walk through your first task](docs/guides/FIRST_PROJECT.md).
+
+## Just looking around?
+
+Ask your assistant: **"Show me the AIWorks demo with sample projects. Do not connect my accounts or run real work."**
+
+The demo lets you explore without AI-worker credentials. Its projects and progress are made up. The dashboard layout is still being improved. [More about the demo](docs/guides/INSTALLATION.md#try-the-demo-without-worker-credentials).
+
+## A few things to know
+
+Your usual AI account limits and costs still apply. Some setup steps require access from the project owner. A plain web chat needs a permitted connection to your computer to start anything there.
+
+The client helping you set up AIWorks is not necessarily the tool that will do its tasks. In particular, **Gemini CLI is a setup assistant here, not a built-in AIWorks worker**. The assistant checks which workers are available. In the current setup, AIWorks prepares checked results for review; it does not automatically publish changes to your live application.
+
+[Installation help](docs/guides/INSTALLATION.md) · [Troubleshooting](docs/guides/TROUBLESHOOTING.md) · [All guides](docs/guides/README.md)
+
+## Prefer commands?
+
+You can also install and run it yourself. This is optional; the AI-assisted path uses the same underlying tools.
+
+<details>
+<summary>Show the commands and technical guides</summary>
+
+For a new source checkout you are allowed to access:
 
 ```powershell
-# Ask the configured read-only coordinator to plan. This does not start implementation.
-node src/supervisor/cli.mjs message "Plan work for my configured project; do not implement yet." --data C:/Work/aiworks/.local/supervisor
+git clone https://github.com/netbka/aiworks.git
+cd aiworks
+npm ci
+node tests/dashboard/fixtures/review-store.mjs --port 4319
+```
 
-# Register or resume an owner-approved declaration already committed in this runtime's campaigns/.
+Open `http://127.0.0.1:4319` for the sample-data demo. This does not run a real project. Stop it with Ctrl+C.
+
+For real work, follow [manual installation](docs/guides/MANUAL_INSTALLATION.md), [configuration](docs/guides/CONFIGURATION.md) and the [command reference](docs/guides/CLI_REFERENCE.md). The three operations are different: `serve` keeps the controller running, `message` asks for a plan, and `start` registers or resumes approved work.
+
+From an already configured runtime, using its actual data directory and approved declaration:
+
+```powershell
 node src/supervisor/cli.mjs start campaigns/my-approved-work.json --data C:/Work/aiworks/.local/supervisor
 node src/supervisor/cli.mjs status my-approved-work --data C:/Work/aiworks/.local/supervisor
 ```
 
-`message` needs an enabled coordinator. `start` needs an approved declaration, a registered target and a runtime revision merged to `origin/main`. A message receipt or successful registration is not proof a worker is active. The guides explain the prerequisites and the expected evidence.
+The campaign name is a placeholder. Start the controller through the installation guide first. Registration alone is not proof a worker is running.
 
-### What a run does
+</details>
 
-An owner authorizes a bounded work program, called a **campaign**. A **worker** implements a task or produces a report. A different, fresh session **verifies** the result. Rejected results return for repair within the campaign's authority. The supervisor publishes a verified code change as a pull request, or a verified report as an issue comment.
-
-The current supervisor does not merge or deploy. Auto Release is a separately governed workstream, not an installation default. A published PR, a merged change and a checked live result are different states. Provider/model availability depends on the installed adapter, role, operating system and account; listing a provider is not proof that it can run here.
+<details>
+<summary>For contributors: project rules and architecture</summary>
 
 ## Start here
 
-This is the engineering reading list; [AGENTS.md](AGENTS.md) points to it. The user guides above explain operation; they do not replace these authorities.
+This is the engineering reading list referenced by [AGENTS.md](AGENTS.md). New users can start with the AI-assisted instructions above.
 
-1. [Product Constitution](docs/PRODUCT_CONSTITUTION.md) - purpose, current audience and success metrics
-2. [Status](docs/STATUS.md) - recorded progress; GitHub issues and PRs hold live work state
-3. [Agent rules](AGENTS.md) - how changes to this repository are made
-4. [Decisions](docs/DECISIONS.md) - accepted product and execution decisions
-5. [Delivery Supervisor](docs/SUPERVISOR.md) - lifecycle, failures, commands, deployment layout and upgrades
-6. [Operations Dashboard](docs/OPERATIONS_DASHBOARD.md) - the local owner interface
-7. [Worker Context Lifecycle](docs/WORKER_CONTEXT_LIFECYCLE.md) - bounded packets, leases and fresh sessions
+1. [Product Constitution](docs/PRODUCT_CONSTITUTION.md) - purpose and current scope
+2. [Status](docs/STATUS.md) - recorded progress; issues and PRs hold live work state
+3. [Agent rules](AGENTS.md) - how changes are made
+4. [Decisions](docs/DECISIONS.md) - accepted decisions
+5. [Delivery Supervisor](docs/SUPERVISOR.md) - execution, recovery and runtime upgrades
+6. [Operations Dashboard](docs/OPERATIONS_DASHBOARD.md) - the local interface
+7. [Worker Context Lifecycle](docs/WORKER_CONTEXT_LIFECYCLE.md) - packets and sessions
 8. [Glossary](docs/GLOSSARY.md) - terms and IDs
-9. [Workspace implementation plan](docs/PROJECT_WORKSPACE_PLAN.md) - staged project connection, intake, scheduling, routing, UI and release work
+9. [Workspace plan](docs/PROJECT_WORKSPACE_PLAN.md) - ongoing development
 
-Portfolio rules come from [Engineering Platform](https://github.com/netbka/engineering-platform): its [Constitution](https://github.com/netbka/engineering-platform/blob/main/docs/CONSTITUTION.md), [Agent Operating Model](https://github.com/netbka/engineering-platform/blob/main/docs/AGENT_OPERATING_MODEL.md), [Continuation](https://github.com/netbka/engineering-platform/blob/main/docs/CONTINUATION.md) and [Owner Intervention](https://github.com/netbka/engineering-platform/blob/main/docs/OWNER_INTERVENTION.md). AIWorks reads an approved governance checkout; it does not write that checkout or replace its policies with test fixtures.
+The runtime reads approved [Engineering Platform](https://github.com/netbka/engineering-platform) governance. Self-service public setup, licensing and external-contribution safeguards remain part of the [public-release checklist](docs/publication/RELEASE_CHECKLIST.md). These docs do not change repository visibility, grant a license or remove existing access requirements.
 
-## Layout
+See [Contributing](CONTRIBUTING.md) and [Security](SECURITY.md). After installing dependencies, run `npm run check`; guide examples also have `node --test tests/docs/getting-started.test.mjs`.
 
-| Path | Purpose |
-| --- | --- |
-| `src/supervisor/` | CLI, controller, SQLite state, coordinator, workers and verification |
-| `src/supervisor/adapters/` | Worker CLI, Git and GitHub adapters |
-| `src/dashboard/` | Local dashboard server and interface |
-| `src/shared/` | Shared helpers |
-| `campaigns/` | Actual owner-authorized work declarations; not a starter library |
-| `docs/guides/` | Installation, configuration, manual/AI startup and troubleshooting |
-| `docs/guides/examples/` | Inert example JSON; not executable campaign registrations |
-| `docs/publication/` | Public-release checklist and deferred showcase instructions |
-| `scripts/lib/worker-context.mjs` | Packet validation, context and lease helpers |
-| `registry/` and `schemas/` | AIWorks runtime contracts |
-| `scripts/supervisor/` | Windows task installers and reviewed runtime upgrade script |
-| `tests/` | Disposable tests and a synthetic dashboard fixture |
+The showcase website waits for the finished dashboard and its acceptance, tracked in [#99](https://github.com/netbka/aiworks/issues/99). This documentation change does not build or deploy it.
 
-Local source, runtime, state and worktrees must remain separate. On the owner's existing HomePc setup, these are `D:/Git/aiworks`, `.local/runtime`, `.local/supervisor`, `.local/worktrees` and `.local/governance`. New installations may use different absolute paths. Do not create a second store or overwrite existing scheduled tasks by following an example literally.
-
-## Validation
-
-Install dependencies once (`npm install`, or `npm ci` for the committed lockfile), then run:
-
-```powershell
-npm run check
-```
-
-The new guide examples also have a focused check:
-
-```powershell
-node --test tests/docs/getting-started.test.mjs
-```
-
-Tests and the synthetic demo do not prove that a real worker, a provider account or a production deployment works. Use the evidence levels in [AGENTS.md](AGENTS.md).
-
-## Public showcase
-
-The layout and dashboard are still being finished. The owner asked to prepare the documentation now and build the showcase page afterwards. [Issue #99](https://github.com/netbka/aiworks/issues/99) records that dependency. No final promotional screenshots, site implementation or GitHub Pages deployment are part of this documentation change.
+</details>
