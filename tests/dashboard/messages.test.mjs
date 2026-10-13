@@ -179,7 +179,7 @@ test('the Start work page offers Plan only, shows Plan and do with its not-built
     const projectList = () => [{ id: 'example/notes-site', kind: 'GitHub' }, { id: 'local-notes', kind: 'Folder' }]; const projectCampaigns = () => [];
     const state = { supervisor: { available: true, coordinator: { configured: true, reportTo: 'example/notes-site#1', messages: [] } } };
     const sending = false, offline = false, MESSAGES_ADDRESS = '#/settings/messages';`;
-  const { startScreen } = fromPage(['PLAN_AND_DO_OFF', 'START_FROM', 'startBlocked', 'startDraft', 'function startReceipt(', 'function startScreen('], stubs);
+  const { startScreen } = fromPage(['PLAN_AND_DO_OFF', 'START_FROM', 'startBlocked', 'startDraft', 'readsKey', 'function startReceipt(', 'function startScreen('], stubs);
   const nodes = [], walk = (node) => { if (node && typeof node === 'object') { nodes.push(node); node.children.forEach(walk); } };
   startScreen('example/notes-site').forEach(walk);
   const text = nodes.flatMap((node) => node.children.filter((child) => typeof child === 'string')).join('\n');

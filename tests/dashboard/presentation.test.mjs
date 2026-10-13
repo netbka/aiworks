@@ -42,15 +42,16 @@ test('campaign titles prefer declared wording; names built from ids are humanize
   assert.doesNotMatch(page('dashboard.js'), / — \$\{purpose\.variant\}/, 'no dash before the distinguishing name');
 });
 
-test('a new view starts at its top; Back and Forward return to where that view was left', () => {
+test('a view not opened yet starts at its top; a link, Back and Forward return to where a view was left', () => {
   const js = page('dashboard.js');
-  // Scroll is remembered per address; a new destination gets a history entry and opens at its top, Back and Forward restore.
-  assert.match(js, /function go\(address, \{ restore = false \} = \{\}\) \{\r?\n  scrollMemory\.set\(current\.address, window\.scrollY\);\r?\n  const next = resolveRoute\(address\);\r?\n  if \(!restore\) history\.pushState\(null, '', next\.address\);\r?\n  else if \(next\.replace\) history\.replaceState\(null, '', next\.address\);\r?\n  current = next;\r?\n  showRoute\(\);\r?\n  window\.scrollTo\(0, restore \? scrollMemory\.get\(current\.address\) \?\? 0 : 0\);/);
+  // Scroll is remembered per address; a destination gets a history entry, Back and Forward do not, and every address
+  // returns to its own scroll, or its top when it was not opened yet (OWNER_WORKSPACE §3.3; aiworks#11 review F5).
+  assert.match(js, /function go\(address, \{ restore = false \} = \{\}\) \{\r?\n  scrollMemory\.set\(current\.address, window\.scrollY\);\r?\n  let next = resolveRoute\(address\);\r?\n[^\n]+\r?\n[^\n]+\r?\n  if \(left\) next = resolveRoute\(left\);\r?\n  if \(!restore\) history\.pushState\(null, '', next\.address\);\r?\n  else if \(next\.replace\) history\.replaceState\(null, '', next\.address\);\r?\n  current = next;\r?\n  showRoute\(\);\r?\n  window\.scrollTo\(0, scrollMemory\.get\(current\.address\) \?\? 0\);/);
   assert.match(js, /history\.scrollRestoration = 'manual'/, 'the browser does not fight the per-address scroll');
   // Every destination link opens through go(), unless the owner asked for a new tab or window.
   assert.match(js, /const anchor = event\.target\.closest\?\.\('a\[href\^="#\/"\]'\);\r?\n  if \(!anchor \|\| event\.defaultPrevented \|\| event\.button !== 0 \|\| event\.metaKey \|\| event\.ctrlKey \|\| event\.shiftKey \|\| event\.altKey\) return;\r?\n  event\.preventDefault\(\);\r?\n  if \(resolveRoute\(anchor\.getAttribute\('href'\)\)\.address !== current\.address\) go\(anchor\.getAttribute\('href'\)\);/);
   assert.match(js, /addEventListener\('hashchange', \(\) => \{ if \(location\.hash !== current\.address\) go\(location\.hash, \{ restore: true \}\); \}\)/);
-  // In-page links to other screens are links to their addresses, so they also start at the top.
+  // In-page links to other screens are links to their addresses, so they open through go() too.
   for (const target of ['#/settings/diagnostics', '#/settings/messages', '#/projects']) assert.match(js, new RegExp(`routeLink\\('[^']+', '${target}'`), `in-page link to ${target}`);
 });
 
