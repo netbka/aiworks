@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { POWERSHELL } from '../proc.mjs';
 import * as agy from './agy.mjs';
+import { caamProfileEnv, caamProvider } from './caam.mjs';
 import * as claude from './claude.mjs';
 
 export const AGY_LOG_LIMIT = agy.LOG_LIMIT;
@@ -95,7 +96,11 @@ export function codexSandboxProbe(command, { timeoutMs = 90_000, spawn = spawnSy
     : `codex sandbox probe failed (exit ${result.status ?? 'unknown'})`;
 }
 
-export function unavailableReason(executor, workspace, ghCommand, { probe = null, chromeCommand = null, web = false } = {}) {
+// The worker environment of a CAAM shallow profile (caam.mjs caamProfileEnv), or none when the launch names no profile
+// home. Only Claude and Codex rotate profiles: agy and Cursor refuse one rather than run under the host login.
+const profileEnv = (kind, profileHome) => profileHome == null ? {} : caamProfileEnv(profileHome, caamProvider(kind));
+
+export function unavailableReason(executor, workspace, ghCommand, { probe = null, chromeCommand = null, web = false, profileHome = null } = {}) {
   // agy runs from a run-local profile home with no project or user extensions; it, and Claude on a web task, need only a browser.
   if (executor.kind === 'agy-cli' || web) return agy.unavailableReason(chromeCommand);
   if (executor.kind === 'claude-cli') {
@@ -129,7 +134,9 @@ export function unavailableReason(executor, workspace, ghCommand, { probe = null
     if (files.some((path) => existsSync(join(root, path)))) return 'project CLI extensions require a scoped adapter policy';
     if (existsSync(join(root, '.git')) || dirname(root) === root) break;
   }
-  if (executor.kind === 'codex-cli' && existsSync(join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'hooks.json'))) {
+  // A profile launch reads the profile's CODEX_HOME, not the host's: check the one the worker will use.
+  if (executor.kind === 'codex-cli' && existsSync(join(profileHome == null ? process.env.CODEX_HOME || join(homedir(), '.codex')
+    : profileEnv(executor.kind, profileHome).CODEX_HOME, 'hooks.json'))) {
     return 'user Codex hooks require a scoped adapter policy';
   }
   const cursorHome = process.env.CURSOR_CONFIG_DIR || join(homedir(), '.cursor');
@@ -151,8 +158,13 @@ export function roleUnavailableReason(executor, role, deliverable, platform = pr
   return null;
 }
 
+// profileHome (ACCOUNT_ADAPTER_CAAM.md section 3.4, slice CAAM4): the absolute shallow home of the CAAM profile this run
+// is bound to, or null for the host login. It only sets the worker's environment (HOME, USERPROFILE, CODEX_HOME and
+// Claude's background switches); every isolation flag below stays exactly as it is without a profile.
 export function prepare({ executor, command, role, deliverable, sessionId, digest, runDir, workspace, prompt, repository, ghCommand, projectSettings = null,
-  web = null, chromeCommand = null, timeoutMs = 60 * 60_000 }) {
+  web = null, chromeCommand = null, timeoutMs = 60 * 60_000, profileHome = null }) {
+  // Resolved first, so a bad home or a kind CAAM does not rotate fails before any run file is written.
+  const profile = profileEnv(executor.kind, profileHome);
   if (executor.kind === 'agy-cli') {
     if (!web || deliverable !== 'report') throw new Error('The AGY browser worker requires a web acceptance task with a report deliverable');
     return agy.prepare({ command, executor, role, sessionId, digest, runDir, prompt, web, chromeCommand, timeoutMs });
@@ -170,7 +182,7 @@ export function prepare({ executor, command, role, deliverable, sessionId, diges
         '--json-schema', JSON.stringify(role === 'verification' ? claude.VERIFIER_SCHEMA : claude.IMPLEMENTER_SCHEMA),
         '--allowedTools', ...agy.TOOLS.map((name) => `mcp__${agy.BROWSER_SERVER}__${name}`),
         '--disallowedTools', `mcp__${agy.BROWSER_SERVER}__upload_file`],
-      prompt, cwd, env: { ...claude.ISOLATION_ENV },
+      prompt, cwd, env: { ...profile, ...claude.ISOLATION_ENV },
     };
   }
   if (executor.researchOnly && deliverable !== 'report') throw new Error('Research-only executor requires a report deliverable');
@@ -191,7 +203,7 @@ export function prepare({ executor, command, role, deliverable, sessionId, diges
     argv: [...claude.buildArgv({ command, executor, role, deliverable, sessionId }),
       // ISOLATION_ARGS already drop setting sources, hooks and inherited MCP; research mode also removes every tool.
       ...(executor.researchOnly ? ['--safe-mode', '--tools', '', '--mcp-config', '{"mcpServers":{}}'] : [])], prompt, cwd,
-    env: { ...claude.projectEnv(projectSettings), ...claude.ISOLATION_ENV },
+    env: { ...claude.projectEnv(projectSettings), ...profile, ...claude.ISOLATION_ENV },
   };
   const schema = resultSchema(role, sessionId, digest);
   const schemaPath = join(runDir, 'output-schema.json');
@@ -223,6 +235,7 @@ export function prepare({ executor, command, role, deliverable, sessionId, diges
       '--sandbox', role === 'verification' || deliverable === 'report' ? 'read-only' : 'workspace-write',
       '--json', '--color', 'never', '--output-schema', schemaPath, ...model, '-'],
     cwd, prompt: boundPrompt + (executor.researchOnly ? '' : gitTrust) + (reader.length ? readerInstructions : ''),
+    ...(profileHome == null ? {} : { env: profile }),
   };
   // shortcut: Cursor commit roles wait for a scoped publication-denial adapter; use the next executor meanwhile.
   // Workspace trust is limited to the controller-created checkout; tool permissions stay unchanged.
