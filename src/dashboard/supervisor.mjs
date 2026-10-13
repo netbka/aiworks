@@ -284,18 +284,31 @@ function workerProgress(dataDir, op) {
     const stat = statSync(path);
     if (!stat.isFile() || stat.size === 0 || stat.size > PROGRESS_MAX_BYTES) return null;
     let turns = 0, toolCalls = 0, lastTool = null, lastAt = null;
+    // The newest tool call that has no result yet: the worker is waiting on it (a test suite, a build), not idle.
+    let open = null;
     for (const line of readFileSync(path, 'utf8').split('\n')) {
       if (!line.trim()) continue;
       let event;
       try { event = JSON.parse(line); } catch { continue; }
       if (kind === 'claude-cli') {
+        if (event.type === 'user') {
+          const done = (Array.isArray(event.message?.content) ? event.message.content : []).filter((part) => part?.type === 'tool_result').map((part) => part.tool_use_id);
+          if (open && done.includes(open.id)) open = null;
+          continue;
+        }
         if (event.type !== 'assistant') continue;
         turns++;
         const at = Date.parse(event.timestamp ?? '');
         if (Number.isFinite(at)) lastAt = at;
-        for (const part of event.message?.content ?? []) if (part?.type === 'tool_use') { toolCalls++; lastTool = toolName(part.name); }
+        for (const part of event.message?.content ?? []) {
+          if (part?.type !== 'tool_use') continue;
+          toolCalls++; lastTool = toolName(part.name);
+          open = { id: part.id, tool: lastTool, since: Number.isFinite(at) ? at : null };
+        }
       } else {
         const item = event.item;
+        if (event.type === 'item.started' && item?.type === 'command_execution') open = { id: item.id, tool: 'command', since: stat.mtimeMs };
+        if (event.type === 'item.completed' && open && item?.id === open.id) open = null;
         if (event.type === 'item.completed' && item?.type === 'agent_message') turns++;
         if (event.type === 'item.completed' && ['command_execution', 'mcp_tool_call'].includes(item?.type)) {
           toolCalls++; lastTool = item.type === 'mcp_tool_call' ? toolName(`${item.server}.${item.tool}`) : 'command';
@@ -304,7 +317,8 @@ function workerProgress(dataDir, op) {
       }
     }
     return { source: kind === 'claude-cli' ? 'session-transcript' : 'streamed-output', turns, toolCalls, lastTool,
-      lastActivityAt: lastAt ?? stat.mtimeMs, updatedAt: stat.mtimeMs };
+      lastActivityAt: lastAt ?? stat.mtimeMs, updatedAt: stat.mtimeMs,
+      runningTool: open?.tool ?? null, runningSince: open ? open.since ?? lastAt ?? stat.mtimeMs : null };
   } catch { return null; }
 }
 
