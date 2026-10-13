@@ -12,21 +12,26 @@ export const AGY_LOG_LIMIT = agy.LOG_LIMIT;
 // The browser workers: AGY, and Claude given the same isolated browser. When AGY is out of credits or waiting, a web task
 // moves to Claude instead of waiting.
 export const BROWSER_KINDS = ['agy-cli', 'claude-cli'];
+// Commit tasks only (#102): STA7's verifier returned evidence-unavailable because its npm run check did not finish within
+// one foreground command while other campaigns ran. Report tasks, including research-only runs, do not carry it.
+export const FULL_GATE_RULE = 'The repository\'s full gate (npm run check) can take 20 to 30 minutes on this PC while other work runs, longer than one foreground command may wait. Start it as a separate background process with its output in a file in this run\'s working directory (for example gate.log, never committed), wait for that process to exit using foreground commands, then copy the final summary block verbatim from the file (with scripts/run-tests.mjs, the block after "# all test files"). Never shorten the suite, skip files or weaken a test to make it finish.';
 // Gate evidence rules for commit and report tasks (#42, #43): CI runs on Linux while workers run on Windows, and a
 // tally is copied from the output, never retyped. A browser review runs no gate, so web prompts do not carry them.
 export const GATE_RULES = [
   'Repository CI runs npm run check on ubuntu-latest (Linux), not only on this host: a test that depends on the platform must guard itself with a skip that names the reason, or a platform-appropriate equivalent, without weakening what it checks on Windows.',
   'Copy test summary lines verbatim from the command output (for node:test: # tests, # pass, # fail, # skipped); never retype or recall a tally.',
+  FULL_GATE_RULE,
 ];
 export const VERIFIER_TALLY_RULE = 'A test tally or other count in the report that does not match your own re-run of the same gate at the same head is a blocking finding: a wrong number is a false claim.';
 // The rules follow the role header, before the packet, so every existing prompt line stays as it was.
-function withGateRules(prompt, role) {
+function withGateRules(prompt, role, deliverable) {
   const at = prompt.indexOf('\n\nTask packet (sha256 ');
-  const rules = [...GATE_RULES, ...(role === 'verification' ? [VERIFIER_TALLY_RULE] : [])];
+  const rules = [...GATE_RULES.filter((rule) => rule !== FULL_GATE_RULE || deliverable === 'commit'),
+    ...(role === 'verification' ? [VERIFIER_TALLY_RULE] : [])];
   return `${prompt.slice(0, at)}\n${rules.join('\n')}${prompt.slice(at)}`;
 }
 // A browser worker reviews pages, not a checkout, so a web task gets the browser prompt whichever worker runs it.
-export const buildPrompt = (args) => args.web ? agy.buildPrompt(args) : withGateRules(claude.buildPrompt(args), args.role);
+export const buildPrompt = (args) => args.web ? agy.buildPrompt(args) : withGateRules(claude.buildPrompt(args), args.role, args.deliverable);
 const nativeKind = (kind) => kind ?? 'claude-cli';
 // Codex/Cursor do not report measured dollar cost or Claude turn counts: unknown is not a free refusal.
 export const refusedBeforeWork = (verdict) => nativeKind(verdict?.executorKind) === 'claude-cli' && claude.refusedBeforeWork(verdict);
