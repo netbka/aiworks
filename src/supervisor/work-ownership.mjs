@@ -2,6 +2,7 @@
 // The caller must hold the store's BEGIN IMMEDIATE transaction through registration, so two
 // connections cannot both pass the check before either inserts its campaign.
 import { createHash } from 'node:crypto';
+import { specsOf } from './plan.mjs';
 
 /** Exact intended work, independent of campaign/task IDs, display text and reference order.
  * This is deliberately not fuzzy matching. Differently worded repairs need the same explicit workKey.
@@ -24,6 +25,8 @@ const commitTask = (task) => task && task.deliverable === 'commit' && typeof tas
  * A nonterminal campaign keeps all its commit assignments, including published tasks: another
  * task may still be integrating that work. Reports never reserve write ownership.
  *
+ * An owner's admitted child tasks own work exactly like its declared ones (WORK_ENVELOPE 6.7, slice E3).
+ *
  * This does not inspect unmerged PRs after a campaign finishes, fence existing writers, or
  * reconcile duplicate campaigns registered before this guard. Those are aiworks#5 scope B.
  */
@@ -41,7 +44,7 @@ export function findWorkConflict(store, declaration) {
     const previous = owner.declaration;
     if (!readable(previous) || previous.target.tenantId !== declaration.target.tenantId ||
         previous.target.repository.toLowerCase() !== repository) continue;
-    for (const owned of previous.tasks) {
+    for (const owned of specsOf(store, owner.id, previous).values()) {
       if (!commitTask(owned)) continue;
       const fingerprint = workFingerprint(owned);
       for (const { task, fingerprint: candidate } of candidates) {
@@ -104,7 +107,8 @@ const ACTIVE = new Set(['implementing', 'implemented', 'verifying', 'verified'])
  * - a task implemented, verifying or verified, not yet integrated ('unintegrated');
  * - a done commit task whose verified head is not in its base yet, in any campaign, finished or cancelled included
  *   ('published-unmerged'). `integrated(campaignId, taskRow, declaration)` answers that from the fetched base.
- * A pending task with nothing open holds nothing. The candidate task itself is skipped.
+ * A pending task with nothing open holds nothing. The candidate task itself is skipped. Admitted child tasks hold their
+ * `writes` like declared tasks (WORK_ENVELOPE 6.7); a cancelled child holds nothing.
  */
 export function domainHolders(store, { campaignId, taskId, domain }, { integrated = () => false } = {}) {
   if (!domain) return [];
@@ -115,7 +119,7 @@ export function domainHolders(store, { campaignId, taskId, domain }, { integrate
     const writing = new Set(store.all("SELECT task_id FROM operations WHERE campaign_id = ? AND kind = 'implement' AND state IN ('recorded', 'dispatched')", c.id)
       .map((row) => row.task_id));
     const rows = new Map(store.all('SELECT * FROM tasks WHERE campaign_id = ?', c.id).map((row) => [row.task_id, row]));
-    for (const spec of c.declaration.tasks) {
+    for (const spec of specsOf(store, c.id, c.declaration).values()) {
       if (c.id === campaignId && spec.id === taskId) continue;
       if (!domainsOverlap(domain, domainOf(c.declaration, spec))) continue;
       const row = rows.get(spec.id);
