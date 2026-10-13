@@ -12,18 +12,27 @@
 // and leaves it in place. Port 4318 is refused: it is the live dashboard's port. Never point --dir at .local.
 // Then open http://127.0.0.1:4319. It runs the unchanged dashboard (src/dashboard/main.mjs) against the fixture, with its
 // own governance copy: the test governance checkout with a made-up roadmap and project registry (review-governance/), so
-// the page names no real project. Commands sent from the page change only the synthetic store.
+// the page names no real project, and links only made-up issues. Commands sent from the page change only the synthetic store.
+//
+// The dashboard runs from a disposable runtime checkout (<dir>/runtime): an unchanged copy of this repository's code,
+// committed together with the synthetic declarations in campaigns/ and pushed to a local origin's main. Resume checks the
+// stored declaration against that checkout's origin/main exactly as it does on HomePc (AW-005), so the paused work resumes.
+// The full store has a coordinator that reports to a made-up issue, so Messages shows each receipt; nothing runs it, so
+// a message sent during the review stays received.
 //
 // Times are fixed when the fixture is built. "A few minutes late" turns into "stopped" and "waiting to be picked up"
 // turns into "not started" after 5 minutes, as they would live; restart the command to see them again. The serving
 // process keeps the heartbeat of the two working agents current, so "working normally" holds for the whole review.
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Store } from '../../../src/supervisor/store.mjs';
 import { campaignStart, campaignPause } from '../../../src/supervisor/api.mjs';
+import { runNotCounted } from '../../../src/supervisor/adapters/executors.mjs';
+import { postOwnerMessage, LANE } from '../../../src/supervisor/coordinator.mjs';
+import { planRequestText } from '../../../src/dashboard/supervisor.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('../../..', import.meta.url)));
 export const GOVERNANCE = join(ROOT, 'tests', 'fixtures', 'governance');
@@ -33,6 +42,12 @@ export const REVIEW_GOVERNANCE = fileURLToPath(new URL('review-governance', impo
 export const REVIEW_PORT = 4319;
 export const LIVE_PORT = 4318;
 export const PROJECTS = ['example/shop-app', 'example/recipes', 'example/notes-site'];
+/** Where the fixture's supervisor faults are tracked: a made-up issue, never AIWorks' own. */
+const REVIEW_SUPERVISOR_ISSUE = 'https://github.com/example/aiworks/issues/2';
+/** What the full store's coordinator posts to: made up, and nothing reads or posts it (no supervisor runs). */
+const COORDINATOR = { repositories: PROJECTS, reportTo: 'example/recipes#1' };
+/** The code the runtime checkout copies: what the dashboard and the supervisor modules it imports read. */
+const RUNTIME_PARTS = ['package.json', 'registry', 'schemas', 'scripts', 'src'];
 
 const M = 60_000, H = 60 * M;
 /** A lease that outlives any review, so "running" holds without a live supervisor. */
@@ -119,7 +134,7 @@ const SINGLE = { ...CLAUDE, implementerTimeoutMinutes: 60, verifierTimeoutMinute
 
 function declaration(campaignId, repository, purpose, trackingIssue, tasks, executor = SINGLE) {
   return { version: 1, campaignId, purpose,
-    authorization: { version: 1, grantedBy: 'owner', grantedAt: '2026-10-12', reference: 'https://github.com/netbka/aiworks/issues/11', text: 'Synthetic review fixture; nothing runs.' },
+    authorization: { version: 1, grantedBy: 'owner', grantedAt: '2026-10-12', reference: 'https://github.com/example/aiworks/issues/11', text: 'Synthetic review fixture; nothing runs.' },
     target: { tenantId: 'example', projectId: repository.split('/')[1], environment: 'research', repository, baseBranch: 'main', trackingIssue },
     limits: { slots: 1 }, executor, constraints: ['Synthetic review fixture: no network, no production.'], tasks };
 }
@@ -136,7 +151,8 @@ function fill(store, dataDir, root, now) {
   };
   const sha = (repo, branch) => repos[repo].shas[branch];
   const pull = (repo, n) => `https://github.com/${repo}/pull/${n}`;
-  const start = (d, at) => { campaignStart(store, d, at); return d.campaignId; };
+  const declarations = [];
+  const start = (d, at) => { campaignStart(store, d, at); declarations.push(d); return d.campaignId; };
   const lease = (id, expiresAt) => store.insert('leases', { campaign_id: id, instance_id: 'review-fixture', generation: 1,
     code_revision: 'review0fixture', acquired_at: Math.min(expiresAt, now) - H, expires_at: expiresAt });
   const live = (id) => lease(id, now + LEASE_MS);
@@ -149,17 +165,28 @@ function fill(store, dataDir, root, now) {
     store.insert('operations', { id: opId, campaign_id: id, task_id: taskId, kind, seq, idempotency_key: opId, lease_generation: 1, state,
       session_id: `00000000-0000-4000-8000-${String(seq).padStart(12, '0')}`, run_dir: runDir, workspace: join(root, 'worktrees', opId),
       packet: { synthetic: true }, packet_digest: '0'.repeat(64), outcome, created_at: at, updated_at: state === 'finished' ? at + 10 * M : at, executor_kind: executor });
-    return runDir;
+    return { runDir, workspace: join(root, 'worktrees', opId), sessionId: `00000000-0000-4000-8000-${String(seq).padStart(12, '0')}` };
+  };
+  // Claude's session transcript, where the dashboard reads a Claude worker's turns and tool calls (under the fixture's
+  // own Claude directory, never this computer's): a turn with a tool call, then one without. The last turn's time is the
+  // worker's last activity.
+  const transcript = ({ workspace, sessionId }, from, to) => {
+    const dir = join(root, 'claude', 'projects', String(workspace).replace(/[^A-Za-z0-9]/g, '-'));
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${sessionId}.jsonl`), [
+      { type: 'assistant', timestamp: new Date(from).toISOString(), message: { content: [{ type: 'text', text: 'Synthetic turn.' }, { type: 'tool_use', name: 'Read' }] } },
+      { type: 'assistant', timestamp: new Date(to).toISOString(), message: { content: [{ type: 'text', text: 'Synthetic turn.' }] } },
+    ].map((line) => JSON.stringify(line)).join('\n') + '\n');
   };
   // Codex's streamed record: turns and actions the dashboard counts; its time is the file's.
-  const streamed = (runDir, at) => {
+  const streamed = ({ runDir }, at) => {
     const path = join(runDir, 'stdout.json');
     writeFileSync(path, [{ type: 'item.completed', item: { type: 'agent_message' } }, { type: 'item.completed', item: { type: 'command_execution' } },
       { type: 'item.completed', item: { type: 'agent_message' } }].map((line) => JSON.stringify(line)).join('\n') + '\n');
     utimesSync(path, new Date(at), new Date(at));
   };
   const working = [];
-  const beat = (runDir, at = now) => { writeFileSync(join(runDir, 'heartbeat'), String(at)); working.push(runDir); };
+  const beat = ({ runDir }, at = now) => { writeFileSync(join(runDir, 'heartbeat'), String(at)); working.push(runDir); };
   const finished = (result, costUsd) => ({ class: 'result', value: result, ...(costUsd ? { receipt: { costUsd } } : {}) });
 
   // example/shop-app: running work, a finished campaign with merged, open and closed results, and a merge wait.
@@ -167,23 +194,27 @@ function fill(store, dataDir, root, now) {
   let id = start(declaration('shop-checkout', shop, 'Let customers pay at checkout', 10, [task('T1', 11, 'checkout form', 'Checkout form'),
     task('T2', 12, 'order email', 'Order confirmation email', { dependsOn: ['T1'] })], CHAIN), now - 3 * H);
   live(id);
-  let run = operation(id, 'T1', 'implement', { executor: 'codex-cli', at: now - 20 * M });
-  streamed(run, now - 2 * M); beat(run);
-  setTask(id, 'T1', { state: 'pending', attempts: 1 });
+  // Running steps are in the state the supervisor gives them while a worker runs (implementing, verifying), and the
+  // builder is Claude: Settings shows it can build code on this computer, whatever the platform.
+  let run = operation(id, 'T1', 'implement', { at: now - 20 * M });
+  transcript(run, now - 20 * M, now - 2 * M); beat(run);
+  setTask(id, 'T1', { state: 'implementing', attempts: 1 });
 
   id = start(declaration('shop-reviews', shop, 'Show product reviews', 20, [task('T1', 21, 'review list', 'Product review list')]), now - 4 * H);
   live(id);
   operation(id, 'T1', 'implement', { state: 'finished', at: now - 2 * H, outcome: finished({ result: 'implemented' }, 1.1) });
-  setTask(id, 'T1', { state: 'implemented', attempts: 1, head_sha: 'c'.repeat(40) });
   beat(operation(id, 'T1', 'verify', { at: now - 6 * M }));
+  setTask(id, 'T1', { state: 'verifying', attempts: 1, head_sha: 'c'.repeat(40) });
 
   id = start(declaration('shop-wishlist', shop, 'Let customers save a wishlist', 30, [task('T1', 31, 'wishlist', 'Wishlist page')], CHAIN), now - 2 * H);
   live(id);
-  run = operation(id, 'T1', 'implement', { executor: 'codex-cli', at: now - 70 * M });
+  // Claude built it; Codex checks it, which Settings says Codex can do here ("can check and report here").
+  operation(id, 'T1', 'implement', { state: 'finished', at: now - 2 * H, outcome: finished({ result: 'implemented' }, 0.7) });
+  run = operation(id, 'T1', 'verify', { executor: 'codex-cli', at: now - 70 * M });
   // The worker process is alive, but its own record has not moved for 25 minutes.
-  writeFileSync(join(run, 'heartbeat'), String(now));
+  writeFileSync(join(run.runDir, 'heartbeat'), String(now));
   streamed(run, now - 25 * M);
-  setTask(id, 'T1', { state: 'pending', attempts: 1 });
+  setTask(id, 'T1', { state: 'verifying', attempts: 1, head_sha: 'd'.repeat(40) });
 
   id = start(declaration('shop-search', shop, 'Help customers find products', 40, [task('T1', 41, 'search page', 'Search page'),
     task('T2', 42, 'search filters', 'Search filters'), task('T3', 43, 'sale banner', 'Sale banner')]), now - 30 * H);
@@ -194,7 +225,7 @@ function fill(store, dataDir, root, now) {
     setTask(id, taskId, { state: 'done', attempts: 1, head_sha: sha(shop, branch), verified_sha: sha(shop, branch), pr_url: pull(shop, n) });
     store.journal(id, 'published', { task: taskId, url: pull(shop, n) }, now - 26 * H);
   }
-  setCampaign(id, { control: 'finished', status: 'ready', cost_usd: 4.2, runs_used: 6,
+  setCampaign(id, { control: 'finished', status: 'ready',
     next_action: 'Release gate: review campaign deliveries under example/shop-app\'s own merge and release policy.' });
   lease(id, now - 26 * H);
 
@@ -236,7 +267,7 @@ function fill(store, dataDir, root, now) {
     setTask(id, taskId, { state: 'done', attempts: 1, head_sha: sha(recipes, branch), verified_sha: sha(recipes, branch), pr_url: pull(recipes, n) });
     store.journal(id, 'published', { task: taskId, url: pull(recipes, n) }, now - 27 * H);
   }
-  setCampaign(id, { control: 'finished', status: 'ready', cost_usd: 3.4, runs_used: 4,
+  setCampaign(id, { control: 'finished', status: 'ready',
     next_action: 'Release gate: review campaign deliveries under example/recipes\'s own merge and release policy.' });
   lease(id, now - 27 * H);
 
@@ -290,34 +321,95 @@ function fill(store, dataDir, root, now) {
   setCampaign(id, { control: 'finished', status: 'ready' });
   lease(id, now - 14 * H);
 
-  return { repositories: Object.fromEntries(Object.entries(repos).map(([name, repo]) => [name, { path: repo.path }])),
+  // The campaign counters follow the runs, as the supervisor keeps them: every recorded run counts unless it was refunded,
+  // and every cost a run reported adds to the total. So a project's total is the sum of what its runs reported.
+  for (const { id: campaignId } of store.all('SELECT id FROM campaigns')) {
+    const outcomes = store.all('SELECT outcome FROM operations WHERE campaign_id = ?', campaignId).map((op) => op.outcome);
+    setCampaign(campaignId, { runs_used: outcomes.filter((outcome) => !runNotCounted(outcome)).length,
+      cost_usd: Math.round(outcomes.reduce((sum, outcome) => sum + (outcome?.receipt?.costUsd > 0 ? outcome.receipt.costUsd : 0), 0) * 10000) / 10000 });
+  }
+
+  // Settings › Messages: Plan only requests with each receipt of OWNER_WORKSPACE §5.4 (answered, read, received), written as the
+  // dashboard and the coordinator write them. The answer links a made-up comment.
+  const message = (project, goal, at) => postOwnerMessage(store, { text: planRequestText({ project, goal, from: 'description' }),
+    requestId: `00000000-0000-4000-9000-${String(++seq).padStart(12, '0')}`, source: 'owner (Start work: Plan only)' }, at).id;
+  const coordinatorRun = (state, at, messageIds) => {
+    const runId = `coordinator-review-${++seq}`, runDir = join(dataDir, 'runs', runId);
+    mkdirSync(runDir, { recursive: true });
+    const recorded = { runId, workspace: join(root, 'worktrees', runId), sessionId: `00000000-0000-4000-a000-${String(seq).padStart(12, '0')}` };
+    store.insert('coordinator_runs', { id: runId, state, session_id: recorded.sessionId, run_dir: runDir, workspace: recorded.workspace,
+      message_ids: messageIds, outcome: null, cost_usd: null, created_at: at, updated_at: at });
+    for (const messageId of messageIds) {
+      store.run("UPDATE owner_messages SET state = 'read', run_id = ?, read_at = ?, attempts = attempts + 1, updated_at = ? WHERE id = ?", runId, at, at, messageId);
+    }
+    return recorded;
+  };
+  const answered = message('example/recipes', 'Users can print a shopping list from a recipe.', now - 3 * H);
+  const reply = coordinatorRun('answered', now - 3 * H + M, [answered]), key = `${LANE}:${reply.runId}:reply`;
+  store.run("INSERT INTO outbox (key, campaign_id, target, body, state, attempts, posted, updated_at) VALUES (?, ?, ?, ?, 'posted', 1, ?, ?)",
+    key, LANE, COORDINATOR.reportTo, 'Synthetic plan reply.', 'https://github.com/example/recipes/issues/1#issuecomment-1001', now - 3 * H + 20 * M);
+  store.run("UPDATE owner_messages SET state = 'answered', answered_at = ?, response_key = ?, updated_at = ? WHERE id = ?", now - 3 * H + 20 * M, key, now - 3 * H + 20 * M, answered);
+  const reading = coordinatorRun('dispatched', now - 11 * M, [message('example/shop-app', 'Customers can pay with a gift card.', now - 12 * M)]);
+  transcript(reading, now - 11 * M, now - M);
+  message('example/notes-site', 'Notes can be exported as a PDF.', now - 2 * M);
+
+  return { declarations, repositories: Object.fromEntries(Object.entries(repos).map(([name, repo]) => [name, { path: repo.path }])),
     commits: Object.fromEntries(Object.entries(repos).map(([name, repo]) => [name, repo.shas])), heartbeats: working };
 }
 
 /**
+ * A disposable runtime checkout, like HomePc's `.local/runtime`: this repository's code (RUNTIME_PARTS) and the
+ * synthetic declarations in campaigns/, committed and pushed to a local bare origin, so its origin/main holds them.
+ * Its node_modules is a link to this repository's, so nothing is installed. The review dashboard runs from here, so
+ * Resume's AW-005 check reads this checkout, never this repository.
+ */
+function runtimeCheckout(root, declarations) {
+  const path = join(root, 'runtime'), origin = join(root, 'git', 'aiworks.git');
+  mkdirSync(origin, { recursive: true });
+  git(origin, 'init', '-q', '--bare', '-b', 'main');
+  mkdirSync(join(path, 'campaigns'), { recursive: true });
+  git(path, 'init', '-q', '-b', 'main');
+  for (const part of RUNTIME_PARTS) cpSync(join(ROOT, part), join(path, part), { recursive: true });
+  for (const d of declarations) writeFileSync(join(path, 'campaigns', `${d.campaignId}.json`), `${JSON.stringify(d, null, 2)}\n`);
+  writeFileSync(join(path, '.gitignore'), '/node_modules\n');
+  git(path, 'add', '-A');
+  git(path, 'commit', '-q', '-m', 'Review fixture runtime: AIWorks code and the synthetic declarations');
+  git(path, 'remote', 'add', 'origin', origin);
+  git(path, 'push', '-q', 'origin', 'main');
+  git(path, 'fetch', '-q', 'origin');
+  // A junction needs no privilege on Windows. Deleting the fixture removes the link, never what it points at.
+  symlinkSync(join(ROOT, 'node_modules'), join(path, 'node_modules'), 'junction');
+  return path;
+}
+
+/**
  * Builds a review fixture under `root` (a new or empty directory) and returns its paths. `store`: 'full' (every
- * state), 'empty' (first run, no projects) or 'unreadable'. Writes `<root>/data/supervisor.db` and
- * `<root>/data/config.json` with only `repositories` (no commands, no credentials, no `gh`), and `<root>/governance`: a
- * copy of GOVERNANCE whose roadmap documents and project registry are REVIEW_GOVERNANCE's. GOVERNANCE is not changed.
+ * state), 'empty' (first run, no projects) or 'unreadable'. Writes `<root>/data/supervisor.db`, and
+ * `<root>/data/config.json` with `repositories`, a made-up `supervisorIssue` and, for the full store, a `coordinator`
+ * that reports to a made-up issue (no commands, no credentials, no `gh`). Writes `<root>/governance`: a copy of
+ * GOVERNANCE whose roadmap documents and project registry are REVIEW_GOVERNANCE's (GOVERNANCE is not changed);
+ * `<root>/claude`, the Claude transcripts of the working agents; and `<root>/runtime` (runtimeCheckout).
  */
 export function buildReviewFixture(root, { now = Date.now(), store: kind = 'full' } = {}) {
   if (!['full', 'empty', 'unreadable'].includes(kind)) throw new Error('store must be full, empty or unreadable');
   if (existsSync(root) && readdirSync(root).length) throw new Error('the review fixture needs a new or empty directory');
   const dataDir = join(root, 'data');
   mkdirSync(dataDir, { recursive: true });
-  let built = { repositories: {}, commits: {}, heartbeats: [] };
+  let built = { declarations: [], repositories: {}, commits: {}, heartbeats: [] };
   if (kind === 'unreadable') writeFileSync(join(dataDir, 'supervisor.db'), 'not a supervisor store\n');
   else {
     const store = new Store(join(dataDir, 'supervisor.db'));
     try { if (kind === 'full') built = fill(store, dataDir, root, now); }
     finally { store.close(); }
   }
-  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ repositories: built.repositories }, null, 2));
+  const { declarations, ...paths } = built;
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ repositories: paths.repositories,
+    ...(kind === 'full' ? { coordinator: COORDINATOR } : {}), supervisorIssue: REVIEW_SUPERVISOR_ISSUE }, null, 2));
   const governance = join(root, 'governance');
   cpSync(GOVERNANCE, governance, { recursive: true });
   rmSync(join(governance, 'registry', 'projects'), { recursive: true });
   cpSync(REVIEW_GOVERNANCE, governance, { recursive: true });
-  return { root, dataDir, governance, now, ...built };
+  return { root, dataDir, governance, claudeConfigDir: join(root, 'claude'), runtime: runtimeCheckout(root, declarations), now, ...paths };
 }
 
 /** Command-line entry: build a fixture, then run the unchanged dashboard against it in this process. */
@@ -338,9 +430,11 @@ async function serve(args) {
   // Keep the working agents' heartbeats current for the whole review; the timer never keeps the process alive.
   setInterval(() => { for (const dir of fixture.heartbeats) writeFileSync(join(dir, 'heartbeat'), String(Date.now())); }, 30_000).unref();
   console.log(`Review fixture (${options['--store']}): ${fixture.dataDir}`);
-  process.argv = [process.argv[0], join(ROOT, 'src', 'dashboard', 'main.mjs'),
-    '--data', fixture.dataDir, '--port', String(port), '--governance', fixture.governance];
-  await import(pathToFileURL(join(ROOT, 'src', 'dashboard', 'main.mjs')).href);
+  // The working agents' transcripts are the fixture's, never this computer's own Claude directory.
+  process.env.CLAUDE_CONFIG_DIR = fixture.claudeConfigDir;
+  const main = join(fixture.runtime, 'src', 'dashboard', 'main.mjs');
+  process.argv = [process.argv[0], main, '--data', fixture.dataDir, '--port', String(port), '--governance', fixture.governance];
+  await import(pathToFileURL(main).href);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

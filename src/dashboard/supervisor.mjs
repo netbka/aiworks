@@ -226,7 +226,10 @@ export function releaseModes(repositories) {
 /** Settings (slice S8): configured command names, the AI workers once for this computer, and release mode per project. */
 export function computerSettings(campaigns, config, { platform = process.platform, now = Date.now(), repositories = [] } = {}) {
   return { commands: configuredCommandNames(config), workers: aiWorkers(campaigns, config, { platform, now }),
-    releases: releaseModes([...repositories, ...campaigns.map((c) => c.repository)]) };
+    releases: releaseModes([...repositories, ...campaigns.map((c) => c.repository)]),
+    // Where supervisor faults are tracked: config.json "supervisorIssue" (a GitHub issue link) when set, so a disposable
+    // review copy can name a made-up one; otherwise null, and the owner view links AIWorks' own (owner.mjs SUPERVISOR_ISSUE).
+    supervisorIssue: /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+$/.test(config?.supervisorIssue ?? '') ? config.supervisorIssue : null };
 }
 
 // The controller's own next action for a finished campaign is one of two fixed sentences naming the repository; it
