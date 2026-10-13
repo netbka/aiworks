@@ -1,0 +1,25 @@
+{
+  "governanceRoot": "C:/Work/aiworks/.local/governance",
+  "repositories": {
+    "example/project": {
+      "path": "C:/Work/project",
+      "worktreeRoot": "C:/Work/aiworks/.local/worktrees/project"
+    }
+  },
+  "commands": {
+    "claude": ["C:/Tools/Claude/claude.exe"],
+    "git": ["C:/Program Files/Git/cmd/git.exe"],
+    "gh": ["C:/Program Files/GitHub CLI/gh.exe"]
+  },
+  "coordinator": {
+    "enabled": false,
+    "repositories": ["example/project"],
+    "reportTo": "example/project#1",
+    "model": "opus",
+    "permissionMode": "dontAsk",
+    "timeoutMinutes": 30,
+    "sourceRepo": "C:/Work/aiworks",
+    "runtimeRoot": "C:/Work/aiworks/.local/runtime",
+    "worktreeRoot": "C:/Work/aiworks/.local/worktrees/aiworks"
+  }
+}

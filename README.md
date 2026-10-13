@@ -1,136 +1,104 @@
 # AIWorks
 
-AIWorks is the owner's AI delivery machine. It runs on the owner's PC and keeps registered work moving without the owner prompting each agent.
+Keep assigned AI work moving, and check what it actually delivered.
 
-- A **supervisor** runs the campaigns the owner registered. It gives each task to a headless AI worker: Claude, Codex or Cursor, or AGY for checks in a real browser. A separate fresh session checks the result. Then the supervisor opens a pull request or posts a report.
-- It **waits out** provider limits and restarts on its own. It stops for the owner only when a real decision is needed.
-- A read-only **coordinator** answers the owner's messages and plans work.
-- A local **dashboard** at `http://127.0.0.1:4318` shows what needs the owner first, then progress in plain words.
+AIWorks runs on your Windows PC around coding tools such as Claude Code and Codex. A persistent supervisor dispatches approved work, gives the result to a separate verification session, handles recoverable waits and records the outcome. A local dashboard shows progress and what needs your attention.
 
-AIWorks never merges, deploys or changes provider resources. Merge and release stay with each project.
+**Current stage: internal preview; preparing for a public release.** The running product serves the owner's projects. A real installation still needs approved Engineering Platform governance and project registration. Public self-service setup, licensing and external-contribution safeguards must be completed before a public release. This documentation does not change repository visibility or grant an open-source license. See the [release checklist](docs/publication/RELEASE_CHECKLIST.md).
 
-**Who it is for.** The owner only.
+## Install and use
 
-**Where it stands.** See [docs/STATUS.md](docs/STATUS.md).
+| I want to... | Start here |
+| --- | --- |
+| Understand the workflow and choose a setup path | [User documentation](docs/guides/README.md) |
+| Look around without AI accounts or real projects | [Local demo](docs/guides/INSTALLATION.md#try-the-demo-without-worker-credentials) |
+| Install a real local supervisor | [Windows installation](docs/guides/INSTALLATION.md#install-for-real-project-work) |
+| Start work myself with a command | [First project and CLI walkthrough](docs/guides/FIRST_PROJECT.md) |
+| Ask an AI assistant to start project work | [AI-assisted startup and copyable prompts](docs/guides/AI_ASSISTED_START.md) |
+| Understand settings, providers and credentials | [Configuration](docs/guides/CONFIGURATION.md) |
+| Diagnose a wait or failed start | [Troubleshooting](docs/guides/TROUBLESHOOTING.md) |
+| Suggest or contribute a change | [Contributing](CONTRIBUTING.md) |
+| Report a security problem privately | [Security](SECURITY.md) |
+
+### Three commands with different jobs
+
+Run these from an installed runtime checkout, with its actual data directory. Replace the example names; do not run another owner's campaign.
+
+```powershell
+# Keep the controller running in this terminal. This does not assign a task.
+node src/supervisor/cli.mjs serve --data C:/Work/aiworks/.local/supervisor
+```
+
+In another terminal, in the same runtime checkout:
+
+```powershell
+# Ask the configured read-only coordinator to plan. This does not start implementation.
+node src/supervisor/cli.mjs message "Plan work for my configured project; do not implement yet." --data C:/Work/aiworks/.local/supervisor
+
+# Register or resume an owner-approved declaration already committed in this runtime's campaigns/.
+node src/supervisor/cli.mjs start campaigns/my-approved-work.json --data C:/Work/aiworks/.local/supervisor
+node src/supervisor/cli.mjs status my-approved-work --data C:/Work/aiworks/.local/supervisor
+```
+
+`message` needs an enabled coordinator. `start` needs an approved declaration, a registered target and a runtime revision merged to `origin/main`. A message receipt or successful registration is not proof a worker is active. The guides explain the prerequisites and the expected evidence.
+
+### What a run does
+
+An owner authorizes a bounded work program, called a **campaign**. A **worker** implements a task or produces a report. A different, fresh session **verifies** the result. Rejected results return for repair within the campaign's authority. The supervisor publishes a verified code change as a pull request, or a verified report as an issue comment.
+
+The current supervisor does not merge or deploy. Auto Release is a separately governed workstream, not an installation default. A published PR, a merged change and a checked live result are different states. Provider/model availability depends on the installed adapter, role, operating system and account; listing a provider is not proof that it can run here.
 
 ## Start here
 
-This is the single reading list; [AGENTS.md](AGENTS.md) points to it.
+This is the engineering reading list; [AGENTS.md](AGENTS.md) points to it. The user guides above explain operation; they do not replace these authorities.
 
-1. [Product Constitution](docs/PRODUCT_CONSTITUTION.md) - what AIWorks is, for whom, and how success is measured
-2. [Status](docs/STATUS.md) - where things stand and what needs the owner
-3. [Agent rules](AGENTS.md) - what agents may and may not do here
-4. [Decisions](docs/DECISIONS.md) - accepted decisions AW-001 to AW-007
-5. [Delivery Supervisor](docs/SUPERVISOR.md) - the runbook: boundary, lifecycle, failures, commands, HomePc layout, upgrades
-6. [Operations Dashboard](docs/OPERATIONS_DASHBOARD.md) - what the owner sees and the local access boundary
-7. [Worker Context Lifecycle](docs/WORKER_CONTEXT_LIFECYCLE.md) - task packets, leases and fresh sessions
+1. [Product Constitution](docs/PRODUCT_CONSTITUTION.md) - purpose, current audience and success metrics
+2. [Status](docs/STATUS.md) - recorded progress; GitHub issues and PRs hold live work state
+3. [Agent rules](AGENTS.md) - how changes to this repository are made
+4. [Decisions](docs/DECISIONS.md) - accepted product and execution decisions
+5. [Delivery Supervisor](docs/SUPERVISOR.md) - lifecycle, failures, commands, deployment layout and upgrades
+6. [Operations Dashboard](docs/OPERATIONS_DASHBOARD.md) - the local owner interface
+7. [Worker Context Lifecycle](docs/WORKER_CONTEXT_LIFECYCLE.md) - bounded packets, leases and fresh sessions
 8. [Glossary](docs/GLOSSARY.md) - terms and IDs
+9. [Workspace implementation plan](docs/PROJECT_WORKSPACE_PLAN.md) - staged project connection, intake, scheduling, routing, UI and release work
 
-Portfolio rules that AIWorks follows live in [Engineering Platform](https://github.com/netbka/engineering-platform):
-
-- [Constitution](https://github.com/netbka/engineering-platform/blob/main/docs/CONSTITUTION.md)
-- [Agent Operating Model](https://github.com/netbka/engineering-platform/blob/main/docs/AGENT_OPERATING_MODEL.md)
-- [Continuation](https://github.com/netbka/engineering-platform/blob/main/docs/CONTINUATION.md)
-- [Owner Intervention](https://github.com/netbka/engineering-platform/blob/main/docs/OWNER_INTERVENTION.md)
+Portfolio rules come from [Engineering Platform](https://github.com/netbka/engineering-platform): its [Constitution](https://github.com/netbka/engineering-platform/blob/main/docs/CONSTITUTION.md), [Agent Operating Model](https://github.com/netbka/engineering-platform/blob/main/docs/AGENT_OPERATING_MODEL.md), [Continuation](https://github.com/netbka/engineering-platform/blob/main/docs/CONTINUATION.md) and [Owner Intervention](https://github.com/netbka/engineering-platform/blob/main/docs/OWNER_INTERVENTION.md). AIWorks reads an approved governance checkout; it does not write that checkout or replace its policies with test fixtures.
 
 ## Layout
 
-| Path | What it holds |
-| --- | --- |
-| `src/supervisor/` | The supervisor: CLI, controller, SQLite store, runner, Windows process containment, coordinator, owner-intervention core, browser wrapper |
-| `src/supervisor/adapters/` | Executors for the worker CLIs, plus Git and GitHub adapters |
-| `src/dashboard/` | The operations dashboard: server, owner view and page |
-| `src/shared/` | Shared helpers |
-| `campaigns/` | Campaign declarations, one JSON file per campaign |
-| `scripts/lib/worker-context.mjs` | Worker-context helpers: packet validation, context planning, lease checks |
-| `registry/worker-context-policy.json` | Worker-context policy defaults |
-| `schemas/` | Schemas for the worker-context policy and the worker task packet |
-| `scripts/check-campaigns.mjs` | Parses every campaign declaration |
-| `scripts/supervisor/install-windows-task.ps1` | Registers the supervisor as a Windows task: at logon, and every 5 minutes if it stopped |
-| `scripts/supervisor/install-dashboard-task.ps1` | Registers the dashboard as a Windows task: at logon, and every 5 minutes if it stopped |
-| `scripts/supervisor/deploy.ps1` | Deploys a reviewed commit to `.local/runtime` and refreshes the governance checkout |
-| `tests/` | Supervisor, dashboard and worker-context tests; `tests/fixtures/governance/` is a small governance checkout for tests |
-
-## Run it
-
-Requirements: Windows, Node 22.5 or newer, an authenticated `gh` CLI, and the worker CLIs installed and logged in.
-
-```sh
-npm install
-```
-
-### Configure
-
-The supervisor's data directory holds `config.json`. Its shape, with example paths:
-
-```json
-{
-  "governanceRoot": "D:/Git/aiworks/.local/governance",
-  "repositories": {
-    "netbka/Dyk": { "path": "D:/Git/Dyk", "worktreeRoot": "D:/Git/aiworks/.local/worktrees/Dyk" }
-  },
-  "commands": {
-    "claude": ["C:/path/to/claude.exe"],
-    "codex": ["C:/path/to/codex.exe"],
-    "gh": ["C:/path/to/gh.exe"]
-  },
-  "coordinator": {
-    "repositories": ["netbka/aiworks", "netbka/engineering-platform", "netbka/Dyk"],
-    "reportTo": "netbka/aiworks#3",
-    "model": "opus", "timeoutMinutes": 60
-  }
-}
-```
-
-- `governanceRoot` is the governance checkout: a plain clone of `netbka/engineering-platform` main. AIWorks reads the project registry, policies and schemas from it and never writes to it. Without it, anything that needs it fails closed ([SUPERVISOR.md §6](docs/SUPERVISOR.md#governance-checkout)).
-- `repositories` maps each target repository to its local checkout and a worktree root.
-- `commands` gives each tool as an absolute native executable in an array. `cursor`, `agy` and `chrome` are optional ([SUPERVISOR.md §8 and §11](docs/SUPERVISOR.md#8-ordered-cli-execution)).
-- `coordinator` is optional; without it, owner messages are stored but not read ([SUPERVISOR.md §9](docs/SUPERVISOR.md#9-owner-messages-and-the-coordinator)).
-- `ownerIntervention` is optional and off by default ([SUPERVISOR.md §10](docs/SUPERVISOR.md#10-owner-intervention-core)).
-
-No credentials go into `config.json`.
-
-### Supervisor
-
-```sh
-node src/supervisor/cli.mjs serve --data <dir>     # the controller loop
-node src/supervisor/cli.mjs keep --data <dir>      # runs serve and restarts it after any exit
-node src/supervisor/cli.mjs start campaigns/<campaign>.json --data <dir>
-node src/supervisor/cli.mjs status <campaign> --data <dir>
-```
-
-`AIWORKS_DATA` may stand in for `--data`. `start` also accepts `--governance <path>`. Other commands (`pause`, `cancel`, `recheck`, `stop`, `message`, `messages`, `coordinator-clear`) are in [SUPERVISOR.md §5](docs/SUPERVISOR.md#5-commands).
-
-### Dashboard
-
-```sh
-npm run dashboard -- --data <dir> --governance <path>
-```
-
-Open `http://127.0.0.1:4318`. `--governance` defaults to `governanceRoot` in `config.json`. The dashboard binds to `127.0.0.1` only ([AW-003](docs/DECISIONS.md#aw-003---the-operations-dashboard-is-local-only)).
-
-### Windows tasks
-
-```powershell
-powershell -NoProfile -File scripts\supervisor\install-windows-task.ps1 -Checkout D:\Git\aiworks\.local\runtime -DataDir D:\Git\aiworks\.local\supervisor
-```
-
-This registers the per-user logon task `AIWorks Supervisor`, which runs `keep` hidden. The dashboard runs as a separate task, `AIWorks Dashboard`, registered by `scripts/supervisor/install-dashboard-task.ps1` with the same arguments.
-
-If either stops, it comes back within 5 minutes: both tasks also start every 5 minutes, and do nothing while they already run. `cli.mjs stop` keeps the supervisor stopped until its STOP file is removed. `keep` writes why it ended to `supervisor.log`. When every controller lease has expired, `status` and the dashboard lead with "supervisor stopped" and the time of the last lease renewal. Details: [SUPERVISOR.md §6](docs/SUPERVISOR.md#6-running-on-homepc).
-
-## HomePc layout
-
 | Path | Purpose |
 | --- | --- |
-| `D:/Git/aiworks` | Development checkout |
-| `D:/Git/aiworks/.local/runtime` | Detached checkout of the reviewed commit that the supervisor and dashboard run from |
-| `D:/Git/aiworks/.local/supervisor` | Data directory: `config.json`, the SQLite store, journal, log and run artifacts |
-| `D:/Git/aiworks/.local/worktrees/<repo>` | Worktrees the supervisor creates for workers and verifiers, and the coordinator's checkout |
-| `D:/Git/aiworks/.local/governance` | Governance checkout of `netbka/engineering-platform` main, read-only to AIWorks |
+| `src/supervisor/` | CLI, controller, SQLite state, coordinator, workers and verification |
+| `src/supervisor/adapters/` | Worker CLI, Git and GitHub adapters |
+| `src/dashboard/` | Local dashboard server and interface |
+| `src/shared/` | Shared helpers |
+| `campaigns/` | Actual owner-authorized work declarations; not a starter library |
+| `docs/guides/` | Installation, configuration, manual/AI startup and troubleshooting |
+| `docs/guides/examples/` | Inert example JSON; not executable campaign registrations |
+| `docs/publication/` | Public-release checklist and deferred showcase instructions |
+| `scripts/lib/worker-context.mjs` | Packet validation, context and lease helpers |
+| `registry/` and `schemas/` | AIWorks runtime contracts |
+| `scripts/supervisor/` | Windows task installers and reviewed runtime upgrade script |
+| `tests/` | Disposable tests and a synthetic dashboard fixture |
 
-`.local/` is ignored by Git. The live runtime changes only through the [upgrade procedure](docs/SUPERVISOR.md#upgrade).
+Local source, runtime, state and worktrees must remain separate. On the owner's existing HomePc setup, these are `D:/Git/aiworks`, `.local/runtime`, `.local/supervisor`, `.local/worktrees` and `.local/governance`. New installations may use different absolute paths. Do not create a second store or overwrite existing scheduled tasks by following an example literally.
 
 ## Validation
 
-After changing code, schemas, campaign declarations, fixtures or documentation, run `npm install` once and then `npm run check`.
+Install dependencies once (`npm install`, or `npm ci` for the committed lockfile), then run:
+
+```powershell
+npm run check
+```
+
+The new guide examples also have a focused check:
+
+```powershell
+node --test tests/docs/getting-started.test.mjs
+```
+
+Tests and the synthetic demo do not prove that a real worker, a provider account or a production deployment works. Use the evidence levels in [AGENTS.md](AGENTS.md).
+
+## Public showcase
+
+The layout and dashboard are still being finished. The owner asked to prepare the documentation now and build the showcase page afterwards. [Issue #99](https://github.com/netbka/aiworks/issues/99) records that dependency. No final promotional screenshots, site implementation or GitHub Pages deployment are part of this documentation change.
