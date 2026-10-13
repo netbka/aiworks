@@ -2,7 +2,7 @@
 // with the merge state the dashboard reads from local git (merges.mjs); it never calls GitHub. Unknown or stale merge
 // state never reads as merged; every sentence is built from supervisor or local git fields, never from worker output.
 
-import { NEEDS, RESTART_ADVICE, blockerWords, stateCopy } from './copy.mjs';
+import { DELEGATED, NEEDS, RESTART_ADVICE, blockerWords, stateCopy } from './copy.mjs';
 
 const PR_URL = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)$/;
 const COMMENT_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+#issuecomment-\d+$/;
@@ -62,8 +62,10 @@ const NOTES = { published: 'Your review and merge', 'report-posted': 'For you to
  * result link was recorded. Merged only when a current check found the verified commit on the base branch. A published
  * step carries why its merge is not seen: `pending` when a check that can still come shortly is running or due.
  * `asOf` is the time of a merge check that is not current, or that is current but whose last fetch failed.
+ * With merging delegated by the owner (`delegation`, config.json `merges`, #17), a verified pull request whose merge is
+ * not seen and is not being checked is `delegated`: merged for the owner after CI, or `held` with its reason key.
  */
-export function delivery(task, merges = NO_MERGES, now = Date.now(), campaignId = null) {
+export function delivery(task, merges = NO_MERGES, now = Date.now(), campaignId = null, delegation = null) {
   if (task.state !== 'done') return null;
   const url = task.resultUrl ?? '';
   if (COMMENT_URL.test(url)) return { state: 'report-posted', url, note: NOTES['report-posted'] };
@@ -78,6 +80,10 @@ export function delivery(task, merges = NO_MERGES, now = Date.now(), campaignId 
   if (result === true && check.fresh) return { state: 'merged', ...base, note: null, mergedAt: step.mergedAt ?? null };
   const reason = !task.verifiedSha ? 'no-verified-sha' : check.reason === 'no-checkout' ? 'no-checkout'
     : check.reason === 'fetch-failed' && !check.fresh ? 'fetch-failed' : !check.fresh || result === null ? 'checking' : null;
+  if (delegation && task.verifiedSha && reason !== 'checking') {
+    const held = delegation.held?.[url.toLowerCase()] ?? null;
+    return { state: 'delegated', ...base, reason, pending: false, held, note: held ? DELEGATED.held[held] : DELEGATED.note };
+  }
   return { state: 'published', ...base, reason, pending: reason === 'checking', note: NOTES[reason ?? 'published'] };
 }
 
@@ -109,6 +115,7 @@ export function resultEvidence(task, pullRequest = true) {
  */
 export const RESULT_GROUPS = [
   { key: 'review', title: 'Waiting for your review' },
+  { key: 'delegated', title: 'Being merged for you' },
   { key: 'closed', title: 'Closed without merging' },
   { key: 'reports', title: 'Reports to read' },
   { key: 'merged', title: 'Merged' },
@@ -131,6 +138,9 @@ function resultRow(c, task, d, releases) {
   // Merged only from a current merge check; what follows is the project's release rule, never "released" or "live".
   if (d.state === 'merged') return { ...base, ...proof, group: 'merged', word: 'Merged', note: null, link, mergedAt: d.mergedAt ?? null,
     release: `Release follows ${releaseRule(releases, c.repository)}.` };
+  // Merging delegated by the owner: passed the check and merged for them after CI, or held with its reason.
+  if (d.state === 'delegated') return { ...base, ...proof, group: 'delegated', note: d.note, link,
+    word: d.held ? DELEGATED.heldRow(number, DELEGATED.held[d.held]) : DELEGATED.row(number) };
   // A merge check that can still come shortly: the state is not known yet, so it is neither waiting nor merged.
   if (d.pending) return { ...base, ...proof, group: 'unknown', word: 'Not known yet', note: d.note, link };
   return { ...base, ...proof, group: 'review', word: `Pull request #${number} · waiting for your review`,
@@ -181,14 +191,15 @@ function finishedSummary(c, steps, releases) {
   const has = (n) => n === 1 ? 'has' : 'have';
   const missing = count((step) => !step.delivery), noLink = state('unknown'),
     checking = count((step) => step.delivery?.pending), published = state('published') - checking,
-    reports = state('report-posted'), merged = state('merged');
+    reports = state('report-posted'), merged = state('merged'), delegated = state('delegated');
   // Merged work is ready for release only when every other step is a report: none unknown, being checked or unmerged.
-  const releaseReady = merged > 0 && !(missing + noLink + checking + published);
+  const releaseReady = merged > 0 && !(missing + noLink + checking + published + delegated);
   const parts = [
     missing ? `${plural(missing, 'step')} ${has(missing)} no recorded result` : null,
     checking ? `the merge of ${plural(checking, 'step')} is being checked; check again shortly` : null,
     noLink ? `${plural(noLink, 'step')} ${has(noLink)} no recorded result link; check ${noLink === 1 ? 'its issue' : 'their issues'}` : null,
     published ? `${plural(published, 'step')} ${published === 1 ? 'waits' : 'wait'} for your review (merge not seen yet)` : null,
+    delegated ? DELEGATED.progress(delegated) : null,
     // A report is for the owner to read and decide on. A campaign of reports only shows the supervisor's own next action.
     reports ? reports === steps.length && REPORTS_ACTION.test(c.nextAction ?? '') ? c.nextAction : `${plural(reports, 'report')} posted for you to read` : null,
     merged ? releaseReady ? `the merged work is ready; release follows ${releaseRule(releases, c.repository)}` : `${merged} merged` : null,
@@ -244,8 +255,10 @@ const agentWorking = (agent, now) => agent.heartbeatState === 'recent' || (agent
 /**
  * The owner view. `releases` maps a lowercased repository to the standing deploy authorization its registry entry
  * records (readReleaseAuthorizations); a repository without one is described only by its own release policy.
+ * `delegation` is the owner's merge delegation from config.json (configuredMergeDelegation), or null: with it, a
+ * verified, unmerged pull request is no Needs me item and is counted as `delegated`, never as awaiting the owner.
  */
-export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = Date.now(), releases = {} } = {}) {
+export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = Date.now(), releases = {}, delegation = null } = {}) {
   // Results with nothing finished in a project show the §7.1 empty copy, written once in copy.mjs.
   const { title, text } = stateCopy('results-empty'), noResults = { title, text };
   if (!supervisor?.available) return { available: false, headline: null, count: 0, items: [], groups: [], unknownResults: 0, also: null, layout: { cards: [], finished: [] }, reply: null, campaigns: {}, results: {}, noResults, recent: null };
@@ -255,7 +268,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
   const entries = supervisor.campaigns.map((c) => ({ id: c.id, purpose: purpose(c) }));
   distinguish(entries);
   for (const c of supervisor.campaigns) {
-    const steps = c.tasks.map((task) => ({ task, delivery: delivery(task, merges, now, c.id) }));
+    const steps = c.tasks.map((task) => ({ task, delivery: delivery(task, merges, now, c.id, delegation) }));
     const by = (state) => steps.filter((step) => step.delivery?.state === state);
     // "Checking for merges" only while a merge check that can still come shortly is running or due. Every other
     // published step waits for the owner's review: its merge is not seen, whatever the reason.
@@ -281,8 +294,9 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       finished: finished?.text ?? null, releaseReady: finished?.releaseReady ?? false,
       // One line for the compact list of finished and cancelled campaigns.
       outcome: finished?.line ?? (c.control === 'cancelled' ? `Cancelled · ${delivered} of ${plural(c.tasks.length, 'step')} delivered` : null),
+      // `delegated` only when the owner delegated merging: without it the counts are as before.
       counts: { total: c.tasks.length, delivered, merged: by('merged').length,
-        awaiting: awaiting.length, checking: checking.length, unknown: unknown.length, reports: by('report-posted').length } };
+        awaiting: awaiting.length, ...(delegation ? { delegated: by('delegated').length } : {}), checking: checking.length, unknown: unknown.length, reports: by('report-posted').length } };
     const base = { campaignId: c.id, repository: c.repository };
     // One item per step, led by what the step delivers. The evidence is one compact line; the full sentence is one click away.
     for (const { task, delivery: d } of awaiting) {
