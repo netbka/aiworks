@@ -1,6 +1,7 @@
 {
   "name": "aiworks",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "AIWorks: the AI delivery machine (delivery supervisor, operations dashboard and campaigns).",
   "scripts": {
