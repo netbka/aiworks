@@ -8,6 +8,7 @@ import { availableParallelism } from 'node:os';
 import { campaignLimits } from './campaign.mjs';
 import { domainHolders, domainOf } from './work-ownership.mjs';
 import { runNotCounted } from './adapters/executors.mjs';
+import { openRunBeats } from './host.mjs';
 
 /**
  * The wait reasons, in the order they are checked. A waiting step always has exactly one: the first that applies.
@@ -83,6 +84,28 @@ export function adjustFanout(store, { campaignId, bound, run, waited = false, th
 }
 
 /**
+ * The host pressure gate (section 4.6, slice RUN7): one sample per admission pass from `sampler` (host.mjs), over the
+ * heartbeats of every open run. Returns null or { signal, detail }, which admissionCheck turns into a 'host-pressure'
+ * wait for every candidate; open operations are never touched. An episode is one row, capacity ('host', 'pressure'):
+ * the pass that starts it journals 'host-pressure' with the signal, the pass that ends it 'host-pressure-cleared'. Each
+ * is a conditional write, so a restarted or second controller never journals the same episode twice.
+ */
+export function hostPressure(store, sampler, now) {
+  const pressure = sampler.sample({ now, beats: openRunBeats(store) });
+  if (pressure) {
+    const started = store.run(`INSERT INTO capacity (scope, id, value, reason, updated_at) VALUES ('host', 'pressure', 1, ?, ?)
+      ON CONFLICT (scope, id) DO UPDATE SET value = 1, reason = excluded.reason, updated_at = excluded.updated_at WHERE capacity.value = 0`,
+    pressure.signal, now);
+    if (started.changes === 1) store.journal(null, 'host-pressure', pressure, now);
+  } else {
+    const row = store.get("SELECT reason FROM capacity WHERE scope = 'host' AND id = 'pressure' AND value = 1");
+    const ended = store.run("UPDATE capacity SET value = 0, updated_at = ? WHERE scope = 'host' AND id = 'pressure' AND value = 1", now);
+    if (ended.changes === 1) store.journal(null, 'host-pressure-cleared', { signal: row?.reason ?? null }, now);
+  }
+  return pressure;
+}
+
+/**
  * Fair order (section 4.2): the project whose most recent admitted operation is oldest first (never served first),
  * then the least recently served campaign in it, then campaign age and id; within a campaign verify before implement,
  * then declaration order. "Served" is MAX(operations.created_at), derived from rows: there is no fairness state to lose.
@@ -111,8 +134,8 @@ export function orderCandidates(store, candidates) {
 /**
  * The one reason this candidate waits, or null when it may start now (section 4.1). Checked in WAIT_REASONS order, from
  * rows only, so the controller can call it again inside the recording transaction. `providerWaiting(candidate)` tells
- * whether every authorized provider for it is waiting (the controller's executorChoice); `pressure` is the latest host
- * sample (null: none); `integrated(campaignId, taskRow, declaration)` releases a published domain once it is in its base.
+ * whether every authorized provider for it is waiting (the controller's executorChoice); `pressure` is this pass's
+ * hostPressure sample (null: none), which can only refuse; `integrated(campaignId, taskRow, declaration)` releases a published domain once it is in its base.
  */
 export function admissionCheck(store, candidate, { ceiling, pressure = null, providerWaiting = () => false, integrated = () => false }) {
   const open = store.all("SELECT campaign_id, task_id FROM operations WHERE state IN ('recorded', 'dispatched')");
