@@ -225,11 +225,12 @@ test('the calm heading is about what blocks on the owner; reports to read and re
   assert.equal(ownerView(supervisor, { repositories: [], steps: {} }).headline, 'Checking for merges before listing what needs you', 'an unchecked merge is never calm');
   const nothing = ownerView({ ...supervisor, campaigns: [] }, checked());
   assert.deepEqual([nothing.headline, nothing.also], ['Nothing is blocked on you right now', null]);
-  // The page shows the owner view's heading and "Also for you" line; its calm text is scoped to what blocks on the owner.
+  // The page shows the owner view's heading; its calm text is scoped to what blocks on the owner. Reports to read and work
+  // ready for release are not on Needs me or its count (owner, 2026-10-13: only what really needs the owner).
   const page = readFileSync(join(ROOT, 'src/dashboard/public/dashboard.js'), 'utf8');
   assert.doesNotMatch(page, /Nothing needs you|Nothing is waiting for you/);
   assert.match(page, /el\('h2', \{ id: 'needs-title' \}, headline\)/);
-  assert.match(page, /also \? el\('p', \{ class: 'needs-also' \}, also\.text\)/);
+  assert.doesNotMatch(page, /needs-also|owner\.also/);
   assert.match(page, /'Nothing is blocked on you'/);
 });
 
