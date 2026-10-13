@@ -472,6 +472,21 @@ export const COMMANDS = {
   noNextRun: 'No AI worker runs this step again, so it cannot get guidance. Refresh the page to see where it stands.',
 };
 
+/**
+ * When nothing on this computer reads a request (no coordinator is configured, or its configuration is invalid): Start
+ * work and Messages say so before anything is sent, keep the unsent text, and offer what the owner can do instead of
+ * sending (aiworks#11 review F10). The machine's reason is in Details.
+ */
+export const NOT_READ = {
+  title: 'Nothing will read this request yet.',
+  text: 'AIWorks on this computer is not set up to read requests, so a request sent now would wait with no answer.',
+  invalid: 'AIWorks on this computer cannot read requests: the part of its configuration file that sets up reading them is not valid.',
+  instead: 'What you can do instead: keep your text here, it is not lost, and set up request reading in the AIWorks configuration file on this computer. Then send it.',
+  setUp: 'How to set it up',
+  setUpUrl: 'https://github.com/netbka/aiworks/blob/main/docs/SUPERVISOR.md#9-owner-messages-and-the-coordinator',
+  receipt: 'nothing on this computer is set up to read requests yet',
+};
+
 /** The Cancel dialog and the guidance dialog, in the owner's words. */
 export const DIALOGS = {
   cancelTitle: 'Cancel this work?',

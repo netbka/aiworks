@@ -1,6 +1,6 @@
 import { formatRoute, globalOf, resolveRoute, tabOf } from '/router.mjs';
 // The state copy of OWNER_WORKSPACE §7 and the Now screen (slice S4); the server serves src/dashboard/copy.mjs here.
-import { COMMANDS, DIALOGS, NEEDS, costRunsLine, nowView, workLine } from '/copy.mjs';
+import { COMMANDS, DIALOGS, NEEDS, NOT_READ, costRunsLine, nowView, workLine } from '/copy.mjs';
 
 const $ = (selector) => document.querySelector(selector);
 const names = { done: 'Done', blocked: 'Blocked', unknown: 'Unknown',
@@ -129,6 +129,8 @@ function showRoute() {
   tabs.replaceChildren(...(project ? Object.entries(tabLabels).map(([id, label]) => el('a', { href: formatRoute({ screen: 'project', project, tab: id }),
     class: `tab${id === tab ? ' active' : ''}`, 'aria-current': id === tab && route.screen === 'project' ? 'page' : null }, label)) : []));
   if (project && route.screen === 'project') writeLastProject(project);
+  // The screen this project was left on, so coming back to the project opens it again (go(); aiworks#11 review F5).
+  if (project) projectMemory.set(project.toLowerCase(), current.address);
   $('#notice').hidden = !$('#notice').childNodes.length || noticeAddress !== null && noticeAddress !== current.address;
   $('#filters').hidden = !(route.screen === 'settings' && route.section === 'diagnostics');
   if (state) render();
@@ -391,7 +393,7 @@ function messageReceipt(m, coordinator) {
   const steps = [receiptStep(true, 'Received', `stored by the supervisor ${dateTime(m.receivedAt)}`)];
   if (m.state === 'received') {
     steps.push(m.failure ? receiptStep(false, 'Retrying', `the last read ended without an answer (${outcomeLabels[m.failure] ?? m.failure}); next attempt ${dateTime(m.retryAt)}`, 'failed')
-      : !coordinator.configured ? receiptStep(false, 'Not read', coordinator.configError ? `the coordinator configuration is invalid: ${coordinator.configError}` : 'no coordinator agent is configured on this supervisor', 'failed')
+      : !coordinator.configured ? receiptStep(false, 'Not read', NOT_READ.receipt, 'failed')
         : coordinator.blocked ? receiptStep(false, 'Not read yet', coordinator.blocked, 'failed')
         : coordinator.maxRunsPerDay !== null && coordinator.runsToday >= coordinator.maxRunsPerDay ? receiptStep(false, 'Waiting', `today's ${coordinator.maxRunsPerDay} coordinator runs are used; it is read when the window frees up`)
           : receiptStep(false, 'Waiting', 'the coordinator agent picks it up within seconds'));
@@ -409,16 +411,31 @@ function messageReceipt(m, coordinator) {
   return el('article', { class: 'receipt' }, el('strong', {}, `Message #${m.id} · ${m.source}`), el('p', {}, m.text), el('ol', { class: 'receipt-steps' }, ...steps));
 }
 
+// Whether anything reads requests: yes, no, or not with an invalid configuration.
+const readsKey = (coordinator) => coordinator?.configured ? 'yes' : coordinator?.configError ? 'invalid' : 'no';
+/**
+ * When nothing reads requests, what Start work and Messages show in place of their send action: that nothing will read
+ * it, and what the owner can do instead (aiworks#11 review F10). Null while something reads them.
+ */
+function notRead(coordinator) {
+  if (!coordinator || coordinator.configured) return null;
+  return el('div', { class: 'notes', 'data-not-read': '' },
+    el('p', {}, el('strong', {}, NOT_READ.title), ` ${coordinator.configError ? NOT_READ.invalid : NOT_READ.text}`),
+    el('p', {}, `${NOT_READ.instead} `, link(`${NOT_READ.setUp} ↗`, NOT_READ.setUpUrl)),
+    coordinator.configError ? disclosure('not-read/details', COMMANDS.details, el('p', { class: 'subtext' }, coordinator.configError)) : null);
+}
+
 function messagesPanel(limit) {
   const coordinator = state.supervisor.coordinator;
   if (!coordinator) return panel('Messages to the coordinator', 'Supervisor state unavailable', empty('Messages unavailable', state.supervisor.message ?? ''));
   const items = coordinator.messages.slice(0, limit);
+  // Sending is offered only while something reads messages; otherwise the panel says so and what to do instead.
   return panel('Messages to the coordinator', coordinator.configured
     ? `Read-only coordinator agent · replies go to ${coordinator.reportTo ?? 'GitHub'} · ${coordinator.runsToday}${coordinator.maxRunsPerDay === null ? '' : `/${coordinator.maxRunsPerDay}`} runs in the last 24h${coordinator.blocked ? ` · not reading now: ${coordinator.blocked}` : ''}`
-    : coordinator.configError ? `Coordinator configuration is invalid (${coordinator.configError}): messages are stored but nothing reads them`
-      : 'No coordinator agent is configured: messages are stored but nothing reads them',
-  items.length ? el('div', { class: 'instruction-list' }, ...items.map((m) => messageReceipt(m, coordinator))) : empty('No messages yet', 'Use “New message” to ask for a review or a plan.'),
-  button('✉ New message', openMessage, 'link'));
+    : null,
+  el('div', {}, notRead(coordinator), items.length ? el('div', { class: 'instruction-list' }, ...items.map((m) => messageReceipt(m, coordinator)))
+    : empty('No messages yet', coordinator.configured ? 'Use “New message” to ask for a review or a plan.' : '')),
+  coordinator.configured ? button('✉ New message', openMessage, 'link') : null);
 }
 
 // Receipt transitions become a notice here and a desktop notification, so the owner learns when work was read.
@@ -458,7 +475,7 @@ const messageDraft = {
 };
 function openMessage() {
   const coordinator = state?.supervisor.coordinator;
-  $('#message-target').textContent = coordinator?.configured ? `Replies are posted to ${coordinator.reportTo}.` : 'No coordinator agent is configured yet: the message will be stored, but nothing will read it.';
+  $('#message-target').textContent = coordinator?.configured ? `Replies are posted to ${coordinator.reportTo}.` : `${NOT_READ.title} ${NOT_READ.text}`;
   $('#message-text').value = messageDraft.text;
   $('#message-dialog').showModal();
   $('#message-text').focus();
@@ -516,8 +533,10 @@ function startScreen(project) {
   const from = ([value, label]) => el('label', { class: 'choice' }, el('input', { type: 'radio', name: 'start-from', value, checked: draft.from === value,
     onchange: () => { numberLabel.hidden = value === 'description'; number.required = value !== 'description'; save(); } }), ` ${label}`);
   // The form wears the dialogs' styles: each box inside its label, and the choices in framed groups (aiworks#11 review F25).
-  const form = el('form', { class: 'panel-body start-form', 'data-start-form': project, 'data-focus-scope': `start/${project}`,
-    onsubmit: (event) => { event.preventDefault(); save(); void askForPlan(project, address); } },
+  // When nothing reads requests, the form keeps the goal but offers no send: it says so and what to do instead (F10).
+  const reads = Boolean(coordinator?.configured);
+  const form = el('form', { class: 'panel-body start-form', 'data-start-form': project, 'data-reads': readsKey(coordinator), 'data-focus-scope': `start/${project}`,
+    onsubmit: (event) => { event.preventDefault(); save(); if (reads) void askForPlan(project, address); } },
     el('label', { class: 'field' }, el('strong', {}, 'What should be true when this is finished?'), goal),
     el('fieldset', {}, el('legend', {}, 'Start from'), ...START_FROM.map(from), numberLabel),
     el('fieldset', {}, el('legend', {}, 'How far AIWorks goes'),
@@ -525,9 +544,8 @@ function startScreen(project) {
       el('p', { class: 'subtext' }, 'AIWorks looks and proposes a plan. Nothing in your project changes.'),
       el('label', { class: 'choice' }, el('input', { type: 'radio', name: 'start-mode', value: 'plan-and-do', disabled: true, 'aria-describedby': 'plan-and-do-note' }), ' Plan and do'),
       el('p', { class: 'subtext', id: 'plan-and-do-note' }, 'AIWorks proposes a plan. After you approve it once, it does the work. ', PLAN_AND_DO_OFF.join(' '))),
-    el('p', { class: 'subtext' }, coordinator?.configured ? `The plan is posted to ${coordinator.reportTo ?? 'GitHub'}. No secrets; up to 2,000 characters.`
-      : 'No coordinator agent is configured yet: the request will be stored, but nothing will read it.'),
-    el('button', { class: 'button', type: 'submit', disabled: startBlocked() }, 'Ask for a plan'),
+    reads ? el('p', { class: 'subtext' }, `The plan is posted to ${coordinator.reportTo ?? 'GitHub'}. No secrets; up to 2,000 characters.`) : notRead(coordinator),
+    reads ? el('button', { class: 'button', type: 'submit', disabled: startBlocked() }, 'Ask for a plan') : null,
     el('div', { id: 'start-receipt', 'aria-live': 'polite' }, startReceipt(address)));
   return [el('section', { class: 'panel' }, form)];
 }
@@ -536,7 +554,10 @@ function startScreen(project) {
 function refreshStart(content, project) {
   const form = content.querySelector('form[data-start-form]');
   if (!form || form.dataset.startForm !== project || !state.supervisor.available) return false;
-  form.querySelector('button[type="submit"]').disabled = startBlocked();
+  // Whether anything reads requests changed: the form is built again from the saved draft, with or without its send.
+  if (form.dataset.reads !== readsKey(state.supervisor.coordinator)) return false;
+  const submit = form.querySelector('button[type="submit"]');
+  if (submit) submit.disabled = startBlocked();
   const receipt = startReceipt(formatRoute({ screen: 'start', project }));
   patch(form.querySelector('#start-receipt'), receipt ? [receipt] : []);
   return true;
@@ -1193,18 +1214,23 @@ async function poll() {
   }
 }
 
-// A new destination starts at its top; Back or Forward returns to where that address was left (UX-001 §8, preserve
-// context). The page keeps scroll per address itself, so the browser's own restoration is switched off.
-const scrollMemory = new Map();
+// Moving never loses the owner's place (OWNER_WORKSPACE §3.3 and §13.3 T10; aiworks#11 review F5; UX-001 §8, preserve
+// context). Opening a project from outside it returns to the screen that project was left on; its Now tab still opens
+// Now. Every address, reached by a link, Back or Forward, returns to where it was left; one not opened yet starts at its
+// top. The page keeps both for this tab itself, so the browser's own restoration is switched off.
+const scrollMemory = new Map(), projectMemory = new Map();
 try { history.scrollRestoration = 'manual'; } catch { /* the browser restores by itself */ }
 function go(address, { restore = false } = {}) {
   scrollMemory.set(current.address, window.scrollY);
-  const next = resolveRoute(address);
+  let next = resolveRoute(address);
+  const left = !restore && next.route.screen === 'project' && next.route.tab === 'now' && !sameProject(next.route.project, current.route.project)
+    ? projectMemory.get(next.route.project.toLowerCase()) : null;
+  if (left) next = resolveRoute(left);
   if (!restore) history.pushState(null, '', next.address);
   else if (next.replace) history.replaceState(null, '', next.address);
   current = next;
   showRoute();
-  window.scrollTo(0, restore ? scrollMemory.get(current.address) ?? 0 : 0);
+  window.scrollTo(0, scrollMemory.get(current.address) ?? 0);
   // Focus moves to the new screen's heading, so a screen reader starts there.
   $('#view-title').focus({ preventScroll: true });
 }
