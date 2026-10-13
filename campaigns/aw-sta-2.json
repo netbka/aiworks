@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "campaignId": "aw-sta-2",
+  "purpose": "Projects that live only on this computer, as a local Git repository or a plain folder, can be connected safely; starting work on them stays off until the owner decides #24 and #32.",
+  "authorization": {
+    "version": 1,
+    "grantedBy": "owner (netbka), delegated to the owner's main session",
+    "grantedAt": "2026-10-12",
+    "reference": "https://github.com/netbka/aiworks/issues/14",
+    "text": "On 2026-10-12 the owner directed: \"take this as starting point and deliver till end. Delivery this work with the AIWorks environment.\" The starting point is docs/PROJECT_WORKSPACE_PLAN.md (PR #12), with owner decisions D1, D3, D5 (direction only) and D9 recorded in its section 8. This campaign builds slices STA4 and STA5 of docs/PROJECT_WORKSPACE_PLAN.md section 6.6, in order, beside aw-core-2 (their files are lane-only, section 6.9). Starting work on a project without GitHub stays off (LOCAL_START_OFF) until #24 and #32 are decided."
+  },
+  "target": {
+    "tenantId": "netbka",
+    "projectId": "aiworks",
+    "environment": "research",
+    "repository": "netbka/aiworks",
+    "baseBranch": "main",
+    "trackingIssue": 7
+  },
+  "executor": {
+    "kind": "cli-chain",
+    "providers": [
+      {
+        "kind": "claude-cli",
+        "model": "opus",
+        "permissionMode": "auto"
+      },
+      {
+        "kind": "codex-cli",
+        "model": "gpt-6-astra"
+      }
+    ],
+    "implementerTimeoutMinutes": 240,
+    "verifierTimeoutMinutes": 120
+  },
+  "constraints": [
+    "Program netbka/aiworks#14: deliver docs/PROJECT_WORKSPACE_PLAN.md through supervisor campaigns. Change only the files your task names. Other campaigns change other files at the same time: never edit their files, other agents' branches or worktrees, or campaigns/*.json.",
+    "Your assigned worktree is the only place you change files. Never touch D:/Git/aiworks/.local (live runtime, supervisor data directory, governance checkout, other worktrees) or the main checkout, and never start, stop or restart the supervisor, its scheduled tasks or the dashboard.",
+    "No production access, deployment, GitHub Actions changes, paid services, Telegram or other provider API calls, or new recurring spend. Never read .env contents, credentials or secret files. Read Engineering Platform only with read-only gh commands; never write the governance checkout or open changes in another repository: EP-side changes are proposed as text.",
+    "Follow AGENTS.md: run npm ci once in your worktree, then npm run check after changes. Report exact commands and pass/fail tallies.",
+    "Never weaken an assertion, delete or skip a test, or broaden a timeout to make the gate pass. Tests make no model, network or GitHub calls: synthetic executables and disposable git repositories, as tests/supervisor/helpers.mjs does.",
+    "Keep AW-001 to AW-007 as written. Do not enable a power whose decision is still open (GitHub-free local admission, Auto Release, Telegram delivery): design it, or build it switched off, and name the decision it waits for.",
+    "Label every claim about the running system observed, verified, planned or unknown (AGENTS.md evidence rule); merged is not deployed. Do not comment on GitHub, merge, close issues or change labels: the supervisor publishes your verified commit. Write \"Refs #N\", never \"Closes\".",
+    "Write for the owner first: plain English, short sentences, the outcome before the mechanism. Link Engineering Platform policies instead of copying them.",
+    "Read GitHub with REST only (gh api repos/netbka/aiworks/issues/<n> --jq .body, .../comments, gh api repos/netbka/aiworks/pulls/<n>), never gh issue view or gh pr view: the account GraphQL quota is shared (#16, #21).",
+    "Repository CI runs npm ci and npm run check on ubuntu-latest (.github/workflows/check.yml). Every test you add or change must pass there and on Windows: guard platform-specific behaviour with a skip that names the reason, without weakening what it checks on Windows (#42). Copy the node:test summary lines (# tests, # pass, # fail, # skipped) verbatim from the output; never retype a tally (#43).",
+    "A task named after a build-order slice of docs/PROJECT_WORKSPACE_PLAN.md section 6 builds exactly that slice: its outcome, its tests and the files it lists under Owns. Section 6 decides order and file ownership; the design slice it maps to (section 6.11) decides behaviour and tests. A needed change outside the slice's files is reported as a finding, not made. Anything the slice builds switched off ships off, and with it off the full existing suite passes unchanged.",
+    "Verifiers: a check that behaves as intended is reported as pass, including a mutation or base comparison whose expected failure was observed (say so in its detail); report fail only for a check whose outcome shows a defect, and never return accepted with a check marked fail (#59). Implementers: if the outcome cannot work without changing a file the plan does not list under Owns (for example the dashboard server allowlist for a new browser module), change the smallest part of it and name the file and the reason in the PR. The verifier judges whether it was needed; such a file is not a finding by itself."
+  ],
+  "tasks": [
+    {
+      "id": "STA4",
+      "issue": 7,
+      "title": "Local Git projects connect with a managed mirror (starting work stays off)",
+      "outcome": "A local Git project connects through a managed mirror; the owner's own .git is never touched, and starting work stays off (LOCAL_START_OFF) until #24 and #32 are decided.",
+      "deliverable": "commit",
+      "goal": "Build slice STA4 of docs/PROJECT_WORKSPACE_PLAN.md section 6 (read 6.2 rules, the STA4 row, 6.9 turn order, 6.10 and 6.12 resolutions). Outcome: A local Git project connects through a managed mirror; the owner's own .git is never touched, and starting work stays off (LOCAL_START_OFF) until #24 and #32 are decided. Behaviour and tests: docs/design/PROJECT_CONNECTION.md slice S4; read that slice and the design sections it cites first. Starting work on a project without GitHub is not available yet: keep startWork false with LOCAL_START_OFF. Change only what the slice needs; switches it adds stay off by default.",
+      "dependsOn": [],
+      "acceptance": [
+        "Every test the plan and docs/design/PROJECT_CONNECTION.md slice S4 list for STA4 exists and passes; the PR says which fail on the task base and how that was shown.",
+        "Only files the plan lists for STA4 under Owns change, plus any file named in the PR with the reason the outcome needs it; the PR shows the diff stat.",
+        "Switches the slice adds are off by default; with them off the full existing suite passes unchanged, and new tests are correct on Linux CI and Windows.",
+        "npm run check passes; the PR copies the node:test summary lines verbatim and states that nothing is deployed."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md",
+        "docs/SUPERVISOR.md",
+        "src/supervisor/project-connect.mjs",
+        "src/supervisor/project-preflight.mjs",
+        "src/supervisor/projects.mjs"
+      ]
+    },
+    {
+      "id": "STA5",
+      "issue": 7,
+      "title": "Plain folders connect with a managed snapshot; the source stays byte-identical",
+      "outcome": "A plain folder connects through a managed snapshot with baselines, and the source folder stays byte-identical; starting work stays off.",
+      "deliverable": "commit",
+      "goal": "Build slice STA5 of docs/PROJECT_WORKSPACE_PLAN.md section 6 (read 6.2 rules, the STA5 row, 6.9 turn order, 6.10 and 6.12 resolutions). Outcome: A plain folder connects through a managed snapshot with baselines, and the source folder stays byte-identical; starting work stays off. Behaviour and tests: docs/design/PROJECT_CONNECTION.md slice S5; read that slice and the design sections it cites first. Change only what the slice needs; switches it adds stay off by default.",
+      "dependsOn": [
+        "STA4"
+      ],
+      "acceptance": [
+        "Every test the plan and docs/design/PROJECT_CONNECTION.md slice S5 list for STA5 exists and passes; the PR says which fail on the task base and how that was shown.",
+        "Only files the plan lists for STA5 under Owns change, plus any file named in the PR with the reason the outcome needs it; the PR shows the diff stat.",
+        "Switches the slice adds are off by default; with them off the full existing suite passes unchanged, and new tests are correct on Linux CI and Windows.",
+        "npm run check passes; the PR copies the node:test summary lines verbatim and states that nothing is deployed."
+      ],
+      "references": [
+        "AGENTS.md",
+        "docs/PROJECT_WORKSPACE_PLAN.md",
+        "docs/SUPERVISOR.md",
+        "src/supervisor/adapters/mirror.mjs",
+        "src/supervisor/project-preflight.mjs"
+      ],
+      "requiresMergedDependencies": true
+    }
+  ]
+}
