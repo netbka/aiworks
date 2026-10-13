@@ -12,6 +12,7 @@ import { researchContext } from './adapters/research-context.mjs';
 import * as gitA from './adapters/git.mjs';
 import * as github from './adapters/github.mjs';
 import { authorityDigest, campaignLimits, executorOrder, projectGovernance } from './campaign.mjs';
+import { resolveCheckout } from './project-connect.mjs';
 import { campaignBudget } from './api.mjs';
 import { ACCOUNT_SCOPED, accountOf, accountWait, clearAccountWait, laterWait, setAccountWait } from './accounts.mjs';
 import { domainOf, pathsOutside, writeDomainConstraint } from './work-ownership.mjs';
@@ -664,6 +665,8 @@ export class Controller {
     const due = tasks.filter((t) => t.state === 'pending' && !t.blocked && (!t.retry_at || t.retry_at <= this.now()) &&
       specs.get(t.task_id).requiresMergedDependencies && specs.get(t.task_id).dependsOn.every((id) => tasks.find((d) => d.task_id === id)?.state === 'done'));
     if (!due.length) return;
+    // A project and config.json that disagree: refresh nothing, so dispatch raises the CONFIG_CONFLICT blocker.
+    if (resolveCheckout(this.store, this.config, c.declaration.target.repository)?.conflict) return;
     this.fenced(ctx, () => {
       const repo = this.repo(c.declaration), base = c.declaration.target.baseBranch;
       const fetched = this.fetchBase(repo.path, base);
@@ -701,6 +704,7 @@ export class Controller {
     // A finished campaign with nothing left to check is not visited again until a restart; a running one may publish more.
     this.integrationCheckedAt.set(ctx.id, !candidates && c.control === 'finished' ? Infinity : this.now());
     if (!candidates) return;
+    if (resolveCheckout(this.store, this.config, decl.target.repository)?.conflict) { this.log(`integration check of ${ctx.id} skipped: CONFIG_CONFLICT`); return; }
     this.fenced(ctx, () => {
       const repo = this.repo(decl), base = decl.target.baseBranch, git = this.cmd.git;
       const baseSha = this.fetchBase(repo.path, base).sha;
@@ -949,7 +953,7 @@ export class Controller {
     }
     for (const [key, { ctx, decl, holders }] of due) {
       this.baseCheckedAt.set(key, now);
-      const repo = this.config.repositories?.[decl.target.repository];
+      const repo = this.checkout(decl);
       if (!repo?.path) continue;
       const fetched = this.fenced(ctx, () => this.fetchBase(repo.path, decl.target.baseBranch));
       if (!fetched?.ok) continue;
@@ -966,7 +970,7 @@ export class Controller {
   /** Is this commit in the base as last fetched into refs/aiworks/base/<base>? Local read only; unknown counts as no. */
   inBase(decl, sha) {
     if (!/^[0-9a-f]{40}$/.test(sha ?? '')) return false;
-    const repo = this.config.repositories?.[decl.target.repository];
+    const repo = this.checkout(decl);
     if (!repo?.path) return false;
     return gitA.exec(this.cmd.git, ['merge-base', '--is-ancestor', sha, `refs/aiworks/base/${decl.target.baseBranch}`], { cwd: repo.path }).ok;
   }
@@ -1002,10 +1006,21 @@ export class Controller {
     this.domainWaits = domainWaits;
   }
 
+  /**
+   * The campaign's checkout (PROJECT_CONNECTION 6.1, slice STA3): the live GitHub project for target.repository, else
+   * config.json as before. A project and a config entry that disagree are never chosen between: CONFIG_CONFLICT.
+   */
   repo(decl) {
-    const repo = this.config.repositories?.[decl.target.repository];
+    const repo = resolveCheckout(this.store, this.config, decl.target.repository);
+    if (repo?.conflict) throw Object.assign(new Error(repo.conflict.message), { code: 'CONFIG_CONFLICT' });
     if (!repo?.path || !repo?.worktreeRoot) throw new Error(`no local checkout configured for ${decl.target.repository}`);
     return repo;
+  }
+
+  /** The checkout for local reads that tolerate its absence: null on CONFIG_CONFLICT too (dispatch raises that blocker). */
+  checkout(decl) {
+    const repo = resolveCheckout(this.store, this.config, decl.target.repository);
+    return repo?.conflict ? null : repo;
   }
 
   /** The executor that produced this task's latest unaccepted attempt of the same kind, if any. */
@@ -1112,6 +1127,13 @@ export class Controller {
         this.raiseBlocker(ctx, decl, { kind: 'project-governance', class: 'B2',
           reason: `No new worker dispatched: the governance of ${decl.target.repository} cannot be resolved from the governance checkout (${error.code ? `${error.code}: ` : ''}${String(error.message).slice(0, 400)})`,
           requestedAction: `Make sure governanceRoot in the supervisor config.json names a current Engineering Platform checkout in which exactly one registry/projects entry declares repository.github ${decl.target.repository}, then run: supervisor recheck ${ctx.id}` }, this.now());
+        return null;
+      }
+      // A project and a config.json entry that disagree about this repository: B2, and nothing is dispatched (design 8.2).
+      const checkout = resolveCheckout(this.store, this.config, decl.target.repository);
+      if (checkout?.conflict) {
+        this.raiseBlocker(ctx, decl, { kind: 'project-connection', class: 'B2', code: 'CONFIG_CONFLICT', reason: checkout.conflict.message,
+          requestedAction: `Remove either the ${decl.target.repository} entry in the supervisor config.json or the project connection, then run: supervisor recheck ${ctx.id}` }, this.now());
         return null;
       }
       for (const provider of executorOrder(decl.executor)) {

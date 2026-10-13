@@ -278,7 +278,20 @@ export function projectGovernance(repository, governanceRoot) {
   const entries = registryEntries(join(root, 'registry', 'projects'), target);
   if (!entries.length) throw new TypeError(`target ${target || '(none)'} is not a registered project: no registry/projects entry has that repository.github`);
   if (entries.length > 1) throw new TypeError(`target ${target} matches ${entries.length} registry entries (${entries.map((entry) => entry.id).join(', ')}); refusing to choose one`);
-  const [contract] = entries;
+  return governanceForContract(entries[0], root, target);
+}
+
+/** The registry entries whose repository.github equals `repository` (the registration gate's match), for project connect. */
+export function registryEntriesFor(repository, governanceRoot) {
+  return registryEntries(join(requireGovernanceRoot(governanceRoot), 'registry', 'projects'), String(repository ?? ''));
+}
+
+/**
+ * One project contract's governance values (PROJECT_CONNECTION section 6.2): schema validation and policy derivation,
+ * shared by the registry path (projectGovernance) and, later, the overlay path. Throws on anything malformed.
+ */
+export function governanceForContract(contract, governanceRoot, target = contract?.repository?.github ?? '') {
+  const root = requireGovernanceRoot(governanceRoot);
   const schemaErrors = contractSchemaErrors(contract, root);
   if (schemaErrors) {
     const first = schemaErrors.slice(0, 3).map((error) => `${error.instancePath || '/'} ${error.message}`).join('; ');
