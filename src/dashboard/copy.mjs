@@ -108,7 +108,8 @@ const STATES = {
     sentence([d.action, d.text].filter(Boolean).join(': ')), d.url ? { label: d.linkLabel ?? 'Open it', url: d.url } : { label: 'See what needs you', route: { screen: 'needs' } }] },
   'several': { section: '4.4', needsYou: true, copy: (d) => [`${capital(plural(d.count, 'thing'))} need you.`,
     'Each one says what to do in Needs me.', { label: `See the ${d.count} things that need you`, route: { screen: 'needs' } }] },
-  'supervisor-fault': { section: '7.7', needsYou: true, copy: () => ['AIWorks has a problem of its own with this work.',
+  // Not an owner action, so not one of the project's Needs me items (review F17).
+  'supervisor-fault': { section: '7.7', needsYou: false, copy: () => ['AIWorks has a problem of its own with this work.',
     'It is not yours to fix: it is tracked for AIWorks’ maintainers. This work may not move until it is fixed.', null] },
   // §7.7 Blocked
   'needs-decision': { section: '7.7', needsYou: true, copy: (d) => ['Stopped: needs your decision.', `${d.step}: ${sentence(d.reason)}`, stepIssue(d.url)] },
@@ -194,8 +195,6 @@ const taskBy = (c, key, url) => url ? c?.tasks.find((task) => task[key] === url)
 
 /** The state for one Needs me item of this project. */
 function itemState(item, c, d) {
-  if (item.kind === 'controller' && item.system) return ['supervisor-fault', {}];
-  if (item.kind === 'controller') return [c?.control === 'paused' ? 'paused-stopped' : 'supervisor-stopped', { stoppedAt: item.at ?? null, pausedAt: c?.pausedAt ?? null }];
   if (item.kind === 'review') {
     const task = taskBy(c, 'resultUrl', item.link?.url), number = PR.exec(item.link?.url ?? '')?.[1];
     if (task && number) {
@@ -286,7 +285,8 @@ function mergeNote(project, merges, counts, now) {
  * The project's Now screen (§4.4): its goal, one state sentence with at most one primary action, progress, a merge
  * note when the merge check is not current, and "since you last looked" for this project only. `data` is the page's
  * /api/state answer ({ supervisor, owner, merges, host, observedAt }) plus `offline` when the page cannot reach the
- * dashboard. The state is about this project alone: it needs the owner exactly when this project has Needs me items.
+ * dashboard. The state is about this project alone: it needs the owner when this project has Needs me items, or when
+ * AIWorks stopped on this computer holds up its work (that one item is listed under AIWorks itself).
  * `options.startWork` turns on the Start work action (OW S9); it is off until that screen exists.
  */
 export function nowView(project, data = {}, { now = Date.now(), format = {}, startWork = false } = {}) {
@@ -307,12 +307,12 @@ export function nowView(project, data = {}, { now = Date.now(), format = {}, sta
   if (offline) return result(make('page-disconnected', { loadedAt: Date.parse(data.observedAt ?? '') || null }));
   if (!supervisor?.available || !owner?.available) return result(make('unreadable'));
   if (!campaigns.length) return result(make('no-work', { startWork }));
+  // This project's Needs me items: the ones the Projects screen counts and Needs me lists under it (review F6).
   const items = (owner.items ?? []).filter((item) => same(item.repository, project));
   const byId = (id) => campaigns.find((c) => c.id === id) ?? null;
+  // With several pieces of work, what needs the owner leads (review F16): this project's Needs me items, then a pause the
+  // owner can resume, then AIWorks stopped for its work, then a fault of AIWorks itself; then work that goes on by itself.
   if (items.length) {
-    // AIWorks itself stopped leads: nothing in this project moves until it runs again.
-    const stopped = items.find((item) => item.kind === 'controller' && !item.system);
-    if (stopped) return result(make(...itemState(stopped, byId(stopped.campaignId), d)), byId(stopped.campaignId));
     const first = byId(items[0].campaignId), counts = owner.campaigns?.[first?.id]?.counts;
     // Only pull requests of one finished piece of work: §7.8 says it more exactly than a count.
     if (first?.control === 'finished' && counts && items.every((item) => item.kind === 'review' && item.campaignId === first.id)) {
@@ -321,7 +321,20 @@ export function nowView(project, data = {}, { now = Date.now(), format = {}, sta
     if (items.length > 1) return result(make('several', { count: items.length }), first);
     return result(make(...itemState(items[0], first, d)), first);
   }
+  const liveness = (c) => owner.campaigns?.[c.id]?.liveness;
   const active = campaigns.filter((c) => !['finished', 'cancelled'].includes(c.control));
+  // Resume works only while AIWorks runs this work; a pause AIWorks is late on keeps today's "late" sentence.
+  const resumable = active.find((c) => c.control === 'paused' && liveness(c) === 'running');
+  if (resumable) return result(make('paused', { pausedAt: resumable.pausedAt, reason: resumable.pausedReason, campaignId: resumable.id }), resumable);
+  // AIWorks stopped on this computer: nothing of this work moves until it runs again (§7.2, §7.5).
+  const stopped = active.find((c) => ['stopped', 'agent-working-supervisor-silent'].includes(liveness(c)));
+  if (stopped) {
+    return result(make(stopped.control === 'paused' ? 'paused-stopped' : 'supervisor-stopped',
+      { stoppedAt: owner.campaigns[stopped.id].lastCheckIn ?? null, pausedAt: stopped.pausedAt ?? null }), stopped);
+  }
+  // Not an owner action, but this work may not move until it is fixed (§7.7).
+  const fault = (owner.items ?? []).find((item) => item.system && item.campaignId && same(item.about, project));
+  if (fault) return result(make('supervisor-fault'), byId(fault.campaignId));
   if (active.length) {
     const [c, key, values] = activeState(active, d);
     return result(make(key, values), c);
@@ -369,7 +382,8 @@ export const NEEDS = {
   recorded: 'What AIWorks recorded',
   fault: { text: 'AIWorks has a problem of its own with this work', link: 'AIWorks issue #2',
     point: 'Not yours to fix: it is tracked for AIWorks’ maintainers. This work may not move until it is fixed.' },
-  // The page adds "at about <time>" after the text, so the time always follows the stop, never the pause (F23).
+  // AIWorks stopped on this computer is said once (review F9). The page adds "at about <time>" after the text, so the time
+  // always follows the stop, never the pause (F23). With one piece of work held up, the item is worded for it:
   silent: { text: 'An AI worker is still working, but AIWorks stopped checking in on this computer',
     point: `Its result is collected and checked only when AIWorks runs again. ${RESTART}` },
   notPickedUp: (paused) => ({ text: `AIWorks on this computer has not picked up this work yet${paused ? ' (it is paused)' : ''}`,
@@ -377,6 +391,20 @@ export const NEEDS = {
   stopped: (paused) => paused
     ? { text: 'This work was paused, then AIWorks stopped on this computer', point: `No step starts while it is paused, and it can’t resume until AIWorks runs again. ${RESTART}` }
     : { text: 'AIWorks stopped on this computer', point: `No new step starts. ${RESTART}` },
+  // with several, it names the work it holds up per project. `pickup` when it never picked up any of it.
+  halted: (pickup) => pickup
+    ? { text: 'AIWorks on this computer has not picked up approved work', point: `None of it starts until AIWorks runs. ${RESTART}` }
+    : { text: 'AIWorks stopped on this computer', point: `No new step starts. ${RESTART}` },
+  /** A Needs me group's count: its owner actions, and the items listed there that are not (review F17). */
+  groupCount: (count, notCounted) => `${count ? ` (${count})` : ''}${notCounted ? ` · ${count ? 'also ' : ''}${plural(notCounted, 'item')} for its maintainers, not counted` : ''}`,
+  /** One piece of work a stopped AIWorks holds up, with what that means for it when the item's text does not say it. */
+  heldWork: (name, how, paused) => {
+    const notes = [paused ? 'paused; it can’t resume until AIWorks runs again' : null, how === 'not-picked-up' ? 'not picked up yet' : null,
+      how === 'silent' ? 'an AI worker is still working; its result is collected and checked only when AIWorks runs again' : null].filter(Boolean);
+    return `“${name}”${notes.length ? ` (${notes.join('; ')})` : ''}`;
+  },
+  /** The work a stopped AIWorks holds up in one project. */
+  heldUp: (project, works) => `Held up in ${project}: ${works.join(', ')}.`,
   /** The banner when this computer's AIWorks has stopped; `at` is its last check-in. */
   banner: (at, f, onPurpose) => `AIWorks has stopped on this computer. It last checked in ${at ? f.dateTime(at) : 'at a time not known'}${onPurpose ? ' (it was stopped on purpose: an update or its operator)' : ''}.`,
   /** The check evidence of a step waiting for review (§2.3: "Passed the check", never "accepted"). */

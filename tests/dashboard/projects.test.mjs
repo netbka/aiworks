@@ -59,6 +59,11 @@ function assertAgreesWithNeedsMe({ owner, projects }) {
   }
   assert.equal(projects.projects.reduce((n, project) => n + project.details.needsYou, 0), owner.items.filter((item) => item.repository).length,
     'every Needs me item about a repository belongs to exactly one project');
+  // The same number as the project's own group on Needs me (aiworks#11 review F6).
+  for (const project of projects.projects) {
+    const group = owner.groups.find((item) => item.project?.toLowerCase() === project.repository.toLowerCase());
+    assert.equal(project.details.needsYou, group?.count ?? 0, `${project.id} counts what its Needs me group counts`);
+  }
 }
 
 test('one row per repository, grouped case-insensitively; the configured spelling names it', (t) => {
@@ -116,13 +121,13 @@ test('order: needs you, then work running, then the rest by last activity; one s
     assert.equal(Boolean(project.action.url) !== Boolean(project.action.route), true, `${project.id}: one link or one screen`);
   }
   assertAgreesWithNeedsMe(seen);
-  // A stopped supervisor is a Needs me item for the project whose work it stops: the project then needs the owner too.
+  // A stopped supervisor is one fact about this computer, listed once under AIWorks itself (review F9): no project counts it.
   start('notes-search', 'example/notes-site', null, old);
   const stopped = view(dataDir, merges);
   assertAgreesWithNeedsMe(stopped);
-  const site = stopped.projects.projects.find((project) => project.id === 'example/notes-site');
-  assert.deepEqual([site.state.text, site.action], ['One thing needs you.', { label: 'See what needs you', route: { screen: 'needs' } }]);
-  assert.deepEqual(stopped.projects.projects.slice(0, 2).map((project) => project.state.key), ['needs-you', 'needs-you']);
+  assert.deepEqual(stopped.owner.groups.map((group) => [group.name, group.count]), [['Dyk', 1], ['AIWorks itself', 1]]);
+  assert.deepEqual(stopped.projects.projects.map((project) => [project.id, project.state.key, project.details.needsYou]).slice(0, 2),
+    [['netbka/Dyk', 'needs-you', 1], ['example/shop-app', 'running', 0]]);
 });
 
 test('a configured repository with no work shows "No work yet" and opens the project', (t) => {

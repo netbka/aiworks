@@ -248,9 +248,9 @@ const agentWorking = (agent, now) => agent.heartbeatState === 'recent' || (agent
 export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = Date.now(), releases = {} } = {}) {
   // Results with nothing finished in a project show the §7.1 empty copy, written once in copy.mjs.
   const { title, text } = stateCopy('results-empty'), noResults = { title, text };
-  if (!supervisor?.available) return { available: false, headline: null, items: [], groups: [], unknownResults: 0, also: null, layout: { cards: [], finished: [] }, reply: null, campaigns: {}, results: {}, noResults, recent: null };
+  if (!supervisor?.available) return { available: false, headline: null, count: 0, items: [], groups: [], unknownResults: 0, also: null, layout: { cards: [], finished: [] }, reply: null, campaigns: {}, results: {}, noResults, recent: null };
   // `host` names this computer in the page header; the items say "this computer" (aiworks#11 review F22).
-  const items = [], campaigns = {};
+  const items = [], campaigns = {}, halted = [];
   let unknownResults = 0;
   const entries = supervisor.campaigns.map((c) => ({ id: c.id, purpose: purpose(c) }));
   distinguish(entries);
@@ -327,20 +327,20 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     // store does not record who paused, so nothing is inferred from the reason text). A paused campaign still needs a
     // running supervisor, which renews its lease too, so a stopped or absent supervisor is listed, worded for the pause.
     const paused = c.control === 'paused';
-    // The work itself is named on the item's context line; `at` is when AIWorks stopped, which the page says after the text.
+    // A supervisor fault is not an owner action (aiworks#11 review F6, F17): it is listed under AIWorks itself, names the
+    // project it holds up in `about`, and no project or headline counts it.
     if (c.livenessDefect) {
-      items.push({ ...base, kind: 'controller', system: true, text: NEEDS.fault.text,
+      items.push({ campaignId: c.id, repository: null, about: c.repository, kind: 'controller', system: true, text: NEEDS.fault.text,
         points: [{ link: { label: NEEDS.fault.link, url: SUPERVISOR_ISSUE }, text: NEEDS.fault.point }] });
     } else if (campaigns[c.id].liveness === 'agent-working-supervisor-silent') {
-      items.push({ ...base, kind: 'controller', at: leaseEnded, text: NEEDS.silent.text, points: [{ link: null, text: NEEDS.silent.point }] });
-    } else if (campaigns[c.id].liveness === 'stopped' && neverLeased) {
-      const words = NEEDS.notPickedUp(paused);
-      items.push({ ...base, kind: 'controller', text: words.text, points: [{ link: null, text: words.point }] });
+      halted.push({ c, at: leaseEnded, how: 'silent', paused });
     } else if (campaigns[c.id].liveness === 'stopped') {
-      const words = NEEDS.stopped(paused);
-      items.push({ ...base, kind: 'controller', at: leaseEnded, text: words.text, points: [{ link: null, text: words.point }] });
+      halted.push({ c, at: neverLeased ? undefined : leaseEnded, how: neverLeased ? 'not-picked-up' : 'stopped', paused });
     }
   }
+  // AIWorks stopped on this computer is one fact, listed once under AIWorks itself with the work it holds up, not once
+  // per piece of work (aiworks#11 review F9). Restarting it is the owner's action, so it counts toward Needs you.
+  if (halted.length) items.push(stoppedItem(halted, entries));
   const coordinator = supervisor.coordinator;
   if (coordinator && (coordinator.configError || coordinator.blocked)) {
     const waiting = coordinator.messages.filter((m) => m.state === 'received').length;
@@ -348,16 +348,45 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       points: [{ link: null, text: `${coordinator.configError ?? coordinator.blocked}${waiting ? ` · ${plural(waiting, 'message')} waiting` : ''}. This is a supervisor configuration fix for whoever maintains AIWorks.` }] });
   }
   const answered = (coordinator?.messages ?? []).filter((m) => m.state === 'answered' && m.replyUrl).sort((a, b) => b.answeredAt - a.answeredAt)[0];
-  // Calm only about what blocks on the owner; reports and releases are said apart, never as "nothing".
-  const headline = items.length ? `Needs you (${items.length})` : unknownResults ? 'Checking for merges before listing what needs you' : 'Nothing is blocked on you right now';
+  // Calm only about what blocks on the owner; reports and releases are said apart, never as "nothing". Items that say
+  // they are not owner actions (a supervisor fault, an unreadable inbox) are listed but not counted (review F17).
+  const count = items.filter((item) => !item.system).length;
+  const headline = count ? `Needs you (${count})` : unknownResults ? 'Checking for merges before listing what needs you' : 'Nothing is blocked on you right now';
   // Page order: campaigns with something listed for the owner, then the other active ones. Finished or cancelled
   // campaigns with nothing listed collapse into a compact list, most recent first.
   const listed = new Set(items.map((item) => item.campaignId).filter(Boolean));
   const terminal = (c) => ['finished', 'cancelled'].includes(c.control), recency = (c) => Date.parse(c.lastProgressAt ?? '') || 0;
   const layout = { cards: [...supervisor.campaigns.filter((c) => listed.has(c.id)), ...supervisor.campaigns.filter((c) => !listed.has(c.id) && !terminal(c))].map((c) => c.id),
     finished: supervisor.campaigns.filter((c) => !listed.has(c.id) && terminal(c)).sort((a, b) => recency(b) - recency(a)).map((c) => c.id) };
-  return { available: true, headline, items, groups: needsGroups(items), unknownResults, also: alsoForYou(supervisor, campaigns, releases), layout, campaigns,
+  return { available: true, headline, count, items, groups: needsGroups(items), unknownResults, also: alsoForYou(supervisor, campaigns, releases), layout, campaigns,
     results: resultsByProject(supervisor, campaigns, releases), noResults, recent: recentSummary(supervisor, campaigns), reply: answered ? { messageId: answered.id, answeredAt: answered.answeredAt, url: answered.replyUrl } : null };
+}
+
+/**
+ * The one Needs me item for AIWorks stopped on this computer (OWNER_WORKSPACE §7.2), listed under AIWorks itself: when
+ * it last checked in and how to restart it. With one piece of work held up it is worded for that work and names it
+ * (`about`, `campaignId`); with several, one line per project names the work it holds up and what a pause or a
+ * still-working AI worker means for it.
+ */
+function stoppedItem(halted, entries) {
+  if (halted.length === 1) {
+    const [{ c, at, how, paused }] = halted;
+    const words = how === 'silent' ? NEEDS.silent : how === 'not-picked-up' ? NEEDS.notPickedUp(paused) : NEEDS.stopped(paused);
+    return { kind: 'controller', campaignId: c.id, repository: null, about: c.repository, at, text: words.text, points: [{ link: null, text: words.point }] };
+  }
+  const known = halted.map((entry) => entry.at).filter(Number.isFinite);
+  // What all of it has in common is said once, in the item's text; each piece of work notes only what differs.
+  const common = halted.every((entry) => entry.how === halted[0].how) ? halted[0].how : 'stopped';
+  const words = common === 'silent' ? NEEDS.silent : NEEDS.halted(common === 'not-picked-up');
+  const projects = new Map();
+  for (const { c, how, paused } of halted) {
+    const key = c.repository.toLowerCase(), purpose = entries.find((entry) => entry.id === c.id).purpose;
+    const name = purpose ? `${purpose.text}${purpose.variant ? ` (${purpose.variant})` : ''}` : c.id;
+    if (!projects.has(key)) projects.set(key, { name: short(c.repository), works: [] });
+    projects.get(key).works.push(NEEDS.heldWork(name, how === common ? null : how, paused));
+  }
+  return { kind: 'controller', campaignId: null, repository: null, at: known.length ? Math.max(...known) : null, text: words.text,
+    points: [{ link: null, text: words.point }, ...[...projects.values()].map(({ name, works }) => ({ link: null, text: NEEDS.heldUp(name, works) }))] };
 }
 
 export const SYSTEM_GROUP = 'AIWorks itself';
@@ -365,10 +394,11 @@ export const SYSTEM_GROUP = 'AIWorks itself';
 /**
  * Needs me (OWNER_WORKSPACE slice S3): the same items, grouped by project. One group per repository (case-insensitive,
  * in the order its first item is listed), named by its short name, or `owner/name` when two share one; then "AIWorks
- * itself" last. That group holds the items marked `system`, which say they are not owner actions (a supervisor fault,
- * an unreadable coordinator inbox). A stopped supervisor stays with the project whose work it stops: restarting it is
- * the owner's action, and the Projects screen counts it for that project. Grouping only: no item is added, dropped or
- * reworded, so the group counts add up to the headline count.
+ * itself" last. That group holds the items about this computer's AIWorks: the one stopped-AIWorks item, which is the
+ * owner's to restart, and the items marked `system`, which say they are not owner actions (a supervisor fault, an
+ * unreadable coordinator inbox). A group's `count` is its owner actions, so a project's count is the Projects screen's
+ * and the counts add up to the headline; `notCounted` is its items that are not owner actions (review F6, F17).
+ * Grouping only: no item is added, dropped or reworded.
  */
 function needsGroups(items) {
   const groups = new Map(), system = [];
@@ -382,7 +412,10 @@ function needsGroups(items) {
   const shared = projects.filter((group) => projects.some((other) => other !== group && other.name.toLowerCase() === group.name.toLowerCase()));
   for (const group of shared) group.name = group.project;
   if (system.length) projects.push({ key: 'aiworks-itself', project: null, name: SYSTEM_GROUP, items: system });
-  return projects.map((group) => ({ ...group, count: group.items.length }));
+  return projects.map((group) => {
+    const count = group.items.filter((item) => !item.system).length;
+    return { ...group, count, notCounted: group.items.length - count };
+  });
 }
 
 /**

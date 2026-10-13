@@ -200,10 +200,13 @@ test('per-project calm rule: Now needs the owner exactly when that project has N
     assert.deepEqual(nowView(project.toUpperCase(), { ...review }, { now: review.now }).state.key, view.state.key);
   }
   assert.ok(mine('example/notes-site').length > 1 && !mine('example/recipes').length, 'the fixture has a project that needs the owner and one that does not');
-  // Every piece of work alone: its Now state is calm exactly when it has no Needs me item.
+  // Every piece of work alone: its Now state is calm exactly when it has no Needs me owner action, or AIWorks stopped on
+  // this computer holds it up (that one item is under AIWorks itself; review F9). A fault of AIWorks itself is not the
+  // owner's to do (review F17).
   for (const id of new Set(Object.values(REVIEW_STATES).map((entry) => entry.campaignId).filter(Boolean))) {
-    const view = alone(review, id), items = review.owner.items.filter((item) => item.campaignId === id);
-    assert.equal(view.state.needsYou, items.length > 0, `${id}: ${view.state.key}`);
+    const view = alone(review, id), items = review.owner.items.filter((item) => item.campaignId === id && !item.system);
+    const held = ['stopped', 'agent-working-supervisor-silent'].includes(review.owner.campaigns[id].liveness);
+    assert.equal(view.state.needsYou, items.length > 0 || held, `${id}: ${view.state.key}`);
   }
   // Another project's items never reach this one: calm is per project, not across the computer.
   const shop = review.supervisor.campaigns.find((c) => c.id === 'shop-checkout'), notes = review.supervisor.campaigns.find((c) => c.id === 'notes-theme');

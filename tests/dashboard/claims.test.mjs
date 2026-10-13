@@ -332,7 +332,7 @@ test('each "Needs you" item leads with what its step delivers, with the evidence
   assert.match(page, /item\.action \? el\('div', \{ class: 'needs-action' \}, item\.action\)/);
 });
 
-test('"AIWorks itself" holds only items that say they are not owner actions; a project group never names a campaign', (t) => {
+test('"AIWorks itself" holds the items that say they are not owner actions, uncounted; a project group never names a campaign', (t) => {
   const { dataDir, store, d, finish } = fixture(t, [task('T1', 'first', { outcome: 'Telegram ingestion: analysed messages are not sent again' })], Date.now() - 10 * 60_000);
   finish('T1', 'https://github.com/netbka/Dyk/pull/463', { verified_sha: sha('T1') });
   store.acquireLease(d.campaignId, 'synthetic-instance', Date.now(), 60_000);
@@ -345,10 +345,14 @@ test('"AIWorks itself" holds only items that say they are not owner actions; a p
   const [project, system] = faulty.groups;
   assert.deepEqual([project.name, project.items.map((item) => item.kind)], ['Dyk', ['review']]);
   assert.deepEqual(system.items.map((item) => item.kind), ['controller', 'coordinator']);
-  assert.deepEqual([system.items[0].system, system.items[0].repository], [true, 'netbka/Dyk'], 'the fault still names the project whose work it holds up');
+  // The fault names the project whose work it holds up, but no project counts it (aiworks#11 review F6).
+  assert.deepEqual([system.items[0].system, system.items[0].repository, system.items[0].about], [true, null, 'netbka/Dyk'], 'the fault still names the project whose work it holds up');
   for (const item of system.items) assert.match(whole(item), /Not yours to fix|for whoever maintains AIWorks/, item.text);
   for (const item of project.items) assert.doesNotMatch(whole(item), /Not yours to fix|for whoever maintains AIWorks/, item.text);
-  assert.equal(faulty.headline, 'Needs you (3)', 'the same count as the ungrouped list');
+  // Listed, but not counted: neither says it is the owner's to do (review F17).
+  assert.equal(faulty.headline, 'Needs you (1)', 'only the owner action is counted');
+  assert.deepEqual(faulty.groups.map((group) => [group.count, group.notCounted]), [[1, 0], [0, 2]]);
+  assert.equal(healthy.headline, 'Needs you (1)', 'an unreadable inbox is listed, not counted');
   assert.ok(faulty.groups.every((group) => !group.name.includes(d.campaignId)), 'groups are named by project, never by campaign');
 });
 
