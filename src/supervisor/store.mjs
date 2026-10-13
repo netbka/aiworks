@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS operations (
   state TEXT NOT NULL, session_id TEXT NOT NULL, run_dir TEXT NOT NULL, workspace TEXT NOT NULL,
   base_sha TEXT, target_sha TEXT, report_digest TEXT, packet TEXT NOT NULL, packet_digest TEXT NOT NULL,
   outcome TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-  executor_kind TEXT NOT NULL DEFAULT 'claude-cli', routing TEXT);
+  executor_kind TEXT NOT NULL DEFAULT 'claude-cli', routing TEXT, account_identity TEXT);
 CREATE TABLE IF NOT EXISTS executor_waits (
   campaign_id TEXT NOT NULL, executor_kind TEXT NOT NULL, retry_at INTEGER,
   reason TEXT NOT NULL, PRIMARY KEY (campaign_id, executor_kind));
@@ -180,6 +180,9 @@ export class Store {
         // The routing receipt (router.mjs, docs/design/MODEL_ROUTING.md section 9) is additive in the same way: an
         // operation recorded before it reads routing as null, and the store version does not change.
         if (!columns.includes('routing')) this.db.exec('ALTER TABLE operations ADD COLUMN routing TEXT');
+        // The provider account an operation ran under (docs/design/ACCOUNT_ADAPTER_CAAM.md section 3.1) is additive too:
+        // a legacy operation reads account_identity as null, and the store version does not change.
+        if (!columns.includes('account_identity')) this.db.exec('ALTER TABLE operations ADD COLUMN account_identity TEXT');
       });
     } catch (error) {
       this.db.close();
@@ -218,8 +221,14 @@ export class Store {
   /**
    * Record an operation. One task has at most one open operation, whatever the campaign's parallelism: its implementer
    * and its verifier never overlap. Called inside the dispatch transaction, so the check and the insert commit together.
+   * account_identity, when given, is the provider account bound at dispatch (ACCOUNT_ADAPTER_CAAM.md section 3.1); it
+   * must be a non-empty string, and an operation recorded without one stores null.
    */
   recordOperation(row) {
+    const account = row.account_identity;
+    if (account !== undefined && account !== null && (typeof account !== 'string' || account === '')) {
+      throw new TypeError('account_identity must be a non-empty string or null');
+    }
     const open = this.get("SELECT id FROM operations WHERE campaign_id = ? AND task_id = ? AND state IN ('recorded', 'dispatched')", row.campaign_id, row.task_id);
     if (open) throw new ConflictError(`task ${row.task_id} of ${row.campaign_id} already has the open operation ${open.id}`);
     this.insert('operations', row);
