@@ -12,7 +12,7 @@ export const safeText = (value, max = 300) => {
 };
 /**
  * Standing deploy authorizations recorded in governance provider's project registry (`governance.releaseAuthorization`,
- * governance-029) under the governance root, by lowercased GitHub repository. Without a valid root nothing is recorded. A project without one is absent: its release follows its own policy, and the
+ * EP-029) under the governance root, by lowercased GitHub repository. Without a valid root nothing is recorded. A project without one is absent: its release follows its own policy, and the
  * dashboard does not say who releases.
  */
 export function readReleaseAuthorizations(root) {

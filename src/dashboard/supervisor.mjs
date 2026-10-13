@@ -229,7 +229,7 @@ export function releaseModes(repositories) {
     { key: 'review-only', label: 'Review only', on: true, text: 'AIWorks stops when a result passes the check and is published. You merge and release.' },
     { key: 'auto-release', label: 'Auto Release', on: false, available: false,
       text: 'Not available. Turning this on needs your separate release approval for this project, which has not been given.',
-      waitsFor: 'https://github.com/example-org/aiworks/issues/33' }] }));
+      waitsFor: 'https://github.com/netbka/aiworks/issues/33' }] }));
 }
 
 /** Settings (slice S8): configured command names, the AI workers once for this computer, and release mode per project. */

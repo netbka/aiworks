@@ -190,7 +190,7 @@ test('an unknown role fails closed at registration; tasks without a role need no
 test('declarations without the new keys validate and digest exactly as before', () => {
   // Synthetic identities replace installation names. Pins use the frozen pre-routing hash formulas.
   const decl = { version: 1, campaignId: 'digest-pin',
-    authorization: { version: 1, grantedBy: 'owner', grantedAt: '2026-10-09', reference: 'https://github.com/example-org/aiworks/issues/2', text: 'Synthetic test authorization.' },
+    authorization: { version: 1, grantedBy: 'owner', grantedAt: '2026-10-09', reference: 'https://github.com/netbka/aiworks/issues/2', text: 'Synthetic test authorization.' },
     target: { tenantId: 'example-org', projectId: 'sampleapp', environment: 'research', repository: 'example-org/sampleapp', baseBranch: 'main', trackingIssue: 443 },
     limits: { maxWorkerRuns: 12, slots: 1, maxRepairRounds: 2, maxRetriesPerTask: 2 },
     executor: { kind: 'claude-cli', model: 'opus', permissionMode: 'auto', implementerTimeoutMinutes: 1, verifierTimeoutMinutes: 1 },

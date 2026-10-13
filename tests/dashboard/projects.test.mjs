@@ -125,7 +125,7 @@ test('order: needs you, then work running, then the rest by last activity; one s
   start('notes-search', 'example/notes-site', null, old);
   const stopped = view(dataDir, merges);
   assertAgreesWithNeedsMe(stopped);
-  assert.deepEqual(stopped.owner.groups.map((group) => [group.name, group.count]), [['SampleApp', 1], ['AIWorks itself', 1]]);
+  assert.deepEqual(stopped.owner.groups.map((group) => [group.name, group.count]), [['sampleapp', 1], ['AIWorks itself', 1]]);
   assert.deepEqual(stopped.projects.projects.map((project) => [project.id, project.state.key, project.details.needsYou]).slice(0, 2),
     [['example-org/sampleapp', 'needs-you', 1], ['example/shop-app', 'running', 0]]);
 });

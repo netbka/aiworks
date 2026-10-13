@@ -398,7 +398,7 @@ The `claude -p` output shape was checked against Claude Code 2.1.295; the first 
 - **Cursor:** sandboxed `ask` mode for report/verification roles. `--trust` applies only to the controller-created checkout of the explicitly authorized repository; it does not enable force/yolo or MCP auto-approval. Commit implementation is skipped until a scoped publication-denial adapter is available. Detected project/global extensions that cannot be scoped per invocation make the provider unavailable.
 - **Claude:** the existing fresh `--session-id`, scoped permission mode, denied approval prompts, JSON schema, and publication/deployment deny list remain. Verifiers also deny edit/write/commit tools. Every Claude worker runs isolated from the host and the target project's Claude setup:
 
-  - `--setting-sources ""`: no user, project or local settings, so none of their allow rules (SampleApp's include `ssh netcup:*`, `git push origin main` and issue comments) or hooks apply. Admin-managed policy settings still apply by design.
+  - `--setting-sources ""`: no user, project or local settings, so none of their allow rules (SampleApp's include `ssh example-host:*`, `git push origin main` and issue comments) or hooks apply. Admin-managed policy settings still apply by design.
   - `--strict-mcp-config`: no MCP servers or claude.ai connectors such as local control service.
   - `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`: no saved memories. `--setting-sources` alone does not stop them: a SampleApp worker otherwise received the project memory naming its production ssh host.
   - Commands run in the foreground. `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` removes background commands: in a headless run with a JSON schema, ending a turn while one runs makes the CLI demand the final result at once, so a verifier that backgrounded a 10-minute `npm run check` had to return `evidence-unavailable` after one pass. `BASH_MAX_TIMEOUT_MS=3600000` and `BASH_DEFAULT_TIMEOUT_MS=1800000` keep such a gate from hitting the 10-minute foreground cap. The prompt says so too. The operation timeout still bounds the whole run.
@@ -561,3 +561,5 @@ Owner commands (both only narrow):
 - `node src/supervisor/cli.mjs release-mode <project> <destination> review-only --data <dir>` narrows one destination to Review only. It needs no grant and takes effect before the next step. `review-only` is the only mode the command accepts. **No command switches a destination to Auto Release**: only a newer valid grant does.
 
 `status` shows `release.stopped` while `RELEASE-STOP` exists and `release.narrowed` for destinations of the campaign's project that the owner narrowed. Neither appears until used.
+
+Project connectors accept an explicit `tenantId`. When omitted, the installation-local identity `local` is used; existing stored project identities are unchanged.

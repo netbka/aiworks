@@ -679,7 +679,7 @@ function sinceSummary() {
     recent.supervisorErrors || recent.livenessProblems ? el('li', { class: 'warn' }, `The supervisor itself had problems (${[
       recent.supervisorErrors ? `its own check failed ${plural(recent.supervisorErrors, 'time')} and was retried` : null,
       recent.livenessProblems ? plural(recent.livenessProblems, 'liveness problem') : null].filter(Boolean).join('; ')}). Not an owner action: these are supervisor faults for AIWorks's maintainers. `,
-    link('Supervisor issue #2 ↗', 'https://github.com/example-org/aiworks/issues/2'), ' · ', routeLink('When, in Diagnostics', '#/settings/diagnostics')) : null,
+    link('Supervisor issue #2 ↗', 'https://github.com/netbka/aiworks/issues/2'), ' · ', routeLink('When, in Diagnostics', '#/settings/diagnostics')) : null,
   ].filter(Boolean);
   return el('section', { class: 'since', 'aria-labelledby': 'since-title' }, el('h2', { id: 'since-title' }, when),
     facts.length ? el('ul', {}, ...facts) : el('p', {}, 'Nothing changed.'));

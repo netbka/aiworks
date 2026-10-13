@@ -98,7 +98,7 @@ export function declaration({ tasks, limits = {}, version = 1, campaignId = 'tes
   return {
     version: 1,
     campaignId,
-    authorization: { version, grantedBy: 'owner', grantedAt: '2026-10-09', reference: 'https://github.com/example-org/aiworks/issues/new', text: 'Synthetic test authorization.' },
+    authorization: { version, grantedBy: 'owner', grantedAt: '2026-10-09', reference: 'https://github.com/netbka/aiworks/issues/new', text: 'Synthetic test authorization.' },
     target: { tenantId: 'example-org', projectId: 'sampleapp', environment: 'research', repository: 'example-org/sampleapp', baseBranch: 'main', trackingIssue: 443 },
     limits: { maxWorkerRuns: 12, slots: 1, maxRepairRounds: 2, maxRetriesPerTask: 2, ...limits },
     executor: { kind: 'claude-cli', model: 'opus', permissionMode: 'auto', implementerTimeoutMinutes: 1, verifierTimeoutMinutes: 1 },

@@ -153,7 +153,7 @@ const capabilities = (ready, reason) => Object.fromEntries(CAPS.map((key) => [ke
  * Options: store, config, dataDir, governanceRoot, tenantId, gh and lsRemote (runners, injected by tests), git (the Git
  * command line), and preflight options (gitEnv, protectedRoots ...).
  */
-export function connectGithubProject(input, { store, config = {}, dataDir, governanceRoot, tenantId = 'example-org', gh, git = ['git'], lsRemote, now = Date.now(), ...options }) {
+export function connectGithubProject(input, { store, config = {}, dataDir, governanceRoot, tenantId = 'local', gh, git = ['git'], lsRemote, now = Date.now(), ...options }) {
   const live = projects(store);
   const found = preflight(input.path, { ...options, git, governanceRoot, projects: live, kind: 'github' });
   if (found.code === 'ALREADY_CONNECTED') return { ok: true, code: null, status: project(store, found.detail.projectId).status, project: project(store, found.detail.projectId), preflight: found };
@@ -261,7 +261,7 @@ function insertBaseline(store, projectId, seq, commit, counts, now) {
  * input: path, and optionally name, id, branch, asNewProject. Options: store, dataDir, governanceRoot, tenantId, git,
  * now, statfs (for the space check) and preflight options (gitEnv, protectedRoots ...).
  */
-export function connectLocalGitProject(input, { store, dataDir, governanceRoot, tenantId = 'example-org', git = ['git'], now = Date.now(), statfs, ...options }) {
+export function connectLocalGitProject(input, { store, dataDir, governanceRoot, tenantId = 'local', git = ['git'], now = Date.now(), statfs, ...options }) {
   const live = projects(store);
   const home = dirname(resolve(dataDir));
   const found = preflight(input.path, { ...options, git, governanceRoot, projects: live, kind: 'local-git',
@@ -469,7 +469,7 @@ function importFailed(store, current, { code, detail }, now) {
  * dataDir, governanceRoot, tenantId, git, now, statfs (for the space check), clock (the scan's time source), hooks
  * (tests), and preflight options (limits, io, gitEnv, protectedRoots ...).
  */
-export function connectFolderProject(input, { store, dataDir, governanceRoot, tenantId = 'example-org', git = ['git'], now = Date.now(), statfs, clock, hooks, ...options }) {
+export function connectFolderProject(input, { store, dataDir, governanceRoot, tenantId = 'local', git = ['git'], now = Date.now(), statfs, clock, hooks, ...options }) {
   const live = projects(store);
   const home = dirname(resolve(dataDir));
   const exclusions = input.exclusions ?? [];

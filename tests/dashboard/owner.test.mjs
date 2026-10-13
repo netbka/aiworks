@@ -141,7 +141,7 @@ test('each review names the accepted commit, points to the pull request for CI a
   // When nothing else waits on the step, release follows the project's rule; the owner is not assumed to release.
   const done = { ...supervisor, campaigns: supervisor.campaigns.map((c) => ({ ...c, tasks: c.tasks.map((task) => task.id === 'T3' ? { ...task, state: 'done', resultUrl: null } : task) })) };
   assert.equal(ownerView(done, merges).items[0].points.at(-1).text,
-    'Nothing else in this work waits on it; after merging, release follows SampleApp\'s release policy.');
+    'Nothing else in this work waits on it; after merging, release follows sampleapp\'s release policy.');
 });
 
 test('a working agent with a silent supervisor is said plainly, and same-titled campaigns are told apart', () => {
@@ -156,7 +156,7 @@ test('a working agent with a silent supervisor is said plainly, and same-titled 
   assert.equal(view.items[0].text, 'An AI worker is still working, but AIWorks stopped checking in on this computer');
   assert.equal(view.items[0].at, now - 10 * 60_000);
   assert.match(view.items[0].points[0].text, /result is collected and checked only when AIWorks runs again/);
-  assert.equal(view.items[0].points[1].text, 'Held up in SampleApp: “Run a controlled pilot (Telegram)”, “Run a controlled pilot (Whatsapp)”.');
+  assert.equal(view.items[0].points[1].text, 'Held up in sampleapp: “Run a controlled pilot (Telegram)”, “Run a controlled pilot (Whatsapp)”.');
   assert.equal(view.campaigns['sampleapp-442-pilot-telegram'].liveness, 'agent-working-supervisor-silent');
   assert.deepEqual(['sampleapp-442-pilot-telegram', 'sampleapp-442-pilot-whatsapp'].map((id) => view.campaigns[id].purpose.variant), ['Telegram', 'Whatsapp']);
 });
@@ -181,7 +181,7 @@ test('campaigns with something for the owner and active ones come first; finishe
     'finished-review/R1': result(sha(463), false), 'finished-new/N1': result(sha(464), true) }), { now });
   assert.deepEqual(view.items.map((item) => item.campaignId), ['finished-review']);
   assert.deepEqual(view.layout, { cards: ['finished-review', 'active'], finished: ['finished-new', 'cancelled', 'finished-old'] });
-  assert.equal(view.campaigns['finished-new'].outcome, 'The merged work is ready; release follows SampleApp\'s release policy');
+  assert.equal(view.campaigns['finished-new'].outcome, 'The merged work is ready; release follows sampleapp\'s release policy');
   assert.equal(view.campaigns['finished-review'].finished, 'All steps are finished · 1 step waits for your review (merge not seen yet)');
   assert.equal(view.campaigns.cancelled.outcome, 'Cancelled · 1 of 2 steps delivered');
   assert.equal(view.campaigns.active.outcome, null);
@@ -260,18 +260,18 @@ test('Needs me groups today\'s items by project, case-insensitively, with "AIWor
     campaign('shop-fault', 'example/shop', { livenessDefect: true, tasks: [decision('S1', 'example/shop')] }),
     campaign('sampleapp-b', 'example-org/sampleapp', { tasks: [review('B1', 'example-org/sampleapp', 464)] }),
     // Another owner's repository with the same short name keeps its owner in the group name.
-    campaign('other-sampleapp', 'example/SampleApp', { tasks: [review('O1', 'example/SampleApp', 7)] }),
+    campaign('other-sampleapp', 'example/sampleapp', { tasks: [review('O1', 'example/sampleapp', 7)] }),
     // A stopped supervisor is one fact about this computer and restarting it is the owner's action: it is counted under
     // AIWorks itself, never under the project (review F9).
     campaign('notes-stopped', 'example/notes', { controllerLive: false, leaseExpiresAt: new Date(now - 60 * 60_000).toISOString() }),
     // Waiting for an AI worker's usage limit to reset is never listed (AW-002).
     campaign('notes-wait', 'example/notes', { waitingReason: 'provider-availability', tasks: [{ ...decision('W1', 'example/notes'), blocked: null, blockedReason: null }] }),
   ], coordinator: { configError: 'coordinator.reportTo is missing', blocked: null, messages: [] } };
-  const merges = { repositories: ['example-org/sampleapp', 'example/SampleApp'].map((repository) => ({ repository, configured: true, fetchedAt: now, attemptedAt: now, error: null })),
+  const merges = { repositories: ['example-org/sampleapp', 'example/sampleapp'].map((repository) => ({ repository, configured: true, fetchedAt: now, attemptedAt: now, error: null })),
     steps: { 'sampleapp-a/A1': result(sha(463), false), 'sampleapp-b/B1': result(sha(464), false), 'other-sampleapp/O1': result(sha(7), false) } };
   const view = ownerView(supervisor, merges, { host: 'workstation', now });
   assert.deepEqual(view.groups.map((group) => [group.name, group.project, group.count]), [
-    ['example-org/sampleapp', 'example-org/sampleapp', 2], ['shop', 'example/shop', 1], ['example/SampleApp', 'example/SampleApp', 1], [SYSTEM_GROUP, null, 1]]);
+    ['example-org/sampleapp', 'example-org/sampleapp', 2], ['shop', 'example/shop', 1], ['example/sampleapp', 'example/sampleapp', 1], [SYSTEM_GROUP, null, 1]]);
   assert.equal(SYSTEM_GROUP, 'AIWorks itself');
   assert.deepEqual(view.groups[0].items.map((item) => item.campaignId), ['sampleapp-a', 'sampleapp-b'], 'one project whatever the spelling of its name');
   // The fault and the unreadable inbox are listed but not counted (review F17); the stop is counted.

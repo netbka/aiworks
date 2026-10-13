@@ -41,14 +41,14 @@ test('owner messages are accepted only from the dashboard origin, stored once an
   // Receipt states and the reply link as the dashboard sees them.
   const now = Date.now();
   store.run("UPDATE owner_messages SET state = 'answered', read_at = ?, answered_at = ?, response_key = 'k' WHERE id = ?", now + 1, now + 2, receipt.id);
-  store.run("INSERT INTO outbox (key, campaign_id, target, body, state, attempts, posted, updated_at) VALUES ('k', '_coordinator', 'example-org/aiworks#3', 'secret-marker', 'posted', 1, 'https://github.com/example-org/aiworks/issues/3#issuecomment-1', ?)", now);
+  store.run("INSERT INTO outbox (key, campaign_id, target, body, state, attempts, posted, updated_at) VALUES ('k', '_coordinator', 'example-org/aiworks#3', 'secret-marker', 'posted', 1, 'https://github.com/netbka/aiworks/issues/3#issuecomment-1', ?)", now);
   const view = supervisorSnapshot(dataDir).coordinator;
   assert.equal(view.configured, true);
   assert.equal(view.reportTo, 'example-org/aiworks#3');
   const message = view.messages[0];
   assert.deepEqual([message.state, message.text, message.source], ['answered', text, 'owner (dashboard)']);
   assert.ok(message.receivedAt <= message.readAt && message.readAt <= message.answeredAt);
-  assert.equal(message.replyUrl, 'https://github.com/example-org/aiworks/issues/3#issuecomment-1');
+  assert.equal(message.replyUrl, 'https://github.com/netbka/aiworks/issues/3#issuecomment-1');
   assert.ok(!JSON.stringify(view).includes('secret-marker'), 'the posted body is not exposed');
 });
 
@@ -92,7 +92,7 @@ test('Plan only: the coordinator message is built from the project, the goal and
     'Reply with a proposed plan: how success is checked, the main steps in order with the result of each, and any earlier or overlapping work in this project.',
     'This is Plan only. Change no file, register or start no work, and open, edit or comment on no issue or pull request.',
   ].join('\n'));
-  assert.match(planRequestText({ project: 'example-org/sampleapp', goal: 'g', from: 'pull', number: 12 }), /^Start from: GitHub pull request #12 \(https:\/\/github\.com\/example-org\/SampleApp\/pull\/12\)$/m);
+  assert.match(planRequestText({ project: 'example-org/sampleapp', goal: 'g', from: 'pull', number: 12 }), /^Start from: GitHub pull request #12 \(https:\/\/github\.com\/example-org\/sampleapp\/pull\/12\)$/m);
   assert.match(planRequestText({ project: 'example-org/sampleapp', goal: 'g', from: 'description' }), /^Start from: my description below$/m);
   assert.deepEqual(Object.keys(PLAN_SOURCES), ['description', 'issue', 'pull']);
   // The longest goal still fits the coordinator's 4,000-character message limit.

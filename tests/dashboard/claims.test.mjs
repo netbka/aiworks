@@ -88,7 +88,7 @@ test('a finished campaign says "nothing waits for you" only when every step is m
   assert.equal(finished(checked(results(d.campaignId, { T1: true, T2: true, T3: null }))).finished,
     'All steps are finished · the merge of 1 step is being checked; check again shortly · 2 merged');
   assert.equal(finished(checked(results(d.campaignId, { T1: true, T2: true, T3: true }))).finished,
-    'All steps are finished · the merged work is ready; release follows SampleApp\'s release policy');
+    'All steps are finished · the merged work is ready; release follows sampleapp\'s release policy');
   // Stale merge data never reads as merged, so it never makes a campaign ready for release.
   const stale = finished(checked(results(d.campaignId, { T1: true, T2: true, T3: true }), { fetchedAt: Date.now() - 20 * 60_000 }));
   assert.equal(stale.releaseReady, false);
@@ -216,8 +216,8 @@ test('the calm heading is about what blocks on the owner; reports to read and re
   assert.equal(view.headline, 'Nothing is blocked on you right now');
   // Reports are for the owner; who releases the merged work is the project's rule, not assumed to be the owner.
   assert.deepEqual(view.also, { reports: 1, release: [{ campaignId: d.campaignId, repository: 'example-org/sampleapp' }],
-    text: 'Also: 1 report for you to read · merged work in SampleApp is ready; release follows its release policy', short: '1 report for you to read · merged work ready for release' });
-  assert.equal(view.campaigns[d.campaignId].finished, 'All steps are finished · 1 report posted for you to read · the merged work is ready; release follows SampleApp\'s release policy');
+    text: 'Also: 1 report for you to read · merged work in sampleapp is ready; release follows its release policy', short: '1 report for you to read · merged work ready for release' });
+  assert.equal(view.campaigns[d.campaignId].finished, 'All steps are finished · 1 report posted for you to read · the merged work is ready; release follows sampleapp\'s release policy');
   // Not ready for release while a pull request is open; it is then a "Needs you" item, and the heading counts it.
   const open = ownerView(supervisor, checked(results(d.campaignId, { T2: true, T3: false })));
   assert.equal(open.headline, 'Needs you (1)');
@@ -340,10 +340,10 @@ test('"AIWorks itself" holds the items that say they are not owner actions, unco
   const supervisor = supervisorSnapshot(dataDir);
   const merges = checked(results(d.campaignId, { T1: false }));
   const healthy = ownerView(supervisor, merges);
-  assert.deepEqual(healthy.groups.map((group) => [group.name, group.items.map((item) => item.kind)]), [['SampleApp', ['review']], ['AIWorks itself', ['coordinator']]]);
+  assert.deepEqual(healthy.groups.map((group) => [group.name, group.items.map((item) => item.kind)]), [['sampleapp', ['review']], ['AIWorks itself', ['coordinator']]]);
   const faulty = ownerView({ ...supervisor, campaigns: supervisor.campaigns.map((c) => ({ ...c, livenessDefect: true })) }, merges, { host: 'workstation' });
   const [project, system] = faulty.groups;
-  assert.deepEqual([project.name, project.items.map((item) => item.kind)], ['SampleApp', ['review']]);
+  assert.deepEqual([project.name, project.items.map((item) => item.kind)], ['sampleapp', ['review']]);
   assert.deepEqual(system.items.map((item) => item.kind), ['controller', 'coordinator']);
   // The fault names the project whose work it holds up, but no project counts it (aiworks#11 review F6).
   assert.deepEqual([system.items[0].system, system.items[0].repository, system.items[0].about], [true, null, 'example-org/sampleapp'], 'the fault still names the project whose work it holds up');
@@ -367,11 +367,11 @@ test('release wording follows the project registry: a recorded standing authoriz
   const supervisor = supervisorSnapshot(dataDir);
   const oneOpen = checked(results(d.campaignId, { T1: false, T2: true }));
   const open = (options) => ownerView(supervisor, oneOpen, options).items[0].points.at(-1).text;
-  assert.equal(open({ releases }), 'Nothing else in this work waits on it; after merging, release follows SampleApp\'s standing deploy authorization.');
-  assert.equal(open({}), 'Nothing else in this work waits on it; after merging, release follows SampleApp\'s release policy.', 'nothing recorded: no one is named');
+  assert.equal(open({ releases }), 'Nothing else in this work waits on it; after merging, release follows sampleapp\'s standing deploy authorization.');
+  assert.equal(open({}), 'Nothing else in this work waits on it; after merging, release follows sampleapp\'s release policy.', 'nothing recorded: no one is named');
   const merged = ownerView(supervisor, checked(results(d.campaignId, { T1: true, T2: true })), { releases });
-  assert.equal(merged.campaigns[d.campaignId].finished, 'All steps are finished · the merged work is ready; release follows SampleApp\'s standing deploy authorization');
-  assert.equal(merged.also.text, 'Also: merged work in SampleApp is ready; release follows its standing deploy authorization');
+  assert.equal(merged.campaigns[d.campaignId].finished, 'All steps are finished · the merged work is ready; release follows sampleapp\'s standing deploy authorization');
+  assert.equal(merged.also.text, 'Also: merged work in sampleapp is ready; release follows its standing deploy authorization');
   for (const view of [merged, ownerView(supervisor, oneOpen, { releases })]) {
     assert.doesNotMatch(JSON.stringify(view), /your release|releasing it is your next step/i, 'the owner is never assumed to release');
   }
@@ -434,8 +434,8 @@ test('a merged result never reads released, deployed or live; stale merge data n
   const merged = (options) => view(options).groups.find((group) => group.key === 'merged').rows;
   // The release line is the project's rule from the registry, else its own policy; it never says who acts.
   assert.deepEqual(merged({ releases }).map((row) => [row.word, row.mergedAt, row.release]), [
-    ['Merged', mergedAt, 'Release follows SampleApp\'s standing deploy authorization.'], ['Merged', mergedAt, 'Release follows SampleApp\'s standing deploy authorization.']]);
-  assert.deepEqual(merged({}).map((row) => row.release), ['Release follows SampleApp\'s release policy.', 'Release follows SampleApp\'s release policy.']);
+    ['Merged', mergedAt, 'Release follows sampleapp\'s standing deploy authorization.'], ['Merged', mergedAt, 'Release follows sampleapp\'s standing deploy authorization.']]);
+  assert.deepEqual(merged({}).map((row) => row.release), ['Release follows sampleapp\'s release policy.', 'Release follows sampleapp\'s release policy.']);
   for (const options of [{ releases }, {}]) {
     const text = JSON.stringify(view(options).groups.map((group) => [group.title, ...group.rows.map((row) => [row.word, row.note, row.release, row.evidence, row.detail])]));
     assert.doesNotMatch(text, /releas(ed|ing)|deployed|\blive\b|accepted|\bdone\b/i, text);

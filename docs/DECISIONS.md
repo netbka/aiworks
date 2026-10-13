@@ -14,9 +14,9 @@ Optional run, repair, retry and cost limits must be explicit. Provider availabil
 
 Bind to loopback. Mutating requests require exact origin checks, CSRF protection, bounded input and current version, scope and authorization. Remote access needs a separately reviewed authentication design.
 
-## AW-004 - Visible dashboard changes need independent verification
+## AW-004 - The coordinator is read-only
 
-Validate behaviour, presentation and the access boundary with evidence appropriate to the change. Private installation screenshots and results stay outside public source.
+The coordinator reads assigned repositories and reports plans and answers through the supervisor. It does not edit source, merge, deploy, change provider resources or register campaigns. Execution belongs to explicitly registered campaigns.
 
 ## AW-005 - Runtime code must be merged; declarations remain private
 

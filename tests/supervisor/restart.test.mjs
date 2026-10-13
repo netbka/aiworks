@@ -180,7 +180,7 @@ test('two controllers running at once never dispatch the same work twice', { ski
 // (ADAPTIVE_SCHEDULER 4.3). Campaigns that may run side by side target different repositories; campaigns on one
 // repository share its domain and must take turns.
 
-const PROJECTS = { 'example-org/sampleapp': 'sampleapp', 'example-org/service': 'otp', 'example-org/sample-wiki': 'sample-wiki' };
+const PROJECTS = { 'example-org/sampleapp': 'sampleapp', 'example-org/service': 'service', 'example-org/sample-wiki': 'sample-wiki' };
 /** A campaign of one commit task on `repository`. */
 const single = (campaignId, issue, repository = 'example-org/sampleapp') => {
   const d = declaration({ campaignId, tasks: [{ id: 'T1', issue, title: `task of ${campaignId}`, deliverable: 'commit',

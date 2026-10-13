@@ -68,7 +68,7 @@ test('with merges.delegatedTo, a verified, unmerged pull request is not in Needs
   assert.ok(!view.items.some((item) => item.link?.url === PR(463)));
   assert.equal(view.count, 1);
   assert.equal(view.headline, 'Needs you (1)');
-  assert.deepEqual(view.groups.map((group) => [group.name, group.count]), [['SampleApp', 1]]);
+  assert.deepEqual(view.groups.map((group) => [group.name, group.count]), [['sampleapp', 1]]);
   const projects = projectsView(supervisor, view);
   assert.equal(projects.projects.find((project) => project.repository === 'example-org/sampleapp').details.needsYou, 1);
   // Work: the step's state and the line under it.
