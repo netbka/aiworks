@@ -166,3 +166,137 @@ test('closed database bytes and directory entries remain unchanged after status'
   assert.deepEqual(readFileSync(path), before);
   assert.deepEqual(readdirSync(root), files);
 });
+
+// ---- RUN9 (ADAPTIVE_SCHEDULER slice S8, supervisor half): one plain wait reason and the next automatic action per step. ----
+
+const CODES = ['running', 'paused', 'cancelled', 'owner', 'recheck', 'dependency', 'integration', 'retry-backoff', 'publishing', 'provider-cooldown',
+  'campaign-fanout', 'host-capacity', 'host-pressure', 'write-domain', 'provider-concurrency', 'ready'];
+
+function openOperation(store, campaignId, taskId, now, { kind = 'implement', id = `${campaignId}-${taskId}` } = {}) {
+  store.insert('operations', { id, campaign_id: campaignId, task_id: taskId, kind, seq: 1, idempotency_key: id, lease_generation: 1, state: 'recorded',
+    session_id: 'synthetic', run_dir: 'synthetic', workspace: 'synthetic', packet: {}, packet_digest: 'digest', created_at: now, updated_at: now });
+}
+
+const patchTask = (store, campaignId, taskId, changes, now) =>
+  store.patch('tasks', { campaign_id: campaignId, task_id: taskId }, store.task(campaignId, taskId).version, changes, now);
+
+/** Every unfinished task has exactly one wait with a known code, owner text and a next action; a done task has none. */
+function waits(store, campaignId, now, options) {
+  const status = campaignStatus(store, campaignId, now, options);
+  for (const task of status.tasks) {
+    if (task.state === 'done') { assert.equal(task.wait, null, `${task.id} is done`); continue; }
+    assert.ok(CODES.includes(task.wait?.code), `${task.id} has one known reason: ${JSON.stringify(task.wait)}`);
+    assert.ok(task.wait.text && task.wait.next, `${task.id} has owner text and a next action`);
+  }
+  return Object.fromEntries(status.tasks.map((task) => [task.id, task.wait]));
+}
+
+const commitTask = (id, extra = {}) => ({ id, issue: 1, title: `Task ${id}`, deliverable: 'commit', goal: 'g', dependsOn: [], acceptance: ['a'], references: ['AGENTS.md'], ...extra });
+
+function waitStore(t, prefix) {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  const store = new Store(join(root, 'supervisor.db'));
+  t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
+  return store;
+}
+
+test('status gives every waiting step one plain reason and the next automatic action', { skip: !SQLITE }, (t) => {
+  const store = waitStore(t, 'aiworks-status-wait-');
+  const id = 'waits';
+  campaignStart(store, declaration({ campaignId: id, tasks: [
+    commitTask('A', { title: 'Login page' }), commitTask('B', { dependsOn: ['A'] }), commitTask('C'),
+    commitTask('D', { dependsOn: ['A'], requiresMergedDependencies: true }),
+  ] }));
+  const now = Date.now();
+  let wait = waits(store, id, now);
+  assert.equal(wait.A.code, 'ready');
+  assert.equal(wait.A.next, 'Starts on the next turn');
+  assert.deepEqual([wait.B.code, wait.B.text, wait.B.next], ['dependency', 'Waiting for "Login page" to finish', 'Starts when that step is done']);
+  assert.equal(wait.C.code, 'campaign-fanout', 'with the scheduler off one step runs at a time, the first one first');
+  openOperation(store, id, 'A', now);
+  wait = waits(store, id, now);
+  assert.deepEqual([wait.A.code, wait.A.text, wait.A.next], ['running', 'Being implemented', 'The result is recorded when the run ends']);
+  assert.deepEqual([wait.C.code, wait.C.text, wait.C.next], ['campaign-fanout', 'Waiting for a free worker in this work program', 'Starts when a running step finishes']);
+  store.run("UPDATE operations SET state = 'finished'");
+  patchTask(store, id, 'A', { state: 'done', verified_sha: 'a'.repeat(40) }, now);
+  patchTask(store, id, 'B', { retry_at: now + 60_000, last_error: 'timeout: the run took too long' }, now);
+  patchTask(store, id, 'C', { retry_at: now + 30_000, last_error: 'quota: provider usage/rate limit' }, now);
+  patchTask(store, id, 'D', { retry_at: now + 60_000, last_error: 'dependency-integration: waiting for A in main' }, now);
+  wait = waits(store, id, now);
+  assert.equal(wait.A, null);
+  assert.deepEqual([wait.B.code, wait.B.until], ['retry-backoff', new Date(now + 60_000).toISOString()]);
+  assert.equal(wait.B.next, `Tries again at ${new Date(now + 60_000).toISOString()}`);
+  assert.deepEqual([wait.C.code, wait.C.until], ['provider-cooldown', new Date(now + 30_000).toISOString()]);
+  assert.deepEqual([wait.D.code, wait.D.text], ['integration', 'Waiting for "Login page" to be merged into main']);
+  patchTask(store, id, 'B', { state: 'verified', retry_at: null, last_error: null }, now);
+  assert.equal(waits(store, id, now).B.code, 'publishing', 'publication needs no provider');
+  patchTask(store, id, 'C', { blocked: { class: 'B3', reason: 'owner-reserved' } }, now);
+  wait = waits(store, id, now);
+  assert.deepEqual([wait.C.code, wait.C.next], ['owner', 'None; listed in Needs me']);
+  store.patch('campaigns', { id }, store.campaign(id).version, { control: 'paused' }, now);
+  wait = waits(store, id, now);
+  assert.deepEqual([wait.B.code, wait.C.code, wait.D.code], ['paused', 'paused', 'paused']);
+  assert.equal(wait.D.next, 'None until you resume it');
+});
+
+test('with the scheduler on, status names the admission check that refuses each step', { skip: !SQLITE }, async (t) => {
+  const { admissionCheck, hostCeiling } = await import('../../src/supervisor/scheduler.mjs');
+  const store = waitStore(t, 'aiworks-status-admit-');
+  campaignStart(store, declaration({ campaignId: 'wide', tasks: [commitTask('W', { issue: 2, title: 'Dashboard', writes: ['src/'] })] }));
+  campaignStart(store, declaration({ campaignId: 'narrow', limits: { slots: 'auto' }, tasks: [commitTask('N', { issue: 3, writes: ['src/ui/'] }), commitTask('M', { issue: 4, writes: ['docs/'] })] }));
+  const now = Date.now();
+  const config = { scheduler: { enabled: true, maxWorkers: 4 } };
+  // The reason status shows is the scheduler's own predicate over the same rows.
+  const decided = (taskId) => admissionCheck(store, { campaignId: 'narrow', taskId, kind: 'implement', declaration: store.campaign('narrow').declaration },
+    { ceiling: hostCeiling(config) })?.reason ?? 'ready';
+  openOperation(store, 'wide', 'W', now);
+  let wait = waits(store, 'narrow', now, { config });
+  assert.deepEqual([wait.N.code, wait.N.text, wait.N.next], ['write-domain', 'Another step ("Dashboard") is changing src/', 'Starts when that change is merged or dropped']);
+  assert.deepEqual(wait.N.holder, { campaignId: 'wide', taskId: 'W', reason: 'writing', prUrl: null });
+  assert.equal(wait.N.code, decided('N'));
+  assert.equal(wait.M.code, 'ready', 'a disjoint domain is not held');
+  assert.equal(wait.M.code, decided('M'));
+  assert.equal(waits(store, 'narrow', now).N.code, 'ready', 'off means today: no write domains without the scheduler');
+  store.run("UPDATE operations SET state = 'finished'");
+  patchTask(store, 'wide', 'W', { state: 'done', verified_sha: 'b'.repeat(40), pr_url: 'https://github.com/netbka/Dyk/pull/41' }, now);
+  wait = waits(store, 'narrow', now, { config });
+  assert.equal(wait.N.text, 'Another step ("Dashboard") is changing src/ (PR #41 not merged yet)');
+  assert.equal(wait.N.holder.reason, 'published-unmerged');
+  openOperation(store, 'narrow', 'M', now);
+  wait = waits(store, 'narrow', now, { config });
+  assert.equal(wait.N.code, 'campaign-fanout', 'the learned fan-out starts at one');
+  assert.equal(wait.N.code, decided('N'));
+  store.run("INSERT INTO capacity (scope, id, value, reason, updated_at) VALUES ('campaign', 'narrow', 2, 'synthetic', ?)", now);
+  assert.equal(waits(store, 'narrow', now, { config }).N.code, 'write-domain', 'a raised fan-out lets the next check decide');
+  openOperation(store, 'elsewhere', 'X', now);
+  assert.equal(waits(store, 'narrow', now, { config: { scheduler: { enabled: true, maxWorkers: 2 } } }).N.code, 'host-capacity');
+  store.run("INSERT INTO capacity (scope, id, value, reason, updated_at) VALUES ('host', 'pressure', 1, 'memory', ?)", now);
+  wait = waits(store, 'narrow', now, { config });
+  assert.deepEqual([wait.N.code, wait.N.text], ['host-pressure', 'This computer is low on memory']);
+  store.run("UPDATE capacity SET value = 0 WHERE scope = 'host'");
+  store.run("INSERT INTO capacity (scope, id, value, reason, updated_at) VALUES ('account', 'claude-cli', 1, 'synthetic', ?)", now);
+  patchTask(store, 'wide', 'W', { pr_url: null, verified_sha: null }, now);
+  wait = waits(store, 'narrow', now, { config });
+  assert.deepEqual([wait.N.code, wait.N.text], ['provider-concurrency', 'The AI provider asked to slow down']);
+});
+
+test('a wait reason never carries worker output or a recorded error text', { skip: !SQLITE }, (t) => {
+  const store = waitStore(t, 'aiworks-status-text-');
+  const id = 'texts';
+  const marker = 'SECRET-WORKER-TEXT';
+  campaignStart(store, declaration({ campaignId: id, tasks: [commitTask('A'), commitTask('B'), commitTask('C'), commitTask('D')] }));
+  const now = Date.now();
+  patchTask(store, id, 'A', { blocked: { class: 'B3', reason: `owner-reserved: ${marker}` }, result: { summary: marker } }, now);
+  patchTask(store, id, 'B', { blocked: { class: 'stalled', reason: `3 failed attempts: ${marker}` } }, now);
+  patchTask(store, id, 'C', { retry_at: now + 5_000, last_error: `timeout: ${marker}` }, now);
+  patchTask(store, id, 'D', { retry_at: now + 5_000, last_error: `quota: ${marker}` }, now);
+  const seen = [waits(store, id, now)];
+  store.patch('campaigns', { id }, store.campaign(id).version, { blocker: { kind: 'auth', class: 'B2', reason: marker, requestedAction: marker } }, now);
+  patchTask(store, id, 'C', { retry_at: null }, now);
+  seen.push(waits(store, id, now));
+  store.patch('campaigns', { id }, store.campaign(id).version, { blocker: { kind: marker, class: 'B2', reason: marker } }, now);
+  seen.push(waits(store, id, now));
+  assert.deepEqual(seen.map((wait) => wait.C.code), ['retry-backoff', 'owner', 'owner']);
+  assert.equal(seen[1].C.text, 'Needs you: an AI provider login failed');
+  for (const wait of seen) assert.ok(!JSON.stringify(wait).includes(marker), JSON.stringify(wait));
+});
