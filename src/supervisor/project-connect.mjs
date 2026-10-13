@@ -4,13 +4,15 @@
 // branch. Nothing is fetched or created at connect: no git fetch, no worktree, no branch, no config.json write.
 // Connecting a local Git project (slice S4, design 8.3) reads the owner's repository and copies the chosen branch into
 // AIWorks's managed mirror outside it (adapters/mirror.mjs). Starting work there stays off: LOCAL_START_OFF until the
-// owner decides D2 (#24) and D4 (#32).
+// owner decides D2 (#24) and D4 (#32). Connecting a plain folder (slice S5, design 8.4) copies its included files into
+// AIWorks's managed snapshot; the folder itself is only read and stays byte-identical. Starting work stays off there too.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { realpathSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { existsSync, lstatSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { basename, dirname, join, parse, resolve } from 'node:path';
 import { governanceForContract, registryEntriesFor } from './campaign.mjs';
-import { mirrorHead, mirrorRootFor, mirrorSpace, MirrorError, syncGitMirror, treeCounts, validBranch } from './adapters/mirror.mjs';
+import { folderHead, folderManifest, mirrorHead, mirrorRootFor, mirrorSpace, MirrorError, syncFolderSnapshot, syncGitMirror, treeCounts,
+  validBranch } from './adapters/mirror.mjs';
 import { checkProject, githubRemote, preflight } from './project-preflight.mjs';
 import { createProject, githubRepository, project, PROJECT_ID, ProjectError, projects, rootKey, updateProject } from './projects.mjs';
 
@@ -21,6 +23,7 @@ export const CONNECT_CODES = Object.freeze({
   CONFIG_CONFLICT: 'needs-setup',
   MIRROR_SPACE: 'not-saved', MIRROR_CHANGED: 'needs-setup', LOCAL_BRANCH_MISSING: 'not-saved', GITHUB_REGISTERED: 'not-saved',
   PROJECT_MOVED: 'confirm', NOT_LOCAL_GIT: 'not-saved',
+  CHANGED_DURING_COPY: 'unavailable', NOT_FOLDER: 'not-saved',
 });
 const BRANCH = /^(?!-)(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9._/-]{1,200}(?<![./])$/;
 const CAPS = ['plan', 'startWork', 'publish', 'apply'];
@@ -50,8 +53,21 @@ export function connectCopy(code, detail = {}) {
     GITHUB_REGISTERED: `${repo} is in Engineering Platform's project list, so connect it as a GitHub project.`,
     PROJECT_MOVED: `This is "${name}", connected before at ${detail.was}. Move "${name}" here to keep its history.`,
     NOT_LOCAL_GIT: 'This folder has no Git repository with commits. Connect it as a GitHub project or a plain folder.',
+    // Plain folders (design 8.4).
+    EXCLUDED_NOTICE: `AIWorks left out ${detail.n ?? excludedTotal(detail)} items and never copies them: ${detail.secrets ?? 0} secret-like files (for example .env), ${detail.links ?? 0} links, ${detail.repos ?? 0} other Git repositories, ${detail.ignored ?? 0} ignored files.`,
+    TOO_LARGE: `This folder is too big to copy safely (${detail.files} files, ${size(detail.bytes)}). Leave out large folders such as build output, or choose a smaller folder.`,
+    FILE_TOO_LARGE: `${detail.count} files are larger than 100 MB, for example ${detail.examples?.[0]}. Leave them out to continue.`,
+    SCAN_TIMEOUT: 'Reading this folder took too long. Leave out large folders, then try again.',
+    UNREADABLE_FILES: `AIWorks can't read ${detail.count} files, for example ${detail.examples?.[0]}. Fix their permissions or leave them out.`,
+    CASE_COLLISION: `${detail.a} and ${detail.b} differ only in capital letters. AIWorks's copy can't keep both. Rename one or leave it out.`,
+    CHANGED_DURING_COPY: 'Files changed while AIWorks was copying them. Finish saving your work, then check again.',
+    // The design names this outcome (8.4, step 2) but gives no copy; it follows the style of NOT_LOCAL_GIT.
+    NOT_FOLDER: 'This folder is a Git repository. Connect it as a GitHub or local Git project.',
   }[code] ?? null;
 }
+
+const EXCLUDED_KINDS = ['secrets', 'links', 'repos', 'modules', 'owner', 'other', 'ignored'];
+const excludedTotal = (detail) => EXCLUDED_KINDS.reduce((sum, kind) => sum + (Number(detail[kind]) || 0), 0);
 
 /** Bytes as the owner reads them: 512 MB, 1.5 GB. */
 function size(bytes) {
@@ -224,10 +240,13 @@ const refused = (found, code, detail = {}) => ({ ok: false, code, status: CONNEC
   message: connectCopy(code, detail), detail, project: null, preflight: found });
 const asOwnerStatus = (status) => (['ready', 'needs-setup', 'unavailable'].includes(status) ? status : 'needs-setup');
 
-/** Record baseline `seq` of a local Git project: its manifest is the commit's tree, so the digest is the commit SHA (5.3). */
+/**
+ * Record baseline `seq` (design 5.3). For local Git the manifest is the commit's tree, so the digest is the commit SHA;
+ * a plain folder's import gives its manifest digest and excluded-path summary in `counts`.
+ */
 function insertBaseline(store, projectId, seq, commit, counts, now) {
-  store.insert('project_baselines', { project_id: projectId, seq, commit_sha: commit, manifest_digest: commit,
-    files: counts.files, bytes: counts.bytes, excluded: '{}', created_at: now });
+  store.insert('project_baselines', { project_id: projectId, seq, commit_sha: commit, manifest_digest: counts.manifestDigest ?? commit,
+    files: counts.files, bytes: counts.bytes, excluded: JSON.stringify(counts.excluded ?? {}), created_at: now });
   store.journal(null, 'project-baseline-taken', { projectId, seq, commit }, now);
   return { seq, commit, at: now };
 }
@@ -268,12 +287,7 @@ export function connectLocalGitProject(input, { store, dataDir, governanceRoot, 
   if (moved && !input.asNewProject) return refused(found, 'PROJECT_MOVED', { projectId: moved.id, name: moved.name, was: moved.root_path });
 
   const name = input.name ?? basename(found.root);
-  const id = input.id ?? idFrom(name);
-  // The id names the mirror's folder, so it is checked before anything is created.
-  if (typeof id !== 'string' || !PROJECT_ID.test(id)) {
-    throw new ProjectError('PROJECT_ID_INVALID', 'Project ids use 2 to 40 lowercase letters, digits and hyphens, starting with a letter or digit');
-  }
-  if (project(store, id)) throw new ProjectError('PROJECT_ID_TAKEN', `The project id "${id}" is already in use or was used before. Choose another.`, { projectId: id });
+  const id = newId(store, input.id ?? idFrom(name));
   const space = mirrorSpace({ git, sourceRoot: found.root, mirrorParent: home, statfs, gitEnv });
   if (!space.ok) return refused(found, 'MIRROR_SPACE', space);
 
@@ -294,12 +308,29 @@ export function connectLocalGitProject(input, { store, dataDir, governanceRoot, 
   return { ok: true, code: null, status: 'ready', message: null, notices: localNotices(found), project: saved, baseline: saved.current_baseline, preflight: found };
 }
 
-function liveLocalGit(store, id) {
+/** The id names the mirror's folder, so it is checked before anything is created. */
+function newId(store, id) {
+  if (typeof id !== 'string' || !PROJECT_ID.test(id)) {
+    throw new ProjectError('PROJECT_ID_INVALID', 'Project ids use 2 to 40 lowercase letters, digits and hyphens, starting with a letter or digit');
+  }
+  if (project(store, id)) throw new ProjectError('PROJECT_ID_TAKEN', `The project id "${id}" is already in use or was used before. Choose another.`, { projectId: id });
+  return id;
+}
+
+function liveLocal(store, id, kind) {
   const current = project(store, id);
   if (!current || current.disconnected_at != null) throw new ProjectError('PROJECT_NOT_FOUND', `No connected project "${id}"`, { projectId: id });
-  if (current.source_kind !== 'local-git') throw new ProjectError('PROJECT_INVALID', `Project "${id}" is not a local Git project`, { projectId: id });
+  if (current.source_kind !== kind) {
+    throw new ProjectError('PROJECT_INVALID', `Project "${id}" is not a ${kind === 'folder' ? 'plain folder' : 'local Git project'}`, { projectId: id });
+  }
   return current;
 }
+const liveLocalGit = (store, id) => liveLocal(store, id, 'local-git');
+
+/** The commit AIWorks's copy holds now: the mirror ref for local Git, aiworks/baseline for a plain folder. */
+const copyHead = (current, git, gitEnv) => (current.source_kind === 'folder'
+  ? folderHead({ git, mirrorRoot: current.mirror_root, gitEnv })
+  : mirrorHead({ git, mirrorRoot: current.mirror_root, branch: current.local_branch, gitEnv }));
 
 /** Save a check's outcome when it changed the status; a passing check after MIRROR_CHANGED does not clear it (Rebuild copy does). */
 function saveState(store, current, status, reason, now) {
@@ -312,13 +343,15 @@ function saveState(store, current, status, reason, now) {
  * identity rules), and the mirror still holds the recorded baseline. MIRROR_CHANGED when it does not: AIWorks stops
  * using the copy until the owner chooses Rebuild copy. The status is saved. Returns { ok, code, status, message, project }.
  */
-export function checkLocalGitProject(store, id, { governanceRoot, git = ['git'], now = Date.now(), ...options }) {
-  const current = liveLocalGit(store, id);
+export function checkLocalGitProject(store, id, options) {
+  return checkLocal(store, liveLocalGit(store, id), options);
+}
+
+function checkLocal(store, current, { governanceRoot, git = ['git'], now = Date.now(), ...options }) {
   const source = checkProject(current, { ...options, git, governanceRoot, projects: projects(store) });
   let code = source.ok ? null : source.code;
   let detail = source.ok ? {} : source.detail;
-  if (!code && (current.reason === 'MIRROR_CHANGED' ||
-      mirrorHead({ git, mirrorRoot: current.mirror_root, branch: current.local_branch, gitEnv: options.gitEnv }) !== current.current_baseline?.commit)) {
+  if (!code && (current.reason === 'MIRROR_CHANGED' || copyHead(current, git, options.gitEnv) !== current.current_baseline?.commit)) {
     code = 'MIRROR_CHANGED';
     detail = {};
   }
@@ -389,6 +422,175 @@ export function relocateLocalGitProject(store, id, path, { governanceRoot, dataD
     return project(store, id);
   });
   return { ok: true, code: null, status: saved.status, message: null, project: saved };
+}
+
+/**
+ * What a plain folder may do: the same as a local Git project (design 8.4, step 6). Starting work waits for D2 (#24)
+ * and D4 (#32), as for local Git.
+ */
+export const FOLDER_CAPABILITIES = LOCAL_GIT_CAPABILITIES;
+
+/** EXCLUDED_NOTICE for an import: counts for each class and at most 10 example relative paths each (design 4.4). */
+function excludedNotice(excluded) {
+  const counts = Object.fromEntries(Object.entries(excluded).map(([kind, bucket]) => [kind, bucket.count]));
+  const n = excludedTotal(counts);
+  if (!n) return [];
+  const examples = Object.fromEntries(Object.entries(excluded).filter(([, bucket]) => bucket.count).map(([kind, bucket]) => [kind, bucket.examples]));
+  return [withCopy({ code: 'EXCLUDED_NOTICE', n, ...counts, examples })];
+}
+
+/**
+ * Import the folder into AIWorks's copy (adapters/mirror.mjs). A file that changed during the copy, or one that cannot
+ * be read, comes back as { code, detail }; anything else throws. Returns { sync } on success.
+ */
+function importFolder(target, { git, gitEnv, hooks, parent }) {
+  try {
+    return { sync: syncFolderSnapshot({ git, mirrorRoot: target.mirror_root, sourceRoot: target.root_path, parent, exclusions: target.exclusions,
+      hooks, gitEnv }) };
+  } catch (error) {
+    if (error instanceof MirrorError && ['CHANGED_DURING_COPY', 'UNREADABLE_FILES'].includes(error.code)) return { code: error.code, detail: error.detail };
+    throw error;
+  }
+}
+
+/** Save a failed import's code; the current baseline stays (design 4.5). */
+function importFailed(store, current, { code, detail }, now) {
+  const status = asOwnerStatus(CONNECT_CODES[code]);
+  return { ok: false, code, status, message: connectCopy(code, detail), notices: [], project: saveState(store, current, status, code, now) };
+}
+
+/**
+ * Connect the plain folder at `input.path` (design 8.4): path checks and Git detection (preflight, which finds no
+ * repository), the scan with its limits and exclusions (preflight), the copy into `snapshot/` with hash and re-hash,
+ * and the commit that is baseline 1. Governance is `none` (D2 is not in force). It saves Ready with startWork false
+ * (LOCAL_START_OFF). The folder is only read. Returns { ok, code, status, message, notices, project, baseline,
+ * preflight }. Refusals save nothing and leave no copy behind; the same folder already connected returns that project.
+ * input: path, and optionally name, id, exclusions (relative paths the owner leaves out), worktreeRoot. Options: store,
+ * dataDir, governanceRoot, tenantId, git, now, statfs (for the space check), clock (the scan's time source), hooks
+ * (tests), and preflight options (limits, io, gitEnv, protectedRoots ...).
+ */
+export function connectFolderProject(input, { store, dataDir, governanceRoot, tenantId = 'netbka', git = ['git'], now = Date.now(), statfs, clock, hooks, ...options }) {
+  const live = projects(store);
+  const home = dirname(resolve(dataDir));
+  const exclusions = input.exclusions ?? [];
+  const found = preflight(input.path, { ...options, git, governanceRoot, projects: live, kind: 'folder', exclusions, mirrorParent: home,
+    io: statfs ? { ...options.io, statfs } : options.io, ...(clock ? { now: clock } : {}),
+    protectedRoots: [...(options.protectedRoots ?? []), dataDir, join(home, 'mirrors')] });
+  if (found.code === 'ALREADY_CONNECTED') {
+    const existing = project(store, found.detail.projectId);
+    return { ok: true, code: null, status: existing.status, message: null, notices: [withCopy({ code: 'LOCAL_START_OFF' })], project: existing,
+      baseline: existing.current_baseline, preflight: found };
+  }
+  if (!found.ok) return refused(found, found.code, found.code === 'MIRROR_SPACE' ? { ...found.detail, drive: parse(home).root } : found.detail);
+  if (found.kind !== 'folder') return refused(found, 'NOT_FOLDER');
+
+  const name = input.name ?? basename(found.root);
+  const id = newId(store, input.id ?? idFrom(name));
+  const mirrorRoot = mirrorRootFor(dataDir, id);
+  // A copy this connect started is removed when it fails, so a refusal leaves nothing behind. It is AIWorks's own folder.
+  const discard = existsSync(mirrorRoot) ? () => {} : () => rmSync(mirrorRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  let imported;
+  try {
+    imported = importFolder({ mirror_root: mirrorRoot, root_path: found.root, exclusions }, { git, gitEnv: options.gitEnv, hooks, parent: null });
+  } catch (error) { discard(); throw error; }
+  if (imported.code) { discard(); return refused(found, imported.code, imported.detail); }
+  const { sync } = imported;
+  const saved = store.tx(() => {
+    createProject(store, {
+      id, tenant_id: tenantId, name, source_kind: 'folder', root_path: found.root, root_file_id: found.rootFileId, exclusions,
+      mirror_root: mirrorRoot, worktree_root: input.worktreeRoot ?? join(home, 'worktrees', id),
+      governance: { kind: 'none' }, status: 'ready', reason: null, capabilities: FOLDER_CAPABILITIES,
+      current_baseline: { seq: 1, commit: sync.head, at: now },
+      last_preflight: { at: now, code: null, notices: found.notices.map((notice) => notice.code) },
+    }, now);
+    insertBaseline(store, id, 1, sync.head, sync, now);
+    return project(store, id);
+  });
+  return { ok: true, code: null, status: 'ready', message: null, notices: [withCopy({ code: 'LOCAL_START_OFF' }), ...excludedNotice(sync.excluded)],
+    project: saved, baseline: saved.current_baseline, preflight: found };
+}
+
+/**
+ * Light check of a plain folder (design 3.3): the folder is reachable and was not replaced (preflight's identity rules,
+ * with its scan), and aiworks/baseline still holds the recorded baseline; MIRROR_CHANGED when it does not, until the
+ * owner chooses Rebuild copy. The status is saved. Returns { ok, code, status, message, notices, project }.
+ */
+export function checkFolderProject(store, id, options) {
+  return checkLocal(store, liveLocal(store, id, 'folder'), options);
+}
+
+/**
+ * Refresh from folder (design 5.3): after a passing light check, import the folder again on top of the current
+ * baseline. A changed tree becomes the next baseline; an unchanged folder takes none. CHANGED_DURING_COPY keeps the
+ * current baseline. Returns { ok, code, status, message, taken, project }.
+ */
+export function refreshFolderProject(store, id, { git = ['git'], now = Date.now(), hooks, ...options }) {
+  const check = checkFolderProject(store, id, { ...options, git, now });
+  if (!check.ok) return { ...check, taken: false };
+  const current = check.project;
+  const imported = importFolder(current, { git, gitEnv: options.gitEnv, hooks, parent: current.current_baseline.commit });
+  if (imported.code) return { ...importFailed(store, current, imported, now), taken: false };
+  if (!imported.sync.committed) return { ...check, taken: false };
+  return { ...check, project: takeBaseline(store, current, imported.sync.head, imported.sync, now), taken: true };
+}
+
+/**
+ * Rebuild copy, the action for MIRROR_CHANGED (design 5.3): re-import the folder from an empty index into a new root
+ * commit and move aiworks/baseline to it, whatever it was changed to, then take a new baseline. The copy's attributes
+ * and settings are rewritten too. The source must still pass the light check. Old baselines, task worktrees and
+ * evidence are kept. Returns { ok, code, status, message, project }.
+ */
+export function rebuildFolderMirror(store, id, { governanceRoot, git = ['git'], now = Date.now(), hooks, ...options }) {
+  const current = liveLocal(store, id, 'folder');
+  const source = checkProject(current, { ...options, git, governanceRoot, projects: projects(store) });
+  if (!source.ok) {
+    const status = asOwnerStatus(source.status);
+    return { ok: false, code: source.code, status, message: connectCopy(source.code, source.detail), project: saveState(store, current, status, source.code, now) };
+  }
+  const imported = importFolder(current, { git, gitEnv: options.gitEnv, hooks, parent: null });
+  if (imported.code) return importFailed(store, current, imported, now);
+  return { ok: true, code: null, status: 'ready', message: null, project: takeBaseline(store, current, imported.sync.head, imported.sync, now) };
+}
+
+/**
+ * How many files at `path` match the current baseline by hash (design 4.6), shown before the owner chooses Move
+ * "{name}" here or This is still "{name}". It reads regular files only and follows no link. Returns { files, matches },
+ * or null when the baseline's manifest is not available.
+ */
+export function folderMatches(store, id, path) {
+  const current = liveLocal(store, id, 'folder');
+  const baseline = store.get('SELECT commit_sha, manifest_digest FROM project_baselines WHERE project_id = ? AND seq = ?', id, current.current_baseline?.seq);
+  const rows = baseline && folderManifest({ mirrorRoot: current.mirror_root, commit: baseline.commit_sha, digest: baseline.manifest_digest });
+  if (!rows) return null;
+  let matches = 0;
+  for (const [rel, , hash] of rows) {
+    try {
+      const file = join(path, rel);
+      if (lstatSync(file).isFile() && createHash('sha256').update(readFileSync(file)).digest('hex') === hash) matches += 1;
+    } catch { /* missing or unreadable: not a match */ }
+  }
+  return { files: rows.length, matches };
+}
+
+/**
+ * Move "{name}" here, or This is still "{name}" (design 4.6). A plain folder has no fingerprint, so the owner confirms
+ * explicitly, after seeing folderMatches. The id, history, copy and baselines stay; the root changes and
+ * `project-relocated` is journalled with the match count. Returns { ok, code, status, message, match, project }.
+ */
+export function relocateFolderProject(store, id, path, { governanceRoot, dataDir, git = ['git'], now = Date.now(), ...options }) {
+  const current = liveLocal(store, id, 'folder');
+  const others = projects(store).filter((other) => other.id !== id);
+  const protectedRoots = [...(options.protectedRoots ?? []), current.mirror_root, ...(dataDir ? [dataDir, join(dirname(resolve(dataDir)), 'mirrors')] : [])];
+  const found = preflight(path, { ...options, git, governanceRoot, projects: others, kind: 'folder', exclusions: current.exclusions, protectedRoots });
+  if (!found.ok) return { ok: false, code: found.code, status: found.status, message: connectCopy(found.code, found.detail), match: null, project: current };
+  if (found.kind !== 'folder') return { ok: false, code: 'NOT_FOLDER', status: 'not-saved', message: connectCopy('NOT_FOLDER'), match: null, project: current };
+  const match = folderMatches(store, id, found.root);
+  const saved = store.tx(() => {
+    store.patch('projects', { id }, current.version, { root_path: found.root, root_key: found.rootKey, root_file_id: found.rootFileId }, now);
+    store.journal(null, 'project-relocated', { projectId: id, matches: match?.matches ?? null, files: match?.files ?? null }, now);
+    return project(store, id);
+  });
+  return { ok: true, code: null, status: saved.status, message: null, match, project: saved };
 }
 
 export { MirrorError, ProjectError };
