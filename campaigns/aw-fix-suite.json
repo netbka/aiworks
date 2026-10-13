@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "campaignId": "aw-fix-suite",
+  "purpose": "The full test run takes about half the time and no longer fails just because the computer is busy, so every step moves faster at no extra cost.",
+  "authorization": {
+    "version": 1,
+    "grantedBy": "owner (netbka), delegated to the owner's main session",
+    "grantedAt": "2026-10-12",
+    "reference": "https://github.com/netbka/aiworks/issues/14",
+    "text": "On 2026-10-12 the owner directed: \"take this as starting point and deliver till end. Delivery this work with the AIWorks environment.\" The starting point is docs/PROJECT_WORKSPACE_PLAN.md (PR #12), with owner decisions D1, D3, D5 (direction only) and D9 recorded in its section 8. This campaign fixes the test-speed half of monitor finding #102 in scripts/run-tests.mjs and tests/ only. The owner approved it on 2026-10-13 (\"yes\" to the cost and speed proposal)."
+  },
+  "target": {
+    "tenantId": "netbka",
+    "projectId": "aiworks",
+    "environment": "research",
+    "repository": "netbka/aiworks",
+    "baseBranch": "main",
+    "trackingIssue": 14
+  },
+  "executor": {
+    "kind": "cli-chain",
+    "providers": [
+      {
+        "kind": "claude-cli",
+        "model": "opus",
+        "permissionMode": "auto"
+      },
+      {
+        "kind": "codex-cli",
+        "model": "gpt-6-astra"
+      }
+    ],
+    "implementerTimeoutMinutes": 240,
+    "verifierTimeoutMinutes": 120
+  },
+  "constraints": [
+    "Program netbka/aiworks#14: deliver docs/PROJECT_WORKSPACE_PLAN.md through supervisor campaigns. Change only the files your task names. Other campaigns change other files at the same time: never edit their files, other agents' branches or worktrees, or campaigns/*.json.",
+    "Your assigned worktree is the only place you change files. Never touch D:/Git/aiworks/.local (live runtime, supervisor data directory, governance checkout, other worktrees) or the main checkout, and never start, stop or restart the supervisor, its scheduled tasks or the dashboard.",
+    "No production access, deployment, GitHub Actions changes, paid services, Telegram or other provider API calls, or new recurring spend. Never read .env contents, credentials or secret files. Read Engineering Platform only with read-only gh commands; never write the governance checkout or open changes in another repository: EP-side changes are proposed as text.",
+    "Follow AGENTS.md: run npm ci once in your worktree, then npm run check after changes. Report exact commands and pass/fail tallies.",
+    "Never weaken an assertion, delete or skip a test, or broaden a timeout to make the gate pass. Tests make no model, network or GitHub calls: synthetic executables and disposable git repositories, as tests/supervisor/helpers.mjs does.",
+    "Keep AW-001 to AW-007 as written. Do not enable a power whose decision is still open (GitHub-free local admission, Auto Release, Telegram delivery): design it, or build it switched off, and name the decision it waits for.",
+    "Label every claim about the running system observed, verified, planned or unknown (AGENTS.md evidence rule); merged is not deployed. Do not comment on GitHub, merge, close issues or change labels: the supervisor publishes your verified commit. Write \"Refs #N\", never \"Closes\".",
+    "Write for the owner first: plain English, short sentences, the outcome before the mechanism. Link Engineering Platform policies instead of copying them.",
+    "Read GitHub with REST only (gh api repos/netbka/aiworks/issues/<n> --jq .body, .../comments, gh api repos/netbka/aiworks/pulls/<n>), never gh issue view or gh pr view: the account GraphQL quota is shared (#16, #21).",
+    "There is no GitHub Actions run any more (owner decision 2026-10-13): the local npm run check is the only full test run and the independent verifier repeats it. Keep every test you add or change correct on Windows and on Linux: guard platform-specific behaviour with a skip that names the reason, without weakening what it checks elsewhere. Never add, enable or trigger a GitHub Actions workflow.",
+    "A task named after a build-order slice of docs/PROJECT_WORKSPACE_PLAN.md section 6 builds exactly that slice: its outcome, its tests and the files it lists under Owns. Section 6 decides order and file ownership; the design slice it maps to (section 6.11) decides behaviour and tests. A needed change outside the slice's files is reported as a finding, not made. Anything the slice builds switched off ships off, and with it off the full existing suite passes unchanged.",
+    "Verifiers: a check that behaves as intended is reported as pass, including a mutation or base comparison whose expected failure was observed (say so in its detail); report fail only for a check whose outcome shows a defect, and never return accepted with a check marked fail (#59). Implementers: if the outcome cannot work without changing a file the plan does not list under Owns (for example the dashboard server allowlist for a new browser module), change the smallest part of it and name the file and the reason in the PR. The verifier judges whether it was needed; such a file is not a finding by itself."
+  ],
+  "tasks": [
+    {
+      "deliverable": "commit",
+      "dependsOn": [],
+      "id": "SUITE-SPEED",
+      "issue": 102,
+      "title": "The full gate runs in about half the time, with no test weakened",
+      "outcome": "Every build and every check finishes its full test run in about half the time, so each step of the work moves faster, and no test fails only because the computer is busy.",
+      "goal": "Fix the test-speed half of #102 (gh api repos/netbka/aiworks/issues/102/comments --jq \".[].body\"). scripts/run-tests.mjs runs 23 light files 4 at a time and then 48 heavy files (they start supervisor workers, servers or other real processes) one at a time; the heavy group takes about 21 minutes. First measure each heavy file's time and report the table. Then make the heaviest files safe to run side by side (each takes its own ports, temporary directories and data directories; nothing shared and fixed) and let run-tests.mjs run the heavy group 2 at a time by default (AIWORKS_HEAVY_CONCURRENCY, 1 restores today's order); keep a file serial if it cannot be made safe, and say why. Also make \"pause stops new dispatch; start resumes\" independent of machine speed: wait for the event it checks (the journal entry or state change) instead of a fixed time; never broaden a timeout to make it pass.",
+      "constraints": [
+        "Change only scripts/run-tests.mjs, files under tests/ and docs/SUPERVISOR.md (a short note on the test runner). Nothing under src/ changes."
+      ],
+      "acceptance": [
+        "The PR has a table of each heavy file's time before and after, and the full gate's wall time before and after, measured on this computer.",
+        "No assertion is removed, weakened or skipped, and no timeout is broadened; every changed test still checks the same property (the PR lists each changed test with why).",
+        "Two full npm run check runs in a row pass with the new default, while another campaign is running; AIWORKS_HEAVY_CONCURRENCY=1 still passes.",
+        "The final summary block is still the total of every test file, copied verbatim in the PR; the PR states that nothing is deployed."
+      ],
+      "references": [
+        "AGENTS.md",
+        "scripts/run-tests.mjs",
+        "tests/supervisor/helpers.mjs",
+        "tests/supervisor/restart.test.mjs",
+        "docs/SUPERVISOR.md"
+      ]
+    }
+  ]
+}
