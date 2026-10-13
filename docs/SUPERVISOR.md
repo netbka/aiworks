@@ -418,6 +418,8 @@ The `claude -p` output shape was checked against Claude Code 2.1.295; the first 
 
 Every implementer and verifier prompt for a commit or report task, whichever provider runs it, says that repository CI runs `npm run check` on `ubuntu-latest`, so platform-specific tests guard themselves without weakening the Windows check ([#42](https://github.com/netbka/aiworks/issues/42)). It also says to copy test summary lines verbatim, and tells verifiers that a tally that does not match their own re-run of the same gate at the same head is a blocking finding ([#43](https://github.com/netbka/aiworks/issues/43)). Web-task prompts run no gate and do not carry these rules.
 
+Commit-task prompts also say that the full gate can take 20 to 30 minutes while other work runs. The worker starts it as a separate process with its output in a file, waits for it to exit, and copies the final summary block verbatim, never shortening the suite ([#102](https://github.com/netbka/aiworks/issues/102)). Report and research-only prompts do not carry this rule.
+
 Dated verification evidence for these rules lives in Git history and the PRs that introduced them, not in this runbook. For work before the split, that history is in the private archive `netbka/engineering-platform-archive`. Current status is in [STATUS.md](STATUS.md).
 
 Changing only the executor chain requires a higher authorization version, a paused campaign and no open operation. Target, tasks and constraints remain immutable. The amendment journals both executor declarations and scope digests; existing tasks, costs, operation history and consumed budget are retained. An exhausted campaign does not resume merely because its executor changes.

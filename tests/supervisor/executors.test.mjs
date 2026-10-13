@@ -448,3 +448,35 @@ test('web-task prompts are the unchanged browser prompt and carry no gate rules'
     for (const rule of [...GATE_RULES, VERIFIER_TALLY_RULE]) assert.ok(!prompt.includes(rule));
   }
 });
+
+test('commit prompts tell implementers and verifiers how to get a completed full gate; report prompts do not (#102)', () => {
+  const ruleLine = (prompt) => prompt.split('\n').find((line) => line.startsWith('The repository\'s full gate (npm run check)'));
+  for (const role of ['implementer', 'verification']) {
+    const args = promptArgs(role, 'commit');
+    const prompt = buildPrompt(args);
+    const rule = ruleLine(prompt);
+    assert.ok(rule, `${role} commit prompt carries the full-gate rule`);
+    assert.match(rule, /can take 20 to 30 minutes on this PC while other work runs, longer than one foreground command may wait/);
+    assert.match(rule, /Start it as a separate background process with its output in a file in this run's working directory/);
+    assert.match(rule, /wait for that process to exit/);
+    assert.match(rule, /copy the final summary block verbatim.*scripts\/run-tests\.mjs, the block after "# all test files"/);
+    assert.match(rule, /Never shorten the suite, skip files or weaken a test to make it finish\./);
+    assert.ok(prompt.indexOf(rule) < prompt.indexOf('Task packet (sha256 '), 'the rule precedes the packet');
+    // Only the gate rules are added to the base prompt, the new one among them.
+    const added = [...GATE_RULES, ...(role === 'verification' ? [VERIFIER_TALLY_RULE] : [])];
+    assert.ok(added.includes(rule));
+    assert.equal(prompt.split('\n').filter((line) => !added.includes(line)).join('\n'), claude.buildPrompt(args));
+    // Report tasks (research-only workers run only these) keep exactly the two #42/#43 rules and no full-gate rule.
+    const reportArgs = promptArgs(role, 'report');
+    const report = buildPrompt(reportArgs);
+    assert.equal(ruleLine(report), undefined, `${role} report prompt`);
+    const reportAdded = [GATE_RULES[0], GATE_RULES[1], ...(role === 'verification' ? [VERIFIER_TALLY_RULE] : [])];
+    const base = claude.buildPrompt(reportArgs);
+    const at = base.indexOf('\n\nTask packet (sha256 ');
+    assert.equal(report, `${base.slice(0, at)}\n${reportAdded.join('\n')}${base.slice(at)}`);
+    // Web tasks keep the unchanged browser prompt.
+    const webArgs = promptArgs(role, 'report', { web: { urls: ['https://example.test/'] } });
+    assert.equal(buildPrompt(webArgs), agy.buildPrompt(webArgs));
+    assert.equal(ruleLine(buildPrompt(webArgs)), undefined);
+  }
+});
