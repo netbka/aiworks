@@ -1,0 +1,149 @@
+{
+  "version": 1,
+  "campaignId": "elma-wiki-execution-2",
+  "authorization": {
+    "version": 1,
+    "grantedBy": "owner (netbka), current conversation",
+    "grantedAt": "2026-10-11",
+    "reference": "https://github.com/netbka/elma_wiki/issues/91",
+    "text": "Follow-on to elma-wiki-execution, whose P6 stopped on the no-progress guard (four evidence-unavailable results: netbka/elma365#60 has no versioned native materialization/validation contract). On 2026-10-11 the owner decided: (1) accept P6 as Wiki-side only, so the native validation criterion moves to the P8 acceptance gate and P7-P9 continue; (2) the native contract is to be published through elma365#60 under its own campaign; (3) agents may use the credentialed native CLI against DEV/dev2 for build and validate only, never import, publish or change DEV data, once a supervisor capability provides it without exposing secret values. Until that capability exists, workers still never open credentials. All other elma-wiki-execution authority is unchanged: repository changes in netbka/elma_wiki only, read-only netbka/elma365 metadata, uncapped worker runs, PRs only, no merges, production operations, account/provider changes, purchasing or worktree deletion. Provider order Claude, then Codex, then Cursor, since Codex and Cursor cannot commit on this Windows host."
+  },
+  "target": {
+    "tenantId": "netbka",
+    "projectId": "elma-wiki",
+    "environment": "implementation",
+    "repository": "netbka/elma_wiki",
+    "baseBranch": "main",
+    "trackingIssue": 91
+  },
+  "limits": {
+    "maxWorkerRuns": null,
+    "slots": 1,
+    "maxRepairRounds": 3,
+    "maxRetriesPerTask": 3
+  },
+  "executor": {
+    "kind": "cli-chain",
+    "providers": [
+      {
+        "kind": "claude-cli",
+        "model": "opus",
+        "permissionMode": "auto"
+      },
+      {
+        "kind": "codex-cli"
+      },
+      {
+        "kind": "cursor-cli"
+      }
+    ],
+    "implementerTimeoutMinutes": 240,
+    "verifierTimeoutMinutes": 90
+  },
+  "constraints": [
+    "Execute the accepted PLAN-01 package DAG toward Wiki #94's working-configuration outcome. Read the verified plan https://github.com/netbka/elma_wiki/issues/91#issuecomment-6086757327 and current #91 before changes. Inspect main/open PRs and active claims. Preserve A UI, B domain/store, C resolver and I serial integration ownership. Do not duplicate a currently active claimed slice; report its exact head/PR and concrete overlap blocker.",
+    "Read AGENTS.md, .agent/capabilities.yaml and current Solution-first product authority. Reuse existing reducer/store, renderer, native adapters and #11 delivery coordinator. Review acceptance is an intermediate milestone, not full working-release acceptance.",
+    "Work only in the assigned supervisor checkout. Do not remove any worktree, delete branches, touch private evidence or other checkouts. Supervisor owns push/PR/comments; workers never publish, merge or deploy. Override the generic project startup cleanup with preservation for this campaign.",
+    "Source/code changes are assigned only in netbka/elma_wiki. Read-only native contract/issue metadata in netbka/elma365#60 is permitted. Do not mutate native or other repositories, call live state-changing provider APIs, launch product daemons, select a live Target/candidate or inspect private exports.",
+    "Keep #59/#41 human work deferred and #19 provider execution disabled. Do not restart human reviews or provider execution as a way around a missing release gate.",
+    "Never open .env, credentials, secret files, customer exports, private messages or participant records. Use synthetic fixtures. Keep only secret names/references; operational credentials and customer content stay private.",
+    "Evidence is observed, verified, planned or unknown. No source or merged PR is proof of native/runtime/business acceptance. Missing serializers, ancestry, identity, receipts, licenses, bindings and recovery evidence must block eligibility. Preserve unknown/opaque bytes; never forge entitlement or remove paid flags.",
+    "Each bounded implementation requires a coherent commit, focused tests at the changed invariant, affected contracts/Storybook where relevant, and independent exact-head verification. Do not resolve by documentation alone when code is assigned. Return evidence-unavailable with concrete acquisition attempts for missing evidence; blocked-owner-reserved must cite the genuine authority/owner-action trigger. Continue all permitted work before reporting a gate.",
+    "Dependencies published as PRs are not integrated. Tasks requiring merged dependencies wait until their verified commits are ancestors of freshly fetched origin/main. Do not copy an unreviewed interface or bypass that gate. Maintain semantic/resource reservations and stale-input checks.",
+    "This campaign supersedes elma-wiki-execution for P6-P9. P1-P5 are done and merged to main (PRs #107-#111); do not redo them. The owner-accepted Wiki-side P6 work is commit 03a1139958c37d86cef7ce559425b81aea4a0d91 on local branch campaign/elma-wiki-execution/P6; reuse it, do not rewrite it from scratch."
+  ],
+  "tasks": [
+    {
+      "id": "P6",
+      "issue": 94,
+      "title": "Wiki-side Contracts materialization integration (owner-accepted, native validation deferred to P8)",
+      "deliverable": "commit",
+      "goal": "Deliver the Wiki side of PLAN-01 P6 as the owner accepted it on 2026-10-11. Cherry-pick commit 03a1139958c37d86cef7ce559425b81aea4a0d91 from local branch campaign/elma-wiki-execution/P6 onto this task branch (fresh origin/main), resolve any drift against current main, and rerun its focused tests and the full suite. Keep the adapter fail-closed: without a pinned native contract it must return unavailable and releaseEligible stays false; the synthetic contract stays test-only. Update docs/contracts/native-materialization.md to state that native validation of exact physical Contracts output is an open P8 gate that depends on netbka/elma365#60. Do not claim native materialization works.",
+      "dependsOn": [],
+      "constraints": [],
+      "acceptance": [
+        "Build inputs bind resolved revision, native unit/profile/compiler/dependency locks and exact originals; changed input stales output and missing serializer/compiler/resources fails closed.",
+        "No-edit, one-edit and two-change round trips preserve unknown resources/manifests and coupled source/runtime without blanket metadata exclusions.",
+        "The native-validation criterion is explicitly recorded as deferred to P8 and elma365#60 in the contract doc and PR body; no code path, test or document treats synthetic output as native-valid or release-eligible."
+      ],
+      "references": [
+        "AGENTS.md",
+        ".agent/capabilities.yaml",
+        "docs/contracts/managed-workspace.md",
+        "docs/contracts/release-scope-planner.md",
+        "docs/contracts/target-deployment.md",
+        "docs/plans/working-configuration-release.md"
+      ]
+    },
+    {
+      "id": "P7",
+      "issue": 11,
+      "title": "Composed candidate and guarded delivery integration",
+      "deliverable": "commit",
+      "goal": "Implement PLAN-01 P7 through the existing #11 deliveryStore/coordinator using exact P6 artifacts and P4/P5 scope/order/profile/review/dependency evidence. Extend the unchanged-original route deliberately to a frozen composed candidate with trusted execution actors, Target reservations, recovery and stale-input checks. Preserve contextual/shared and legacy-root isolation. This task implements guards and synthetic integration, never live dispatch, a second coordinator or inferred native idempotency. P1, P4 and P5 are already merged to main by elma-wiki-execution; P6 here is the owner-accepted Wiki-side integration, so P6 artifacts stay non-native until P8.",
+      "dependsOn": [
+        "P6"
+      ],
+      "requiresMergedDependencies": true,
+      "constraints": [],
+      "acceptance": [
+        "Composed candidates bind exact artifacts/manifest/profile/review and preserve cross-root identity and provenance versus execution actor separation.",
+        "Focused tests cover one reservation/coordinator, async prepare/confirm/verify stale checks, deploying persistence before dispatch, cancellation before dispatch only, and truthful multi-unit receipts.",
+        "Crash/lost response/unknown outcome cannot redispatch. Synthetic store/API/renderer evidence includes security and concurrency boundaries; no live execution is claimed."
+      ],
+      "references": [
+        "AGENTS.md",
+        ".agent/capabilities.yaml",
+        "docs/contracts/target-deployment.md",
+        "docs/contracts/managed-workspace.md",
+        "docs/plans/working-configuration-release.md"
+      ]
+    },
+    {
+      "id": "P8",
+      "issue": 37,
+      "title": "Exact-byte isolated Contracts acceptance gate",
+      "deliverable": "report",
+      "goal": "Own PLAN-01 P8 to actual isolated native/business acceptance. Acquire existing exact-candidate/profile/ancestry/dependency/license/binding/import/read-back/recovery evidence through permitted read-only metadata and prepare the concrete acceptance harness. Do not select a Target or execute a live operation without destination-specific authority. Missing native evidence returns evidence-unavailable with attempts; missing genuine environment/candidate authorization returns blocked-owner-reserved with its trigger. A readiness report alone cannot resolve this task. Preserve both changes' full parent business-route outcome. Native validation of the exact physical Contracts output (the deferred P6 criterion) belongs to this gate. Build and validate against DEV/dev2 is owner-authorized only through a supervisor capability that does not expose secrets; if no such capability is provided in this run, return evidence-unavailable naming it. Installing or importing a candidate into any environment is not authorized: return blocked-owner-reserved citing that trigger when acceptance needs it.",
+      "dependsOn": [
+        "P7"
+      ],
+      "requiresMergedDependencies": true,
+      "constraints": [],
+      "acceptance": [
+        "Frozen physical candidate and explicitly authorized isolated matching environment have actual installation/read-back evidence; no-op/mismatched/extra/missing/stale outcomes fail.",
+        "Both changes and selected conflict resolution work together with correct source/runtime/forms/permissions/resources and full affected parent outputs, including return/resubmit/cancel/error/duplicate/recovery cases.",
+        "Independent native/business evidence binds exact candidate/profile and clean/reset Target; otherwise keep task and parent blocked, never mark report publication as product acceptance."
+      ],
+      "references": [
+        "AGENTS.md",
+        ".agent/capabilities.yaml",
+        "docs/contracts/target-deployment.md",
+        "docs/plans/working-configuration-release.md"
+      ]
+    },
+    {
+      "id": "P9",
+      "issue": 94,
+      "title": "Destination promotion, recovery and all-scope completion gate",
+      "deliverable": "report",
+      "goal": "Own PLAN-01 P9 and remaining #94 application-part/application/Solution/server coverage outcome after Contracts acceptance. Reconcile actual destination-specific authorization, read-back/business/recovery evidence and supported domain coverage. Acquire available evidence read-only; do not purchase, access credentials, mutate providers, select a live destination or promote production. Record exact missing engineering versus owner gates. Return resolved only for the real assigned outcome with independent evidence, never because Contracts passed or because future scope was documented.",
+      "dependsOn": [
+        "P8"
+      ],
+      "constraints": [],
+      "acceptance": [
+        "Exact accepted artifact has destination-specific promotion/read-back/recovery/business evidence under that project's separately authorized release gate.",
+        "Required application-part, application, Solution and server domains/dependencies/global configuration have executable supported handling and matching native evidence; one Contracts slice does not establish universal coverage.",
+        "All unresolved implementation, native, destination and owner gates keep the parent open. #59/#41 remain deferred and #19 remains disabled absent explicit changed authority."
+      ],
+      "references": [
+        "AGENTS.md",
+        ".agent/capabilities.yaml",
+        "docs/SOLUTION_FIRST_PRODUCT_PLAN.md",
+        "docs/plans/working-configuration-release.md",
+        "docs/contracts/target-deployment.md"
+      ]
+    }
+  ]
+}
