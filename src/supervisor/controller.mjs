@@ -21,7 +21,7 @@ import { coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
 import { stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions } from './instructions.mjs';
 import { priorAttempt, receiptInputs, staticReceipt } from './router.mjs';
-import { specOf, specsOf } from './plan.mjs';
+import { PLAN_TASK, settleAmendment, specOf, specsOf } from './plan.mjs';
 import { ConflictError, FencedError } from './store.mjs';
 import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
 
@@ -383,7 +383,8 @@ export class Controller {
   }
 
   deliverable(ctx, taskId) {
-    return specOf(this.store, ctx.id, taskId).deliverable;
+    // A planning step is read-only report work (WORK_ENVELOPE 6.2); it has no spec of its own.
+    return taskId === PLAN_TASK ? 'report' : specOf(this.store, ctx.id, taskId).deliverable;
   }
 
   consume(ctx, op, run) {
@@ -415,6 +416,7 @@ export class Controller {
   }
 
   applyOutcome(ctx, op, outcome) {
+    if (op.kind === 'plan') return this.settlePlan(ctx, op, outcome);
     let verdict = outcome;
     const before = this.store.task(ctx.id, op.task_id);
     // Deterministic checks of the worker's claims, outside the write transaction.
@@ -518,6 +520,40 @@ export class Controller {
           `**${task.task_id}** is blocked (${change.blocked.class}): ${change.blocked.reason}\n\nThe campaign keeps ownership. After recovery or an owner decision recorded on the task issue, run \`supervisor recheck ${ctx.id} --task ${task.task_id}\`.`, now);
       }
     });
+  }
+
+  /**
+   * Settle a planning operation (WORK_ENVELOPE 6.3 and 6.4, slice E3). The operation finishes and its amendment is admitted,
+   * with its task rows, in one fenced transaction: both commit or neither does. A controller whose lease generation is stale
+   * gets FencedError and writes nothing. After a crash before the commit the operation is still open and is settled again
+   * with the same idempotency key; after the commit it is finished and nothing is applied twice. Code admits, never a model.
+   * Nothing records a planning operation yet: planning triggers and the plan-stage result are slice E5.
+   */
+  settlePlan(ctx, op, outcome) {
+    const merged = !this.unmergedRevision();
+    const settled = this.fenced(ctx, () => {
+      const now = this.now();
+      const fresh = this.store.get('SELECT * FROM operations WHERE id = ?', op.id);
+      if (!['recorded', 'dispatched'].includes(fresh.state)) return null; // already settled
+      let verdict = { ...outcome, executorKind: fresh.executor_kind };
+      if (verdict.class === 'result' && !acceptsLease(runLease(fresh, 'active'), runLease(fresh, 'active', verdict.receipt?.sessionId ?? ''), now)) {
+        verdict = { ...verdict, class: 'invalid-result', detail: `result session ${verdict.receipt?.sessionId} is not the dispatched session ${fresh.session_id}` };
+      }
+      this.store.updateOperation(op.id, { state: 'finished', outcome: verdict }, now);
+      const campaign = this.store.campaign(ctx.id);
+      if (verdict.receipt?.costUsd) this.store.patch('campaigns', { id: ctx.id }, campaign.version, { cost_usd: campaign.cost_usd + verdict.receipt.costUsd }, now);
+      this.store.journal(ctx.id, 'operation-finished', { op: op.id, executor: fresh.executor_kind, class: verdict.class, detail: verdict.detail ?? null,
+        session: verdict.receipt?.sessionId ?? null, costUsd: verdict.receipt?.costUsd ?? null }, now);
+      if (verdict.class !== 'result') return null;
+      const admission = settleAmendment(this.store, { campaign: this.store.campaign(ctx.id), operation: fresh, amendment: verdict.value?.amendment,
+        merged, leaseGeneration: ctx.generation, codeRevision: this.codeRevision, now });
+      const kind = { admitted: 'amendment-admitted', repeated: 'amendment-repeated', none: 'plan-no-change', refused: 'amendment-refused' }[admission.outcome];
+      this.store.journal(ctx.id, kind, { op: op.id, ...admission, ops: admission.ops?.length }, now);
+      this.injectFault('before-plan-settle');
+      return admission;
+    });
+    this.injectFault('after-plan-settle');
+    return settled;
   }
 
   transition(ctx, task, op, v, decl, now) {
@@ -1575,7 +1611,8 @@ export class Controller {
       const open = this.store.openOperations(ctx.id);
       const spec = specsOf(this.store, ctx.id, decl);
       const done = new Set(tasks.filter((task) => task.state === 'done').map((task) => task.task_id));
-      const waiting = tasks.filter((task) => task.state !== 'done');
+      // A cancelled child task (WORK_ENVELOPE 6.4) is settled: it never runs and keeps no campaign open.
+      const waiting = tasks.filter((task) => !['done', 'cancelled'].includes(task.state));
       const blockedTasks = waiting.filter((task) => task.blocked);
       const held = this.heldTasks(ctx.id);
       const runnable = waiting.filter((task) => !task.blocked && !held.has(task.task_id) && RUNNABLE.includes(task.state) &&
