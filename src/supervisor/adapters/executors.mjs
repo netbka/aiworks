@@ -22,7 +22,11 @@ export const GATE_RULES = [
   'Copy test summary lines verbatim from the command output (for node:test: # tests, # pass, # fail, # skipped); never retype or recall a tally.',
   FULL_GATE_RULE,
 ];
-export const VERIFIER_TALLY_RULE = 'A test tally or other count in the report that does not match your own re-run of the same gate at the same head is a blocking finding: a wrong number is a false claim.';
+// Verifiers only (#59): verifiers returned accepted with a check marked fail (an expected mutation failure, an unrelated
+// flaky timeout that passed on a re-run), and the controller refused each result and ran the whole verification again.
+export const VERIFIER_CHECK_RULE = 'A check that behaves as intended is reported as pass, including a mutation or base comparison whose expected failure was observed, and a full-suite run whose only failure is an unrelated timing test that passes on a re-run (name the test, the run and the re-run summary in its detail). Report fail only for an outcome that shows a defect in the change. Never return accepted with a check marked fail.';
+// The check rule shares the tally rule's line, so the verifier rules stay one line after the gate rules.
+export const VERIFIER_TALLY_RULE = `A test tally or other count in the report that does not match your own re-run of the same gate at the same head is a blocking finding: a wrong number is a false claim. ${VERIFIER_CHECK_RULE}`;
 // The rules follow the role header, before the packet, so every existing prompt line stays as it was.
 function withGateRules(prompt, role, deliverable) {
   const at = prompt.indexOf('\n\nTask packet (sha256 ');

@@ -426,6 +426,8 @@ Every implementer and verifier prompt for a commit or report task, whichever pro
 
 Commit-task prompts also say that the full gate can take 20 to 30 minutes while other work runs. The worker starts it as a separate process with its output in a file, waits for it to exit, and copies the final summary block verbatim, never shortening the suite ([#102](https://github.com/netbka/aiworks/issues/102)). Report and research-only prompts do not carry this rule.
 
+Verifier prompts for commit and report tasks also say that a check that behaves as intended is a pass. That includes a mutation or base comparison whose expected failure was seen, and a full-suite run whose only failure is an unrelated timing test that passes on a re-run. `fail` is only for an outcome that shows a defect in the change, and `accepted` never comes with a failed check ([#59](https://github.com/netbka/aiworks/issues/59)). Implementer and web-task prompts do not carry this rule.
+
 Dated verification evidence for these rules lives in Git history and the PRs that introduced them, not in this runbook. For work before the split, that history is in the private archive `netbka/engineering-platform-archive`. Current status is in [STATUS.md](STATUS.md).
 
 Changing only the executor chain requires a higher authorization version, a paused campaign and no open operation. Target, tasks and constraints remain immutable. The amendment journals both executor declarations and scope digests; existing tasks, costs, operation history and consumed budget are retained. An exhausted campaign does not resume merely because its executor changes.
