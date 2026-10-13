@@ -14,7 +14,7 @@ import * as github from './adapters/github.mjs';
 import { authorityDigest, campaignLimits, executorOrder, projectGovernance } from './campaign.mjs';
 import { resolveCheckout } from './project-connect.mjs';
 import { campaignBudget } from './api.mjs';
-import { ACCOUNT_SCOPED, accountOf, accountWait, clearAccountWait, laterWait, setAccountWait } from './accounts.mjs';
+import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountOf, accountWait, clearAccountWait, laterWait, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
 import { domainOf, pathsOutside, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
 import { coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
@@ -105,11 +105,15 @@ export class Controller {
   // revisionCheck (AW-005): returns null while this code is merged into origin/main, else the reason. `cli.mjs serve` always
   // supplies it from git; only an in-process embedding (the tests) constructs a controller without it. revisionCheckMs
   // is likewise an in-process seam, never read from config.json.
+  // profiles (ACCOUNT_ADAPTER_CAAM.md section 3.3, slice CAAM3): `(kind, now) => profiles`, CAAM's inventory for an executor
+  // kind (caam.mjs caamRobotStatus records), or null for a kind CAAM does not manage; it may throw. Selection runs only
+  // with it and config.json "caam": { "enabled": true }. cli.mjs supplies none yet, so it stays off: a chosen profile must
+  // also be the one the worker launches under, which waits for the CAAM4 launch slice and the owner's Phase 2 pilot.
   constructor({ store, config, dataDir, log = () => {}, now = () => Date.now(), instanceId = randomUUID(),
     codeRevision = null, fault = process.env.AIWORKS_FAULT ?? null, notifier = noopTransport, probes = {},
-    governanceRoot = undefined, revisionCheck = null, revisionCheckMs = REVISION_CHECK_MS }) {
+    governanceRoot = undefined, revisionCheck = null, revisionCheckMs = REVISION_CHECK_MS, profiles = null }) {
     Object.assign(this, { store, dataDir, log, now, instanceId, codeRevision, fault, notifier, probes, governanceRoot,
-      revisionCheck, revisionCheckMs });
+      revisionCheck, revisionCheckMs, profiles });
     this.config = { ...DEFAULTS, ...config };
     this.governanceRoot = governanceRoot ?? this.config.governanceRoot;
     // aiworks#1 owner-intervention core: off unless the data-directory config enables it.
@@ -1063,6 +1067,18 @@ export class Controller {
     return true;
   }
 
+  /**
+   * The CAAM profile the next run on `kind` would get (accounts.mjs selectProfile), or null when profile selection is off
+   * or CAAM does not manage `kind`. An inventory that cannot be read fails closed: no profile, and a re-read later.
+   */
+  profileChoice(kind, now = this.now()) {
+    if (!profilesEnabled(this.config, this.profiles)) return null;
+    let profiles;
+    try { profiles = this.profiles(kind, now); }
+    catch (error) { return { account: null, retryAt: now + PROFILE_RECHECK_MS, reason: `the CAAM inventory for ${kind} cannot be read (${error.code ?? 'error'})` }; }
+    return profiles == null ? null : selectProfile(this.store, kind, profiles, now);
+  }
+
   /** The first untimed account wait (a failed login, or a host finding that needs a recheck) on a provider of `decl`, or null. */
   untimedAccountWait(decl) {
     for (const { kind } of executorOrder(decl.executor)) {
@@ -1088,7 +1104,10 @@ export class Controller {
       // The later of this campaign's own wait and the account's wait (ADAPTIVE_SCHEDULER 4.5); an elapsed timed wait is none.
       const wait = laterWait(own, accountWait(this.store, this.config, kind));
       const active = wait && (wait.retry_at === null || wait.retry_at > now);
-      return { cliConfigured: true, hostUnavailable: null, wait: active ? { retryAt: wait.retry_at, reason: wait.reason } : null };
+      if (active) return { cliConfigured: true, hostUnavailable: null, wait: { retryAt: wait.retry_at, reason: wait.reason } };
+      // With profile selection, a kind waits when none of its profiles may run, until the earliest reset among them.
+      const profile = this.profileChoice(kind, now);
+      return { cliConfigured: true, hostUnavailable: null, wait: profile && !profile.account ? { retryAt: profile.retryAt, reason: profile.reason } : null };
     };
     const receipt = staticReceipt(receiptInputs({
       stage: task.state === 'implemented' ? 'verify' : 'implement', chain: decl.executor.kind === 'cli-chain',
@@ -1150,6 +1169,14 @@ export class Controller {
         return null;
       }
       const executor = choice.executor;
+      // The profile is chosen again here and bound by recordOperation below, in this one transaction: two dispatches
+      // never take the same free profile, and a run that waits records nothing and spends no attempt (section 3.3).
+      const profile = this.profileChoice(executor.kind);
+      if (profile && !profile.account) {
+        this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
+          { retry_at: profile.retryAt, last_error: `waiting for executor availability: ${profile.reason}` }, this.now());
+        return null;
+      }
       const spec = specOf(this.store, ctx.id, task.task_id, decl);
       const repo = this.repo(decl);
       const seq = task.attempts + 1;
@@ -1291,12 +1318,12 @@ export class Controller {
         id: opId, campaign_id: ctx.id, task_id: task.task_id, kind, seq, idempotency_key: opId, lease_generation: ctx.generation,
         state: 'recorded', session_id: sessionId, run_dir: runDir, workspace, base_sha: revision, target_sha: targetSha,
         report_digest: reportDigest, packet, packet_digest: digest, outcome: null, created_at: now, updated_at: now,
-        executor_kind: executor.kind, routing: choice.receipt,
+        executor_kind: executor.kind, routing: choice.receipt, ...(profile ? { account_identity: profile.account } : {}),
       });
       this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, t.version,
         { attempts: seq, base_sha: baseSha, state: kind === 'implement' ? 'implementing' : 'verifying', retry_at: null }, now);
       this.store.patch('campaigns', { id: ctx.id }, c.version, { runs_used: c.runs_used + 1 }, now);
-      this.store.journal(ctx.id, 'operation-recorded', { op: opId, kind, executor: executor.kind, model: choice.receipt.decision.chosen.model, session: sessionId, packetDigest: digest, generation: ctx.generation, run: c.runs_used + 1 }, now);
+      this.store.journal(ctx.id, 'operation-recorded', { op: opId, kind, executor: executor.kind, model: choice.receipt.decision.chosen.model, ...(profile ? { account: profile.account } : {}), session: sessionId, packetDigest: digest, generation: ctx.generation, run: c.runs_used + 1 }, now);
 
       // This checkpoint and admission decision commit together before launch.
       const plan = planContext({
