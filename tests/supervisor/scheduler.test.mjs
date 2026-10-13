@@ -1,9 +1,9 @@
 // RUN5 (ADAPTIVE_SCHEDULER slice S4), the admission rules as functions over a real store: write domains never overlap,
 // fair order across projects, fan-out that grows only on useful results while work waited, one wait reason per step and
-// the host ceiling. No model, network or GitHub call; nothing is spawned.
+// the host ceiling; RUN7 (slice S5) adds the host pressure gate. No model, network or GitHub call; nothing is spawned.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../../src/supervisor/store.mjs';
@@ -159,4 +159,138 @@ test('the host ceiling is the configured number or a quarter of the cores, betwe
   assert.equal(hostCeiling({}, 2), 1);
   assert.equal(hostCeiling({}, 8), 2);
   assert.equal(hostCeiling({}, 64), 4);
+});
+
+// ---- RUN7 (ADAPTIVE_SCHEDULER slice S5): host pressure stops new admission; running work continues. The host is a
+// synthetic os/fs; host.mjs and hostPressure are imported per test, so each test fails on its own where they are absent.
+
+const GiB = 1024 ** 3;
+/** A synthetic host: memory, CPU times and free disk the test sets; nothing reads the real machine. */
+function fakeHost({ total = 32 * GiB } = {}) {
+  const h = { free: 16 * GiB, busy: 0, idle: 0, disk: { 'W:/worktrees': 100 * GiB } };
+  h.os = { freemem: () => h.free, totalmem: () => total, cpus: () => [{ times: { user: h.busy, nice: 0, sys: 0, idle: h.idle, irq: 0 } }] };
+  h.fs = { statfsSync: (volume) => {
+    if (!(volume in h.disk)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    return { bavail: h.disk[volume] / 4096, bsize: 4096 };
+  } };
+  return h;
+}
+
+test('host pressure stops new admission and leaves running work alone', async (t) => {
+  const { createHostSampler } = await import('../../src/supervisor/host.mjs');
+  const { hostPressure } = await import('../../src/supervisor/scheduler.mjs');
+  const r = rig(t);
+  const one = r.register('one', [commitTask('A', 1, { writes: ['a/'] })]);
+  const two = r.register('two', [commitTask('B', 2, { writes: ['b/'] })], { projectId: 'other' });
+  const running = r.open('one', 'A'); r.state('one', 'A', { state: 'implementing' });
+  const before = r.store.get('SELECT * FROM operations WHERE id = ?', running);
+  const h = fakeHost();
+  const sampler = createHostSampler({ os: h.os, fs: h.fs, volumes: ['W:/worktrees'] });
+  const pass = () => {
+    const pressure = hostPressure(r.store, sampler, r.now());
+    r.advance(5000);
+    return admissionCheck(r.store, r.candidate(two, 'B'), { ceiling: 4, pressure });
+  };
+  assert.equal(pass(), null, 'a calm host admits B');
+
+  h.free = 2 * GiB; // below max(2 GiB, 10% of 32 GiB)
+  const refused = pass();
+  assert.equal(refused?.reason, 'host-pressure', 'an injected low-memory sample refuses new admission');
+  assert.equal(refused.detail.signal, 'memory');
+  assert.equal(pass()?.reason, 'host-pressure', 'and keeps refusing while it lasts');
+  assert.deepEqual(r.store.get('SELECT * FROM operations WHERE id = ?', running), before, 'the running operation is untouched');
+  assert.deepEqual(r.store.all("SELECT task_id, state FROM operations WHERE state IN ('recorded', 'dispatched')"), [{ task_id: 'A', state: 'dispatched' }]);
+  assert.equal(r.store.task('one', 'A').state, 'implementing');
+  assert.equal(admissionCheck(r.store, r.candidate(one, 'A'), { ceiling: 4, pressure: refused.detail })?.reason, 'already-running',
+    'a running step keeps its own reason; pressure never reclassifies it');
+
+  h.free = 16 * GiB;
+  assert.equal(pass(), null, 'admission resumes when the pressure clears');
+  const journal = r.store.all("SELECT campaign_id, kind, detail FROM journal WHERE kind LIKE 'host-pressure%' ORDER BY seq");
+  assert.deepEqual(journal.map((row) => row.kind), ['host-pressure', 'host-pressure-cleared'], 'journalled once per episode, and its end once');
+  assert.equal(journal[0].campaign_id, null, 'a host fact, not one campaign\'s');
+  assert.equal(journal[0].detail.signal, 'memory');
+  assert.equal(journal[1].detail.signal, 'memory');
+
+  // A second episode, seen by two controllers on one store: each samples, the episode is journalled once.
+  h.free = 1 * GiB;
+  const other = createHostSampler({ os: h.os, fs: h.fs, volumes: ['W:/worktrees'] });
+  assert.equal(pass()?.reason, 'host-pressure');
+  assert.equal(hostPressure(r.store, other, r.now())?.signal, 'memory');
+  assert.equal(r.store.all("SELECT kind FROM journal WHERE kind = 'host-pressure'").length, 2, 'two episodes, two entries');
+});
+
+test('the host sampler reports memory, CPU over a full window, disk on every volume and late heartbeats, in that order', async () => {
+  const { createHostSampler, PRESSURE_SIGNALS, PRESSURE_DEFAULTS } = await import('../../src/supervisor/host.mjs');
+  assert.deepEqual(PRESSURE_SIGNALS, ['memory', 'cpu', 'disk', 'heartbeats']);
+  assert.equal(PRESSURE_DEFAULTS.minFreeMemoryBytes, 2 * GiB);
+  const h = fakeHost();
+  h.disk['V:/other'] = 100 * GiB;
+  const host = createHostSampler({ os: h.os, fs: h.fs, volumes: ['W:/worktrees', 'X:/unmounted', 'V:/other'], heartbeatMs: 10_000, staleMs: 90_000 });
+  assert.equal(host.sample({ now: 0 }), null, 'a calm host');
+
+  h.free = 3 * GiB; // above 2 GiB but below 10% of 32 GiB
+  assert.equal(host.sample({ now: 1 })?.signal, 'memory', 'the floor is the larger of 2 GiB and 10% of total memory');
+  h.free = 16 * GiB;
+
+  h.busy = 95; h.idle = 5;
+  assert.equal(host.sample({ now: 30_000 }), null, 'CPU is judged only over a full window');
+  assert.equal(host.sample({ now: 60_000 })?.signal, 'cpu', '95% busy over 60 s');
+  h.busy = 100; h.idle = 1000;
+  assert.equal(host.sample({ now: 120_000 }), null, 'a mostly idle next window clears it');
+  h.busy = 10_000;
+  assert.equal(host.sample({ now: 500_000 }), null, 'a window far longer than a minute says nothing about the last minute');
+
+  h.disk['V:/other'] = 4 * GiB;
+  assert.deepEqual(host.sample({ now: 500_001 }), { signal: 'disk', detail: { volume: 'V:/other', freeBytes: 4 * GiB } },
+    'any worktree volume below 5 GiB; an unreadable one gives no signal');
+  h.disk['V:/other'] = 100 * GiB;
+
+  assert.equal(host.sample({ now: 600_000, beats: [600_000 - 35_000] })?.signal, 'heartbeats', 'older than three intervals');
+  assert.equal(host.sample({ now: 600_000, beats: [600_000 - 95_000] }), null, 'a stale run is the controller\'s to reconcile, not pressure');
+  assert.equal(host.sample({ now: 600_000, beats: [600_000 - 5_000, 0, Number.NaN] }), null, 'on time, or no beat yet');
+
+  h.free = 1 * GiB; h.disk['W:/worktrees'] = 1;
+  assert.equal(host.sample({ now: 600_001, beats: [600_000 - 35_000] })?.signal, 'memory', 'the first signal that applies');
+});
+
+test('pressure thresholds come from config.scheduler.pressure; invalid values keep the defaults', async () => {
+  const { hostSamplerFor, pressureThresholds, PRESSURE_DEFAULTS } = await import('../../src/supervisor/host.mjs');
+  assert.deepEqual(pressureThresholds(undefined), PRESSURE_DEFAULTS);
+  assert.deepEqual(pressureThresholds({ minFreeDiskBytes: 'lots', maxCpuBusy: -1, lateHeartbeats: Infinity, cpuWindowMs: 0 }), PRESSURE_DEFAULTS);
+  const h = fakeHost();
+  h.disk['D:/wt'] = 8 * GiB;
+  const config = { heartbeatMs: 100, staleMs: 5000, scheduler: { pressure: { minFreeDiskBytes: 10 * GiB, lateHeartbeats: 5 } },
+    repositories: { 'o/a': { path: 'D:/a', worktreeRoot: 'D:/wt' }, 'o/b': { path: 'D:/b', worktreeRoot: 'D:/wt' }, 'o/c': { path: 'D:/c' } } };
+  const host = hostSamplerFor(config, { os: h.os, fs: h.fs });
+  assert.equal(host.limits.minFreeDiskBytes, 10 * GiB);
+  assert.equal(host.sample({ now: 0 })?.signal, 'disk', 'the configured worktree volume, against the configured floor');
+  h.disk['D:/wt'] = 100 * GiB;
+  assert.equal(host.sample({ now: 1000, beats: [1000 - 450] }), null, 'five intervals of the configured heartbeat, not three');
+  assert.equal(host.sample({ now: 1000, beats: [1000 - 600] })?.signal, 'heartbeats');
+});
+
+test('open run heartbeats are read for worker and coordinator runs only while they are open', async (t) => {
+  const { openRunBeats } = await import('../../src/supervisor/host.mjs');
+  const r = rig(t);
+  r.register('one', [commitTask('A', 1), commitTask('B', 2)]);
+  const dirs = mkdtempSync(join(tmpdir(), 'aiworks-beats-'));
+  t.after(() => rmSync(dirs, { recursive: true, force: true }));
+  const runDir = (name, beat) => {
+    const dir = join(dirs, name);
+    mkdirSync(dir);
+    if (beat !== undefined) writeFileSync(join(dir, 'heartbeat'), String(beat));
+    return dir;
+  };
+  const open = r.open('one', 'A');
+  r.store.run('UPDATE operations SET run_dir = ? WHERE id = ?', runDir('open', 1111), open);
+  const done = r.open('one', 'B');
+  r.store.run('UPDATE operations SET run_dir = ? WHERE id = ?', runDir('done', 2222), done);
+  r.finish(done, { class: 'result', value: { result: 'resolved' } });
+  const fresh = r.open('one', 'B');
+  r.store.run('UPDATE operations SET run_dir = ? WHERE id = ?', runDir('fresh'), fresh);
+  for (const [id, state, beat] of [['c1', 'dispatched', 3333], ['c2', 'finished', 4444]]) {
+    r.store.insert('coordinator_runs', { id, state, session_id: id, run_dir: runDir(id, beat), workspace: dirs, message_ids: [], created_at: 0, updated_at: 0 });
+  }
+  assert.deepEqual(openRunBeats(r.store).sort(), [1111, 3333], 'a finished run is not read; a run without a beat yet is left out');
 });
