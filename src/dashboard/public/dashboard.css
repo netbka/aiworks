@@ -348,3 +348,4 @@ main{padding:25px 15px}
 @media(prefers-reduced-motion:reduce){
 *{transition:none!important;scroll-behavior:auto!important}
 }
+.coordinator-reply { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }

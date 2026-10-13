@@ -227,7 +227,7 @@ The items are today's "Needs you" items, unchanged in meaning (observed: built i
 - **Primary action.** "Ask for a plan".
 - **In details.** Which AI workers may be used, optional spending limit, how results are published.
 
-**Today and after.** Plan only can be built now on the existing message path: the dashboard sends the coordinator a message with the project, the goal and the chosen issue or pull request (observed: `src/dashboard/supervisor.mjs:273-287`, `src/dashboard/server.mjs:80`). The coordinator is read-only and posts its reply on GitHub (AW-004). "Plan and do" is shown but not selectable until slice S10 ([§11](#11-implementation-slices)). Its line reads: "Starting work from this page is not built yet. Today, work starts after its plan is merged into AIWorks and started on this computer." For a project without GitHub, Plan only waits for a local place to post the reply (**unknown**; see S12).
+**Today and after.** Plan only uses the existing message path: the dashboard sends the coordinator the selected project, goal and chosen issue or pull request. The coordinator is read-only; its checked final reply stays in the local dashboard and creates no GitHub issue, PR or comment (AW-004, amended 2026-10-13). "Plan and do" is shown but not selectable until slice S10 ([§11](#11-implementation-slices)). Its line reads: "Starting work from this page is not built yet. Today, work starts when an authorized private plan is registered on this computer." Projects without GitHub still need the local intake contract in S12; storing replies locally alone does not enable their planning.
 
 ### 4.6 Review
 
@@ -331,13 +331,13 @@ Each flow is written as screen → what the owner sees → what they do. "Today"
 1. **Projects** → "Add project". The owner pastes `D:\Notes\recipes`.
 2. AIWorks finds "Ordinary folder, no Git" and says: "AIWorks will never change this folder directly. It works on its own copy and asks you before applying a checked result." (plan §3.1)
 3. "Connect project" → **Now**: "Connected. Starting work in a folder without GitHub is not available yet." The details name what it waits for: a local project identity in governance provider (D2) and a local approval route (owner question Q2).
-4. Plan only becomes available when the coordinator can report locally (S12). Plan and do becomes available after D2 and Q2.
+4. Plan only becomes available with the local intake contract (S12). Local reply storage alone does not enable it. Plan and do becomes available after D2 and Q2.
 
 ### 5.4 Starting work
 
 1. **Now** → "Start work" → **Start work**.
 2. Today (after S9): the owner writes the goal, picks "A GitHub issue" → #443, keeps "Plan only" and presses "Ask for a plan".
-3. The page shows the receipt in place: "Sent · AIWorks received your request at 12:31". Then "Read at 12:32", then "Answered · Read the plan on GitHub ↗" (today's receipts).
+3. The page shows the receipt in place: "Sent · AIWorks received your request at 12:31". Then "Read at 12:32", then "Answered · Read the plan" in the local dashboard. Planning writes nothing to GitHub (AW-004, amended 2026-10-13).
 4. With "Plan and do" (after S10): "Ask for a plan" leads to **Review** when the plan is ready.
 
 ### 5.5 Approving (after S10 and Q1)
@@ -793,5 +793,5 @@ Before each task, the reviewer answers the pass-A questions: Where am I? What br
 ## 14. Open unknowns
 
 - Whether each AI worker records a cost for every run, which per-step cost depends on (**unknown**; #10).
-- Where the coordinator will post a plan for a project with no GitHub (**unknown**; S12).
+- The local intake contract for a project with no GitHub (S12); replies stay in the dashboard under AW-004.
 - Whether the live workstation dashboard matches the code at `acb9e66` (**unknown**; not checked by this design).

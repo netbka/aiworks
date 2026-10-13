@@ -1,5 +1,5 @@
 // Owner -> coordinator inbox: durable receipt, read by one bounded read-only agent, answered by a
-// supervisor-posted comment. Synthetic claude/gh only; no model, network or GitHub access.
+// local dashboard reply. Synthetic claude/gh only; no model, network or GitHub access.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -46,11 +46,10 @@ test('a message is stored once per request id and rejects empty, oversized and c
   assert.ok(store.all("SELECT kind FROM journal WHERE kind = 'message-received'").length === 1);
 });
 
-test('the coordinator reads the message read-only and the supervisor posts its answer with receipts', { skip: skipWithoutSqlite }, async (t) => {
+test('the coordinator reads the message read-only and stores its answer locally with receipts', { skip: skipWithoutSqlite }, async (t) => {
   const { env, store, controller } = setup(t);
   const { id } = coordinator.postOwnerMessage(store, { text: 'Review new PR and issues and plan their execution.', requestId: randomUUID(), source: 'owner (test)' });
-  await until(controller, store, () => store.get('SELECT state FROM owner_messages WHERE id = ?', id).state === 'answered' &&
-    env.comments().some((c) => c.url.includes('aiworks/issues/3')));
+  await until(controller, store, () => store.get('SELECT state FROM owner_messages WHERE id = ?', id).state === 'answered');
   const message = store.get('SELECT * FROM owner_messages WHERE id = ?', id);
   assert.ok(message.received_at <= message.read_at && message.read_at <= message.answered_at, 'received, then read, then answered');
   const call = env.calls().find((c) => c.role === 'coordinate');
@@ -76,7 +75,7 @@ test('the coordinator reads the message read-only and the supervisor posts its a
   const prompt = readFileSync(join(run.run_dir, 'prompt.txt'), 'utf8');
   assert.ok(prompt.includes('Review new PR and issues and plan their execution.'), 'the owner text reaches the agent');
   assert.match(prompt, /read-only/);
-  const reply = env.comments().find((c) => c.url.includes('aiworks/issues/3'));
+  const reply = store.get('SELECT body FROM coordinator_replies WHERE run_id = ?', run.id);
   assert.match(reply.body, /Coordinator reply/);
   assert.match(reply.body, /example-org\/sampleapp#455 \| issue \| Telegram ingestion SQL contract \| new-campaign-candidate/);
   assert.match(reply.body, /Proposed campaign \(draft, not registered\)/);
@@ -84,8 +83,77 @@ test('the coordinator reads the message read-only and the supervisor posts its a
   for (const kind of ['message-received', 'message-read', 'message-answered']) assert.ok(kinds.includes(kind), kind);
   const view = coordinator.coordinatorView(store, env.config);
   assert.equal(view.messages[0].state, 'answered');
-  assert.match(view.messages[0].replyUrl, /issues\/3#issuecomment-/);
+  assert.equal(view.messages[0].replyUrl, null);
+  assert.equal(view.messages[0].replyBody, reply.body);
+  assert.equal(env.comments().length, 0);
+  assert.equal(store.all('SELECT * FROM outbox').length, 0);
+  const reopened = new Store(join(env.dataDir, 'supervisor.db'), { readOnly: true });
+  try { assert.equal(coordinator.coordinatorView(reopened, env.config).messages[0].replyBody, reply.body); }
+  finally { reopened.close(); }
   assert.equal(store.all('SELECT * FROM campaigns').length, 0, 'the coordinator never registers a campaign');
+});
+
+test('separate project plans never publish to the global report issue', { skip: skipWithoutSqlite }, async (t) => {
+  const { env, store, controller } = setup(t);
+  const { planRequestText } = await import('../../src/dashboard/supervisor.mjs');
+  const requestId = randomUUID();
+  const text = planRequestText({ project: 'example-org/sampleapp', from: 'description', goal: 'Review open sample app PRs.' });
+  const sample = coordinator.postOwnerMessage(store, { text, repository: 'example-org/sampleapp', requestId, source: 'owner (Start work: Plan only)' });
+  assert.throws(() => coordinator.postOwnerMessage(store, { text, repository: 'example-org/aiworks', requestId }), /different message/);
+  const aiworks = coordinator.postOwnerMessage(store, { text: 'Review the dashboard.', repository: 'example-org/aiworks', requestId: randomUUID() });
+  await until(controller, store, () => store.get('SELECT state FROM owner_messages WHERE id = ?', aiworks.id).state === 'answered');
+  const runs = store.all('SELECT * FROM coordinator_runs ORDER BY created_at');
+  assert.deepEqual(runs.map((run) => run.message_ids), [[sample.id], [aiworks.id]]);
+  const prompt = readFileSync(join(runs[0].run_dir, 'prompt.txt'), 'utf8');
+  assert.match(prompt, /inventory open and recently updated issues and pull requests in example-org\/sampleapp with read-only commands/);
+  assert.doesNotMatch(prompt, /Review the dashboard\.|example-org\/aiworks#3/);
+  assert.match(prompt, /posts nothing to GitHub/);
+  assert.equal(env.comments().length, 0);
+  assert.equal(store.all('SELECT * FROM outbox').length, 0);
+  assert.equal(store.all('SELECT * FROM coordinator_replies').length, 2);
+  assert.equal(coordinator.coordinatorView(store, env.config).messages.find((m) => m.id === sample.id).repository, 'example-org/sampleapp');
+});
+
+test('legacy Plan only headers keep their project and pending replies never reach GitHub', { skip: !SQLITE }, async (t) => {
+  const { env, store, controller } = setup(t);
+  const text = 'Start work: Plan only, sent from the dashboard.\nProject: example-org/sampleapp\nStart from: my description below\nReview open PRs.';
+  const { id } = coordinator.postOwnerMessage(store, { text, requestId: randomUUID(), source: 'owner (Start work: Plan only)' });
+  store.run('UPDATE owner_messages SET repository = NULL WHERE id = ?', id);
+  const message = store.get('SELECT * FROM owner_messages WHERE id = ?', id);
+  assert.equal(coordinator.postOwnerMessage(store, { text, repository: 'example-org/sampleapp', requestId: message.request_id }).duplicate, true,
+    'retrying a request made before repository metadata existed remains idempotent');
+  const prompt = coordinator.buildPrompt({ messages: [message], repositories: COORDINATOR.repositories });
+  assert.match(prompt, /pull requests in example-org\/sampleapp with read-only commands/);
+  const now = Date.now(), key = '_coordinator:old:reply';
+  store.run("INSERT INTO outbox (key, campaign_id, target, body, state, updated_at) VALUES (?, '_coordinator', 'example-org/aiworks#3', 'Legacy sample plan', 'pending', ?)", key, now);
+  store.run("UPDATE owner_messages SET state = 'answered', response_key = ? WHERE id = ?", key, id);
+  const lease = store.acquireLease(coordinator.LANE, controller.instanceId, now, 60_000);
+  controller.held.set(coordinator.LANE, lease.generation);
+  await controller.drainOutbox();
+  assert.equal(store.get('SELECT state FROM outbox WHERE key = ?', key).state, 'local');
+  assert.equal(coordinator.coordinatorView(store, env.config).messages[0].replyBody, 'Legacy sample plan');
+  assert.equal(env.comments().length, 0);
+  await controller.drainOutbox();
+  assert.equal(env.comments().length, 0, 'a restart or retry cannot publish the retained reply');
+});
+
+test('an older store stays readable and gains reply storage only when opened for writing', { skip: !SQLITE }, (t) => {
+  const { env, store } = setup(t);
+  coordinator.postOwnerMessage(store, { text: 'Old request', requestId: randomUUID() });
+  store.db.exec('DROP TABLE coordinator_replies; ALTER TABLE owner_messages DROP COLUMN repository');
+  const path = join(env.dataDir, 'supervisor.db');
+  const reader = new Store(path, { readOnly: true });
+  try {
+    assert.equal(coordinator.coordinatorView(reader, env.config).messages[0].replyBody, null);
+    assert.equal(reader.get("SELECT name FROM sqlite_master WHERE name = 'coordinator_replies'"), null);
+  } finally { reader.close(); }
+  for (let i = 0; i < 2; i++) {
+    const writer = new Store(path);
+    try {
+      assert.equal(writer.get('SELECT repository FROM owner_messages').repository, null);
+      assert.equal(writer.all('SELECT * FROM coordinator_replies').length, 0);
+    } finally { writer.close(); }
+  }
 });
 
 test('a read that ends without an answer retries once with a fresh session, then reports failure', { skip: skipWithoutSqlite }, async (t) => {
@@ -158,6 +226,7 @@ test('invalid coordinator configuration keeps the lane idle and is reported', { 
     assert.ok(coordinator.coordinatorConfigError({ ...COORDINATOR, ...bad }), JSON.stringify(bad));
   }
   assert.equal(coordinator.coordinatorConfigError(COORDINATOR), null);
+  assert.equal(coordinator.coordinatorConfigError({ repositories: ['example-org/sampleapp'] }), null, 'local replies need no GitHub destination');
   assert.equal(coordinator.coordinatorConfigError({ ...COORDINATOR, permissionMode: 'dontAsk' }), null);
   const { env, store, controller } = setup(t, {}, { coordinator: { permissionMode: 'bypassPermissions' } });
   coordinator.postOwnerMessage(store, { text: 'Hello', requestId: randomUUID() });
@@ -186,6 +255,8 @@ test('a reply that contains credential-like text is withheld, never posted', { s
   assert.equal(store.get('SELECT failure FROM owner_messages WHERE id = ?', id).failure, 'reply-withheld');
   assert.equal(env.comments().length, 0);
   assert.equal(store.all("SELECT * FROM outbox WHERE campaign_id = '_coordinator'").length, 0);
+  assert.equal(store.all('SELECT * FROM coordinator_replies').length, 0, 'credential-like output is not saved as a reply');
+  assert.equal(coordinator.coordinatorView(store, env.config).messages[0].replyBody, null);
   assert.ok(store.all("SELECT kind FROM journal WHERE kind = 'coordinator-reply-withheld'").length === 1);
   assert.equal(coordinator.containsSecret('rotate the deploy token next week'), false, 'prose about tokens is not withheld');
 });

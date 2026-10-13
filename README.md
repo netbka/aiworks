@@ -51,6 +51,8 @@ The governance directory provides `registry/projects`, `policies/catalog.json` a
 
 Optional `coordinator` and `ownerIntervention` configuration are described in the runbook. No credentials go into `config.json`.
 
+Coordinator plans and replies stay in the local dashboard. Planning never creates GitHub issues, PRs or comments.
+
 Create your private campaign under `.local/campaigns/` using the contract in `src/supervisor/campaign.mjs`. The files in `tests/fixtures/campaigns/` are synthetic validation examples, not operational assignments.
 
 ```sh

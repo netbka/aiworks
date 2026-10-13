@@ -1937,6 +1937,11 @@ export class Controller {
       try {
         this.fenced({ id: item.campaign_id, generation: this.held.get(item.campaign_id) }, () => {
           if (this.store.get('SELECT state FROM outbox WHERE key = ?', item.key)?.state !== 'pending') return;
+          // Replies queued by an older runtime stay local too; never publish them after an upgrade.
+          if (item.campaign_id === COORDINATOR_LANE) {
+            this.store.run("UPDATE outbox SET state = 'local', updated_at = ? WHERE key = ?", now, item.key);
+            return;
+          }
           if (github.findMarkedComment({ gh: this.cmd.gh, repository, issue, key: item.key })) {
             this.store.run("UPDATE outbox SET state = 'posted', posted = 'reconciled', updated_at = ? WHERE key = ?", now, item.key);
             return;
