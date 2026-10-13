@@ -72,7 +72,8 @@ const STATES = {
     // After Start work exists (OW S9, build slice UI10).
     ? ['No work yet.', `Tell AIWorks what you want done in ${shortName(d.project)}.`, { label: 'Start work', route: { screen: 'start', project: d.project } }]
     : ['No work yet.', `Work in ${shortName(d.project)} appears here once it is registered on this computer. Starting work from this page is not built yet.`, null] },
-  'needs-calm': { section: '7.1', needsYou: false, copy: (d) => ['Nothing is blocked on you right now.', d.also ?? '', null] },
+  // Calm means nothing at all for the owner: reports and releases are on Results, never named here (owner, 2026-10-13).
+  'needs-calm': { section: '7.1', needsYou: false, copy: () => ['Nothing is blocked on you right now.', '', null] },
   'results-empty': { section: '7.1', needsYou: false, copy: () => ['No results yet.', 'Results appear here when a step finishes and passes the independent check.', null] },
   'cost-empty': { section: '7.1', needsYou: false, copy: () => ['No cost yet.', 'Nothing has run for this project.', null] },
   // §7.2 Disconnected
