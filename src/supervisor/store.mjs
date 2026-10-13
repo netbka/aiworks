@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS provider_waits (
 CREATE TABLE IF NOT EXISTS capacity (
   scope TEXT NOT NULL, id TEXT NOT NULL, value INTEGER NOT NULL, reason TEXT, updated_at INTEGER NOT NULL,
   PRIMARY KEY (scope, id));
--- Auto Release (release/state.mjs, slice REL3; built switched off until netbka/aiworks#33). One row per release attempt
+-- Auto Release (release/state.mjs, slice REL3; built switched off until example-org/aiworks#33). One row per release attempt
 -- of one exact verified revision to one destination. A step is recorded started, with no outcome, before it acts; such
 -- a row is unknown after a restart until a read-only look proves where the destination is. history is the step log.
 CREATE TABLE IF NOT EXISTS releases (

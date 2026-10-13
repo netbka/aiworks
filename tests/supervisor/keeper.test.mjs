@@ -14,7 +14,7 @@ const Store = SQLITE ? (await import('../../src/supervisor/store.mjs')).Store : 
 
 const PRELOAD = pathToFileURL(join(ROOT, 'tests', 'supervisor', 'fixtures', 'keep-preload.mjs')).href;
 const LEASE_MS = 120_000;
-// CI runs on ubuntu-latest (aiworks#42); HomePc runs Windows. AIWORKS_TEST_PLATFORM=linux runs the non-Windows branch
+// CI runs on ubuntu-latest (aiworks#42); workstation runs Windows. AIWORKS_TEST_PLATFORM=linux runs the non-Windows branch
 // of these tests on Windows, so the Linux path can be checked locally.
 const WINDOWS = (process.env.AIWORKS_TEST_PLATFORM || process.platform) === 'win32';
 const WINDOWS_ONLY = !WINDOWS && 'Windows only: Task Scheduler and powershell.exe';

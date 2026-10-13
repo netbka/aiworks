@@ -228,6 +228,16 @@ test('status gives every waiting step one plain reason and the next automatic ac
   assert.equal(wait.B.next, `Tries again at ${new Date(now + 60_000).toISOString()}`);
   assert.deepEqual([wait.C.code, wait.C.until], ['provider-cooldown', new Date(now + 30_000).toISOString()]);
   assert.deepEqual([wait.D.code, wait.D.text], ['integration', 'Waiting for "Login page" to be merged into main']);
+  assert.deepEqual(wait.D.holder, { campaignId: id, taskId: 'A', reason: 'dependency-integration', prUrl: null, verifiedSha: 'a'.repeat(40) });
+  patchTask(store, id, 'A', { pr_url: 'https://github.com/example-org/sampleapp/pull/113' }, now);
+  wait = waits(store, id, now);
+  assert.match(wait.D.text, /PR #113/);
+  assert.equal(wait.D.holder.prUrl, 'https://github.com/example-org/sampleapp/pull/113');
+  patchTask(store, id, 'D', { last_error: 'dependency-integration: waiting for A in main (remote refresh unavailable)' }, now);
+  wait = waits(store, id, now);
+  assert.equal(wait.D.text, 'Cannot check whether "Login page" is merged into main');
+  assert.equal(wait.D.holder.verifiedSha, 'a'.repeat(40));
+  assert.match(wait.D.next, /automatically/);
   patchTask(store, id, 'B', { state: 'verified', retry_at: null, last_error: null }, now);
   assert.equal(waits(store, id, now).B.code, 'publishing', 'publication needs no provider');
   patchTask(store, id, 'C', { blocked: { class: 'B3', reason: 'owner-reserved' } }, now);
@@ -258,7 +268,7 @@ test('with the scheduler on, status names the admission check that refuses each 
   assert.equal(wait.M.code, decided('M'));
   assert.equal(waits(store, 'narrow', now).N.code, 'ready', 'off means today: no write domains without the scheduler');
   store.run("UPDATE operations SET state = 'finished'");
-  patchTask(store, 'wide', 'W', { state: 'done', verified_sha: 'b'.repeat(40), pr_url: 'https://github.com/netbka/Dyk/pull/41' }, now);
+  patchTask(store, 'wide', 'W', { state: 'done', verified_sha: 'b'.repeat(40), pr_url: 'https://github.com/example-org/sampleapp/pull/41' }, now);
   wait = waits(store, 'narrow', now, { config });
   assert.equal(wait.N.text, 'Another step ("Dashboard") is changing src/ (PR #41 not merged yet)');
   assert.equal(wait.N.holder.reason, 'published-unmerged');

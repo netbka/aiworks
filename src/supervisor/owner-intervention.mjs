@@ -1,4 +1,4 @@
-// aiworks#1 owner-intervention core (Engineering Platform's docs/OWNER_INTERVENTION.md, OPS-001). Pure helpers the controller uses to
+// aiworks#1 owner-intervention core (governance provider's docs/OWNER_INTERVENTION.md, OPS-001). Pure helpers the controller uses to
 // fingerprint, deduplicate and recheck B2-B5 blockers and to record what an owner notification would say.
 // Nothing here reads credentials or talks to a network: the only transport is the no-op one below.
 import { createHash } from 'node:crypto';

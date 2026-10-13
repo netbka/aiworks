@@ -201,7 +201,15 @@ export async function openPage(t, { store = 'full', host = 'review-pc' } = {}) {
   await import(pathToFileURL(file).href);
   delete globalThis[key];
 
-  const settle = async () => { for (let i = 0; i < 400 && (pending || i < 5); i++) await new Promise((done) => setImmediate(done)); };
+  const settle = async () => {
+    const deadline = Date.now() + 15_000;
+    let quiet = 0;
+    while (quiet < 5) {
+      if (Date.now() >= deadline) throw new Error('Dashboard requests did not settle within 15 seconds');
+      await new Promise((done) => setTimeout(done, 5));
+      quiet = pending ? 0 : quiet + 1;
+    }
+  };
   /** Opens an address the way Back, Forward or an edited address does, then waits for the page to finish. */
   const go = async (address) => { location.hash = address; window.listeners.hashchange?.forEach((listener) => listener(new Event('hashchange'))); await settle(); };
   await settle();

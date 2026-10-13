@@ -1,7 +1,7 @@
 param(
   [string] $Sha = '',
-  [string] $Root = 'D:/Git/aiworks',
-  [string] $Node = 'C:/nvm4w/nodejs/node.exe'
+  [string] $Root = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path,
+  [string] $Node = (Get-Command node -ErrorAction Stop).Source
 )
 # Upgrade the pinned AIWorks runtime to a reviewed commit (default: origin/main), refresh the governance
 # checkout, and restart the supervisor and dashboard tasks. Follows docs/SUPERVISOR.md section 6.
@@ -73,7 +73,7 @@ $after = & git -C $runtime status --porcelain
 if ($after) { Note "WARNING: runtime checkout is not clean after install: $after" }
 Note "runtime pinned at $head"
 
-# 4. Refresh the read-only governance checkout (Engineering Platform main).
+# 4. Refresh the read-only governance checkout (governance provider main).
 if (Test-Path "$governance/.git") {
   $gdirty = & git -C $governance status --porcelain
   if ($gdirty) { throw "governance checkout has local changes: $gdirty" }

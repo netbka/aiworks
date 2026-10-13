@@ -336,7 +336,15 @@ export function waitReason(task, { store, campaign: c, tasks, open, held = new M
   const error = String(task.last_error ?? '');
   if (error.startsWith('dependency-integration:')) {
     const missing = spec.dependsOn.find((id) => new RegExp(`\\b${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(error)) ?? spec.dependsOn[0];
-    return reason('integration', `Waiting for "${title(missing)}" to be merged into ${decl.target.baseBranch}`, 'Checks the base branch again every minute', task.retry_at);
+    const dependency = tasks.find((row) => row.task_id === missing);
+    const holder = { campaignId: c.id, taskId: missing, reason: 'dependency-integration',
+      prUrl: dependency?.pr_url ?? null, verifiedSha: dependency?.verified_sha ?? null };
+    const refreshFailed = error.endsWith(' (remote refresh unavailable)');
+    const pr = /\/pull\/(\d+)$/.exec(holder.prUrl ?? '');
+    return reason('integration', refreshFailed
+      ? `Cannot check whether "${title(missing)}" is merged into ${decl.target.baseBranch}`
+      : `Waiting for "${title(missing)}" to be merged into ${decl.target.baseBranch}${pr ? ` (PR #${pr[1]})` : ''}`,
+    'Checks the base branch again automatically; starts after the verified dependency is integrated', task.retry_at, holder);
   }
   if (task.retry_at > now) {
     return /^(quota:|waiting for executor availability)/.test(error)

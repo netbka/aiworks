@@ -1,0 +1,14 @@
+{
+  "id": "service",
+  "name": "Service Browser Extension",
+  "repository": {
+    "github": "example-org/Service"
+  },
+  "lifecycle": "support",
+  "capabilities": [
+    "browser-extension"
+  ],
+  "environments": [
+    "local"
+  ]
+}

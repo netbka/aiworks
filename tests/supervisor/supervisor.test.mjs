@@ -331,7 +331,7 @@ test('a worker cannot steer later workers through the project settings it commit
   const { mkdirSync, writeFileSync } = await import('node:fs');
   const decl = declaration({ tasks: [declaration().tasks[0]] });
   const { store, controller, env, id } = await setup(t, { decl, scenario: { implement: ['commit-settings'] } });
-  // The base commit carries Dyk-style tuning; the implementer then commits different values and an executable path.
+  // The base commit carries sampleapp-style tuning; the implementer then commits different values and an executable path.
   mkdirSync(join(env.repo, '.claude'));
   writeFileSync(join(env.repo, '.claude', 'settings.json'), JSON.stringify({ env: { CLAUDE_CODE_SUBAGENT_MODEL: 'haiku' } }));
   execFileSync('git', ['-C', env.repo, 'add', '-A']);

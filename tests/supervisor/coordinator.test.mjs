@@ -11,7 +11,7 @@ import { environment, runUntil, SQLITE, skipWithoutSqlite } from './helpers.mjs'
 const { Store } = SQLITE ? await import('../../src/supervisor/store.mjs') : {};
 const { Controller } = SQLITE ? await import('../../src/supervisor/controller.mjs') : {};
 const coordinator = SQLITE ? await import('../../src/supervisor/coordinator.mjs') : {};
-const COORDINATOR = { repositories: ['netbka/Dyk', 'netbka/aiworks'], reportTo: 'netbka/aiworks#3', timeoutMinutes: 1, maxRunsPerDay: 6 };
+const COORDINATOR = { repositories: ['example-org/sampleapp', 'example-org/aiworks'], reportTo: 'example-org/aiworks#3', timeoutMinutes: 1, maxRunsPerDay: 6 };
 
 function setup(t, scenario = {}, { codeRevision = null, coordinator = {} } = {}) {
   const env = environment({ scenario });
@@ -22,7 +22,7 @@ function setup(t, scenario = {}, { codeRevision = null, coordinator = {} } = {})
   t.after(() => { controller.release(); store.close(); env.cleanup(); });
   return { env, store, controller };
 }
-// The same budget as runUntil: each coordinator read is a real contained runner, whose start-up and drain take seconds under load (engineering-platform-archive#58).
+// The same budget as runUntil: each coordinator read is a real contained runner, whose start-up and drain take seconds under load (historical regression).
 const until = async (controller, store, predicate, timeoutMs = 60_000) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -78,7 +78,7 @@ test('the coordinator reads the message read-only and the supervisor posts its a
   assert.match(prompt, /read-only/);
   const reply = env.comments().find((c) => c.url.includes('aiworks/issues/3'));
   assert.match(reply.body, /Coordinator reply/);
-  assert.match(reply.body, /netbka\/Dyk#455 \| issue \| Telegram ingestion SQL contract \| new-campaign-candidate/);
+  assert.match(reply.body, /example-org\/sampleapp#455 \| issue \| Telegram ingestion SQL contract \| new-campaign-candidate/);
   assert.match(reply.body, /Proposed campaign \(draft, not registered\)/);
   const kinds = store.all("SELECT kind FROM journal WHERE campaign_id = '_coordinator'").map((row) => row.kind);
   for (const kind of ['message-received', 'message-read', 'message-answered']) assert.ok(kinds.includes(kind), kind);
@@ -172,8 +172,8 @@ test('campaign Claude workers run without host settings, MCP servers, remote she
   const { buildArgv } = await import('../../src/supervisor/adapters/claude.mjs');
   for (const [role, deliverable] of [['implementer', 'commit'], ['implementer', 'report'], ['verification', 'commit']]) {
     const argv = buildArgv({ command: ['claude'], executor: { model: 'opus', permissionMode: 'auto' }, role, deliverable, sessionId: 's' });
-    assert.equal(argv[argv.indexOf('--setting-sources') + 1], '', 'Dyk project settings (ssh netcup, push main) never load');
-    assert.ok(argv.includes('--strict-mcp-config'), 'no inherited MCP servers or claude.ai connectors such as Local Commander');
+    assert.equal(argv[argv.indexOf('--setting-sources') + 1], '', 'sampleapp project settings (ssh example-host, push main) never load');
+    assert.ok(argv.includes('--strict-mcp-config'), 'no inherited MCP servers or claude.ai connectors such as local control service');
     for (const denied of ['Bash(ssh:*)', 'Bash(scp:*)', 'Bash(git push:*)', 'SendMessage', 'Workflow', 'RemoteTrigger']) assert.ok(argv.includes(denied), denied);
     assert.ok(!argv.some((arg) => /bypass/i.test(arg)));
   }
@@ -193,7 +193,7 @@ test('a reply that contains credential-like text is withheld, never posted', { s
 test('workers inherit only exact, validated project tuning names, never paths, providers, credentials or permissions', async () => {
   const { projectEnv } = await import('../../src/supervisor/adapters/claude.mjs');
   const { prepare } = await import('../../src/supervisor/adapters/executors.mjs');
-  const settings = JSON.stringify({ permissions: { allow: ['Bash(ssh netcup:*)'] }, env: {
+  const settings = JSON.stringify({ permissions: { allow: ['Bash(ssh example-host:*)'] }, env: {
     CLAUDE_CODE_SUBAGENT_MODEL: 'haiku', CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY: '3', CLAUDE_CODE_GIT_BASH_PATH: 'C:/evil/bash.exe',
     CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CODE_OAUTH_TOKEN: 'secret', ANTHROPIC_BASE_URL: 'https://evil.example', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0' } });
   assert.deepEqual(projectEnv(settings), { CLAUDE_CODE_SUBAGENT_MODEL: 'haiku', CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY: '3' });
@@ -204,5 +204,5 @@ test('workers inherit only exact, validated project tuning names, never paths, p
     deliverable: 'report', sessionId: 's', workspace: '.', prompt: 'p', projectSettings: settings });
   assert.deepEqual(invocation.env, { CLAUDE_CODE_SUBAGENT_MODEL: 'haiku', CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY: '3', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
     CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1', BASH_DEFAULT_TIMEOUT_MS: '1800000', BASH_MAX_TIMEOUT_MS: '3600000' });
-  assert.ok(!invocation.argv.some((arg) => /netcup/.test(arg)), 'the project allow rules are not carried over');
+  assert.ok(!invocation.argv.some((arg) => /example-host/.test(arg)), 'the project allow rules are not carried over');
 });

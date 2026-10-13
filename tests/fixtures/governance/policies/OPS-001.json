@@ -1,32 +1,5 @@
 {
   "id": "OPS-001",
-  "version": "1.0.0",
   "scope": "portfolio",
-  "applies_when": {},
-  "invariants": [
-    { "id": "b0-transient-self-recoverable", "source": "docs/OWNER_INTERVENTION.md#b0---transient--self-recoverable", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "b1-agent-resolvable", "source": "docs/OWNER_INTERVENTION.md#b1---agent-resolvable", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "b2-owner-action-required", "source": "docs/OWNER_INTERVENTION.md#b2---owner-action-required", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "b3-owner-decision-required", "source": "docs/OWNER_INTERVENTION.md#b3---owner-decision-required", "baseline": ["baseline:owner-reserved"], "exception_mode": "forbidden" },
-    { "id": "b4-external-wait", "source": "docs/OWNER_INTERVENTION.md#b4---external-wait", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "b5-critical-incident", "source": "docs/CONSTITUTION.md#15-incident-escalation", "constitution_section": 15, "baseline": ["baseline:incident-escalation"], "exception_mode": "forbidden" },
-    { "id": "complete-outage-five-minute-escalation", "source": "docs/CONSTITUTION.md#15-incident-escalation", "constitution_section": 15, "baseline": ["baseline:incident-escalation"], "exception_mode": "forbidden" },
-    { "id": "bounded-recovery-before-notification", "source": "docs/OWNER_INTERVENTION.md#5-automatic-recovery-before-owner-notification", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "github-durable-blocker", "source": "docs/OWNER_INTERVENTION.md#6-durable-blocker-record", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "blocker-record-sensitive-data-exclusion", "source": "docs/OWNER_INTERVENTION.md#sensitive-data-exclusion", "baseline": ["baseline:credential-boundaries"], "exception_mode": "forbidden" },
-    { "id": "telegram-first-channel", "source": "docs/OWNER_INTERVENTION.md#8-telegram-notification-contract", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "owner-done-triggers-recheck", "source": "docs/OWNER_INTERVENTION.md#9-owner-interaction-semantics", "baseline": ["baseline:evidence-truth"], "exception_mode": "forbidden" },
-    { "id": "dedup-anti-spam", "source": "docs/OWNER_INTERVENTION.md#7-deduplication", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "reminder-limits", "source": "docs/OWNER_INTERVENTION.md#10-anti-spam-and-reminder-behavior", "baseline": [], "exception_mode": "forbidden" }
-  ],
-  "owner_reserved_when": [],
-  "detect": [
-    { "id": "policy-metadata", "kind": "schema", "invariants": ["b3-owner-decision-required", "b5-critical-incident"] },
-    { "id": "blocker-classification-review", "kind": "review", "invariants": ["b0-transient-self-recoverable", "b1-agent-resolvable", "b2-owner-action-required", "b3-owner-decision-required", "b4-external-wait", "b5-critical-incident", "complete-outage-five-minute-escalation", "bounded-recovery-before-notification", "github-durable-blocker", "blocker-record-sensitive-data-exclusion", "telegram-first-channel", "owner-done-triggers-recheck", "dedup-anti-spam", "reminder-limits"] }
-  ],
-  "required_evidence": [
-    { "kind": "blocker-classification", "reviewer": "independent-verifier", "when": { "intents": ["operate"], "material": true } }
-  ],
-  "blocking": { "mode": "enforce", "missing_evidence": "block" },
-  "exceptions": { "mode": "clause-only" }
+  "applies_when": {}
 }

@@ -1,0 +1,75 @@
+{
+  "id": "sample-wiki",
+  "name": "sample native service Wiki",
+  "repository": {
+    "github": "example-org/sample-wiki"
+  },
+  "lifecycle": "active",
+  "capabilities": [
+    "ui",
+    "storybook",
+    "api",
+    "auth",
+    "email",
+    "docker"
+  ],
+  "environments": [
+    "local",
+    "prod"
+  ],
+  "governance": {
+    "observedAt": "example-org/sample-wiki@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "parentLink": "absent",
+    "authorities": [
+      {
+        "role": "agent-contract",
+        "path": "AGENTS.md"
+      },
+      {
+        "role": "product-constitution",
+        "path": "docs/SOLUTION_FIRST_PRODUCT_PLAN.md"
+      },
+      {
+        "role": "decisions",
+        "path": "docs/SOLUTION_FIRST_CONTRADICTIONS.md"
+      },
+      {
+        "role": "router",
+        "path": ".agent/capabilities.yaml"
+      },
+      {
+        "role": "runtime-state",
+        "path": "docs/STATE.md"
+      },
+      {
+        "role": "experience-review",
+        "path": "docs/EXPERIENCE_REVIEW.md"
+      },
+      {
+        "role": "ui-authority",
+        "path": "storybook/review-manifest.json"
+      }
+    ],
+    "exceptions": [
+      {
+        "id": "prod-ssh-password",
+        "rule": "constitution#7",
+        "source": "deploy/README.md",
+        "approval": "https://github.com/example-org/governance/issues/82",
+        "reviewBy": "2026-11-30",
+        "summary": "Synthetic fixture requirement."
+      }
+    ],
+    "gaps": [
+      {
+        "id": "prod-root-credential",
+        "rule": "baseline:credential-boundaries",
+        "source": "deploy/README.md",
+        "request": "https://github.com/example-org/governance/issues/82",
+        "reviewBy": "2026-11-30",
+        "summary": "Synthetic fixture requirement."
+      }
+    ],
+    "independentVerificationGate": "not-enabled"
+  }
+}

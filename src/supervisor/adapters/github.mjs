@@ -2,7 +2,7 @@
 // no new identity. Creation calls are preceded by a lookup so a retry after an unknown
 // outcome reconciles instead of duplicating (no exactly-once promise).
 // Every call is REST (gh api), never GraphQL: the account's GraphQL quota is shared with the
-// dashboard and other tools, and a spent quota must not stall publication (netbka/aiworks#21).
+// dashboard and other tools, and a spent quota must not stall publication (AIWorks).
 import { writeFileSync } from 'node:fs';
 import { exec } from './git.mjs';
 

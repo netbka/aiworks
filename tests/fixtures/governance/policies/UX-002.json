@@ -1,52 +1,9 @@
 {
   "id": "UX-002",
-  "version": "1.0.0",
   "scope": "portfolio",
-  "applies_when": { "boundaries": ["ui"] },
-  "invariants": [
-    { "id": "ordered-review-passes", "source": "docs/EXPERIENCE_REVIEW.md#1-layers-and-order", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "blind-intent-isolation", "source": "docs/EXPERIENCE_REVIEW.md#blind-intent-pass", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "retained-controls-justified", "source": "docs/EXPERIENCE_REVIEW.md#constitutional-pass", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "visual-pass-on-accepted-target", "source": "docs/EXPERIENCE_REVIEW.md#visual-pass", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "one-primary-goal", "source": "docs/EXPERIENCE_REVIEW.md#one-primary-goal-per-surface", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "structure-explains", "source": "docs/EXPERIENCE_REVIEW.md#structure-explains-before-text", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "phone-first-direction-aware", "source": "docs/EXPERIENCE_REVIEW.md#phone-first-and-direction-aware", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "spatial-grouping", "source": "docs/EXPERIENCE_REVIEW.md#spatial-grouping", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "adaptive-composition", "source": "docs/EXPERIENCE_REVIEW.md#adaptive-composition", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "modality-zoom-motion", "source": "docs/EXPERIENCE_REVIEW.md#input-modality-zoom-and-motion", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "surface-progressive-disclosure", "source": "docs/EXPERIENCE_REVIEW.md#progressive-disclosure-on-the-surface", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "decision-ready-details", "source": "docs/EXPERIENCE_REVIEW.md#decision-ready-details", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "declared-review-matrix", "source": "docs/EXPERIENCE_REVIEW.md#3-review-matrix", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "finding-record", "source": "docs/EXPERIENCE_REVIEW.md#finding-record", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "finding-severity", "source": "docs/EXPERIENCE_REVIEW.md#severity", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "experience-codes", "source": "docs/EXPERIENCE_REVIEW.md#experience-codes", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "capability-class-boundary", "source": "docs/EXPERIENCE_REVIEW.md#capability-class", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "finding-lifecycle", "source": "docs/EXPERIENCE_REVIEW.md#finding-lifecycle", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "plain-content", "source": "docs/EXPERIENCE_REVIEW.md#5-content-and-copy", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "fingerprint-bound-evidence", "source": "docs/EXPERIENCE_REVIEW.md#fingerprint-binding", "baseline": ["baseline:evidence-truth"], "exception_mode": "forbidden" },
-    { "id": "experience-reviewer-independence", "source": "docs/EXPERIENCE_REVIEW.md#reviewer-independence", "baseline": ["baseline:independent-verification"], "exception_mode": "forbidden" },
-    { "id": "technical-pass-not-acceptance", "source": "docs/EXPERIENCE_REVIEW.md#technical-checks-are-not-acceptance", "baseline": ["baseline:evidence-truth"], "exception_mode": "forbidden" },
-    { "id": "accepted-not-uninspected", "source": "docs/EXPERIENCE_REVIEW.md#accepted-is-not-uninspected", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "ui-state-manifest", "source": "docs/EXPERIENCE_REVIEW.md#7-ui-authority-and-state-manifest", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "uncoached-usability", "source": "docs/EXPERIENCE_REVIEW.md#8-uncoached-human-usability", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "isolated-review-environment", "source": "docs/EXPERIENCE_REVIEW.md#9-review-environment", "baseline": [], "exception_mode": "forbidden" }
-  ],
-  "owner_reserved_when": [
-    { "trigger": "product-scope-change", "when": { "capability_classes": ["D"] } }
-  ],
-  "detect": [
-    { "id": "experience-review", "kind": "review", "invariants": ["ordered-review-passes", "blind-intent-isolation", "retained-controls-justified", "visual-pass-on-accepted-target", "one-primary-goal", "structure-explains", "phone-first-direction-aware", "spatial-grouping", "adaptive-composition", "modality-zoom-motion", "surface-progressive-disclosure", "decision-ready-details", "declared-review-matrix", "finding-record", "finding-severity", "experience-codes", "capability-class-boundary", "finding-lifecycle", "plain-content", "experience-reviewer-independence", "technical-pass-not-acceptance", "accepted-not-uninspected", "isolated-review-environment"] },
-    { "id": "ui-authority-contract", "kind": "contract", "invariants": ["declared-review-matrix", "fingerprint-bound-evidence", "ui-state-manifest"] },
-    { "id": "rendered-copy-scan", "kind": "static", "invariants": ["plain-content"] },
-    { "id": "uncoached-usability-session", "kind": "review", "invariants": ["uncoached-usability"] }
-  ],
-  "required_evidence": [
-    { "kind": "current-ui-authority", "authority_role": "ui-authority", "when": { "material": true } },
-    { "kind": "blind-intent-review", "reviewer": "customer-eye", "authority_role": "experience-review", "when": { "material": true } },
-    { "kind": "constitutional-review", "reviewer": "customer-eye", "authority_role": "experience-review", "when": { "material": true } },
-    { "kind": "visual-accessibility-localization", "reviewer": "customer-eye", "authority_role": "experience-review", "when": { "material": true } },
-    { "kind": "uncoached-usability", "reviewer": "uncoached-participant", "when": { "capability_classes": ["D"], "material": true } }
-  ],
-  "blocking": { "mode": "report", "missing_evidence": "block" },
-  "exceptions": { "mode": "clause-only" }
+  "applies_when": {
+    "boundaries": [
+      "ui"
+    ]
+  }
 }

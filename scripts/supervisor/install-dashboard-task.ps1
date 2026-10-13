@@ -3,7 +3,7 @@
 # every 5 minutes, so a dashboard that died is started again (aiworks#18); while one runs, MultipleInstances IgnoreNew
 # skips it. The governance checkout comes from <DataDir>/config.json (governanceRoot). Output goes to
 # <Checkout>/../dashboard-task.*.log.
-# Usage: powershell -NoProfile -File scripts\supervisor\install-dashboard-task.ps1 -Checkout D:\Git\aiworks\.local\runtime -DataDir D:\Git\aiworks\.local\supervisor
+# Usage: powershell -NoProfile -File scripts\supervisor\install-dashboard-task.ps1 -Checkout C:\example\aiworks\.local\runtime -DataDir C:\example\aiworks\.local\supervisor
 # -DefinitionOnly prints the task definition as JSON and changes nothing.
 param(
   [Parameter(Mandatory = $true)] [string] $Checkout,
