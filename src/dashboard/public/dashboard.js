@@ -81,6 +81,9 @@ const timeAgo = (value) => {
 // Locale-neutral English dates ("10 Oct 12:23"), whatever the computer's own locale.
 const dateTime = (value) => value ? new Date(value).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).replace(',', '') : '—';
 const timeOnly = (value) => value ? new Date(value).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '—';
+// The supervisor's sentences carry exact UTC times ("resets at 2026-10-13T14:05:00.000Z"): shown as a clock time, with the date when not today.
+const clockTimes = (text) => String(text ?? '').replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b/g, (at) =>
+  new Date(at).toDateString() === new Date().toDateString() ? timeOnly(at) : dateTime(at));
 const panel = (title, description, body, action) => el('section', { class: 'panel' },
   el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, title), description ? el('p', {}, description) : null), action ?? null), body);
 const table = (headers, rows) => el('div', { class: 'table-scroll' }, el('table', {},
@@ -318,7 +321,7 @@ function controlsNote(c) {
 }
 
 /** The work's state in one sentence, in owner words (the copy module), with liveness reconciled with the agents' own records. */
-const campaignNext = (c) => workLine(c, ownerCampaign(c), { time: timeOnly, dateTime });
+const campaignNext = (c) => clockTimes(workLine(c, ownerCampaign(c), { time: timeOnly, dateTime }));
 
 const livenessNames = { running: 'Supervisor running', late: 'Supervisor checking in late', 'awaiting-pickup': 'Waiting for the supervisor',
   'agent-working-supervisor-silent': 'Agent working · supervisor silent', stopped: 'Supervisor not running' };
@@ -935,8 +938,8 @@ function runOrder(c) {
   return placed;
 }
 
-// Why a step waits (named by step outcomes in the supervisor snapshot), with when AIWorks tries again by itself.
-const waitLine = (wait) => wait ? `${wait.text}${wait.retryAt ? ` · next try ${timeOnly(wait.retryAt)}` : ''}` : null;
+// Why a step waits and what AIWorks does next by itself, both from the supervisor's status (UI11); its times read as local clock times.
+const waitLine = (wait) => wait ? `${clockTimes(wait.text)} · ${clockTimes(wait.next)}` : null;
 const commandsOff = () => sending || offline || !state.supervisor.available;
 function askCancel(c) {
   pendingCancel = c; $('#cancel-description').textContent = campaignTitle(c); $('#cancel-dialog').showModal();

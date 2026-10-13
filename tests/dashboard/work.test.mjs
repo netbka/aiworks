@@ -1,14 +1,16 @@
 // Work and Step (OWNER_WORKSPACE slice S5, build slice UI6, resolutions C6 and C7): wait reasons named by step outcome,
 // built from today's supervisor fields; a step's own attempt history; a stopped step in the §7.7 words; and the More
 // menu (Pause, Check again, Cancel) with Resume as the primary action of paused work, absent on finished work. Synthetic
-// review fixture and disposable stores only; no network, model or GitHub call.
+// review fixture and disposable stores only; no network, model or GitHub call. Since UI11 (plan §6.12 C7, ADAPTIVE_SCHEDULER
+// slice S8, dashboard half) the wait of each step is the status `wait` field, with no worker text in a reason.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Store } from '../../src/supervisor/store.mjs';
+import { campaignStatus } from '../../src/supervisor/api.mjs';
 import { applyCommand, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { stateCopy } from '../../src/dashboard/copy.mjs';
 import { buildReviewFixture, REVIEW_STATES } from './fixtures/review-store.mjs';
@@ -103,7 +105,7 @@ test('no worker text leaks into Work or Step: no output, prompt, finding, error 
   assert.deepEqual(step('notes-theme', 'T2').history.attempts.map((a) => [a.state, a.outcome, a.endedAt]), [['abandoned', 'admission-blocked', now - 30 * M]]);
 });
 
-test('wait sentences name the steps they wait for by outcome, never by ID, and say when AIWorks tries again', (t) => {
+test('wait sentences name the steps they wait for, never by ID, and say what AIWorks does next and when', (t) => {
   const { dataDir, now } = fixture(t);
   change(dataDir, (store) => {
     // A run that ended without a result, retried by AIWorks itself.
@@ -112,23 +114,103 @@ test('wait sentences name the steps they wait for by outcome, never by ID, and s
   });
   const { step } = view(dataDir, now);
   const wait = (state) => step(REVIEW_STATES[state].campaignId, REVIEW_STATES[state].taskId).wait;
-  // §4.7's own examples: "Starts after 'Contracts import' is merged", "Waiting for an AI worker to be free · next try 14:05".
-  assert.deepEqual(wait('waiting-for-merge'), { text: 'Starts after “Contracts import” is merged', retryAt: now + 10 * M });
-  assert.deepEqual(wait('provider-wait'), { text: 'Waiting for an AI worker to be free', retryAt: now + 45 * M });
-  assert.deepEqual(step('shop-checkout', 'T2').wait, { text: 'Starts after “Checkout form” is finished', retryAt: null });
-  assert.deepEqual(step('recipes-idle', 'T1').wait, { text: 'The last run did not finish; AIWorks tries again by itself', retryAt: now + 5 * M });
-  // C7: today's machine sentence stays as it is for the views that read it; the Work view reads the new one.
+  const at = (ms) => new Date(ms).toISOString();
+  // The supervisor's sentences (status `wait`, ADAPTIVE_SCHEDULER section 6), since C7: the step it waits for by name, and the next automatic action.
+  assert.deepEqual(wait('waiting-for-merge'), { code: 'integration', text: 'Waiting for "contracts import" to be merged into main',
+    next: 'Checks the base branch again every minute', until: at(now + 10 * M) });
+  assert.deepEqual(wait('provider-wait'), { code: 'provider-cooldown', text: `AI worker usage limit; resets at ${at(now + 45 * M)}`,
+    next: `Tries again at ${at(now + 45 * M)}`, until: at(now + 45 * M) });
+  assert.deepEqual(step('shop-checkout', 'T2').wait, { code: 'dependency', text: 'Waiting for "checkout form" to finish', next: 'Starts when that step is done', until: null });
+  assert.deepEqual(step('recipes-idle', 'T1').wait, { code: 'retry-backoff', text: `Retrying after a failed attempt at ${at(now + 5 * M)}`,
+    next: `Tries again at ${at(now + 5 * M)}`, until: at(now + 5 * M) });
+  // C7: today's machine sentence stays as it is for the views that read it; the Work view reads the status one.
   assert.equal(step('shop-contracts', 'T2').waitingReason, 'Waiting for verified dependencies in main: T1');
   // No wait for a step that is ready, being worked on, stopped or finished.
   for (const [id, taskId] of [['shop-checkout', 'T1'], ['shop-reviews', 'T1'], ['notes-theme', 'T1'], ['notes-search', 'T1'], ['shop-search', 'T1'], ['recipes-share', 'T1']]) {
     assert.equal(step(id, taskId).wait, null, `${id}/${taskId}`);
   }
   for (const c of view(dataDir, now).snapshot.campaigns) {
-    for (const task of c.tasks.filter((item) => item.wait)) assert.doesNotMatch(task.wait.text, /\bT\d+\b|dependenc|provider|executor|quota/i, `${c.id}/${task.id}: ${task.wait.text}`);
+    for (const task of c.tasks.filter((item) => item.wait)) {
+      for (const line of [task.wait.text, task.wait.next]) assert.doesNotMatch(line, /\bT\d+\b|dependenc|provider|executor|quota/i, `${c.id}/${task.id}: ${line}`);
+    }
   }
-  // The page shows the wait on each Work row and on the Step, with the retry time.
-  assert.match(page(), /const waitLine = \(wait\) => wait \? `\$\{wait\.text\}\$\{wait\.retryAt \? ` · next try \$\{timeOnly\(wait\.retryAt\)\}` : ''\}` : null;/);
+  // The page shows the wait and the next action on each Work row and on the Step, with times as clock times.
+  assert.match(page(), /const waitLine = \(wait\) => wait \? `\$\{clockTimes\(wait\.text\)\} · \$\{clockTimes\(wait\.next\)\}` : null;/);
   assert.match(page(), /\.\.\.\[whoIsOn\(c, task\), task\.stopped\?\.title, waitLine\(task\.wait\)\]/);
+});
+
+test('the Work view takes each step’s wait from the status wait field, with the controller’s own config', (t) => {
+  const { dataDir, now } = fixture(t);
+  // RUN9's status is the one source (C7): every unfinished step of live work reads exactly what status says, in the
+  // owner's word for an AI worker; only running, ready and stopped steps, and finished work, show no wait.
+  const compare = () => {
+    const { snapshot } = view(dataDir, now);
+    const config = JSON.parse((() => { try { return readFileSync(join(dataDir, 'config.json'), 'utf8'); } catch { return '{}'; } })());
+    const store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true });
+    let shown = 0;
+    try {
+      for (const c of snapshot.campaigns) {
+        const status = campaignStatus(store, c.id, now, { config });
+        for (const task of c.tasks) {
+          const wait = status.tasks.find((item) => item.id === task.id).wait;
+          const hidden = !wait || ['running', 'ready'].includes(wait.code) || task.blocked || ['finished', 'cancelled'].includes(c.control);
+          if (hidden) { assert.equal(task.wait, null, `${c.id}/${task.id}`); continue; }
+          const owner = (line) => line.replace(/\bAI provider\b/g, 'AI worker').replace(/\bprovider account\b/g, 'AI worker account');
+          assert.deepEqual(task.wait, { code: wait.code, text: owner(wait.text), next: owner(wait.next), until: wait.until }, `${c.id}/${task.id}`);
+          assert.ok(task.wait.text && task.wait.next, `${c.id}/${task.id} says why and what happens next`);
+          shown += 1;
+        }
+      }
+    } finally { store.close(); }
+    return { snapshot, shown };
+  };
+  // Scheduler off (no config): one worker per work program; paused work and the recorded blocker read the supervisor's words.
+  const off = compare();
+  assert.ok(off.shown >= 5, `${off.shown} waits shown`);
+  const step = (id, taskId) => off.snapshot.campaigns.find((c) => c.id === id).tasks.find((task) => task.id === taskId);
+  assert.deepEqual(step('recipes-import', 'T1').wait, { code: 'paused', text: 'Paused by you', next: 'None until you resume it', until: null });
+  assert.deepEqual(step('notes-deploy', 'T1').wait, { code: 'owner', text: 'Needs you: no allowed AI worker can run this work', next: 'None; listed in Needs me', until: null });
+  assert.equal(step('recipes-print', 'T2').wait, null, 'cancelled work no longer waits');
+  // Scheduler on: status names the scheduler's admission check, and the dashboard passes the same config to it.
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ scheduler: { enabled: true, maxWorkers: 1 } }));
+  const on = compare();
+  assert.ok(on.shown >= off.shown);
+  // A ready step whose run is held by the host ceiling of one waits for a free worker on this computer.
+  const held = on.snapshot.campaigns.flatMap((c) => c.tasks.map((task) => task.wait?.code)).filter(Boolean);
+  assert.ok(held.includes('host-capacity'), `codes: ${held.join(', ')}`);
+});
+
+test('no worker text reaches a wait reason, whatever the worker wrote into errors, stops, results or the journal', (t) => {
+  const { dataDir, now } = fixture(t);
+  change(dataDir, (store) => {
+    const patch = (id, taskId, changes) => store.patch('tasks', { campaign_id: id, task_id: taskId }, store.task(id, taskId).version, changes, now);
+    // Each kind of wait, with worker text planted in every stored field a sentence could be built from.
+    patch('shop-contracts', 'T2', { last_error: 'dependency-integration: WORKER-INTEGRATION-must-not-leak T1', retry_at: now + 10 * M });
+    patch('recipes-tags', 'T1', { last_error: 'quota: WORKER-QUOTA-must-not-leak', retry_at: now + 45 * M });
+    patch('recipes-idle', 'T1', { attempts: 1, last_error: 'timeout: WORKER-TIMEOUT-must-not-leak', retry_at: now + 5 * M });
+    patch('shop-checkout', 'T2', { last_error: 'failed: WORKER-PENDING-must-not-leak' });
+    patch('notes-theme', 'T2', { last_error: 'waiting for executor availability: WORKER-AVAILABILITY-must-not-leak', retry_at: now + 30 * M });
+    const deploy = store.campaign('notes-deploy');
+    store.patch('campaigns', { id: 'notes-deploy' }, deploy.version, { blocker: { ...deploy.blocker, reason: 'WORKER-BLOCKER-must-not-leak', requestedAction: 'WORKER-ACTION-must-not-leak' } }, now);
+    store.insert('executor_waits', { campaign_id: 'recipes-idle', executor_kind: 'codex-cli', retry_at: now + 50 * M, reason: 'quota: WORKER-WAIT-must-not-leak' });
+    const op = operation(store, dataDir, 'shop-checkout', 'T2', 'implement', { at: now - 40 * M,
+      outcome: { class: 'result', value: { result: 'failed', summary: 'WORKER-SUMMARY-must-not-leak' } } });
+    store.journal('shop-checkout', 'operation-finished', { op, class: 'result', reason: 'WORKER-JOURNAL-must-not-leak' }, now - 35 * M);
+  });
+  const { snapshot, step } = view(dataDir, now);
+  const waits = snapshot.campaigns.flatMap((c) => c.tasks.filter((task) => task.wait).map((task) => [`${c.id}/${task.id}`, task.wait]));
+  // Every planted case still waits, so the check below reads real reasons, not missing ones.
+  for (const [id, taskId, kind] of [['shop-contracts', 'T2', 'integration'], ['recipes-tags', 'T1', 'provider-cooldown'], ['recipes-idle', 'T1', 'retry-backoff'],
+    ['shop-checkout', 'T2', 'dependency'], ['notes-theme', 'T2', 'provider-cooldown'], ['notes-deploy', 'T1', 'owner']]) {
+    assert.equal(step(id, taskId).wait?.code, kind, `${id}/${taskId}`);
+  }
+  for (const [where, wait] of waits) {
+    assert.doesNotMatch(JSON.stringify(wait), /must.not.leak/i, where);
+    assert.deepEqual(Object.keys(wait), ['code', 'text', 'next', 'until'], `${where}: only the code, two sentences and a time are served`);
+  }
+  // The page renders only those fields of a wait.
+  const js = page();
+  assert.deepEqual([...js.matchAll(/\bwait\.(\w+)/g)].map((m) => m[1]).sort(), ['next', 'text']);
 });
 
 test('a stopped step reads as in §7.7, with the step issue as its one primary action', (t) => {
