@@ -19,6 +19,7 @@ class Text {
   constructor(text) { this.nodeType = 3; this.data = String(text); this.parentNode = null; }
   get textContent() { return this.data; }
   set textContent(value) { this.data = String(value); }
+  remove() { if (this.parentNode) { this.parentNode.childNodes.splice(this.parentNode.childNodes.indexOf(this), 1); this.parentNode = null; } }
 }
 
 /** Selectors the page uses: compound tag, #id, .class and [attr], [attr="v"], [attr^="v"], comma-separated. */
@@ -52,6 +53,7 @@ class Element {
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.has(name) ? this.attributes.get(name) : null; }
   removeAttribute(name) { this.attributes.delete(name); }
+  getAttributeNames() { return [...this.attributes.keys()]; }
   hasAttribute(name) { return this.attributes.has(name); }
   get className() { return this.getAttribute('class') ?? ''; }
   set className(value) { this.setAttribute('class', value); }
@@ -90,6 +92,10 @@ class Element {
     }
   }
   replaceChildren(...children) { for (const child of this.childNodes) child.parentNode = null; this.childNodes = []; this.append(...children); }
+  replaceChild(node, old) {
+    node.parentNode?.childNodes.splice(node.parentNode.childNodes.indexOf(node), 1);
+    this.childNodes.splice(this.childNodes.indexOf(old), 1, node); node.parentNode = this; old.parentNode = null; return old;
+  }
   remove() { if (this.parentNode) { this.parentNode.childNodes.splice(this.parentNode.childNodes.indexOf(this), 1); this.parentNode = null; } }
   *walk() { for (const child of this.childNodes) if (child.nodeType === 1) { yield child; yield* child.walk(); } }
   querySelectorAll(selector) { return [...this.walk()].filter((node) => matches(node, selector)); }
@@ -103,7 +109,10 @@ class Element {
     return !event.defaultPrevented;
   }
   click() { if (!this.disabled) this.dispatchEvent(new Event('click')); }
-  focus() { this.ownerDocument.activeElement = this; }
+  // Focus is announced the way a browser does, with a focusin event that bubbles to the document.
+  focus() { this.ownerDocument.activeElement = this; this.dispatchEvent(new Event('focusin')); }
+  // No layout here: a test places an element by setting `rect`, as a browser at a given width would.
+  getBoundingClientRect() { return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0, ...this.rect }; }
   showModal() { this.open = true; }
   close() { this.open = false; }
 }
@@ -170,15 +179,16 @@ export async function openPage(t, { store = 'full', host = 'review-pc' } = {}) {
   // Clicks bubble from the body to the document, where the page listens for links to other screens.
   document.body.parentNode = { listeners: document.listeners };
   const location = { hash: '' };
-  const window = { scrollY: 0, scrollTo: (x, y) => { window.scrollY = y; }, listeners: {}, addEventListener: Element.prototype.addEventListener };
+  const window = { scrollY: 0, innerHeight: 720, scrollTo: (x, y) => { window.scrollY = y; }, scrollBy: (x, y) => { window.scrollY += y; }, listeners: {}, addEventListener: Element.prototype.addEventListener };
   const history = { scrollRestoration: 'auto', pushState: (_, __, address) => { location.hash = address; }, replaceState: (_, __, address) => { location.hash = address; } };
   const storage = () => { const values = new Map(); return { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, String(value)), removeItem: (key) => values.delete(key) }; };
-  let pending = 0;
+  let pending = 0, tick = () => {};
   const fetch = async (path, options = {}) => {
     pending++;
     try { return await call(port, path, { method: options.method, headers: options.headers, body: options.body }); } finally { pending--; }
   };
-  const page = { document, window, location, history, localStorage: storage(), sessionStorage: storage(), fetch, setInterval: () => 0 };
+  // The page's 5-second refresh does not run by itself here; refresh() runs it once.
+  const page = { document, window, location, history, localStorage: storage(), sessionStorage: storage(), fetch, setInterval: (callback) => { tick = callback; return 0; } };
   // The page imports /router.mjs and /copy.mjs from the server; here the same files from disk. Its browser globals
   // are this page's own, so pages of two tests never share state.
   const source = readFileSync(join(PUBLIC, 'dashboard.js'), 'utf8')
@@ -195,7 +205,7 @@ export async function openPage(t, { store = 'full', host = 'review-pc' } = {}) {
   /** Opens an address the way Back, Forward or an edited address does, then waits for the page to finish. */
   const go = async (address) => { location.hash = address; window.listeners.hashchange?.forEach((listener) => listener(new Event('hashchange'))); await settle(); };
   await settle();
-  return { document, window, location, go, settle, dataDir, fixture, port, poll: () => go(location.hash),
+  return { document, window, location, go, settle, dataDir, fixture, port, poll: () => go(location.hash), refresh: async () => { tick(); await settle(); },
     $: (selector) => document.querySelector(selector), text: () => visibleText(document.body) };
 }
 

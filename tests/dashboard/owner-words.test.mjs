@@ -181,7 +181,8 @@ test('F24: the footer of every screen says only when the page last checked, with
   for (const where of ['#/projects', '#/needs', '#/settings', address('example/shop-app'), address('example/shop-app', '/cost')]) {
     await page.go(where);
     const footer = visibleText(page.$('footer'));
-    assert.match(footer, /^review-pc · Checked \d\d:\d\d · merges (checked .+|not checked yet)$/, where);
+    // How fresh the merge check is belongs on the row that uses it, not in the footer (aiworks#11 review F8).
+    assert.match(footer, /^review-pc · Checked \d\d:\d\d$/, where);
     assert.doesNotMatch(footer, /supervisor|execution state|GitHub API/i, where);
   }
   // How merges are read is still said, where the machine is described.

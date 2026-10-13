@@ -154,10 +154,12 @@ test('a stopped step reads as in §7.7, with the step issue as its one primary a
   assert.deepEqual(failed.stopped, { key: 'failed-attempts', title, text, primary });
   assert.equal(step('notes-theme', 'T2').wait, null);
   assert.equal(step('shop-checkout', 'T1').stopped, null, 'a step that is not stopped has no stop copy');
-  // The Step screen leads with it and offers its primary action; Check again sits in the step's More menu.
+  // The Step screen leads with it and offers its primary action. The Check again its sentence names is shown beside that
+  // action (aiworks#11 review F12); a step that is not stopped keeps Check again in its More menu.
   assert.match(page(), /const primary = task\.stopped \? primaryAction\(task\.stopped\.primary\)/);
   assert.match(page(), /task\.stopped \? el\('strong', \{\}, task\.stopped\.title\)/);
-  assert.match(page(), /const actions = task \? allowed\.filter\(\(action\) => action === 'recheck' && task\.state !== 'done' && Boolean\(task\.blocked \|\| task\.retryAt \|\| task\.errorClass\)\) : allowed;/);
+  assert.match(page(), /const canCheckAgain = \(c, task\) => \(c\.controls\?\.more \?\? \[\]\)\.includes\('recheck'\) && task\.state !== 'done' && Boolean\(task\.blocked \|\| task\.retryAt \|\| task\.errorClass\);/);
+  assert.match(page(), /const actions = task \? task\.stopped \|\| !canCheckAgain\(c, task\) \? \[\] : \['recheck'\] : allowed;/);
 });
 
 test('the More menu offers Pause, Check again and Cancel, Resume leads when paused, and finished work has no menu', (t) => {
