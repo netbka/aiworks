@@ -34,7 +34,8 @@ async function merges(dataDir) {
 }
 
 test('the full fixture is three made-up projects in local git repositories, configured without any GitHub command', (t) => {
-  const { root, dataDir, repositories } = fixture(t);
+  const { root, dataDir, repositories, governance } = fixture(t);
+  assert.ok(inside(root, governance), 'the governance copy is built inside the disposable directory');
   const config = JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8'));
   // C1: no fake gh and no commands at all; the dashboard reads merges from local git only.
   assert.deepEqual(Object.keys(config), ['repositories']);
@@ -203,7 +204,8 @@ test('the review command refuses the live dashboard port and a directory that is
   assert.match(used.stderr, /needs a new or empty directory/);
 });
 
-test('the review command serves today\'s dashboard from the fixture on the port it is given', async (t) => {
+/** Runs the documented review command on a free port with `store`; returns a function that reads its /api/state. */
+async function serveReview(t, store) {
   const root = mkdtempSync(join(tmpdir(), 'aiworks-review-test-'));
   // A free port other than the live one; the documented command uses 4319, which another review may hold.
   let port;
@@ -214,7 +216,7 @@ test('the review command serves today\'s dashboard from the fixture on the port 
     probe.close();
     await once(probe, 'close');
   } while (port === LIVE_PORT || port < 1024);
-  const child = spawn(process.execPath, [COMMAND, '--port', String(port), '--dir', join(root, 'review')], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [COMMAND, '--port', String(port), '--store', store, '--dir', join(root, 'review')], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   const exited = once(child, 'exit');
   // Stop the dashboard first: its checkouts are busy while it runs (Windows refuses to remove them).
   t.after(async () => {
@@ -228,13 +230,17 @@ test('the review command serves today\'s dashboard from the fixture on the port 
     child.stdout.on('data', (chunk) => { output += chunk; if (output.includes(`AIWorks dashboard: http://127.0.0.1:${port}`)) done(); });
     exited.then(([code]) => fail(new Error(`review command exited ${code}: ${output}`)));
   });
-  const get = () => new Promise((done, fail) => {
+  return () => new Promise((done, fail) => {
     request({ host: '127.0.0.1', port, path: '/api/state' }, (res) => {
       let body = '';
       res.on('data', (chunk) => { body += chunk; });
-      res.on('end', () => done({ status: res.statusCode, body: JSON.parse(body) }));
+      res.on('end', () => done({ status: res.statusCode, text: body, body: JSON.parse(body) }));
     }).on('error', fail).end();
   });
+}
+
+test('the review command serves today\'s dashboard from the fixture on the port it is given', async (t) => {
+  const get = await serveReview(t, 'full');
   // Every answer starts the local merge check and never waits for it (each says it is refreshing); ask again until the
   // owner view settles on the checked results, at most for 30 seconds.
   const settled = (body) => body.owner.headline === 'Needs you (12)';
@@ -249,4 +255,39 @@ test('the review command serves today\'s dashboard from the fixture on the port 
   assert.deepEqual(state.body.merges.repositories.map((r) => [r.repository, r.error]).sort(),
     [['example/notes-site', 'fetch-failed'], ['example/recipes', null], ['example/shop-app', null]]);
   assert.equal(state.body.owner.headline, 'Needs you (12)');
+});
+
+// AIWorks' own issue links, fixed in src/dashboard: the Auto Release decision (#33, supervisor.mjs) and the supervisor
+// fault issue (#2, owner.mjs, shown for the supervisor-fault state). They are the tool's own state, not a project.
+const OWN_LINKS = /https:\/\/github\.com\/netbka\/aiworks\/issues\/(?:33|2)(?!\d)/g;
+/** Every string a `repository` key holds anywhere in `value`. */
+function repositoriesIn(value, found = []) {
+  if (Array.isArray(value)) for (const item of value) repositoriesIn(item, found);
+  else if (value && typeof value === 'object') {
+    for (const [key, item] of Object.entries(value)) {
+      if (key === 'repository' && typeof item === 'string') found.push(item);
+      else repositoriesIn(item, found);
+    }
+  }
+  return found;
+}
+
+test('the review dashboard shows only made-up projects, for the full, empty and unreadable stores', async (t) => {
+  for (const store of ['full', 'empty', 'unreadable']) {
+    const get = await serveReview(t, store);
+    let state = await get();
+    // The full store's owner view names its projects once the local merge check settles; read it then.
+    for (let i = 0; store === 'full' && i < 120 && state.body.owner.headline !== 'Needs you (12)'; i++) {
+      await new Promise((done) => setTimeout(done, 250));
+      state = await get();
+    }
+    assert.equal(state.status, 200, store);
+    // The dashboard reads the fixture's own governance copy, and the copy is usable.
+    assert.equal(state.body.roadmap.governance.configured, true, store);
+    const outside = repositoriesIn(state.body).filter((name) => !name.startsWith('example/'));
+    assert.deepEqual(outside, [], `${store}: no repository outside example/`);
+    const text = state.text.replace(OWN_LINKS, '');
+    assert.doesNotMatch(text, /netbka\//i, `${store}: nothing of the owner's beyond AIWorks' own issue links`);
+    for (const [, owner] of text.matchAll(/github\.com\/([\w.-]+)\//g)) assert.equal(owner, 'example', `${store}: links point at made-up projects`);
+  }
 });
