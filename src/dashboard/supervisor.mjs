@@ -476,16 +476,67 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
   finally { store?.close(); }
 }
 
-/** Owner message to the coordinator. Returns the durable receipt; exact retries are acknowledged, not duplicated. */
+// Start work: Plan only (OWNER_WORKSPACE §4.5, slice S9; build slice UI10). The page sends the parts and this module
+// writes the coordinator message, so every Plan only request has the same structure and the same read-only limits. It
+// goes through the owner-message path above: it stores one message and nothing else. It never registers, starts or
+// changes work and never touches a project's files. "Plan and do" waits for the admission API (#8) and slice S10.
+export const PLAN_GOAL_LIMIT = 2000;
+export const PLAN_SOURCES = Object.freeze({ description: 'Just my description', issue: 'A GitHub issue', pull: 'A GitHub pull request' });
+const PLAN_AND_DO_OFF = 'Plan and do is not built yet. Today, work starts after its plan is merged into AIWorks and started on this computer.';
+
+/** The coordinator message for a checked Plan only request: project, where it starts from, the goal and the limits. */
+export function planRequestText({ project, goal, from, number }) {
+  const source = from === 'issue' ? `GitHub issue #${number} (https://github.com/${project}/issues/${number})`
+    : from === 'pull' ? `GitHub pull request #${number} (https://github.com/${project}/pull/${number})` : 'my description below';
+  return [
+    'Start work: Plan only, sent from the dashboard.',
+    `Project: ${project}`,
+    `Start from: ${source}`,
+    'Goal (what should be true when this is finished):',
+    goal,
+    '',
+    'Reply with a proposed plan: how success is checked, the main steps in order with the result of each, and any earlier or overlapping work in this project.',
+    'This is Plan only. Change no file, register or start no work, and open, edit or comment on no issue or pull request.',
+  ].join('\n');
+}
+
+/** Checks a Plan only request against the projects this computer knows; returns the parts with the project as known. */
+function planRequest(store, dataDir, plan) {
+  const invalid = (message) => fail(400, message);
+  if (!plan || typeof plan !== 'object' || Array.isArray(plan) || Object.keys(plan).some((key) => !['mode', 'project', 'goal', 'from', 'number'].includes(key))) {
+    throw invalid('Invalid plan request.');
+  }
+  if (plan.mode === 'plan-and-do') throw fail(409, PLAN_AND_DO_OFF);
+  if (plan.mode !== 'plan-only') throw invalid('Invalid plan request.');
+  const known = [...configuredRepositories(dataDir), ...store.all('SELECT id FROM campaigns').map(({ id }) => store.campaign(id).declaration.target.repository)];
+  const project = typeof plan.project === 'string' ? known.find((name) => name.toLowerCase() === plan.project.toLowerCase()) : undefined;
+  if (!project) throw invalid('That project is not known on this computer.');
+  const goal = typeof plan.goal === 'string' ? plan.goal.trim() : '';
+  if (!goal || goal.length > PLAN_GOAL_LIMIT) throw invalid(`Describe the goal in 1 to ${PLAN_GOAL_LIMIT.toLocaleString('en-US')} characters.`);
+  if (safeText(goal, PLAN_GOAL_LIMIT) !== goal) throw invalid('The goal looks like it contains a secret. Remove it and send again.');
+  if (!Object.hasOwn(PLAN_SOURCES, plan.from)) throw invalid('Choose where the work starts from.');
+  if (plan.from === 'description' ? plan.number !== undefined : !(Number.isSafeInteger(plan.number) && plan.number > 0)) {
+    throw invalid(plan.from === 'description' ? 'Invalid plan request.' : `Give the ${plan.from === 'issue' ? 'issue' : 'pull request'} number.`);
+  }
+  return { project, goal, from: plan.from, number: plan.number };
+}
+
+/**
+ * Owner message to the coordinator. Returns the durable receipt; exact retries are acknowledged, not duplicated.
+ * `input` is { requestId, text } for a free message, or { requestId, plan } for Start work: Plan only (slice S9).
+ */
 export function postMessage(dataDir, input, now = Date.now()) {
-  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['requestId', 'text'].includes(key)) ||
-      typeof input.text !== 'string' || safeText(input.text, 4000) !== input.text) {
+  const keys = input && typeof input === 'object' && !Array.isArray(input) ? Object.keys(input) : null;
+  const isPlan = keys?.includes('plan') && !keys.includes('text');
+  if (!keys || keys.some((key) => !['requestId', isPlan ? 'plan' : 'text'].includes(key)) ||
+      (!isPlan && (typeof input.text !== 'string' || safeText(input.text, 4000) !== input.text))) {
     throw fail(400, 'Invalid message. Up to 4,000 characters, no secrets.');
   }
   if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'Supervisor is unavailable.');
   const store = new Store(join(dataDir, 'supervisor.db'));
   try {
-    return postOwnerMessage(store, { text: input.text, requestId: input.requestId, source: 'owner (dashboard)' }, now);
+    const text = isPlan ? planRequestText(planRequest(store, dataDir, input.plan)) : input.text;
+    return postOwnerMessage(store, { text, requestId: input.requestId, source: isPlan ? 'owner (Start work: Plan only)' : 'owner (dashboard)' }, now);
   } catch (error) {
     if (error.code === 'INVALID_MESSAGE') throw fail(400, error.message);
     if (error.code === 'CONFLICT') throw fail(409, error.message);

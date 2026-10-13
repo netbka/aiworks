@@ -491,6 +491,86 @@ async function sendMessage(text) {
   try { await attempt(); } finally { sending = false; await poll(); }
 }
 
+/*
+ * Start work (OWNER_WORKSPACE §4.5, slice S9; build slice UI10): the goal, where the work starts from, and Plan only.
+ * "Ask for a plan" sends those parts; the supervisor module writes them into one coordinator message and stores it like
+ * any owner message, so the receipt (Received, Read, Answered) shows here in place. Plan only never changes a project
+ * file or registers work. Plan and do is shown but cannot be chosen until slice S10 and the admission API (#8).
+ */
+const PLAN_AND_DO_OFF = ['Starting work from this page is not built yet.', 'Today, work starts after its plan is merged into AIWorks and started on this computer.'];
+const START_FROM = [['description', 'Just my description'], ['issue', 'A GitHub issue'], ['pull', 'A GitHub pull request']];
+const startBlocked = () => sending || offline || !state.supervisor.available;
+// The unsent goal and source, kept per address like every draft, and the message id of the last request sent from here.
+const startDraft = (address) => ({ goal: '', from: 'description', number: '', sent: null, ...(drafts.get(address, 'start') ?? {}) });
+
+/** The receipt of the last plan request sent from this project's Start work, or null. */
+function startReceipt(address) {
+  const id = startDraft(address).sent, coordinator = state.supervisor.coordinator;
+  if (!id || !coordinator) return null;
+  const m = coordinator.messages.find((item) => item.id === id);
+  return m ? messageReceipt(m, coordinator) : el('p', { class: 'subtext' }, `Sent as message #${id}. Its receipt is under `, routeLink('Messages', MESSAGES_ADDRESS), '.');
+}
+
+function startScreen(project) {
+  const address = formatRoute({ screen: 'start', project }), draft = startDraft(address), coordinator = state.supervisor.coordinator;
+  // Every project this computer has today is a GitHub repository; the coordinator posts its plan there (AW-004).
+  // A project without GitHub waits for a local place for the reply (OWNER_WORKSPACE §14, plan gap G4).
+  if (!projectCampaigns(project).length && projectList().find((item) => sameProject(item.id, project))?.kind !== 'GitHub') {
+    return [empty('Plan only is not available for this project yet.', 'AIWorks posts its plan on GitHub, and this project has no GitHub repository.')];
+  }
+  const save = () => drafts.set(address, 'start', { goal: goal.value, from: form.elements['start-from'].value, number: number.value, sent: startDraft(address).sent });
+  const goal = el('textarea', { id: 'start-goal', rows: 5, maxlength: 2000, required: true, oninput: save });
+  goal.value = draft.goal;
+  const number = el('input', { id: 'start-number', type: 'number', min: 1, step: 1, inputmode: 'numeric', required: draft.from !== 'description', oninput: save });
+  number.value = draft.number;
+  const numberLabel = el('label', { hidden: draft.from === 'description' }, 'Number ', number);
+  const from = ([value, label]) => el('label', {}, el('input', { type: 'radio', name: 'start-from', value, checked: draft.from === value,
+    onchange: () => { numberLabel.hidden = value === 'description'; number.required = value !== 'description'; save(); } }), ` ${label}`);
+  const form = el('form', { class: 'panel-body', 'data-start-form': project, 'data-focus-scope': `start/${project}`,
+    onsubmit: (event) => { event.preventDefault(); save(); void askForPlan(project, address); } },
+    el('label', { for: 'start-goal' }, el('strong', {}, 'What should be true when this is finished?')), goal,
+    el('fieldset', {}, el('legend', {}, 'Start from'), ...START_FROM.map(from), numberLabel),
+    el('fieldset', {}, el('legend', {}, 'How far AIWorks goes'),
+      el('label', {}, el('input', { type: 'radio', name: 'start-mode', value: 'plan-only', checked: true }), ' Plan only'),
+      el('p', { class: 'subtext' }, 'AIWorks looks and proposes a plan. Nothing in your project changes.'),
+      el('label', {}, el('input', { type: 'radio', name: 'start-mode', value: 'plan-and-do', disabled: true, 'aria-describedby': 'plan-and-do-note' }), ' Plan and do'),
+      el('p', { class: 'subtext', id: 'plan-and-do-note' }, 'AIWorks proposes a plan. After you approve it once, it does the work. ', PLAN_AND_DO_OFF.join(' '))),
+    el('p', { class: 'subtext' }, coordinator?.configured ? `The plan is posted to ${coordinator.reportTo ?? 'GitHub'}. No secrets; up to 2,000 characters.`
+      : 'No coordinator agent is configured yet: the request will be stored, but nothing will read it.'),
+    el('button', { class: 'button', type: 'submit', disabled: startBlocked() }, 'Ask for a plan'),
+    el('div', { id: 'start-receipt', 'aria-live': 'polite' }, startReceipt(address)));
+  return [el('section', { class: 'panel' }, form)];
+}
+
+/** The 5-second refresh keeps the Start work form as typed: only its receipt and button change. False when it must be built. */
+function refreshStart(content, project) {
+  const form = content.querySelector('form[data-start-form]');
+  if (!form || form.dataset.startForm !== project || !state.supervisor.available) return false;
+  form.querySelector('button[type="submit"]').disabled = startBlocked();
+  const receipt = startReceipt(formatRoute({ screen: 'start', project }));
+  form.querySelector('#start-receipt').replaceChildren(...(receipt ? [receipt] : []));
+  return true;
+}
+
+async function askForPlan(project, address) {
+  const draft = startDraft(address);
+  const plan = { mode: 'plan-only', project, goal: draft.goal, from: draft.from, ...(draft.from === 'description' ? {} : { number: Number(draft.number) }) };
+  sending = true; render();
+  const requestId = crypto.randomUUID();
+  const attempt = async () => {
+    try {
+      const result = await post('/api/messages', { requestId, plan });
+      // Accepted: an empty form for the next request, with this request's receipt under it.
+      drafts.set(address, 'start', { sent: result.id });
+      document.querySelector('form[data-start-form]')?.remove();
+      notice(result.duplicate ? `Plan request #${result.id} was already received; it was not stored twice.` : `Plan request #${result.id} received by the supervisor. You will see "Read" when the coordinator agent starts on it.`);
+    } catch (error) {
+      notice(error.known ? error.message : 'Delivery could not be confirmed. Retry: the same request is never stored twice.', error.known ? null : attempt);
+    }
+  };
+  try { await attempt(); } finally { sending = false; await poll(); }
+}
+
 // An instruction draft belongs to the address its dialog was opened from, and to its campaign.
 let instructionAddress = null;
 function saveDraft() {
@@ -807,7 +887,9 @@ function primaryAction(primary) {
  * polite live region, so a screen reader hears it only when its text changes.
  */
 function nowScreen(project) {
-  const view = nowView(project, { ...state, offline }, { now: Date.now() }), { state: now, details } = view;
+  // Start work exists since slice S9 (Plan only), so the no-work state offers it as its primary action.
+  const view = nowView(project, { ...state, offline }, { now: Date.now(), startWork: true }), { state: now, details } = view;
+  const startWork = now.primary?.route?.screen === 'start' || offline || !state.supervisor.available ? null : routeLink('Start work', { screen: 'start', project }, 'button secondary');
   const goal = view.goal ? `${view.goal.text}${view.goal.variant ? ` (${view.goal.variant})` : ''}` : null;
   const since = view.since?.length ? el('section', { class: 'since', 'aria-labelledby': 'since-title' },
     el('h2', { id: 'since-title' }, previousVisit ? `Since you last looked (${dateTime(previousVisit)})` : 'In the last 24 hours'),
@@ -816,7 +898,7 @@ function nowScreen(project) {
   return [el('section', { class: 'panel', 'data-focus-scope': `now/${project}` }, el('div', { class: 'panel-body' },
     goal ? el('p', { class: 'eyebrow' }, goal) : null,
     el('p', { role: 'status', 'aria-live': 'polite', 'data-state': now.key }, el('strong', {}, now.title), now.text ? ` ${now.text}` : ''),
-    primaryAction(now.primary),
+    primaryAction(now.primary), startWork,
     view.progress ? el('p', { class: 'subtext' }, view.progress) : null,
     view.note ? el('p', { class: 'subtext' }, `${view.note.title} ${view.note.text}`) : null,
     details.workId || others.length ? disclosure(`now/${project}/details`, 'Details', el('div', { class: 'subtext' }, [
@@ -987,6 +1069,7 @@ function projectScreen(route) {
   if (route.screen === 'project' && route.tab === 'now' && (offline || !state.supervisor.available || all.length ||
     projectList().some((item) => sameProject(item.id, project)))) return nowScreen(project);
   if (!state.supervisor.available) return [unavailable()];
+  if (route.screen === 'start' && (all.length || projectList().some((item) => sameProject(item.id, project)))) return startScreen(project);
   // A repository this computer's settings list, with no work yet (OWNER_WORKSPACE §7.1). Starting work here is not built yet.
   if (!all.length && projectList().some((item) => sameProject(item.id, project))) return [empty('No work yet.', `Work in ${projectName(project)} appears here once it is registered on this computer. Starting work from this page is not built yet.`)];
   if (!all.length) return [empty('This project has no work on this computer', 'The address may be mistyped, or its work was removed.'), routeLink('All projects', '#/projects', 'button secondary')];
@@ -998,7 +1081,7 @@ function projectScreen(route) {
     if (!task) return [empty('This step is not recorded for this project', 'It may belong to another project, or the address is mistyped.'), routeLink('All work in this project', { screen: 'project', project, tab: 'work' }, 'button secondary')];
     return stepScreen(project, c, task);
   }
-  if (route.screen === 'start' || route.screen === 'review') return [empty('Starting work from this page is not built yet.', 'Today, work starts after its plan is merged into AIWorks and started on this computer.')];
+  if (route.screen === 'review') return [empty(...PLAN_AND_DO_OFF)];
   if (route.tab === 'work') {
     return [...cards.map((c) => workPanel(project, c)), cards.some((c) => c.agents.length) ? verdictExplanation() : null,
       cards.some((c) => !['finished', 'cancelled'].includes(c.control)) ? providerNote() : null,
@@ -1023,6 +1106,7 @@ function render() {
     panel('Execution journal', 'Latest 80 events · raw agent transcripts and secrets are never shown', activityList()));
   else if (route.screen === 'settings') content.replaceChildren(...settingsScreen());
   else if (route.screen === 'add-project') content.replaceChildren(empty('Adding a project from this page is not built yet.', 'Projects appear on Projects when this computer’s AIWorks settings list a repository.'));
+  else if (route.screen === 'start' && refreshStart(content, route.project)) { /* the form stays as the owner typed it */ }
   else if (route.project) content.replaceChildren(...projectScreen(route));
   else content.replaceChildren(...projectsScreen());
   if (focused) [...content.querySelectorAll('a, button, summary')].find((node) => focusKey(node) === focused)?.focus({ preventScroll: true });
