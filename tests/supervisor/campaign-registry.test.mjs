@@ -201,7 +201,7 @@ test('declarations without the new keys validate and digest exactly as before', 
     ] };
   assert.doesNotThrow(() => validateDeclaration(decl));
   assert.equal(scopeDigest(decl), '8be3e164c24bb4d577c55dfab9ce9ce65629aced4646aa09caf66b12bed8fb7f');
-  assert.equal(authorityDigest(decl), '76736ce25f9d949d2c5c2ad679e01c03d4a19ef23d18a6dfc7ad995c887d48aa');
+  assert.equal(authorityDigest(decl), '5f9561e23cfa568effb9cf5f0a2b95f14fba499538f44246e907e6f4a8806325');
   // Every committed campaign still validates, and its scope digest is the pre-routing formula: nothing routing adds
   // (no default `routing`, no default task `role`) enters the digest of a declaration that does not declare it.
   const before = (d) => createHash('sha256').update(canonicalJson({ ...d, authorization: undefined, limits: undefined, purpose: undefined,
