@@ -20,6 +20,7 @@ import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, or
 import { coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
 import { stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions } from './instructions.mjs';
+import { priorAttempt, receiptInputs, staticReceipt } from './router.mjs';
 import { ConflictError, FencedError } from './store.mjs';
 import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
 
@@ -1023,19 +1024,11 @@ export class Controller {
     return repo?.conflict ? null : repo;
   }
 
-  /** The executor that produced this task's latest unaccepted attempt of the same kind, if any. */
-  lastFailedExecutor(decl, task) {
+  /** This task's finished attempts of the same kind, newest first, as routing receipt entries (router.mjs priorAttempt). */
+  priorAttempts(decl, task) {
     const kind = task.state === 'implemented' ? 'verify' : 'implement';
-    const last = this.store.get("SELECT executor_kind, outcome FROM operations WHERE campaign_id = ? AND task_id = ? AND kind = ? AND state = 'finished' ORDER BY created_at DESC LIMIT 1",
-      decl.campaignId, task.task_id, kind);
-    // Provider availability (quota, auth, launch, unavailable host) is governed by executor_waits: once that
-    // wait ends the preferred provider resumes. Only a task-level failure reroutes the next attempt.
-    if (!last?.outcome || ['admission-blocked', 'quota', 'auth', 'spawn-failed', 'unavailable'].includes(last.outcome.class)) return null;
-    // Never route around a denial: the next attempt keeps the declared provider order.
-    if (/denied|permission|no provider fallback|unexpected tool|sandbox violation/i.test(last.outcome.detail ?? '')) return null;
-    const terminal = last.outcome.value?.result ?? last.outcome.value?.verdict ?? null;
-    const failed = last.outcome.class !== 'result' || terminal === 'evidence-unavailable';
-    return failed ? last.executor_kind : null;
+    return this.store.all("SELECT id, executor_kind, outcome, routing FROM operations WHERE campaign_id = ? AND task_id = ? AND kind = ? AND state = 'finished' ORDER BY created_at DESC",
+      decl.campaignId, task.task_id, kind).map(priorAttempt);
   }
 
   /** A timed account wait for a single-provider campaign, as an epoch, or 0. An untimed one holds it at dispatch (untimedAccountWait). */
@@ -1078,36 +1071,32 @@ export class Controller {
     return null;
   }
 
+  /**
+   * Today's choice, as a routing receipt (router.mjs, static mode): the facts are observed here once and route() decides
+   * from them alone. After a failed attempt the next eligible provider in the chain gets the task first; the one that
+   * failed remains the fallback when it is the only eligible provider. Denials and rejections are not routed around:
+   * this only reorders between providers the owner already authorized.
+   */
   executorChoice(decl, task, now = this.now()) {
     const waits = this.store.all('SELECT * FROM executor_waits WHERE campaign_id = ?', decl.campaignId);
-    // After a failed attempt the next eligible provider in the chain gets the task first; the one that
-    // failed remains the fallback when it is the only eligible provider. Denials and rejections are not
-    // routed around: this only reorders between providers the owner already authorized.
-    const avoid = decl.executor.kind === 'cli-chain' ? this.lastFailedExecutor(decl, task) : null;
-    let retryAt = null;
-    let fallback = null;
-    const spec = decl.tasks.find((item) => item.id === task.task_id);
-    for (const executor of executorOrder(decl.executor)) {
-      if (executor.researchOnly && spec.deliverable !== 'report') continue;
-      // Web acceptance belongs to the browser workers alone, so no other provider's wait can hold it, and AGY runs nothing else.
-      if (spec.web ? !executors.BROWSER_KINDS.includes(executor.kind) : executor.kind === 'agy-cli') continue;
-      if (!this.cmd[executor.kind.replace('-cli', '')]?.length) {
-        const wait = waits.find((item) => item.executor_kind === executor.kind);
-        const at = wait?.retry_at > now ? wait.retry_at : now + 15 * 60_000;
-        retryAt = retryAt === null ? at : Math.min(retryAt, at);
-        continue;
+    const facts = (kind) => {
+      const own = waits.find((item) => item.executor_kind === kind);
+      if (!this.cmd[kind.replace('-cli', '')]?.length) {
+        return { cliConfigured: false, cliRecheckAt: own?.retry_at > now ? own.retry_at : now + 15 * 60_000, hostUnavailable: null, wait: null };
       }
-      if (executors.roleUnavailableReason(executor, task.state === 'implemented' ? 'verification' : 'implementer',
-        spec.deliverable, process.platform, Boolean(spec.web))) continue;
-      // The later of this campaign's own wait and the account's wait (ADAPTIVE_SCHEDULER 4.5).
-      const wait = laterWait(waits.find((item) => item.executor_kind === executor.kind), accountWait(this.store, this.config, executor.kind));
-      if (!wait || wait.retry_at !== null && wait.retry_at <= now) {
-        if (executor.kind === avoid) { fallback ??= executor; continue; }
-        return { executor, retryAt: null };
-      }
-      if (wait.retry_at !== null) retryAt = retryAt === null ? wait.retry_at : Math.min(retryAt, wait.retry_at);
-    }
-    return fallback ? { executor: fallback, retryAt: null } : { executor: null, retryAt };
+      // The later of this campaign's own wait and the account's wait (ADAPTIVE_SCHEDULER 4.5); an elapsed timed wait is none.
+      const wait = laterWait(own, accountWait(this.store, this.config, kind));
+      const active = wait && (wait.retry_at === null || wait.retry_at > now);
+      return { cliConfigured: true, hostUnavailable: null, wait: active ? { retryAt: wait.retry_at, reason: wait.reason } : null };
+    };
+    const receipt = staticReceipt(receiptInputs({
+      stage: task.state === 'implemented' ? 'verify' : 'implement', chain: decl.executor.kind === 'cli-chain',
+      spec: decl.tasks.find((item) => item.id === task.task_id), providers: executorOrder(decl.executor),
+      platform: process.platform, facts, priorAttempts: this.priorAttempts(decl, task),
+    }));
+    const chosen = receipt.decision.chosen;
+    return { executor: chosen ? executorOrder(decl.executor).find((provider) => provider.kind === chosen.kind) : null,
+      retryAt: receipt.decision.retryAt, receipt };
   }
 
   async dispatch(ctx, campaign, task, kind, { admission = null } = {}) {
@@ -1301,12 +1290,12 @@ export class Controller {
         id: opId, campaign_id: ctx.id, task_id: task.task_id, kind, seq, idempotency_key: opId, lease_generation: ctx.generation,
         state: 'recorded', session_id: sessionId, run_dir: runDir, workspace, base_sha: revision, target_sha: targetSha,
         report_digest: reportDigest, packet, packet_digest: digest, outcome: null, created_at: now, updated_at: now,
-        executor_kind: executor.kind,
+        executor_kind: executor.kind, routing: choice.receipt,
       });
       this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, t.version,
         { attempts: seq, base_sha: baseSha, state: kind === 'implement' ? 'implementing' : 'verifying', retry_at: null }, now);
       this.store.patch('campaigns', { id: ctx.id }, c.version, { runs_used: c.runs_used + 1 }, now);
-      this.store.journal(ctx.id, 'operation-recorded', { op: opId, kind, executor: executor.kind, session: sessionId, packetDigest: digest, generation: ctx.generation, run: c.runs_used + 1 }, now);
+      this.store.journal(ctx.id, 'operation-recorded', { op: opId, kind, executor: executor.kind, model: choice.receipt.decision.chosen.model, session: sessionId, packetDigest: digest, generation: ctx.generation, run: c.runs_used + 1 }, now);
 
       // This checkpoint and admission decision commit together before launch.
       const plan = planContext({

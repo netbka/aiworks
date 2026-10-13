@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS operations (
   state TEXT NOT NULL, session_id TEXT NOT NULL, run_dir TEXT NOT NULL, workspace TEXT NOT NULL,
   base_sha TEXT, target_sha TEXT, report_digest TEXT, packet TEXT NOT NULL, packet_digest TEXT NOT NULL,
   outcome TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-  executor_kind TEXT NOT NULL DEFAULT 'claude-cli');
+  executor_kind TEXT NOT NULL DEFAULT 'claude-cli', routing TEXT);
 CREATE TABLE IF NOT EXISTS executor_waits (
   campaign_id TEXT NOT NULL, executor_kind TEXT NOT NULL, retry_at INTEGER,
   reason TEXT NOT NULL, PRIMARY KEY (campaign_id, executor_kind));
@@ -120,7 +120,7 @@ CREATE TABLE IF NOT EXISTS project_overlays (
 
 const JSON_COLUMNS = new Set(['declaration', 'blocker', 'failures', 'findings', 'result', 'verification',
   'blocked', 'packet', 'outcome', 'payload', 'detail', 'message_ids', 'probe', 'last_evidence', 'resolution', 'message',
-  'eligibility', 'steps', 'history']);
+  'eligibility', 'steps', 'history', 'routing']);
 
 function decode(row) {
   if (!row) return null;
@@ -159,9 +159,13 @@ export class Store {
       this.depth = 0;
       // Only a writer upgrades legacy operations; status/dashboard reads never migrate stores.
       if (!readOnly) this.tx(() => {
-        if (!this.db.prepare('PRAGMA table_info(operations)').all().some((column) => column.name === 'executor_kind')) {
+        const columns = this.db.prepare('PRAGMA table_info(operations)').all().map((column) => column.name);
+        if (!columns.includes('executor_kind')) {
           this.db.exec("ALTER TABLE operations ADD COLUMN executor_kind TEXT NOT NULL DEFAULT 'claude-cli'");
         }
+        // The routing receipt (router.mjs, docs/design/MODEL_ROUTING.md section 9) is additive in the same way: an
+        // operation recorded before it reads routing as null, and the store version does not change.
+        if (!columns.includes('routing')) this.db.exec('ALTER TABLE operations ADD COLUMN routing TEXT');
       });
     } catch (error) {
       this.db.close();
