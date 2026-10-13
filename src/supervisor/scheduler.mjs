@@ -1,4 +1,4 @@
-// The scheduler's admission rules (docs/design/ADAPTIVE_SCHEDULER.md sections 4.1, 4.2, 4.4 and 4.6; slice RUN5), as
+// The scheduler's admission rules (docs/design/ADAPTIVE_SCHEDULER.md sections 4.1, 4.2, 4.4, 4.5 and 4.6; slices RUN5, RUN7 and RUN8), as
 // functions over the store's rows. Behind config.scheduler.enabled (default off) the controller settles each campaign,
 // collects its candidates, orders them with orderCandidates and admits at most one per tick: the first candidate whose
 // admissionCheck returns null, checked again inside the transaction that records its operation. Nothing here keeps
@@ -14,7 +14,7 @@ import { openRunBeats } from './host.mjs';
  * The wait reasons, in the order they are checked. A waiting step always has exactly one: the first that applies.
  * 'launch-turn' is the controller's, after the checks: admissible, but this tick already started one operation.
  */
-export const WAIT_REASONS = Object.freeze(['already-running', 'campaign-fanout', 'host-capacity', 'host-pressure', 'write-domain', 'provider-cooldown', 'launch-turn']);
+export const WAIT_REASONS = Object.freeze(['already-running', 'campaign-fanout', 'host-capacity', 'host-pressure', 'write-domain', 'provider-cooldown', 'provider-concurrency', 'launch-turn']);
 
 export const schedulerEnabled = (config) => config?.scheduler?.enabled === true;
 
@@ -136,8 +136,10 @@ export function orderCandidates(store, candidates) {
  * rows only, so the controller can call it again inside the recording transaction. `providerWaiting(candidate)` tells
  * whether every authorized provider for it is waiting (the controller's executorChoice); `pressure` is this pass's
  * hostPressure sample (null: none), which can only refuse; `integrated(campaignId, taskRow, declaration)` releases a published domain once it is in its base.
+ * `accountFull(candidate)` returns null, or the account of the provider the candidate would get when that account
+ * throttled earlier and is at its learned limit (accounts.mjs accountFull, slice RUN8).
  */
-export function admissionCheck(store, candidate, { ceiling, pressure = null, providerWaiting = () => false, integrated = () => false }) {
+export function admissionCheck(store, candidate, { ceiling, pressure = null, providerWaiting = () => false, accountFull = () => null, integrated = () => false }) {
   const open = store.all("SELECT campaign_id, task_id FROM operations WHERE state IN ('recorded', 'dispatched')");
   if (open.some((op) => op.campaign_id === candidate.campaignId && op.task_id === candidate.taskId)) return { reason: 'already-running' };
   const bound = fanoutBound(candidate.declaration, ceiling);
@@ -151,5 +153,7 @@ export function admissionCheck(store, candidate, { ceiling, pressure = null, pro
     if (holders.length) return { reason: 'write-domain', detail: { holders } };
   }
   if (providerWaiting(candidate)) return { reason: 'provider-cooldown' };
+  const full = accountFull(candidate);
+  if (full) return { reason: 'provider-concurrency', detail: full };
   return null;
 }
