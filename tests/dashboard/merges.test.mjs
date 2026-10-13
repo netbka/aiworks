@@ -1,4 +1,4 @@
-// Merged state from local git only (netbka/aiworks#16): a step is merged when its verified commit is reachable from
+// Merged state from local git only (AIWorks): a step is merged when its verified commit is reachable from
 // origin/<base> in the configured checkout; the base branch is fetched at most once per repository every 5 minutes,
 // one repository at a time; a failed fetch keeps the last state and shows its age; and no dashboard code path runs
 // gh or calls the GitHub API. Disposable git repositories, a synthetic git wrapper and a synthetic gh only.
@@ -30,7 +30,7 @@ const git = (cwd, args, env = {}) => {
  * A disposable origin, the configured checkout (cloned before anything is merged) and a second clone standing in for
  * GitHub's side: T1's commit is merged into main there, T2's is pushed on a branch that is never merged.
  */
-function repositories(t, name = 'Dyk') {
+function repositories(t, name = 'sampleapp') {
   const tmp = mkdtempSync(join(tmpdir(), 'aiworks-merges-'));
   t.after(() => rmSync(tmp, { recursive: true, force: true }));
   const origin = join(tmp, `${name}.git`), checkout = join(tmp, 'checkout'), remote = join(tmp, 'remote');
@@ -54,15 +54,15 @@ function repositories(t, name = 'Dyk') {
   return { tmp, origin, checkout, remote, merged, unmerged };
 }
 
-/** A supervisor store with one campaign on netbka/<name>: T1 and T2 published as pull requests with their verified commits. */
-function store(t, { merged, unmerged }, { name = 'Dyk', dataDir = mkdtempSync(join(tmpdir(), 'aiworks-merges-data-')) } = {}) {
+/** A supervisor store with one campaign on example-org/<name>: T1 and T2 published as pull requests with their verified commits. */
+function store(t, { merged, unmerged }, { name = 'sampleapp', dataDir = mkdtempSync(join(tmpdir(), 'aiworks-merges-data-')) } = {}) {
   const s = new Store(join(dataDir, 'supervisor.db'));
-  const d = { ...declaration({ campaignId: `campaign-${name.toLowerCase()}` }), target: { ...declaration().target, repository: `netbka/${name}` } };
+  const d = { ...declaration({ campaignId: `campaign-${name.toLowerCase()}` }), target: { ...declaration().target, repository: `example-org/${name}` } };
   campaignStart(s, d);
   for (const [taskId, number, sha] of [['T1', 463, merged], ['T2', 464, unmerged]]) {
     const row = s.task(d.campaignId, taskId);
     s.patch('tasks', { campaign_id: d.campaignId, task_id: taskId }, row.version,
-      { state: 'done', pr_url: `https://github.com/netbka/${name}/pull/${number}`, verified_sha: sha }, Date.now());
+      { state: 'done', pr_url: `https://github.com/example-org/${name}/pull/${number}`, verified_sha: sha }, Date.now());
   }
   t.after(() => { s.close(); rmSync(dataDir, { recursive: true, force: true }); });
   return { dataDir, store: s, d };
@@ -88,8 +88,8 @@ process.exit(result.status ?? 1);
 test('a step whose verified commit is reachable from origin/main after a fetch is merged; one that is not is published, merge not seen yet', async (t) => {
   const repo = repositories(t);
   const { dataDir, d } = store(t, repo);
-  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ repositories: { 'netbka/Dyk': { path: repo.checkout, worktreeRoot: join(repo.tmp, 'worktrees') } } }));
-  assert.deepEqual(configuredCheckouts(dataDir), { 'netbka/dyk': repo.checkout });
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ repositories: { 'example-org/sampleapp': { path: repo.checkout, worktreeRoot: join(repo.tmp, 'worktrees') } } }));
+  assert.deepEqual(configuredCheckouts(dataDir), { 'example-org/sampleapp': repo.checkout });
   assert.deepEqual(publishedSteps(dataDir).map((step) => [step.taskId, step.baseBranch, step.sha]), [['T1', 'main', repo.merged], ['T2', 'main', repo.unmerged]]);
   const recorder = recordingGit(repo.tmp);
   const watcher = new MergeWatcher({ steps: () => publishedSteps(dataDir), checkouts: configuredCheckouts(dataDir), git: recorder.git });
@@ -99,7 +99,7 @@ test('a step whose verified commit is reachable from origin/main after a fetch i
   assert.deepEqual(Object.values(before.campaigns[d.campaignId].deliveries).map((item) => [item.state, item.pending]), [['published', true], ['published', true]]);
   await watcher.refresh();
   const snapshot = watcher.snapshot();
-  assert.deepEqual(snapshot.repositories.map(({ repository, configured, error }) => [repository, configured, error]), [['netbka/Dyk', true, null]]);
+  assert.deepEqual(snapshot.repositories.map(({ repository, configured, error }) => [repository, configured, error]), [['example-org/sampleapp', true, null]]);
   assert.deepEqual(snapshot.steps[`${d.campaignId}/T1`], { sha: repo.merged, baseBranch: 'main', merged: true, mergedAt: MERGED_AT * 1000 });
   assert.deepEqual(snapshot.steps[`${d.campaignId}/T2`], { sha: repo.unmerged, baseBranch: 'main', merged: false, mergedAt: null });
   const view = ownerView(supervisor, snapshot);
@@ -126,19 +126,19 @@ test('a step whose verified commit is reachable from origin/main after a fetch i
 });
 
 test('git fetch runs at most once per repository per 5 minutes, one repository at a time', async (t) => {
-  const one = repositories(t, 'Dyk'), two = repositories(t, 'Other');
+  const one = repositories(t, 'sampleapp'), two = repositories(t, 'Other');
   const dataDir = mkdtempSync(join(tmpdir(), 'aiworks-merges-two-'));
-  const first = store(t, one, { name: 'Dyk', dataDir });
+  const first = store(t, one, { name: 'sampleapp', dataDir });
   // Both campaigns live in one store.
-  const d2 = { ...declaration({ campaignId: 'campaign-other' }), target: { ...declaration().target, repository: 'netbka/Other' } };
+  const d2 = { ...declaration({ campaignId: 'campaign-other' }), target: { ...declaration().target, repository: 'example-org/Other' } };
   campaignStart(first.store, d2);
   for (const [taskId, number, sha] of [['T1', 1, two.merged], ['T2', 2, two.unmerged]]) {
     const row = first.store.task(d2.campaignId, taskId);
-    first.store.patch('tasks', { campaign_id: d2.campaignId, task_id: taskId }, row.version, { state: 'done', pr_url: `https://github.com/netbka/Other/pull/${number}`, verified_sha: sha }, Date.now());
+    first.store.patch('tasks', { campaign_id: d2.campaignId, task_id: taskId }, row.version, { state: 'done', pr_url: `https://github.com/example-org/Other/pull/${number}`, verified_sha: sha }, Date.now());
   }
   const recorder = recordingGit(one.tmp);
   const clock = { now: 1_800_000_000_000 };
-  const watcher = new MergeWatcher({ steps: () => publishedSteps(dataDir), checkouts: { 'netbka/dyk': one.checkout, 'netbka/other': two.checkout },
+  const watcher = new MergeWatcher({ steps: () => publishedSteps(dataDir), checkouts: { 'example-org/sampleapp': one.checkout, 'example-org/other': two.checkout },
     git: recorder.git, now: () => clock.now });
   const fetches = () => recorder.calls().filter((call) => call.args[0] === 'fetch');
   // Concurrent requests share one refresh.
@@ -163,7 +163,7 @@ test('a failed fetch keeps the last state and shows its age, and is not retried 
   const { dataDir, d } = store(t, repo);
   const recorder = recordingGit(repo.tmp);
   const start = Date.now(), clock = { now: start };
-  const watcher = new MergeWatcher({ steps: () => publishedSteps(dataDir), checkouts: { 'netbka/dyk': repo.checkout }, git: recorder.git, now: () => clock.now });
+  const watcher = new MergeWatcher({ steps: () => publishedSteps(dataDir), checkouts: { 'example-org/sampleapp': repo.checkout }, git: recorder.git, now: () => clock.now });
   await watcher.refresh();
   const supervisor = supervisorSnapshot(dataDir);
   assert.equal(ownerView(supervisor, watcher.snapshot(), { now: clock.now }).campaigns[d.campaignId].deliveries.T1.state, 'merged');
@@ -201,9 +201,9 @@ test('the git command comes from the supervisor config, else git on PATH', (t) =
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   assert.deepEqual(configuredGitCommand(dir), ['git']);
   assert.deepEqual(configuredCheckouts(dir), {});
-  writeFileSync(join(dir, 'config.json'), JSON.stringify({ commands: { git: ['C:/tools/git.exe'] }, repositories: { 'netbka/Dyk': { path: 'D:/Git/Dyk' }, 'invalid path': { path: 'x' }, 'netbka/none': {} } }));
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ commands: { git: ['C:/tools/git.exe'] }, repositories: { 'example-org/sampleapp': { path: 'C:/example/sampleapp' }, 'invalid path': { path: 'x' }, 'example-org/none': {} } }));
   assert.deepEqual(configuredGitCommand(dir), ['C:/tools/git.exe']);
-  assert.deepEqual(configuredCheckouts(dir), { 'netbka/dyk': 'D:/Git/Dyk' });
+  assert.deepEqual(configuredCheckouts(dir), { 'example-org/sampleapp': 'C:/example/sampleapp' });
   writeFileSync(join(dir, 'config.json'), JSON.stringify({ commands: { git: [] } }));
   assert.throws(() => configuredGitCommand(dir), /commands.git/);
 });
@@ -234,7 +234,7 @@ test('across startup, merge checks and every page and API route, the running das
   writeFileSync(join(bin, 'gh.cmd'), `@"${process.execPath}" "${recorder}" %*\r\n`);
   writeFileSync(join(bin, 'gh'), `#!/bin/sh\nexec "${process.execPath}" "${recorder}" "$@"\n`, { mode: 0o755 });
   writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ governanceRoot: GOVERNANCE, commands: { gh: [process.execPath, recorder] },
-    repositories: { 'netbka/Dyk': { path: repo.checkout, worktreeRoot: join(repo.tmp, 'worktrees') } } }));
+    repositories: { 'example-org/sampleapp': { path: repo.checkout, worktreeRoot: join(repo.tmp, 'worktrees') } } }));
   const port = await freePort();
   const PATH = `${bin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`;
   const child = spawn(process.execPath, [join(ROOT, 'src/dashboard/main.mjs'), '--data', dataDir, '--port', String(port), '--cache', join(repo.tmp, 'cache')],

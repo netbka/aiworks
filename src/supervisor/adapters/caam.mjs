@@ -4,7 +4,7 @@
 // missing shallow home and caamProfileEnv points a worker at it; executors.mjs applies that environment when a launch
 // names a profile home. cli.mjs wires none of it yet: the owner's Phase 2 pilot turns it on. The record shape follows
 // CAAM v0.1.23 cmd/caam/cmd/robot.go (RobotOutput, RobotProviderInfo, RobotProfileInfo); compatibility with the CAAM
-// installed on HomePc, including `caam shallow-profile create`, is unverified.
+// installed on workstation, including `caam shallow-profile create`, is unverified.
 // Robot status carries no credentials. The adapter keeps only the fields below, never the email, auth paths or raw
 // output, and its errors quote CAAM's own error code and message, never stdout or stderr.
 import { spawnSync } from 'node:child_process';

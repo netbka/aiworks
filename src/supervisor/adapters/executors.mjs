@@ -62,7 +62,7 @@ export function resultSchema(role, sessionId, digest) {
 }
 
 // Verified against codex-cli 0.162.0: without `--disable apps` a worker sees every mcp__codex_apps__* tool,
-// including the owner's Local Commander connector. aiworks_repository must remain the only MCP server.
+// including the owner's local control service connector. aiworks_repository must remain the only MCP server.
 export const CODEX_DISABLED_FEATURES = ['apps', 'multi_agent', 'multi_agent_v2', 'computer_use', 'browser_use', 'browser_use_external', 'image_generation'];
 // The native Windows sandbox helper refused to start any process: an executor/host failure, never the worker's.
 export const CODEX_EXEC_SETUP_FAILURE = /Failed to create unified exec process|helper_unknown_error|setup refresh had errors|sandbox setup failed/i;
@@ -229,7 +229,7 @@ export function prepare({ executor, command, role, deliverable, sessionId, diges
         '-c', 'web_search="disabled"'] : []),
       // Ignoring user config must not also disable the native Windows sandbox backend.
       ...(process.platform === 'win32' ? ['-c', 'windows.sandbox="elevated"'] : []),
-      // Account-level connectors (codex_apps, including Local Commander) are never reachable from a worker.
+      // Account-level connectors (codex_apps, including local control service) are never reachable from a worker.
       ...CODEX_DISABLED_FEATURES.flatMap((feature) => ['--disable', feature]),
       ...reader,
       '--sandbox', role === 'verification' || deliverable === 'report' ? 'read-only' : 'workspace-write',

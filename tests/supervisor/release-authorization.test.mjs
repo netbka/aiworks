@@ -11,12 +11,12 @@ import {
 } from '../../src/supervisor/release/authorization.mjs';
 
 const NOW = Date.parse('2026-11-15T12:00:00Z');
-const options = { project: 'dyk', now: NOW };
+const options = { project: 'sampleapp', now: NOW };
 const record = (change = (value) => value) => change({
   schema: 'aiworks-release-authorization/1',
-  project: 'dyk',
+  project: 'sampleapp',
   version: 3,
-  approval: 'https://github.com/netbka/Dyk/issues/120',
+  approval: 'https://github.com/example-org/sampleapp/issues/120',
   grantedAt: '2026-11-01',
   expiresAt: '2027-01-30',
   revoked: false,
@@ -25,11 +25,11 @@ const record = (change = (value) => value) => change({
       id: 'production', environment: 'production', kind: 'merge-then-deploy', baseBranch: 'main', mergeMethod: 'squash',
       changeClasses: ['docs', 'app-code'],
       commands: { deploy: 'deploy/release.ps1', observe: 'deploy/observe.ps1', check: 'deploy/check.ps1', rollback: 'deploy/rollback.ps1' },
-      credential: { ref: 'aiworks-release/dyk', owner: 'netbka' }, rollback: 'automatic', checkWindowMinutes: 10,
+      credential: { ref: 'aiworks-release/sampleapp', owner: 'example-org' }, rollback: 'automatic', checkWindowMinutes: 10,
     },
     {
       id: 'main-merge', environment: 'production', kind: 'merge', baseBranch: 'main', mergeMethod: 'merge',
-      changeClasses: ['docs'], credential: { ref: 'aiworks-release/dyk', owner: 'netbka' }, rollback: 'automatic', checkWindowMinutes: 5,
+      changeClasses: ['docs'], credential: { ref: 'aiworks-release/sampleapp', owner: 'example-org' }, rollback: 'automatic', checkWindowMinutes: 5,
     },
   ],
   classes: { docs: ['docs/**', '*.md'], 'app-code': ['src/**'], migration: ['db/migrations/**'] },
@@ -56,7 +56,7 @@ test('a valid record yields its digest and destinations', () => {
   assert.equal(validateAuthorization(record((r) => { delete r.ownerConfirm; return r; }), options).valid, true);
   assert.equal(validateAuthorization(record((r) => ({ ...r, destinations: [{
     id: 'folder', environment: 'local', kind: 'local-folder-apply', changeClasses: ['docs'], commands: { check: 'scripts/check.ps1' },
-    credential: { ref: 'aiworks-release/dyk', owner: 'netbka' }, rollback: 'report-only', checkWindowMinutes: 5,
+    credential: { ref: 'aiworks-release/sampleapp', owner: 'example-org' }, rollback: 'report-only', checkWindowMinutes: 5,
   }] })), options).valid, true);
 });
 
@@ -83,10 +83,10 @@ test('missing, unknown or mistyped fields are invalid', () => {
   invalidBecause(record((r) => { r.destinations[0].commands.deploy = 'C:/deploy.ps1'; return r; }), /commands\/deploy is not a plain path/);
   invalidBecause(record((r) => ({ ...r, destinations: [{
     id: 'git', environment: 'local', kind: 'local-git-apply', baseBranch: 'main', changeClasses: ['docs'], commands: { check: 'c.ps1' },
-    credential: { ref: 'aiworks-release/dyk', owner: 'netbka' }, rollback: 'report-only', checkWindowMinutes: 5,
+    credential: { ref: 'aiworks-release/sampleapp', owner: 'example-org' }, rollback: 'report-only', checkWindowMinutes: 5,
   }] })), /names baseBranch or mergeMethod, which only merge destinations take$/);
   invalidBecause(record((r) => ({ ...r, grantedAt: '2026-02-30' })), /grantedAt 2026-02-30 is not a real date/);
-  invalidBecause(record((r) => ({ ...r, project: 'aiworks' })), /^the record is for project aiworks, not dyk$/);
+  invalidBecause(record((r) => ({ ...r, project: 'aiworks' })), /^the record is for project aiworks, not sampleapp$/);
   // Several problems are each reported, not only the first.
   assert.equal(validateAuthorization(record((r) => ({ ...r, version: 'x', revoked: 'x' })), options).reasons.length, 2);
   assert.deepEqual(parseAuthorization('{"schema":', options).reasons, ['the record is not valid JSON']);
@@ -105,7 +105,7 @@ test('expired or revoked grants are invalid', () => {
   }
   const early = validateAuthorization(record(), { ...options, now: new Date('2026-10-31T23:00:00Z') });
   assert.deepEqual(early.reasons, ['the grant starts on 2026-11-01, which is still to come']);
-  assert.throws(() => validateAuthorization(record(), { project: 'dyk' }), /evaluation time/);
+  assert.throws(() => validateAuthorization(record(), { project: 'sampleapp' }), /evaluation time/);
   assert.throws(() => validateAuthorization(record(), { now: NOW }), /expected project id/);
 });
 

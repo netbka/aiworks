@@ -40,7 +40,7 @@ export const SECRET_LIKE_PATH_PATTERN = '(?:^|/)(?:\\.[Ee][Nn][Vv][^/#]*|\\.[Gg]
 const SECRET_LIKE_PATH = new RegExp(SECRET_LIKE_PATH_PATTERN, 'u');
 
 /**
- * Optional packet `governance` (Engineering Platform governance inheritance): the target project's inherited governance as values only. Its registry id, the
+ * Optional packet `governance` (governance provider governance inheritance): the target project's inherited governance as values only. Its registry id, the
  * inherited portfolio policy IDs, its declared authority pointers (role and repository-relative path in the target
  * repository) and its declared exceptions and gaps as id and rule. No summaries, sources, approvals or file contents.
  */

@@ -108,8 +108,8 @@ const eacces = (path) => Object.assign(new Error(`EACCES: permission denied, ${p
 
 test('a GitHub checkout, a local Git repository and a plain folder are told apart', options, (t) => {
   const dir = base(t);
-  const site = repository(dir, 'site', { origin: 'https://someone:ghp_secretToken@github.com/netbka/site.git' });
-  const ssh = repository(dir, 'ssh', { origin: 'git@github.com:netbka/ssh-site.git' });
+  const site = repository(dir, 'site', { origin: 'https://someone:ghp_secretToken@github.com/example-org/site.git' });
+  const ssh = repository(dir, 'ssh', { origin: 'git@github.com:example-org/ssh-site.git' });
   const local = repository(dir, 'local');
   const elsewhere = repository(dir, 'elsewhere', { origin: 'https://git.example.invalid/team/elsewhere.git' });
   const plain = folder(dir, 'notes', { 'a.txt': 'a\r\n', 'docs/b.md': '# b\n' });
@@ -119,8 +119,8 @@ test('a GitHub checkout, a local Git repository and a plain folder are told apar
   assert.equal(github.code, null);
   assert.equal(github.kind, 'github');
   assert.equal(github.proposedKind, 'github');
-  assert.equal(github.repository, 'netbka/site');
-  assert.equal(github.fingerprint, 'netbka/site');
+  assert.equal(github.repository, 'example-org/site');
+  assert.equal(github.fingerprint, 'example-org/site');
   assert.equal(github.branch, 'main');
   assert.match(github.head, /^[0-9a-f]{40}$/);
   assert.equal(github.root, site);
@@ -129,7 +129,7 @@ test('a GitHub checkout, a local Git repository and a plain folder are told apar
   assert.equal(github.confirm, null);
   assert.equal(github.scan, null, 'a Git project is not scanned file by file');
   assert.doesNotMatch(JSON.stringify(github), /someone|ghp_secretToken/, 'user info in the remote never reaches the result');
-  assert.equal(pf.preflight(ssh, defaults()).repository, 'netbka/ssh-site');
+  assert.equal(pf.preflight(ssh, defaults()).repository, 'example-org/ssh-site');
 
   const repo = pf.preflight(local, defaults());
   assert.equal(repo.ok, true);
@@ -229,13 +229,13 @@ test('overlap, reconnect, a replaced root, a changed identity and a missing root
   folder(dir, 'plain', { 'a.txt': 'a' });
   check(pf.checkProject(saved, defaults()), 'ROOT_REPLACED');
 
-  const repo = repository(dir, 'repo', { origin: 'https://github.com/netbka/site.git' });
+  const repo = repository(dir, 'repo', { origin: 'https://github.com/example-org/site.git' });
   const github = record(pf.preflight(repo, defaults()));
   assert.equal(pf.checkProject(github, defaults()).ok, true);
-  assert.equal(pf.checkProject({ ...github, fingerprint: 'NetBKA/Site' }, defaults()).ok, true, 'GitHub names ignore case');
-  git(repo, 'remote', 'set-url', 'origin', 'https://github.com/netbka/other.git');
+  assert.equal(pf.checkProject({ ...github, fingerprint: 'Example-Org/Site' }, defaults()).ok, true, 'GitHub names ignore case');
+  git(repo, 'remote', 'set-url', 'origin', 'https://github.com/example-org/other.git');
   const changed = check(pf.checkProject(github, defaults()), 'IDENTITY_CHANGED');
-  assert.deepEqual([changed.detail.was, changed.detail.now], ['netbka/site', 'netbka/other']);
+  assert.deepEqual([changed.detail.was, changed.detail.now], ['example-org/site', 'example-org/other']);
 
   const local = repository(dir, 'local');
   const localRecord = record(pf.preflight(local, defaults()));
@@ -283,7 +283,7 @@ test('Git detection refuses a bare repository, a subfolder, a linked worktree, a
   git(main, 'worktree', 'add', '-q', '-b', 'side', linked);
   const worktree = check(pf.preflight(linked, defaults()), 'GIT_WORKTREE');
   assert.equal(rootKey(worktree.detail.main), rootKey(main));
-  const empty = repository(dir, 'empty', { commit: false, origin: 'https://github.com/netbka/empty.git' });
+  const empty = repository(dir, 'empty', { commit: false, origin: 'https://github.com/example-org/empty.git' });
   const none = check(pf.preflight(empty, defaults()), 'GIT_NO_COMMITS');
   assert.equal(none.kind, 'local-git');
   assert.equal(none.detail.alternative, 'folder');
@@ -382,7 +382,7 @@ test('scan limits stop before anything is copied: files, bytes, one file, time, 
 test('preflight leaves every source byte-identical, including .git, and runs only read-only git with optional locks off', options, (t) => {
   const dir = base(t);
   const recorder = recordingGit(dir);
-  const site = repository(dir, 'site', { origin: 'https://github.com/netbka/site.git', files: { 'README.md': '# s\n', 'app.js': 'a\n' } });
+  const site = repository(dir, 'site', { origin: 'https://github.com/example-org/site.git', files: { 'README.md': '# s\n', 'app.js': 'a\n' } });
   const local = repository(dir, 'local', { origin: 'ssh://git@git.example.invalid/never/contacted.git', files: { 'README.md': '# l\n' } });
   writeFileSync(join(local, 'README.md'), '# uncommitted\n');
   writeFileSync(join(local, 'untracked.txt'), 'u\n');

@@ -14,7 +14,7 @@ import * as github from './adapters/github.mjs';
 import { authorityDigest, campaignLimits, executorOrder, projectGovernance } from './campaign.mjs';
 import { resolveCheckout } from './project-connect.mjs';
 import { campaignBudget } from './api.mjs';
-import { ACCOUNT_SCOPED, accountOf, accountWait, clearAccountWait, laterWait, setAccountWait } from './accounts.mjs';
+import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountOf, accountWait, clearAccountWait, laterWait, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
 import { domainOf, pathsOutside, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
 import { coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
@@ -29,7 +29,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const POLICY = JSON.parse(readFileSync(resolve(here, '../../registry/worker-context-policy.json'), 'utf8'));
 const RUNNER = join(here, 'runner.mjs');
 // A task whose fresh sessions keep returning evidence-unavailable is not making progress. After this many
-// such results it stops with a B3 owner decision, whatever the retry limit (engineering-platform-archive#74): a no-progress guard, not
+// such results it stops with a B3 owner decision, whatever the retry limit (historical regression): a no-progress guard, not
 // a spend cap. With the 2/10/30-minute backoff the fourth result comes at least ~42 minutes after the first,
 // so a short outage does not stop work. A resolved or accepted result, or a recheck naming the task, resets
 // the count.
@@ -99,17 +99,21 @@ const runLease = (op, state, sessionId = op.session_id) => ({
 });
 
 export class Controller {
-  // governanceRoot: the read-only Engineering Platform checkout whose registry/projects and policies/catalog.json resolve each
+  // governanceRoot: the read-only governance provider checkout whose registry/projects and policies/catalog.json resolve each
   // target project's governance; the explicit argument, else config.json `governanceRoot`. With neither (or an invalid root) no
   // worker is dispatched: dispatch fails closed with a project-governance blocker, never falling back to this checkout.
   // revisionCheck (AW-005): returns null while this code is merged into origin/main, else the reason. `cli.mjs serve` always
   // supplies it from git; only an in-process embedding (the tests) constructs a controller without it. revisionCheckMs
   // is likewise an in-process seam, never read from config.json.
+  // profiles (ACCOUNT_ADAPTER_CAAM.md section 3.3, slice CAAM3): `(kind, now) => profiles`, CAAM's inventory for an executor
+  // kind (caam.mjs caamRobotStatus records), or null for a kind CAAM does not manage; it may throw. Selection runs only
+  // with it and config.json "caam": { "enabled": true }. cli.mjs supplies none yet, so it stays off: a chosen profile must
+  // also be the one the worker launches under, which waits for the CAAM4 launch slice and the owner's Phase 2 pilot.
   constructor({ store, config, dataDir, log = () => {}, now = () => Date.now(), instanceId = randomUUID(),
     codeRevision = null, fault = process.env.AIWORKS_FAULT ?? null, notifier = noopTransport, probes = {},
-    governanceRoot = undefined, revisionCheck = null, revisionCheckMs = REVISION_CHECK_MS }) {
+    governanceRoot = undefined, revisionCheck = null, revisionCheckMs = REVISION_CHECK_MS, profiles = null }) {
     Object.assign(this, { store, dataDir, log, now, instanceId, codeRevision, fault, notifier, probes, governanceRoot,
-      revisionCheck, revisionCheckMs });
+      revisionCheck, revisionCheckMs, profiles });
     this.config = { ...DEFAULTS, ...config };
     this.governanceRoot = governanceRoot ?? this.config.governanceRoot;
     // aiworks#1 owner-intervention core: off unless the data-directory config enables it.
@@ -457,7 +461,7 @@ export class Controller {
       const fresh = this.store.get('SELECT * FROM operations WHERE id = ?', op.id);
       if (!['recorded', 'dispatched'].includes(fresh.state)) return; // already applied
       verdict = { ...verdict, executorKind: fresh.executor_kind };
-      // engineering-platform-archive#47 C0 predicate inside the authoritative commit: the result must come from the exact dispatched run.
+      // historical regression C0 predicate inside the authoritative commit: the result must come from the exact dispatched run.
       if (verdict.class === 'result' && !acceptsLease(runLease(fresh, 'active'), runLease(fresh, 'active', verdict.receipt?.sessionId ?? ''), now)) {
         verdict = { ...verdict, class: 'invalid-result', detail: `result session ${verdict.receipt?.sessionId} is not the dispatched session ${fresh.session_id}` };
       }
@@ -1099,6 +1103,18 @@ export class Controller {
     return true;
   }
 
+  /**
+   * The CAAM profile the next run on `kind` would get (accounts.mjs selectProfile), or null when profile selection is off
+   * or CAAM does not manage `kind`. An inventory that cannot be read fails closed: no profile, and a re-read later.
+   */
+  profileChoice(kind, now = this.now()) {
+    if (!profilesEnabled(this.config, this.profiles)) return null;
+    let profiles;
+    try { profiles = this.profiles(kind, now); }
+    catch (error) { return { account: null, retryAt: now + PROFILE_RECHECK_MS, reason: `the CAAM inventory for ${kind} cannot be read (${error.code ?? 'error'})` }; }
+    return profiles == null ? null : selectProfile(this.store, kind, profiles, now);
+  }
+
   /** The first untimed account wait (a failed login, or a host finding that needs a recheck) on a provider of `decl`, or null. */
   untimedAccountWait(decl) {
     for (const { kind } of executorOrder(decl.executor)) {
@@ -1124,7 +1140,10 @@ export class Controller {
       // The later of this campaign's own wait and the account's wait (ADAPTIVE_SCHEDULER 4.5); an elapsed timed wait is none.
       const wait = laterWait(own, accountWait(this.store, this.config, kind));
       const active = wait && (wait.retry_at === null || wait.retry_at > now);
-      return { cliConfigured: true, hostUnavailable: null, wait: active ? { retryAt: wait.retry_at, reason: wait.reason } : null };
+      if (active) return { cliConfigured: true, hostUnavailable: null, wait: { retryAt: wait.retry_at, reason: wait.reason } };
+      // With profile selection, a kind waits when none of its profiles may run, until the earliest reset among them.
+      const profile = this.profileChoice(kind, now);
+      return { cliConfigured: true, hostUnavailable: null, wait: profile && !profile.account ? { retryAt: profile.retryAt, reason: profile.reason } : null };
     };
     const receipt = staticReceipt(receiptInputs({
       stage: task.state === 'implemented' ? 'verify' : 'implement', chain: decl.executor.kind === 'cli-chain',
@@ -1145,14 +1164,14 @@ export class Controller {
       if (current.control !== 'registered' || current.blocker || current.version !== campaign.version ||
           busy || campaignBudget(this.store, current).exhausted) return null;
       const decl = campaign.declaration;
-      // The target project's own rules (Engineering Platform governance inheritance), resolved from the registry exactly as the registration gate matches.
+      // The target project's own rules (governance provider governance inheritance), resolved from the registry exactly as the registration gate matches.
       // Without them no new worker starts: there is no default project to fall back to.
       let governance;
       try { governance = projectGovernance(decl.target.repository, this.governanceRoot); }
       catch (error) {
         this.raiseBlocker(ctx, decl, { kind: 'project-governance', class: 'B2',
           reason: `No new worker dispatched: the governance of ${decl.target.repository} cannot be resolved from the governance checkout (${error.code ? `${error.code}: ` : ''}${String(error.message).slice(0, 400)})`,
-          requestedAction: `Make sure governanceRoot in the supervisor config.json names a current Engineering Platform checkout in which exactly one registry/projects entry declares repository.github ${decl.target.repository}, then run: supervisor recheck ${ctx.id}` }, this.now());
+          requestedAction: `Make sure governanceRoot in the supervisor config.json names a current governance provider checkout in which exactly one registry/projects entry declares repository.github ${decl.target.repository}, then run: supervisor recheck ${ctx.id}` }, this.now());
         return null;
       }
       // A project and a config.json entry that disagree about this repository: B2, and nothing is dispatched (design 8.2).
@@ -1186,6 +1205,14 @@ export class Controller {
         return null;
       }
       const executor = choice.executor;
+      // The profile is chosen again here and bound by recordOperation below, in this one transaction: two dispatches
+      // never take the same free profile, and a run that waits records nothing and spends no attempt (section 3.3).
+      const profile = this.profileChoice(executor.kind);
+      if (profile && !profile.account) {
+        this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
+          { retry_at: profile.retryAt, last_error: `waiting for executor availability: ${profile.reason}` }, this.now());
+        return null;
+      }
       const spec = specOf(this.store, ctx.id, task.task_id, decl);
       const repo = this.repo(decl);
       const seq = task.attempts + 1;
@@ -1327,12 +1354,12 @@ export class Controller {
         id: opId, campaign_id: ctx.id, task_id: task.task_id, kind, seq, idempotency_key: opId, lease_generation: ctx.generation,
         state: 'recorded', session_id: sessionId, run_dir: runDir, workspace, base_sha: revision, target_sha: targetSha,
         report_digest: reportDigest, packet, packet_digest: digest, outcome: null, created_at: now, updated_at: now,
-        executor_kind: executor.kind, routing: choice.receipt,
+        executor_kind: executor.kind, routing: choice.receipt, ...(profile ? { account_identity: profile.account } : {}),
       });
       this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, t.version,
         { attempts: seq, base_sha: baseSha, state: kind === 'implement' ? 'implementing' : 'verifying', retry_at: null }, now);
       this.store.patch('campaigns', { id: ctx.id }, c.version, { runs_used: c.runs_used + 1 }, now);
-      this.store.journal(ctx.id, 'operation-recorded', { op: opId, kind, executor: executor.kind, model: choice.receipt.decision.chosen.model, session: sessionId, packetDigest: digest, generation: ctx.generation, run: c.runs_used + 1 }, now);
+      this.store.journal(ctx.id, 'operation-recorded', { op: opId, kind, executor: executor.kind, model: choice.receipt.decision.chosen.model, ...(profile ? { account: profile.account } : {}), session: sessionId, packetDigest: digest, generation: ctx.generation, run: c.runs_used + 1 }, now);
 
       // This checkpoint and admission decision commit together before launch.
       const plan = planContext({
@@ -1566,7 +1593,7 @@ export class Controller {
     return [
       `## ${spec.id}: ${spec.title} (independently verified report)`,
       '',
-      `Campaign \`${decl.campaignId}\` (#${decl.target.trackingIssue}), AIWorks supervisor (netbka/aiworks#2). Revision \`${task.verified_sha}\`, report sha256 \`${digest}\`.`,
+      `Campaign \`${decl.campaignId}\` (#${decl.target.trackingIssue}), AIWorks supervisor (AIWorks). Revision \`${task.verified_sha}\`, report sha256 \`${digest}\`.`,
       '',
       String(task.result?.report ?? ''),
       '',
@@ -1582,7 +1609,7 @@ export class Controller {
     return [
       `## ${spec.id}: ${spec.title}`,
       '',
-      `Refs #${spec.issue}. Campaign \`${decl.campaignId}\` (parent plan #${decl.target.trackingIssue}), run by the AIWorks supervisor (netbka/aiworks#2).`,
+      `Refs #${spec.issue}. Campaign \`${decl.campaignId}\` (parent plan #${decl.target.trackingIssue}), run by the AIWorks supervisor (AIWorks).`,
       '',
       `**Verified commit:** \`${task.verified_sha}\`. A separate fresh verifier session accepted exactly this SHA; the branch was pushed at that SHA.`,
       '',

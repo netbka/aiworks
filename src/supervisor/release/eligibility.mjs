@@ -2,7 +2,7 @@
 // Report only: it answers "would be eligible" or "not eligible, because ..." and never acts. Every check needs positive
 // evidence: no reader, a reader that throws, returns undefined, null or a promise, or a value of the wrong shape fails
 // the check. There is no "assume yes". Readers are injected, synchronous and read-only; this module makes no write and
-// no external call of its own. Auto Release stays off until the owner decides netbka/aiworks#33.
+// no external call of its own. Auto Release stays off until the owner decides example-org/aiworks#33.
 import { FORBIDDEN_CLASSES, parseAuthorization } from './authorization.mjs';
 import { classify, UNCLASSIFIED } from './classify.mjs';
 
@@ -45,7 +45,7 @@ const CHECKS = [
     const { value, reason } = ctx.evidence('authority');
     if (reason) return reason;
     if (value.decisionAccepted !== true) return 'the release decision is not accepted in docs/DECISIONS.md of the running revision';
-    return value.registryPointsHere === true ? null : 'the Engineering Platform registry entry does not point to this grant';
+    return value.registryPointsHere === true ? null : 'the governance provider registry entry does not point to this grant';
   }],
   ['E4', 'The candidate was independently checked', (c, ctx) => {
     const { value, reason } = ctx.evidence('verification');
@@ -218,7 +218,7 @@ export const REVIEW_ONLY_SUMMARY = 'Review only: checked results are published f
  * The `release` field of campaign status. Auto Release is built switched off: `release.enabled` is false (the switch
  * itself arrives with slice REL4), no grant is read and no reader is wired, so every done task is reported not eligible
  * with the reason and the project stays in Review only. It runs the real evaluator so the report is the evaluator's own
- * answer, and it acts on nothing. Waits for the owner's decision on netbka/aiworks#33.
+ * answer, and it acts on nothing. Waits for the owner's decision on example-org/aiworks#33.
  */
 export function releaseStatus({ project, tasks }) {
   const read = { switches: () => ({ enabled: false, stop: null, mode: 'review-only' }) };

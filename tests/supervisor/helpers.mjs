@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 export const ROOT = resolve(here, '..', '..');
 export const CLI = join(ROOT, 'src', 'supervisor', 'cli.mjs');
-// A small stand-in for the Engineering Platform checkout AIWorks reads governance from; tests never need a real one.
+// A small stand-in for the governance provider checkout AIWorks reads governance from; tests never need a real one.
 export const GOVERNANCE = join(ROOT, 'tests', 'fixtures', 'governance');
 
 let sqliteAvailable = true;
@@ -27,7 +27,7 @@ const git = (cwd, ...args) => {
 export const FAST = {
   // Allow the native Windows helper to compile and drain without declaring its runner lost. A lease must outlive one tick,
   // and a dispatching tick awaits the runner receipt for up to dispatchWaitMs (5 s) without renewing it. Under load,
-  // controllers renewed their 1.5 s lease up to 3.5 s late (engineering-platform-archive#58), so it is 2 x dispatchWaitMs, as production's 90 s exceeds 15 s.
+  // controllers renewed their 1.5 s lease up to 3.5 s late (historical regression), so it is 2 x dispatchWaitMs, as production's 90 s exceeds 15 s.
   // staleMs and startGraceMs stay 5 s: under 24 busy processes on 20 cores, runners beat at most 1.9 s apart and wrote
   // their first beat within 1.5 s of spawn (tests/supervisor/measure-liveness.mjs), so a healthy runner is never stale.
   tickMs: 50, leaseMs: 10_000, pollMs: 500, heartbeatMs: 100, staleMs: 5000, startGraceMs: 5000,
@@ -62,7 +62,7 @@ export function environment({ scenario = {}, config = {} } = {}) {
   const fullConfig = {
     ...FAST,
     governanceRoot: GOVERNANCE,
-    repositories: { 'netbka/Dyk': { path: repo, worktreeRoot: join(tmp, 'worktrees') } },
+    repositories: { 'example-org/sampleapp': { path: repo, worktreeRoot: join(tmp, 'worktrees') } },
     commands: {
       claude: [process.execPath, join(here, 'fixtures', 'fake-claude.mjs')],
       gh: [process.execPath, join(here, 'fixtures', 'fake-gh.mjs')],
@@ -98,8 +98,8 @@ export function declaration({ tasks, limits = {}, version = 1, campaignId = 'tes
   return {
     version: 1,
     campaignId,
-    authorization: { version, grantedBy: 'owner', grantedAt: '2026-10-09', reference: 'https://github.com/netbka/aiworks/issues/2', text: 'Synthetic test authorization.' },
-    target: { tenantId: 'netbka', projectId: 'dyk', environment: 'research', repository: 'netbka/Dyk', baseBranch: 'main', trackingIssue: 443 },
+    authorization: { version, grantedBy: 'owner', grantedAt: '2026-10-09', reference: 'https://github.com/netbka/aiworks/issues/new', text: 'Synthetic test authorization.' },
+    target: { tenantId: 'example-org', projectId: 'sampleapp', environment: 'research', repository: 'example-org/sampleapp', baseBranch: 'main', trackingIssue: 443 },
     limits: { maxWorkerRuns: 12, slots: 1, maxRepairRounds: 2, maxRetriesPerTask: 2, ...limits },
     executor: { kind: 'claude-cli', model: 'opus', permissionMode: 'auto', implementerTimeoutMinutes: 1, verifierTimeoutMinutes: 1 },
     constraints: ['Synthetic test constraint: no network, no production.'],
@@ -114,21 +114,22 @@ export const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
 /**
  * A disposable AIWorks checkout for tests that run cli.mjs as a process (AW-005): a temp git repository holding a copy of
- * this tree's supervisor code, worker-context runtime, schemas and campaigns, plus any extra `declarations`, committed
+ * this tree's supervisor code, worker-context runtime and schemas, plus ignored private `declarations`. Code is committed
  * with `refs/remotes/origin/main` at that commit, so it is "merged main". `unmerged: true` adds one local commit that
  * origin/main does not contain. node_modules is linked, never copied or committed. The real checkout's own git state
  * (a campaign branch, a CI merge commit) therefore never decides a test. Governance still comes from GOVERNANCE.
  */
 export function runtimeCheckout({ declarations = {}, unmerged = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'aiworks-runtime-'));
-  for (const dir of ['src/supervisor', 'scripts/lib', 'registry', 'schemas', 'campaigns']) {
+  for (const dir of ['src/supervisor', 'scripts/lib', 'registry', 'schemas']) {
     cpSync(join(ROOT, dir), join(root, dir), { recursive: true });
   }
   cpSync(join(ROOT, 'package.json'), join(root, 'package.json'));
+  mkdirSync(join(root, 'campaigns'), { recursive: true });
   for (const [name, value] of Object.entries(declarations)) writeFileSync(join(root, 'campaigns', name), `${JSON.stringify(value, null, 2)}\n`);
-  writeFileSync(join(root, '.gitignore'), 'node_modules\n');
+  writeFileSync(join(root, '.gitignore'), 'node_modules\ncampaigns/\n');
   symlinkSync(join(ROOT, 'node_modules'), join(root, 'node_modules'), 'junction');
-  // autocrlf=true, as on HomePc: committed blobs are LF while working files may keep CRLF.
+  // autocrlf=true, as on workstation: committed blobs are LF while working files may keep CRLF.
   const run = (...args) => git(root, '-c', 'user.name=Runtime Test', '-c', 'user.email=runtime-test@example.invalid', '-c', 'core.autocrlf=true', ...args);
   run('init', '-q', '-b', 'main');
   run('add', '-A');
@@ -154,7 +155,7 @@ export function runCli(cli, args) {
 }
 
 /** Tick a controller until the predicate holds, asserting the liveness invariant on every tick. The generous
- * deadline only matters when a run is slow under machine load (engineering-platform-archive#58); a passing test returns as soon as it holds. */
+ * deadline only matters when a run is slow under machine load (historical regression); a passing test returns as soon as it holds. */
 export async function runUntil(controller, store, campaignId, predicate, { timeoutMs = 60_000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {

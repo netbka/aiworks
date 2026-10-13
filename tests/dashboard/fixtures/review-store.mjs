@@ -16,7 +16,7 @@
 //
 // The dashboard runs from a disposable runtime checkout (<dir>/runtime): an unchanged copy of this repository's code,
 // committed together with the synthetic declarations in campaigns/ and pushed to a local origin's main. Resume checks the
-// stored declaration against that checkout's origin/main exactly as it does on HomePc (AW-005), so the paused work resumes.
+// stored declaration against that checkout's origin/main exactly as it does on workstation (AW-005), so the paused work resumes.
 // The full store has a coordinator that reports to a made-up issue, so Messages shows each receipt; nothing runs it, so
 // a message sent during the review stays received.
 //
@@ -358,8 +358,8 @@ function fill(store, dataDir, root, now) {
 }
 
 /**
- * A disposable runtime checkout, like HomePc's `.local/runtime`: this repository's code (RUNTIME_PARTS) and the
- * synthetic declarations in campaigns/, committed and pushed to a local bare origin, so its origin/main holds them.
+ * A disposable runtime checkout, like workstation's `.local/runtime`: this repository's code (RUNTIME_PARTS) and the
+ * synthetic declarations in ignored campaigns/, with only code committed and pushed to a local bare origin, so its origin/main holds the code.
  * Its node_modules is a link to this repository's, so nothing is installed. The review dashboard runs from here, so
  * Resume's AW-005 check reads this checkout, never this repository.
  */
@@ -371,7 +371,7 @@ function runtimeCheckout(root, declarations) {
   git(path, 'init', '-q', '-b', 'main');
   for (const part of RUNTIME_PARTS) cpSync(join(ROOT, part), join(path, part), { recursive: true });
   for (const d of declarations) writeFileSync(join(path, 'campaigns', `${d.campaignId}.json`), `${JSON.stringify(d, null, 2)}\n`);
-  writeFileSync(join(path, '.gitignore'), '/node_modules\n');
+  writeFileSync(join(path, '.gitignore'), '/node_modules\n/campaigns/\n');
   git(path, 'add', '-A');
   git(path, 'commit', '-q', '-m', 'Review fixture runtime: AIWorks code and the synthetic declarations');
   git(path, 'remote', 'add', 'origin', origin);

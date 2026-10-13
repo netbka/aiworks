@@ -6,7 +6,7 @@ const credentialCompound = /(?:^|api|private|access|signing|encryption|service|c
 const passwordCompound = /^(?:|db|database|smtp|mail|email|user|admin|root|ftp|sftp|redis|mysql|pg|postgres|postgresql|mongo|mongodb|sql|ldap|proxy|basic|app|service)pass(?:value)?$/;
 
 // Well-known credential value formats, recognised whatever key or position they appear under and through
-// common encoding layers (N7, engineering-platform-archive#103 review).
+// common encoding layers (N7, historical regression review).
 const KNOWN_SECRET_VALUES = [
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/,
   /(?:^|[^A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})/,
@@ -39,8 +39,8 @@ export const containsKnownSecretValue = (value) => typeof value === "string" &&
 // Cookie and session-id header or variable names name a credential in any case or separator style (Cookie,
 // Set-Cookie, SESSION_ID, sessionid, session-token, JSESSIONID, PHPSESSID, sessid, connect.sid). Compared after
 // removing separators and case. Keys, declared field names and values that name a secret all use it, so
-// short forms without the word "session" (sessid, PHPSESSID, connect.sid) are refused as keys too (engineering-platform-archive#106,
-// engineering-platform-archive#113 review).
+// short forms without the word "session" (sessid, PHPSESSID, connect.sid) are refused as keys too (historical regression,
+// historical regression review).
 export const SESSION_CREDENTIAL_NAMES = /^(?:set)?cookie2?$|^(?:x|j|php|asp|aspnet|connect|user|auth|app|web)?sess(?:ion)?(?:id|key|token|cookie|value|secret)$|^connectsid$/;
 export const isSecretLikeConfigKey = (name) => {
   const normalized = name.replace(/[_.\s+-]/g, "").toLowerCase();
@@ -73,11 +73,11 @@ const credentialText = (text) =>
   [...text.matchAll(/(?:^|[;?&#\s,{])["']?([A-Za-z0-9_.%+-]+)["']?\s*[:=]/g)]
     .some((match) => credentialParameter(match[1]));
 // The connection store's judgement of one metadata key. Provider config declarations share it, so a declared
-// field can never be a name the store refuses as a key (engineering-platform-archive#106).
+// field can never be a name the store refuses as a key (historical regression).
 export const refusesMetadataKey = (key) => isSecretLikeConfigKey(key) || containsCredentialMaterial(key) ||
   containsCredentialMaterial(JSON.stringify({ [key]: null }));
 
-// Declared config field names get a stricter judgement than runtime keys and values (engineering-platform-archive#116). Provider and
+// Declared config field names get a stricter judgement than runtime keys and values (historical regression). Provider and
 // capability authors choose them in reviewed definitions, so a false positive costs a rename, while a miss lets
 // a field hold a credential: a PIN, a DSN or connection string with embedded credentials, a webhook URL whose
 // path is the secret, or key material named only by a trailing "key" (DB_KEY, licenseKey).
@@ -87,10 +87,10 @@ const fieldNameWords = (name) => name
   .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
   .split(/[\s_.+-]+/).filter(Boolean).map((word) => word.toLowerCase());
 // Credential-bearing locators: webhooks (whose path is the secret), DSNs and connection strings. These names are
-// refused whatever their last word, so webhookUrl, sentryDsnUrl and connectionStringType stay refused (engineering-platform-archive#124).
+// refused whatever their last word, so webhookUrl, sentryDsnUrl and connectionStringType stay refused (historical regression).
 const LOCATOR_WORDS = new Set(["dsn", "connstr", "connstring", "connectionstring"]);
 const LOCATOR_PHRASES = new Set(["conn str", "conn string", "connection string"]);
-// Words that name a credential or secret-adjacent personal data on their own (engineering-platform-archive#116, engineering-platform-archive#118 review, engineering-platform-archive#124): PINs,
+// Words that name a credential or secret-adjacent personal data on their own (historical regression, historical regression review, historical regression): PINs,
 // passcodes and one-time, access, auth, backup, recovery, unlock, security and MFA codes; seeds, mnemonics,
 // recovery phrases and salts; HMAC keys, JSON Web Keys and key stores; security answers; card security codes
 // (cvv, cvc, cvn, csc); and identity, tax, birth and payment data.
@@ -112,7 +112,7 @@ const SECRET_FIELD_PHRASES = new Set([
 // A last word that names a property of the thing rather than the thing itself: jwksUri, jwksUrl, otpEnabled,
 // hmacAlgorithm, keystoreType, passcodeLength and seedHosts name where, which kind, how long or whether, never the
 // secret value. Such names are allowed unless they name a locator above, or the store's key judgement refuses
-// them (engineering-platform-archive#124).
+// them (historical regression).
 const DESCRIPTIVE_LAST_WORDS = new Set(["url", "uri", "type", "algorithm", "length", "enabled", "hosts"]);
 // A trailing "key" or "keys" names key material unless the word before it names a data, routing or public key.
 // These label a column, attribute, shard, message route, cache or lookup entry, an object path, a request for

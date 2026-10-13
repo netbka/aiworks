@@ -1,6 +1,6 @@
 // Antigravity CLI (agy) adapter: the browser worker for web acceptance tasks (a task that declares `web`). Each
 // operation is one fresh `agy` print-mode session with a stream-json prompt on stdin, a JSON-schema terminal result
-// and a per-step event log that the supervisor audits. Probed with agy 1.3.3 on HomePc (2026-10-11):
+// and a per-step event log that the supervisor audits. Probed with agy 1.3.3 on workstation (2026-10-11):
 // - agy reads every setting from %USERPROFILE%\.gemini and takes its login from the OS keyring, so a run-local
 //   profile home leaves out the owner's grants, MCP servers, memories and conversations and still authenticates;
 // - in print mode a tool that falls to "ask" is soft-denied and ends the turn without output, while an explicit deny
@@ -116,9 +116,9 @@ export function prepare({ command, executor, role, sessionId, digest, runDir, pr
 
 export function buildPrompt({ role, packet, packetDigest, repository, targetSha, report, reportDigest, note, instructions = [], web }) {
   const header = role === 'verification'
-    ? ['You are an INDEPENDENT VERIFIER of a visual acceptance report, dispatched by the AIWorks delivery supervisor (netbka/aiworks).',
+    ? ['You are an INDEPENDENT VERIFIER of a visual acceptance report, dispatched by the AIWorks delivery supervisor (AIWorks).',
       'You are a fresh headless session. You did not write the report, you have no access to its author\'s reasoning, and you must not repair it.']
-    : ['You are a VISUAL ACCEPTANCE reviewer dispatched by the AIWorks delivery supervisor (netbka/aiworks).',
+    : ['You are a VISUAL ACCEPTANCE reviewer dispatched by the AIWorks delivery supervisor (AIWorks).',
       'You are one fresh headless session for exactly one task packet. The supervisor owns publication and acceptance.'];
   if (packet?.governance) header.push(`This task belongs to the registered project "${packet.governance.project}" (${repository}); the portfolio policies in packet.governance.policies apply.`);
   const method = [

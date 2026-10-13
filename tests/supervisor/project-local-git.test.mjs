@@ -292,18 +292,18 @@ test('a worktree from the mirror via prepareImplementWorkspace with baseSha make
 
 test('an unregistered GitHub checkout may connect as local Git; a registered one must connect as GitHub', (t) => {
   const unregistered = rig(t);
-  git(unregistered.root, 'remote', 'add', 'origin', 'https://github.com/netbka/Unlisted.git');
+  git(unregistered.root, 'remote', 'add', 'origin', 'https://github.com/example-org/Unlisted.git');
   const local = unregistered.connect();
   assert.equal(local.ok, true, local.message);
   assert.equal(local.project.source_kind, 'local-git');
   assert.equal(local.project.github_repository, null, 'the remote is ignored and never pushed to');
-  assert.ok(!unregistered.calls().some((argv) => argv.some((arg) => arg.includes('github.com/netbka/Unlisted')) || argv.includes('origin')));
+  assert.ok(!unregistered.calls().some((argv) => argv.some((arg) => arg.includes('github.com/example-org/Unlisted')) || argv.includes('origin')));
 
-  const registered = rig(t, { name: 'Dyk' });
-  git(registered.root, 'remote', 'add', 'origin', 'https://github.com/netbka/Dyk.git');
+  const registered = rig(t, { name: 'SampleApp' });
+  git(registered.root, 'remote', 'add', 'origin', 'https://github.com/example-org/sampleapp.git');
   const refused = registered.connect();
   assert.equal(refused.code, 'GITHUB_REGISTERED');
-  assert.equal(refused.message, "netbka/Dyk is in Engineering Platform's project list, so connect it as a GitHub project.");
+  assert.equal(refused.message, "example-org/sampleapp is in governance provider's project list, so connect it as a GitHub project.");
   assert.equal(projects(registered.store).length, 0);
   assert.equal(existsSync(join(registered.tmp, 'mirrors')), false);
 });
