@@ -77,8 +77,12 @@ test('F5: switching to another project and back keeps the screen, the draft and 
 
 test('F10: with nothing to read requests, Start work and Messages say so in owner words, offer no send, and say what to do instead', async (t) => {
   const page = await openPage(t);
-  // The review fixture configures no coordinator.
+  // Nothing reads requests: the review fixture's coordinator is taken out of the configuration.
+  const file = join(page.dataDir, 'config.json'), config = JSON.parse(readFileSync(file, 'utf8'));
+  delete config.coordinator;
+  writeFileSync(file, JSON.stringify(config));
   await page.go(address('example/shop-app', '/start'));
+  await page.refresh();
   const form = page.$('form[data-start-form]');
   const note = page.$('[data-not-read]');
   assert.ok(note && form.contains(note), 'the note is on the form');
@@ -98,7 +102,6 @@ test('F10: with nothing to read requests, Start work and Messages say so in owne
   assert.equal(visibleText(page.$('[data-not-read]')), said);
   assert.equal(buttonNamed(page, '✉ New message'), undefined, 'sending is not offered');
   // Invalid reading set-up: said in owner words, the machine's reason only under Details.
-  const file = join(page.dataDir, 'config.json'), config = JSON.parse(readFileSync(file, 'utf8'));
   writeFileSync(file, JSON.stringify({ ...config, coordinator: { repositories: 'not-a-list', reportTo: 'example/shop-app#1' } }));
   await page.go(address('example/shop-app', '/start'));
   await page.refresh();

@@ -117,9 +117,9 @@ test('F14: the Cost summary counts the pieces of work its runs are in, as the br
   const pieces = page.$('#content').querySelectorAll('section.panel').filter((node) => node.dataset.focusScope?.startsWith('cost/'));
   const runs = pieces.map((node) => Number(/^(\d+) runs?/.exec(node.querySelector('p').textContent)[1]));
   const ran = runs.filter((n) => n > 0).length, total = runs.reduce((n, value) => n + value, 0);
-  assert.deepEqual([pieces.length, ran, total], [5, 1, 6], 'shop-app: five pieces of work, one of them with all six runs');
-  assert.ok(screen(page).includes(' 6 runs in 1 of 5 pieces of work. '), screen(page));
-  assert.doesNotMatch(screen(page), /6 runs in 5 pieces of work/);
+  assert.deepEqual([pieces.length, ran, total], [5, 4, 11], 'shop-app: five pieces of work, four of them with the eleven runs');
+  assert.ok(screen(page).includes(' 11 runs in 4 of 5 pieces of work. '), screen(page));
+  assert.doesNotMatch(screen(page), /11 runs in 5 pieces of work/);
 });
 
 test('F18: the empty state names the configuration file on this computer, never "settings", which is the Settings screen', async (t) => {

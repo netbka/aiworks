@@ -12,6 +12,7 @@ import { join, relative, resolve, isAbsolute } from 'node:path';
 import { once } from 'node:events';
 import { applyCommand, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { ownerView } from '../../src/dashboard/owner.mjs';
+import { COMMANDS } from '../../src/dashboard/copy.mjs';
 import { configuredCheckouts, configuredGitCommand, MergeWatcher, publishedSteps } from '../../src/dashboard/merges.mjs';
 import { buildReviewFixture, PROJECTS, REVIEW_STATES, REVIEW_PORT, LIVE_PORT } from './fixtures/review-store.mjs';
 
@@ -204,7 +205,7 @@ test('F26: the supervisor-fault item links a made-up issue, never one of AIWorks
   const { dataDir } = fixture(t);
   const view = ownerView(supervisorSnapshot(dataDir));
   const fault = view.items.find((item) => item.campaignId === REVIEW_STATES['supervisor-fault'].campaignId);
-  assert.deepEqual(fault.points[0].link, { label: 'Supervisor issue #2', url: 'https://github.com/example/aiworks/issues/2' });
+  assert.deepEqual(fault.points[0].link, { label: 'AIWorks issue #2', url: 'https://github.com/example/aiworks/issues/2' });
   assert.doesNotMatch(JSON.stringify(view), /netbka\//i);
 });
 
@@ -377,7 +378,7 @@ test('F2: AW-005 still refuses the same Resume against a checkout whose main doe
   const command = () => ({ campaignId: paused.id, action: 'resume', requestId: randomUUID(), version: paused.version,
     authorizationVersion: paused.authorizationVersion, scopeDigest: paused.scopeDigest });
   // This repository's main has no synthetic declaration: the unchanged check refuses, and nothing changes.
-  assert.throws(() => applyCommand(dataDir, command(), Date.now(), { provenanceRoot: ROOT }), (error) => error.status === 409 && /^Resume refused: /.test(error.message));
+  assert.throws(() => applyCommand(dataDir, command(), Date.now(), { provenanceRoot: ROOT }), (error) => error.status === 409 && error.message === COMMANDS.resumeRefused && /^Resume refused: /.test(error.detail));
   assert.equal(supervisorSnapshot(dataDir).campaigns.find((c) => c.id === paused.id).control, 'paused');
   assert.deepEqual(applyCommand(dataDir, command(), Date.now(), { provenanceRoot: runtime }), { accepted: true, duplicate: false, action: 'resume' });
 });
@@ -402,7 +403,7 @@ test('the review dashboard shows only made-up projects, for the full, empty and 
     const get = await serveReview(t, store);
     let state = await get();
     // The full store's owner view names its projects once the local merge check settles; read it then.
-    for (let i = 0; store === 'full' && i < 120 && state.body.owner.headline !== 'Needs you (12)'; i++) {
+    for (let i = 0; store === 'full' && i < 120 && state.body.owner.headline !== 'Needs you (10)'; i++) {
       await new Promise((done) => setTimeout(done, 250));
       state = await get();
     }
