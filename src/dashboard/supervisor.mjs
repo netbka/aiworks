@@ -11,6 +11,7 @@ import { campaignLimits } from '../supervisor/campaign.mjs';
 import { coordinatorView, postOwnerMessage } from '../supervisor/coordinator.mjs';
 import { CODE_ROOT, storedDeclarationOnMain } from '../supervisor/provenance.mjs';
 import { stateCopy } from './copy.mjs';
+import { configuredRepositories } from './projects.mjs';
 
 const readConfig = (dataDir) => {
   try { return JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { return {}; }
@@ -159,6 +160,70 @@ export function projectCosts(campaigns) {
     const empty = !project.runs && !project.runningRuns && !project.unreportedRuns && !(project.reportedUsd > 0) ? stateCopy('cost-empty') : null;
     return { ...project, reportedUsd: project.reportedUsd > 0 ? project.reportedUsd : null, empty: empty && { title: empty.title, text: empty.text } };
   });
+}
+
+// The command names config.json may set (`commands.<name>`). Only the names leave this module, never the configured value:
+// a command is an executable path and its arguments (OWNER_WORKSPACE §8, slice S8).
+const COMMAND_NAMES = ['claude', 'codex', 'cursor', 'agy', 'chrome', 'git', 'gh'];
+/** The AI workers this computer can have, in the order the owner reads them. AGY is listed only when set up or allowed. */
+const WORKERS = [
+  { kind: 'claude-cli', command: 'claude', fallback: true }, { kind: 'codex-cli', command: 'codex' },
+  { kind: 'cursor-cli', command: 'cursor' }, { kind: 'agy-cli', command: 'agy', needs: ['chrome'], optional: true },
+];
+const TERMINAL = ['finished', 'cancelled'];
+
+/** Which `commands.<name>` entries this computer's config.json sets, by name only. */
+export function configuredCommandNames(config) {
+  const commands = config?.commands;
+  if (!commands || typeof commands !== 'object' || Array.isArray(commands)) return [];
+  return COMMAND_NAMES.filter((name) => Array.isArray(commands[name]) && commands[name].length > 0 && commands[name].every((part) => typeof part === 'string' && part.length > 0));
+}
+
+/**
+ * The AI workers of this computer, once each (OWNER_WORKSPACE §4.3, slice S8). Each campaign's own provider rows are
+ * merged: a worker is "running" when any active campaign runs it, "waiting" for a usage limit with the earliest time
+ * AIWorks tries again, "unavailable" with the supervisor's reason, "not-set-up" when config.json sets no command for it
+ * (Claude falls back to `claude` on PATH, as the controller does), and "host-unavailable" when it cannot run on this
+ * operating system at all. Finished and cancelled work no longer waits for anything, so its rows are not read.
+ */
+export function aiWorkers(campaigns, config, { platform = process.platform, now = Date.now() } = {}) {
+  const names = configuredCommandNames(config), active = campaigns.filter((c) => !TERMINAL.includes(c.control));
+  return WORKERS.filter((w) => !w.optional || names.includes(w.command) || active.some((c) => c.executors.includes(w.kind))).map((w) => {
+    const rows = active.flatMap((c) => (c.providers ?? []).filter((p) => p.kind === w.kind && p.priority !== null));
+    const setUp = names.includes(w.command) && (w.needs ?? []).every((name) => names.includes(name)) ? 'configured' : w.fallback ? 'default' : 'missing';
+    const hostLimit = w.kind === 'cursor-cli' && platform === 'win32' ? 'windows' : null;
+    const limit = roleUnavailableReason({ kind: w.kind }, 'implementer', 'commit', platform);
+    const waits = rows.filter((p) => ['cooldown', 'retry-due'].includes(p.state) && p.retryAt !== null);
+    const unavailable = rows.find((p) => p.state === 'unavailable');
+    const state = hostLimit ? 'host-unavailable' : rows.some((p) => p.state === 'running') ? 'running' : setUp === 'missing' ? 'not-set-up'
+      : unavailable ? 'unavailable' : waits.length ? 'waiting' : 'ready';
+    const retryAt = state === 'waiting' ? Math.min(...waits.map((p) => p.retryAt)) : null;
+    return { kind: w.kind, state, setUp, usedBy: rows.length, retryAt, overdue: retryAt !== null && retryAt <= now,
+      reason: state === 'waiting' ? waits.find((p) => p.retryAt === retryAt).reason ?? 'quota' : state === 'unavailable' ? unavailable.reason : null,
+      credits: state === 'waiting' && waits.some((p) => p.credits), availabilityReason: state === 'unavailable' ? unavailable.availabilityReason : null,
+      hostLimit, buildLimit: !limit ? null : w.kind === 'agy-cli' ? 'web-only' : 'checks-only' };
+  });
+}
+
+/**
+ * Release mode per project (OWNER_WORKSPACE §10.3, slice S8): Review only is on; Auto Release is off and not available.
+ * Text only. There is no control and no field a page could turn into one: Auto Release waits for the owner's release
+ * decision (#33, D5-gate) and a release grant for the project, neither of which exists.
+ */
+export function releaseModes(repositories) {
+  const projects = new Map();
+  for (const repository of repositories) if (/^[\w.-]+\/[\w.-]+$/.test(repository ?? '') && !projects.has(repository.toLowerCase())) projects.set(repository.toLowerCase(), repository);
+  return [...projects.values()].sort((a, b) => a.localeCompare(b)).map((repository) => ({ repository, mode: 'review-only', modes: [
+    { key: 'review-only', label: 'Review only', on: true, text: 'AIWorks stops when a result passes the check and is published. You merge and release.' },
+    { key: 'auto-release', label: 'Auto Release', on: false, available: false,
+      text: 'Not available. Turning this on needs your separate release approval for this project, which has not been given.',
+      waitsFor: 'https://github.com/netbka/aiworks/issues/33' }] }));
+}
+
+/** Settings (slice S8): configured command names, the AI workers once for this computer, and release mode per project. */
+export function computerSettings(campaigns, config, { platform = process.platform, now = Date.now(), repositories = [] } = {}) {
+  return { commands: configuredCommandNames(config), workers: aiWorkers(campaigns, config, { platform, now }),
+    releases: releaseModes([...repositories, ...campaigns.map((c) => c.repository)]) };
 }
 
 // The controller's own next action for a finished campaign is one of two fixed sentences naming the repository; it
@@ -405,7 +470,8 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
           const run = view.runs.find((item) => item.id === m.runId);
           return run ? workerProgress(dataDir, { executor_kind: 'claude-cli', workspace: run.workspace, session_id: run.session_id, run_dir: run.run_dir }) : null;
         })() : null })) };
-    return { available: true, observedAt: new Date(now).toISOString(), controller, campaigns, costs: projectCosts(campaigns), activity, coordinator, recent };
+    const settings = computerSettings(campaigns, readConfig(dataDir), { now, repositories: configuredRepositories(dataDir) });
+    return { available: true, observedAt: new Date(now).toISOString(), controller, campaigns, costs: projectCosts(campaigns), activity, coordinator, recent, settings };
   } catch { return { available: false, message: 'Supervisor state is temporarily unavailable. Commands are disabled until it reconnects.', campaigns: [], costs: [], activity: [] }; }
   finally { store?.close(); }
 }
