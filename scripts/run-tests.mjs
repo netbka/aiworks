@@ -1,7 +1,9 @@
-// Runs every AIWorks test file. Files that start supervisor workers, servers or other real processes run one at a time
-// (native Windows containment probes need capacity for helper startup); every other file runs several at a time (#102),
-// before them. Both groups' output is shown as it comes, followed by one combined summary in node:test's own format,
-// so the last summary is always the total. AIWORKS_TEST_CONCURRENCY sets how many light files run at once (1 = all serial).
+// Runs every AIWorks test file. Light files run several at a time first (#102). Files that start supervisor workers,
+// servers or other real processes (heavy) run next, 2 at a time: each takes its own temporary directories, data
+// directories and OS-assigned ports, so two never share state, and two at once leaves native Windows containment probes
+// capacity for helper startup. Both groups' output is shown as it comes, followed by one combined summary in node:test's
+// own format, so the last summary is always the total. AIWORKS_TEST_CONCURRENCY sets how many light files run at once,
+// AIWORKS_HEAVY_CONCURRENCY how many heavy files (1 = one at a time, the order before #102).
 import { spawn } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { availableParallelism } from 'node:os';
@@ -19,8 +21,12 @@ const files = discover(join(root, 'tests')).sort();
 export const HEAVY = /environment\(|runUntil|\.tick\(|runtimeCheckout|new Controller|\.listen\(|createServer|review-store|startDashboard|cli\.mjs|\bCLI\b|keep-preload|runner\.mjs|stopOwnedRun|containment|POWERSHELL|main\.mjs|fake-(claude|gh|agy)|browser-mcp/;
 const heavy = files.filter((file) => HEAVY.test(readFileSync(join(root, file), 'utf8')));
 const light = files.filter((file) => !heavy.includes(file));
-const requested = Number(process.env.AIWORKS_TEST_CONCURRENCY);
-const concurrency = Number.isInteger(requested) && requested > 0 ? requested : Math.min(4, Math.max(1, Math.floor(availableParallelism() / 4)));
+const setting = (name, fallback) => {
+  const requested = Number(process.env[name]);
+  return Number.isInteger(requested) && requested > 0 ? requested : fallback;
+};
+const concurrency = setting('AIWORKS_TEST_CONCURRENCY', Math.min(4, Math.max(1, Math.floor(availableParallelism() / 4))));
+const heavyConcurrency = setting('AIWORKS_HEAVY_CONCURRENCY', 2);
 
 // An inherited test-worker marker makes a nested node --test silently skip its files.
 const env = { ...process.env };
@@ -51,8 +57,8 @@ function run(group, groupConcurrency) {
 
 const started = Date.now();
 const lightStatus = await run(light, concurrency);
-const heavyStatus = await run(heavy, 1);
-console.log(`# all test files: ${light.length} run ${concurrency} at a time, then ${heavy.length} one at a time`);
+const heavyStatus = await run(heavy, heavyConcurrency);
+console.log(`# all test files: ${light.length} run ${concurrency} at a time, then ${heavy.length} run ${heavyConcurrency} at a time`);
 for (const key of COUNTS) console.log(`# ${key} ${total[key]}`);
 console.log(`# duration_ms ${Date.now() - started}`);
 process.exit(lightStatus || heavyStatus);

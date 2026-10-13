@@ -380,6 +380,8 @@ Relocation is an operator maintenance action, not worker cleanup: pause admissio
 
 They make no model, network or GitHub calls. They read governance files from a small fixture governance checkout under `tests/fixtures/governance/`, never from a real Engineering Platform checkout.
 
+**The test runner.** `npm test` (`scripts/run-tests.mjs`) runs the light test files 4 at a time, then the heavy ones (those that start supervisor workers, servers or other real processes) 2 at a time ([#102](https://github.com/netbka/aiworks/issues/102)). Each heavy file takes its own temporary and data directories and ports the OS assigns, so two files never share state. `AIWORKS_HEAVY_CONCURRENCY=1` runs the heavy files one at a time, as before; `AIWORKS_TEST_CONCURRENCY` sets the light group. The last summary block, after `# all test files`, is the total of every file.
+
 **Several steps at once (built, off by default).** When the scheduler is on, steps that do not depend on each other and do not change the same files run at the same time, across campaigns and projects, and a busy project cannot hold up a quiet one. It is off unless the data directory's `config.json` says `"scheduler": { "enabled": true }`. Off, every campaign runs one operation at a time, exactly as before. Turning it on at HomePc is a runtime configuration change made through the upgrade procedure (section 6), after the owner's answer on the live scheduler (slice RUN10; [ADAPTIVE_SCHEDULER](design/ADAPTIVE_SCHEDULER.md#9-owner-reserved-questions) Q2 and Q3).
 
 How it decides (`src/supervisor/scheduler.mjs`, design [ADAPTIVE_SCHEDULER §4](design/ADAPTIVE_SCHEDULER.md#4-design)):

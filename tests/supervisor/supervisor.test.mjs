@@ -284,8 +284,16 @@ test('pause stops new dispatch; start resumes', { skip: skipWithoutSqlite }, asy
   const { m, store, controller, env, id, d } = await setup(t);
   await runUntil(controller, store, id, () => store.task(id, 'T1').state === 'done');
   m.campaignPause(store, id, 'owner pause');
+  // A run dispatched in the tick that finished T1 may still be starting, and a slow machine may record its call after any
+  // fixed wait. Wait for the event instead: the controller has seen the pause and every run started before it has settled.
+  const operations = () => store.all('SELECT id FROM operations WHERE campaign_id = ? ORDER BY id', id).map((op) => op.id);
+  const atPause = operations();
+  await runUntil(controller, store, id, (c) => c.next_action === 'Paused by the owner; start the campaign again to resume.' ||
+    operations().length !== atPause.length);
+  assert.deepEqual(operations(), atPause, 'no dispatch while paused');
   const before = env.calls().length;
   for (let i = 0; i < 8; i++) { await controller.tick(); await sleep(40); }
+  assert.deepEqual(operations(), atPause, 'no dispatch while paused');
   assert.equal(env.calls().length, before, 'no dispatch while paused');
   assert.equal(m.campaignStatus(store, id).readiness, 'PAUSED');
   m.campaignStart(store, d);
