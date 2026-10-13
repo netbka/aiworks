@@ -6,6 +6,7 @@ import { authorityDigest, campaignLimits, canonicalJson, executorOrder, scopeDig
 import { findWorkConflict } from './work-ownership.mjs';
 import { laterWait } from './accounts.mjs';
 import { releaseStatus } from './release/eligibility.mjs';
+import { releaseNarrowings } from './release/state.mjs';
 
 export class CampaignError extends Error {
   constructor(code, message) { super(message); this.name = 'CampaignError'; this.code = code; }
@@ -139,7 +140,14 @@ function executorWaitsView(store, c) {
   return [...byKind.values()];
 }
 
-export function campaignStatus(store, id, now = Date.now()) {
+/** Status `release`: the report-only eligibility, plus `stopped` and `narrowed` only once the owner has used them. */
+function releaseView(store, project, tasks, releaseStop) {
+  const narrowed = releaseNarrowings(store, project);
+  return { ...releaseStatus({ project, tasks }), ...(releaseStop === true ? { stopped: 'RELEASE-STOP is set: every release is stopped' } : {}),
+    ...(narrowed.length ? { narrowed } : {}) };
+}
+
+export function campaignStatus(store, id, now = Date.now(), { releaseStop = false } = {}) {
   const c = store.campaign(id);
   if (!c) throw new CampaignError('CAMPAIGN_NOT_FOUND', `campaign ${id} is not registered in the selected store; check the installed task --data argument`);
   const lease = store.lease(id);
@@ -202,8 +210,9 @@ export function campaignStatus(store, id, now = Date.now()) {
     executorWaits: executorWaitsView(store, c),
     costUsd: Math.round(c.cost_usd * 10000) / 10000,
     ci: ci.summary,
-    // Auto Release is built switched off (AUTO_RELEASE.md slice R2): report only, per done task. It never acts.
-    release: releaseStatus({ project: c.declaration.target.projectId, tasks }),
+    // Auto Release is built switched off (AUTO_RELEASE.md slice R2): report only, per done task. It never acts. The
+    // owner's stops (slice R4) show only once used: RELEASE-STOP when the caller saw the file, and narrowed destinations.
+    release: releaseView(store, c.declaration.target.projectId, tasks, releaseStop),
     tasks: tasks.map((t) => ({
       id: t.task_id, state: t.state, attempts: t.attempts, repairRounds: t.repair_rounds,
       headSha: t.head_sha, verifiedSha: t.verified_sha, prUrl: t.pr_url,

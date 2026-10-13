@@ -12,6 +12,11 @@
 //   run(release, step)     -> { outcome: 'done' | 'failed' | 'refused', mergeCommit?, deployedDigest?, previousDigest?, backupPath? }
 //   observe(release, step) -> { outcome: 'done' | 'failed' | 'not-done' | 'unknown', ...the same optional fields }
 // A plain outcome string is accepted for either. A throw, or any other answer, is an unknown outcome.
+// The switches (slice REL4, AUTO_RELEASE.md sections 3 and 4.5) are checked before every step: release.enabled in
+// config.json, the RELEASE-STOP file, a valid grant and the destination's mode. A stop prevents the next step, never
+// recovery: a check after a forward step, and a rollback, still run.
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 
 export const FORWARD_STEPS = Object.freeze(['merge', 'deploy', 'apply', 'check']);
 export const TERMINAL = Object.freeze(['accepted', 'rolled-back', 'refused']);
@@ -110,6 +115,9 @@ export function nextStep(r) {
   return r.steps[r.steps.indexOf(r.step) + 1] ?? null;
 }
 
+/** A rollback, or a check after a forward step finished: recovery, which a stop never prevents (AUTO_RELEASE.md 4.5). */
+const isRecovery = (r, step) => step === 'rollback' || (step === 'check' && r.history.some((entry) => entry.step !== 'check' && entry.outcome === 'done'));
+
 /** Where a release stands after a step's known outcome. A failed forward step or check is recovered by `rollback`. */
 const settled = (step, outcome) => (outcome === 'done' ? DONE[step] : outcome === 'refused' ? 'refused' : step === 'rollback' ? 'rollback-failed' : RUNNING[step]);
 
@@ -135,8 +143,12 @@ function finish(store, r, result, now, how) {
  * (reconcile it first), one without the lock, and a step that ran before unless every earlier run was proven not done.
  * The intent (state, step, its key `<release id>.<step>.<n>`, a history entry with no outcome) is committed before the
  * adapter acts. A throw or an unreadable answer makes the release `unknown`. Returns the release afterwards.
+ * `gate(release, step)` (releaseGate bound to the destination) is asked in that transaction before every step except
+ * recovery. A reason, a throw or any answer other than null stops it: nothing runs, the release keeps its state and its
+ * lock, and `reason` says why. The caller that will drive releases (slice REL5) always passes it.
  */
-export async function runStep(store, adapter, id, { lease, now }) {
+export async function runStep(store, adapter, id, { lease, now, gate = null }) {
+  if (gate !== null && typeof gate !== 'function') throw new TypeError('the runStep gate must be a function (release, step) -> reason or null');
   const started = store.tx(() => {
     const r = release(store, id);
     if (!r) throw new Error(`no release ${id}`);
@@ -149,11 +161,22 @@ export async function runStep(store, adapter, id, { lease, now }) {
     if (!step) throw new Error(`release ${id} has no step to run in state ${r.state}`);
     const earlier = r.history.filter((entry) => entry.step === step);
     if (earlier.some((entry) => entry.outcome !== 'not-done')) throw new Error(`step ${step} of release ${id} ran before and was not proven not done`);
+    // The switches, before every step. A stop leaves the release where it is, with its lock, and runs nothing.
+    if (gate && !isRecovery(r, step)) {
+      let reason;
+      try { reason = gate(r, step); } catch (error) { reason = `the release switches could not be read: ${error.message}`; }
+      if (reason !== null) {
+        reason = typeof reason === 'string' && reason ? reason : 'the release switches gave no clear answer';
+        store.journal(r.campaign_id, 'release-stopped', { release: id, step, reason }, now);
+        return { stopped: update(store, id, { reason }, now) };
+      }
+    }
     const key = `${id}.${step}.${earlier.length + 1}`;
     store.journal(r.campaign_id, 'release-step-started', { release: id, step, key }, now);
-    return update(store, id, { state: RUNNING[step], step, step_key: key, step_started_at: now, step_outcome: null,
+    return update(store, id, { state: RUNNING[step], step, step_key: key, step_started_at: now, step_outcome: null, reason: null,
       history: [...r.history, { key, step, startedAt: now, endedAt: null, outcome: null }] }, now);
   });
+  if (started.stopped) return started.stopped;
   let result;
   try { result = answer(await adapter.run(started, started.step), ['done', 'failed', ...(started.step === 'check' || started.step === 'rollback' ? [] : ['refused'])]); }
   catch { result = { outcome: 'unknown' }; }
@@ -227,4 +250,92 @@ export async function reconcile(store, adapter, id, { lease, now }) {
     store.journal(r.campaign_id, 'release-still-unknown', { release: id, step: r.step, key: r.step_key }, now);
     return r;
   });
+}
+
+// ---- The switches and the mode (AUTO_RELEASE.md sections 3 and 4.5, slice REL4). Built switched off (#33). ----
+
+/** The file in the supervisor data directory that stops every release on the machine. Removing it is the owner's. */
+export const RELEASE_STOP = 'RELEASE-STOP';
+export const REVIEW_ONLY = 'review-only';
+export const AUTO_RELEASE = 'auto-release';
+
+// The owner's narrowings, one row per project and destination; no row means never narrowed. The table is created here,
+// on the first narrowing, because slice REL4 does not own store.mjs. It is additive like every release table.
+const MODES_DDL = `CREATE TABLE IF NOT EXISTS release_modes (
+  project TEXT NOT NULL, destination TEXT NOT NULL, mode TEXT NOT NULL, grant_version INTEGER, narrowed_at INTEGER NOT NULL,
+  source TEXT NOT NULL, PRIMARY KEY (project, destination))`;
+const hasModes = (store) => Boolean(store.get("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'release_modes'"));
+
+const named = (value, what) => {
+  if (typeof value !== 'string' || !value.trim()) throw new TypeError(`${what} must be a non-empty name`);
+  return value;
+};
+
+/**
+ * Narrow one destination of one project to Review only. Always allowed: it needs no grant and nobody's approval, and it
+ * takes effect before the next step (AUTO_RELEASE.md section 3). Nothing here widens: only a newer grant makes Auto
+ * Release available again. `grantVersion` is the version of the grant in force when the caller knows it; without it,
+ * only a grant granted after this narrowing widens. Returns the stored narrowing.
+ */
+export function setReviewOnly(store, { project, destination, grantVersion = null, source = 'owner', now }) {
+  named(project, 'project'); named(destination, 'destination');
+  if (grantVersion !== null && !(Number.isInteger(grantVersion) && grantVersion > 0)) throw new TypeError('grantVersion must be a positive integer or null');
+  if (!Number.isFinite(now)) throw new TypeError('setReviewOnly needs the time');
+  store.db.exec(MODES_DDL);
+  return store.tx(() => {
+    store.run(`INSERT INTO release_modes (project, destination, mode, grant_version, narrowed_at, source) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT (project, destination) DO UPDATE SET mode = excluded.mode, grant_version = excluded.grant_version,
+      narrowed_at = excluded.narrowed_at, source = excluded.source`, project, destination, REVIEW_ONLY, grantVersion, now, source);
+    store.journal(null, 'release-mode-narrowed', { project, destination, mode: REVIEW_ONLY, grantVersion, source }, now);
+    return store.get('SELECT * FROM release_modes WHERE project = ? AND destination = ?', project, destination);
+  });
+}
+
+/** The narrowings recorded for a project, for status. Read-only; a store never narrowed has none. */
+export function releaseNarrowings(store, project) {
+  if (!hasModes(store)) return [];
+  return store.all('SELECT destination, mode, grant_version, narrowed_at, source FROM release_modes WHERE project = ? ORDER BY destination', project)
+    .map((row) => ({ destination: row.destination, mode: row.mode, grantVersion: row.grant_version, narrowedAt: new Date(row.narrowed_at).toISOString(), source: row.source }));
+}
+
+/**
+ * The effective mode of one destination. `auto-release` only with a valid grant that names the destination and is newer
+ * than the owner's last narrowing of it (a higher version, or granted after it when the narrowed version is unknown);
+ * `review-only` otherwise, the default for every project. `grant` is one already validated by release/authorization.mjs,
+ * as eligibility.mjs holds it: { record, digest } when valid, { reason } when not.
+ */
+export function releaseMode(store, { project, destination, grant }) {
+  const record = grant && !grant.reason ? grant.record : null;
+  if (!record || !Array.isArray(record.destinations) || !record.destinations.some((item) => item?.id === destination)) return REVIEW_ONLY;
+  const narrowed = hasModes(store) ? store.get('SELECT grant_version, narrowed_at FROM release_modes WHERE project = ? AND destination = ?', project, destination) : null;
+  if (!narrowed) return AUTO_RELEASE;
+  const newer = narrowed.grant_version !== null
+    ? Number.isInteger(record.version) && record.version > narrowed.grant_version
+    : Date.parse(record.grantedAt) > narrowed.narrowed_at;
+  return newer ? AUTO_RELEASE : REVIEW_ONLY;
+}
+
+/**
+ * The switches of one destination, in the shape eligibility check E1 reads: { enabled, stop, mode }. `enabled` is true
+ * only when config.json says `"release": { "enabled": true }`; absent or anything else is off. `stop` is whether
+ * `<dataDir>/RELEASE-STOP` exists, null when that cannot be read. `mode` is releaseMode's answer, null when unread.
+ */
+export function releaseSwitches({ dataDir, config, store, project, destination, grant, exists = existsSync }) {
+  let stop = null, mode = null;
+  try { stop = typeof dataDir === 'string' && dataDir ? exists(join(dataDir, RELEASE_STOP)) === true : null; } catch { stop = null; }
+  try { mode = releaseMode(store, { project, destination, grant }); } catch { mode = null; }
+  return { enabled: config?.release?.enabled === true, stop, mode };
+}
+
+/**
+ * Why no release step may start now, or null when every switch allows it: runStep's gate. A switch that cannot be read
+ * stops: a stop is never assumed absent.
+ */
+export function releaseGate(input) {
+  let switches;
+  try { switches = releaseSwitches(input); } catch (error) { return `the release switches could not be read: ${error.message}`; }
+  if (switches.enabled !== true) return 'Auto Release is switched off (release.enabled is not true)';
+  if (switches.stop !== false) return switches.stop === true ? 'RELEASE-STOP is set: every release is stopped' : 'whether RELEASE-STOP is set is unknown';
+  if (switches.mode === AUTO_RELEASE) return null;
+  return switches.mode === REVIEW_ONLY ? 'the destination is in Review only' : 'the mode of the destination is unknown';
 }

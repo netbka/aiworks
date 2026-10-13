@@ -15,6 +15,7 @@ import { configuredGovernanceRoot, requireGovernanceRoot } from './governance.mj
 import { clearCoordinatorViolation, coordinatorView, postOwnerMessage } from './coordinator.mjs';
 import { CODE_ROOT, declarationFromMain, revisionNotMerged } from './provenance.mjs';
 import { Store } from './store.mjs';
+import { RELEASE_STOP, REVIEW_ONLY, releaseNarrowings, setReviewOnly } from './release/state.mjs';
 
 const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--governance <engineering-platform-checkout>] ...
   serve                                 run the controller loop (exits cleanly when <data>/STOP exists)
@@ -32,6 +33,11 @@ const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--go
   messages                              list coordinator message receipts (received, read, answered)
   coordinator-clear                     after inspecting a boundary violation, let the coordinator read again
   baseline [--since <date>] [--json]    print the cost and outcome baseline (read-only; --json prints the report only)
+  release-stop                          create <data>/RELEASE-STOP: every release stops before its next step (Auto Release
+                                        is built switched off; removing the file is the owner's action)
+  release-mode <project> <destination> review-only
+                                        narrow one destination to Review only. review-only is the only mode accepted:
+                                        no command switches a destination to Auto Release, only a newer valid grant does
 The data directory defaults to AIWORKS_DATA and holds config.json, supervisor.db, runs/ and supervisor.log.
 The governance checkout (a read-only clone of netbka/engineering-platform) is --governance, else config.json "governanceRoot".`;
 
@@ -58,6 +64,18 @@ if (!command || !selectedData) {
 const STOP = join(dataDir, 'STOP');
 if (command === 'keep') await keep();
 if (command === 'stop') { writeFileSync(STOP, new Date().toISOString()); console.log(`created ${STOP}`); process.exit(0); }
+// Stop all releases is a file, so it works without SQLite and without healthy release code (AUTO_RELEASE.md 4.5).
+if (command === 'release-stop') {
+  const file = join(dataDir, RELEASE_STOP);
+  writeFileSync(file, new Date().toISOString());
+  console.log(`created ${file}: every release stops before its next step. Delete the file to allow releases again.`);
+  process.exit(0);
+}
+// The mode only narrows. Anything but `release-mode <project> <destination> review-only` is refused before the store opens.
+if (command === 'release-mode' && (rest.length !== 3 || !rest[0]?.trim() || !rest[1]?.trim() || rest[2] !== REVIEW_ONLY)) {
+  console.error(`RELEASE_MODE_REFUSED: release-mode only narrows: use release-mode <project> <destination> ${REVIEW_ONLY}. No command switches a destination to Auto Release; only a newer valid release grant makes it available (docs/design/AUTO_RELEASE.md section 3).`);
+  process.exit(2);
+}
 
 let store;
 const print = (value) => console.log(JSON.stringify(value, null, 2));
@@ -89,7 +107,7 @@ try {
       try { config = JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { /* the default lease length */ }
       const now = Date.now();
       const supervisor = supervisorLiveness(store, { now, leaseMs: config.leaseMs ?? DEFAULTS.leaseMs, stopRequested: existsSync(STOP) });
-      print({ supervisor, ...campaignStatus(store, rest[0], now), dataSource: explicitData ? '--data' : 'AIWORKS_DATA' });
+      print({ supervisor, ...campaignStatus(store, rest[0], now, { releaseStop: existsSync(join(dataDir, RELEASE_STOP)) }), dataSource: explicitData ? '--data' : 'AIWORKS_DATA' });
     }
     finally { store.db.exec('ROLLBACK'); }
   }
@@ -110,6 +128,10 @@ try {
   else if (command === 'cancel') print(campaignCancel(store, rest[0], rest.slice(1).join(' ') || null));
   else if (command === 'recheck') print(campaignRecheck(store, rest[0], { task: taskFlag, note: rest.slice(1).join(' ') || null }));
   else if (command === 'coordinator-clear') print(clearCoordinatorViolation(store));
+  else if (command === 'release-mode') {
+    setReviewOnly(store, { project: rest[0], destination: rest[1], source: 'owner (cli)', now: Date.now() });
+    print({ project: rest[0], narrowed: releaseNarrowings(store, rest[0]).find((row) => row.destination === rest[1]) });
+  }
   else if (command === 'message') print(postOwnerMessage(store, { text: rest.join(' '), requestId: randomUUID(), source: 'owner (cli)' }));
   else if (command === 'messages') {
     const config = existsSync(join(dataDir, 'config.json')) ? JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')) : {};

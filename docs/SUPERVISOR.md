@@ -540,3 +540,26 @@ Probe findings behind these rules (agy 1.3.3, chrome-devtools-mcp 1.10.1, Chrome
 - A WebRTC page asked for a STUN server on this PC's LAN address. With the policy flag it gathered no candidate at all.
 - A headless window cannot be narrower than about 500 px, so phone checks use `emulate`.
 - On a page with planted defects, a first probe found every planted defect but passed a phone-width criterion that measurement showed failing. The prompt therefore requires measured evidence and phone checks through `emulate`. Through this adapter and the contained runner, AGY then judged all eight criteria correctly (about 4.5 minutes), and a fresh AGY verifier re-measured every claim and accepted the report (about 3 minutes).
+
+## 12. Auto Release (built, not enabled)
+
+**In short.** No release runs. Every project and destination is **Review only**: the supervisor publishes checked results and never merges or deploys them ([AW-001](DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception)). Auto Release ([#13](https://github.com/netbka/aiworks/issues/13), [design](design/AUTO_RELEASE.md)) is being built switched off. Turning it on waits for the owner's decision on [#33](https://github.com/netbka/aiworks/issues/33).
+
+What exists in code, all inert (observed; nothing outside the tests drives a release):
+
+- **Eligibility** (`src/supervisor/release/eligibility.mjs`) reports per done task "would be eligible" or "not eligible, because ...". It never acts.
+- **Release state** (`src/supervisor/release/state.mjs`, tables `releases` and `release_locks`): one release per destination at a time, a step recorded as started before it acts, and reconciliation instead of repetition after a restart.
+- **The switches**, checked before every release step ([design §4.5](design/AUTO_RELEASE.md#45-the-kill-switches)). A step may start only when all four allow it:
+  1. `release.enabled` in `config.json` is exactly `true`. Absent, or any other value, is off. It is off on every install.
+  2. There is no file `RELEASE-STOP` in the data directory. If the supervisor cannot tell, it stops.
+  3. A valid release grant names the destination.
+  4. The destination's mode is Auto Release. The mode is Review only unless that grant is newer than the owner's last narrowing.
+
+A stop prevents the **next** step. It never interrupts a running step and never prevents recovery: after a merge, deploy or apply, the check still runs, and a rollback still runs if the check fails. A stopped release keeps its place and its destination lock; its `reason` says why.
+
+Owner commands (both only narrow):
+
+- `node src/supervisor/cli.mjs release-stop --data <dir>` writes `RELEASE-STOP`: **stop all releases** on this machine. It needs no database. To allow releases again, the owner deletes the file.
+- `node src/supervisor/cli.mjs release-mode <project> <destination> review-only --data <dir>` narrows one destination to Review only. It needs no grant and takes effect before the next step. `review-only` is the only mode the command accepts. **No command switches a destination to Auto Release**: only a newer valid grant does.
+
+`status` shows `release.stopped` while `RELEASE-STOP` exists and `release.narrowed` for destinations of the campaign's project that the owner narrowed. Neither appears until used.
