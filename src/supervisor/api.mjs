@@ -4,7 +4,8 @@
 import { runNotCounted } from './adapters/executors.mjs';
 import { authorityDigest, campaignLimits, canonicalJson, executorOrder, scopeDigest, validateDeclaration } from './campaign.mjs';
 import { findWorkConflict } from './work-ownership.mjs';
-import { laterWait } from './accounts.mjs';
+import { accountFull, laterWait } from './accounts.mjs';
+import { admissionCheck, hostCeiling, schedulerEnabled } from './scheduler.mjs';
 import { releaseStatus } from './release/eligibility.mjs';
 import { releaseNarrowings } from './release/state.mjs';
 
@@ -147,7 +148,11 @@ function releaseView(store, project, tasks, releaseStop) {
     ...(narrowed.length ? { narrowed } : {}) };
 }
 
-export function campaignStatus(store, id, now = Date.now(), { releaseStop = false } = {}) {
+/**
+ * `config` (optional) is the supervisor's config.json: with `scheduler.enabled` the `wait` of each task names the
+ * scheduler's admission reason; without it, waits follow the one-worker-per-campaign rule the controller uses when off.
+ */
+export function campaignStatus(store, id, now = Date.now(), { releaseStop = false, config = null } = {}) {
   const c = store.campaign(id);
   if (!c) throw new CampaignError('CAMPAIGN_NOT_FOUND', `campaign ${id} is not registered in the selected store; check the installed task --data argument`);
   const lease = store.lease(id);
@@ -171,6 +176,7 @@ export function campaignStatus(store, id, now = Date.now(), { releaseStop = fals
     ? chainWaiting ? Math.min(...runnable.map((t) => t.retry_at)) : 0 : legacyWaitUntil;
   const ownerBlockers = ownerBlockerView(store, id);
   const ci = ciView(store, c, tasks);
+  const waits = { store, campaign: c, tasks, open: operations, held: heldTasks(store, id), now, config };
   return {
     campaignId: c.id,
     store: store.identity,
@@ -218,11 +224,135 @@ export function campaignStatus(store, id, now = Date.now(), { releaseStop = fals
       headSha: t.head_sha, verifiedSha: t.verified_sha, prUrl: t.pr_url,
       retryAt: t.retry_at ? new Date(t.retry_at).toISOString() : null, blocked: t.blocked, lastError: t.last_error,
       ci: ci.tasks.get(t.task_id) ?? null,
+      wait: waitReason(t, waits),
     })),
     openOperations: operations.map((op) => ({ id: op.id, taskId: op.task_id, kind: op.kind, executor: op.executor_kind ?? 'claude-cli', state: op.state,
       createdAt: new Date(op.created_at).toISOString(), updatedAt: new Date(op.updated_at).toISOString() })),
     ...(ownerBlockers.length ? { ownerBlockers } : {}),
   };
+}
+
+// ---- "Why is this step waiting?" (ADAPTIVE_SCHEDULER section 6, slice S8 supervisor half: RUN9). ----
+
+const RUNNABLE = ['pending', 'implemented', 'verified'];
+const OWNER_NEXT = 'None; listed in Needs me';
+const BLOCKER_TEXT = {
+  budget: 'Needs your decision: this work program used its budget',
+  auth: 'Needs you: an AI provider login failed',
+  executors: 'Needs you: no allowed AI provider can run this work',
+  'process-ownership': 'Needs you: a worker process could not be confirmed stopped',
+  'project-governance': 'Needs you: the project rules could not be read',
+  'publication-size': 'Needs you: a result is too large to publish',
+  'research-context': 'Needs you: the research material is missing',
+  'runtime-not-merged': 'Needs you: the supervisor code running here is not on main',
+};
+const PRESSURE_TEXT = { cpu: 'processor time', disk: 'disk space', heartbeats: 'headroom: workers report late' };
+const iso = (ms) => (ms ? new Date(ms).toISOString() : null);
+const reason = (code, text, next, until = null, holder = null) => ({ code, text, next, until: iso(until), holder });
+
+/** Tasks held by an open owner-intervention blocker (aiworks#1), as the controller's heldTasks: task id -> blocker class. */
+function heldTasks(store, campaignId) {
+  if (!hasTable(store, 'blocker_parents')) return new Map();
+  const rows = store.all(`SELECT p.task_id, b.class, b.status, b.probe, b.next_recheck_at FROM blocker_parents p JOIN blockers b ON b.fingerprint = p.fingerprint
+    WHERE p.campaign_id = ? AND p.released_at IS NULL AND b.status IN ('open', 'rechecking')`, campaignId);
+  const probing = new Set(rows.filter((row) => row.status === 'rechecking' && row.probe?.campaignId === campaignId).map((row) => row.probe.taskId));
+  return new Map(rows.filter((row) => !probing.has(row.task_id)).map((row) => [row.task_id, row]));
+}
+
+/** When every provider the campaign may use is waiting: the earliest timed reset, or null for an untimed wait; else undefined. */
+function providersWaiting(store, c, tasks, now) {
+  const waits = executorWaitsView(store, c).filter((row) => row.retry_at === null || row.retry_at > now);
+  const kinds = executorOrder(c.declaration.executor).map((provider) => provider.kind);
+  const quota = c.declaration.executor.kind === 'cli-chain' ? 0 : Math.max(0, ...tasks
+    .filter((t) => t.retry_at > now && String(t.last_error ?? '').startsWith('quota:')).map((t) => t.retry_at));
+  if (quota) return quota;
+  if (!kinds.every((kind) => waits.some((row) => row.executor_kind === kind))) return undefined;
+  const timed = waits.filter((row) => row.retry_at !== null).map((row) => row.retry_at);
+  return timed.length === waits.length ? Math.min(...timed) : null;
+}
+
+/** The plain wait for a scheduler refusal (scheduler.mjs WAIT_REASONS); a write-domain holder is named from its declaration. */
+function admissionReason(store, refusal) {
+  switch (refusal.reason) {
+    case 'campaign-fanout': return reason('campaign-fanout', 'Waiting for a free worker in this work program', 'Starts when a running step finishes');
+    case 'host-capacity': return reason('host-capacity', 'This computer is running its maximum number of workers', 'Starts when one finishes');
+    case 'host-pressure': return reason('host-pressure', `This computer is low on ${PRESSURE_TEXT[refusal.detail?.signal] ?? 'memory'}`, 'Starts when the computer has room again');
+    case 'provider-concurrency': return reason('provider-concurrency', 'The AI provider asked to slow down', 'Starts when a run on that provider account finishes');
+    case 'write-domain': {
+      const first = refusal.detail.holders[0];
+      const owner = store.campaign(first.campaignId);
+      const spec = owner?.declaration?.tasks?.find((task) => task.id === first.taskId);
+      const prUrl = store.task(first.campaignId, first.taskId)?.pr_url ?? null;
+      const pr = first.reason === 'published-unmerged' && /\/pull\/(\d+)$/.exec(prUrl ?? '');
+      const where = Array.isArray(spec?.writes) ? spec.writes.join(', ') : 'the same repository';
+      return reason('write-domain', `Another step ("${spec?.title ?? first.taskId}") is changing ${where}${pr ? ` (PR #${pr[1]} not merged yet)` : ''}`,
+        'Starts when that change is merged or dropped', null, { campaignId: first.campaignId, taskId: first.taskId, reason: first.reason, prUrl });
+    }
+    default: return reason('ready', 'Ready to start', 'Starts on the next turn');
+  }
+}
+
+/**
+ * Why one task is not finished, and what happens next without the owner: { code, text, next, until, holder }, or null
+ * for a done task. The first check that applies, in a fixed order (ADAPTIVE_SCHEDULER section 6). With the scheduler on,
+ * the admission part is scheduler.mjs admissionCheck itself, over the same rows, so status names the predicate that
+ * refuses the step. Built only from supervisor fields (states, times, declaration titles and write domains, PR numbers):
+ * never from worker output, a blocker's reason or an error text, so no report or owner-trigger text reaches a reason.
+ * `snapshot` = { store, campaign, tasks, open (the campaign's open operations), held, now, config }.
+ */
+export function waitReason(task, { store, campaign: c, tasks, open, held = new Map(), now, config = null }) {
+  if (task.state === 'done') return null;
+  const running = open.find((op) => op.task_id === task.task_id);
+  if (running) return reason('running', running.kind === 'verify' ? 'Being checked' : 'Being implemented', 'The result is recorded when the run ends');
+  if (c.control === 'paused') return reason('paused', 'Paused by you', 'None until you resume it');
+  if (c.control === 'cancel-requested' || c.control === 'cancelled') return reason('cancelled', 'Cancelled by you', 'None');
+  if (task.blocked) {
+    return reason('owner', task.blocked.class === 'B3' ? 'Needs your decision' : 'Stopped after repeated problems; needs your decision', OWNER_NEXT);
+  }
+  const hold = held.get(task.task_id);
+  if (hold) {
+    return hold.class === 'B3' ? reason('owner', 'Needs your decision', OWNER_NEXT)
+      : reason('recheck', 'Held until a recorded problem clears', hold.next_recheck_at ? `Checked again at ${iso(hold.next_recheck_at)}` : 'Checked again automatically', hold.next_recheck_at);
+  }
+  if (c.blocker) return reason('owner', BLOCKER_TEXT[c.blocker.kind] ?? 'Needs you: this work program is stopped', OWNER_NEXT);
+  const decl = c.declaration;
+  const spec = decl.tasks.find((item) => item.id === task.task_id);
+  const title = (id) => decl.tasks.find((item) => item.id === id)?.title ?? id;
+  const state = (id) => tasks.find((row) => row.task_id === id)?.state;
+  const unfinished = spec.dependsOn.filter((id) => state(id) !== 'done');
+  if (unfinished.length) return reason('dependency', `Waiting for "${title(unfinished[0])}" to finish`, 'Starts when that step is done');
+  const error = String(task.last_error ?? '');
+  if (error.startsWith('dependency-integration:')) {
+    const missing = spec.dependsOn.find((id) => new RegExp(`\\b${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(error)) ?? spec.dependsOn[0];
+    return reason('integration', `Waiting for "${title(missing)}" to be merged into ${decl.target.baseBranch}`, 'Checks the base branch again every minute', task.retry_at);
+  }
+  if (task.retry_at > now) {
+    return /^(quota:|waiting for executor availability)/.test(error)
+      ? reason('provider-cooldown', `AI provider usage limit; resets at ${iso(task.retry_at)}`, `Tries again at ${iso(task.retry_at)}`, task.retry_at)
+      : reason('retry-backoff', `Retrying after a failed attempt at ${iso(task.retry_at)}`, `Tries again at ${iso(task.retry_at)}`, task.retry_at);
+  }
+  if (task.state === 'verified') return reason('publishing', 'Checked; being published', 'Published on the next turn');
+  const providerReset = providersWaiting(store, c, tasks, now);
+  if (providerReset !== undefined) {
+    return providerReset ? reason('provider-cooldown', `AI provider usage limit; resets at ${iso(providerReset)}`, `Tries again at ${iso(providerReset)}`, providerReset)
+      : reason('provider-cooldown', 'The AI provider is unavailable', 'Tries again after a recheck succeeds');
+  }
+  const budget = campaignBudget(store, c);
+  if (budget.exhausted && !open.length) return reason('owner', BLOCKER_TEXT.budget, OWNER_NEXT);
+  if (!schedulerEnabled(config) || !hasTable(store, 'capacity')) {
+    // Scheduler off: one worker at a time per campaign, the first runnable task in declaration order first.
+    const first = tasks.find((row) => RUNNABLE.includes(row.state) && row.state !== 'verified' && !row.blocked && !held.has(row.task_id) &&
+      !(row.retry_at > now) && decl.tasks.find((item) => item.id === row.task_id).dependsOn.every((id) => state(id) === 'done'));
+    return open.length || first?.task_id !== task.task_id ? admissionReason(store, { reason: 'campaign-fanout' }) : admissionReason(store, { reason: null });
+  }
+  if (budget.exhausted) return admissionReason(store, { reason: 'campaign-fanout' });
+  const pressure = store.get("SELECT reason FROM capacity WHERE scope = 'host' AND id = 'pressure' AND value = 1");
+  const waiting = new Set(executorWaitsView(store, c).filter((row) => row.retry_at === null || row.retry_at > now).map((row) => row.executor_kind));
+  const kind = executorOrder(decl.executor).map((provider) => provider.kind).find((item) => !waiting.has(item));
+  // Status cannot read the fetched base, so published work counts as unmerged until the controller sees it merged.
+  const refusal = admissionCheck(store, { campaignId: c.id, taskId: task.task_id, kind: task.state === 'pending' ? 'implement' : 'verify', declaration: decl },
+    { ceiling: hostCeiling(config), pressure: pressure ? { signal: pressure.reason } : null, accountFull: () => (kind ? accountFull(store, config, kind) : null) });
+  return admissionReason(store, refusal ?? { reason: null });
 }
 
 const CI_STATE = { 'ci-pending': 'pending', 'ci-passed': 'success', 'ci-failed': 'failure', 'ci-inconclusive': 'inconclusive', 'ci-none': 'none' };
