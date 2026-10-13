@@ -1,4 +1,4 @@
-// The governance root: AIWorks reads Engineering Platform's registry, policy catalog and roadmap docs from an explicit
+// The governance root: AIWorks reads governance provider's registry, policy catalog and roadmap docs from an explicit
 // read-only checkout. Configured, missing and invalid roots, for the library, the CLI, the controller and the dashboard.
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -30,17 +30,17 @@ test('a configured root resolves; the key is read from config.json and a bad con
     writeFileSync(join(data, 'config.json'), content);
     assert.equal(configuredGovernanceRoot(data), null, content);
   }
-  assert.equal(projectGovernance('netbka/Dyk', GOVERNANCE).project, 'dyk');
+  assert.equal(projectGovernance('example-org/sampleapp', GOVERNANCE).project, 'sampleapp');
   assert.doesNotThrow(() => assertRegisteredTarget(declaration(), GOVERNANCE));
 });
 
 test('a missing root fails closed with GOVERNANCE_ROOT_REQUIRED and never falls back to the AIWorks code root', () => {
   for (const missing of [undefined, null, '', '   ']) {
     assert.equal(codeOf(() => requireGovernanceRoot(missing)), 'GOVERNANCE_ROOT_REQUIRED');
-    assert.equal(codeOf(() => projectGovernance('netbka/Dyk', missing)), 'GOVERNANCE_ROOT_REQUIRED');
+    assert.equal(codeOf(() => projectGovernance('example-org/sampleapp', missing)), 'GOVERNANCE_ROOT_REQUIRED');
     assert.equal(codeOf(() => assertRegisteredTarget(declaration(), missing)), 'GOVERNANCE_ROOT_REQUIRED');
   }
-  assert.throws(() => projectGovernance('netbka/Dyk'), GovernanceRootError, 'no default root');
+  assert.throws(() => projectGovernance('example-org/sampleapp'), GovernanceRootError, 'no default root');
 });
 
 test('an invalid root fails closed with GOVERNANCE_ROOT_INVALID', (t) => {
@@ -50,7 +50,7 @@ test('an invalid root fails closed with GOVERNANCE_ROOT_INVALID', (t) => {
   writeFileSync(join(noProjects, 'registry', 'projects'), 'a file, not a directory');
   for (const invalid of [join(empty, 'does-not-exist'), empty, noProjects, 'relative/path']) {
     assert.equal(codeOf(() => requireGovernanceRoot(invalid)), 'GOVERNANCE_ROOT_INVALID', invalid);
-    assert.equal(codeOf(() => projectGovernance('netbka/Dyk', invalid)), 'GOVERNANCE_ROOT_INVALID', invalid);
+    assert.equal(codeOf(() => projectGovernance('example-org/sampleapp', invalid)), 'GOVERNANCE_ROOT_INVALID', invalid);
     assert.equal(codeOf(() => assertRegisteredTarget(declaration(), invalid)), 'GOVERNANCE_ROOT_INVALID', invalid);
   }
 });
@@ -127,12 +127,12 @@ test('the dashboard roadmap reads the governance root, and degrades instead of c
   assert.ok(configured.snapshot().entries.length > 0);
   assert.deepEqual(configured.snapshot().governance, { configured: true, code: null, reason: null });
 
-  const missing = new RoadmapSource({ root: null, cacheDir: cache, repositories: ['netbka/Dyk'] });
+  const missing = new RoadmapSource({ root: null, cacheDir: cache, repositories: ['example-org/sampleapp'] });
   assert.equal(missing.snapshot().governance.configured, false);
   assert.equal(missing.snapshot().governance.code, 'GOVERNANCE_ROOT_REQUIRED');
   assert.match(missing.snapshot().governance.reason, /governance checkout not configured/);
   assert.deepEqual(missing.snapshot().entries, []);
-  assert.deepEqual(missing.repositories, ['netbka/Dyk'], 'configured project repositories are still tracked');
+  assert.deepEqual(missing.repositories, ['example-org/sampleapp'], 'configured project repositories are still tracked');
 
   const empty = temp(t);
   const invalid = new RoadmapSource({ root: empty, cacheDir: cache });

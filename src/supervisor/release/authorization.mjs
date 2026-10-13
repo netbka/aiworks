@@ -1,6 +1,6 @@
 // Standing release authorization records (docs/design/AUTO_RELEASE.md section 4, slice R1).
 // AIWorks reads a project's release record and says whether it is valid and, if not, why. Nothing here acts on a
-// record: no release code exists yet, and Auto Release stays off until the owner decides netbka/aiworks#33. Every
+// record: no release code exists yet, and Auto Release stays off until the owner decides example-org/aiworks#33. Every
 // function is pure except loadAuthorization, which only reads one file at one commit of an already fetched ref.
 import Ajv2020 from 'ajv/dist/2020.js';
 import { spawnSync } from 'node:child_process';
@@ -40,7 +40,7 @@ function shapeReason(error) {
 
 /**
  * Validates one parsed record against the schema and the rules of AUTO_RELEASE.md section 4.
- * `project` is the EP registry id the record must name; `now` (a Date or epoch ms) decides expiry.
+ * `project` is the governance registry id the record must name; `now` (a Date or epoch ms) decides expiry.
  * Returns { valid, reasons, destinations }: `reasons` is one plain sentence per problem, empty when valid;
  * `destinations` lists the destination ids of a valid record and is empty otherwise.
  */

@@ -1,6 +1,4 @@
-// AW-005 (docs/DECISIONS.md): a campaign runs only from merged supervisor code, with its declaration file in campaigns/
-// on main. Registration and resume through `cli.mjs start <file>` check the file and the checkout; the controller starts
-// no new work from an unmerged revision. Every case uses disposable git repositories; no model, network or GitHub call.
+// Private campaign data and merged executable code are separate boundaries.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
@@ -41,163 +39,61 @@ function repository(t, { files = {}, originMain = true } = {}) {
 }
 const refused = (code, pattern) => (error) => error.code === code && pattern.test(error.message);
 
-test('a committed, unmodified declaration at a merged HEAD is accepted, from its committed blob', (t) => {
-  const decl = declaration({ campaignId: 'merged-one' });
-  const root = repository(t, { files: { 'merged-one.json': decl } });
-  assert.deepEqual(provenance.declarationFromMain(join(root, 'campaigns', 'merged-one.json'), { root }), decl);
-  // Line endings converted by the checkout (core.autocrlf, as on HomePc) are not a modification.
-  writeFileSync(join(root, 'campaigns', 'merged-one.json'), text(decl).replace(/\n/g, '\r\n'));
-  assert.deepEqual(provenance.declarationFromMain(join(root, 'campaigns', 'merged-one.json'), { root }), decl);
-  // origin/main moving ahead keeps HEAD an ancestor: a fresh deploy never fails for that.
-  git(root, 'checkout', '-q', '-b', 'later');
-  writeFileSync(join(root, 'README.md'), 'later on main\n');
-  git(root, 'commit', '-q', '-am', 'later on main');
-  git(root, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
-  git(root, 'checkout', '-q', '--detach', 'main');
-  assert.equal(provenance.revisionNotMerged({ root }), null);
-  assert.deepEqual(provenance.declarationFromMain(join(root, 'campaigns', 'merged-one.json'), { root }), decl);
+
+test('private declarations outside the code checkout are accepted without Git tracking', (t) => {
+  const root = repository(t);
+  const privateDir = mkdtempSync(join(tmpdir(), 'aiworks-private-'));
+  t.after(() => rmSync(privateDir, { recursive: true, force: true }));
+  const file = join(privateDir, 'private.json');
+  const decl = declaration(); writeFileSync(file, text(decl));
+  assert.deepEqual(provenance.declarationFromFile(file, { root }), decl);
+  assert.equal(git(root, 'ls-files', 'campaigns').length, 0);
+  writeFileSync(file, text({ ...decl, authorization: { ...decl.authorization, version: 2 } }));
+  assert.equal(provenance.declarationFromFile(file, { root }).authorization.version, 2);
 });
 
-test('a declaration outside campaigns/ is refused, even a committed copy elsewhere', (t) => {
-  const decl = declaration({ campaignId: 'outside' });
-  const root = repository(t, { files: { 'outside.json': decl } });
-  mkdirSync(join(root, 'campaigns', 'nested'));
-  writeFileSync(join(root, 'campaigns', 'nested', 'outside.json'), text(decl));
-  writeFileSync(join(root, 'outside.json'), text(decl));
-  git(root, 'add', '-A');
-  git(root, 'commit', '-q', '-m', 'copies outside campaigns/');
-  git(root, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
-  const elsewhere = mkdtempSync(join(tmpdir(), 'aiworks-elsewhere-'));
-  t.after(() => rmSync(elsewhere, { recursive: true, force: true }));
-  writeFileSync(join(elsewhere, 'outside.json'), text(decl));
-  for (const file of [join(root, 'outside.json'), join(root, 'campaigns', 'nested', 'outside.json'), join(elsewhere, 'outside.json'),
-    join(root, 'campaigns', '..', 'outside.json'), join(root, 'campaigns', 'missing.json')]) {
-    assert.throws(() => provenance.declarationFromMain(file, { root }), refused('DECLARATION_NOT_ON_MAIN', /campaigns|cannot be read/), file);
-  }
+test('private declaration loading still refuses unmerged and unknown runtime revisions', (t) => {
+  const root = repository(t, { files: { 'private.json': declaration() } });
+  writeFileSync(join(root, 'README.md'), 'local change');
+  git(root, 'commit', '-q', '-am', 'unmerged code');
+  assert.throws(() => provenance.declarationFromFile(join(root, 'campaigns/private.json'), { root }), refused('RUNTIME_NOT_MERGED', /not merged/));
+  const unknown = repository(t, { originMain: false });
+  assert.match(provenance.revisionNotMerged({ root: unknown }), /origin\/main is not available/);
 });
 
-test('an untracked, staged-only or modified declaration is refused', (t) => {
-  const decl = declaration({ campaignId: 'tracked' });
-  const root = repository(t, { files: { 'tracked.json': decl } });
-  writeFileSync(join(root, 'campaigns', 'untracked.json'), text(declaration({ campaignId: 'untracked' })));
-  assert.throws(() => provenance.declarationFromMain(join(root, 'campaigns', 'untracked.json'), { root }),
-    refused('DECLARATION_NOT_ON_MAIN', /campaigns\/untracked\.json is not committed at this checkout's HEAD/));
-  git(root, 'add', 'campaigns/untracked.json'); // staged is still not committed
-  assert.throws(() => provenance.declarationFromMain(join(root, 'campaigns', 'untracked.json'), { root }), refused('DECLARATION_NOT_ON_MAIN', /not committed/));
-  writeFileSync(join(root, 'campaigns', 'tracked.json'), text({ ...decl, limits: { ...decl.limits, maxWorkerRuns: 99 } }));
-  assert.throws(() => provenance.declarationFromMain(join(root, 'campaigns', 'tracked.json'), { root }),
-    refused('DECLARATION_NOT_ON_MAIN', /campaigns\/tracked\.json differs from its committed version at HEAD/));
+test('invalid private JSON is refused without copying its contents into diagnostics', (t) => {
+  const root = repository(t);
+  const path = join(root, 'private.json'); writeFileSync(path, '{PRIVATE-CONTENT');
+  assert.throws(() => provenance.declarationFromFile(path, { root }), e => e.code === 'DECLARATION_INVALID' && !e.message.includes('PRIVATE-CONTENT'));
+  assert.throws(() => provenance.declarationFromFile(join(root, 'missing.json'), { root }), refused('DECLARATION_INVALID', /Cannot read/));
 });
 
-test('a HEAD that is not an ancestor of origin/main, or no origin/main, is refused', (t) => {
-  const decl = declaration({ campaignId: 'local' });
-  const root = repository(t, { files: { 'local.json': decl } });
-  writeFileSync(join(root, 'README.md'), 'a local commit\n');
-  git(root, 'commit', '-q', '-am', 'not on origin/main');
-  assert.match(provenance.revisionNotMerged({ root }), /is not merged: it is not an ancestor of origin\/main/);
-  assert.throws(() => provenance.declarationFromMain(join(root, 'campaigns', 'local.json'), { root }),
-    refused('RUNTIME_NOT_MERGED', /is not an ancestor of origin\/main/));
-  const unfetched = repository(t, { files: { 'local.json': decl }, originMain: false });
-  assert.throws(() => provenance.declarationFromMain(join(unfetched, 'campaigns', 'local.json'), { root: unfetched }),
-    refused('RUNTIME_NOT_MERGED', /origin\/main is not available/));
-  assert.match(provenance.revisionNotMerged({ root, revision: null }), /unknown/);
-  assert.match(provenance.revisionNotMerged({ root, revision: 'f'.repeat(40) }), /cannot be resolved/);
+test('CLI registers and resumes ignored campaigns but still binds scope and authorization', { skip: !SQLITE }, (t) => {
+  const decl = declaration({ campaignId: 'local-private' });
+  const runtime = runtimeCheckout({ declarations: { 'private.json': decl } });
+  const data = mkdtempSync(join(tmpdir(), 'aiworks-private-cli-'));
+  t.after(() => { runtime.cleanup(); rmSync(data, { recursive: true, force: true }); });
+  const file = join(runtime.root, 'campaigns/private.json');
+  const start = () => runCli(runtime.cli, ['start', file, '--data', data, '--governance', GOVERNANCE]);
+  assert.equal(runtime.git('ls-files', 'campaigns'), '');
+  assert.equal(start().status, 0);
+  const store = new Store(join(data, 'supervisor.db'));
+  try { campaignPause(store, decl.campaignId); } finally { store.close(); }
+  assert.equal(start().status, 0);
+  writeFileSync(file, text({ ...decl, constraints: ['Altered scope'] }));
+  assert.match(start().stderr, /^SCOPE_CONFLICT:/m);
+  writeFileSync(file, text({ ...decl, purpose: 'New private wording' }));
+  assert.match(start().stderr, /^AUTHORIZATION_VERSION_REQUIRED:/m);
+  writeFileSync(file, text({ ...decl, purpose: 'New private wording', authorization: { ...decl.authorization, version: 2 } }));
+  assert.equal(start().status, 0);
 });
 
-test('a stored declaration resumes when any merged revision committed it; main\'s tip is not required', (t) => {
-  const v1 = declaration({ campaignId: 'history' });
-  const v2 = { ...v1, authorization: { ...v1.authorization, version: 2 }, limits: { ...v1.limits, maxWorkerRuns: 20 } };
-  const root = repository(t, { files: { 'history.json': v1 } });
-  const first = git(root, 'rev-parse', 'HEAD');
-  writeFileSync(join(root, 'campaigns', 'history.json'), text(v2));
-  git(root, 'commit', '-q', '-am', 'amend the declaration on main');
-  git(root, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
-  assert.equal(provenance.storedDeclarationOnMain(v1, { root }), `${first}:campaigns/history.json`, 'an older merged version');
-  assert.match(provenance.storedDeclarationOnMain(v2, { root }), /:campaigns\/history\.json$/);
-  // Committed under another file name on main still counts; the content is what was merged.
-  const renamed = { ...v1, campaignId: 'renamed' };
-  writeFileSync(join(root, 'campaigns', 'other-name.json'), text(renamed));
-  git(root, 'add', '-A');
-  git(root, 'commit', '-q', '-m', 'another declaration');
-  git(root, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
-  assert.match(provenance.storedDeclarationOnMain(renamed, { root }), /:campaigns\/other-name\.json$/);
-  // A version committed only after origin/main, or never committed, is refused.
-  const local = { ...v2, authorization: { ...v2.authorization, version: 3 } };
-  writeFileSync(join(root, 'campaigns', 'history.json'), text(local));
-  git(root, 'commit', '-q', '-am', 'local amendment, not merged');
-  for (const stored of [local, declaration({ campaignId: 'never-committed' })]) {
-    assert.throws(() => provenance.storedDeclarationOnMain(stored, { root }),
-      refused('DECLARATION_NOT_ON_MAIN', /is not committed in campaigns\/ in any revision merged to main; .*main's tip is not required/));
-  }
-  const unfetched = repository(t, { files: { 'history.json': v1 }, originMain: false });
-  assert.throws(() => provenance.storedDeclarationOnMain(v1, { root: unfetched }), refused('DECLARATION_NOT_ON_MAIN', /origin\/main is not available/));
-});
-
-test('cli.mjs start registers and resumes only committed declarations of a merged runtime checkout', { skip: !SQLITE }, (t) => {
-  const decl = declaration({ campaignId: 'cli-merged' });
-  const merged = runtimeCheckout({ declarations: { 'cli-merged.json': decl } });
-  const unmerged = runtimeCheckout({ declarations: { 'cli-merged.json': decl }, unmerged: true });
-  const data = mkdtempSync(join(tmpdir(), 'aiworks-cli-merged-'));
-  t.after(() => { merged.cleanup(); unmerged.cleanup(); rmSync(data, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); });
-  const start = (cli, file, dir) => runCli(cli, ['start', file, '--data', join(data, dir), '--governance', GOVERNANCE]);
-  const stored = (dir) => {
-    const store = new Store(join(data, dir, 'supervisor.db'));
-    try { return store.campaign(decl.campaignId); } finally { store.close(); }
-  };
-
-  // Refused: another checkout's campaigns/, an unmerged runtime HEAD, an untracked or a modified file. Nothing is stored.
-  for (const [dir, cli, file, pattern] of [
-    ['other-checkout', merged.cli, join(unmerged.root, 'campaigns', 'cli-merged.json'), /^DECLARATION_NOT_ON_MAIN: .* is not a file in /m],
-    ['unmerged', unmerged.cli, join(unmerged.root, 'campaigns', 'cli-merged.json'), /^RUNTIME_NOT_MERGED: supervisor code [0-9a-f]{12} is not merged/m],
-  ]) {
-    const out = start(cli, file, dir);
-    assert.equal(out.status, 1, dir);
-    assert.match(out.stderr, pattern, dir);
-    assert.equal(stored(dir), null, `${dir}: nothing registered`);
-  }
-  writeFileSync(join(merged.root, 'campaigns', 'cli-untracked.json'), text(declaration({ campaignId: 'cli-untracked' })));
-  const untracked = start(merged.cli, join(merged.root, 'campaigns', 'cli-untracked.json'), 'untracked');
-  assert.equal(untracked.status, 1);
-  assert.match(untracked.stderr, /^DECLARATION_NOT_ON_MAIN: campaigns\/cli-untracked\.json is not committed/m);
-  const none = new Store(join(data, 'untracked', 'supervisor.db'));
-  try { assert.equal(none.campaign('cli-untracked'), null, 'untracked: nothing registered'); } finally { none.close(); }
-
-  // Accepted: register, then the deploy procedure's identical resume after a pause.
-  const registered = start(merged.cli, join(merged.root, 'campaigns', 'cli-merged.json'), 'live');
-  assert.equal(registered.status, 0, registered.stderr);
-  assert.equal(JSON.parse(registered.stdout).scopeDigest, scopeDigest(decl));
-  pauseAt(join(data, 'live'), decl.campaignId);
-  const resumed = start(merged.cli, join(merged.root, 'campaigns', 'cli-merged.json'), 'live');
-  assert.equal(resumed.status, 0, resumed.stderr);
-  assert.equal(JSON.parse(resumed.stdout).control, 'registered');
-  assert.equal(authorityDigest(stored('live').declaration), authorityDigest(decl), 'the stored declaration is the committed one');
-
-  // A resume or amendment from an edited, uncommitted file is refused and leaves the campaign as it was.
-  pauseAt(join(data, 'live'), decl.campaignId);
-  writeFileSync(join(merged.root, 'campaigns', 'cli-merged.json'), text({ ...decl, authorization: { ...decl.authorization, version: 2 } }));
-  const edited = start(merged.cli, join(merged.root, 'campaigns', 'cli-merged.json'), 'live');
-  assert.equal(edited.status, 1);
-  assert.match(edited.stderr, /^DECLARATION_NOT_ON_MAIN: campaigns\/cli-merged\.json differs from its committed version/m);
-  assert.equal(stored('live').control, 'paused');
-  assert.equal(stored('live').authorization_version, 1);
-});
-
-function pauseAt(dataDir, id) {
-  const store = new Store(join(dataDir, 'supervisor.db'));
-  try { campaignPause(store, id, 'upgrade'); } finally { store.close(); }
-}
-
-test('no CLI flag, config.json key or environment variable skips the checks', () => {
-  const sources = ['src/supervisor/provenance.mjs', 'src/supervisor/cli.mjs', 'src/supervisor/controller.mjs', 'src/dashboard/supervisor.mjs']
-    // Code only: comments may name config.json and the environment to say they are not read.
-    .map((path) => readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8').split(/\r?\n/)
-      .filter((line) => !/^\s*(\/\/|\/\*\*|\*)/.test(line)).map((line) => line.replace(/\s\/\/ .*$/, '')).join('\n'));
-  const [provenanceSource, cliSource, controllerSource] = sources;
-  assert.doesNotMatch(provenanceSource, /process\.env|config\b|argv/, 'the checks read no environment, configuration or arguments');
-  assert.match(cliSource, /declarationFromMain\(rest\[0\], \{ root: CODE_ROOT \}\)/, 'start always checks this checkout');
-  assert.match(cliSource, /revisionNotMerged\(\{ root: CODE_ROOT, revision: codeRevision \}\)/, 'serve always checks its own revision');
-  assert.doesNotMatch(controllerSource, /config\.revisionCheck/, 'the controller takes no revision setting from config.json');
-  for (const source of sources) assert.doesNotMatch(source, /AIWORKS_[A-Z_]*(MERGED|PROVENANCE|BYPASS|SKIP)/);
+test('merged code enforcement has no configuration or environment bypass', () => {
+  const cli = readFileSync(new URL('../../src/supervisor/cli.mjs', import.meta.url), 'utf8');
+  assert.match(cli, /declarationFromFile\(rest\[0\], \{ root: CODE_ROOT \}\)/);
+  assert.match(cli, /revisionNotMerged\(\{ root: CODE_ROOT, revision: codeRevision \}\)/);
+  const source = readFileSync(new URL('../../src/supervisor/provenance.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /process\.env|config\.commands/);
 });
 
 /** One-task campaign in a disposable environment with in-process controllers whose revision check is chosen per test. */
@@ -328,7 +224,7 @@ test('a verified task is not published by unmerged code', { skip: skipWithoutSql
 
 test('the coordinator starts no read from unmerged code', { skip: skipWithoutSqlite }, async (t) => {
   const env = environment();
-  env.config.coordinator = { repositories: ['netbka/aiworks'], reportTo: 'netbka/aiworks#3', timeoutMinutes: 1,
+  env.config.coordinator = { repositories: ['example-org/aiworks'], reportTo: 'example-org/aiworks#3', timeoutMinutes: 1,
     sourceRepo: env.repo, worktreeRoot: join(env.tmp, 'coordinator-worktrees') };
   const store = new Store(join(env.dataDir, 'supervisor.db'));
   const controller = new Controller({ store, config: env.config, dataDir: env.dataDir, fault: null, revisionCheck: () => UNMERGED, revisionCheckMs: 0 });

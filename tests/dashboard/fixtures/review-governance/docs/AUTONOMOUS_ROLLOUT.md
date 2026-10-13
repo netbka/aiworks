@@ -1,7 +1,7 @@
 # Example rollout
 
 A made-up rollout for the review dashboard. The dashboard reads `GOV-<n>` rows of section 19 and links them to
-Engineering Platform, so the rows below use other ids and are not read.
+governance provider, so the rows below use other ids and are not read.
 
 ## 19. PR program
 

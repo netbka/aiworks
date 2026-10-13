@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://engineering-platform.local/schemas/project-contract.schema.json",
+  "$id": "https://governance.local/schemas/project-contract.schema.json",
   "title": "Portfolio Project Contract",
   "type": "object",
   "required": ["id", "name", "repository", "lifecycle", "capabilities", "environments"],
@@ -94,7 +94,7 @@
       "additionalProperties": false
     },
     "releaseAuthorization": {
-      "$comment": "A standing deploy authorization the owner granted as the project's manual release transition (CONSTITUTION section 14, EP-029): assigned changes and the project's own release targets only, every release gate binding. Absent means none is recorded.",
+      "$comment": "A standing deploy authorization the owner granted as the project's manual release transition (CONSTITUTION section 14, governance-029): assigned changes and the project's own release targets only, every release gate binding. Absent means none is recorded.",
       "type": "object",
       "required": ["source", "approval", "summary"],
       "properties": {

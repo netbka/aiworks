@@ -25,8 +25,8 @@ async function setup(t, { config } = {}) {
 
 test('the synthetic gh refuses every GraphQL-backed command', (t) => {
   const env = environment(); t.after(() => env.cleanup());
-  for (const args of [['pr', 'list', '--repo', 'netbka/Dyk', '--head', 'b'], ['pr', 'create', '--repo', 'netbka/Dyk'],
-    ['pr', 'view', '1', '--repo', 'netbka/Dyk'], ['issue', 'comment', '1', '--repo', 'netbka/Dyk'], ['api', 'graphql', '-f', 'query={viewer{login}}']]) {
+  for (const args of [['pr', 'list', '--repo', 'example-org/sampleapp', '--head', 'b'], ['pr', 'create', '--repo', 'example-org/sampleapp'],
+    ['pr', 'view', '1', '--repo', 'example-org/sampleapp'], ['issue', 'comment', '1', '--repo', 'example-org/sampleapp'], ['api', 'graphql', '-f', 'query={viewer{login}}']]) {
     const out = spawnSync(process.execPath, [FAKE_GH, ...args], { env: { ...process.env, ...env.env }, encoding: 'utf8', windowsHide: true });
     assert.equal(out.status, 9, `gh ${args.join(' ')} must be refused`);
   }
@@ -39,9 +39,9 @@ test('publication uses only REST routes: lookup by owner:branch, then one create
   assert.ok(calls.length > 0);
   assert.deepEqual(calls.filter(GRAPHQL_BACKED), [], 'no gh pr, gh issue comment or GraphQL call');
   const branch = `campaign/${id}/T1`;
-  const lookup = calls.find((args) => args.includes('repos/netbka/Dyk/pulls') && args.includes('GET'));
-  assert.ok(lookup.includes(`head=netbka:${branch}`) && lookup.includes('state=open'));
-  const creates = calls.filter((args) => args.includes('repos/netbka/Dyk/pulls') && args.includes('POST'));
+  const lookup = calls.find((args) => args.includes('repos/example-org/sampleapp/pulls') && args.includes('GET'));
+  assert.ok(lookup.includes(`head=example-org:${branch}`) && lookup.includes('state=open'));
+  const creates = calls.filter((args) => args.includes('repos/example-org/sampleapp/pulls') && args.includes('POST'));
   assert.equal(creates.length, 1);
   assert.ok(creates[0].includes(`head=${branch}`) && creates[0].includes('base=main'));
   const [pr] = env.prs();
@@ -57,16 +57,16 @@ test('a create whose response is lost reconciles through the REST lookup: one PR
   writeFileSync(lossy, `import { spawnSync } from 'node:child_process';
 const args = process.argv.slice(2);
 const out = spawnSync(process.execPath, [${JSON.stringify(FAKE_GH)}, ...args], { encoding: 'utf8' });
-if (args.includes('POST') && args.includes('repos/netbka/Dyk/pulls')) { process.stderr.write('gh: HTTP 502 Bad Gateway'); process.exit(1); }
+if (args.includes('POST') && args.includes('repos/example-org/sampleapp/pulls')) { process.stderr.write('gh: HTTP 502 Bad Gateway'); process.exit(1); }
 process.stdout.write(out.stdout); process.stderr.write(out.stderr); process.exit(out.status);`);
   const gh = [process.execPath, lossy];
-  const input = { gh, repository: 'netbka/Dyk', baseBranch: 'main', branch: 'campaign/c/T1', title: 'T1', body: 'body', bodyFile: join(env.tmp, 'body.md') };
+  const input = { gh, repository: 'example-org/sampleapp', baseBranch: 'main', branch: 'campaign/c/T1', title: 'T1', body: 'body', bodyFile: join(env.tmp, 'body.md') };
   const url = openPullRequest(input);
   assert.equal(env.prs().length, 1);
   assert.equal(url, env.prs()[0].url);
   assert.equal(openPullRequest(input), url, 'a retry finds the open PR and creates nothing');
   assert.equal(env.prs().length, 1);
-  assert.equal(findOpenPullRequest({ gh, repository: 'netbka/Dyk', branch: 'campaign/c/other' }), null);
+  assert.equal(findOpenPullRequest({ gh, repository: 'example-org/sampleapp', branch: 'campaign/c/other' }), null);
 });
 
 test('rate-limit refusals are recognised with their reset time; other failures are not', () => {
@@ -93,7 +93,7 @@ async function rateLimitedPublication(t, limit) {
   assert.equal(waits.length, 1, 'one refusal, one recorded wait');
   const calls = env.ghCalls();
   assert.deepEqual(calls.map((call) => call.args).filter(GRAPHQL_BACKED), []);
-  const route = (call) => call.args.includes('repos/netbka/Dyk/pulls') && call.args.includes(limit.route.split(' ')[0]);
+  const route = (call) => call.args.includes('repos/example-org/sampleapp/pulls') && call.args.includes(limit.route.split(' ')[0]);
   const [refused, retried, ...more] = calls.filter(route);
   assert.equal(more.length, 0, 'the refused call is repeated once, after the reset');
   const { retryAt } = waits[0].detail;

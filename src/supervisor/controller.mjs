@@ -29,7 +29,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const POLICY = JSON.parse(readFileSync(resolve(here, '../../registry/worker-context-policy.json'), 'utf8'));
 const RUNNER = join(here, 'runner.mjs');
 // A task whose fresh sessions keep returning evidence-unavailable is not making progress. After this many
-// such results it stops with a B3 owner decision, whatever the retry limit (engineering-platform-archive#74): a no-progress guard, not
+// such results it stops with a B3 owner decision, whatever the retry limit (historical regression): a no-progress guard, not
 // a spend cap. With the 2/10/30-minute backoff the fourth result comes at least ~42 minutes after the first,
 // so a short outage does not stop work. A resolved or accepted result, or a recheck naming the task, resets
 // the count.
@@ -99,7 +99,7 @@ const runLease = (op, state, sessionId = op.session_id) => ({
 });
 
 export class Controller {
-  // governanceRoot: the read-only Engineering Platform checkout whose registry/projects and policies/catalog.json resolve each
+  // governanceRoot: the read-only governance provider checkout whose registry/projects and policies/catalog.json resolve each
   // target project's governance; the explicit argument, else config.json `governanceRoot`. With neither (or an invalid root) no
   // worker is dispatched: dispatch fails closed with a project-governance blocker, never falling back to this checkout.
   // revisionCheck (AW-005): returns null while this code is merged into origin/main, else the reason. `cli.mjs serve` always
@@ -461,7 +461,7 @@ export class Controller {
       const fresh = this.store.get('SELECT * FROM operations WHERE id = ?', op.id);
       if (!['recorded', 'dispatched'].includes(fresh.state)) return; // already applied
       verdict = { ...verdict, executorKind: fresh.executor_kind };
-      // engineering-platform-archive#47 C0 predicate inside the authoritative commit: the result must come from the exact dispatched run.
+      // historical regression C0 predicate inside the authoritative commit: the result must come from the exact dispatched run.
       if (verdict.class === 'result' && !acceptsLease(runLease(fresh, 'active'), runLease(fresh, 'active', verdict.receipt?.sessionId ?? ''), now)) {
         verdict = { ...verdict, class: 'invalid-result', detail: `result session ${verdict.receipt?.sessionId} is not the dispatched session ${fresh.session_id}` };
       }
@@ -1164,14 +1164,14 @@ export class Controller {
       if (current.control !== 'registered' || current.blocker || current.version !== campaign.version ||
           busy || campaignBudget(this.store, current).exhausted) return null;
       const decl = campaign.declaration;
-      // The target project's own rules (Engineering Platform governance inheritance), resolved from the registry exactly as the registration gate matches.
+      // The target project's own rules (governance provider governance inheritance), resolved from the registry exactly as the registration gate matches.
       // Without them no new worker starts: there is no default project to fall back to.
       let governance;
       try { governance = projectGovernance(decl.target.repository, this.governanceRoot); }
       catch (error) {
         this.raiseBlocker(ctx, decl, { kind: 'project-governance', class: 'B2',
           reason: `No new worker dispatched: the governance of ${decl.target.repository} cannot be resolved from the governance checkout (${error.code ? `${error.code}: ` : ''}${String(error.message).slice(0, 400)})`,
-          requestedAction: `Make sure governanceRoot in the supervisor config.json names a current Engineering Platform checkout in which exactly one registry/projects entry declares repository.github ${decl.target.repository}, then run: supervisor recheck ${ctx.id}` }, this.now());
+          requestedAction: `Make sure governanceRoot in the supervisor config.json names a current governance provider checkout in which exactly one registry/projects entry declares repository.github ${decl.target.repository}, then run: supervisor recheck ${ctx.id}` }, this.now());
         return null;
       }
       // A project and a config.json entry that disagree about this repository: B2, and nothing is dispatched (design 8.2).
@@ -1593,7 +1593,7 @@ export class Controller {
     return [
       `## ${spec.id}: ${spec.title} (independently verified report)`,
       '',
-      `Campaign \`${decl.campaignId}\` (#${decl.target.trackingIssue}), AIWorks supervisor (netbka/aiworks#2). Revision \`${task.verified_sha}\`, report sha256 \`${digest}\`.`,
+      `Campaign \`${decl.campaignId}\` (#${decl.target.trackingIssue}), AIWorks supervisor (AIWorks). Revision \`${task.verified_sha}\`, report sha256 \`${digest}\`.`,
       '',
       String(task.result?.report ?? ''),
       '',
@@ -1609,7 +1609,7 @@ export class Controller {
     return [
       `## ${spec.id}: ${spec.title}`,
       '',
-      `Refs #${spec.issue}. Campaign \`${decl.campaignId}\` (parent plan #${decl.target.trackingIssue}), run by the AIWorks supervisor (netbka/aiworks#2).`,
+      `Refs #${spec.issue}. Campaign \`${decl.campaignId}\` (parent plan #${decl.target.trackingIssue}), run by the AIWorks supervisor (AIWorks).`,
       '',
       `**Verified commit:** \`${task.verified_sha}\`. A separate fresh verifier session accepted exactly this SHA; the branch was pushed at that SHA.`,
       '',

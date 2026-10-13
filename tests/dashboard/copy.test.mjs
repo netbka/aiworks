@@ -24,7 +24,7 @@ const FORMAT = { time: (value) => `T${(NOW - value) / M}`, dateTime: (value) => 
 const PR = 'https://github.com/example/shop-app/pull/465';
 const ISSUE = 'https://github.com/example/shop-app/issues/441';
 /** Data that fills every placeholder of every state. */
-const SAMPLE = { project: 'example/shop-app', host: 'HomePc', now: NOW, loadedAt: NOW - 3 * M, at: NOW - 20 * M, count: 3, pausedAt: NOW - 60 * M, stoppedAt: NOW - 30 * M,
+const SAMPLE = { project: 'example/shop-app', host: 'workstation', now: NOW, loadedAt: NOW - 3 * M, at: NOW - 20 * M, count: 3, pausedAt: NOW - 60 * M, stoppedAt: NOW - 30 * M,
   reason: 'Paused for an update', campaignId: 'shop-search', step: 'Search page', next: 'Price sync', provider: 'claude-cli', startedAt: NOW - 10 * M,
   lastActivityAt: NOW - 2 * M, minutes: 25, number: 465, url: PR, registeredAt: NOW - 2 * M, attempts: 5, action: 'Review and merge', text: 'Search page',
   linkLabel: 'Review pull request #465', reasons: ['Codex is not set up on this computer'], awaiting: 2, delegated: 2, merged: 0, reports: 2, closed: 1, delivered: 4,
@@ -43,13 +43,13 @@ async function reviewState(t, store = 'full') {
   const watcher = new MergeWatcher({ steps: () => publishedSteps(dataDir), checkouts: configuredCheckouts(dataDir), git: configuredGitCommand(dataDir) });
   await watcher.refresh();
   const merges = watcher.snapshot();
-  return { supervisor, owner: ownerView(supervisor, merges, { host: 'HomePc', now }), merges, now };
+  return { supervisor, owner: ownerView(supervisor, merges, { host: 'workstation', now }), merges, now };
 }
 /** The Now screen of a project that has only this one piece of work, with that work's own Needs me items. */
 const alone = ({ supervisor, owner, merges, now }, campaignId) => {
   const c = supervisor.campaigns.find((item) => item.id === campaignId);
   return nowView(c.repository, { supervisor: { ...supervisor, campaigns: [c] }, owner: { ...owner, items: owner.items.filter((item) => item.campaignId === campaignId) },
-    merges, host: { name: 'HomePc' } }, { now });
+    merges, host: { name: 'workstation' } }, { now });
 };
 
 test('every state of §7 has its text in the copy module', () => {
@@ -109,7 +109,7 @@ test('no primary text uses a machine word', async (t) => {
     const view = alone(review, id);
     texts.push(words(view.state), view.progress, view.note ? words(view.note) : '', ...(view.since ?? []).map((line) => line.text));
   }
-  for (const project of PROJECTS) texts.push(words(nowView(project, { ...review, host: { name: 'HomePc' } }, { now: review.now }).state));
+  for (const project of PROJECTS) texts.push(words(nowView(project, { ...review, host: { name: 'workstation' } }, { now: review.now }).state));
   // "Release" is not "lease": whole words only.
   assert.ok(texts.some((text) => /Release follows/.test(text)));
   for (const text of texts) for (const word of DETAIL_ONLY_WORDS) assert.ok(!has(text, word), `"${word}" in: ${text}`);
@@ -193,7 +193,7 @@ test('per-project calm rule: Now needs the owner exactly when that project has N
   const projects = projectsView(review.supervisor, review.owner, { repositories: PROJECTS });
   // Every project of the fixture, with all its work: the same answer as its Needs me group and its Projects row.
   for (const project of PROJECTS) {
-    const view = nowView(project, { ...review, host: { name: 'HomePc' } }, { now: review.now });
+    const view = nowView(project, { ...review, host: { name: 'workstation' } }, { now: review.now });
     assert.equal(view.state.needsYou, mine(project).length > 0, `${project}: ${view.state.key}`);
     assert.equal(view.state.needsYou, projects.projects.find((row) => row.id === project).state.key === 'needs-you', `${project} agrees with Projects`);
     // Upper case in the address opens the same project.

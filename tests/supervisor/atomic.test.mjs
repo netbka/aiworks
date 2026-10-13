@@ -15,7 +15,7 @@ test('atomic receipts survive a Windows reader lock and fail closed for a persis
   writeFileSync(receipt, 'old');
   const quote = (value) => "'" + value.replaceAll("'", "''") + "'";
   // The brief lock ends on the reader's own timer, inside writeAtomic's >= 1 s retry window. The persistent lock is held until
-  // the test writes `release`, so the expected EPERM never depends on how fast a loaded machine schedules either side (engineering-platform-archive#58).
+  // the test writes `release`, so the expected EPERM never depends on how fast a loaded machine schedules either side (historical regression).
   for (const persistent of [false, true]) {
     for (const marker of [ready, release]) rmSync(marker, { force: true });
     const hold = persistent ? `while (-not [IO.File]::Exists(${quote(release)})) { [Threading.Thread]::Sleep(20) }` : '[Threading.Thread]::Sleep(300)';

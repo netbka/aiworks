@@ -5,7 +5,7 @@
   "description": "AIWorks: the AI delivery machine (delivery supervisor, operations dashboard and campaigns).",
   "scripts": {
     "test": "node scripts/run-tests.mjs",
-    "check": "node scripts/check-campaigns.mjs && npm test",
+    "check": "node scripts/check-public-scope.mjs && node scripts/check-campaigns.mjs && npm test",
     "dashboard": "node src/dashboard/main.mjs",
     "supervisor": "node src/supervisor/cli.mjs"
   },

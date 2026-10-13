@@ -2,7 +2,7 @@
 # It starts at logon, runs `cli.mjs keep` hidden (which restarts `serve` after any exit),
 # and has no execution time limit. A second trigger repeats every 5 minutes, so a keeper that died is started again
 # (aiworks#18); while one runs, MultipleInstances IgnoreNew skips it. Stop with `node cli.mjs stop --data <dir>`.
-# Usage: powershell -NoProfile -File scripts\supervisor\install-windows-task.ps1 -Checkout D:\Git\aiworks\.local\runtime -DataDir D:\Git\aiworks\.local\supervisor
+# Usage: powershell -NoProfile -File scripts\supervisor\install-windows-task.ps1 -Checkout C:\example\aiworks\.local\runtime -DataDir C:\example\aiworks\.local\supervisor
 # -DefinitionOnly prints the task definition as JSON and changes nothing (no registration, no STOP removal).
 param(
   [Parameter(Mandatory = $true)] [string] $Checkout,

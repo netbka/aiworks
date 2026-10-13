@@ -175,7 +175,7 @@ function resultsByProject(supervisor, campaigns, releases) {
 
 /**
  * Where merged work goes next in a repository. A standing deploy authorization recorded in the project registry
- * (Engineering Platform's CONSTITUTION §14, EP-029) is named; otherwise release follows the project's own policy. Neither says who acts.
+ * (governance provider's CONSTITUTION §14, EP-029) is named; otherwise release follows the project's own policy. Neither says who acts.
  */
 const releaseRule = (releases, repository, whose = `${short(repository)}'s`) =>
   `${whose} ${releases?.[repository.toLowerCase()] ? 'standing deploy authorization' : 'release policy'}`;

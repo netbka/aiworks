@@ -1,26 +1,5 @@
 {
   "id": "RELEASE-001",
-  "version": "1.0.0",
   "scope": "portfolio",
-  "applies_when": {},
-  "invariants": [
-    { "id": "exact-immutable-sha", "source": "docs/CONSTITUTION.md#14-release-authority", "constitution_section": 14, "baseline": [], "exception_mode": "forbidden" },
-    { "id": "risk-based-preflight-evidence", "source": "docs/DECISIONS.md#ep-014---release-target-is-247-risk-based-automatic-release", "baseline": ["baseline:evidence-truth"], "exception_mode": "forbidden" },
-    { "id": "post-release-verification", "source": "docs/AUTONOMOUS_OPERATING_MODEL.md#release---mergereleaserollback", "baseline": ["baseline:evidence-truth"], "exception_mode": "forbidden" },
-    { "id": "automatic-rollback-where-safe", "source": "docs/CONSTITUTION.md#14-release-authority", "constitution_section": 14, "baseline": [], "exception_mode": "forbidden" },
-    { "id": "failed-rollback-escalates", "source": "docs/CONSTITUTION.md#15-incident-escalation", "constitution_section": 15, "baseline": ["baseline:incident-escalation"], "exception_mode": "forbidden" },
-    { "id": "manual-transition-until-gate-proven", "source": "docs/CONSTITUTION.md#14-release-authority", "constitution_section": 14, "baseline": [], "exception_mode": "forbidden" }
-  ],
-  "owner_reserved_when": [],
-  "detect": [
-    { "id": "policy-metadata", "kind": "schema", "invariants": ["manual-transition-until-gate-proven"] },
-    { "id": "release-review", "kind": "review", "invariants": ["exact-immutable-sha", "risk-based-preflight-evidence", "post-release-verification", "automatic-rollback-where-safe", "failed-rollback-escalates", "manual-transition-until-gate-proven"] }
-  ],
-  "required_evidence": [
-    { "kind": "release-preflight", "reviewer": "independent-verifier", "when": { "intents": ["operate"], "material": true } },
-    { "kind": "post-release-verification", "when": { "intents": ["operate"], "material": true } },
-    { "kind": "rollback-evidence", "when": { "intents": ["operate"], "boundaries": ["data", "provider", "security", "ops"] } }
-  ],
-  "blocking": { "mode": "enforce", "missing_evidence": "block" },
-  "exceptions": { "mode": "clause-only" }
+  "applies_when": {}
 }

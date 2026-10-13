@@ -1,4 +1,4 @@
-// AIWorks continuous-execution fixes (2026-10-09 Dyk campaign stall): executor unavailability
+// AIWorks continuous-execution fixes (2026-10-09 sampleapp campaign stall): executor unavailability
 // versus task failure, no account connectors for Codex workers, provider rotation after a failed
 // attempt, report-repair handoff, and the owner's cost ceiling. No model, network or GitHub calls.
 import assert from 'node:assert/strict';
@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { campaignBudget, campaignStart } from '../../src/supervisor/api.mjs';
 import { classify, prepare, codexExecutorSetupFailure, codexSandboxProbe, CODEX_DISABLED_FEATURES, runNotCounted } from '../../src/supervisor/adapters/executors.mjs';
-import { validateDeclaration } from '../../src/supervisor/campaign.mjs';
+import { campaignLimits, validateDeclaration } from '../../src/supervisor/campaign.mjs';
 import { declaration, environment, runUntil, SQLITE, skipWithoutSqlite } from './helpers.mjs';
 
 const { Store } = SQLITE ? await import('../../src/supervisor/store.mjs') : {};
@@ -129,10 +129,10 @@ test('the cost ceiling binds with unreported costs priced conservatively and mus
   assert.match(campaignBudget(fakeStore([]), { ...campaign, runs_used: 12 }).exhausted, /worker-run cap/);
   const uncapped = { ...campaign, runs_used: 100, declaration: { ...ok, limits: { ...ok.limits, maxWorkerRuns: null } } };
   assert.equal(campaignBudget(fakeStore([]), uncapped).exhausted, null, 'uncapped Wiki execution survives the new budget check');
-  const live = JSON.parse(readFileSync(new URL('../../campaigns/dyk-443-waves.json', import.meta.url)));
+  const live = JSON.parse(readFileSync(new URL('../../tests/fixtures/campaigns/sample-chain.json', import.meta.url)));
   validateDeclaration(live);
   assert.deepEqual(live.executor.providers.map((p) => p.kind), ['claude-cli', 'codex-cli', 'cursor-cli']);
-  assert.equal(live.limits.maxWorkerRuns, null, "owner removed the run cap (authorization v4)");
+  assert.equal(campaignLimits(live).maxWorkerRuns, null, 'synthetic authority has no run cap');
 });
 
 test('a rejected report repair receives the rejected report and a report-only instruction', { skip: skipWithoutSqlite }, async (t) => {
