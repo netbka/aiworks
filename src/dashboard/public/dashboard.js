@@ -1,6 +1,6 @@
 import { formatRoute, globalOf, resolveRoute, tabOf } from '/router.mjs';
 // The state copy of OWNER_WORKSPACE §7 and the Now screen (slice S4); the server serves src/dashboard/copy.mjs here.
-import { COMMANDS, DIALOGS, NEEDS, NOT_READ, costRunsLine, nowView, workLine } from '/copy.mjs';
+import { COMMANDS, DIALOGS, NEEDS, NOT_READ, busyOnCommand, costRunsLine, nowView, workLine } from '/copy.mjs';
 
 const $ = (selector) => document.querySelector(selector);
 const names = { done: 'Done', blocked: 'Blocked', unknown: 'Unknown',
@@ -187,6 +187,10 @@ function trackOverview() {
 function agentVerdict(agent) {
   const last = agent.progress?.lastActivityAt ?? agent.outputAt ?? null;
   const minutes = last ? Math.max(0, Math.floor((Date.now() - last) / 60_000)) : null;
+  if (minutes !== null && minutes >= STUCK_MINUTES) {
+    const busy = busyOnCommand(agent, Date.now());
+    if (busy !== null) return ['recent', `Working: running a command for ${busy} min (usually its tests)`];
+  }
   if (minutes !== null) return minutes < STUCK_MINUTES ? ['recent', 'Working normally'] : ['stale', `Possibly stuck: no progress for ${minutes} min`];
   if (agent.heartbeatState === 'recent') return ['recent', 'Working normally'];
   return Date.now() - agent.startedAt < 5 * 60_000 ? ['pending', 'Starting'] : ['stale', 'Not started'];
@@ -203,7 +207,7 @@ function whoIsOn(c, task) {
 /** How the verdicts are decided, shown once rather than on every card. */
 const verdictExplanation = () => el('details', { class: 'explain' }, el('summary', {}, 'How “working normally” is decided'),
   el('div', { class: 'notes' }, `Working normally: the agent's own record shows a turn or action in the last ${STUCK_MINUTES} minutes, or, for an agent that reports only at the end, its runner is still alive. `,
-    `Possibly stuck: no progress for ${STUCK_MINUTES} minutes or more. Not started: no sign of life 5 minutes after it was scheduled. `,
+    `Running a command: the agent is waiting on one long command, such as its test suite, and its runner is alive (up to an hour). Possibly stuck: no progress for ${STUCK_MINUTES} minutes or more. Not started: no sign of life 5 minutes after it was scheduled. `,
     'Counts come from the agent’s own session record; its prompts and output are never shown here.'));
 
 /** Shown once per page: what provider waits mean and what they never do. */

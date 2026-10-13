@@ -16,6 +16,18 @@ export const DETAIL_ONLY_WORDS = ['pipeline', 'fencing', 'lease', 'slots', 'cont
 export const NOT_FOR_OPEN = ['merged', 'deployed', 'released', 'live', 'done', 'accepted'];
 /** A running AI worker whose own record has not moved for this long reads "no progress" (today's dashboard rule). */
 export const STUCK_MS = 15 * 60_000;
+/** A worker waiting on one command (a test suite, a build) is busy, not stuck, for up to this long while its runner is alive. */
+export const COMMAND_MAX_MS = 60 * 60_000;
+/**
+ * Minutes a live worker has been waiting on its newest command, or null. The worker's record does not move while a long
+ * command runs, so without this a full test suite reads as "no progress" (#102). A dead runner or a command running
+ * longer than COMMAND_MAX_MS is not busy: those still read as possibly stuck.
+ */
+export function busyOnCommand(agent, now) {
+  const since = agent?.progress?.runningTool ? agent.progress.runningSince : null;
+  if (agent?.heartbeatState !== 'recent' || !Number.isFinite(since) || now - since >= COMMAND_MAX_MS) return null;
+  return Math.max(0, Math.floor((now - since) / 60_000));
+}
 /** A merge check is current for this long after a successful fetch (src/dashboard/owner.mjs MERGE_FRESH_MS). */
 export const MERGE_FRESH_MS = 15 * 60_000;
 
@@ -236,7 +248,7 @@ function activeState(active, d) {
   // A worker whose own record stopped moving is said first; otherwise the first one at work.
   const agents = going.flatMap((c) => c.agents.map((agent) => ({ c, agent, task: c.tasks.find((item) => item.id === agent.taskId),
     last: agent.progress?.lastActivityAt ?? agent.outputAt ?? null })));
-  const stuck = agents.find(({ last }) => last && d.now - last >= STUCK_MS);
+  const stuck = agents.find(({ agent, last }) => last && d.now - last >= STUCK_MS && busyOnCommand(agent, d.now) === null);
   if (stuck) return [stuck.c, 'possibly-stuck', { step: capital(label(stuck.task)), minutes: Math.floor((d.now - stuck.last) / 60_000) }];
   if (agents.length) {
     const [{ c, agent, task, last }] = agents;
