@@ -103,7 +103,16 @@ export function commitChecks({ gh, repository, sha }) {
   return ciState(rest(gh, 'GET check-runs', ['--method', 'GET', `repos/${repository}/commits/${sha}/check-runs`, '-f', 'per_page=100'], { timeoutMs: 30_000 }));
 }
 
+/**
+ * A campaign declaration is private installation data and is never published (docs/design/WORK_ENVELOPE.md section 5,
+ * slice E9): a `declare/...` branch, the former declaration-PR route, is refused before any gh call.
+ */
+export const declarationBranch = (branch) => /^declare\//i.test(String(branch ?? ''));
+
 export function openPullRequest({ gh, repository, baseBranch, branch, title, body, bodyFile }) {
+  if (declarationBranch(branch)) {
+    throw Object.assign(new Error(`DECLARATION_PUBLISH_REFUSED: ${branch} is a declaration branch; approved declarations stay private and are never opened as a pull request`), { code: 'DECLARATION_PUBLISH_REFUSED' });
+  }
   const existing = findOpenPullRequest({ gh, repository, branch });
   if (existing) return existing.url;
   writeFileSync(bodyFile, body, 'utf8');
