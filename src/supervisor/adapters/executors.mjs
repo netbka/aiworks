@@ -254,7 +254,28 @@ function cleanNulls(value, schema) {
   return value;
 }
 
-export function classify({ executorKind, ...args }) {
+// The provider refused the requested model: the name is unknown, retired, or not on this account (MODEL_ROUTING 9).
+export const UNKNOWN_MODEL = /issue with the selected model|not_found_error[^\n]{0,80}\bmodel\b|\bmodel\b[^\n]{0,120}\b(?:does not exist|not found|is not supported|isn't supported|is not available)|\b(?:unknown|invalid) model\b/i;
+
+/**
+ * Classify one finished run. With `routed` (a campaign whose routing.mode is "auto", slice R5), a run the provider refused
+ * because it does not know the requested model is `unavailable` with `modelUnavailable`: no task attempt took place, and
+ * the controller holds that one candidate until a recheck. Without it the outcome is unchanged.
+ */
+export function classify({ routed = false, ...args }) {
+  const outcome = classifyRun(args);
+  if (!routed || outcome.class !== 'error' || outcome.detail === 'executor permission or sandbox denial' || args.run.spawnError) return outcome;
+  let text = args.stderrText.slice(-4000);
+  try {
+    const out = JSON.parse(args.stdoutText);
+    if (out?.is_error) text = `${out.result ?? ''}\n${text}`;
+  } catch { text = `${args.stdoutText.slice(-4000)}\n${text}`; }
+  const refused = UNKNOWN_MODEL.exec(text);
+  return refused ? { ...outcome, class: 'unavailable', modelUnavailable: true,
+    detail: `${nativeKind(args.executorKind)} refused the requested model (${refused[0].slice(0, 160)})` } : outcome;
+}
+
+function classifyRun({ executorKind, ...args }) {
   const kind = nativeKind(executorKind);
   if (args.run.spawnError && /EACCES|EPERM|denied|permission/i.test(args.run.spawnError)) return {
     executorKind: kind, receipt: {}, exitCode: args.run.exitCode ?? null, class: 'error', detail: 'executor launch permission denied',
