@@ -5,6 +5,7 @@
 // releases or changes provider resources.
 import * as gitA from './adapters/git.mjs';
 import * as github from './adapters/github.mjs';
+import { mergeWithMergeCommit } from './release/github-merge.mjs';
 import { campaignLimits } from './campaign.mjs';
 import { specsOf } from './plan.mjs';
 import { resolveCheckout } from './project-connect.mjs';
@@ -181,7 +182,7 @@ function mergeOne(controller, item, settings, repoPath, baseSha) {
   controller.injectFault('before-merge');
   try {
     controller.fenced(ctx, () => {
-      const { mergeCommit } = github.mergePullRequest({ gh, repository, number, sha });
+      const { mergeCommit } = mergeWithMergeCommit({ gh, repository, number, sha });
       controller.injectFault('after-merge');
       record(controller, ctx, item, mergeCommit, { reconciled: false, requested: true });
     });

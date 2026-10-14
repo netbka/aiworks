@@ -38,7 +38,7 @@ export function rateLimitReset({ status, headers, body }, stderr = '', now = Dat
 }
 
 /** One REST call; returns the parsed JSON body or throws (RateLimitError for a rate-limit refusal). */
-function rest(gh, what, args, { timeoutMs } = {}) {
+export function rest(gh, what, args, { timeoutMs } = {}) {
   const out = exec(gh, ['api', '--include', ...args], { timeoutMs });
   const response = parseResponse(out.stdout);
   if (!out.ok) {
@@ -77,19 +77,6 @@ export function pullRequest({ gh, repository, number }) {
   const pr = rest(gh, 'GET pull', ['--method', 'GET', `repos/${repository}/pulls/${number}`], { timeoutMs: 30_000 });
   return { url: pr?.html_url ?? null, state: pr?.state ?? null, merged: pr?.merged === true, mergeable: pr?.mergeable ?? null,
     headRef: pr?.head?.ref ?? null, headSha: pr?.head?.sha ?? null, baseRef: pr?.base?.ref ?? null, mergeCommit: pr?.merge_commit_sha ?? null };
-}
-
-/**
- * Merge with a merge commit (aiworks#138): PUT repos/{repo}/pulls/{n}/merge with merge_method=merge and sha=<verified>,
- * so GitHub refuses if the head moved. Never a squash, a rebase, an admin bypass or a branch deletion. Returns the merge
- * commit; throws when GitHub refuses or the outcome is unknown, and the caller reads the PR before any retry.
- */
-export function mergePullRequest({ gh, repository, number, sha }) {
-  if (!/^[0-9a-f]{40}$/.test(sha ?? '')) throw new Error('a merge needs the full verified SHA');
-  const result = rest(gh, 'PUT merge', ['--method', 'PUT', `repos/${repository}/pulls/${number}/merge`,
-    '-f', 'merge_method=merge', '-f', `sha=${sha}`], { timeoutMs: 60_000 });
-  if (result?.merged !== true || !/^[0-9a-f]{40}$/.test(result.sha ?? '')) throw new Error(`PUT merge returned no merge commit: ${JSON.stringify(result)}`.slice(0, 500));
-  return { mergeCommit: result.sha };
 }
 
 const CI_PASSED = new Set(['success', 'neutral', 'skipped']);

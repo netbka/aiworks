@@ -133,7 +133,7 @@ Verification runs on this computer (Windows), but the repository's CI may run el
 
 ### Merge gate
 
-Merging used to be delegated to a monitoring session (`merges.delegatedTo: "monitor"`). When none ran, verified PRs waited for hours ([#138](https://github.com/example-org/aiworks/issues/138)). With the merge gate on, the supervisor merges a verified PR itself, and only when merging it puts exactly the independently verified tree on the base branch. It still never deploys, releases or changes provider resources ([AW-001](DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception)). The code is `src/supervisor/merge.mjs`.
+Merging used to be delegated to a monitoring session (`merges.delegatedTo: "monitor"`). When none ran, verified PRs waited for hours ([#138](https://github.com/example-org/aiworks/issues/138)). With the merge gate on, the supervisor merges a verified PR itself, and only when merging it puts exactly the independently verified tree on the base branch. It still never deploys, releases or changes provider resources ([AW-001](DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception)). The gate is `src/supervisor/merge.mjs`; its one merge call is `src/supervisor/release/github-merge.mjs`, since merge calls live only under `release/` (REL5).
 
 - **Off by default.** Only the owner's `config.json` turns it on, per repository. Without `merges`, with `"delegatedTo": "monitor"` (or anyone other than `"supervisor"`), or for a repository not listed, nothing is merged. A malformed setting also leaves it off and is logged. The setting is the one the dashboard already reads; `held` works for both:
 
