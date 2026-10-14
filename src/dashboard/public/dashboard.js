@@ -1,6 +1,6 @@
 import { formatRoute, globalOf, resolveRoute, tabOf } from '/router.mjs';
 // The state copy of OWNER_WORKSPACE §7 and the Now screen (slice S4); the server serves src/dashboard/copy.mjs here.
-import { COMMANDS, DELEGATED, DIALOGS, NEEDS, NOT_READ, busyOnCommand, costRunsLine, nowView, workLine } from '/copy.mjs';
+import { COMMANDS, DELEGATED, DIALOGS, NEEDS, NOT_READ, busyOnCommand, costRunsLine, nowView, stateCopy, workLine } from '/copy.mjs';
 
 const $ = (selector) => document.querySelector(selector);
 const names = { done: 'Done', blocked: 'Blocked', unknown: 'Unknown',
@@ -102,7 +102,8 @@ const notice = (text, retry, detail = null, address = current.address) => {
 
 /** A link to another screen of this page: a real link, so it opens in a new tab and Back works. */
 const routeLink = (text, route, cls = '') => el('a', { href: typeof route === 'string' ? route : formatRoute(route), class: cls }, text);
-const projectName = (project) => shortRepo(project) || project;
+// A connected project without GitHub is addressed by its project id and named by its own name.
+const projectName = (project) => state?.projects?.projects?.find((item) => !item.repository && item.id === project)?.name ?? (shortRepo(project) || project);
 // Each screen's heading and the one question it answers (OWNER_WORKSPACE §3.1).
 const screenText = { projects: ['Projects', 'Which project should I open?'], needs: ['Needs me', 'What is waiting for me, across projects?'],
   settings: ['Settings', 'What can AIWorks use on this computer?'], messages: ['Messages', 'What did I ask AIWorks, and what did it answer?'],
@@ -803,25 +804,232 @@ const projectList = () => state.projects?.projects ?? [];
 const sameProject = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
 const projectCampaigns = (project) => state.supervisor.campaigns.filter((c) => sameProject(c.repository, project));
 const unavailable = () => empty('Supervisor unavailable', state.supervisor.message ?? 'The supervisor state cannot be read right now. This is not the same as nothing happening.');
-const stateTones = { 'needs-you': 'attention', running: 'in_progress', paused: 'pending', finished: 'done', cancelled: 'pending', 'no-work': 'pending' };
-const stateWords = { 'needs-you': 'Needs you', running: 'Running', paused: 'Paused', finished: 'Finished', cancelled: 'Cancelled', 'no-work': 'No work yet' };
+const stateTones = { 'needs-you': 'attention', running: 'in_progress', paused: 'pending', finished: 'done', cancelled: 'pending', 'no-work': 'pending',
+  ready: 'done', 'needs-setup': 'attention', unavailable: 'pending' };
+const stateWords = { 'needs-you': 'Needs you', running: 'Running', paused: 'Paused', finished: 'Finished', cancelled: 'Cancelled', 'no-work': 'No work yet',
+  ready: 'Ready', 'needs-setup': 'Needs setup', unavailable: 'Temporarily unavailable' };
 const projectAction = (action) => action.url ? link(`${action.label} ↗`, action.url, 'project-action') : routeLink(action.label, action.route, 'project-action');
 
 function projectsScreen() {
   if (!state.supervisor.available) return [unavailable()];
   const projects = projectList(), saved = readLastProject(), last = projects.find((project) => sameProject(project.id, saved))?.id;
+  // Add project (OWNER_WORKSPACE S11, build slice UI13) is the screen's one primary action once this computer turns it on.
+  const adding = Boolean(state.projects?.addProject);
   // "Configuration file", never "settings": the Settings screen cannot list a repository (aiworks#11 review F18).
-  if (!projects.length) return [empty('No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository. Adding a project from this page is not built yet.')];
+  if (!projects.length && !adding) return [empty('No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository. Adding a project from this page is not built yet.')];
+  if (!projects.length) {
+    const first = stateCopy('projects-empty', { addProject: true });
+    return [el('section', { class: 'panel' }, el('div', { class: 'panel-body' }, el('p', {}, el('strong', {}, first.title), ` ${first.text}`), primaryAction(first.primary)))];
+  }
   return [last ? el('p', { class: 'continue' }, routeLink(`Continue with ${projectName(last)} →`, { screen: 'project', project: last }, 'continue-link')) : null,
     sinceSummary(),
-    panel('Your projects', 'One row per repository this computer works on. Those that need you come first, then those with work running.',
+    panel('Your projects', adding ? 'One row per project this computer works on. Those that need you come first, then those with work running.'
+      : 'One row per repository this computer works on. Those that need you come first, then those with work running.',
       el('ul', { class: 'project-list' }, ...projects.map((project) => el('li', { class: 'project-row', 'data-focus-scope': project.id },
         el('div', { class: 'row-line' }, routeLink(project.name, { screen: 'project', project: project.id }, 'project-name'), el('span', { class: 'subtext' }, project.kind)),
         // One state, said in words (never by colour alone), and one next action.
         el('div', { class: 'row-line' }, badge(stateTones[project.state.key] ?? 'unknown', stateWords[project.state.key] ?? 'Not known'), el('span', {}, project.state.text)),
         projectAction(project.action),
-        disclosure(`project/${project.id}`, 'Details', el('div', { class: 'subtext' }, [`Repository ${project.repository}`, `owner ${project.details.owner}`,
-          plural(project.details.work, 'piece of work', 'pieces of work'), project.details.configured ? 'listed in the AIWorks configuration file on this computer' : null].filter(Boolean).join(' · ')))))))].filter(Boolean);
+        disclosure(`project/${project.id}`, 'Details', el('div', { class: 'subtext' }, (project.repository ? [`Repository ${project.repository}`, `owner ${project.details.owner}`,
+          plural(project.details.work, 'piece of work', 'pieces of work'), project.details.configured ? 'listed in the AIWorks configuration file on this computer' : null]
+          : [`${project.kind} project`]).concat(project.connection ? [`connected from the folder ${project.connection.folder}`] : []).filter(Boolean).join(' · ')))))),
+      adding ? routeLink('Add project', { screen: 'add-project' }, 'button') : null)].filter(Boolean);
+}
+
+/**
+ * Add project (OWNER_WORKSPACE §4.11, §5.2 and §5.3, slice S11; PROJECT_CONNECTION §8, slice S6; build slice UI13). The
+ * owner types or pastes a folder path; the server checks it without changing anything and says what it found; "Connect
+ * project" then connects it through the supervisor's project connection API. Connecting only reads the folder. The
+ * draft is kept per address like every draft, so the 5-second refresh, a reload and Back keep it.
+ */
+const ADD_ADDRESS = '#/projects/add';
+const addDraft = () => ({ path: '', kind: null, id: '', found: null, outcome: null, ...(drafts.get(ADD_ADDRESS, 'add') ?? {}) });
+const saveAdd = (changes) => drafts.set(ADD_ADDRESS, 'add', { ...addDraft(), ...changes });
+// Emptied only after the server accepted the connection or the move, like every draft.
+const clearAdd = () => drafts.set(ADD_ADDRESS, 'add', {});
+// What runs now: 'check' or 'connect' on Add project, or a project's id for its Check again, Move or Disconnect.
+let addBusy = null, pendingDisconnect = null;
+const ADD_OFF = ['Adding a project from this page is not built yet.', 'Projects appear on Projects when the AIWorks configuration file on this computer lists a repository.'];
+
+/** The one action a code offers (PROJECT_CONNECTION §8, Action column): a screen link or a button. */
+function connectAction(action, retry) {
+  if (!action) return null;
+  if (action.do === 'open') return routeLink(action.label, { screen: 'project', project: action.project }, 'button secondary');
+  if (action.do === 'settings') return routeLink(action.label, '#/settings', 'button secondary');
+  return button(action.label, () => {
+    if (action.do === 'use-path') { saveAdd({ path: action.path, found: null, outcome: null, kind: null }); void checkFolder(); }
+    else if (action.do === 'kind') { saveAdd({ kind: action.kind }); void checkFolder(); }
+    else if (action.do === 'move') void moveProject(action.projectId, addDraft().path, ADD_ADDRESS);
+    else void retry();
+  }, 'secondary', Boolean(addBusy) || offline);
+}
+/** A refusal or problem: its sentence, then its one action. */
+const outcomeLines = (outcome, retry) => [el('p', {}, outcome.message), connectAction(outcome.action, retry)];
+const noticeLines = (notices) => notices?.length ? el('ul', { class: 'add-notes' }, ...notices.map((item) => el('li', {}, item.message))) : null;
+
+function addProjectScreen() {
+  if (!state.projects?.addProject) return [empty(...ADD_OFF)];
+  if (!state.supervisor.available) return [unavailable()];
+  const draft = addDraft(), result = draft.found, found = result?.found ?? null, busy = Boolean(addBusy) || offline;
+  const area = el('div', { id: 'add-result', role: 'status', 'aria-live': 'polite', tabindex: '-1' });
+  const path = el('input', { id: 'add-path', type: 'text', autocomplete: 'off', spellcheck: 'false', maxlength: 1024, required: true, 'aria-describedby': 'add-path-hint',
+    // A changed path has not been checked: what was found for the old one goes, and so does Connect project.
+    oninput: () => { saveAdd({ path: path.value, found: null, outcome: null, kind: null }); area.replaceChildren(); form.querySelector('[data-connect]')?.remove(); } });
+  path.value = draft.path;
+  if (addBusy === 'check') area.append(el('p', {}, 'Checking the folder…'));
+  else if (addBusy === 'connect') area.append(el('p', {}, 'Connecting… AIWorks only reads your folder.'));
+  else if (draft.outcome) area.append(...outcomeLines(draft.outcome, checkFolder).filter(Boolean));
+  else if (found) {
+    const kinds = found.kinds.length > 1 ? el('fieldset', {}, el('legend', {}, 'Connect as'), ...found.kinds.map((kind) => el('label', { class: 'choice' },
+      el('input', { type: 'radio', name: 'add-kind', value: kind, checked: (draft.kind ?? found.kind) === kind, onchange: () => saveAdd({ kind }) }),
+      ` ${kind === 'github' ? 'GitHub project' : 'Local Git project (AIWorks ignores the GitHub remote and never pushes)'}`))) : null;
+    const id = el('input', { id: 'add-id', type: 'text', autocomplete: 'off', spellcheck: 'false', maxlength: 40, pattern: '[a-z0-9][a-z0-9\\-]{1,39}', 'aria-describedby': 'add-id-hint',
+      oninput: () => saveAdd({ id: id.value }) });
+    id.value = draft.id;
+    area.append(el('p', {}, el('strong', {}, `${found.text}.`), ` Folder ${found.folder}.`),
+      ...found.notes.map((text) => el('p', {}, text)), noticeLines(result.notices),
+      result.confirm ? el('p', {}, result.confirm.message) : null, result.confirm ? connectAction(result.confirm.action, checkFolder) : null,
+      kinds, result.confirm ? null : el('label', { class: 'field' }, el('strong', {}, 'Short name (optional)'), id,
+        el('span', { class: 'subtext', id: 'add-id-hint' }, 'Lowercase letters, digits and hyphens. Without one, AIWorks uses the folder name.')));
+  }
+  // One primary action at a time: Check folder until the folder is checked, then Connect project.
+  const ready = Boolean(found && !result.confirm && !draft.outcome && !addBusy);
+  const form = el('form', { class: 'panel-body start-form add-form', 'data-add-form': 'add', 'data-focus-scope': 'add-project',
+    onsubmit: (event) => { event.preventDefault(); void checkFolder(); } },
+    el('label', { class: 'field' }, el('strong', {}, 'Folder path'), path,
+      el('span', { class: 'subtext', id: 'add-path-hint' }, 'Type or paste the full path of a folder on this computer, for example D:\\Projects\\my-app. AIWorks only reads it to check what it is.')),
+    el('button', { class: `button${ready ? ' secondary' : ''}`, type: 'submit', disabled: busy }, 'Check folder'),
+    area,
+    ready ? el('button', { class: 'button', type: 'button', 'data-connect': 'connect', disabled: busy, onclick: () => void connectFolder() }, 'Connect project') : null,
+    draft.outcome?.code === 'PROJECT_MOVED' ? button('Connect as a new project', () => void connectFolder({ asNewProject: true }), 'secondary', busy) : null);
+  return [el('section', { class: 'panel' }, form)];
+}
+
+/** The 5-second refresh keeps the Add project form as typed: only its buttons follow the connection. False when it must be built. */
+function refreshAdd(content) {
+  const form = content.querySelector('form[data-add-form]');
+  if (!form || !state.projects?.addProject || !state.supervisor.available) return false;
+  for (const node of form.querySelectorAll('button')) node.disabled = Boolean(addBusy) || offline;
+  return true;
+}
+/** Build the Add project form again from its draft, and keep the owner where the answer is. */
+function rebuildAdd({ focus = false } = {}) {
+  document.querySelector('form[data-add-form]')?.remove();
+  render();
+  if (focus) $('#add-result')?.focus({ preventScroll: true });
+}
+
+async function checkFolder() {
+  const draft = addDraft();
+  addBusy = 'check'; rebuildAdd();
+  try {
+    const result = await post('/api/projects/preflight', { path: draft.path, ...(draft.kind ? { kind: draft.kind } : {}) });
+    saveAdd(result.ok ? { found: result, outcome: null, kind: result.found.kind } : { found: null, outcome: result });
+  } catch (error) {
+    saveAdd({ found: null, outcome: { message: error.known ? error.message : 'AIWorks could not check the folder. Check that this page is connected, then try again.', action: null } });
+  } finally { addBusy = null; rebuildAdd({ focus: true }); }
+}
+
+async function connectFolder(extra = {}) {
+  const draft = addDraft(), found = draft.found?.found;
+  if (!found && !extra.asNewProject) return;
+  addBusy = 'connect'; rebuildAdd();
+  try {
+    const result = await post('/api/projects/connect', { path: found?.root ?? draft.path, kind: draft.kind ?? found?.kind ?? 'local-git',
+      ...(draft.id ? { id: draft.id } : {}), ...extra, requestId: crypto.randomUUID() });
+    if (result.project) {
+      // Saved: the project opens. A project saved with a problem says it there, with its Check again.
+      clearAdd();
+      addBusy = null;
+      await poll();
+      go(formatRoute({ screen: 'project', project: result.project.route }));
+      notice(result.ok ? [`Connected "${result.project.name}".`, ...(result.notices ?? []).map((item) => item.message)].join(' ') : result.message, null, null, current.address);
+      return;
+    }
+    saveAdd({ outcome: result });
+  } catch (error) {
+    saveAdd({ outcome: { message: error.known ? error.message : 'Connecting could not be confirmed. Check Projects before trying again: the same folder is never connected twice.', action: null } });
+  } finally { if (addBusy) { addBusy = null; rebuildAdd({ focus: true }); } }
+}
+
+/** Move "{name}" here (design §4.6): a local Git project moves at once; a plain folder first shows how many files match. */
+async function moveProject(projectId, path, from, confirm = false) {
+  addBusy = projectId; render();
+  try {
+    const result = await post('/api/projects/relocate', { projectId, path, ...(confirm ? { confirm } : {}), requestId: crypto.randomUUID() });
+    if (result.confirm) {
+      moves.set(projectId, { path, ...result });
+    } else if (result.ok) {
+      moves.delete(projectId);
+      if (from === ADD_ADDRESS) clearAdd();
+      addBusy = null;
+      await poll();
+      go(formatRoute({ screen: 'project', project: result.project.route }));
+      notice(`Moved "${result.project.name}" here.`, null, null, current.address);
+      return;
+    } else notice(result.message, null, null, from);
+  } catch (error) {
+    notice(error.known ? error.message : 'The move could not be confirmed. Refresh before trying again.', null, null, from);
+  } finally { if (addBusy) { addBusy = null; render(); } }
+}
+// A plain folder's move waiting for the owner's confirmation, by project: the path and how many files match.
+const moves = new Map();
+
+/** Check again (design §3.3): the server checks the folder and saves what it found. */
+async function checkConnection(connection) {
+  addBusy = connection.id; render();
+  try {
+    const result = await post('/api/projects/check', { projectId: connection.id, requestId: crypto.randomUUID() });
+    notice(result.ok ? `"${connection.name}" is ready.` : result.message, null, null, current.address);
+  } catch (error) {
+    notice(error.known ? error.message : 'Check again could not be confirmed. It is safe to try again.', null, null, current.address);
+  } finally { addBusy = null; await poll(); }
+}
+
+async function disconnectConnection(connection) {
+  addBusy = connection.id; pendingDisconnect = null; render();
+  try {
+    const result = await post('/api/projects/disconnect', { projectId: connection.id, version: connection.version, requestId: crypto.randomUUID() });
+    addBusy = null;
+    await poll();
+    go('#/projects');
+    notice(result.message, null, null, current.address);
+  } catch (error) {
+    notice(error.known ? error.message : 'Disconnecting could not be confirmed. Refresh before trying again.', null, null, current.address);
+  } finally { if (addBusy) { addBusy = null; await poll(); } }
+}
+
+/**
+ * A connected project's connection on its Now screen: its status in one sentence with Check again when it is not ready,
+ * Move here when its folder is gone, and in details its kind, folder, copy and Disconnect. A project without GitHub says
+ * that starting work is not available yet and what it waits for (OWNER_WORKSPACE §5.3; #24, #32).
+ */
+function connectionPanel(row) {
+  const c = row.connection, local = !row.repository, busy = Boolean(addBusy) || offline || !state.supervisor.available;
+  const ready = c.status === 'ready', move = moves.get(c.id);
+  const sentence = local && ready ? c.startWork.text : ready ? null : c.message;
+  const check = button('Check again', () => void checkConnection(c), ready || c.reason === 'REGISTRY_MISSING' ? 'secondary small' : '', busy);
+  let moved = null;
+  if (local && c.reason === 'ROOT_MISSING') {
+    const where = el('input', { id: `move-${c.id}`, type: 'text', autocomplete: 'off', spellcheck: 'false', maxlength: 1024, value: move?.path ?? null });
+    moved = el('form', { class: 'start-form', 'data-focus-scope': `move/${c.id}`, onsubmit: (event) => { event.preventDefault(); void moveProject(c.id, where.value, current.address); } },
+      el('label', { class: 'field' }, el('strong', {}, `Moved it? The folder "${c.name}" is in now`), where),
+      move ? el('p', {}, move.message) : null,
+      move ? button(move.action.label, () => void moveProject(c.id, move.path, current.address, true), '', busy)
+        : el('button', { class: 'button secondary', type: 'submit', disabled: busy }, c.sourceKind === 'folder' ? 'Compare this folder' : `Move "${c.name}" here`));
+  }
+  const facts = [`${c.kind} project`, `folder ${c.folder}`, c.repository ? `repository ${c.repository}` : null, c.branch ? `branch ${c.branch}` : null,
+    c.baseline ? `AIWorks’s copy taken ${dateTime(c.baseline.at)}` : null, `${c.statusWords}`].filter(Boolean).join(' · ');
+  const leaving = pendingDisconnect === c.id
+    ? el('div', {}, el('p', {}, `Disconnect "${c.name}"? AIWorks keeps its history and its copy, and never touches your folder.`),
+      button('Disconnect', () => void disconnectConnection(c), 'danger small', busy), button('Keep it', () => { pendingDisconnect = null; render(); }, 'secondary small'))
+    : button('Disconnect…', () => { pendingDisconnect = c.id; render(); }, 'text-danger small', busy);
+  return el('section', { class: 'panel', 'data-focus-scope': `connection/${c.id}` }, el('div', { class: 'panel-body' },
+    sentence ? el('p', { role: 'status', 'aria-live': 'polite', 'data-state': c.status }, ...(ready ? [el('strong', {}, sentence)]
+      : [badge(stateTones[c.status] ?? 'unknown', c.statusWords), ' ', sentence])) : null,
+    !ready && c.reason !== 'REGISTRY_MISSING' ? check : null, moved,
+    disclosure(`connection/${c.id}`, local ? 'Details' : 'Connection', el('div', {}, el('p', { class: 'subtext' }, facts),
+      local ? el('p', { class: 'subtext' }, c.startWork.detail) : null, ready || c.reason === 'REGISTRY_MISSING' ? check : null, leaving))));
 }
 
 /**
@@ -876,7 +1084,8 @@ const mergeRow = (repository) => (state.merges?.repositories ?? []).find((repo) 
 
 /** Diagnostics: how fresh each project's merge check is, in place of "Refresh GitHub" (plan §6.12 C1). */
 function mergeChecksPanel() {
-  const projects = projectList();
+  // Merges are checked for GitHub projects only.
+  const projects = projectList().filter((project) => project.repository);
   return panel('Merge checks', `Read from each project’s local checkout with git, at most every 5 minutes while this page is open. No GitHub API call is made, so there is no refresh button: the check runs by itself.${state.merges?.refreshing ? ' Checking now…' : ''}`,
     projects.length ? el('ul', { class: 'settings-links' }, ...projects.map((project) => el('li', { 'data-focus-scope': `merges/${project.id}` },
       el('strong', {}, project.name), el('div', { class: 'subtext' }, mergeFreshness(mergeRow(project.repository))))))
@@ -908,8 +1117,9 @@ function settingsScreen() {
   const connections = panel('Projects', 'Each project’s kind and whether this computer is connected to it.', projects.length
     ? el('ul', { class: 'settings-links' }, ...projects.map((project) => el('li', { 'data-focus-scope': `connection/${project.id}` },
       el('strong', {}, `${project.name} · ${project.kind}`),
-      el('div', { class: 'subtext' }, project.details.configured ? 'Listed in the AIWorks configuration file on this computer.' : 'Has work on this computer, but the AIWorks configuration file does not list it.'),
-      el('div', { class: 'subtext' }, mergeFreshness(mergeRow(project.repository))))))
+      project.connection ? el('div', { class: 'subtext' }, `${project.connection.statusWords}. Connected from the folder ${project.connection.folder}.`) : null,
+      project.repository ? el('div', { class: 'subtext' }, project.details.configured ? 'Listed in the AIWorks configuration file on this computer.' : project.connection ? 'The AIWorks configuration file does not list it.' : 'Has work on this computer, but the AIWorks configuration file does not list it.') : null,
+      project.repository ? el('div', { class: 'subtext' }, mergeFreshness(mergeRow(project.repository))) : null)))
     : empty('No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository.'));
   return [computer, workers, connections, releasePanel(settings.releases), settingsLinks()];
 }
@@ -936,6 +1146,10 @@ function primaryAction(primary) {
  * polite live region, so a screen reader hears it only when its text changes.
  */
 function nowScreen(project) {
+  // A connected project (UI13): one without GitHub has no work yet, so its connection is its Now; a GitHub project's
+  // connection follows its work.
+  const row = projectList().find((item) => sameProject(item.id, project));
+  if (row?.connection && !row.repository) return [connectionPanel(row)];
   // Start work exists since slice S9 (Plan only), so the no-work state offers it as its primary action.
   const view = nowView(project, { ...state, offline }, { now: Date.now(), startWork: true }), { state: now, details } = view;
   const startWork = now.primary?.route?.screen === 'start' || offline || !state.supervisor.available ? null : routeLink('Start work', { screen: 'start', project }, 'button secondary');
@@ -953,7 +1167,7 @@ function nowScreen(project) {
     details.workId || others.length ? disclosure(`now/${project}/details`, 'Details', el('div', { class: 'subtext' }, [
       details.workId ? `Campaign ${details.workId}` : null, details.trackingUrl ? link(`tracking issue #${details.trackingIssue} ↗`, details.trackingUrl) : null,
       others.length ? `Other work in this project: ${others.join(', ')}` : null].filter(Boolean).flatMap((part, index) => index ? [' · ', part] : [part]))) : null)),
-  since].filter(Boolean);
+  row?.connection ? connectionPanel(row) : null, since].filter(Boolean);
 }
 
 /** A piece of work's steps in the order they can run: each after the steps it depends on, otherwise as declared. */
@@ -1000,7 +1214,9 @@ function workPanel(project, c) {
   const terminal = ['finished', 'cancelled'].includes(c.control), note = terminal ? null : controlsNote(c);
   const rows = runOrder(c).map((task) => el('tr', { 'data-focus-scope': `${c.id}/${task.id}` },
     el('td', { class: 'c-work' }, routeLink(stepLabels(task).lead, { screen: 'step', project, work: c.id, step: task.id }, 'task-name'),
-      stepLabels(task).more ? el('div', { class: 'subtext' }, stepLabels(task).more) : null),
+      stepLabels(task).more ? el('div', { class: 'subtext' }, stepLabels(task).more) : null,
+      // Why it now runs on a stronger model (MODEL_ROUTING R6): the model itself is in Details.
+      movedUpText(task.routing) ? el('div', { class: 'subtext' }, movedUpText(task.routing)) : null),
     el('td', { class: 'c-state' }, el('div', { class: 'cell-labels' }, stepBadge(c, task)),
       ...[whoLine(c, task), task.stopped?.title, waitLine(task.wait)].filter(Boolean).map((text) => el('div', { class: 'subtext' }, text)),
       verdictLabel(c, task),
@@ -1012,7 +1228,17 @@ function workPanel(project, c) {
       el('div', {}, resumeButton(c), moreMenu(c))),
     el('div', { class: 'steps' }, table(['What it delivers', 'Where it stands'], rows)),
     disclosure(`${c.id}/work-details`, `Details · ${plural(c.tasks.length, 'step')} · ${plural(c.runsUsed, 'run')} · ${cost}`,
-      el('div', {}, stepsTable(c), terminal ? null : providerStatus(c), body)));
+      el('div', {}, stepsTable(c), terminal ? null : providerStatus(c), body, modelNotes(c))));
+}
+
+/** Each step's models and tiers and its cost by unit, then the work's (MODEL_ROUTING R6): Details of the Work screen. */
+function modelNotes(c) {
+  const steps = runOrder(c).filter((task) => modelsText(task.routing) || unitCostText(task.costByUnit));
+  if (!steps.length && !unitCostText(c.costByUnit)) return null;
+  return el('div', { class: 'notes' }, el('h3', { class: 'section-title' }, 'Models and cost by unit'),
+    steps.length ? el('ul', {}, ...steps.map((task) => el('li', {}, `${task.outcome ?? task.title}: `,
+      [modelsText(task.routing), movedUpText(task.routing), unitCostText(task.costByUnit)].filter(Boolean).join('. ')))) : null,
+    unitCostText(c.costByUnit) ? el('p', {}, `This work, by unit, never added together: ${unitCostText(c.costByUnit)}.`) : null);
 }
 
 /** One attempt of a step and how it ended, from the supervisor's records: "Builder (Claude): rejected · started … · ended …". */
@@ -1092,6 +1318,27 @@ function costText({ runs, reportedUsd, unreportedRuns, runningRuns }) {
 }
 
 /**
+ * Model, tier and cost by unit (MODEL_ROUTING slice R6, build slice UI12), in words. Each unit stays apart: reported
+ * dollars, then tokens per AI provider, then the runs whose cost is unknown. Nothing is added across units or providers,
+ * and an unknown cost is counted in runs, never shown as $0.00.
+ */
+const tokenCount = (n) => n.toLocaleString('en-US');
+const modelText = (used) => used ? `${provider(used.executor)} ${used.model ?? '(model not recorded)'}${used.tier ? ` (${used.tier})` : ''}` : null;
+function modelsText(routing) {
+  const parts = [routing?.implement ? `Model: ${modelText(routing.implement)}` : null, routing?.verify ? `checked by ${modelText(routing.verify)}` : null].filter(Boolean);
+  return parts.length ? parts.join(' · ') : null;
+}
+function unitCostText(cost) {
+  if (!cost) return null;
+  const parts = [cost.usd !== null ? `${usd(cost.usd)} reported (${plural(cost.usdRuns, 'run')})` : null,
+    ...cost.tokens.map((t) => `${provider(t.executor)}: ${tokenCount(t.input)} input${t.cachedInInput && t.cacheRead ? ` (${tokenCount(t.cacheRead)} of them cached)` : ''}${
+      !t.cachedInInput && t.cacheRead ? ` + ${tokenCount(t.cacheRead)} read from cache` : ''}${t.cacheCreation ? ` + ${tokenCount(t.cacheCreation)} written to cache` : ''} and ${tokenCount(t.output)} output tokens`),
+    cost.unknownRuns ? `${plural(cost.unknownRuns, 'run')} with unknown cost` : null].filter(Boolean);
+  return parts.length ? parts.join(' · ') : null;
+}
+const movedUpText = (routing) => routing?.movedUp?.reason ?? null;
+
+/**
  * A project's Cost tab (OWNER_WORKSPACE §4.10, slice S7). First the project's reported total, from today's per-campaign
  * totals, with the runs that reported no cost counted apart; then "See the breakdown": per piece of work and per step,
  * its runs, reported cost, unreported runs, retries and checker rejections. No primary action.
@@ -1109,10 +1356,13 @@ function costScreen(project, all) {
     costRunsLine(total)].filter(Boolean);
   const work = (c) => el('section', { class: 'panel', 'data-focus-scope': `cost/${c.id}` },
     el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, campaignTitle(c)),
-      el('p', {}, `${plural(c.runsUsed, 'run')} · ${costText({ runs: c.runsUsed, ...c.cost })}`))),
+      el('p', {}, `${plural(c.runsUsed, 'run')} · ${costText({ runs: c.runsUsed, ...c.cost })}`),
+      unitCostText(c.costByUnit) ? el('p', { class: 'subtext' }, `By unit, never added together: ${unitCostText(c.costByUnit)}`) : null)),
     el('div', { class: 'steps' }, table(['Step', 'Runs', 'Cost', 'Retries', 'Checker rejections'], runOrder(c).map((task) => el('tr', { 'data-focus-scope': `cost/${c.id}/${task.id}` },
-      el('td', { class: 'c-work' }, routeLink(task.outcome ?? task.title, { screen: 'step', project, work: c.id, step: task.id }, 'task-name')),
-      cell(String(task.cost.runs)), cell(costText(task.cost)), cell(String(task.cost.retries)), cell(String(task.cost.checkerRejections)))))),
+      el('td', { class: 'c-work' }, routeLink(task.outcome ?? task.title, { screen: 'step', project, work: c.id, step: task.id }, 'task-name'),
+        ...[modelsText(task.routing), movedUpText(task.routing)].filter(Boolean).map((text) => el('div', { class: 'subtext' }, text))),
+      cell(String(task.cost.runs)), cell(costText(task.cost), unitCostText(task.costByUnit) ? el('div', { class: 'subtext' }, unitCostText(task.costByUnit)) : null),
+      cell(String(task.cost.retries)), cell(String(task.cost.checkerRejections)))))),
     costNotes(c).body);
   return [el('section', { class: 'panel' }, el('h2', {}, headline), ...lines.map((line) => el('p', {}, line))),
     disclosure(`cost/${project}`, 'See the breakdown', el('div', {}, ...all.map(work)))];
@@ -1188,7 +1438,8 @@ function render() {
   else if (diagnostics) patch(content, [trackOverview(), roadmapView(), workView(), mergeChecksPanel(),
     panel('Execution journal', 'Latest 80 events · raw agent transcripts and secrets are never shown', activityList())]);
   else if (route.screen === 'settings') patch(content, settingsScreen());
-  else if (route.screen === 'add-project') patch(content, [empty('Adding a project from this page is not built yet.', 'Projects appear on Projects when the AIWorks configuration file on this computer lists a repository.')]);
+  else if (route.screen === 'add-project' && refreshAdd(content)) { /* the form stays as the owner typed it */ }
+  else if (route.screen === 'add-project') patch(content, addProjectScreen());
   else if (route.screen === 'start' && refreshStart(content, route.project)) { /* the form stays as the owner typed it */ }
   else if (route.project) patch(content, projectScreen(route));
   else patch(content, projectsScreen());
