@@ -197,6 +197,48 @@ export function connectGithubProject(input, { store, config = {}, dataDir, gover
   return { ok: !code, code, status, message: code ? connectCopy(code, detail) : null, project: saved, preflight: found };
 }
 
+/**
+ * Check again for a GitHub project (design 3.3, full check; the action of the 8.2 codes): the light check of its folder,
+ * then the same reads as connect: gh, the registry, the base branch and config.json. Nothing is fetched or created. The
+ * outcome is saved as the project's status, reason, governance and capabilities. Returns { ok, code, status, message,
+ * detail, project }. Options as for connectGithubProject.
+ */
+export function checkGithubProject(store, id, { config = {}, governanceRoot, gh, git = ['git'], lsRemote, now = Date.now(), ...options }) {
+  const current = project(store, id);
+  if (!current || current.disconnected_at != null) throw new ProjectError('PROJECT_NOT_FOUND', `No connected project "${id}"`, { projectId: id });
+  if (current.source_kind !== 'github') throw new ProjectError('PROJECT_INVALID', `Project "${id}" is not a GitHub project`, { projectId: id });
+  const source = checkProject(current, { ...options, git, governanceRoot, projects: projects(store) });
+  const repository = current.github_repository;
+  let code = source.ok ? null : source.code;
+  let detail = source.ok ? {} : source.detail;
+  let governance = current.governance;
+  let baseBranch = current.base_branch;
+  if (!code) {
+    const github = readGithub(gh ?? ((args) => run(config.commands?.gh ?? ['gh'], args, {})), repository);
+    if (github.code) code = github.code;
+    else {
+      baseBranch ??= github.defaultBranch;
+      const registry = readRegistry(repository, governanceRoot);
+      if (registry.code) ({ code, detail = {} } = registry);
+      else governance = registry.governance;
+    }
+  }
+  const branchExists = lsRemote ?? ((root, branch) => lsRemoteHas(git, root, branch));
+  if (!code && (!BRANCH.test(baseBranch ?? '') || !branchExists(current.root_path, baseBranch))) code = 'BRANCH_MISSING';
+  const configured = configEntry(config, repository);
+  if (!code && configured && (canonicalKey(configured.path) !== current.root_key ||
+      (configured.worktreeRoot && canonicalKey(configured.worktreeRoot) !== canonicalKey(current.worktree_root)))) {
+    code = 'CONFIG_CONFLICT';
+    detail = { configPath: configured.path, root: current.root_path };
+  }
+  detail = { ...detail, repository, branch: baseBranch, name: current.name };
+  const status = code ? asOwnerStatus(CONNECT_CODES[code] ?? source.status) : 'ready';
+  const saved = updateProject(store, id, current.version, { status, reason: code, governance, capabilities: capabilities(!code, code),
+    base_branch: BRANCH.test(baseBranch ?? '') ? baseBranch : current.base_branch,
+    last_preflight: { at: now, code, notices: (source.notices ?? []).map((notice) => notice.code) } }, now);
+  return { ok: !code, code, status, message: code ? connectCopy(code, detail) : null, detail, project: saved };
+}
+
 /** `git ls-remote --heads origin <branch>`: reads the remote's branch list only. */
 function lsRemoteHas(git, root, branch) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
@@ -357,7 +399,7 @@ function checkLocal(store, current, { governanceRoot, git = ['git'], now = Date.
   }
   const status = code ? asOwnerStatus(CONNECT_CODES[code] ?? source.status) : 'ready';
   const saved = saveState(store, current, status, code, now);
-  return { ok: !code, code, status, message: code ? connectCopy(code, { ...detail, name: current.name }) : null,
+  return { ok: !code, code, status, message: code ? connectCopy(code, { ...detail, name: current.name }) : null, detail,
     notices: code ? [] : localNotices(source), project: saved };
 }
 
