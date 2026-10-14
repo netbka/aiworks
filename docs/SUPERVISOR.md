@@ -151,8 +151,9 @@ Merging used to be delegated to a monitoring session (`merges.delegatedTo: "moni
   1. the repository is listed and the PR is not in `merges.held`;
   2. the PR is the one this campaign task opened, on its `campaign/<campaign>/<task>` branch, still open, against the declared base branch, and its head is the task's verified SHA;
   3. the verified SHA contains the current `origin/<base>`, so the merge result is the verified tree;
-  4. GitHub reports it mergeable;
-  5. the campaign is neither paused nor cancelled, and this supervisor code passes the AW-005 merged-code check.
+  4. with `ciRepair` on, CI at the verified head passed, or the repository runs no CI on it. A head whose CI is unread, pending, inconclusive or failed waits; a failed one is reopened by CI repair first. With `ciRepair` off the gate does not read CI, so turn it on with the merge gate;
+  5. GitHub reports it mergeable;
+  6. the campaign is neither paused nor cancelled, and this supervisor code passes the AW-005 merged-code check.
 
   A PR that fails a condition waits. The journal records `merge-waiting` with the reason each time the reason changes.
 - **When the base has moved** (condition 3 fails), the supervisor does not merge. It reopens the task as an integration repair round on the same branch and PR (section 3, "Integration repair of a published PR"), even with `integrationRepair` off. The journal records `merge-base-moved`. The round merges the base in, a fresh independent verifier checks the exact new head, and the repaired head is pushed to the same PR. Only then can the PR merge. This also catches a semantic conflict that merges cleanly as text. It counts against `maxRepairRounds`.

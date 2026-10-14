@@ -42,6 +42,15 @@ export function mergeSettings(config) {
 const journaled = (store, campaignId, kind) => new Set(store.all('SELECT detail FROM journal WHERE campaign_id = ? AND kind = ?', campaignId, kind)
   .map((row) => `${row.detail?.task}:${row.detail?.sha}`));
 
+/** The latest CI journal kind recorded for one task head (`ci-passed`, `ci-failed`, ...), or null when never read. */
+function ciAt(store, campaignId, taskId, sha) {
+  const row = store.get(`SELECT kind FROM journal WHERE campaign_id = ? AND kind IN ('ci-pending', 'ci-passed', 'ci-failed', 'ci-inconclusive', 'ci-none')
+    AND json_extract(detail, '$.task') = ? AND json_extract(detail, '$.sha') = ? ORDER BY seq DESC LIMIT 1`, campaignId, taskId, sha);
+  return row?.kind ?? null;
+}
+/** CI lets this head merge: it passed, or the repository runs no CI on it. */
+const ciMergeable = (store, campaignId, taskId, sha) => ['ci-passed', 'ci-none'].includes(ciAt(store, campaignId, taskId, sha));
+
 /**
  * Published commit tasks not yet recorded as merged, in campaigns that are neither paused nor cancelled, whose target
  * repository the owner listed. Oldest campaign first, then plan order.
@@ -165,6 +174,11 @@ function mergeOne(controller, item, settings, repoPath, baseSha) {
     if (!ctx) return false;
     return controller.fenced(ctx, () => repair(controller, ctx, item, repoPath, baseSha));
   }
+  // With CI repair on, CI is read: merge only a head whose CI passed or that has no CI, never one still running or red.
+  if (controller.ci && !ciMergeable(store, campaignId, task.task_id, sha)) {
+    return wait(controller, item, ciAt(store, campaignId, task.task_id, sha) === 'ci-failed' ? 'CI failed at the verified head; CI repair runs first'
+      : 'CI has not passed at the verified head yet');
+  }
   if (pr.mergeable !== true) return wait(controller, item, pr.mergeable === false ? 'GitHub reports it not mergeable' : 'GitHub has not computed mergeability yet');
 
   const ctx = lease(controller, campaignId);
@@ -172,7 +186,8 @@ function mergeOne(controller, item, settings, repoPath, baseSha) {
   // The request is committed before the call: after a crash the next pass reads the pull request before any retry.
   const still = () => {
     const c = store.campaign(campaignId), t = store.task(campaignId, task.task_id);
-    return ['registered', 'finished'].includes(c.control) && t.state === 'done' && !t.blocked && t.verified_sha === sha && t.pr_url === url;
+    return ['registered', 'finished'].includes(c.control) && t.state === 'done' && !t.blocked && t.verified_sha === sha && t.pr_url === url
+      && (!controller.ci || ciMergeable(store, campaignId, task.task_id, sha));
   };
   if (!controller.fenced(ctx, () => {
     if (!still()) return false;
