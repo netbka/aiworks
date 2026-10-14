@@ -38,7 +38,7 @@ export function rateLimitReset({ status, headers, body }, stderr = '', now = Dat
 }
 
 /** One REST call; returns the parsed JSON body or throws (RateLimitError for a rate-limit refusal). */
-function rest(gh, what, args, { timeoutMs } = {}) {
+export function rest(gh, what, args, { timeoutMs } = {}) {
   const out = exec(gh, ['api', '--include', ...args], { timeoutMs });
   const response = parseResponse(out.stdout);
   if (!out.ok) {
@@ -67,6 +67,16 @@ export function integratedPullRequest({ gh, repository, url, headSha, baseBranch
     return receipt?.html_url === url && receipt.merged === true && receipt.head?.sha === headSha &&
       receipt.base?.ref === baseBranch && /^[0-9a-f]{40}$/.test(receipt.merge_commit_sha ?? '') ? receipt.merge_commit_sha : null;
   } catch { return null; }
+}
+
+/**
+ * One pull request as the merge gate reads it (aiworks#138): GET repos/{repo}/pulls/{n}. `mergeable` is GitHub's own
+ * answer: true, false, or null while GitHub is still computing it. Throws when the read fails.
+ */
+export function pullRequest({ gh, repository, number }) {
+  const pr = rest(gh, 'GET pull', ['--method', 'GET', `repos/${repository}/pulls/${number}`], { timeoutMs: 30_000 });
+  return { url: pr?.html_url ?? null, state: pr?.state ?? null, merged: pr?.merged === true, mergeable: pr?.mergeable ?? null,
+    headRef: pr?.head?.ref ?? null, headSha: pr?.head?.sha ?? null, baseRef: pr?.base?.ref ?? null, mergeCommit: pr?.merge_commit_sha ?? null };
 }
 
 const CI_PASSED = new Set(['success', 'neutral', 'skipped']);

@@ -12,7 +12,7 @@ Project governance comes from a separately configured read-only governance direc
 
 Agents may change AIWorks code, scripts, schemas, tests and documentation. An operator may explicitly register a local campaign under existing owner authority. Registration never requires publishing its declaration. Runtime code must be merged before it starts new work; campaign scope, authorization version and independent verification remain binding.
 
-The supervisor may create isolated worktrees, campaign branches, pull requests and issue comments only in a registered campaign's target repository. It never merges, deploys or changes provider resources.
+The supervisor may create isolated worktrees, campaign branches, pull requests and issue comments only in a registered campaign's target repository. It merges only under the merge gate, when the owner opts in for that repository (AW-001, [the runbook](docs/SUPERVISOR.md#merge-gate)); it never squashes, rebases, force-pushes, bypasses branch protection or deletes a branch. It never deploys, releases or changes provider resources.
 
 Do not change another project from work here, mutate the governance directory, restart production, create provider resources, read secret files, expose secret values, widen execution grants or weaken security controls without explicit operator authorization.
 

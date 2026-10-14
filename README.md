@@ -41,7 +41,7 @@ You end up as a full-time project manager for your AI helpers instead of working
 | 🔍 **Gets a second opinion on every change** | A fresh AI session that did not write the code checks each result. It runs the tests again on that exact version and looks for problems. Work that fails goes back for another round, with the findings attached. |
 | 📬 **Delivers to GitHub, where you already work** | Each finished step arrives as a pull request with the builder's report and the checker's verdict inside. Reports and research arrive as comments on the step's issue. |
 | 🙋 **Asks you only for real decisions** | One list, **Needs me**, shows the few things only you can do: make a decision, review a pull request, look at a step that stopped for good. AIWorks handles the rest. |
-| 🛡️ **Stays inside the lines you draw** | Runs only plans you approved. Never merges, deploys or changes your accounts by itself. Runs on your PC, and its settings hold no passwords or keys. |
+| 🛡️ **Stays inside the lines you draw** | Runs only plans you approved. Merges a checked pull request only if you switch that on for the project. Never deploys or changes your accounts by itself. Runs on your PC, and its settings hold no passwords or keys. |
 
 ```mermaid
 flowchart LR
@@ -50,7 +50,7 @@ flowchart LR
     build --> check{A fresh AI<br/>checks the result}
     check -- needs work --> build
     check -- passes --> pr[Pull request<br/>with both reports]
-    pr --> merge([You merge it,<br/>or delegate merging])
+    pr --> merge([You merge it, or let<br/>AIWorks merge it once checked])
     pr -. next step .-> build
 ```
 
@@ -135,7 +135,7 @@ Everything ends up in GitHub, next to the rest of your project:
 - Each piece of work has a **tracking issue**, and each step has its own issue. AIWorks posts progress notes and blockers there.
 - Each code change is a **pull request** that contains the builder's report and the independent check.
 - Reports and research are posted as **comments** on the step's issue.
-- **AIWorks never merges.** You merge, or you hand merging of checked pull requests to an assistant you trust, as the author does.
+- **AIWorks merges only if you switch it on.** By default you merge, or you hand merging of checked pull requests to an assistant you trust. You can instead let AIWorks merge them itself, one project at a time. It then merges a pull request only when the result on your main branch is exactly the version the checker approved. If main moved in the meantime, it brings the change up to date and has it checked again first. It never deploys.
 
 ## In production and on the roadmap
 
@@ -160,6 +160,7 @@ Everything ends up in GitHub, next to the rest of your project:
 
 | Capability | Status |
 | --- | --- |
+| Merging checked pull requests | AIWorks merges a checked pull request itself, only in projects you list, and only when what lands on main is exactly what was checked. You can hold any pull request back. One setting turns it on. Merging is not deploying. |
 | Conflict repair | When another merge leaves a pull request in conflict, AIWorks fixes it and checks it again. One setting turns it on. |
 | Fixing a pull request whose online tests fail | AIWorks reads the project's GitHub test results and sends a failure back for repair. One setting turns it on, for projects that run tests on GitHub. |
 | Several steps at once inside one piece of work | Built and tested. You turn it on and choose how much of the PC it may use. |
@@ -169,7 +170,7 @@ Everything ends up in GitHub, next to the rest of your project:
 | Smarter choice of AI model per step | The rules are written, and every run already records why its AI worker was chosen. Not yet used to decide. |
 | Several AI accounts with automatic switching | Finding and choosing an account is built. Starting a run on the chosen account comes next. |
 | Slowing down when the PC is busy or an account is throttled | The building blocks are written but not connected yet. |
-| Automatic release, opt-in per project | The safety parts are built: "review only" by default, a stop switch, and one lock per destination. Nothing can merge or deploy yet. |
+| Automatic release, opt-in per project | The safety parts are built: "review only" by default, a stop switch, and one lock per destination. Auto Release cannot merge or deploy yet. |
 
 ### 🗺️ On the roadmap
 
@@ -241,7 +242,7 @@ The assistant runs the commands below. You handle any sign-in it cannot do for y
 
 **Safety rules.** These are accepted decisions, recorded in [docs/DECISIONS.md](docs/DECISIONS.md):
 
-- The only writes outside this repository are worktrees, branches, pull requests and issue comments, for work the owner registered. No merging, deploying or changes to provider resources.
+- The only writes outside this repository are worktrees, branches, pull requests and issue comments, for work the owner registered. Merging is off by default. The supervisor merges a pull request only under the merge gate, and only in a repository the owner lists in `config.json` (`merges.delegatedTo: "supervisor"`, decision AW-001, #138): the pull request is its own, its head is the checked commit, and what lands on the base branch is exactly the checked version. It never deploys, releases or changes provider resources.
 - AIWorks runs only from its own merged code; a supervisor running unmerged code starts no new work. Plans are private files on your computer, registered explicitly, and their scope can only change with a higher authorization version.
 - The dashboard listens on `127.0.0.1` only and needs the same origin plus a per-session token for every action. Text that looks like a secret is refused.
 - There are no budget caps by default. A plan can set run, retry, repair and cost limits.

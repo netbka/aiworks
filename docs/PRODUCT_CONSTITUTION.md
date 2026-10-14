@@ -16,7 +16,7 @@ The dashboard should make progress and blockers understandable in under a minute
 
 - Work starts only under explicit campaign authority. A backlog item alone is not an assignment.
 - Every deliverable receives separate verification of its exact revision or report digest.
-- The supervisor may create worktrees, task branches, pull requests and issue comments. It never merges, deploys or changes provider resources.
+- The supervisor may create worktrees, task branches, pull requests and issue comments. It merges a verified pull request only under the merge gate, in a repository the owner opted in ([AW-001](DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception)). It never deploys, releases or changes provider resources.
 - Worker permission denials are never routed around through another provider.
 - The dashboard remains loopback-only without a separately reviewed authentication layer.
 - Governance is supplied by a separately configured read-only directory. AIWorks does not publish an operator's project inventory or policies.
