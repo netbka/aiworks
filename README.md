@@ -242,7 +242,7 @@ The assistant runs the commands below. You handle any sign-in it cannot do for y
 
 **Safety rules.** These are accepted decisions, recorded in [docs/DECISIONS.md](docs/DECISIONS.md):
 
-- The only writes outside this repository are worktrees, branches, pull requests and issue comments, for work the owner registered. No merging, deploying or changes to provider resources.
+- The only writes outside this repository are worktrees, branches, pull requests and issue comments, for work the owner registered. Merging is off by default. The supervisor merges a pull request only under the merge gate, and only in a repository the owner lists in `config.json` (`merges.delegatedTo: "supervisor"`, decision AW-001, #138): the pull request is its own, its head is the checked commit, and what lands on the base branch is exactly the checked version. It never deploys, releases or changes provider resources.
 - AIWorks runs only from its own merged code; a supervisor running unmerged code starts no new work. Plans are private files on your computer, registered explicitly, and their scope can only change with a higher authorization version.
 - The dashboard listens on `127.0.0.1` only and needs the same origin plus a per-session token for every action. Text that looks like a secret is refused.
 - There are no budget caps by default. A plan can set run, retry, repair and cost limits.
