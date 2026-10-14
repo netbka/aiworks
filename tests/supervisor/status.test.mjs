@@ -228,6 +228,8 @@ test('status gives every waiting step one plain reason and the next automatic ac
   assert.equal(wait.B.next, `Tries again at ${new Date(now + 60_000).toISOString()}`);
   assert.deepEqual([wait.C.code, wait.C.until], ['provider-cooldown', new Date(now + 30_000).toISOString()]);
   assert.deepEqual([wait.D.code, wait.D.text], ['integration', 'Waiting for "Login page" to be merged into main']);
+  assert.equal(wait.D.next, 'Checks the base branch again automatically; starts after "Login page" is merged');
+  assert.doesNotMatch(wait.D.next, /dependenc/i, 'the next action names the step, not an internal term');
   assert.deepEqual(wait.D.holder, { campaignId: id, taskId: 'A', reason: 'dependency-integration', prUrl: null, verifiedSha: 'a'.repeat(40) });
   patchTask(store, id, 'A', { pr_url: 'https://github.com/example-org/sampleapp/pull/113' }, now);
   wait = waits(store, id, now);

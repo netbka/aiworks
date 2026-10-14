@@ -348,7 +348,7 @@ export function waitReason(task, { store, campaign: c, tasks, open, held = new M
     return reason('integration', refreshFailed
       ? `Cannot check whether "${title(missing)}" is merged into ${decl.target.baseBranch}`
       : `Waiting for "${title(missing)}" to be merged into ${decl.target.baseBranch}${pr ? ` (PR #${pr[1]})` : ''}`,
-    'Checks the base branch again automatically; starts after the verified dependency is integrated', task.retry_at, holder);
+    `Checks the base branch again automatically; starts after "${title(missing)}" is merged`, task.retry_at, holder);
   }
   if (task.retry_at > now) {
     return /^(quota:|waiting for executor availability)/.test(error)
