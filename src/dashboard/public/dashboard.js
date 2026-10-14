@@ -1214,7 +1214,9 @@ function workPanel(project, c) {
   const terminal = ['finished', 'cancelled'].includes(c.control), note = terminal ? null : controlsNote(c);
   const rows = runOrder(c).map((task) => el('tr', { 'data-focus-scope': `${c.id}/${task.id}` },
     el('td', { class: 'c-work' }, routeLink(stepLabels(task).lead, { screen: 'step', project, work: c.id, step: task.id }, 'task-name'),
-      stepLabels(task).more ? el('div', { class: 'subtext' }, stepLabels(task).more) : null),
+      stepLabels(task).more ? el('div', { class: 'subtext' }, stepLabels(task).more) : null,
+      // Why it now runs on a stronger model (MODEL_ROUTING R6): the model itself is in Details.
+      movedUpText(task.routing) ? el('div', { class: 'subtext' }, movedUpText(task.routing)) : null),
     el('td', { class: 'c-state' }, el('div', { class: 'cell-labels' }, stepBadge(c, task)),
       ...[whoLine(c, task), task.stopped?.title, waitLine(task.wait)].filter(Boolean).map((text) => el('div', { class: 'subtext' }, text)),
       verdictLabel(c, task),
@@ -1226,7 +1228,17 @@ function workPanel(project, c) {
       el('div', {}, resumeButton(c), moreMenu(c))),
     el('div', { class: 'steps' }, table(['What it delivers', 'Where it stands'], rows)),
     disclosure(`${c.id}/work-details`, `Details · ${plural(c.tasks.length, 'step')} · ${plural(c.runsUsed, 'run')} · ${cost}`,
-      el('div', {}, stepsTable(c), terminal ? null : providerStatus(c), body)));
+      el('div', {}, stepsTable(c), terminal ? null : providerStatus(c), body, modelNotes(c))));
+}
+
+/** Each step's models and tiers and its cost by unit, then the work's (MODEL_ROUTING R6): Details of the Work screen. */
+function modelNotes(c) {
+  const steps = runOrder(c).filter((task) => modelsText(task.routing) || unitCostText(task.costByUnit));
+  if (!steps.length && !unitCostText(c.costByUnit)) return null;
+  return el('div', { class: 'notes' }, el('h3', { class: 'section-title' }, 'Models and cost by unit'),
+    steps.length ? el('ul', {}, ...steps.map((task) => el('li', {}, `${task.outcome ?? task.title}: `,
+      [modelsText(task.routing), movedUpText(task.routing), unitCostText(task.costByUnit)].filter(Boolean).join('. ')))) : null,
+    unitCostText(c.costByUnit) ? el('p', {}, `This work, by unit, never added together: ${unitCostText(c.costByUnit)}.`) : null);
 }
 
 /** One attempt of a step and how it ended, from the supervisor's records: "Builder (Claude): rejected · started … · ended …". */
@@ -1306,6 +1318,27 @@ function costText({ runs, reportedUsd, unreportedRuns, runningRuns }) {
 }
 
 /**
+ * Model, tier and cost by unit (MODEL_ROUTING slice R6, build slice UI12), in words. Each unit stays apart: reported
+ * dollars, then tokens per AI provider, then the runs whose cost is unknown. Nothing is added across units or providers,
+ * and an unknown cost is counted in runs, never shown as $0.00.
+ */
+const tokenCount = (n) => n.toLocaleString('en-US');
+const modelText = (used) => used ? `${provider(used.executor)} ${used.model ?? '(model not recorded)'}${used.tier ? ` (${used.tier})` : ''}` : null;
+function modelsText(routing) {
+  const parts = [routing?.implement ? `Model: ${modelText(routing.implement)}` : null, routing?.verify ? `checked by ${modelText(routing.verify)}` : null].filter(Boolean);
+  return parts.length ? parts.join(' · ') : null;
+}
+function unitCostText(cost) {
+  if (!cost) return null;
+  const parts = [cost.usd !== null ? `${usd(cost.usd)} reported (${plural(cost.usdRuns, 'run')})` : null,
+    ...cost.tokens.map((t) => `${provider(t.executor)}: ${tokenCount(t.input)} input${t.cachedInInput && t.cacheRead ? ` (${tokenCount(t.cacheRead)} of them cached)` : ''}${
+      !t.cachedInInput && t.cacheRead ? ` + ${tokenCount(t.cacheRead)} read from cache` : ''}${t.cacheCreation ? ` + ${tokenCount(t.cacheCreation)} written to cache` : ''} and ${tokenCount(t.output)} output tokens`),
+    cost.unknownRuns ? `${plural(cost.unknownRuns, 'run')} with unknown cost` : null].filter(Boolean);
+  return parts.length ? parts.join(' · ') : null;
+}
+const movedUpText = (routing) => routing?.movedUp?.reason ?? null;
+
+/**
  * A project's Cost tab (OWNER_WORKSPACE §4.10, slice S7). First the project's reported total, from today's per-campaign
  * totals, with the runs that reported no cost counted apart; then "See the breakdown": per piece of work and per step,
  * its runs, reported cost, unreported runs, retries and checker rejections. No primary action.
@@ -1323,10 +1356,13 @@ function costScreen(project, all) {
     costRunsLine(total)].filter(Boolean);
   const work = (c) => el('section', { class: 'panel', 'data-focus-scope': `cost/${c.id}` },
     el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, campaignTitle(c)),
-      el('p', {}, `${plural(c.runsUsed, 'run')} · ${costText({ runs: c.runsUsed, ...c.cost })}`))),
+      el('p', {}, `${plural(c.runsUsed, 'run')} · ${costText({ runs: c.runsUsed, ...c.cost })}`),
+      unitCostText(c.costByUnit) ? el('p', { class: 'subtext' }, `By unit, never added together: ${unitCostText(c.costByUnit)}`) : null)),
     el('div', { class: 'steps' }, table(['Step', 'Runs', 'Cost', 'Retries', 'Checker rejections'], runOrder(c).map((task) => el('tr', { 'data-focus-scope': `cost/${c.id}/${task.id}` },
-      el('td', { class: 'c-work' }, routeLink(task.outcome ?? task.title, { screen: 'step', project, work: c.id, step: task.id }, 'task-name')),
-      cell(String(task.cost.runs)), cell(costText(task.cost)), cell(String(task.cost.retries)), cell(String(task.cost.checkerRejections)))))),
+      el('td', { class: 'c-work' }, routeLink(task.outcome ?? task.title, { screen: 'step', project, work: c.id, step: task.id }, 'task-name'),
+        ...[modelsText(task.routing), movedUpText(task.routing)].filter(Boolean).map((text) => el('div', { class: 'subtext' }, text))),
+      cell(String(task.cost.runs)), cell(costText(task.cost), unitCostText(task.costByUnit) ? el('div', { class: 'subtext' }, unitCostText(task.costByUnit)) : null),
+      cell(String(task.cost.retries)), cell(String(task.cost.checkerRejections)))))),
     costNotes(c).body);
   return [el('section', { class: 'panel' }, el('h2', {}, headline), ...lines.map((line) => el('p', {}, line))),
     disclosure(`cost/${project}`, 'See the breakdown', el('div', {}, ...all.map(work)))];
