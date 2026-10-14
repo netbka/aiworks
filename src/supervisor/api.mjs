@@ -9,6 +9,7 @@ import { accountFull, laterWait } from './accounts.mjs';
 import { admissionCheck, hostCeiling, schedulerEnabled } from './scheduler.mjs';
 import { releaseStatus } from './release/eligibility.mjs';
 import { releaseNarrowings } from './release/state.mjs';
+import { candidateStatus } from './local-candidates.mjs';
 
 export class CampaignError extends Error {
   constructor(code, message) { super(message); this.name = 'CampaignError'; this.code = code; }
@@ -240,12 +241,19 @@ export function campaignStatus(store, id, now = Date.now(), { releaseStop = fals
       wait: waitReason(t, waits),
       routing: routed.tasks.get(t.task_id)?.routing ?? { implement: null, verify: null, escalation: null },
       costByUnit: routed.tasks.get(t.task_id)?.cost ?? emptyCost(),
+      // A project without GitHub shows its verified local candidate (WORK_ENVELOPE slice E10), never a PR; only once one exists.
+      ...withCandidate(store, c.id, t.task_id),
     })),
     openOperations: operations.map((op) => ({ id: op.id, taskId: op.task_id, kind: op.kind, executor: op.executor_kind ?? 'claude-cli', state: op.state,
       createdAt: new Date(op.created_at).toISOString(), updatedAt: new Date(op.updated_at).toISOString() })),
     ...(ownerBlockers.length ? { ownerBlockers } : {}),
   };
 }
+
+const withCandidate = (store, campaignId, taskId) => {
+  const candidate = candidateStatus(store, campaignId, taskId);
+  return candidate ? { candidate } : {};
+};
 
 // ---- "Why is this step waiting?" (ADAPTIVE_SCHEDULER section 6, slice S8 supervisor half: RUN9). ----
 
