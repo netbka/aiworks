@@ -22,7 +22,7 @@ import { stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from '.
 import { pendingInstructions, attachInstructions } from './instructions.mjs';
 import { POLICY as ROUTING_POLICY, autoReceipt, indicators, policyInputs, priorAttempt, receiptInputs, staticReceipt } from './router.mjs';
 import { roleCatalog } from './governance.mjs';
-import { PLAN_TASK, admitAmendment, settleAmendment, specOf, specsOf, verifyChain } from './plan.mjs';
+import { ACCEPT_TASK, PLAN_TASK, admitAmendment, settleAmendment, specOf as storedSpecOf, specsOf as storedSpecsOf, verifyChain } from './plan.mjs';
 import { ConflictError, FencedError } from './store.mjs';
 import { mergePass, mergeSettings } from './merge.mjs';
 import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
@@ -99,6 +99,45 @@ const NOT_QUALITY = new Set(['quota', 'auth', 'spawn-failed', 'unavailable', 'ad
 // A candidate whose model the provider refused waits alone (MODEL_ROUTING 9): its executor_waits row names kind and model.
 const modelWaitKey = (kind, model) => `${kind}/${model}`;
 
+// ---- Generated tasks of an envelope (WORK_ENVELOPE 6.2 and 6.6, slice E5). ----
+// With adaptive planning on, an envelope campaign gets two task rows no declaration holds: the planning step PLAN and the
+// closing check ACCEPT. Their specs are generated from the envelope here, and only while their rows exist, so with the
+// switch off (no such rows) every spec below is exactly plan.mjs's.
+const GENERATED = new Set([PLAN_TASK, ACCEPT_TASK]);
+function generatedSpec(store, campaignId, taskId, decl) {
+  const envelope = decl?.envelope;
+  if (!envelope || !store.task(campaignId, taskId)) return undefined;
+  const references = [...new Set(decl.tasks.flatMap((task) => task.references))].slice(0, 16);
+  const common = { issue: decl.target.trackingIssue, deliverable: 'report', references: references.length ? references : ['AGENTS.md'] };
+  if (taskId === PLAN_TASK) {
+    return { id: PLAN_TASK, title: 'Plan the next steps', ...common, dependsOn: [],
+      goal: `Propose the steps the approved outcome still needs, inside what the owner approved: ${envelope.outcome}`.slice(0, 2000),
+      acceptance: ['Every proposed step stays inside the approved files, deliverables and issues', 'amendment.basis is the plan head named in the planning context'] };
+  }
+  // ACCEPT depends on every other task that is not cancelled, computed whenever it is read (WORK_ENVELOPE 6.6).
+  return { id: ACCEPT_TASK, title: 'Closing check', ...common,
+    dependsOn: store.tasks(campaignId).filter((row) => row.task_id !== ACCEPT_TASK && row.state !== 'cancelled').map((row) => row.task_id),
+    goal: `Check the approved outcome against the evidence of every step: ${envelope.outcome}`.slice(0, 2000), acceptance: envelope.acceptance };
+}
+const specOf = (store, campaignId, taskId, decl = store.campaign(campaignId)?.declaration) =>
+  GENERATED.has(taskId) ? generatedSpec(store, campaignId, taskId, decl) : storedSpecOf(store, campaignId, taskId, decl);
+function specsOf(store, campaignId, decl = store.campaign(campaignId)?.declaration) {
+  const specs = storedSpecsOf(store, campaignId, decl);
+  for (const id of GENERATED) {
+    const spec = generatedSpec(store, campaignId, id, decl);
+    if (spec) specs.set(id, spec);
+  }
+  return specs;
+}
+/** The constraint every child and generated packet carries (WORK_ENVELOPE 6.5): the approved outcome and files. */
+function envelopeConstraint(envelope) {
+  const deny = envelope.denyWrites ?? [];
+  return `Approved outcome: ${envelope.outcome}${/[.!?]$/.test(envelope.outcome) ? '' : '.'} Change only: ${envelope.writes.length ? envelope.writes.join(', ') : 'no repository path'}${deny.length ? ` (never ${deny.join(', ')})` : ''}; anything else is a boundary violation.`.slice(0, 2000);
+}
+const sameItems = (a, b) => canonicalJson(a) === canonicalJson(b);
+// The operation a runnable task needs next. PLAN runs as a read-only planning operation and is never verified (code admits).
+const opKind = (task) => task.task_id === PLAN_TASK ? 'plan' : task.state === 'pending' ? 'implement' : 'verify';
+
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const runLease = (op, state, sessionId = op.session_id) => ({
   tenantId: op.packet.tenantId, projectId: op.packet.projectId, environment: op.packet.environment,
@@ -138,6 +177,11 @@ export class Controller {
     // aiworks#42 CI repair: off unless the data-directory config enables it. Poll times are kept in memory only: after a
     // restart each published head whose CI is not yet settled is read once more. Settled results are in the journal.
     this.ci = this.config.ciRepair?.enabled === true;
+    // WORK_ENVELOPE slice E5 adaptive planning: off unless the data-directory config enables it. Off, no envelope campaign
+    // gets a planning step or a closing check, and every worker schema and prompt is today's. On, an envelope campaign
+    // gets the closing check ACCEPT, and a planning step PLAN runs only on a trigger: a result's followUps, or a closing
+    // check that names acceptance items no evidence covers. Never on a timer.
+    this.ap = this.config.adaptivePlanning?.enabled === true;
     this.ciNextAt = new Map();
     this.ciPolledAt = new Map();
     // ADAPTIVE_SCHEDULER (slice RUN5): off unless the data-directory config enables it. Off, every campaign keeps one
@@ -279,10 +323,131 @@ export class Controller {
         if (this.ir) this.checkPublishedIntegration(ctx);
         if (this.ci) this.checkPublishedCi(ctx);
         this.reconcileIntegration(ctx);
+        if (this.ap) this.ensureClosingCheck(ctx);
         await this.schedule(ctx);
       }
     }
     this.refreshStatus(ctx);
+  }
+
+  // ---- WORK_ENVELOPE slice E5: planning triggers, the planning step PLAN and the closing check ACCEPT. Only with this.ap. ----
+
+  /** The adaptive-planning stage of a run (executors.mjs STAGES), or null: always null with the switch off or without an envelope. */
+  stageOf(decl, taskId, kind) {
+    if (!this.ap || !decl?.envelope) return null;
+    return kind === 'plan' ? 'plan' : taskId === ACCEPT_TASK ? 'accept' : 'work';
+  }
+
+  /** Every envelope gets one generated closing check, ACCEPT (WORK_ENVELOPE 6.6). Its row is added once, after the other tasks. */
+  ensureClosingCheck(ctx) {
+    if (!this.store.campaign(ctx.id).declaration.envelope || this.store.task(ctx.id, ACCEPT_TASK)) return;
+    this.fenced(ctx, () => {
+      if (this.store.task(ctx.id, ACCEPT_TASK)) return;
+      const now = this.now();
+      const ord = Math.max(0, ...this.store.tasks(ctx.id).map((row) => row.ord)) + 1;
+      this.store.insert('tasks', { campaign_id: ctx.id, task_id: ACCEPT_TASK, ord, state: 'pending', version: 1, updated_at: now });
+      this.store.journal(ctx.id, 'closing-check-added', { task: ACCEPT_TASK }, now);
+    });
+  }
+
+  /**
+   * Ask for a planning step (WORK_ENVELOPE 6.2): the trigger is kept on the PLAN row until a planning result settles it,
+   * so it survives a crash and a failed run. The row is added on the first trigger. An identical pending trigger is not
+   * added twice. Call inside fenced().
+   */
+  recordPlanTrigger(ctx, trigger, now) {
+    const row = this.store.task(ctx.id, PLAN_TASK);
+    const pending = row?.findings ?? [];
+    if (pending.some((item) => item.task === trigger.task && sameItems(item.items, trigger.items))) return;
+    // A number that only grows (the journal is append-only), so a settled trigger is never confused with a newer one.
+    const n = this.store.get("SELECT COUNT(*) AS n FROM journal WHERE campaign_id = ? AND kind = 'plan-triggered'", ctx.id).n + 1;
+    const entry = { n, ...trigger, at: now };
+    if (!row) {
+      const ord = Math.max(0, ...this.store.tasks(ctx.id).map((task) => task.ord)) + 1;
+      this.store.insert('tasks', { campaign_id: ctx.id, task_id: PLAN_TASK, ord, state: 'pending', findings: [entry], version: 1, updated_at: now });
+    } else {
+      // A running planning step keeps running; the new trigger waits for the next one.
+      this.store.patch('tasks', { campaign_id: ctx.id, task_id: PLAN_TASK }, row.version,
+        { findings: [...pending, entry], ...(row.state === 'done' ? { state: 'pending', retry_at: null } : {}) }, now);
+    }
+    this.store.journal(ctx.id, 'plan-triggered', entry, now);
+  }
+
+  /**
+   * A finished run of an envelope campaign may ask for planning (WORK_ENVELOPE 6.2 and 6.6). Its followUps become a
+   * trigger. A closing check that names uncovered acceptance items does not pass: it waits for a planning step, and the
+   * second identical report with no task finished in between is a B3 owner decision. Changes `change`; inside fenced().
+   */
+  planningAfterResult(ctx, decl, task, op, verdict, change, now) {
+    if (verdict.class !== 'result') return;
+    const value = verdict.value;
+    if (task.task_id !== ACCEPT_TASK) {
+      if (value.followUps?.length) {
+        this.recordPlanTrigger(ctx, { trigger: 'follow-ups', task: task.task_id, items: value.followUps.map((item) => `${item.title}: ${item.reason}`) }, now);
+      }
+      return;
+    }
+    if (op.kind !== 'implement' || value.result !== 'resolved' || !value.uncovered?.length) return;
+    const items = [...new Set(value.uncovered.map((item) => item.trim()).filter(Boolean))].sort();
+    const done = this.store.tasks(ctx.id).filter((row) => row.state === 'done' && !GENERATED.has(row.task_id)).length;
+    const last = this.store.get("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'closing-uncovered' ORDER BY seq DESC LIMIT 1", ctx.id)?.detail;
+    const repeated = Boolean(last) && last.done === done && sameItems(last.items, items);
+    this.store.journal(ctx.id, 'closing-uncovered', { op: op.id, items, done, repeated }, now);
+    Object.assign(change, { state: 'pending', head_sha: null, retry_at: null });
+    if (repeated) {
+      change.blocked = { class: 'B3', reason: `This can't be finished within what you approved: ${items.join('; ')}`.slice(0, 1000), at: now };
+      return;
+    }
+    this.recordPlanTrigger(ctx, { trigger: 'uncovered', task: ACCEPT_TASK, items }, now);
+  }
+
+  /**
+   * The PLAN row after its planning operation settled (WORK_ENVELOPE 6.3). Admitted, repeated, nothing proposed, or every
+   * op a duplicate: the triggers that run saw are settled. A `replan` refusal keeps them and plans again after a backoff,
+   * up to NO_PROGRESS_LIMIT refusals in a row (then B3 stalled). A widening (`owner`) is never retried: B3, while every
+   * other step keeps running; only the closing check, which depends on PLAN, waits. Inside fenced().
+   */
+  planRowAfterSettle(ctx, row, op, admission, now) {
+    const through = this.store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'operation-recorded'", ctx.id)
+      .find((entry) => entry.detail?.op === op.id)?.detail?.through ?? 0;
+    const refused = admission.outcome === 'refused' && admission.kind !== 'drop' ? admission : null;
+    if (!refused) {
+      const pending = (row.findings ?? []).filter((item) => item.n > through);
+      this.store.patch('tasks', { campaign_id: ctx.id, task_id: PLAN_TASK }, row.version, { state: pending.length ? 'pending' : 'done',
+        findings: pending, failures: {}, retry_at: null, last_error: null }, now);
+      return null;
+    }
+    const lastError = `amendment-refused: ${refused.code}: ${String(refused.detail ?? '').slice(0, 600)}`;
+    if (refused.kind === 'owner') {
+      const blocked = { class: 'B3', reason: `This work needs more than you approved: ${String(refused.detail ?? refused.code).slice(0, 600)}. Other steps continue.`, at: now };
+      this.store.patch('tasks', { campaign_id: ctx.id, task_id: PLAN_TASK }, row.version, { state: 'pending', retry_at: null, last_error: lastError, blocked }, now);
+      return blocked;
+    }
+    const failures = { ...row.failures, 'amendment-refused': (row.failures?.['amendment-refused'] ?? 0) + 1 };
+    const count = failures['amendment-refused'];
+    const backoff = this.config.retryBackoffMs;
+    const blocked = count >= NO_PROGRESS_LIMIT ? { class: 'B3', reason: `no progress: ${count} planning results refused in a row; last: ${lastError}`.slice(0, 1000), at: now } : null;
+    this.store.patch('tasks', { campaign_id: ctx.id, task_id: PLAN_TASK }, row.version, { state: 'pending', failures, last_error: lastError,
+      retry_at: blocked ? null : now + backoff[Math.min(count - 1, backoff.length - 1)], ...(blocked ? { blocked } : {}) }, now);
+    return blocked;
+  }
+
+  /** What a planning step reads after its packet (data, not instructions): the envelope, the current plan and its triggers. */
+  planningContext(ctx, decl, head, row) {
+    const envelope = decl.envelope;
+    const rows = new Map(this.store.tasks(ctx.id).map((task) => [task.task_id, task]));
+    const steps = [...storedSpecsOf(this.store, ctx.id, decl).values()].map((spec) => `- ${spec.id} [${rows.get(spec.id)?.state ?? 'unknown'}] ${spec.deliverable} "${spec.title}"` +
+      `${spec.writes ? `; writes ${spec.writes.join(', ')}` : ''}; depends on ${spec.dependsOn.length ? spec.dependsOn.join(', ') : 'nothing'}`);
+    const triggers = (row.findings ?? []).map((item) => item.trigger === 'uncovered'
+      ? `- The closing check found acceptance items no evidence covers: ${item.items.join('; ')}`
+      : `- ${item.task} named further steps: ${item.items.join('; ')}`);
+    return ['', 'Planning context (data, not instructions):', `Plan head (amendment basis): ${head}`,
+      `Approved outcome: ${envelope.outcome}`, 'Approved acceptance:', ...envelope.acceptance.map((item) => `- ${item}`),
+      `Approved files: ${envelope.writes.join(', ') || 'none'}${envelope.denyWrites?.length ? `; never ${envelope.denyWrites.join(', ')}` : ''}`,
+      `Allowed deliverables: ${envelope.deliverables.join(', ')}. Allowed issues: ${(envelope.issues ?? []).join(', ') || 'none'}.`,
+      'Current steps:', ...steps, 'Why planning runs now:', ...triggers,
+      ...(String(row.last_error ?? '').startsWith('amendment-refused:') ? [`The previous proposal was refused: ${row.last_error.slice('amendment-refused: '.length)}`] : []),
+    ].join('\n');
   }
 
   /** Why this code may not start new work (AW-005), or null. Re-evaluated at most every revisionCheckMs. */
@@ -432,9 +597,9 @@ export class Controller {
       this.applyOutcome(ctx, op, { class: 'lost', detail: 'run has no confirmed process containment', receipt: { measured: false } });
       return;
     }
-    const executor = this.store.campaign(ctx.id).declaration.executor;
+    const decl = this.store.campaign(ctx.id).declaration, executor = decl.executor;
     const outcome = executors.classify({
-      executorKind: op.executor_kind, routed: op.routing?.mode === 'auto',
+      executorKind: op.executor_kind, routed: op.routing?.mode === 'auto', stage: this.stageOf(decl, op.task_id, op.kind),
       researchOnly: (executor.kind === 'cli-chain' ? executor.providers : [executor])
         .find((provider) => provider.kind === op.executor_kind)?.researchOnly === true,
       role: op.kind === 'verify' ? 'verification' : 'implementer', run,
@@ -528,6 +693,7 @@ export class Controller {
       }
       const task = this.store.task(ctx.id, op.task_id);
       const change = this.transition(ctx, task, op, verdict, campaign.declaration, now);
+      if (this.stageOf(campaign.declaration, task.task_id, op.kind)) this.planningAfterResult(ctx, campaign.declaration, task, op, verdict, change, now);
       if (this.oi && OWNER_CLASSES.has(change.blocked?.class)) {
         const reason = redact(change.blocked.reason);
         const record = this.openBlocker(ctx, campaign.declaration, { dependency: 'owner-decision', cls: change.blocked.class,
@@ -568,7 +734,8 @@ export class Controller {
    * with its task rows, in one fenced transaction: both commit or neither does. A controller whose lease generation is stale
    * gets FencedError and writes nothing. After a crash before the commit the operation is still open and is settled again
    * with the same idempotency key; after the commit it is finished and nothing is applied twice. Code admits, never a model.
-   * Nothing records a planning operation yet: planning triggers and the plan-stage result are slice E5.
+   * A planning operation dispatched from a trigger (slice E5) also settles its PLAN row in the same transaction: a failed
+   * run waits and retries like any task run, and a result settles or keeps the triggers (planRowAfterSettle).
    */
   settlePlan(ctx, op, outcome) {
     const merged = !this.unmergedRevision();
@@ -585,11 +752,33 @@ export class Controller {
       if (verdict.receipt?.costUsd) this.store.patch('campaigns', { id: ctx.id }, campaign.version, { cost_usd: campaign.cost_usd + verdict.receipt.costUsd }, now);
       this.store.journal(ctx.id, 'operation-finished', { op: op.id, executor: fresh.executor_kind, class: verdict.class, detail: verdict.detail ?? null,
         session: verdict.receipt?.sessionId ?? null, costUsd: verdict.receipt?.costUsd ?? null }, now);
-      if (verdict.class !== 'result') return null;
+      // The PLAN row exists only for a planning step that a trigger dispatched (slice E5).
+      const row = this.store.task(ctx.id, PLAN_TASK);
+      if (row && verdict.class === 'result') {
+        this.store.run('DELETE FROM executor_waits WHERE campaign_id = ? AND executor_kind = ?', ctx.id, op.executor_kind);
+        this.endAccountWait(op.executor_kind, op.id, now, fresh.account_identity ?? null);
+      }
+      if (row && executors.runNotCounted(verdict)) {
+        const c = this.store.campaign(ctx.id);
+        this.store.patch('campaigns', { id: ctx.id }, c.version, { runs_used: Math.max(0, c.runs_used - 1) }, now);
+        this.store.journal(ctx.id, 'run-refunded', { op: op.id, reason: verdict.class === 'unavailable'
+          ? 'executor was unavailable; no task attempt took place' : 'provider usage limit refused the run before any work' }, now);
+      }
+      if (verdict.class !== 'result') {
+        if (row) this.store.patch('tasks', { campaign_id: ctx.id, task_id: PLAN_TASK }, row.version,
+          this.transition(ctx, row, fresh, verdict, this.store.campaign(ctx.id).declaration, now), now);
+        return null;
+      }
       const admission = settleAmendment(this.store, { campaign: this.store.campaign(ctx.id), operation: fresh, amendment: verdict.value?.amendment,
         merged, leaseGeneration: ctx.generation, codeRevision: this.codeRevision, now });
       const kind = { admitted: 'amendment-admitted', repeated: 'amendment-repeated', none: 'plan-no-change', refused: 'amendment-refused' }[admission.outcome];
       this.store.journal(ctx.id, kind, { op: op.id, ...admission, ops: admission.ops?.length }, now);
+      const blocked = row ? this.planRowAfterSettle(ctx, this.store.task(ctx.id, PLAN_TASK), fresh, admission, now) : null;
+      if (blocked) {
+        const decl = this.store.campaign(ctx.id).declaration;
+        this.enqueue(ctx.id, `${ctx.id}:${PLAN_TASK}:blocked:${op.id}`, decl,
+          `**${PLAN_TASK}** (planning) needs your decision (${blocked.class}): ${blocked.reason}\n\nThe campaign keeps ownership and other steps continue. After an owner decision recorded on the tracking issue, run \`supervisor recheck ${ctx.id} --task ${PLAN_TASK}\`.`, now);
+      }
       this.injectFault('before-plan-settle');
       return admission;
     });
@@ -1025,7 +1214,7 @@ export class Controller {
       // Settle only: every runnable task without an open operation becomes a candidate; admit() starts at most one.
       const running = new Set(this.store.openOperations(ctx.id).map((op) => op.task_id));
       for (const task of runnable.filter((item) => !running.has(item.task_id))) {
-        this.candidates.push({ ctx, campaignId: ctx.id, taskId: task.task_id, kind: task.state === 'pending' ? 'implement' : 'verify',
+        this.candidates.push({ ctx, campaignId: ctx.id, taskId: task.task_id, kind: opKind(task),
           ord: task.ord, declaration: decl, createdAt: campaign.created_at });
       }
       return;
@@ -1038,7 +1227,7 @@ export class Controller {
       }, this.now(), { identity: `v${campaign.authorization_version}:${budget.exhausted.split(' (')[0]}` }));
       return;
     }
-    await this.dispatch(ctx, campaign, ready, ready.state === 'pending' ? 'implement' : 'verify');
+    await this.dispatch(ctx, campaign, ready, opKind(ready));
   }
 
   /** Admission inputs, all from store rows or local refs (ADAPTIVE_SCHEDULER 4.1). Host pressure is slice RUN7. */
@@ -1418,12 +1607,16 @@ export class Controller {
     const chain = verifyChain(this.store, campaign.id);
     if (!chain.ok) return { current: false, problem: chain.problem };
     if (decl.tasks.some((spec) => spec.id === taskId)) return { current: true, authority: authorityDigest(decl), envelope: null };
+    // A generated task (slice E5) binds to the approval and the plan head it reads, so a planning step after an admitted
+    // amendment, or a closing check after one, is a new packet and a fresh session.
+    if (GENERATED.has(taskId) && decl.envelope) return { current: true, head: chain.head, envelope: envelopeConstraint(decl.envelope),
+      authority: createHash('sha256').update(canonicalJson({ authority: authorityDigest(decl), generated: taskId, plan: chain.head }), 'utf8').digest('hex') };
     const row = this.store.get(`SELECT s.spec, s.cancelled_at, a.digest FROM task_specs s
       JOIN plan_amendments a ON a.campaign_id = s.campaign_id AND a.seq = s.amendment_seq
       WHERE s.campaign_id = ? AND s.task_id = ? ORDER BY s.revision DESC LIMIT 1`, campaign.id, taskId);
     if (!row || row.cancelled_at !== null) return { current: false, problem: `${taskId} has no live approved spec` };
     // The live spec proposed again as an addition to the plan without it: one rule for admission and for dispatch.
-    const specs = specsOf(this.store, campaign.id, decl);
+    const specs = storedSpecsOf(this.store, campaign.id, decl);
     specs.delete(taskId);
     const others = this.store.all('SELECT task_id, cancelled_at FROM task_specs WHERE campaign_id = ? AND task_id != ?', campaign.id, taskId);
     const check = admitAmendment({ declaration: decl, head: chain.head, specs,
@@ -1432,12 +1625,10 @@ export class Controller {
       childIds: new Set(others.map((other) => other.task_id)),
       amendment: { basis: chain.head, ops: [{ op: 'add', task: row.spec }] } });
     if (!check.admitted) return { current: false, problem: `${taskId} no longer passes admission: ${check.code}: ${check.detail}` };
-    const envelope = decl.envelope;
-    const deny = envelope.denyWrites ?? [];
     return {
       current: true,
       authority: createHash('sha256').update(canonicalJson({ authority: authorityDigest(decl), amendment: row.digest }), 'utf8').digest('hex'),
-      envelope: `Approved outcome: ${envelope.outcome}${/[.!?]$/.test(envelope.outcome) ? '' : '.'} Change only: ${envelope.writes.length ? envelope.writes.join(', ') : 'no repository path'}${deny.length ? ` (never ${deny.join(', ')})` : ''}; anything else is a boundary violation.`.slice(0, 2000),
+      envelope: envelopeConstraint(decl.envelope),
     };
   }
 
@@ -1536,7 +1727,7 @@ export class Controller {
       const repair = spec.deliverable === 'commit' ? this.publishedRepair(task) : null;
       const integration = repair?.id === 'integration-conflict' ? repair : null;
       const ci = repair?.id === 'ci-failure' ? repair : null;
-      if (kind === 'implement') {
+      if (kind !== 'verify') {
         let integrationBase;
         if (spec.requiresMergedDependencies) {
           const fetched = this.fetchBase(repo.path, decl.target.baseBranch);
@@ -1592,7 +1783,9 @@ export class Controller {
         // A declared write domain is enforced on the commit, so the worker and its verifier are told it first.
         // A child also carries the approved outcome and files (WORK_ENVELOPE 6.5); a declared task's packet is unchanged.
         constraints: [...decl.constraints, ...(binding.envelope ? [binding.envelope] : []), ...(spec.constraints ?? []),
-          ...(spec.writes ? [writeDomainConstraint(spec.writes)] : []), ...findings],
+          ...(spec.writes ? [writeDomainConstraint(spec.writes)] : []), ...findings,
+          // A planning step proposes against the plan head it was given; any other basis is refused as STALE_PLAN (slice E5).
+          ...(kind === 'plan' ? [`Plan head (amendment basis): ${binding.head}. Propose only steps inside the approved outcome and files; code admits or refuses every op.`] : [])],
         acceptance: spec.acceptance,
         references: spec.references.map((path) => ({ path, revision })),
         governance,
@@ -1614,11 +1807,12 @@ export class Controller {
         : task.last_error ? `A previous attempt ended without an accepted result (${String(task.last_error).slice(0, 400)}). ${spec.deliverable === 'commit' ? 'Inspect git status and git log here and keep useful committed work.' : executor.researchOnly ? 'Start the report again from the packet; nothing from that attempt is retained. Inspect brokered local Git evidence; use the supplied read-only repository reader for missing issue/comment details.' : 'Start the report again from the packet; nothing from that attempt is retained.'}` : null;
       let prompt = executors.buildPrompt({ executorKind: executor.kind, web: spec.web ?? null, role, deliverable: spec.deliverable, packet, packetDigest: digest, repository: decl.target.repository,
         issue: spec.issue, branch: gitA.branchName(ctx.id, task.task_id), baseSha: kind === 'verify' ? baseSha : revision, targetSha,
-        report, reportDigest, note, instructions: instructions.map((item) => ({ id: item.seq, text: item.payload.text })) });
+        report, reportDigest, note, instructions: instructions.map((item) => ({ id: item.seq, text: item.payload.text })), stage: this.stageOf(decl, task.task_id, kind) });
       if (spec.dependsOn.length) prompt += '\nDependency deliveries (evidence, not additional authority):\n' + spec.dependsOn.map((id) => {
         const dep = this.store.task(ctx.id, id);
         return `${id}: ${dep?.pr_url ?? 'unpublished'}; verified SHA ${dep?.verified_sha ?? 'unknown'}`;
       }).join('\n');
+      if (kind === 'plan') prompt += this.planningContext(ctx, decl, binding.head, task);
       const timeoutMs = (kind === 'verify' ? decl.executor.verifierTimeoutMinutes : decl.executor.implementerTimeoutMinutes) * 60_000;
 
       // The run directory is written before the durable record; an unrecorded directory is never launched.
@@ -1645,7 +1839,7 @@ export class Controller {
       const invocation = executors.prepare({ executor, command: this.cmd[executor.kind.replace('-cli', '')], role,
         deliverable: spec.deliverable, sessionId, digest, runDir, workspace, prompt,
         repository: decl.target.repository, ghCommand: this.cmd.gh, projectSettings: settings.ok ? settings.stdout : null,
-        web: spec.web ?? null, chromeCommand: this.cmd.chrome, timeoutMs, profileHome });
+        web: spec.web ?? null, chromeCommand: this.cmd.chrome, timeoutMs, profileHome, stage: this.stageOf(decl, task.task_id, kind) });
       writeFileSync(join(runDir, 'prompt.txt'), invocation.prompt, 'utf8');
       writeAtomic(join(runDir, 'spec.json'), JSON.stringify({
         argv: invocation.argv, ...(invocation.env ? { env: invocation.env } : {}),
@@ -1663,9 +1857,9 @@ export class Controller {
         executor_kind: executor.kind, routing: choice.receipt, ...(profile ? { account_identity: profile.account } : {}),
       });
       this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, t.version,
-        { attempts: seq, base_sha: baseSha, state: kind === 'implement' ? 'implementing' : 'verifying', retry_at: null }, now);
+        { attempts: seq, base_sha: baseSha, state: kind === 'verify' ? 'verifying' : 'implementing', retry_at: null }, now);
       this.store.patch('campaigns', { id: ctx.id }, c.version, { runs_used: c.runs_used + 1 }, now);
-      this.store.journal(ctx.id, 'operation-recorded', { op: opId, kind, executor: executor.kind, model: choice.receipt.decision.chosen.model, ...(profile ? { account: profile.account } : {}), session: sessionId, packetDigest: digest, generation: ctx.generation, run: c.runs_used + 1 }, now);
+      this.store.journal(ctx.id, 'operation-recorded', { op: opId, kind, executor: executor.kind, model: choice.receipt.decision.chosen.model, ...(profile ? { account: profile.account } : {}), session: sessionId, packetDigest: digest, generation: ctx.generation, run: c.runs_used + 1, ...(kind === 'plan' ? { through: Math.max(0, ...(t.findings ?? []).map((item) => item.n)) } : {}) }, now);
 
       // This checkpoint and admission decision commit together before launch.
       const plan = planContext({
@@ -1681,7 +1875,7 @@ export class Controller {
         this.store.updateOperation(opId, { state: 'abandoned', outcome: { class: 'admission-blocked', detail: plan.reason } }, now);
         this.store.patch('campaigns', { id: ctx.id }, c.version, { runs_used: c.runs_used - 1 }, now);
         this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, t.version,
-          { state: kind === 'implement' ? 'pending' : 'implemented', blocked: { class: 'stalled', reason: `admission blocked: ${plan.reason}`, at: now } }, now);
+          { state: kind === 'verify' ? 'implemented' : 'pending', blocked: { class: 'stalled', reason: `admission blocked: ${plan.reason}`, at: now } }, now);
         return;
       }
       attachInstructions(this.store, instructions, opId, now);
