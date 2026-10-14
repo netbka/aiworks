@@ -341,14 +341,17 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       items.push({ ...base, kind: 'check', action: 'Check on GitHub', text: label(task), link: { label: NEEDS.stepIssue, url: task.issueUrl }, mergeCheck: null,
         points: [{ link: null, text: 'This step finished, but no result link was recorded, so the dashboard cannot tell where it stands.' }] });
     }
-    if (c.blocker) {
+    // A cancelled campaign's stops are history: no answer or recheck resumes it, so they are no owner item. Its open
+    // pull requests above still are, because a published result can still be merged.
+    const cancelled = c.control === 'cancelled';
+    if (c.blocker && !cancelled) {
       // What happened and what to do in owner words; what the supervisor recorded is one click away.
       const words = blockerWords(c.blocker);
       items.push({ ...base, kind: c.blockerClass === 'B3' ? 'decision' : 'stopped', text: NEEDS.workStopped,
         evidence: NEEDS.recorded, detail: [c.blockerClass, c.blockerReason, c.blockerAction].filter(Boolean).join(' · '),
         points: [{ link: { label: 'Tracking issue', url: c.trackingUrl }, text: `${words.reason}. What to do: ${words.action}.` }] });
     }
-    for (const task of c.tasks.filter((item) => item.blocked && item.state !== 'done')) {
+    for (const task of cancelled ? [] : c.tasks.filter((item) => item.blocked && item.state !== 'done')) {
       items.push({ ...base, kind: task.blocked === 'B3' ? 'decision' : 'stopped', action: task.blocked === 'B3' ? 'Decision needed' : 'Stopped; will not retry by itself',
         text: label(task), link: { label: NEEDS.stepIssue, url: task.issueUrl },
         points: [{ link: null, text: `${task.blockedReason.charAt(0).toUpperCase()}${task.blockedReason.slice(1)}.` }] });

@@ -356,3 +356,16 @@ test('a dashboard link opened from another site loads the page, while data and c
   assert.deepEqual(state.merges, { refreshing: false, repositories: [] });
   assert.ok(d.campaignId in state.owner.campaigns);
 });
+
+test('a cancelled campaign lists its open pull requests but none of its stops', (t) => {
+  const { dataDir, store, d, finish } = fixture(t);
+  finish('T1', 'https://github.com/example-org/sampleapp/pull/466');
+  const t2 = store.task(d.campaignId, 'T2');
+  store.patch('tasks', { campaign_id: d.campaignId, task_id: 'T2' }, t2.version, { blocked: { class: 'B3', reason: 'owner-reserved: worker text' } }, Date.now());
+  const before = ownerView(supervisorSnapshot(dataDir), checked()).items.map((item) => item.kind);
+  assert.ok(before.includes('decision'), 'a live campaign lists its decision');
+  const c = store.campaign(d.campaignId);
+  store.patch('campaigns', { id: d.campaignId }, c.version, { control: 'cancelled' }, Date.now());
+  const items = ownerView(supervisorSnapshot(dataDir), checked()).items.filter((item) => item.campaignId === d.campaignId);
+  assert.deepEqual(items.map((item) => item.kind), ['review'], 'the open PR stays; the stop of a cancelled campaign is history');
+});
