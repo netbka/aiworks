@@ -11,17 +11,17 @@ import * as executors from './adapters/executors.mjs';
 import { researchContext } from './adapters/research-context.mjs';
 import * as gitA from './adapters/git.mjs';
 import * as github from './adapters/github.mjs';
-import { authorityDigest, campaignLimits, executorOrder, projectGovernance } from './campaign.mjs';
+import { authorityDigest, campaignLimits, canonicalJson, executorOrder, projectGovernance } from './campaign.mjs';
 import { resolveCheckout } from './project-connect.mjs';
 import { campaignBudget } from './api.mjs';
-import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountOf, accountWait, clearAccountWait, laterWait, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
+import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountOf, accountWait, clearAccountWait, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
 import { domainOf, pathsOutside, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
 import { coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
 import { stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions } from './instructions.mjs';
 import { priorAttempt, receiptInputs, staticReceipt } from './router.mjs';
-import { PLAN_TASK, settleAmendment, specOf, specsOf } from './plan.mjs';
+import { PLAN_TASK, admitAmendment, settleAmendment, specOf, specsOf, verifyChain } from './plan.mjs';
 import { ConflictError, FencedError } from './store.mjs';
 import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
 
@@ -56,6 +56,7 @@ const RECHECK_PROCEDURE = {
   'process-ownership': 'Reconcile the recorded run; resume when the operation is no longer open.',
   'runtime-not-merged': 'Compare the supervisor code revision with origin/main in its checkout; resume once it is an ancestor.',
   'owner-decision': 'Record the decision on the task issue, then run: supervisor recheck <campaign> --task <task>.',
+  'plan-integrity': 'Dispatch the held task again: the plan chain and its admission checks are recomputed from the rows first, and nothing runs while they fail.',
 };
 const RECOVERY_TRIED = {
   auth: 'the executor run failed authentication; no credential was read or refreshed by the supervisor',
@@ -135,6 +136,9 @@ export class Controller {
     this.sched = schedulerEnabled(this.config);
     this.candidates = [];
     this.fanoutWaited = new Set();
+    // CAAM profiles that a dispatch found at their learned limit while no profile could run (CAAM5): per-tick memory, as
+    // fanoutWaited; the next useful result on one of them raises its limit by one.
+    this.profileWaited = new Set();
     this.waitReasons = new Map();
     this.domainWaits = [];
     this.baseCheckedAt = new Map();
@@ -311,7 +315,11 @@ export class Controller {
           if (!only) {
             this.store.run('DELETE FROM executor_waits WHERE campaign_id = ?', ctx.id);
             // The owner's "the limit lifted" is about the account: it ends once for every campaign that uses it.
-            for (const { kind } of executorOrder(this.store.campaign(ctx.id).declaration.executor)) this.endAccountWait(kind, `recheck of ${ctx.id}`, now);
+            // Waits of the CAAM profiles its runs were bound to end with it (CAAM5).
+            for (const { kind } of executorOrder(this.store.campaign(ctx.id).declaration.executor)) {
+              this.endAccountWait(kind, `recheck of ${ctx.id}`, now);
+              for (const profile of profileWaits(this.store, kind)) this.endAccountWait(kind, `recheck of ${ctx.id}`, now, profile);
+            }
           }
           for (const task of this.store.tasks(ctx.id)) {
             // A usage-limit wait is not a blocker, but recheck also ends it (the owner knows the limit lifted early).
@@ -467,11 +475,18 @@ export class Controller {
       }
       if (executors.runNotCounted(verdict)) verdict = { ...verdict, refunded: true };
       this.store.updateOperation(op.id, { state: 'finished', outcome: verdict }, now);
+      // A run bound to a CAAM profile is attributed to that profile from its durable row, also after a restart: never to
+      // the profile selection would choose now, nor to the executor kind's static account (ACCOUNT_ADAPTER_CAAM 3.5).
+      const profile = fresh.account_identity ?? null;
       if (verdict.class === 'result') {
         this.store.run('DELETE FROM executor_waits WHERE campaign_id = ? AND executor_kind = ?', ctx.id, op.executor_kind);
-        // The account works again: its wait ends for every campaign that uses it.
-        this.endAccountWait(op.executor_kind, op.id, now);
+        // The account works again: its wait ends for every campaign that uses it. A profile ends only its own wait.
+        this.endAccountWait(op.executor_kind, op.id, now, profile);
       }
+      // A usage limit halves that profile's concurrency, and a useful result while work waited for it raises it by one;
+      // sibling profiles keep their own limits. Runs on the static account follow RUN8 (not wired here yet).
+      if (profile) accountAfterRun(this.store, this.config, { kind: fresh.executor_kind, account: profile, opId: op.id, quota: verdict.class === 'quota',
+        run: classifyRun(op.kind, verdict), waited: this.profileWaited, campaignId: ctx.id, now });
       const blocked = this.store.campaign(ctx.id);
       // Only the operation whose ownership was unresolved clears its blocker; another operation finishing proves nothing
       // about it. A blocker recorded before the operation id was kept (no `operation`) keeps the old behaviour.
@@ -574,8 +589,9 @@ export class Controller {
         return { state, failures, retry_at: null, last_error: `${cls}: ${detail}`,
           blocked: { class: 'stalled', reason: `${total} failed attempts; last ${cls}: ${String(detail).slice(0, 300)}`, at: now } };
       }
+      // A class outside the retry budget (an unavailable host) still waits for the first backoff step, never 0 ms.
       const backoff = this.config.retryBackoffMs;
-      return { state, failures, retry_at: now + backoff[Math.min(total - 1, backoff.length - 1)], last_error: `${cls}: ${detail}` };
+      return { state, failures, retry_at: now + backoff[Math.min(Math.max(total, 1) - 1, backoff.length - 1)], last_error: `${cls}: ${detail}` };
     };
     // A worker that left its boundary is never retried on the same provider: the task waits for the owner.
     if (v.violation) return { state: back, retry_at: null, last_error: `violation: ${v.detail}`,
@@ -585,10 +601,13 @@ export class Controller {
       // an untimed wait (auth, missing support) lasts until an explicit recheck.
       // This campaign's row stays as before. A usage limit, a failed login or an unavailable host also belongs to the
       // account, so its row holds every other campaign on it too; a failed launch stays with this campaign only.
+      // A run bound to a CAAM profile records the wait on that profile only: the campaign keeps no row for the whole
+      // kind, so the next choice may take a sibling profile of the same provider (CAAM5).
       const waitUntil = ['quota', 'unavailable'].includes(v.class) ? v.retryAt ?? null : null;
-      this.store.run('INSERT OR REPLACE INTO executor_waits (campaign_id, executor_kind, retry_at, reason) VALUES (?, ?, ?, ?)',
+      const profile = ACCOUNT_SCOPED.has(v.class) ? op.account_identity ?? null : null;
+      if (!profile) this.store.run('INSERT OR REPLACE INTO executor_waits (campaign_id, executor_kind, retry_at, reason) VALUES (?, ?, ?, ?)',
         ctx.id, op.executor_kind, waitUntil, `${v.class}: ${v.detail}`);
-      if (ACCOUNT_SCOPED.has(v.class)) setAccountWait(this.store, this.config, { kind: op.executor_kind, retryAt: waitUntil, reason: `${v.class}: ${v.detail}`, campaignId: ctx.id, now });
+      if (ACCOUNT_SCOPED.has(v.class)) setAccountWait(this.store, this.config, { kind: op.executor_kind, account: profile, retryAt: waitUntil, reason: `${v.class}: ${v.detail}`, campaignId: ctx.id, now });
       const choice = this.executorChoice(decl, { ...task, state: back }, now);
       if (choice.executor) {
         this.store.journal(ctx.id, 'executor-fallback', { task: task.task_id, from: op.executor_kind,
@@ -601,6 +620,24 @@ export class Controller {
       { identity: 'no-eligible-executor' });
       return { state: back, retry_at: null, last_error: `${op.executor_kind}: ${v.class}: ${v.detail}` };
     }
+    // A single-provider run bound to a CAAM profile: a usage limit, a failed login or a host failure waits on that
+    // profile only. A host failure without a reset time waits for the task's next retry backoff, so the same profile is
+    // not chosen again at once. While a sibling profile may run, the task goes back at once with no blocker and no
+    // wait; otherwise it falls through to the single-account handling below (a recheck also ends the profile rows).
+    const profile = ACCOUNT_SCOPED.has(v.class) ? op.account_identity ?? null : null;
+    if (profile) {
+      const backoff = this.config.retryBackoffMs;
+      const until = v.class === 'auth' ? null : v.retryAt ?? (v.class === 'unavailable'
+        ? now + backoff[Math.min(task.failures?.unavailable ?? 0, backoff.length - 1)] : null);
+      setAccountWait(this.store, this.config, { kind: op.executor_kind, account: profile, retryAt: until, reason: `${v.class}: ${v.detail}`, campaignId: ctx.id, now });
+      const next = this.profileChoice(op.executor_kind, now);
+      if (next?.account) {
+        this.store.journal(ctx.id, 'profile-fallback', { task: task.task_id, executor: op.executor_kind, from: profile, to: next.account, reason: v.class }, now);
+        return { state: back, retry_at: now, last_error: `${profile}: ${v.class}: ${v.detail}` };
+      }
+      // Every profile waits: the task waits for the earliest reset among them, not only for this profile's.
+      if (next && v.class === 'quota') return { state: back, retry_at: next.retryAt, last_error: `waiting for executor availability: ${profile}: quota: ${v.detail}` };
+    }
     // A single-provider campaign's failed login stays its own B2 blocker, whose recheck or probe resolution resumes it;
     // an account row here would outlive that resolution. (A chain records it on the account above.)
     if (v.class === 'auth') {
@@ -610,7 +647,7 @@ export class Controller {
       return { state: back, last_error: `auth: ${v.detail}` };
     }
     if (v.class === 'quota') {
-      setAccountWait(this.store, this.config, { kind: op.executor_kind, retryAt: v.retryAt ?? null, reason: `quota: ${v.detail}`, campaignId: ctx.id, now });
+      if (!profile) setAccountWait(this.store, this.config, { kind: op.executor_kind, retryAt: v.retryAt ?? null, reason: `quota: ${v.detail}`, campaignId: ctx.id, now });
       return { state: back, retry_at: v.retryAt, last_error: `quota: ${v.detail}` };
     }
     if (v.class !== 'result') return retry(v.class, v.detail, back);
@@ -705,7 +742,7 @@ export class Controller {
     if (c.blocker) return;
     const tasks = this.store.tasks(ctx.id), specs = specsOf(this.store, ctx.id, c.declaration);
     const due = tasks.filter((t) => t.state === 'pending' && !t.blocked && (!t.retry_at || t.retry_at <= this.now()) &&
-      specs.get(t.task_id).requiresMergedDependencies && specs.get(t.task_id).dependsOn.every((id) => tasks.find((d) => d.task_id === id)?.state === 'done'));
+      specs.get(t.task_id)?.requiresMergedDependencies && specs.get(t.task_id).dependsOn.every((id) => tasks.find((d) => d.task_id === id)?.state === 'done'));
     if (!due.length) return;
     // A project and config.json that disagree: refresh nothing, so dispatch raises the CONFIG_CONFLICT blocker.
     if (resolveCheckout(this.store, this.config, c.declaration.target.repository)?.conflict) return;
@@ -922,7 +959,7 @@ export class Controller {
     const hold = decl.executor.kind === 'cli-chain' ? 0 : Math.max(quotaHoldUntil(tasks, now), this.accountHoldUntil(decl.executor.kind, now)); // a chain holds only the exhausted account
     const held = this.heldTasks(ctx.id);
     const runnable = tasks.filter((task) => RUNNABLE.includes(task.state) && !task.blocked && !held.has(task.task_id) && (!task.retry_at || task.retry_at <= now) &&
-      (!hold || task.state === 'verified') && spec.get(task.task_id).dependsOn.every((dep) => done.has(dep)));
+      (!hold || task.state === 'verified') && (spec.get(task.task_id)?.dependsOn ?? []).every((dep) => done.has(dep)));
     // Publication is not a worker and takes no capacity: every verified task publishes this tick, whatever else is
     // running (ADAPTIVE_SCHEDULER row 2). Dependents see the new state on the next tick.
     const verified = runnable.filter((task) => task.state === 'verified');
@@ -1082,10 +1119,11 @@ export class Controller {
    * End the wait of the account behind `kind` once, for every campaign that uses it: a success on the account proves it
    * works, and a recheck is the owner saying the limit lifted. Each such campaign drops its own copy of that wait (a usage
    * limit, a failed login or an unavailable host; a failed launch stays with its campaign), its tasks that waited for it
-   * are due again at once, and its journal records provider-wait-cleared. Store writes only, no model call.
+   * are due again at once, and its journal records provider-wait-cleared. Store writes only, no model call. With
+   * `account` (a CAAM profile) only that profile's row ends; its sibling profiles keep theirs.
    */
-  endAccountWait(kind, by, now) {
-    if (!clearAccountWait(this.store, this.config, kind)) return false;
+  endAccountWait(kind, by, now, account = null) {
+    if (!clearAccountWait(this.store, this.config, kind, account)) return false;
     const users = this.store.all("SELECT id, declaration FROM campaigns WHERE control NOT IN ('finished', 'cancelled')")
       .filter((c) => executorOrder(c.declaration.executor).some((provider) => provider.kind === kind));
     for (const c of users) {
@@ -1098,7 +1136,7 @@ export class Controller {
             !(error.startsWith('waiting for executor availability:') || single && error.startsWith('quota:'))) continue;
         this.store.patch('tasks', { campaign_id: c.id, task_id: task.task_id }, task.version, { retry_at: null, last_error: null }, now);
       }
-      this.store.journal(c.id, 'provider-wait-cleared', { executor: kind, account: accountOf(this.config, kind), by }, now);
+      this.store.journal(c.id, 'provider-wait-cleared', { executor: kind, account: account ?? accountOf(this.config, kind), by }, now);
     }
     return true;
   }
@@ -1112,7 +1150,7 @@ export class Controller {
     let profiles;
     try { profiles = this.profiles(kind, now); }
     catch (error) { return { account: null, retryAt: now + PROFILE_RECHECK_MS, reason: `the CAAM inventory for ${kind} cannot be read (${error.code ?? 'error'})` }; }
-    return profiles == null ? null : selectProfile(this.store, kind, profiles, now);
+    return profiles == null ? null : selectProfile(this.store, kind, profiles, now, this.profileWaited);
   }
 
   /** The first untimed account wait (a failed login, or a host finding that needs a recheck) on a provider of `decl`, or null. */
@@ -1155,6 +1193,42 @@ export class Controller {
       retryAt: receipt.decision.retryAt, receipt };
   }
 
+  /**
+   * The packet binding of one task, recomputed from the rows before every dispatch (WORK_ENVELOPE 6.5, slice E4): the
+   * plan chain verifies, and a child's live spec still passes admission (A3 to A11, and A13) against the unchanged
+   * envelope. A declared task binds to the approval itself, `authorityDigest(decl)`, exactly as before. A child binds to
+   * the approval and the amendment that set its live revision, so a revised child gets a new digest and a fresh session.
+   * Returns `{ current: true, authority, envelope }`, where `envelope` is a child's extra constraint (null for a declared
+   * task), or `{ current: false, problem }`.
+   */
+  planBinding(campaign, taskId) {
+    const decl = campaign.declaration;
+    const chain = verifyChain(this.store, campaign.id);
+    if (!chain.ok) return { current: false, problem: chain.problem };
+    if (decl.tasks.some((spec) => spec.id === taskId)) return { current: true, authority: authorityDigest(decl), envelope: null };
+    const row = this.store.get(`SELECT s.spec, s.cancelled_at, a.digest FROM task_specs s
+      JOIN plan_amendments a ON a.campaign_id = s.campaign_id AND a.seq = s.amendment_seq
+      WHERE s.campaign_id = ? AND s.task_id = ? ORDER BY s.revision DESC LIMIT 1`, campaign.id, taskId);
+    if (!row || row.cancelled_at !== null) return { current: false, problem: `${taskId} has no live approved spec` };
+    // The live spec proposed again as an addition to the plan without it: one rule for admission and for dispatch.
+    const specs = specsOf(this.store, campaign.id, decl);
+    specs.delete(taskId);
+    const others = this.store.all('SELECT task_id, cancelled_at FROM task_specs WHERE campaign_id = ? AND task_id != ?', campaign.id, taskId);
+    const check = admitAmendment({ declaration: decl, head: chain.head, specs,
+      stored: { scopeDigest: campaign.scope_digest, authorizationVersion: campaign.authorization_version },
+      retired: new Set(others.filter((other) => other.cancelled_at !== null).map((other) => other.task_id)),
+      childIds: new Set(others.map((other) => other.task_id)),
+      amendment: { basis: chain.head, ops: [{ op: 'add', task: row.spec }] } });
+    if (!check.admitted) return { current: false, problem: `${taskId} no longer passes admission: ${check.code}: ${check.detail}` };
+    const envelope = decl.envelope;
+    const deny = envelope.denyWrites ?? [];
+    return {
+      current: true,
+      authority: createHash('sha256').update(canonicalJson({ authority: authorityDigest(decl), amendment: row.digest }), 'utf8').digest('hex'),
+      envelope: `Approved outcome: ${envelope.outcome}${/[.!?]$/.test(envelope.outcome) ? '' : '.'} Change only: ${envelope.writes.length ? envelope.writes.join(', ') : 'no repository path'}${deny.length ? ` (never ${deny.join(', ')})` : ''}; anything else is a boundary violation.`.slice(0, 2000),
+    };
+  }
+
   async dispatch(ctx, campaign, task, kind, { admission = null } = {}) {
     const op = this.fenced(ctx, () => {
       const current = this.store.campaign(ctx.id);
@@ -1164,6 +1238,15 @@ export class Controller {
       if (current.control !== 'registered' || current.blocker || current.version !== campaign.version ||
           busy || campaignBudget(this.store, current).exhausted) return null;
       const decl = campaign.declaration;
+      // The task's packet binding, checked again from the rows before anything is recorded (WORK_ENVELOPE 6.5, slice E4).
+      const binding = this.planBinding(current, task.task_id);
+      if (!binding.current) {
+        this.raiseBlocker(ctx, decl, { kind: 'plan-integrity', class: 'B2',
+          reason: `No worker dispatched for ${task.task_id}: the approved plan does not verify (${String(binding.problem).slice(0, 400)})`,
+          requestedAction: `Restore the plan rows of ${ctx.id} (plan_amendments, task_specs) from a backup of the supervisor store, or cancel the campaign; then run: supervisor recheck ${ctx.id}` },
+        this.now(), { identity: binding.problem });
+        return null;
+      }
       // The target project's own rules (governance provider governance inheritance), resolved from the registry exactly as the registration gate matches.
       // Without them no new worker starts: there is no default project to fall back to.
       let governance;
@@ -1273,11 +1356,13 @@ export class Controller {
       const packet = validatePacket({
         version: 1, tenantId: decl.target.tenantId, projectId: decl.target.projectId, environment: decl.target.environment,
         taskId: task.task_id, stageId: kind, runId: opId, role, revision,
-        authorityDigest: authorityDigest(decl),
+        authorityDigest: binding.authority,
         access: readOnly ? 'read-only' : 'write',
         goal: `${spec.title} (${decl.target.repository}#${spec.issue}). ${spec.goal}`.slice(0, 2000),
         // A declared write domain is enforced on the commit, so the worker and its verifier are told it first.
-        constraints: [...decl.constraints, ...(spec.constraints ?? []), ...(spec.writes ? [writeDomainConstraint(spec.writes)] : []), ...findings],
+        // A child also carries the approved outcome and files (WORK_ENVELOPE 6.5); a declared task's packet is unchanged.
+        constraints: [...decl.constraints, ...(binding.envelope ? [binding.envelope] : []), ...(spec.constraints ?? []),
+          ...(spec.writes ? [writeDomainConstraint(spec.writes)] : []), ...findings],
         acceptance: spec.acceptance,
         references: spec.references.map((path) => ({ path, revision })),
         governance,
@@ -1363,7 +1448,7 @@ export class Controller {
 
       // This checkpoint and admission decision commit together before launch.
       const plan = planContext({
-        packet, authorityCurrent: true, predecessorSafe: true, session: null,
+        packet, authorityCurrent: binding.current, predecessorSafe: true, session: null,
         checkpoint: { committed: true, packetDigest: digest, tenantId: packet.tenantId, projectId: packet.projectId, environment: packet.environment,
           taskId: packet.taskId, stageId: packet.stageId, revision: packet.revision, authorityDigest: packet.authorityDigest },
         budget: dispatchBudget(executor, role, prompt),
@@ -1643,7 +1728,7 @@ export class Controller {
       const blockedTasks = waiting.filter((task) => task.blocked);
       const held = this.heldTasks(ctx.id);
       const runnable = waiting.filter((task) => !task.blocked && !held.has(task.task_id) && RUNNABLE.includes(task.state) &&
-        spec.get(task.task_id).dependsOn.every((dep) => done.has(dep)) && (task.state === 'verified' || !c.blocker));
+        (spec.get(task.task_id)?.dependsOn ?? []).every((dep) => done.has(dep)) && (task.state === 'verified' || !c.blocker));
       let status = c.status;
       let control = c.control;
       let nextAction = null;
@@ -1831,7 +1916,7 @@ export class Controller {
     const parents = new Set(this.store.all('SELECT task_id FROM blocker_parents WHERE fingerprint = ? AND campaign_id = ? AND released_at IS NULL',
       record.fingerprint, ctx.id).map((row) => row.task_id));
     const probe = tasks.find((task) => parents.has(task.task_id) && RUNNABLE.includes(task.state) && !task.blocked &&
-      spec.get(task.task_id).dependsOn.every((dep) => done.has(dep)));
+      (spec.get(task.task_id)?.dependsOn ?? []).every((dep) => done.has(dep)));
     if (!probe) {
       const evidence = { trigger, probe: 'run', pass: false, detail: 'no runnable held task can carry the recheck run', at: now };
       this.store.run('UPDATE blockers SET last_evidence = ?, updated_at = ? WHERE fingerprint = ?', evidence, now, record.fingerprint);
@@ -1937,6 +2022,11 @@ export class Controller {
       try {
         this.fenced({ id: item.campaign_id, generation: this.held.get(item.campaign_id) }, () => {
           if (this.store.get('SELECT state FROM outbox WHERE key = ?', item.key)?.state !== 'pending') return;
+          // Replies queued by an older runtime stay local too; never publish them after an upgrade.
+          if (item.campaign_id === COORDINATOR_LANE) {
+            this.store.run("UPDATE outbox SET state = 'local', updated_at = ? WHERE key = ?", now, item.key);
+            return;
+          }
           if (github.findMarkedComment({ gh: this.cmd.gh, repository, issue, key: item.key })) {
             this.store.run("UPDATE outbox SET state = 'posted', posted = 'reconciled', updated_at = ? WHERE key = ?", now, item.key);
             return;

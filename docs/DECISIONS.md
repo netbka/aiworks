@@ -16,7 +16,7 @@ Bind to loopback. Mutating requests require exact origin checks, CSRF protection
 
 ## AW-004 - The coordinator is read-only
 
-The coordinator reads assigned repositories and reports plans and answers through the supervisor. It does not edit source, merge, deploy, change provider resources or register campaigns. Execution belongs to explicitly registered campaigns.
+The coordinator reads assigned repositories and reports plans and answers locally through the supervisor and dashboard. Planning creates no GitHub issue, pull request or comment. Each plan request retains its selected repository and is processed separately. It does not edit source, merge, deploy, change provider resources or register campaigns. Execution belongs to explicitly registered campaigns, whose publication stays in their declared target repository.
 
 ## AW-005 - Runtime code must be merged; declarations remain private
 

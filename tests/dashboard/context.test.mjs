@@ -114,7 +114,8 @@ test('F10: with nothing to read requests, Start work and Messages say so in owne
   assert.equal(page.$('[data-not-read]'), null);
   assert.ok(buttonNamed(page, 'Ask for a plan'), 'sending is offered');
   assert.equal(page.$('#start-goal').value, 'A shopping list from a recipe');
-  assert.match(visibleText(page.$('form[data-start-form]')), /The plan is posted to example\/shop-app#1\./);
+  assert.match(visibleText(page.$('form[data-start-form]')), /The plan appears here\. Nothing is posted to GitHub\./);
+  assert.doesNotMatch(visibleText(page.$('form[data-start-form]')), /example\/shop-app#1/);
   await page.go('#/settings/messages');
   assert.ok(buttonNamed(page, '✉ New message'));
 });

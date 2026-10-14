@@ -12,6 +12,7 @@ import { campaignStart } from '../../src/supervisor/api.mjs';
 import { declaration } from '../supervisor/helpers.mjs';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
 import { PLAN_GOAL_LIMIT, PLAN_SOURCES, planRequestText, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
+import { ownerView } from '../../src/dashboard/owner.mjs';
 
 test('owner messages are accepted only from the dashboard origin, stored once and shown with receipts', async (t) => {
   const dataDir = mkdtempSync(join(tmpdir(), 'aiworks-messages-'));
@@ -41,14 +42,14 @@ test('owner messages are accepted only from the dashboard origin, stored once an
   // Receipt states and the reply link as the dashboard sees them.
   const now = Date.now();
   store.run("UPDATE owner_messages SET state = 'answered', read_at = ?, answered_at = ?, response_key = 'k' WHERE id = ?", now + 1, now + 2, receipt.id);
-  store.run("INSERT INTO outbox (key, campaign_id, target, body, state, attempts, posted, updated_at) VALUES ('k', '_coordinator', 'example-org/aiworks#3', 'secret-marker', 'posted', 1, 'https://github.com/netbka/aiworks/issues/3#issuecomment-1', ?)", now);
+  store.run("INSERT INTO outbox (key, campaign_id, target, body, state, attempts, posted, updated_at) VALUES ('k', '_coordinator', 'example-org/aiworks#3', 'secret-marker', 'posted', 1, 'https://github.com/example-org/aiworks/issues/3#issuecomment-1', ?)", now);
   const view = supervisorSnapshot(dataDir).coordinator;
   assert.equal(view.configured, true);
   assert.equal(view.reportTo, 'example-org/aiworks#3');
   const message = view.messages[0];
   assert.deepEqual([message.state, message.text, message.source], ['answered', text, 'owner (dashboard)']);
   assert.ok(message.receivedAt <= message.readAt && message.readAt <= message.answeredAt);
-  assert.equal(message.replyUrl, 'https://github.com/netbka/aiworks/issues/3#issuecomment-1');
+  assert.equal(message.replyUrl, 'https://github.com/example-org/aiworks/issues/3#issuecomment-1');
   assert.ok(!JSON.stringify(view).includes('secret-marker'), 'the posted body is not exposed');
 });
 
@@ -117,6 +118,7 @@ test('Plan only is stored once as a structured coordinator message, with the sam
   // The project is written as this computer knows it, and the message is exactly the structured text.
   assert.equal(rows[0].text, planRequestText({ project: 'example-org/sampleapp', goal: 'Search finds recipes by ingredient.', from: 'issue', number: 443 }));
   assert.equal(rows[0].source, 'owner (Start work: Plan only)');
+  assert.equal(rows[0].repository, 'example-org/sampleapp', 'project scope is durable metadata, not only prompt text');
   const shown = supervisorSnapshot(dataDir).coordinator.messages[0];
   assert.deepEqual([shown.id, shown.state, shown.source], [receipt.id, 'received', 'owner (Start work: Plan only)']);
   // Refused, and nothing stored: credential-like goals, unknown projects, missing numbers, extra fields, Plan and do.
@@ -139,6 +141,28 @@ test('Plan only is stored once as a structured coordinator message, with the sam
   assert.equal(store.all('SELECT * FROM owner_messages').length, 1);
   // A plain message still goes the old way.
   assert.equal((await send({ requestId: randomUUID(), text: 'Review new PRs.' })).status, 202);
+});
+
+test('the dashboard serves a saved final plan and renders it as text, without a GitHub destination', async (t) => {
+  const { store, send, dataDir } = await planFixture(t);
+  const receipt = await (await send({ requestId: randomUUID(), plan: plan() })).json();
+  const body = '## Sample plan\n<img src=x onerror=alert(1)>\nReview example-org/sampleapp#443.';
+  store.run('INSERT INTO coordinator_replies (run_id, body) VALUES (?, ?)', 'plan-test', body);
+  store.run("UPDATE owner_messages SET state = 'answered', run_id = 'plan-test', answered_at = ? WHERE id = ?", Date.now(), receipt.id);
+  const snapshot = supervisorSnapshot(dataDir);
+  const message = snapshot.coordinator.messages[0];
+  assert.deepEqual(ownerView(snapshot).reply, { messageId: message.id, answeredAt: message.answeredAt, url: null });
+  assert.equal(message.replyBody, body);
+  assert.equal(message.replyUrl, null);
+  const { messageReceipt } = fromPage(['function messageReceipt('], `
+    const el = (tag, attrs, ...children) => ({ tag, attrs, children });
+    const dateTime = () => 'now'; const receiptStep = (done, label, detail) => ({ done, label, detail });
+    const disclosure = (id, label, content) => ({ id, label, content });`);
+  const rendered = messageReceipt(message, {});
+  assert.equal(rendered.children.at(-1).content.tag, 'pre');
+  assert.deepEqual(rendered.children.at(-1).content.children, [body], 'reply goes through text-node rendering, never HTML');
+  assert.doesNotMatch(JSON.stringify(rendered), /posting the reply|aiworks#3/);
+  assert.equal(store.all('SELECT * FROM outbox').length, 0);
 });
 
 test('Plan only never changes a project file or registers work', async (t) => {
@@ -189,9 +213,10 @@ test('the Start work page offers Plan only, shows Plan and do with its not-built
   assert.deepEqual(radios('start-from').map(({ value, checked }) => [value, checked]), [['description', true], ['issue', false], ['pull', false]]);
   assert.deepEqual(radios('start-mode').map(({ value, checked, disabled }) => [value, checked, disabled]), [['plan-only', true, undefined], ['plan-and-do', undefined, true]]);
   assert.match(text, /AIWorks looks and proposes a plan\. Nothing in your project changes\./);
+  assert.match(text, /The plan appears here\. Nothing is posted to GitHub\./);
   assert.match(text, /Starting work from this page is not built yet\. Today, work starts when an authorized private plan is registered on this computer\./);
   assert.deepEqual(nodes.filter((node) => node.tag === 'button').map((node) => [node.attributes.type, node.children[0], node.attributes.disabled]), [['submit', 'Ask for a plan', false]]);
-  // A project without GitHub has nowhere for the plan to be posted yet (OWNER_WORKSPACE §14, plan gap G4).
+  // Local project intake is still unavailable even though answers can now be stored locally.
   const local = JSON.stringify(startScreen('local-notes'));
   assert.match(local, /Plan only is not available for this project yet\./);
   assert.doesNotMatch(local, /"(?:button|input|form|textarea)"/);
