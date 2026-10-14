@@ -6,6 +6,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
 import { DELEGATED } from './copy.mjs';
+import { MERGE_STALL_HOURS } from './owner.mjs';
 
 /** At most one fetch of a repository's base branches per this interval, whether the last one succeeded or failed. */
 export const FETCH_INTERVAL_MS = 5 * 60_000;
@@ -44,7 +45,9 @@ const DECISION = /^#\d{1,9}$/;
 /**
  * Who merges verified pull requests, from config.json `merges` (absent by default). `delegatedTo` names who the owner
  * delegated merging to and `decision` the owner decision that did it (#17). `held` maps a pull request URL to why it
- * is held from merging (a DELEGATED.held key in copy.mjs; any other reason reads as `other`). The dashboard only reads this: it never merges. Missing, unreadable or
+ * is held from merging (a DELEGATED.held key in copy.mjs; any other reason reads as `other`). `stallHours` is how long a
+ * verified, unmerged, not-held pull request may wait since its check before it is the owner's again (#139): a whole
+ * number of hours from 1 to 720, else MERGE_STALL_HOURS. The dashboard only reads this: it never merges. Missing, unreadable or
  * malformed: null, and every verified, unmerged pull request stays the owner's to review and merge.
  */
 export function configuredMergeDelegation(dataDir) {
@@ -56,7 +59,8 @@ export function configuredMergeDelegation(dataDir) {
   if (merges.held && typeof merges.held === 'object' && !Array.isArray(merges.held)) {
     for (const [url, reason] of Object.entries(merges.held)) if (PULL.test(url)) held[url.toLowerCase()] = Object.hasOwn(DELEGATED.held, reason) ? reason : 'other';
   }
-  return { delegatedTo: merges.delegatedTo, decision: merges.decision, held };
+  const stallHours = Number.isSafeInteger(merges.stallHours) && merges.stallHours >= 1 && merges.stallHours <= 720 ? merges.stallHours : MERGE_STALL_HOURS;
+  return { delegatedTo: merges.delegatedTo, decision: merges.decision, held, stallHours };
 }
 
 /**

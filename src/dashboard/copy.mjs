@@ -137,7 +137,7 @@ const STATES = {
     `${plural(d.awaiting, 'pull request')} ${d.awaiting === 1 ? 'waits' : 'wait'} for your review${d.merged ? ` · ${d.merged} merged` : ''}.`, seeResults(d.project)] },
   // Merging delegated by the owner (#97): the pull requests still open are merged for them, so nothing waits for them.
   'finished-delegated': { section: '7.8', needsYou: false, copy: (d) => ['All steps are finished.',
-    `${plural(d.delegated, 'pull request')} passed the check and ${d.delegated === 1 ? 'is' : 'are'} to be merged for you after CI${d.merged ? ` · ${d.merged} merged` : ''}.`, seeResults(d.project)] },
+    `${plural(d.delegated, 'pull request')} passed the check and ${d.delegated === 1 ? 'is' : 'are'} to be merged for you${d.merged ? ` · ${d.merged} merged` : ''}.`, seeResults(d.project)] },
   'finished-merged': { section: '7.8', needsYou: false, copy: (d) => ['All steps are finished and merged.',
     `Release follows ${whose(d.project)} ${d.standing ? 'standing deploy authorization' : 'release policy'}.`, seeResults(d.project)] },
   'finished-unknown': { section: '7.8', needsYou: false, copy: (d) => ['All steps are finished.',
@@ -240,6 +240,8 @@ function itemState(item, c, d) {
     }
   }
   const [, number] = PR.exec(item.link?.url ?? '') ?? [];
+  // A delegated merge that waited too long (#139): the step and how long it waited; its action opens the pull request.
+  if (item.kind === 'merge-stalled' && number) return ['one-thing', { action: item.text, text: item.points[0]?.text, url: item.link.url, linkLabel: `Open pull request #${number}` }];
   return ['one-thing', { action: item.action, text: item.text, url: item.link?.url ?? null, linkLabel: number ? `Review pull request #${number}` : item.link ? 'Open the step issue' : null }];
 }
 
@@ -396,14 +398,21 @@ export function stopReasonWords(blocked, rounds = 0) {
 
 /**
  * A verified pull request whose merge the owner delegated (config.json `merges`, #17, #97): not a Needs me item, never
- * called merged before it is. `held` is why one is held from merging, by the reason key config.json records.
+ * called merged before it is. `held` is why one is held from merging, by the reason key config.json records. `by` is
+ * who merges (`merges.delegatedTo`): AIWorks itself (`supervisor`, #138) merges after its check against the latest
+ * main; anyone else is not named. There is no CI to wait for. One that waited too long since its check is `stalled`:
+ * a Needs me item again (#139).
  */
+const MERGES_AFTER = 'AIWorks merges it after it passes the check against the latest main';
 export const DELEGATED = {
   word: 'Passed the check',
-  note: 'Will be merged for you after CI passes. Nothing for you to do.',
-  row: (number) => `Pull request #${number} · passed the check · will be merged for you after CI`,
+  note: (by) => by === 'supervisor' ? `${MERGES_AFTER}. Nothing for you to do.` : 'Will be merged for you. Nothing for you to do.',
+  row: (number, by) => `Pull request #${number} · passed the check · ${by === 'supervisor' ? MERGES_AFTER : 'will be merged for you'}`,
   heldRow: (number, reason) => `Pull request #${number} · ${reason.charAt(0).toLowerCase()}${reason.slice(1)}`,
-  progress: (n) => `${n} to be merged for you after CI`,
+  progress: (n) => `${n} to be merged for you`,
+  stalledAction: 'Check why it is not merged',
+  stalled: (hours) => `Checked and waiting to be merged for ${plural(hours, 'hour')}. Nothing has merged it.`,
+  stalledRow: (number, hours) => `Pull request #${number} · checked and waiting to be merged for ${plural(hours, 'hour')}`,
   held: {
     'newer-work': 'Held: waiting to be combined with newer work',
     other: 'Held for now; the pull request says why',

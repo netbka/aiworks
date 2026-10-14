@@ -370,10 +370,14 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
       const specs = new Map(c.declaration.tasks.map((task) => [task.id, task]));
       const operations = store.openOperations(id);
       const order = status.executorOrder;
-      // Verifier rejections per task: a churn signal for the owner, not a limit.
-      const rejections = new Map();
-      for (const op of store.all("SELECT task_id, outcome FROM operations WHERE campaign_id = ? AND kind = 'verify' AND state = 'finished'", id)) {
-        if (op.outcome?.class === 'result' && (op.outcome.value?.verdict ?? op.outcome.value?.result) === 'rejected') rejections.set(op.task_id, (rejections.get(op.task_id) ?? 0) + 1);
+      // Verifier rejections per task: a churn signal for the owner, not a limit. And when each commit passed the check:
+      // the latest finished check that accepted it, by task and commit (a delegated merge that waits too long, #139).
+      const rejections = new Map(), acceptedAt = new Map();
+      for (const op of store.all("SELECT task_id, target_sha, outcome, updated_at FROM operations WHERE campaign_id = ? AND kind = 'verify' AND state = 'finished'", id)) {
+        const verdict = op.outcome?.class === 'result' ? op.outcome.value?.verdict ?? op.outcome.value?.result : null;
+        if (verdict === 'rejected') rejections.set(op.task_id, (rejections.get(op.task_id) ?? 0) + 1);
+        const key = `${op.task_id}/${op.target_sha}`;
+        if (verdict === 'accepted' && Number.isSafeInteger(op.updated_at)) acceptedAt.set(key, Math.max(acceptedAt.get(key) ?? 0, op.updated_at));
       }
       const histories = stepHistories(store, id);
       const costs = stepCosts(store, id);
@@ -455,6 +459,9 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
           errorClass: code(String(task.last_error ?? '').split(':')[0]),
           retryAt: task.retry_at, dependsOn: specs.get(task.task_id)?.dependsOn ?? [], resultUrl: githubLink(task.pr_url),
           headSha: task.head_sha, verifiedSha: task.verified_sha, lastOutcome: lastOutcome(task.task_id),
+          // When the verified commit passed the check. Without a recorded check run, when the step last changed, which is
+          // never earlier, so a wait is never overstated.
+          verifiedAt: task.verified_sha ? acceptedAt.get(`${task.task_id}/${task.verified_sha}`) ?? task.updated_at : null,
           // OWNER_WORKSPACE S5: why it waits, naming steps by outcome; a stop in §7.7 words; its own attempts and events.
           wait: stepWait(task, specs.get(task.task_id), specs, taskRows),
           stopped: stepStopped(task, safeText(specs.get(task.task_id)?.outcome ?? specs.get(task.task_id)?.title ?? task.task_id),
