@@ -180,6 +180,28 @@ Free-text guidance is supplemental to the immutable task packet and never change
 
 Commands use the existing supervisor APIs within one transaction. The request is bound to campaign row version, authorization version, scope digest and, for task recheck, task version. Changed state returns a conflict. A durable request ID is bound to the exact payload; repeating it acknowledges the original command without applying it twice. Commands and receipts use the existing events/journal tables.
 
+## Add project (built, off by default)
+
+**In short.** With it on, the owner adds a project from the Projects screen: a GitHub checkout, a local Git repository or a plain folder. Connecting only reads the folder. A project without GitHub says plainly that starting work is not available yet. (Planned design: [PROJECT_CONNECTION §8](design/PROJECT_CONNECTION.md#8-connect-flows-failure-copy-and-tests) and [OWNER_WORKSPACE §4.11](design/OWNER_WORKSPACE.md#411-add-project-after-project-connection-exists); build slice UI13 of [the plan](PROJECT_WORKSPACE_PLAN.md#67-lane-ui---owner-workspace).)
+
+- **Off by default.** With no `projectConnection` block in the data directory's `config.json`, the Projects screen and `#/projects/add` read exactly as before, and every route below answers 404. Turn it on with `"projectConnection": { "enabled": true }`. The dashboard reads it on every request. Turning it on waits for no owner decision (plan §6.7, UI13 row). Like any runtime change, it goes through the upgrade procedure ([SUPERVISOR.md §6](SUPERVISOR.md#6-installation-and-maintenance)).
+- **How it works.** The owner types or pastes a folder path. *Check folder* says what AIWorks found: *Git repository with GitHub remote owner/name*, *Git repository, no GitHub remote* or *Ordinary folder, no Git*. *Connect project* then connects it through the supervisor's project connection API (`src/supervisor/project-connect.mjs`), and the project's Now screen opens. A refusal shows the design's sentence for its code and its one action, such as *Use this folder* or *Check again*.
+- **Your folder stays untouched.** Connect runs read-only Git commands and never writes in the folder. A local Git project or plain folder gets AIWorks's own copy outside it, next to the data directory. A GitHub project needs `gh` signed in; connect reads the repository over REST only.
+- **Starting work.** On a GitHub project it works as before. On a local Git project or plain folder it is off (`LOCAL_START_OFF`): the Now screen says *Connected. Starting work in a folder without GitHub is not available yet.* It waits for #24 (D2) and #32 (D4). A GitHub project that governance provider does not list reads *This project is not registered with governance provider yet, so AIWorks cannot start work on it.*
+- **On a connected project.** Its Now screen offers *Check again*. When a local project's folder moved, it offers *Move "{name}" here*; a plain folder first shows how many files match AIWorks's last copy. Under the connection's details sits *Disconnect…*, which deletes no history, copy or worktree.
+- **Known limit.** Connecting a large plain folder copies it inside the dashboard's request. The page does not refresh until the copy ends (at most the 120-second scan limit, plus the copy).
+
+| Route | Effect |
+| --- | --- |
+| `GET /api/projects` | The connected projects, each with its own folder path |
+| `POST /api/projects/preflight` | What the folder is; saves nothing |
+| `POST /api/projects/connect` | Connects it as `github`, `local-git` or `folder`; the same folder again opens the same project |
+| `POST /api/projects/check` | Check again; saves the status |
+| `POST /api/projects/relocate` | Move here (a plain folder needs `confirm: true` after the match count) |
+| `POST /api/projects/disconnect` | Disconnects; bound to the version the page saw |
+
+The POST routes keep the command rules: exact Origin, the CSRF token, JSON of at most 16 KiB, and only their own fields. The one absolute path a response may carry is the owner's own project root (plan §6.7 and §6.14), and only in these routes. `/api/state` names a project's folder, never its path. Mirror, worktree and data paths are never served.
+
 ## Local access boundary
 
 The server binds only to `127.0.0.1`; the local host is the trust boundary. This is not a remote or multi-user authentication service. Do not expose it through a proxy, tunnel or public interface without a separately reviewed authentication layer.
@@ -194,7 +216,7 @@ Requests require the exact loopback Host.
 
 The page then loads its data with same-origin requests.
 
-Commands are JSON POSTs with exact same Origin and a per-process CSRF token; foreign/null/missing command origins are rejected. Responses prohibit framing and cross-origin reads. They also set `Cross-Origin-Opener-Policy: same-origin`, so a dashboard page opened from another site shares no window reference with that site. All remote labels/titles render as text and links are constrained to GitHub. Snapshot fields are allowlisted: raw worker output, prompt packets, session identities, local workspace paths, secrets and raw error text are not served. Heartbeat reads are confined to the configured runs directory.
+Commands are JSON POSTs with exact same Origin and a per-process CSRF token; foreign/null/missing command origins are rejected. Responses prohibit framing and cross-origin reads. They also set `Cross-Origin-Opener-Policy: same-origin`, so a dashboard page opened from another site shares no window reference with that site. All remote labels/titles render as text and links are constrained to GitHub. Snapshot fields are allowlisted: raw worker output, prompt packets, session identities, local workspace paths, secrets and raw error text are not served. The one exception is a connected project's own folder path, in the [Add project](#add-project-built-off-by-default) routes only. Heartbeat reads are confined to the configured runs directory.
 
 ## Verification
 
@@ -238,6 +260,16 @@ Completed/cancelled campaigns do not appear as controller failures when their hi
 - the neutral host placeholder;
 - the explicit page background and large-screen scaling;
 - supervisor-fault wording that links where faults are tracked.
+
+`tests/dashboard/connect.test.mjs` checks Add project with disposable folders and git repositories, a synthetic `gh` and synthetic branch reads:
+- off by default, every route answers as before;
+- the routes keep the Origin, Host, CSRF, JSON and 16 KiB rules;
+- a plain folder, a local Git repository and a GitHub checkout connect, and each folder is byte-identical afterwards, `.git` included;
+- every code's copy matches PROJECT_CONNECTION §8;
+- no response names a path other than the owner's own project root;
+- the two-project acceptance (§8.5);
+- Check again, Move here and Disconnect;
+- a keyboard-only connect through the page, and the 320px rules.
 
 No verification command pauses or cancels a live campaign.
 
