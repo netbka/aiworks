@@ -7,13 +7,14 @@ import { appendFileSync, existsSync, readFileSync, realpathSync, writeFileSync }
 import { constants as osConstants } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { approvalRequired, approvedStart, revokeApprovals } from './approvals.mjs';
 import { baselineReport, formatBaseline } from './baseline.mjs';
-import { CampaignError, campaignCancel, campaignPause, campaignRecheck, campaignStart, campaignStatus, supervisorLiveness } from './api.mjs';
+import { CampaignError, campaignCancel, campaignPause, campaignRecheck, campaignStatus, supervisorLiveness } from './api.mjs';
 import { assertRegisteredTarget } from './campaign.mjs';
 import { Controller, DEFAULTS } from './controller.mjs';
 import { configuredGovernanceRoot, requireGovernanceRoot } from './governance.mjs';
 import { clearCoordinatorViolation, coordinatorView, postOwnerMessage } from './coordinator.mjs';
-import { CODE_ROOT, declarationFromFile, revisionNotMerged } from './provenance.mjs';
+import { approvalFromFile, CODE_ROOT, declarationFromFile, revisionNotMerged } from './provenance.mjs';
 import { Store } from './store.mjs';
 import { RELEASE_STOP, REVIEW_ONLY, releaseNarrowings, setReviewOnly } from './release/state.mjs';
 
@@ -24,6 +25,12 @@ const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--go
   start <declaration.json>              register, amend (authorization.version + 1) or resume a private local campaign.
                                         Runtime code must be merged into origin/main (RUNTIME_NOT_MERGED). A new registration
                                         needs the governance checkout (GOVERNANCE_ROOT_REQUIRED / GOVERNANCE_ROOT_INVALID)
+    --approval <approval.json>          start only under this private approval: its authorityDigest must equal the declaration's
+                                        (DECLARATION_DIFFERS_FROM_APPROVAL). A campaign started under an approval needs one on
+                                        every later start. config.json "approvals": { "required": true } (off by default) also
+                                        requires one for every new version 2 campaign
+  approval-revoke <campaignId> [reason] revoke the campaign's recorded private approvals and cancel the campaign:
+                                        nothing starts under them again
   status <campaignId>
   pause <campaignId> [reason]
   cancel <campaignId> [reason]
@@ -51,6 +58,7 @@ const explicitData = take('--data');
 const selectedData = explicitData ?? process.env.AIWORKS_DATA;
 const dataDir = resolve(selectedData ?? '');
 const taskFlag = take('--task');
+const approvalFlag = take('--approval');
 const explicitGovernance = take('--governance');
 const sinceFlag = take('--since');
 const jsonOnly = args.includes('--json') ? Boolean(args.splice(args.indexOf('--json'), 1)) : false;
@@ -91,11 +99,15 @@ try {
   else if (command === 'start') {
     // Explicit operator registration reads private data; executable code must still be merged.
     const declaration = declarationFromFile(rest[0], { root: CODE_ROOT });
+    // The owner's private approval, when given, is read by the same merged code (WORK_ENVELOPE.md section 5, slice E7).
+    const approval = approvalFlag === null ? null : approvalFromFile(approvalFlag, { root: CODE_ROOT });
     // Only a new registration is gated on the registry; resuming or amending a stored campaign is unaffected.
     if (!store.campaign(declaration?.campaignId)) {
       assertRegisteredTarget(declaration, explicitGovernance ? resolve(explicitGovernance) : configuredGovernanceRoot(dataDir));
     }
-    print(campaignStart(store, declaration));
+    let config = {};
+    try { config = JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { /* no config: approvals stay optional */ }
+    print(approvedStart(store, declaration, approval, { required: approvalRequired(config) }));
   }
   else if (command === 'status') {
     store.db.exec('BEGIN');
@@ -125,6 +137,7 @@ try {
   else if (command === 'pause') print(campaignPause(store, rest[0], rest.slice(1).join(' ') || null));
   else if (command === 'cancel') print(campaignCancel(store, rest[0], rest.slice(1).join(' ') || null));
   else if (command === 'recheck') print(campaignRecheck(store, rest[0], { task: taskFlag, note: rest.slice(1).join(' ') || null }));
+  else if (command === 'approval-revoke') print(revokeApprovals(store, rest[0], { reason: rest.slice(1).join(' ') || null }));
   else if (command === 'coordinator-clear') print(clearCoordinatorViolation(store));
   else if (command === 'release-mode') {
     setReviewOnly(store, { project: rest[0], destination: rest[1], source: 'owner (cli)', now: Date.now() });
