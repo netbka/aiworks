@@ -84,6 +84,21 @@ CREATE TABLE IF NOT EXISTS task_specs (
   campaign_id TEXT NOT NULL, task_id TEXT NOT NULL, revision INTEGER NOT NULL, amendment_seq INTEGER NOT NULL,
   spec TEXT NOT NULL, spec_digest TEXT NOT NULL, fingerprint TEXT NOT NULL, cancelled_at INTEGER, created_at INTEGER NOT NULL,
   PRIMARY KEY (campaign_id, task_id, revision));
+-- Owner work requests and the draft plans drafted from them (docs/design/WORK_ENVELOPE.md section 3; rules in intake.mjs).
+-- Additive like every table above. Nothing that schedules reads them: a draft is never a campaign, task or operation.
+-- A request is received, drafting, drafted or failed; each draft version is a new row and is never edited except to
+-- mark it stale.
+CREATE TABLE IF NOT EXISTS work_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, route TEXT NOT NULL,
+  text TEXT, reference TEXT, tracking_issue INTEGER, plan_only INTEGER NOT NULL, state TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0, not_before INTEGER, run_id TEXT, pinned TEXT, failure TEXT,
+  received_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS work_drafts (
+  request_id TEXT NOT NULL, version INTEGER NOT NULL, project_id TEXT NOT NULL, plan_only INTEGER NOT NULL,
+  state TEXT NOT NULL, declaration TEXT NOT NULL, scope_digest TEXT NOT NULL, authority_digest TEXT NOT NULL,
+  pinned TEXT NOT NULL, summary TEXT NOT NULL, plan TEXT NOT NULL, steps TEXT NOT NULL, questions TEXT NOT NULL,
+  conflicts TEXT NOT NULL, notes TEXT NOT NULL, start_code TEXT, stale_what TEXT, run_id TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (request_id, version));
 CREATE TABLE IF NOT EXISTS events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT NOT NULL, kind TEXT NOT NULL,
   dedup_key TEXT UNIQUE, payload TEXT, received_at INTEGER NOT NULL, processed_at INTEGER);
@@ -136,7 +151,7 @@ CREATE TABLE IF NOT EXISTS project_overlays (
 
 const JSON_COLUMNS = new Set(['declaration', 'blocker', 'failures', 'findings', 'result', 'verification',
   'blocked', 'packet', 'outcome', 'payload', 'detail', 'message_ids', 'probe', 'last_evidence', 'resolution', 'message',
-  'eligibility', 'steps', 'history', 'routing', 'ops', 'spec']);
+  'eligibility', 'steps', 'history', 'routing', 'ops', 'spec', 'pinned', 'questions', 'conflicts', 'notes', 'stale_what']);
 
 function decode(row) {
   if (!row) return null;
