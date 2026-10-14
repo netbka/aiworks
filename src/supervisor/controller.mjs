@@ -117,12 +117,16 @@ export class Controller {
   // profiles (ACCOUNT_ADAPTER_CAAM.md section 3.3, slice CAAM3): `(kind, now) => profiles`, CAAM's inventory for an executor
   // kind (caam.mjs caamRobotStatus records), or null for a kind CAAM does not manage; it may throw. Selection runs only
   // with it and config.json "caam": { "enabled": true }. cli.mjs supplies none yet, so it stays off: a chosen profile must
-  // also be the one the worker launches under, which waits for the CAAM4 launch slice and the owner's Phase 2 pilot.
+  // also be the one the worker launches under, which waits for the owner's Phase 2 pilot.
+  // profileHomes (CAAM6, #9): `(kind, account) => home`, the absolute shallow home of a chosen profile (caam.mjs
+  // ensureShallowProfile); it may throw. A run bound to a profile then launches inside that home: it is passed as
+  // profileHome to executors.unavailableReason and executors.prepare. A home that cannot be prepared records nothing and
+  // waits like a busy profile. cli.mjs supplies none: without a profile, or without this seam, the launch is unchanged.
   constructor({ store, config, dataDir, log = () => {}, now = () => Date.now(), instanceId = randomUUID(),
     codeRevision = null, fault = process.env.AIWORKS_FAULT ?? null, notifier = noopTransport, probes = {},
-    governanceRoot = undefined, revisionCheck = null, revisionCheckMs = REVISION_CHECK_MS, profiles = null }) {
+    governanceRoot = undefined, revisionCheck = null, revisionCheckMs = REVISION_CHECK_MS, profiles = null, profileHomes = null }) {
     Object.assign(this, { store, dataDir, log, now, instanceId, codeRevision, fault, notifier, probes, governanceRoot,
-      revisionCheck, revisionCheckMs, profiles });
+      revisionCheck, revisionCheckMs, profiles, profileHomes });
     this.config = { ...DEFAULTS, ...config };
     this.governanceRoot = governanceRoot ?? this.config.governanceRoot;
     // aiworks#1 owner-intervention core: off unless the data-directory config enables it.
@@ -1512,6 +1516,16 @@ export class Controller {
           { retry_at: profile.retryAt, last_error: `waiting for executor availability: ${profile.reason}` }, this.now());
         return null;
       }
+      // The chosen profile's shallow home, so the worker reads that profile's login and never the host's (CAAM6).
+      let profileHome = null;
+      if (profile && this.profileHomes) {
+        try { profileHome = this.profileHomes(executor.kind, profile.account); }
+        catch (error) {
+          this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
+            { retry_at: this.now() + PROFILE_RECHECK_MS, last_error: `waiting for executor availability: the shallow home of ${profile.account} cannot be prepared (${error.code ?? 'error'})` }, this.now());
+          return null;
+        }
+      }
       const spec = specOf(this.store, ctx.id, task.task_id, decl);
       const repo = this.repo(decl);
       const seq = task.attempts + 1;
@@ -1620,7 +1634,7 @@ export class Controller {
         }
       }
       const unavailable = executors.unavailableReason(executor, workspace, this.cmd.gh, {
-        probe, chromeCommand: this.cmd.chrome, web: Boolean(spec.web),
+        probe, chromeCommand: this.cmd.chrome, web: Boolean(spec.web), profileHome,
       });
       if (unavailable) {
         this.recordUnavailable(ctx, executor.kind, unavailable);
@@ -1631,7 +1645,7 @@ export class Controller {
       const invocation = executors.prepare({ executor, command: this.cmd[executor.kind.replace('-cli', '')], role,
         deliverable: spec.deliverable, sessionId, digest, runDir, workspace, prompt,
         repository: decl.target.repository, ghCommand: this.cmd.gh, projectSettings: settings.ok ? settings.stdout : null,
-        web: spec.web ?? null, chromeCommand: this.cmd.chrome, timeoutMs });
+        web: spec.web ?? null, chromeCommand: this.cmd.chrome, timeoutMs, profileHome });
       writeFileSync(join(runDir, 'prompt.txt'), invocation.prompt, 'utf8');
       writeAtomic(join(runDir, 'spec.json'), JSON.stringify({
         argv: invocation.argv, ...(invocation.env ? { env: invocation.env } : {}),
