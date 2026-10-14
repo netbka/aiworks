@@ -14,13 +14,13 @@ function fixture(t) {
     writeFileSync(process.argv[3],JSON.stringify(process.argv.slice(4)));
     const r=JSON.parse(readFileSync(process.argv[2]));
     if(r.fail){console.error('HTTP 403 synthetic-sensitive-detail');process.exit(1)}
-    process.stdout.write(r.oversize?'x'.repeat(3*1024*1024):r.raw??JSON.stringify(r));`);
+    process.stdout.write(r.oversize?'x'.repeat(3*1024*1024):r.bytes?'x'.repeat(r.bytes):r.raw??JSON.stringify(r));`);
   const config = { repository, runId: 'd0e4fd84-a8ea-4400-842e-e80cf6c4a130', packetDigest: 'a'.repeat(64),
     ghCommand: [process.execPath, cli, input, calls] };
   const respond = (value) => writeFileSync(input, JSON.stringify(value));
   const read = createGitHubReader(config);
   const identity = () => { respond({ url: base, full_name: repository, default_branch: 'main', private: true }); return read({ resource: 'repository' }); };
-  return { read, config, respond, identity, args: () => JSON.parse(readFileSync(calls)) };
+  return { read, config, respond, identity, input, args: () => JSON.parse(readFileSync(calls)) };
 }
 
 test('repository reader binds identity, GET routes, pagination and projected output to the run', (t) => {
@@ -71,4 +71,23 @@ test('comment responses must identify the exact assigned issue and repository', 
   assert.equal(f.read({ resource: 'comment', number: 8 }).data.id, 8);
   f.respond([{ id: 8, url: `${base}/issues/comments/8`, issue_url: `${base}/issues/4` }]);
   assert.throws(() => f.read({ resource: 'comments', number: 3 }), /outside/);
+});
+
+test('a pulls page larger than 2 MB is read; a response over the limit is refused without stopping the reader', (t) => {
+  const f = fixture(t); f.identity();
+  const pulls = Array.from({ length: 100 }, (_, i) => ({ url: `${base}/pulls/${i + 1}`, id: 1000 + i, number: i + 1,
+    title: `pull ${i + 1}`, body: 'b'.repeat(25 * 1024), base: { sha: 'a'.repeat(40) }, head: { sha: 'c'.repeat(40) } }));
+  f.respond(pulls);
+  assert.ok(readFileSync(f.input).length > 2 * 1024 * 1024);
+  const page = f.read({ resource: 'pulls', perPage: 100 });
+  assert.equal(page.data.length, 100);
+  assert.equal(page.possiblyMore, true);
+  assert.equal(page.data[99].number, 100);
+  f.respond({ bytes: 33 * 1024 * 1024 });
+  assert.throws(() => f.read({ resource: 'pulls', perPage: 100 }), /larger than 32 MB; ask for a smaller perPage/);
+  f.respond(pulls.slice(0, 10));
+  assert.equal(f.read({ resource: 'pulls', perPage: 10 }).data.length, 10);
+  f.respond({ fail: true });
+  assert.throws(() => f.read({ resource: 'pulls' }), /GitHub read failed \(HTTP 403\)/);
+  f.respond([]); assert.throws(() => f.read({ resource: 'pulls' }), /stopped after an upstream failure/);
 });
