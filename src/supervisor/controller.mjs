@@ -14,7 +14,7 @@ import * as github from './adapters/github.mjs';
 import { authorityDigest, campaignLimits, canonicalJson, executorOrder, projectGovernance } from './campaign.mjs';
 import { resolveCheckout } from './project-connect.mjs';
 import { campaignBudget } from './api.mjs';
-import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountOf, accountWait, clearAccountWait, laterWait, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
+import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountOf, accountWait, clearAccountWait, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
 import { domainOf, pathsOutside, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
 import { coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
@@ -136,6 +136,9 @@ export class Controller {
     this.sched = schedulerEnabled(this.config);
     this.candidates = [];
     this.fanoutWaited = new Set();
+    // CAAM profiles that a dispatch found at their learned limit while no profile could run (CAAM5): per-tick memory, as
+    // fanoutWaited; the next useful result on one of them raises its limit by one.
+    this.profileWaited = new Set();
     this.waitReasons = new Map();
     this.domainWaits = [];
     this.baseCheckedAt = new Map();
@@ -312,7 +315,11 @@ export class Controller {
           if (!only) {
             this.store.run('DELETE FROM executor_waits WHERE campaign_id = ?', ctx.id);
             // The owner's "the limit lifted" is about the account: it ends once for every campaign that uses it.
-            for (const { kind } of executorOrder(this.store.campaign(ctx.id).declaration.executor)) this.endAccountWait(kind, `recheck of ${ctx.id}`, now);
+            // Waits of the CAAM profiles its runs were bound to end with it (CAAM5).
+            for (const { kind } of executorOrder(this.store.campaign(ctx.id).declaration.executor)) {
+              this.endAccountWait(kind, `recheck of ${ctx.id}`, now);
+              for (const profile of profileWaits(this.store, kind)) this.endAccountWait(kind, `recheck of ${ctx.id}`, now, profile);
+            }
           }
           for (const task of this.store.tasks(ctx.id)) {
             // A usage-limit wait is not a blocker, but recheck also ends it (the owner knows the limit lifted early).
@@ -468,11 +475,18 @@ export class Controller {
       }
       if (executors.runNotCounted(verdict)) verdict = { ...verdict, refunded: true };
       this.store.updateOperation(op.id, { state: 'finished', outcome: verdict }, now);
+      // A run bound to a CAAM profile is attributed to that profile from its durable row, also after a restart: never to
+      // the profile selection would choose now, nor to the executor kind's static account (ACCOUNT_ADAPTER_CAAM 3.5).
+      const profile = fresh.account_identity ?? null;
       if (verdict.class === 'result') {
         this.store.run('DELETE FROM executor_waits WHERE campaign_id = ? AND executor_kind = ?', ctx.id, op.executor_kind);
-        // The account works again: its wait ends for every campaign that uses it.
-        this.endAccountWait(op.executor_kind, op.id, now);
+        // The account works again: its wait ends for every campaign that uses it. A profile ends only its own wait.
+        this.endAccountWait(op.executor_kind, op.id, now, profile);
       }
+      // A usage limit halves that profile's concurrency, and a useful result while work waited for it raises it by one;
+      // sibling profiles keep their own limits. Runs on the static account follow RUN8 (not wired here yet).
+      if (profile) accountAfterRun(this.store, this.config, { kind: fresh.executor_kind, account: profile, opId: op.id, quota: verdict.class === 'quota',
+        run: classifyRun(op.kind, verdict), waited: this.profileWaited, campaignId: ctx.id, now });
       const blocked = this.store.campaign(ctx.id);
       // Only the operation whose ownership was unresolved clears its blocker; another operation finishing proves nothing
       // about it. A blocker recorded before the operation id was kept (no `operation`) keeps the old behaviour.
@@ -575,8 +589,9 @@ export class Controller {
         return { state, failures, retry_at: null, last_error: `${cls}: ${detail}`,
           blocked: { class: 'stalled', reason: `${total} failed attempts; last ${cls}: ${String(detail).slice(0, 300)}`, at: now } };
       }
+      // A class outside the retry budget (an unavailable host) still waits for the first backoff step, never 0 ms.
       const backoff = this.config.retryBackoffMs;
-      return { state, failures, retry_at: now + backoff[Math.min(total - 1, backoff.length - 1)], last_error: `${cls}: ${detail}` };
+      return { state, failures, retry_at: now + backoff[Math.min(Math.max(total, 1) - 1, backoff.length - 1)], last_error: `${cls}: ${detail}` };
     };
     // A worker that left its boundary is never retried on the same provider: the task waits for the owner.
     if (v.violation) return { state: back, retry_at: null, last_error: `violation: ${v.detail}`,
@@ -586,10 +601,13 @@ export class Controller {
       // an untimed wait (auth, missing support) lasts until an explicit recheck.
       // This campaign's row stays as before. A usage limit, a failed login or an unavailable host also belongs to the
       // account, so its row holds every other campaign on it too; a failed launch stays with this campaign only.
+      // A run bound to a CAAM profile records the wait on that profile only: the campaign keeps no row for the whole
+      // kind, so the next choice may take a sibling profile of the same provider (CAAM5).
       const waitUntil = ['quota', 'unavailable'].includes(v.class) ? v.retryAt ?? null : null;
-      this.store.run('INSERT OR REPLACE INTO executor_waits (campaign_id, executor_kind, retry_at, reason) VALUES (?, ?, ?, ?)',
+      const profile = ACCOUNT_SCOPED.has(v.class) ? op.account_identity ?? null : null;
+      if (!profile) this.store.run('INSERT OR REPLACE INTO executor_waits (campaign_id, executor_kind, retry_at, reason) VALUES (?, ?, ?, ?)',
         ctx.id, op.executor_kind, waitUntil, `${v.class}: ${v.detail}`);
-      if (ACCOUNT_SCOPED.has(v.class)) setAccountWait(this.store, this.config, { kind: op.executor_kind, retryAt: waitUntil, reason: `${v.class}: ${v.detail}`, campaignId: ctx.id, now });
+      if (ACCOUNT_SCOPED.has(v.class)) setAccountWait(this.store, this.config, { kind: op.executor_kind, account: profile, retryAt: waitUntil, reason: `${v.class}: ${v.detail}`, campaignId: ctx.id, now });
       const choice = this.executorChoice(decl, { ...task, state: back }, now);
       if (choice.executor) {
         this.store.journal(ctx.id, 'executor-fallback', { task: task.task_id, from: op.executor_kind,
@@ -602,6 +620,24 @@ export class Controller {
       { identity: 'no-eligible-executor' });
       return { state: back, retry_at: null, last_error: `${op.executor_kind}: ${v.class}: ${v.detail}` };
     }
+    // A single-provider run bound to a CAAM profile: a usage limit, a failed login or a host failure waits on that
+    // profile only. A host failure without a reset time waits for the task's next retry backoff, so the same profile is
+    // not chosen again at once. While a sibling profile may run, the task goes back at once with no blocker and no
+    // wait; otherwise it falls through to the single-account handling below (a recheck also ends the profile rows).
+    const profile = ACCOUNT_SCOPED.has(v.class) ? op.account_identity ?? null : null;
+    if (profile) {
+      const backoff = this.config.retryBackoffMs;
+      const until = v.class === 'auth' ? null : v.retryAt ?? (v.class === 'unavailable'
+        ? now + backoff[Math.min(task.failures?.unavailable ?? 0, backoff.length - 1)] : null);
+      setAccountWait(this.store, this.config, { kind: op.executor_kind, account: profile, retryAt: until, reason: `${v.class}: ${v.detail}`, campaignId: ctx.id, now });
+      const next = this.profileChoice(op.executor_kind, now);
+      if (next?.account) {
+        this.store.journal(ctx.id, 'profile-fallback', { task: task.task_id, executor: op.executor_kind, from: profile, to: next.account, reason: v.class }, now);
+        return { state: back, retry_at: now, last_error: `${profile}: ${v.class}: ${v.detail}` };
+      }
+      // Every profile waits: the task waits for the earliest reset among them, not only for this profile's.
+      if (next && v.class === 'quota') return { state: back, retry_at: next.retryAt, last_error: `waiting for executor availability: ${profile}: quota: ${v.detail}` };
+    }
     // A single-provider campaign's failed login stays its own B2 blocker, whose recheck or probe resolution resumes it;
     // an account row here would outlive that resolution. (A chain records it on the account above.)
     if (v.class === 'auth') {
@@ -611,7 +647,7 @@ export class Controller {
       return { state: back, last_error: `auth: ${v.detail}` };
     }
     if (v.class === 'quota') {
-      setAccountWait(this.store, this.config, { kind: op.executor_kind, retryAt: v.retryAt ?? null, reason: `quota: ${v.detail}`, campaignId: ctx.id, now });
+      if (!profile) setAccountWait(this.store, this.config, { kind: op.executor_kind, retryAt: v.retryAt ?? null, reason: `quota: ${v.detail}`, campaignId: ctx.id, now });
       return { state: back, retry_at: v.retryAt, last_error: `quota: ${v.detail}` };
     }
     if (v.class !== 'result') return retry(v.class, v.detail, back);
@@ -1083,10 +1119,11 @@ export class Controller {
    * End the wait of the account behind `kind` once, for every campaign that uses it: a success on the account proves it
    * works, and a recheck is the owner saying the limit lifted. Each such campaign drops its own copy of that wait (a usage
    * limit, a failed login or an unavailable host; a failed launch stays with its campaign), its tasks that waited for it
-   * are due again at once, and its journal records provider-wait-cleared. Store writes only, no model call.
+   * are due again at once, and its journal records provider-wait-cleared. Store writes only, no model call. With
+   * `account` (a CAAM profile) only that profile's row ends; its sibling profiles keep theirs.
    */
-  endAccountWait(kind, by, now) {
-    if (!clearAccountWait(this.store, this.config, kind)) return false;
+  endAccountWait(kind, by, now, account = null) {
+    if (!clearAccountWait(this.store, this.config, kind, account)) return false;
     const users = this.store.all("SELECT id, declaration FROM campaigns WHERE control NOT IN ('finished', 'cancelled')")
       .filter((c) => executorOrder(c.declaration.executor).some((provider) => provider.kind === kind));
     for (const c of users) {
@@ -1099,7 +1136,7 @@ export class Controller {
             !(error.startsWith('waiting for executor availability:') || single && error.startsWith('quota:'))) continue;
         this.store.patch('tasks', { campaign_id: c.id, task_id: task.task_id }, task.version, { retry_at: null, last_error: null }, now);
       }
-      this.store.journal(c.id, 'provider-wait-cleared', { executor: kind, account: accountOf(this.config, kind), by }, now);
+      this.store.journal(c.id, 'provider-wait-cleared', { executor: kind, account: account ?? accountOf(this.config, kind), by }, now);
     }
     return true;
   }
@@ -1113,7 +1150,7 @@ export class Controller {
     let profiles;
     try { profiles = this.profiles(kind, now); }
     catch (error) { return { account: null, retryAt: now + PROFILE_RECHECK_MS, reason: `the CAAM inventory for ${kind} cannot be read (${error.code ?? 'error'})` }; }
-    return profiles == null ? null : selectProfile(this.store, kind, profiles, now);
+    return profiles == null ? null : selectProfile(this.store, kind, profiles, now, this.profileWaited);
   }
 
   /** The first untimed account wait (a failed login, or a host finding that needs a recheck) on a provider of `decl`, or null. */
