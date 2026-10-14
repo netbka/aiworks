@@ -480,3 +480,29 @@ test('commit prompts tell implementers and verifiers how to get a completed full
     assert.equal(ruleLine(buildPrompt(webArgs)), undefined);
   }
 });
+
+test('commit and report verifier prompts report a check that behaved as intended as pass; implementer and web prompts do not carry it (#59)', () => {
+  const ruleLine = (prompt) => prompt.split('\n').find((line) => line.includes('A check that behaves as intended is reported as pass'));
+  for (const deliverable of ['commit', 'report']) {
+    for (const role of ['implementer', 'verification']) {
+      const args = promptArgs(role, deliverable);
+      const prompt = buildPrompt(args);
+      const rule = ruleLine(prompt);
+      if (role !== 'verification') { assert.equal(rule, undefined, `${role} ${deliverable}`); continue; }
+      assert.ok(rule, `verifier ${deliverable} prompt carries the rule`);
+      assert.match(rule, /including a mutation or base comparison whose expected failure was observed/);
+      assert.match(rule, /a full-suite run whose only failure is an unrelated timing test that passes on a re-run \(name the test, the run and the re-run summary in its detail\)/);
+      assert.match(rule, /Report fail only for an outcome that shows a defect in the change\./);
+      assert.match(rule, /Never return accepted with a check marked fail\./);
+      assert.ok(prompt.indexOf(rule) < prompt.indexOf('Task packet (sha256 '), 'the rule precedes the packet');
+      // The base prompt is otherwise unchanged: removing the added rule lines gives it back.
+      const added = [...GATE_RULES, VERIFIER_TALLY_RULE];
+      assert.equal(prompt.split('\n').filter((line) => !added.includes(line)).join('\n'), claude.buildPrompt(args));
+    }
+  }
+  for (const role of ['implementer', 'verification']) {
+    const webArgs = promptArgs(role, 'report', { web: { urls: ['https://example.test/'] } });
+    assert.equal(buildPrompt(webArgs), agy.buildPrompt(webArgs));
+    assert.equal(ruleLine(buildPrompt(webArgs)), undefined, `${role} web prompt`);
+  }
+});
