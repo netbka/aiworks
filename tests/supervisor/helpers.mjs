@@ -142,6 +142,10 @@ export function runtimeCheckout({ declarations = {}, unmerged = false } = {}) {
   }
   return {
     root, cli: join(root, 'src', 'supervisor', 'cli.mjs'), git: run,
+    // Every ref of the checkout with its commit, and the working-tree changes Git would commit (ignored files excluded):
+    // a test compares them before and after to show nothing was branched, committed or staged for publication.
+    refs: () => run('for-each-ref', '--format=%(refname) %(objectname)'),
+    changes: () => run('status', '--porcelain', '--untracked-files=all'),
     // The node_modules junction is removed as a link; rmSync never follows it into the real dependencies.
     cleanup: () => { try { rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* Windows may hold files briefly */ } },
   };

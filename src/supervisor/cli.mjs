@@ -8,6 +8,7 @@ import { constants as osConstants } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { approvalRequired, approvedStart, revokeApprovals } from './approvals.mjs';
+import { approvedDeclaration, persistApproved, registerApproved } from './approved-declarations.mjs';
 import { baselineReport, formatBaseline } from './baseline.mjs';
 import { CampaignError, campaignCancel, campaignPause, campaignRecheck, campaignStatus, supervisorLiveness } from './api.mjs';
 import { assertRegisteredTarget } from './campaign.mjs';
@@ -29,6 +30,11 @@ const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--go
                                         (DECLARATION_DIFFERS_FROM_APPROVAL). A campaign started under an approval needs one on
                                         every later start. config.json "approvals": { "required": true } (off by default) also
                                         requires one for every new version 2 campaign
+  start --approved <campaignId>         register the campaign once from its persisted private approved declaration; the stored
+                                        bytes must still match the approval. Already registered under that digest: no change
+  approve <declaration.json> --approval <approval.json>
+                                        keep the approved declaration in the private store (supervisor.db, which Git must not
+                                        track: PRIVATE_STORE_NOT_IGNORED). Registers nothing; never opens a branch or PR
   approval-revoke <campaignId> [reason] revoke the campaign's recorded private approvals and cancel the campaign:
                                         nothing starts under them again
   status <campaignId>
@@ -59,6 +65,7 @@ const selectedData = explicitData ?? process.env.AIWORKS_DATA;
 const dataDir = resolve(selectedData ?? '');
 const taskFlag = take('--task');
 const approvalFlag = take('--approval');
+const approvedFlag = take('--approved');
 const explicitGovernance = take('--governance');
 const sinceFlag = take('--since');
 const jsonOnly = args.includes('--json') ? Boolean(args.splice(args.indexOf('--json'), 1)) : false;
@@ -96,6 +103,19 @@ try {
   }
   store = new Store(join(dataDir, 'supervisor.db'), { readOnly: ['status', 'messages', 'baseline'].includes(command) });
   if (command === 'serve') await serve();
+  else if (command === 'start' && approvedFlag !== null) {
+    // The owner's private approved declaration (WORK_ENVELOPE.md section 5, slice E9), registered by merged code only.
+    const notMerged = revisionNotMerged({ root: CODE_ROOT });
+    if (notMerged) throw new CampaignError('RUNTIME_NOT_MERGED', notMerged);
+    if (!store.campaign(approvedFlag)) {
+      assertRegisteredTarget(approvedDeclaration(store, approvedFlag).declaration, explicitGovernance ? resolve(explicitGovernance) : configuredGovernanceRoot(dataDir));
+    }
+    print(registerApproved(store, approvedFlag));
+  }
+  else if (command === 'approve') {
+    if (approvalFlag === null) throw new CampaignError('APPROVAL_REQUIRED', 'approve <declaration.json> needs --approval <approval.json>');
+    print(persistApproved(store, declarationFromFile(rest[0], { root: CODE_ROOT }), approvalFromFile(approvalFlag, { root: CODE_ROOT })));
+  }
   else if (command === 'start') {
     // Explicit operator registration reads private data; executable code must still be merged.
     const declaration = declarationFromFile(rest[0], { root: CODE_ROOT });
