@@ -45,11 +45,11 @@ const journaled = (store, campaignId, kind) => new Set(store.all('SELECT detail 
  * Published commit tasks not yet recorded as merged, in campaigns that are neither paused nor cancelled, whose target
  * repository the owner listed. Oldest campaign first, then plan order.
  */
-function candidates(store, settings) {
+function candidates(store, repositories) {
   const out = [];
   for (const { id } of store.all("SELECT id FROM campaigns WHERE control IN ('registered', 'finished') ORDER BY created_at")) {
     const campaign = store.campaign(id), decl = campaign.declaration, repository = decl.target.repository;
-    if (!settings.repositories.has(String(repository).toLowerCase())) continue;
+    if (!repositories.has(String(repository).toLowerCase())) continue;
     const specs = specsOf(store, id, decl), merged = journaled(store, id, 'merged');
     for (const task of store.tasks(id)) {
       if (task.state !== 'done' || task.blocked || !SHA.test(task.verified_sha ?? '') || specs.get(task.task_id)?.deliverable !== 'commit') continue;
@@ -71,14 +71,16 @@ export async function mergePass(controller) {
   // AW-005: code that is not merged into origin/main merges nothing.
   if (controller.unmergedRevision()) return;
   const now = controller.now();
+  // Listed repositories due a check; between checks a tick reads nothing.
+  const due = new Set([...settings.repositories].filter((key) => (controller.mergeCheckedAt.get(key) ?? -Infinity) + controller.config.integrationPollMs <= now));
+  if (!due.size) return;
+  for (const key of due) controller.mergeCheckedAt.set(key, now);
   const byRepository = new Map();
-  for (const item of candidates(controller.store, settings)) {
+  for (const item of candidates(controller.store, due)) {
     const key = item.decl.target.repository.toLowerCase();
     byRepository.set(key, [...(byRepository.get(key) ?? []), item]);
   }
-  for (const [key, items] of byRepository) {
-    if ((controller.mergeCheckedAt.get(key) ?? -Infinity) + controller.config.integrationPollMs > now) continue;
-    controller.mergeCheckedAt.set(key, now);
+  for (const items of byRepository.values()) {
     const decl = items[0].decl;
     if (resolveCheckout(controller.store, controller.config, decl.target.repository)?.conflict) { controller.log(`merge pass for ${decl.target.repository} skipped: CONFIG_CONFLICT`); continue; }
     let repoPath;
