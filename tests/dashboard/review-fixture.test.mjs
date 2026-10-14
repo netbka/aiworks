@@ -378,9 +378,12 @@ test('F2: private Resume still refuses unmerged runtime code', (t) => {
   const paused = supervisorSnapshot(dataDir).campaigns.find((c) => c.id === REVIEW_STATES.paused.campaignId);
   const command = () => ({ campaignId: paused.id, action: 'resume', requestId: randomUUID(), version: paused.version,
     authorizationVersion: paused.authorizationVersion, scopeDigest: paused.scopeDigest });
-  // This repository's main has no synthetic declaration: the unchanged check refuses, and nothing changes.
-  assert.throws(() => applyCommand(dataDir, command(), Date.now(), { provenanceRoot: ROOT }), (error) => error.status === 409 && error.message === COMMANDS.resumeRefused && /^Resume refused: /.test(error.detail));
+  // One commit after the fixture runtime's origin/main makes that disposable checkout unmerged: the unchanged check refuses,
+  // and nothing changes. This repository's own git state never decides the test.
+  assert.equal(git(runtime, '-c', 'user.name=Review Fixture', '-c', 'user.email=review-fixture@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'Unmerged local change').status, 0);
+  assert.throws(() => applyCommand(dataDir, command(), Date.now(), { provenanceRoot: runtime }), (error) => error.status === 409 && error.message === COMMANDS.resumeRefused && /^Resume refused: .*not merged/.test(error.detail));
   assert.equal(supervisorSnapshot(dataDir).campaigns.find((c) => c.id === paused.id).control, 'paused');
+  assert.equal(git(runtime, 'reset', '-q', '--hard', 'origin/main').status, 0);
   assert.deepEqual(applyCommand(dataDir, command(), Date.now(), { provenanceRoot: runtime }), { accepted: true, duplicate: false, action: 'resume' });
 });
 

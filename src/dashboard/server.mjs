@@ -30,7 +30,9 @@ const pageNavigation = (req, path) => req.method === 'GET' && path === '/' && !r
  * reads as merged. No route calls GitHub: a state request only starts a local merge check, which fetches each
  * repository's base branch at most every 5 minutes.
  */
-export function createDashboardServer({ dataDir, roadmap, merges = null, host = {}, releases = {} }) {
+// provenanceRoot: the checkout whose origin/main a Resume is checked against (AW-005); by default the code this server runs
+// from. Tests pass a disposable checkout so the check never reads this repository's own git state.
+export function createDashboardServer({ dataDir, roadmap, merges = null, host = {}, releases = {}, provenanceRoot = undefined }) {
   const csrf = randomBytes(32).toString('hex');
   // Which machine and dashboard version this is, so a screenshot identifies its supervisor.
   const machine = { name: safeText(host.name ?? hostname(), 64) || null, revision: /^[0-9a-f]{7,40}$/.test(host.revision ?? '') ? host.revision : null };
@@ -87,7 +89,7 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       let value;
       try { value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))); }
       catch { return send(400, { error: 'Invalid JSON.' }); }
-      if (path === '/api/commands') return send(202, applyCommand(dataDir, value));
+      if (path === '/api/commands') return send(202, applyCommand(dataDir, value, Date.now(), { provenanceRoot }));
       if (path === '/api/messages') return send(202, postMessage(dataDir, value));
       return send(404, { error: 'Not found.' });
     } catch (error) {

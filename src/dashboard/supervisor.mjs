@@ -557,8 +557,8 @@ export function postMessage(dataDir, input, now = Date.now()) {
   } finally { store.close(); }
 }
 
-// provenanceRoot: the checkout whose origin/main a Resume is checked against (AW-005). The HTTP server never passes it, so
-// it is always this dashboard's own checkout; only in-process callers (the tests) point it at another repository.
+// provenanceRoot: the checkout whose origin/main a Resume is checked against (AW-005). The dashboard's own entry point never
+// passes it, so it is always this dashboard's own checkout; only the tests point a server or a call at another repository.
 export function applyCommand(dataDir, input, now = Date.now(), { provenanceRoot = CODE_ROOT } = {}) {
   const allowed = ['campaignId', 'action', 'taskId', 'taskVersion', 'version', 'authorizationVersion', 'scopeDigest', 'requestId', 'text', 'role'];
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !allowed.includes(key)) ||

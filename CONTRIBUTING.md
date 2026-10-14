@@ -11,7 +11,7 @@ Small, reproducible fixes and documentation corrections can go straight to a pul
 ## Making a change
 
 1. Fork the repository and create a branch from `main`.
-2. Install dependencies with `npm install` and run `npm run check`. It verifies that no private installation files are in the commit, validates the example plans and runs the test suite.
+2. Install dependencies with `npm install` and run `npm run check`. It verifies that no private installation files are in the commit, validates the example plans and runs the test suite. While you work, `npm run test:quick` runs the unit and service tests in a few minutes and leaves out the supervisor rehearsals; the full gate is still `npm run check`.
 3. Keep code and tests together in one small pull request. One topic per pull request keeps review quick.
 4. Run `npm run check` again before you push.
 
