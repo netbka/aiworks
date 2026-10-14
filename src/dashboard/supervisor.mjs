@@ -33,33 +33,16 @@ function publicTaskWait(task, spec) {
 }
 
 /**
- * Why a step waits, in the owner's words (OWNER_WORKSPACE §4.7, slice S5): other steps are named by their outcome, never
- * by ID, and only supervisor-known fields are read (stored errors can quote worker text). `retryAt` is when AIWorks
- * tries again by itself. Built from today's fields; the status `wait` field replaces it later (plan §6.12 C7, UI11).
+ * Why a step waits and what AIWorks does next by itself: the supervisor's own `wait` of the step in status (RUN9,
+ * ADAPTIVE_SCHEDULER section 6), never a sentence of the dashboard's (plan §6.12 C7, UI11). Status builds it from
+ * supervisor fields only, so no worker text reaches it. Only its code, its two sentences and its time are served, with
+ * the owner's word for an AI worker (OWNER_WORKSPACE §2.1). A step being worked on, ready to start, stopped, finished or
+ * in finished work has no wait: who is on it, the stop copy or the result says where it stands.
  */
-const shortName = (text, max = 80) => {
-  const safe = safeText(String(text), 200);
-  if (safe.length <= max) return safe;
-  const cut = safe.slice(0, max);
-  return `${cut.slice(0, Math.max(cut.lastIndexOf(' '), max / 2)).replace(/[s,;:.]+$/, '')}…`;
-};
-function stepWait(task, spec, specs, taskRows) {
-  if (task.blocked || ['done', 'verified'].includes(task.state)) return null;
-  const names = (ids) => {
-    // A step is named by its outcome; a long outcome sentence gives way to the short title instead of being cut mid-word
-    // (owner review 2026-10-13).
-    const named = (spec) => spec?.outcome && (spec.outcome.length <= 80 || !spec.title) ? spec.outcome : spec?.title ?? spec?.outcome ?? 'an earlier step';
-    const quoted = ids.map((id) => `“${shortName(named(specs.get(id)))}”`);
-    return quoted.length > 1 ? `${quoted.slice(0, -1).join(', ')} and ${quoted.at(-1)}` : quoted[0];
-  };
-  const be = (ids) => ids.length === 1 ? 'is' : 'are';
-  const error = String(task.last_error ?? ''), dependsOn = spec?.dependsOn ?? [];
-  if (error.startsWith('dependency-integration:') && dependsOn.length) return { text: `Starts after ${names(dependsOn)} ${be(dependsOn)} merged`, retryAt: task.retry_at ?? null };
-  if (error.startsWith('waiting for executor availability:') || error.startsWith('quota:')) return { text: 'Waiting for an AI worker to be free', retryAt: task.retry_at ?? null };
-  if (task.retry_at) return { text: 'The last run did not finish; AIWorks tries again by itself', retryAt: task.retry_at };
-  const open = dependsOn.filter((id) => taskRows.find((item) => item.task_id === id)?.state !== 'done');
-  if (task.state === 'pending' && open.length) return { text: `Starts after ${names(open)} ${be(open)} finished`, retryAt: null };
-  return null;
+const ownerWords = (text) => safeText(String(text ?? ''), 300).replace(/\bAI provider\b/g, 'AI worker').replace(/\bprovider account\b/g, 'AI worker account');
+function stepWait(task, wait, control) {
+  if (!wait || ['running', 'ready'].includes(wait.code) || task.blocked || ['finished', 'cancelled'].includes(control)) return null;
+  return { code: code(wait.code), text: ownerWords(wait.text), next: ownerWords(wait.next), until: wait.until ?? null };
 }
 
 /** A stopped step in the §7.7 words of the state copy module, with its one primary action (open the step issue). */
@@ -364,8 +347,10 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
   try {
     store = new Store(path, { readOnly: true });
     store.db.exec('BEGIN');
+    // The supervisor's config, so each step's wait names the same admission check the controller applies (scheduler on or off).
+    const config = readConfig(dataDir);
     const campaigns = store.all("SELECT id FROM campaigns ORDER BY CASE WHEN control IN ('finished', 'cancelled') THEN 1 ELSE 0 END, created_at").map(({ id }) => {
-      const c = store.campaign(id), status = campaignStatus(store, id, now);
+      const c = store.campaign(id), status = campaignStatus(store, id, now, { config });
       const taskRows = store.tasks(id);
       const specs = new Map(c.declaration.tasks.map((task) => [task.id, task]));
       const operations = store.openOperations(id);
@@ -462,8 +447,8 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
           // When the verified commit passed the check. Without a recorded check run, when the step last changed, which is
           // never earlier, so a wait is never overstated.
           verifiedAt: task.verified_sha ? acceptedAt.get(`${task.task_id}/${task.verified_sha}`) ?? task.updated_at : null,
-          // OWNER_WORKSPACE S5: why it waits, naming steps by outcome; a stop in §7.7 words; its own attempts and events.
-          wait: stepWait(task, specs.get(task.task_id), specs, taskRows),
+          // Why it waits, from status (UI11); a stop in §7.7 words and its own attempts and events (OWNER_WORKSPACE S5).
+          wait: stepWait(task, status.tasks.find((item) => item.id === task.task_id)?.wait, c.control),
           stopped: stepStopped(task, safeText(specs.get(task.task_id)?.outcome ?? specs.get(task.task_id)?.title ?? task.task_id),
             `https://github.com/${c.declaration.target.repository}/issues/${specs.get(task.task_id)?.issue}`),
           history: histories.get(task.task_id) ?? { attempts: [], events: [] },
