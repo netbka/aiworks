@@ -15,7 +15,9 @@ export const AGY_LOG_LIMIT = agy.LOG_LIMIT;
 export const BROWSER_KINDS = ['agy-cli', 'claude-cli'];
 // Commit tasks only (#102): STA7's verifier returned evidence-unavailable because its npm run check did not finish within
 // one foreground command while other campaigns ran. Report tasks, including research-only runs, do not carry it.
-export const FULL_GATE_RULE = 'The repository\'s full gate (npm run check) can take 20 to 30 minutes on this PC while other work runs, longer than one foreground command may wait. Start it as a separate background process with its output in a file in this run\'s working directory (for example gate.log, never committed), wait for that process to exit using foreground commands, then copy the final summary block verbatim from the file (with scripts/run-tests.mjs, the block after "# all test files"). Never shorten the suite, skip files or weaken a test to make it finish.';
+// Gate files end in .log (#135): a verifier's gate.exit left its checkout unclean, so checkVerification refused the
+// accepted result. The clean-checkout check stays; the rule keeps every gate file git-ignored.
+export const FULL_GATE_RULE = 'The repository\'s full gate (npm run check) can take 20 to 30 minutes on this PC while other work runs, longer than one foreground command may wait. Start it as a separate background process with its output in a file in this run\'s working directory, wait for that process to exit using foreground commands, then copy the final summary block verbatim from the file (with scripts/run-tests.mjs, the block after "# all test files"). Every file the gate writes ends in .log, which git ignores: gate.log for the output, gate-exit.log for the exit code, never committed. A verifier\'s checkout must stay clean: any other new or changed file in it makes the verification result invalid. Never shorten the suite, skip files or weaken a test to make it finish.';
 // Gate evidence rules for commit and report tasks (#42, #43): CI runs on Linux while workers run on Windows, and a
 // tally is copied from the output, never retyped. A browser review runs no gate, so web prompts do not carry them.
 export const GATE_RULES = [

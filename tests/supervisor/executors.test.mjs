@@ -453,7 +453,7 @@ test('web-task prompts are the unchanged browser prompt and carry no gate rules'
   }
 });
 
-test('commit prompts tell implementers and verifiers how to get a completed full gate; report prompts do not (#102)', () => {
+test('commit prompts tell implementers and verifiers how to get a completed full gate; report prompts do not (#102, #135)', () => {
   const ruleLine = (prompt) => prompt.split('\n').find((line) => line.startsWith('The repository\'s full gate (npm run check)'));
   for (const role of ['implementer', 'verification']) {
     const args = promptArgs(role, 'commit');
@@ -463,6 +463,10 @@ test('commit prompts tell implementers and verifiers how to get a completed full
     assert.match(rule, /can take 20 to 30 minutes on this PC while other work runs, longer than one foreground command may wait/);
     assert.match(rule, /Start it as a separate background process with its output in a file in this run's working directory/);
     assert.match(rule, /wait for that process to exit/);
+    // #135: every gate file is git-ignored, so a verifier's checkout stays clean.
+    assert.match(rule, /Every file the gate writes ends in \.log, which git ignores: gate\.log for the output, gate-exit\.log for the exit code, never committed\./);
+    assert.match(rule, /A verifier's checkout must stay clean: any other new or changed file in it makes the verification result invalid\./);
+    assert.doesNotMatch(rule, /gate\.exit/);
     assert.match(rule, /copy the final summary block verbatim.*scripts\/run-tests\.mjs, the block after "# all test files"/);
     assert.match(rule, /Never shorten the suite, skip files or weaken a test to make it finish\./);
     assert.ok(prompt.indexOf(rule) < prompt.indexOf('Task packet (sha256 '), 'the rule precedes the packet');
