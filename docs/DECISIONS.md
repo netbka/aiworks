@@ -4,7 +4,9 @@ These decisions describe reusable product boundaries. Private authorizations and
 
 ## AW-001 - The delivery supervisor is the one external-write exception
 
-For a registered campaign, the supervisor may create worktrees, task branches, pull requests and issue comments in its target repository. Workers do not publish directly. The supervisor never merges, deploys or changes provider resources.
+For a registered campaign, the supervisor may create worktrees, task branches, pull requests and issue comments in its target repository. Workers do not publish directly. The supervisor never deploys, releases or changes provider resources.
+
+It merges only under the merge gate, and only when the owner opts in ([#138](https://github.com/example-org/aiworks/issues/138), owner decision 2026-10-14). The opt-in is `config.json` `merges.delegatedTo: "supervisor"` with an explicit list of repositories; it is off by default. It merges a pull request only when merging it puts exactly the independently verified tree on the base branch, and only with a merge commit: never a squash, a rebase, a force-push, an admin bypass or a branch deletion. The gate is in [the runbook](SUPERVISOR.md#merge-gate).
 
 ## AW-002 - Campaigns have no capacity limits by default
 

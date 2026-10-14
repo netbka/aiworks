@@ -23,6 +23,7 @@ import { pendingInstructions, attachInstructions } from './instructions.mjs';
 import { priorAttempt, receiptInputs, staticReceipt } from './router.mjs';
 import { PLAN_TASK, admitAmendment, settleAmendment, specOf, specsOf, verifyChain } from './plan.mjs';
 import { ConflictError, FencedError } from './store.mjs';
+import { mergePass, mergeSettings } from './merge.mjs';
 import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -143,6 +144,13 @@ export class Controller {
     this.domainWaits = [];
     this.baseCheckedAt = new Map();
     this.mergedHeads = new Set();
+    // aiworks#138 merge gate: off unless config.json `merges` delegates merging to the supervisor and lists the repository.
+    // Check times and wait reasons are memory only: after a restart every published PR is judged once more, and a merge
+    // whose outcome was unknown is settled by reading the PR first (merge.mjs).
+    this.merges = mergeSettings(this.config);
+    if (this.merges.problem) this.log(this.merges.problem);
+    this.mergeCheckedAt = new Map();
+    this.mergeWaits = new Map();
     const commands = config.commands ?? {};
     this.cmd = { codex: commands.codex, cursor: commands.cursor, agy: commands.agy, chrome: commands.chrome,
       claude: commands.claude ?? ['claude'], git: commands.git ?? ['git'], gh: commands.gh ?? ['gh'] };
@@ -187,6 +195,9 @@ export class Controller {
         }
       }
     }
+    // Merge gate (aiworks#138): verified PRs in repositories the owner opted in, one per repository per pass.
+    try { await mergePass(this); }
+    catch (error) { this.log(`merge pass failed: ${error.stack || error}`); }
     // Admission: at most one launch per tick across every campaign this instance holds (ADAPTIVE_SCHEDULER 4.1).
     if (this.sched) {
       try { await this.admit(); }
@@ -807,21 +818,31 @@ export class Controller {
             `Conflicting paths: ${paths.join(', ')}. Sibling commits on ${base}: ${commits.map((item) => `${item.sha.slice(0, 12)} ${item.subject}`).join('; ') || 'unknown'}. ` +
             `Merge ${baseSha} into this branch (git merge ${baseSha}), resolve the conflicts, run the full gate and commit the merge. Never rebase, reset or amend: ${sha} must stay an ancestor of the new head.`,
         };
-        const stalled = limits.maxRepairRounds !== null && task.repair_rounds >= limits.maxRepairRounds;
-        this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version, {
-          state: 'pending', base_sha: sha, findings: [finding], failures: {}, retry_at: null,
-          last_error: `integration-conflict: ${paths.join(', ')} conflict with ${base} at ${baseSha}`.slice(0, 1000),
-          ...(stalled ? { blocked: { class: 'stalled', reason: `integration conflict with ${base} after ${task.repair_rounds} repair rounds`, at: now } }
-            : { repair_rounds: task.repair_rounds + 1 }),
-        }, now);
+        const stalled = this.reopenPublished(ctx, task, finding, { limits, now,
+          lastError: `integration-conflict: ${paths.join(', ')} conflict with ${base} at ${baseSha}`,
+          stalledReason: `integration conflict with ${base} after ${task.repair_rounds} repair rounds` });
         this.store.journal(ctx.id, 'integration-conflict', { task: task.task_id, sha, base: baseSha, paths, commits: commits.map((item) => item.sha), stalled }, now);
-        const fresh = this.store.campaign(ctx.id);
-        if (fresh.control === 'finished') {
-          this.store.patch('campaigns', { id: ctx.id }, fresh.version, { control: 'registered', status: 'active', next_action: null }, now);
-        }
       }
       if (!open && this.store.campaign(ctx.id).control === 'finished') this.integrationCheckedAt.set(ctx.id, Infinity);
     });
+  }
+
+  /**
+   * Reopen a published task as a repair round on its own branch and PR, carrying `finding` (aiworks#27, aiworks#138): its
+   * verified head is the new round's base. Past maxRepairRounds the task stalls instead. A finished campaign becomes
+   * active again. Call inside fenced(). Returns whether the task stalled.
+   */
+  reopenPublished(ctx, task, finding, { limits, now, lastError, stalledReason }) {
+    const stalled = limits.maxRepairRounds !== null && task.repair_rounds >= limits.maxRepairRounds;
+    this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version, {
+      state: 'pending', base_sha: task.verified_sha, findings: [finding], failures: {}, retry_at: null, last_error: lastError.slice(0, 1000),
+      ...(stalled ? { blocked: { class: 'stalled', reason: stalledReason, at: now } } : { repair_rounds: task.repair_rounds + 1 }),
+    }, now);
+    const fresh = this.store.campaign(ctx.id);
+    if (fresh.control === 'finished') {
+      this.store.patch('campaigns', { id: ctx.id }, fresh.version, { control: 'registered', status: 'active', next_action: null }, now);
+    }
+    return stalled;
   }
 
   /** The open integration-conflict finding of a task in an integration repair round, or null. */
@@ -1371,9 +1392,9 @@ export class Controller {
       const instructions = pendingInstructions(this.store, current, task.task_id, kind);
       const sessionId = randomUUID();
       const note = integration && kind === 'verify'
-        ? `This head is an integration repair round: it must merge ${integration.base} (the current ${decl.target.baseBranch}) into the previously verified ${integration.verified} to resolve conflicts in ${integration.paths.join(', ')}. Check that both are ancestors of the target, review the resolution with git show --remerge-diff ${targetSha}, and run the full gate.`
+        ? `This head is an integration repair round: it must merge ${integration.base} (the current ${decl.target.baseBranch}) into the previously verified ${integration.verified} ${integration.moved ? 'because the base moved before the merge gate could merge it (aiworks#138)' : `to resolve conflicts in ${integration.paths.join(', ')}`}. Check that both are ancestors of the target, review the resolution with git show --remerge-diff ${targetSha}, and run the full gate.`
         : integration && task.findings.length === 1
-          ? `This is repair round ${task.repair_rounds}, an integration repair: the verified, published commit ${integration.verified} conflicts with ${decl.target.baseBranch} at ${integration.base} after a sibling merge. Merge that base into this branch, resolve the conflicts listed in the packet constraints, run the full gate, commit, and return resolved with the new headSha. Never rebase, reset or amend the verified commit.`
+          ? `This is repair round ${task.repair_rounds}, an integration repair: the verified, published commit ${integration.verified} ${integration.moved ? 'does not contain' : 'conflicts with'} ${decl.target.baseBranch} at ${integration.base} after a sibling merge. Merge that base into this branch, resolve ${integration.moved ? 'any conflicts' : 'the conflicts listed in the packet constraints'}, run the full gate, commit, and return resolved with the new headSha. Never rebase, reset or amend the verified commit.`
           : ci && kind === 'verify'
             ? `This head is a CI repair round: repository CI failed on the previously verified ${ci.verified} in ${ci.checks.map((check) => check.name).join(', ')}. Check that ${ci.verified} is an ancestor of the target, that the change fixes the cause of the failing checks without weakening, skipping or deleting a test, that platform-specific behaviour is guarded for the platform CI runs on, and run the full gate.`
             : ci && task.findings.length === 1
@@ -1599,7 +1620,7 @@ export class Controller {
         // With CI repair on, a published head is never announced as if its CI had passed (aiworks#42).
         const ciNote = this.ci && spec.deliverable === 'commit' ? ' CI on this head is not known yet; the supervisor reads it and reopens the task if it fails.' : '';
         this.enqueue(ctx.id, `${ctx.id}:${task.task_id}:published:${task.verified_sha}`, decl, (integration
-          ? `**${task.task_id}** (#${spec.issue}) conflicted with ${decl.target.baseBranch} after a sibling merge. The supervisor merged the base, a fresh independent verification accepted \`${task.verified_sha}\`, and it is pushed to the same PR: ${url}. Not merged; merge follows ${decl.target.repository}'s release gate.`
+          ? `**${task.task_id}** (#${spec.issue}) ${integration.moved ? 'did not contain the current' : 'conflicted with'} ${decl.target.baseBranch} after a sibling merge. The supervisor merged the base, a fresh independent verification accepted \`${task.verified_sha}\`, and it is pushed to the same PR: ${url}. Not merged; merge follows ${decl.target.repository}'s release gate.`
           : repair
           ? `**${task.task_id}** (#${spec.issue}) failed CI at \`${repair.verified}\`. A repair round fixed it, a fresh independent verification accepted \`${task.verified_sha}\`, and it is pushed to the same PR: ${url}. Not merged; merge follows ${decl.target.repository}'s release gate.`
           : spec.deliverable === 'commit'
@@ -1649,9 +1670,11 @@ export class Controller {
     return [
       `## ${spec.id}: integration repair, independently verified`,
       '',
-      `The verified commit \`${integration.verified}\` stopped merging into \`${decl.target.baseBranch}\` at \`${integration.base}\` after a sibling merge. Conflicting paths: ${integration.paths.map((path) => `\`${path}\``).join(', ')}.`,
+      integration.moved
+        ? `The verified commit \`${integration.verified}\` did not contain \`${decl.target.baseBranch}\` at \`${integration.base}\` after a sibling merge, so merging it would have put an unverified tree on the base (merge gate, aiworks#138).${integration.paths.length ? ` Conflicting paths: ${integration.paths.map((path) => `\`${path}\``).join(', ')}.` : ''}`
+        : `The verified commit \`${integration.verified}\` stopped merging into \`${decl.target.baseBranch}\` at \`${integration.base}\` after a sibling merge. Conflicting paths: ${integration.paths.map((path) => `\`${path}\``).join(', ')}.`,
       '',
-      `The base was merged into this branch and the conflicts resolved. A separate fresh verifier session accepted exactly \`${task.verified_sha}\`, which was pushed here as a fast-forward: \`${integration.verified}\` stays an ancestor.`,
+      `The base was merged into this branch and ${integration.paths.length ? 'the conflicts resolved' : 'the result checked again'}. A separate fresh verifier session accepted exactly \`${task.verified_sha}\`, which was pushed here as a fast-forward: \`${integration.verified}\` stays an ancestor.`,
       '',
       ...this.verificationLines(task),
       '',
