@@ -37,7 +37,7 @@ test('stale controllers cannot prepare worktrees, launch, publish or post outbox
   await assert.rejects(controller.launch(ctx, { id: 'unrecorded', run_dir: join(env.dataDir, 'unrecorded') }), FencedError);
   await assert.rejects(controller.publish(ctx, campaign, { ...task, state: 'verified', head_sha: head, verified_sha: head }), FencedError);
   await controller.drainOutbox();
-  assert.equal(existsSync(env.config.repositories['netbka/Dyk'].worktreeRoot), false);
+  assert.equal(existsSync(env.config.repositories['example-org/sampleapp'].worktreeRoot), false);
   assert.equal(env.remoteHead(`campaign/${id}/T1`), null);
   assert.equal(env.calls().length, 0);
   assert.equal(env.prs().length, 0);
@@ -114,7 +114,7 @@ test('verification cannot accept a dirty checkout or a different HEAD', { skip: 
 
 test('a verifier retry preserves the rejected checkout and starts clean', { skip: skipWithoutSqlite }, (t) => {
   const { env, id } = fixture(t);
-  const options = { git: ['git'], repoPath: env.repo, worktreeRoot: env.config.repositories['netbka/Dyk'].worktreeRoot,
+  const options = { git: ['git'], repoPath: env.repo, worktreeRoot: env.config.repositories['example-org/sampleapp'].worktreeRoot,
     campaignId: id, taskId: 'T1', targetSha: git.currentHead({ git: ['git'], path: env.repo }) };
   const first = git.prepareVerifyWorkspace({ ...options, attempt: 1 });
   writeFileSync(join(first.path, 'AGENTS.md'), 'changed during rejected review');

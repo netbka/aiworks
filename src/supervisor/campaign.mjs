@@ -10,7 +10,7 @@ import { SECRET_LIKE_PATH_PATTERN, validGovernance } from '../../scripts/lib/wor
 import { safeResearchPath } from './adapters/research-context.mjs';
 import { requireGovernanceRoot, roleCatalog } from './governance.mjs';
 
-// The registry's own schema (Engineering Platform's schemas/project-contract.schema.json, read from the governance root),
+// The registry's own schema (governance provider's schemas/project-contract.schema.json, read from the governance root),
 // compiled once per root on first use: it alone decides which registry fields are legal.
 const projectContracts = new Map();
 const contractSchemaErrors = (contract, root) => {
@@ -36,7 +36,7 @@ const webUrl = (url) => {
     return ['http:', 'https:'].includes(parsed.protocol) && Boolean(parsed.hostname) && !parsed.username && !parsed.password;
   } catch { return false; }
 };
-// The owner's own control planes on this host: the supervisor dashboard and Local Commander. A browser worker that could
+// The owner's own control planes on this host: the supervisor dashboard and local control service. A browser worker that could
 // load them could pause or cancel campaigns, or message the coordinator as the owner, so no web task may name their
 // ports on any host: loopback has too many spellings (localhost., foo.localhost., [::ffff:127.0.0.1]) to list safely.
 const CONTROL_PLANE_PORTS = ['4318', '17321'];
@@ -48,7 +48,7 @@ const safePath = (path) => text(path, 512) && !path.startsWith('/') && !/[\\:%\u
 const writeEntry = (entry) => typeof entry === 'string' && (/^resource:[a-z0-9][a-z0-9._-]{0,63}$/.test(entry) ||
   safePath(entry.endsWith('/') ? entry.slice(0, -1) : entry));
 const pathPrefix = (entry) => typeof entry === 'string' && safePath(entry.endsWith('/') ? entry.slice(0, -1) : entry);
-// An Engineering Platform role id (registry/agents.json); whether it exists is checked against the catalog at registration.
+// An governance provider role id (registry/agents.json); whether it exists is checked against the catalog at registration.
 const ROLE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const TASK_KEYS = ['id', 'issue', 'title', 'outcome', 'workKey', 'writes', 'deliverable', 'goal', 'dependsOn', 'requiresMergedDependencies',
   'constraints', 'acceptance', 'references', 'web', 'role', 'routing'];
@@ -260,7 +260,7 @@ function validateWeb(w, where, bad) {
     if (w.resourceOrigins !== undefined && (!Array.isArray(w.resourceOrigins) || w.resourceOrigins.length > 16 ||
         !w.resourceOrigins.every((url) => webUrl(url) && new URL(url).origin === url))) bad(`${where}.resourceOrigins must be 0..16 http(s) origins`);
     else if ([...w.urls, ...(w.resourceOrigins ?? [])].some((url) => webUrl(url) && controlPlane(url))) {
-      bad(`${where} must not name port 4318 (supervisor dashboard) or 17321 (Local Commander) on any host`);
+      bad(`${where} must not name port 4318 (supervisor dashboard) or 17321 (local control service) on any host`);
     }
   }
 }
@@ -425,7 +425,7 @@ function validateRouting(routing, kinds, bad) {
 
 /**
  * A new campaign may target only a registered portfolio project: registry membership is the governance
- * inheritance (Engineering Platform's docs/GOVERNANCE_INHERITANCE.md section 1). Checked when a campaign is first
+ * inheritance (governance provider's docs/GOVERNANCE_INHERITANCE.md section 1). Checked when a campaign is first
  * registered; a campaign already in the store keeps resuming and running unaffected. The registry is Engineering
  * Platform's, read from `governanceRoot`; a missing or invalid root throws GOVERNANCE_ROOT_REQUIRED / GOVERNANCE_ROOT_INVALID.
  */
@@ -439,7 +439,7 @@ export function assertRegisteredTarget(declaration, governanceRoot) {
 }
 
 /**
- * Every task `role` must be a role id in Engineering Platform's catalog (registry/agents.json in the governance root),
+ * Every task `role` must be a role id in governance provider's catalog (registry/agents.json in the governance root),
  * checked when the campaign is first registered. A missing or malformed catalog, or an unknown id, throws: registration
  * fails closed. Tasks without `role` do not read the catalog.
  */
@@ -466,7 +466,7 @@ function registryEntries(registryDir, repository) {
 const CAPABILITY_BOUNDARIES = new Set(['ui']);
 
 /**
- * The target project's inherited governance for a worker packet (Engineering Platform's docs/GOVERNANCE_INHERITANCE.md sections 1 and 9),
+ * The target project's inherited governance for a worker packet (governance provider's docs/GOVERNANCE_INHERITANCE.md sections 1 and 9),
  * as values only: the registry id; the IDs of the portfolio policies in the governance root's policies/catalog.json that can apply to the
  * project under its contract; the project's declared authority pointers (role, repository-relative path); and its
  * declared exceptions and gaps as id and rule. The project is the single registry entry whose repository.github equals

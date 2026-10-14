@@ -67,7 +67,7 @@ const validateVerifier = ajv.compile(VERIFIER_SCHEMA);
 export const ALWAYS_DENIED = ['Bash(git push:*)', 'Bash(gh pr merge:*)', 'Bash(gh pr create:*)', 'Bash(gh release:*)',
   'Bash(gh issue comment:*)', 'Bash(gh issue close:*)', 'Bash(npm run update:*)', 'Bash(npm run deploy:*)',
   'Bash(git worktree remove:*)',
-  // Remote hosts are production for the target projects (Dyk's own settings allow `ssh netcup:*`).
+  // Remote hosts are production for the target projects (sampleapp's own settings allow `ssh example-host:*`).
   'Bash(ssh:*)', 'Bash(scp:*)', 'Bash(sftp:*)', 'Bash(rsync:*)',
   // Cross-session messaging, scheduling and orchestration would let a worker act outside its packet.
   'SendMessage', 'ListAgents', 'RemoteTrigger', 'CronCreate', 'CronDelete', 'ScheduleWakeup', 'Workflow',
@@ -76,19 +76,19 @@ export const ALWAYS_DENIED = ['Bash(git push:*)', 'Bash(gh pr merge:*)', 'Bash(g
   'Skill',
   // The Windows PowerShell tool bypasses Bash(...) prefixes; the same remote-shell and push denies apply there.
   'PowerShell(ssh *)', 'PowerShell(scp *)', 'PowerShell(sftp *)', 'PowerShell(rsync *)', 'PowerShell(git push *)'];
-// Every headless worker runs isolated from the host's interactive setup: no settings files (Dyk's project
+// Every headless worker runs isolated from the host's interactive setup: no settings files (sampleapp's project
 // settings allow production ssh, pushes to main and issue comments), and no MCP servers or claude.ai connectors
-// such as Local Commander. Verified with Claude Code 2.1.296: the tool list then has no mcp__ tools, and
+// such as local control service. Verified with Claude Code 2.1.296: the tool list then has no mcp__ tools, and
 // allowlisted mode denies ssh, gh issue comment and curl. Permissions come only from these flags.
-// Probed on HomePc (2.1.296): with no setting sources, project .claude/agents and CLAUDE.md do not load at all (only the
+// Probed on workstation (2.1.296): with no setting sources, project .claude/agents and CLAUDE.md do not load at all (only the
 // built-in subagents claude, Explore, general-purpose, Plan and statusline-setup), so agent-frontmatter hooks and MCP
 // servers a worker commits cannot reach the next worker or the verifier. disableAllHooks additionally switches off any
 // hook source that remains (plugins, --settings, future sources); the supervisor relies on none.
 export const ISOLATION_ARGS = ['--setting-sources', '', '--strict-mcp-config', '--settings', '{"disableAllHooks":true}'];
-// --setting-sources does not stop auto-memory: a probe in a Dyk worktree still loaded the Dyk project's saved
+// --setting-sources does not stop auto-memory: a probe in a sampleapp worktree still loaded the sampleapp project's saved
 // memories (including the production ssh host entry). This switch removes them; the packet is the only context.
 // Long gates run in the foreground. In a headless --json-schema run, ending a turn while a background command
-// runs makes the CLI demand the StructuredOutput result at once ("structured-output-enforce"): campaign ep-13-owner-intervention-core's verify.2
+// runs makes the CLI demand the StructuredOutput result at once ("structured-output-enforce"): campaign example-13-owner-intervention-core's verify.2
 // (2026-10-10) started its two `npm run check` passes in the background because one pass (~600 s) reached the
 // default 10-minute foreground cap, and so had to answer evidence-unavailable after one pass. Background tasks are
 // therefore disabled, and the foreground cap is raised to 1 h (default 30 min) so a gate is never cut short; the
@@ -110,8 +110,8 @@ const PROJECT_ENV = {
 /**
  * The target project's own Claude Code tuning, taken from the "env" of its tracked .claude/settings.json AS COMMITTED
  * AT THE TASK BASE (settingsText), never from the worktree a worker can change. Only PROJECT_ENV names with valid
- * values pass; permissions never do. Dyk sets CLAUDE_CODE_SUBAGENT_MODEL=haiku and CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY=3;
- * a HomePc probe confirmed these reach an isolated auto-mode worker through the process environment.
+ * values pass; permissions never do. sampleapp sets CLAUDE_CODE_SUBAGENT_MODEL=haiku and CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY=3;
+ * a workstation probe confirmed these reach an isolated auto-mode worker through the process environment.
  */
 export function projectEnv(settingsText) {
   let env;
@@ -139,11 +139,11 @@ export function buildArgv({ command, executor, role, deliverable, sessionId }) {
 export function buildPrompt({ role, deliverable, packet, packetDigest, repository, issue, branch, baseSha, targetSha, report, reportDigest, note, instructions = [] }) {
   const header = role === 'verification'
     ? [
-      'You are an INDEPENDENT VERIFIER dispatched by the AIWorks delivery supervisor (netbka/aiworks).',
+      'You are an INDEPENDENT VERIFIER dispatched by the AIWorks delivery supervisor (AIWorks).',
       'You are a fresh headless session. You have no access to the implementer\'s reasoning, and you must not repair anything yourself.',
     ]
     : [
-      'You are a bounded IMPLEMENTER dispatched by the AIWorks delivery supervisor (netbka/aiworks).',
+      'You are a bounded IMPLEMENTER dispatched by the AIWorks delivery supervisor (AIWorks).',
       'You are one fresh headless session for exactly one task packet. The supervisor owns the parent outcome, publication and acceptance.',
     ];
   // Isolated sessions do not load host or project CLAUDE.md files, saved memories or settings, so the repository

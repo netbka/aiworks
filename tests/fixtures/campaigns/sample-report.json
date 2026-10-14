@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "campaignId": "sample-report",
+  "authorization": {
+    "version": 1,
+    "grantedBy": "owner",
+    "grantedAt": "2026-10-09",
+    "reference": "https://github.com/example-org/aiworks/issues/new",
+    "text": "Synthetic test authorization."
+  },
+  "target": {
+    "tenantId": "example-org",
+    "projectId": "sample-wiki",
+    "environment": "research",
+    "repository": "example-org/sample-wiki",
+    "baseBranch": "main",
+    "trackingIssue": 443
+  },
+  "limits": {
+    "maxWorkerRuns": 12,
+    "slots": 1,
+    "maxRepairRounds": 2,
+    "maxRetriesPerTask": 2
+  },
+  "executor": {
+    "kind": "cli-chain",
+    "providers": [
+      {
+        "kind": "codex-cli",
+        "researchOnly": true
+      },
+      {
+        "kind": "claude-cli",
+        "model": "opus",
+        "permissionMode": "auto",
+        "researchOnly": true
+      },
+      {
+        "kind": "cursor-cli",
+        "researchOnly": true
+      }
+    ],
+    "implementerTimeoutMinutes": 60,
+    "verifierTimeoutMinutes": 30
+  },
+  "constraints": [
+    "Synthetic test constraint: no network, no production."
+  ],
+  "tasks": [
+    {
+      "id": "REPORT",
+      "issue": 1,
+      "title": "Synthetic planning report",
+      "deliverable": "report",
+      "goal": "Read synthetic project metadata and report verified findings.",
+      "dependsOn": [],
+      "acceptance": [
+        "Facts cite synthetic primary sources."
+      ],
+      "references": [
+        "AGENTS.md"
+      ]
+    }
+  ]
+}

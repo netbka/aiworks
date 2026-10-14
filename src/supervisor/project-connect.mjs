@@ -38,9 +38,9 @@ export function connectCopy(code, detail = {}) {
     GH_NO_ACCESS: `Your GitHub account can't open ${repo}. Check the repository and your access.`,
     GH_UNREACHABLE: "GitHub can't be reached right now. Your project is unchanged; AIWorks will check again.",
     BRANCH_MISSING: `${repo} has no branch named ${detail.branch}. Choose the branch AIWorks should start from.`,
-    REGISTRY_MISSING: `${repo} isn't in Engineering Platform's project list, so AIWorks can plan but not start work. Add it there, then check again.`,
-    REGISTRY_AMBIGUOUS: `Engineering Platform lists ${repo} more than once (${(detail.ids ?? []).join(', ')}). AIWorks won't guess which rules apply.`,
-    REGISTRY_INVALID: `Engineering Platform's entry for ${repo} has an error, so AIWorks can't read its rules.`,
+    REGISTRY_MISSING: `${repo} isn't in governance provider's project list, so AIWorks can plan but not start work. Add it there, then check again.`,
+    REGISTRY_AMBIGUOUS: `governance provider lists ${repo} more than once (${(detail.ids ?? []).join(', ')}). AIWorks won't guess which rules apply.`,
+    REGISTRY_INVALID: `governance provider's entry for ${repo} has an error, so AIWorks can't read its rules.`,
     CONFIG_CONFLICT: `Settings point ${repo} to ${detail.configPath}, but this project is at ${detail.root}. Remove one so AIWorks doesn't guess.`,
     GIT_NO_COMMITS: 'This Git repository has no commits yet. Make a first commit, or connect it as a plain folder.',
     UNCOMMITTED_NOTICE: `You have changes that aren't committed. AIWorks works from your last commit (${detail.sha7}) and never touches your files.`,
@@ -50,7 +50,7 @@ export function connectCopy(code, detail = {}) {
     SECRET_TRACKED: `${detail.count} committed files look like secrets, for example ${detail.examples?.[0]}. Workers will see them.`,
     // The design names these outcomes (4.2 point 4, 4.6) but gives no copy; these follow its style.
     LOCAL_BRANCH_MISSING: `This repository has no branch named ${detail.branch}. Choose the branch AIWorks should copy.`,
-    GITHUB_REGISTERED: `${repo} is in Engineering Platform's project list, so connect it as a GitHub project.`,
+    GITHUB_REGISTERED: `${repo} is in governance provider's project list, so connect it as a GitHub project.`,
     PROJECT_MOVED: `This is "${name}", connected before at ${detail.was}. Move "${name}" here to keep its history.`,
     NOT_LOCAL_GIT: 'This folder has no Git repository with commits. Connect it as a GitHub project or a plain folder.',
     // Plain folders (design 8.4).
@@ -153,7 +153,7 @@ const capabilities = (ready, reason) => Object.fromEntries(CAPS.map((key) => [ke
  * Options: store, config, dataDir, governanceRoot, tenantId, gh and lsRemote (runners, injected by tests), git (the Git
  * command line), and preflight options (gitEnv, protectedRoots ...).
  */
-export function connectGithubProject(input, { store, config = {}, dataDir, governanceRoot, tenantId = 'netbka', gh, git = ['git'], lsRemote, now = Date.now(), ...options }) {
+export function connectGithubProject(input, { store, config = {}, dataDir, governanceRoot, tenantId = 'local', gh, git = ['git'], lsRemote, now = Date.now(), ...options }) {
   const live = projects(store);
   const found = preflight(input.path, { ...options, git, governanceRoot, projects: live, kind: 'github' });
   if (found.code === 'ALREADY_CONNECTED') return { ok: true, code: null, status: project(store, found.detail.projectId).status, project: project(store, found.detail.projectId), preflight: found };
@@ -261,7 +261,7 @@ function insertBaseline(store, projectId, seq, commit, counts, now) {
  * input: path, and optionally name, id, branch, asNewProject. Options: store, dataDir, governanceRoot, tenantId, git,
  * now, statfs (for the space check) and preflight options (gitEnv, protectedRoots ...).
  */
-export function connectLocalGitProject(input, { store, dataDir, governanceRoot, tenantId = 'netbka', git = ['git'], now = Date.now(), statfs, ...options }) {
+export function connectLocalGitProject(input, { store, dataDir, governanceRoot, tenantId = 'local', git = ['git'], now = Date.now(), statfs, ...options }) {
   const live = projects(store);
   const home = dirname(resolve(dataDir));
   const found = preflight(input.path, { ...options, git, governanceRoot, projects: live, kind: 'local-git',
@@ -469,7 +469,7 @@ function importFailed(store, current, { code, detail }, now) {
  * dataDir, governanceRoot, tenantId, git, now, statfs (for the space check), clock (the scan's time source), hooks
  * (tests), and preflight options (limits, io, gitEnv, protectedRoots ...).
  */
-export function connectFolderProject(input, { store, dataDir, governanceRoot, tenantId = 'netbka', git = ['git'], now = Date.now(), statfs, clock, hooks, ...options }) {
+export function connectFolderProject(input, { store, dataDir, governanceRoot, tenantId = 'local', git = ['git'], now = Date.now(), statfs, clock, hooks, ...options }) {
   const live = projects(store);
   const home = dirname(resolve(dataDir));
   const exclusions = input.exclusions ?? [];

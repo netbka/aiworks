@@ -1,0 +1,91 @@
+{
+  "id": "local-tool",
+  "name": "local control service MCP",
+  "repository": {
+    "github": "example-org/local-tool-mcp"
+  },
+  "lifecycle": "active",
+  "capabilities": [
+    "api",
+    "mcp",
+    "npm-package",
+    "ui",
+    "storybook",
+    "public-web",
+    "worker",
+    "database",
+    "docker",
+    "auth",
+    "email",
+    "payments"
+  ],
+  "environments": [
+    "local",
+    "prod"
+  ],
+  "governance": {
+    "observedAt": "example-org/local-tool-mcp@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "parentLink": "absent",
+    "authorities": [
+      {
+        "role": "agent-contract",
+        "path": "AGENTS.md"
+      },
+      {
+        "role": "product-constitution",
+        "path": "planning/PRODUCT_CONSTITUTION.md"
+      },
+      {
+        "role": "principles",
+        "path": "planning/PRODUCT_PRINCIPLES.md"
+      },
+      {
+        "role": "decisions",
+        "path": "planning/ARCHITECTURE_DECISIONS.md"
+      },
+      {
+        "role": "runtime-state",
+        "path": "planning/ACTIVE_WORK.md"
+      },
+      {
+        "role": "capability-contract",
+        "path": "planning/AUTHORIZED_EXECUTION_CONTRACT.md"
+      },
+      {
+        "role": "workflow-contract",
+        "path": "planning/ROADMAP_EXECUTOR.md"
+      },
+      {
+        "role": "experience-review",
+        "path": "planning/STORYBOOK_EXPERIENCE_REVIEW.md"
+      }
+    ],
+    "ownerReserved": [
+      {
+        "id": "security-default-widening",
+        "kind": "permanent",
+        "source": "planning/PRODUCT_PRINCIPLES.md#owner-reserved-matters",
+        "summary": "Synthetic fixture requirement."
+      }
+    ],
+    "gaps": [
+      {
+        "id": "unrestricted-standing-deploy",
+        "rule": "constitution#14",
+        "source": "AGENTS.md#permission-boundary",
+        "request": "https://github.com/example-org/governance/issues/82",
+        "reviewBy": "2026-11-30",
+        "summary": "Synthetic fixture requirement."
+      },
+      {
+        "id": "tests-on-request",
+        "rule": "baseline:independent-verification",
+        "source": "AGENTS.md#verify-and-finish",
+        "request": "https://github.com/example-org/governance/issues/82",
+        "reviewBy": "2026-11-30",
+        "summary": "Synthetic fixture requirement."
+      }
+    ],
+    "independentVerificationGate": "not-enabled"
+  }
+}

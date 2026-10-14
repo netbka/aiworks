@@ -104,13 +104,13 @@ test('ownership is scoped to tenant and repository, with repository case ignored
   const store = setup(t);
   campaignStart(store, assigned());
   const otherRepo = assigned('other-repo');
-  otherRepo.target.repository = 'netbka/another-project';
+  otherRepo.target.repository = 'example-org/another-project';
   campaignStart(store, otherRepo);
   const otherTenant = assigned('other-tenant');
   otherTenant.target.tenantId = 'another-owner';
   campaignStart(store, otherTenant);
   const alias = assigned('alias');
-  Object.assign(alias.target, { repository: 'NetBka/dyk', projectId: 'alias', environment: 'another-env', baseBranch: 'next' });
+  Object.assign(alias.target, { repository: 'EXAMPLE-ORG/sampleapp', projectId: 'alias', environment: 'another-env', baseBranch: 'next' });
   conflict(store, alias, { campaignId: 'owner' });
 });
 
@@ -147,7 +147,7 @@ test('a published task keeps ownership while its campaign runs; completion relea
   campaignStart(store, assigned());
   const task = store.task('owner', 'T1');
   store.patch('tasks', { campaign_id: 'owner', task_id: 'T1' }, task.version,
-    { state: 'done', pr_url: 'https://github.com/netbka/Dyk/pull/1' }, Date.now());
+    { state: 'done', pr_url: 'https://github.com/example-org/sampleapp/pull/1' }, Date.now());
   conflict(store, assigned('duplicate'));
   terminal(store, 'owner', 'finished');
   campaignStart(store, assigned('after-finish'));

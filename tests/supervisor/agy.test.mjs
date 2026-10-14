@@ -217,20 +217,20 @@ test('the audit fails closed on event shapes and browser tools it does not know'
 });
 
 test('the browser prompt names the pages and the browser-only rules; the verifier re-checks every claim', () => {
-  const packet = { taskId: 'W1', governance: { project: 'dyk', policies: [] } };
-  const implement = buildPrompt({ executorKind: 'agy-cli', web, role: 'implementer', deliverable: 'report', packet, packetDigest: digest, repository: 'netbka/Dyk' });
+  const packet = { taskId: 'W1', governance: { project: 'sampleapp', policies: [] } };
+  const implement = buildPrompt({ executorKind: 'agy-cli', web, role: 'implementer', deliverable: 'report', packet, packetDigest: digest, repository: 'example-org/sampleapp' });
   for (const url of web.urls) assert.ok(implement.includes(`- ${url}`));
   assert.match(implement, /VISUAL ACCEPTANCE/);
   assert.match(implement, /Visual acceptance: ACCEPTED/);
   assert.match(implement, /emulate/);
   assert.doesNotMatch(implement, /read AGENTS\.md/, 'no repository instructions for a browser-only run');
   const verify = buildPrompt({ executorKind: 'agy-cli', web, role: 'verification', deliverable: 'report', packet, packetDigest: digest,
-    repository: 'netbka/Dyk', targetSha: 'b'.repeat(40), report: '**Visual acceptance: ACCEPTED**', reportDigest: 'c'.repeat(64) });
+    repository: 'example-org/sampleapp', targetSha: 'b'.repeat(40), report: '**Visual acceptance: ACCEPTED**', reportDigest: 'c'.repeat(64) });
   assert.match(verify, /INDEPENDENT VERIFIER/);
   assert.match(verify, /re-check EVERY criterion/);
   assert.ok(verify.includes(`targetSha ${'b'.repeat(40)} and reportDigest ${'c'.repeat(64)}`));
   assert.ok(verify.includes('<report>\n**Visual acceptance: ACCEPTED**\n</report>'));
-  assert.match(buildPrompt({ role: 'implementer', deliverable: 'report', packet, packetDigest: digest, repository: 'netbka/Dyk', baseSha: 'b'.repeat(40) }), /read AGENTS\.md/,
+  assert.match(buildPrompt({ role: 'implementer', deliverable: 'report', packet, packetDigest: digest, repository: 'example-org/sampleapp', baseSha: 'b'.repeat(40) }), /read AGENTS\.md/,
     'other providers keep the repository prompt');
 });
 
@@ -321,7 +321,7 @@ test('Claude on a web task gets the same browser and nothing else', (t) => {
   assert.throws(() => prepare({ executor: { ...claudeProvider, researchOnly: true }, command: ['claude.exe'], role: 'implementer', deliverable: 'report',
     sessionId: 'bound-run', digest, runDir, prompt: 'p', web, chromeCommand: ['C:/Chrome/chrome.exe'] }), /browses only/);
   assert.match(buildPrompt({ executorKind: 'claude-cli', web, role: 'implementer', deliverable: 'report', packet: { taskId: 'W1' }, packetDigest: digest,
-    repository: 'netbka/Dyk' }), /VISUAL ACCEPTANCE/, 'a web task gets the browser prompt on Claude too');
+    repository: 'example-org/sampleapp' }), /VISUAL ACCEPTANCE/, 'a web task gets the browser prompt on Claude too');
 });
 
 test('when AGY is not available, Claude takes the web task with the isolated browser', { skip: skipWithoutSqlite }, async (t) => {

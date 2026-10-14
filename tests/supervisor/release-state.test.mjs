@@ -1,5 +1,5 @@
 // REL3 (AUTO_RELEASE slice R3): durable release rows, one lock per destination, intent before effect, reconciliation
-// with a fake adapter. Built switched off: nothing outside these tests calls release/state.mjs until netbka/aiworks#33.
+// with a fake adapter. Built switched off: nothing outside these tests calls release/state.mjs until example-org/aiworks#33.
 // No model, network or GitHub call: the adapter is a fake that records what it was asked to do.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -24,7 +24,7 @@ function rig(t) {
   rig.lease = rig.leaseFor(rig.store, 'first');
   rig.at = (lease = rig.lease) => ({ lease, now: rig.now });
   rig.make = (destination = 'prod', { store = rig.store, lease = rig.lease, steps = ['merge', 'deploy', 'check'] } = {}) => createRelease(store, {
-    project: 'dyk', destination, campaignId: 'c', taskId: 'T1', verifiedSha: SHA, grantVersion: 1, grantDigest: 'g'.repeat(64), steps, lease, now: rig.now }).id;
+    project: 'sampleapp', destination, campaignId: 'c', taskId: 'T1', verifiedSha: SHA, grantVersion: 1, grantDigest: 'g'.repeat(64), steps, lease, now: rig.now }).id;
   rig.locked = (destination, options = {}) => {
     const id = rig.make(destination, options);
     assert.equal(acquireLock(options.store ?? rig.store, id, { ...rig.at(options.lease), recheck: ELIGIBLE }).locked, true);
@@ -45,13 +45,13 @@ test('two candidates for one destination never hold the lock together', async (t
   const r = rig(t);
   const one = r.make(), two = r.make(), other = r.make('staging');
   assert.notEqual(one, two, 'a second attempt gets its own id');
-  assert.equal(release(r.store, two).idempotency_key, `dyk.prod.${SHA}.2`);
+  assert.equal(release(r.store, two).idempotency_key, `sampleapp.prod.${SHA}.2`);
   assert.equal(acquireLock(r.store, one, { ...r.at(), recheck: ELIGIBLE }).locked, true);
   const waiting = acquireLock(r.store, two, { ...r.at(), recheck: ELIGIBLE });
   assert.deepEqual([waiting.locked, waiting.refused, waiting.waitingFor, waiting.release.state], [false, false, one, 'eligible'], 'it waits; it is not an error');
   assert.equal(acquireLock(r.store, one, { ...r.at(), recheck: ELIGIBLE }).locked, true, 'idempotent for the holder');
   assert.equal(acquireLock(r.store, other, { ...r.at(), recheck: ELIGIBLE }).locked, true, 'another destination is independent');
-  assert.throws(() => r.store.run("INSERT INTO release_locks (destination, release_id, instance_id, generation, acquired_at) VALUES ('dyk.prod', ?, 'x', 1, 0)", two),
+  assert.throws(() => r.store.run("INSERT INTO release_locks (destination, release_id, instance_id, generation, acquired_at) VALUES ('sampleapp.prod', ?, 'x', 1, 0)", two),
     /UNIQUE|PRIMARY KEY/, 'the table itself allows one holder per destination');
 
   // The lock is freed only at a known terminal state, so two only gets it after one is accepted.
@@ -61,7 +61,7 @@ test('two candidates for one destination never hold the lock together', async (t
     assert.equal(acquireLock(r.store, two, { ...r.at(), recheck: ELIGIBLE }).locked, false, `still held after ${step}`);
   }
   assert.equal((await runStep(r.store, adapter, one, r.at())).state, 'accepted');
-  assert.equal(destinationState(r.store, 'dyk', 'prod').free, true);
+  assert.equal(destinationState(r.store, 'sampleapp', 'prod').free, true);
   assert.equal(acquireLock(r.store, two, { ...r.at(), recheck: ELIGIBLE }).locked, true, 'free again once accepted');
 
   // A re-check that fails, throws, is missing or answers late refuses without taking the lock.
@@ -70,7 +70,7 @@ test('two candidates for one destination never hold the lock together', async (t
     const id = r.make('canary');
     const result = acquireLock(r.store, id, { ...r.at(), recheck });
     assert.deepEqual([result.locked, result.refused, result.release.state], [false, true, 'refused']);
-    assert.equal(destinationState(r.store, 'dyk', 'canary').free, true);
+    assert.equal(destinationState(r.store, 'sampleapp', 'canary').free, true);
   }
 });
 
@@ -81,7 +81,7 @@ test('unknown and rollback-failed keep the lock', async (t) => {
   assert.equal(lost.state, 'unknown', 'a step whose outcome is not known is unknown');
   const two = r.make('prod');
   assert.equal(acquireLock(r.store, two, { ...r.at(), recheck: ELIGIBLE }).waitingFor, one);
-  assert.deepEqual(destinationState(r.store, 'dyk', 'prod'), { free: false, releaseId: one, state: 'unknown' });
+  assert.deepEqual(destinationState(r.store, 'sampleapp', 'prod'), { free: false, releaseId: one, state: 'unknown' });
 
   const three = r.locked('staging');
   const failing = fake({ run: (release, step) => (step === 'check' || step === 'rollback' ? 'failed' : 'done') });
@@ -96,7 +96,7 @@ test('unknown and rollback-failed keep the lock', async (t) => {
   const recovering = fake({ run: (release, step) => (step === 'check' ? 'failed' : 'done') });
   for (let i = 0; i < 4; i++) await runStep(r.store, recovering, four, r.at());
   assert.equal(release(r.store, four).state, 'rolled-back');
-  assert.equal(destinationState(r.store, 'dyk', 'canary').free, true, 'rolled-back is a known terminal state and frees it');
+  assert.equal(destinationState(r.store, 'sampleapp', 'canary').free, true, 'rolled-back is a known terminal state and frees it');
 });
 
 test('a started step with no outcome is unknown after restart', async (t) => {
@@ -198,8 +198,8 @@ test('the release tables are additive to an existing store', (t) => {
   const store = r.open();
   const tables = store.all("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'release%' ORDER BY name").map((row) => row.name);
   assert.deepEqual(tables, ['release_locks', 'releases']);
-  assert.throws(() => createRelease(store, { project: 'dyk', destination: 'prod', campaignId: 'c', taskId: 'T1', verifiedSha: 'abc', steps: ['check'],
+  assert.throws(() => createRelease(store, { project: 'sampleapp', destination: 'prod', campaignId: 'c', taskId: 'T1', verifiedSha: 'abc', steps: ['check'],
     lease: { instanceId: 'first', generation: 1 }, now: r.now }), /40-character/);
-  assert.throws(() => createRelease(store, { project: 'dyk', destination: 'prod', campaignId: 'c', taskId: 'T1', verifiedSha: SHA, steps: ['merge'],
+  assert.throws(() => createRelease(store, { project: 'sampleapp', destination: 'prod', campaignId: 'c', taskId: 'T1', verifiedSha: SHA, steps: ['merge'],
     lease: { instanceId: 'first', generation: 1 }, now: r.now }), /ends with its check step/);
 });

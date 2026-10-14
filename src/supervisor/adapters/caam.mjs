@@ -2,7 +2,7 @@
 // `caam robot status <provider>` and turns the JSON into validated profile records. It never activates, cools down,
 // creates or refreshes a profile, and nothing in the supervisor calls it yet; selection (CAAM3) and launch (CAAM4) wire
 // it in later. The record shape follows CAAM v0.1.23 cmd/caam/cmd/robot.go (RobotOutput, RobotProviderInfo,
-// RobotProfileInfo); compatibility with the CAAM installed on HomePc is unverified.
+// RobotProfileInfo); compatibility with the CAAM installed on workstation is unverified.
 // Robot status carries no credentials. The adapter keeps only the fields below, never the email, auth paths or raw
 // output, and its errors quote CAAM's own error code and message, never stdout or stderr.
 import { spawnSync } from 'node:child_process';
