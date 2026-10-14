@@ -25,7 +25,7 @@ The active local service uses a detached checkout of a merged, independently rev
 
 - Overview: **Needs you** first, then a card for each campaign that has something listed for the owner or is still active, then live agents and roadmap progress. Finished and cancelled campaigns with nothing listed come after that, as one line each.
   - **Needs you** is built from supervisor fields and local git, never from worker output or the GitHub API. It lists:
-    - published steps whose merge is not seen yet, for the owner's review and merge, with the steps that build on them and any step that took many tries. When the owner delegated merging, verified ones are not listed ([Merging delegated by the owner](#merging-delegated-by-the-owner));
+    - published steps whose merge is not seen yet, for the owner's review and merge, with the steps that build on them and any step that took many tries. When the owner delegated merging, verified ones are not listed until nothing has merged them for `merges.stallHours` ([Merging delegated by the owner](#merging-delegated-by-the-owner));
     - owner decisions and stopped steps;
     - a supervisor that is not running;
     - a coordinator that cannot read messages;
@@ -116,23 +116,35 @@ The owner decided that a pull request which passed the supervisor's independent 
 "merges": {
   "delegatedTo": "monitor",
   "decision": "#17",
-  "held": { "https://github.com/example-org/aiworks/pull/88": "newer-work" }
+  "held": { "https://github.com/example-org/aiworks/pull/88": "newer-work" },
+  "stallHours": 3
 }
 ```
 
 - `delegatedTo` names who merges for the owner. `decision` is the owner decision that delegated it, as `#<issue>`. Both are required; without them the setting is ignored.
 - `held` is optional. It lists pull requests held from merging, with the reason: `newer-work` reads *Held: waiting to be combined with newer work*. Any other reason reads *Held for now; the pull request says why*. Whoever holds a pull request records it here and removes it when the hold ends.
+- `stallHours` is optional, 3 by default. It is how many hours a verified, unmerged, not-held pull request may wait since it passed the check before it comes back to the owner ([#139](https://github.com/example-org/aiworks/issues/139)). It is a whole number from 1 to 720; anything else means 3.
 
 With the setting:
 
 - a verified pull request whose merge is not seen is **not** a Needs me item. No count, project or headline counts it as an owner action;
-- the project's Work shows it as *Passed the check*, with *Will be merged for you after CI passes. Nothing for you to do.* or its held reason;
-- Results lists it under *Being merged for you*, as *Pull request #N · passed the check · will be merged for you after CI*, or with its held reason;
+- the project's Work shows it as *Passed the check*, with *Will be merged for you. Nothing for you to do.* or its held reason;
+- Results lists it under *Being merged for you*, as *Pull request #N · passed the check · will be merged for you*, or with its held reason;
+- with `"delegatedTo": "supervisor"` ([#138](https://github.com/example-org/aiworks/issues/138)), Work says *AIWorks merges it after it passes the check against the latest main. Nothing for you to do.* and Results *Pull request #N · passed the check · AIWorks merges it after it passes the check against the latest main*. There is no CI step, so no text waits for CI;
 - it reads *merged* only once the merge check sees it on the base branch, as before. A step with no recorded verified commit stays a Needs me item.
+
+A delegated merge that waits too long comes back to the owner. When a verified, unmerged pull request that is not held has waited longer than `stallHours` since it passed the check, nothing has merged it:
+
+- it is a counted Needs me item, *Check why it is not merged*, with *Checked and waiting to be merged for N hours. Nothing has merged it.* Its one action opens the pull request;
+- Work shows the same sentence, and Results *Pull request #N · checked and waiting to be merged for N hours*;
+- N is whole hours, rounded down. The time it passed the check is the latest finished check that accepted its verified commit, from the supervisor store. Without a recorded check run, it is when the step last changed, which is never earlier;
+- before the threshold, and while it is held, it reads as above. It is never called merged until the merge check sees it on the base branch.
+
+This uses the supervisor store and local git only, never the GitHub API.
 
 Without the setting, nothing changes: every verified, unmerged pull request is a *Review and merge* item.
 
-The dashboard only reads this setting. It never merges, and the supervisor never merges ([AW-001](DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception)). Setting it on workstation is a configuration change for the owner or the upgrade procedure ([SUPERVISOR.md §6](SUPERVISOR.md#6-installation-and-maintenance)).
+The dashboard only reads this setting. It never merges. Whether the supervisor merges is decided by [AW-001](DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception) and the owner's own configuration (#138); the `supervisor` wording is ready for it. Setting it on workstation is a configuration change for the owner or the upgrade procedure ([SUPERVISOR.md §6](SUPERVISOR.md#6-installation-and-maintenance)).
 
 ### What the dashboard no longer shows
 
@@ -192,7 +204,10 @@ Completed/cancelled campaigns do not appear as controller failures when their hi
 - a step whose verified commit is reachable from `origin/main` after a fetch is merged, with its merge commit time; one that is not reads *Published, merge not seen yet*; old data never shows merged;
 - `git fetch` runs at most once per repository per 5 minutes, never two at once;
 - a failed fetch keeps the last state, shows its age and is not retried for 5 minutes; a repository with no checkout is never fetched;
-- the running dashboard (`main.mjs`) makes zero `gh` calls across startup, merge checks and every page and API route, with the synthetic `gh` both configured and first on `PATH`; no dashboard source names the GitHub API.
+- the running dashboard (`main.mjs`) makes zero `gh` calls across startup, merge checks and every page and API route, with the synthetic `gh` both configured and first on `PATH`; no dashboard source names the GitHub API;
+- a delegated merge that waited past `merges.stallHours` becomes a counted Needs me item from the store and local git alone, with zero `gh` calls.
+
+`tests/dashboard/delegation.test.mjs` checks the delegated merge copy, holds, `stallHours` and the stalled Needs me item with a fixed clock.
 
 `tests/dashboard/dashboard.test.mjs` exercises the roadmap definitions (no GitHub work state, no cache), read-only snapshots, safe metadata, real API transitions, stale/ABA protection, authority preservation, duplicate delivery and HTTP request protections and response headers using disposable data.
 

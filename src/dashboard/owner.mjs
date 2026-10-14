@@ -23,6 +23,12 @@ export const RESTART_GRACE_MS = 5 * 60_000;
  * yet", and "Needs you" items built from it say when the check is from. A failed fetch keeps the last result and its time.
  */
 export const MERGE_FRESH_MS = 15 * 60_000;
+/**
+ * A delegated, verified, unmerged and not-held pull request that waited longer than this since its check is the owner's
+ * again (#139). config.json `merges.stallHours` replaces it.
+ */
+export const MERGE_STALL_HOURS = 3;
+const HOUR_MS = 60 * 60_000;
 /** Where the supervisor's own faults are tracked (docs/SUPERVISOR.md). */
 export const SUPERVISOR_ISSUE = 'https://github.com/netbka/aiworks/issues/2';
 /** The supervisor's own next action for a finished campaign whose steps are all reports. */
@@ -63,7 +69,8 @@ const NOTES = { published: 'Your review and merge', 'report-posted': 'For you to
  * step carries why its merge is not seen: `pending` when a check that can still come shortly is running or due.
  * `asOf` is the time of a merge check that is not current, or that is current but whose last fetch failed.
  * With merging delegated by the owner (`delegation`, config.json `merges`, #17), a verified pull request whose merge is
- * not seen and is not being checked is `delegated`: merged for the owner after CI, or `held` with its reason key.
+ * not seen and is not being checked is `delegated`: merged for the owner by `by`, or `held` with its reason key. One not
+ * held that waited longer than `delegation.stallHours` since its check (`task.verifiedAt`) is `stalled`, in whole hours (#139).
  */
 export function delivery(task, merges = NO_MERGES, now = Date.now(), campaignId = null, delegation = null) {
   if (task.state !== 'done') return null;
@@ -82,7 +89,10 @@ export function delivery(task, merges = NO_MERGES, now = Date.now(), campaignId 
     : check.reason === 'fetch-failed' && !check.fresh ? 'fetch-failed' : !check.fresh || result === null ? 'checking' : null;
   if (delegation && task.verifiedSha && reason !== 'checking') {
     const held = delegation.held?.[url.toLowerCase()] ?? null;
-    return { state: 'delegated', ...base, reason, pending: false, held, note: held ? DELEGATED.held[held] : DELEGATED.note };
+    const waited = !held && Number.isSafeInteger(task.verifiedAt) ? now - task.verifiedAt : null;
+    const stalled = waited !== null && waited > (delegation.stallHours ?? MERGE_STALL_HOURS) * HOUR_MS ? Math.floor(waited / HOUR_MS) : null;
+    return { state: 'delegated', ...base, reason, pending: false, held, stalled, by: delegation.delegatedTo,
+      note: held ? DELEGATED.held[held] : stalled ? DELEGATED.stalled(stalled) : DELEGATED.note(delegation.delegatedTo) };
   }
   return { state: 'published', ...base, reason, pending: reason === 'checking', note: NOTES[reason ?? 'published'] };
 }
@@ -138,9 +148,9 @@ function resultRow(c, task, d, releases) {
   // Merged only from a current merge check; what follows is the project's release rule, never "released" or "live".
   if (d.state === 'merged') return { ...base, ...proof, group: 'merged', word: 'Merged', note: null, link, mergedAt: d.mergedAt ?? null,
     release: `Release follows ${releaseRule(releases, c.repository)}.` };
-  // Merging delegated by the owner: passed the check and merged for them after CI, or held with its reason.
+  // Merging delegated by the owner: passed the check and merged for them, held with its reason, or waiting too long.
   if (d.state === 'delegated') return { ...base, ...proof, group: 'delegated', note: d.note, link,
-    word: d.held ? DELEGATED.heldRow(number, DELEGATED.held[d.held]) : DELEGATED.row(number) };
+    word: d.held ? DELEGATED.heldRow(number, DELEGATED.held[d.held]) : d.stalled ? DELEGATED.stalledRow(number, d.stalled) : DELEGATED.row(number, d.by) };
   // A merge check that can still come shortly: the state is not known yet, so it is neither waiting nor merged.
   if (d.pending) return { ...base, ...proof, group: 'unknown', word: 'Not known yet', note: d.note, link };
   return { ...base, ...proof, group: 'review', word: `Pull request #${number} · waiting for your review`,
@@ -256,7 +266,8 @@ const agentWorking = (agent, now) => agent.heartbeatState === 'recent' || (agent
  * The owner view. `releases` maps a lowercased repository to the standing deploy authorization its registry entry
  * records (readReleaseAuthorizations); a repository without one is described only by its own release policy.
  * `delegation` is the owner's merge delegation from config.json (configuredMergeDelegation), or null: with it, a
- * verified, unmerged pull request is no Needs me item and is counted as `delegated`, never as awaiting the owner.
+ * verified, unmerged pull request is no Needs me item and is counted as `delegated`, never as awaiting the owner, until
+ * it waited longer than `delegation.stallHours` since its check: then it is a counted Needs me item that opens it (#139).
  */
 export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = Date.now(), releases = {}, delegation = null } = {}) {
   // Results with nothing finished in a project show the §7.1 empty copy, written once in copy.mjs.
@@ -320,6 +331,11 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
               // Who releases is the project's rule (registry), never assumed to be the owner.
               : NEEDS.nothingWaits(releaseRule(releases, d.repository)),
         ].filter(Boolean).map((text) => ({ link: null, text })) });
+    }
+    // A delegated merge that waited too long: nothing has merged it, so it is the owner's again (#139).
+    for (const { task, delivery: d } of by('delegated').filter((step) => step.delivery.stalled)) {
+      items.push({ ...base, kind: 'merge-stalled', action: DELEGATED.stalledAction, text: label(task), link: { label: `Open PR #${d.number}`, url: d.url },
+        mergeCheck: d.asOf, points: [{ link: null, text: DELEGATED.stalled(d.stalled) }] });
     }
     for (const { task } of unknown) {
       items.push({ ...base, kind: 'check', action: 'Check on GitHub', text: label(task), link: { label: NEEDS.stepIssue, url: task.issueUrl }, mergeCheck: null,

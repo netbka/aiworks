@@ -268,3 +268,46 @@ test('across startup, merge checks and every page and API route, the running das
   assert.equal(existsSync(join(repo.tmp, 'cache')), false, 'no GitHub cache is written');
   assert.equal(existsSync(calls), false, `gh was called: ${existsSync(calls) ? readFileSync(calls, 'utf8') : ''}`);
 });
+
+test('a delegated merge that waited too long comes back to Needs me from the store and local git alone, with zero gh calls (#139)', async (t) => {
+  const repo = repositories(t);
+  const { dataDir, store: s, d } = store(t, repo);
+  // T2 (never merged) passed the check 4 hours ago; merging is delegated to AIWorks with the default threshold of 3 hours.
+  const at = Date.now() - 4 * 60 * 60_000;
+  s.insert('operations', { id: 'v2', campaign_id: d.campaignId, task_id: 'T2', kind: 'verify', seq: 1, idempotency_key: 'v2', lease_generation: 1, state: 'finished',
+    session_id: 's', run_dir: 'v2', workspace: 'w', target_sha: repo.unmerged, packet: {}, packet_digest: 'p', outcome: { class: 'result', value: { verdict: 'accepted' } },
+    created_at: at - 60_000, updated_at: at, executor_kind: 'claude-cli' });
+  // A synthetic gh that records every call, both as the configured command and first on PATH.
+  const bin = join(repo.tmp, 'bin'), calls = join(repo.tmp, 'gh-calls.jsonl');
+  mkdirSync(bin);
+  const recorder = join(bin, 'record-gh.mjs');
+  writeFileSync(recorder, `import { appendFileSync } from 'node:fs';\nappendFileSync(${JSON.stringify(calls)}, JSON.stringify(process.argv.slice(2)) + '\n');\nprocess.stdout.write('[]');\n`);
+  writeFileSync(join(bin, 'gh.cmd'), `@"${process.execPath}" "${recorder}" %*\r\n`);
+  writeFileSync(join(bin, 'gh'), `#!/bin/sh\nexec "${process.execPath}" "${recorder}" "$@"\n`, { mode: 0o755 });
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ governanceRoot: GOVERNANCE, commands: { gh: [process.execPath, recorder] },
+    repositories: { 'example-org/sampleapp': { path: repo.checkout, worktreeRoot: join(repo.tmp, 'worktrees') } }, merges: { delegatedTo: 'supervisor', decision: '#138' } }));
+  const port = await freePort();
+  const PATH = `${bin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`;
+  const child = spawn(process.execPath, [join(ROOT, 'src/dashboard/main.mjs'), '--data', dataDir, '--port', String(port), '--cache', join(repo.tmp, 'cache')],
+    { env: { ...process.env, PATH, Path: PATH }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  t.after(() => child.kill());
+  await new Promise((done, fail) => {
+    let output = '';
+    child.stdout.on('data', (chunk) => { output += chunk; if (output.includes('AIWorks dashboard:')) done(); });
+    child.on('exit', (code) => fail(new Error(`dashboard exited ${code}`)));
+  });
+  // Poll state until the merge check has fetched, as an open page would.
+  let state;
+  for (let i = 0; i < 100; i++) {
+    state = await (await fetch(`http://127.0.0.1:${port}/api/state`)).json();
+    if (state.owner.campaigns[d.campaignId].deliveries.T2.state === 'delegated' && !state.merges.refreshing) break;
+    await new Promise((done) => setTimeout(done, 100));
+  }
+  const t2 = state.owner.campaigns[d.campaignId].deliveries.T2;
+  assert.deepEqual([t2.state, t2.stalled, t2.note], ['delegated', 4, 'Checked and waiting to be merged for 4 hours. Nothing has merged it.']);
+  const item = state.owner.items.find((entry) => entry.kind === 'merge-stalled');
+  assert.deepEqual(item.link, { label: 'Open PR #464', url: 'https://github.com/example-org/sampleapp/pull/464' });
+  assert.equal(state.owner.count, state.owner.items.filter((entry) => !entry.system).length);
+  assert.ok(state.owner.count >= 1, 'the stalled merge is counted');
+  assert.equal(existsSync(calls), false, `gh was called: ${existsSync(calls) ? readFileSync(calls, 'utf8') : ''}`);
+});

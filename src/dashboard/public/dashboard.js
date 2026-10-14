@@ -1001,7 +1001,7 @@ function workPanel(project, c) {
     el('td', { class: 'c-state' }, el('div', { class: 'cell-labels' }, stepBadge(c, task)),
       ...[whoLine(c, task), task.stopped?.title, waitLine(task.wait)].filter(Boolean).map((text) => el('div', { class: 'subtext' }, text)),
       verdictLabel(c, task),
-      // Merging delegated by the owner: merged for them after CI, or why it is held (#97).
+      // Merging delegated by the owner: merged for them, why it is held (#97), or how long nothing merged it (#139).
       delegatedNote(c, task) ? el('div', { class: 'subtext' }, delegatedNote(c, task)) : null)));
   const { cost, body } = costNotes(c);
   return el('section', { class: 'panel', 'data-focus-scope': `work/${c.id}` },
