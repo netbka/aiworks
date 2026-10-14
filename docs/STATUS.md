@@ -6,7 +6,7 @@ The code includes a persistent SQLite-backed supervisor, bounded worker sessions
 
 Coordinator plans and replies stay in the local dashboard. Requests retain their selected repository and run separately. Older pending coordinator replies are retained locally instead of published to GitHub. Registered campaign publication uses its declared target repository.
 
-Code for sharing work between several logins of one provider through CAAM (choosing a login per run, keeping a usage limit with its login, restart recovery and a rollback switch) is in the source, switched off. No running supervisor uses it yet: launching a worker inside its login's own home folder is still to come, and turning it on waits for the owner's pilot. See [SUPERVISOR.md section 13](SUPERVISOR.md#13-caam-account-profiles-built-not-enabled).
+Code for sharing work between several logins of one provider through CAAM (choosing a login per run, launching the worker inside that login's own home folder, keeping a usage limit with its login, restart recovery and a rollback switch) is in the source, switched off. Synthetic tests verify it; no running supervisor uses it. Turning it on waits for the owner's pilot. See [SUPERVISOR.md section 13](SUPERVISOR.md#13-caam-account-profiles-built-not-enabled).
 
 Project connection, work-envelope, adaptive scheduling, routing and release designs are in `docs/design/`. A design document is not proof that its feature is implemented, enabled or deployed. Release authorization records do not enable release execution.
 

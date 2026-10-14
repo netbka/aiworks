@@ -1,22 +1,25 @@
 // CAAM6 (docs/design/ACCOUNT_ADAPTER_CAAM.md section 4, slice CAAM6-VERIFY): the validation matrix end to end, through the
-// real controller, the real store and the real CAAM discovery adapter (caam.mjs caamRobotStatus) reading a synthetic
-// `caam` executable that this file writes into a temporary directory. Two profiles run at once on separate run
-// directories and worktrees; selection rotates A, B, A, B; a usage limit on A moves the task to B with one commit and one
+// real controller, the real store and the real CAAM adapter (caam.mjs caamRobotStatus and ensureShallowProfile) calling a
+// synthetic `caam` executable that this file writes into a temporary directory. Two profiles run at once, each launched
+// inside its own shallow home with its own login while the host home stays untouched; selection rotates A, B, A, B; a usage limit on A moves the task to B with one commit and one
 // PR; a restarted supervisor keeps the durable profile of an open run; no secret the CAAM inventory or the host carries
 // reaches the database, the run directories or the log; and "caam": { "enabled": false } in config.json brings back the
-// single-account behaviour. Workers are played through applyOutcome (launch is stubbed) on a simulated clock, so nothing
-// is spawned except the synthetic caam and gh scripts and git: no model, network or GitHub call, the same on Windows and
-// Linux. Per-profile HOME and USERPROFILE at launch are the CAAM4 launch slice; cli.mjs supplies no inventory yet.
+// single-account behaviour. Workers are played through applyOutcome (launch is stubbed) on a simulated clock; the
+// isolation test also starts a synthetic worker from each run's spec.json. Nothing else is spawned except the synthetic
+// caam and gh scripts and git: no model, network or GitHub call, the same on Windows and Linux. cli.mjs supplies no
+// inventory and no shallow homes yet, so this stays off in a serving supervisor until the owner's Phase 2 pilot.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { Store } from '../../src/supervisor/store.mjs';
 import { campaignStart } from '../../src/supervisor/api.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
 import { accountWait } from '../../src/supervisor/accounts.mjs';
-import { caamRobotStatus } from '../../src/supervisor/adapters/caam.mjs';
+import { caamRobotStatus, ensureShallowProfile } from '../../src/supervisor/adapters/caam.mjs';
+import { workerEnv } from '../../src/supervisor/proc.mjs';
 import { ISOLATION_ARGS } from '../../src/supervisor/adapters/claude.mjs';
 import { declaration, environment } from './helpers.mjs';
 
@@ -41,9 +44,11 @@ const git = (cwd, ...args) => {
 /**
  * A synthetic `caam` CLI. `robot status <provider>` prints CAAM v0.1.23's RobotOutput for the profiles in caam-state.json,
  * with an email, auth paths and tokens the adapter must drop; `fail: true` makes it exit non-zero with the token on
- * stdout and stderr. Every call is logged, so a test can prove AIWorks only ever reads status and never runs `caam run`.
+ * stdout and stderr. `shallow-profile create <name> --from-vault <provider>/<name> --json` materializes the profile's
+ * shallow home under state.homes with that profile's own login file (holding the token, as a real one would);
+ * `createFail: true` makes it fail. Every call is logged, so a test can prove AIWorks never runs `caam run`.
  */
-const FAKE_CAAM = `import { appendFileSync, readFileSync } from 'node:fs';
+const FAKE_CAAM = `import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 const dir = process.argv[2];
 const args = process.argv.slice(3);
@@ -53,6 +58,14 @@ if (state.fail) {
   process.stdout.write('caam: vault unlock failed for token ' + state.token + '\\n');
   process.stderr.write('Authorization: Bearer ' + state.token + '\\n');
   process.exit(3);
+}
+if (args[0] === 'shallow-profile' && args[1] === 'create' && args[3] === '--from-vault' && args[4] === 'claude/' + args[2]) {
+  if (state.createFail) { process.stdout.write(JSON.stringify({ success: false, error: { code: 'VAULT_LOCKED', message: 'vault locked' } })); process.exit(1); }
+  const home = join(state.homes, args[2]);
+  mkdirSync(join(home, '.claude'), { recursive: true });
+  writeFileSync(join(home, '.claude', '.credentials.json'), JSON.stringify({ login: args[2], claudeAiOauth: { accessToken: state.token, refreshToken: state.refresh } }));
+  process.stdout.write(JSON.stringify({ success: true, data: { name: args[2] } }));
+  process.exit(0);
 }
 if (args[0] !== 'robot' || args[1] !== 'status') { process.stderr.write('unsupported in this fake: ' + args.join(' ') + '\\n'); process.exit(64); }
 const provider = args[2];
@@ -80,7 +93,9 @@ function rig(t, { caam = true } = {}) {
   writeFileSync(join(caamDir, 'fake-caam.mjs'), FAKE_CAAM);
   const command = [process.execPath, join(caamDir, 'fake-caam.mjs'), caamDir];
   let clock = Date.now();
-  const caamState = { email: EMAIL, token: TOKEN, refresh: REFRESH, expiresAt: new Date(clock + 30 * DAY).toISOString(), fail: false,
+  // Shallow homes live outside the data directory, as CAAM keeps them: the secret scan below reads the data directory.
+  const homes = join(env.tmp, 'homes');
+  const caamState = { homes, email: EMAIL, token: TOKEN, refresh: REFRESH, expiresAt: new Date(clock + 30 * DAY).toISOString(), fail: false,
     profiles: { claude: [{ name: 'work-a', active: true }, { name: 'work-b' }] } };
   const setCaam = (patch) => { Object.assign(caamState, patch); writeFileSync(join(caamDir, 'caam-state.json'), JSON.stringify(caamState)); };
   setCaam({});
@@ -93,16 +108,18 @@ function rig(t, { caam = true } = {}) {
   const logs = [];
   // The inventory a serving supervisor would pass: the real discovery adapter over the configured caam command.
   const inventory = (kind, now) => (kind === 'claude-cli' ? caamRobotStatus({ command, kind, now }).profiles : null);
+  // The shallow home of a chosen profile ("claude/work-a" is profile work-a), created by CAAM the first time.
+  const profileHomes = (kind, account) => ensureShallowProfile({ command, kind, name: account.slice(account.indexOf('/') + 1), root: homes });
   const launched = [];
   const build = () => {
     const config = JSON.parse(readFileSync(configPath, 'utf8'));
-    const controller = new Controller({ store, config, dataDir: env.dataDir, fault: null, now: () => clock, profiles: inventory,
+    const controller = new Controller({ store, config, dataDir: env.dataDir, fault: null, now: () => clock, profiles: inventory, profileHomes,
       log: (...line) => logs.push(line.map((part) => (typeof part === 'string' ? part : JSON.stringify(part))).join(' ')) });
     controller.launch = async (ctx, op) => { launched.push(op.id); }; // the test plays the worker; nothing is spawned
     return controller;
   };
   const r = {
-    env, store, logs, launched, caamDir, setCaam, writeConfig,
+    env, store, logs, launched, caamDir, homes, setCaam, writeConfig,
     controller: build(),
     clock: () => clock,
     advance: (ms) => { clock += ms; },
@@ -154,8 +171,60 @@ async function deliver(r, campaignId) {
 /** The commits the published task branch adds over main, read from the disposable origin. */
 const branchCommits = (r, campaignId) => git(r.env.repo, 'rev-list', '--count', `main..${r.env.remoteHead(`campaign/${campaignId}/T1`)}`, '--');
 
-test('two CAAM profiles run at the same time, each bound durably in its own run directory and worktree', async (t) => {
+/** Every file under `dir`, recursively. */
+const filesUnder = (dir) => readdirSync(dir).flatMap((name) => {
+  const path = join(dir, name);
+  return statSync(path).isDirectory() ? filesUnder(path) : [path];
+});
+
+/**
+ * Stands in for the CLI a run launches: it reports the home it sees and the login it finds there, waits until the other
+ * worker has started too (so both are alive at once), then writes a note into its own ~/.claude. It prints the login
+ * name only, never the credentials file.
+ */
+const PROBE = `import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+const barrier = process.argv[2];
+const home = homedir();
+const file = join(home, '.claude', '.credentials.json');
+const login = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')).login : null;
+writeFileSync(join(barrier, 'started-' + login), '');
+const started = () => readdirSync(barrier).filter((name) => name.startsWith('started-')).length;
+for (const deadline = Date.now() + 20000; started() < 2 && Date.now() < deadline;) await new Promise((done) => setTimeout(done, 20));
+mkdirSync(join(home, '.claude'), { recursive: true });
+writeFileSync(join(home, '.claude', 'session-note.txt'), 'run by ' + login + '\\n');
+process.stdout.write(JSON.stringify({ home, HOME: process.env.HOME ?? null, USERPROFILE: process.env.USERPROFILE ?? null,
+  login, together: started() >= 2, cwd: process.cwd() }));
+`;
+
+/** Every file under `dir` with its content, for a before-and-after comparison. */
+const snapshot = (dir) => Object.fromEntries(filesUnder(dir).map((path) => [path, readFileSync(path, 'utf8')]));
+
+/** Start the probe as the runner starts a worker: spec.json's cwd, and its env over the inherited one (proc.mjs workerEnv). */
+const runProbe = (probe, barrier, spec) => new Promise((done, fail) => {
+  const child = spawn(process.execPath, [probe, barrier], { cwd: spec.cwd, env: workerEnv(process.env, spec.env), windowsHide: true,
+    stdio: ['ignore', 'pipe', 'inherit'] });
+  let out = '';
+  child.stdout.on('data', (chunk) => { out += chunk; });
+  child.on('error', fail);
+  child.on('close', (code) => (code === 0 ? done(JSON.parse(out)) : fail(new Error(`probe exited ${code}`))));
+});
+
+test('two CAAM profiles run at the same time, each inside its own shallow home and login; the host home is untouched', async (t) => {
+  // The host's own home, with its own login, stands in for ~/.claude: HOME and USERPROFILE point at it for this test,
+  // which is how os.homedir() finds the home on Linux and on Windows. Restored afterwards; this file runs in its own process.
+  const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  t.after(() => { for (const [name, value] of Object.entries(saved)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; } });
   const r = rig(t);
+  const host = join(r.env.tmp, 'host-home');
+  mkdirSync(join(host, '.claude'), { recursive: true });
+  writeFileSync(join(host, '.claude', '.credentials.json'), JSON.stringify({ login: 'host' }));
+  process.env.HOME = host;
+  process.env.USERPROFILE = host;
+  assert.equal(resolve(homedir()), resolve(host), 'the test sees the stand-in host home');
+  const hostBefore = snapshot(host);
+
   r.register('iso-a', 1101);
   r.register('iso-b', 1102);
   await r.tick();
@@ -176,17 +245,73 @@ test('two CAAM profiles run at the same time, each bound durably in its own run 
   assert.equal(existsSync(join(b.workspace, 'only-in-a.txt')), false);
   assert.equal(git(b.workspace, 'status', '--porcelain'), '', 'B\'s worktree is untouched');
 
-  // Switching profiles keeps AIWorks' isolation flags, and adds no credential or home override of its own to the spec.
-  for (const op of [a, b]) {
+  // Each launch names its own profile's shallow home, and keeps AIWorks' isolation flags.
+  const specs = {};
+  for (const [op, name] of [[a, 'work-a'], [b, 'work-b']]) {
     const spec = JSON.parse(readFileSync(join(op.run_dir, 'spec.json'), 'utf8'));
+    specs[name] = spec;
+    const home = join(r.homes, name);
+    assert.equal(spec.env.HOME, home, `${name}: HOME is its shallow home`);
+    assert.equal(spec.env.USERPROFILE, home, `${name}: USERPROFILE is its shallow home`);
+    assert.equal(spec.env.CLAUDE_CODE_DISABLE_AGENT_VIEW, '1');
+    assert.equal(spec.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, '1');
+    assert.equal(spec.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, '1');
+    assert.notEqual(resolve(spec.env.HOME), resolve(host), `${name}: never the host home`);
     for (let i = 0; i < ISOLATION_ARGS.length; i++) assert.ok(spec.argv.includes(ISOLATION_ARGS[i]), `${op.account_identity}: ${ISOLATION_ARGS[i]} stays`);
     assert.equal(spec.argv[spec.argv.indexOf('--setting-sources') + 1], '', '--setting-sources "" disables user settings and hooks');
     assert.ok(spec.argv.includes('--strict-mcp-config'));
     assert.equal(spec.cwd, op.workspace, 'the worker starts in its own worktree');
-    for (const name of Object.keys(spec.env ?? {})) assert.doesNotMatch(name, /TOKEN|API_KEY|SECRET|CREDENTIAL/i, `spec env ${name}`);
+    for (const key of Object.keys(spec.env)) assert.doesNotMatch(key, /TOKEN|API_KEY|SECRET|CREDENTIAL/i, `spec env ${key}`);
   }
-  assert.ok(r.caamCalls().length > 0 && r.caamCalls().every((args) => args.join(' ') === 'robot status claude'),
-    'AIWorks only reads CAAM status; it never wraps a worker in caam run or activates a profile');
+  assert.notEqual(specs['work-a'].env.HOME, specs['work-b'].env.HOME, 'the two profiles have different homes');
+
+  // Both workers start from their spec at the same time. Each finds its own profile's login, never the host's or the
+  // other profile's, and what it writes under ~/.claude lands in its own shallow home.
+  const barrier = join(r.env.tmp, 'barrier');
+  mkdirSync(barrier);
+  const probe = join(r.env.tmp, 'probe.mjs');
+  writeFileSync(probe, PROBE);
+  const [seenA, seenB] = await Promise.all([runProbe(probe, barrier, specs['work-a']), runProbe(probe, barrier, specs['work-b'])]);
+  for (const [seen, name, op] of [[seenA, 'work-a', a], [seenB, 'work-b', b]]) {
+    const home = join(r.homes, name);
+    assert.equal(seen.together, true, `${name} ran while the other worker was running`);
+    assert.equal(resolve(seen.home), resolve(home), `${name}: the worker's home is its shallow home`);
+    assert.equal(seen.HOME, home);
+    assert.equal(seen.USERPROFILE, home);
+    assert.equal(seen.login, name, `${name}: the worker reads its own profile's login`);
+    assert.equal(resolve(seen.cwd), resolve(op.workspace));
+    assert.equal(readFileSync(join(home, '.claude', 'session-note.txt'), 'utf8'), `run by ${name}\n`);
+  }
+  assert.deepEqual(snapshot(host), hostBefore, 'the host home and its ~/.claude are untouched');
+
+  const calls = r.caamCalls().map((args) => args.join(' '));
+  assert.ok(calls.includes('robot status claude'));
+  assert.deepEqual(calls.filter((call) => call !== 'robot status claude'), [
+    'shallow-profile create work-a --from-vault claude/work-a --json', 'shallow-profile create work-b --from-vault claude/work-b --json',
+  ], 'AIWorks reads CAAM status and creates each shallow home once; it never wraps a worker in caam run or activates a profile');
+});
+
+test('a shallow home that cannot be prepared records no run and waits; the host login is never used instead', async (t) => {
+  const r = rig(t);
+  r.setCaam({ createFail: true });
+  r.register('home-1', 1111);
+  await r.tick();
+  assert.deepEqual(r.opened('home-1'), [], 'no operation is recorded and nothing is launched');
+  assert.deepEqual(r.launched, []);
+  const task = r.store.task('home-1', 'T1');
+  assert.equal(task.attempts, 0, 'no attempt is spent');
+  assert.equal(r.store.campaign('home-1').runs_used, 0);
+  assert.equal(r.store.campaign('home-1').blocker, null, 'a profile that cannot start yet is not an owner stop');
+  assert.match(task.last_error, /^waiting for executor availability: the shallow home of claude\/work-a cannot be prepared \(cli-error\)$/);
+  assert.ok(task.retry_at > r.clock());
+
+  // CAAM can create it again: the next due tick launches inside it.
+  r.setCaam({ createFail: false });
+  r.advance(task.retry_at - r.clock());
+  await r.tick();
+  const op = r.open('home-1');
+  assert.ok(op, 'the task runs once the home exists');
+  assert.equal(JSON.parse(readFileSync(join(op.run_dir, 'spec.json'), 'utf8')).env.HOME, join(r.homes, op.account_identity.slice('claude/'.length)));
 });
 
 test('selection rotates A, B, A, B; skips a profile CAAM cools down; waits for the earliest reset when all cool down', async (t) => {
@@ -283,12 +408,6 @@ test('after a supervisor crash an open run keeps its durable profile; it finishe
   assert.equal(branchCommits(r, 'crash-1'), '1', 'exactly one commit');
 });
 
-/** Every file under `dir`, recursively. */
-const filesUnder = (dir) => readdirSync(dir).flatMap((name) => {
-  const path = join(dir, name);
-  return statSync(path).isDirectory() ? filesUnder(path) : [path];
-});
-
 test('no CAAM or host secret reaches the database, the run directories or the log', async (t) => {
   // The host carries provider credentials, as an owner's shell may. Restored afterwards; this file runs in its own process.
   const saved = Object.fromEntries(['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'GH_TOKEN'].map((name) => [name, process.env[name]]));
@@ -351,6 +470,9 @@ test('"caam": { "enabled": false } in config.json falls back to the single-accou
     r.register(id, 1602 + i);
     await r.tick();
     assert.equal(r.open(id)?.account_identity, null, `${id} is not bound to a profile`);
+    const env = JSON.parse(readFileSync(join(r.open(id).run_dir, 'spec.json'), 'utf8')).env ?? {};
+    assert.equal(env.HOME, undefined, `${id} launches under the host login, as before the adapter`);
+    assert.equal(env.USERPROFILE, undefined);
   }
   assert.deepEqual(r.store.all("SELECT detail FROM journal WHERE kind = 'operation-recorded' AND campaign_id IN ('roll-2', 'roll-3')")
     .map((row) => row.detail.account), [undefined, undefined], 'no profile is journalled');

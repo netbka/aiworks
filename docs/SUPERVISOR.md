@@ -362,7 +362,7 @@ Relocation is an operator maintenance action, not worker cleanup: pause admissio
 - the serial DAG, repair rounds, retry/stall, auth, budget, owner-reserved, stale target, pause and cancel cases;
 - real-process crash rehearsals: after checkpoint, after launch, during the worker, whole-tree loss, between push and PR, after a report post, and two concurrent controllers;
 - the owner-intervention core (section 10), including a restart during a recheck probe run.
-- the CAAM account profiles (section 13): two profiles at once, rotation, a usage limit moving a task to another profile with one commit and one PR, a restart with a run still open, a secret scan of the database, run files and log, and the `"caam": { "enabled": false }` rollback (`tests/supervisor/caam-integration.test.mjs`).
+- the CAAM account profiles (section 13): two profiles running at once, each inside its own home folder and login while the host home stays untouched, a home that cannot be prepared, rotation, a usage limit moving a task to another profile with one commit and one PR, a restart with a run still open, a secret scan of the database, run files and log, and the `"caam": { "enabled": false }` rollback (`tests/supervisor/caam-integration.test.mjs`).
 
 They make no model, network or GitHub calls. They read governance files from a small fixture governance checkout under `tests/fixtures/governance/`, never from a real governance provider checkout.
 
@@ -570,13 +570,14 @@ Project connectors accept an explicit `tenantId`. When omitted, the installation
 
 ## 13. CAAM account profiles (built, not enabled)
 
-**In short.** AIWorks can share work between several logins of one provider, for example two Claude subscriptions, so that a usage limit on one login does not stop the work. The logins come from CAAM, the Coding Agent Account Manager. This is off on every install. Nothing in a running supervisor uses it yet (observed: `cli.mjs` gives the controller no CAAM inventory). Design: [ACCOUNT_ADAPTER_CAAM.md](design/ACCOUNT_ADAPTER_CAAM.md). Work item: [#9](https://github.com/example-org/aiworks/issues/9).
+**In short.** AIWorks can share work between several logins of one provider, for example two Claude subscriptions, so that a usage limit on one login does not stop the work. The logins come from CAAM, the Coding Agent Account Manager. This is off on every install. Nothing in a running supervisor uses it yet (observed: `cli.mjs` gives the controller no CAAM inventory and no profile homes). Design: [ACCOUNT_ADAPTER_CAAM.md](design/ACCOUNT_ADAPTER_CAAM.md). Work item: [#9](https://github.com/example-org/aiworks/issues/9).
 
 What the code does when the switch is on and an inventory is supplied (observed in code, verified by the synthetic tests only):
 
 - **Reading profiles.** `src/supervisor/adapters/caam.mjs` runs `caam robot status claude` (or `codex`) and keeps each profile's name, health, cooldown and expiry. It drops the email, auth paths and any other field, and its errors never quote CAAM's output. AIWorks only reads status: it never runs `caam run`, because AIWorks alone owns retries and scheduling. Consumer AGY is excluded.
 - **Choosing a profile.** Before each run, inside the same database transaction that records it, AIWorks picks the least recently used profile that CAAM lists as eligible and that has no wait or full limit of its own. Two runs in a row therefore go A, B, A, B. The choice is stored on the run (`operations.account_identity`, for example `claude/work-a`) and journalled in `operation-recorded`.
 - **Limits stay with their profile.** A usage limit, failed login or host failure on profile A waits on A only and halves A's learned concurrency. The task goes back at once and the next run goes to B. When every profile waits, the task waits for the earliest reset, spends no retry and asks the owner nothing. A success on A clears A's wait only. A `recheck` clears profile waits too.
+- **Launching inside the profile's home.** When the controller is also given the profile homes (`profileHomes`), a run bound to profile A starts inside A's own shallow home folder. CAAM creates that folder once (`caam shallow-profile create`). The worker's `HOME` and `USERPROFILE` (and `CODEX_HOME` for Codex) point there, so it reads A's login and never the host's own `~/.claude`. AIWorks' isolation flags stay as they are. If the folder cannot be prepared, nothing is recorded or launched: the task waits and retries later, and the host login is never used instead.
 - **Restart.** After a crash the replacement supervisor reads the profile from the stored run, never from a new choice. An open run is resumed once and counted against its own profile.
 
 **Configuration.** In the data directory's `config.json`:
@@ -587,10 +588,9 @@ What the code does when the switch is on and an inventory is supplied (observed 
 
 `commands.caam` is the path of the CAAM program only, never a credential. CAAM keeps the logins in its own vault.
 
-**Rollback.** Set `"caam": { "enabled": false }` (or remove the key) and restart the supervisor. New runs then use the single account of each executor kind, as before (section 4, provider usage limit). CAAM is not called. A run still open keeps its stored profile and finishes normally. The store needs no change. Turning the switch on again resumes the rotation from the stored history.
+**Rollback.** Set `"caam": { "enabled": false }` (or remove the key) and restart the supervisor. New runs then use the single account of each executor kind, as before (section 4, provider usage limit). They launch under the host login, with no profile home. CAAM is not called. A run still open keeps its stored profile and finishes normally. The store needs no change. Turning the switch on again resumes the rotation from the stored history.
 
 **What is not done yet (planned):**
 
-- Launching a worker inside its profile's own home folder (`HOME`, `USERPROFILE`, `CODEX_HOME`) is slice CAAM4, reviewed separately and not part of this change. Until it is merged, a chosen profile would only label the run, so the switch must stay off.
-- Supplying the CAAM inventory from `cli.mjs` and turning the switch on at an install is the owner's Phase 2 pilot ([design section 5](design/ACCOUNT_ADAPTER_CAAM.md#5-four-step-rollout-plan)). It waits for that decision and goes through the upgrade procedure (section 6).
+- Supplying the CAAM inventory and the profile homes from `cli.mjs`, choosing the shallow homes folder, and turning the switch on at an install are the owner's Phase 2 pilot ([design section 5](design/ACCOUNT_ADAPTER_CAAM.md#5-four-step-rollout-plan)). It waits for that decision and goes through the upgrade procedure (section 6).
 - Compatibility with a real CAAM install is unknown. The tests use a synthetic `caam` program.
