@@ -32,7 +32,7 @@ const git = (cwd, args, env = {}) => {
  */
 function repositories(t, name = 'sampleapp') {
   const tmp = mkdtempSync(join(tmpdir(), 'aiworks-merges-'));
-  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+  t.after(() => rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
   const origin = join(tmp, `${name}.git`), checkout = join(tmp, 'checkout'), remote = join(tmp, 'remote');
   git(tmp, ['init', '-q', '--bare', '-b', 'main', origin]);
   git(tmp, ['init', '-q', '-b', 'main', remote]);
@@ -239,32 +239,39 @@ test('across startup, merge checks and every page and API route, the running das
   const PATH = `${bin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`;
   const child = spawn(process.execPath, [join(ROOT, 'src/dashboard/main.mjs'), '--data', dataDir, '--port', String(port), '--cache', join(repo.tmp, 'cache')],
     { env: { ...process.env, PATH, Path: PATH }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-  t.after(() => child.kill());
-  await new Promise((done, fail) => {
-    let output = '';
-    child.stdout.on('data', (chunk) => { output += chunk; if (output.includes('AIWorks dashboard:')) done(); });
-    child.on('exit', (code) => fail(new Error(`dashboard exited ${code}`)));
-  });
-  const base = `http://127.0.0.1:${port}`;
-  for (const path of ['/', '/dashboard.css', '/dashboard.js', '/api/session', '/missing']) assert.ok([200, 404].includes((await fetch(`${base}${path}`)).status), path);
-  const csrf = (await (await fetch(`${base}/api/session`)).json()).csrf;
-  const headers = { Origin: base, 'Content-Type': 'application/json', 'X-Dashboard-CSRF': csrf };
-  assert.equal((await fetch(`${base}/api/refresh`, { method: 'POST', headers, body: '{}' })).status, 404, 'the GitHub refresh route is gone');
-  assert.equal((await fetch(`${base}/api/messages`, { method: 'POST', headers, body: JSON.stringify({ requestId: randomUUID(), text: 'status?' }) })).status, 202);
-  const c = s.campaign(d.campaignId);
-  assert.equal((await fetch(`${base}/api/commands`, { method: 'POST', headers, body: JSON.stringify({ campaignId: c.id, action: 'pause', requestId: randomUUID(),
-    version: c.version, authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest }) })).status, 202);
-  // Poll state until the merge check has fetched and seen the merge, as an open page would.
-  let state;
-  for (let i = 0; i < 100; i++) {
-    state = await (await fetch(`${base}/api/state?since=${Date.now() - 60_000}`)).json();
-    if (state.owner.campaigns[d.campaignId].deliveries.T1.state === 'merged' && !state.merges.refreshing) break;
-    await new Promise((done) => setTimeout(done, 100));
+  // Stop the dashboard before the after hooks remove its checkout and data folders. Hooks run in the order they were
+  // registered, so a hook here would run last; Windows refuses to remove folders a running dashboard still holds.
+  const exited = new Promise((done) => child.on('exit', done));
+  try {
+    await new Promise((done, fail) => {
+      let output = '';
+      child.stdout.on('data', (chunk) => { output += chunk; if (output.includes('AIWorks dashboard:')) done(); });
+      child.on('exit', (code) => fail(new Error(`dashboard exited ${code}`)));
+    });
+    const base = `http://127.0.0.1:${port}`;
+    for (const path of ['/', '/dashboard.css', '/dashboard.js', '/api/session', '/missing']) assert.ok([200, 404].includes((await fetch(`${base}${path}`)).status), path);
+    const csrf = (await (await fetch(`${base}/api/session`)).json()).csrf;
+    const headers = { Origin: base, 'Content-Type': 'application/json', 'X-Dashboard-CSRF': csrf };
+    assert.equal((await fetch(`${base}/api/refresh`, { method: 'POST', headers, body: '{}' })).status, 404, 'the GitHub refresh route is gone');
+    assert.equal((await fetch(`${base}/api/messages`, { method: 'POST', headers, body: JSON.stringify({ requestId: randomUUID(), text: 'status?' }) })).status, 202);
+    const c = s.campaign(d.campaignId);
+    assert.equal((await fetch(`${base}/api/commands`, { method: 'POST', headers, body: JSON.stringify({ campaignId: c.id, action: 'pause', requestId: randomUUID(),
+      version: c.version, authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest }) })).status, 202);
+    // Poll state until the merge check has fetched and seen the merge, as an open page would.
+    let state;
+    for (let i = 0; i < 100; i++) {
+      state = await (await fetch(`${base}/api/state?since=${Date.now() - 60_000}`)).json();
+      if (state.owner.campaigns[d.campaignId].deliveries.T1.state === 'merged' && !state.merges.refreshing) break;
+      await new Promise((done) => setTimeout(done, 100));
+    }
+    assert.equal(state.owner.campaigns[d.campaignId].deliveries.T1.state, 'merged');
+    assert.equal(state.owner.campaigns[d.campaignId].deliveries.T2.state, 'published');
+    assert.ok(state.roadmap.entries.length > 0, 'the roadmap is read from the governance checkout');
+    assert.equal(state.roadmap.sources, undefined, 'no GitHub snapshot is served');
+    assert.equal(existsSync(join(repo.tmp, 'cache')), false, 'no GitHub cache is written');
+    assert.equal(existsSync(calls), false, `gh was called: ${existsSync(calls) ? readFileSync(calls, 'utf8') : ''}`);
+  } finally {
+    child.kill();
+    await exited;
   }
-  assert.equal(state.owner.campaigns[d.campaignId].deliveries.T1.state, 'merged');
-  assert.equal(state.owner.campaigns[d.campaignId].deliveries.T2.state, 'published');
-  assert.ok(state.roadmap.entries.length > 0, 'the roadmap is read from the governance checkout');
-  assert.equal(state.roadmap.sources, undefined, 'no GitHub snapshot is served');
-  assert.equal(existsSync(join(repo.tmp, 'cache')), false, 'no GitHub cache is written');
-  assert.equal(existsSync(calls), false, `gh was called: ${existsSync(calls) ? readFileSync(calls, 'utf8') : ''}`);
 });
