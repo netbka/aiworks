@@ -228,6 +228,18 @@ test('status gives every waiting step one plain reason and the next automatic ac
   assert.equal(wait.B.next, `Tries again at ${new Date(now + 60_000).toISOString()}`);
   assert.deepEqual([wait.C.code, wait.C.until], ['provider-cooldown', new Date(now + 30_000).toISOString()]);
   assert.deepEqual([wait.D.code, wait.D.text], ['integration', 'Waiting for "Login page" to be merged into main']);
+  assert.equal(wait.D.next, 'Checks the base branch again automatically; starts after "Login page" is merged');
+  assert.doesNotMatch(wait.D.next, /dependenc/i, 'the next action names the step, not an internal term');
+  assert.deepEqual(wait.D.holder, { campaignId: id, taskId: 'A', reason: 'dependency-integration', prUrl: null, verifiedSha: 'a'.repeat(40) });
+  patchTask(store, id, 'A', { pr_url: 'https://github.com/example-org/sampleapp/pull/113' }, now);
+  wait = waits(store, id, now);
+  assert.match(wait.D.text, /PR #113/);
+  assert.equal(wait.D.holder.prUrl, 'https://github.com/example-org/sampleapp/pull/113');
+  patchTask(store, id, 'D', { last_error: 'dependency-integration: waiting for A in main (remote refresh unavailable)' }, now);
+  wait = waits(store, id, now);
+  assert.equal(wait.D.text, 'Cannot check whether "Login page" is merged into main');
+  assert.equal(wait.D.holder.verifiedSha, 'a'.repeat(40));
+  assert.match(wait.D.next, /automatically/);
   patchTask(store, id, 'B', { state: 'verified', retry_at: null, last_error: null }, now);
   assert.equal(waits(store, id, now).B.code, 'publishing', 'publication needs no provider');
   patchTask(store, id, 'C', { blocked: { class: 'B3', reason: 'owner-reserved' } }, now);
@@ -258,7 +270,7 @@ test('with the scheduler on, status names the admission check that refuses each 
   assert.equal(wait.M.code, decided('M'));
   assert.equal(waits(store, 'narrow', now).N.code, 'ready', 'off means today: no write domains without the scheduler');
   store.run("UPDATE operations SET state = 'finished'");
-  patchTask(store, 'wide', 'W', { state: 'done', verified_sha: 'b'.repeat(40), pr_url: 'https://github.com/netbka/Dyk/pull/41' }, now);
+  patchTask(store, 'wide', 'W', { state: 'done', verified_sha: 'b'.repeat(40), pr_url: 'https://github.com/example-org/sampleapp/pull/41' }, now);
   wait = waits(store, 'narrow', now, { config });
   assert.equal(wait.N.text, 'Another step ("Dashboard") is changing src/ (PR #41 not merged yet)');
   assert.equal(wait.N.holder.reason, 'published-unmerged');
@@ -299,4 +311,113 @@ test('a wait reason never carries worker output or a recorded error text', { ski
   assert.deepEqual(seen.map((wait) => wait.C.code), ['retry-backoff', 'owner', 'owner']);
   assert.equal(seen[1].C.text, 'Needs you: an AI provider login failed');
   for (const wait of seen) assert.ok(!JSON.stringify(wait).includes(marker), JSON.stringify(wait));
+});
+
+// ---- MOD6 (MODEL_ROUTING slice R6, supervisor half): model, tier, cost by unit, unknown-cost runs and the reason a step moved up. ----
+
+const claudeTiers = [{ kind: 'claude-cli', model: 'haiku', tier: 1 }, { kind: 'claude-cli', model: 'sonnet', tier: 2 },
+  { kind: 'claude-cli', model: 'opus', tier: 3 }];
+
+test('status names the model, tier and reason a routed step moved up, from the controller\'s own receipts', { skip: !SQLITE }, async (t) => {
+  const { environment, runUntil } = await import('./helpers.mjs');
+  const { Controller } = await import('../../src/supervisor/controller.mjs');
+  const env = environment({ scenario: { commitDir: 'docs', verify: ['reject', 'reject', 'accept'] } });
+  const store = new Store(join(env.dataDir, 'supervisor.db'));
+  const decl = declaration({ tasks: [commitTask('T1', { title: 'fix a typo', writes: ['docs/'] })] });
+  decl.routing = { mode: 'auto', candidates: claudeTiers, sensitivePaths: ['src/supervisor/'] };
+  campaignStart(store, decl);
+  const controller = new Controller({ store, config: env.config, dataDir: env.dataDir });
+  t.after(() => { controller.release(); store.close(); env.cleanup(); });
+  await runUntil(controller, store, decl.campaignId, (c) => c.control === 'finished');
+  const status = campaignStatus(store, decl.campaignId);
+  const [task] = status.tasks;
+  const ops = store.all('SELECT * FROM operations WHERE campaign_id = ? ORDER BY created_at, seq', decl.campaignId);
+  const newest = (kind) => ops.filter((op) => op.kind === kind).at(-1).id;
+  assert.deepEqual(task.routing.implement, { operationId: newest('implement'), executor: 'claude-cli', model: 'sonnet', tier: 2, tierName: 'standard', routed: true });
+  assert.deepEqual(task.routing.verify, { operationId: newest('verify'), executor: 'claude-cli', model: 'sonnet', tier: 2, tierName: 'standard', routed: true });
+  assert.deepEqual(task.routing.escalation, { stage: 'implement', operationId: newest('implement'), fromTier: 1, toTier: 2, toTierName: 'standard',
+    reason: 'Moved to the standard model after two rejected attempts' });
+  // Every run reported dollars here: the reported total is the campaign's recorded cost, and the unknown count is the budget's.
+  assert.equal(task.costByUnit.usd.reportedRuns, ops.filter((op) => op.outcome?.receipt?.costUsd > 0).length);
+  assert.equal(task.costByUnit.usd.reported, status.costUsd);
+  assert.equal(task.costByUnit.unknownCostRuns, status.budget.unknownCostRuns);
+  assert.deepEqual(status.costByUnit, task.costByUnit, 'one task: the work program total is that task');
+  assert.deepEqual(Object.keys(task.costByUnit.tokens), ['claude-cli']);
+});
+
+test('cost stays in its own unit per step and per work program; unknown is counted, never zero', { skip: !SQLITE }, (t) => {
+  const store = waitStore(t, 'aiworks-status-cost-');
+  const id = 'costs';
+  const marker = 'SECRET-WORKER-TEXT';
+  campaignStart(store, declaration({ campaignId: id, tasks: [commitTask('A'), commitTask('B'), commitTask('C')] }));
+  const now = Date.now();
+  let seq = 0;
+  const op = (taskId, kind, { executor = 'claude-cli', state = 'finished', outcome = null, routing = null } = {}) => {
+    seq += 1;
+    store.insert('operations', { id: `op${seq}`, campaign_id: id, task_id: taskId, kind, seq, idempotency_key: `op${seq}`, lease_generation: 1,
+      state, session_id: 'synthetic', run_dir: 'synthetic', workspace: 'synthetic', packet: {}, packet_digest: 'digest',
+      created_at: now + seq, updated_at: now + seq, executor_kind: executor, outcome, routing });
+    return `op${seq}`;
+  };
+  const receipt = (kind, model, tier, priorAttempts = [], escalated = false) => ({ version: 1, policy: 'routing-policy/1', mode: 'auto',
+    inputs: { escalation: { priorAttempts } },
+    decision: { chosen: { kind, model, tier }, escalation: { tier, escalated }, reason: `chosen: ${marker}` } });
+  const result = (receiptValue, value = { result: 'resolved', summary: marker }) => ({ class: 'result', value, detail: marker, receipt: receiptValue });
+  op('A', 'implement', { outcome: result({ costUsd: 0.5, usage: { input: 100, output: 10, cacheRead: 0, cacheCreation: 0 } }),
+    routing: receipt('claude-cli', 'haiku', 1) });
+  op('A', 'verify', { executor: 'codex-cli', outcome: result({ costUsd: null, usage: { input: 200, output: 20, cacheRead: 50, inputIncludesCacheRead: true } },
+    { verdict: 'rejected', summary: marker }), routing: receipt('codex-cli', 'gpt-6-astra', 3) });
+  op('A', 'implement', { outcome: { class: 'unavailable', detail: marker, receipt: { costUsd: 9 } }, routing: receipt('claude-cli', 'opus', 3) });
+  const moved = op('A', 'implement', { outcome: result({ costUsd: 0, usage: null }), routing: receipt('claude-cli', 'sonnet', 2, [
+    { op: 'op3', kind: 'claude-cli', model: 'haiku', class: 'timeout', terminal: null, denied: false, tier: 1 },
+    { op: 'op1', kind: 'claude-cli', model: 'haiku', class: 'result', terminal: 'rejected', denied: false, tier: 1 },
+  ], true) });
+  const unreceipted = op('B', 'implement', { executor: 'cursor-cli', outcome: { class: 'result', value: { result: 'resolved' }, receipt: { costUsd: null, usage: null } } });
+  const open = op('B', 'verify', { state: 'recorded' });
+  const status = campaignStatus(store, id, now);
+  const [a, b, c] = status.tasks;
+
+  assert.deepEqual(a.routing.implement, { operationId: moved, executor: 'claude-cli', model: 'sonnet', tier: 2, tierName: 'standard', routed: true },
+    'a refused run that did no work is neither the step\'s model nor a cost');
+  assert.deepEqual([a.routing.verify.model, a.routing.verify.tierName], ['gpt-6-astra', 'strongest']);
+  assert.equal(a.routing.escalation.reason, 'Moved to the standard model after one timed-out attempt and one rejected attempt');
+  assert.deepEqual(a.costByUnit, {
+    usd: { reported: 0.5, reportedRuns: 1 },
+    tokens: {
+      'claude-cli': { runs: 1, input: 100, output: 10, cacheRead: 0, cacheCreation: 0, inputIncludesCacheReadRuns: 0 },
+      'codex-cli': { runs: 1, input: 200, output: 20, cacheRead: 50, cacheCreation: 0, inputIncludesCacheReadRuns: 1 },
+    },
+    unknownCostRuns: 2,
+  }, 'tokens stay per provider, dollars stay dollars, and a run reporting $0 or nothing is unknown');
+
+  // A run with no receipt has an unknown model and tier; an open run has no cost yet; nothing unknown reads as $0.
+  assert.deepEqual(b.routing.implement, { operationId: unreceipted, executor: 'cursor-cli', model: null, tier: null, tierName: null, routed: false });
+  assert.deepEqual(b.routing.verify, { operationId: open, executor: 'claude-cli', model: null, tier: null, tierName: null, routed: false });
+  assert.equal(b.routing.escalation, null);
+  assert.deepEqual(b.costByUnit, { usd: { reported: null, reportedRuns: 0 }, tokens: {}, unknownCostRuns: 1 });
+  assert.deepEqual(c.routing, { implement: null, verify: null, escalation: null }, 'a step that never ran has no model');
+  assert.deepEqual(c.costByUnit, { usd: { reported: null, reportedRuns: 0 }, tokens: {}, unknownCostRuns: 0 });
+
+  // The work program: the same units, never added across units or providers, and the same unknown count as the budget.
+  assert.deepEqual(status.costByUnit, { usd: { reported: 0.5, reportedRuns: 1 }, tokens: a.costByUnit.tokens, unknownCostRuns: 3 });
+  assert.equal(status.costByUnit.unknownCostRuns, status.budget.unknownCostRuns);
+  assert.ok(!JSON.stringify(status.tasks.map((task) => [task.routing, task.costByUnit])).includes(marker), 'no worker or router text in a reason');
+});
+
+test('a verifier move up counts unusable reviews, and staying on the moved-to tier is no new move', { skip: !SQLITE }, (t) => {
+  const store = waitStore(t, 'aiworks-status-escalation-');
+  const id = 'moves';
+  campaignStart(store, declaration({ campaignId: id, tasks: [commitTask('A')] }));
+  const now = Date.now();
+  const insert = (n, priorAttempts) => store.insert('operations', { id: `m${n}`, campaign_id: id, task_id: 'A', kind: 'verify', seq: n,
+    idempotency_key: `m${n}`, lease_generation: 1, state: 'finished', session_id: 's', run_dir: 'r', workspace: 'w', packet: {}, packet_digest: 'd',
+    created_at: now + n, updated_at: now + n, outcome: { class: 'invalid-result', receipt: { costUsd: 0.1 } },
+    routing: { mode: 'auto', inputs: { escalation: { priorAttempts } }, decision: { chosen: { kind: 'claude-cli', model: 'opus', tier: 3 }, escalation: { tier: 3, escalated: true } } } });
+  const unusable = (op, cls, tier = 2) => ({ op, kind: 'claude-cli', model: tier === 2 ? 'sonnet' : 'opus', class: cls, terminal: null, denied: false, tier });
+  insert(1, [unusable('v2', 'exit-without-result'), unusable('v1', 'invalid-result')]);
+  assert.equal(campaignStatus(store, id, now).tasks[0].routing.escalation.reason, 'Moved to the strongest model after two unusable reviews');
+  insert(2, [unusable('m1', 'invalid-result', 3)]);
+  const status = campaignStatus(store, id, now);
+  assert.equal(status.tasks[0].routing.escalation.operationId, 'm1');
+  assert.deepEqual(status.costByUnit.usd, { reported: 0.2, reportedRuns: 2 });
 });

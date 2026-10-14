@@ -49,7 +49,7 @@ function prepared(t) {
   campaignStart(store, decl);
   store.recordOperation({ id: OP, campaign_id: CAMPAIGN, task_id: PLAN_TASK, kind: 'plan', seq: 1, idempotency_key: OP, lease_generation: 1,
     state: 'dispatched', session_id: SESSION, run_dir: join(dataDir, 'runs', OP), workspace: join(dataDir, 'workspace'),
-    packet: { tenantId: 'netbka', projectId: 'dyk', environment: 'research', taskId: PLAN_TASK, stageId: 'plan', runId: OP,
+    packet: { tenantId: 'example-org', projectId: 'sampleapp', environment: 'research', taskId: PLAN_TASK, stageId: 'plan', runId: OP,
       revision: '0'.repeat(40), authorityDigest: authorityDigest(decl) },
     packet_digest: 'd'.repeat(64), created_at: 1, updated_at: 1 });
   const verdict = { class: 'result', receipt: { sessionId: SESSION, costUsd: 0.25 }, value: { result: 'resolved', summary: 'Two steps are missing.',

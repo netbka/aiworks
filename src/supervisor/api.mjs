@@ -188,6 +188,7 @@ export function campaignStatus(store, id, now = Date.now(), { releaseStop = fals
   const ownerBlockers = ownerBlockerView(store, id);
   const ci = ciView(store, c, tasks);
   const waits = { store, campaign: c, tasks, open: operations, held: heldTasks(store, id), now, config };
+  const routed = routingView(store, id);
   return {
     campaignId: c.id,
     store: store.identity,
@@ -226,6 +227,7 @@ export function campaignStatus(store, id, now = Date.now(), { releaseStop = fals
     executorOrder: executorOrder(c.declaration.executor).map((executor) => executor.kind),
     executorWaits: executorWaitsView(store, c),
     costUsd: Math.round(c.cost_usd * 10000) / 10000,
+    costByUnit: routed.cost,
     ci: ci.summary,
     // Auto Release is built switched off (AUTO_RELEASE.md slice R2): report only, per done task. It never acts. The
     // owner's stops (slice R4) show only once used: RELEASE-STOP when the caller saw the file, and narrowed destinations.
@@ -236,6 +238,8 @@ export function campaignStatus(store, id, now = Date.now(), { releaseStop = fals
       retryAt: t.retry_at ? new Date(t.retry_at).toISOString() : null, blocked: t.blocked, lastError: t.last_error,
       ci: ci.tasks.get(t.task_id) ?? null,
       wait: waitReason(t, waits),
+      routing: routed.tasks.get(t.task_id)?.routing ?? { implement: null, verify: null, escalation: null },
+      costByUnit: routed.tasks.get(t.task_id)?.cost ?? emptyCost(),
     })),
     openOperations: operations.map((op) => ({ id: op.id, taskId: op.task_id, kind: op.kind, executor: op.executor_kind ?? 'claude-cli', state: op.state,
       createdAt: new Date(op.created_at).toISOString(), updatedAt: new Date(op.updated_at).toISOString() })),
@@ -336,7 +340,15 @@ export function waitReason(task, { store, campaign: c, tasks, open, held = new M
   const error = String(task.last_error ?? '');
   if (error.startsWith('dependency-integration:')) {
     const missing = spec.dependsOn.find((id) => new RegExp(`\\b${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(error)) ?? spec.dependsOn[0];
-    return reason('integration', `Waiting for "${title(missing)}" to be merged into ${decl.target.baseBranch}`, 'Checks the base branch again every minute', task.retry_at);
+    const dependency = tasks.find((row) => row.task_id === missing);
+    const holder = { campaignId: c.id, taskId: missing, reason: 'dependency-integration',
+      prUrl: dependency?.pr_url ?? null, verifiedSha: dependency?.verified_sha ?? null };
+    const refreshFailed = error.endsWith(' (remote refresh unavailable)');
+    const pr = /\/pull\/(\d+)$/.exec(holder.prUrl ?? '');
+    return reason('integration', refreshFailed
+      ? `Cannot check whether "${title(missing)}" is merged into ${decl.target.baseBranch}`
+      : `Waiting for "${title(missing)}" to be merged into ${decl.target.baseBranch}${pr ? ` (PR #${pr[1]})` : ''}`,
+    `Checks the base branch again automatically; starts after "${title(missing)}" is merged`, task.retry_at, holder);
   }
   if (task.retry_at > now) {
     return /^(quota:|waiting for executor availability)/.test(error)
@@ -365,6 +377,97 @@ export function waitReason(task, { store, campaign: c, tasks, open, held = new M
   const refusal = admissionCheck(store, { campaignId: c.id, taskId: task.task_id, kind: task.state === 'pending' ? 'implement' : 'verify', declaration: decl },
     { ceiling: hostCeiling(config), pressure: pressure ? { signal: pressure.reason } : null, accountFull: () => (kind ? accountFull(store, config, kind) : null) });
   return admissionReason(store, refusal ?? { reason: null });
+}
+
+// ---- Model, tier, cost by unit and the reason a step moved up (MODEL_ROUTING section 9 "What the owner sees", slice R6
+// supervisor half: MOD6). Built from operation rows and their routing receipts only. Costs stay in the unit each provider
+// reports: reported dollars, tokens per provider, and a count of runs whose dollars are unknown. Units are never added
+// together, and unknown is never shown as zero. ----
+
+export const TIER_NAMES = { 1: 'economy', 2: 'standard', 3: 'strongest' };
+const STAGES = ['implement', 'verify'];
+const WORDS = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
+// The poor-quality outcomes that move a step up (MODEL_ROUTING 5.4), by stage, as owner words. Only these fixed labels
+// enter a reason: never worker output, an error detail or the router's own reason text.
+const POOR = {
+  implement: { rejected: 'rejected', 'evidence-unavailable': 'without evidence', 'invalid-result': 'unusable', 'exit-without-result': 'unusable', timeout: 'timed-out' },
+  verify: { 'invalid-result': 'unusable', 'exit-without-result': 'unusable', timeout: 'timed-out' },
+};
+
+function emptyCost() {
+  return { usd: { reported: null, reportedRuns: 0 }, tokens: {}, unknownCostRuns: 0 };
+}
+
+/** One counted run into a cost record. Dollars count as reported only when above zero, the rule campaignBudget uses. */
+function addCost(cost, op) {
+  const receipt = op.outcome?.receipt;
+  if (receipt?.costUsd > 0) {
+    cost.usd.reported = Math.round(((cost.usd.reported ?? 0) + receipt.costUsd) * 10000) / 10000;
+    cost.usd.reportedRuns += 1;
+  } else cost.unknownCostRuns += 1;
+  const usage = receipt?.usage;
+  if (!usage) return;
+  const tokens = cost.tokens[op.executor_kind ?? 'claude-cli'] ??= { runs: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0, inputIncludesCacheReadRuns: 0 };
+  tokens.runs += 1;
+  for (const key of ['input', 'output', 'cacheRead', 'cacheCreation']) if (Number.isFinite(usage[key])) tokens[key] += usage[key];
+  if (usage.inputIncludesCacheRead) tokens.inputIncludesCacheReadRuns += 1;
+}
+
+/** The model of one run, from its own receipt. A run recorded before receipts, or a provider with no declared model, is null: unknown. */
+function modelView(op) {
+  const chosen = op.routing?.decision?.chosen ?? null;
+  const tier = Number.isInteger(chosen?.tier) ? chosen.tier : null;
+  return { operationId: op.id, executor: op.executor_kind ?? 'claude-cli', model: chosen?.model ?? null, tier, tierName: TIER_NAMES[tier] ?? null,
+    routed: op.routing?.mode === 'auto' };
+}
+
+/**
+ * The newest move up of one step: a routed run whose receipt says it escalated to a higher tier than the attempt before it.
+ * The reason counts that attempt's tier's poor-quality outcomes from the receipt's own priorAttempts.
+ */
+function escalationView(ops) {
+  for (const op of [...ops].reverse()) {
+    const decision = op.routing?.mode === 'auto' ? op.routing.decision : null;
+    const to = decision?.escalation?.escalated ? decision.chosen?.tier : null;
+    const attempts = op.routing?.inputs?.escalation?.priorAttempts ?? [];
+    const from = attempts[0]?.tier ?? null;
+    if (!Number.isInteger(to) || !Number.isInteger(from) || to <= from) continue;
+    const labels = POOR[op.kind] ?? {};
+    const counts = new Map();
+    for (const attempt of attempts) {
+      const label = attempt.tier !== from ? null : attempt.class === 'result' ? labels[attempt.terminal] : labels[attempt.class];
+      if (label) counts.set(label, (counts.get(label) ?? 0) + 1);
+    }
+    const noun = op.kind === 'verify' ? 'review' : 'attempt';
+    const parts = [...counts].map(([label, n]) => `${WORDS[n] ?? n} ${label} ${noun}${n === 1 ? '' : 's'}`);
+    const after = parts.length ? parts.join(' and ') : 'poor-quality results';
+    return { stage: op.kind, operationId: op.id, fromTier: from, toTier: to, toTierName: TIER_NAMES[to] ?? null,
+      reason: `Moved to the ${TIER_NAMES[to] ?? `tier ${to}`} model after ${after}` };
+  }
+  return null;
+}
+
+/**
+ * Per task: the model and tier of its newest implement and verify run, the newest move up and its cost by unit; and the
+ * campaign's cost by unit. Counted runs only (runNotCounted, as campaignBudget): open runs have no cost yet.
+ */
+function routingView(store, campaignId) {
+  const ops = store.all("SELECT * FROM operations WHERE campaign_id = ? ORDER BY created_at, seq", campaignId);
+  const cost = emptyCost();
+  const tasks = new Map();
+  for (const op of ops) {
+    const item = tasks.get(op.task_id) ?? { routing: { implement: null, verify: null, escalation: null }, cost: emptyCost(), steps: [] };
+    tasks.set(op.task_id, item);
+    const finished = op.state === 'finished';
+    if (finished && runNotCounted(op.outcome)) continue;
+    if (STAGES.includes(op.kind)) {
+      item.routing[op.kind] = modelView(op);
+      item.steps.push(op);
+    }
+    if (finished) { addCost(cost, op); addCost(item.cost, op); }
+  }
+  for (const item of tasks.values()) item.routing.escalation = escalationView(item.steps);
+  return { cost, tasks };
 }
 
 const CI_STATE = { 'ci-pending': 'pending', 'ci-passed': 'success', 'ci-failed': 'failure', 'ci-inconclusive': 'inconclusive', 'ci-none': 'none' };

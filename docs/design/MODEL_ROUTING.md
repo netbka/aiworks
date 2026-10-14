@@ -1,10 +1,12 @@
 # Cost- and quality-aware model choice per task role
 
-**Status:** design only. Nothing in this document is built, merged into the runtime or deployed. Refs [#10](https://github.com/netbka/aiworks/issues/10), [#5](https://github.com/netbka/aiworks/issues/5), [#14](https://github.com/netbka/aiworks/issues/14).
+**Privacy boundary:** this is a design proposal, not a live installation record. Campaign declarations and approval records stay private under [AW-009](../DECISIONS.md#aw-009---public-commits-contain-no-installation-data). Any proposal to publish declarations through source branches or pull requests is superseded. Merged executable code, explicit owner authorization, scope binding and independent verification remain required.
 
-**Basis:** `netbka/aiworks` at `143208c3f62d37040de3f1b145b41957de62f868` (the task base). Every "today" statement is **observed** in that revision and cites `file:line` there. Nothing here was checked on HomePc: how the live runtime behaves, which models the owner's accounts allow and how they are billed are **unknown** to this document. Proposed behaviour is **planned**. The Engineering Platform role catalog was read once, read-only, from `netbka/engineering-platform` main (`registry/agents.json`, blob `84f078e6`) on 2026-10-12; that is an **observed** document, not a runtime check.
+**Status:** design only. Nothing in this document is built, merged into the runtime or deployed. Refs #10, #5, #14.
 
-**Inputs:** [PROJECT_WORKSPACE_PLAN.md §5.3](../PROJECT_WORKSPACE_PLAN.md#53-rolemodelcost-routing) and §7, [#10](https://github.com/netbka/aiworks/issues/10), [ADAPTIVE_SCHEDULER.md](ADAPTIVE_SCHEDULER.md) (merged design, PR [#20](https://github.com/netbka/aiworks/pull/20)), [SUPERVISOR.md](../SUPERVISOR.md), [DECISIONS.md](../DECISIONS.md) (AW-001, AW-002, AW-005). Engineering Platform rules apply through [AGENTS.md](../../AGENTS.md) and are linked, not repeated: [Owner Intervention, rate limits](https://github.com/netbka/engineering-platform/blob/main/docs/OWNER_INTERVENTION.md#rate-limits--quotas), [Agent Operating Model](https://github.com/netbka/engineering-platform/blob/main/docs/AGENT_OPERATING_MODEL.md), [Delivery Practices](https://github.com/netbka/engineering-platform/blob/main/docs/DELIVERY_PRACTICES.md).
+**Basis:** design notes; implementation status must be checked against the selected runtime revision.
+
+**Inputs:** [PROJECT_WORKSPACE_PLAN.md §5.3](../PROJECT_WORKSPACE_PLAN.md#53-rolemodelcost-routing) and §7, #10, [ADAPTIVE_SCHEDULER.md](ADAPTIVE_SCHEDULER.md) (merged design, PR #20), [SUPERVISOR.md](../SUPERVISOR.md), [DECISIONS.md](../DECISIONS.md) (AW-001, AW-002, AW-005). governance provider rules apply through [AGENTS.md](../../AGENTS.md) and are linked, not repeated: Owner Intervention, rate limits, Agent Operating Model, Delivery Practices.
 
 ## 1. What the owner gets
 
@@ -20,7 +22,7 @@ What it does **not** do:
 - It sets **no** run cap or cost ceiling ([AW-002](../DECISIONS.md#aw-002---campaigns-have-no-capacity-limits-by-default)). Owner-declared budgets keep working as today.
 - It makes **no** model call to decide. The router is deterministic code that runs only when a step is dispatched, never on an idle tick.
 - It never switches account, subscription or login, and never uses a model or provider the work program does not list.
-- It does not enable GitHub-free admission ([D4](../PROJECT_WORKSPACE_PLAN.md#8-owner-decisions-and-remaining-implementation-design-gates)), Auto Release ([D5-gate](../PROJECT_WORKSPACE_PLAN.md#8-owner-decisions-and-remaining-implementation-design-gates), #13) or Telegram delivery ([#1](https://github.com/netbka/aiworks/issues/1)). Section 10 says what waits for which decision.
+- It does not enable GitHub-free admission ([D4](../PROJECT_WORKSPACE_PLAN.md#8-owner-decisions-and-remaining-implementation-design-gates)), Auto Release ([D5-gate](../PROJECT_WORKSPACE_PLAN.md#8-owner-decisions-and-remaining-implementation-design-gates), #13) or Telegram delivery (#1). Section 10 says what waits for which decision.
 
 ## 2. How it works today (observed)
 
@@ -71,7 +73,7 @@ So today the model is fixed per provider and per campaign. The only "routing" is
 
 ### 2.5 The role catalog
 
-- Engineering Platform's `registry/agents.json` lists 15 roles with `id`, `purpose`, `authority`, `must_not`, `returns`, `escalates`, and for reviewers `independent_from` (observed in EP main, blob `84f078e6`). Examples: `verification-agent` (independent from the architects and engineers), `security-reviewer` (independent from `backend-engineer`, `infrastructure-sre`), `product-reviewer`, `release-agent`.
+- The operator-supplied private role catalog may define role IDs, authority, escalation and reviewer independence. Routing must consume the supported contract without publishing its actual entries or inferring missing relationships.
 - AIWorks already reads that file from the governance checkout, for the dashboard roadmap only (`src/dashboard/roadmap.mjs:62-63`; root rules at `src/supervisor/governance.mjs:1-4`). The supervisor does not read it.
 - The test fixture copy has an empty `roles` list (`tests/fixtures/governance/registry/agents.json:3`).
 - Worker packets know four roles: `implementer`, `verification`, `security-review`, `browser-review` (`scripts/lib/worker-context.mjs:85`). The controller uses only the first two (`controller.mjs:665`).
@@ -83,7 +85,7 @@ Every step gets three deterministic indicators. They are computed from the appro
 ### 3.1 Role
 
 - **Stage:** `implement` or `verify`, as today (`controller.mjs:582`).
-- **Catalog role:** an optional task field `role`, an id from EP `registry/agents.json`. It is checked against the catalog when the campaign is registered. The default is no catalog role for an implementer and `verification-agent` for a verifier. AIWorks reads the catalog; it never copies it (section 7).
+- **Catalog role:** an optional task field `role`, an id from governance `registry/agents.json`. It is checked against the catalog when the campaign is registered. The default is no catalog role for an implementer and `verification-agent` for a verifier. AIWorks reads the catalog; it never copies it (section 7).
 - **Browser:** a task with `web` (`campaign.mjs:197-209`) is a browser step. Only browser workers are candidates, as today.
 
 ### 3.2 Risk
@@ -94,7 +96,7 @@ Every step gets three deterministic indicators. They are computed from the appro
 | **R1 medium** | A commit task without declared `writes` (it owns the whole repository, ADAPTIVE_SCHEDULER.md §4.3); or a web task. |
 | **R0 low** | Everything else: report tasks, and commit tasks whose declared `writes` touch no sensitive path. |
 
-`writes` comes from scheduler slice S3. Until S3 exists, every commit task is at least R1. A task may declare `routing.risk: "high"` to **raise** its level; nothing can lower a computed level. For AIWorks itself, `src/supervisor/` is the natural sensitive path, because a change there needs an independent review of the exact head ([AGENTS.md](../../AGENTS.md#changing-the-supervisor)).
+`writes` comes from scheduler slice S3. Until S3 exists, every commit task is at least R1. A task may declare `routing.risk: "high"` to **raise** its level; nothing can lower a computed level. For AIWorks itself, `src/supervisor/` is the natural sensitive path, because a change there needs an independent review of the exact head ([AGENTS.md](../../AGENTS.md#review-and-runtime-maintenance)).
 
 ### 3.3 Complexity
 
@@ -167,7 +169,7 @@ These rules hold for every verify step, whatever the mode:
 1. **Never the same session.** The verifier gets a new session id (`controller.mjs:687`), and only that session's result is accepted (`controller.mjs:313-316`). The receipt also records the implementer session(s) that produced the head under review (`inputs.implementerSessions`, section 9) and asserts that the new id differs from all of them. A test fails if it ever matches.
 2. **Never an unauthorized provider or model.** Candidates come only from the declaration (section 4.1). The verifier filters are the same as above, with role `verification`.
 3. **Read-only and fresh checkout**, unchanged (section 2.2).
-4. **Prefer a different model for risky work.** For R2 steps, and for C3 steps, a candidate whose `(kind, model)` differs from the implementer of the head (`inputs.headImplementer`, section 9) is ranked first, if one is eligible at or above the floor. Then the receipt says `independence: "different-model"`. If none is, the same model runs in a fresh session, and the receipt says `independence: "fresh-session-same-model"`. This is a preference, not a gate. A hard requirement would block work until the owner configures a second provider. AGENTS.md forbids adding such a gate without the owner ([When to stop for the owner](../../AGENTS.md#when-to-stop-for-the-owner)).
+4. **Prefer a different model for risky work.** For R2 steps, and for C3 steps, a candidate whose `(kind, model)` differs from the implementer of the head (`inputs.headImplementer`, section 9) is ranked first, if one is eligible at or above the floor. Then the receipt says `independence: "different-model"`. If none is, the same model runs in a fresh session, and the receipt says `independence: "fresh-session-same-model"`. This is a preference, not a gate. A hard requirement would block work until the owner configures a second provider. AGENTS.md forbids adding such a gate without the owner ([When to stop for the owner](../../AGENTS.md#owner-intervention)).
 5. **Catalog independence.** When a task declares a catalog role, the verifier's catalog role (`verification-agent`, or `security-reviewer` for R2 with a security role) must list it in `independent_from`, or the receipt records `catalog-independence: "not-declared"`. This is report-only, for the same reason as rule 4.
 
 ### 4.4 The verifier projection (implement steps)
@@ -259,12 +261,12 @@ The escalation state is derived from the task's finished operations and their re
 - Changing a pin is a routing amendment (section 4.1).
 - A campaign without `routing` is in effect pinned to its declared chain: today's behaviour.
 
-## 7. The role catalog comes from Engineering Platform
+## 7. The role catalog comes from governance provider
 
 - The supervisor reads `registry/agents.json` from the configured governance root, through the same root rules as the project registry (`governance.mjs:28-39`). A new `roleCatalog(root)` returns the role ids and their `independent_from` lists. Nothing is copied into AIWorks.
-- The catalog is read at registration (to validate task `role` values) and at dispatch (to fill the receipt). The receipt records the catalog file's blob digest, so a later EP change is visible in the record.
+- The catalog is read at registration (to validate task `role` values) and at dispatch (to fill the receipt). The receipt records the catalog file's blob digest, so a later governance change is visible in the record.
 - If a task declares a `role` and the catalog is missing or lacks that id, registration fails closed. This is the same rule as for the project registry (`campaign.mjs:230-237`, `campaign.mjs:259-264`). Tasks without `role` do not need the catalog.
-- EP's catalog has no schema in `schemas/` that this design relies on (whether one exists is **unknown** here). AIWorks checks the shape it reads: `roles[]` with string `id`, and optional string-array `independent_from`. Proposed to EP as text, not opened from here: *add `schemas/agents.schema.json` for `registry/agents.json`, so consumers validate the catalog with EP's own schema, as AIWorks does for project contracts (`campaign.mjs:12-22`).* AIWorks does not wait for it.
+- the governance contract's catalog has no schema in `schemas/` that this design relies on (whether one exists is **unknown** here). AIWorks checks the shape it reads: `roles[]` with string `id`, and optional string-array `independent_from`. Proposed to governance as text, not opened from here: *add `schemas/agents.schema.json` for `registry/agents.json`, so consumers validate the catalog with the governance contract's own schema, as AIWorks does for project contracts (`campaign.mjs:12-22`).* AIWorks does not wait for it.
 - Mapping to packet roles stays as today (`implementer`, `verification`). Using `security-review` and `browser-review` packets is not part of this design.
 
 ## 8. Baseline before any saving is claimed
@@ -310,7 +312,6 @@ For each task class (stage x risk x complexity) and each provider and model:
 - **Defects found after acceptance.** Reverts, follow-up fixes and owner review comments after a PR is published are in GitHub, not in the store.
 - **Missed defects by a verifier.** The store shows only usable reviews.
 - **Exact provider wait duration.** The journal records when a wait starts. The end is approximated by the next dispatch of that task and labelled approximate.
-- **History before 2026-10-12.** The AIWorks store started fresh at the split ([AW-007](../DECISIONS.md#aw-007---aiworks-is-a-standalone-product-separate-from-engineering-platform)); how many runs it holds now is unknown to this document. The archived earlier store (`D:\Backups\handson-split`) may be read by the same tool if its store version matches; whether it does is unknown.
 
 ### 8.4 When a saving may be claimed
 
@@ -417,7 +418,7 @@ These cases become the table-driven tests of slice R4. Candidates as in section 
 - Escalation only on poor-quality evidence. Never on a denial, a limit, a login problem or a host failure.
 - A different verifier model for risky work is a preference. Fresh session and authorized candidates are hard rules.
 - The receipt is immutable, versioned, stored with the operation, and replayable without the store.
-- The role catalog is read from the EP governance checkout, never copied.
+- The role catalog is read from the governance governance checkout, never copied.
 - No saving is claimed before the baseline (section 8.4).
 
 ## 12. Owner-reserved questions
@@ -426,8 +427,8 @@ None of these re-opens D1, D3, D5 or D9.
 
 | # | Question | Recommended answer | What it unblocks |
 | --- | --- | --- | --- |
-| Q1 | Which models may each of the owner's accounts use, and is any account billed per use rather than a flat plan? Accounts and spending are the owner's ([Constitution §2](https://github.com/netbka/engineering-platform/blob/main/docs/CONSTITUTION.md#2-owner-role)), and a different model on a pay-per-use account changes spending. This document cannot see the accounts (unknown). | Allow routing among the models of the providers already in use, on the same logins, where the plan is flat. On any pay-per-use account, keep today's single model unless the campaign also declares `maxCostUsd`. | Declarations with several candidates per provider for the cohort (R7). R1 to R6 do not wait. |
-| Q2 | May routing run on the live HomePc runtime, after R1 to R5 are merged, reviewed on their exact heads and deployed by the documented upgrade? Changing what the live runtime does is a production change agents may not make ([AGENTS.md](../../AGENTS.md#agents-must-not)). | Yes, for one cohort of AIWorks documentation and design campaigns first, compared with the baseline (section 8.4) before wider use. | R7: the first measured comparison. |
+| Q1 | Which models may each of the owner's accounts use, and is any account billed per use rather than a flat plan? Accounts and spending are the owner's (Constitution §2), and a different model on a pay-per-use account changes spending. This document cannot see the accounts (unknown). | Allow routing among the models of the providers already in use, on the same logins, where the plan is flat. On any pay-per-use account, keep today's single model unless the campaign also declares `maxCostUsd`. | Declarations with several candidates per provider for the cohort (R7). R1 to R6 do not wait. |
+| Q2 | May routing run on the live workstation runtime, after R1 to R5 are merged, reviewed on their exact heads and deployed by the documented upgrade? Changing what the live runtime does is a production change agents may not make ([AGENTS.md](../../AGENTS.md#authorized-work)). | Yes, for one cohort of AIWorks documentation and design campaigns first, compared with the baseline (section 8.4) before wider use. | R7: the first measured comparison. |
 
 Waiting on decisions already open elsewhere (not asked again here):
 
@@ -435,11 +436,11 @@ Waiting on decisions already open elsewhere (not asked again here):
 - Fully local projects wait for **D2** and **D4**. The router does not depend on GitHub; it only needs a registered project and its declaration.
 - Auto Release (**D5-gate**, #13) and Telegram delivery (#1) are not touched. `release-agent` work is not routed until #13 is authorized.
 
-Engineering Platform: no EP change is required. The schema for `registry/agents.json` (section 7) is an optional proposal, given here as text.
+governance provider: no governance change is required. The schema for `registry/agents.json` (section 7) is an optional proposal, given here as text.
 
 ## 13. Implementation slices
 
-Every slice is one reviewable PR. A slice that changes `src/supervisor` needs an independent review approving its exact head before merge ([AGENTS.md](../../AGENTS.md#changing-the-supervisor)). Merged is not deployed: nothing reaches HomePc before R7. Every slice runs `npm run check`. All tests use disposable stores, disposable git repositories and the synthetic executables in `tests/supervisor/fixtures/`, as `tests/supervisor/helpers.mjs` does. They make no model, network or GitHub call. `fake-claude.mjs` already records each call's arguments, including `--model` (`tests/supervisor/fixtures/fake-claude.mjs:19-21`).
+Every slice is one reviewable PR. A slice that changes `src/supervisor` needs an independent review approving its exact head before merge ([AGENTS.md](../../AGENTS.md#review-and-runtime-maintenance)). Merged is not deployed: nothing reaches workstation before R7. Every slice runs `npm run check`. All tests use disposable stores, disposable git repositories and the synthetic executables in `tests/supervisor/fixtures/`, as `tests/supervisor/helpers.mjs` does. They make no model, network or GitHub call. `fake-claude.mjs` already records each call's arguments, including `--model` (`tests/supervisor/fixtures/fake-claude.mjs:19-21`).
 
 Slices that edit `controller.mjs`, `campaign.mjs` or `api.mjs` are sequenced with the scheduler slices and F2-DUPLICATE that edit the same files: one at a time, never in parallel.
 
@@ -461,10 +462,10 @@ Slices that edit `controller.mjs`, `campaign.mjs` or `api.mjs` are sequenced wit
 
 **R3. Role catalog and declaration fields**
 
-- Outcome: `routing` (candidates, sensitive paths, pin) and task `role` / `routing.risk` / `routing.complexity` validate. Roles are checked against EP `registry/agents.json`. Routing amendments follow the executor rule.
+- Outcome: `routing` (candidates, sensitive paths, pin) and task `role` / `routing.risk` / `routing.complexity` validate. Roles are checked against governance `registry/agents.json`. Routing amendments follow the executor rule.
 - Files: `src/supervisor/governance.mjs` (`roleCatalog`), `src/supervisor/campaign.mjs`, `src/supervisor/api.mjs` (routing amendment), `tests/fixtures/governance/registry/agents.json` (synthetic roles for tests), `tests/supervisor/campaign-registry.test.mjs`, `docs/SUPERVISOR.md`.
 - Tests: an unknown role fails closed; a pin outside the candidates is rejected; a candidate kind outside `executor.providers` is rejected; declarations without the new keys validate and digest exactly as before; amending `routing` on a running campaign is refused.
-- Acceptance: no campaign in `campaigns/` changes its scope digest.
+- Acceptance: no private campaign changes its scope digest.
 - Depends on: F2-DUPLICATE (owner of `campaign.mjs` and `api.mjs` for #5); scheduler S3 for `writes` (until then risk treats every commit task as R1 or above). Waits for: nothing.
 
 **R4. Router policy** (pure function)
@@ -488,14 +489,14 @@ Slices that edit `controller.mjs`, `campaign.mjs` or `api.mjs` are sequenced wit
 - Outcome: per accepted step and per work program, the owner sees model, tier, reported cost by unit, unknown-cost run count and the reason for any move up.
 - Files: `src/supervisor/api.mjs` (status fields), `src/dashboard/supervisor.mjs`, `src/dashboard/public/dashboard.js`, `tests/supervisor/status.test.mjs`, `tests/dashboard/`.
 - Tests: totals are never summed across units; unknown is shown as unknown; no worker text appears in a reason.
-- Acceptance: blind owner review per [UX-002](https://github.com/netbka/engineering-platform/blob/main/docs/EXPERIENCE_REVIEW.md).
+- Acceptance: blind owner review per UX-002.
 - Depends on: R5; follows the #11 work view design and its file owner. Waits for: nothing owner-reserved.
 
 **R7. Cohort and live enablement** (runbook and declarations, no code)
 
-- Outcome: a baseline report is recorded, one cohort runs with routing on HomePc, and the comparison is published per section 8.4.
-- Files: `docs/SUPERVISOR.md` (enable and roll back: remove `routing` with an amendment), `docs/STATUS.md`, one cohort declaration in `campaigns/`.
-- Tests: the full suite at the deployed SHA; `supervisor baseline` before and after; status before and after the upgrade ([AGENTS.md](../../AGENTS.md#upgrading-the-live-runtime)).
-- Acceptance: observed on HomePc, and labelled verified only there: chosen models match receipts, no run was charged twice, quota waits did not spin, and any claim meets section 8.4.
+- Outcome: a baseline report is recorded, one cohort runs with routing on workstation, and the comparison is published per section 8.4.
+- Files: `docs/SUPERVISOR.md` (enable and roll back: remove `routing` with an amendment), `docs/STATUS.md`, one private cohort declaration under `.local/campaigns/`.
+- Tests: the full suite at the deployed SHA; `supervisor baseline` before and after; status before and after the upgrade ([AGENTS.md](../../AGENTS.md#review-and-runtime-maintenance)).
+- Acceptance: observed on workstation, and labelled verified only there: chosen models match receipts, no run was charged twice, quota waits did not spin, and any claim meets section 8.4.
 - Depends on: R1 to R5 merged and deployed (R6 recommended).
 - Waits for: **owner** Q1 and Q2.

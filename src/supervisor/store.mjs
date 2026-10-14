@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS provider_waits (
 CREATE TABLE IF NOT EXISTS capacity (
   scope TEXT NOT NULL, id TEXT NOT NULL, value INTEGER NOT NULL, reason TEXT, updated_at INTEGER NOT NULL,
   PRIMARY KEY (scope, id));
--- Auto Release (release/state.mjs, slice REL3; built switched off until netbka/aiworks#33). One row per release attempt
+-- Auto Release (release/state.mjs, slice REL3; built switched off until example-org/aiworks#33). One row per release attempt
 -- of one exact verified revision to one destination. A step is recorded started, with no outcome, before it acts; such
 -- a row is unknown after a restart until a read-only look proves where the destination is. history is the step log.
 CREATE TABLE IF NOT EXISTS releases (
@@ -99,6 +99,8 @@ CREATE TABLE IF NOT EXISTS owner_messages (
 CREATE TABLE IF NOT EXISTS coordinator_runs (
   id TEXT PRIMARY KEY, state TEXT NOT NULL, session_id TEXT NOT NULL, run_dir TEXT NOT NULL, workspace TEXT NOT NULL,
   message_ids TEXT NOT NULL, outcome TEXT, cost_usd REAL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS coordinator_replies (
+  run_id TEXT PRIMARY KEY, body TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS blockers (
   fingerprint TEXT PRIMARY KEY, project TEXT NOT NULL, environment TEXT NOT NULL, dependency TEXT NOT NULL,
   class TEXT NOT NULL, identity TEXT NOT NULL, subject TEXT, status TEXT NOT NULL, episode INTEGER NOT NULL DEFAULT 1,
@@ -173,6 +175,8 @@ export class Store {
       this.depth = 0;
       // Only a writer upgrades legacy operations; status/dashboard reads never migrate stores.
       if (!readOnly) this.tx(() => {
+        const messageColumns = this.db.prepare('PRAGMA table_info(owner_messages)').all().map((column) => column.name);
+        if (!messageColumns.includes('repository')) this.db.exec('ALTER TABLE owner_messages ADD COLUMN repository TEXT');
         const columns = this.db.prepare('PRAGMA table_info(operations)').all().map((column) => column.name);
         if (!columns.includes('executor_kind')) {
           this.db.exec("ALTER TABLE operations ADD COLUMN executor_kind TEXT NOT NULL DEFAULT 'claude-cli'");

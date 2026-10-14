@@ -98,8 +98,8 @@ export function staticReceipt(inputs) {
 }
 
 // routing-policy/1 (docs/design/MODEL_ROUTING.md sections 3 to 6 and 9, slice R4): indicators, filters, floors, ranking,
-// escalation, pin and verifier independence, as a pure function of the receipt's inputs. Nothing dispatches with it yet:
-// the controller still stores static receipts. Using routeAuto at dispatch is slice R5.
+// escalation, pin and verifier independence, as a pure function of the receipt's inputs. The controller dispatches with it
+// for a campaign whose routing.mode is "auto" (slice R5); every other campaign keeps the static receipt above.
 
 export const POLICY = 'routing-policy/1';
 export const REASON_CODES = ['research-only', 'web-mismatch', 'cli-not-configured', 'role-unsupported', 'host-unavailable',
@@ -271,9 +271,11 @@ export function routeAuto(inputs) {
     const capped = !candidates.some((candidate) => candidate.tier >= wanted);
     floors[r] = { value: capped ? tiers.at(-1) : wanted, capped };
   }
-  const fact = (kind) => hostFacts.find((item) => item.kind === kind);
+  // A host fact naming a model belongs to that candidate only (an unknown model waits alone, slice R5); else the kind's fact.
+  const fact = (candidate) => hostFacts.find((item) => item.kind === candidate.kind && item.model === candidate.model) ??
+    hostFacts.find((item) => item.kind === candidate.kind && item.model === undefined);
   const eligibility = candidates.flatMap((candidate) => ROLES.map((r) => {
-    const out = reasons(candidate, fact(candidate.kind), r, task, platform);
+    const out = reasons(candidate, fact(candidate), r, task, platform);
     if (floors[r].value !== null && candidate.tier < floors[r].value) out.push('below-floor');
     if (!pinAdmits(pins[r], candidate)) out.push('pin-excluded');
     return { kind: candidate.kind, model: candidate.model, role: r, reasons: out };
@@ -315,7 +317,7 @@ export function routeAuto(inputs) {
   if (!pool.length) {
     // Only waits and unconfigured CLIs clear by themselves; the earliest timed one bounds the retry.
     const times = candidates.filter((candidate) => reasonsOf(candidate, role).every((code) => code === 'account-wait' || code === 'cli-not-configured'))
-      .flatMap((candidate) => { const own = fact(candidate.kind); return [own.wait?.retryAt, own.cliConfigured ? null : own.cliRecheckAt]; })
+      .flatMap((candidate) => { const own = fact(candidate); return [own.wait?.retryAt, own.cliConfigured ? null : own.cliRecheckAt]; })
       .filter((at) => typeof at === 'number');
     decision.retryAt = times.length ? Math.min(...times) : null;
     decision.reason = pins[role] ? 'the pinned candidate is not eligible now; the step waits for it' : 'no declared candidate is eligible';

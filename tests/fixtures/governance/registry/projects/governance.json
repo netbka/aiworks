@@ -1,0 +1,46 @@
+{
+  "id": "governance",
+  "name": "governance provider",
+  "repository": {
+    "github": "example-org/governance"
+  },
+  "lifecycle": "active",
+  "capabilities": [
+    "ui",
+    "api",
+    "mcp",
+    "auth",
+    "database",
+    "worker"
+  ],
+  "environments": [
+    "local"
+  ],
+  "governance": {
+    "observedAt": "example-org/governance@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "parentLink": "linked",
+    "authorities": [
+      {
+        "role": "agent-contract",
+        "path": "AGENTS.md"
+      },
+      {
+        "role": "product-constitution",
+        "path": "docs/PRODUCT_CONSTITUTION.md"
+      },
+      {
+        "role": "decisions",
+        "path": "docs/DECISIONS.md"
+      },
+      {
+        "role": "capability-contract",
+        "path": "docs/PLATFORM_MCP.md"
+      },
+      {
+        "role": "workflow-contract",
+        "path": "docs/SUPERVISOR.md"
+      }
+    ],
+    "independentVerificationGate": "not-enabled"
+  }
+}

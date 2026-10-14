@@ -63,8 +63,11 @@ test('eligibility lists both roles, and only Codex commit support depends on the
   assert.deepEqual(changed, [[
     { kind: 'codex-cli', model: null, role: 'implementer', reasons: ['role-unsupported'] },
     { kind: 'codex-cli', model: null, role: 'implementer', reasons: [] },
+  ], [
+    // Codex cannot run the repository's tests in its read-only sandbox on Windows (#113).
+    { kind: 'codex-cli', model: null, role: 'verification', reasons: ['role-unsupported'] },
+    { kind: 'codex-cli', model: null, role: 'verification', reasons: [] },
   ]]);
-  assert.deepEqual(windows.eligibility.find((item) => item.kind === 'codex-cli' && item.role === 'verification').reasons, []);
   assert.deepEqual(windows.eligibility.find((item) => item.kind === 'cursor-cli' && item.role === 'implementer').reasons, ['role-unsupported']);
   assert.deepEqual(windows.eligibility.find((item) => item.kind === 'agy-cli' && item.role === 'implementer').reasons, ['web-mismatch', 'role-unsupported']);
   assert.equal(windows.chosen.kind, 'claude-cli', 'on Windows Codex cannot commit, so Claude implements');

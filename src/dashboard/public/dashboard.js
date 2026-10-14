@@ -170,7 +170,7 @@ function renderMetrics(campaigns = state.supervisor.campaigns, shown = []) {
   $('#needs-count').textContent = !state.supervisor.available ? '?' : attention ? String(attention) : unknown ? '?' : '';
 }
 
-// Engineering Platform's own roadmap (read from the governance checkout), kept apart from project campaigns; display names replace internal track labels.
+// governance provider's own roadmap (read from the governance checkout), kept apart from project campaigns; display names replace internal track labels.
 const trackNames = { 'Product control plane': 'Control plane: first release', 'Product · next': 'Control plane: after the first release',
   'Autonomous governance': 'Portfolio rules rollout', 'Tracked extensions': 'Other tracked platform work' };
 function governanceMissing() {
@@ -179,13 +179,13 @@ function governanceMissing() {
 }
 function trackOverview() {
   const missing = governanceMissing();
-  if (missing) return panel('Engineering Platform roadmap', 'Read from the Engineering Platform governance checkout.', missing);
+  if (missing) return panel('governance provider roadmap', 'Read from the governance provider governance checkout.', missing);
   // Definitions only: the dashboard does not read GitHub, so it shows no progress for these items.
   const rows = [...new Set(state.roadmap.entries.map((entry) => entry.track))].map((track) => {
     const list = state.roadmap.entries.filter((item) => item.track === track);
     return el('div', { class: 'track-row' }, el('div', { class: 'row-line' }, el('span', { class: 'track-name' }, trackNames[track] ?? track), el('span', { class: 'track-count number' }, plural(list.length, 'item'))));
   });
-  return panel('Engineering Platform roadmap', 'The platform’s own work toward its product, the project control plane. This is separate from your projects. Its progress is tracked on GitHub, not read here.',
+  return panel('governance provider roadmap', 'The platform’s own work toward its product, the project control plane. This is separate from your projects. Its progress is tracked on GitHub, not read here.',
     el('div', { class: 'panel-body' }, ...rows));
 }
 
@@ -441,12 +441,13 @@ function messageReceipt(m, coordinator) {
   if (m.state === 'read') {
     steps.push(receiptStep(false, 'Working', m.progress ? `${m.progress.turns} turns · ${m.progress.toolCalls} tool calls · last activity ${timeAgo(m.progress.lastActivityAt)}${m.progress.lastTool ? ` (${m.progress.lastTool})` : ''}` : 'reviewing and planning'));
   } else if (m.state === 'answered') {
-    steps.push(receiptStep(true, 'Answered', m.replyUrl ? `${dateTime(m.answeredAt)} · ` : `${dateTime(m.answeredAt)} · posting the reply to ${coordinator.reportTo ?? 'GitHub'}…`));
+    steps.push(receiptStep(true, 'Answered', `${dateTime(m.answeredAt)} · ${m.replyBody ? 'the reply is below' : m.replyUrl ? '' : 'reply unavailable'}`));
     if (m.replyUrl) steps.at(-1).append(link('Open the reply ↗', m.replyUrl));
   } else if (m.state === 'failed') {
     steps.push(receiptStep(false, 'Not answered', `two reads ended without an answer (${outcomeLabels[m.failure] ?? m.failure}). Send it again or check the supervisor log.`, 'failed'));
   }
-  return el('article', { class: 'receipt' }, el('strong', {}, `Message #${m.id} · ${m.source}`), el('p', {}, m.text), el('ol', { class: 'receipt-steps' }, ...steps));
+  return el('article', { class: 'receipt' }, el('strong', {}, `Message #${m.id} · ${m.source}`), el('p', {}, m.text), el('ol', { class: 'receipt-steps' }, ...steps),
+    m.replyBody ? disclosure(`message/${m.id}/reply`, 'Read the plan', el('pre', { class: 'coordinator-reply' }, m.replyBody)) : null);
 }
 
 // Whether anything reads requests: yes, no, or not with an invalid configuration.
@@ -469,7 +470,7 @@ function messagesPanel(limit) {
   const items = coordinator.messages.slice(0, limit);
   // Sending is offered only while something reads messages; otherwise the panel says so and what to do instead.
   return panel('Messages to the coordinator', coordinator.configured
-    ? `Read-only coordinator agent · replies go to ${coordinator.reportTo ?? 'GitHub'} · ${coordinator.runsToday}${coordinator.maxRunsPerDay === null ? '' : `/${coordinator.maxRunsPerDay}`} runs in the last 24h${coordinator.blocked ? ` · not reading now: ${coordinator.blocked}` : ''}`
+    ? `Read-only coordinator agent · replies stay in this dashboard · ${coordinator.runsToday}${coordinator.maxRunsPerDay === null ? '' : `/${coordinator.maxRunsPerDay}`} runs in the last 24h${coordinator.blocked ? ` · not reading now: ${coordinator.blocked}` : ''}`
     : null,
   el('div', {}, notRead(coordinator), items.length ? el('div', { class: 'instruction-list' }, ...items.map((m) => messageReceipt(m, coordinator)))
     : empty('No messages yet', coordinator.configured ? 'Use “New message” to ask for a review or a plan.' : '')),
@@ -493,7 +494,7 @@ function trackReceipts() {
     if (key.startsWith('m')) {
       if (now === 'received' && !before) announce(`Message #${item.id} received`, 'The supervisor stored it.');
       else if (now === 'read') announce(`Message #${item.id} read`, 'The coordinator agent started working on it.');
-      else if (now === 'answered') announce(`Message #${item.id} answered`, item.replyUrl ? 'The reply is posted.' : 'The reply is being posted.');
+      else if (now === 'answered') announce(`Message #${item.id} answered`, item.replyBody ? 'The reply is ready in Messages.' : item.replyUrl ? 'The reply is posted.' : 'Check Messages for the reply.');
       else if (now === 'failed') announce(`Message #${item.id} not answered`, 'Two reads ended without an answer.');
     } else if (now === 'attached:dispatched' || now === 'attached:recorded') announce(`Guidance for ${item.step} read`, `The ${roleName(item.role)} (${provider(item.executor)}) received it.`);
     else if (now === 'attached:finished') announce(`The AI worker that read your guidance for ${item.step} finished`, `Outcome: ${terminalLabels[item.runOutcome] ?? outcomeLabels[item.runOutcome] ?? item.runOutcome ?? 'unknown'}.`);
@@ -513,7 +514,7 @@ const messageDraft = {
 };
 function openMessage() {
   const coordinator = state?.supervisor.coordinator;
-  $('#message-target').textContent = coordinator?.configured ? `Replies are posted to ${coordinator.reportTo}.` : `${NOT_READ.title} ${NOT_READ.text}`;
+  $('#message-target').textContent = coordinator?.configured ? 'Replies stay in this dashboard. Nothing is posted to GitHub.' : `${NOT_READ.title} ${NOT_READ.text}`;
   $('#message-text').value = messageDraft.text;
   $('#message-dialog').showModal();
   $('#message-text').focus();
@@ -541,7 +542,7 @@ async function sendMessage(text) {
  * any owner message, so the receipt (Received, Read, Answered) shows here in place. Plan only never changes a project
  * file or registers work. Plan and do is shown but cannot be chosen until slice S10 and the admission API (#8).
  */
-const PLAN_AND_DO_OFF = ['Starting work from this page is not built yet.', 'Today, work starts after its plan is merged into AIWorks and started on this computer.'];
+const PLAN_AND_DO_OFF = ['Starting work from this page is not built yet.', 'Today, work starts when an authorized private plan is registered on this computer.'];
 const START_FROM = [['description', 'Just my description'], ['issue', 'A GitHub issue'], ['pull', 'A GitHub pull request']];
 const startBlocked = () => sending || offline || !state.supervisor.available;
 // The unsent goal and source, kept per address like every draft, and the message id of the last request sent from here.
@@ -557,10 +558,9 @@ function startReceipt(address) {
 
 function startScreen(project) {
   const address = formatRoute({ screen: 'start', project }), draft = startDraft(address), coordinator = state.supervisor.coordinator;
-  // Every project this computer has today is a GitHub repository; the coordinator posts its plan there (AW-004).
-  // A project without GitHub waits for a local place for the reply (OWNER_WORKSPACE §14, plan gap G4).
+  // Local project planning still needs an intake contract; local reply storage alone does not enable it.
   if (!projectCampaigns(project).length && projectList().find((item) => sameProject(item.id, project))?.kind !== 'GitHub') {
-    return [empty('Plan only is not available for this project yet.', 'AIWorks posts its plan on GitHub, and this project has no GitHub repository.')];
+    return [empty('Plan only is not available for this project yet.', 'Planning for projects without a GitHub repository is not available yet.')];
   }
   const save = () => drafts.set(address, 'start', { goal: goal.value, from: form.elements['start-from'].value, number: number.value, sent: startDraft(address).sent });
   const goal = el('textarea', { id: 'start-goal', rows: 5, maxlength: 2000, required: true, oninput: save });
@@ -582,7 +582,7 @@ function startScreen(project) {
       el('p', { class: 'subtext' }, 'AIWorks looks and proposes a plan. Nothing in your project changes.'),
       el('label', { class: 'choice' }, el('input', { type: 'radio', name: 'start-mode', value: 'plan-and-do', disabled: true, 'aria-describedby': 'plan-and-do-note' }), ' Plan and do'),
       el('p', { class: 'subtext', id: 'plan-and-do-note' }, 'AIWorks proposes a plan. After you approve it once, it does the work. ', PLAN_AND_DO_OFF.join(' '))),
-    reads ? el('p', { class: 'subtext' }, `The plan is posted to ${coordinator.reportTo ?? 'GitHub'}. No secrets; up to 2,000 characters.`) : notRead(coordinator),
+    reads ? el('p', { class: 'subtext' }, 'The plan appears here. Nothing is posted to GitHub. No secrets; up to 2,000 characters.') : notRead(coordinator),
     reads ? el('button', { class: 'button', type: 'submit', disabled: startBlocked() }, 'Ask for a plan') : null,
     el('div', { id: 'start-receipt', 'aria-live': 'polite' }, startReceipt(address)));
   return [el('section', { class: 'panel' }, form)];
@@ -703,13 +703,13 @@ function roadmapView() {
       entry.dependencies.length ? el('div', { class: 'subtext' }, `Depends on ${entry.dependencies.join(', ')}`) : null),
     cell(el('div', { class: 'subtext' }, entry.owner ? `Responsible role: ${entry.owner}` : 'No role assigned in the registry'))));
   const missingRoadmap = governanceMissing();
-  if (missingRoadmap) return panel('Engineering Platform roadmap items', 'Read from the Engineering Platform governance checkout.', missingRoadmap);
-  return panel('Engineering Platform roadmap items', `${entries.length} of ${state.roadmap.entries.length} items · the platform’s own work toward the project control plane. Definitions only: progress is tracked on GitHub and not read here`,
+  if (missingRoadmap) return panel('governance provider roadmap items', 'Read from the governance provider governance checkout.', missingRoadmap);
+  return panel('governance provider roadmap items', `${entries.length} of ${state.roadmap.entries.length} items · the platform’s own work toward the project control plane. Definitions only: progress is tracked on GitHub and not read here`,
     rows.length ? table(['Item', 'Outcome', 'Role'], rows) : empty('No matching items', 'Try another search or track filter.'));
 }
 
 const campaignById = (id) => state.supervisor.campaigns.find((c) => c.id === id);
-/** "Dyk: <purpose>": the work a row belongs to. Its ID is in the work's Details on Now and in Diagnostics. */
+/** "SampleApp: <purpose>": the work a row belongs to. Its ID is in the work's Details on Now and in Diagnostics. */
 const campaignContext = (id) => { const c = campaignById(id); return c ? campaignTitle(c) : id; };
 /** Campaign order from the owner view: cards for campaigns with something for the owner, then active ones; then finished ones. */
 function campaignLayout() {
@@ -769,7 +769,7 @@ function needsYou() {
     // Only owner actions here (owner, 2026-10-13): posted reports and merged work ready for release are on Results.
     ...groups.map(needsGroup),
     reply ? el('div', { class: 'needs-reply' }, `The coordinator answered your message #${reply.messageId} (${dateTime(reply.answeredAt)}). `,
-      link('Read its “What needs you” ↗', reply.url)) : null);
+      reply.url ? link('Read its “What needs you” ↗', reply.url) : routeLink('Read the plan', MESSAGES_ADDRESS)) : null);
 }
 
 /**
@@ -917,7 +917,7 @@ function settingsScreen() {
 function settingsLinks() {
   return panel('More', null, el('ul', { class: 'settings-links' },
     el('li', {}, routeLink('Messages', '#/settings/messages'), el('div', { class: 'subtext' }, 'What you asked AIWorks, and what it answered.')),
-    el('li', {}, routeLink('Diagnostics', '#/settings/diagnostics'), el('div', { class: 'subtext' }, 'The full activity journal, every step with its issue and pull request, the Engineering Platform roadmap and how fresh each merge check is.'))));
+    el('li', {}, routeLink('Diagnostics', '#/settings/diagnostics'), el('div', { class: 'subtext' }, 'The full activity journal, every step with its issue and pull request, the governance provider roadmap and how fresh each merge check is.'))));
 }
 
 /** The one primary action of a state (OWNER_WORKSPACE §4.4), or nothing: a screen link, a GitHub link or Resume. */
@@ -1004,7 +1004,7 @@ function workPanel(project, c) {
     el('td', { class: 'c-state' }, el('div', { class: 'cell-labels' }, stepBadge(c, task)),
       ...[whoLine(c, task), task.stopped?.title, waitLine(task.wait)].filter(Boolean).map((text) => el('div', { class: 'subtext' }, text)),
       verdictLabel(c, task),
-      // Merging delegated by the owner: merged for them after CI, or why it is held (#97).
+      // Merging delegated by the owner: merged for them, why it is held (#97), or how long nothing merged it (#139).
       delegatedNote(c, task) ? el('div', { class: 'subtext' }, delegatedNote(c, task)) : null)));
   const { cost, body } = costNotes(c);
   return el('section', { class: 'panel', 'data-focus-scope': `work/${c.id}` },

@@ -1,6 +1,6 @@
-// AIWorks reads Engineering Platform's portfolio governance (registry/projects, policies/catalog.json, registry/agents.json,
+// AIWorks reads governance provider's portfolio governance (registry/projects, policies/catalog.json, registry/agents.json,
 // schemas/project-contract.schema.json, docs/PRODUCT_ROADMAP.md, docs/AUTONOMOUS_ROLLOUT.md) from an explicit governance
-// root: a read-only checkout of netbka/engineering-platform. There is no default and no fallback to AIWorks's own tree:
+// root: an operator-configured read-only directory. There is no default or fallback to AIWorks's own tree:
 // without a valid root every code path that needs governance fails closed with a coded error.
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
@@ -29,18 +29,18 @@ export function configuredGovernanceRoot(dataDir) {
 export function requireGovernanceRoot(candidate) {
   if (typeof candidate !== 'string' || !candidate.trim()) {
     throw new GovernanceRootError('GOVERNANCE_ROOT_REQUIRED',
-      'no governance checkout is configured: set "governanceRoot" in the data directory config.json or pass --governance <path> (a read-only checkout of netbka/engineering-platform)');
+      'no governance checkout is configured: set "governanceRoot" in the data directory config.json or pass --governance <path> (a read-only governance directory)');
   }
   if (!isAbsolute(candidate)) throw new GovernanceRootError('GOVERNANCE_ROOT_INVALID', `governanceRoot must be an absolute path, got ${candidate}`);
   const root = resolve(candidate);
   let directory = false;
   try { directory = statSync(join(root, 'registry', 'projects')).isDirectory(); } catch { /* reported below */ }
-  if (!directory) throw new GovernanceRootError('GOVERNANCE_ROOT_INVALID', `governanceRoot ${root} has no registry/projects directory: it is not a checkout of netbka/engineering-platform`);
+  if (!directory) throw new GovernanceRootError('GOVERNANCE_ROOT_INVALID', `governanceRoot ${root} has no registry/projects directory: it is not a valid governance directory`);
   return root;
 }
 
 /**
- * Engineering Platform's agent-role catalog (registry/agents.json in the governance root), read, never copied
+ * governance provider's agent-role catalog (registry/agents.json in the governance root), read, never copied
  * (docs/design/MODEL_ROUTING.md section 7). Returns the role ids with their `independent_from` lists, and the file's git
  * blob id (of the bytes read; it equals EP's blob id where the checkout keeps
  * LF line endings), so a routing receipt can show which catalog it read. EP publishes no schema for the file, so only the shape

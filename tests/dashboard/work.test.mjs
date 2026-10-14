@@ -116,8 +116,8 @@ test('wait sentences name the steps they wait for, never by ID, and say what AIW
   const wait = (state) => step(REVIEW_STATES[state].campaignId, REVIEW_STATES[state].taskId).wait;
   const at = (ms) => new Date(ms).toISOString();
   // The supervisor's sentences (status `wait`, ADAPTIVE_SCHEDULER section 6), since C7: the step it waits for by name, and the next automatic action.
-  assert.deepEqual(wait('waiting-for-merge'), { code: 'integration', text: 'Waiting for "contracts import" to be merged into main',
-    next: 'Checks the base branch again every minute', until: at(now + 10 * M) });
+  assert.deepEqual(wait('waiting-for-merge'), { code: 'integration', text: 'Waiting for "contracts import" to be merged into main (PR #104)',
+    next: 'Checks the base branch again automatically; starts after "contracts import" is merged', until: at(now + 10 * M) });
   assert.deepEqual(wait('provider-wait'), { code: 'provider-cooldown', text: `AI worker usage limit; resets at ${at(now + 45 * M)}`,
     next: `Tries again at ${at(now + 45 * M)}`, until: at(now + 45 * M) });
   assert.deepEqual(step('shop-checkout', 'T2').wait, { code: 'dependency', text: 'Waiting for "checkout form" to finish', next: 'Starts when that step is done', until: null });

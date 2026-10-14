@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://aiworks.local/schemas/release-authorization.schema.json",
   "title": "Standing release authorization record (aiworks-release-authorization/1)",
-  "description": "A project's standing grant for AIWorks Auto Release, read from the project's base branch (docs/design/AUTO_RELEASE.md section 4). This schema checks the shape only. src/supervisor/release/authorization.mjs adds the rules a schema cannot state plainly: project match, real dates, expiry at most 90 days after the grant, expired or revoked grants, forbidden change classes, unique destination ids, an observe command for deploys and a rollback command for automatic rollback. The record holds no secrets: a credential is named by reference only. Nothing acts on a valid record until netbka/aiworks#33 is decided.",
+  "description": "A project's standing grant for AIWorks Auto Release, read from the project's base branch (docs/design/AUTO_RELEASE.md section 4). This schema checks the shape only. src/supervisor/release/authorization.mjs adds the rules a schema cannot state plainly: project match, real dates, expiry at most 90 days after the grant, expired or revoked grants, forbidden change classes, unique destination ids, an observe command for deploys and a rollback command for automatic rollback. The record holds no secrets: a credential is named by reference only. Nothing acts on a valid record until example-org/aiworks#33 is decided.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "project", "version", "approval", "grantedAt", "expiresAt", "revoked", "destinations", "classes"],
