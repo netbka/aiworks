@@ -124,15 +124,16 @@ test('case 3: a cross-cutting refactor starts on the strongest tier, prefers a d
   assert.deepEqual(implement.indicators, { risk: 'R1', complexity: 'C3' });
   assert.equal(implement.floor, 3);
   assert.deepEqual(implement.chosen, of(OPUS));
-  const check = decide(make({ stage: 'verify', task, verify: head(OPUS) }));
+  // Linux: Codex cannot verify a commit task on Windows (#113).
+  const check = decide(make({ stage: 'verify', task, platform: 'linux', verify: head(OPUS) }));
   assert.equal(check.floor, 3);
   assert.deepEqual(check.chosen, of(CODEX));
   assert.equal(check.independence, 'different-model');
-  const unusable = decide(make({ stage: 'verify', task, verify: head(OPUS), priorAttempts: [attempt(CODEX, 'timeout'), attempt(CODEX, 'invalid-result')] }));
+  const unusable = decide(make({ stage: 'verify', task, platform: 'linux', verify: head(OPUS), priorAttempts: [attempt(CODEX, 'timeout'), attempt(CODEX, 'invalid-result')] }));
   assert.deepEqual(unusable.escalation, { tier: 3, qualityFailuresOnTier: 2, escalated: false, disabled: null });
   assert.equal(unusable.chosen.tier, 3, 'already the top tier: backoff only');
   // A rejection is a useful review: it resets the unusable streak.
-  const useful = decide(make({ stage: 'verify', task, verify: head(OPUS),
+  const useful = decide(make({ stage: 'verify', task, platform: 'linux', verify: head(OPUS),
     priorAttempts: [attempt(CODEX, 'timeout'), attempt(CODEX, 'result', 'rejected'), attempt(CODEX, 'timeout')] }));
   assert.equal(useful.escalation.qualityFailuresOnTier, 1);
 });
@@ -159,8 +160,9 @@ test('case 5: a supervisor change is high risk; Codex checks Opus; Opus repairs 
   assert.equal(implement.floor, 3);
   assert.deepEqual(implement.chosen, of(OPUS));
   assert.deepEqual(reasonsFor(implement, CODEX, 'implementer'), ['role-unsupported']);
-  assert.deepEqual(reasonsFor(implement, CODEX, 'verification'), []);
-  const check = decide(make({ stage: 'verify', task, verify: head(OPUS) }));
+  assert.deepEqual(reasonsFor(implement, CODEX, 'verification'), ['role-unsupported'], 'Codex cannot run the gate on Windows (#113)');
+  assert.deepEqual(decide(make({ stage: 'verify', task, verify: head(OPUS) })).chosen, of(OPUS));
+  const check = decide(make({ stage: 'verify', task, platform: 'linux', verify: head(OPUS) }));
   assert.deepEqual(check.chosen, of(CODEX));
   assert.equal(check.independence, 'different-model');
   assert.deepEqual(check.catalogIndependence, { role: 'verification-agent', value: 'declared' });
@@ -266,11 +268,12 @@ test('case 11: the projected verifier\'s cost can flip the implement choice, and
   assert.ok(Math.abs(value(dear, HAIKU) - 11 / 0.44) < 1e-9 && Math.abs(value(dear, SONNET) - 15) < 1e-9);
   assert.deepEqual(cheap.verifierProjection[0].u, { unit: 'usd-reported', mean: 0 });
   assert.deepEqual(dear.verifierProjection[0].u, { unit: 'usd-reported', mean: 10 });
-  // Codex: role-unsupported as implementer on Windows but eligible as verifier, recomputed from `platform` alone.
+  // Codex: role-unsupported for a commit task on Windows in both roles (#113), eligible on Linux, recomputed from `platform` alone.
   assert.deepEqual(reasonsFor(cheap, CODEX, 'implementer'), ['role-unsupported']);
-  assert.deepEqual(reasonsFor(cheap, CODEX, 'verification'), []);
+  assert.deepEqual(reasonsFor(cheap, CODEX, 'verification'), ['role-unsupported']);
   const linux = decide(make({ task, platform: 'linux', history: [...implementRows, ...verifyRows(0)] }));
   assert.deepEqual(reasonsFor(linux, CODEX, 'implementer'), []);
+  assert.deepEqual(reasonsFor(linux, CODEX, 'verification'), []);
   assert.equal(linux.basis, 'tier-walk', 'Codex reports no dollars, so the costs no longer compare');
 });
 
@@ -300,7 +303,7 @@ test('a sidestep changes when only the newest prior attempt\'s kind and model ch
 
 test('the different-model verifier preference changes when only the head implementer\'s kind and model change', () => {
   const task = spec({ writes: ['src/supervisor/'] });
-  const check = (implementer) => decide(make({ stage: 'verify', task, verify: head(implementer) }));
+  const check = (implementer) => decide(make({ stage: 'verify', task, platform: 'linux', verify: head(implementer) }));
   assert.deepEqual(check(OPUS).chosen, of(CODEX));
   assert.deepEqual(check(CODEX).chosen, of(OPUS));
   assert.equal(check(CODEX).independence, 'different-model');

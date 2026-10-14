@@ -155,7 +155,10 @@ export function roleUnavailableReason(executor, role, deliverable, platform = pr
   if (executor.kind === 'agy-cli') return web ? null : 'AGY runs only web acceptance tasks';
   if (web) return executor.kind === 'claude-cli' && !executor.researchOnly ? null
     : 'Web acceptance tasks run only on a browser worker: AGY, or Claude with the isolated browser';
-  if (role === 'verification' || deliverable !== 'commit') return null;
+  if (deliverable !== 'commit') return null;
+  // The gate needs a writable node_modules and temp directory; never widen the verifier's read-only sandbox (#113).
+  if (role === 'verification') return executor.kind === 'codex-cli' && platform === 'win32'
+    ? "Codex cannot run the repository's tests in its read-only sandbox on Windows" : null;
   if (executor.kind === 'cursor-cli') return 'Commit roles await a scoped publication-denial adapter';
   // shortcut: Windows linked-worktree commits need a scoped Git capability; never broaden sandbox writes.
   if (executor.kind === 'codex-cli' && platform === 'win32') return 'Windows sandbox cannot commit through the shared Git directory';

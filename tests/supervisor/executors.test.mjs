@@ -13,6 +13,7 @@ import * as agy from '../../src/supervisor/adapters/agy.mjs';
 import { CaamError, caamProfileEnv, ensureShallowProfile, shallowHomeOf } from '../../src/supervisor/adapters/caam.mjs';
 import * as claude from '../../src/supervisor/adapters/claude.mjs';
 import { scopeDigest, validateDeclaration } from '../../src/supervisor/campaign.mjs';
+import { route } from '../../src/supervisor/router.mjs';
 import { declaration, environment, SQLITE, skipWithoutSqlite } from './helpers.mjs';
 
 const { Store } = SQLITE ? await import('../../src/supervisor/store.mjs') : {};
@@ -115,8 +116,29 @@ test('owner campaign priority and role support are explicit', () => {
   validateDeclaration(campaign);
   assert.deepEqual(campaign.executor.providers.map((p) => p.kind), ['claude-cli', 'codex-cli', 'cursor-cli']);
   assert.match(roleUnavailableReason({ kind: 'codex-cli' }, 'implementer', 'commit', 'win32'), /shared Git/);
-  assert.equal(roleUnavailableReason({ kind: 'codex-cli' }, 'verification', 'commit', 'win32'), null);
   assert.equal(roleUnavailableReason({ kind: 'codex-cli' }, 'implementer', 'report', 'win32'), null);
+});
+
+test('Codex never verifies a commit task on Windows; report tasks and other platforms are unchanged (#113)', () => {
+  const codex = { kind: 'codex-cli' };
+  const reason = roleUnavailableReason(codex, 'verification', 'commit', 'win32');
+  assert.equal(reason, "Codex cannot run the repository's tests in its read-only sandbox on Windows");
+  assert.doesNotMatch(reason, /codex-cli|[a-z]+[A-Z]\w*|_/, 'owner-readable: no internal identifier');
+  assert.equal(roleUnavailableReason(codex, 'verification', 'report', 'win32'), null);
+  for (const platform of ['linux', 'darwin']) {
+    assert.equal(roleUnavailableReason(codex, 'verification', 'commit', platform), null, platform);
+    assert.equal(roleUnavailableReason(codex, 'implementer', 'commit', platform), null, platform);
+  }
+  for (const kind of ['claude-cli', 'cursor-cli']) assert.equal(roleUnavailableReason({ kind }, 'verification', 'commit', 'win32'), null, kind);
+  const chain = (deliverable, platform) => route({ stage: 'verify', chain: true, task: { deliverable, web: false }, platform,
+    candidates: [{ kind: 'codex-cli', model: null }, { kind: 'claude-cli', model: 'opus' }],
+    hostFacts: ['codex-cli', 'claude-cli'].map((kind) => ({ kind, cliConfigured: true, hostUnavailable: false, wait: null })),
+    escalation: { priorAttempts: [] } });
+  assert.equal(chain('commit', 'win32').chosen.kind, 'claude-cli', 'the chain skips Codex for a commit verification on Windows');
+  assert.ok(chain('commit', 'win32').eligibility.some((e) => e.kind === 'codex-cli' && e.role === 'verification' && e.reasons.includes('role-unsupported')));
+  assert.equal(chain('report', 'win32').chosen.kind, 'codex-cli');
+  assert.equal(chain('commit', 'linux').chosen.kind, 'codex-cli');
+  assert.equal(chain('commit', 'darwin').chosen.kind, 'codex-cli');
 });
 
 test('native tool refusals before quota or completion cannot trigger provider fallback', () => {
