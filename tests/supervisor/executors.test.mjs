@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { once } from 'node:events';
 import { test } from 'node:test';
-import childProcess from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import childProcess, { spawn } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { campaignPause, campaignRecheck, campaignStart, campaignStatus } from '../../src/supervisor/api.mjs';
 import { buildPrompt, classify, GATE_RULES, prepare, refusedBeforeWork, unavailableReason, roleUnavailableReason, VERIFIER_TALLY_RULE } from '../../src/supervisor/adapters/executors.mjs';
 import * as agy from '../../src/supervisor/adapters/agy.mjs';
+import { CaamError, caamProfileEnv, ensureShallowProfile, shallowHomeOf } from '../../src/supervisor/adapters/caam.mjs';
 import * as claude from '../../src/supervisor/adapters/claude.mjs';
 import { scopeDigest, validateDeclaration } from '../../src/supervisor/campaign.mjs';
 import { declaration, environment, SQLITE, skipWithoutSqlite } from './helpers.mjs';
@@ -480,6 +484,161 @@ test('commit prompts tell implementers and verifiers how to get a completed full
     assert.equal(ruleLine(buildPrompt(webArgs)), undefined);
   }
 });
+
+// CAAM4-LAUNCH (docs/design/ACCOUNT_ADAPTER_CAAM.md section 3.4): a run bound to a CAAM profile launches with that
+// profile's shallow home and nothing else changes. Synthetic homes and a synthetic caam only; no real CAAM or login.
+const runnerPath = fileURLToPath(new URL('../../src/supervisor/runner.mjs', import.meta.url));
+const CLAUDE_PROFILE_KEYS = ['HOME', 'USERPROFILE', 'CLAUDE_CODE_DISABLE_AGENT_VIEW', 'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS', 'CLAUDE_CODE_DISABLE_AUTO_MEMORY'];
+function profileDirs(t) {
+  const tmp = mkdtempSync(join(tmpdir(), 'aiworks-caam-launch-'));
+  t.after(() => rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  const root = join(tmp, 'shallow-homes');
+  const home = join(root, 'work-a');
+  const workspace = join(tmp, 'workspace');
+  const runDir = join(tmp, 'run');
+  // The .git marks the checkout boundary, so the extension preflight never climbs into the host's own folders.
+  for (const dir of [join(home, '.codex'), join(workspace, '.git'), runDir]) mkdirSync(dir, { recursive: true });
+  return { tmp, root, home, workspace, runDir };
+}
+const launchArgs = (executor, dirs, extra = {}) => ({ executor, command: ['native-cli'], role: 'implementer', deliverable: 'commit',
+  sessionId: expect.sessionId, digest, runDir: dirs.runDir, workspace: dirs.workspace, prompt: 'synthetic', ...extra });
+
+test('a Claude run bound to a CAAM profile gets the shallow home and keeps every isolation flag', (t) => {
+  const dirs = profileDirs(t);
+  const executor = chain.providers.find((p) => p.kind === 'claude-cli');
+  const settings = JSON.stringify({ env: { CLAUDE_CODE_SUBAGENT_MODEL: 'haiku', HOME: 'C:/elsewhere' } });
+  const hostRun = prepare(launchArgs(executor, dirs, { projectSettings: settings }));
+  const run = prepare(launchArgs(executor, dirs, { projectSettings: settings, profileHome: dirs.home }));
+  assert.equal(run.env.HOME, dirs.home);
+  assert.equal(run.env.USERPROFILE, dirs.home);
+  assert.equal(run.env.CLAUDE_CODE_DISABLE_AGENT_VIEW, '1');
+  assert.equal(run.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, '1');
+  assert.equal(run.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, '1');
+  assert.equal(run.env.CODEX_HOME, undefined);
+  // Exactly the host-run environment plus the profile: no host variable, project HOME or personal setting leaks in.
+  assert.deepEqual(Object.keys(run.env).sort(), [...new Set([...Object.keys(hostRun.env), ...CLAUDE_PROFILE_KEYS])].sort());
+  for (const [key, value] of Object.entries(hostRun.env)) if (!CLAUDE_PROFILE_KEYS.includes(key)) assert.equal(run.env[key], value);
+  assert.equal(hostRun.env.HOME, undefined, 'a run without a profile keeps the host login');
+  // The argv, prompt and working directory are unchanged: the profile changes the environment only.
+  assert.deepEqual(run.argv, hostRun.argv);
+  assert.equal(run.prompt, hostRun.prompt);
+  assert.equal(run.cwd, hostRun.cwd);
+  assert.equal(run.argv[run.argv.indexOf('--setting-sources') + 1], '');
+  assert.ok(run.argv.includes('--strict-mcp-config'));
+  assert.ok(run.argv.includes('{"disableAllHooks":true}'));
+  assert.ok(!run.argv.some((arg) => /bypass|--resume|--continue|--mcp-config/.test(arg)));
+  // Research-only Claude keeps its tool-free safe mode under a profile.
+  const research = prepare(launchArgs({ ...executor, researchOnly: true }, dirs, { deliverable: 'report', profileHome: dirs.home }));
+  assert.equal(research.env.HOME, dirs.home);
+  assert.ok(research.argv.includes('--safe-mode'));
+  assert.equal(research.argv[research.argv.indexOf('--tools') + 1], '');
+  assert.equal(research.argv[research.argv.indexOf('--mcp-config') + 1], '{"mcpServers":{}}');
+});
+
+test('a Codex run bound to a CAAM profile gets HOME, USERPROFILE and CODEX_HOME and keeps apps disabled and the sandbox', (t) => {
+  const dirs = profileDirs(t);
+  const executor = chain.providers.find((p) => p.kind === 'codex-cli');
+  for (const role of ['implementer', 'verification']) {
+    const hostRun = prepare(launchArgs(executor, dirs, { role }));
+    const run = prepare(launchArgs(executor, dirs, { role, profileHome: dirs.home }));
+    assert.equal(hostRun.env, undefined, 'a Codex run without a profile adds no environment');
+    assert.deepEqual(run.env, { HOME: dirs.home, USERPROFILE: dirs.home, CODEX_HOME: join(dirs.home, '.codex') });
+    assert.deepEqual(run.argv, hostRun.argv);
+    assert.equal(run.prompt, hostRun.prompt);
+    assert.equal(run.argv[run.argv.indexOf('--disable') + 1], 'apps');
+    assert.ok(run.argv.includes('--ignore-user-config'));
+    assert.equal(run.argv[run.argv.indexOf('--sandbox') + 1], role === 'verification' ? 'read-only' : 'workspace-write');
+    assert.equal(run.argv[run.argv.indexOf('-a') + 1], 'never');
+  }
+  // The hooks preflight reads the profile's CODEX_HOME, which is the one the worker will load.
+  assert.equal(unavailableReason(executor, dirs.workspace, null, { profileHome: dirs.home }), null);
+  writeFileSync(join(dirs.home, '.codex', 'hooks.json'), '{}');
+  assert.match(unavailableReason(executor, dirs.workspace, null, { profileHome: dirs.home }), /user Codex hooks/);
+});
+
+test('a CAAM profile cannot launch agy or Cursor, or point at a relative home or the host home', (t) => {
+  const dirs = profileDirs(t);
+  assert.throws(() => prepare(launchArgs({ kind: 'agy-cli' }, dirs, { deliverable: 'report', web: { urls: ['https://example.test/'] }, profileHome: dirs.home })),
+    (error) => error instanceof CaamError && error.code === 'consumer-agy-excluded');
+  assert.throws(() => prepare(launchArgs({ kind: 'cursor-cli' }, dirs, { role: 'verification', profileHome: dirs.home })),
+    (error) => error instanceof CaamError && error.code === 'unsupported-executor');
+  const claudeExecutor = chain.providers.find((p) => p.kind === 'claude-cli');
+  for (const profileHome of ['relative/home', homedir(), dirname(homedir())]) {
+    assert.throws(() => prepare(launchArgs(claudeExecutor, dirs, { profileHome })), (error) => error.code === 'invalid-profile-home', profileHome);
+  }
+  // A home under the host home, CAAM's default ~/.caam/shallow-homes/<name>, is allowed.
+  const underHost = join(homedir(), '.caam', 'shallow-homes', 'work-a');
+  assert.equal(caamProfileEnv(underHost, 'claude').HOME, underHost);
+  for (const name of ['../escape', 'a/b', '', '-flag']) {
+    assert.throws(() => shallowHomeOf(dirs.root, name), (error) => error.code === 'invalid-profile-home', name);
+  }
+  assert.throws(() => shallowHomeOf('relative', 'work-a'), (error) => error.code === 'invalid-profile-home');
+  assert.equal(shallowHomeOf(dirs.root, 'work-a'), dirs.home);
+});
+
+test('ensureShallowProfile uses an existing home, creates a missing one through caam once and fails closed', (t) => {
+  const dirs = profileDirs(t);
+  const calls = [];
+  const spawnWith = (create) => (command, args, options) => { calls.push({ command, args, options }); return create(); };
+  const never = spawnWith(() => assert.fail('an existing home must not call caam'));
+  assert.equal(ensureShallowProfile({ command: ['caam'], kind: 'claude-cli', name: 'work-a', root: dirs.root, spawn: never }), dirs.home);
+  assert.equal(calls.length, 0);
+  // Missing: one create call with the exact argv, then the home must exist.
+  const made = spawnWith(() => { mkdirSync(join(dirs.root, 'work-b')); return { status: 0, stdout: '{"success":true}\n', stderr: '' }; });
+  assert.equal(ensureShallowProfile({ command: ['node', 'caam.mjs'], kind: 'codex-cli', name: 'work-b', root: dirs.root, spawn: made }), join(dirs.root, 'work-b'));
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, 'node');
+  assert.deepEqual(calls[0].args, ['caam.mjs', 'shallow-profile', 'create', 'work-b', '--from-vault', 'codex/work-b', '--json']);
+  assert.equal(calls[0].options.windowsHide, true);
+  const fails = (create, code, pattern) => assert.throws(
+    () => ensureShallowProfile({ command: ['caam'], kind: 'claude-cli', name: 'work-c', root: dirs.root, spawn: spawnWith(create) }),
+    (error) => error instanceof CaamError && error.code === code && pattern.test(error.message) && !/secret/.test(error.message));
+  fails(() => ({ status: 0, stdout: '{"success":true}', stderr: 'secret' }), 'shallow-profile-missing', /no shallow home/);
+  fails(() => ({ status: 1, stdout: '{"success":false,"error":{"code":"VAULT_MISSING","message":"no vault entry"}}', stderr: 'secret' }),
+    'cli-error', /VAULT_MISSING: no vault entry/);
+  fails(() => ({ status: 2, stdout: 'not json secret', stderr: 'secret' }), 'cli-error', /exited 2/);
+  fails(() => ({ error: Object.assign(new Error('missing'), { code: 'ENOENT' }) }), 'missing-executable', /caam was not found/);
+  fails(() => ({ error: Object.assign(new Error('slow'), { code: 'ETIMEDOUT' }) }), 'timeout', /longer than/);
+  assert.throws(() => ensureShallowProfile({ command: [], kind: 'claude-cli', name: 'work-c', root: dirs.root, spawn: never }),
+    (error) => error.code === 'missing-executable');
+  assert.throws(() => ensureShallowProfile({ command: ['caam'], kind: 'agy-cli', name: 'work-c', root: dirs.root, spawn: never }),
+    (error) => error.code === 'consumer-agy-excluded');
+  assert.equal(existsSync(join(dirs.root, 'work-c')), false);
+});
+
+test('a profile run under Job Object containment reads its prompt, writes stdout and returns its exit code with the shallow home',
+  { skip: process.platform !== 'win32' && 'Windows Job Object containment (runner.mjs, windows-process.ps1) runs only on Windows' }, async (t) => {
+    const dirs = profileDirs(t);
+    const invocation = prepare(launchArgs(chain.providers.find((p) => p.kind === 'claude-cli'), dirs, { profileHome: dirs.home }));
+    const worker = join(dirs.runDir, 'worker.mjs');
+    writeFileSync(worker, [
+      "import { readFileSync } from 'node:fs';",
+      "import { homedir } from 'node:os';",
+      'const pick = (key) => process.env[key] ?? null;',
+      "process.stdout.write(JSON.stringify({ prompt: readFileSync(0, 'utf8'), homedir: homedir(), HOME: pick('HOME'),",
+      "  USERPROFILE: pick('USERPROFILE'), CODEX_HOME: pick('CODEX_HOME'), view: pick('CLAUDE_CODE_DISABLE_AGENT_VIEW'),",
+      "  background: pick('CLAUDE_CODE_DISABLE_BACKGROUND_TASKS'), memory: pick('CLAUDE_CODE_DISABLE_AUTO_MEMORY'),",
+      "  session: pick('CLAUDE_CODE_SESSION_PROBE') }));",
+      'process.exit(7);',
+    ].join('\n'));
+    writeFileSync(join(dirs.runDir, 'prompt.txt'), invocation.prompt);
+    // The spec as controller.mjs writes it, with the synthetic worker in place of the native CLI.
+    writeFileSync(join(dirs.runDir, 'spec.json'), JSON.stringify({ argv: [process.execPath, worker], env: invocation.env,
+      cwd: invocation.cwd, timeoutMs: 60_000, heartbeatMs: 50 }));
+    // A host Claude Code session variable must not reach the worker (proc.mjs workerEnv).
+    const child = spawn(process.execPath, [runnerPath, dirs.runDir], { windowsHide: true, stdio: 'ignore',
+      env: { ...process.env, CLAUDE_CODE_SESSION_PROBE: 'host-session' } });
+    const exited = once(child, 'exit');
+    t.after(async () => { if (child.exitCode === null && child.signalCode === null) { child.kill(); await exited; } });
+    await exited;
+    const result = JSON.parse(readFileSync(join(dirs.runDir, 'result.json'), 'utf8'));
+    assert.equal(result.exitCode, 7, JSON.stringify(result));
+    assert.equal(result.timedOut, false);
+    assert.equal(result.containment, 'windows-job-v1');
+    assert.equal(result.containmentStopped, true);
+    assert.deepEqual(JSON.parse(readFileSync(join(dirs.runDir, 'stdout.json'), 'utf8')), { prompt: invocation.prompt, homedir: dirs.home,
+      HOME: dirs.home, USERPROFILE: dirs.home, CODEX_HOME: null, view: '1', background: '1', memory: '1', session: null });
+  });
 
 test('commit and report verifier prompts report a check that behaved as intended as pass; implementer and web prompts do not carry it (#59)', () => {
   const ruleLine = (prompt) => prompt.split('\n').find((line) => line.includes('A check that behaves as intended is reported as pass'));
