@@ -36,20 +36,20 @@ test('writes and slots validate; declarations without them keep their digests', 
   // An absent list changes no digest: every committed declaration still validates and digests as its canonical JSON says.
   const plain = declaration();
   assert.equal(scopeDigest(plain), scopeDigest({ ...plain, tasks: plain.tasks.map((task) => ({ ...task, writes: undefined })) }));
-  for (const name of readdirSync(join(ROOT, 'campaigns')).filter((file) => file.endsWith('.json'))) {
-    validateDeclaration(JSON.parse(readFileSync(join(ROOT, 'campaigns', name), 'utf8')));
+  for (const name of readdirSync(join(ROOT, 'tests/fixtures/campaigns')).filter((file) => file.endsWith('.json'))) {
+    validateDeclaration(JSON.parse(readFileSync(join(ROOT, 'tests/fixtures/campaigns', name), 'utf8')));
   }
 });
 
 test('domains overlap by repository, workKey, path prefix (case folded) or resource; reports hold none', () => {
   const decl = (repository, tasks) => ({ ...declaration({ tasks }), target: { ...declaration().target, repository } });
-  const dom = (task, repository = 'netbka/Dyk') => domainOf(decl(repository, [task]), task);
+  const dom = (task, repository = 'example-org/sampleapp') => domainOf(decl(repository, [task]), task);
   const a = dom(commitTask('A', 1, { writes: ['src/dashboard/'] }));
-  assert.equal(domainOf(decl('netbka/Dyk', []), { ...commitTask('R', 1), deliverable: 'report' }), null);
+  assert.equal(domainOf(decl('example-org/sampleapp', []), { ...commitTask('R', 1), deliverable: 'report' }), null);
   assert.ok(domainsOverlap(a, dom(commitTask('B', 2, { writes: ['SRC/Dashboard/server.mjs'] }))), 'prefix, case folded');
   assert.ok(!domainsOverlap(a, dom(commitTask('C', 3, { writes: ['src/supervisor/'] }))), 'disjoint prefixes');
   assert.ok(domainsOverlap(a, dom(commitTask('D', 4))), 'a task without writes owns the whole repository');
-  assert.ok(!domainsOverlap(a, dom(commitTask('E', 5), 'netbka/aiworks')), 'different repositories never conflict');
+  assert.ok(!domainsOverlap(a, dom(commitTask('E', 5), 'example-org/aiworks')), 'different repositories never conflict');
   assert.ok(domainsOverlap(dom(commitTask('F', 6, { writes: ['resource:port-4319'] })), dom(commitTask('G', 7, { writes: ['resource:port-4319'] }))));
   assert.ok(domainsOverlap(dom(commitTask('H', 8, { writes: ['a/'], workKey: 'repair-x' })), dom(commitTask('I', 9, { writes: ['b/'], workKey: 'repair-x' }))), 'a shared workKey always conflicts');
   assert.deepEqual(pathsOutside(a, ['src/dashboard/server.mjs', 'src/Dashboard/public/x.js', 'src/supervisor/api.mjs']), ['src/supervisor/api.mjs']);
@@ -89,7 +89,7 @@ test('who holds a domain follows the holder table, across campaigns, until integ
     setTask('c1', { state });
     assert.deepEqual(holders(), ['c1:unintegrated'], `${state} is not integrated yet`);
   }
-  setTask('c1', { state: 'done', verified_sha: 'a'.repeat(40), pr_url: 'https://github.com/netbka/Dyk/pull/1' });
+  setTask('c1', { state: 'done', verified_sha: 'a'.repeat(40), pr_url: 'https://github.com/example-org/sampleapp/pull/1' });
   assert.deepEqual(holders(), ['c1:published-unmerged'], 'published but unmerged keeps its domain');
   assert.deepEqual(holders(() => true), [], 'released once integrated');
 
@@ -103,7 +103,7 @@ test('who holds a domain follows the holder table, across campaigns, until integ
 
   campaignStart(store, other('c2', ['src/z/']));
   setTask('c2', { state: 'verified' });
-  campaignStart(store, { ...other('c3', undefined), target: { ...declaration().target, repository: 'netbka/aiworks' } });
+  campaignStart(store, { ...other('c3', undefined), target: { ...declaration().target, repository: 'example-org/aiworks' } });
   setTask('c3', { state: 'verified' });
   assert.deepEqual(holders(), ['c1:published-unmerged'], 'disjoint paths and other repositories never hold it');
   campaignStart(store, other('c4', undefined));
@@ -141,7 +141,7 @@ test('published but unmerged work keeps its domain until merged', (t) => {
   git(env.repo, 'checkout', '-q', 'main');
   const task = store.task('first', 'X');
   store.patch('tasks', { campaign_id: 'first', task_id: 'X' }, task.version,
-    { state: 'done', verified_sha: verified, pr_url: 'https://github.com/netbka/Dyk/pull/7' }, Date.now());
+    { state: 'done', verified_sha: verified, pr_url: 'https://github.com/example-org/sampleapp/pull/7' }, Date.now());
   // Integrated means: the verified SHA is in the fetched base branch, read from an explicit ref as the controller does.
   const integrated = (campaignId, row) => {
     git(env.repo, 'fetch', '-q', 'origin', '+refs/heads/main:refs/aiworks/base/main');

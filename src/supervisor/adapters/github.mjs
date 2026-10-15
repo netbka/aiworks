@@ -2,7 +2,7 @@
 // no new identity. Creation calls are preceded by a lookup so a retry after an unknown
 // outcome reconciles instead of duplicating (no exactly-once promise).
 // Every call is REST (gh api), never GraphQL: the account's GraphQL quota is shared with the
-// dashboard and other tools, and a spent quota must not stall publication (netbka/aiworks#21).
+// dashboard and other tools, and a spent quota must not stall publication (AIWorks).
 import { writeFileSync } from 'node:fs';
 import { exec } from './git.mjs';
 
@@ -38,7 +38,7 @@ export function rateLimitReset({ status, headers, body }, stderr = '', now = Dat
 }
 
 /** One REST call; returns the parsed JSON body or throws (RateLimitError for a rate-limit refusal). */
-function rest(gh, what, args, { timeoutMs } = {}) {
+export function rest(gh, what, args, { timeoutMs } = {}) {
   const out = exec(gh, ['api', '--include', ...args], { timeoutMs });
   const response = parseResponse(out.stdout);
   if (!out.ok) {
@@ -69,6 +69,16 @@ export function integratedPullRequest({ gh, repository, url, headSha, baseBranch
   } catch { return null; }
 }
 
+/**
+ * One pull request as the merge gate reads it (aiworks#138): GET repos/{repo}/pulls/{n}. `mergeable` is GitHub's own
+ * answer: true, false, or null while GitHub is still computing it. Throws when the read fails.
+ */
+export function pullRequest({ gh, repository, number }) {
+  const pr = rest(gh, 'GET pull', ['--method', 'GET', `repos/${repository}/pulls/${number}`], { timeoutMs: 30_000 });
+  return { url: pr?.html_url ?? null, state: pr?.state ?? null, merged: pr?.merged === true, mergeable: pr?.mergeable ?? null,
+    headRef: pr?.head?.ref ?? null, headSha: pr?.head?.sha ?? null, baseRef: pr?.base?.ref ?? null, mergeCommit: pr?.merge_commit_sha ?? null };
+}
+
 const CI_PASSED = new Set(['success', 'neutral', 'skipped']);
 const CI_FAILED = new Set(['failure', 'timed_out', 'startup_failure']);
 
@@ -93,7 +103,16 @@ export function commitChecks({ gh, repository, sha }) {
   return ciState(rest(gh, 'GET check-runs', ['--method', 'GET', `repos/${repository}/commits/${sha}/check-runs`, '-f', 'per_page=100'], { timeoutMs: 30_000 }));
 }
 
+/**
+ * A campaign declaration is private installation data and is never published (docs/design/WORK_ENVELOPE.md section 5,
+ * slice E9): a `declare/...` branch, the former declaration-PR route, is refused before any gh call.
+ */
+export const declarationBranch = (branch) => /^declare\//i.test(String(branch ?? ''));
+
 export function openPullRequest({ gh, repository, baseBranch, branch, title, body, bodyFile }) {
+  if (declarationBranch(branch)) {
+    throw Object.assign(new Error(`DECLARATION_PUBLISH_REFUSED: ${branch} is a declaration branch; approved declarations stay private and are never opened as a pull request`), { code: 'DECLARATION_PUBLISH_REFUSED' });
+  }
   const existing = findOpenPullRequest({ gh, repository, branch });
   if (existing) return existing.url;
   writeFileSync(bodyFile, body, 'utf8');

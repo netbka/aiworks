@@ -20,15 +20,18 @@ export function accountWait(store, config, kind) {
   return store.get('SELECT * FROM provider_waits WHERE account = ? AND executor_kind = ?', accountOf(config, kind), kind) ?? null;
 }
 
-/** Record a wait on the account behind `kind`. `retryAt` null is untimed: only a success or a recheck ends it. */
-export function setAccountWait(store, config, { kind, retryAt, reason, campaignId, now }) {
+/**
+ * Record a wait on the account behind `kind`, or on `account` when the run was bound to a CAAM profile (its
+ * operations.account_identity). `retryAt` null is untimed: only a success or a recheck ends it.
+ */
+export function setAccountWait(store, config, { kind, account = null, retryAt, reason, campaignId, now }) {
   store.run(`INSERT OR REPLACE INTO provider_waits (account, executor_kind, retry_at, reason, campaign_id, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)`, accountOf(config, kind), kind, retryAt ?? null, reason, campaignId, now);
+    VALUES (?, ?, ?, ?, ?, ?)`, account ?? accountOf(config, kind), kind, retryAt ?? null, reason, campaignId, now);
 }
 
-/** End the account's wait; returns whether there was one. */
-export function clearAccountWait(store, config, kind) {
-  return store.run('DELETE FROM provider_waits WHERE account = ? AND executor_kind = ?', accountOf(config, kind), kind).changes > 0;
+/** End the wait of the account behind `kind`, or of profile `account`; returns whether there was one. */
+export function clearAccountWait(store, config, kind, account = null) {
+  return store.run('DELETE FROM provider_waits WHERE account = ? AND executor_kind = ?', account ?? accountOf(config, kind), kind).changes > 0;
 }
 
 /**
@@ -57,8 +60,8 @@ export function accountLimit(store, config, kind) {
   return store.get("SELECT value FROM capacity WHERE scope = 'account' AND id = ?", accountOf(config, kind))?.value ?? null;
 }
 
-function setLimit(store, config, kind, { from, to, reason, campaignId, now }) {
-  const account = accountOf(config, kind);
+function setLimit(store, config, kind, { account = null, from, to, reason, campaignId, now }) {
+  account ??= accountOf(config, kind);
   store.run(`INSERT INTO capacity (scope, id, value, reason, updated_at) VALUES ('account', ?, ?, ?, ?)
     ON CONFLICT (scope, id) DO UPDATE SET value = excluded.value, reason = excluded.reason, updated_at = excluded.updated_at`, account, to, reason, now);
   store.journal(campaignId, to < (from ?? Infinity) ? 'account-concurrency-lowered' : 'account-concurrency-raised',
@@ -82,22 +85,106 @@ export function accountFull(store, config, kind, waited = null) {
 }
 
 /**
- * After run `opId` on `kind` finished (scheduler on). A quota outcome sets the account's limit to half of the runs open
- * on it at that moment, this one included, minimum 1; a repeat halves again from what is open then, and a throttle never
- * raises a limit, so repeated refusals converge on one run instead of a retry storm. A useful result while another
- * candidate waited for the account (`waited`) raises its limit by 1. Every change is journalled. Returns the limit.
+ * After run `opId` on `kind` finished (scheduler on, or a run bound to CAAM profile `account`). A quota outcome sets the
+ * account's limit to half of the runs open on it at that moment, this one included, minimum 1; a repeat halves again
+ * from what is open then, and a throttle never raises a limit, so repeated refusals converge on one run instead of a
+ * retry storm. A useful result while another candidate waited for the account (`waited`) raises its limit by 1. With
+ * `account` only that profile's row and its runs count: sibling profiles keep their own limits. Every change is
+ * journalled. Returns the limit.
  */
-export function accountAfterRun(store, config, { kind, opId, quota = false, run = 'neutral', waited = null, campaignId, now }) {
-  const account = accountOf(config, kind);
-  const before = accountLimit(store, config, kind);
+export function accountAfterRun(store, config, { kind, account = null, opId, quota = false, run = 'neutral', waited = null, campaignId, now }) {
+  const id = account ?? accountOf(config, kind);
+  const before = account ? profileLimit(store, account) : accountLimit(store, config, kind);
   if (quota) {
-    const open = openOnAccount(store, config, kind, opId);
+    const open = account ? openOnProfile(store, account, opId) : openOnAccount(store, config, kind, opId);
     const to = Math.max(1, Math.floor(open / 2));
     if (before !== null && before <= to) return before;
-    return setLimit(store, config, kind, { from: before, to, reason: `the provider refused a run for its usage limit with ${open} run(s) open`, campaignId, now });
+    return setLimit(store, config, kind, { account: id, from: before, to, reason: `the provider refused a run for its usage limit with ${open} run(s) open`, campaignId, now });
   }
   if (run !== 'useful') return before;
-  const wasWaiting = waited?.delete(account) ?? false;
+  const wasWaiting = waited?.delete(id) ?? false;
   if (before === null || !wasWaiting) return before;
-  return setLimit(store, config, kind, { from: before, to: before + 1, reason: 'a useful result while work waited for this account', campaignId, now });
+  return setLimit(store, config, kind, { account: id, from: before, to: before + 1, reason: 'a useful result while work waited for this account', campaignId, now });
+}
+
+// ---- Profile selection (docs/design/ACCOUNT_ADAPTER_CAAM.md section 3.3, slice CAAM3). ----
+// With the adapter on, an executor kind runs under one of several CAAM profiles, each its own account: its id
+// ("claude/work-a") keys its provider_waits row, its capacity row and operations.account_identity. AIWorks chooses the
+// profile itself before launch and never wraps a worker in `caam run` (section 1.2 rule 1).
+
+// A profile that is unhealthy, expired or has an untimed wait gives no reset time: the kind is read again after this.
+export const PROFILE_RECHECK_MS = 15 * 60_000;
+
+/**
+ * Is profile selection on? Only when config.json says "caam": { "enabled": true } and the controller was given a CAAM
+ * inventory. Off, every operation keeps the one static account of accountOf and records no account_identity.
+ */
+export const profilesEnabled = (config, inventory) => config?.caam?.enabled === true && typeof inventory === 'function';
+
+/** Open worker operations bound to this profile, in any campaign; `alsoId` counts that one too. */
+export function openOnProfile(store, account, alsoId = null) {
+  return store.get("SELECT COUNT(*) AS n FROM operations WHERE account_identity = ? AND (state IN ('recorded', 'dispatched') OR id = ?)", account, alsoId).n;
+}
+
+/** The profile's learned concurrency limit, or null: a profile that never throttled has none. */
+export function profileLimit(store, account) {
+  return store.get("SELECT value FROM capacity WHERE scope = 'account' AND id = ?", account)?.value ?? null;
+}
+
+/**
+ * The profiles of `kind` that have a wait row: provider_waits rows keyed by an account some operation was bound to.
+ * A recheck ends them with the static account's row, so a profile whose login failed is not parked for good.
+ */
+export function profileWaits(store, kind) {
+  return store.all(`SELECT account FROM provider_waits WHERE executor_kind = ? AND account IN
+    (SELECT account_identity FROM operations WHERE account_identity IS NOT NULL)`, kind).map((row) => row.account);
+}
+
+/**
+ * Choose the profile for the next run on `kind` from CAAM's `profiles` (caam.mjs caamRobotStatus records: id, eligible,
+ * cooldown). A profile is skipped when CAAM marks it not eligible, when its provider_waits row is untimed or not yet due,
+ * or when it is at a learned concurrency limit. Among the rest the least recently used wins: the one whose newest
+ * operation is oldest, a never-used one first, ties in CAAM's order. So consecutive dispatches rotate A, B, A, B.
+ * Returns { account } or, when no profile may run, { account: null, retryAt, reason }: the earliest reset among the
+ * cooling-down profiles, else a re-read after PROFILE_RECHECK_MS. Reads rows only; it records nothing. When no profile
+ * may run, each one skipped for its concurrency limit is added to `waited`, so its next useful result may raise it.
+ */
+export function selectProfile(store, kind, profiles, now, waited = null) {
+  const full = [];
+  const resets = [];
+  const skipped = [];
+  const eligible = [];
+  for (const profile of Array.isArray(profiles) ? profiles : []) {
+    const id = profile?.id;
+    if (typeof id !== 'string' || id === '') continue;
+    if (profile.eligible !== true) {
+      const until = profile.cooldown?.until;
+      if (Number.isFinite(until) && until > now) resets.push(until);
+      skipped.push(`${id}: ${profile.reasons?.join(', ') || 'not eligible in CAAM'}`);
+      continue;
+    }
+    const wait = store.get('SELECT * FROM provider_waits WHERE account = ? AND executor_kind = ?', id, kind);
+    if (wait && (wait.retry_at === null || wait.retry_at > now)) {
+      if (wait.retry_at !== null) resets.push(wait.retry_at);
+      skipped.push(`${id}: ${wait.reason}`);
+      continue;
+    }
+    const limit = profileLimit(store, id);
+    if (limit !== null && openOnProfile(store, id) >= limit) {
+      full.push(id);
+      skipped.push(`${id}: ${limit} run(s) open, its limit`);
+      continue;
+    }
+    eligible.push({ id, order: eligible.length });
+  }
+  if (eligible.length) {
+    const last = new Map(store.all(`SELECT account_identity AS id, MAX(created_at) AS at, MAX(rowid) AS seq FROM operations
+      WHERE account_identity IS NOT NULL GROUP BY account_identity`).map((row) => [row.id, row]));
+    const used = (id) => last.get(id) ?? { at: -Infinity, seq: -Infinity };
+    eligible.sort((a, b) => used(a.id).at - used(b.id).at || used(a.id).seq - used(b.id).seq || a.order - b.order);
+    return { account: eligible[0].id };
+  }
+  for (const id of full) waited?.add(id);
+  const reason = skipped.length ? `every ${kind} profile waits (${skipped.join('; ')})`.slice(0, 500) : `CAAM lists no ${kind} profile`;
+  return { account: null, retryAt: resets.length ? Math.min(...resets) : now + PROFILE_RECHECK_MS, reason };
 }

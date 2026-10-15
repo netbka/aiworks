@@ -19,7 +19,7 @@ function rig(t) {
   const store = new Store(join(dir, 'supervisor.db'));
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   let clock = Date.now();
-  const register = (campaignId, tasks, { projectId = 'dyk', limits = {} } = {}) => {
+  const register = (campaignId, tasks, { projectId = 'sampleapp', limits = {} } = {}) => {
     const d = declaration({ campaignId, tasks, limits });
     const decl = { ...d, target: { ...d.target, projectId } };
     campaignStart(store, decl);
@@ -73,13 +73,13 @@ test('a verifier holds no write domain and is never refused for one', (t) => {
 
 test('two projects progress fairly under a ceiling of one', (t) => {
   const r = rig(t);
-  const dyk = r.register('dyk-busy', [commitTask('D1', 1, { writes: ['a/'] }), commitTask('D2', 2, { writes: ['b/'] }), commitTask('D3', 3, { writes: ['c/'] })], { projectId: 'dyk', limits: { slots: 'auto' } });
+  const sampleapp = r.register('sampleapp-busy', [commitTask('D1', 1, { writes: ['a/'] }), commitTask('D2', 2, { writes: ['b/'] }), commitTask('D3', 3, { writes: ['c/'] })], { projectId: 'sampleapp', limits: { slots: 'auto' } });
   const aiw = r.register('aiw-quiet', [commitTask('Q1', 4, { writes: ['q/'] })], { projectId: 'aiworks' });
   const served = [];
   // Round by round: admit the first admissible candidate under a ceiling of one, run it to the end, then the next round.
   for (let round = 0; round < 4; round++) {
     const pending = (decl) => decl.tasks.filter((task) => r.store.task(decl.campaignId, task.id).state === 'pending').map((task) => r.candidate(decl, task.id));
-    const ordered = orderCandidates(r.store, [...pending(dyk), ...pending(aiw)]);
+    const ordered = orderCandidates(r.store, [...pending(sampleapp), ...pending(aiw)]);
     const next = ordered.find((c) => !admissionCheck(r.store, c, { ceiling: 1 }));
     if (!next) break;
     served.push(next.declaration.target.projectId);
@@ -88,7 +88,7 @@ test('two projects progress fairly under a ceiling of one', (t) => {
     r.state(next.campaignId, next.taskId, { state: 'done' });
     r.advance(1000);
   }
-  assert.deepEqual(served.slice(0, 2).sort(), ['aiworks', 'dyk'], 'each project is served once before either is served twice');
+  assert.deepEqual(served.slice(0, 2).sort(), ['aiworks', 'sampleapp'], 'each project is served once before either is served twice');
   assert.equal(served.filter((p) => p === 'aiworks').length, 1);
 });
 

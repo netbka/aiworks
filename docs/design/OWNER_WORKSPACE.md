@@ -1,8 +1,10 @@
 # Owner workspace: one question per screen
 
-**Status:** design only. Nothing in this document is built or deployed. It is the design for [#11](https://github.com/netbka/aiworks/issues/11), part of the program in [PROJECT_WORKSPACE_PLAN.md §4](../PROJECT_WORKSPACE_PLAN.md#4-owner-information-architecture---one-primary-question-per-screen) ([#14](https://github.com/netbka/aiworks/issues/14)). It builds on the owner view from [#4](https://github.com/netbka/aiworks/issues/4) and the review items carried over in [#6](https://github.com/netbka/aiworks/issues/6).
+**Privacy boundary:** this is a design proposal, not a live installation record. Campaign declarations and approval records stay private under [AW-009](../DECISIONS.md#aw-009---public-commits-contain-no-installation-data). Any proposal to publish declarations through source branches or pull requests is superseded. Merged executable code, explicit owner authorization, scope binding and independent verification remain required.
 
-**Basis.** The code at `acb9e66a35980a68bf0bfacfbb01f6bfaa902261`. Statements about today's dashboard are **observed**: read from the code at that revision, with `file:line`. None of them was checked on the live HomePc dashboard, so none is **verified**. Everything else here is **planned**. Where we do not know something, it says **unknown**. A merged change is not a deployed one ([AGENTS.md, evidence rule](../AGENTS.md#evidence-rule)).
+**Status:** design only. Nothing in this document is built or deployed. It is the design for #11, part of the program in [PROJECT_WORKSPACE_PLAN.md §4](../PROJECT_WORKSPACE_PLAN.md#4-owner-information-architecture---one-primary-question-per-screen) (#14). It builds on the owner view from #4 and the review items carried over in #6.
+
+**Basis.** The code at `<revision>`. Statements about today's dashboard are **observed**: read from the code at that revision, with `file:line`. None of them was checked on the live workstation dashboard, so none is **verified**. Everything else here is **planned**. Where we do not know something, it says **unknown**. A merged change is not a deployed one ([AGENTS.md, evidence rule](../../AGENTS.md#evidence-and-secrets)).
 
 **What this document settles.** The screens, what each one asks and shows, the exact English copy for each state, the order of work and the review method. Questions only the owner can answer are listed in [§12](#12-owner-reserved-questions). It does not reopen D1, D3, D5 or D9 ([plan §8](../PROJECT_WORKSPACE_PLAN.md#8-owner-decisions-and-remaining-implementation-design-gates)). It keeps AW-001 to AW-007 as written ([DECISIONS.md](../DECISIONS.md)).
 
@@ -46,7 +48,6 @@ The UI is English only (D9).
 
 These appear only inside "Details" disclosures and Settings › Diagnostics: pipeline, fencing, lease, slots, control plane, campaign declaration, scope digest, authorization version, operation, executor, DAG, run ID, packet, B2/B3/B4, heartbeat.
 
-"Campaign" is also kept out of headings, buttons and state copy. It may appear in a details line such as "Campaign dyk-443-waves", because that is the name the CLI and GitHub use.
 
 ### 2.3 Words for result states
 
@@ -62,8 +63,8 @@ The same word always means the same thing:
 | Closed without merging | GitHub reports it closed and not merged | |
 | Report posted · for you to read | the result is an issue comment | "nothing to do" |
 | Not known yet | GitHub state not loaded, unreadable or not found | "nothing", "0" |
-| Released | only with recorded release evidence ([#13](https://github.com/netbka/aiworks/issues/13)); not built | |
-| Accepted | only with recorded acceptance evidence ([#4](https://github.com/netbka/aiworks/issues/4) remaining item); not built | |
+| Released | only with recorded release evidence (#13); not built | |
+| Accepted | only with recorded acceptance evidence (#4 remaining item); not built | |
 
 Today's code already keeps merged, waiting for review, closed, report posted and unknown apart (observed: `src/dashboard/owner.mjs:59-75`, `src/dashboard/owner.mjs:50-52`). Today's checker sentence says "Checker accepted the head" (observed: `src/dashboard/owner.mjs:95`). The design renames it to "Passed the check" so "accepted" is free for the acceptance state.
 
@@ -112,7 +113,7 @@ Each screen has its own address, so Back, Forward, reload and bookmarks work. Th
 | Review | `#/p/<project>/review/<plan>` |
 | Add project | `#/projects/add` |
 
-`<project>` is the GitHub `owner/repo`, URL-encoded, for a GitHub project. For a local project it is the opaque ID that project connection ([#7](https://github.com/netbka/aiworks/issues/7)) assigns. Never a filesystem path.
+`<project>` is the GitHub `owner/repo`, URL-encoded, for a GitHub project. For a local project it is the opaque ID that project connection (#7) assigns. Never a filesystem path.
 
 Today's addresses `#overview`, `#roadmap`, `#work`, `#agents`, `#messages` and `#activity` (observed: `src/dashboard/public/dashboard.js:71-72`) are redirected once, with `history.replaceState`, as in [§9](#9-what-todays-views-become).
 
@@ -120,8 +121,9 @@ Today's addresses `#overview`, `#roadmap`, `#work`, `#agents`, `#messages` and `
 
 - **Route.** The address is the state. Reload opens the same screen.
 - **Selected project.** The last opened project is remembered in `localStorage` and offered first on Projects as "Continue with <name>". This is the same per-browser convenience as today's "since you last looked" (observed: `src/dashboard/public/dashboard.js:27-28`).
-- **Scroll.** A new destination opens at its top. Back and Forward return to where it was left. Today's views already do this (observed: `src/dashboard/public/dashboard.js:709-713`, `src/dashboard/public/dashboard.js:743`); the design keeps it per address.
-- **Unsent drafts.** The Start work goal, step guidance and the message to AIWorks are kept in `sessionStorage`, per address. They survive the 5-second refresh, a reload and Back. They are cleared only after the server returns an accepted receipt. Today drafts live in memory only and are lost on reload (observed: `src/dashboard/public/dashboard.js:32`, `src/dashboard/public/dashboard.js:435`).
+- **Screen per project.** Opening a project from outside it (from Projects, "Continue with <name>", Needs me or another project) opens the screen that project was left on, for example its Start work half-way through a plan request. The project's Now tab still opens Now. This holds while the page stays open in that tab. It is what [§13.3](#133-tasks) T10 and the [#11](https://github.com/example-org/aiworks/issues/11) acceptance ask for: switching projects "without losing route, draft, scroll".
+- **Scroll.** Every address returns to where it was left, whether the owner reaches it by a link, Back or Forward. An address not opened yet in this tab opens at its top. The page keeps this per address while it stays open in that tab.
+- **Unsent drafts.** The Start work goal, step guidance and the message to AIWorks are kept in `sessionStorage`, per address. They survive the 5-second refresh, a reload, Back and a move to another project and back. They are cleared only after the server returns an accepted receipt. Today drafts live in memory only and are lost on reload (observed: `src/dashboard/public/dashboard.js:32`, `src/dashboard/public/dashboard.js:435`).
 - **Open details.** An opened "Details" disclosure stays open across refresh. Today's disclosures already do (observed: `src/dashboard/public/dashboard.js:224`).
 - **Identity.** A step is always shown with its project and its work's goal, so moving between projects never mixes them up.
 
@@ -150,7 +152,7 @@ Each screen lists: its question, what is visible first, its one primary action, 
 - **Primary action.** "Add project". It appears only once project connection exists (slice S11). Before that, the screen has no primary button, and the empty state says how projects appear today ([§7.1](#71-empty)).
 - **In details.** Repository owner, base branch, connection check time, the number of pieces of work.
 
-Today there is no project object. Campaigns carry their target repository (observed: `src/dashboard/supervisor.mjs:172`), and `config.json` lists the repositories this computer may work on (observed: `src/dashboard/roadmap.mjs:24-29`, `README.md:86`). Slice S2 builds the project list from those two. Local Git and plain folders need [#7](https://github.com/netbka/aiworks/issues/7).
+Today there is no project object. Campaigns carry their target repository (observed: `src/dashboard/supervisor.mjs:172`), and `config.json` lists the repositories this computer may work on (observed: `src/dashboard/roadmap.mjs:24-29`, `README.md:86`). Slice S2 builds the project list from those two. Local Git and plain folders need #7.
 
 ### 4.2 Needs me
 
@@ -172,7 +174,7 @@ The items are today's "Needs you" items, unchanged in meaning (observed: built i
 - **Question.** What can AIWorks use on this computer?
 - **First visible.** Four short sections:
   - **This computer:** name and dashboard version (observed: `src/dashboard/server.mjs:26`).
-  - **AI workers:** one line per AI worker, **once per computer**, for example "Claude · ready", "Codex · not set up on this computer", "Cursor · not available on Windows". Today the same three boxes repeat on every campaign (observed: `src/dashboard/supervisor.mjs:194-210`; reported in [#4](https://github.com/netbka/aiworks/issues/4)).
+  - **AI workers:** one line per AI worker, **once per computer**, for example "Claude · ready", "Codex · not set up on this computer", "Cursor · not available on Windows". Today the same three boxes repeat on every campaign (observed: `src/dashboard/supervisor.mjs:194-210`; reported in #4).
   - **Projects:** each project's kind and connection state.
   - **Release mode,** per project: "Review only" (on) and "Auto Release" (off, unavailable). See [§10.3](#103-release-mode).
 - **Primary action.** None today. Settings only shows what the machine has.
@@ -188,7 +190,7 @@ The items are today's "Needs you" items, unchanged in meaning (observed: built i
 #### Settings › Diagnostics
 
 - **Question.** What exactly did the machine record?
-- **First visible.** The full activity journal, Issues & pull requests, and the Engineering Platform roadmap, each behind its own heading.
+- **First visible.** The full activity journal, Issues & pull requests, and the governance provider roadmap, each behind its own heading.
 - **Primary action.** None. "Refresh GitHub" is a secondary button here.
 - **In details.** Everything else. This is where technical words are allowed.
 
@@ -225,7 +227,7 @@ The items are today's "Needs you" items, unchanged in meaning (observed: built i
 - **Primary action.** "Ask for a plan".
 - **In details.** Which AI workers may be used, optional spending limit, how results are published.
 
-**Today and after.** Plan only can be built now on the existing message path: the dashboard sends the coordinator a message with the project, the goal and the chosen issue or pull request (observed: `src/dashboard/supervisor.mjs:273-287`, `src/dashboard/server.mjs:80`). The coordinator is read-only and posts its reply on GitHub (AW-004). "Plan and do" is shown but not selectable until slice S10 ([§11](#11-implementation-slices)). Its line reads: "Starting work from this page is not built yet. Today, work starts after its plan is merged into AIWorks and started on this computer." For a project without GitHub, Plan only waits for a local place to post the reply (**unknown**; see S12).
+**Today and after.** Plan only uses the existing message path: the dashboard sends the coordinator the selected project, goal and chosen issue or pull request. The coordinator is read-only; its checked final reply stays in the local dashboard and creates no GitHub issue, PR or comment (AW-004, amended 2026-10-13). "Plan and do" is shown but not selectable until slice S10 ([§11](#11-implementation-slices)). Its line reads: "Starting work from this page is not built yet. Today, work starts when an authorized private plan is registered on this computer." Projects without GitHub still need the local intake contract in S12; storing replies locally alone does not enable their planning.
 
 ### 4.6 Review
 
@@ -239,7 +241,7 @@ The items are today's "Needs you" items, unchanged in meaning (observed: built i
 - **Primary action.** "Approve and start". A secondary link: "Change the request".
 - **In details.** The full step graph, per-step instructions, the plan as JSON.
 
-The Review screen waits for a supervisor admission API ([#8](https://github.com/netbka/aiworks/issues/8)) and for [owner question Q1](#12-owner-reserved-questions). Until then the screen is not reachable, and "Plan and do" says why ([§4.5](#45-start-work)).
+The Review screen waits for a supervisor admission API (#8) and for [owner question Q1](#12-owner-reserved-questions). Until then the screen is not reachable, and "Plan and do" says why ([§4.5](#45-start-work)).
 
 ### 4.7 Work
 
@@ -280,7 +282,7 @@ Today the step's attempt history is only in the global journal of the last 80 ev
   4. Merged;
   5. Not known yet.
   
-  Each row shows the step outcome and the state word from [§2.3](#23-words-for-result-states). A merged row adds the project's release rule: "Merged 10 Oct. Release follows Dyk's standing deploy authorization." (observed: `src/dashboard/owner.mjs:107-108`). It never says released or live.
+  Each row shows the step outcome and the state word from [§2.3](#23-words-for-result-states). A merged row adds the project's release rule: "Merged 10 Oct. Release follows sampleapp's standing deploy authorization." (observed: `src/dashboard/owner.mjs:107-108`). It never says released or live.
 - **Primary action.** "Review pull request #N" for the oldest waiting review. Otherwise none.
 - **In details.** The full check evidence, the commit, CI counts, data age.
 - **Local projects (planned).** A checked local revision with "Ready to apply · nothing in your folder has changed yet". No pull request is ever shown for a project without GitHub (plan §1).
@@ -292,16 +294,16 @@ Today the step's attempt history is only in the global journal of the last 80 ev
 - **Primary action.** None. "See the breakdown" opens the details.
 - **In details.** Per piece of work and per step: runs, reported cost, unreported runs, retries and checker rejections.
 
-Per-campaign cost exists (observed: `src/dashboard/supervisor.mjs:183`, `src/dashboard/supervisor.mjs:192`). Per-step cost is **unknown**: it depends on whether each AI worker's run records one ([#10](https://github.com/netbka/aiworks/issues/10)). Slice S7 shows per-step cost only where it is recorded and says "not reported" otherwise.
+Per-campaign cost exists (observed: `src/dashboard/supervisor.mjs:183`, `src/dashboard/supervisor.mjs:192`). Per-step cost is **unknown**: it depends on whether each AI worker's run records one (#10). Slice S7 shows per-step cost only where it is recorded and says "not reported" otherwise.
 
 ### 4.11 Add project (after project connection exists)
 
 - **Question.** Which folder should AIWorks work on?
-- **First visible.** A folder field, then what AIWorks found: "Git repository with GitHub remote netbka/Dyk", "Git repository, no GitHub remote", or "Ordinary folder, no Git".
+- **First visible.** A folder field, then what AIWorks found: "Git repository with GitHub remote example-org/sampleapp", "Git repository, no GitHub remote", or "Ordinary folder, no Git".
 - **Primary action.** "Connect project".
 - **In details.** The checks run and their results.
 
-This needs the supervisor's project connection API ([#7](https://github.com/netbka/aiworks/issues/7)). A browser page cannot pick a local folder path, so the folder is typed or pasted, and the server checks it. The full path is sent once, to the connection API, and is never served back: the UI shows the folder name only ([§10.2](#102-what-the-new-screens-add)).
+This needs the supervisor's project connection API (#7). A browser page cannot pick a local folder path, so the folder is typed or pasted, and the server checks it. The full path is sent once, to the connection API, and is never served back: the UI shows the folder name only ([§10.2](#102-what-the-new-screens-add)).
 
 ---
 
@@ -319,23 +321,23 @@ Each flow is written as screen → what the owner sees → what they do. "Today"
 ### 5.2 Adding a GitHub project (after S11)
 
 1. **Projects** → "Add project".
-2. **Add project**: the owner pastes `D:\Git\Dyk`. AIWorks shows "Checking the folder…" within a second (UX-001 immediate acknowledgement).
-3. AIWorks finds "Git repository with GitHub remote netbka/Dyk, main branch main". The project is in Engineering Platform's registry, so it reads "Ready".
-4. "Connect project" → **Now** for Dyk: "No work yet" → "Start work".
-5. If the project is not in the registry: "This project is not registered with Engineering Platform yet, so AIWorks cannot start work on it. Registering it is done in Engineering Platform." No button: the fix is outside AIWorks.
+2. **Add project**: the owner pastes `C:\example\sampleapp`. AIWorks shows "Checking the folder…" within a second (UX-001 immediate acknowledgement).
+3. AIWorks finds "Git repository with GitHub remote example-org/sampleapp, main branch main". The project is in governance provider's registry, so it reads "Ready".
+4. "Connect project" → **Now** for sampleapp: "No work yet" → "Start work".
+5. If the project is not in the registry: "This project is not registered with governance provider yet, so AIWorks cannot start work on it. Registering it is done in governance provider." No button: the fix is outside AIWorks.
 
 ### 5.3 Adding a plain folder (after S11; starting work waits for D2 and Q2)
 
 1. **Projects** → "Add project". The owner pastes `D:\Notes\recipes`.
 2. AIWorks finds "Ordinary folder, no Git" and says: "AIWorks will never change this folder directly. It works on its own copy and asks you before applying a checked result." (plan §3.1)
-3. "Connect project" → **Now**: "Connected. Starting work in a folder without GitHub is not available yet." The details name what it waits for: a local project identity in Engineering Platform (D2) and a local approval route (owner question Q2).
-4. Plan only becomes available when the coordinator can report locally (S12). Plan and do becomes available after D2 and Q2.
+3. "Connect project" → **Now**: "Connected. Starting work in a folder without GitHub is not available yet." The details name what it waits for: a local project identity in governance provider (D2) and a local approval route (owner question Q2).
+4. Plan only becomes available with the local intake contract (S12). Local reply storage alone does not enable it. Plan and do becomes available after D2 and Q2.
 
 ### 5.4 Starting work
 
 1. **Now** → "Start work" → **Start work**.
 2. Today (after S9): the owner writes the goal, picks "A GitHub issue" → #443, keeps "Plan only" and presses "Ask for a plan".
-3. The page shows the receipt in place: "Sent · AIWorks received your request at 12:31". Then "Read at 12:32", then "Answered · Read the plan on GitHub ↗" (today's receipts).
+3. The page shows the receipt in place: "Sent · AIWorks received your request at 12:31". Then "Read at 12:32", then "Answered · Read the plan" in the local dashboard. Planning writes nothing to GitHub (AW-004, amended 2026-10-13).
 4. With "Plan and do" (after S10): "Ask for a plan" leads to **Review** when the plan is ready.
 
 ### 5.5 Approving (after S10 and Q1)
@@ -364,7 +366,7 @@ Each flow is written as screen → what the owner sees → what they do. "Today"
 1. **Now**: "All steps are finished · 2 pull requests wait for your review · 3 merged". Primary action: "See results".
 2. → **Results**: "Waiting for your review (2)" first. Each row: "Pull request open · waiting for your review", then "Passed the check at this commit · no conflicts · all 3 CI checks passed".
 3. "Review pull request #465" opens GitHub. Merging happens on GitHub; AIWorks never merges (AW-001).
-4. After the merge and the next GitHub refresh, the row moves to "Merged 12 Oct · Release follows Dyk's release policy".
+4. After the merge and the next GitHub refresh, the row moves to "Merged 12 Oct · Release follows sampleapp's release policy".
 
 ---
 
@@ -387,7 +389,7 @@ Rules:
 - Nothing exists at only one width. Every action at 1440px is also there at 320px.
 - Touch targets are at least 44 by 44 CSS px.
 - Content and actions survive 200% text size.
-- Long names wrap; they never become one-letter columns (the 390px header bug in [#4](https://github.com/netbka/aiworks/issues/4)).
+- Long names wrap; they never become one-letter columns (the 390px header bug in #4).
 - Today the bottom bar starts at 520px and the side bar narrows to icons at 850px (observed: `src/dashboard/public/dashboard.css:244-251`, `src/dashboard/public/dashboard.css:266`). The new layout replaces these breakpoints.
 - The page stays light with an explicit background (observed: `src/dashboard/public/index.html:6`, `src/dashboard/public/dashboard.css:5`). A dark theme is out of scope.
 - Reduced motion is respected (observed: `src/dashboard/public/dashboard.css:321`).
@@ -400,7 +402,7 @@ Rules:
 - On a route change, focus moves to the new screen's `<h1>` (with `tabindex="-1"`), and the page title becomes "<Screen> · <Project> · AIWorks".
 - Focus order follows reading order. The primary action comes right after the state sentence.
 - A visible focus ring on every focusable element (observed: `src/dashboard/public/dashboard.css:26`).
-- Dialogs (Cancel work, Send guidance) move focus to their first field. Escape closes them, and focus returns to the button that opened them, as today ([#4](https://github.com/netbka/aiworks/issues/4) live review).
+- Dialogs (Cancel work, Send guidance) move focus to their first field. Escape closes them, and focus returns to the button that opened them, as today (#4 live review).
 - The 5-second refresh never moves focus and never announces itself. The state sentence of the current screen sits in a polite live region and is announced only when its text changes. Today's refresh keeps focus on the same element (observed: `src/dashboard/public/dashboard.js:623-645`).
 - State is never told by colour alone: every state has its word.
 - No single-key shortcuts.
@@ -430,7 +432,7 @@ None of these texts say merged, deployed, released, live, done or accepted unles
 | --- | --- | --- |
 | The page cannot reach the dashboard (observed today as "Disconnected · controls disabled": `src/dashboard/public/dashboard.js:701`) | **Can't reach AIWorks on this computer.** Showing what was loaded at <12:31>. Buttons are off until it reconnects. Trying again every 5 seconds. | none |
 | The dashboard cannot read AIWorks' records (observed: `src/dashboard/supervisor.mjs:144`, `src/dashboard/supervisor.mjs:268`) | **AIWorks can't read its work records right now.** What you see may be out of date. Buttons are off until it can read them again. | none |
-| AIWorks stopped on this computer, after the 5-minute grace (observed: `src/dashboard/owner.mjs:17`, `src/dashboard/owner.mjs:282-286`) | **AIWorks has stopped on <HomePc>.** No new step starts. If nobody is updating it right now, restart it there: sign in on that computer, or start the task "AIWorks Supervisor". | none |
+| AIWorks stopped on this computer, after the 5-minute grace (observed: `src/dashboard/owner.mjs:17`, `src/dashboard/owner.mjs:282-286`) | **AIWorks has stopped on <workstation>.** No new step starts. If nobody is updating it right now, restart it there: sign in on that computer, or start the task "AIWorks Supervisor". | none |
 | Within the grace (observed: `src/dashboard/owner.mjs:208`) | **AIWorks is a few minutes late checking in.** This is normal during a restart or an update. Nothing for you to do yet. | none |
 
 ### 7.3 No worker
@@ -438,7 +440,7 @@ None of these texts say merged, deployed, released, live, done or accepted unles
 | Case | Copy | Primary |
 | --- | --- | --- |
 | Every allowed AI worker is waiting for a usage limit (observed: `src/dashboard/supervisor.mjs:186`, `src/dashboard/supervisor.mjs:199`) | **Waiting for an AI worker to be free.** <Claude> can start again at <14:05>. Work continues by itself. Nothing for you to do. | none |
-| No allowed AI worker can run on this computer (observed reasons: `src/dashboard/supervisor.mjs:201-208`) | **No AI worker can run this work on <HomePc>.** <Codex is not set up on this computer. Cursor is not available on Windows.> AIWorks can't fix this by itself. See Settings › AI workers. | none (the fix is on the computer) |
+| No allowed AI worker can run on this computer (observed reasons: `src/dashboard/supervisor.mjs:201-208`) | **No AI worker can run this work on <workstation>.** <Codex is not set up on this computer. Cursor is not available on Windows.> AIWorks can't fix this by itself. See Settings › AI workers. | none (the fix is on the computer) |
 | Nothing is running right now, and no reason is recorded | **No AI worker is busy on this project right now.** <next step> starts when it is ready. | Open current work |
 
 "Not set up" is listed in Needs me only when the supervisor records a blocker for it (observed: blocker items, `src/dashboard/owner.mjs:259-262`). A usage-limit wait is never listed there (AW-002).
@@ -454,14 +456,14 @@ None of these texts say merged, deployed, released, live, done or accepted unles
 
 Stale data never supports "ready to merge" (observed: `src/dashboard/owner.mjs:88`). The note appears on the row or screen that uses the data, not as a page-wide banner. No primary action: the refresh is automatic.
 
-Today's header can say "Execution live · syncing GitHub…" for minutes ([#4](https://github.com/netbka/aiworks/issues/4); observed: `src/dashboard/public/dashboard.js:694-696`). The header keeps only "Connected" or the disconnected text.
+Today's header can say "Execution live · syncing GitHub…" for minutes (#4; observed: `src/dashboard/public/dashboard.js:694-696`). The header keeps only "Connected" or the disconnected text.
 
 ### 7.5 Paused
 
 | Case | Copy | Primary |
 | --- | --- | --- |
 | Paused, AIWorks running (observed: `src/dashboard/public/dashboard.js:280-284`) | **Paused since <10 Oct 22:58>.** No new step starts. A step already running may finish. Reason given: "<reason>". | Resume |
-| Paused, AIWorks stopped | **Paused, and AIWorks has stopped on <HomePc>.** Nothing can resume until it runs again. If nobody is updating it right now, restart it there. | none |
+| Paused, AIWorks stopped | **Paused, and AIWorks has stopped on <workstation>.** Nothing can resume until it runs again. If nobody is updating it right now, restart it there. | none |
 
 A pause is neutral. It is not counted in Needs me (observed: `src/dashboard/owner.mjs:268-271`).
 
@@ -489,10 +491,10 @@ A pause is neutral. It is not counted in Needs me (observed: `src/dashboard/owne
 | Case | Copy | Primary |
 | --- | --- | --- |
 | Pull requests wait for review | **All steps are finished.** <2> pull requests wait for your review · <3> merged. | See results |
-| Everything merged, all states known (observed rule: `src/dashboard/owner.mjs:124`, `src/dashboard/owner.mjs:135`) | **All steps are finished and merged.** Release follows <Dyk's> <release policy \| standing deploy authorization>. | See results |
+| Everything merged, all states known (observed rule: `src/dashboard/owner.mjs:124`, `src/dashboard/owner.mjs:135`) | **All steps are finished and merged.** Release follows <sampleapp's> <release policy \| standing deploy authorization>. | See results |
 | Some states unknown | **All steps are finished.** The GitHub state of <2> results is not known yet, so this is not settled. | See results |
 | Reports only | **All steps are finished.** <2> reports posted for you to read. | See results |
-| Some closed without merging | **All steps are finished.** <1> pull request was closed without merging, so that work is not in <Dyk>. | See results |
+| Some closed without merging | **All steps are finished.** <1> pull request was closed without merging, so that work is not in <sampleapp>. | See results |
 | Local project (planned, S12) | **All steps are finished.** The checked result is ready to apply. Nothing in your folder has changed yet. | See results |
 | Cancelled (observed: `src/dashboard/owner.mjs:223`) | **Cancelled.** <4> of <9> steps had results before it stopped. | See results |
 
@@ -506,19 +508,19 @@ A pause is neutral. It is not counted in Needs me (observed: `src/dashboard/owne
 
 | Screen | Needs | Today (observed) | Missing, and from where |
 | --- | --- | --- | --- |
-| Projects | project list, kind, one state, one action | target repository per campaign `supervisor.mjs:172`; configured repositories `roadmap.mjs:24-29`; owner items `owner.mjs:228-294`; liveness `owner.mjs:218-219` | grouping and state per project: dashboard (S2). Local Git and folders, connection state: **Supervisor API** [#7](https://github.com/netbka/aiworks/issues/7) |
+| Projects | project list, kind, one state, one action | target repository per campaign `supervisor.mjs:172`; configured repositories `roadmap.mjs:24-29`; owner items `owner.mjs:228-294`; liveness `owner.mjs:218-219` | grouping and state per project: dashboard (S2). Local Git and folders, connection state: **Supervisor API** #7 |
 | Needs me | items grouped by project | items with `campaignId` and `repository` `owner.mjs:226`; headline `owner.mjs:297`; also-line `owner.mjs:313-322` | grouping only: dashboard (S3) |
-| Settings | computer, AI workers once, release mode | host `server.mjs:26`; providers per campaign `supervisor.mjs:194-210`; Cursor host limit `supervisor.mjs:208` | per-computer merge of providers: dashboard (S8). Which CLIs are configured: dashboard read of `config.json` command **names only** (`supervisor.mjs:12-14` reads it today). Release mode: fixed "Review only" until [#13](https://github.com/netbka/aiworks/issues/13) |
+| Settings | computer, AI workers once, release mode | host `server.mjs:26`; providers per campaign `supervisor.mjs:194-210`; Cursor host limit `supervisor.mjs:208` | per-computer merge of providers: dashboard (S8). Which CLIs are configured: dashboard read of `config.json` command **names only** (`supervisor.mjs:12-14` reads it today). Release mode: fixed "Review only" until #13 |
 | Messages | messages and receipts | `supervisor.mjs:257-266`; send `supervisor.mjs:273-287` | none |
 | Diagnostics | journal, issues and PRs, roadmap | journal `supervisor.mjs:244-254`; roadmap and work `roadmap.mjs:257-258` | none |
 | Now | goal, sentence, progress, since-last-look | purpose `owner.mjs:147-155`; counts `owner.mjs:224-225`; recent `owner.mjs:325-340`; next action `supervisor.mjs:32-43` | per-project recent summary: dashboard (S4) |
-| Start work | project, goal, optional issue or PR | issues and PRs per repository `roadmap.mjs:257-258`; message path `supervisor.mjs:273-287` | plan request with structure: dashboard (S9) composes a message. "Plan and do" and plan drafts: **Supervisor API** [#8](https://github.com/netbka/aiworks/issues/8) |
-| Review | proposed plan, overlaps, limits | none | **Supervisor API** [#8](https://github.com/netbka/aiworks/issues/8) (plan draft, admission), duplicate check [#5](https://github.com/netbka/aiworks/issues/5) |
+| Start work | project, goal, optional issue or PR | issues and PRs per repository `roadmap.mjs:257-258`; message path `supervisor.mjs:273-287` | plan request with structure: dashboard (S9) composes a message. "Plan and do" and plan drafts: **Supervisor API** #8 |
+| Review | proposed plan, overlaps, limits | none | **Supervisor API** #8 (plan draft, admission), duplicate check #5 |
 | Work | steps, states, waits, agents | tasks `supervisor.mjs:224-234`; agents `supervisor.mjs:235-242`; waits `supervisor.mjs:20-28`; commands `supervisor.mjs:289-341` | wait sentences that name step outcomes: dashboard (S5) |
 | Step | state, progress, last result, guidance, history | task fields and `lastOutcome` `supervisor.mjs:162-170`; progress `supervisor.mjs:76-106`; instructions `supervisor.mjs:211-223` | per-step attempt history: dashboard read of `journal` and `operations` for one task (S5) |
-| Results | lifecycle per result | delivery `owner.mjs:59-75`; readiness `owner.mjs:83-101`; release rule `owner.mjs:107-108` | changes requested: dashboard, add review state to the read-only `gh pr list` fields (S6). Released and accepted: **unknown** until [#13](https://github.com/netbka/aiworks/issues/13) and #4 record evidence. Local results: [#7](https://github.com/netbka/aiworks/issues/7), [#8](https://github.com/netbka/aiworks/issues/8) |
-| Cost | reported cost, unreported runs | `recordedCostUsd`, `runsUsed`, `budget.unknownCostRuns` `supervisor.mjs:183`, `supervisor.mjs:192` | per-step cost: dashboard read where recorded (S7); completeness **unknown** ([#10](https://github.com/netbka/aiworks/issues/10)) |
-| Add project | folder check, connect | none | **Supervisor API** [#7](https://github.com/netbka/aiworks/issues/7) |
+| Results | lifecycle per result | delivery `owner.mjs:59-75`; readiness `owner.mjs:83-101`; release rule `owner.mjs:107-108` | changes requested: dashboard, add review state to the read-only `gh pr list` fields (S6). Released and accepted: **unknown** until #13 and #4 record evidence. Local results: #7, #8 |
+| Cost | reported cost, unreported runs | `recordedCostUsd`, `runsUsed`, `budget.unknownCostRuns` `supervisor.mjs:183`, `supervisor.mjs:192` | per-step cost: dashboard read where recorded (S7); completeness **unknown** (#10) |
+| Add project | folder check, connect | none | **Supervisor API** #7 |
 
 ---
 
@@ -529,7 +531,7 @@ A pause is neutral. It is not counted in Needs me (observed: `src/dashboard/owne
 | Today (observed: `src/dashboard/public/dashboard.js:73-78`) | Becomes | Old address goes to |
 | --- | --- | --- |
 | **Overview**: since-last-look, Needs you, campaign cards, Live now, platform roadmap, finished list, activity, messages (`dashboard.js:638-644`) | Split. Needs you → **Needs me**. Since-last-look → each project's **Now**. Campaign cards → **Now** and **Work**. Live now → **Work**. Finished list → **Results**. The four metrics (`dashboard.js:104-114`) go: "Platform roadmap items" → Diagnostics; "Needs you" → the Needs me count; "Agents working" → Work; "Cost so far" → **Cost**. | `#/projects` |
-| **Plans**: campaign plans, then the Engineering Platform roadmap (`dashboard.js:574-583`, `dashboard.js:533-555`) | Campaign plans → each project's **Work**. The platform roadmap → **Settings › Diagnostics**. It is Engineering Platform's plan, not one of the owner's work items. | `#/settings/diagnostics` |
+| **Plans**: campaign plans, then the governance provider roadmap (`dashboard.js:574-583`, `dashboard.js:533-555`) | Campaign plans → each project's **Work**. The platform roadmap → **Settings › Diagnostics**. It is governance provider's plan, not one of the owner's work items. | `#/settings/diagnostics` |
 | **Issues & PRs** (`dashboard.js:609-618`) | Per project: the issue and pull request picker in **Start work**, and pull request links in **Results**. The full list → **Diagnostics**. | `#/settings/diagnostics` |
 | **Agents** (`dashboard.js:634-637`) | Who is working → **Work** and **Step**. AI workers → **Settings**, once per computer. | `#/projects` |
 | **Messages** (`dashboard.js:394-406`) | **Settings › Messages**. The header keeps a "Messages" link. | `#/settings/messages` |
@@ -569,7 +571,7 @@ The new screens keep every request check the server has today:
 Settings shows, per project:
 
 - **Review only** · On. "AIWorks stops when a result passes the check and is published. You merge and release."
-- **Auto Release** · Off · "Not available. Turning this on needs your separate release approval for this project, which has not been given." ([#13](https://github.com/netbka/aiworks/issues/13), D5-gate)
+- **Auto Release** · Off · "Not available. Turning this on needs your separate release approval for this project, which has not been given." (#13, D5-gate)
 
 There is no switch until the D5-gate decision and #13 exist. Text only, no disabled control.
 
@@ -577,10 +579,10 @@ There is no switch until the D5-gate decision and #13 exist. Text only, no disab
 
 | Power | State in this design | Waits for |
 | --- | --- | --- |
-| Starting work from the dashboard | designed (S10), built switched off | [#8](https://github.com/netbka/aiworks/issues/8) supervisor admission API, owner question Q1 |
-| Local admission without GitHub | designed (S12), not built | D4: an AW-005 amendment (owner); D2: Engineering Platform local project identity |
-| Auto Release | text only, no control | D5-gate (owner), [#13](https://github.com/netbka/aiworks/issues/13) |
-| Telegram delivery of Needs me | not designed here; Needs me stays the one source | [#1](https://github.com/netbka/aiworks/issues/1), owner question Q3 |
+| Starting work from the dashboard | designed (S10), built switched off | #8 supervisor admission API, owner question Q1 |
+| Local admission without GitHub | designed (S12), not built | D4: an AW-005 amendment (owner); D2: governance provider local project identity |
+| Auto Release | text only, no control | D5-gate (owner), #13 |
+| Telegram delivery of Needs me | not designed here; Needs me stays the one source | #1, owner question Q3 |
 
 ---
 
@@ -680,8 +682,8 @@ Order: S0 first, then S1. S2–S8 may run in parallel after S1, with one owner p
 
 - **Outcome.** Plan and do → Review → "Approve and start" for a GitHub project, under AW-005.
 - **Files.** `src/dashboard/server.mjs` (one POST route), `src/dashboard/supervisor.mjs`, `src/dashboard/public/dashboard.js`.
-- **Dependency (Supervisor API).** A reviewed admission API from [#8](https://github.com/netbka/aiworks/issues/8) that registers a declaration only if it is on main and unchanged (AW-005), and the duplicate check from [#5](https://github.com/netbka/aiworks/issues/5) and [#6](https://github.com/netbka/aiworks/issues/6).
-- **Tests.** `tests/dashboard/approve.test.mjs`: CSRF and Origin required; a changed plan is a conflict; a declaration not on main is refused; a repeat with the same request ID is acknowledged once.
+- **Dependency (Supervisor API).** A reviewed admission API from #8 that registers a declaration only under private stored authorization and merged runtime code (AW-005), and the duplicate check from #5 and #6.
+- **Tests.** `tests/dashboard/approve.test.mjs`: CSRF and Origin required; a changed plan is a conflict; a declaration that differs from its private approval is refused; a repeat with the same request ID is acknowledged once.
 - **Acceptance.** No dashboard path registers work that the CLI would refuse.
 - **Waits for.** Owner question Q1, and #8.
 
@@ -689,28 +691,28 @@ Order: S0 first, then S1. S2–S8 may run in parallel after S1, with one owner p
 
 - **Outcome.** Add project for GitHub, local Git and plain folders; the Projects primary action.
 - **Files.** `src/dashboard/server.mjs`, `src/dashboard/supervisor.mjs`, `src/dashboard/public/dashboard.js`.
-- **Dependency (Supervisor API).** Project connection from [#7](https://github.com/netbka/aiworks/issues/7).
+- **Dependency (Supervisor API).** Project connection from #7.
 - **Tests.** `tests/dashboard/connect.test.mjs` with disposable folders and git repositories: no file in the folder changes on connect; the full path is never served back; an unregistered GitHub project reads as in §5.2.
 - **Acceptance.** An uncoached reviewer adds a plain folder (#11 acceptance).
-- **Waits for.** #7. Starting work in a local project also waits for D2 (Engineering Platform) and D4 (owner).
+- **Waits for.** #7. Starting work in a local project also waits for D2 (governance provider) and D4 (owner).
 
 ### S12. Local projects: plan, approve and apply
 
 - **Outcome.** Plan only and Plan and do for projects without GitHub; local results with "Ready to apply"; the apply action.
 - **Files.** `src/dashboard/**`.
-- **Dependency (Supervisor API).** [#7](https://github.com/netbka/aiworks/issues/7), [#8](https://github.com/netbka/aiworks/issues/8), a local reply place for the coordinator, and the local apply operation.
+- **Dependency (Supervisor API).** #7, #8, a local reply place for the coordinator, and the local apply operation.
 - **Tests.** Synthetic local projects: no pull request ever shown; apply refused on a changed folder.
 - **Acceptance.** Plan §1 acceptance for a folder without GitHub.
-- **Waits for.** D2 (Engineering Platform) and D4 (owner AW-005 amendment).
+- **Waits for.** D2 (governance provider) and D4 (owner AW-005 amendment).
 
 ### S13. Release mode switch
 
 - **Outcome.** A real Auto Release switch per project, with eligible, blocked and released states.
 - **Files.** `src/dashboard/**`.
-- **Dependency.** [#13](https://github.com/netbka/aiworks/issues/13) release adapter and evidence.
+- **Dependency.** #13 release adapter and evidence.
 - **Tests.** The switch absent without a recorded grant; released only with recorded evidence.
 - **Acceptance.** Nothing implies that passing the check means deployed.
-- **Waits for.** D5-gate (owner) and the Engineering Platform release policy.
+- **Waits for.** D5-gate (owner) and the governance provider release policy.
 
 ### Acceptance runs
 
@@ -724,12 +726,12 @@ Only questions that change a permission or a documented boundary are here. D1, D
 
 | # | Question | Recommended answer | What it unblocks |
 | --- | --- | --- | --- |
-| **Q1** | May the local dashboard start (register) work whose plan is merged on AIWorks main, when the owner presses "Approve and start"? Today the documented boundary says no campaign can be registered from the dashboard ([OPERATIONS_DASHBOARD.md, Commands](../OPERATIONS_DASHBOARD.md#commands)). | **Yes,** with the same checks as the CLI `start`: declaration on main and unchanged (AW-005), merged supervisor code, the duplicate check, CSRF and Origin, and a confirmation screen showing goal and limits. It stays loopback-only (AW-003). | S10. With D4, the local half of S12. |
-| **Q2** | D4: may a project without GitHub be approved by a tamper-evident local record instead of a declaration on main? | **Yes, as the narrow AW-005 amendment in [plan §3.2](../PROJECT_WORKSPACE_PLAN.md#32-work-request---one-authorization-autonomous-execution-inside-its-scope-owner-approved-d3):** reviewed, pinned supervisor code stays required; only the declaration's home changes. It goes through its own reviewed decision record. | S12 approval and child steps for local projects. |
-| **Q3** | Should Needs me also be sent to Telegram ([#1](https://github.com/netbka/aiworks/issues/1))? | **Not in this program.** Keep Needs me the one source, so #1 can send the same items later without a second list. | Nothing here; keeps #1 simple. |
+| **Q1** | May the local dashboard start (register) work whose plan is merged on AIWorks main, when the owner presses "Approve and start"? Today the documented boundary says no campaign can be registered from the dashboard ([OPERATIONS_DASHBOARD.md, Commands](../OPERATIONS_DASHBOARD.md#commands)). | **Yes,** with the same checks as the CLI `start`: private approved declaration and authorized (AW-005), merged supervisor code, the duplicate check, CSRF and Origin, and a confirmation screen showing goal and limits. It stays loopback-only (AW-003). | S10. With D4, the local half of S12. |
+| **Q2** | D4: may a project without GitHub be approved by a tamper-evident local record instead of a private approved declaration? | **Yes, as the narrow AW-005 amendment in [plan §3.2](../PROJECT_WORKSPACE_PLAN.md#32-work-request---one-authorization-autonomous-execution-inside-its-scope-owner-approved-d3):** reviewed, pinned supervisor code stays required; only the declaration's home changes. It goes through its own reviewed decision record. | S12 approval and child steps for local projects. |
+| **Q3** | Should Needs me also be sent to Telegram (#1)? | **Not in this program.** Keep Needs me the one source, so #1 can send the same items later without a second list. | Nothing here; keeps #1 simple. |
 | **Q4** | D5-gate: which releases may Auto Release make, and where? | **Not now.** Show Auto Release as off and unavailable until a per-project release grant exists ([plan §5.5](../PROJECT_WORKSPACE_PLAN.md#55-separate-auto-release-mode-owner-approved-d5-tracked-13)). | S13. |
 
-**Waits for Engineering Platform (not the owner here).** D2: a local project identity, so a folder without a GitHub remote can be registered without a GitHub pull request per folder. Proposed text for an EP pull request: "Project contract: allow an owner-approved local project identity (stable owner-scoped ID, local authority pointers) recorded in a local overlay validated against inherited policies. The overlay may never waive an EP policy or write the governance checkout." It unblocks starting work in S11 and S12. It is proposed as text only; no EP change is made from here.
+**Waits for governance provider (not the owner here).** D2: a local project identity, so a folder without a GitHub remote can be registered without a GitHub pull request per folder. Proposed text for a governance pull request: "Project contract: allow an owner-approved local project identity (stable owner-scoped ID, local authority pointers) recorded in a local overlay validated against inherited policies. The overlay may never waive a governance policy or write the governance checkout." It unblocks starting work in S11 and S12. It is proposed as text only; no governance change is made from here.
 
 Everything else in this document is decided here: the navigation, the copy, the routes, the folder-name-only rule, the draft storage, the "AIWorks itself" group in Needs me, the Diagnostics home for the platform roadmap and the "Passed the check" wording.
 
@@ -737,13 +739,13 @@ Everything else in this document is decided here: the navigation, the copy, the 
 
 ## 13. Blind review protocol (UX-002 pass A)
 
-Method: [EXPERIENCE_REVIEW.md](https://github.com/netbka/engineering-platform/blob/main/docs/EXPERIENCE_REVIEW.md) §1 (blind intent pass), §3 (matrix) and §4 (finding record). This section only fills in the AIWorks parts.
+Method: EXPERIENCE_REVIEW.md §1 (blind intent pass), §3 (matrix) and §4 (finding record). This section only fills in the AIWorks parts.
 
 ### 13.1 Disposable dashboard
 
 The person running the review prepares it; the reviewer never sees these steps.
 
-1. Make a fresh temporary directory, for example with `mkdtemp`. Never use `D:/Git/aiworks/.local` or the live data directory.
+1. Make a fresh temporary directory, for example with `mkdtemp`. Never use `C:/example/aiworks/.local` or the live data directory.
 2. Build the S0 synthetic store in `<tmp>/data/supervisor.db`. It has three made-up projects (`example/shop-app`, `example/recipes`, `example/notes-site`) and covers every §7 state: running, provider wait, paused, blocked on a decision, stopped after failures, finished with open, merged and closed pull requests, reports, unknown GitHub state, and a stopped supervisor. Leases are written with a future expiry, so "running" holds without a live supervisor. A second, empty store covers the first run.
 3. Write `<tmp>/data/config.json` with `repositories` for the three projects and `commands.gh` pointing to the S0 fake `gh` (read through `configuredGithubCommand`, observed: `src/dashboard/roadmap.mjs:10-19`). The fake returns fixture JSON and makes no network call. No credentials go in it.
 4. Start the dashboard in the foreground on **port 4319**, never 4318:
@@ -782,7 +784,7 @@ Before each task, the reviewer answers the pass-A questions: Where am I? What br
 - Each finding uses the UX-002 §4 record, severity and experience code. It names the screen, state, viewport and the dashboard revision reviewed.
 - For each screen the reviewer reached, it writes in its own words the question the screen answers. A mismatch with §4 is a finding against this design.
 - **Pass:** T1–T10 succeed without knowledge of the tool's internals, and no blocker or must finding is open.
-- Order: pass A first, on screenshots and on the running disposable dashboard. Then the constitutional pass (B), the behavioral pass (B2, UX-001) and the visual pass (C) at 320px, about 390px and about 1440px, with 200% text and one keyboard-only pass. The behavioral and visual passes have not run on the dashboard yet ([#6](https://github.com/netbka/aiworks/issues/6)).
+- Order: pass A first, on screenshots and on the running disposable dashboard. Then the constitutional pass (B), the behavioral pass (B2, UX-001) and the visual pass (C) at 320px, about 390px and about 1440px, with 200% text and one keyboard-only pass. The behavioral and visual passes have not run on the dashboard yet (#6).
 - Run it once on today's dashboard as a baseline after S0, and again after S1–S8.
 - Screenshots show synthetic data only.
 
@@ -790,6 +792,6 @@ Before each task, the reviewer answers the pass-A questions: Where am I? What br
 
 ## 14. Open unknowns
 
-- Whether each AI worker records a cost for every run, which per-step cost depends on (**unknown**; [#10](https://github.com/netbka/aiworks/issues/10)).
-- Where the coordinator will post a plan for a project with no GitHub (**unknown**; S12).
-- Whether the live HomePc dashboard matches the code at `acb9e66` (**unknown**; not checked by this design).
+- Whether each AI worker records a cost for every run, which per-step cost depends on (**unknown**; #10).
+- The local intake contract for a project with no GitHub (S12); replies stay in the dashboard under AW-004.
+- Whether the live workstation dashboard matches the code at `acb9e66` (**unknown**; not checked by this design).

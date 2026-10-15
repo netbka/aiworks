@@ -87,16 +87,16 @@ test('squash merge receipt admits only the exact reviewed PR head in the freshly
   git(env.repo, 'add', '.'); git(env.repo, 'commit', '-qm', 'coordinator squash merge');
   const squashSha = git(env.repo, 'rev-parse', 'HEAD');
   git(env.repo, 'push', 'origin', `${squashSha}:refs/heads/main`);
-  const url = 'https://github.com/netbka/Dyk/pull/123';
+  const url = 'https://github.com/example-org/sampleapp/pull/123';
   const script = join(env.tmp, 'merge-receipt.mjs');
   // The REST receipt of GET repos/{repo}/pulls/{n}; any other gh call (a GraphQL-backed gh pr view) is refused.
   const receipt = { html_url: url, merged: true, head: { sha: reviewedSha }, base: { ref: 'main' }, merge_commit_sha: squashSha };
   const setReceipt = (overrides = {}) => writeFileSync(script, `const args = process.argv.slice(2);
-if (args[0] !== 'api' || !args.includes('repos/netbka/Dyk/pulls/123')) process.exit(9);
+if (args[0] !== 'api' || !args.includes('repos/example-org/sampleapp/pulls/123')) process.exit(9);
 process.stdout.write('HTTP/2.0 200 OK\\r\\nContent-Type: application/json\\r\\n\\r\\n' +${JSON.stringify(JSON.stringify({ ...receipt, ...overrides }))});`);
   setReceipt();
   const gh = [process.execPath, script];
-  const input = { gh, repository: 'netbka/Dyk', url, headSha: reviewedSha, baseBranch: 'main' };
+  const input = { gh, repository: 'example-org/sampleapp', url, headSha: reviewedSha, baseBranch: 'main' };
   assert.equal(integratedPullRequest(input), squashSha);
   for (const overrides of [{ html_url: 'https://github.com/foreign/repo/pull/123' }, { merged: false },
     { head: { sha: base } }, { base: { ref: 'foreign' } }, { merge_commit_sha: 'invalid' }]) {
@@ -162,7 +162,7 @@ test('new checkout uses the exact validated base instead of refetching a moving 
   git(env.repo, 'fetch', 'origin', 'main');
   git(env.repo, 'push', '--force', 'origin', `${original}:refs/heads/main`);
   const ws = prepareImplementWorkspace({ git: ['git'], repoPath: env.repo,
-    worktreeRoot: env.config.repositories['netbka/Dyk'].worktreeRoot,
+    worktreeRoot: env.config.repositories['example-org/sampleapp'].worktreeRoot,
     campaignId: 'pinned', taskId: 'T2', baseBranch: 'main', baseSha: sha });
   assert.equal(ws.head, sha);
 });

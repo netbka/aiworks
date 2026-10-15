@@ -9,7 +9,7 @@ import { pendingInstructions } from '../supervisor/instructions.mjs';
 import { roleUnavailableReason, runNotCounted } from '../supervisor/adapters/executors.mjs';
 import { campaignLimits } from '../supervisor/campaign.mjs';
 import { coordinatorView, postOwnerMessage } from '../supervisor/coordinator.mjs';
-import { CODE_ROOT, storedDeclarationOnMain } from '../supervisor/provenance.mjs';
+import { CODE_ROOT, revisionNotMerged } from '../supervisor/provenance.mjs';
 import { COMMANDS, stateCopy, stopReasonWords } from './copy.mjs';
 import { configuredRepositories } from './projects.mjs';
 
@@ -33,24 +33,16 @@ function publicTaskWait(task, spec) {
 }
 
 /**
- * Why a step waits, in the owner's words (OWNER_WORKSPACE §4.7, slice S5): other steps are named by their outcome, never
- * by ID, and only supervisor-known fields are read (stored errors can quote worker text). `retryAt` is when AIWorks
- * tries again by itself. Built from today's fields; the status `wait` field replaces it later (plan §6.12 C7, UI11).
+ * Why a step waits and what AIWorks does next by itself: the supervisor's own `wait` of the step in status (RUN9,
+ * ADAPTIVE_SCHEDULER section 6), never a sentence of the dashboard's (plan §6.12 C7, UI11). Status builds it from
+ * supervisor fields only, so no worker text reaches it. Only its code, its two sentences and its time are served, with
+ * the owner's word for an AI worker (OWNER_WORKSPACE §2.1). A step being worked on, ready to start, stopped, finished or
+ * in finished work has no wait: who is on it, the stop copy or the result says where it stands.
  */
-function stepWait(task, spec, specs, taskRows) {
-  if (task.blocked || ['done', 'verified'].includes(task.state)) return null;
-  const names = (ids) => {
-    const quoted = ids.map((id) => `“${safeText(specs.get(id)?.outcome ?? specs.get(id)?.title ?? 'an earlier step', 120)}”`);
-    return quoted.length > 1 ? `${quoted.slice(0, -1).join(', ')} and ${quoted.at(-1)}` : quoted[0];
-  };
-  const be = (ids) => ids.length === 1 ? 'is' : 'are';
-  const error = String(task.last_error ?? ''), dependsOn = spec?.dependsOn ?? [];
-  if (error.startsWith('dependency-integration:') && dependsOn.length) return { text: `Starts after ${names(dependsOn)} ${be(dependsOn)} merged`, retryAt: task.retry_at ?? null };
-  if (error.startsWith('waiting for executor availability:') || error.startsWith('quota:')) return { text: 'Waiting for an AI worker to be free', retryAt: task.retry_at ?? null };
-  if (task.retry_at) return { text: 'The last run did not finish; AIWorks tries again by itself', retryAt: task.retry_at };
-  const open = dependsOn.filter((id) => taskRows.find((item) => item.task_id === id)?.state !== 'done');
-  if (task.state === 'pending' && open.length) return { text: `Starts after ${names(open)} ${be(open)} finished`, retryAt: null };
-  return null;
+const ownerWords = (text) => safeText(String(text ?? ''), 300).replace(/\bAI provider\b/g, 'AI worker').replace(/\bprovider account\b/g, 'AI worker account');
+function stepWait(task, wait, control) {
+  if (!wait || ['running', 'ready'].includes(wait.code) || task.blocked || ['finished', 'cancelled'].includes(control)) return null;
+  return { code: code(wait.code), text: ownerWords(wait.text), next: ownerWords(wait.next), until: wait.until ?? null };
 }
 
 /** A stopped step in the §7.7 words of the state copy module, with its one primary action (open the step issue). */
@@ -165,6 +157,38 @@ export function projectCosts(campaigns) {
   });
 }
 
+// ---- Model, tier, cost by unit and why a step moved up (MODEL_ROUTING slice R6, dashboard half; build slice UI12). The
+// supervisor's status (MOD6) is the one source; this only narrows it to safe values. Units are never added together: dollars
+// stay dollars, tokens stay per provider, and runs without reported dollars are counted, never shown as $0.00. ----
+
+const TIERS = ['economy', 'standard', 'strongest'];
+const modelName = (value) => /^[a-z0-9][a-z0-9._:-]{0,79}$/i.test(value ?? '') ? value : null;
+const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : 0;
+/** One run's model: the provider, the model its receipt names (null when not recorded) and its tier name. */
+const modelUsed = (view) => view ? { executor: code(view.executor), model: modelName(view.model), tier: TIERS.includes(view.tierName) ? view.tierName : null } : null;
+// The status reason is built from fixed labels only (MOD6). This keeps it to that shape, so no other text can reach the page.
+const MOVED_UP = /^Moved to the (?:economy|standard|strongest|tier \d+) model after (?:poor-quality results|(?:\w+ (?:rejected|unusable|timed-out|without evidence) (?:attempt|review)s?)(?: and \w+ (?:rejected|unusable|timed-out|without evidence) (?:attempt|review)s?)*)$/;
+/** Why a step moved to a stronger model, in the status's own words; a sentence of any other shape becomes the general one. */
+function movedUp(escalation) {
+  if (!escalation) return null;
+  const tier = TIERS.includes(escalation.toTierName) ? escalation.toTierName : null;
+  return { stage: escalation.stage === 'verify' ? 'verify' : 'implement', tier,
+    reason: MOVED_UP.test(escalation.reason ?? '') ? escalation.reason : `Moved to ${tier ? `the ${tier}` : 'a stronger'} model after poor-quality results` };
+}
+/** A step's or a work program's cost by unit: reported dollars (null, never 0, when none), tokens per provider and unknown-cost runs. */
+export function costByUnit(cost) {
+  const reported = Number.isFinite(cost?.usd?.reported) && cost.usd.reported > 0 ? cost.usd.reported : null;
+  return { usd: reported, usdRuns: reported === null ? 0 : count(cost.usd.reportedRuns),
+    tokens: Object.entries(cost?.tokens ?? {}).filter(([kind]) => code(kind)).map(([executor, item]) => ({ executor, runs: count(item.runs),
+      input: count(item.input), output: count(item.output), cacheRead: count(item.cacheRead), cacheCreation: count(item.cacheCreation),
+      cachedInInput: count(item.runs) > 0 && count(item.inputIncludesCacheReadRuns) === count(item.runs) })),
+    unknownRuns: count(cost?.unknownCostRuns) };
+}
+/** A step's models and move up, from its status row. */
+export function stepRouting(row) {
+  return { implement: modelUsed(row?.routing?.implement), verify: modelUsed(row?.routing?.verify), movedUp: movedUp(row?.routing?.escalation) };
+}
+
 // The command names config.json may set (`commands.<name>`). Only the names leave this module, never the configured value:
 // a command is an executable path and its arguments (OWNER_WORKSPACE §8, slice S8).
 const COMMAND_NAMES = ['claude', 'codex', 'cursor', 'agy', 'chrome', 'git', 'gh'];
@@ -226,7 +250,10 @@ export function releaseModes(repositories) {
 /** Settings (slice S8): configured command names, the AI workers once for this computer, and release mode per project. */
 export function computerSettings(campaigns, config, { platform = process.platform, now = Date.now(), repositories = [] } = {}) {
   return { commands: configuredCommandNames(config), workers: aiWorkers(campaigns, config, { platform, now }),
-    releases: releaseModes([...repositories, ...campaigns.map((c) => c.repository)]) };
+    releases: releaseModes([...repositories, ...campaigns.map((c) => c.repository)]),
+    // Where supervisor faults are tracked: config.json "supervisorIssue" (a GitHub issue link) when set, so a disposable
+    // review copy can name a made-up one; otherwise null, and the owner view links AIWorks' own (owner.mjs SUPERVISOR_ISSUE).
+    supervisorIssue: /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+$/.test(config?.supervisorIssue ?? '') ? config.supervisorIssue : null };
 }
 
 // The controller's own next action for a finished campaign is one of two fixed sentences naming the repository; it
@@ -284,18 +311,31 @@ function workerProgress(dataDir, op) {
     const stat = statSync(path);
     if (!stat.isFile() || stat.size === 0 || stat.size > PROGRESS_MAX_BYTES) return null;
     let turns = 0, toolCalls = 0, lastTool = null, lastAt = null;
+    // The newest tool call that has no result yet: the worker is waiting on it (a test suite, a build), not idle.
+    let open = null;
     for (const line of readFileSync(path, 'utf8').split('\n')) {
       if (!line.trim()) continue;
       let event;
       try { event = JSON.parse(line); } catch { continue; }
       if (kind === 'claude-cli') {
+        if (event.type === 'user') {
+          const done = (Array.isArray(event.message?.content) ? event.message.content : []).filter((part) => part?.type === 'tool_result').map((part) => part.tool_use_id);
+          if (open && done.includes(open.id)) open = null;
+          continue;
+        }
         if (event.type !== 'assistant') continue;
         turns++;
         const at = Date.parse(event.timestamp ?? '');
         if (Number.isFinite(at)) lastAt = at;
-        for (const part of event.message?.content ?? []) if (part?.type === 'tool_use') { toolCalls++; lastTool = toolName(part.name); }
+        for (const part of event.message?.content ?? []) {
+          if (part?.type !== 'tool_use') continue;
+          toolCalls++; lastTool = toolName(part.name);
+          open = { id: part.id, tool: lastTool, since: Number.isFinite(at) ? at : null };
+        }
       } else {
         const item = event.item;
+        if (event.type === 'item.started' && item?.type === 'command_execution') open = { id: item.id, tool: 'command', since: stat.mtimeMs };
+        if (event.type === 'item.completed' && open && item?.id === open.id) open = null;
         if (event.type === 'item.completed' && item?.type === 'agent_message') turns++;
         if (event.type === 'item.completed' && ['command_execution', 'mcp_tool_call'].includes(item?.type)) {
           toolCalls++; lastTool = item.type === 'mcp_tool_call' ? toolName(`${item.server}.${item.tool}`) : 'command';
@@ -304,7 +344,8 @@ function workerProgress(dataDir, op) {
       }
     }
     return { source: kind === 'claude-cli' ? 'session-transcript' : 'streamed-output', turns, toolCalls, lastTool,
-      lastActivityAt: lastAt ?? stat.mtimeMs, updatedAt: stat.mtimeMs };
+      lastActivityAt: lastAt ?? stat.mtimeMs, updatedAt: stat.mtimeMs,
+      runningTool: open?.tool ?? null, runningSince: open ? open.since ?? lastAt ?? stat.mtimeMs : null };
   } catch { return null; }
 }
 
@@ -338,16 +379,22 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
   try {
     store = new Store(path, { readOnly: true });
     store.db.exec('BEGIN');
+    // The supervisor's config, so each step's wait names the same admission check the controller applies (scheduler on or off).
+    const config = readConfig(dataDir);
     const campaigns = store.all("SELECT id FROM campaigns ORDER BY CASE WHEN control IN ('finished', 'cancelled') THEN 1 ELSE 0 END, created_at").map(({ id }) => {
-      const c = store.campaign(id), status = campaignStatus(store, id, now);
+      const c = store.campaign(id), status = campaignStatus(store, id, now, { config });
       const taskRows = store.tasks(id);
       const specs = new Map(c.declaration.tasks.map((task) => [task.id, task]));
       const operations = store.openOperations(id);
       const order = status.executorOrder;
-      // Verifier rejections per task: a churn signal for the owner, not a limit.
-      const rejections = new Map();
-      for (const op of store.all("SELECT task_id, outcome FROM operations WHERE campaign_id = ? AND kind = 'verify' AND state = 'finished'", id)) {
-        if (op.outcome?.class === 'result' && (op.outcome.value?.verdict ?? op.outcome.value?.result) === 'rejected') rejections.set(op.task_id, (rejections.get(op.task_id) ?? 0) + 1);
+      // Verifier rejections per task: a churn signal for the owner, not a limit. And when each commit passed the check:
+      // the latest finished check that accepted it, by task and commit (a delegated merge that waits too long, #139).
+      const rejections = new Map(), acceptedAt = new Map();
+      for (const op of store.all("SELECT task_id, target_sha, outcome, updated_at FROM operations WHERE campaign_id = ? AND kind = 'verify' AND state = 'finished'", id)) {
+        const verdict = op.outcome?.class === 'result' ? op.outcome.value?.verdict ?? op.outcome.value?.result : null;
+        if (verdict === 'rejected') rejections.set(op.task_id, (rejections.get(op.task_id) ?? 0) + 1);
+        const key = `${op.task_id}/${op.target_sha}`;
+        if (verdict === 'accepted' && Number.isSafeInteger(op.updated_at)) acceptedAt.set(key, Math.max(acceptedAt.get(key) ?? 0, op.updated_at));
       }
       const histories = stepHistories(store, id);
       const costs = stepCosts(store, id);
@@ -387,6 +434,8 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
         runsUsed: status.runsUsed, maxWorkerRuns: status.maxWorkerRuns, recordedCostUsd: status.costUsd,
         // OWNER_WORKSPACE S7: today's totals, with unreported and running runs apart; null, never 0, when nothing reported a cost.
         cost: { reportedUsd: status.costUsd > 0 ? status.costUsd : null, unreportedRuns: status.budget.unknownCostRuns, runningRuns: operations.length },
+        // MODEL_ROUTING R6 (UI12): the same work's cost in each unit apart, from status.
+        costByUnit: costByUnit(status.costByUnit),
         executors: (c.declaration.executor.providers ?? [c.declaration.executor]).map((item) => code(item.kind)),
         providers: [...order, ...['codex-cli', 'claude-cli', 'cursor-cli'].filter((kind) => !order.includes(kind))].map((kind) => {
           const wait = status.executorWaits.find((item) => item.executor_kind === kind);
@@ -429,14 +478,20 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
           errorClass: code(String(task.last_error ?? '').split(':')[0]),
           retryAt: task.retry_at, dependsOn: specs.get(task.task_id)?.dependsOn ?? [], resultUrl: githubLink(task.pr_url),
           headSha: task.head_sha, verifiedSha: task.verified_sha, lastOutcome: lastOutcome(task.task_id),
-          // OWNER_WORKSPACE S5: why it waits, naming steps by outcome; a stop in §7.7 words; its own attempts and events.
-          wait: stepWait(task, specs.get(task.task_id), specs, taskRows),
+          // When the verified commit passed the check. Without a recorded check run, when the step last changed, which is
+          // never earlier, so a wait is never overstated.
+          verifiedAt: task.verified_sha ? acceptedAt.get(`${task.task_id}/${task.verified_sha}`) ?? task.updated_at : null,
+          // Why it waits, from status (UI11); a stop in §7.7 words and its own attempts and events (OWNER_WORKSPACE S5).
+          wait: stepWait(task, status.tasks.find((item) => item.id === task.task_id)?.wait, c.control),
           stopped: stepStopped(task, safeText(specs.get(task.task_id)?.outcome ?? specs.get(task.task_id)?.title ?? task.task_id),
             `https://github.com/${c.declaration.target.repository}/issues/${specs.get(task.task_id)?.issue}`),
           history: histories.get(task.task_id) ?? { attempts: [], events: [] },
           // OWNER_WORKSPACE S7: its runs and the cost they reported; null, never 0, when none reported one.
           cost: (({ reportedUsd, ...rest }) => ({ ...rest, reportedUsd: reportedUsd > 0 ? reportedUsd : null, checkerRejections: rejections.get(task.task_id) ?? 0 }))(
-            costs.get(task.task_id) ?? { runs: 0, reportedUsd: 0, unreportedRuns: 0, runningRuns: 0, retries: 0 }) })),
+            costs.get(task.task_id) ?? { runs: 0, reportedUsd: 0, unreportedRuns: 0, runningRuns: 0, retries: 0 }),
+          // MODEL_ROUTING R6 (UI12): its models and tiers, why it moved up, and its cost in each unit apart, from status.
+          routing: stepRouting(status.tasks.find((item) => item.id === task.task_id)),
+          costByUnit: costByUnit(status.tasks.find((item) => item.id === task.task_id)?.costByUnit) })),
         agents: operations.map((op) => {
           const beat = heartbeat(dataDir, op.run_dir);
           return { id: op.id, taskId: op.task_id, role: op.kind === 'verify' ? 'Verifier' : 'Implementer',
@@ -457,6 +512,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
       blocked: view.blocked ? safeText(view.blocked, 300) : null, reportTo: view.reportTo ?? null, runsToday: view.runsToday ?? 0, maxRunsPerDay: view.maxRunsPerDay ?? null,
       messages: view.messages.map((m) => ({ id: m.id, text: safeText(m.text, 4000), source: safeText(m.source, 80), state: code(m.state),
         receivedAt: m.receivedAt, readAt: m.readAt, answeredAt: m.answeredAt, failure: code(m.failure), retryAt: m.retryAt, attempts: m.attempts,
+        repository: m.repository, replyBody: m.replyBody ? safeText(m.replyBody, 61000) : null,
         replyState: code(m.replyState), replyUrl: githubLink(m.replyUrl),
         progress: m.state === 'read' ? (() => {
           const run = view.runs.find((item) => item.id === m.runId);
@@ -474,7 +530,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
 // changes work and never touches a project's files. "Plan and do" waits for the admission API (#8) and slice S10.
 export const PLAN_GOAL_LIMIT = 2000;
 export const PLAN_SOURCES = Object.freeze({ description: 'Just my description', issue: 'A GitHub issue', pull: 'A GitHub pull request' });
-const PLAN_AND_DO_OFF = 'Plan and do is not built yet. Today, work starts after its plan is merged into AIWorks and started on this computer.';
+const PLAN_AND_DO_OFF = 'Plan and do is not built yet. Today, work starts when an authorized private plan is registered on this computer.';
 
 /** The coordinator message for a checked Plan only request: project, where it starts from, the goal and the limits. */
 export function planRequestText({ project, goal, from, number }) {
@@ -527,8 +583,10 @@ export function postMessage(dataDir, input, now = Date.now()) {
   if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'Supervisor is unavailable.');
   const store = new Store(join(dataDir, 'supervisor.db'));
   try {
-    const text = isPlan ? planRequestText(planRequest(store, dataDir, input.plan)) : input.text;
-    return postOwnerMessage(store, { text, requestId: input.requestId, source: isPlan ? 'owner (Start work: Plan only)' : 'owner (dashboard)' }, now);
+    const plan = isPlan ? planRequest(store, dataDir, input.plan) : null;
+    const text = plan ? planRequestText(plan) : input.text;
+    return postOwnerMessage(store, { text, repository: plan?.project ?? null, requestId: input.requestId,
+      source: isPlan ? 'owner (Start work: Plan only)' : 'owner (dashboard)' }, now);
   } catch (error) {
     if (error.code === 'INVALID_MESSAGE') throw fail(400, error.message);
     if (error.code === 'CONFLICT') throw fail(409, error.message);
@@ -553,12 +611,11 @@ export function applyCommand(dataDir, input, now = Date.now(), { provenanceRoot 
   if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'Supervisor is unavailable.');
   const store = new Store(join(dataDir, 'supervisor.db'));
   try {
-    // AW-005: Resume restarts work from the stored declaration, so that declaration must be one committed in campaigns/
-    // on origin/main. Checked before the write transaction (git reads), then pinned inside it by the campaign version.
+    // Private Resume uses the registered declaration; executable code must still be merged.
     const before = input.action === 'resume' ? store.campaign(input.campaignId) : null;
     if (before?.control === 'paused') {
-      try { storedDeclarationOnMain(before.declaration, { root: provenanceRoot }); }
-      catch (error) { throw fail(409, COMMANDS.resumeRefused, `Resume refused: ${error.message}`); }
+      const notMerged = revisionNotMerged({ root: provenanceRoot });
+      if (notMerged) throw fail(409, COMMANDS.resumeRefused, `Resume refused: ${notMerged}`);
     }
     return store.tx(() => {
       const id = input.campaignId;

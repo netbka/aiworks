@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 400" width="1280" height="400" role="img" aria-labelledby="t d">
+  <title id="t">AIWorks</title>
+  <desc id="d">Your AI coding agents keep working. You step in only for decisions. Plan, build, independent check, pull request.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1d3fb8"/>
+      <stop offset="0.55" stop-color="#335eea"/>
+      <stop offset="1" stop-color="#4f7cff"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.85" cy="0.15" r="0.6">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#ffffff" stroke-opacity="0.06" stroke-width="1"/>
+    </pattern>
+  </defs>
+  <style>
+    text { font-family: Inter, "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif; }
+    .word { font-size: 46px; font-weight: 700; fill: #ffffff; letter-spacing: -0.5px; }
+    .word-light { font-weight: 400; }
+    .head { font-size: 40px; font-weight: 700; fill: #ffffff; letter-spacing: -0.6px; }
+    .sub { font-size: 21px; fill: #dbe5ff; }
+    .chip { font-size: 17px; font-weight: 600; fill: #1d3fb8; }
+    .chip-note { font-size: 13px; fill: #dbe5ff; }
+  </style>
+
+  <rect width="1280" height="400" rx="24" fill="url(#bg)"/>
+  <rect width="1280" height="400" rx="24" fill="url(#grid)"/>
+  <rect width="1280" height="400" rx="24" fill="url(#glow)"/>
+
+  <!-- Brand -->
+  <g transform="translate(72 64)">
+    <rect width="64" height="64" rx="16" fill="#ffffff"/>
+    <text x="11" y="44" font-size="30" font-weight="700" fill="#335eea" style="font-family: Inter, 'Segoe UI', Arial, sans-serif">aw</text>
+    <path d="M47 24 L56 15 M49 15 H56 V22" stroke="#335eea" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    <text x="84" y="47" class="word"><tspan class="word-light">AI</tspan>Works</text>
+  </g>
+
+  <!-- Mini status card -->
+  <g transform="translate(900 44)">
+    <rect width="308" height="206" rx="16" fill="#ffffff" fill-opacity="0.97"/>
+    <text x="20" y="34" font-size="13" font-weight="700" fill="#718096" letter-spacing="1.2">NEEDS ME</text>
+    <circle cx="26" cy="58" r="5" fill="#20815e"/>
+    <text x="40" y="63" font-size="16" font-weight="600" fill="#1d2839">Nothing is blocked on you</text>
+    <path d="M20 82 H288" stroke="#e6ebf2" stroke-width="1"/>
+    <text x="20" y="110" font-size="14" fill="#1d2839">Checkout form</text>
+    <rect x="186" y="94" width="102" height="24" rx="6" fill="#eaf0ff"/>
+    <text x="237" y="111" font-size="12.5" font-weight="600" fill="#335eea" text-anchor="middle">Being built</text>
+    <text x="20" y="146" font-size="14" fill="#1d2839">Review list</text>
+    <rect x="176" y="130" width="112" height="24" rx="6" fill="#eaf0ff"/>
+    <text x="232" y="147" font-size="12.5" font-weight="600" fill="#335eea" text-anchor="middle">Being checked</text>
+    <text x="20" y="178" font-size="14" fill="#1d2839">Search filters</text>
+    <rect x="200" y="162" width="88" height="24" rx="6" fill="#e6f4ee"/>
+    <text x="244" y="179" font-size="12.5" font-weight="600" fill="#20815e" text-anchor="middle">Merged</text>
+  </g>
+
+  <!-- Message -->
+  <text x="72" y="196" class="head">Your AI coding agents keep working.</text>
+  <text x="72" y="244" class="head">You step in only for decisions.</text>
+  <text x="72" y="286" class="sub">Runs on your own PC · every change checked by a second, independent AI · results arrive as pull requests</text>
+
+  <!-- Pipeline -->
+  <g transform="translate(72 318)">
+    <rect x="0" y="0" width="176" height="42" rx="21" fill="#ffffff"/>
+    <text x="88" y="27" class="chip" text-anchor="middle">You approve a plan</text>
+    <path d="M190 21 h28" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="M212 14 l8 7 l-8 7" stroke="#ffffff" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <rect x="234" y="0" width="150" height="42" rx="21" fill="#ffffff"/>
+    <text x="309" y="27" class="chip" text-anchor="middle">An AI builds it</text>
+    <path d="M398 21 h28" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="M420 14 l8 7 l-8 7" stroke="#ffffff" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <rect x="442" y="0" width="200" height="42" rx="21" fill="#ffffff"/>
+    <text x="542" y="27" class="chip" text-anchor="middle">A fresh AI checks it</text>
+    <path d="M656 21 h28" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="M678 14 l8 7 l-8 7" stroke="#ffffff" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <rect x="700" y="0" width="210" height="42" rx="21" fill="#ffffff"/>
+    <text x="805" y="27" class="chip" text-anchor="middle">You get a pull request</text>
+  </g>
+</svg>

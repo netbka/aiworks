@@ -23,10 +23,10 @@ function memory(t) {
   return store;
 }
 const github = (dir, patch = {}) => ({
-  id: 'site', tenant_id: 'netbka', name: 'Site', source_kind: 'github', root_path: join(dir, 'site'),
-  github_repository: 'netbka/site', base_branch: 'main', ...patch,
+  id: 'site', tenant_id: 'example-org', name: 'Site', source_kind: 'github', root_path: join(dir, 'site'),
+  github_repository: 'example-org/site', base_branch: 'main', ...patch,
 });
-const plain = (dir, patch = {}) => ({ id: 'notes', tenant_id: 'netbka', name: 'Notes', source_kind: 'folder', root_path: join(dir, 'notes'), ...patch });
+const plain = (dir, patch = {}) => ({ id: 'notes', tenant_id: 'example-org', name: 'Notes', source_kind: 'folder', root_path: join(dir, 'notes'), ...patch });
 const code = (expected) => (error) => { assert.equal(error.code, expected, error.message); return true; };
 const projectJournal = (store) => store.all("SELECT * FROM journal WHERE kind LIKE 'project-%' ORDER BY seq");
 
@@ -68,7 +68,7 @@ test('a project record survives a restart with every field intact', options, (t)
     const read = p.project(store, 'site');
     assert.deepEqual(read, created);
     assert.equal(read.version, 1);
-    assert.equal(read.fingerprint, 'netbka/site', 'a GitHub project is identified by owner/name');
+    assert.equal(read.fingerprint, 'example-org/site', 'a GitHub project is identified by owner/name');
     assert.equal(read.governance.kind, 'registry');
     assert.equal(read.capabilities.plan.allowed, true);
     assert.deepEqual(read.last_preflight.codes, ['SECRET_TRACKED']);
@@ -148,7 +148,7 @@ test('one live project per root and per GitHub repository', options, (t) => {
     assert.equal(error.message, 'This folder is already connected as "Site".');
     return true;
   });
-  assert.throws(() => p.createProject(store, github(dir, { id: 'site-copy', root_path: join(dir, 'copy'), github_repository: 'NetBKA/Site' }), 2),
+  assert.throws(() => p.createProject(store, github(dir, { id: 'site-copy', root_path: join(dir, 'copy'), github_repository: 'Example-Org/Site' }), 2),
     (error) => {
       assert.equal(error.code, 'ALREADY_CONNECTED');
       assert.equal(error.message, 'This repository is already connected as "Site".');
@@ -157,7 +157,7 @@ test('one live project per root and per GitHub repository', options, (t) => {
   // The partial unique indexes hold even for a writer that skips the module's checks.
   const row = store.get("SELECT * FROM projects WHERE id = 'site'");
   assert.throws(() => store.insert('projects', { ...row, id: 'raw-root', github_repository: null }), /UNIQUE/);
-  assert.throws(() => store.insert('projects', { ...row, id: 'raw-repo', root_key: 'elsewhere', github_repository: 'NETBKA/SITE' }), /UNIQUE/);
+  assert.throws(() => store.insert('projects', { ...row, id: 'raw-repo', root_key: 'elsewhere', github_repository: 'EXAMPLE-ORG/SITE' }), /UNIQUE/);
   p.disconnectProject(store, 'site', 1, 3);
   store.insert('projects', { ...row, id: 'raw-after', version: 1 });
   assert.equal(store.all("SELECT * FROM projects WHERE root_key = ?", row.root_key).length, 2, 'tombstones do not hold the root');
@@ -181,16 +181,16 @@ test('a remote URL with user info is stored as owner/name only', options, (t) =>
   const store = memory(t);
   const secret = 'ghp_SYNTHETICTOKEN0123456789';
   const remotes = [
-    `https://x-access-token:${secret}@github.com/NetBKA/site.git`,
-    `https://${secret}@github.com/NetBKA/site/`,
-    'git@github.com:NetBKA/site.git',
-    'ssh://git@github.com:22/NetBKA/site.git',
-    'https://github.com/NetBKA/site?tab=readme',
-    'NetBKA/site',
+    `https://x-access-token:${secret}@github.com/Example-Org/site.git`,
+    `https://${secret}@github.com/Example-Org/site/`,
+    'git@github.com:Example-Org/site.git',
+    'ssh://git@github.com:22/Example-Org/site.git',
+    'https://github.com/Example-Org/site?tab=readme',
+    'Example-Org/site',
   ];
-  for (const remote of remotes) assert.equal(p.githubRepository(remote), 'NetBKA/site', remote.replace(secret, '***'));
-  for (const remote of ['https://gitlab.com/netbka/site.git', `https://${secret}@example.com/netbka/site`, 'file:///tmp/site.git',
-    'netbka/site/extra', 'netbka', 'https://github.com/netbka', 'netbka/..', '']) {
+  for (const remote of remotes) assert.equal(p.githubRepository(remote), 'Example-Org/site', remote.replace(secret, '***'));
+  for (const remote of ['https://gitlab.com/example-org/site.git', `https://${secret}@example.com/example-org/site`, 'file:///tmp/site.git',
+    'example-org/site/extra', 'example-org', 'https://github.com/example-org', 'example-org/..', '']) {
     assert.throws(() => p.githubRepository(remote), (error) => {
       assert.equal(error.code, 'PROJECT_INVALID');
       assert.ok(!error.message.includes(secret), 'the refusal never echoes a credential');
@@ -198,8 +198,8 @@ test('a remote URL with user info is stored as owner/name only', options, (t) =>
     }, remote.replace(secret, '***'));
   }
   const saved = p.createProject(store, github(dir, { github_repository: remotes[0] }), 1);
-  assert.equal(saved.github_repository, 'NetBKA/site');
-  assert.equal(saved.fingerprint, 'NetBKA/site');
+  assert.equal(saved.github_repository, 'Example-Org/site');
+  assert.equal(saved.fingerprint, 'Example-Org/site');
   const dump = JSON.stringify([store.all('SELECT * FROM projects'), store.all('SELECT * FROM journal')]);
   assert.ok(!dump.includes(secret) && !dump.includes('x-access-token'), 'no user info reaches the store');
 });
@@ -207,7 +207,7 @@ test('a remote URL with user info is stored as owner/name only', options, (t) =>
 test('connect and disconnect write project journal entries outside any campaign', options, (t) => {
   const dir = folder(t);
   const store = memory(t);
-  const created = p.createProject(store, github(dir, { github_repository: 'https://github.com/netbka/site.git' }), 10);
+  const created = p.createProject(store, github(dir, { github_repository: 'https://github.com/example-org/site.git' }), 10);
   assert.throws(() => p.createProject(store, github(dir, { id: 'dup' }), 11), code('ALREADY_CONNECTED'));
   p.updateProject(store, 'site', created.version, { status: 'ready' }, 12);
   p.disconnectProject(store, 'site', 2, 13);
@@ -215,7 +215,7 @@ test('connect and disconnect write project journal entries outside any campaign'
   const entries = projectJournal(store);
   assert.deepEqual(entries.map((e) => [e.campaign_id, e.kind, e.at]), [[null, 'project-connected', 10], [null, 'project-disconnected', 13]],
     'a refused create and a repeated disconnect write nothing');
-  assert.deepEqual(entries[0].detail, { projectId: 'site', tenantId: 'netbka', sourceKind: 'github', githubRepository: 'netbka/site' });
+  assert.deepEqual(entries[0].detail, { projectId: 'site', tenantId: 'example-org', sourceKind: 'github', githubRepository: 'example-org/site' });
   assert.deepEqual(entries[1].detail, { projectId: 'site' });
 });
 
@@ -229,7 +229,7 @@ test('starting work stays off for projects without GitHub, and records keep to t
   assert.throws(() => p.updateProject(store, 'repo', local.version, { capabilities: off }, 2), code('LOCAL_START_OFF'));
   assert.equal(p.project(store, 'repo').capabilities.startWork.allowed, false);
   const refused = [
-    plain(dir, { id: 'a1', github_repository: 'netbka/site' }),
+    plain(dir, { id: 'a1', github_repository: 'example-org/site' }),
     plain(dir, { id: 'a2', local_branch: 'main' }),
     plain(dir, { id: 'a3', fingerprint: 'x' }),
     plain(dir, { id: 'a4', root_path: 'relative/notes' }),

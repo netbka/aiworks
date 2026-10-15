@@ -16,6 +16,18 @@ export const DETAIL_ONLY_WORDS = ['pipeline', 'fencing', 'lease', 'slots', 'cont
 export const NOT_FOR_OPEN = ['merged', 'deployed', 'released', 'live', 'done', 'accepted'];
 /** A running AI worker whose own record has not moved for this long reads "no progress" (today's dashboard rule). */
 export const STUCK_MS = 15 * 60_000;
+/** A worker waiting on one command (a test suite, a build) is busy, not stuck, for up to this long while its runner is alive. */
+export const COMMAND_MAX_MS = 60 * 60_000;
+/**
+ * Minutes a live worker has been waiting on its newest command, or null. The worker's record does not move while a long
+ * command runs, so without this a full test suite reads as "no progress" (#102). A dead runner or a command running
+ * longer than COMMAND_MAX_MS is not busy: those still read as possibly stuck.
+ */
+export function busyOnCommand(agent, now) {
+  const since = agent?.progress?.runningTool ? agent.progress.runningSince : null;
+  if (agent?.heartbeatState !== 'recent' || !Number.isFinite(since) || now - since >= COMMAND_MAX_MS) return null;
+  return Math.max(0, Math.floor((now - since) / 60_000));
+}
 /** A merge check is current for this long after a successful fetch (src/dashboard/owner.mjs MERGE_FRESH_MS). */
 export const MERGE_FRESH_MS = 15 * 60_000;
 
@@ -60,7 +72,8 @@ const STATES = {
     // After Start work exists (OW S9, build slice UI10).
     ? ['No work yet.', `Tell AIWorks what you want done in ${shortName(d.project)}.`, { label: 'Start work', route: { screen: 'start', project: d.project } }]
     : ['No work yet.', `Work in ${shortName(d.project)} appears here once it is registered on this computer. Starting work from this page is not built yet.`, null] },
-  'needs-calm': { section: '7.1', needsYou: false, copy: (d) => ['Nothing is blocked on you right now.', d.also ?? '', null] },
+  // Calm means nothing at all for the owner: reports and releases are on Results, never named here (owner, 2026-10-13).
+  'needs-calm': { section: '7.1', needsYou: false, copy: () => ['Nothing is blocked on you right now.', '', null] },
   'results-empty': { section: '7.1', needsYou: false, copy: () => ['No results yet.', 'Results appear here when a step finishes and passes the independent check.', null] },
   'cost-empty': { section: '7.1', needsYou: false, copy: () => ['No cost yet.', 'Nothing has run for this project.', null] },
   // §7.2 Disconnected
@@ -122,6 +135,9 @@ const STATES = {
   // §7.8 Finished. "Merged" only with a current merge check; unknown is said, never counted as nothing.
   'finished-open': { section: '7.8', needsYou: true, copy: (d) => ['All steps are finished.',
     `${plural(d.awaiting, 'pull request')} ${d.awaiting === 1 ? 'waits' : 'wait'} for your review${d.merged ? ` · ${d.merged} merged` : ''}.`, seeResults(d.project)] },
+  // Merging delegated by the owner (#97): the pull requests still open are merged for them, so nothing waits for them.
+  'finished-delegated': { section: '7.8', needsYou: false, copy: (d) => ['All steps are finished.',
+    `${plural(d.delegated, 'pull request')} passed the check and ${d.delegated === 1 ? 'is' : 'are'} to be merged for you${d.merged ? ` · ${d.merged} merged` : ''}.`, seeResults(d.project)] },
   'finished-merged': { section: '7.8', needsYou: false, copy: (d) => ['All steps are finished and merged.',
     `Release follows ${whose(d.project)} ${d.standing ? 'standing deploy authorization' : 'release policy'}.`, seeResults(d.project)] },
   'finished-unknown': { section: '7.8', needsYou: false, copy: (d) => ['All steps are finished.',
@@ -165,6 +181,7 @@ export function progressText(counts) {
   const parts = [`${counts.delivered ?? 0} of ${counts.total} ${counts.total === 1 ? 'step has' : 'steps have'} results`];
   if (counts.merged) parts.push(`${counts.merged} merged`);
   if (counts.awaiting) parts.push(`${counts.awaiting} waiting for your review`);
+  if (counts.delegated) parts.push(DELEGATED.progress(counts.delegated));
   if (counts.reports) parts.push(`${plural(counts.reports, 'report')} for you to read`);
   if (counts.checking) parts.push(`the merge of ${counts.checking} is being checked`);
   if (counts.unknown) parts.push(`${counts.unknown} without a recorded result link`);
@@ -223,6 +240,8 @@ function itemState(item, c, d) {
     }
   }
   const [, number] = PR.exec(item.link?.url ?? '') ?? [];
+  // A delegated merge that waited too long (#139): the step and how long it waited; its action opens the pull request.
+  if (item.kind === 'merge-stalled' && number) return ['one-thing', { action: item.text, text: item.points[0]?.text, url: item.link.url, linkLabel: `Open pull request #${number}` }];
   return ['one-thing', { action: item.action, text: item.text, url: item.link?.url ?? null, linkLabel: number ? `Review pull request #${number}` : item.link ? 'Open the step issue' : null }];
 }
 
@@ -236,7 +255,7 @@ function activeState(active, d) {
   // A worker whose own record stopped moving is said first; otherwise the first one at work.
   const agents = going.flatMap((c) => c.agents.map((agent) => ({ c, agent, task: c.tasks.find((item) => item.id === agent.taskId),
     last: agent.progress?.lastActivityAt ?? agent.outputAt ?? null })));
-  const stuck = agents.find(({ last }) => last && d.now - last >= STUCK_MS);
+  const stuck = agents.find(({ agent, last }) => last && d.now - last >= STUCK_MS && busyOnCommand(agent, d.now) === null);
   if (stuck) return [stuck.c, 'possibly-stuck', { step: capital(label(stuck.task)), minutes: Math.floor((d.now - stuck.last) / 60_000) }];
   if (agents.length) {
     const [{ c, agent, task, last }] = agents;
@@ -266,7 +285,9 @@ function finishedState(c, d) {
   const unknown = counts.total - counts.delivered + counts.checking + counts.unknown;
   if (unknown) return ['finished-unknown', { count: unknown }];
   if (counts.awaiting) return ['finished-open', { awaiting: counts.awaiting, merged: counts.merged }];
+  // Reports are the owner's to read, so they are said before pull requests merged for the owner.
   if (counts.reports) return ['finished-reports', { reports: counts.reports, merged: counts.merged }];
+  if (counts.delegated) return ['finished-delegated', { delegated: counts.delegated, merged: counts.merged }];
   return ['finished-merged', { standing: /standing deploy authorization/.test(view.finished ?? '') }];
 }
 
@@ -274,7 +295,7 @@ function finishedState(c, d) {
 function mergeNote(project, merges, counts, now) {
   const repo = (merges?.repositories ?? []).find((item) => same(item.repository, project));
   // Only work with pull requests depends on the merge check; reports do not.
-  if (!repo || repo.configured === false || !(counts?.merged || counts?.awaiting || counts?.checking)) return null;
+  if (!repo || repo.configured === false || !(counts?.merged || counts?.awaiting || counts?.delegated || counts?.checking)) return null;
   const at = Number.isSafeInteger(repo.fetchedAt) ? repo.fetchedAt : null;
   if (repo.error) return ['merge-failed', { at }];
   if (at === null) return counts?.checking ? ['merge-never', { count: counts.checking }] : null;
@@ -375,6 +396,29 @@ export function stopReasonWords(blocked, rounds = 0) {
   return 'it stopped; see Settings › Diagnostics for what AIWorks recorded';
 }
 
+/**
+ * A verified pull request whose merge the owner delegated (config.json `merges`, #17, #97): not a Needs me item, never
+ * called merged before it is. `held` is why one is held from merging, by the reason key config.json records. `by` is
+ * who merges (`merges.delegatedTo`): AIWorks itself (`supervisor`, #138) merges after its check against the latest
+ * main; anyone else is not named. There is no CI to wait for. One that waited too long since its check is `stalled`:
+ * a Needs me item again (#139).
+ */
+const MERGES_AFTER = 'AIWorks merges it after it passes the check against the latest main';
+export const DELEGATED = {
+  word: 'Passed the check',
+  note: (by) => by === 'supervisor' ? `${MERGES_AFTER}. Nothing for you to do.` : 'Will be merged for you. Nothing for you to do.',
+  row: (number, by) => `Pull request #${number} · passed the check · ${by === 'supervisor' ? MERGES_AFTER : 'will be merged for you'}`,
+  heldRow: (number, reason) => `Pull request #${number} · ${reason.charAt(0).toLowerCase()}${reason.slice(1)}`,
+  progress: (n) => `${n} to be merged for you`,
+  stalledAction: 'Check why it is not merged',
+  stalled: (hours) => `Checked and waiting to be merged for ${plural(hours, 'hour')}. Nothing has merged it.`,
+  stalledRow: (number, hours) => `Pull request #${number} · checked and waiting to be merged for ${plural(hours, 'hour')}`,
+  held: {
+    'newer-work': 'Held: waiting to be combined with newer work',
+    other: 'Held for now; the pull request says why',
+  },
+};
+
 /** Needs me items about AIWorks itself and about stopped work, in the owner's words. */
 export const NEEDS = {
   stepIssue: 'Open the step issue',
@@ -464,12 +508,27 @@ export const COMMANDS = {
   retry: 'Retry same command',
   details: 'Details',
   // aiworks#11 review F3: what happened, that nothing changed, and what the owner can do. The rule and the files are in Details.
-  resumeRefused: 'AIWorks did not resume this work. Nothing changed: it is still paused. It resumes only work whose plan is merged into AIWorks, and this work’s plan is not. Merge its plan into AIWorks, then press Resume again.',
+  resumeRefused: 'AIWorks did not resume this work. Nothing changed: it is still paused. The AIWorks software here is not merged yet. Update AIWorks to a reviewed version, then press Resume again.',
   notFound: 'This work is not recorded on this computer any more. Refresh the page to see what is.',
   closed: 'This work is finished or cancelled, so it takes no more commands. Refresh the page to see where it stands.',
   notPaused: 'Only paused work can resume. Refresh the page to see where it stands.',
   stepChanged: 'This step changed or is already finished. Refresh the page and try again.',
   noNextRun: 'No AI worker runs this step again, so it cannot get guidance. Refresh the page to see where it stands.',
+};
+
+/**
+ * When nothing on this computer reads a request (no coordinator is configured, or its configuration is invalid): Start
+ * work and Messages say so before anything is sent, keep the unsent text, and offer what the owner can do instead of
+ * sending (aiworks#11 review F10). The machine's reason is in Details.
+ */
+export const NOT_READ = {
+  title: 'Nothing will read this request yet.',
+  text: 'AIWorks on this computer is not set up to read requests, so a request sent now would wait with no answer.',
+  invalid: 'AIWorks on this computer cannot read requests: the part of its configuration file that sets up reading them is not valid.',
+  instead: 'What you can do instead: keep your text here, it is not lost, and set up request reading in the AIWorks configuration file on this computer. Then send it.',
+  setUp: 'How to set it up',
+  setUpUrl: 'https://github.com/netbka/aiworks/blob/main/docs/SUPERVISOR.md#9-owner-messages-and-the-coordinator',
+  receipt: 'nothing on this computer is set up to read requests yet',
 };
 
 /** The Cancel dialog and the guidance dialog, in the owner's words. */

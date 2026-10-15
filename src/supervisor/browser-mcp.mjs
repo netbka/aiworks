@@ -3,7 +3,7 @@
 // agy starts it from the run's mcp_config.json with the path of the run's browser.json:
 //   { chrome, profileDir, filesDir, tempDir, allowedUrlPatterns }
 // Chrome gets a fresh profile inside the run directory and a loopback debugging port, and may load only the declared
-// origins. HomePc probes (agy 1.3.3, chrome-devtools-mcp 1.10.1, Chrome 155, 2026-10-11) shaped this:
+// origins. workstation probes (agy 1.3.3, chrome-devtools-mcp 1.10.1, Chrome 155, 2026-10-11) shaped this:
 // - Puppeteer's own launch (--remote-debugging-pipe) never connected when agy was the MCP host, and every browser call
 //   timed out after 3 minutes; connecting to a Chrome started here over its debugging port works, and that Chrome runs
 //   under the run-local profile home, AppData and temporary folder agy was given;
@@ -28,7 +28,7 @@ const entry = createRequire(import.meta.url).resolve('chrome-devtools-mcp/build/
 const portFile = join(config.profileDir, 'DevToolsActivePort');
 rmSync(portFile, { force: true });
 // URL patterns do not govern WebRTC: a page's STUN/TURN traffic would go out over UDP to any address (seen with a LAN
-// host in a engineering-platform-archive#142 probe). With no proxy configured, this policy leaves WebRTC no UDP path at all.
+// host in a historical regression probe). With no proxy configured, this policy leaves WebRTC no UDP path at all.
 const browser = spawn(config.chrome, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${config.profileDir}`,
   '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-sync', '--disable-background-networking',
   '--disable-component-update', '--disable-default-apps', '--webrtc-ip-handling-policy=disable_non_proxied_udp',

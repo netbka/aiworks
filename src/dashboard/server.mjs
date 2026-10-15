@@ -5,7 +5,9 @@ import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
 import { supervisorSnapshot, applyCommand, postMessage } from './supervisor.mjs';
 import { ownerView } from './owner.mjs';
-import { configuredRepositories, projectsView } from './projects.mjs';
+import { configuredMergeDelegation } from './merges.mjs';
+import { checkConnectedProject, configuredRepositories, connectedProjects, connectProject, disconnectConnectedProject, listConnectedProjects,
+  previewProject, projectConnectionEnabled, projectsView, relocateConnectedProject } from './projects.mjs';
 import { safeText } from './roadmap.mjs';
 
 const staticFiles = new Map([
@@ -27,9 +29,11 @@ const pageNavigation = (req, path) => req.method === 'GET' && path === '/' && !r
 /**
  * roadmap: the governance roadmap (RoadmapSource). merges: the local merge check (MergeWatcher); without one, no step
  * reads as merged. No route calls GitHub: a state request only starts a local merge check, which fetches each
- * repository's base branch at most every 5 minutes.
+ * repository's base branch at most every 5 minutes. Add project (UI13), when config.json switches it on, connects a
+ * GitHub project with read-only gh calls; `projectConnection` is for tests only (synthetic gh and branch reads, gitEnv,
+ * statfs) and is never given by main.mjs.
  */
-export function createDashboardServer({ dataDir, roadmap, merges = null, host = {}, releases = {} }) {
+export function createDashboardServer({ dataDir, roadmap, merges = null, host = {}, releases = {}, projectConnection = {} }) {
   const csrf = randomBytes(32).toString('hex');
   // Which machine and dashboard version this is, so a screenshot identifies its supervisor.
   const machine = { name: safeText(host.name ?? hostname(), 64) || null, revision: /^[0-9a-f]{7,40}$/.test(host.revision ?? '') ? host.revision : null };
@@ -62,12 +66,17 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
           // Merge checks run while someone looks at the page; the answer never waits for them.
           if (merges) void merges.refresh();
           const merged = merges?.snapshot() ?? { refreshing: false, repositories: [], steps: {} };
-          const owner = ownerView(supervisor, merged, { host: machine.name, now, releases });
+          // The owner's merge delegation is read on every request, so a change to config.json shows without a restart.
+          const owner = ownerView(supervisor, merged, { host: machine.name, now, releases, delegation: configuredMergeDelegation(dataDir) });
+          // Add project is read on every request too; off, the Projects screen is exactly as before.
+          const addProject = projectConnectionEnabled(dataDir);
           return send(200, { observedAt: new Date(now).toISOString(), host: machine, supervisor, roadmap: roadmap.snapshot(),
             merges: { refreshing: merged.refreshing, repositories: merged.repositories }, owner,
-            // Projects: campaign repositories and the repositories config.json lists, by name only (never a path).
-            projects: projectsView(supervisor, owner, { repositories: configuredRepositories(dataDir) }) });
+            // Projects: campaign repositories, the repositories config.json lists and connected projects, by name only (never a path).
+            projects: projectsView(supervisor, owner, { repositories: configuredRepositories(dataDir), ...(addProject ? { records: connectedProjects(dataDir), addProject } : {}) }) });
         }
+        // The connected projects with each one's own folder, the one path a response may carry (404 while Add project is off).
+        if (path === '/api/projects') return send(200, listConnectedProjects(dataDir));
         return send(404, { error: 'Not found.' });
       }
       if (req.method !== 'POST') return send(405, { error: 'Method not allowed.' });
@@ -87,6 +96,12 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       catch { return send(400, { error: 'Invalid JSON.' }); }
       if (path === '/api/commands') return send(202, applyCommand(dataDir, value));
       if (path === '/api/messages') return send(202, postMessage(dataDir, value));
+      // Add project (UI13): each answers 404 while it is off, as before it existed.
+      if (path === '/api/projects/preflight') return send(200, previewProject(dataDir, value, projectConnection));
+      if (path === '/api/projects/connect') return send(200, connectProject(dataDir, value, projectConnection));
+      if (path === '/api/projects/check') return send(200, checkConnectedProject(dataDir, value, projectConnection));
+      if (path === '/api/projects/relocate') return send(200, relocateConnectedProject(dataDir, value, projectConnection));
+      if (path === '/api/projects/disconnect') return send(200, disconnectConnectedProject(dataDir, value));
       return send(404, { error: 'Not found.' });
     } catch (error) {
       const status = error.status ?? (error.code === 'INVALID_STATE' || error.name === 'ConflictError' ? 409 : 503);

@@ -1,4 +1,4 @@
-// Presentation follow-ups from the live reviews of the owner view (engineering-platform-archive#78): readable campaign titles, view navigation
+// Presentation follow-ups from the live reviews of the owner view (governance-archive#78): readable campaign titles, view navigation
 // that starts at the top, provider detail only where it matters, a neutral host placeholder, an explicit page
 // background, large-screen scaling and actionable supervisor-fault wording. Synthetic owner-view input only.
 import assert from 'node:assert/strict';
@@ -9,7 +9,7 @@ import { ownerView, SUPERVISOR_ISSUE } from '../../src/dashboard/owner.mjs';
 
 const ROOT = resolve(import.meta.dirname, '../..');
 const page = (file) => readFileSync(join(ROOT, 'src/dashboard/public', file), 'utf8');
-const campaign = (id, tasks = [], extra = {}) => ({ id, repository: 'netbka/Dyk', trackingIssue: 458, trackingUrl: 'https://github.com/netbka/Dyk/issues/458', purpose: null,
+const campaign = (id, tasks = [], extra = {}) => ({ id, repository: 'example-org/sampleapp', trackingIssue: 458, trackingUrl: 'https://github.com/example-org/sampleapp/issues/458', purpose: null,
   control: 'finished', readiness: 'COMPLETE', controllerLive: false, livenessDefect: false, leaseExpiresAt: null, blocker: null, tasks, agents: [], lastProgressAt: null, ...extra });
 const step = (id, title, outcome = null) => ({ id, title, outcome, state: 'pending', resultUrl: null, dependsOn: [], attempts: 0, verifierRejections: 0, verifiedSha: null });
 const view = (campaigns) => ownerView({ available: true, campaigns, coordinator: null, recent: null });
@@ -18,39 +18,40 @@ const shared = { purpose: 'Design PR inventory reconciliation' };
 
 test('campaign titles prefer declared wording; names built from ids are humanized, without issue numbers or a dash', () => {
   const v = view([
-    campaign('dyk-455-telegram-ingest', [step('FIX-455', 'Telegram ingestion: analysed messages must not be sent again')]),
-    campaign('dyk-442-pilot-whatsapp', [step('P-404', 'WhatsApp pairing code', 'WhatsApp pairing recovers an interrupted result')]),
-    campaign('dyk-458-design-contracts', [step('A', 'a'), step('B', 'b')], shared),
-    campaign('dyk-458-task-details', [step('A', 'a'), step('B', 'b')], shared),
-    campaign('dyk-closeout-458-405', [step('A', 'a'), step('B', 'b')], shared),
-    campaign('dyk-open-runtime-prs', [step('A', 'a'), step('B', 'b')], shared),
+    campaign('sampleapp-455-telegram-ingest', [step('FIX-455', 'Telegram ingestion: analysed messages must not be sent again')]),
+    campaign('sampleapp-442-pilot-whatsapp', [step('P-404', 'WhatsApp pairing code', 'WhatsApp pairing recovers an interrupted result')]),
+    campaign('sampleapp-458-design-contracts', [step('A', 'a'), step('B', 'b')], shared),
+    campaign('sampleapp-458-task-details', [step('A', 'a'), step('B', 'b')], shared),
+    campaign('sampleapp-closeout-458-405', [step('A', 'a'), step('B', 'b')], shared),
+    campaign('sampleapp-open-runtime-prs', [step('A', 'a'), step('B', 'b')], shared),
     campaign('declared', [step('A', 'a'), step('B', 'b')], { purpose: 'One accountable delivery' }),
     campaign('undeclared', [step('A', 'a'), step('B', 'b')]),
   ]);
   const titles = Object.fromEntries(Object.entries(v.campaigns).map(([id, c]) => [id, c.purpose]));
-  assert.deepEqual(titles['dyk-455-telegram-ingest'], { text: 'Telegram ingestion: analysed messages must not be sent again', from: 'step-title' }, 'one step: what it delivers');
-  assert.deepEqual(titles['dyk-442-pilot-whatsapp'], { text: 'WhatsApp pairing recovers an interrupted result', from: 'step-outcome' }, 'its declared outcome first');
+  assert.deepEqual(titles['sampleapp-455-telegram-ingest'], { text: 'Telegram ingestion: analysed messages must not be sent again', from: 'step-title' }, 'one step: what it delivers');
+  assert.deepEqual(titles['sampleapp-442-pilot-whatsapp'], { text: 'WhatsApp pairing recovers an interrupted result', from: 'step-outcome' }, 'its declared outcome first');
   assert.deepEqual(titles.declared, { text: 'One accountable delivery', from: 'declaration' });
   assert.equal(titles.undeclared, null, 'several steps and no declared purpose: the page shows the campaign id; no issue title is fetched');
-  assert.deepEqual(['dyk-458-design-contracts', 'dyk-458-task-details', 'dyk-closeout-458-405', 'dyk-open-runtime-prs'].map((id) => [titles[id].text, titles[id].variant]), [
+  assert.deepEqual(['sampleapp-458-design-contracts', 'sampleapp-458-task-details', 'sampleapp-closeout-458-405', 'sampleapp-open-runtime-prs'].map((id) => [titles[id].text, titles[id].variant]), [
     ['Design PR inventory reconciliation', 'Design contracts'], ['Design PR inventory reconciliation', 'Task details'],
     ['Design PR inventory reconciliation', 'Closeout'], ['Design PR inventory reconciliation', 'Open runtime PRs']]);
   // Numbers come back only when the names would otherwise be the same.
-  const same = view([campaign('dyk-458-fix', [step('A', 'a'), step('B', 'b')], shared), campaign('dyk-459-fix', [step('A', 'a'), step('B', 'b')], shared)]);
+  const same = view([campaign('sampleapp-458-fix', [step('A', 'a'), step('B', 'b')], shared), campaign('sampleapp-459-fix', [step('A', 'a'), step('B', 'b')], shared)]);
   assert.deepEqual(Object.values(same.campaigns).map((c) => c.purpose.variant), ['458 fix', '459 fix']);
   assert.match(page('dashboard.js'), /purpose\?\.variant \? ` \(\$\{purpose\.variant\}\)` : ''/);
   assert.doesNotMatch(page('dashboard.js'), / — \$\{purpose\.variant\}/, 'no dash before the distinguishing name');
 });
 
-test('a new view starts at its top; Back and Forward return to where that view was left', () => {
+test('a view not opened yet starts at its top; a link, Back and Forward return to where a view was left', () => {
   const js = page('dashboard.js');
-  // Scroll is remembered per address; a new destination gets a history entry and opens at its top, Back and Forward restore.
-  assert.match(js, /function go\(address, \{ restore = false \} = \{\}\) \{\r?\n  scrollMemory\.set\(current\.address, window\.scrollY\);\r?\n  const next = resolveRoute\(address\);\r?\n  if \(!restore\) history\.pushState\(null, '', next\.address\);\r?\n  else if \(next\.replace\) history\.replaceState\(null, '', next\.address\);\r?\n  current = next;\r?\n  showRoute\(\);\r?\n  window\.scrollTo\(0, restore \? scrollMemory\.get\(current\.address\) \?\? 0 : 0\);/);
+  // Scroll is remembered per address; a destination gets a history entry, Back and Forward do not, and every address
+  // returns to its own scroll, or its top when it was not opened yet (OWNER_WORKSPACE §3.3; aiworks#11 review F5).
+  assert.match(js, /function go\(address, \{ restore = false \} = \{\}\) \{\r?\n  scrollMemory\.set\(current\.address, window\.scrollY\);\r?\n  let next = resolveRoute\(address\);\r?\n[^\n]+\r?\n[^\n]+\r?\n  if \(left\) next = resolveRoute\(left\);\r?\n  if \(!restore\) history\.pushState\(null, '', next\.address\);\r?\n  else if \(next\.replace\) history\.replaceState\(null, '', next\.address\);\r?\n  current = next;\r?\n  showRoute\(\);\r?\n  window\.scrollTo\(0, scrollMemory\.get\(current\.address\) \?\? 0\);/);
   assert.match(js, /history\.scrollRestoration = 'manual'/, 'the browser does not fight the per-address scroll');
   // Every destination link opens through go(), unless the owner asked for a new tab or window.
   assert.match(js, /const anchor = event\.target\.closest\?\.\('a\[href\^="#\/"\]'\);\r?\n  if \(!anchor \|\| event\.defaultPrevented \|\| event\.button !== 0 \|\| event\.metaKey \|\| event\.ctrlKey \|\| event\.shiftKey \|\| event\.altKey\) return;\r?\n  event\.preventDefault\(\);\r?\n  if \(resolveRoute\(anchor\.getAttribute\('href'\)\)\.address !== current\.address\) go\(anchor\.getAttribute\('href'\)\);/);
   assert.match(js, /addEventListener\('hashchange', \(\) => \{ if \(location\.hash !== current\.address\) go\(location\.hash, \{ restore: true \}\); \}\)/);
-  // In-page links to other screens are links to their addresses, so they also start at the top.
+  // In-page links to other screens are links to their addresses, so they open through go() too.
   for (const target of ['#/settings/diagnostics', '#/settings/messages', '#/projects']) assert.match(js, new RegExp(`routeLink\\('[^']+', '${target}'`), `in-page link to ${target}`);
 });
 

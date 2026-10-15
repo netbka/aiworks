@@ -152,16 +152,17 @@ function call(port, path, { method = 'GET', headers = {}, body } = {}) {
 
 /**
  * Serves the review fixture (`store`: 'full' or 'empty') with the dashboard's own server and loads the page. Returns
- * { document, go(address), settle(), text(), dataDir, now }. Cleans up with the test.
+ * { document, go(address), settle(), text(), dataDir, now }. Cleans up with the test. `server`: extra options for
+ * createDashboardServer (Add project's synthetic connect options, UI13).
  */
-export async function openPage(t, { store = 'full', host = 'review-pc' } = {}) {
+export async function openPage(t, { store = 'full', host = 'review-pc', server: serverOptions = {} } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'aiworks-page-'));
   const fixture = buildReviewFixture(join(root, 'review'), { store });
   const { dataDir } = fixture;
   const merges = new MergeWatcher({ steps: () => publishedSteps(dataDir), checkouts: configuredCheckouts(dataDir), git: configuredGitCommand(dataDir) });
   await merges.refresh();
   const roadmap = { snapshot: () => ({ entries: [], governance: { configured: false, reason: 'Not used by this test.' } }) };
-  const server = createDashboardServer({ dataDir, roadmap, merges, host: { name: host, revision: '0123456789ab' } });
+  const server = createDashboardServer({ dataDir, roadmap, merges, host: { name: host, revision: '0123456789ab' }, ...serverOptions });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const { port } = server.address();
@@ -201,7 +202,15 @@ export async function openPage(t, { store = 'full', host = 'review-pc' } = {}) {
   await import(pathToFileURL(file).href);
   delete globalThis[key];
 
-  const settle = async () => { for (let i = 0; i < 400 && (pending || i < 5); i++) await new Promise((done) => setImmediate(done)); };
+  const settle = async () => {
+    const deadline = Date.now() + 15_000;
+    let quiet = 0;
+    while (quiet < 5) {
+      if (Date.now() >= deadline) throw new Error('Dashboard requests did not settle within 15 seconds');
+      await new Promise((done) => setTimeout(done, 5));
+      quiet = pending ? 0 : quiet + 1;
+    }
+  };
   /** Opens an address the way Back, Forward or an edited address does, then waits for the page to finish. */
   const go = async (address) => { location.hash = address; window.listeners.hashchange?.forEach((listener) => listener(new Event('hashchange'))); await settle(); };
   await settle();

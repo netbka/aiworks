@@ -1,16 +1,18 @@
 # AIWorks - Project-first owner workspace and adaptive delivery plan
 
+**Privacy boundary:** this is a design proposal, not a live installation record. Campaign declarations and approval records stay private under [AW-009](DECISIONS.md#aw-009---public-commits-contain-no-installation-data). Any proposal to publish declarations through source branches or pull requests is superseded. Merged executable code, explicit owner authorization, scope binding and independent verification remain required.
+
 **Status:** PLANNING ONLY. Owner approved four product-direction decisions on 2026-10-12 (recorded in section 8). These are design requirements, **not** authorization to change the running supervisor, merge/deploy, add credentials or override AW-001..AW-007. Execution/release permissions remain governed by the applicable, separately reviewed authorization gates.
 
-**Prepared:** 2026-10-12. Repository basis: `netbka/aiworks` main at `c63333cc04581e469d7fed4840f470db8dda7a09`, and the linked `netbka/engineering-platform` main. Every "current" statement below describes inspected repository code/docs as of this revision; it is not a new live-host check.
+**Prepared:** 2026-10-12. Repository basis: `example-org/aiworks` main at `<revision>`, and the linked `example-org/governance` main. Every "current" statement below describes inspected repository code/docs as of this revision; it is not a new live-host check.
 
-**Tracking:** This planning PR plus [Workspace #7](https://github.com/netbka/aiworks/issues/7), [#8](https://github.com/netbka/aiworks/issues/8), [#9](https://github.com/netbka/aiworks/issues/9), [#10](https://github.com/netbka/aiworks/issues/10), [#11](https://github.com/netbka/aiworks/issues/11), and [#13](https://github.com/netbka/aiworks/issues/13) (opt-in automatic release); existing [#1](https://github.com/netbka/aiworks/issues/1)..[#6](https://github.com/netbka/aiworks/issues/6). This is the one implementation-roadmap document for this redesign. GitHub issues/PRs remain the live work-state authority.
+**Tracking:** This planning PR plus Workspace #7, #8, #9, #10, #11, and #13 (opt-in automatic release); existing #1..#6. This is the one implementation-roadmap document for this redesign. GitHub issues/PRs remain the live work-state authority.
 
 ## 1. Product, stated from the owner's job
 
 **One sentence:** AIWorks runs and supervises AI-assisted delivery across the owner's local projects - with or without GitHub and even when the starting folder has no Git metadata. Connect a folder, specify an outcome or existing work, approve one scoped work program, then let AIWorks plan, dispatch, independently check, adapt and continue. An optional separately authorized release mode can complete a project's delivery when its verified release gates permit it.
 
-**The job:** "I develop several applications. I want to connect each project, tell the system what to work on, let it choose a reasonable number and tier of agents, and see what has been delivered, what is running and what I must decide - without babysitting terminals or reading an engineering control panel."
+**The job:** Connect projects, authorize an outcome, let the supervisor route and independently check bounded work, and understand deliveries and blockers without monitoring individual terminals.
 
 AIWorks is **not** a Git hosting provider, chat-first general assistant, portfolio governance registry, multi-user cloud SaaS, remote-access system or generic autonomous backlog claimer. It **will** provide an opt-in release workflow through a separately governed adapter, without replacing the project-specific release authority.
 
@@ -31,21 +33,21 @@ A **project** is the primary product object. A **campaign** is one authorized wo
 | Present and useful | Limitation requiring work |
 | --- | --- |
 | Deterministic supervisor with SQLite operations, fencing, restart recovery, worker/verifier separation (`src/supervisor/`) | The owner must prepare `campaigns/*.json` and register through the CLI. There is no dashboard create-project/create-campaign route. |
-| Configured local Git checkouts and isolated worktrees (`README.md`, `src/supervisor/adapters/git.mjs`) | Paths/repos are manually registered in local `config.json`; no folder-first onboarding. GitHub remote and EP GitHub-repository match are currently required for campaign admission. Fully local/no-Git support needs a new scoped local project contract and adapter. |
+| Configured local Git checkouts and isolated worktrees (`README.md`, `src/supervisor/adapters/git.mjs`) | Paths/repos are manually registered in local `config.json`; no folder-first onboarding. GitHub remote and governance GitHub-repository match are currently required for campaign admission. Fully local/no-Git support needs a new scoped local project contract and adapter. |
 | Coordinator with durable owner-message receipts and read-only research (`src/supervisor/coordinator.mjs`) | It proposes work but does not turn an approved plan into a registered execution program. |
 | Task DAG, declarative executor chain, project governance lookup (`src/supervisor/campaign.mjs`, `controller.mjs`) | `limits.slots` permits only `1`; `schedule()` exits when one operation is open. No adaptive parallelism or fair cross-project capacity controller. |
 | Explicit Claude/Codex/Cursor models, AGY/browser adapter, independent verifier, provider fallback and some cost receipts | Provider order/model choices are declared per campaign, not quality/cost-selected per task/role. Some costs remain unreported; account cooldown scope across campaigns is a risk (#5). |
 | Dashboard with owner-attention reconciliation, GitHub issue/PR metadata, commands, receipts and activity (`src/dashboard/`) | Global sections are Overview / Plans / Issues & PRs / Agents / Messages / Activity; Overview mixes every concern. A project is not the main navigation context. |
-| EP inherited governance and AIWorks-local `AGENTS.md`, decisions and constitution | Inheritance is already correct; **do not fork EP policies or duplicate generic documentation here**. |
+| governance inherited governance and AIWorks-local `AGENTS.md`, decisions and constitution | Inheritance is already correct; **do not fork governance policies or duplicate generic documentation here**. |
 
-Current GitHub snapshot: zero open PRs and six pre-existing open issues when this planning work began (#1..#6). Archived `engineering-platform-archive` PRs [#126](https://github.com/netbka/engineering-platform-archive/pull/126) and [#139](https://github.com/netbka/engineering-platform-archive/pull/139) are **closed and unmerged**; issue [#6](https://github.com/netbka/aiworks/issues/6) tracks their selective port. The current branch's planning-only PR should not race with those runtime files or with the previously reserved audit-fix work in #5.
+Current GitHub snapshot: zero open PRs and six pre-existing open issues when this planning work began (#1..#6). Archived `governance-archive` PRs #126 and #139 are **closed and unmerged**; issue #6 tracks their selective port. The current branch's planning-only PR should not race with those runtime files or with the previously reserved audit-fix work in #5.
 
 ### Existing authority and constraints (non-negotiable for this plan)
 
 - [AIWorks AGENTS.md](../AGENTS.md), [Product Constitution](PRODUCT_CONSTITUTION.md), [Decisions AW-001..AW-007](DECISIONS.md), [Supervisor](SUPERVISOR.md), [Worker Context Lifecycle](WORKER_CONTEXT_LIFECYCLE.md).
-- [EP Constitution](https://github.com/netbka/engineering-platform/blob/main/docs/CONSTITUTION.md), [Agent Operating Model](https://github.com/netbka/engineering-platform/blob/main/docs/AGENT_OPERATING_MODEL.md), [Continuation](https://github.com/netbka/engineering-platform/blob/main/docs/CONTINUATION.md), [Owner Intervention](https://github.com/netbka/engineering-platform/blob/main/docs/OWNER_INTERVENTION.md), [Governance Inheritance](https://github.com/netbka/engineering-platform/blob/main/docs/GOVERNANCE_INHERITANCE.md), [AGENT-001](https://github.com/netbka/engineering-platform/blob/main/policies/AGENT-001.json), [Delivery Practices](https://github.com/netbka/engineering-platform/blob/main/docs/DELIVERY_PRACTICES.md), [Experience Review / UX-002](https://github.com/netbka/engineering-platform/blob/main/docs/EXPERIENCE_REVIEW.md), [Behavioral Interaction / UX-001](https://github.com/netbka/engineering-platform/blob/main/docs/BEHAVIORAL_INTERACTION.md).
-- EP owns portfolio policies, project registry, role catalog and project-contract schemas. AIWorks reads the governance checkout, never writes it as a side effect of project selection. `registry/projects/aiworks.json` already registers AIWorks with `ui` and `worker` capabilities. **Gap:** the existing GitHub-identified registry/target contract cannot express an ordinary folder without a remote. Support requires a reviewed EP-compatible local project identity/contract and explicit project governance inheritance, not skipping governance checks.
-- AW-001 currently prohibits supervisor merges, deployments and provider-resource mutations. The owner now wants a **separate, opt-in Auto Release mode** (#13), but this new direction does **not** amend AW-001 or itself grant runtime deployment rights. A narrowly reviewed AW decision, scoped release capability and required EP release authorization must precede enablement. AW-003: local-only dashboard; AW-006: no combined dashboard across machines. "Several projects" means several local projects on this machine.
+- governance Constitution, Agent Operating Model, Continuation, Owner Intervention, Governance Inheritance, AGENT-001, Delivery Practices, Experience Review / UX-002, Behavioral Interaction / UX-001.
+- governance owns portfolio policies, project registry, role catalog and project-contract schemas. AIWorks reads the governance checkout, never writes it as a side effect of project selection. `registry/projects/aiworks.json` already registers AIWorks with `ui` and `worker` capabilities. **Gap:** the existing GitHub-identified registry/target contract cannot express an ordinary folder without a remote. Support requires a reviewed governance-compatible local project identity/contract and explicit project governance inheritance, not skipping governance checks.
+- AW-001 currently prohibits supervisor merges, deployments and provider-resource mutations. The owner now wants a **separate, opt-in Auto Release mode** (#13), but this new direction does **not** amend AW-001 or itself grant runtime deployment rights. A narrowly reviewed AW decision, scoped release capability and required governance release authorization must precede enablement. AW-003: local-only dashboard; AW-006: no combined dashboard across machines. "Several projects" means several local projects on this machine.
 - AW-002: no default run/cost ceilings. Safety limits for actual host/provider concurrency are not equivalent to a monetary/run cap. All user-declared budgets remain honored.
 - AW-004: the coordinator stays read-only; it proposes plans but cannot itself register/dispatch. AW-005: the **initial authorized campaign declaration** and executable code come from merged AIWorks `main`; UI convenience cannot bypass either gate. Approved autonomous subtask expansion **inside that immutable authorization envelope** requires a separately reviewed, versioned DAG amendment design; it must not execute unmerged code or silently widen scope.
 - One accountable Task Controller per parent outcome; fresh independent verifier; durable bounded packets; no idle model calls, credential copies, peer-to-peer orchestration or invented completion evidence.
@@ -63,7 +65,7 @@ A **project is a local directory**, not a GitHub repository. Support three input
 | Local Git | Absent | Yes | Local commit/revision graph, isolated worktrees, local review and independent evidence; no pretend remote PR. |
 | Plain local folder | Absent | Absent | Owner-selected source folder; AIWorks manages its own isolated, revisioned mirror/workspaces **outside the source**, with an explicit apply/publish operation and reversible snapshot/backup. Never run `git init` or overwrite user files silently. |
 
-**Governance gap:** Today project admission depends on an EP registry entry keyed by GitHub repository. Before local-only dispatch, review and extend EP's project-identity/registration contract to authorize a local project by stable owner-scoped ID and approved local authority pointers. **Prefer a one-time EP contract extension with an owner-authorized local project registry overlay** validated against inherited EP policies, so adding each ordinary folder does not require a new GitHub PR. The local overlay may never waive an EP policy or overwrite the governance checkout. Do not bypass governance because a remote does not exist.
+**Governance gap:** Today project admission depends on a governance registry entry keyed by GitHub repository. Before local-only dispatch, review and extend the governance contract's project-identity/registration contract to authorize a local project by stable owner-scoped ID and approved local authority pointers. **Prefer a one-time governance contract extension with an owner-authorized local project registry overlay** validated against inherited governance policies, so adding each ordinary folder does not require a new GitHub PR. The local overlay may never waive a governance policy or overwrite the governance checkout. Do not bypass governance because a remote does not exist.
 
 A local connection references:
 - stable owner-scoped project ID, source kind, canonical local root, selected source revision/snapshot, isolated worktree or managed mirror root, machine identity and optional GitHub identity/base branch;
@@ -74,7 +76,7 @@ A local connection references:
 
 **Local-folder write contract:** Use a revisioned snapshot or internal managed Git mirror as the agent's source-of-truth staging surface, not an uncontrolled writable copy of the original. Bind a baseline hash/manifest before task dispatch; agents only mutate isolated staged workspaces. Before applying results to the owner's source, check for changes/conflicts, owner-selected output policy and reversibility; preserve original files/backups, refuse unresolved overlaps and record a verifiable local result. Symlinks, junctions, nested repositories, file permissions, case-folding on Windows, ignored/secret-like paths, oversized projects, binary changes, deletes and external file mutation must have explicit preflight and tests. No automatic whole-folder recursive command or secret copying.
 
-Connection does not itself authorize execution or release. Require tests across GitHub, local Git and non-Git sources with two concurrent projects. Keep EP's role, policy, ownership and evidence constraints for all three modes.
+Connection does not itself authorize execution or release. Require tests across GitHub, local Git and non-Git sources with two concurrent projects. Keep the governance contract's role, policy, ownership and evidence constraints for all three modes.
 
 
 ### 3.2 Work request - one authorization, autonomous execution inside its scope (owner approved D3)
@@ -128,7 +130,7 @@ Project status distinguishes planned, executing, paused, provider-wait, blocked-
 | **Results / What is delivered and what remains?** | Delivered steps, accepted commits and open PRs clearly distinct from merged/deployed | **Review result** / **Open PR** | Detailed check evidence |
 | **Cost / What did the outcome cost?** | Actual reported project and accepted-outcome consumption, unknown separately | **Inspect breakdown** | Raw token/input/cache and provider receipts |
 
-Keep a maximum of one obvious primary button per state; do not show inactive technical buttons as decoration. Empty, disconnected, no-worker, GitHub-stale, paused, running, blocked and finished states each require explicit truthful copy. Preserve selected project, route, scroll and unsent draft after refresh/back. Navigation shows a short project name rather than campaign IDs; link actual GitHub artifacts when a remote exists and verified local artifacts otherwise. Add a project-scoped `Release mode` entry (Review only / Auto Release), where Auto Release stays unavailable until separately authorized (#13). Existing `Needs you` correctness, lifecycle evidence and receipts in [#4](https://github.com/netbka/aiworks/issues/4) are **reused**, not thrown away.
+Keep a maximum of one obvious primary button per state; do not show inactive technical buttons as decoration. Empty, disconnected, no-worker, GitHub-stale, paused, running, blocked and finished states each require explicit truthful copy. Preserve selected project, route, scroll and unsent draft after refresh/back. Navigation shows a short project name rather than campaign IDs; link actual GitHub artifacts when a remote exists and verified local artifacts otherwise. Add a project-scoped `Release mode` entry (Review only / Auto Release), where Auto Release stays unavailable until separately authorized (#13). Existing `Needs you` correctness, lifecycle evidence and receipts in #4 are **reused**, not thrown away.
 
 **Language (owner approved D9):** The UI is **English only for this release**. Keep all labels, errors, actions and empty states in natural, short English; do not allocate a localization framework or Russian copy work. Use normal human outcomes and short verbs. Avoid "pipeline", "fencing", "lease", "slots", "project control plane" or "campaign declaration" at the primary UI level. Technical terms belong in diagnostics. Current interface is English; adding Russian/localization is an open scope choice, not an implied blocker. UX-001/UX-002 reviews apply to the actual interactive local dashboard; start with a blind task-oriented review before approving visual polish.
 
@@ -157,11 +159,11 @@ Current code: `campaign.mjs` rejects `limits.slots != 1`; `controller.mjs.schedu
 
 Keep the existing SQLite work authority, revision-pinned task packets, lease generations, process containment and idempotent external effects. No parallel implementation/verifier work on the *same* material deliverable without the existing verification sequencing and independence. A controller crash cannot let another project unknowingly duplicate a partially applied write.
 
-**Acceptance gates:** serial-vs-parallel outcome comparison, independent tasks really overlap, conflicts never do; two projects make progress without starvation; crash/restart/timeout/unknown-acceptance and quota recovery do not duplicate an external write. Evidence comes from synthetic/focused tests before HomePc rehearsal.
+**Acceptance gates:** serial-vs-parallel outcome comparison, independent tasks really overlap, conflicts never do; two projects make progress without starvation; crash/restart/timeout/unknown-acceptance and quota recovery do not duplicate an external write. Evidence comes from synthetic/focused tests before workstation rehearsal.
 
 ### 5.3 Role/model/cost routing
 
-Use the role catalog already in EP: orchestrator, product/system architect, UX, frontend, backend, DB, security, independent verifier, product reviewer, release and observer. Do **not** duplicate this catalog. Assign a role only when it has a real independent decision, work product or acceptance obligation.
+Use the role catalog already in governance: orchestrator, product/system architect, UX, frontend, backend, DB, security, independent verifier, product reviewer, release and observer. Do **not** duplicate this catalog. Assign a role only when it has a real independent decision, work product or acceptance obligation.
 
 Provider eligibility is determined from **this host's** configured authorized CLIs, permissions, project constraints, role capability and real observed errors. Provider/model *cost and reliability* are attributes of a task stage, not a reason to weaken verification. Proposed decision pipeline:
 
@@ -172,11 +174,11 @@ Provider eligibility is determined from **this host's** configured authorized CL
 5. Preserve the chosen executable/model and reason in a versioned receipt so replay/diagnostics are unambiguous. An owner pin overrides ranking within safe permissions.
 6. Keep unreported pricing/usage as **unknown**. A subscription-based or provider-limited CLI may not expose a reliable marginal dollar cost; report native units and comparable observed workload without fictional savings.
 
-No idle LLM heartbeat, no provider account rotations outside granted accounts, no default monetary/run caps (AW-002), no new autonomous recurring spend under EP's portfolio rules. Measure baseline and run a small cohort before claiming optimized token or dollar savings.
+No idle LLM heartbeat, no provider account rotations outside granted accounts, no default monetary/run caps (AW-002), no new autonomous recurring spend under the governance contract's portfolio rules. Measure baseline and run a small cohort before claiming optimized token or dollar savings.
 
 ### 5.4 Owner intervention and results
 
-Reuse [#1](https://github.com/netbka/aiworks/issues/1) for blocker dedup/Telegram recovery, [#4](https://github.com/netbka/aiworks/issues/4) for owner-attention evidence, and [#5](https://github.com/netbka/aiworks/issues/5) for duplicate prevention and parent-outcome closure. Do not build another notifications database, parent state machine or separate watchdog LLM. Persistent warnings must route to the same owner queue whether seen locally or through the approved Telegram transport.
+Reuse #1 for blocker dedup/Telegram recovery, #4 for owner-attention evidence, and #5 for duplicate prevention and parent-outcome closure. Do not build another notifications database, parent state machine or separate watchdog LLM. Persistent warnings must route to the same owner queue whether seen locally or through the approved Telegram transport.
 
 
 ### 5.5 Separate Auto Release mode (owner approved D5; tracked #13)
@@ -186,37 +188,37 @@ Reuse [#1](https://github.com/netbka/aiworks/issues/1) for blocker dedup/Telegra
 - **Review only** - default, current behavior. AIWorks stops after a verified publish/candidate and gives a truthful next action. It never merges, deploys or applies staged changes automatically.
 - **Auto Release** - explicitly enabled **per project and destination/environment** after its own versioned release authorization and necessary independent validation. It may progress a verified candidate through release and post-release checks without asking again for each routine eligible deployment **only within the standing grant**.
 
-**Critical authority boundary:** Existing AW-001 prohibits supervisor merge/deploy. The user's approval of this *feature* does not grant production rights to the current supervisor. Before runtime enablement, create a narrowly scoped AW decision/constitution amendment and align the target project's EP contract/release policies, independently review the actual release adapter and perform a disposable rehearsal. Do not grant implementer/verifier agents deployment credentials; release is a separate scoped role/capability with dedicated local authorization and kill switch.
+**Critical authority boundary:** Existing AW-001 prohibits supervisor merge/deploy. The user's approval of this *feature* does not grant production rights to the current supervisor. Before runtime enablement, create a narrowly scoped AW decision/constitution amendment and align the target project's governance contract/release policies, independently review the actual release adapter and perform a disposable rehearsal. Do not grant implementer/verifier agents deployment credentials; release is a separate scoped role/capability with dedicated local authorization and kill switch.
 
-**Eligibility:** immutable candidate artifact/revision; independent verification of the exact revision; required tests/security/UX evidence for that target; authorized destination and permitted change class; no stale dependency or changed head; appropriate migration/rollback readiness; no new recurring spend or elevated permissions; exclusive destination lock and durable idempotent deployment state. Missing/unknown evidence blocks release. Irreversible/destructive migrations and other EP owner-reserved triggers must stop and request owner approval.
+**Eligibility:** immutable candidate artifact/revision; independent verification of the exact revision; required tests/security/UX evidence for that target; authorized destination and permitted change class; no stale dependency or changed head; appropriate migration/rollback readiness; no new recurring spend or elevated permissions; exclusive destination lock and durable idempotent deployment state. Missing/unknown evidence blocks release. Irreversible/destructive migrations and other governance owner-reserved triggers must stop and request owner approval.
 
 **GitHub vs local:** When a GitHub project has a permitted merge gate, Auto Release can use that approved gate and then deploy. A GitHub-less local project has **no PR merge step**: its authorized release adapter checks the original source baseline, applies/publishes an exact reviewed revision to a configured local target with reversible backup, verifies the actual result and records it locally. Never silently copy changes over concurrent owner edits or deploy to arbitrary folders.
 
 **Post-release:** validate health/journey evidence, record target revision and outcome, offer a real pause/revoke/rollback action, alert for failure through #1. A restart reconciles unknown acceptance, rather than repeating a potentially irreversible action. Distinguish merged, applied, deployed and end-user accepted status - including unknown.
 
-**Delivery waves:** govern/authorize release capability -> eligibility evaluator and compact project UI -> local/GitHub release adapters -> independent safety and rollback tests -> explicitly authorized canary. Implementation belongs to [#13](https://github.com/netbka/aiworks/issues/13), not this planning PR. No real release is currently authorized.
+**Delivery waves:** govern/authorize release capability -> eligibility evaluator and compact project UI -> local/GitHub release adapters -> independent safety and rollback tests -> explicitly authorized canary. Implementation belongs to #13, not this planning PR. No real release is currently authorized.
 
 ## 6. Build order, lanes and file ownership
 
-**In short.** First, AIWorks stops losing time to its own problems: a stopped supervisor comes back by itself (#18), publishing survives a GitHub limit (#21), a pull request that conflicts after a sibling merge is repaired without a hand-written campaign (#27), and more than one step can run at a time. After that, five lanes run as parallel campaigns. Powers that wait for an owner decision ([#24](https://github.com/netbka/aiworks/issues/24) D2, [#32](https://github.com/netbka/aiworks/issues/32) D4, [#33](https://github.com/netbka/aiworks/issues/33) D5-gate) are built switched off, or not built, and each row says which.
+**In short.** First, AIWorks stops losing time to its own problems: a stopped supervisor comes back by itself (#18), publishing survives a GitHub limit (#21), a pull request that conflicts after a sibling merge is repaired without a hand-written campaign (#27), and more than one step can run at a time. After that, five lanes run as parallel campaigns. Powers that wait for an owner decision (#24 D2, #32 D4, #33 D5-gate) are built switched off, or not built, and each row says which.
 
-This section consolidates the implementation slices of the six merged designs: [PROJECT_CONNECTION](design/PROJECT_CONNECTION.md#10-implementation-slices) (PC), [WORK_ENVELOPE](design/WORK_ENVELOPE.md#12-implementation-slices) (WE), [ADAPTIVE_SCHEDULER](design/ADAPTIVE_SCHEDULER.md#10-implementation-slices) (SCH), [MODEL_ROUTING](design/MODEL_ROUTING.md#13-implementation-slices) (MR), [OWNER_WORKSPACE](design/OWNER_WORKSPACE.md#11-implementation-slices) (OW) and [AUTO_RELEASE](design/AUTO_RELEASE.md#11-implementation-slices) (AR). The designs hold the detail (exact tests, acceptance, reasons). This section decides order, lanes and file ownership only. It replaces the earlier wave table.
+This section consolidates the implementation slices of the six merged designs: [PROJECT_CONNECTION](design/PROJECT_CONNECTION.md#10-implementation-slices) (PC), [WORK_ENVELOPE](design/WORK_ENVELOPE.md#12-implementation-slices) (WE), [ADAPTIVE_SCHEDULER](design/ADAPTIVE_SCHEDULER.md#10-implementation-slices) (SCH), [MODEL_ROUTING](design/MODEL_ROUTING.md#13-implementation-slices) (MR), [OWNER_WORKSPACE](design/OWNER_WORKSPACE.md#11-implementation-slices) (OW) and [AUTO_RELEASE](design/AUTO_RELEASE.md#11-implementation-slices) (AR), plus the later [SCOPED_READING](design/SCOPED_READING.md#13-implementation-slices) (SR, added 2026-10-14 as lane READ). The designs hold the detail (exact tests, acceptance, reasons). This section decides order, lanes and file ownership only. It replaces the earlier wave table.
 
 ### 6.1 Where things stand (observed on main at `f912d23`, 2026-10-12)
 
 | Item | State |
 | --- | --- |
-| F0-STOPPERS (#17), F1-AW005 (via I1-F1-AW005, #27 workaround), LD1-LOCAL-DATA (#16), R1-REST-PUBLISH (#21), the six designs | Merged on main (observed). Merged is not deployed: what runs on HomePc is **unknown** here. |
-| R2-KEEPER (#18), F2-DUPLICATE (#5 scope A), F3-CARRYOVER (#6) | Declared in `campaigns/aw-reliability.json` and `campaigns/aw-foundation.json`; not merged (observed). They run before every lane below. |
-| #27 (conflicting published PR) | Open. Only the one-off `aw-integrate-f1` workaround exists. |
+| F0-STOPPERS (#17), F1-AW005 (via I1-F1-AW005, #27 workaround), LD1-LOCAL-DATA (#16), R1-REST-PUBLISH (#21), the six designs | Merged on main (observed). Merged is not deployed: what runs on workstation is **unknown** here. |
+| R2-KEEPER (#18), F2-DUPLICATE (#5 scope A), F3-CARRYOVER (#6) | Declared in `campaigns/example-reliability.json` and `campaigns/example-foundation.json`; not merged (observed). They run before every lane below. |
+| #27 (conflicting published PR) | Open. Only the one-off `example-integrate-f1` workaround exists. |
 | One-slot limit | Still in code: `limits.slots` must be 1 and `schedule()` stops at one open operation (observed, [SCH §3](design/ADAPTIVE_SCHEDULER.md#3-every-place-that-assumes-one-slot-and-what-replaces-it)). |
 | #24, #32, #33 | Open owner decisions. Each default keeps today's behaviour. |
 
 ### 6.2 The rules every slice follows
 
 - **One slice is one reviewable PR**, with `npm run check` and synthetic tests only (disposable stores and git repositories, synthetic executables as in `tests/supervisor/helpers.mjs`; no model, network or GitHub call).
-- **Supervisor changes** need the independent review of the exact head ([AGENTS.md](../AGENTS.md#changing-the-supervisor)). The supervisor's verification of the exact head counts as that review (#17).
-- **Merged is not deployed.** Nothing changes on HomePc except through the upgrade procedure ([SUPERVISOR.md §6](SUPERVISOR.md#6-running-on-homepc)). Only the enablement slices (RUN10, MOD7, REL11) touch the live runtime, and each waits for an owner answer.
+- **Supervisor changes** need the independent review of the exact head ([AGENTS.md](../AGENTS.md#review-and-runtime-maintenance)). The supervisor's verification of the exact head counts as that review (#17).
+- **Merged is not deployed.** Nothing changes on workstation except through the upgrade procedure ([SUPERVISOR.md §6](SUPERVISOR.md#6-installation-and-maintenance)). Only the enablement slices (RUN10, MOD7, REL11) touch the live runtime, and each waits for an owner answer.
 - **Within a lane, slices run in the listed order.** A slice that waits for a decision never holds up the later slices of its lane that do not depend on it; those are listed last.
 - **Across lanes, a shared file has one writer at a time.** A slice that changes a shared file starts only after every earlier slice in [6.9](#69-shared-files-and-the-order-that-avoids-conflicts) that changes the same file is merged. A lane campaign declares that as a dependency with `requiresMergedDependencies`.
 - **Off means today.** A slice built switched off ships with its switch off, and with the switch off the full existing suite passes unchanged.
@@ -230,8 +232,9 @@ Paths: `sup/` is `src/supervisor/`, `dash/` is `src/dashboard/`, `pub/` is `src/
 | **RUN** - keep it running, several steps at once | A conflicting PR is repaired by itself; independent steps run in parallel, fairly across projects, safe across crashes. | RUN1-RUN10 | First. Owns the first turn on `controller.mjs`. |
 | **MOD** - model choice and cost | Each step uses a fitting model; cost is shown honestly, unknown stays unknown. | MOD1-MOD7 | MOD1 at once; MOD2 after RUN6. |
 | **STA** - connect projects and start work | Projects connect (GitHub, local Git, plain folder); one approval grows its own task graph. | STA1-STA17 | STA1, STA2 at once; STA3 after RUN6. |
-| **UI** - owner workspace | One question per screen, project first. Every dashboard file is changed only in this lane. | UI1-UI17 | At once. |
+| **UI** - owner workspace | One question per screen, project first. Every dashboard file is changed only in this lane. | UI1-UI17; UI18 (the dashboard half of lane READ, 6.8a) | At once. |
 | **REL** - Auto Release, switched off | Release can be checked and rehearsed, but never runs until #33. | REL1-REL11 | At once (REL1). |
+| **READ** - scoped reading | A plan marks the sections a worker must read; the verifier reads everything and cites the rule a returned change broke; the repair round receives that section. Misses are counted, never assumed away. | READ1-READ3; UI18 runs in lane UI | READ1 at once: every earlier writer of its files is merged (observed on main at `ec7b1b3`, 2026-10-15). READ2 after READ1, READ3 after READ2, UI18 after READ3. |
 
 The declared tasks R2-KEEPER, F2-DUPLICATE and F3-CARRYOVER are not repeated in a lane. They are dependencies. They overlap each other: R2-KEEPER and F2-DUPLICATE both change `sup/api.mjs` and SUPERVISOR.md, in two campaigns with no declared order (observed). Recommended order: R2-KEEPER, then F2-DUPLICATE, then F3-CARRYOVER. The one merged second needs an integration round: the `aw-integrate` workaround until RUN1 exists.
 
@@ -249,7 +252,7 @@ The declared tasks R2-KEEPER, F2-DUPLICATE and F3-CARRYOVER are not repeated in 
 | **RUN7** | Host memory, CPU, disk and heartbeat pressure stop new admission; running work continues. | `sup/host.mjs` (new), `sup/scheduler.mjs`, `ts/scheduler.test.mjs` | RUN5 | SCH S5 test | No |
 | **RUN8** | A quota outcome halves an account's concurrency; useful results raise it again. | `sup/accounts.mjs`, `sup/scheduler.mjs`, `ts/provider-accounts.test.mjs` | RUN3, RUN7 | SCH S6 test | No |
 | **RUN9** | Status gives one plain wait reason and the next automatic action for every waiting step (supervisor half of SCH S8). | `sup/api.mjs` (`wait` per task), `ts/status.test.mjs` | RUN8, REL4 (api turn) | Status returns one reason per waiting task, built only from supervisor fields | No |
-| **RUN10** | The live runtime runs the scheduler (`scheduler.enabled: true`), after a disposable two-project rehearsal on HomePc. Runbook only. | SUPERVISOR.md §6, `docs/STATUS.md` | RUN1-RUN8 merged (RUN9 recommended) | Full suite at the deployed SHA; serial vs parallel on HomePc; status before and after | Not #24/#32/#33. Waits for SCH Q2 and Q3 (owner; no issue raised yet, gap G5). |
+| **RUN10** | The live runtime runs the scheduler (`scheduler.enabled: true`), after a disposable two-project rehearsal on workstation. Runbook only. | SUPERVISOR.md §6, `docs/STATUS.md` | RUN1-RUN8 merged (RUN9 recommended) | Full suite at the deployed SHA; serial vs parallel on workstation; status before and after | Not #24/#32/#33. Waits for SCH Q2 and Q3 (owner; no issue raised yet, gap G5). |
 
 ### 6.5 Lane MOD - model choice and cost
 
@@ -257,11 +260,11 @@ The declared tasks R2-KEEPER, F2-DUPLICATE and F3-CARRYOVER are not repeated in 
 | --- | --- | --- | --- | --- | --- |
 | **MOD1** | `supervisor baseline` prints the cost and outcome baseline from any store, read-only. | `sup/baseline.mjs` (new), `sup/cli.mjs`, SUPERVISOR.md (short section), `ts/baseline.test.mjs` (new) | R2-KEEPER (cli.mjs), RUN1 (SUPERVISOR.md) | MR R1 tests; store byte-identical after the run | No |
 | **MOD2** | Every new operation stores a static routing receipt naming today's choice and model. Behaviour unchanged. | `sup/router.mjs` (new), `sup/store.mjs` (`routing` column), `sup/controller.mjs` (`executorChoice`), `ts/routing-receipt.test.mjs` (new) | MOD1, STA3 (controller turn), REL3 (store turn) | MR R2 tests, including replay and `after-record` crash | No |
-| **MOD3** | `routing`, task `role`, risk and complexity validate; roles come from EP's catalog in the governance checkout. | `sup/governance.mjs`, `sup/campaign.mjs`, `sup/api.mjs` (routing amendment), `tests/fixtures/governance/registry/agents.json`, `ts/campaign-registry.test.mjs`, SUPERVISOR.md | MOD2, RUN4 (`writes`), RUN9 (api turn), F2-DUPLICATE | MR R3 tests; no scope digest in `campaigns/` changes | No |
+| **MOD3** | `routing`, task `role`, risk and complexity validate; roles come from the governance contract's catalog in the governance checkout. | `sup/governance.mjs`, `sup/campaign.mjs`, `sup/api.mjs` (routing amendment), `tests/fixtures/governance/registry/agents.json`, `ts/campaign-registry.test.mjs`, SUPERVISOR.md | MOD2, RUN4 (`writes`), RUN9 (api turn), F2-DUPLICATE | MR R3 tests; no scope digest in `campaigns/` changes | No |
 | **MOD4** | The router policy as a pure function (`routing-policy/1`). | `sup/router.mjs`, `ts/router.test.mjs` (new) | MOD3 | MR R4 tests and the MR §10 table | No |
 | **MOD5** | Campaigns with `routing.mode: "auto"` dispatch with the router's model; escalation follows recorded outcomes only. | `sup/controller.mjs`, `sup/adapters/executors.mjs`, `ts/fixtures/fake-claude.mjs`, `ts/routing.test.mjs` (new) | MOD4, RUN3 (account waits), STA9 (controller turn) | MR R5 tests; no model call on idle ticks | No |
 | **MOD6** | Status carries model, tier, cost by unit, unknown-cost count and escalation reason per step (supervisor half of MR R6). | `sup/api.mjs`, `ts/status.test.mjs` | MOD5, RUN9 (status test) | Units never summed; unknown stays unknown | No |
-| **MOD7** | Baseline recorded, one cohort runs with routing on HomePc, comparison published. Runbook and one declaration. | SUPERVISOR.md, `docs/STATUS.md`, one cohort file in `campaigns/` | MOD1-MOD5 merged and deployed (MOD6 recommended) | `supervisor baseline` before and after; status before and after | Not #24/#32/#33. Waits for MR Q1 and Q2 (owner; no issue raised yet, gap G5). |
+| **MOD7** | Baseline recorded, one cohort runs with routing on workstation, comparison published. Runbook and one declaration. | SUPERVISOR.md, `docs/STATUS.md`, one cohort file in `campaigns/` | MOD1-MOD5 merged and deployed (MOD6 recommended) | `supervisor baseline` before and after; status before and after | Not #24/#32/#33. Waits for MR Q1 and Q2 (owner; no issue raised yet, gap G5). |
 
 ### 6.6 Lane STA - connect projects and start work
 
@@ -277,13 +280,13 @@ The declared tasks R2-KEEPER, F2-DUPLICATE and F3-CARRYOVER are not repeated in 
 | **STA8** | Child tasks are admitted, chained to the envelope and idempotent across crash and retry. | `sup/plan.mjs`, `sup/controller.mjs`, `sup/work-ownership.mjs`, `ts/plan-admission.test.mjs`, `ts/plan-crash.test.mjs` (new) | STA7 | WE E3 tests: every widening refused with its code | No |
 | **STA9** | Children run with their own packet binding, re-checked before every dispatch. | `sup/controller.mjs`, a new controller test file under `ts/` | STA8, RUN4 (changed paths) | WE E4 tests; declared tasks' packets byte-identical | No |
 | **STA10** | AIWorks adds steps by itself and closes the outcome with a generated closing check. | `sup/adapters/executors.mjs`, `sup/controller.mjs`, `ts/envelope-e2e.test.mjs` (new) | STA9, MOD5 (controller and executors turn) | WE E5 tests; #8 acceptance "one start ... finish without the owner" | No |
-| **STA11** | An approved GitHub plan can only start as approved: declaration read from `origin/main`, digest equal to the approval. | `sup/approvals.mjs` (new), `sup/provenance.mjs`, `sup/cli.mjs`, `ts/approval-main.test.mjs` (new) | STA10, F1-AW005 (merged), REL4 (cli turn) | WE E7 tests | No |
+| **STA11** | An approved plan starts only under its exact private approval digest and merged runtime code. | Private approvals, local loader and CLI | STA10 and merged runtime enforcement | Private approval tests | No public declaration |
 | **STA12** | The owner can ask by goal, issue, PR or plan file, or plan only; drafts are never scheduled. | `sup/intake.mjs` (new), `sup/coordinator.mjs`, `sup/store.mjs` (`work_requests`, `work_drafts`), `ts/intake.test.mjs` (new) | STA11, STA1, STA4 | WE E6 tests | No |
-| **STA13** | The supervisor can open (never merge) the declaration PR for an approved plan, built behind `DECLARATION_PR = false`. | `sup/approvals.mjs`, `sup/adapters/github.mjs`, `ts/helpers.mjs` (synthetic `gh` routes) | STA12, R1-REST-PUBLISH (merged), RUN1 (helpers turn) | WE E9 tests: one file, exact bytes, branch `declare/<id>`, never a merge call | **#32 item 2.** Built off; nothing is pushed until the owner says yes. |
+| **STA13** | Persist private approved declarations and register them idempotently; never publish a declaration PR. | Private approval store and local loader | STA12 | Restart and digest-binding tests | Private installation data only |
 | **STA14** | Local projects get verified candidates in a local ledger, never a fake PR. Inert until local admission is on. | `sup/local-candidates.mjs` (new), `sup/controller.mjs` (publish branch for local kinds), `ts/local-candidates.test.mjs` (new) | STA13, STA9, STA5 | WE E10 tests; `gh` never called | Built now, inert; used only after #24 and #32 (STA17). |
-| **STA15** | AIWorks side of D2: local overlay entries validate against EP's merged schema; `LOCAL_ADMISSION` stays false. | `sup/local-overlay.mjs` (new), `sup/campaign.mjs` (`overlayGovernance`), `tests/fixtures/governance-overlay/` (copy of EP's merged schema), `ts/local-overlay.test.mjs` (new) | STA14, STA4; EP merge of the PC §7.3 change | PC S7 tests | **#24.** Not built until #24 is answered and EP merges the schema (the fixture copies the merged schema). Meanwhile local projects connect and are checked but get no rules. |
+| **STA15** | AIWorks side of D2: local overlay entries validate against the governance contract's merged schema; `LOCAL_ADMISSION` stays false. | `sup/local-overlay.mjs` (new), `sup/campaign.mjs` (`overlayGovernance`), `tests/fixtures/governance-overlay/` (copy of the governance contract's merged schema), `ts/local-overlay.test.mjs` (new) | STA14, STA4; governance merge of the PC §7.3 change | PC S7 tests | **#24.** Not built until #24 is answered and governance merges the schema (the fixture copies the merged schema). Meanwhile local projects connect and are checked but get no rules. |
 | **STA16** | D4 local admission built and tested with synthetic keys, behind `LOCAL_ADMISSION = false`. | `sup/local-admission.mjs` (new), trust-root reader, `ts/local-admission.test.mjs` (new) | STA15, STA14, STA11, STA8 | WE E11 tests with a synthetic `ssh-keygen` | **#32** to use; built off. Its STA15 dependency makes it wait for **#24** too (C9). |
-| **STA17** | Work starts on projects without GitHub: `LOCAL_ADMISSION = true`, trust root on main, D4 recorded. | `sup/local-admission.mjs`, trust-root file on main, `docs/DECISIONS.md`, SUPERVISOR.md | STA16, UI16 (rules approval) | WE E12 full local end-to-end with a synthetic signer | **#32** (items 1 and 3) and **#24**. Stays off until both. |
+| **STA17** | Work starts on projects without GitHub: `LOCAL_ADMISSION = true`, private installation trust root, D4 recorded. | `sup/local-admission.mjs`, private trust-root file, `docs/DECISIONS.md`, SUPERVISOR.md | STA16, UI16 (rules approval) | WE E12 full local end-to-end with a synthetic signer | **#32** (items 1 and 3) and **#24**. Stays off until both. |
 
 ### 6.7 Lane UI - owner workspace
 
@@ -326,10 +329,23 @@ Every slice ships with `release.enabled: false` and no release credential (AR §
 | **REL7** | Deploy, check and rollback through the project's own commands at the exact revision, with drift check and automatic rollback. | `sup/release/deploy.mjs` (new), `ts/release-deploy.test.mjs` (new) | REL6 | AR R7 tests | Built off; a real destination waits for **#33** |
 | **REL8** | `local-git-apply` and `local-folder-apply` with backup, apply, confirm, rollback and reconciliation. | `sup/release/local-apply.mjs` (new), `ts/release-local.test.mjs` (new) | REL4, STA5 | AR R8 tests, none skipped on Windows | **#24** (a local grant needs D2), then **#33**. Not built before #24. |
 | **REL9** | The release decision and its three cross-references are recorded with the next free AW number (C2). | `docs/DECISIONS.md`, `docs/PRODUCT_CONSTITUTION.md`, `AGENTS.md`, `docs/STATUS.md` | REL7, F3-CARRYOVER (REL8 not needed) | `npm run check`; text matches the owner's accepted wording | **#33** item 1. Not written before. |
-| **REL10** | EP's project-contract schema accepts the release executor and record; AIWorks's registry entry carries it. **An EP pull request by EP's process, proposed from here as text only.** | In `netbka/engineering-platform`: `schemas/project-contract.schema.json`, `registry/projects/aiworks.json` | REL9 | EP's own validation | **#33** and EP review |
-| **REL11** | Disposable rehearsal on HomePc, then one granted canary. Runbook only. | SUPERVISOR.md (enable and roll back), `docs/STATUS.md` | REL1-REL7, REL9, REL10 merged and deployed (REL8 for a local canary, UI15 recommended) | Full suite at the deployed SHA; forced check failure with rollback; controller killed mid-merge and mid-deploy | **#33** items 1-3. Nothing before. |
+| **REL10** | the governance contract's project-contract schema accepts the release executor and record; AIWorks's registry entry carries it. **An governance pull request by the governance contract's process, proposed from here as text only.** | In `example-org/governance`: `schemas/project-contract.schema.json`, `registry/projects/aiworks.json` | REL9 | the governance contract's own validation | **#33** and governance review |
+| **REL11** | Disposable rehearsal on workstation, then one granted canary. Runbook only. | SUPERVISOR.md (enable and roll back), `docs/STATUS.md` | REL1-REL7, REL9, REL10 merged and deployed (REL8 for a local canary, UI15 recommended) | Full suite at the deployed SHA; forced check failure with rollback; controller killed mid-merge and mid-deploy | **#33** items 1-3. Nothing before. |
 
 REL8 to REL11 wait for decisions; REL9 does not wait for REL8.
+
+### 6.8a Lane READ - scoped reading and verifier citations
+
+Added 2026-10-14 from [SCOPED_READING](design/SCOPED_READING.md). A task reference may name one section of a Markdown document (`docs/SUPERVISOR.md#3-lifecycle-of-one-task`); the controller resolves it at the pinned revision into a reading guide for the prompt, and an anchor that does not resolve widens to the whole document and is journalled, never blocks. The verifier reads every referenced document in full and cites the section a blocking finding rests on; the repair packet carries that section as a reference and in the finding text; later siblings in the same campaign get it in their guide. The packet schema, the worker-context policy and every anchor-free declaration's digests are unchanged. No saving is claimed: `supervisor baseline` reports the miss and fallback counts and compares cohorts only when both have five finished tasks. Seven further improvements are written and parked in [SR §10](design/SCOPED_READING.md#10-parked-written-not-built) with the evidence that would un-park each.
+
+Nothing in this lane is built (planned). Every slice it waits for (STA8, STA10, MOD5, MOD6, UI12) is merged on main, and so are STA12 and STA14, which changed `sup/coordinator.mjs`, `sup/controller.mjs` and `sup/api.mjs` after the design was first written (observed at `ec7b1b3`, 2026-10-15; merged is not deployed). STA10 put the planning-step prompt in `sup/adapters/executors.mjs` (`PLAN_RULE`), so READ3 also writes that file. UI18 changes dashboard files, so it runs in lane UI (6.7) and is listed here for the outcome.
+
+| ID | Outcome | Owns | Depends on | Tests | Owner decision |
+| --- | --- | --- | --- | --- | --- |
+| **READ1** | `path#anchor` validates in declarations and child amendments; a pure resolver (slugs, headings, extents) exists. No behaviour change. | `sup/reading.mjs` (new), `sup/campaign.mjs` (reference rule), `sup/plan.mjs` (A5), SUPERVISOR.md §1, `ts/reading.test.mjs` (new) | STA8 | SR §13 READ1: slugs of every design document's headings match their own links; exact, unique-prefix, ambiguous and missing anchors; secret-like behind an anchor refused; every synthetic fixture's digests unchanged | No |
+| **READ2** | Dispatch resolves anchors into a reading guide; implementer and verifier prompts carry the SR §5 wording; verifier findings may cite `path#anchor`; cites of blocking findings reach the repair packet; brokered research reads the path part. | `sup/controller.mjs`, `sup/adapters/claude.mjs`, `sup/adapters/executors.mjs`, `sup/adapters/research-context.mjs`, `ts/reading-dispatch.test.mjs` (new) | READ1, STA10 and STA14 (controller turn; STA10 also executors), MOD5 | SR §13 READ2: heading moved between two commits resolves then falls back; anchor-free packets and prompts byte-identical; a bad cite never invalidates a verdict; cap by priority; `covered`, `section-miss`, `unreferenced-doc` classified | No |
+| **READ3** | Siblings in one campaign inherit cited sections in their guide (prompt only); the coordinator and the planning step mark sections; status and baseline report the counts. | `sup/controller.mjs`, `sup/coordinator.mjs` (both drafting prompts), `sup/adapters/executors.mjs` (`PLAN_RULE`, the STA10 planning prompt), `sup/api.mjs` (`reading` per task), `sup/baseline.mjs` (`aiworks-baseline/2`), `ts/coordinator.test.mjs`, `ts/status.test.mjs`, `ts/baseline.test.mjs` | READ2, MOD6 and STA14 (api turn; MOD6 also status test), STA10 (plan prompt), STA12 (coordinator turn) | SR §13 READ3: carry-forward only to section-referencing siblings, bounded 4 per document and 8 per dispatch, packet digests unchanged; "not comparable" below five finished tasks per cohort; store byte-identical after `baseline` | No |
+| **UI18** | The Step screen says which rule a returned change broke and which sections the next attempt was given. | `dash/supervisor.mjs`, `dash/copy.mjs`, `pub/dashboard.js`, `td/work.test.mjs` | READ3, UI12 | SR §13 UI18: copy for fallbacks, misses and extensions; nothing shown for `reading: null`; no document text served | No |
 
 ### 6.9 Shared files and the order that avoids conflicts
 
@@ -337,35 +353,42 @@ Files touched by one lane only (for example `sup/scheduler.mjs`, `sup/router.mjs
 
 **Turn order:** R2-KEEPER → F2-DUPLICATE → F3-CARRYOVER → RUN1 → RUN1B → STA1 → MOD1 → RUN2 → RUN3 → REL2 → RUN4 → RUN5 → REL3 → REL4 → RUN6 → RUN9 → STA3 → MOD2 → MOD3 → STA6 → STA7 → STA8 → STA9 → MOD5 → MOD6 → STA10 → STA11 → STA12 → STA13 → REL6 → STA14 → RUN10 → MOD7 → STA15 → STA16 → STA17 → REL9 → REL11.
 
+**Lane READ (added 2026-10-14, re-checked against main at `ec7b1b3` on 2026-10-15)** joins the order after STA14: READ1 → READ2 → READ3, each after the slice above that last touched its files. Every earlier writer of a READ file is merged (observed). READ1 touches `sup/campaign.mjs` after STA7 and before STA15, `sup/plan.mjs` after STA8 and SUPERVISOR.md after STA7 and before RUN10. READ2 touches `sup/controller.mjs` after STA14 and `sup/adapters/executors.mjs` after STA10. READ3 touches `sup/controller.mjs` and `sup/adapters/executors.mjs` after READ2, `sup/api.mjs` after STA14, `ts/status.test.mjs` after MOD6 and `sup/coordinator.mjs` after STA12. STA14 merged first (#162), so its controller turn comes before READ2 and READ3.
+
 | Shared file | Writers, in order |
 | --- | --- |
-| `sup/controller.mjs` | RUN1, RUN1B, RUN2, RUN3, RUN4, RUN5, RUN6, STA3, MOD2, STA6, STA8, STA9, MOD5, STA10, STA14 |
+| `sup/controller.mjs` | RUN1, RUN1B, RUN2, RUN3, RUN4, RUN5, RUN6, STA3, MOD2, STA6, STA8, STA9, MOD5, STA10, STA14, READ2, READ3 |
 | `sup/store.mjs` | F2-DUPLICATE, STA1, RUN2, RUN3, RUN5, REL3, MOD2, STA6, STA12 |
-| `sup/api.mjs` | R2-KEEPER, F2-DUPLICATE, RUN1B, RUN2, RUN3, REL2, REL4, RUN9, MOD3, STA6, MOD6 |
-| `sup/campaign.mjs` | F2-DUPLICATE, RUN4, STA3, MOD3, STA7, STA15 |
+| `sup/api.mjs` | R2-KEEPER, F2-DUPLICATE, RUN1B, RUN2, RUN3, REL2, REL4, RUN9, MOD3, STA6, MOD6, STA14 (observed: #162 changed it), READ3 |
+| `sup/campaign.mjs` | F2-DUPLICATE, RUN4, STA3, MOD3, STA7, READ1, STA15 |
+| `sup/plan.mjs` | STA6 (creates), STA8, READ1 |
+| `sup/coordinator.mjs` | STA12, READ3 |
+| `sup/baseline.mjs` | MOD1 (creates), READ3 |
+| `sup/adapters/claude.mjs` | READ2 |
+| `sup/adapters/research-context.mjs` | READ2 |
 | `sup/cli.mjs` | R2-KEEPER, MOD1, REL4, STA11 |
 | `sup/work-ownership.mjs` | F2-DUPLICATE (creates), RUN4, STA8 |
 | `sup/adapters/github.mjs` | R1-REST-PUBLISH (merged), RUN1B, STA13, REL6 |
-| `sup/adapters/executors.mjs` | MOD5, STA10 |
+| `sup/adapters/executors.mjs` | MOD5, STA10, READ2, READ3 |
 | `ts/helpers.mjs` | R2-KEEPER, RUN1, STA13 |
-| `ts/status.test.mjs` | RUN9, MOD6 |
+| `ts/status.test.mjs` | RUN9, MOD6, READ3 |
 | `dash/supervisor.mjs` | R2-KEEPER, then lane UI only |
-| `docs/SUPERVISOR.md` | R2-KEEPER, F2-DUPLICATE, F3-CARRYOVER, RUN1, RUN1B, MOD1, RUN3, RUN4, RUN5, REL4, MOD3, STA7, RUN10, MOD7, STA17, REL11 |
+| `docs/SUPERVISOR.md` | R2-KEEPER, F2-DUPLICATE, F3-CARRYOVER, RUN1, RUN1B, MOD1, RUN3, RUN4, RUN5, REL4, MOD3, STA7, READ1, RUN10, MOD7, STA17, REL11 |
 | `docs/STATUS.md` | F3-CARRYOVER, RUN10, MOD7, REL9, REL11 |
 | `docs/DECISIONS.md` | F3-CARRYOVER, STA17, REL9 |
 
 Two cases need the order spelled out:
 
-- **`controller.mjs` is the bottleneck.** Fifteen slices change it, one at a time. RUN goes first because parallel work and conflict repair speed up every later slice. Meanwhile the other lanes do their slices that avoid it: STA1, STA2, MOD1, MOD4, REL1 to REL5, REL7 and all of lane UI.
+- **`controller.mjs` is the bottleneck.** Seventeen slices change it (fifteen before lane READ), one at a time. RUN goes first because parallel work and conflict repair speed up every later slice. Meanwhile the other lanes do their slices that avoid it: STA1, STA2, MOD1, MOD4, REL1 to REL5, REL7 and all of lane UI.
 - **STA17 and REL9 both append a decision** after an owner answer whose timing is unknown. The listed order holds; if #33 is answered first, REL9 may go first, and STA17 then starts after REL9 is merged. Both only append a new record.
 
 ### 6.10 What waits for #24, #32 and #33
 
 | Decision | Built switched off meanwhile | Stays off or unbuilt until answered |
 | --- | --- | --- |
-| [#24](https://github.com/netbka/aiworks/issues/24) D2 - local projects inherit EP rules | STA4, STA5 connect local projects with `LOCAL_START_OFF`; STA14 local candidates, inert; UI13 connects local projects and says starting work is not available | STA15 (needs EP's merged schema), STA16 (through STA15), STA17, UI16, UI17, REL8 |
-| [#32](https://github.com/netbka/aiworks/issues/32) D4 - starting projects without GitHub | STA13 declaration PR publisher (`DECLARATION_PR = false`); STA16 local admission (`LOCAL_ADMISSION = false`, once #24 lets it be built); UI14 approve with automatic start off | STA17 (`LOCAL_ADMISSION = true`), UI17; STA13 on (item 2); UI14 automatic start (C3) |
-| [#33](https://github.com/netbka/aiworks/issues/33) D5-gate - Auto Release | REL1-REL7 (`release.enabled: false`, no credential); UI15 (Review only, Stop all releases, no switch without a grant); STA7 refuses `auto-release` | REL9, REL10, REL11; any real grant, credential or canary; REL8 also needs #24 |
+| #24 D2 - local projects inherit governance rules | STA4, STA5 connect local projects with `LOCAL_START_OFF`; STA14 local candidates, inert; UI13 connects local projects and says starting work is not available | STA15 (needs the governance contract's merged schema), STA16 (through STA15), STA17, UI16, UI17, REL8 |
+| Local project admission | Private approval and local identity contracts remain proposals; no declaration publisher | Enable only separately authorized local execution capabilities |
+| #33 D5-gate - Auto Release | REL1-REL7 (`release.enabled: false`, no credential); UI15 (Review only, Stop all releases, no switch without a grant); STA7 refuses `auto-release` | REL9, REL10, REL11; any real grant, credential or canary; REL8 also needs #24 |
 
 Telegram delivery (#1) has no slice in this order and stays off. Needs me stays the one source it would later send.
 
@@ -382,6 +405,7 @@ Every design slice appears once. "Merged" means two design slices became one bui
 | OW | S0→UI1, S1→UI2, S2→UI3, S3→UI4, S4→UI5, S5→UI6, S6→UI7, S7→UI8, S8→UI9, S9→UI10, S10→UI14 (merged), S11→UI13 (merged), S12→UI17, S13→UI15 (merged with AR R9) |
 | AR | R1→REL1, R2→REL2, R3→REL3, R4→REL4, R5→REL5, R6→REL6, R7→REL7, R8→REL8, R9→UI15 (merged), R10→REL9, R11→REL10, R12→REL11 |
 | Issue #27 (no design slice) | RUN1 (gap G1) |
+| SR | READ1→READ1, READ2→READ2, READ3→READ3, UI18→UI18 (dashboard half, lane UI); SR §10 P1-P7 parked, no slice |
 
 Reasons for the merges and splits:
 
@@ -402,7 +426,7 @@ Reasons for the merges and splits:
 | C6 | OW S5 and WE E8 both create `td/work.test.mjs`. | UI6 owns it for the Work screen; UI14 uses `td/approve.test.mjs` (OW S10's name). | Same file name for two different screens. |
 | C7 | OW S5 writes new wait sentences in `dash/supervisor.mjs`; SCH S8 makes status the source of wait reasons. | UI6 renders today's waits; UI11 then switches the Work view to the status `wait` field from RUN9. | One source of truth for why a step waits. |
 | C8 | OW S7 and MR R6 both build a per-step cost view. | UI12 extends UI8's Cost screen. There is one cost view. | No duplicate screen. |
-| C9 | WE E11 is "no decision to build", but depends on PC S7, which cannot be built before EP merges the D2 schema (#24). | STA16 waits for #24 through STA15. | The dependency is real: local admission validates rules from the overlay. |
+| C9 | WE E11 is "no decision to build", but depends on PC S7, which cannot be built before governance merges the D2 schema (#24). | STA16 waits for #24 through STA15. | The dependency is real: local admission validates rules from the overlay. |
 | C10 | WE E2 puts `release.mode` in each campaign's envelope; AR §3 says the mode is per project and destination, never per campaign, and approving a campaign never turns Auto Release on. | STA7 accepts only `review-only`, which both allow. What the envelope field means after #33 is gap G6. | Until #33 the two agree in behaviour. |
 | C11 | OW says S2 to S8 may run in parallel after S1. All of them change `pub/dashboard.js`. | Lane UI runs them in order. | No two slices may change one file at once. |
 | C12 | PC S4 changes `sup/project-connect.mjs`, which PC S3 creates, but lists only S1 and S2 as dependencies. | STA4 follows STA3. | The file must exist first. |
@@ -414,17 +438,17 @@ Reasons for the merges and splits:
 - **G2.** The Review-only local "Apply" has no slice in any design (C4).
 - **G3.** "Changes requested" in Results needs GitHub's review state, which the dashboard no longer reads and the supervisor does not store. No design supplies it.
 - **G4.** Where the coordinator posts a plan for a project without GitHub is unknown ([OW §14](design/OWNER_WORKSPACE.md#14-open-unknowns)). UI17 cannot finish without it.
-- **G5.** Owner questions with no issue yet: SCH Q2 and Q3 (live scheduler, host ceiling; RUN10), MR Q1 and Q2 (models per account, live routing; MOD7). Under [AGENTS.md](../AGENTS.md#when-to-stop-for-the-owner) each becomes one `owner-reserved` issue when its slice is reached, with today's behaviour as the default. SCH Q1 ships with its default. OW Q3 (Telegram) is answered "not in this program" by the design.
+- **G5.** Owner questions with no issue yet: SCH Q2 and Q3 (live scheduler, host ceiling; RUN10), MR Q1 and Q2 (models per account, live routing; MOD7). Under [AGENTS.md](../AGENTS.md#owner-intervention) each becomes one `owner-reserved` issue when its slice is reached, with today's behaviour as the default. SCH Q1 ships with its default. OW Q3 (Telegram) is answered "not in this program" by the design.
 - **G6.** After #33, whether the envelope's `release.mode` is dropped or shown only (C10).
-- **G7.** The EP-side changes (D2 schema for STA15, release schema for REL10) are proposed as text in PC §7.3 and AR §10.2. They are made by EP's own process, never from here.
-- **G8.** HomePc state is unknown here. Whether R1-REST-PUBLISH, LD1-LOCAL-DATA or F1-AW005 is deployed has not been checked.
+- **G7.** The governance-side changes (D2 schema for STA15, release schema for REL10) are proposed as text in PC §7.3 and AR §10.2. They are made by the governance contract's own process, never from here.
+- **G8.** workstation state is unknown here. Whether R1-REST-PUBLISH, LD1-LOCAL-DATA or F1-AW005 is deployed has not been checked.
 
 ### 6.14 Implementation boundaries (kept)
 
 - `src/supervisor/`: durable admission, coordination and concurrency. #5's owner (F2-DUPLICATE) goes first on `api.mjs`, `campaign.mjs` and `store.mjs` (see 6.9).
 - `src/dashboard/`: lane UI only. Keep the security headers, origin and CSRF checks, the 127.0.0.1 binding (AW-003), and never serve raw prompts, secrets or paths beyond the owner's own project root.
-- `campaigns/`: initial approved declarations on main (AW-005). No local admission ledger or child amendment runs before its decision.
-- `docs/`: AIWorks-specific flow, decisions and operations. EP standards are linked, not copied.
+- `campaigns/`: initial approved private approved declarations (AW-005). No local admission ledger or child amendment runs before its decision.
+- `docs/`: AIWorks-specific flow, decisions and operations. governance standards are linked, not copied.
 - Stop before a slice whose row names an open decision; every other slice proceeds.
 
 ## 7. Evidence and success metrics
@@ -440,7 +464,7 @@ Add operational diagnostics (not new product goals):
 - Per accepted outcome: reported model usage and costs, unknown cost count, verification/retry overhead, total time and rejected attempts. Do not claim savings without comparable receipts.
 - Owner's ability to answer the screen's primary question without opening a technical panel (blind UX test).
 
-Acceptance must use source-appropriate evidence: L0 plan, L1 interactive UI review, L2 contract tests, L3 integration, L4 HomePc runtime check and further target-project/client evidence only where the particular claim requires it. Unknown is not green. All supervisor-code changes need independent approval of the exact commit, and live checkout changes require the documented pinned-upgrade sequence.
+Acceptance must use source-appropriate evidence: L0 plan, L1 interactive UI review, L2 contract tests, L3 integration, L4 workstation runtime check and further target-project/client evidence only where the particular claim requires it. Unknown is not green. All supervisor-code changes need independent approval of the exact commit, and live checkout changes require the documented pinned-upgrade sequence.
 
 
 ## 8. Owner decisions and remaining implementation-design gates
@@ -449,30 +473,30 @@ Acceptance must use source-appropriate evidence: L0 plan, L1 interactive UI revi
 
 - **D1 - APPROVED:** Fully local projects are supported. GitHub is optional, including support for a folder with no remote and no Git metadata. Do not claim offline LLM availability. See #7.
 - **D3 - APPROVED:** After one authorization of the requested outcome and boundaries, the system autonomously plans, splits, assigns, retries, reviews and closes **internal tasks** without separate approvals for each child. A new outcome/permission/release authorization is not covered. See #8 and #9.
-- **D5 - APPROVED PRODUCT DIRECTION:** Provide a distinct **opt-in Auto Release** mode in addition to default manual review. This is **not** immediate authorization to merge/deploy; AW-001 and EP release gates remain effective until their separately reviewed narrow amendment/authorization. See #13 and section 5.5.
+- **D5 - APPROVED PRODUCT DIRECTION:** Provide a distinct **opt-in Auto Release** mode in addition to default manual review. This is **not** immediate authorization to merge/deploy; AW-001 and governance release gates remain effective until their separately reviewed narrow amendment/authorization. See #13 and section 5.5.
 - **D9 - APPROVED:** The owner interface is **English**. No localization implementation is planned in this scope. See #11.
 
 | ID | Still-open detailed design/authority question | Proposed resolution pending proper review | Dependency |
 | --- | --- | --- | --- |
-| **D2** | How does a **local-only project** inherit governance without per-folder GitHub PRs? | A reviewed EP contract extension to allow owner-approved, locally recorded project identities validated against inherited policies; do not let a local overlay weaken EP rules. | EP scoped contract PR + #7 |
+| **D2** | How does a **local-only project** inherit governance without per-folder GitHub PRs? | A reviewed governance contract extension to allow owner-approved, locally recorded project identities validated against inherited policies; do not let a local overlay weaken governance rules. | governance scoped contract PR + #7 |
 | **D4** | How can fully local projects authorize campaigns and produce new child tasks while AW-005 requires an AIWorks main declaration? | Retain trusted reviewed/pinned code; introduce a **separately approved AW-005 local admission exception** using signed/tamper-evident owner authorizations, plus append-only child-plan records constrained by the original approved scope. The normal GitHub main path remains available. | AW-005 decision, #2, #5, #6, #8 |
-| **D5-gate** | Exactly which releases can **Auto Release** perform, and to which destinations? | Default OFF. Separate owner-approved standing capability scoped to project/environment/change classes/target, independent exact-revision verifier, eligibility/rollback/health gates; narrowly amend AW-001 via a separate reviewed change. | #13 + EP release governance |
+| **D5-gate** | Exactly which releases can **Auto Release** perform, and to which destinations? | Default OFF. Separate owner-approved standing capability scoped to project/environment/change classes/target, independent exact-revision verifier, eligibility/rollback/health gates; narrowly amend AW-001 via a separate reviewed change. | #13 + governance release governance |
 | **D6** | Cross-machine aggregation? | Keep the existing AW-006 single-machine dashboard. Multiple projects on the same machine do not require a second-PC view. No change requested. | none |
 | **D7** | Worker count? | Adaptive Auto with an optional manual resource concurrency setting. Do not introduce default campaign run/cost ceilings under AW-002. | #9 |
 | **D8** | Model choice? | Automatic capability-, role-, quality- and cost-aware routing across existing authorized providers, with optional model pin. Unknown billing stays unknown. | #10 |
 | **D10** | Completion semantics? | Independently verified candidate, local apply/PR merge, release and observed outcome are separately evidenced. Auto Release can advance eligible states, not manufacture them. | #4, #8, #13 |
 
-**No additional permission can be inferred from approving a product requirement.** Never silently rewrite EP portfolio rules, AW-001/AW-005, credential boundaries, independent verification or actual project release grants. The above table records design obligations, not reasons to ask the owner the same product questions again. The remaining decisions should be resolved by engineering/review under existing authority where possible; ask the owner only for a genuine owner-reserved release/permission change.
+**No additional permission can be inferred from approving a product requirement.** Never silently rewrite governance portfolio rules, AW-001/AW-005, credential boundaries, independent verification or actual project release grants. The above table records design obligations, not reasons to ask the owner the same product questions again. The remaining decisions should be resolved by engineering/review under existing authority where possible; ask the owner only for a genuine owner-reserved release/permission change.
 
 ## 9. Planning-only PR acceptance
 
-- [ ] Product purpose and project-first owner journey are understandable without knowledge of the supervisor, DAG or EP, for both local-only and GitHub-backed projects.
+- [ ] Product purpose and project-first owner journey are understandable without knowledge of the supervisor, DAG or governance, for both local-only and GitHub-backed projects.
 - [ ] Every primary screen answers exactly one real-world question, with an observable entry action and useful empty/blocked states.
 - [ ] Work is divided among #7..#11, #13 and existing #1..#6, with explicit dependencies and without duplicate implementations.
-- [ ] EP policies are linked, not copied, and the current main-only/external-write/local-only boundaries are preserved.
+- [ ] governance policies are linked, not copied, and the current main-only/external-write/local-only boundaries are preserved.
 - [ ] Existing runtime evidence is correctly labeled as code/docs observation; no new deployment or UI walkthrough is claimed.
 - [x] D1, D3, D5 (product direction), D9 received explicit owner decisions on 2026-10-12 and are recorded above.
 - [ ] D2 local inheritance, D4 GitHub-free admission/AW-005 amendment, and D5 release/AW-001 amendment are designed and independently approved before the associated runtime powers are enabled.
 - [ ] Implementation proceeds through small independently reviewable PRs, not by merging an entire code rewrite as one branch.
 
-**Out of scope of this draft:** runtime file changes, production upgrade, agent dispatch, new account connections, provider secrets, EP registry writes, actual release/merge/deployment and budget increases. Auto Release and local-only execution are planned capabilities, not currently enabled permissions.
+**Out of scope of this draft:** runtime file changes, production upgrade, agent dispatch, new account connections, provider secrets, governance registry writes, actual release/merge/deployment and budget increases. Auto Release and local-only execution are planned capabilities, not currently enabled permissions.

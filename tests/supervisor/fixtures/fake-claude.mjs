@@ -6,17 +6,22 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { join } from 'node:path';
 
 const args = process.argv.slice(2);
-const option = (flag) => { const index = args.indexOf(flag); return index >= 0 ? args[index + 1] : null; };
+const valueOf = (list, flag) => { const index = list.indexOf(flag); return index >= 0 ? list[index + 1] : null; };
+const option = (flag) => valueOf(args, flag);
 const sessionId = option('--session-id');
 const prompt = readFileSync(0, 'utf8');
 const role = prompt.includes('INDEPENDENT VERIFIER') ? 'verify' : prompt.includes('AIWORKS COORDINATOR') ? 'coordinate' : 'implement';
 const stateDir = process.env.FAKE_CLAUDE_STATE;
 const scenario = JSON.parse(readFileSync(join(stateDir, 'scenario.json'), 'utf8'));
 const callsFile = join(stateDir, 'calls.jsonl');
-const previous = existsSync(callsFile)
-  ? readFileSync(callsFile, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)).filter((call) => call.role === role).length
-  : 0;
-let mode = scenario[role]?.[previous] ?? (role === 'implement' ? 'commit' : role === 'coordinate' ? 'coordinate' : 'accept');
+const model = option('--model');
+const earlier = existsSync(callsFile)
+  ? readFileSync(callsFile, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)).filter((call) => call.role === role) : [];
+const previous = earlier.length;
+// Scenario per model (model routing): byModel.<model>.<role> lists the modes of that model's calls, counted per model.
+const own = scenario.byModel?.[model]?.[role];
+let mode = (own ? own[earlier.filter((call) => valueOf(call.args, '--model') === model).length] : scenario[role]?.[previous]) ??
+  (role === 'implement' ? 'commit' : role === 'coordinate' ? 'coordinate' : 'accept');
 appendFileSync(callsFile, `${JSON.stringify({ role, sessionId, cwd: process.cwd(), mode, args,
   autoMemoryDisabled: process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY === '1', subagentModel: process.env.CLAUDE_CODE_SUBAGENT_MODEL ?? null,
   gitBashPath: process.env.CLAUDE_CODE_GIT_BASH_PATH ?? null, inheritedProbe: process.env.CLAUDE_CODE_PROBE_INHERITED ?? null, at: Date.now() })}\n`);
@@ -56,7 +61,10 @@ switch (mode) {
     break;
   case 'commit':
   case 'dirty': {
-    writeFileSync(join(process.cwd(), `work-${sessionId}.txt`), `work by ${sessionId}\n`);
+    // scenario.commitDir keeps the work inside a declared write domain (a task with `writes`).
+    const dir = join(process.cwd(), scenario.commitDir ?? '');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `work-${sessionId}.txt`), `work by ${sessionId}\n`);
     git('add', '-A');
     git('commit', '-q', '-m', `work ${sessionId}`);
     if (mode === 'dirty') writeFileSync(join(process.cwd(), 'uncommitted.txt'), 'left behind\n');
@@ -74,9 +82,9 @@ switch (mode) {
   // falls through to a normal answer
   case 'coordinate':
     ok({ summary: 'two new items reviewed', reply: `Reviewed as asked (session ${sessionId}).`,
-      newWork: [{ repository: 'netbka/Dyk', number: 455, kind: 'issue', title: 'Telegram ingestion SQL contract', classification: 'new-campaign-candidate', reason: 'defect on main', wave: 1 },
-        { repository: 'netbka/Dyk', number: 461, kind: 'pr', title: 'Readable WhatsApp contacts', classification: 'needs-review-or-merge', reason: 'open PR awaiting review' }],
-      plan: 'Wave 1: #455 with independent verification.', proposedCampaign: '{"campaignId":"dyk-next"}' });
+      newWork: [{ repository: 'example-org/sampleapp', number: 455, kind: 'issue', title: 'Telegram ingestion SQL contract', classification: 'new-campaign-candidate', reason: 'defect on main', wave: 1 },
+        { repository: 'example-org/sampleapp', number: 461, kind: 'pr', title: 'Readable WhatsApp contacts', classification: 'needs-review-or-merge', reason: 'open PR awaiting review' }],
+      plan: 'Wave 1: #455 with independent verification.', proposedCampaign: '{"campaignId":"sampleapp-next"}' });
     break;
   case 'owner':
     ok({ result: 'blocked-owner-reserved', summary: 'needs owner', ownerTrigger: 'Constitution 2: paid spend decision' });
@@ -85,7 +93,7 @@ switch (mode) {
     ok({ result: 'blocked-owner-reserved', summary: 'needs owner',
       ownerTrigger: `Rotate key ${['sk', 'ant', 'api03', 'SYNTHETICfakeVALUE0123456789abcdef'].join('-')} with password=SYNTHETICfakePassphrase then decide` });
     break;
-  case 'unavailable': // a worker that cannot proceed and says so (the WAVE-06 shape, engineering-platform-archive#74)
+  case 'unavailable': // a worker that cannot proceed and says so (the WAVE-06 shape, historical regression)
     ok({ result: 'evidence-unavailable', summary: 'cannot proceed', tried: 'synthetic: no cohort assigned within the authorization' });
     break;
   case 'no-result':
@@ -106,6 +114,10 @@ switch (mode) {
     break;
   case 'wrong-target':
     ok({ verdict: 'accepted', targetSha: '0'.repeat(40), reportDigest, summary: 'looked at something else', findings: [], checks: [] });
+    break;
+  case 'unknown-model': // the provider does not know the requested model, as the CLI reports it before any work
+    emit({ type: 'result', subtype: 'success', is_error: true, session_id: sessionId, num_turns: 1, total_cost_usd: 0,
+      result: `There's an issue with the selected model (${model}). It may not exist or you may not have access to it.` }, 1);
     break;
   case 'quota': // subscription limit refusal before any work, as the CLI reports it (no parseable reset here)
     emit({ type: 'result', subtype: 'success', is_error: true, session_id: sessionId, num_turns: 1, total_cost_usd: 0, result: "You've hit your session limit" }, 1);

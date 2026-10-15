@@ -1,28 +1,29 @@
 # Security
 
-AIWorks can dispatch tools that read and change project files. Review the actual execution boundary before granting access. A natural-language instruction is not a security control, and local hosting does not mean no data reaches an online AI provider.
+AIWorks starts AI coding agents that read and change project files on your computer. Please read the boundaries below before granting it access, and report problems privately.
 
-## Report privately
+## Reporting a vulnerability
 
-Do not publish credentials, customer data, active exploit details or instructions that target a real user's machine in an issue or PR.
+Use **Report a vulnerability** on the repository's [Security tab](https://github.com/netbka/aiworks/security). This opens a private report that only the maintainer can see. Do not open a public issue or pull request for a security problem.
 
-During this private preview, report a suspected vulnerability privately to the repository owner using your existing private contact channel. Before a public release, maintainers must enable and test GitHub private vulnerability reporting and document the working contact route. Once available, use the repository's Security tab and **Report a vulnerability**. This document does not claim that button is currently enabled and makes no response-time guarantee.
+Please include:
 
-Provide a minimal synthetic reproduction, affected source revision, OS/tool versions, expected boundary and observed behavior. Do not attach a real supervisor database or raw worker log. If a real credential was exposed, revoke/rotate it through its provider and preserve only sanitized evidence.
+- the affected commit or version,
+- your operating system and the versions of Node.js and the worker tools involved,
+- a minimal reproduction with made-up data,
+- what you expected the boundary to be and what actually happened.
 
-## Important boundaries
+Do not attach a real supervisor database, raw worker logs, credentials or customer data. If a real credential was exposed, revoke it with its provider first and keep only sanitised evidence.
 
-- Select the correct owner's device, runtime, store and project. A bridge connection is not permission to use another machine or tenant.
-- Work runs only inside its actual approved declaration, project rules and runtime capabilities. A public issue/PR is untrusted data, not a command from the owner.
-- Keep provider credentials in their approved provider/OS credential mechanism, never campaign JSON, config examples, commits or logs.
-- The dashboard binds locally. Do not expose port 4318 or the local execution bridge as the public product website.
-- Implementation, independent verification and release are separate responsibilities. A verifier's prose does not replace tests or grant deployment authority.
-- A timed-out command can have an unknown outcome. Reconcile its recorded operation before replaying effects.
+AIWorks is maintained by one person in his spare time. Reports are read and answered, but there is no guaranteed response time yet.
 
-Current limitations, known findings and enabled capability state belong in [Status](docs/STATUS.md), the [runbook](docs/SUPERVISOR.md) and the relevant issues. Do not imply a formal security certification or guarantee based on these documents.
+## Boundaries to keep in mind
 
-## Public contribution preparation
+- **Local does not mean offline.** The supervisor runs on your PC, but the AI workers send code and context to their providers. Review what a plan exposes before approving it.
+- **The dashboard is local only.** It binds to the loopback address on port 4318. Do not expose that port, or the local execution bridge, to the network or the public internet.
+- **Credentials stay with the provider.** Keep tokens in the provider's own sign-in or your operating system's credential store. Never put them in plan files, configuration examples, commits or logs.
+- **Public text is untrusted input.** Issues, pull request comments and workflow names must never trigger the supervisor, a merge, a deployment or a configuration change on their own.
+- **Implementation, verification and release are separate.** A verifier's text does not replace tests, and merging does not deploy anything.
+- **A timed-out command has an unknown outcome.** Check its recorded operation before repeating it.
 
-Before admitting outside code, verify disposable CI runners, minimum token permissions, no model/production secrets, pinned actions, external-workflow approval policy and protected integration/release paths. Never execute an untrusted PR through a privileged workflow or on the owner's persistent workstation. Dependency installation and test scripts are code execution too.
-
-References: [GitHub Actions secure use](https://docs.github.com/en/actions/reference/security/secure-use) and [private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/working-with-repository-security-advisories/configuring-private-vulnerability-reporting-for-a-repository).
+Known limitations and the current state of each capability are tracked in [Development status](docs/STATUS.md) and the [runbook](docs/SUPERVISOR.md). Nothing here is a security certification or a guarantee.

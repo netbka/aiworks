@@ -1,32 +1,9 @@
 {
   "id": "UX-001",
-  "version": "1.0.0",
   "scope": "portfolio",
-  "applies_when": { "boundaries": ["ui"] },
-  "invariants": [
-    { "id": "interaction-cost-not-click-count", "source": "docs/BEHAVIORAL_INTERACTION.md#1-interaction-cost-not-click-count", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "immediate-acknowledgement", "source": "docs/BEHAVIORAL_INTERACTION.md#2-immediate-acknowledgement-and-response-budgets", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "explicit-operation-lifecycle", "source": "docs/BEHAVIORAL_INTERACTION.md#3-operation-lifecycle-is-explicit", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "coherent-current-state", "source": "docs/BEHAVIORAL_INTERACTION.md#4-current-state-stays-coherent", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "recoverable-reversible-actions", "source": "docs/BEHAVIORAL_INTERACTION.md#5-recovery-reversibility-and-destructive-actions", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "duplicate-submit-idempotency", "source": "docs/BEHAVIORAL_INTERACTION.md#6-duplicate-submit-and-idempotency", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "long-running-status", "source": "docs/BEHAVIORAL_INTERACTION.md#7-long-running-and-background-work", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "preserve-context", "source": "docs/BEHAVIORAL_INTERACTION.md#8-preserve-context", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "progressive-disclosure-local-actions", "source": "docs/BEHAVIORAL_INTERACTION.md#9-progressive-disclosure-and-local-actions", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "familiar-control-semantics", "source": "docs/BEHAVIORAL_INTERACTION.md#10-familiar-controls-and-input-semantics", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "novice-and-expert-paths", "source": "docs/BEHAVIORAL_INTERACTION.md#11-novice-path-and-expert-accelerators", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "agent-user-control", "source": "docs/BEHAVIORAL_INTERACTION.md#12-ai-and-agent-interactions-keep-user-control", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "behavior-evidence-layer", "source": "docs/BEHAVIORAL_INTERACTION.md#13-behavioral-review-contract", "baseline": [], "exception_mode": "forbidden" },
-    { "id": "visual-evidence-separation", "source": "docs/BEHAVIORAL_INTERACTION.md#14-visual-evidence-is-separate", "baseline": [], "exception_mode": "forbidden" }
-  ],
-  "owner_reserved_when": [],
-  "detect": [
-    { "id": "behavioral-review", "kind": "review", "invariants": ["interaction-cost-not-click-count", "immediate-acknowledgement", "explicit-operation-lifecycle", "coherent-current-state", "recoverable-reversible-actions", "duplicate-submit-idempotency", "long-running-status", "preserve-context", "progressive-disclosure-local-actions", "familiar-control-semantics", "novice-and-expert-paths", "agent-user-control"] },
-    { "id": "behavioral-evidence-routing", "kind": "contract", "invariants": ["behavior-evidence-layer", "visual-evidence-separation"] }
-  ],
-  "required_evidence": [
-    { "kind": "behavioral-interaction-review", "reviewer": "customer-eye", "authority_role": "experience-review", "when": { "material": true } }
-  ],
-  "blocking": { "mode": "report", "missing_evidence": "block" },
-  "exceptions": { "mode": "clause-only" }
+  "applies_when": {
+    "boundaries": [
+      "ui"
+    ]
+  }
 }

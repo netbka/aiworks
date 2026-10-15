@@ -67,27 +67,27 @@ function assertAgreesWithNeedsMe({ owner, projects }) {
 }
 
 test('one row per repository, grouped case-insensitively; the configured spelling names it', (t) => {
-  const { dataDir, start } = fixture(t, { 'netbka/dyk': { path: 'C:/work/dyk' } });
-  start('dyk-443-waves', 'netbka/Dyk');
-  start('dyk-455-telegram-ingest', 'NETBKA/DYK');
+  const { dataDir, start } = fixture(t, { 'example-org/sampleapp': { path: 'C:/work/sampleapp' } });
+  start('sampleapp-443-waves', 'example-org/sampleapp');
+  start('sampleapp-455-telegram-ingest', 'EXAMPLE-ORG/SAMPLEAPP');
   start('shop-checkout', 'example/shop-app');
   const { projects } = view(dataDir);
   assert.equal(projects.available, true);
-  assert.deepEqual(projects.projects.map((project) => project.id).sort(), ['example/shop-app', 'netbka/dyk']);
-  const dyk = projects.projects.find((project) => project.id === 'netbka/dyk');
-  assert.deepEqual([dyk.name, dyk.kind, dyk.details], ['dyk', 'GitHub', { owner: 'netbka', work: 2, configured: true, needsYou: 0 }]);
+  assert.deepEqual(projects.projects.map((project) => project.id).sort(), ['example-org/sampleapp', 'example/shop-app']);
+  const sampleapp = projects.projects.find((project) => project.id === 'example-org/sampleapp');
+  assert.deepEqual([sampleapp.name, sampleapp.kind, sampleapp.details], ['sampleapp', 'GitHub', { owner: 'example-org', work: 2, configured: true, needsYou: 0 }]);
   const shop = projects.projects.find((project) => project.id === 'example/shop-app');
   assert.deepEqual([shop.name, shop.details.configured, shop.details.work], ['shop-app', false, 1], 'work without configuration is still a project');
 });
 
 test('without configuration, the first campaign’s spelling names the project; two owners of one name keep the owner', () => {
   const snapshot = { available: true, campaigns: [
-    { id: 'a', repository: 'netbka/Dyk', control: 'finished', tasks: [], agents: [] },
-    { id: 'b', repository: 'netbka/dyk', control: 'finished', tasks: [], agents: [] },
-    { id: 'c', repository: 'example/dyk', control: 'finished', tasks: [], agents: [] }] };
+    { id: 'a', repository: 'example-org/sampleapp', control: 'finished', tasks: [], agents: [] },
+    { id: 'b', repository: 'EXAMPLE-ORG/SAMPLEAPP', control: 'finished', tasks: [], agents: [] },
+    { id: 'c', repository: 'example/sampleapp', control: 'finished', tasks: [], agents: [] }] };
   const { projects } = projectsView(snapshot, { items: [], campaigns: {} });
   assert.deepEqual(projects.map((project) => [project.id, project.name, project.details.work]).sort(),
-    [['example/dyk', 'example/dyk', 1], ['netbka/Dyk', 'netbka/Dyk', 2]]);
+    [['example-org/sampleapp', 'example-org/sampleapp', 2], ['example/sampleapp', 'example/sampleapp', 1]]);
 });
 
 test('order: needs you, then work running, then the rest by last activity; one state and one action each', (t) => {
@@ -100,15 +100,15 @@ test('order: needs you, then work running, then the rest by last activity; one s
   // Running: registered just now, so AIWorks still has its grace to pick it up (nothing for the owner yet).
   start('shop-checkout', 'example/shop-app');
   // Needs you: a published pull request the current merge check does not see merged.
-  start('dyk-443-waves', 'netbka/Dyk', [task('T1', 'waves', { outcome: 'Telegram waves are sent once' })]);
-  finish('dyk-443-waves', 'T1', 'https://github.com/netbka/Dyk/pull/465', { verified_sha: sha('T1') });
-  const merges = { repositories: [{ repository: 'netbka/Dyk', configured: true, fetchedAt: Date.now(), attemptedAt: Date.now(), error: null }],
-    steps: { 'dyk-443-waves/T1': { sha: sha('T1'), baseBranch: 'main', merged: false, mergedAt: null } } };
+  start('sampleapp-443-waves', 'example-org/sampleapp', [task('T1', 'waves', { outcome: 'Telegram waves are sent once' })]);
+  finish('sampleapp-443-waves', 'T1', 'https://github.com/example-org/sampleapp/pull/465', { verified_sha: sha('T1') });
+  const merges = { repositories: [{ repository: 'example-org/sampleapp', configured: true, fetchedAt: Date.now(), attemptedAt: Date.now(), error: null }],
+    steps: { 'sampleapp-443-waves/T1': { sha: sha('T1'), baseBranch: 'main', merged: false, mergedAt: null } } };
   const seen = view(dataDir, merges);
   assert.deepEqual(seen.projects.projects.map((project) => [project.id, project.state.key]), [
-    ['netbka/Dyk', 'needs-you'], ['example/shop-app', 'running'], ['example/recipes', 'finished'], ['example/notes-site', 'no-work']]);
-  const [dyk, shop, recipes, notes] = seen.projects.projects;
-  assert.deepEqual([dyk.state.text, dyk.action], ['One thing needs you.', { label: 'Review pull request #465', url: 'https://github.com/netbka/Dyk/pull/465' }]);
+    ['example-org/sampleapp', 'needs-you'], ['example/shop-app', 'running'], ['example/recipes', 'finished'], ['example/notes-site', 'no-work']]);
+  const [sampleapp, shop, recipes, notes] = seen.projects.projects;
+  assert.deepEqual([sampleapp.state.text, sampleapp.action], ['One thing needs you.', { label: 'Review pull request #465', url: 'https://github.com/example-org/sampleapp/pull/465' }]);
   assert.deepEqual([shop.state.text, shop.action], ['No AI worker is busy on this project right now.',
     { label: 'Open current work', route: { screen: 'project', project: 'example/shop-app', tab: 'work' } }]);
   assert.deepEqual([recipes.state.text, recipes.action], ['All steps are finished · 1 report posted for you to read.',
@@ -125,9 +125,9 @@ test('order: needs you, then work running, then the rest by last activity; one s
   start('notes-search', 'example/notes-site', null, old);
   const stopped = view(dataDir, merges);
   assertAgreesWithNeedsMe(stopped);
-  assert.deepEqual(stopped.owner.groups.map((group) => [group.name, group.count]), [['Dyk', 1], ['AIWorks itself', 1]]);
+  assert.deepEqual(stopped.owner.groups.map((group) => [group.name, group.count]), [['sampleapp', 1], ['AIWorks itself', 1]]);
   assert.deepEqual(stopped.projects.projects.map((project) => [project.id, project.state.key, project.details.needsYou]).slice(0, 2),
-    [['netbka/Dyk', 'needs-you', 1], ['example/shop-app', 'running', 0]]);
+    [['example-org/sampleapp', 'needs-you', 1], ['example/shop-app', 'running', 0]]);
 });
 
 test('a configured repository with no work shows "No work yet" and opens the project', (t) => {
@@ -140,7 +140,7 @@ test('a configured repository with no work shows "No work yet" and opens the pro
   const empty = mkdtempSync(join(tmpdir(), 'aiworks-projects-config-'));
   t.after(() => rmSync(empty, { recursive: true, force: true }));
   assert.deepEqual(configuredRepositories(empty), []);
-  for (const content of ['{', '[]', '{"repositories":["netbka/Dyk"]}', '{"repositories":null}']) {
+  for (const content of ['{', '[]', '{"repositories":["example-org/sampleapp"]}', '{"repositories":null}']) {
     writeFileSync(join(empty, 'config.json'), content);
     assert.deepEqual(configuredRepositories(empty), [], content);
   }
@@ -173,7 +173,7 @@ test('running work says who is working on which step; paused and cancelled work 
 test('no campaign id at the primary level: name, state and action never show one', (t) => {
   const old = Date.now() - RESTART_GRACE_MS - 60_000;
   const { dataDir, start, finish, close } = fixture(t, { 'example/notes-site': { path: 'C:/work/notes' } });
-  start('dyk-443-waves', 'netbka/Dyk', [task('T1', 'waves')], old);
+  start('sampleapp-443-waves', 'example-org/sampleapp', [task('T1', 'waves')], old);
   start('notes-search', 'example/notes-site');
   start('recipes-print', 'example/recipes', [task('T1', 'print'), task('T2', 'share')]);
   finish('recipes-print', 'T1', 'https://github.com/example/recipes/pull/7', { verified_sha: sha('T1') });
@@ -193,7 +193,7 @@ test('no campaign id at the primary level: name, state and action never show one
 });
 
 test('an unreadable supervisor store lists no projects rather than calm ones', () => {
-  assert.deepEqual(projectsView({ available: false, campaigns: [] }, { items: [] }, { repositories: ['netbka/Dyk'] }), { available: false, projects: [] });
+  assert.deepEqual(projectsView({ available: false, campaigns: [] }, { items: [] }, { repositories: ['example-org/sampleapp'] }), { available: false, projects: [] });
 });
 
 test('/api/state carries the Projects screen, with repository names and never a configured path', async (t) => {
@@ -223,4 +223,49 @@ test('the page draws Projects from the server’s list: one state in words and o
   // A project address in any spelling opens the same project.
   assert.match(js, /const projectCampaigns = \(project\) => state\.supervisor\.campaigns\.filter\(\(c\) => sameProject\(c\.repository, project\)\);/);
   assert.match(js, /empty\('No work yet\.', `Work in \$\{projectName\(project\)\} appears here once it is registered on this computer\./);
+});
+
+// UI13 (PROJECT_CONNECTION S6, OWNER_WORKSPACE S11, resolution C5): connected projects join the Projects screen when Add
+// project is on. A GitHub project joins its repository's row; a local Git project or plain folder is a row of its own,
+// addressed by its project id. The polled state names folders, never their paths.
+const record = (fields) => ({ tenant_id: 'local', fingerprint: null, github_repository: null, base_branch: null, local_branch: null, mirror_root: null,
+  worktree_root: null, exclusions: [], governance: { kind: 'none' }, reason: null, current_baseline: null, last_preflight: null, version: 1,
+  created_at: 1, updated_at: 1, disconnected_at: null, ...fields });
+const LOCAL_CAPS = { plan: { allowed: true }, startWork: { allowed: false, reason: 'LOCAL_START_OFF' }, publish: { allowed: false, reason: 'NO_GITHUB' }, apply: { allowed: false, reason: 'APPLY_NOT_BUILT' } };
+
+test('connected projects: a GitHub project joins its row, the others have their own, and the owner’s problems come first', () => {
+  const snapshot = { available: true, campaigns: [{ id: 'waves', repository: 'example-org/sampleapp', control: 'finished', tasks: [], agents: [] }] };
+  const records = [
+    record({ id: 'sampleapp', name: 'SampleApp', source_kind: 'github', github_repository: 'EXAMPLE-ORG/sampleapp', base_branch: 'main', root_path: '/srv/work/SampleApp', status: 'ready',
+      capabilities: { plan: { allowed: true }, startWork: { allowed: true }, publish: { allowed: true }, apply: { allowed: false, reason: 'GITHUB_PUBLISHES' } } }),
+    record({ id: 'recipes', name: 'Recipes', source_kind: 'local-git', local_branch: 'main', root_path: '/srv/work/Recipes', mirror_root: '/srv/aiworks/mirrors/recipes', status: 'ready', capabilities: LOCAL_CAPS,
+      current_baseline: { seq: 1, commit: 'a'.repeat(40), at: 5 } }),
+    record({ id: 'notes', name: 'Notes', source_kind: 'folder', root_path: '/srv/work/Notes', mirror_root: '/srv/aiworks/mirrors/notes', status: 'unavailable', reason: 'ROOT_MISSING', capabilities: LOCAL_CAPS })];
+  const view = projectsView(snapshot, { items: [], campaigns: {} }, { records, addProject: true });
+  assert.equal(view.addProject, true);
+  assert.deepEqual(view.projects.map((project) => [project.id, project.name, project.kind, project.state.key]), [
+    ['notes', 'Notes', 'Folder', 'unavailable'], ['recipes', 'Recipes', 'Local Git', 'ready'], ['example-org/sampleapp', 'sampleapp', 'GitHub', 'finished']]);
+  const [notes, recipes, sampleapp] = view.projects;
+  assert.deepEqual([sampleapp.connection.id, sampleapp.connection.status, sampleapp.connection.folder, sampleapp.details.work], ['sampleapp', 'ready', 'SampleApp', 1]);
+  assert.deepEqual([recipes.state.text, recipes.action, recipes.connection.startWork.allowed],
+    ['Connected. Starting work in a folder without GitHub is not available yet.', { label: 'Open project', route: { screen: 'project', project: 'recipes', tab: 'now' } }, false]);
+  // Its folder by name: "AIWorks can't reach {path}" says the project's name here; the path is only in the owner's own project list.
+  assert.equal(notes.state.text, "AIWorks can't reach Notes. If it's on a removable drive, plug it in.");
+  assert.ok(!JSON.stringify(view).includes('/srv/'), 'no path in the polled Projects screen');
+  // Needs setup ranks with Needs you, first.
+  const setup = projectsView(snapshot, { items: [], campaigns: {} }, { records: [records[0], { ...records[2], status: 'needs-setup', reason: 'ROOT_REPLACED' }], addProject: true });
+  assert.deepEqual(setup.projects.map((project) => [project.id, project.state.key, project.state.text]), [
+    ['notes', 'needs-setup', 'The folder at Notes was replaced. Confirm it\'s still "Notes" before work continues.'], ['example-org/sampleapp', 'finished', 'All steps are finished.']]);
+});
+
+test('the page offers Add project only when this computer switches it on, as the empty screen’s and the list’s one action', () => {
+  const js = readFileSync(join(ROOT, 'src/dashboard/public/dashboard.js'), 'utf8');
+  const screen = /function projectsScreen\(\) \{[\s\S]*?\n\}/.exec(js)[0];
+  assert.match(screen, /const adding = Boolean\(state\.projects\?\.addProject\);/);
+  assert.match(screen, /if \(!projects\.length && !adding\) return \[empty\('No projects yet\.'/, 'off: the empty screen is as before');
+  assert.match(screen, /stateCopy\('projects-empty', \{ addProject: true \}\)/, 'on: OWNER_WORKSPACE §7.1 after S11, from the copy module');
+  assert.match(screen, /adding \? routeLink\('Add project', \{ screen: 'add-project' \}, 'button'\) : null/);
+  // Off, the Add project address says it is not built, exactly as before.
+  assert.match(js, /if \(!state\.projects\?\.addProject\) return \[empty\(\.\.\.ADD_OFF\)\];/);
+  assert.match(js, /const ADD_OFF = \['Adding a project from this page is not built yet\.', 'Projects appear on Projects when the AIWorks configuration file on this computer lists a repository\.'\];/);
 });

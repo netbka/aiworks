@@ -19,6 +19,8 @@ const configSchema = z.strictObject({
 });
 const fields = ['id', 'number', 'title', 'body', 'state', 'created_at', 'updated_at', 'closed_at', 'merged_at',
   'html_url', 'merge_commit_sha', 'additions', 'deletions', 'changed_files', 'commits'];
+// One page of 100 full pull request objects can exceed 2 MB; items are trimmed after parsing.
+const maxOutputMegabytes = 32;
 
 export function createGitHubReader(configuration) {
   const config = configSchema.parse(configuration);
@@ -37,8 +39,12 @@ export function createGitHubReader(configuration) {
     const endpoint = `repos/${config.repository}${routes[resource]}` +
       (list ? `?per_page=${perPage}&page=${page}${resource === 'comments' ? '' : '&state=all'}` : '');
     const result = spawnSync(config.ghCommand[0], [...config.ghCommand.slice(1), 'api', '--hostname', 'github.com',
-      '--method', 'GET', endpoint], { windowsHide: true, encoding: 'utf8', timeout: 30_000, maxBuffer: 2 * 1024 * 1024,
+      '--method', 'GET', endpoint], { windowsHide: true, encoding: 'utf8', timeout: 30_000, maxBuffer: maxOutputMegabytes * 1024 * 1024,
       env: { ...process.env, GH_DEBUG: '', GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1' } });
+    // Too large is neither an upstream nor a credential failure: report it and keep the reader usable.
+    if (result.error?.code === 'ENOBUFS') {
+      throw new Error(`GitHub response was larger than ${maxOutputMegabytes} MB; ask for a smaller perPage.`);
+    }
     try {
       if (result.error || result.status !== 0) {
         const status = /HTTP (\d{3})/.exec(result.stderr ?? '')?.[1];

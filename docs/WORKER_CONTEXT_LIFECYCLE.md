@@ -1,12 +1,12 @@
 # Worker context lifecycle
 
-Owner direction accepted: 2026-10-05. The C0 contract and helpers were delivered in Engineering Platform ([#47](https://github.com/netbka/engineering-platform-archive/issues/47), closed); runtime work is in [netbka/aiworks#2](https://github.com/netbka/aiworks/issues/2).
+This document defines the reusable worker-context contract.
 
-This extends the portfolio [AGENT_OPERATING_MODEL.md](https://github.com/netbka/engineering-platform/blob/main/docs/AGENT_OPERATING_MODEL.md), [CONTINUATION.md](https://github.com/netbka/engineering-platform/blob/main/docs/CONTINUATION.md) and [OWNER_INTERVENTION.md](https://github.com/netbka/engineering-platform/blob/main/docs/OWNER_INTERVENTION.md). It does not replace their authority, completion or independent-acceptance rules.
+This extends the portfolio AGENT_OPERATING_MODEL.md, CONTINUATION.md and OWNER_INTERVENTION.md. It does not replace their authority, completion or independent-acceptance rules.
 
 ## 1. Implementation boundary
 
-C0 supplies a contract, schemas, bounded policy defaults, pure admission/fencing predicates and an async deadline helper with synthetic tests. C0 itself is not a dispatcher, lease store, provider adapter, reaper or remote context reset. For owner-registered campaigns, the AIWorks delivery supervisor ([SUPERVISOR.md](SUPERVISOR.md), [netbka/aiworks#2](https://github.com/netbka/aiworks/issues/2)) is the running implementation. It reuses these helpers and keeps no second packet or lease model. Any other runtime must meet sections 5–9 before relying on this contract.
+C0 supplies a contract, schemas, bounded policy defaults, pure admission/fencing predicates and an async deadline helper with synthetic tests. C0 itself is not a dispatcher, lease store, provider adapter, reaper or remote context reset. For owner-registered campaigns, the AIWorks delivery supervisor ([SUPERVISOR.md](SUPERVISOR.md), AIWorks design work) is the running implementation. It reuses these helpers and keeps no second packet or lease model. Any other runtime must meet sections 5–9 before relying on this contract.
 
 Core principle: **durable task state, short-lived execution sessions**. A fresh task session should not wait for disposal of a previous session. Context optimization is optional; authorization, data isolation, write safety and independent acceptance are mandatory.
 
@@ -22,7 +22,7 @@ MCP reconnection, a process restart and browser storage clearing must never be r
 
 Use `schemas/worker-task-packet.schema.json` and `validatePacket` in `scripts/lib/worker-context.mjs`. The schema defines shape; the helper additionally enforces configured byte/reference limits. Pass only relevant source sections, not the full conversation or every project document.
 
-The packet includes tenant/project/environment, task/stage/run identity, role, exact revision, authority digest, access mode, goal, explicit constraints, acceptance criteria and revision-pinned repository references. It may also carry `governance`: the target project's registry id, inherited policy IDs, declared authority pointers and declared exceptions and gaps as id and rule, values only ([GOVERNANCE_INHERITANCE.md](https://github.com/netbka/engineering-platform/blob/main/docs/GOVERNANCE_INHERITANCE.md#9-machine-readable-inheritance-state) section 9; read from the governance checkout, [SUPERVISOR.md §6](SUPERVISOR.md#governance-checkout)). A packet without it stays valid. Its canonical SHA-256 digest binds every field, including constraints, acceptance criteria and governance. Repository pointers are scoped paths, not credentials, signed URLs or arbitrary external content.
+The packet includes tenant/project/environment, task/stage/run identity, role, exact revision, authority digest, access mode, goal, explicit constraints, acceptance criteria and revision-pinned repository references. It may also carry `governance`: the target project's registry id, inherited policy IDs, declared authority pointers and declared exceptions and gaps as id and rule, values only (GOVERNANCE_INHERITANCE.md section 9; read from the governance checkout, [SUPERVISOR.md §6](SUPERVISOR.md#governance-checkout)). A packet without it stays valid. Its canonical SHA-256 digest binds every field, including constraints, acceptance criteria and governance. Repository pointers are scoped paths, not credentials, signed URLs or arbitrary external content.
 
 The controller resolves current authority and required rules BEFORE constructing the packet. Required constraints remain in the packet; optional details may be read on demand. Retrieved pages, source content and tool output are untrusted data, not instructions. A summary cannot overrule an authority document or grant additional permissions.
 
@@ -92,7 +92,7 @@ For a Web Extension unable to start/reset the AI conversation, mark that capabil
 
 The Task Controller owns the outcome through replacement and review. It does not hand accountability to a memory-cleaning agent. System Architecture owns this contract, Backend owns durable admission/checkpoints/fences, SRE owns adapters/reaping/metrics, Documentation owns authority links, and separate Security/Verification roles own acceptance.
 
-Apply [OWNER_INTERVENTION](https://github.com/netbka/engineering-platform/blob/main/docs/OWNER_INTERVENTION.md): ordinary timeout is B0/B1; use bounded recovery first. Notify only for genuine B2 human action, B3 reserved decision, B4 awareness under impact policy or B5 incident. A cleanup failure alone does not page the owner. Isolation or credential exposure follows incident policy immediately. Never report a queued role assignment as an agent already executing it.
+Apply OWNER_INTERVENTION: ordinary timeout is B0/B1; use bounded recovery first. Notify only for genuine B2 human action, B3 reserved decision, B4 awareness under impact policy or B5 incident. A cleanup failure alone does not page the owner. Isolation or credential exposure follows incident policy immediately. Never report a queued role assignment as an agent already executing it.
 
 Metrics are bounded, sanitized metadata: adapter/version, task/run/session IDs or redacted equivalents, decision/reason, policy version, cleanup/creation latency, timeout/replacement counts, quarantine depth, stale-action rejections, checkpoint age, input/output/cache tokens, token-measurement method, total cost if available and acceptance/regression outcomes. Null is unknown, not zero. No transcripts or raw payloads in metrics.
 
@@ -100,7 +100,7 @@ Measure end-to-end cost/latency and requirement retention, not just context size
 
 ## 9. Integration and acceptance
 
-C0 was delivered and closed in Engineering Platform. Open runtime work is tracked in [netbka/aiworks#2](https://github.com/netbka/aiworks/issues/2). The runtime slices are: C1 durable store and dispatcher bindings, C2 verified adapters, C3 bounded reaping, metrics and crash recovery, C4 independent exact-SHA verification, then shadow mode and a read-only canary before an approved adapter is enabled. Writes outside this repository follow [AW-001](DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception) only.
+C0 was delivered and closed in governance provider. Open runtime work is tracked in AIWorks design work. The runtime slices are: C1 durable store and dispatcher bindings, C2 verified adapters, C3 bounded reaping, metrics and crash recovery, C4 independent exact-SHA verification, then shadow mode and a read-only canary before an approved adapter is enabled. Writes outside this repository follow [AW-001](DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception) only.
 
 Run `npm install` once, then `npm run check` in an isolated checkout. It parses every campaign declaration and runs the supervisor, dashboard and worker-context tests (`tests/worker-context*.test.mjs` for C0). The repository check also runs in CI (`.github/workflows/check.yml`). A green CI run does not satisfy a merge gate by itself, and release paths must not depend on GitHub Actions.
 

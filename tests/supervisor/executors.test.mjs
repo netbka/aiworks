@@ -1,14 +1,19 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { once } from 'node:events';
 import { test } from 'node:test';
-import childProcess from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import childProcess, { spawn } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { campaignPause, campaignRecheck, campaignStart, campaignStatus } from '../../src/supervisor/api.mjs';
 import { buildPrompt, classify, GATE_RULES, prepare, refusedBeforeWork, unavailableReason, roleUnavailableReason, VERIFIER_TALLY_RULE } from '../../src/supervisor/adapters/executors.mjs';
 import * as agy from '../../src/supervisor/adapters/agy.mjs';
+import { CaamError, caamProfileEnv, ensureShallowProfile, shallowHomeOf } from '../../src/supervisor/adapters/caam.mjs';
 import * as claude from '../../src/supervisor/adapters/claude.mjs';
 import { scopeDigest, validateDeclaration } from '../../src/supervisor/campaign.mjs';
+import { route } from '../../src/supervisor/router.mjs';
 import { declaration, environment, SQLITE, skipWithoutSqlite } from './helpers.mjs';
 
 const { Store } = SQLITE ? await import('../../src/supervisor/store.mjs') : {};
@@ -107,12 +112,33 @@ test('credit exhaustion falls back for each provider; permission denial and reco
 });
 
 test('owner campaign priority and role support are explicit', () => {
-  const campaign = JSON.parse(readFileSync(new URL('../../campaigns/dyk-443-waves.json', import.meta.url)));
+  const campaign = JSON.parse(readFileSync(new URL('../../tests/fixtures/campaigns/sample-chain.json', import.meta.url)));
   validateDeclaration(campaign);
   assert.deepEqual(campaign.executor.providers.map((p) => p.kind), ['claude-cli', 'codex-cli', 'cursor-cli']);
   assert.match(roleUnavailableReason({ kind: 'codex-cli' }, 'implementer', 'commit', 'win32'), /shared Git/);
-  assert.equal(roleUnavailableReason({ kind: 'codex-cli' }, 'verification', 'commit', 'win32'), null);
   assert.equal(roleUnavailableReason({ kind: 'codex-cli' }, 'implementer', 'report', 'win32'), null);
+});
+
+test('Codex never verifies a commit task on Windows; report tasks and other platforms are unchanged (#113)', () => {
+  const codex = { kind: 'codex-cli' };
+  const reason = roleUnavailableReason(codex, 'verification', 'commit', 'win32');
+  assert.equal(reason, "Codex cannot run the repository's tests in its read-only sandbox on Windows");
+  assert.doesNotMatch(reason, /codex-cli|[a-z]+[A-Z]\w*|_/, 'owner-readable: no internal identifier');
+  assert.equal(roleUnavailableReason(codex, 'verification', 'report', 'win32'), null);
+  for (const platform of ['linux', 'darwin']) {
+    assert.equal(roleUnavailableReason(codex, 'verification', 'commit', platform), null, platform);
+    assert.equal(roleUnavailableReason(codex, 'implementer', 'commit', platform), null, platform);
+  }
+  for (const kind of ['claude-cli', 'cursor-cli']) assert.equal(roleUnavailableReason({ kind }, 'verification', 'commit', 'win32'), null, kind);
+  const chain = (deliverable, platform) => route({ stage: 'verify', chain: true, task: { deliverable, web: false }, platform,
+    candidates: [{ kind: 'codex-cli', model: null }, { kind: 'claude-cli', model: 'opus' }],
+    hostFacts: ['codex-cli', 'claude-cli'].map((kind) => ({ kind, cliConfigured: true, hostUnavailable: false, wait: null })),
+    escalation: { priorAttempts: [] } });
+  assert.equal(chain('commit', 'win32').chosen.kind, 'claude-cli', 'the chain skips Codex for a commit verification on Windows');
+  assert.ok(chain('commit', 'win32').eligibility.some((e) => e.kind === 'codex-cli' && e.role === 'verification' && e.reasons.includes('role-unsupported')));
+  assert.equal(chain('report', 'win32').chosen.kind, 'codex-cli');
+  assert.equal(chain('commit', 'linux').chosen.kind, 'codex-cli');
+  assert.equal(chain('commit', 'darwin').chosen.kind, 'codex-cli');
 });
 
 test('native tool refusals before quota or completion cannot trigger provider fallback', () => {
@@ -154,7 +180,7 @@ test('Codex gets one required repository reader with immutable scope and no glob
   assert.ok(claudeResearch.argv.includes('--safe-mode'));
 });
 
-function fixture(t, maxWorkerRuns = 12, tasks, repository = 'netbka/Dyk') {
+function fixture(t, maxWorkerRuns = 12, tasks, repository = 'example-org/sampleapp') {
   const env = environment();
   const oldHomes = { CODEX_HOME: process.env.CODEX_HOME, CURSOR_CONFIG_DIR: process.env.CURSOR_CONFIG_DIR };
   for (const key of Object.keys(oldHomes)) process.env[key] = join(env.tmp, key);
@@ -166,7 +192,7 @@ function fixture(t, maxWorkerRuns = 12, tasks, repository = 'netbka/Dyk') {
   const store = new Store(join(env.dataDir, 'supervisor.db'));
   const d = declaration({ tasks: tasks ?? [{ ...declaration().tasks[0], deliverable: 'report' }], limits: { maxWorkerRuns } });
   d.target.repository = repository;
-  env.config.repositories[repository] = env.config.repositories['netbka/Dyk'];
+  env.config.repositories[repository] = env.config.repositories['example-org/sampleapp'];
   d.executor = structuredClone(chain);
   campaignStart(store, d);
   const controller = new Controller({ store, config: env.config, dataDir: env.dataDir });
@@ -393,7 +419,7 @@ test('explicit uncapped authorization permits runs above numeric caps without lo
   assert.equal(store.openOperations(id)[0].executor_kind, 'codex-cli');
   assert.equal(store.campaign(id).runs_used, 102);
   assert.equal(store.campaign(id).blocker, null);
-  // Since engineering-platform-archive#72 an omitted cap also means no run cap; out-of-range values still fail.
+  // Since historical regression an omitted cap also means no run cap; out-of-range values still fail.
   assert.doesNotThrow(() => validateDeclaration({ ...d, limits: { ...d.limits, maxWorkerRuns: undefined } }));
   assert.throws(() => validateDeclaration({ ...d, limits: { ...d.limits, maxWorkerRuns: 0 } }), /maxWorkerRuns/);
 });
@@ -414,7 +440,7 @@ test('completed planning campaigns name their actual target without claiming PR 
   const c = store.campaign(id);
   assert.equal(c.control, 'finished');
   assert.match(c.next_action, /Planning reports published in test\/wiki/);
-  assert.doesNotMatch(c.next_action, /Dyk|merge the campaign PRs/);
+  assert.doesNotMatch(c.next_action, /sampleapp|merge the campaign PRs/);
 });
 
 const promptArgs = (role, deliverable, changes = {}) => ({ executorKind: 'claude-cli', web: null, role, deliverable,
@@ -446,5 +472,222 @@ test('web-task prompts are the unchanged browser prompt and carry no gate rules'
     const prompt = buildPrompt(args);
     assert.equal(prompt, agy.buildPrompt(args));
     for (const rule of [...GATE_RULES, VERIFIER_TALLY_RULE]) assert.ok(!prompt.includes(rule));
+  }
+});
+
+test('commit prompts tell implementers and verifiers how to get a completed full gate; report prompts do not (#102, #135)', () => {
+  const ruleLine = (prompt) => prompt.split('\n').find((line) => line.startsWith('The repository\'s full gate (npm run check)'));
+  for (const role of ['implementer', 'verification']) {
+    const args = promptArgs(role, 'commit');
+    const prompt = buildPrompt(args);
+    const rule = ruleLine(prompt);
+    assert.ok(rule, `${role} commit prompt carries the full-gate rule`);
+    assert.match(rule, /can take 20 to 30 minutes on this PC while other work runs, longer than one foreground command may wait/);
+    assert.match(rule, /Start it as a separate background process with its output in a file in this run's working directory/);
+    assert.match(rule, /wait for that process to exit/);
+    // #135: every gate file is git-ignored, so a verifier's checkout stays clean.
+    assert.match(rule, /Every file the gate writes ends in \.log, which git ignores: gate\.log for the output, gate-exit\.log for the exit code, never committed\./);
+    assert.match(rule, /A verifier's checkout must stay clean: any other new or changed file in it makes the verification result invalid\./);
+    assert.doesNotMatch(rule, /gate\.exit/);
+    assert.match(rule, /copy the final summary block verbatim.*scripts\/run-tests\.mjs, the block after "# all test files"/);
+    assert.match(rule, /Never shorten the suite, skip files or weaken a test to make it finish\./);
+    assert.ok(prompt.indexOf(rule) < prompt.indexOf('Task packet (sha256 '), 'the rule precedes the packet');
+    // Only the gate rules are added to the base prompt, the new one among them.
+    const added = [...GATE_RULES, ...(role === 'verification' ? [VERIFIER_TALLY_RULE] : [])];
+    assert.ok(added.includes(rule));
+    assert.equal(prompt.split('\n').filter((line) => !added.includes(line)).join('\n'), claude.buildPrompt(args));
+    // Report tasks (research-only workers run only these) keep exactly the two #42/#43 rules and no full-gate rule.
+    const reportArgs = promptArgs(role, 'report');
+    const report = buildPrompt(reportArgs);
+    assert.equal(ruleLine(report), undefined, `${role} report prompt`);
+    const reportAdded = [GATE_RULES[0], GATE_RULES[1], ...(role === 'verification' ? [VERIFIER_TALLY_RULE] : [])];
+    const base = claude.buildPrompt(reportArgs);
+    const at = base.indexOf('\n\nTask packet (sha256 ');
+    assert.equal(report, `${base.slice(0, at)}\n${reportAdded.join('\n')}${base.slice(at)}`);
+    // Web tasks keep the unchanged browser prompt.
+    const webArgs = promptArgs(role, 'report', { web: { urls: ['https://example.test/'] } });
+    assert.equal(buildPrompt(webArgs), agy.buildPrompt(webArgs));
+    assert.equal(ruleLine(buildPrompt(webArgs)), undefined);
+  }
+});
+
+// CAAM4-LAUNCH (docs/design/ACCOUNT_ADAPTER_CAAM.md section 3.4): a run bound to a CAAM profile launches with that
+// profile's shallow home and nothing else changes. Synthetic homes and a synthetic caam only; no real CAAM or login.
+const runnerPath = fileURLToPath(new URL('../../src/supervisor/runner.mjs', import.meta.url));
+const CLAUDE_PROFILE_KEYS = ['HOME', 'USERPROFILE', 'CLAUDE_CODE_DISABLE_AGENT_VIEW', 'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS', 'CLAUDE_CODE_DISABLE_AUTO_MEMORY'];
+function profileDirs(t) {
+  const tmp = mkdtempSync(join(tmpdir(), 'aiworks-caam-launch-'));
+  t.after(() => rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  const root = join(tmp, 'shallow-homes');
+  const home = join(root, 'work-a');
+  const workspace = join(tmp, 'workspace');
+  const runDir = join(tmp, 'run');
+  // The .git marks the checkout boundary, so the extension preflight never climbs into the host's own folders.
+  for (const dir of [join(home, '.codex'), join(workspace, '.git'), runDir]) mkdirSync(dir, { recursive: true });
+  return { tmp, root, home, workspace, runDir };
+}
+const launchArgs = (executor, dirs, extra = {}) => ({ executor, command: ['native-cli'], role: 'implementer', deliverable: 'commit',
+  sessionId: expect.sessionId, digest, runDir: dirs.runDir, workspace: dirs.workspace, prompt: 'synthetic', ...extra });
+
+test('a Claude run bound to a CAAM profile gets the shallow home and keeps every isolation flag', (t) => {
+  const dirs = profileDirs(t);
+  const executor = chain.providers.find((p) => p.kind === 'claude-cli');
+  const settings = JSON.stringify({ env: { CLAUDE_CODE_SUBAGENT_MODEL: 'haiku', HOME: 'C:/elsewhere' } });
+  const hostRun = prepare(launchArgs(executor, dirs, { projectSettings: settings }));
+  const run = prepare(launchArgs(executor, dirs, { projectSettings: settings, profileHome: dirs.home }));
+  assert.equal(run.env.HOME, dirs.home);
+  assert.equal(run.env.USERPROFILE, dirs.home);
+  assert.equal(run.env.CLAUDE_CODE_DISABLE_AGENT_VIEW, '1');
+  assert.equal(run.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, '1');
+  assert.equal(run.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, '1');
+  assert.equal(run.env.CODEX_HOME, undefined);
+  // Exactly the host-run environment plus the profile: no host variable, project HOME or personal setting leaks in.
+  assert.deepEqual(Object.keys(run.env).sort(), [...new Set([...Object.keys(hostRun.env), ...CLAUDE_PROFILE_KEYS])].sort());
+  for (const [key, value] of Object.entries(hostRun.env)) if (!CLAUDE_PROFILE_KEYS.includes(key)) assert.equal(run.env[key], value);
+  assert.equal(hostRun.env.HOME, undefined, 'a run without a profile keeps the host login');
+  // The argv, prompt and working directory are unchanged: the profile changes the environment only.
+  assert.deepEqual(run.argv, hostRun.argv);
+  assert.equal(run.prompt, hostRun.prompt);
+  assert.equal(run.cwd, hostRun.cwd);
+  assert.equal(run.argv[run.argv.indexOf('--setting-sources') + 1], '');
+  assert.ok(run.argv.includes('--strict-mcp-config'));
+  assert.ok(run.argv.includes('{"disableAllHooks":true}'));
+  assert.ok(!run.argv.some((arg) => /bypass|--resume|--continue|--mcp-config/.test(arg)));
+  // Research-only Claude keeps its tool-free safe mode under a profile.
+  const research = prepare(launchArgs({ ...executor, researchOnly: true }, dirs, { deliverable: 'report', profileHome: dirs.home }));
+  assert.equal(research.env.HOME, dirs.home);
+  assert.ok(research.argv.includes('--safe-mode'));
+  assert.equal(research.argv[research.argv.indexOf('--tools') + 1], '');
+  assert.equal(research.argv[research.argv.indexOf('--mcp-config') + 1], '{"mcpServers":{}}');
+});
+
+test('a Codex run bound to a CAAM profile gets HOME, USERPROFILE and CODEX_HOME and keeps apps disabled and the sandbox', (t) => {
+  const dirs = profileDirs(t);
+  const executor = chain.providers.find((p) => p.kind === 'codex-cli');
+  for (const role of ['implementer', 'verification']) {
+    const hostRun = prepare(launchArgs(executor, dirs, { role }));
+    const run = prepare(launchArgs(executor, dirs, { role, profileHome: dirs.home }));
+    assert.equal(hostRun.env, undefined, 'a Codex run without a profile adds no environment');
+    assert.deepEqual(run.env, { HOME: dirs.home, USERPROFILE: dirs.home, CODEX_HOME: join(dirs.home, '.codex') });
+    assert.deepEqual(run.argv, hostRun.argv);
+    assert.equal(run.prompt, hostRun.prompt);
+    assert.equal(run.argv[run.argv.indexOf('--disable') + 1], 'apps');
+    assert.ok(run.argv.includes('--ignore-user-config'));
+    assert.equal(run.argv[run.argv.indexOf('--sandbox') + 1], role === 'verification' ? 'read-only' : 'workspace-write');
+    assert.equal(run.argv[run.argv.indexOf('-a') + 1], 'never');
+  }
+  // The hooks preflight reads the profile's CODEX_HOME, which is the one the worker will load.
+  assert.equal(unavailableReason(executor, dirs.workspace, null, { profileHome: dirs.home }), null);
+  writeFileSync(join(dirs.home, '.codex', 'hooks.json'), '{}');
+  assert.match(unavailableReason(executor, dirs.workspace, null, { profileHome: dirs.home }), /user Codex hooks/);
+});
+
+test('a CAAM profile cannot launch agy or Cursor, or point at a relative home or the host home', (t) => {
+  const dirs = profileDirs(t);
+  assert.throws(() => prepare(launchArgs({ kind: 'agy-cli' }, dirs, { deliverable: 'report', web: { urls: ['https://example.test/'] }, profileHome: dirs.home })),
+    (error) => error instanceof CaamError && error.code === 'consumer-agy-excluded');
+  assert.throws(() => prepare(launchArgs({ kind: 'cursor-cli' }, dirs, { role: 'verification', profileHome: dirs.home })),
+    (error) => error instanceof CaamError && error.code === 'unsupported-executor');
+  const claudeExecutor = chain.providers.find((p) => p.kind === 'claude-cli');
+  for (const profileHome of ['relative/home', homedir(), dirname(homedir())]) {
+    assert.throws(() => prepare(launchArgs(claudeExecutor, dirs, { profileHome })), (error) => error.code === 'invalid-profile-home', profileHome);
+  }
+  // A home under the host home, CAAM's default ~/.caam/shallow-homes/<name>, is allowed.
+  const underHost = join(homedir(), '.caam', 'shallow-homes', 'work-a');
+  assert.equal(caamProfileEnv(underHost, 'claude').HOME, underHost);
+  for (const name of ['../escape', 'a/b', '', '-flag']) {
+    assert.throws(() => shallowHomeOf(dirs.root, name), (error) => error.code === 'invalid-profile-home', name);
+  }
+  assert.throws(() => shallowHomeOf('relative', 'work-a'), (error) => error.code === 'invalid-profile-home');
+  assert.equal(shallowHomeOf(dirs.root, 'work-a'), dirs.home);
+});
+
+test('ensureShallowProfile uses an existing home, creates a missing one through caam once and fails closed', (t) => {
+  const dirs = profileDirs(t);
+  const calls = [];
+  const spawnWith = (create) => (command, args, options) => { calls.push({ command, args, options }); return create(); };
+  const never = spawnWith(() => assert.fail('an existing home must not call caam'));
+  assert.equal(ensureShallowProfile({ command: ['caam'], kind: 'claude-cli', name: 'work-a', root: dirs.root, spawn: never }), dirs.home);
+  assert.equal(calls.length, 0);
+  // Missing: one create call with the exact argv, then the home must exist.
+  const made = spawnWith(() => { mkdirSync(join(dirs.root, 'work-b')); return { status: 0, stdout: '{"success":true}\n', stderr: '' }; });
+  assert.equal(ensureShallowProfile({ command: ['node', 'caam.mjs'], kind: 'codex-cli', name: 'work-b', root: dirs.root, spawn: made }), join(dirs.root, 'work-b'));
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, 'node');
+  assert.deepEqual(calls[0].args, ['caam.mjs', 'shallow-profile', 'create', 'work-b', '--from-vault', 'codex/work-b', '--json']);
+  assert.equal(calls[0].options.windowsHide, true);
+  const fails = (create, code, pattern) => assert.throws(
+    () => ensureShallowProfile({ command: ['caam'], kind: 'claude-cli', name: 'work-c', root: dirs.root, spawn: spawnWith(create) }),
+    (error) => error instanceof CaamError && error.code === code && pattern.test(error.message) && !/secret/.test(error.message));
+  fails(() => ({ status: 0, stdout: '{"success":true}', stderr: 'secret' }), 'shallow-profile-missing', /no shallow home/);
+  fails(() => ({ status: 1, stdout: '{"success":false,"error":{"code":"VAULT_MISSING","message":"no vault entry"}}', stderr: 'secret' }),
+    'cli-error', /VAULT_MISSING: no vault entry/);
+  fails(() => ({ status: 2, stdout: 'not json secret', stderr: 'secret' }), 'cli-error', /exited 2/);
+  fails(() => ({ error: Object.assign(new Error('missing'), { code: 'ENOENT' }) }), 'missing-executable', /caam was not found/);
+  fails(() => ({ error: Object.assign(new Error('slow'), { code: 'ETIMEDOUT' }) }), 'timeout', /longer than/);
+  assert.throws(() => ensureShallowProfile({ command: [], kind: 'claude-cli', name: 'work-c', root: dirs.root, spawn: never }),
+    (error) => error.code === 'missing-executable');
+  assert.throws(() => ensureShallowProfile({ command: ['caam'], kind: 'agy-cli', name: 'work-c', root: dirs.root, spawn: never }),
+    (error) => error.code === 'consumer-agy-excluded');
+  assert.equal(existsSync(join(dirs.root, 'work-c')), false);
+});
+
+test('a profile run under Job Object containment reads its prompt, writes stdout and returns its exit code with the shallow home',
+  { skip: process.platform !== 'win32' && 'Windows Job Object containment (runner.mjs, windows-process.ps1) runs only on Windows' }, async (t) => {
+    const dirs = profileDirs(t);
+    const invocation = prepare(launchArgs(chain.providers.find((p) => p.kind === 'claude-cli'), dirs, { profileHome: dirs.home }));
+    const worker = join(dirs.runDir, 'worker.mjs');
+    writeFileSync(worker, [
+      "import { readFileSync } from 'node:fs';",
+      "import { homedir } from 'node:os';",
+      'const pick = (key) => process.env[key] ?? null;',
+      "process.stdout.write(JSON.stringify({ prompt: readFileSync(0, 'utf8'), homedir: homedir(), HOME: pick('HOME'),",
+      "  USERPROFILE: pick('USERPROFILE'), CODEX_HOME: pick('CODEX_HOME'), view: pick('CLAUDE_CODE_DISABLE_AGENT_VIEW'),",
+      "  background: pick('CLAUDE_CODE_DISABLE_BACKGROUND_TASKS'), memory: pick('CLAUDE_CODE_DISABLE_AUTO_MEMORY'),",
+      "  session: pick('CLAUDE_CODE_SESSION_PROBE') }));",
+      'process.exit(7);',
+    ].join('\n'));
+    writeFileSync(join(dirs.runDir, 'prompt.txt'), invocation.prompt);
+    // The spec as controller.mjs writes it, with the synthetic worker in place of the native CLI.
+    writeFileSync(join(dirs.runDir, 'spec.json'), JSON.stringify({ argv: [process.execPath, worker], env: invocation.env,
+      cwd: invocation.cwd, timeoutMs: 60_000, heartbeatMs: 50 }));
+    // A host Claude Code session variable must not reach the worker (proc.mjs workerEnv).
+    const child = spawn(process.execPath, [runnerPath, dirs.runDir], { windowsHide: true, stdio: 'ignore',
+      env: { ...process.env, CLAUDE_CODE_SESSION_PROBE: 'host-session' } });
+    const exited = once(child, 'exit');
+    t.after(async () => { if (child.exitCode === null && child.signalCode === null) { child.kill(); await exited; } });
+    await exited;
+    const result = JSON.parse(readFileSync(join(dirs.runDir, 'result.json'), 'utf8'));
+    assert.equal(result.exitCode, 7, JSON.stringify(result));
+    assert.equal(result.timedOut, false);
+    assert.equal(result.containment, 'windows-job-v1');
+    assert.equal(result.containmentStopped, true);
+    assert.deepEqual(JSON.parse(readFileSync(join(dirs.runDir, 'stdout.json'), 'utf8')), { prompt: invocation.prompt, homedir: dirs.home,
+      HOME: dirs.home, USERPROFILE: dirs.home, CODEX_HOME: null, view: '1', background: '1', memory: '1', session: null });
+  });
+
+test('commit and report verifier prompts report a check that behaved as intended as pass; implementer and web prompts do not carry it (#59)', () => {
+  const ruleLine = (prompt) => prompt.split('\n').find((line) => line.includes('A check that behaves as intended is reported as pass'));
+  for (const deliverable of ['commit', 'report']) {
+    for (const role of ['implementer', 'verification']) {
+      const args = promptArgs(role, deliverable);
+      const prompt = buildPrompt(args);
+      const rule = ruleLine(prompt);
+      if (role !== 'verification') { assert.equal(rule, undefined, `${role} ${deliverable}`); continue; }
+      assert.ok(rule, `verifier ${deliverable} prompt carries the rule`);
+      assert.match(rule, /including a mutation or base comparison whose expected failure was observed/);
+      assert.match(rule, /a full-suite run whose only failure is an unrelated timing test that passes on a re-run \(name the test, the run and the re-run summary in its detail\)/);
+      assert.match(rule, /Report fail only for an outcome that shows a defect in the change\./);
+      assert.match(rule, /Never return accepted with a check marked fail\./);
+      assert.ok(prompt.indexOf(rule) < prompt.indexOf('Task packet (sha256 '), 'the rule precedes the packet');
+      // The base prompt is otherwise unchanged: removing the added rule lines gives it back.
+      const added = [...GATE_RULES, VERIFIER_TALLY_RULE];
+      assert.equal(prompt.split('\n').filter((line) => !added.includes(line)).join('\n'), claude.buildPrompt(args));
+    }
+  }
+  for (const role of ['implementer', 'verification']) {
+    const webArgs = promptArgs(role, 'report', { web: { urls: ['https://example.test/'] } });
+    assert.equal(buildPrompt(webArgs), agy.buildPrompt(webArgs));
+    assert.equal(ruleLine(buildPrompt(webArgs)), undefined, `${role} web prompt`);
   }
 });

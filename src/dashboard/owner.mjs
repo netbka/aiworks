@@ -2,7 +2,7 @@
 // with the merge state the dashboard reads from local git (merges.mjs); it never calls GitHub. Unknown or stale merge
 // state never reads as merged; every sentence is built from supervisor or local git fields, never from worker output.
 
-import { NEEDS, RESTART_ADVICE, blockerWords, stateCopy } from './copy.mjs';
+import { DELEGATED, NEEDS, RESTART_ADVICE, blockerWords, stateCopy } from './copy.mjs';
 
 const PR_URL = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)$/;
 const COMMENT_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+#issuecomment-\d+$/;
@@ -23,6 +23,12 @@ export const RESTART_GRACE_MS = 5 * 60_000;
  * yet", and "Needs you" items built from it say when the check is from. A failed fetch keeps the last result and its time.
  */
 export const MERGE_FRESH_MS = 15 * 60_000;
+/**
+ * A delegated, verified, unmerged and not-held pull request that waited longer than this since its check is the owner's
+ * again (#139). config.json `merges.stallHours` replaces it.
+ */
+export const MERGE_STALL_HOURS = 3;
+const HOUR_MS = 60 * 60_000;
 /** Where the supervisor's own faults are tracked (docs/SUPERVISOR.md). */
 export const SUPERVISOR_ISSUE = 'https://github.com/netbka/aiworks/issues/2';
 /** The supervisor's own next action for a finished campaign whose steps are all reports. */
@@ -62,8 +68,11 @@ const NOTES = { published: 'Your review and merge', 'report-posted': 'For you to
  * result link was recorded. Merged only when a current check found the verified commit on the base branch. A published
  * step carries why its merge is not seen: `pending` when a check that can still come shortly is running or due.
  * `asOf` is the time of a merge check that is not current, or that is current but whose last fetch failed.
+ * With merging delegated by the owner (`delegation`, config.json `merges`, #17), a verified pull request whose merge is
+ * not seen and is not being checked is `delegated`: merged for the owner by `by`, or `held` with its reason key. One not
+ * held that waited longer than `delegation.stallHours` since its check (`task.verifiedAt`) is `stalled`, in whole hours (#139).
  */
-export function delivery(task, merges = NO_MERGES, now = Date.now(), campaignId = null) {
+export function delivery(task, merges = NO_MERGES, now = Date.now(), campaignId = null, delegation = null) {
   if (task.state !== 'done') return null;
   const url = task.resultUrl ?? '';
   if (COMMENT_URL.test(url)) return { state: 'report-posted', url, note: NOTES['report-posted'] };
@@ -78,6 +87,13 @@ export function delivery(task, merges = NO_MERGES, now = Date.now(), campaignId 
   if (result === true && check.fresh) return { state: 'merged', ...base, note: null, mergedAt: step.mergedAt ?? null };
   const reason = !task.verifiedSha ? 'no-verified-sha' : check.reason === 'no-checkout' ? 'no-checkout'
     : check.reason === 'fetch-failed' && !check.fresh ? 'fetch-failed' : !check.fresh || result === null ? 'checking' : null;
+  if (delegation && task.verifiedSha && reason !== 'checking') {
+    const held = delegation.held?.[url.toLowerCase()] ?? null;
+    const waited = !held && Number.isSafeInteger(task.verifiedAt) ? now - task.verifiedAt : null;
+    const stalled = waited !== null && waited > (delegation.stallHours ?? MERGE_STALL_HOURS) * HOUR_MS ? Math.floor(waited / HOUR_MS) : null;
+    return { state: 'delegated', ...base, reason, pending: false, held, stalled, by: delegation.delegatedTo,
+      note: held ? DELEGATED.held[held] : stalled ? DELEGATED.stalled(stalled) : DELEGATED.note(delegation.delegatedTo) };
+  }
   return { state: 'published', ...base, reason, pending: reason === 'checking', note: NOTES[reason ?? 'published'] };
 }
 
@@ -109,6 +125,7 @@ export function resultEvidence(task, pullRequest = true) {
  */
 export const RESULT_GROUPS = [
   { key: 'review', title: 'Waiting for your review' },
+  { key: 'delegated', title: 'Being merged for you' },
   { key: 'closed', title: 'Closed without merging' },
   { key: 'reports', title: 'Reports to read' },
   { key: 'merged', title: 'Merged' },
@@ -131,6 +148,9 @@ function resultRow(c, task, d, releases) {
   // Merged only from a current merge check; what follows is the project's release rule, never "released" or "live".
   if (d.state === 'merged') return { ...base, ...proof, group: 'merged', word: 'Merged', note: null, link, mergedAt: d.mergedAt ?? null,
     release: `Release follows ${releaseRule(releases, c.repository)}.` };
+  // Merging delegated by the owner: passed the check and merged for them, held with its reason, or waiting too long.
+  if (d.state === 'delegated') return { ...base, ...proof, group: 'delegated', note: d.note, link,
+    word: d.held ? DELEGATED.heldRow(number, DELEGATED.held[d.held]) : d.stalled ? DELEGATED.stalledRow(number, d.stalled) : DELEGATED.row(number, d.by) };
   // A merge check that can still come shortly: the state is not known yet, so it is neither waiting nor merged.
   if (d.pending) return { ...base, ...proof, group: 'unknown', word: 'Not known yet', note: d.note, link };
   return { ...base, ...proof, group: 'review', word: `Pull request #${number} · waiting for your review`,
@@ -165,7 +185,7 @@ function resultsByProject(supervisor, campaigns, releases) {
 
 /**
  * Where merged work goes next in a repository. A standing deploy authorization recorded in the project registry
- * (Engineering Platform's CONSTITUTION §14, EP-029) is named; otherwise release follows the project's own policy. Neither says who acts.
+ * (governance provider's CONSTITUTION §14, EP-029) is named; otherwise release follows the project's own policy. Neither says who acts.
  */
 const releaseRule = (releases, repository, whose = `${short(repository)}'s`) =>
   `${whose} ${releases?.[repository.toLowerCase()] ? 'standing deploy authorization' : 'release policy'}`;
@@ -181,14 +201,15 @@ function finishedSummary(c, steps, releases) {
   const has = (n) => n === 1 ? 'has' : 'have';
   const missing = count((step) => !step.delivery), noLink = state('unknown'),
     checking = count((step) => step.delivery?.pending), published = state('published') - checking,
-    reports = state('report-posted'), merged = state('merged');
+    reports = state('report-posted'), merged = state('merged'), delegated = state('delegated');
   // Merged work is ready for release only when every other step is a report: none unknown, being checked or unmerged.
-  const releaseReady = merged > 0 && !(missing + noLink + checking + published);
+  const releaseReady = merged > 0 && !(missing + noLink + checking + published + delegated);
   const parts = [
     missing ? `${plural(missing, 'step')} ${has(missing)} no recorded result` : null,
     checking ? `the merge of ${plural(checking, 'step')} is being checked; check again shortly` : null,
     noLink ? `${plural(noLink, 'step')} ${has(noLink)} no recorded result link; check ${noLink === 1 ? 'its issue' : 'their issues'}` : null,
     published ? `${plural(published, 'step')} ${published === 1 ? 'waits' : 'wait'} for your review (merge not seen yet)` : null,
+    delegated ? DELEGATED.progress(delegated) : null,
     // A report is for the owner to read and decide on. A campaign of reports only shows the supervisor's own next action.
     reports ? reports === steps.length && REPORTS_ACTION.test(c.nextAction ?? '') ? c.nextAction : `${plural(reports, 'report')} posted for you to read` : null,
     merged ? releaseReady ? `the merged work is ready; release follows ${releaseRule(releases, c.repository)}` : `${merged} merged` : null,
@@ -244,8 +265,11 @@ const agentWorking = (agent, now) => agent.heartbeatState === 'recent' || (agent
 /**
  * The owner view. `releases` maps a lowercased repository to the standing deploy authorization its registry entry
  * records (readReleaseAuthorizations); a repository without one is described only by its own release policy.
+ * `delegation` is the owner's merge delegation from config.json (configuredMergeDelegation), or null: with it, a
+ * verified, unmerged pull request is no Needs me item and is counted as `delegated`, never as awaiting the owner, until
+ * it waited longer than `delegation.stallHours` since its check: then it is a counted Needs me item that opens it (#139).
  */
-export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = Date.now(), releases = {} } = {}) {
+export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = Date.now(), releases = {}, delegation = null } = {}) {
   // Results with nothing finished in a project show the §7.1 empty copy, written once in copy.mjs.
   const { title, text } = stateCopy('results-empty'), noResults = { title, text };
   if (!supervisor?.available) return { available: false, headline: null, count: 0, items: [], groups: [], unknownResults: 0, also: null, layout: { cards: [], finished: [] }, reply: null, campaigns: {}, results: {}, noResults, recent: null };
@@ -255,7 +279,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
   const entries = supervisor.campaigns.map((c) => ({ id: c.id, purpose: purpose(c) }));
   distinguish(entries);
   for (const c of supervisor.campaigns) {
-    const steps = c.tasks.map((task) => ({ task, delivery: delivery(task, merges, now, c.id) }));
+    const steps = c.tasks.map((task) => ({ task, delivery: delivery(task, merges, now, c.id, delegation) }));
     const by = (state) => steps.filter((step) => step.delivery?.state === state);
     // "Checking for merges" only while a merge check that can still come shortly is running or due. Every other
     // published step waits for the owner's review: its merge is not seen, whatever the reason.
@@ -281,8 +305,9 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       finished: finished?.text ?? null, releaseReady: finished?.releaseReady ?? false,
       // One line for the compact list of finished and cancelled campaigns.
       outcome: finished?.line ?? (c.control === 'cancelled' ? `Cancelled · ${delivered} of ${plural(c.tasks.length, 'step')} delivered` : null),
+      // `delegated` only when the owner delegated merging: without it the counts are as before.
       counts: { total: c.tasks.length, delivered, merged: by('merged').length,
-        awaiting: awaiting.length, checking: checking.length, unknown: unknown.length, reports: by('report-posted').length } };
+        awaiting: awaiting.length, ...(delegation ? { delegated: by('delegated').length } : {}), checking: checking.length, unknown: unknown.length, reports: by('report-posted').length } };
     const base = { campaignId: c.id, repository: c.repository };
     // One item per step, led by what the step delivers. The evidence is one compact line; the full sentence is one click away.
     for (const { task, delivery: d } of awaiting) {
@@ -307,18 +332,26 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
               : NEEDS.nothingWaits(releaseRule(releases, d.repository)),
         ].filter(Boolean).map((text) => ({ link: null, text })) });
     }
+    // A delegated merge that waited too long: nothing has merged it, so it is the owner's again (#139).
+    for (const { task, delivery: d } of by('delegated').filter((step) => step.delivery.stalled)) {
+      items.push({ ...base, kind: 'merge-stalled', action: DELEGATED.stalledAction, text: label(task), link: { label: `Open PR #${d.number}`, url: d.url },
+        mergeCheck: d.asOf, points: [{ link: null, text: DELEGATED.stalled(d.stalled) }] });
+    }
     for (const { task } of unknown) {
       items.push({ ...base, kind: 'check', action: 'Check on GitHub', text: label(task), link: { label: NEEDS.stepIssue, url: task.issueUrl }, mergeCheck: null,
         points: [{ link: null, text: 'This step finished, but no result link was recorded, so the dashboard cannot tell where it stands.' }] });
     }
-    if (c.blocker) {
+    // A cancelled campaign's stops are history: no answer or recheck resumes it, so they are no owner item. Its open
+    // pull requests above still are, because a published result can still be merged.
+    const cancelled = c.control === 'cancelled';
+    if (c.blocker && !cancelled) {
       // What happened and what to do in owner words; what the supervisor recorded is one click away.
       const words = blockerWords(c.blocker);
       items.push({ ...base, kind: c.blockerClass === 'B3' ? 'decision' : 'stopped', text: NEEDS.workStopped,
         evidence: NEEDS.recorded, detail: [c.blockerClass, c.blockerReason, c.blockerAction].filter(Boolean).join(' · '),
         points: [{ link: { label: 'Tracking issue', url: c.trackingUrl }, text: `${words.reason}. What to do: ${words.action}.` }] });
     }
-    for (const task of c.tasks.filter((item) => item.blocked && item.state !== 'done')) {
+    for (const task of cancelled ? [] : c.tasks.filter((item) => item.blocked && item.state !== 'done')) {
       items.push({ ...base, kind: task.blocked === 'B3' ? 'decision' : 'stopped', action: task.blocked === 'B3' ? 'Decision needed' : 'Stopped; will not retry by itself',
         text: label(task), link: { label: NEEDS.stepIssue, url: task.issueUrl },
         points: [{ link: null, text: `${task.blockedReason.charAt(0).toUpperCase()}${task.blockedReason.slice(1)}.` }] });
@@ -330,8 +363,9 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     // A supervisor fault is not an owner action (aiworks#11 review F6, F17): it is listed under AIWorks itself, names the
     // project it holds up in `about`, and no project or headline counts it.
     if (c.livenessDefect) {
+      const issue = supervisor.settings?.supervisorIssue ?? SUPERVISOR_ISSUE;
       items.push({ campaignId: c.id, repository: null, about: c.repository, kind: 'controller', system: true, text: NEEDS.fault.text,
-        points: [{ link: { label: NEEDS.fault.link, url: SUPERVISOR_ISSUE }, text: NEEDS.fault.point }] });
+        points: [{ link: { label: NEEDS.fault.link.replace(/\d+$/, issue.split('/').at(-1)), url: issue }, text: NEEDS.fault.point }] });
     } else if (campaigns[c.id].liveness === 'agent-working-supervisor-silent') {
       halted.push({ c, at: leaseEnded, how: 'silent', paused });
     } else if (campaigns[c.id].liveness === 'stopped') {
@@ -347,7 +381,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     items.push({ kind: 'coordinator', system: true, campaignId: null, repository: null, text: 'The coordinator cannot read your messages',
       points: [{ link: null, text: `${coordinator.configError ?? coordinator.blocked}${waiting ? ` · ${plural(waiting, 'message')} waiting` : ''}. This is a supervisor configuration fix for whoever maintains AIWorks.` }] });
   }
-  const answered = (coordinator?.messages ?? []).filter((m) => m.state === 'answered' && m.replyUrl).sort((a, b) => b.answeredAt - a.answeredAt)[0];
+  const answered = (coordinator?.messages ?? []).filter((m) => m.state === 'answered' && (m.replyBody || m.replyUrl)).sort((a, b) => b.answeredAt - a.answeredAt)[0];
   // Calm only about what blocks on the owner; reports and releases are said apart, never as "nothing". Items that say
   // they are not owner actions (a supervisor fault, an unreadable inbox) are listed but not counted (review F17).
   const count = items.filter((item) => !item.system).length;
@@ -359,7 +393,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
   const layout = { cards: [...supervisor.campaigns.filter((c) => listed.has(c.id)), ...supervisor.campaigns.filter((c) => !listed.has(c.id) && !terminal(c))].map((c) => c.id),
     finished: supervisor.campaigns.filter((c) => !listed.has(c.id) && terminal(c)).sort((a, b) => recency(b) - recency(a)).map((c) => c.id) };
   return { available: true, headline, count, items, groups: needsGroups(items), unknownResults, also: alsoForYou(supervisor, campaigns, releases), layout, campaigns,
-    results: resultsByProject(supervisor, campaigns, releases), noResults, recent: recentSummary(supervisor, campaigns), reply: answered ? { messageId: answered.id, answeredAt: answered.answeredAt, url: answered.replyUrl } : null };
+    results: resultsByProject(supervisor, campaigns, releases), noResults, recent: recentSummary(supervisor, campaigns), reply: answered ? { messageId: answered.id, answeredAt: answered.answeredAt, url: answered.replyBody ? null : answered.replyUrl } : null };
 }
 
 /**

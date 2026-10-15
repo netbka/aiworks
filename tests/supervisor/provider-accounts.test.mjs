@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { Store } from '../../src/supervisor/store.mjs';
 import { campaignRecheck, campaignStart, campaignStatus } from '../../src/supervisor/api.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
-import { accountAfterRun, accountFull, accountLimit, accountOf, accountWait, laterWait, openOnAccount } from '../../src/supervisor/accounts.mjs';
+import { PROFILE_RECHECK_MS, accountAfterRun, accountFull, accountLimit, accountOf, accountWait, laterWait, openOnAccount, selectProfile } from '../../src/supervisor/accounts.mjs';
 import { WAIT_REASONS, admissionCheck, classifyRun } from '../../src/supervisor/scheduler.mjs';
 import { declaration, environment } from './helpers.mjs';
 
@@ -31,12 +31,12 @@ const campaign = (campaignId, issue, { executor = null, deliverable = 'commit' }
   return executor ? { ...d, executor } : d;
 };
 
-function rig(t, config = {}, { Ctl = Controller, now = undefined } = {}) {
+function rig(t, config = {}, { Ctl = Controller, now = undefined, profiles = null } = {}) {
   const env = environment();
   Object.assign(env.config, config, { commands: { ...env.config.commands, ...config.commands } });
   const store = new Store(join(env.dataDir, 'supervisor.db'));
   t.after(() => { store.close(); env.cleanup(); });
-  const controller = new Ctl({ store, config: env.config, dataDir: env.dataDir, fault: null, now });
+  const controller = new Ctl({ store, config: env.config, dataDir: env.dataDir, fault: null, now, profiles });
   controller.launch = async () => {}; // the test plays the worker; nothing is spawned
   const open = (id) => store.openOperations(id)[0] ?? null;
   const ctx = (id) => ({ id, generation: controller.held.get(id) });
@@ -315,4 +315,304 @@ test('no limit appears for an account that never throttled', async (t) => {
   const candidate = { campaignId: 'calm-d', taskId: 'T1', kind: 'implement', ord: 0, declaration: r.store.campaign('calm-d').declaration };
   assert.equal(admissionCheck(r.store, candidate, { ...r.controller.admissionInputs(), ceiling: 8 }), null);
   assert.equal(admissionCheck(r.store, candidate, { ceiling: 8 }), null);
+});
+
+// ---- CAAM3 (ACCOUNT_ADAPTER_CAAM.md section 3.3): choose a CAAM profile per run, inside the dispatch transaction. ----
+
+const CAAM = { caam: { enabled: true } };
+/** A CAAM profile record as caam.mjs caamRobotStatus returns it; `cooldownUntil` makes CAAM report it cooling down. */
+const profile = (name, cooldownUntil = null) => ({ id: `claude/${name}`, name, eligible: cooldownUntil === null,
+  cooldown: { active: cooldownUntil !== null, until: cooldownUntil, reason: cooldownUntil === null ? null : 'rate limited' },
+  reasons: cooldownUntil === null ? [] : ['cooldown active'] });
+/** A synthetic CAAM inventory: Claude profiles only; any other kind keeps its static account. */
+const inventory = (list) => (kind) => (kind === 'claude-cli' ? list() : null);
+const bound = (r) => r.store.all("SELECT account_identity FROM operations WHERE executor_kind = 'claude-cli' ORDER BY created_at, rowid").map((op) => op.account_identity);
+const profileWait = (r, account, retryAt, reason, now) => r.store.run(`INSERT INTO provider_waits (account, executor_kind, retry_at, reason,
+  campaign_id, updated_at) VALUES (?, 'claude-cli', ?, ?, 'elsewhere', ?)`, account, retryAt, reason, now);
+
+test('selection rotates among eligible profiles across consecutive dispatches', async (t) => {
+  let clock = Date.now();
+  const r = rig(t, CAAM, { now: () => clock, profiles: inventory(() => [profile('work-a'), profile('work-b')]) });
+  for (const [i, id] of ['rot-1', 'rot-2', 'rot-3', 'rot-4'].entries()) {
+    campaignStart(r.store, campaign(id, 901 + i));
+    await r.tick();
+    clock += 1;
+  }
+  assert.deepEqual(bound(r), ['claude/work-a', 'claude/work-b', 'claude/work-a', 'claude/work-b'], 'least recently used first: A, B, A, B');
+  assert.deepEqual(r.store.all("SELECT detail FROM journal WHERE kind = 'operation-recorded' ORDER BY seq").map((row) => row.detail.account),
+    ['claude/work-a', 'claude/work-b', 'claude/work-a', 'claude/work-b'], 'each run journals its profile');
+  assert.equal(selectProfile(r.store, 'claude-cli', [profile('work-a'), profile('work-b'), profile('work-c')], clock).account, 'claude/work-c',
+    'a profile never used goes first');
+});
+
+test('rotation holds when dispatches share a timestamp', async (t) => {
+  const clock = Date.now();
+  const r = rig(t, CAAM, { now: () => clock, profiles: inventory(() => [profile('work-a'), profile('work-b')]) });
+  for (const [i, id] of ['same-1', 'same-2', 'same-3', 'same-4'].entries()) {
+    campaignStart(r.store, campaign(id, 951 + i));
+    await r.tick();
+  }
+  assert.deepEqual(bound(r), ['claude/work-a', 'claude/work-b', 'claude/work-a', 'claude/work-b'], 'the newer operation counts as the later use');
+});
+
+test('a profile with an active wait or a CAAM cooldown is skipped', async (t) => {
+  let clock = Date.now();
+  let list = [profile('work-a'), profile('work-b')];
+  const r = rig(t, CAAM, { now: () => clock, profiles: inventory(() => list) });
+  // work-a has a usage-limit row of its own: work-b takes both runs.
+  profileWait(r, 'claude/work-a', clock + HOUR, 'quota: usage limit', clock);
+  for (const [i, id] of ['skip-1', 'skip-2'].entries()) {
+    campaignStart(r.store, campaign(id, 911 + i));
+    await r.tick();
+    clock += 1;
+  }
+  assert.deepEqual(bound(r), ['claude/work-b', 'claude/work-b'], 'the waiting profile is skipped');
+  // work-a's row has run out and CAAM now reports work-b cooling down: work-a takes the next run.
+  clock += HOUR;
+  list = [profile('work-a'), profile('work-b', clock + HOUR)];
+  campaignStart(r.store, campaign('skip-3', 913));
+  await r.tick();
+  assert.deepEqual(bound(r), ['claude/work-b', 'claude/work-b', 'claude/work-a'], 'the profile CAAM cools down is skipped');
+  // A profile at its learned concurrency limit is skipped while another has room.
+  r.store.run("INSERT INTO capacity (scope, id, value, reason, updated_at) VALUES ('account', 'claude/work-a', 1, 'test', ?)", clock);
+  assert.equal(selectProfile(r.store, 'claude-cli', [profile('work-a'), profile('work-c')], clock).account, 'claude/work-c');
+  // An untimed wait (a failed login) skips the profile until a success or a recheck ends it.
+  profileWait(r, 'claude/work-c', null, 'auth: not logged in', clock);
+  assert.equal(selectProfile(r.store, 'claude-cli', [profile('work-c'), profile('work-d')], clock).account, 'claude/work-d');
+});
+
+test('when every profile waits, the campaign waits for the earliest reset and records nothing', async (t) => {
+  const clock = Date.now();
+  const r = rig(t, CAAM, { now: () => clock, profiles: inventory(() => [profile('work-a'), profile('work-b', clock + 2 * HOUR)]) });
+  profileWait(r, 'claude/work-a', clock + HOUR, 'quota: usage limit', clock);
+  campaignStart(r.store, campaign('wait-all', 921));
+  await r.tick();
+  await r.tick();
+  assert.deepEqual(r.opened('wait-all'), [], 'no operation is recorded');
+  const task = r.store.task('wait-all', 'T1');
+  assert.equal(task.retry_at, clock + HOUR, 'the campaign waits for the earliest reset among the profiles');
+  assert.match(task.last_error, /^waiting for executor availability/);
+  assert.equal(task.attempts, 0, 'no retry is spent');
+  assert.equal(r.store.campaign('wait-all').runs_used, 0, 'no run is counted');
+  assert.equal(r.store.campaign('wait-all').blocker, null, 'a provider limit is not an owner stop');
+  assert.equal(accountWait(r.store, r.env.config, 'claude-cli'), null, 'no wait is invented for the whole executor kind');
+
+  // No timed reset at all (CAAM lists no profile, or cannot be read): a bounded re-read, never an owner blocker.
+  assert.deepEqual(selectProfile(r.store, 'claude-cli', [], clock), { account: null, retryAt: clock + PROFILE_RECHECK_MS, reason: 'CAAM lists no claude-cli profile' });
+  const broken = rig(t, CAAM, { now: () => clock, profiles: () => { throw Object.assign(new Error('caam missing'), { code: 'missing-executable' }); } });
+  campaignStart(broken.store, campaign('wait-broken', 922));
+  await broken.tick();
+  assert.deepEqual(broken.opened('wait-broken'), [], 'an unreadable inventory fails closed');
+  assert.equal(broken.store.task('wait-broken', 'T1').retry_at, clock + PROFILE_RECHECK_MS);
+  assert.equal(broken.store.campaign('wait-broken').blocker, null);
+});
+
+test('the profile is reserved in the same transaction as recordOperation', async (t) => {
+  let clock = Date.now();
+  const r = rig(t, CAAM, { now: () => clock, profiles: inventory(() => [profile('work-a'), profile('work-b')]) });
+  const reads = [];
+  const read = r.controller.profiles;
+  r.controller.profiles = (kind, now) => { reads.push(r.store.depth > 0); return read(kind, now); };
+  const recorded = [];
+  const record = r.store.recordOperation.bind(r.store);
+  r.store.recordOperation = (row) => { recorded.push({ inTx: r.store.depth > 0, account: row.account_identity }); return record(row); };
+  campaignStart(r.store, campaign('atom-1', 931));
+  await r.tick();
+  assert.deepEqual(recorded, [{ inTx: true, account: 'claude/work-a' }], 'recordOperation binds the chosen profile inside the transaction');
+  assert.equal(reads.at(-1), true, 'the profile is chosen again inside the dispatch transaction');
+  assert.equal(r.open('atom-1').account_identity, 'claude/work-a');
+
+  // A dispatch whose transaction fails after recordOperation leaves no reservation: work-b is still the next choice.
+  clock += 1;
+  r.store.recordOperation = (row) => { record(row); throw new Error('injected failure after recordOperation'); };
+  campaignStart(r.store, campaign('atom-2', 932));
+  await r.tick().catch(() => {});
+  assert.deepEqual(r.opened('atom-2'), [], 'the operation rolled back');
+  assert.equal(selectProfile(r.store, 'claude-cli', [profile('work-a'), profile('work-b')], clock).account, 'claude/work-b',
+    'the rolled-back reservation does not count as a use');
+  r.store.recordOperation = record;
+  clock += 1;
+  await r.tick();
+  assert.equal(r.open('atom-2')?.account_identity, 'claude/work-b');
+});
+
+test('profile selection is off unless config.json enables it and an inventory is supplied', async (t) => {
+  const off = rig(t, {}, { profiles: inventory(() => [profile('work-a')]) });
+  campaignStart(off.store, campaign('off-1', 941));
+  await off.tick();
+  assert.ok(off.open('off-1'));
+  assert.equal(off.open('off-1').account_identity, null, 'without "caam": { "enabled": true } nothing is bound');
+  const none = rig(t, CAAM);
+  campaignStart(none.store, campaign('off-2', 942));
+  await none.tick();
+  assert.ok(none.open('off-2'));
+  assert.equal(none.open('off-2').account_identity, null, 'without an inventory (cli.mjs supplies none) nothing is bound');
+  assert.equal(none.store.all("SELECT detail FROM journal WHERE kind = 'operation-recorded'")[0].detail.account, undefined);
+});
+
+// ---- CAAM5 (ACCOUNT_ADAPTER_CAAM.md section 3.5): outcomes land on the run's own profile, also after a restart. ----
+
+const waitRows = (r) => r.store.all("SELECT account, retry_at FROM provider_waits WHERE executor_kind = 'claude-cli' ORDER BY account");
+const limits = (r) => r.store.all("SELECT id, value FROM capacity WHERE scope = 'account' ORDER BY id");
+/** A replacement controller on the same store, as after a supervisor crash: it takes the leases once they expire. */
+function restarted(r, now, profiles) {
+  const controller = new Controller({ store: r.store, config: r.env.config, dataDir: r.env.dataDir, fault: null, now, profiles });
+  const launched = [];
+  controller.launch = async (ctx, op) => { launched.push(op.id); };
+  const play = (id, outcome) => {
+    const op = r.open(id);
+    assert.ok(op, `${id} has an open operation`);
+    controller.applyOutcome({ id, generation: controller.held.get(id) }, op, { receipt: { sessionId: op.session_id }, ...outcome });
+  };
+  return { controller, launched, play };
+}
+
+test('a usage limit on profile A waits and throttles A only; the task moves to profile B', async (t) => {
+  let clock = Date.now();
+  const r = rig(t, CAAM, { now: () => clock, profiles: inventory(() => [profile('work-a'), profile('work-b')]) });
+  for (const [i, id] of ['quota-1', 'quota-2', 'quota-3'].entries()) {
+    campaignStart(r.store, campaign(id, 961 + i));
+    await r.tick();
+    clock += 1;
+  }
+  assert.deepEqual(bound(r), ['claude/work-a', 'claude/work-b', 'claude/work-a'], 'two runs open on A, one on B');
+
+  const resetAt = clock + HOUR;
+  r.quota('quota-1', resetAt);
+  assert.deepEqual(waitRows(r), [{ account: 'claude/work-a', retry_at: resetAt }], 'the wait is on profile A only');
+  assert.equal(accountWait(r.store, r.env.config, 'claude-cli'), null, 'the executor kind as a whole does not wait');
+  assert.deepEqual(limits(r), [{ id: 'claude/work-a', value: 1 }], 'half of the two runs open on A; B and the kind keep no limit');
+  assert.deepEqual(r.store.all("SELECT detail FROM journal WHERE kind = 'account-concurrency-lowered'").map((row) => [row.detail.account, row.detail.to]),
+    [['claude/work-a', 1]]);
+  assert.equal(selectProfile(r.store, 'claude-cli', [profile('work-a'), profile('work-b')], clock).account, 'claude/work-b', 'profile B remains available');
+
+  const task = r.store.task('quota-1', 'T1');
+  assert.equal(task.state, 'pending');
+  assert.equal(task.retry_at, clock, 'the task is due again at once, on another profile');
+  assert.match(task.last_error, /^claude\/work-a: quota:/);
+  assert.equal(r.store.campaign('quota-1').blocker, null, 'a provider limit is not an owner stop');
+  await r.tick();
+  assert.equal(r.open('quota-1')?.account_identity, 'claude/work-b', 'the next tick dispatches to profile B');
+  assert.equal(r.open('quota-3')?.account_identity, 'claude/work-a', 'the run already open on A keeps running');
+});
+
+test('a chain run on a profile leaves no campaign-wide wait for the kind', async (t) => {
+  let clock = Date.now();
+  const r = rig(t, CAAM, { now: () => clock, profiles: inventory(() => [profile('work-a'), profile('work-b')]) });
+  campaignStart(r.store, campaign('chain-1', 971, { executor: chain('claude-cli') }));
+  await r.tick();
+  assert.equal(r.open('chain-1')?.account_identity, 'claude/work-a');
+  r.quota('chain-1', clock + HOUR);
+  assert.deepEqual(r.store.all("SELECT * FROM executor_waits WHERE campaign_id = 'chain-1'"), [], 'no campaign row holds every Claude profile');
+  assert.deepEqual(waitRows(r), [{ account: 'claude/work-a', retry_at: clock + HOUR }]);
+  clock += 1;
+  await r.tick();
+  assert.equal(r.open('chain-1')?.account_identity, 'claude/work-b');
+});
+
+test('a failed login on profile A waits untimed on A, moves the task to B, and a recheck ends it', async (t) => {
+  let clock = Date.now();
+  const r = rig(t, CAAM, { now: () => clock, profiles: inventory(() => [profile('work-a'), profile('work-b')]) });
+  campaignStart(r.store, campaign('auth-1', 981));
+  await r.tick();
+  r.auth('auth-1');
+  assert.deepEqual(waitRows(r), [{ account: 'claude/work-a', retry_at: null }], 'an untimed wait on profile A only');
+  assert.equal(r.store.campaign('auth-1').blocker, null, 'profile B still works: no owner stop');
+  assert.equal(r.store.all("SELECT * FROM journal WHERE kind = 'profile-fallback'").length, 1);
+  clock += 1;
+  await r.tick();
+  assert.equal(r.open('auth-1')?.account_identity, 'claude/work-b');
+
+  campaignRecheck(r.store, 'auth-1', { note: 'the owner logged profile A in again' });
+  clock += 1;
+  await r.tick();
+  assert.deepEqual(waitRows(r), [], 'the recheck ends the profile wait');
+});
+
+test('an unavailable host without a reset time waits on its profile, so the task never retries it at once', async (t) => {
+  let clock = Date.now();
+  let list = [profile('work-a'), profile('work-b')];
+  const r = rig(t, CAAM, { now: () => clock, profiles: inventory(() => list) });
+  const unavailable = (id) => r.controller.applyOutcome({ id, generation: r.controller.held.get(id) }, r.open(id),
+    { receipt: { sessionId: r.open(id).session_id }, class: 'unavailable', detail: 'host failure' });
+  const [first, second] = r.env.config.retryBackoffMs;
+
+  // With a sibling: A waits for one backoff step and the task moves to B at once.
+  campaignStart(r.store, campaign('down-1', 1011));
+  await r.tick();
+  assert.equal(r.open('down-1')?.account_identity, 'claude/work-a');
+  unavailable('down-1');
+  assert.deepEqual(waitRows(r), [{ account: 'claude/work-a', retry_at: clock + first }], 'the wait is on profile A only, and timed');
+  assert.equal(r.store.task('down-1', 'T1').retry_at, clock, 'the task is due again at once, on another profile');
+  clock += 1;
+  await r.tick();
+  assert.equal(r.open('down-1')?.account_identity, 'claude/work-b', 'the retry goes to B, not back to A');
+
+  // With A the only profile: the task and A both wait for the backoff, then A runs again by itself.
+  list = [profile('work-a')];
+  campaignStart(r.store, campaign('down-2', 1012));
+  clock += first;
+  await r.tick();
+  assert.equal(r.open('down-2')?.account_identity, 'claude/work-a');
+  unavailable('down-2');
+  assert.deepEqual(waitRows(r).find((row) => row.account === 'claude/work-a'), { account: 'claude/work-a', retry_at: clock + first });
+  assert.equal(r.store.task('down-2', 'T1').retry_at, clock + first, 'the task waits for its backoff');
+  assert.equal(r.store.campaign('down-2').blocker, null);
+  const due = clock + first;
+  clock += 1;
+  await r.tick();
+  assert.equal(r.open('down-2'), null, 'no immediate run on the failed profile');
+  clock = due;
+  await r.tick();
+  assert.equal(r.open('down-2')?.account_identity, 'claude/work-a', 'A runs again once its wait ends');
+  // A second failure in a row waits for the next backoff step.
+  unavailable('down-2');
+  assert.deepEqual(waitRows(r).find((row) => row.account === 'claude/work-a'), { account: 'claude/work-a', retry_at: clock + second });
+});
+
+test('a success clears the wait of its own profile only', async (t) => {
+  let clock = Date.now();
+  const r = rig(t, CAAM, { now: () => clock, profiles: inventory(() => [profile('work-a'), profile('work-b')]) });
+  for (const [i, id] of ['ok-1', 'ok-2'].entries()) {
+    campaignStart(r.store, campaign(id, 991 + i));
+    await r.tick();
+    clock += 1;
+  }
+  assert.deepEqual(bound(r), ['claude/work-a', 'claude/work-b']);
+  // Both profiles were refused elsewhere while these runs were open.
+  profileWait(r, 'claude/work-a', clock + HOUR, 'quota: usage limit', clock);
+  profileWait(r, 'claude/work-b', clock + HOUR, 'quota: usage limit', clock);
+  r.succeed('ok-1');
+  assert.deepEqual(waitRows(r), [{ account: 'claude/work-b', retry_at: clock + HOUR }], 'A works again; B still waits');
+  assert.deepEqual(r.store.all("SELECT campaign_id, detail FROM journal WHERE kind = 'provider-wait-cleared' ORDER BY campaign_id").map((row) => [row.campaign_id, row.detail.account]),
+    [['ok-1', 'claude/work-a'], ['ok-2', 'claude/work-a']], 'each campaign on the kind journals the cleared wait of A once');
+});
+
+test('after a restart an open run keeps its durable profile, without a second operation', async (t) => {
+  let clock = Date.now();
+  let list = [profile('work-a'), profile('work-b')];
+  const r = rig(t, CAAM, { now: () => clock, profiles: inventory(() => list) });
+  campaignStart(r.store, campaign('crash-1', 1001));
+  await r.tick();
+  const before = r.open('crash-1');
+  assert.equal(before.account_identity, 'claude/work-a');
+
+  // The supervisor dies without releasing its leases. CAAM now lists only B: a selection now would give B, so only the
+  // durable row can attribute the open run to A.
+  list = [profile('work-b')];
+  clock += r.controller.config.leaseMs + 1;
+  const next = restarted(r, () => clock, inventory(() => list));
+  await next.controller.tick();
+  clock += 1;
+  await next.controller.tick();
+  assert.deepEqual(r.opened('crash-1').map((op) => [op.id, op.account_identity]), [[before.id, 'claude/work-a']],
+    'the replacement reloads the same operation with its exact profile and records no second one');
+  assert.deepEqual([...new Set(next.launched)], [before.id], 'only the recorded operation is resumed');
+
+  next.play('crash-1', { class: 'quota', retryAt: clock + HOUR, detail: 'usage limit reached; resets later' });
+  assert.deepEqual(waitRows(r), [{ account: 'claude/work-a', retry_at: clock + HOUR }], 'the outcome lands on A from the durable row');
+  assert.deepEqual(limits(r), [{ id: 'claude/work-a', value: 1 }]);
+  clock += 1;
+  await next.controller.tick();
+  assert.deepEqual(r.opened('crash-1').map((op) => op.account_identity), ['claude/work-a', 'claude/work-b'], 'one retry, on B');
 });

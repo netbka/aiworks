@@ -1,6 +1,6 @@
 import { formatRoute, globalOf, resolveRoute, tabOf } from '/router.mjs';
 // The state copy of OWNER_WORKSPACE §7 and the Now screen (slice S4); the server serves src/dashboard/copy.mjs here.
-import { COMMANDS, DIALOGS, NEEDS, costRunsLine, nowView, workLine } from '/copy.mjs';
+import { COMMANDS, DELEGATED, DIALOGS, NEEDS, NOT_READ, busyOnCommand, costRunsLine, nowView, stateCopy, workLine } from '/copy.mjs';
 
 const $ = (selector) => document.querySelector(selector);
 const names = { done: 'Done', blocked: 'Blocked', unknown: 'Unknown',
@@ -9,9 +9,10 @@ const names = { done: 'Done', blocked: 'Blocked', unknown: 'Unknown',
 const provider = (kind) => ({ 'claude-cli': 'Claude', 'codex-cli': 'Codex', 'cursor-cli': 'Cursor Agent', 'agy-cli': 'AGY (Antigravity) browser' })[kind] ?? 'Unknown AI provider';
 // Owner-facing role names: the agent that builds a step, and the separate agent that checks it.
 const roleName = (role) => ({ Verifier: 'Independent checker', Implementer: 'Builder', verify: 'independent checker', implement: 'builder' })[role] ?? role;
-// What a finished step means for the owner: merged into the project (seen in local git), or published with its merge
-// not seen yet. The line under it (what it means for the owner, or why the merge is not seen) is `delivery.note`.
-const deliveryNames = { merged: ['done', 'Merged'], published: ['attention', 'Published, merge not seen yet'],
+// What a finished step means for the owner: merged into the project (seen in local git), published with its merge
+// not seen yet, or passed the check and merged for the owner when merging is delegated (#97). The line under it (what
+// it means for the owner, why the merge is not seen, or why it is held) is `delivery.note`.
+const deliveryNames = { merged: ['done', 'Merged'], published: ['attention', 'Published, merge not seen yet'], delegated: ['in_progress', DELEGATED.word],
   'report-posted': ['done', 'Report posted'], unknown: ['unknown', 'Result not known'] };
 const CHURN_ATTEMPTS = 5;
 const STUCK_MINUTES = 15;
@@ -20,9 +21,10 @@ const deliveryOf = (c, task) => ownerCampaign(c)?.deliveries?.[task.id] ?? null;
 const shortRepo = (repository) => repository?.split('/')[1] ?? repository ?? '';
 const plural = (n, word, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
 const usd = (value) => `$${value.toFixed(2)}`;
-const campaignTitle = (c) => {
+const campaignTitle = (c, { inProject = false } = {}) => {
   const purpose = ownerCampaign(c)?.purpose;
-  return `${shortRepo(c.repository)}: ${purpose?.text ?? c.id}${purpose?.variant ? ` (${purpose.variant})` : ''}`;
+  const text = `${purpose?.text ?? c.id}${purpose?.variant ? ` (${purpose.variant})` : ''}`;
+  return inProject ? text : `${shortRepo(c.repository)}: ${text}`;
 };
 
 // "Since you last looked": the last visit is a per-viewer convenience in this browser only. Reads and writes may
@@ -80,6 +82,9 @@ const timeAgo = (value) => {
 // Locale-neutral English dates ("10 Oct 12:23"), whatever the computer's own locale.
 const dateTime = (value) => value ? new Date(value).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).replace(',', '') : '—';
 const timeOnly = (value) => value ? new Date(value).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '—';
+// The supervisor's sentences carry exact UTC times ("resets at 2026-10-13T14:05:00.000Z"): shown as a clock time, with the date when not today.
+const clockTimes = (text) => String(text ?? '').replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b/g, (at) =>
+  new Date(at).toDateString() === new Date().toDateString() ? timeOnly(at) : dateTime(at));
 const panel = (title, description, body, action) => el('section', { class: 'panel' },
   el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, title), description ? el('p', {}, description) : null), action ?? null), body);
 const table = (headers, rows) => el('div', { class: 'table-scroll' }, el('table', {},
@@ -97,7 +102,8 @@ const notice = (text, retry, detail = null, address = current.address) => {
 
 /** A link to another screen of this page: a real link, so it opens in a new tab and Back works. */
 const routeLink = (text, route, cls = '') => el('a', { href: typeof route === 'string' ? route : formatRoute(route), class: cls }, text);
-const projectName = (project) => shortRepo(project) || project;
+// A connected project without GitHub is addressed by its project id and named by its own name.
+const projectName = (project) => state?.projects?.projects?.find((item) => !item.repository && item.id === project)?.name ?? (shortRepo(project) || project);
 // Each screen's heading and the one question it answers (OWNER_WORKSPACE §3.1).
 const screenText = { projects: ['Projects', 'Which project should I open?'], needs: ['Needs me', 'What is waiting for me, across projects?'],
   settings: ['Settings', 'What can AIWorks use on this computer?'], messages: ['Messages', 'What did I ask AIWorks, and what did it answer?'],
@@ -129,6 +135,8 @@ function showRoute() {
   tabs.replaceChildren(...(project ? Object.entries(tabLabels).map(([id, label]) => el('a', { href: formatRoute({ screen: 'project', project, tab: id }),
     class: `tab${id === tab ? ' active' : ''}`, 'aria-current': id === tab && route.screen === 'project' ? 'page' : null }, label)) : []));
   if (project && route.screen === 'project') writeLastProject(project);
+  // The screen this project was left on, so coming back to the project opens it again (go(); aiworks#11 review F5).
+  if (project) projectMemory.set(project.toLowerCase(), current.address);
   $('#notice').hidden = !$('#notice').childNodes.length || noticeAddress !== null && noticeAddress !== current.address;
   $('#filters').hidden = !(route.screen === 'settings' && route.section === 'diagnostics');
   if (state) render();
@@ -142,7 +150,8 @@ function renderMetrics(campaigns = state.supervisor.campaigns, shown = []) {
   // The owner actions under "Needs you": reviews, decisions, stopped work and a stopped supervisor. A supervisor fault and an
   // unreadable inbox are listed but not counted: they are not the owner's to do. A pause by itself is not listed.
   // A published step whose merge is still being checked is never counted as nothing.
-  // "Nothing" is only about what blocks on the owner: reports to read and releases are named after it.
+  // Needs you counts and names only what the owner must do (owner, 2026-10-13: "only notifications where I am really
+  // needed"); reports to read and work ready for release are on Results, not here.
   const owner = state.owner ?? { count: 0, unknownResults: 0, also: null }, attention = owner.count, unknown = owner.unknownResults;
   const available = state.supervisor.available;
   const verdicts = agents.map((agent) => agentVerdict(agent)[0]);
@@ -152,7 +161,7 @@ function renderMetrics(campaigns = state.supervisor.campaigns, shown = []) {
       : agents.length ? `${verdicts.filter((v) => v === 'recent').length} working normally${verdicts.some((v) => v === 'stale') ? ` · ${verdicts.filter((v) => v === 'stale').length} possibly stuck or not started` : ''}` : 'None right now', '◎'],
     ['Needs you', !available ? '—' : unknown && !attention ? '?' : attention, available && unknown && attention ? '+ ?' : null,
       !available ? 'Execution state unknown'
-        : `${attention ? `${plural(attention, 'item')} listed below` : unknown ? 'Nothing confirmed yet' : 'Nothing is blocked on you'}${unknown ? ` · merge of ${plural(unknown, 'published step')} being checked` : ''}${owner.also ? ` · also ${owner.also.short}` : ''}`, '◈'],
+        : `${attention ? `${plural(attention, 'item')} listed below` : unknown ? 'Nothing confirmed yet' : 'Nothing is blocked on you'}${unknown ? ` · merge of ${plural(unknown, 'published step')} being checked` : ''}`, '◈'],
   ];
   $('#metrics').replaceChildren(...metrics.filter(([title]) => shown.includes(title)).map(([title, value, total, foot, icon]) => el('div', { class: 'metric' },
     el('div', { class: 'metric-title' }, title, el('span', { class: 'metric-icon', 'aria-hidden': 'true' }, icon)),
@@ -162,7 +171,7 @@ function renderMetrics(campaigns = state.supervisor.campaigns, shown = []) {
   $('#needs-count').textContent = !state.supervisor.available ? '?' : attention ? String(attention) : unknown ? '?' : '';
 }
 
-// Engineering Platform's own roadmap (read from the governance checkout), kept apart from project campaigns; display names replace internal track labels.
+// governance provider's own roadmap (read from the governance checkout), kept apart from project campaigns; display names replace internal track labels.
 const trackNames = { 'Product control plane': 'Control plane: first release', 'Product · next': 'Control plane: after the first release',
   'Autonomous governance': 'Portfolio rules rollout', 'Tracked extensions': 'Other tracked platform work' };
 function governanceMissing() {
@@ -171,13 +180,13 @@ function governanceMissing() {
 }
 function trackOverview() {
   const missing = governanceMissing();
-  if (missing) return panel('Engineering Platform roadmap', 'Read from the Engineering Platform governance checkout.', missing);
+  if (missing) return panel('governance provider roadmap', 'Read from the governance provider governance checkout.', missing);
   // Definitions only: the dashboard does not read GitHub, so it shows no progress for these items.
   const rows = [...new Set(state.roadmap.entries.map((entry) => entry.track))].map((track) => {
     const list = state.roadmap.entries.filter((item) => item.track === track);
     return el('div', { class: 'track-row' }, el('div', { class: 'row-line' }, el('span', { class: 'track-name' }, trackNames[track] ?? track), el('span', { class: 'track-count number' }, plural(list.length, 'item'))));
   });
-  return panel('Engineering Platform roadmap', 'The platform’s own work toward its product, the project control plane. This is separate from your projects. Its progress is tracked on GitHub, not read here.',
+  return panel('governance provider roadmap', 'The platform’s own work toward its product, the project control plane. This is separate from your projects. Its progress is tracked on GitHub, not read here.',
     el('div', { class: 'panel-body' }, ...rows));
 }
 
@@ -185,6 +194,10 @@ function trackOverview() {
 function agentVerdict(agent) {
   const last = agent.progress?.lastActivityAt ?? agent.outputAt ?? null;
   const minutes = last ? Math.max(0, Math.floor((Date.now() - last) / 60_000)) : null;
+  if (minutes !== null && minutes >= STUCK_MINUTES) {
+    const busy = busyOnCommand(agent, Date.now());
+    if (busy !== null) return ['recent', `Working: running a command for ${busy} min (usually its tests)`];
+  }
   if (minutes !== null) return minutes < STUCK_MINUTES ? ['recent', 'Working normally'] : ['stale', `Possibly stuck: no progress for ${minutes} min`];
   if (agent.heartbeatState === 'recent') return ['recent', 'Working normally'];
   return Date.now() - agent.startedAt < 5 * 60_000 ? ['pending', 'Starting'] : ['stale', 'Not started'];
@@ -198,10 +211,37 @@ function whoIsOn(c, task) {
   return `${roleName(agent.role)} (${provider(agent.executor)}) · ${verdict.charAt(0).toLowerCase()}${verdict.slice(1)}${last ? ` · last activity ${timeAgo(last)}` : ''}`;
 }
 
+/**
+ * How a step is named in a row (OWNER_WORKSPACE §4.7: by its outcome): a short outcome leads; a long one (a whole
+ * sentence) gives way to the step's short title and becomes the line under it. The same words twice are shown once.
+ */
+const OUTCOME_LEAD_MAX = 100;
+function stepLabels(task) {
+  const outcome = task.outcome ?? null, title = task.title ?? null;
+  const lead = outcome && (outcome.length <= OUTCOME_LEAD_MAX || !title) ? outcome : title ?? outcome ?? task.id;
+  const other = lead === outcome ? title : outcome;
+  return { lead, more: other && other.toLowerCase() !== lead.toLowerCase() ? other : null };
+}
+
+/** Who is on a step, without the verdict: "Independent checker (Claude) · last activity 24m ago". */
+function whoLine(c, task) {
+  const agent = c.agents.find((item) => item.taskId === task.id);
+  if (!agent) return null;
+  const last = agent.progress?.lastActivityAt ?? agent.outputAt ?? null;
+  return `${roleName(agent.role)} (${provider(agent.executor)})${last ? ` · last activity ${timeAgo(last)}` : ''}`;
+}
+/** The verdict as its own label, placed under the text it describes ("Possibly stuck: no progress for 25 min"). */
+function verdictLabel(c, task) {
+  const agent = c.agents.find((item) => item.taskId === task.id);
+  if (!agent) return null;
+  const [cls, verdict] = agentVerdict(agent);
+  return el('div', { class: 'cell-labels' }, badge(cls, verdict));
+}
+
 /** How the verdicts are decided, shown once rather than on every card. */
 const verdictExplanation = () => el('details', { class: 'explain' }, el('summary', {}, 'How “working normally” is decided'),
   el('div', { class: 'notes' }, `Working normally: the agent's own record shows a turn or action in the last ${STUCK_MINUTES} minutes, or, for an agent that reports only at the end, its runner is still alive. `,
-    `Possibly stuck: no progress for ${STUCK_MINUTES} minutes or more. Not started: no sign of life 5 minutes after it was scheduled. `,
+    `Running a command: the agent is waiting on one long command, such as its test suite, and its runner is alive (up to an hour). Possibly stuck: no progress for ${STUCK_MINUTES} minutes or more. Not started: no sign of life 5 minutes after it was scheduled. `,
     'Counts come from the agent’s own session record; its prompts and output are never shown here.'));
 
 /** Shown once per page: what provider waits mean and what they never do. */
@@ -294,6 +334,7 @@ function deliverySummary(c) {
   const parts = [`${delivered} of ${plural(c.tasks.length, 'step')} delivered`];
   if (counts?.merged) parts.push(`${counts.merged} merged`);
   if (counts?.awaiting) parts.push(`${counts.awaiting} waiting for your review`);
+  if (counts?.delegated) parts.push(DELEGATED.progress(counts.delegated));
   if (counts?.reports) parts.push(`${plural(counts.reports, 'report')} for you to read`);
   if (counts?.checking) parts.push(`merge of ${counts.checking} being checked`);
   if (counts?.unknown) parts.push(`${counts.unknown} without a recorded result`);
@@ -310,7 +351,7 @@ function controlsNote(c) {
 }
 
 /** The work's state in one sentence, in owner words (the copy module), with liveness reconciled with the agents' own records. */
-const campaignNext = (c) => workLine(c, ownerCampaign(c), { time: timeOnly, dateTime });
+const campaignNext = (c) => clockTimes(workLine(c, ownerCampaign(c), { time: timeOnly, dateTime }));
 
 const livenessNames = { running: 'Supervisor running', late: 'Supervisor checking in late', 'awaiting-pickup': 'Waiting for the supervisor',
   'agent-working-supervisor-silent': 'Agent working · supervisor silent', stopped: 'Supervisor not running' };
@@ -391,7 +432,7 @@ function messageReceipt(m, coordinator) {
   const steps = [receiptStep(true, 'Received', `stored by the supervisor ${dateTime(m.receivedAt)}`)];
   if (m.state === 'received') {
     steps.push(m.failure ? receiptStep(false, 'Retrying', `the last read ended without an answer (${outcomeLabels[m.failure] ?? m.failure}); next attempt ${dateTime(m.retryAt)}`, 'failed')
-      : !coordinator.configured ? receiptStep(false, 'Not read', coordinator.configError ? `the coordinator configuration is invalid: ${coordinator.configError}` : 'no coordinator agent is configured on this supervisor', 'failed')
+      : !coordinator.configured ? receiptStep(false, 'Not read', NOT_READ.receipt, 'failed')
         : coordinator.blocked ? receiptStep(false, 'Not read yet', coordinator.blocked, 'failed')
         : coordinator.maxRunsPerDay !== null && coordinator.runsToday >= coordinator.maxRunsPerDay ? receiptStep(false, 'Waiting', `today's ${coordinator.maxRunsPerDay} coordinator runs are used; it is read when the window frees up`)
           : receiptStep(false, 'Waiting', 'the coordinator agent picks it up within seconds'));
@@ -401,24 +442,40 @@ function messageReceipt(m, coordinator) {
   if (m.state === 'read') {
     steps.push(receiptStep(false, 'Working', m.progress ? `${m.progress.turns} turns · ${m.progress.toolCalls} tool calls · last activity ${timeAgo(m.progress.lastActivityAt)}${m.progress.lastTool ? ` (${m.progress.lastTool})` : ''}` : 'reviewing and planning'));
   } else if (m.state === 'answered') {
-    steps.push(receiptStep(true, 'Answered', m.replyUrl ? `${dateTime(m.answeredAt)} · ` : `${dateTime(m.answeredAt)} · posting the reply to ${coordinator.reportTo ?? 'GitHub'}…`));
+    steps.push(receiptStep(true, 'Answered', `${dateTime(m.answeredAt)} · ${m.replyBody ? 'the reply is below' : m.replyUrl ? '' : 'reply unavailable'}`));
     if (m.replyUrl) steps.at(-1).append(link('Open the reply ↗', m.replyUrl));
   } else if (m.state === 'failed') {
     steps.push(receiptStep(false, 'Not answered', `two reads ended without an answer (${outcomeLabels[m.failure] ?? m.failure}). Send it again or check the supervisor log.`, 'failed'));
   }
-  return el('article', { class: 'receipt' }, el('strong', {}, `Message #${m.id} · ${m.source}`), el('p', {}, m.text), el('ol', { class: 'receipt-steps' }, ...steps));
+  return el('article', { class: 'receipt' }, el('strong', {}, `Message #${m.id} · ${m.source}`), el('p', {}, m.text), el('ol', { class: 'receipt-steps' }, ...steps),
+    m.replyBody ? disclosure(`message/${m.id}/reply`, 'Read the plan', el('pre', { class: 'coordinator-reply' }, m.replyBody)) : null);
+}
+
+// Whether anything reads requests: yes, no, or not with an invalid configuration.
+const readsKey = (coordinator) => coordinator?.configured ? 'yes' : coordinator?.configError ? 'invalid' : 'no';
+/**
+ * When nothing reads requests, what Start work and Messages show in place of their send action: that nothing will read
+ * it, and what the owner can do instead (aiworks#11 review F10). Null while something reads them.
+ */
+function notRead(coordinator) {
+  if (!coordinator || coordinator.configured) return null;
+  return el('div', { class: 'notes', 'data-not-read': '' },
+    el('p', {}, el('strong', {}, NOT_READ.title), ` ${coordinator.configError ? NOT_READ.invalid : NOT_READ.text}`),
+    el('p', {}, `${NOT_READ.instead} `, link(`${NOT_READ.setUp} ↗`, NOT_READ.setUpUrl)),
+    coordinator.configError ? disclosure('not-read/details', COMMANDS.details, el('p', { class: 'subtext' }, coordinator.configError)) : null);
 }
 
 function messagesPanel(limit) {
   const coordinator = state.supervisor.coordinator;
   if (!coordinator) return panel('Messages to the coordinator', 'Supervisor state unavailable', empty('Messages unavailable', state.supervisor.message ?? ''));
   const items = coordinator.messages.slice(0, limit);
+  // Sending is offered only while something reads messages; otherwise the panel says so and what to do instead.
   return panel('Messages to the coordinator', coordinator.configured
-    ? `Read-only coordinator agent · replies go to ${coordinator.reportTo ?? 'GitHub'} · ${coordinator.runsToday}${coordinator.maxRunsPerDay === null ? '' : `/${coordinator.maxRunsPerDay}`} runs in the last 24h${coordinator.blocked ? ` · not reading now: ${coordinator.blocked}` : ''}`
-    : coordinator.configError ? `Coordinator configuration is invalid (${coordinator.configError}): messages are stored but nothing reads them`
-      : 'No coordinator agent is configured: messages are stored but nothing reads them',
-  items.length ? el('div', { class: 'instruction-list' }, ...items.map((m) => messageReceipt(m, coordinator))) : empty('No messages yet', 'Use “New message” to ask for a review or a plan.'),
-  button('✉ New message', openMessage, 'link'));
+    ? `Read-only coordinator agent · replies stay in this dashboard · ${coordinator.runsToday}${coordinator.maxRunsPerDay === null ? '' : `/${coordinator.maxRunsPerDay}`} runs in the last 24h${coordinator.blocked ? ` · not reading now: ${coordinator.blocked}` : ''}`
+    : null,
+  el('div', {}, notRead(coordinator), items.length ? el('div', { class: 'instruction-list' }, ...items.map((m) => messageReceipt(m, coordinator)))
+    : empty('No messages yet', coordinator.configured ? 'Use “New message” to ask for a review or a plan.' : '')),
+  coordinator.configured ? button('✉ New message', openMessage, 'link') : null);
 }
 
 // Receipt transitions become a notice here and a desktop notification, so the owner learns when work was read.
@@ -438,7 +495,7 @@ function trackReceipts() {
     if (key.startsWith('m')) {
       if (now === 'received' && !before) announce(`Message #${item.id} received`, 'The supervisor stored it.');
       else if (now === 'read') announce(`Message #${item.id} read`, 'The coordinator agent started working on it.');
-      else if (now === 'answered') announce(`Message #${item.id} answered`, item.replyUrl ? 'The reply is posted.' : 'The reply is being posted.');
+      else if (now === 'answered') announce(`Message #${item.id} answered`, item.replyBody ? 'The reply is ready in Messages.' : item.replyUrl ? 'The reply is posted.' : 'Check Messages for the reply.');
       else if (now === 'failed') announce(`Message #${item.id} not answered`, 'Two reads ended without an answer.');
     } else if (now === 'attached:dispatched' || now === 'attached:recorded') announce(`Guidance for ${item.step} read`, `The ${roleName(item.role)} (${provider(item.executor)}) received it.`);
     else if (now === 'attached:finished') announce(`The AI worker that read your guidance for ${item.step} finished`, `Outcome: ${terminalLabels[item.runOutcome] ?? outcomeLabels[item.runOutcome] ?? item.runOutcome ?? 'unknown'}.`);
@@ -458,7 +515,7 @@ const messageDraft = {
 };
 function openMessage() {
   const coordinator = state?.supervisor.coordinator;
-  $('#message-target').textContent = coordinator?.configured ? `Replies are posted to ${coordinator.reportTo}.` : 'No coordinator agent is configured yet: the message will be stored, but nothing will read it.';
+  $('#message-target').textContent = coordinator?.configured ? 'Replies stay in this dashboard. Nothing is posted to GitHub.' : `${NOT_READ.title} ${NOT_READ.text}`;
   $('#message-text').value = messageDraft.text;
   $('#message-dialog').showModal();
   $('#message-text').focus();
@@ -486,7 +543,7 @@ async function sendMessage(text) {
  * any owner message, so the receipt (Received, Read, Answered) shows here in place. Plan only never changes a project
  * file or registers work. Plan and do is shown but cannot be chosen until slice S10 and the admission API (#8).
  */
-const PLAN_AND_DO_OFF = ['Starting work from this page is not built yet.', 'Today, work starts after its plan is merged into AIWorks and started on this computer.'];
+const PLAN_AND_DO_OFF = ['Starting work from this page is not built yet.', 'Today, work starts when an authorized private plan is registered on this computer.'];
 const START_FROM = [['description', 'Just my description'], ['issue', 'A GitHub issue'], ['pull', 'A GitHub pull request']];
 const startBlocked = () => sending || offline || !state.supervisor.available;
 // The unsent goal and source, kept per address like every draft, and the message id of the last request sent from here.
@@ -502,10 +559,9 @@ function startReceipt(address) {
 
 function startScreen(project) {
   const address = formatRoute({ screen: 'start', project }), draft = startDraft(address), coordinator = state.supervisor.coordinator;
-  // Every project this computer has today is a GitHub repository; the coordinator posts its plan there (AW-004).
-  // A project without GitHub waits for a local place for the reply (OWNER_WORKSPACE §14, plan gap G4).
+  // Local project planning still needs an intake contract; local reply storage alone does not enable it.
   if (!projectCampaigns(project).length && projectList().find((item) => sameProject(item.id, project))?.kind !== 'GitHub') {
-    return [empty('Plan only is not available for this project yet.', 'AIWorks posts its plan on GitHub, and this project has no GitHub repository.')];
+    return [empty('Plan only is not available for this project yet.', 'Planning for projects without a GitHub repository is not available yet.')];
   }
   const save = () => drafts.set(address, 'start', { goal: goal.value, from: form.elements['start-from'].value, number: number.value, sent: startDraft(address).sent });
   const goal = el('textarea', { id: 'start-goal', rows: 5, maxlength: 2000, required: true, oninput: save });
@@ -516,8 +572,10 @@ function startScreen(project) {
   const from = ([value, label]) => el('label', { class: 'choice' }, el('input', { type: 'radio', name: 'start-from', value, checked: draft.from === value,
     onchange: () => { numberLabel.hidden = value === 'description'; number.required = value !== 'description'; save(); } }), ` ${label}`);
   // The form wears the dialogs' styles: each box inside its label, and the choices in framed groups (aiworks#11 review F25).
-  const form = el('form', { class: 'panel-body start-form', 'data-start-form': project, 'data-focus-scope': `start/${project}`,
-    onsubmit: (event) => { event.preventDefault(); save(); void askForPlan(project, address); } },
+  // When nothing reads requests, the form keeps the goal but offers no send: it says so and what to do instead (F10).
+  const reads = Boolean(coordinator?.configured);
+  const form = el('form', { class: 'panel-body start-form', 'data-start-form': project, 'data-reads': readsKey(coordinator), 'data-focus-scope': `start/${project}`,
+    onsubmit: (event) => { event.preventDefault(); save(); if (reads) void askForPlan(project, address); } },
     el('label', { class: 'field' }, el('strong', {}, 'What should be true when this is finished?'), goal),
     el('fieldset', {}, el('legend', {}, 'Start from'), ...START_FROM.map(from), numberLabel),
     el('fieldset', {}, el('legend', {}, 'How far AIWorks goes'),
@@ -525,9 +583,8 @@ function startScreen(project) {
       el('p', { class: 'subtext' }, 'AIWorks looks and proposes a plan. Nothing in your project changes.'),
       el('label', { class: 'choice' }, el('input', { type: 'radio', name: 'start-mode', value: 'plan-and-do', disabled: true, 'aria-describedby': 'plan-and-do-note' }), ' Plan and do'),
       el('p', { class: 'subtext', id: 'plan-and-do-note' }, 'AIWorks proposes a plan. After you approve it once, it does the work. ', PLAN_AND_DO_OFF.join(' '))),
-    el('p', { class: 'subtext' }, coordinator?.configured ? `The plan is posted to ${coordinator.reportTo ?? 'GitHub'}. No secrets; up to 2,000 characters.`
-      : 'No coordinator agent is configured yet: the request will be stored, but nothing will read it.'),
-    el('button', { class: 'button', type: 'submit', disabled: startBlocked() }, 'Ask for a plan'),
+    reads ? el('p', { class: 'subtext' }, 'The plan appears here. Nothing is posted to GitHub. No secrets; up to 2,000 characters.') : notRead(coordinator),
+    reads ? el('button', { class: 'button', type: 'submit', disabled: startBlocked() }, 'Ask for a plan') : null,
     el('div', { id: 'start-receipt', 'aria-live': 'polite' }, startReceipt(address)));
   return [el('section', { class: 'panel' }, form)];
 }
@@ -536,7 +593,10 @@ function startScreen(project) {
 function refreshStart(content, project) {
   const form = content.querySelector('form[data-start-form]');
   if (!form || form.dataset.startForm !== project || !state.supervisor.available) return false;
-  form.querySelector('button[type="submit"]').disabled = startBlocked();
+  // Whether anything reads requests changed: the form is built again from the saved draft, with or without its send.
+  if (form.dataset.reads !== readsKey(state.supervisor.coordinator)) return false;
+  const submit = form.querySelector('button[type="submit"]');
+  if (submit) submit.disabled = startBlocked();
   const receipt = startReceipt(formatRoute({ screen: 'start', project }));
   patch(form.querySelector('#start-receipt'), receipt ? [receipt] : []);
   return true;
@@ -644,13 +704,13 @@ function roadmapView() {
       entry.dependencies.length ? el('div', { class: 'subtext' }, `Depends on ${entry.dependencies.join(', ')}`) : null),
     cell(el('div', { class: 'subtext' }, entry.owner ? `Responsible role: ${entry.owner}` : 'No role assigned in the registry'))));
   const missingRoadmap = governanceMissing();
-  if (missingRoadmap) return panel('Engineering Platform roadmap items', 'Read from the Engineering Platform governance checkout.', missingRoadmap);
-  return panel('Engineering Platform roadmap items', `${entries.length} of ${state.roadmap.entries.length} items · the platform’s own work toward the project control plane. Definitions only: progress is tracked on GitHub and not read here`,
+  if (missingRoadmap) return panel('governance provider roadmap items', 'Read from the governance provider governance checkout.', missingRoadmap);
+  return panel('governance provider roadmap items', `${entries.length} of ${state.roadmap.entries.length} items · the platform’s own work toward the project control plane. Definitions only: progress is tracked on GitHub and not read here`,
     rows.length ? table(['Item', 'Outcome', 'Role'], rows) : empty('No matching items', 'Try another search or track filter.'));
 }
 
 const campaignById = (id) => state.supervisor.campaigns.find((c) => c.id === id);
-/** "Dyk: <purpose>": the work a row belongs to. Its ID is in the work's Details on Now and in Diagnostics. */
+/** "SampleApp: <purpose>": the work a row belongs to. Its ID is in the work's Details on Now and in Diagnostics. */
 const campaignContext = (id) => { const c = campaignById(id); return c ? campaignTitle(c) : id; };
 /** Campaign order from the owner view: cards for campaigns with something for the owner, then active ones; then finished ones. */
 function campaignLayout() {
@@ -700,18 +760,17 @@ const needsGroup = (group) => el('section', { class: 'needs-group', 'aria-labell
 function needsYou() {
   const owner = state.owner;
   if (!owner?.available) return null;
-  const { headline, count, groups = [], unknownResults: unknown, also, reply } = owner;
+  const { headline, count, groups = [], unknownResults: unknown, reply } = owner;
   // aiworks#18: a stopped supervisor leads, with the time it last renewed its leases.
   const controller = state.supervisor.controller;
   return el('section', { class: `needs${count ? '' : unknown ? ' checking' : ' calm'}`, 'aria-labelledby': 'needs-title' },
     controller?.stopped ? el('p', { class: 'needs-stopped' }, NEEDS.banner(controller.lastLeaseRenewalAt, { dateTime }, controller.stopRequested)) : null,
     el('div', { class: 'needs-head' }, el('h2', { id: 'needs-title' }, headline),
       unknown ? el('span', { class: 'needs-unknown' }, `Merge of ${unknown} published step${unknown === 1 ? '' : 's'} being checked`) : null),
-    // Not blocking, never "nothing": posted reports and merged work ready for release.
-    also ? el('p', { class: 'needs-also' }, also.text) : null,
+    // Only owner actions here (owner, 2026-10-13): posted reports and merged work ready for release are on Results.
     ...groups.map(needsGroup),
     reply ? el('div', { class: 'needs-reply' }, `The coordinator answered your message #${reply.messageId} (${dateTime(reply.answeredAt)}). `,
-      link('Read its “What needs you” ↗', reply.url)) : null);
+      reply.url ? link('Read its “What needs you” ↗', reply.url) : routeLink('Read the plan', MESSAGES_ADDRESS)) : null);
 }
 
 /**
@@ -721,7 +780,7 @@ function needsYou() {
 function campaignWork(campaigns = state.supervisor.campaigns) {
   return campaigns.flatMap((c) => c.tasks.map((task) => {
     const delivery = deliveryOf(c, task);
-    const status = delivery ? delivery.state === 'published' ? 'review' : delivery.state === 'unknown' ? 'unknown' : 'done' : task.blocked ? 'blocked' : 'in_progress';
+    const status = delivery ? delivery.state === 'published' ? 'review' : delivery.state === 'delegated' ? 'in_progress' : delivery.state === 'unknown' ? 'unknown' : 'done' : task.blocked ? 'blocked' : 'in_progress';
     return { c, task, delivery, status, id: task.id, campaignId: c.id, repository: c.repository, title: `${task.outcome ?? ''} ${task.title}`,
       number: /\/issues\/(\d+)$/.exec(task.issueUrl ?? '')?.[1] ?? null };
   }));
@@ -745,25 +804,232 @@ const projectList = () => state.projects?.projects ?? [];
 const sameProject = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
 const projectCampaigns = (project) => state.supervisor.campaigns.filter((c) => sameProject(c.repository, project));
 const unavailable = () => empty('Supervisor unavailable', state.supervisor.message ?? 'The supervisor state cannot be read right now. This is not the same as nothing happening.');
-const stateTones = { 'needs-you': 'attention', running: 'in_progress', paused: 'pending', finished: 'done', cancelled: 'pending', 'no-work': 'pending' };
-const stateWords = { 'needs-you': 'Needs you', running: 'Running', paused: 'Paused', finished: 'Finished', cancelled: 'Cancelled', 'no-work': 'No work yet' };
+const stateTones = { 'needs-you': 'attention', running: 'in_progress', paused: 'pending', finished: 'done', cancelled: 'pending', 'no-work': 'pending',
+  ready: 'done', 'needs-setup': 'attention', unavailable: 'pending' };
+const stateWords = { 'needs-you': 'Needs you', running: 'Running', paused: 'Paused', finished: 'Finished', cancelled: 'Cancelled', 'no-work': 'No work yet',
+  ready: 'Ready', 'needs-setup': 'Needs setup', unavailable: 'Temporarily unavailable' };
 const projectAction = (action) => action.url ? link(`${action.label} ↗`, action.url, 'project-action') : routeLink(action.label, action.route, 'project-action');
 
 function projectsScreen() {
   if (!state.supervisor.available) return [unavailable()];
   const projects = projectList(), saved = readLastProject(), last = projects.find((project) => sameProject(project.id, saved))?.id;
+  // Add project (OWNER_WORKSPACE S11, build slice UI13) is the screen's one primary action once this computer turns it on.
+  const adding = Boolean(state.projects?.addProject);
   // "Configuration file", never "settings": the Settings screen cannot list a repository (aiworks#11 review F18).
-  if (!projects.length) return [empty('No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository. Adding a project from this page is not built yet.')];
+  if (!projects.length && !adding) return [empty('No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository. Adding a project from this page is not built yet.')];
+  if (!projects.length) {
+    const first = stateCopy('projects-empty', { addProject: true });
+    return [el('section', { class: 'panel' }, el('div', { class: 'panel-body' }, el('p', {}, el('strong', {}, first.title), ` ${first.text}`), primaryAction(first.primary)))];
+  }
   return [last ? el('p', { class: 'continue' }, routeLink(`Continue with ${projectName(last)} →`, { screen: 'project', project: last }, 'continue-link')) : null,
     sinceSummary(),
-    panel('Your projects', 'One row per repository this computer works on. Those that need you come first, then those with work running.',
+    panel('Your projects', adding ? 'One row per project this computer works on. Those that need you come first, then those with work running.'
+      : 'One row per repository this computer works on. Those that need you come first, then those with work running.',
       el('ul', { class: 'project-list' }, ...projects.map((project) => el('li', { class: 'project-row', 'data-focus-scope': project.id },
         el('div', { class: 'row-line' }, routeLink(project.name, { screen: 'project', project: project.id }, 'project-name'), el('span', { class: 'subtext' }, project.kind)),
         // One state, said in words (never by colour alone), and one next action.
         el('div', { class: 'row-line' }, badge(stateTones[project.state.key] ?? 'unknown', stateWords[project.state.key] ?? 'Not known'), el('span', {}, project.state.text)),
         projectAction(project.action),
-        disclosure(`project/${project.id}`, 'Details', el('div', { class: 'subtext' }, [`Repository ${project.repository}`, `owner ${project.details.owner}`,
-          plural(project.details.work, 'piece of work', 'pieces of work'), project.details.configured ? 'listed in the AIWorks configuration file on this computer' : null].filter(Boolean).join(' · ')))))))].filter(Boolean);
+        disclosure(`project/${project.id}`, 'Details', el('div', { class: 'subtext' }, (project.repository ? [`Repository ${project.repository}`, `owner ${project.details.owner}`,
+          plural(project.details.work, 'piece of work', 'pieces of work'), project.details.configured ? 'listed in the AIWorks configuration file on this computer' : null]
+          : [`${project.kind} project`]).concat(project.connection ? [`connected from the folder ${project.connection.folder}`] : []).filter(Boolean).join(' · ')))))),
+      adding ? routeLink('Add project', { screen: 'add-project' }, 'button') : null)].filter(Boolean);
+}
+
+/**
+ * Add project (OWNER_WORKSPACE §4.11, §5.2 and §5.3, slice S11; PROJECT_CONNECTION §8, slice S6; build slice UI13). The
+ * owner types or pastes a folder path; the server checks it without changing anything and says what it found; "Connect
+ * project" then connects it through the supervisor's project connection API. Connecting only reads the folder. The
+ * draft is kept per address like every draft, so the 5-second refresh, a reload and Back keep it.
+ */
+const ADD_ADDRESS = '#/projects/add';
+const addDraft = () => ({ path: '', kind: null, id: '', found: null, outcome: null, ...(drafts.get(ADD_ADDRESS, 'add') ?? {}) });
+const saveAdd = (changes) => drafts.set(ADD_ADDRESS, 'add', { ...addDraft(), ...changes });
+// Emptied only after the server accepted the connection or the move, like every draft.
+const clearAdd = () => drafts.set(ADD_ADDRESS, 'add', {});
+// What runs now: 'check' or 'connect' on Add project, or a project's id for its Check again, Move or Disconnect.
+let addBusy = null, pendingDisconnect = null;
+const ADD_OFF = ['Adding a project from this page is not built yet.', 'Projects appear on Projects when the AIWorks configuration file on this computer lists a repository.'];
+
+/** The one action a code offers (PROJECT_CONNECTION §8, Action column): a screen link or a button. */
+function connectAction(action, retry) {
+  if (!action) return null;
+  if (action.do === 'open') return routeLink(action.label, { screen: 'project', project: action.project }, 'button secondary');
+  if (action.do === 'settings') return routeLink(action.label, '#/settings', 'button secondary');
+  return button(action.label, () => {
+    if (action.do === 'use-path') { saveAdd({ path: action.path, found: null, outcome: null, kind: null }); void checkFolder(); }
+    else if (action.do === 'kind') { saveAdd({ kind: action.kind }); void checkFolder(); }
+    else if (action.do === 'move') void moveProject(action.projectId, addDraft().path, ADD_ADDRESS);
+    else void retry();
+  }, 'secondary', Boolean(addBusy) || offline);
+}
+/** A refusal or problem: its sentence, then its one action. */
+const outcomeLines = (outcome, retry) => [el('p', {}, outcome.message), connectAction(outcome.action, retry)];
+const noticeLines = (notices) => notices?.length ? el('ul', { class: 'add-notes' }, ...notices.map((item) => el('li', {}, item.message))) : null;
+
+function addProjectScreen() {
+  if (!state.projects?.addProject) return [empty(...ADD_OFF)];
+  if (!state.supervisor.available) return [unavailable()];
+  const draft = addDraft(), result = draft.found, found = result?.found ?? null, busy = Boolean(addBusy) || offline;
+  const area = el('div', { id: 'add-result', role: 'status', 'aria-live': 'polite', tabindex: '-1' });
+  const path = el('input', { id: 'add-path', type: 'text', autocomplete: 'off', spellcheck: 'false', maxlength: 1024, required: true, 'aria-describedby': 'add-path-hint',
+    // A changed path has not been checked: what was found for the old one goes, and so does Connect project.
+    oninput: () => { saveAdd({ path: path.value, found: null, outcome: null, kind: null }); area.replaceChildren(); form.querySelector('[data-connect]')?.remove(); } });
+  path.value = draft.path;
+  if (addBusy === 'check') area.append(el('p', {}, 'Checking the folder…'));
+  else if (addBusy === 'connect') area.append(el('p', {}, 'Connecting… AIWorks only reads your folder.'));
+  else if (draft.outcome) area.append(...outcomeLines(draft.outcome, checkFolder).filter(Boolean));
+  else if (found) {
+    const kinds = found.kinds.length > 1 ? el('fieldset', {}, el('legend', {}, 'Connect as'), ...found.kinds.map((kind) => el('label', { class: 'choice' },
+      el('input', { type: 'radio', name: 'add-kind', value: kind, checked: (draft.kind ?? found.kind) === kind, onchange: () => saveAdd({ kind }) }),
+      ` ${kind === 'github' ? 'GitHub project' : 'Local Git project (AIWorks ignores the GitHub remote and never pushes)'}`))) : null;
+    const id = el('input', { id: 'add-id', type: 'text', autocomplete: 'off', spellcheck: 'false', maxlength: 40, pattern: '[a-z0-9][a-z0-9\\-]{1,39}', 'aria-describedby': 'add-id-hint',
+      oninput: () => saveAdd({ id: id.value }) });
+    id.value = draft.id;
+    area.append(el('p', {}, el('strong', {}, `${found.text}.`), ` Folder ${found.folder}.`),
+      ...found.notes.map((text) => el('p', {}, text)), noticeLines(result.notices),
+      result.confirm ? el('p', {}, result.confirm.message) : null, result.confirm ? connectAction(result.confirm.action, checkFolder) : null,
+      kinds, result.confirm ? null : el('label', { class: 'field' }, el('strong', {}, 'Short name (optional)'), id,
+        el('span', { class: 'subtext', id: 'add-id-hint' }, 'Lowercase letters, digits and hyphens. Without one, AIWorks uses the folder name.')));
+  }
+  // One primary action at a time: Check folder until the folder is checked, then Connect project.
+  const ready = Boolean(found && !result.confirm && !draft.outcome && !addBusy);
+  const form = el('form', { class: 'panel-body start-form add-form', 'data-add-form': 'add', 'data-focus-scope': 'add-project',
+    onsubmit: (event) => { event.preventDefault(); void checkFolder(); } },
+    el('label', { class: 'field' }, el('strong', {}, 'Folder path'), path,
+      el('span', { class: 'subtext', id: 'add-path-hint' }, 'Type or paste the full path of a folder on this computer, for example D:\\Projects\\my-app. AIWorks only reads it to check what it is.')),
+    el('button', { class: `button${ready ? ' secondary' : ''}`, type: 'submit', disabled: busy }, 'Check folder'),
+    area,
+    ready ? el('button', { class: 'button', type: 'button', 'data-connect': 'connect', disabled: busy, onclick: () => void connectFolder() }, 'Connect project') : null,
+    draft.outcome?.code === 'PROJECT_MOVED' ? button('Connect as a new project', () => void connectFolder({ asNewProject: true }), 'secondary', busy) : null);
+  return [el('section', { class: 'panel' }, form)];
+}
+
+/** The 5-second refresh keeps the Add project form as typed: only its buttons follow the connection. False when it must be built. */
+function refreshAdd(content) {
+  const form = content.querySelector('form[data-add-form]');
+  if (!form || !state.projects?.addProject || !state.supervisor.available) return false;
+  for (const node of form.querySelectorAll('button')) node.disabled = Boolean(addBusy) || offline;
+  return true;
+}
+/** Build the Add project form again from its draft, and keep the owner where the answer is. */
+function rebuildAdd({ focus = false } = {}) {
+  document.querySelector('form[data-add-form]')?.remove();
+  render();
+  if (focus) $('#add-result')?.focus({ preventScroll: true });
+}
+
+async function checkFolder() {
+  const draft = addDraft();
+  addBusy = 'check'; rebuildAdd();
+  try {
+    const result = await post('/api/projects/preflight', { path: draft.path, ...(draft.kind ? { kind: draft.kind } : {}) });
+    saveAdd(result.ok ? { found: result, outcome: null, kind: result.found.kind } : { found: null, outcome: result });
+  } catch (error) {
+    saveAdd({ found: null, outcome: { message: error.known ? error.message : 'AIWorks could not check the folder. Check that this page is connected, then try again.', action: null } });
+  } finally { addBusy = null; rebuildAdd({ focus: true }); }
+}
+
+async function connectFolder(extra = {}) {
+  const draft = addDraft(), found = draft.found?.found;
+  if (!found && !extra.asNewProject) return;
+  addBusy = 'connect'; rebuildAdd();
+  try {
+    const result = await post('/api/projects/connect', { path: found?.root ?? draft.path, kind: draft.kind ?? found?.kind ?? 'local-git',
+      ...(draft.id ? { id: draft.id } : {}), ...extra, requestId: crypto.randomUUID() });
+    if (result.project) {
+      // Saved: the project opens. A project saved with a problem says it there, with its Check again.
+      clearAdd();
+      addBusy = null;
+      await poll();
+      go(formatRoute({ screen: 'project', project: result.project.route }));
+      notice(result.ok ? [`Connected "${result.project.name}".`, ...(result.notices ?? []).map((item) => item.message)].join(' ') : result.message, null, null, current.address);
+      return;
+    }
+    saveAdd({ outcome: result });
+  } catch (error) {
+    saveAdd({ outcome: { message: error.known ? error.message : 'Connecting could not be confirmed. Check Projects before trying again: the same folder is never connected twice.', action: null } });
+  } finally { if (addBusy) { addBusy = null; rebuildAdd({ focus: true }); } }
+}
+
+/** Move "{name}" here (design §4.6): a local Git project moves at once; a plain folder first shows how many files match. */
+async function moveProject(projectId, path, from, confirm = false) {
+  addBusy = projectId; render();
+  try {
+    const result = await post('/api/projects/relocate', { projectId, path, ...(confirm ? { confirm } : {}), requestId: crypto.randomUUID() });
+    if (result.confirm) {
+      moves.set(projectId, { path, ...result });
+    } else if (result.ok) {
+      moves.delete(projectId);
+      if (from === ADD_ADDRESS) clearAdd();
+      addBusy = null;
+      await poll();
+      go(formatRoute({ screen: 'project', project: result.project.route }));
+      notice(`Moved "${result.project.name}" here.`, null, null, current.address);
+      return;
+    } else notice(result.message, null, null, from);
+  } catch (error) {
+    notice(error.known ? error.message : 'The move could not be confirmed. Refresh before trying again.', null, null, from);
+  } finally { if (addBusy) { addBusy = null; render(); } }
+}
+// A plain folder's move waiting for the owner's confirmation, by project: the path and how many files match.
+const moves = new Map();
+
+/** Check again (design §3.3): the server checks the folder and saves what it found. */
+async function checkConnection(connection) {
+  addBusy = connection.id; render();
+  try {
+    const result = await post('/api/projects/check', { projectId: connection.id, requestId: crypto.randomUUID() });
+    notice(result.ok ? `"${connection.name}" is ready.` : result.message, null, null, current.address);
+  } catch (error) {
+    notice(error.known ? error.message : 'Check again could not be confirmed. It is safe to try again.', null, null, current.address);
+  } finally { addBusy = null; await poll(); }
+}
+
+async function disconnectConnection(connection) {
+  addBusy = connection.id; pendingDisconnect = null; render();
+  try {
+    const result = await post('/api/projects/disconnect', { projectId: connection.id, version: connection.version, requestId: crypto.randomUUID() });
+    addBusy = null;
+    await poll();
+    go('#/projects');
+    notice(result.message, null, null, current.address);
+  } catch (error) {
+    notice(error.known ? error.message : 'Disconnecting could not be confirmed. Refresh before trying again.', null, null, current.address);
+  } finally { if (addBusy) { addBusy = null; await poll(); } }
+}
+
+/**
+ * A connected project's connection on its Now screen: its status in one sentence with Check again when it is not ready,
+ * Move here when its folder is gone, and in details its kind, folder, copy and Disconnect. A project without GitHub says
+ * that starting work is not available yet and what it waits for (OWNER_WORKSPACE §5.3; #24, #32).
+ */
+function connectionPanel(row) {
+  const c = row.connection, local = !row.repository, busy = Boolean(addBusy) || offline || !state.supervisor.available;
+  const ready = c.status === 'ready', move = moves.get(c.id);
+  const sentence = local && ready ? c.startWork.text : ready ? null : c.message;
+  const check = button('Check again', () => void checkConnection(c), ready || c.reason === 'REGISTRY_MISSING' ? 'secondary small' : '', busy);
+  let moved = null;
+  if (local && c.reason === 'ROOT_MISSING') {
+    const where = el('input', { id: `move-${c.id}`, type: 'text', autocomplete: 'off', spellcheck: 'false', maxlength: 1024, value: move?.path ?? null });
+    moved = el('form', { class: 'start-form', 'data-focus-scope': `move/${c.id}`, onsubmit: (event) => { event.preventDefault(); void moveProject(c.id, where.value, current.address); } },
+      el('label', { class: 'field' }, el('strong', {}, `Moved it? The folder "${c.name}" is in now`), where),
+      move ? el('p', {}, move.message) : null,
+      move ? button(move.action.label, () => void moveProject(c.id, move.path, current.address, true), '', busy)
+        : el('button', { class: 'button secondary', type: 'submit', disabled: busy }, c.sourceKind === 'folder' ? 'Compare this folder' : `Move "${c.name}" here`));
+  }
+  const facts = [`${c.kind} project`, `folder ${c.folder}`, c.repository ? `repository ${c.repository}` : null, c.branch ? `branch ${c.branch}` : null,
+    c.baseline ? `AIWorks’s copy taken ${dateTime(c.baseline.at)}` : null, `${c.statusWords}`].filter(Boolean).join(' · ');
+  const leaving = pendingDisconnect === c.id
+    ? el('div', {}, el('p', {}, `Disconnect "${c.name}"? AIWorks keeps its history and its copy, and never touches your folder.`),
+      button('Disconnect', () => void disconnectConnection(c), 'danger small', busy), button('Keep it', () => { pendingDisconnect = null; render(); }, 'secondary small'))
+    : button('Disconnect…', () => { pendingDisconnect = c.id; render(); }, 'text-danger small', busy);
+  return el('section', { class: 'panel', 'data-focus-scope': `connection/${c.id}` }, el('div', { class: 'panel-body' },
+    sentence ? el('p', { role: 'status', 'aria-live': 'polite', 'data-state': c.status }, ...(ready ? [el('strong', {}, sentence)]
+      : [badge(stateTones[c.status] ?? 'unknown', c.statusWords), ' ', sentence])) : null,
+    !ready && c.reason !== 'REGISTRY_MISSING' ? check : null, moved,
+    disclosure(`connection/${c.id}`, local ? 'Details' : 'Connection', el('div', {}, el('p', { class: 'subtext' }, facts),
+      local ? el('p', { class: 'subtext' }, c.startWork.detail) : null, ready || c.reason === 'REGISTRY_MISSING' ? check : null, leaving))));
 }
 
 /**
@@ -818,7 +1084,8 @@ const mergeRow = (repository) => (state.merges?.repositories ?? []).find((repo) 
 
 /** Diagnostics: how fresh each project's merge check is, in place of "Refresh GitHub" (plan §6.12 C1). */
 function mergeChecksPanel() {
-  const projects = projectList();
+  // Merges are checked for GitHub projects only.
+  const projects = projectList().filter((project) => project.repository);
   return panel('Merge checks', `Read from each project’s local checkout with git, at most every 5 minutes while this page is open. No GitHub API call is made, so there is no refresh button: the check runs by itself.${state.merges?.refreshing ? ' Checking now…' : ''}`,
     projects.length ? el('ul', { class: 'settings-links' }, ...projects.map((project) => el('li', { 'data-focus-scope': `merges/${project.id}` },
       el('strong', {}, project.name), el('div', { class: 'subtext' }, mergeFreshness(mergeRow(project.repository))))))
@@ -850,8 +1117,9 @@ function settingsScreen() {
   const connections = panel('Projects', 'Each project’s kind and whether this computer is connected to it.', projects.length
     ? el('ul', { class: 'settings-links' }, ...projects.map((project) => el('li', { 'data-focus-scope': `connection/${project.id}` },
       el('strong', {}, `${project.name} · ${project.kind}`),
-      el('div', { class: 'subtext' }, project.details.configured ? 'Listed in the AIWorks configuration file on this computer.' : 'Has work on this computer, but the AIWorks configuration file does not list it.'),
-      el('div', { class: 'subtext' }, mergeFreshness(mergeRow(project.repository))))))
+      project.connection ? el('div', { class: 'subtext' }, `${project.connection.statusWords}. Connected from the folder ${project.connection.folder}.`) : null,
+      project.repository ? el('div', { class: 'subtext' }, project.details.configured ? 'Listed in the AIWorks configuration file on this computer.' : project.connection ? 'The AIWorks configuration file does not list it.' : 'Has work on this computer, but the AIWorks configuration file does not list it.') : null,
+      project.repository ? el('div', { class: 'subtext' }, mergeFreshness(mergeRow(project.repository))) : null)))
     : empty('No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository.'));
   return [computer, workers, connections, releasePanel(settings.releases), settingsLinks()];
 }
@@ -859,7 +1127,7 @@ function settingsScreen() {
 function settingsLinks() {
   return panel('More', null, el('ul', { class: 'settings-links' },
     el('li', {}, routeLink('Messages', '#/settings/messages'), el('div', { class: 'subtext' }, 'What you asked AIWorks, and what it answered.')),
-    el('li', {}, routeLink('Diagnostics', '#/settings/diagnostics'), el('div', { class: 'subtext' }, 'The full activity journal, every step with its issue and pull request, the Engineering Platform roadmap and how fresh each merge check is.'))));
+    el('li', {}, routeLink('Diagnostics', '#/settings/diagnostics'), el('div', { class: 'subtext' }, 'The full activity journal, every step with its issue and pull request, the governance provider roadmap and how fresh each merge check is.'))));
 }
 
 /** The one primary action of a state (OWNER_WORKSPACE §4.4), or nothing: a screen link, a GitHub link or Resume. */
@@ -878,6 +1146,10 @@ function primaryAction(primary) {
  * polite live region, so a screen reader hears it only when its text changes.
  */
 function nowScreen(project) {
+  // A connected project (UI13): one without GitHub has no work yet, so its connection is its Now; a GitHub project's
+  // connection follows its work.
+  const row = projectList().find((item) => sameProject(item.id, project));
+  if (row?.connection && !row.repository) return [connectionPanel(row)];
   // Start work exists since slice S9 (Plan only), so the no-work state offers it as its primary action.
   const view = nowView(project, { ...state, offline }, { now: Date.now(), startWork: true }), { state: now, details } = view;
   const startWork = now.primary?.route?.screen === 'start' || offline || !state.supervisor.available ? null : routeLink('Start work', { screen: 'start', project }, 'button secondary');
@@ -895,7 +1167,7 @@ function nowScreen(project) {
     details.workId || others.length ? disclosure(`now/${project}/details`, 'Details', el('div', { class: 'subtext' }, [
       details.workId ? `Campaign ${details.workId}` : null, details.trackingUrl ? link(`tracking issue #${details.trackingIssue} ↗`, details.trackingUrl) : null,
       others.length ? `Other work in this project: ${others.join(', ')}` : null].filter(Boolean).flatMap((part, index) => index ? [' · ', part] : [part]))) : null)),
-  since].filter(Boolean);
+  row?.connection ? connectionPanel(row) : null, since].filter(Boolean);
 }
 
 /** A piece of work's steps in the order they can run: each after the steps it depends on, otherwise as declared. */
@@ -908,8 +1180,8 @@ function runOrder(c) {
   return placed;
 }
 
-// Why a step waits (named by step outcomes in the supervisor snapshot), with when AIWorks tries again by itself.
-const waitLine = (wait) => wait ? `${wait.text}${wait.retryAt ? ` · next try ${timeOnly(wait.retryAt)}` : ''}` : null;
+// Why a step waits and what AIWorks does next by itself, both from the supervisor's status (UI11); its times read as local clock times.
+const waitLine = (wait) => wait ? `${clockTimes(wait.text)} · ${clockTimes(wait.next)}` : null;
 const commandsOff = () => sending || offline || !state.supervisor.available;
 function askCancel(c) {
   pendingCancel = c; $('#cancel-description').textContent = campaignTitle(c); $('#cancel-dialog').showModal();
@@ -937,20 +1209,36 @@ function moreMenu(c, task = null) {
  * its outcome, one state, who is on it and why it waits; Resume as the one primary action when it is paused, and Pause,
  * Check again and Cancel under More. Dependencies, attempts, AI workers and cost are in Details.
  */
+const delegatedNote = (c, task) => { const delivery = deliveryOf(c, task); return delivery?.state === 'delegated' ? delivery.note : null; };
 function workPanel(project, c) {
   const terminal = ['finished', 'cancelled'].includes(c.control), note = terminal ? null : controlsNote(c);
   const rows = runOrder(c).map((task) => el('tr', { 'data-focus-scope': `${c.id}/${task.id}` },
-    el('td', { class: 'c-work' }, routeLink(task.outcome ?? task.title, { screen: 'step', project, work: c.id, step: task.id }, 'task-name'),
-      task.outcome ? el('div', { class: 'subtext' }, task.title) : null),
-    el('td', { class: 'c-state' }, stepBadge(c, task),
-      ...[whoIsOn(c, task), task.stopped?.title, waitLine(task.wait)].filter(Boolean).map((text) => el('div', { class: 'subtext' }, text)))));
+    el('td', { class: 'c-work' }, routeLink(stepLabels(task).lead, { screen: 'step', project, work: c.id, step: task.id }, 'task-name'),
+      stepLabels(task).more ? el('div', { class: 'subtext' }, stepLabels(task).more) : null,
+      // Why it now runs on a stronger model (MODEL_ROUTING R6): the model itself is in Details.
+      movedUpText(task.routing) ? el('div', { class: 'subtext' }, movedUpText(task.routing)) : null),
+    el('td', { class: 'c-state' }, el('div', { class: 'cell-labels' }, stepBadge(c, task)),
+      ...[whoLine(c, task), task.stopped?.title, waitLine(task.wait)].filter(Boolean).map((text) => el('div', { class: 'subtext' }, text)),
+      verdictLabel(c, task),
+      // Merging delegated by the owner: merged for them, why it is held (#97), or how long nothing merged it (#139).
+      delegatedNote(c, task) ? el('div', { class: 'subtext' }, delegatedNote(c, task)) : null)));
   const { cost, body } = costNotes(c);
   return el('section', { class: 'panel', 'data-focus-scope': `work/${c.id}` },
-    el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, campaignTitle(c)), el('p', {}, campaignNext(c)), note ? el('p', { class: 'controls-note' }, note) : null),
+    el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, campaignTitle(c, { inProject: true })), el('p', {}, campaignNext(c)), note ? el('p', { class: 'controls-note' }, note) : null),
       el('div', {}, resumeButton(c), moreMenu(c))),
     el('div', { class: 'steps' }, table(['What it delivers', 'Where it stands'], rows)),
     disclosure(`${c.id}/work-details`, `Details · ${plural(c.tasks.length, 'step')} · ${plural(c.runsUsed, 'run')} · ${cost}`,
-      el('div', {}, stepsTable(c), terminal ? null : providerStatus(c), body)));
+      el('div', {}, stepsTable(c), terminal ? null : providerStatus(c), body, modelNotes(c))));
+}
+
+/** Each step's models and tiers and its cost by unit, then the work's (MODEL_ROUTING R6): Details of the Work screen. */
+function modelNotes(c) {
+  const steps = runOrder(c).filter((task) => modelsText(task.routing) || unitCostText(task.costByUnit));
+  if (!steps.length && !unitCostText(c.costByUnit)) return null;
+  return el('div', { class: 'notes' }, el('h3', { class: 'section-title' }, 'Models and cost by unit'),
+    steps.length ? el('ul', {}, ...steps.map((task) => el('li', {}, `${task.outcome ?? task.title}: `,
+      [modelsText(task.routing), movedUpText(task.routing), unitCostText(task.costByUnit)].filter(Boolean).join('. ')))) : null,
+    unitCostText(c.costByUnit) ? el('p', {}, `This work, by unit, never added together: ${unitCostText(c.costByUnit)}.`) : null);
 }
 
 /** One attempt of a step and how it ended, from the supervisor's records: "Builder (Claude): rejected · started … · ended …". */
@@ -973,7 +1261,7 @@ function stepScreen(project, c, task) {
   const guidance = (c.instructions ?? []).filter((item) => item.taskId === task.id);
   const { attempts, events } = task.history ?? { attempts: [], events: [] };
   return [el('section', { class: 'panel', 'data-focus-scope': `step/${c.id}/${task.id}` },
-    el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, task.outcome ?? task.title), el('p', {}, `${campaignTitle(c)} · project ${projectName(project)}`)),
+    el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, task.outcome ?? task.title), el('p', {}, `${campaignTitle(c, { inProject: true })} · project ${projectName(project)}`)),
       moreMenu(c, task)),
     el('div', { class: 'panel-body' },
       el('p', { role: 'status', 'aria-live': 'polite' }, stepBadge(c, task), ' ', task.stopped ? el('strong', {}, task.stopped.title) : whoIsOn(c, task) ?? waitLine(task.wait) ?? ''),
@@ -1030,6 +1318,27 @@ function costText({ runs, reportedUsd, unreportedRuns, runningRuns }) {
 }
 
 /**
+ * Model, tier and cost by unit (MODEL_ROUTING slice R6, build slice UI12), in words. Each unit stays apart: reported
+ * dollars, then tokens per AI provider, then the runs whose cost is unknown. Nothing is added across units or providers,
+ * and an unknown cost is counted in runs, never shown as $0.00.
+ */
+const tokenCount = (n) => n.toLocaleString('en-US');
+const modelText = (used) => used ? `${provider(used.executor)} ${used.model ?? '(model not recorded)'}${used.tier ? ` (${used.tier})` : ''}` : null;
+function modelsText(routing) {
+  const parts = [routing?.implement ? `Model: ${modelText(routing.implement)}` : null, routing?.verify ? `checked by ${modelText(routing.verify)}` : null].filter(Boolean);
+  return parts.length ? parts.join(' · ') : null;
+}
+function unitCostText(cost) {
+  if (!cost) return null;
+  const parts = [cost.usd !== null ? `${usd(cost.usd)} reported (${plural(cost.usdRuns, 'run')})` : null,
+    ...cost.tokens.map((t) => `${provider(t.executor)}: ${tokenCount(t.input)} input${t.cachedInInput && t.cacheRead ? ` (${tokenCount(t.cacheRead)} of them cached)` : ''}${
+      !t.cachedInInput && t.cacheRead ? ` + ${tokenCount(t.cacheRead)} read from cache` : ''}${t.cacheCreation ? ` + ${tokenCount(t.cacheCreation)} written to cache` : ''} and ${tokenCount(t.output)} output tokens`),
+    cost.unknownRuns ? `${plural(cost.unknownRuns, 'run')} with unknown cost` : null].filter(Boolean);
+  return parts.length ? parts.join(' · ') : null;
+}
+const movedUpText = (routing) => routing?.movedUp?.reason ?? null;
+
+/**
  * A project's Cost tab (OWNER_WORKSPACE §4.10, slice S7). First the project's reported total, from today's per-campaign
  * totals, with the runs that reported no cost counted apart; then "See the breakdown": per piece of work and per step,
  * its runs, reported cost, unreported runs, retries and checker rejections. No primary action.
@@ -1047,10 +1356,13 @@ function costScreen(project, all) {
     costRunsLine(total)].filter(Boolean);
   const work = (c) => el('section', { class: 'panel', 'data-focus-scope': `cost/${c.id}` },
     el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, campaignTitle(c)),
-      el('p', {}, `${plural(c.runsUsed, 'run')} · ${costText({ runs: c.runsUsed, ...c.cost })}`))),
+      el('p', {}, `${plural(c.runsUsed, 'run')} · ${costText({ runs: c.runsUsed, ...c.cost })}`),
+      unitCostText(c.costByUnit) ? el('p', { class: 'subtext' }, `By unit, never added together: ${unitCostText(c.costByUnit)}`) : null)),
     el('div', { class: 'steps' }, table(['Step', 'Runs', 'Cost', 'Retries', 'Checker rejections'], runOrder(c).map((task) => el('tr', { 'data-focus-scope': `cost/${c.id}/${task.id}` },
-      el('td', { class: 'c-work' }, routeLink(task.outcome ?? task.title, { screen: 'step', project, work: c.id, step: task.id }, 'task-name')),
-      cell(String(task.cost.runs)), cell(costText(task.cost)), cell(String(task.cost.retries)), cell(String(task.cost.checkerRejections)))))),
+      el('td', { class: 'c-work' }, routeLink(task.outcome ?? task.title, { screen: 'step', project, work: c.id, step: task.id }, 'task-name'),
+        ...[modelsText(task.routing), movedUpText(task.routing)].filter(Boolean).map((text) => el('div', { class: 'subtext' }, text))),
+      cell(String(task.cost.runs)), cell(costText(task.cost), unitCostText(task.costByUnit) ? el('div', { class: 'subtext' }, unitCostText(task.costByUnit)) : null),
+      cell(String(task.cost.retries)), cell(String(task.cost.checkerRejections)))))),
     costNotes(c).body);
   return [el('section', { class: 'panel' }, el('h2', {}, headline), ...lines.map((line) => el('p', {}, line))),
     disclosure(`cost/${project}`, 'See the breakdown', el('div', {}, ...all.map(work)))];
@@ -1126,7 +1438,8 @@ function render() {
   else if (diagnostics) patch(content, [trackOverview(), roadmapView(), workView(), mergeChecksPanel(),
     panel('Execution journal', 'Latest 80 events · raw agent transcripts and secrets are never shown', activityList())]);
   else if (route.screen === 'settings') patch(content, settingsScreen());
-  else if (route.screen === 'add-project') patch(content, [empty('Adding a project from this page is not built yet.', 'Projects appear on Projects when the AIWorks configuration file on this computer lists a repository.')]);
+  else if (route.screen === 'add-project' && refreshAdd(content)) { /* the form stays as the owner typed it */ }
+  else if (route.screen === 'add-project') patch(content, addProjectScreen());
   else if (route.screen === 'start' && refreshStart(content, route.project)) { /* the form stays as the owner typed it */ }
   else if (route.project) patch(content, projectScreen(route));
   else patch(content, projectsScreen());
@@ -1193,18 +1506,23 @@ async function poll() {
   }
 }
 
-// A new destination starts at its top; Back or Forward returns to where that address was left (UX-001 §8, preserve
-// context). The page keeps scroll per address itself, so the browser's own restoration is switched off.
-const scrollMemory = new Map();
+// Moving never loses the owner's place (OWNER_WORKSPACE §3.3 and §13.3 T10; aiworks#11 review F5; UX-001 §8, preserve
+// context). Opening a project from outside it returns to the screen that project was left on; its Now tab still opens
+// Now. Every address, reached by a link, Back or Forward, returns to where it was left; one not opened yet starts at its
+// top. The page keeps both for this tab itself, so the browser's own restoration is switched off.
+const scrollMemory = new Map(), projectMemory = new Map();
 try { history.scrollRestoration = 'manual'; } catch { /* the browser restores by itself */ }
 function go(address, { restore = false } = {}) {
   scrollMemory.set(current.address, window.scrollY);
-  const next = resolveRoute(address);
+  let next = resolveRoute(address);
+  const left = !restore && next.route.screen === 'project' && next.route.tab === 'now' && !sameProject(next.route.project, current.route.project)
+    ? projectMemory.get(next.route.project.toLowerCase()) : null;
+  if (left) next = resolveRoute(left);
   if (!restore) history.pushState(null, '', next.address);
   else if (next.replace) history.replaceState(null, '', next.address);
   current = next;
   showRoute();
-  window.scrollTo(0, restore ? scrollMemory.get(current.address) ?? 0 : 0);
+  window.scrollTo(0, scrollMemory.get(current.address) ?? 0);
   // Focus moves to the new screen's heading, so a screen reader starts there.
   $('#view-title').focus({ preventScroll: true });
 }

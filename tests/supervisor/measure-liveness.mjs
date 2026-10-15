@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Measurement probe for engineering-platform-archive#58, not a test: launches real contained runners (src/supervisor/runner.mjs) with a
+// Measurement probe for historical regression, not a test: launches real contained runners (src/supervisor/runner.mjs) with a
 // synthetic worker and records, from inside each runner, when it started, wrote runner.json, beat and finished.
 // The process-test liveness bounds in helpers.mjs are derived from these numbers; rerun this under load to check them.
 // Usage: node tests/supervisor/measure-liveness.mjs [--runs 10] [--parallel 2] [--worker-ms 3000] [--heartbeat-ms 100] [--stop 1]

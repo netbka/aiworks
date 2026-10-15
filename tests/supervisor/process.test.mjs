@@ -49,7 +49,7 @@ function launch(t, code, timeoutMs = 10_000, extraArgs = [], env = process.env) 
 }
 // The orphan mutates the run directory as soon as the test writes `release`, which it does only after the point the
 // orphan must not outlive (published result, owned stop, runner death). A fixed 4 s orphan timer raced the PowerShell
-// drain and stop, which take seconds under load, so a contained orphan could write before success was published (engineering-platform-archive#58).
+// drain and stop, which take seconds under load, so a contained orphan could write before success was published (historical regression).
 const descendant = [
   "import { spawn } from 'node:child_process';",
   "import { writeFileSync } from 'node:fs';",
@@ -86,7 +86,7 @@ test('runner timeout kills root and detached descendants before publishing timeo
 test('owned stop refuses a reused PID identity, then stops the exact whole job', { skip: process.platform !== 'win32' }, async (t) => {
   const run = launch(t, descendant + 'setInterval(() => {}, 1000);');
   // The helper prints its ready line and starts the worker at once; the runner rewrites runner.json with the job identity
-  // only when it reads that line, which under load can come after the worker started (engineering-platform-archive#58). Stop on the complete receipt.
+  // only when it reads that line, which under load can come after the worker started (historical regression). Stop on the complete receipt.
   const metadata = await waitFor(() => existsSync(join(run.dir, 'started.txt')) &&
     [readJsonIfExists(join(run.dir, 'runner.json'))].find((receipt) => receipt?.containment), run.diagnostics);
   assert.equal(stopOwnedRun({ ...metadata, creationTime: '1' }), 'identity-mismatch');
@@ -176,10 +176,10 @@ test('runner heartbeats continue while native identity and drain proof are pendi
   assert.equal(result.containmentStopped, true);
 });
 
-test('a heartbeat that cannot be written never kills the runner or its result (engineering-platform-archive#58)', { skip: process.platform !== 'win32' }, async (t) => {
+test('a heartbeat that cannot be written never kills the runner or its result (historical regression)', { skip: process.platform !== 'win32' }, async (t) => {
   // A reader, scanner or indexer holding `heartbeat` makes the Windows rename fail (EPERM). A directory in its
   // place makes every beat fail deterministically. The runner must skip those beats, not crash: a crash
-  // closed the job handle, killed the worker and left no result.json (the engineering-platform-archive#58 supervisor-test signature).
+  // closed the job handle, killed the worker and left no result.json (the historical regression supervisor-test signature).
   const run = launch(t, "await new Promise((done) => setTimeout(done, 300)); console.log('complete');", 10_000, [], (dir) => {
     mkdirSync(join(dir, 'heartbeat', 'blocked'), { recursive: true });
     return process.env;

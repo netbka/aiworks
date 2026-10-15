@@ -17,6 +17,10 @@ dialog select,dialog textarea,.start-form textarea,.start-form input[type=number
 .start-form .choice input{margin:0;width:18px;height:18px}
 .start-form fieldset>.subtext{font-size:12px;margin:0 0 6px 26px}
 .start-form>.button{margin-top:16px}
+/* Add project (UI13): the folder path is typed or pasted; long paths and the buttons that name them wrap, never scroll sideways. */
+.start-form input[type=text]{width:100%;min-height:44px;border:1px solid #ccd5e3;border-radius:7px;padding:10px;background:#fff;color:#24324a}
+.add-form,.add-form .button{overflow-wrap:anywhere}.add-form .button{white-space:normal;min-height:44px;margin:16px 8px 0 0}
+.add-form #add-result p,.add-notes{font-size:13px;color:#24324a}.add-notes{margin:8px 0 0;padding-left:18px}
 .instruction-list{padding:0 24px 16px;display:grid;gap:12px;font-size:12px}
 .instruction-list p{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}
 .receipt{border:1px solid var(--line);border-radius:10px;padding:12px 14px}
@@ -202,6 +206,12 @@ td{padding:17px 24px;font-size:12px;border-bottom:1px solid #eff2f6;vertical-ali
 tr:last-child td{border-bottom:0}
 td .subtext{font-size:10px;color:#8b98ac;margin-top:5px;line-height:1.45}
 .task-name{font-weight:500;line-height:1.5;color:#41536f;display:block;max-width:550px}
+/* Labels sit on their own line under the text they belong to, never squeezed beside it (owner review 2026-10-13). */
+.cell-labels{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.cell-labels:first-child{margin-top:0}
+td .subtext{overflow-wrap:anywhere}
+.steps .c-work{width:60%}
+.panel-header h2{overflow-wrap:anywhere}
 .package-id{font-family:"Cascadia Code",Consolas,monospace;font-size:10px;color:#8e9aac;white-space:nowrap}
 .table-actions{white-space:nowrap;text-align:right}
 .table-actions a{font-size:11px}
@@ -342,3 +352,4 @@ main{padding:25px 15px}
 @media(prefers-reduced-motion:reduce){
 *{transition:none!important;scroll-behavior:auto!important}
 }
+.coordinator-reply { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }

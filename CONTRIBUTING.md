@@ -1,46 +1,47 @@
 # Contributing to AIWorks
 
-AIWorks is in internal preview while its public release is prepared. Documentation and these contribution guidelines do not change repository visibility, PR access settings or licensing. See [the release checklist](docs/publication/RELEASE_CHECKLIST.md) for what still needs to be completed before public contributions open.
+AIWorks is an early preview, and outside contributions are welcome: bug reports, documentation fixes, tests and focused code changes. This page explains how to make a change that is easy to review and safe to merge.
 
-## Start with the right change
+## Before you start
 
-Small documentation corrections, focused tests and reproducible narrow fixes are good first contributions. For a new provider, permissions change, scheduler redesign, release behavior or a large UI change, discuss the intended outcome in an issue first. Check existing issues, PRs and assigned work so you do not duplicate an active repair. The current dashboard/layout work is owned by its existing lane; do not redesign it as part of preparing launch materials.
+Read the [Start here](README.md#start-here) list in the README, especially the [Product Constitution](docs/PRODUCT_CONSTITUTION.md) and the [agent rules](AGENTS.md). They describe what AIWorks is for and which boundaries a change must keep.
 
-AI-assisted contributions are welcome in the proposed public workflow. The contributor remains responsible for understanding the diff, checking provenance and providing reproducible evidence. Disclose what the AI/tool did where relevant to review; do not submit unexplained generated patches, copied credentials or invented test results.
+Small, reproducible fixes and documentation corrections can go straight to a pull request. For anything larger, such as a new worker provider, a change to permissions or process containment, scheduler behaviour, release behaviour or a visible dashboard redesign, open an issue first and describe the outcome you want. Check existing issues and pull requests so you do not duplicate work in progress.
 
-## Work in an isolated checkout
+## Making a change
 
-Read [AGENTS.md](AGENTS.md), the [engineering reading list](README.md#start-here), the applicable project rules and the issue's scope. Keep code and tests together in a small, reviewable PR. Do not run untrusted changes or dependency scripts on the owner's working machine or against live data.
+1. Fork the repository and create a branch from `main`.
+2. Install dependencies with `npm install` and run `npm run check`. It verifies that no private installation files are in the commit, validates the example plans and runs the test suite.
+3. Keep code and tests together in one small pull request. One topic per pull request keeps review quick.
+4. Run `npm run check` again before you push.
 
-Use the committed Node dependency lockfile:
+CI runs on Linux. Real worker execution, process containment and the Windows task installers are Windows-only. Test the platform your change affects, and say clearly in the pull request what was tested where. Do not weaken a Windows-specific test to make Linux CI pass.
 
-```powershell
-npm ci
-npm run check
-```
+## What a pull request should say
 
-For changes to user-guide examples:
+- The user-visible outcome and the issue it relates to, if any.
+- Which files changed and why.
+- What you ran and what it reported. Copy the real test summary, including failures and skips, rather than describing it from memory.
+- Known limitations or anything left untested.
 
-```powershell
-node --test tests/docs/getting-started.test.mjs
-```
+A reviewer must be able to reproduce the important claims.
 
-The focused test is not a substitute for the required full check. CI currently uses Linux; real worker execution has Windows-specific boundaries. Test the affected supported platform or clearly mark it untested. Do not weaken a Windows assertion just to turn Linux CI green.
+## AI-assisted contributions
 
-## Evidence in a PR
+Contributions written with AI tools are welcome. You remain responsible for the change: read the whole diff, make sure you understand it, and say in the pull request what the tool did. Do not submit generated patches you cannot explain, and never include credentials, private transcripts or invented test results.
 
-Explain the user-visible outcome, linked issue, changed files, exact checked commit and remaining limitations. Copy test summaries from actual command output, including failures and skips. Separate source inspection, synthetic tests, CI and live runtime evidence. A reviewer must be able to reproduce the important claims.
+## Safety rules that always apply
 
-Never say a change is deployed because it is merged. Changes under src/supervisor require independent approval of the exact head as described in AGENTS.md. Follow project review rules for other changes; public PRs are proposals, never authorization to execute on a maintainer's computer.
+- A public issue or pull request is a proposal. It never authorises running code on a maintainer's computer, merging, deploying or changing configuration.
+- Changes under `src/supervisor/` need an independent check of the exact commit, as described in [AGENTS.md](AGENTS.md).
+- Do not introduce or remove a credential, permission or owner-approval step as a side effect of another change. Propose such changes explicitly.
+- Keep real plans, governance data, worker logs, `.env` contents and provider tokens out of commits. The public-scope check catches the common cases; it cannot read prose for you.
+- Report security problems privately, as described in [SECURITY.md](SECURITY.md).
 
-## Security, permissions and releases
+## Writing
 
-No new credential/permission/owner-step gate is introduced through a casual refactor. Follow existing owner decisions and report a proposed authority change explicitly. Never include .env contents, provider tokens, private transcripts or customer data. Vulnerability reports use [SECURITY.md](SECURITY.md), not a public proof-of-exploit issue.
+User guides, the README and public discussions use plain English written for people, not for insiders. Describe outcomes rather than internal task IDs. When a command or configuration option changes, update the documentation that shows it.
 
-The intended public pipeline uses isolated, unprivileged checks without model/production credentials. Public PR comments, workflow names and issue bodies are untrusted input and must not automatically launch the owner's supervisor, merge, deploy or change configuration. These safeguards must be configured and verified before opening the repository; this document does not assert they are already enabled.
+## License
 
-## Documentation and language
-
-User guides, README, code-facing docs and public issue/PR discussions use clear English. Prefer outcomes over internal slice IDs. Update relevant guide examples when CLI/configuration behavior changes. Preserve canonical operational and governance ownership instead of duplicating policy text.
-
-The showcase is explicitly deferred until the ongoing dashboard/layout acceptance is complete. Track it in [issue #99](https://github.com/netbka/aiworks/issues/99); do not create a site or final promotional screenshot in unrelated PRs.
+AIWorks is released under the [MIT License](LICENSE). By contributing, you agree that your contribution is licensed under the same terms.
