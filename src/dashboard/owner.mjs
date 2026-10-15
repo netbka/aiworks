@@ -392,8 +392,10 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
   const coordinator = supervisor.coordinator;
   if (coordinator && (coordinator.configError || coordinator.blocked)) {
     const waiting = coordinator.messages.filter((m) => m.state === 'received').length;
-    items.push({ kind: 'coordinator', system: true, campaignId: null, repository: null, text: 'The coordinator cannot read your messages',
-      points: [{ link: null, text: `${coordinator.configError ?? coordinator.blocked}${waiting ? ` · ${plural(waiting, 'message')} waiting` : ''}. This is a supervisor configuration fix for whoever maintains AIWorks.` }] });
+    // Owner words at this level (aiworks#11 review 4 F4); the machine's reason is one click away, under What AIWorks recorded.
+    items.push({ kind: 'coordinator', system: true, campaignId: null, repository: null, text: 'AIWorks cannot read your messages',
+      evidence: 'What AIWorks recorded', detail: coordinator.configError ?? coordinator.blocked,
+      points: [{ link: null, text: `${waiting ? `${plural(waiting, 'message')} waiting. ` : ''}Not yours to fix: the AIWorks configuration file on this computer needs a fix by whoever maintains AIWorks.` }] });
   }
   const answered = (coordinator?.messages ?? []).filter((m) => m.state === 'answered' && (m.replyBody || m.replyUrl)).sort((a, b) => b.answeredAt - a.answeredAt)[0];
   // Calm only about what blocks on the owner; reports and releases are said apart, never as "nothing". Items that say

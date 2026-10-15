@@ -257,7 +257,7 @@ test('a GitHub checkout connects Ready; an unregistered one is saved and reads a
   const saved = (await r.post('/api/projects/connect', { path: unlisted, kind: 'github' })).json;
   // PROJECT_CONNECTION §8.2: the exact REGISTRY_MISSING copy, and its one action.
   assert.deepEqual([saved.ok, saved.code, saved.status, saved.message, saved.action],
-    [false, 'REGISTRY_MISSING', 'needs-setup', "example-org/unlisted-app isn't in governance provider's project list, so AIWorks can plan but not start work. Add it there, then check again.",
+    [false, 'REGISTRY_MISSING', 'needs-setup', "example-org/unlisted-app isn't listed in your project rules, so AIWorks can plan but not start work. Add it there, then check again.",
       { do: 'check', label: 'Check again' }]);
   assert.deepEqual([saved.project.status, saved.project.startWork], ['needs-setup', { allowed: false, text: UNREGISTERED, detail: null }]);
   const row = (await r.get('/api/state')).json.projects.projects.find((item) => item.id === 'example-org/unlisted-app');

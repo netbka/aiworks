@@ -1,6 +1,6 @@
 import { formatRoute, globalOf, resolveRoute, tabOf } from '/router.mjs';
 // The state copy of OWNER_WORKSPACE §7 and the Now screen (slice S4); the server serves src/dashboard/copy.mjs here.
-import { COMMANDS, DELEGATED, DIALOGS, NEEDS, NOT_READ, busyOnCommand, costRunsLine, nowView, readingLines, stateCopy, workLine } from '/copy.mjs';
+import { COMMANDS, DELEGATED, DIALOGS, NEEDS, NOT_READ, busyOnCommand, costRunsLine, nowView, readingLines, resultMeaning, stateCopy, workLine } from '/copy.mjs';
 
 const $ = (selector) => document.querySelector(selector);
 const names = { done: 'Done', blocked: 'Blocked', unknown: 'Unknown',
@@ -82,6 +82,8 @@ const timeAgo = (value) => {
 // Locale-neutral English dates ("10 Oct 12:23"), whatever the computer's own locale.
 const dateTime = (value) => value ? new Date(value).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).replace(',', '') : '—';
 const timeOnly = (value) => value ? new Date(value).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '—';
+/** "12:31" today, "13 Oct 12:31" on another day: a receipt's time (OWNER_WORKSPACE §5.4). */
+const clock = (value) => value && new Date(value).toDateString() === new Date().toDateString() ? timeOnly(value) : dateTime(value);
 // The supervisor's sentences carry exact UTC times ("resets at 2026-10-13T14:05:00.000Z"): shown as a clock time, with the date when not today.
 const clockTimes = (text) => String(text ?? '').replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b/g, (at) =>
   new Date(at).toDateString() === new Date().toDateString() ? timeOnly(at) : dateTime(at));
@@ -157,7 +159,7 @@ function renderMetrics(campaigns = state.supervisor.campaigns, shown = []) {
   const verdicts = agents.map((agent) => agentVerdict(agent)[0]);
   const metrics = [
     ['Platform roadmap items', entries.length, null, 'Definitions from the governance checkout; progress is tracked on GitHub', '☷'],
-    ['Agents working', available ? agents.length : '—', null, !available ? 'Supervisor unavailable'
+    ['AI workers working', available ? agents.length : '—', null, !available ? 'Not known right now'
       : agents.length ? `${verdicts.filter((v) => v === 'recent').length} working normally${verdicts.some((v) => v === 'stale') ? ` · ${verdicts.filter((v) => v === 'stale').length} possibly stuck or not started` : ''}` : 'None right now', '◎'],
     ['Needs you', !available ? '—' : unknown && !attention ? '?' : attention, available && unknown && attention ? '+ checking' : null,
       !available ? 'Execution state unknown'
@@ -255,13 +257,13 @@ function providerStatus(c) {
     'retry-due': 'Retry due', 'not-configured': 'Not used by this campaign' };
   const host = state.host?.name ?? 'this computer';
   return el('div', { class: 'panel-body' },
-    el('p', {}, `${plural(c.agents.length, 'agent')} working · ${c.slots} at a time allowed. AI providers are tried in this order.`),
+    el('p', {}, `${plural(c.agents.length, 'AI worker')} working · ${c.slots} at a time allowed. AI providers are tried in this order.`),
     el('div', { class: 'agents-grid' }, ...(c.providers ?? []).map((p) => el('article', { class: 'agent-card' },
       // A provider that cannot run on this machine at all is not "waiting": say so instead of offering a retry.
       el('strong', {}, `${p.priority ? `${p.priority}. ` : ''}${provider(p.kind)} — ${p.priority && p.hostLimit ? `Not available on ${host}` : labels[p.state]}`),
       p.priority && p.hostLimit ? el('div', { class: 'subtext' }, `No action needed: the campaign runs without it on ${host}. ${p.hostLimit}.`)
         : p.retryAt ? el('div', { class: 'subtext' }, p.retryAt > Date.now() ? `No action needed — retries automatically at ${timeOnly(p.retryAt)}.`
-          : `Overdue: the retry was due at ${timeOnly(p.retryAt)}; it happens at the supervisor's next check.`) : null,
+          : `Overdue: the retry was due at ${timeOnly(p.retryAt)}; it happens at AIWorks' next check.`) : null,
       p.reason ? el('div', { class: 'subtext' }, p.credits ? 'Reported exhausted credits or a billing limit.'
         : p.reason === 'quota' ? 'Reported a usage or rate limit.' : `Last failure: ${p.reason}.`) : null,
       p.availabilityReason ? el('div', { class: 'subtext' }, p.availabilityReason) : null,
@@ -344,7 +346,7 @@ function deliverySummary(c) {
 
 /** Why the campaign controls are off, so a disabled button is never silent. */
 function controlsNote(c) {
-  if (!state.supervisor.available) return 'Controls are off: the supervisor state is unavailable right now.';
+  if (!state.supervisor.available) return 'Controls are off until AIWorks can read its work records again.';
   if (offline) return 'Controls are off: this page lost its connection to the dashboard.';
   if (sending) return 'Sending your command…';
   return { finished: 'Controls are off: every step of this work is finished.', cancelled: 'Controls are off: this work was cancelled.',
@@ -404,7 +406,7 @@ function campaignCard(c, expanded = true) {
   else card.append(disclosure(c.id, `See all ${plural(c.tasks.length, 'step')}`, stepsTable(c)));
   const { cost, body } = costNotes(c);
   card.append(disclosure(`${c.id}/costs`, `Runs, cost and AI providers · ${plural(c.runsUsed, 'run')} · ${cost}`, body));
-  if (c.instructions?.length) card.append(disclosure(`${c.id}/instructions`, `Your instructions to agents (${c.instructions.length})`,
+  if (c.instructions?.length) card.append(disclosure(`${c.id}/instructions`, `Your guidance to AI workers (${c.instructions.length})`,
     el('div', { class: 'instruction-list' }, ...c.instructions.map((item) => instructionReceipt(item, c)))));
   return card;
 }
@@ -415,11 +417,11 @@ const stepName = (campaignId, taskId) => { const task = campaignById(campaignId)
 function instructionReceipt(item, c) {
   const role = roleName(item.role), step = stepName(c.id, item.taskId);
   const steps = [
-    receiptStep(true, 'Received', `stored by the supervisor ${dateTime(item.at)}`),
-    item.status === 'attached' ? receiptStep(true, 'Read', `by the ${role} (${provider(item.executor)}) ${dateTime(item.attachedAt)}; it is in that agent's instructions`)
+    receiptStep(true, 'Sent', `AIWorks received your guidance at ${clock(item.at)}`),
+    item.status === 'attached' ? receiptStep(true, 'Read', `by the ${role} (${provider(item.executor)}) at ${clock(item.attachedAt)}; it is in that AI worker's instructions`)
       : item.status === 'queued' ? receiptStep(false, 'Waiting', `delivered to the next ${role} run of ${step}; a running AI worker is not interrupted`)
         : receiptStep(false, 'Not delivered', item.status === 'outdated' ? 'the approved goal or limits changed before an AI worker ran' : 'no further run of this step is scheduled', 'failed'),
-    item.status === 'attached' ? receiptStep(item.runState === 'finished', item.runState === 'finished' ? 'Agent finished' : 'Agent working',
+    item.status === 'attached' ? receiptStep(item.runState === 'finished', item.runState === 'finished' ? 'AI worker finished' : 'AI worker working',
       item.runState === 'finished' ? `outcome: ${terminalLabels[item.runOutcome] ?? outcomeLabels[item.runOutcome] ?? item.runOutcome ?? 'unknown'}` : 'its result will appear here') : null,
   ];
   return el('article', { class: 'receipt' }, el('strong', {}, `${step} · ${role}`), el('p', {}, item.text), el('ol', { class: 'receipt-steps' }, ...steps));
@@ -430,16 +432,21 @@ function receiptStep(done, label, detail, tone) {
     el('span', {}, el('strong', {}, label), ` · ${detail}`));
 }
 
-function messageReceipt(m, coordinator) {
-  const steps = [receiptStep(true, 'Received', `stored by the supervisor ${dateTime(m.receivedAt)}`)];
+/**
+ * A message's receipt (OWNER_WORKSPACE §5.4): "Sent · AIWorks received your request at 12:31", then Read, then Answered.
+ * While it waits, a time is promised only when the request reader is known to run (`coordinator.reading`); otherwise the
+ * page says it cannot tell when, or that AIWorks has stopped (`aiworks`, the computer-wide state) (aiworks#11 review 4 F12).
+ */
+function messageReceipt(m, coordinator, aiworks) {
+  const steps = [receiptStep(true, 'Sent', `AIWorks received your request at ${clock(m.receivedAt)}`)];
   if (m.state === 'received') {
     steps.push(m.failure ? receiptStep(false, 'Retrying', `the last read ended without an answer (${outcomeLabels[m.failure] ?? m.failure}); next attempt ${dateTime(m.retryAt)}`, 'failed')
       : !coordinator.configured ? receiptStep(false, 'Not read', NOT_READ.receipt, 'failed')
-        : coordinator.blocked ? receiptStep(false, 'Not read yet', coordinator.blocked, 'failed')
-        : coordinator.maxRunsPerDay !== null && coordinator.runsToday >= coordinator.maxRunsPerDay ? receiptStep(false, 'Waiting', `today's ${coordinator.maxRunsPerDay} coordinator runs are used; it is read when the window frees up`)
-          : receiptStep(false, 'Waiting', 'the coordinator agent picks it up within seconds'));
+        : coordinator.blocked ? receiptStep(false, 'Not read yet', 'AIWorks cannot read requests right now; why is under Needs me', 'failed')
+        : coordinator.maxRunsPerDay !== null && coordinator.runsToday >= coordinator.maxRunsPerDay ? receiptStep(false, 'Waiting', `AIWorks has read today's ${coordinator.maxRunsPerDay} requests; it reads this one when the 24 hours free up`)
+          : receiptStep(false, 'Waiting', waitingWords(coordinator, aiworks)));
   } else if (m.readAt) {
-    steps.push(receiptStep(true, 'Read', `by the coordinator agent (Claude) ${dateTime(m.readAt)}`));
+    steps.push(receiptStep(true, 'Read', `AIWorks (Claude) started on it at ${clock(m.readAt)}`));
   }
   if (m.state === 'read') {
     steps.push(receiptStep(false, 'Working', m.progress ? `${m.progress.turns} turns · ${m.progress.toolCalls} tool calls · last activity ${timeAgo(m.progress.lastActivityAt)}${m.progress.lastTool ? ` (${m.progress.lastTool})` : ''}` : 'reviewing and planning'));
@@ -447,10 +454,17 @@ function messageReceipt(m, coordinator) {
     steps.push(receiptStep(true, 'Answered', `${dateTime(m.answeredAt)} · ${m.replyBody ? 'the reply is below' : m.replyUrl ? '' : 'reply unavailable'}`));
     if (m.replyUrl) steps.at(-1).append(link('Open the reply ↗', m.replyUrl));
   } else if (m.state === 'failed') {
-    steps.push(receiptStep(false, 'Not answered', `two reads ended without an answer (${outcomeLabels[m.failure] ?? m.failure}). Send it again or check the supervisor log.`, 'failed'));
+    steps.push(receiptStep(false, 'Not answered', `two reads ended without an answer (${outcomeLabels[m.failure] ?? m.failure}). Send it again, or see what AIWorks recorded in Settings › Diagnostics.`, 'failed'));
   }
   return el('article', { class: 'receipt' }, el('strong', {}, `Message #${m.id} · ${m.source}`), el('p', {}, m.text), el('ol', { class: 'receipt-steps' }, ...steps),
     m.replyBody ? disclosure(`message/${m.id}/reply`, 'Read the plan', el('pre', { class: 'coordinator-reply' }, m.replyBody)) : null);
+}
+
+/** What a waiting request is told: a time only when AIWorks is known to be reading requests on this computer right now. */
+function waitingWords(coordinator, aiworks) {
+  if (coordinator.reading === true) return 'AIWorks is running on this computer and usually starts on a request within a minute';
+  if (aiworks?.state === 'stopped') return 'AIWorks has stopped on this computer; it reads your request when it runs again';
+  return 'AIWorks reads it when it next runs on this computer; this page can’t tell when that will be';
 }
 
 // Whether anything reads requests: yes, no, or not with an invalid configuration.
@@ -469,13 +483,13 @@ function notRead(coordinator) {
 
 function messagesPanel(limit) {
   const coordinator = state.supervisor.coordinator;
-  if (!coordinator) return panel('Messages to the coordinator', 'Supervisor state unavailable', empty('Messages unavailable', state.supervisor.message ?? ''));
+  if (!coordinator) return panel('Your messages to AIWorks', 'Not known right now', empty('Messages unavailable', state.supervisor.message ?? ''));
   const items = coordinator.messages.slice(0, limit);
   // Sending is offered only while something reads messages; otherwise the panel says so and what to do instead.
-  return panel('Messages to the coordinator', coordinator.configured
-    ? `Read-only coordinator agent · replies stay in this dashboard · ${coordinator.runsToday}${coordinator.maxRunsPerDay === null ? '' : `/${coordinator.maxRunsPerDay}`} runs in the last 24h${coordinator.blocked ? ` · not reading now: ${coordinator.blocked}` : ''}`
+  return panel('Your messages to AIWorks', coordinator.configured
+    ? `AIWorks reads them and changes nothing · replies stay in this dashboard · ${coordinator.runsToday}${coordinator.maxRunsPerDay === null ? '' : `/${coordinator.maxRunsPerDay}`} read in the last 24h${coordinator.blocked ? ' · not reading now; why is under Needs me' : ''}`
     : null,
-  el('div', {}, notRead(coordinator), items.length ? el('div', { class: 'instruction-list' }, ...items.map((m) => messageReceipt(m, coordinator)))
+  el('div', {}, notRead(coordinator), items.length ? el('div', { class: 'instruction-list' }, ...items.map((m) => messageReceipt(m, coordinator, state.supervisor.controller)))
     : empty('No messages yet', coordinator.configured ? 'Use “New message” to ask for a review or a plan.' : '')),
   coordinator.configured ? button('✉ New message', openMessage, 'link') : null);
 }
@@ -495,8 +509,8 @@ function trackReceipts() {
     const before = seenReceipts.get(key);
     if (before === now) continue;
     if (key.startsWith('m')) {
-      if (now === 'received' && !before) announce(`Message #${item.id} received`, 'The supervisor stored it.');
-      else if (now === 'read') announce(`Message #${item.id} read`, 'The coordinator agent started working on it.');
+      if (now === 'received' && !before) announce(`Message #${item.id} sent`, `AIWorks received your request at ${clock(item.receivedAt)}.`);
+      else if (now === 'read') announce(`Message #${item.id} read`, 'AIWorks started working on it.');
       else if (now === 'answered') announce(`Message #${item.id} answered`, item.replyBody ? 'The reply is ready in Messages.' : item.replyUrl ? 'The reply is posted.' : 'Check Messages for the reply.');
       else if (now === 'failed') announce(`Message #${item.id} not answered`, 'Two reads ended without an answer.');
     } else if (now === 'attached:dispatched' || now === 'attached:recorded') announce(`Guidance for ${item.step} read`, `The ${roleName(item.role)} (${provider(item.executor)}) received it.`);
@@ -530,7 +544,7 @@ async function sendMessage(text) {
     try {
       const result = await post('/api/messages', { requestId, text });
       messageDraft.text = '';
-      notice(result.duplicate ? `Message #${result.id} was already received; it was not stored twice.` : `Message #${result.id} received by the supervisor. You will see "Read" when the coordinator agent starts on it.`, null, null, MESSAGES_ADDRESS);
+      notice(result.duplicate ? `Message #${result.id} was already received; it was not stored twice.` : `Message #${result.id} sent · AIWorks received your request at ${clock(Date.now())}. You will see "Read" when AIWorks starts on it.`, null, null, MESSAGES_ADDRESS);
       if (current.address !== MESSAGES_ADDRESS) go(MESSAGES_ADDRESS);
     } catch (error) {
       notice(error.known ? error.message : 'Delivery could not be confirmed. Retry: the same message is never stored twice.', error.known ? null : attempt, null, from);
@@ -556,7 +570,7 @@ function startReceipt(address) {
   const id = startDraft(address).sent, coordinator = state.supervisor.coordinator;
   if (!id || !coordinator) return null;
   const m = coordinator.messages.find((item) => item.id === id);
-  return m ? messageReceipt(m, coordinator) : el('p', { class: 'subtext' }, `Sent as message #${id}. Its receipt is under `, routeLink('Messages', MESSAGES_ADDRESS), '.');
+  return m ? messageReceipt(m, coordinator, state.supervisor.controller) : el('p', { class: 'subtext' }, `Sent as message #${id}. Its receipt is under `, routeLink('Messages', MESSAGES_ADDRESS), '.');
 }
 
 function startScreen(project) {
@@ -615,7 +629,7 @@ async function askForPlan(project, address) {
       // Accepted: an empty form for the next request, with this request's receipt under it.
       drafts.set(address, 'start', { sent: result.id });
       document.querySelector('form[data-start-form]')?.remove();
-      notice(result.duplicate ? `Plan request #${result.id} was already received; it was not stored twice.` : `Plan request #${result.id} received by the supervisor. You will see "Read" when the coordinator agent starts on it.`, null, null, address);
+      notice(result.duplicate ? `Plan request #${result.id} was already received; it was not stored twice.` : `Sent · AIWorks received your request at ${clock(Date.now())}. You will see "Read" when AIWorks starts on it.`, null, null, address);
     } catch (error) {
       notice(error.known ? error.message : 'Delivery could not be confirmed. Retry: the same request is never stored twice.', error.known ? null : attempt, null, address);
     }
@@ -656,7 +670,7 @@ function activityList(limit = 80, journal = state.supervisor.activity) {
   Object.assign(descriptions, { 'integration-wait': 'Waiting for merges before the next step', 'integration-ready': 'Merged work is in place; the next step can start',
     'blocker-raised': 'Stopped: needs a decision or action', 'blocker-cleared': 'Stop cleared; work continues', 'stall-released': 'Stopped step released to continue',
     'authorization-amended': 'Campaign authorization updated', 'message-received': 'Your message was received', 'message-read': 'The coordinator started reading your message',
-    'message-answered': 'The coordinator answered', 'message-failed': 'Your message was not answered', 'instruction-attached': 'Your instruction reached a worker',
+    'message-answered': 'AIWorks answered', 'message-failed': 'Your message was not answered', 'instruction-attached': 'Your instruction reached a worker',
     'liveness-defect': 'Supervisor liveness problem', 'operation-abandoned': 'Worker run abandoned', 'step-error': 'Supervisor step failed and will retry' });
   const items = journal.slice(0, limit);
   if (!items.length) return empty('No recorded activity', 'Supervisor events will appear here.');
@@ -670,7 +684,7 @@ function activityList(limit = 80, journal = state.supervisor.activity) {
     el('time', { class: 'timeline-time', datetime: new Date(item.at).toISOString(), title: dateTime(item.at) }, timeAgo(item.at)))));
 }
 
-/** "Since you last looked": merged, delivered, newly waiting for you, failed or rejected runs, and supervisor problems apart. */
+/** "Since you last looked": merged, delivered, newly waiting for you, failed or rejected runs, and AIWorks' own problems apart. */
 function sinceSummary() {
   const recent = state.owner?.recent;
   if (!recent) return null;
@@ -678,15 +692,16 @@ function sinceSummary() {
   const prs = (list) => list.filter((item) => item.url).map((item) => link(`#${item.number} ↗`, item.url));
   const facts = [
     recent.merged.length ? el('li', {}, `${plural(recent.merged.length, 'step')} merged `, ...prs(recent.merged)) : null,
-    recent.delivered.length ? el('li', {}, `${plural(recent.delivered.length, 'step')} delivered by agents`) : null,
+    recent.delivered.length ? el('li', {}, `${plural(recent.delivered.length, 'step')} delivered by AI workers`) : null,
     recent.waiting.length ? el('li', { class: 'attention' }, `${recent.waiting.length} newly waiting for your review `, ...prs(recent.waiting)) : null,
-    recent.failures ? el('li', { class: 'warn' }, `${plural(recent.failures, 'agent run')} did not succeed${recent.rejected ? ` (${recent.rejected} rejected by the independent checker)` : ''}; the supervisor retries automatically`) : null,
-    // The supervisor's own problems, never counted as agent runs: a failing step is recorded on every 5-second check.
-    // Not an owner action, but actionable for whoever maintains the supervisor: where it is tracked, and when it happened.
-    recent.supervisorErrors || recent.livenessProblems ? el('li', { class: 'warn' }, `The supervisor itself had problems (${[
+    recent.failures ? el('li', { class: 'warn' }, `${plural(recent.failures, 'AI worker run')} did not succeed${recent.rejected ? ` (${recent.rejected} rejected by the independent checker)` : ''}; AIWorks retries by itself`) : null,
+    // AIWorks' own problems, never counted as AI worker runs: a failing step is recorded on every 5-second check.
+    // Not an owner action, but actionable for whoever maintains AIWorks: where it is tracked, and when it happened.
+    // Owner words only at this level (aiworks#11 review 4 F4 and F17); the machine's names are in Diagnostics.
+    recent.supervisorErrors || recent.livenessProblems ? el('li', { class: 'warn' }, `AIWorks itself had problems (${[
       recent.supervisorErrors ? `its own check failed ${plural(recent.supervisorErrors, 'time')} and was retried` : null,
-      recent.livenessProblems ? plural(recent.livenessProblems, 'liveness problem') : null].filter(Boolean).join('; ')}). Not an owner action: these are supervisor faults for AIWorks's maintainers. `,
-    link('Supervisor issue #2 ↗', 'https://github.com/netbka/aiworks/issues/2'), ' · ', routeLink('When, in Diagnostics', '#/settings/diagnostics')) : null,
+      recent.livenessProblems ? `it failed to check in on time ${plural(recent.livenessProblems, 'time')}` : null].filter(Boolean).join('; ')}). Not an owner action: these are faults in AIWorks for its maintainers. `,
+    link('AIWorks issue #2 ↗', 'https://github.com/netbka/aiworks/issues/2'), ' · ', routeLink('When, in Diagnostics', '#/settings/diagnostics')) : null,
     // While a merge check runs, what merged is not known yet: never "Nothing changed" (aiworks#11 review 4 F3).
     state.owner?.unknownResults ? el('li', {}, `Checking GitHub… The state of ${plural(state.owner.unknownResults, 'result')} is not known yet.`) : null,
   ].filter(Boolean);
@@ -775,7 +790,7 @@ function needsYou() {
       unknown ? el('span', { class: 'needs-unknown' }, `Merge of ${unknown} published step${unknown === 1 ? '' : 's'} being checked`) : null),
     // Only owner actions here (owner, 2026-10-13): posted reports and merged work ready for release are on Results.
     ...groups.map(needsGroup),
-    reply ? el('div', { class: 'needs-reply' }, `The coordinator answered your message #${reply.messageId} (${dateTime(reply.answeredAt)}). `,
+    reply ? el('div', { class: 'needs-reply' }, `AIWorks answered your message #${reply.messageId} (${dateTime(reply.answeredAt)}). `,
       reply.url ? link('Read its “What needs you” ↗', reply.url) : routeLink('Read the plan', MESSAGES_ADDRESS)) : null);
 }
 
@@ -809,7 +824,7 @@ const projectList = () => state.projects?.projects ?? [];
 // GitHub repository names are case-insensitive: an address in any spelling opens the same project.
 const sameProject = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
 const projectCampaigns = (project) => state.supervisor.campaigns.filter((c) => sameProject(c.repository, project));
-const unavailable = () => empty('Supervisor unavailable', state.supervisor.message ?? 'The supervisor state cannot be read right now. This is not the same as nothing happening.');
+const unavailable = () => empty('Not known right now', state.supervisor.message ?? `${stateCopy('unreadable').title} This is not the same as nothing happening.`);
 const stateTones = { 'needs-you': 'attention', checking: 'unknown', running: 'in_progress', paused: 'pending', finished: 'done', cancelled: 'pending', 'no-work': 'pending',
   ready: 'done', 'needs-setup': 'attention', unavailable: 'pending', 'possibly-stuck': 'stale', stopped: 'stale', fault: 'stale' };
 const stateWords = { 'needs-you': 'Needs you', checking: 'Checking', running: 'Running', paused: 'Paused', finished: 'Finished', cancelled: 'Cancelled', 'no-work': 'No work yet',
@@ -1046,9 +1061,9 @@ function workerLine(w) {
   const status = { ready: 'ready', running: 'in use now', 'not-set-up': 'not set up on this computer', 'host-unavailable': 'not available on Windows',
     unavailable: 'unavailable', waiting: w.overdue ? 'retry due' : 'waiting for its usage limit' }[w.state] ?? 'state not known';
   const notes = [
-    w.state === 'waiting' ? w.overdue ? `The retry was due at ${timeOnly(w.retryAt)}; it happens at the supervisor's next check. No action needed.`
+    w.state === 'waiting' ? w.overdue ? `The retry was due at ${timeOnly(w.retryAt)}; it happens at AIWorks' next check. No action needed.`
       : `${w.credits ? 'It reported exhausted credits or a billing limit. ' : ''}AIWorks tries it again at ${timeOnly(w.retryAt)}. No action needed.` : null,
-    w.state === 'unavailable' ? `${w.availabilityReason ?? 'The supervisor recorded it as unavailable'}.` : null,
+    w.state === 'unavailable' ? `${w.availabilityReason ?? 'AIWorks recorded it as unavailable'}.` : null,
     w.state === 'host-unavailable' ? 'Its native sandbox does not support Windows. Work runs without it here; no action needed.' : null,
     w.state === 'not-set-up' ? 'The AIWorks configuration file on this computer sets no command for it, so no work runs on it here.' : null,
     w.setUp === 'default' && w.state !== 'host-unavailable' ? 'Uses the claude command on this computer’s PATH; the AIWorks configuration file sets none.' : null,
@@ -1138,7 +1153,7 @@ const settingsEmpty = ({ title, text, primary }) => el('div', { class: 'empty-st
 function settingsLinks() {
   return panel('More', null, el('ul', { class: 'settings-links' },
     el('li', {}, routeLink('Messages', '#/settings/messages'), el('div', { class: 'subtext' }, 'What you asked AIWorks, and what it answered.')),
-    el('li', {}, routeLink('Diagnostics', '#/settings/diagnostics'), el('div', { class: 'subtext' }, 'The full activity journal, every step with its issue and pull request, the governance provider roadmap and how fresh each merge check is.'))));
+    el('li', {}, routeLink('Diagnostics', '#/settings/diagnostics'), el('div', { class: 'subtext' }, 'The full activity journal, every step with its issue and pull request, the roadmap of the platform that keeps your project rules, and how fresh each merge check is.'))));
 }
 
 /** The one primary action of a state (OWNER_WORKSPACE §4.4), or nothing: a screen link, a GitHub link or Resume. */
@@ -1269,6 +1284,7 @@ function stepScreen(project, c, task) {
     : task.resultUrl ? link(number ? `Open pull request #${number} ↗` : 'Open the result ↗', task.resultUrl, 'button')
       : unfinished && c.controls?.more.length ? button('Send guidance', () => openInstructions(c, task), '', commandsOff()) : null;
   const last = task.verifiedSha ? `Passed the check at commit ${task.verifiedSha.slice(0, 7)}` : outcomeText(task.lastOutcome);
+  const meaning = task.verifiedSha ? null : resultMeaning(task.lastOutcome, { stopped: Boolean(task.stopped) });
   const guidance = (c.instructions ?? []).filter((item) => item.taskId === task.id);
   const reading = readingLines(task.reading);
   const { attempts, events } = task.history ?? { attempts: [], events: [] };
@@ -1280,6 +1296,8 @@ function stepScreen(project, c, task) {
       task.stopped ? el('p', {}, task.stopped.text) : null,
       p ? el('p', { class: 'subtext' }, `From the worker’s own record: ${plural(p.turns, 'turn')} · ${plural(p.toolCalls, 'action')} · last activity ${timeAgo(p.lastActivityAt)}`) : null,
       last ? el('p', { class: 'subtext' }, `Last result: ${last}`) : null,
+      // What that result means and, when stopped, what fixing it involves, in place (aiworks#11 review 4 F13).
+      meaning ? el('div', { class: 'instruction-list', 'data-result-meaning': '' }, el('p', {}, meaning.kind), el('p', {}, meaning.fix)) : null,
       // The rule a returned change broke and what the next attempt was given (SCOPED_READING, slice UI18): paths, sections and headings only.
       reading ? el('div', { class: 'instruction-list' }, el('h3', { class: 'section-title' }, reading.title), ...reading.lines.map((line) => el('p', {}, line))) : null,
       // The recovery the stop sentence names is shown beside its primary action, never only under More (aiworks#11 review F12).
@@ -1446,7 +1464,7 @@ function render() {
   const focused = content.contains(document.activeElement) ? focusKey(document.activeElement) : null;
   const diagnostics = route.screen === 'settings' && route.section === 'diagnostics';
   renderMetrics(route.project ? projectCampaigns(route.project) : state.supervisor.campaigns, diagnostics ? ['Platform roadmap items']
-    : route.screen === 'project' && route.tab === 'work' ? ['Agents working'] : []);
+    : route.screen === 'project' && route.tab === 'work' ? ['AI workers working'] : []);
   if (route.screen === 'needs') patch(content, [needsYou() ?? unavailable()]);
   else if (route.screen === 'settings' && route.section === 'messages') patch(content, [messagesPanel(20)]);
   else if (diagnostics) patch(content, [trackOverview(), roadmapView(), workView(), mergeChecksPanel(),

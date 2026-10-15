@@ -9,7 +9,7 @@ import { pendingInstructions } from '../supervisor/instructions.mjs';
 import { roleUnavailableReason, runNotCounted } from '../supervisor/adapters/executors.mjs';
 import { campaignLimits } from '../supervisor/campaign.mjs';
 import { parseReference } from '../supervisor/reading.mjs';
-import { coordinatorView, postOwnerMessage } from '../supervisor/coordinator.mjs';
+import { coordinatorView, LANE as COORDINATOR_LANE, postOwnerMessage } from '../supervisor/coordinator.mjs';
 import { CODE_ROOT, revisionNotMerged } from '../supervisor/provenance.mjs';
 import { COMMANDS, stateCopy, stopReasonWords } from './copy.mjs';
 import { configuredRepositories } from './projects.mjs';
@@ -572,7 +572,9 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
     const controller = supervisorLiveness(store, { now, leaseMs: readConfig(dataDir).leaseMs ?? DEFAULTS.leaseMs, stopRequested: existsSync(join(dataDir, 'STOP')) });
     store.db.exec('COMMIT');
     const view = coordinatorView(store, readConfig(dataDir), now);
-    const coordinator = { configured: view.configured, configError: view.configError ? safeText(view.configError, 300) : null,
+    // `reading`: the request reader holds a live lease, so a waiting request is known to be picked up (aiworks#11 review 4 F12).
+    const reading = Boolean(store.get('SELECT 1 AS live FROM leases WHERE campaign_id = ? AND expires_at > ?', COORDINATOR_LANE, now));
+    const coordinator = { configured: view.configured, configError: view.configError ? safeText(view.configError, 300) : null, reading,
       blocked: view.blocked ? safeText(view.blocked, 300) : null, reportTo: view.reportTo ?? null, runsToday: view.runsToday ?? 0, maxRunsPerDay: view.maxRunsPerDay ?? null,
       messages: view.messages.map((m) => ({ id: m.id, text: safeText(m.text, 4000), source: safeText(m.source, 80), state: code(m.state),
         receivedAt: m.receivedAt, readAt: m.readAt, answeredAt: m.answeredAt, failure: code(m.failure), retryAt: m.retryAt, attempts: m.attempts,
@@ -584,7 +586,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
         })() : null })) };
     const settings = computerSettings(campaigns, readConfig(dataDir), { now, repositories: configuredRepositories(dataDir) });
     return { available: true, observedAt: new Date(now).toISOString(), controller, campaigns, costs: projectCosts(campaigns), activity, coordinator, recent, settings };
-  } catch { return { available: false, message: 'Supervisor state is temporarily unavailable. Commands are disabled until it reconnects.', campaigns: [], costs: [], activity: [] }; }
+  } catch { return { available: false, message: "AIWorks can't read its work records right now. What you see may be out of date. Buttons are off until it can read them again.", campaigns: [], costs: [], activity: [] }; }
   finally { store?.close(); }
 }
 
@@ -644,7 +646,7 @@ export function postMessage(dataDir, input, now = Date.now()) {
       (!isPlan && (typeof input.text !== 'string' || safeText(input.text, 4000) !== input.text))) {
     throw fail(400, 'Invalid message. Up to 4,000 characters, no secrets.');
   }
-  if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'Supervisor is unavailable.');
+  if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'AIWorks can’t read its work records on this computer right now.');
   const store = new Store(join(dataDir, 'supervisor.db'));
   try {
     const plan = isPlan ? planRequest(store, dataDir, input.plan) : null;
@@ -672,7 +674,7 @@ export function applyCommand(dataDir, input, now = Date.now(), { provenanceRoot 
       input.action !== 'instruct' && (input.text !== undefined || input.role !== undefined)) {
     throw fail(400, 'Invalid dashboard command.');
   }
-  if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'Supervisor is unavailable.');
+  if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'AIWorks can’t read its work records on this computer right now.');
   const store = new Store(join(dataDir, 'supervisor.db'));
   try {
     // Private Resume uses the registered declaration; executable code must still be merged.

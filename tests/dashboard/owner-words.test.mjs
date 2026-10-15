@@ -6,7 +6,12 @@
 // machine's own words belong (OWNER_WORKSPACE §2.2). Disposable stores, local git and a loopback server only.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { join } from 'node:path';
+import { resultMeaning } from '../../src/dashboard/copy.mjs';
+import { LOCAL_START, projectMessage, UNREGISTERED } from '../../src/dashboard/projects.mjs';
 import { supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
+import { LANE } from '../../src/supervisor/coordinator.mjs';
+import { Store } from '../../src/supervisor/store.mjs';
 import { openPage, visibleText, internalWords } from './fixtures/page.mjs';
 import { PROJECTS } from './fixtures/review-store.mjs';
 
@@ -191,4 +196,129 @@ test('F24: the footer of every screen says only when the page last checked, with
   // How merges are read is still said, where the machine is described.
   await page.go('#/settings/diagnostics');
   assert.match(screen(page), /No GitHub API call is made/);
+});
+
+// aiworks#11 review 4 F4, F12, F13 and F17: what the report quoted, word for word, and the screens it quoted them on.
+const F4_QUOTED = [
+  "AIWorks can't read the project rules from governance provider. Set up the rules folder in Settings.",
+  'The full activity journal, every step with its issue and pull request, the governance provider roadmap and how fresh each merge check is.',
+  'Message #5 received: The supervisor stored it.',
+  'Waiting · the coordinator agent picks it up within seconds',
+  'Agents working 3 · 2 working normally · 1 possibly stuck or not started',
+];
+// The page's receipt times: "12:31" today, "13 Oct 12:31" on another day.
+const TIME = /(?:\d{1,2} \w{3} )?\d\d:\d\d/.source;
+
+test('F4 and F17: the guard catches each word the report quoted, and none is left on Add project, Settings, Start work or Messages', async (t) => {
+  for (const text of F4_QUOTED) assert.ok(internalWords(text).length, `the guard catches: ${text}`);
+  for (const word of ['governance provider', 'rules folder', 'supervisor', 'coordinator', 'Agents']) {
+    assert.ok(F4_QUOTED.some((text) => internalWords(text).some((found) => found.startsWith(`${word} in`))), word);
+  }
+  // Add project: a GitHub project the project rules do not list, and every project-rules stop, say "your project rules".
+  const codes = ['REGISTRY_MISSING', 'REGISTRY_AMBIGUOUS', 'REGISTRY_INVALID', 'GITHUB_REGISTERED', 'GOVERNANCE_ROOT_MISSING'];
+  for (const text of [UNREGISTERED, LOCAL_START[0], ...codes.map((code) => projectMessage(code, { repository: 'example-org/sampleapp', ids: ['a', 'b'] }))]) {
+    assert.deepEqual(internalWords(text), [], text);
+  }
+  assert.match(projectMessage('REGISTRY_MISSING', { repository: 'example-org/sampleapp' }), /^example-org\/sampleapp isn't listed in your project rules, /);
+  assert.equal(projectMessage('REGISTRY_AMBIGUOUS', { repository: 'example-org/sampleapp', ids: ['a', 'b'] }),
+    "Your project rules list example-org/sampleapp more than once (a, b). AIWorks won't guess which rules apply.");
+  const page = await openPage(t);
+  // Settings › More: what Diagnostics holds, in owner words; the platform's own name stays inside Diagnostics.
+  await page.go('#/settings');
+  assert.ok(screen(page).includes('Diagnostics The full activity journal, every step with its issue and pull request, the roadmap of the platform that keeps your project rules, and how fresh each merge check is.'), screen(page));
+  // Messages: the heading, the line under it and every receipt.
+  await page.go('#/settings/messages');
+  const messages = screen(page);
+  assert.match(messages, /Your messages to AIWorks AIWorks reads them and changes nothing · replies stay in this dashboard · /);
+  assert.match(messages, new RegExp(`✓ Sent · AIWorks received your request at ${TIME} ✓ Read · AIWorks \\(Claude\\) started on it at ${TIME}`));
+  assert.deepEqual(internalWords(messages), []);
+  // F17: one word for AI workers on the Work metric.
+  await page.go(address('example/shop-app', '/work'));
+  assert.match(screen(page), /AI workers working ◎ 3 2 working normally · 1 possibly stuck or not started/);
+  assert.doesNotMatch(screen(page), /Agents working/);
+});
+
+test('F4 and F12: the Start work receipt reads like §5.4 and promises no time unless AIWorks is known to read requests', async (t) => {
+  const page = await openPage(t);
+  const ask = async (goal) => {
+    await page.go(address('example/shop-app', '/start'));
+    const box = page.$('#start-goal');
+    box.value = goal;
+    box.dispatchEvent({ type: 'input', target: null, preventDefault() {} });
+    page.$('form[data-start-form]').dispatchEvent({ type: 'submit', defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } });
+    await page.settle();
+    return { notice: visibleText(page.$('#notice')), receipt: screen(page) };
+  };
+  // The review store: AIWorks' work leases are live, but nothing reads requests (no request reader holds a lease).
+  const first = await ask('Customers can pay with a saved card');
+  // The notice, or the announcement of the new receipt that follows it on the next refresh: the same §5.4 words.
+  assert.match(first.notice, new RegExp(`^(?:Sent ·|Message #\\d+ sent:) AIWorks received your request at ${TIME}\\.`), first.notice);
+  assert.match(first.receipt, new RegExp(`✓ Sent · AIWorks received your request at ${TIME} … Waiting · AIWorks reads it when it next runs on this computer; this page can’t tell when that will be`), first.receipt);
+  for (const text of [first.notice, first.receipt]) {
+    assert.deepEqual(internalWords(text), [], text);
+    assert.doesNotMatch(text, /within (seconds|a minute)|picks it up/, 'no pickup time while nothing is known to read requests');
+  }
+  // A request reader with a live lease: then, and only then, the receipt says when a request is usually picked up.
+  const store = new Store(join(page.dataDir, 'supervisor.db'));
+  store.insert('leases', { campaign_id: LANE, instance_id: 'owner-words-test', generation: 1, code_revision: 'review0fixture', acquired_at: Date.now(), expires_at: Date.now() + 60 * 60_000 });
+  store.close();
+  const second = await ask('Customers can save a card');
+  assert.match(second.receipt, /… Waiting · AIWorks is running on this computer and usually starts on a request within a minute/, second.receipt);
+});
+
+test('F13: a step stopped on invalid results says in place what that failure is and what fixing it involves, without worker text', async (t) => {
+  const page = await openPage(t);
+  await page.go(address('example/notes-site', '/step/notes-search/T1'));
+  const step = screen(page);
+  assert.ok(step.includes('Stopped: 5 attempts failed. Notes search. It will not retry by itself. Fix the cause, then check it again.'), step);
+  assert.ok(step.includes('Last result: Builder (Claude): invalid result'), step);
+  const said = resultMeaning({ outcome: 'invalid-result', role: 'Implementer' }, { stopped: true });
+  const meaning = visibleText(page.$('[data-result-meaning]'));
+  assert.equal(meaning, `${said.kind} ${said.fix}`);
+  assert.match(meaning, /^Invalid result: the builder finished, but what it handed back failed AIWorks’ own checks, /);
+  assert.match(meaning, /Fixing the cause means changing what an AI worker is given: .* Then choose Check again\.$/);
+  // In place: right after the last result, outside any Details disclosure, in owner words.
+  assert.ok(step.indexOf('Last result: Builder (Claude): invalid result') < step.indexOf(meaning), step);
+  assert.equal(page.$('[data-result-meaning]').closest('details'), null);
+  assert.deepEqual(internalWords(meaning), []);
+  // From the result's class and role only, never the worker's own text; a step that still retries is told so.
+  assert.equal(resultMeaning({ outcome: 'invalid-result', role: 'Verifier', detail: 'worker text' }).fix, 'AIWorks tries again by itself. Nothing for you to do yet.');
+  assert.match(resultMeaning({ outcome: 'invalid-result', role: 'Verifier' }).kind, /^Invalid result: the independent checker finished, /);
+  for (const outcome of [null, { outcome: 'result', terminal: 'rejected' }, { outcome: 'timeout' }]) assert.equal(resultMeaning(outcome), null);
+});
+
+// Verifier finding B1 on UIF10: the review fixture's recent summary has merges only, so the every-screen guard never drew
+// the home summary's failed runs, AIWorks' own problems or an inbox AIWorks cannot read. These states, drawn here.
+test('F4 and F17: the Projects home, Needs me and Messages say AI worker and AIWorks when runs fail, AIWorks has problems or cannot read messages', async (t) => {
+  const page = await openPage(t);
+  const store = new Store(join(page.dataDir, 'supervisor.db'));
+  const at = Date.now() - 60 * 60_000, reason = 'invalid coordinator configuration: unknown coordinator keys: agentModel';
+  store.journal('shop-checkout', 'published', { task: 'T1' }, at);
+  store.journal('shop-checkout', 'operation-finished', { task: 'T1', class: 'failure' }, at);
+  store.journal('shop-checkout', 'operation-finished', { task: 'T1', class: 'result', terminal: 'rejected' }, at);
+  store.journal('shop-checkout', 'step-error', { message: 'supervisor step failed' }, at);
+  store.journal('shop-checkout', 'liveness-defect', { message: 'supervisor liveness defect' }, at);
+  store.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('coordinator_blocked', ?)", reason);
+  store.close();
+  await page.refresh();
+  const findings = [];
+  for (const where of ['#/projects', '#/needs', '#/settings', '#/settings/messages', address('example/shop-app')]) {
+    await page.go(where);
+    for (const found of internalWords(page.text())) findings.push(`${where}: ${found}`);
+  }
+  assert.deepEqual(findings, []);
+  await page.go('#/projects');
+  const home = screen(page);
+  assert.match(home, /1 step delivered by AI workers/);
+  assert.match(home, /2 AI worker runs did not succeed \(1 rejected by the independent checker\); AIWorks retries by itself/);
+  assert.match(home, /AIWorks itself had problems \(its own check failed 1 time and was retried; it failed to check in on time 1 time\)\. Not an owner action: these are faults in AIWorks for its maintainers\. AIWorks issue #2 ↗/);
+  await page.go('#/needs');
+  assert.match(screen(page), /AIWorks cannot read your messages .*Not yours to fix: the AIWorks configuration file on this computer needs a fix by whoever maintains AIWorks\./);
+  // The machine's reason is kept, one click away.
+  const recorded = nodes(page, 'DETAILS').find((node) => node.textContent.includes(reason));
+  assert.ok(recorded, 'the machine reason is inside a details disclosure');
+  await page.go('#/settings/messages');
+  assert.match(screen(page), /not reading now; why is under Needs me/);
+  assert.match(screen(page), /! Not read yet · AIWorks cannot read requests right now; why is under Needs me/);
+  assert.doesNotMatch(screen(page), /invalid coordinator configuration/);
 });

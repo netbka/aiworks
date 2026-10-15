@@ -287,7 +287,7 @@ test('the empty store is the first run: no projects and nothing blocked on the o
 test('the unreadable store shows that AIWorks cannot read its work records', (t) => {
   const { dataDir } = fixture(t, { store: 'unreadable' });
   const snapshot = supervisorSnapshot(dataDir);
-  assert.deepEqual([snapshot.available, snapshot.message], [false, 'Supervisor state is temporarily unavailable. Commands are disabled until it reconnects.']);
+  assert.deepEqual([snapshot.available, snapshot.message], [false, "AIWorks can't read its work records right now. What you see may be out of date. Buttons are off until it can read them again."]);
   assert.equal(ownerView(snapshot).available, false);
 });
 

@@ -39,14 +39,16 @@ The UI is English only (D9).
 | Step | One part of that work with its own result. | task |
 | Builder | The AI worker that makes a step's change. | implementer |
 | Independent checker | A separate AI worker that checks the result. | verifier |
-| AI worker | Claude, Codex or Cursor running on this computer. | executor, provider |
+| AI worker | Claude, Codex or Cursor running on this computer. The one word for them: never "agent" (aiworks#11 review 4 F17). | executor, provider, agent |
 | Plan | What AIWorks proposes to do, before the owner approves it. | declaration, task graph |
 | Approve | The owner's one approval of the goal and limits of a piece of work (D3). | authorization, registration |
 | Result | What a step produced: a pull request, a report, or (later) a checked local change. | deliverable, `pr_url` |
+| AIWorks | The program on this computer that plans, runs and checks the work and reads the owner's messages. | supervisor, controller, coordinator, coordinator agent |
+| Your project rules | The list of projects AIWorks may work on and the rules each follows. They are kept outside AIWorks, in the governance platform's checkout on this computer. | governance provider (the platform's placeholder name), governance root, rules folder, registry |
 
 ### 2.2 Words never used at the primary level
 
-These appear only inside "Details" disclosures and Settings › Diagnostics: pipeline, fencing, lease, slots, control plane, campaign declaration, scope digest, authorization version, operation, executor, DAG, run ID, packet, B2/B3/B4, heartbeat.
+These appear only inside "Details" disclosures and Settings › Diagnostics: pipeline, fencing, lease, slots, control plane, campaign declaration, scope digest, authorization version, operation, executor, DAG, run ID, packet, B2/B3/B4, heartbeat, supervisor, coordinator, agent, governance provider, rules folder. Two names are kept because they are names, not words for a concept: the scheduled task "AIWorks Supervisor" and the product "Cursor Agent". `tests/dashboard/owner-words.test.mjs` checks every screen of the review fixture for these words (aiworks#11 review 4 F4).
 
 
 ### 2.3 Words for result states
@@ -270,7 +272,7 @@ Today these facts sit on campaign cards and the Agents page (observed: `src/dash
   1. The outcome, the work's goal and the project.
   2. One state, and who is on it: "Being checked by an independent checker (Claude) · working normally".
   3. Progress from the worker's own record: turns, tool calls, last activity (observed: `src/dashboard/supervisor.mjs:76-106`).
-  4. The last result: "Passed the check at commit fedf9cf" or "The checker found 2 blocking problems; the builder is fixing them".
+  4. The last result: "Passed the check at commit fedf9cf" or "The checker found 2 blocking problems; the builder is fixing them". A last result of "invalid result" says beside it what kind of failure that is and, when the step has stopped, what fixing the cause involves ([§7.7](#77-blocked)). The words come from the result's kind and role only, never from the worker's text (aiworks#11 review 4 F13).
   5. Guidance you sent, with its receipt: Queued, Read by the next run, or Not delivered (observed: `src/dashboard/supervisor.mjs:211-223`).
 - **Primary action,** by state: "Send guidance" while the step is unfinished; "Open pull request #N" once it has one; "Open the step issue" when it is blocked on a decision.
 - **In details.** Every attempt with its end (from the journal), the exact model, limits, run IDs.
@@ -327,16 +329,16 @@ Each flow is written as screen → what the owner sees → what they do. "Today"
 
 1. **Projects** → "Add project".
 2. **Add project**: the owner pastes `C:\example\sampleapp`. AIWorks shows "Checking the folder…" within a second (UX-001 immediate acknowledgement).
-3. AIWorks finds "Git repository with GitHub remote example-org/sampleapp, main branch main". The project is in governance provider's registry, so it reads "Ready".
+3. AIWorks finds "Git repository with GitHub remote example-org/sampleapp, main branch main". The project is listed in the owner's project rules, so it reads "Ready".
 4. "Connect project" → **Now** for sampleapp: "No work yet" → "Start work".
-5. If the project is not in the registry: "This project is not registered with governance provider yet, so AIWorks cannot start work on it. Registering it is done in governance provider." No button: the fix is outside AIWorks.
+5. If the project rules do not list the project: "This project is not listed in your project rules yet, so AIWorks cannot start work on it. Adding it there is done outside AIWorks." No button: the fix is outside AIWorks. The copy says "your project rules", not the governance platform's placeholder name, which the owner does not know (aiworks#11 review 4 F4).
 6. The same rule holds when Add project cannot finish for a reason outside the page: no project rules on this computer, no Git, or a configuration file that names another folder for the same repository. The sentence says what is missing and that the fix is outside AIWorks, then offers only "Check again". It never offers "Open Settings": Settings only shows what the machine has ([§4.3](#43-settings)) and has no control for these (aiworks#11 review F1; copy in PROJECT_CONNECTION §8.1 and §8.2).
 
 ### 5.3 Adding a plain folder (after S11; starting work waits for D2 and Q2)
 
 1. **Projects** → "Add project". The owner pastes `D:\Notes\recipes`.
 2. AIWorks finds "Ordinary folder, no Git" and says: "AIWorks will never change this folder directly. It works on its own copy and asks you before applying a checked result." (plan §3.1)
-3. "Connect project" → **Now**: "Connected. Starting work in a folder without GitHub is not available yet." The details name what it waits for: a local project identity in governance provider (D2) and a local approval route (owner question Q2).
+3. "Connect project" → **Now**: "Connected. Starting work in a folder without GitHub is not available yet." The details name what it waits for: a local project identity in the project rules (D2) and a local approval route (owner question Q2).
 4. Plan only becomes available with the local intake contract (S12). Local reply storage alone does not enable it. Plan and do becomes available after D2 and Q2.
 
 ### 5.4 Starting work
@@ -344,6 +346,7 @@ Each flow is written as screen → what the owner sees → what they do. "Today"
 1. **Now** → "Start work" → **Start work**.
 2. Today (after S9): the owner writes the goal, picks "A GitHub issue" → #443, keeps "Plan only" and presses "Ask for a plan".
 3. The page shows the receipt in place: "Sent · AIWorks received your request at 12:31". Then "Read at 12:32", then "Answered · Read the plan" in the local dashboard. Planning writes nothing to GitHub (AW-004, amended 2026-10-13).
+   While it waits, the receipt promises a time only when the page knows something reads requests (the request reader holds a live lease): "AIWorks is running on this computer and usually starts on a request within a minute". Otherwise it says "AIWorks reads it when it next runs on this computer; this page can't tell when that will be", or that AIWorks has stopped (aiworks#11 review 4 F12).
 4. With "Plan and do" (after S10): "Ask for a plan" leads to **Review** when the plan is ready.
 
 ### 5.5 Approving (after S10 and Q1)
@@ -496,6 +499,7 @@ The possibly-stuck words lead the project's row on Projects too ([§4.1](#41-pro
 | --- | --- | --- |
 | A step needs the owner's decision (observed: `src/dashboard/supervisor.mjs:114`) | **Stopped: needs your decision.** <Step outcome>: <reason in supervisor words>. | Open the step issue |
 | A step stopped after failed attempts (observed: `src/dashboard/supervisor.mjs:117-118`) | **Stopped: <5> attempts failed.** <Step outcome>. It will not retry by itself. Fix the cause, then check it again. | Open the step issue |
+| The same, when the last result was "invalid result" (Step screen, beside the last result) | Invalid result: the builder finished, but what it handed back failed AIWorks' own checks, for example no commit, a commit that does not start where the step began, or an answer not in the form AIWorks reads. Nothing it made was used. Fixing the cause means changing what an AI worker is given: make the step smaller or clearer in the plan on this computer, or let another AI worker do it. If a clear step keeps failing this way, AIWorks itself needs a fix. Then choose Check again. (For the independent checker: "…for example it checked an older version of the step… The step's change is kept.") | Check again |
 | The work is stopped by a recorded blocker (observed: `src/dashboard/supervisor.mjs:189-190`) | **Stopped: AIWorks needs a fix on this computer.** <reason>. What to do: <action>. | none |
 | Other steps continue (observed: `src/dashboard/supervisor.mjs:42`) | **One step is stopped; the others continue.** <Step outcome> needs your decision. | Open the step issue |
 

@@ -562,6 +562,23 @@ export const NOT_READ = {
   receipt: 'nothing on this computer is set up to read requests yet',
 };
 
+/**
+ * What a last result of "invalid result" means, said beside it on the Step screen (OWNER_WORKSPACE §4.8 item 4 and §7.7;
+ * aiworks#11 review 4 F13). Built from the result's class and role only, never from the worker's own text. `stopped`
+ * when the step will not retry by itself: then it says what "Fix the cause" involves.
+ */
+export function resultMeaning(outcome, { stopped = false } = {}) {
+  if (outcome?.outcome !== 'invalid-result') return null;
+  const checker = outcome.role === 'Verifier';
+  const kind = checker
+    ? 'Invalid result: the independent checker finished, but its answer failed AIWorks’ own checks, for example it checked an older version of the step, or its answer was not in the form AIWorks reads. The step’s change is kept.'
+    : 'Invalid result: the builder finished, but what it handed back failed AIWorks’ own checks, for example no commit, a commit that does not start where the step began, or an answer not in the form AIWorks reads. Nothing it made was used.';
+  const fix = stopped
+    ? 'Fixing the cause means changing what an AI worker is given: make the step smaller or clearer in the plan on this computer, or let another AI worker do it. If a clear step keeps failing this way, AIWorks itself needs a fix. Then choose Check again.'
+    : 'AIWorks tries again by itself. Nothing for you to do yet.';
+  return { kind, fix };
+}
+
 /** The Cancel dialog and the guidance dialog, in the owner's words. */
 export const DIALOGS = {
   cancelTitle: 'Cancel this work?',
