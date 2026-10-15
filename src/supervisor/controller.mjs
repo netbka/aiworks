@@ -39,6 +39,10 @@ const RUNNER = join(here, 'runner.mjs');
 // so a short outage does not stop work. A resolved or accepted result, or a recheck naming the task, resets
 // the count.
 export const NO_PROGRESS_LIMIT = 4;
+// The same guard for a deterministic local defect (aiworks#136): NO_PROGRESS_LIMIT fresh sessions in a row that end in the
+// same non-provider failure class with the same detail stop with one B3 record naming that detail. Provider waits and
+// limits (quota, auth, unavailable) and evidence-unavailable keep their own handling.
+const REPEAT_GUARDED = new Set(['invalid-result', 'exit-without-result', 'timeout', 'spawn-failed', 'error', 'lost']);
 // GitHub rejects issue/PR bodies and comments over 65,536 characters.
 const BODY_LIMIT = 65536;
 const RETRYABLE = new Set(['invalid-result', 'exit-without-result', 'timeout', 'spawn-failed', 'error', 'evidence-unavailable', 'lost']);
@@ -1026,9 +1030,20 @@ export class Controller {
     const retry = (cls, detail, state) => {
       const failures = { ...task.failures, [cls]: (task.failures?.[cls] ?? 0) + 1 };
       const total = Object.entries(failures).filter(([key]) => RETRYABLE.has(key)).reduce((sum, [, n]) => sum + n, 0);
+      // Identical failures in a row (aiworks#136). A run that made no task attempt (refunded) keeps the count; any other
+      // outcome with another class or detail starts it again.
+      const previous = task.failures?.repeat ?? null;
+      if (REPEAT_GUARDED.has(cls)) {
+        const key = `${cls}: ${detail}`;
+        failures.repeat = { key, count: previous?.key === key ? previous.count + 1 : 1 };
+      } else if (!v.refunded) delete failures.repeat;
       if (cls === 'evidence-unavailable' && failures[cls] >= NO_PROGRESS_LIMIT) {
         return { state, failures, retry_at: null, last_error: `${cls}: ${detail}`,
           blocked: { class: 'B3', reason: `no progress: ${failures[cls]} evidence-unavailable results; last: ${String(detail).slice(0, 300)}`, at: now } };
+      }
+      if (failures.repeat?.count >= NO_PROGRESS_LIMIT) {
+        return { state, failures, retry_at: null, last_error: `${cls}: ${detail}`,
+          blocked: { class: 'B3', reason: `no progress: ${failures.repeat.count} identical ${cls} failures; last: ${String(detail).slice(0, 300)}`, at: now } };
       }
       if (limits.maxRetriesPerTask !== null && total > limits.maxRetriesPerTask) {
         return { state, failures, retry_at: null, last_error: `${cls}: ${detail}`,
