@@ -154,8 +154,9 @@ test('drafts are kept per address in sessionStorage and cleared only after an ac
   assert.match(js, /const result = await post\('\/api\/commands', payload\);[\s\S]{0,900}?\r?\n    if \(payload\.action === 'instruct' && draftAddress\) drafts\.delete\(draftAddress, `instruction:\$\{payload\.campaignId\}`\);\r?\n  \} catch/);
   assert.equal(js.match(/drafts\.delete\(/g).length, 2, 'the message draft setter and the accepted instruction are the only deletions');
   assert.equal(js.match(/messageDraft\.text = ''/g).length, 1);
-  // The last opened project is offered first on Projects.
-  assert.match(js, /`Continue with \$\{projectName\(last\)\} →`/);
+  // A project with an unsent draft, otherwise the last opened project, is offered first on Projects (review 4 F19).
+  assert.match(js, /`Continue with \$\{projectName\(resume\.project\)\} →`/);
+  assert.match(js, /resume = continueWith\(projects, readLastProject\(\), readDrafts\(\)\)/);
 });
 
 /** Width media blocks of a stylesheet: [condition, [[selector, declarations], ...]]. */
@@ -184,10 +185,18 @@ test('the layout follows OWNER_WORKSPACE §6.1, and no action exists at only one
   assert.ok(narrow.some(([s, d]) => s === '.nav-item' && /font-size:11px/.test(d)), 'each destination keeps its label');
   assert.ok(phone.some(([s, d]) => s === '.tab' && /flex:1 1 0/.test(d)), 'four tabs fit without scrolling');
   // Touch targets are at least 44 by 44 CSS px.
-  for (const selector of ['.nav-item', '.tab', '.messages-link', '.brand', '.continue-link']) {
+  for (const selector of ['.nav-item', '.tab', '.messages-link', '.brand', '.continue-link', 'a.button']) {
     const declaration = new RegExp(`(?:^|\\n)${selector.replace('.', '\\.')}\\{[^}]*min-height:(\\d+)px`).exec(css);
     assert.ok(declaration && Number(declaration[1]) >= 44, `${selector} is at least 44px high`);
   }
+  // A link styled as a button is a box, never inline: inline, its padding overlapped the text above it by about 5px and
+  // min-height did not apply (aiworks#11 review 4 F15).
+  assert.match(css, /\na\.button\{display:inline-flex;align-items:center;min-height:44px\}/);
+  // Below 960px only the bar's counts sit on their destination's corner; the Messages count stays in the Messages link,
+  // never placed against the page (aiworks#11 review 4 F16).
+  const placed = blocks.flatMap(([, list]) => list).filter(([, d]) => /position:absolute/.test(d)).flatMap(([s]) => s.split(',').map((one) => one.trim()));
+  assert.ok(placed.includes('.nav-item>.nav-count'), 'the bar counts sit on their destination');
+  assert.deepEqual(placed.filter((s) => /nav-count|messages-link|message-count/.test(s) && s !== '.nav-item>.nav-count'), []);
   // Nothing exists at only one width: no width rule hides a link, a button, a destination or a control.
   const action = /(?:^|[\s>+~])(?:a|button|nav|select|input|summary)(?=$|[\s.:#[>+~])|\.(?:nav-item|global-nav|button|brand|tab|project-tabs|messages-link|topbar-actions|continue-link|project-name|skip-link|campaign-controls|filters|table-actions|c-action|needs-link)\b/;
   const hidden = blocks.flatMap(([condition, list]) => list.filter(([, d]) => /display:none|visibility:hidden/.test(d))

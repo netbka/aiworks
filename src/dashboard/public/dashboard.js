@@ -65,7 +65,8 @@ function el(tag, attributes = {}, ...children) {
     else if (key.startsWith('on')) { node.addEventListener(key.slice(2), value); acting.add(node); }
     else if (value !== false && value !== null && value !== undefined) node.setAttribute(key, value === true ? '' : String(value));
   }
-  node.append(...children.filter((child) => child !== null && child !== undefined));
+  // A list of children is its items, never one text: an array appended whole printed as "a,b" and lost its links (aiworks#11 review 4 F11).
+  node.append(...children.flat(Infinity).filter((child) => child !== null && child !== undefined));
   return node;
 }
 const link = (text, url, cls = '') => el('a', { href: /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\//.test(url ?? '') ? url : '#',
@@ -832,9 +833,23 @@ const stateWords = { 'needs-you': 'Needs you', checking: 'Checking', running: 'R
   fault: 'AIWorks problem' };
 const projectAction = (action) => action.url ? link(`${action.label} ↗`, action.url, 'project-action') : routeLink(action.label, action.route, 'project-action');
 
+// An unsent draft: a Start work goal or a step instruction typed and not yet accepted.
+const unsentDraft = (key, value) => key.endsWith(' start') ? Boolean(value?.goal?.trim()) : key.includes(' instruction:') && Boolean(value?.text?.trim());
+/**
+ * The project "Continue with" offers (OWNER_WORKSPACE §3.3, aiworks#11 review 4 F19): one the owner left an unsent draft
+ * in comes before the last one opened, unless that one has a draft too. Without drafts it is the last one opened.
+ */
+function continueWith(projects, saved, all) {
+  const listed = (id) => projects.find((project) => sameProject(project.id, id))?.id;
+  const drafted = Object.entries(all).filter(([key, value]) => unsentDraft(key, value))
+    .map(([key]) => listed(resolveRoute(key.slice(0, key.indexOf(' '))).route.project)).filter(Boolean);
+  const project = drafted.find((id) => sameProject(id, saved)) ?? drafted[0] ?? listed(saved);
+  return project ? { project, draft: drafted.includes(project) } : null;
+}
+
 function projectsScreen() {
   if (!state.supervisor.available) return [unavailable()];
-  const projects = projectList(), saved = readLastProject(), last = projects.find((project) => sameProject(project.id, saved))?.id;
+  const projects = projectList(), resume = continueWith(projects, readLastProject(), readDrafts());
   // Add project (OWNER_WORKSPACE S11, build slice UI13) is the screen's one primary action once this computer turns it on.
   const adding = Boolean(state.projects?.addProject);
   // "Configuration file", never "settings": the Settings screen cannot list a repository (aiworks#11 review F18).
@@ -843,7 +858,8 @@ function projectsScreen() {
     const first = stateCopy('projects-empty', { addProject: true });
     return [el('section', { class: 'panel' }, el('div', { class: 'panel-body' }, el('p', {}, el('strong', {}, first.title), ` ${first.text}`), primaryAction(first.primary)))];
   }
-  return [last ? el('p', { class: 'continue' }, routeLink(`Continue with ${projectName(last)} →`, { screen: 'project', project: last }, 'continue-link')) : null,
+  return [resume ? el('p', { class: 'continue' }, routeLink(`Continue with ${projectName(resume.project)} →`, { screen: 'project', project: resume.project }, 'continue-link'),
+    resume.draft ? el('span', { class: 'subtext' }, ' Your unsent draft is kept there.') : null) : null,
     sinceSummary(),
     panel('Your projects', adding ? 'One row per project this computer works on. Those that need you come first, then those with work running.'
       : 'One row per repository this computer works on. Those that need you come first, then those with work running.',
@@ -1348,6 +1364,8 @@ function costText({ runs, reportedUsd, unreportedRuns, runningRuns }) {
     : unreportedRuns ? `not reported (${plural(unreportedRuns, 'run')})` : null, runningRuns ? `${plural(runningRuns, 'run')} still running` : null];
   return parts.filter(Boolean).join(' · ');
 }
+// A step's runs beside its cost: the finished ones and those still running, so "1 run still running" never sits beside 0 (aiworks#11 review 4 F18).
+const stepRuns = ({ runs, runningRuns }) => runs + runningRuns;
 
 /**
  * Model, tier and cost by unit (MODEL_ROUTING slice R6, build slice UI12), in words. Each unit stays apart: reported
@@ -1393,7 +1411,7 @@ function costScreen(project, all) {
     el('div', { class: 'steps' }, table(['Step', 'Runs', 'Cost', 'Retries', 'Checker rejections'], runOrder(c).map((task) => el('tr', { 'data-focus-scope': `cost/${c.id}/${task.id}` },
       el('td', { class: 'c-work' }, routeLink(task.outcome ?? task.title, { screen: 'step', project, work: c.id, step: task.id }, 'task-name'),
         ...[modelsText(task.routing), movedUpText(task.routing)].filter(Boolean).map((text) => el('div', { class: 'subtext' }, text))),
-      cell(String(task.cost.runs)), cell(costText(task.cost), unitCostText(task.costByUnit) ? el('div', { class: 'subtext' }, unitCostText(task.costByUnit)) : null),
+      cell(String(stepRuns(task.cost))), cell(costText(task.cost), unitCostText(task.costByUnit) ? el('div', { class: 'subtext' }, unitCostText(task.costByUnit)) : null),
       cell(String(task.cost.retries)), cell(String(task.cost.checkerRejections)))))),
     costNotes(c).body);
   return [el('section', { class: 'panel' }, el('h2', {}, headline), ...lines.map((line) => el('p', {}, line))),

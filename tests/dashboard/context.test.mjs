@@ -2,6 +2,8 @@
 // owner dashboard at 96ed590, findings F5 and F10). F5: opening a project from outside it returns to the screen it was
 // left on, with its draft and its scroll (OWNER_WORKSPACE §3.3, §13.3 T10). F10: with no coordinator configured, Start
 // work and Messages say in owner words that nothing will read a request, offer no send, and say what to do instead.
+// Review 4 (aiworks#11): F11, the tracking issue in Now › Details is a link; F19, "Continue with" offers the project
+// with an unsent draft first.
 // The page is the unchanged dashboard.js on the review fixture through the real dashboard server
 // (tests/dashboard/fixtures/page.mjs). Disposable stores, local git and a loopback server only: no browser, network,
 // model or GitHub call.
@@ -118,4 +120,43 @@ test('F10: with nothing to read requests, Start work and Messages say so in owne
   assert.doesNotMatch(visibleText(page.$('form[data-start-form]')), /example\/shop-app#1/);
   await page.go('#/settings/messages');
   assert.ok(buttonNamed(page, '✉ New message'));
+});
+
+test('F11: Now › Details shows the tracking issue as a working link with its number (aiworks#11 review 4)', async (t) => {
+  const page = await openPage(t);
+  await page.go(address('example/shop-app'));
+  const details = page.$('details[data-disclosure="now/example/shop-app/details"]');
+  assert.ok(details, 'Now has its Details');
+  const body = details.childNodes.find((node) => node.tagName === 'DIV');
+  const issue = [...body.walk()].find((node) => node.tagName === 'A');
+  assert.ok(issue, 'the tracking issue is a link, not text');
+  assert.match(issue.textContent, /^tracking issue #\d+ ↗$/);
+  assert.match(issue.getAttribute('href'), /^https:\/\/github\.com\/example\/shop-app\/issues\/\d+$/);
+  assert.equal(issue.getAttribute('href').split('/').at(-1), issue.textContent.match(/#(\d+)/)[1], 'the link opens the issue it names');
+  // The parts read as words joined by " · ", never as a printed list ("a, · ,b").
+  assert.match(body.textContent, /^Campaign [\w-]+ · tracking issue #\d+ ↗/);
+  assert.doesNotMatch(body.textContent, /,https:|, · ,/);
+});
+
+test('F19: "Continue with" offers the project with an unsent draft before the last one opened (OWNER_WORKSPACE §3.3)', async (t) => {
+  const page = await openPage(t);
+  await page.go('#/projects');
+  // shop-app's Start work holds a half-written plan request; recipes is opened after it.
+  await click(page, linkNamed(page, 'shop-app', 'project-name'));
+  await click(page, linkNamed(page, 'Start work'));
+  type(page.$('#start-goal'), 'Customers can pay with a saved card');
+  await click(page, page.$('a[data-global="projects"]'));
+  await click(page, linkNamed(page, 'recipes', 'project-name'));
+  await click(page, page.$('a[data-global="projects"]'));
+  const resume = linkNamed(page, 'Continue with shop-app →', 'continue-link');
+  assert.match(resume.parentNode.textContent, /Your unsent draft is kept there\./);
+  // It returns to the draft, where it was left.
+  await click(page, resume);
+  assert.equal(page.location.hash, address('example/shop-app', '/start'));
+  assert.equal(page.$('#start-goal').value, 'Customers can pay with a saved card');
+  // With the draft emptied, the last project opened, recipes, is offered again, without the draft line.
+  type(page.$('#start-goal'), '');
+  await click(page, page.$('a[data-global="projects"]'));
+  const last = linkNamed(page, 'Continue with recipes →', 'continue-link');
+  assert.doesNotMatch(last.parentNode.textContent, /unsent draft/);
 });
