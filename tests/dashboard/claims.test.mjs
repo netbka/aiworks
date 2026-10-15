@@ -98,8 +98,29 @@ test('a finished campaign says "nothing waits for you" only when every step is m
   assert.equal(ownerView(empty, checked()).campaigns[d.campaignId].finished, 'All steps are finished · nothing waits for you');
 });
 
+test('issue and pull-request conversation reports stay readable without false missing-link warnings', (t) => {
+  const { dataDir, d, finish, close } = fixture(t, [task('T1', 'issue report', { deliverable: 'report' }), task('T2', 'pull-request report', { deliverable: 'report' })]);
+  const issue = 'https://github.com/example-org/sampleapp/issues/438#issuecomment-1';
+  const pull = 'https://github.com/example-org/sampleapp/pull/439#issuecomment-2';
+  finish('T1', issue);
+  finish('T2', pull);
+  close(null);
+  const view = ownerView(supervisorSnapshot(dataDir), checked());
+  const owner = view.campaigns[d.campaignId];
+  assert.deepEqual([owner.deliveries.T1.state, owner.deliveries.T2.state], ['report-posted', 'report-posted']);
+  assert.equal(owner.counts.reports, 2);
+  assert.equal(view.items.length, 0, 'a recorded report link needs no missing-result intervention');
+  assert.equal(view.unknownResults, 0);
+  const groups = view.results['example-org/sampleapp'].groups;
+  assert.deepEqual(groups.map((group) => [group.title, group.count]), [['Reports to read', 2]]);
+  assert.deepEqual(groups[0].rows.map((row) => row.link.url).sort(), [issue, pull].sort(), 'keep the exact recorded comment destinations');
+  assert.equal(view.also.reports, 2);
+});
+
 test('a finished step with a missing or unrecognised result link is unknown, never published or settled', (t) => {
-  for (const url of [null, 'https://github.com/example-org/sampleapp/issues/437', 'https://github.com/example-org/sampleapp/pull/5#issuecomment-1']) {
+  for (const url of [null, 'https://github.com/example-org/sampleapp/issues/437', 'https://github.com/example-org/sampleapp/pull/5#discussion_r1',
+    'https://github.com/example-org/sampleapp/pull/5#issuecomment-nope', 'https://github.com/example-org/sampleapp/pull/5#issuecomment-1/extra',
+    'https://github.com.evil.invalid/example-org/sampleapp/pull/5#issuecomment-1']) {
     const result = delivery({ id: 'T1', state: 'done', resultUrl: url, verifiedSha: sha('T1') }, checked(), Date.now(), 'c1');
     assert.deepEqual([result.state, result.reason, result.note], ['unknown', 'no-link', 'No result link was recorded; check the step issue'], String(url));
   }
