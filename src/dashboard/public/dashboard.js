@@ -654,6 +654,7 @@ function openInstructions(c, task = null) {
   else if (task) $('#instruction-task').value = task.id;
   $('#instruction-role').value = draft?.role ?? (c.tasks.find((t) => t.id === $('#instruction-task').value)?.state === 'implemented' ? 'verify' : 'implement');
   $('#instruction-text').value = draft?.text ?? '';
+  $('#instruction-refusal').hidden = true; $('#instruction-refusal').textContent = ''; $('#instruction-text').removeAttribute('aria-invalid');
   $('#instruction-dialog').showModal();
   $('#instruction-text').focus();
 }
@@ -1513,7 +1514,7 @@ function render() {
 async function post(path, body) {
   const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Dashboard-CSRF': csrf }, body: JSON.stringify(body) });
   const value = await response.json();
-  if (!response.ok) throw Object.assign(new Error(value.error), { known: true, detail: value.detail ?? null });
+  if (!response.ok) throw Object.assign(new Error(value.error), { known: true, detail: value.detail ?? null, code: value.code ?? null });
   return value;
 }
 
@@ -1524,9 +1525,20 @@ async function deliver(payload, draftAddress = null, from = current.address) {
     notice(result.duplicate ? COMMANDS.duplicate : COMMANDS.accepted[payload.action], null, null, from);
     if (payload.action === 'instruct' && draftAddress) drafts.delete(draftAddress, `instruction:${payload.campaignId}`);
   } catch (error) {
+    if (error.code === 'INSTRUCTION_LOOKS_SENSITIVE' && payload.action === 'instruct') return refuseInstruction(payload, error.message, draftAddress, from);
     // A refusal says what happened and what to do; the machine's reason is behind Details.
     notice(error.known ? error.message : COMMANDS.unconfirmed, error.known ? null : () => deliver(payload, draftAddress, from), error.known ? error.detail : null, from);
   } finally { sending = false; await poll(); }
+}
+
+// An instruction the credential filter refused: nothing was sent and the draft is kept. The dialog opens again with the
+// draft and the reason beside the text; if the owner has moved on meanwhile, the reason is a notice instead (aiworks#61).
+function refuseInstruction(payload, message, draftAddress, from) {
+  const c = campaignById(payload.campaignId);
+  if (!c || current.address !== draftAddress || document.querySelector('dialog[open]')) return notice(message, null, null, from);
+  openInstructions(c);
+  $('#instruction-refusal').textContent = message; $('#instruction-refusal').hidden = false;
+  $('#instruction-text').setAttribute('aria-invalid', 'true');
 }
 
 function command(c, action, task, extra = {}, draftAddress = null) {
@@ -1598,6 +1610,8 @@ document.addEventListener('click', (event) => {
 $('#cancel-title').textContent = DIALOGS.cancelTitle; $('#cancel-text').textContent = DIALOGS.cancelText;
 $('#keep-work').textContent = DIALOGS.cancelKeep; $('#confirm-cancel').textContent = DIALOGS.cancelConfirm;
 $('#instruction-step-label').textContent = DIALOGS.guidanceStep;
+// Why the last instruction was refused, beside the text it is about (aiworks#61).
+$('#instruction-text').closest('label').after(el('p', { id: 'instruction-refusal', class: 'notice warning', role: 'alert', hidden: true }));
 // The skip link moves focus to the content without changing the address.
 $('.skip-link').addEventListener('click', (event) => { event.preventDefault(); $('#main').focus(); });
 for (const selector of ['#search', '#track', '#status']) $(selector).addEventListener('input', () => { workLimit = 80; render(); });

@@ -108,7 +108,9 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
     } catch (error) {
       const status = error.status ?? (error.code === 'INVALID_STATE' || error.name === 'ConflictError' ? 409 : 503);
       // `detail`: the machine's reason behind a refusal, which the page keeps in a Details disclosure (aiworks#11 review F3).
-      send(status, { error: error.status ? error.message : 'The supervisor is busy or unavailable. Refresh before trying again.', ...(error.status && error.detail ? { detail: error.detail } : {}) });
+      // `code`: a refusal the page answers in place, such as INSTRUCTION_LOOKS_SENSITIVE beside the instruction (aiworks#61).
+      send(status, { error: error.status ? error.message : 'The supervisor is busy or unavailable. Refresh before trying again.', ...(error.status && error.detail ? { detail: error.detail } : {}),
+        ...(error.status && typeof error.code === 'string' ? { code: error.code } : {}) });
     }
   });
   server.requestTimeout = 10_000;
