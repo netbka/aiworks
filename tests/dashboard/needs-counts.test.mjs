@@ -20,10 +20,10 @@ const address = (project, tail = '') => `#/p/${encodeURIComponent(project)}${tai
 const screen = (page) => visibleText(page.$('#main'));
 
 /** The full review fixture as the dashboard reads it, with today's local merge check. */
-async function review(t) {
+async function review(t, store = 'full') {
   const root = mkdtempSync(join(tmpdir(), 'aiworks-needs-counts-'));
   t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5 }));
-  const { dataDir } = buildReviewFixture(root);
+  const { dataDir } = buildReviewFixture(root, { store });
   const watcher = new MergeWatcher({ steps: () => publishedSteps(dataDir), checkouts: configuredCheckouts(dataDir), git: configuredGitCommand(dataDir) });
   await watcher.refresh();
   const now = Date.now(), supervisor = supervisorSnapshot(dataDir, now), merges = watcher.snapshot();
@@ -57,7 +57,8 @@ test('F6: a project counts on Projects exactly what Needs me lists under it, on 
 });
 
 test('F9: AIWorks stopped on this computer is one Needs me item for all the work it holds up, under AIWorks itself', async (t) => {
-  const { owner } = await review(t);
+  // AIWorks itself stopped is the stopped store: no lease is live (review 4 F2; the full store's AIWorks runs).
+  const { owner } = await review(t, 'stopped');
   const stops = owner.items.filter((item) => item.kind === 'controller' && !item.system);
   assert.equal(stops.length, 1, JSON.stringify(stops.map((item) => item.text)));
   const [stop] = stops;
@@ -71,6 +72,11 @@ test('F9: AIWorks stopped on this computer is one Needs me item for all the work
   const held = stop.points.map((point) => point.text).find((text) => text.startsWith('Held up in notes-site: '));
   assert.match(held, /“Archive old notes”/);
   assert.match(held, /“Tag notes” \(paused; it can’t resume until AIWorks runs again\)/);
+  // While AIWorks runs (the full store), the same two pieces of work are each their own item under notes-site.
+  const running = (await review(t)).owner;
+  assert.equal(running.items.filter((item) => item.kind === 'controller' && !item.system).length, 0);
+  assert.deepEqual(running.items.filter((item) => item.kind === 'unattended').map((item) => [item.campaignId, item.repository]).sort(),
+    [['notes-archive', 'example/notes-site'], ['notes-tags', 'example/notes-site']]);
   // Several projects: still one item, one line per project; the restart advice is said once.
   const view = ownerView({ available: true, coordinator: null, recent: null, campaigns: [
     campaign('notes-a', 'example/notes', lapsed(60)), campaign('notes-b', 'example/notes', { ...lapsed(60), control: 'paused' }),
@@ -92,7 +98,8 @@ test('F17: "AIWorks itself" counts toward Needs you only when it holds an owner 
   assert.deepEqual([only.headline, only.count], ['No work is blocked on you right now', 0]);
   assert.deepEqual(only.groups.map((group) => [group.name, group.count, group.notCounted]), [[SYSTEM_GROUP, 0, 2]]);
   // With an owner action of its own (AIWorks stopped), that one is counted, and the rest still is not.
-  const both = ownerView({ available: true, recent: null, coordinator: null, campaigns: [campaign('shop-fault', 'example/shop', { livenessDefect: true }),
+  // Every lease lapsed, so AIWorks itself stopped (review 4 F2: one live lease would mean it runs).
+  const both = ownerView({ available: true, recent: null, coordinator: null, campaigns: [campaign('shop-fault', 'example/shop', { livenessDefect: true, ...lapsed(60) }),
     campaign('notes', 'example/notes', { ...lapsed(60), tasks: [decision('N1', 'example/notes')] })] }, undefined, { now: NOW });
   assert.deepEqual([both.headline, both.groups.map((group) => [group.name, group.count, group.notCounted])],
     ['Needs you (2)', [['notes', 1, 0], [SYSTEM_GROUP, 1, 1]]]);
@@ -105,7 +112,8 @@ test('F17: "AIWorks itself" counts toward Needs you only when it holds an owner 
   await page.go('#/needs');
   const text = screen(page);
   assert.ok(text.includes(`Needs you (${actions})`), text);
-  assert.ok(text.includes(`${SYSTEM_GROUP} (1) · also 1 item for its maintainers, not counted`), text);
+  // AIWorks runs in the full store, so "AIWorks itself" holds no owner action, only the fault (review 4 F2).
+  assert.ok(text.includes(`${SYSTEM_GROUP} · 1 item for its maintainers, not counted`), text);
   assert.equal(page.$('#needs-count').textContent, String(actions));
 });
 
@@ -137,7 +145,11 @@ test('F16: with several pieces of work, Now leads with what needs the owner, or 
   };
   assert.equal(lead(working), 'builder-working');
   assert.equal(lead(working, paused), 'paused');
-  assert.equal(lead(working, stopped), 'supervisor-stopped');
-  assert.equal(lead(working, paused, stopped), 'paused', 'Resume works for the work AIWorks still runs');
-  assert.equal(lead(working, stopped, paused, blocked), 'needs-decision');
+  // AIWorks runs (a live lease), so the lapsed work is its own owner item, which leads (review 4 F2).
+  assert.equal(lead(working, stopped), 'work-lapsed');
+  assert.equal(lead(working, paused, stopped), 'work-lapsed');
+  assert.equal(lead(working, stopped, paused, blocked), 'several');
+  // No lease is live: AIWorks itself stopped, and the owner's own items still lead over it.
+  assert.equal(lead(stopped), 'supervisor-stopped');
+  assert.equal(lead(stopped, { ...blocked, ...lapsed(60) }), 'needs-decision');
 });

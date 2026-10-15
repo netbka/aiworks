@@ -354,7 +354,8 @@ function controlsNote(c) {
 const campaignNext = (c) => clockTimes(workLine(c, ownerCampaign(c), { time: timeOnly, dateTime }));
 
 const livenessNames = { running: 'Supervisor running', late: 'Supervisor checking in late', 'awaiting-pickup': 'Waiting for the supervisor',
-  'agent-working-supervisor-silent': 'Agent working · supervisor silent', stopped: 'Supervisor not running' };
+  'agent-working-supervisor-silent': 'Agent working · supervisor silent', stopped: 'Supervisor not running',
+  'work-lapsed': 'Supervisor running · not checking this work', 'work-not-picked-up': 'Supervisor running · not picked up yet' };
 /** The supervisor's state for one campaign; a paused campaign reads neutral, whatever the supervisor is doing. */
 function livenessBadge(c, liveness) {
   if (liveness === 'finished') return null;
@@ -761,10 +762,12 @@ function needsYou() {
   const owner = state.owner;
   if (!owner?.available) return null;
   const { headline, count, groups = [], unknownResults: unknown, reply } = owner;
-  // aiworks#18: a stopped supervisor leads, with the time it last renewed its leases.
+  // aiworks#18: a stopped supervisor leads, with the time it last renewed its leases, unless the one item for AIWorks
+  // stopped already says it with its time (one fact, once; review 4 F2).
   const controller = state.supervisor.controller;
+  const said = owner.items.some((item) => item.kind === 'controller' && !item.system);
   return el('section', { class: `needs${count ? '' : unknown ? ' checking' : ' calm'}`, 'aria-labelledby': 'needs-title' },
-    controller?.stopped ? el('p', { class: 'needs-stopped' }, NEEDS.banner(controller.lastLeaseRenewalAt, { dateTime }, controller.stopRequested)) : null,
+    controller?.stopped && !said ? el('p', { class: 'needs-stopped' }, NEEDS.banner(controller.lastLeaseRenewalAt, { dateTime }, controller.stopRequested)) : null,
     el('div', { class: 'needs-head' }, el('h2', { id: 'needs-title' }, headline),
       unknown ? el('span', { class: 'needs-unknown' }, `Merge of ${unknown} published step${unknown === 1 ? '' : 's'} being checked`) : null),
     // Only owner actions here (owner, 2026-10-13): posted reports and merged work ready for release are on Results.
@@ -805,9 +808,10 @@ const sameProject = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').
 const projectCampaigns = (project) => state.supervisor.campaigns.filter((c) => sameProject(c.repository, project));
 const unavailable = () => empty('Supervisor unavailable', state.supervisor.message ?? 'The supervisor state cannot be read right now. This is not the same as nothing happening.');
 const stateTones = { 'needs-you': 'attention', running: 'in_progress', paused: 'pending', finished: 'done', cancelled: 'pending', 'no-work': 'pending',
-  ready: 'done', 'needs-setup': 'attention', unavailable: 'pending' };
+  ready: 'done', 'needs-setup': 'attention', unavailable: 'pending', 'possibly-stuck': 'stale', stopped: 'stale', fault: 'stale' };
 const stateWords = { 'needs-you': 'Needs you', running: 'Running', paused: 'Paused', finished: 'Finished', cancelled: 'Cancelled', 'no-work': 'No work yet',
-  ready: 'Ready', 'needs-setup': 'Needs setup', unavailable: 'Temporarily unavailable' };
+  ready: 'Ready', 'needs-setup': 'Needs setup', unavailable: 'Temporarily unavailable', 'possibly-stuck': 'Possibly stuck', stopped: 'AIWorks stopped',
+  fault: 'AIWorks problem' };
 const projectAction = (action) => action.url ? link(`${action.label} ↗`, action.url, 'project-action') : routeLink(action.label, action.route, 'project-action');
 
 function projectsScreen() {
@@ -1499,8 +1503,9 @@ async function poll() {
     const response = await fetch(`/api/state?since=${since}`, { signal: AbortSignal.timeout(6000) });
     if (!response.ok) throw new Error('state unavailable');
     state = await response.json(); offline = false;
-    // The header keeps only "Connected" or the disconnected text (OWNER_WORKSPACE §7.4; aiworks#11 review F8).
-    $('#connection').textContent = 'Connected';
+    // The header keeps only "Page connected" or the disconnected text (OWNER_WORKSPACE §3.4, §7.4; aiworks#11 review F8):
+    // it is about this page, never read as "AIWorks is running" (review 4 F6).
+    $('#connection').textContent = 'Page connected';
     $('#connection').className = 'connection online';
     trackReceipts();
     if (!document.querySelector('dialog[open]')) render();

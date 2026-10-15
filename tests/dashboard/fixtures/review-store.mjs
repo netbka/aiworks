@@ -7,7 +7,8 @@
 //
 //   node tests/dashboard/fixtures/review-store.mjs --port 4319
 //
-// Options: `--store full` (default; every state), `--store empty` (the first run: no projects) or `--store unreadable`
+// Options: `--store full` (default; every state), `--store stopped` (the full store after AIWorks stopped on this
+// computer: every lease ended two hours ago), `--store empty` (the first run: no projects) or `--store unreadable`
 // (AIWorks can't read its work records). `--dir <new or empty directory>` builds there instead of a temporary directory
 // and leaves it in place. Port 4318 is refused: it is the live dashboard's port. Never point --dir at .local.
 // Then open http://127.0.0.1:4319. It runs the unchanged dashboard (src/dashboard/main.mjs) against the fixture, with its
@@ -20,8 +21,11 @@
 // The full store has a coordinator that reports to a made-up issue, so Messages shows each receipt; nothing runs it, so
 // a message sent during the review stays received.
 //
-// Times are fixed when the fixture is built. "A few minutes late" turns into "stopped" and "waiting to be picked up"
-// turns into "not started" after 5 minutes, as they would live; restart the command to see them again. The serving
+// Times are fixed when the fixture is built. In the full store AIWorks runs (most leases are live), so after 5 minutes
+// "a few minutes late" turns into that work's own "AIWorks is running, but last checked on this work", and "waiting to be
+// picked up" (recipes-share) into "AIWorks is running, but has not picked it up", as they would live; restart the command
+// to see them again. Those are the states recipes showed right after Resume in review 4 (aiworks#11 F2): not the resumed
+// work, whose lease lasts 30 days, but recipes-share, past its 5-minute grace, worded as if AIWorks had stopped. The serving
 // process keeps the heartbeat of the two working agents current, so "working normally" holds for the whole review.
 import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
@@ -61,7 +65,9 @@ export const REVIEW_STATES = {
   'empty': { section: '7.1', store: 'empty' },
   'no-runs': { section: '7.1', campaignId: 'recipes-share' },
   'unreadable': { section: '7.2', store: 'unreadable' },
-  'supervisor-stopped': { section: '7.2', campaignId: 'notes-archive' },
+  // AIWorks itself stopped is the stopped store; in the full store AIWorks runs, so the same work is its own state.
+  'supervisor-stopped': { section: '7.2', store: 'stopped', campaignId: 'notes-archive' },
+  'work-lapsed': { section: '7.2', campaignId: 'notes-archive' },
   'supervisor-late': { section: '7.2', campaignId: 'notes-drafts' },
   'provider-wait': { section: '7.3', campaignId: 'recipes-tags', taskId: 'T1' },
   'no-worker-can-run': { section: '7.3', campaignId: 'notes-deploy' },
@@ -69,7 +75,8 @@ export const REVIEW_STATES = {
   // §7.4 "GitHub stale" became the merge-check copy (C1): the last check failed, and results whose state is unknown.
   'merge-check-failed': { section: '7.4', campaignId: 'notes-links', taskId: 'T3' },
   'paused': { section: '7.5', campaignId: 'recipes-import' },
-  'paused-supervisor-stopped': { section: '7.5', campaignId: 'notes-tags' },
+  'paused-supervisor-stopped': { section: '7.5', store: 'stopped', campaignId: 'notes-tags' },
+  'paused-work-lapsed': { section: '7.5', campaignId: 'notes-tags' },
   'builder-working': { section: '7.6', campaignId: 'shop-checkout', taskId: 'T1' },
   'checker-working': { section: '7.6', campaignId: 'shop-reviews', taskId: 'T1' },
   'possibly-stuck': { section: '7.6', campaignId: 'shop-wishlist', taskId: 'T1' },
@@ -384,14 +391,15 @@ function runtimeCheckout(root, declarations) {
 
 /**
  * Builds a review fixture under `root` (a new or empty directory) and returns its paths. `store`: 'full' (every
- * state), 'empty' (first run, no projects) or 'unreadable'. Writes `<root>/data/supervisor.db`, and
+ * state), 'stopped' (the full store with every lease ended two hours ago: AIWorks stopped on this computer), 'empty'
+ * (first run, no projects) or 'unreadable'. Writes `<root>/data/supervisor.db`, and
  * `<root>/data/config.json` with `repositories`, a made-up `supervisorIssue` and, for the full store, a `coordinator`
  * that reports to a made-up issue (no commands, no credentials, no `gh`). Writes `<root>/governance`: a copy of
  * GOVERNANCE whose roadmap documents and project registry are REVIEW_GOVERNANCE's (GOVERNANCE is not changed);
  * `<root>/claude`, the Claude transcripts of the working agents; and `<root>/runtime` (runtimeCheckout).
  */
 export function buildReviewFixture(root, { now = Date.now(), store: kind = 'full' } = {}) {
-  if (!['full', 'empty', 'unreadable'].includes(kind)) throw new Error('store must be full, empty or unreadable');
+  if (!['full', 'stopped', 'empty', 'unreadable'].includes(kind)) throw new Error('store must be full, stopped, empty or unreadable');
   if (existsSync(root) && readdirSync(root).length) throw new Error('the review fixture needs a new or empty directory');
   const dataDir = join(root, 'data');
   mkdirSync(dataDir, { recursive: true });
@@ -399,12 +407,16 @@ export function buildReviewFixture(root, { now = Date.now(), store: kind = 'full
   if (kind === 'unreadable') writeFileSync(join(dataDir, 'supervisor.db'), 'not a supervisor store\n');
   else {
     const store = new Store(join(dataDir, 'supervisor.db'));
-    try { if (kind === 'full') built = fill(store, dataDir, root, now); }
+    try {
+      if (['full', 'stopped'].includes(kind)) built = fill(store, dataDir, root, now);
+      // No controller renews any lease: the computer-wide state is "stopped" (src/supervisor/api.mjs supervisorLiveness).
+      if (kind === 'stopped') store.run('UPDATE leases SET acquired_at = MIN(acquired_at, ?), expires_at = ? WHERE expires_at > ?', now - 3 * H, now - 2 * H, now - 2 * H);
+    }
     finally { store.close(); }
   }
   const { declarations, ...paths } = built;
   writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ repositories: paths.repositories,
-    ...(kind === 'full' ? { coordinator: COORDINATOR } : {}), supervisorIssue: REVIEW_SUPERVISOR_ISSUE }, null, 2));
+    ...(['full', 'stopped'].includes(kind) ? { coordinator: COORDINATOR } : {}), supervisorIssue: REVIEW_SUPERVISOR_ISSUE }, null, 2));
   const governance = join(root, 'governance');
   cpSync(GOVERNANCE, governance, { recursive: true });
   rmSync(join(governance, 'registry', 'projects'), { recursive: true });
@@ -417,7 +429,7 @@ async function serve(args) {
   const options = { '--port': String(REVIEW_PORT), '--store': 'full' };
   for (let i = 0; i < args.length; i += 2) {
     if (!['--port', '--store', '--dir'].includes(args[i]) || !args[i + 1]) {
-      throw new Error('Usage: node tests/dashboard/fixtures/review-store.mjs [--port 4319] [--store full|empty|unreadable] [--dir <new directory>]');
+      throw new Error('Usage: node tests/dashboard/fixtures/review-store.mjs [--port 4319] [--store full|stopped|empty|unreadable] [--dir <new directory>]');
     }
     options[args[i]] = args[i + 1];
   }

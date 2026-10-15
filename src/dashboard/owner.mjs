@@ -276,6 +276,10 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
   // `host` names this computer in the page header; the items say "this computer" (aiworks#11 review F22).
   const items = [], campaigns = {}, halted = [];
   let unknownResults = 0;
+  // Whether AIWorks itself runs on this computer: the computer-wide state the supervisor reports from all its leases
+  // (src/supervisor/api.mjs supervisorLiveness), never one piece of work's lease (aiworks#11 review 4 F2). A snapshot
+  // without it (a synthetic one in a test) is read by the same rule: AIWorks runs while any lease is live.
+  const aiworks = supervisor.controller?.state ?? (supervisor.campaigns.some((c) => c.controllerLive) ? 'running' : null);
   const entries = supervisor.campaigns.map((c) => ({ id: c.id, purpose: purpose(c) }));
   distinguish(entries);
   for (const c of supervisor.campaigns) {
@@ -298,9 +302,15 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     const awaitingPickup = registeredAt !== null && now - registeredAt < RESTART_GRACE_MS;
     const finished = c.control === 'finished' ? finishedSummary(c, steps, releases) : null;
     const delivered = steps.filter((step) => step.delivery).length;
+    let liveness = c.controllerLive ? 'running' : ['finished', 'cancelled'].includes(c.control) ? 'finished' : late ? 'late' : awaitingPickup ? 'awaiting-pickup'
+      : working ? 'agent-working-supervisor-silent' : 'stopped';
+    // One lapsed lease is that work's own state while AIWorks runs; while AIWorks restarts, it is only late.
+    if (['stopped', 'agent-working-supervisor-silent'].includes(liveness)) {
+      if (aiworks === 'running') liveness = neverLeased ? 'work-not-picked-up' : 'work-lapsed';
+      else if (aiworks === 'restarting') liveness = neverLeased ? 'awaiting-pickup' : 'late';
+    }
     campaigns[c.id] = { purpose: entries.find((entry) => entry.id === c.id).purpose, deliveries: Object.fromEntries(steps.map((step) => [step.task.id, step.delivery])),
-      liveness: c.controllerLive ? 'running' : ['finished', 'cancelled'].includes(c.control) ? 'finished' : late ? 'late' : awaitingPickup ? 'awaiting-pickup'
-        : working ? 'agent-working-supervisor-silent' : 'stopped',
+      liveness,
       lastCheckIn: c.controllerLive ? null : leaseEnded, registeredAt,
       finished: finished?.text ?? null, releaseReady: finished?.releaseReady ?? false,
       // One line for the compact list of finished and cancelled campaigns.
@@ -366,15 +376,19 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       const issue = supervisor.settings?.supervisorIssue ?? SUPERVISOR_ISSUE;
       items.push({ campaignId: c.id, repository: null, about: c.repository, kind: 'controller', system: true, text: NEEDS.fault.text,
         points: [{ link: { label: NEEDS.fault.link.replace(/\d+$/, issue.split('/').at(-1)), url: issue }, text: NEEDS.fault.point }] });
-    } else if (campaigns[c.id].liveness === 'agent-working-supervisor-silent') {
+    } else if (['work-lapsed', 'work-not-picked-up'].includes(liveness)) {
+      // AIWorks runs, but not this work: an item of this work's project, worded for this work alone, with its one time.
+      const words = liveness === 'work-lapsed' ? NEEDS.lapsed(paused, working > 0) : NEEDS.unpicked(paused);
+      items.push({ ...base, kind: 'unattended', at: liveness === 'work-lapsed' ? leaseEnded : undefined, text: words.text, points: [{ link: null, text: words.point }] });
+    } else if (liveness === 'agent-working-supervisor-silent') {
       halted.push({ c, at: leaseEnded, how: 'silent', paused });
-    } else if (campaigns[c.id].liveness === 'stopped') {
+    } else if (liveness === 'stopped') {
       halted.push({ c, at: neverLeased ? undefined : leaseEnded, how: neverLeased ? 'not-picked-up' : 'stopped', paused });
     }
   }
   // AIWorks stopped on this computer is one fact, listed once under AIWorks itself with the work it holds up, not once
   // per piece of work (aiworks#11 review F9). Restarting it is the owner's action, so it counts toward Needs you.
-  if (halted.length) items.push(stoppedItem(halted, entries));
+  if (halted.length) items.push(stoppedItem(halted, entries, supervisor.controller?.stopRequested === true));
   const coordinator = supervisor.coordinator;
   if (coordinator && (coordinator.configError || coordinator.blocked)) {
     const waiting = coordinator.messages.filter((m) => m.state === 'received').length;
@@ -402,11 +416,13 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
  * (`about`, `campaignId`); with several, one line per project names the work it holds up and what a pause or a
  * still-working AI worker means for it.
  */
-function stoppedItem(halted, entries) {
+function stoppedItem(halted, entries, onPurpose) {
+  // The Needs me banner is not shown with this item, so it says here whether AIWorks was stopped on purpose (one fact, once).
+  const why = (point) => onPurpose ? `${NEEDS.onPurpose} ${point}` : point;
   if (halted.length === 1) {
     const [{ c, at, how, paused }] = halted;
     const words = how === 'silent' ? NEEDS.silent : how === 'not-picked-up' ? NEEDS.notPickedUp(paused) : NEEDS.stopped(paused);
-    return { kind: 'controller', campaignId: c.id, repository: null, about: c.repository, at, text: words.text, points: [{ link: null, text: words.point }] };
+    return { kind: 'controller', campaignId: c.id, repository: null, about: c.repository, at, text: words.text, points: [{ link: null, text: why(words.point) }] };
   }
   const known = halted.map((entry) => entry.at).filter(Number.isFinite);
   // What all of it has in common is said once, in the item's text; each piece of work notes only what differs.
@@ -420,7 +436,7 @@ function stoppedItem(halted, entries) {
     projects.get(key).works.push(NEEDS.heldWork(name, how === common ? null : how, paused));
   }
   return { kind: 'controller', campaignId: null, repository: null, at: known.length ? Math.max(...known) : null, text: words.text,
-    points: [{ link: null, text: words.point }, ...[...projects.values()].map(({ name, works }) => ({ link: null, text: NEEDS.heldUp(name, works) }))] };
+    points: [{ link: null, text: why(words.point) }, ...[...projects.values()].map(({ name, works }) => ({ link: null, text: NEEDS.heldUp(name, works) }))] };
 }
 
 export const SYSTEM_GROUP = 'AIWorks itself';

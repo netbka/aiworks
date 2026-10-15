@@ -73,15 +73,16 @@ test('F4: at 320px every focusable element reached with the keyboard is moved fu
   for (const [selectors, declarations] of narrow) assert.doesNotMatch(declarations, /(?:^|;)(?:min-)?width:(?:[4-9]\d\d|\d{4,})px/, selectors.join(','));
 });
 
-test('F8: the header says only "Connected", on every screen of both stores; merge freshness is on the rows that use it', async (t) => {
-  for (const store of ['full', 'empty']) {
+// Review 4 F6: "Page connected" is about this page, so it cannot be read as "AIWorks is running".
+test('F8: the header says only "Page connected", on every screen of all stores; merge freshness is on the rows that use it', async (t) => {
+  for (const store of ['full', 'stopped', 'empty']) {
     const page = await openPage(t, { store });
     const screens = ['#/projects', '#/needs', '#/settings', '#/settings/messages', '#/settings/diagnostics'];
-    if (store === 'full') for (const project of PROJECTS) screens.push(address(project), address(project, '/work'), address(project, '/results'));
+    if (store !== 'empty') for (const project of PROJECTS) screens.push(address(project), address(project, '/work'), address(project, '/results'));
     for (const where of screens) {
       await page.go(where);
       await page.refresh();
-      assert.equal(visibleText(page.$('#connection')), 'Connected', `${store} ${where}`);
+      assert.equal(visibleText(page.$('#connection')), 'Page connected', `${store} ${where}`);
       assert.equal(page.$('#connection').className, 'connection online');
       // Neither the header nor the footer carries a merge note.
       assert.doesNotMatch(visibleText(page.$('.topbar')), /merge|checking|updates every/i, `${store} ${where}`);

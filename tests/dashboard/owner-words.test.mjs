@@ -138,7 +138,8 @@ test('F18: the empty state names the configuration file on this computer, never 
 });
 
 test('F22: AIWorks stopped "on this computer", with the restart on this computer, never "there" or "that computer"', async (t) => {
-  const page = await openPage(t, { host: 'review-pc' });
+  // AIWorks itself stopped is the stopped store (review 4 F2: in the full store it runs).
+  const page = await openPage(t, { host: 'review-pc', store: 'stopped' });
   const restart = 'If nobody is updating it right now, restart it on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.';
   for (const where of ['#/needs', address('example/notes-site'), address('example/notes-site', '/work')]) {
     await page.go(where);
@@ -154,7 +155,7 @@ test('F22: AIWorks stopped "on this computer", with the restart on this computer
 });
 
 test('F23: one time for one event: the pause has its date, the stop its time, the same on Now, Work and Needs me', async (t) => {
-  const page = await openPage(t);
+  const page = await openPage(t, { store: 'stopped' });
   const tags = supervisorSnapshot(page.dataDir).campaigns.find((c) => c.id === 'notes-tags');
   const paused = dateTime(tags.pausedAt), stopped = time(Date.parse(tags.leaseExpiresAt));
   assert.notEqual(time(tags.pausedAt), stopped, 'the fixture paused it an hour before AIWorks stopped');

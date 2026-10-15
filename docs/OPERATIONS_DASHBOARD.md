@@ -27,7 +27,8 @@ The active local service uses a detached checkout of a merged, independently rev
   - **Needs you** is built from supervisor fields and local git, never from worker output or the GitHub API. It lists:
     - published steps whose merge is not seen yet, for the owner's review and merge, with the steps that build on them and any step that took many tries. When the owner delegated merging, verified ones are not listed until nothing has merged them for `merges.stallHours` ([Merging delegated by the owner](#merging-delegated-by-the-owner));
     - owner decisions and stopped steps;
-    - a supervisor that is not running;
+    - a supervisor that is not running. That is said only from the computer-wide state the supervisor reports (`supervisorLiveness`: no lease live for a minute), once, under AIWorks itself;
+    - one piece of work the running supervisor has not checked on, or not picked up, past the 5-minute grace. It is listed under its own project with the time its lease ended, never as a stopped supervisor (aiworks#11 review 4 F2);
     - a coordinator that cannot read messages;
     - a finished step with no recorded result link. The item says *Check on GitHub* and links the step issue.
 

@@ -130,6 +130,7 @@ Today's addresses `#overview`, `#roadmap`, `#work`, `#agents`, `#messages` and `
 ### 3.4 Global frame
 
 - **Header.** The AIWorks mark (a link to Projects), the computer's name, a connection line and a "Messages" link. The computer's name stays because each computer runs its own AIWorks (AW-006; observed: `src/dashboard/public/dashboard.js:653-658`).
+- **Connection line.** It says **Page connected**, or the disconnected text. It is about this page's link to the dashboard, never about AIWorks' work. A bare "Connected" read as "AIWorks is running" while Needs me said AIWorks had stopped (aiworks#11 review 4 F6). Whether AIWorks runs is said on the screens, from [§7.2](#72-disconnected).
 - **"Refresh GitHub"** moves from the header to Settings › Diagnostics. GitHub refreshes by itself every minute (observed: `src/dashboard/main.mjs:39`). Stale data is said on the screens that use it ([§7.4](#74-github-stale)).
 - **"Message coordinator"** becomes the "Messages" link. Sending a message is the primary action of Settings › Messages, not a header button on every screen.
 
@@ -145,7 +146,7 @@ Each screen lists: its question, what is visible first, its one primary action, 
 - **First visible.** "Continue with <last project>" when there is one. Then one row per project:
   - its short name (the repository name, or the folder name for a local project);
   - its kind: "GitHub", "Local Git" or "Folder";
-  - **one** state in plain words, from [§7](#7-state-copy);
+  - **one** state in plain words, from [§7](#7-state-copy). With nothing for the owner it is the sentence the project's Now screen leads with ([§4.4](#44-now-inside-a-project)), so the two agree, also right after Pause and Resume. With more than one piece of active work it starts with the purpose of the work it is about: "Let customers save a wishlist · Possibly stuck: Wishlist page has made no progress for 25 minutes." (aiworks#11 review 4 F10, F14);
   - **one** next action as a link, for example "Review pull request #465" or "See results".
   
   Projects that need the owner come first, then those with work running, then the rest by last activity.
@@ -434,8 +435,12 @@ None of these texts say merged, deployed, released, live, done or accepted unles
 | --- | --- | --- |
 | The page cannot reach the dashboard (observed today as "Disconnected · controls disabled": `src/dashboard/public/dashboard.js:701`) | **Can't reach AIWorks on this computer.** Showing what was loaded at <12:31>. Buttons are off until it reconnects. Trying again every 5 seconds. | none |
 | The dashboard cannot read AIWorks' records (observed: `src/dashboard/supervisor.mjs:144`, `src/dashboard/supervisor.mjs:268`) | **AIWorks can't read its work records right now.** What you see may be out of date. Buttons are off until it can read them again. | none |
-| AIWorks stopped on this computer, after the 5-minute grace (observed: `src/dashboard/owner.mjs:17`, `src/dashboard/owner.mjs:282-286`) | **AIWorks has stopped on <workstation>.** No new step starts. If nobody is updating it right now, restart it there: sign in on that computer, or start the task "AIWorks Supervisor". | none |
-| Within the grace (observed: `src/dashboard/owner.mjs:208`) | **AIWorks is a few minutes late checking in.** This is normal during a restart or an update. Nothing for you to do yet. | none |
+| AIWorks stopped on this computer: the computer-wide state the supervisor reports is "stopped" (no lease live for a minute; observed: `src/supervisor/api.mjs` `supervisorLiveness`), and the work's own lease ended over 5 minutes ago (observed: `src/dashboard/owner.mjs` `RESTART_GRACE_MS`) | **AIWorks has stopped on <workstation>.** No new step starts. If nobody is updating it right now, restart it there: sign in on that computer, or start the task "AIWorks Supervisor". | none |
+| Within the grace, or while AIWorks restarts (the computer-wide state is "restarting") | **AIWorks is a few minutes late checking in.** This is normal during a restart or an update. Nothing for you to do yet. | none |
+| AIWorks runs (another lease is live), but this work's lease ended over 5 minutes ago | **AIWorks is running, but last checked on this work at about <07:17>.** Other work goes on. This work does not move until AIWorks checks on it again. If it stays like this, restart AIWorks on this computer. | none |
+| AIWorks runs, but has not picked up this approved work 5 minutes after it was approved | **Approved at <09:00>; AIWorks is running, but has not picked it up.** Nothing of it starts until AIWorks picks it up. If it stays like this, restart AIWorks on this computer. | none |
+
+Liveness is read per piece of work, from its own lease, but "AIWorks has stopped" is one fact about the computer. Only the computer-wide state may say it (aiworks#11 review 4 F2). One piece of work whose lease lapsed while AIWorks runs is that work's own state: one Needs me item under its project, with the one time its lease ended, and the same sentence on Now and Work. When AIWorks itself stopped, it is said once: the one Needs me item under "AIWorks itself", with its time. The Needs me banner appears only when no such item says it.
 
 ### 7.3 No worker
 
@@ -458,7 +463,7 @@ None of these texts say merged, deployed, released, live, done or accepted unles
 
 Stale data never supports "ready to merge" (observed: `src/dashboard/owner.mjs:88`). The note appears on the row or screen that uses the data, not as a page-wide banner. No primary action: the refresh is automatic.
 
-Today's header can say "Execution live · syncing GitHub…" for minutes (#4; observed: `src/dashboard/public/dashboard.js:694-696`). The header keeps only "Connected" or the disconnected text.
+Today's header can say "Execution live · syncing GitHub…" for minutes (#4; observed: `src/dashboard/public/dashboard.js:694-696`). The header keeps only "Page connected" or the disconnected text ([§3.4](#34-global-frame)).
 
 ### 7.5 Paused
 
@@ -466,6 +471,7 @@ Today's header can say "Execution live · syncing GitHub…" for minutes (#4; ob
 | --- | --- | --- |
 | Paused, AIWorks running (observed: `src/dashboard/public/dashboard.js:280-284`) | **Paused since <10 Oct 22:58>.** No new step starts. A step already running may finish. Reason given: "<reason>". | Resume |
 | Paused, AIWorks stopped | **Paused, and AIWorks has stopped on <workstation>.** Nothing can resume until it runs again. If nobody is updating it right now, restart it there. | none |
+| Paused, AIWorks running, but not checking on this work ([§7.2](#72-disconnected)) | **Paused since <10 Oct 22:58>; AIWorks is running, but last checked on this work at about <07:17>.** It can't resume until AIWorks checks on it again. If it stays like this, restart AIWorks on this computer. | none |
 
 A pause is neutral. It is not counted in Needs me (observed: `src/dashboard/owner.mjs:268-271`).
 
@@ -475,9 +481,11 @@ A pause is neutral. It is not counted in Needs me (observed: `src/dashboard/owne
 | --- | --- | --- |
 | Builder working | **Working on: <step outcome>.** The builder (<Claude>) started at <12:10> · last activity <2 min> ago. | Open current work |
 | Checker working | **Checking: <step outcome>.** An independent checker (<Claude>) is reviewing the result. | Open current work |
-| Possibly stuck (observed rule: `src/dashboard/public/dashboard.js:147-153`) | **<Step outcome>: no progress for <25> minutes.** AIWorks retries by itself if the worker stops. | Open current work |
+| Possibly stuck (observed rule: `src/dashboard/public/dashboard.js:147-153`) | **Possibly stuck: <Step outcome> has made no progress for <25> minutes.** AIWorks retries by itself if the worker stops. | Open current work |
 | Waiting for a merge (observed: `src/dashboard/supervisor.mjs:23`) | **Waiting for you to merge <"Contracts import">.** <"Search page"> starts after it is merged. | Review pull request #<N> |
 | Waiting for AIWorks to pick it up (observed: `src/dashboard/owner.mjs:212-214`) | **Approved at <12:40>; waiting for AIWorks to pick it up.** Nothing for you to do yet. | none |
+
+The possibly-stuck words lead the project's row on Projects too ([§4.1](#41-projects)), so a stuck worker never reads as normal work there (aiworks#11 review 4 F14).
 
 ### 7.7 Blocked
 

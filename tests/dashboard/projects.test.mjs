@@ -9,13 +9,16 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { once } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import { Store } from '../../src/supervisor/store.mjs';
 import { campaignStart } from '../../src/supervisor/api.mjs';
 import { declaration } from '../supervisor/helpers.mjs';
-import { supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
+import { applyCommand, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { ownerView, RESTART_GRACE_MS } from '../../src/dashboard/owner.mjs';
 import { configuredRepositories, projectsView } from '../../src/dashboard/projects.mjs';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
+import { COMMANDS, nowView, STUCK_MS } from '../../src/dashboard/copy.mjs';
+import { buildReviewFixture, PROJECTS } from './fixtures/review-store.mjs';
 
 const ROOT = resolve(import.meta.dirname, '../..');
 const task = (id, title, extra = {}) => ({ id, issue: 437 + Number(id.slice(1)), title, deliverable: 'commit', goal: `${title}.`, dependsOn: [], acceptance: ['a'], references: ['AGENTS.md'], ...extra });
@@ -109,8 +112,9 @@ test('order: needs you, then work running, then the rest by last activity; one s
     ['example-org/sampleapp', 'needs-you'], ['example/shop-app', 'running'], ['example/recipes', 'finished'], ['example/notes-site', 'no-work']]);
   const [sampleapp, shop, recipes, notes] = seen.projects.projects;
   assert.deepEqual([sampleapp.state.text, sampleapp.action], ['One thing needs you.', { label: 'Review pull request #465', url: 'https://github.com/example-org/sampleapp/pull/465' }]);
-  assert.deepEqual([shop.state.text, shop.action], ['No AI worker is busy on this project right now.',
-    { label: 'Open current work', route: { screen: 'project', project: 'example/shop-app', tab: 'work' } }]);
+  // The sentence its Now screen leads with (review 4 F10): registered just now, so AIWorks has not picked it up yet.
+  assert.match(shop.state.text, /^Approved at \d\d:\d\d; waiting for AIWorks to pick it up\.$/);
+  assert.deepEqual(shop.action, { label: 'Open current work', route: { screen: 'project', project: 'example/shop-app', tab: 'work' } });
   assert.deepEqual([recipes.state.text, recipes.action], ['All steps are finished · 1 report posted for you to read.',
     { label: 'See results', route: { screen: 'project', project: 'example/recipes', tab: 'results' } }]);
   // Each project has exactly one state and one action, never a list of either.
@@ -128,6 +132,90 @@ test('order: needs you, then work running, then the rest by last activity; one s
   assert.deepEqual(stopped.owner.groups.map((group) => [group.name, group.count]), [['sampleapp', 1], ['AIWorks itself', 1]]);
   assert.deepEqual(stopped.projects.projects.map((project) => [project.id, project.state.key, project.details.needsYou]).slice(0, 2),
     [['example-org/sampleapp', 'needs-you', 1], ['example/shop-app', 'running', 0]]);
+});
+
+/** The full review fixture, with its own Claude transcripts (never this computer's). */
+function review(t, prefix) {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5 }));
+  const built = buildReviewFixture(root);
+  const claude = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = built.claudeConfigDir;
+  t.after(() => { if (claude === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = claude; });
+  return built;
+}
+
+// aiworks#11 review 4 F10 and F14: a project's one state is its Now sentence, names the work it is about, and says
+// "Possibly stuck" when that work's worker has not moved past the §7.6 threshold.
+test('F14: a project whose working step made no progress past the §7.6 threshold reads "Possibly stuck" on Projects', () => {
+  const now = Date.UTC(2026, 9, 15, 12, 0), tasks = [{ id: 'T1', title: 'checkout', outcome: 'Checkout form', state: 'implementing', dependsOn: [] }];
+  const agent = (lastActivityAt) => ({ taskId: 'T1', role: 'Implementer', executor: 'claude-cli', startedAt: now - 60 * 60_000, heartbeatState: 'recent', progress: { lastActivityAt } });
+  const row = (last) => {
+    const supervisor = { available: true, campaigns: [{ id: 'shop-checkout', repository: 'example/shop-app', control: 'registered', controllerLive: true, tasks, agents: [agent(last)] }] };
+    const owner = ownerView(supervisor, undefined, { now });
+    return [projectsView(supervisor, owner, { now }).projects[0].state, nowView('example/shop-app', { supervisor, owner }, { now }).state];
+  };
+  const [stuck, stuckNow] = row(now - STUCK_MS - 31 * 60_000);
+  assert.deepEqual(stuck, { key: 'possibly-stuck', text: 'Possibly stuck: Checkout form has made no progress for 46 minutes.' });
+  assert.equal(stuck.text, stuckNow.title, 'the same sentence as Now');
+  // Just under the threshold it is normal work, in Now's words too.
+  const [working, workingNow] = row(now - STUCK_MS + 60_000);
+  assert.deepEqual([working.key, working.text], ['running', 'Working on: Checkout form.']);
+  assert.equal(working.text, workingNow.title);
+});
+
+test('F14 and F10: on the review fixture, shop-app reads "Possibly stuck" and names the work it is about, as Now does', (t) => {
+  const { dataDir } = review(t, 'aiworks-projects-review-');
+  const now = Date.now(), supervisor = supervisorSnapshot(dataDir, now), owner = ownerView(supervisor, undefined, { now });
+  // Without a merge check, shop-app has nothing for the owner: the worker that stopped moving is what its row says, with
+  // the work by name and Now's own sentence (review 4: "Running · Working on: Checkout form").
+  assert.deepEqual(owner.items.filter((item) => item.repository === 'example/shop-app'), []);
+  const row = projectsView(supervisor, owner, { repositories: PROJECTS, now }).projects.find((item) => item.id === 'example/shop-app');
+  const now2 = nowView('example/shop-app', { supervisor, owner }, { now });
+  assert.equal(row.state.key, 'possibly-stuck');
+  assert.match(row.state.text, /^Let customers save a wishlist · Possibly stuck: Wishlist page has made no progress for 2[56] minutes\.$/);
+  assert.equal(row.state.text, `${now2.goal.text} · ${now2.state.title}`, 'the work Now names, and its sentence');
+});
+
+test('F10: after Pause and after Resume, the confirmation, Now and Projects say the same about recipes', (t) => {
+  const { dataDir, runtime } = review(t, 'aiworks-projects-resume-');
+  const project = 'example/recipes';
+  /** Now and Projects for recipes at `at`: "needs you" exactly together, and otherwise the same work and sentence. */
+  const read = (at) => {
+    const supervisor = supervisorSnapshot(dataDir, at), owner = ownerView(supervisor, undefined, { now: at });
+    const now = nowView(project, { supervisor, owner }, { now: at });
+    const row = projectsView(supervisor, owner, { repositories: PROJECTS, now: at }).projects.find((item) => item.id === project);
+    assert.equal(row.state.key === 'needs-you', now.state.needsYou, `${row.state.text} | ${now.state.title}`);
+    if (row.state.key !== 'needs-you') assert.equal(row.state.text, `${now.goal.text} · ${now.state.title}`, 'Projects names the work Now is about, with its sentence');
+    return { supervisor, now, row };
+  };
+  const command = (action) => {
+    const c = supervisorSnapshot(dataDir).campaigns.find((item) => item.id === 'recipes-import');
+    const result = applyCommand(dataDir, { campaignId: c.id, action, requestId: randomUUID(), version: c.version, authorizationVersion: c.authorizationVersion,
+      scopeDigest: c.scopeDigest }, Date.now(), { provenanceRoot: runtime });
+    assert.deepEqual(result, { accepted: true, duplicate: false, action });
+    return COMMANDS.accepted[action];
+  };
+  // Paused (review 4: Projects said "Running · Waiting for an AI worker to be free" while Now said "Paused since").
+  const paused = read(Date.now());
+  assert.deepEqual([paused.now.state.key, paused.row.state.key], ['paused', 'paused']);
+  assert.match(paused.row.state.text, /^Import recipes from a spreadsheet · Paused since \d+ \w+ \d\d:\d\d\.$/);
+  // Resume: the confirmation says it resumed, and neither screen says paused or stopped, then or 10 minutes later.
+  assert.equal(command('resume'), 'Resumed with the goal and limits you approved.');
+  for (const later of [0, 10 * 60_000]) {
+    const { now, row, supervisor } = read(Date.now() + later);
+    assert.equal(supervisor.controller.state, 'running');
+    assert.equal(supervisor.campaigns.find((c) => c.id === 'recipes-import').control, 'registered');
+    for (const text of [now.state.title, now.state.text, row.state.text]) assert.doesNotMatch(text, /paused|AIWorks (has )?stopped/i, `${later}: ${text}`);
+  }
+  // 10 minutes on, "Share a recipe by link" (never picked up, past its 5-minute grace) is its own state: this is what
+  // review 4 saw as "AIWorks has stopped on this computer" right after Resume.
+  const share = read(Date.now() + 10 * 60_000).now;
+  assert.deepEqual([share.state.key, share.goal.text], ['work-not-picked-up', 'Share a recipe by link']);
+  // Pause again: both say paused, in the same words.
+  assert.equal(command('pause'), 'Paused. No new step starts; a step already running may finish.');
+  const again = read(Date.now());
+  assert.deepEqual([again.now.state.key, again.row.state.key], ['paused', 'paused']);
 });
 
 test('a configured repository with no work shows "No work yet" and opens the project', (t) => {
@@ -160,8 +248,8 @@ test('running work says who is working on which step; paused and cancelled work 
   assert.deepEqual(states, {
     'example/shop-app': ['running', 'Working on: Checkout takes a card.'],
     'example/notes-site': ['running', 'Checking: reviews.'],
-    'example/recipes': ['running', 'Waiting for an AI worker to be free. Work continues by itself.'],
-    'example/blog': ['paused', 'Paused. No new step starts.'],
+    'example/recipes': ['running', 'Waiting for an AI worker to be free.'],
+    'example/blog': ['paused', 'Paused.'],
     'example/wiki': ['cancelled', 'Cancelled · 0 of 2 steps delivered.'] });
   assert.deepEqual(projectsView(snapshot, owner).projects.slice(3).map((project) => project.id), ['example/blog', 'example/wiki'], 'the rest by last activity');
   // Several items: one action, to Needs me, which lists them all.

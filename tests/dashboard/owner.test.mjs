@@ -14,7 +14,10 @@ import { declaration } from '../supervisor/helpers.mjs';
 import { supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { ownerView, delivery, purpose, SYSTEM_GROUP } from '../../src/dashboard/owner.mjs';
 import { configuredCheckouts, configuredGitCommand, MergeWatcher, publishedSteps } from '../../src/dashboard/merges.mjs';
-import { buildReviewFixture, REVIEW_STATES } from './fixtures/review-store.mjs';
+import { buildReviewFixture, PROJECTS, REVIEW_STATES } from './fixtures/review-store.mjs';
+import { openPage, visibleText } from './fixtures/page.mjs';
+import { projectsView } from '../../src/dashboard/projects.mjs';
+import { nowView, workLine } from '../../src/dashboard/copy.mjs';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
 
 const three = () => [
@@ -261,8 +264,8 @@ test('Needs me groups today\'s items by project, case-insensitively, with "AIWor
     campaign('sampleapp-b', 'example-org/sampleapp', { tasks: [review('B1', 'example-org/sampleapp', 464)] }),
     // Another owner's repository with the same short name keeps its owner in the group name.
     campaign('other-sampleapp', 'example/sampleapp', { tasks: [review('O1', 'example/sampleapp', 7)] }),
-    // A stopped supervisor is one fact about this computer and restarting it is the owner's action: it is counted under
-    // AIWorks itself, never under the project (review F9).
+    // One lapsed lease while AIWorks runs (the other leases are live) is that work's own item, counted under its project,
+    // never "AIWorks stopped" (review 4 F2). AIWorks itself stopped is one item under AIWorks itself (needs-counts F9).
     campaign('notes-stopped', 'example/notes', { controllerLive: false, leaseExpiresAt: new Date(now - 60 * 60_000).toISOString() }),
     // Waiting for an AI worker's usage limit to reset is never listed (AW-002).
     campaign('notes-wait', 'example/notes', { waitingReason: 'provider-availability', tasks: [{ ...decision('W1', 'example/notes'), blocked: null, blockedReason: null }] }),
@@ -271,13 +274,14 @@ test('Needs me groups today\'s items by project, case-insensitively, with "AIWor
     steps: { 'sampleapp-a/A1': result(sha(463), false), 'sampleapp-b/B1': result(sha(464), false), 'other-sampleapp/O1': result(sha(7), false) } };
   const view = ownerView(supervisor, merges, { host: 'workstation', now });
   assert.deepEqual(view.groups.map((group) => [group.name, group.project, group.count]), [
-    ['example-org/sampleapp', 'example-org/sampleapp', 2], ['shop', 'example/shop', 1], ['example/sampleapp', 'example/sampleapp', 1], [SYSTEM_GROUP, null, 1]]);
+    ['example-org/sampleapp', 'example-org/sampleapp', 2], ['shop', 'example/shop', 1], ['example/sampleapp', 'example/sampleapp', 1], ['notes', 'example/notes', 1], [SYSTEM_GROUP, null, 0]]);
+  assert.deepEqual(view.groups.at(-2).items.map((item) => [item.kind, item.campaignId, item.text, item.at]),
+    [['unattended', 'notes-stopped', 'AIWorks is running, but last checked on this work', now - 60 * 60_000]]);
   assert.equal(SYSTEM_GROUP, 'AIWorks itself');
   assert.deepEqual(view.groups[0].items.map((item) => item.campaignId), ['sampleapp-a', 'sampleapp-b'], 'one project whatever the spelling of its name');
-  // The fault and the unreadable inbox are listed but not counted (review F17); the stop is counted.
+  // The fault and the unreadable inbox are listed but not counted (review F17).
   assert.deepEqual(view.groups.at(-1).items.map((item) => [item.kind, item.repository, item.about, item.text, Boolean(item.system)]), [
     ['controller', null, 'example/shop', 'AIWorks has a problem of its own with this work', true],
-    ['controller', null, 'example/notes', 'AIWorks stopped on this computer', false],
     ['coordinator', null, undefined, 'The coordinator cannot read your messages', true]]);
   assert.equal(view.groups.at(-1).notCounted, 2);
   // Grouping only: the same items, in today's order within each group, and the count is today's headline count.
@@ -306,13 +310,84 @@ test('on the review fixture, Needs me lists the same items and count as before, 
   const grouped = view.groups.flatMap((group) => group.items);
   assert.deepEqual(new Set(grouped), new Set(view.items));
   assert.equal(grouped.length, view.items.length);
+  // recipes-share has no item yet: it is within its 5-minute pickup grace.
   assert.deepEqual(view.groups.map((group) => group.name), ['notes-site', 'shop-app', SYSTEM_GROUP], 'projects in the order of their first item, AIWorks itself last');
   for (const group of view.groups.slice(0, -1)) assert.ok(group.items.every((item) => item.repository.toLowerCase() === group.project.toLowerCase() && !item.system), group.name);
-  // The supervisor fault in notes-site says it is not an owner action, so it is listed under AIWorks itself, and so is
-  // the one item for AIWorks stopped on this computer (review F9).
-  assert.deepEqual(view.groups.at(-1).items.map((item) => [item.campaignId, item.about]), [[REVIEW_STATES['supervisor-fault'].campaignId, 'example/notes-site'], [null, undefined]]);
+  // The supervisor fault in notes-site says it is not an owner action, so it is listed under AIWorks itself. AIWorks runs
+  // in this store, so the work it has not checked on is notes-site's own (review 4 F2), not an item of AIWorks itself.
+  assert.deepEqual(view.groups.at(-1).items.map((item) => [item.campaignId, item.about]), [[REVIEW_STATES['supervisor-fault'].campaignId, 'example/notes-site']]);
+  assert.deepEqual(view.groups[0].items.filter((item) => item.kind === 'unattended').map((item) => item.campaignId).sort(),
+    [REVIEW_STATES['work-lapsed'].campaignId, REVIEW_STATES['paused-work-lapsed'].campaignId].sort());
   // Neither the usage-limit wait nor a pause with a running supervisor is listed.
   for (const state of ['provider-wait', 'paused']) assert.ok(!view.items.some((item) => item.campaignId === REVIEW_STATES[state].campaignId), state);
+});
+
+// aiworks#11 review 4 F2: liveness is per piece of work, but "AIWorks has stopped on this computer" is one fact about the
+// computer, said only from the computer-wide state src/supervisor/api.mjs reports (supervisorLiveness). The review store
+// mixes live and lapsed leases, so AIWorks runs there: every screen says so, and each lapsed piece of work says its own
+// state, once, with the one time its lease ended.
+const STOPPED = /AIWorks (has )?stopped|stopped on this computer/i;
+// Times as their raw value, so a sentence's times can be counted exactly.
+const RAW = { time: (value) => `<${value}>`, dateTime: (value) => `[${value}]` };
+
+test('review 4 F2: with live and lapsed leases, nothing says AIWorks has stopped; each lapsed piece of work says its own state with one time', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'aiworks-owner-lapsed-'));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5 }));
+  const { dataDir, claudeConfigDir } = buildReviewFixture(root);
+  const claude = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = claudeConfigDir;
+  t.after(() => { if (claude === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = claude; });
+  // As built, and 10 minutes later, when "late" and "waiting to be picked up" are past their 5-minute grace.
+  for (const [later, lapsedIds] of [[0, ['notes-archive', 'notes-tags']], [10 * 60_000, ['notes-archive', 'notes-drafts', 'notes-tags']]]) {
+    const now = Date.now() + later, supervisor = supervisorSnapshot(dataDir, now), owner = ownerView(supervisor, undefined, { now });
+    assert.equal(supervisor.controller.state, 'running', 'the computer-wide state: some leases are live');
+    // Needs me, Projects, each project's Now and each piece of work's line on Work.
+    const texts = [...owner.items.flatMap((item) => [item.text, ...item.points.map((point) => point.text)]),
+      ...projectsView(supervisor, owner, { repositories: PROJECTS, now }).projects.map((row) => row.state.text),
+      ...PROJECTS.flatMap((project) => { const { state } = nowView(project, { supervisor, owner }, { now }); return [state.title, state.text]; }),
+      ...supervisor.campaigns.map((c) => workLine(c, owner.campaigns[c.id]))];
+    for (const text of texts) assert.doesNotMatch(text, STOPPED, `${later}: ${text}`);
+    const lapsed = supervisor.campaigns.filter((c) => owner.campaigns[c.id].liveness === 'work-lapsed');
+    assert.deepEqual(lapsed.map((c) => c.id).sort(), lapsedIds, `${later}`);
+    for (const c of lapsed) {
+      const ended = Date.parse(c.leaseExpiresAt), at = `<${ended}>`;
+      // One Needs me item, under its own project, with the time its lease ended (the page adds "at about <time>").
+      assert.deepEqual(owner.items.filter((item) => item.campaignId === c.id).map((item) => [item.kind, item.repository, item.at]),
+        [['unattended', c.repository, ended]], c.id);
+      // Its line on Work and its Now sentence: that one time, once; a paused one also has its pause date (another fact).
+      const line = workLine(c, owner.campaigns[c.id], RAW);
+      assert.deepEqual(line.match(/<\d+>/g), [at], line);
+      const alone = nowView(c.repository, { supervisor: { ...supervisor, campaigns: [c] }, owner: { ...owner, items: owner.items.filter((item) => item.campaignId === c.id) } },
+        { now, format: RAW }).state;
+      assert.equal(alone.key, c.control === 'paused' ? 'paused-work-lapsed' : 'work-lapsed', c.id);
+      assert.deepEqual(`${alone.title} ${alone.text}`.match(/<\d+>/g), [at], alone.title);
+    }
+    // Work no AIWorks has picked up, past its grace, is its own state too.
+    if (later) assert.equal(owner.campaigns['recipes-share'].liveness, 'work-not-picked-up');
+  }
+  // The computer-wide state decides, whatever one lease says: stopped on purpose, the one item says so (the banner is not shown).
+  const now = Date.now(), lapsed = { id: 'notes', repository: 'example/notes', purpose: 'Notes', control: 'registered', controllerLive: false, livenessDefect: false,
+    leaseExpiresAt: new Date(now - 60 * 60_000).toISOString(), blocker: null, tasks: [], agents: [], lastProgressAt: null };
+  const stopped = ownerView({ available: true, recent: null, coordinator: null, campaigns: [lapsed], controller: { state: 'stopped', stopped: true, stopRequested: true } }, undefined, { now });
+  assert.deepEqual(stopped.items.map((item) => [item.kind, item.text, item.points[0].text.startsWith('It was stopped on purpose: an update or its operator. No new step starts.')]),
+    [['controller', 'AIWorks stopped on this computer', true]]);
+});
+
+test('review 4 F2 and F6: on the page, no screen of the review store says AIWorks has stopped, and the header is about the page', async (t) => {
+  const page = await openPage(t);
+  for (const where of ['#/projects', '#/needs', '#/p/example%2Fnotes-site', '#/p/example%2Fnotes-site/work', '#/p/example%2Frecipes', '#/p/example%2Fshop-app']) {
+    await page.go(where);
+    assert.doesNotMatch(visibleText(page.$('#main')), STOPPED, where);
+    assert.equal(visibleText(page.$('#connection')), 'Page connected', where);
+  }
+  await page.go('#/needs');
+  assert.match(visibleText(page.$('#main')), /AIWorks is running, but last checked on this work at about \d\d:\d\d/);
+  // When AIWorks itself stopped, it is said once, with one time: the item, without a banner beside it.
+  const stopped = await openPage(t, { store: 'stopped' });
+  await stopped.go('#/needs');
+  const text = visibleText(stopped.$('#main'));
+  assert.equal(text.match(/stopped on this computer/g).length, 1, text);
+  assert.equal(stopped.$('#main').querySelectorAll('.needs-stopped').length, 0);
 });
 
 test('the Needs me page shows one headed group per project, linked to it, and "AIWorks itself" with the project its item is about', () => {
