@@ -2,7 +2,9 @@
 // built from today's supervisor fields; a step's own attempt history; a stopped step in the §7.7 words; and the More
 // menu (Pause, Check again, Cancel) with Resume as the primary action of paused work, absent on finished work. Synthetic
 // review fixture and disposable stores only; no network, model or GitHub call. Since UI11 (plan §6.12 C7, ADAPTIVE_SCHEDULER
-// slice S8, dashboard half) the wait of each step is the status `wait` field, with no worker text in a reason.
+// slice S8, dashboard half) the wait of each step is the status `wait` field, with no worker text in a reason. Since UI18
+// (SCOPED_READING section 13, the dashboard half of READ3) a Step says which rule a returned change broke and which sections
+// the next attempt was given, from status `reading` and the supervisor's own records: path, section slug and heading only.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -12,7 +14,9 @@ import { randomUUID } from 'node:crypto';
 import { Store } from '../../src/supervisor/store.mjs';
 import { campaignStatus } from '../../src/supervisor/api.mjs';
 import { applyCommand, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
-import { stateCopy } from '../../src/dashboard/copy.mjs';
+import { stateCopy, DETAIL_ONLY_WORDS } from '../../src/dashboard/copy.mjs';
+// A namespace import, so on a base without UI18 only the reading tests fail, not the whole file.
+import * as copy from '../../src/dashboard/copy.mjs';
 import { buildReviewFixture, REVIEW_STATES } from './fixtures/review-store.mjs';
 
 const ROOT = resolve(import.meta.dirname, '../..');
@@ -35,11 +39,11 @@ const view = (dataDir, now = Date.now()) => {
   return { snapshot, campaign: (id) => snapshot.campaigns.find((c) => c.id === id), step: (id, taskId) => snapshot.campaigns.find((c) => c.id === id).tasks.find((task) => task.id === taskId) };
 };
 let seq = 1000;
-function operation(store, dataDir, campaignId, taskId, kind, { state = 'finished', at = Date.now() - 30 * M, outcome = null, executor = 'claude-cli' } = {}) {
+function operation(store, dataDir, campaignId, taskId, kind, { state = 'finished', at = Date.now() - 30 * M, outcome = null, executor = 'claude-cli', packet = null } = {}) {
   const id = `${campaignId}.${taskId}.${kind}.${++seq}`;
   store.insert('operations', { id, campaign_id: campaignId, task_id: taskId, kind, seq, idempotency_key: id, lease_generation: 1, state,
     session_id: `00000000-0000-4000-8000-${String(seq).padStart(12, '0')}`, run_dir: join(dataDir, 'runs', id), workspace: join(dataDir, 'worktrees', id),
-    packet: { synthetic: true, prompt: 'WORKER-PROMPT-must-not-leak' }, packet_digest: '0'.repeat(64), outcome, created_at: at, updated_at: state === 'finished' ? at + 5 * M : at, executor_kind: executor });
+    packet: packet ?? { synthetic: true, prompt: 'WORKER-PROMPT-must-not-leak' }, packet_digest: '0'.repeat(64), outcome, created_at: at, updated_at: state === 'finished' ? at + 5 * M : at, executor_kind: executor });
   return id;
 }
 
@@ -318,4 +322,153 @@ test('a long outcome gives way to the short step title in wait sentences, never 
   // The page's row rule: a short outcome leads; a long one gives way to the title and becomes the line under it.
   assert.match(page(), /const OUTCOME_LEAD_MAX = 100;/);
   assert.match(page(), /const lead = outcome && \(outcome\.length <= OUTCOME_LEAD_MAX \|\| !title\) \? outcome : title \?\? outcome \?\? task\.id;/);
+});
+
+// ---- Scoped reading on the Step screen (SCOPED_READING section 13, slice UI18) ----
+
+/** A step with marked sections: its attempt resolved two, one fell back; the check returned it for two rules. */
+function rejectedForRules(store, dataDir, now) {
+  const first = operation(store, dataDir, 'recipes-idle', 'T1', 'implement', { at: now - 60 * M,
+    packet: { references: [{ path: 'docs/guide.md#1-start', revision: 'a'.repeat(40) }, { path: 'docs/guide.md#old-heading', revision: 'a'.repeat(40) }] },
+    outcome: { class: 'result', value: { result: 'resolved', headSha: 'b'.repeat(40), report: 'WORKER-REPORT-must-not-leak' } } });
+  store.journal('recipes-idle', 'reference-section-resolved', { op: first, anchored: 2, resolved: 1, fallback: 1 }, now - 60 * M);
+  store.journal('recipes-idle', 'reference-section-fallback', { task: 'T1', op: first, path: 'docs/guide.md', anchor: 'old-heading', reason: 'missing' }, now - 60 * M);
+  const check = operation(store, dataDir, 'recipes-idle', 'T1', 'verify', { at: now - 40 * M, outcome: { class: 'result',
+    value: { verdict: 'rejected', findings: [
+      { id: 'F1', severity: 'blocking', description: 'WORKER-FINDING-must-not-leak', cites: ['docs/guide.md#2-rules', 'docs/runbook.md'] },
+      { id: 'F2', severity: 'note', description: 'WORKER-NOTE-must-not-leak', cites: ['docs/guide.md#3-notes'] }] },
+    reading: { cites: [
+      { finding: 'F1', cite: 'docs/guide.md#2-rules', path: 'docs/guide.md', anchor: '2-rules', heading: '2. Rules', from: 10, to: 20, classification: 'section-miss', implementerRead: false,
+        text: 'DOCUMENT-TEXT-must-not-leak' },
+      { finding: 'F1', cite: 'docs/runbook.md', path: 'docs/runbook.md', anchor: null, classification: 'unreferenced-doc', implementerRead: null },
+      { finding: 'F2', cite: 'docs/guide.md#3-notes', path: 'docs/guide.md', anchor: '3-notes', heading: '3. Notes', from: 21, to: 30 }] } } });
+  store.journal('recipes-idle', 'section-miss', { task: 'T1', op: check, finding: 'F1', path: 'docs/guide.md', anchor: '2-rules', implementerRead: false }, now - 39 * M);
+  store.journal('recipes-idle', 'unreferenced-doc', { task: 'T1', op: check, finding: 'F1', path: 'docs/runbook.md', anchor: null, implementerRead: null }, now - 39 * M);
+  return { first, check };
+}
+
+test('a returned change names the rule it broke, then which sections the next attempt was given', (t) => {
+  const { dataDir } = fixture(t);
+  const now = Date.now();
+  change(dataDir, (store) => rejectedForRules(store, dataDir, now));
+  // Before the next attempt starts: the rules of the blocking finding only, and that nothing was given yet.
+  let reading = view(dataDir, now).step('recipes-idle', 'T1').reading;
+  assert.deepEqual(reading, { anchored: 2, fallbacks: [{ path: 'docs/guide.md', anchor: 'old-heading', reason: 'missing' }],
+    misses: { section: 1, unreferenced: 1 }, extended: 0, extendedSections: [],
+    broke: [{ path: 'docs/guide.md', anchor: '2-rules', heading: '2. Rules', kind: 'section-miss', given: null },
+      { path: 'docs/runbook.md', anchor: null, heading: null, kind: 'unreferenced-doc', given: null }],
+    nextStarted: false });
+  assert.deepEqual(copy.readingLines(reading), { title: 'What it reads and the rules it broke', lines: [
+    'This step was asked to start with 2 marked sections of its documents.',
+    'The checker returned the last change: it broke the rule in section “2. Rules” of docs/guide.md. The plan had marked other sections of that document, not this one.',
+    'The checker returned the last change: it broke the rule in docs/runbook.md (the whole document). The plan had not named that document for this step.',
+    'The next attempt has not started yet. It will be given those sections to read.',
+    '1 marked section could not be found, so the whole document was given instead: docs/guide.md (#old-heading, no longer there).',
+    'So far the checker found 1 broken rule in sections the plan did not mark and 1 broken rule in documents the plan did not name.'] });
+  // The repair round starts with the cited section in its references; the whole-document cite did not fit.
+  change(dataDir, (store) => operation(store, dataDir, 'recipes-idle', 'T1', 'implement', { state: 'dispatched', at: now - 20 * M,
+    packet: { references: [{ path: 'docs/guide.md#1-start', revision: 'c'.repeat(40) }, { path: 'docs/guide.md#2-rules', revision: 'c'.repeat(40) }] } }));
+  reading = view(dataDir, now).step('recipes-idle', 'T1').reading;
+  assert.deepEqual(reading.broke.map((item) => [item.path, item.given]), [['docs/guide.md', true], ['docs/runbook.md', false]]);
+  assert.equal(reading.nextStarted, true);
+  const lines = copy.readingLines(reading).lines;
+  assert.ok(lines.includes('The next attempt was given section “2. Rules” of docs/guide.md to read.'), lines.join('\n'));
+  assert.ok(lines.includes('The next attempt had no room for docs/runbook.md (the whole document), so it reads that rule in the checker’s finding.'), lines.join('\n'));
+  assert.ok(!lines.some((line) => /has not started yet/.test(line)));
+  // An accepted check after it: no rule is broken any more; the counts stay, as status keeps them.
+  change(dataDir, (store) => operation(store, dataDir, 'recipes-idle', 'T1', 'verify', { at: now - 10 * M, outcome: { class: 'result', value: { verdict: 'accepted', findings: [] } } }));
+  reading = view(dataDir, now).step('recipes-idle', 'T1').reading;
+  assert.deepEqual([reading.broke, reading.nextStarted, reading.misses], [[], null, { section: 1, unreferenced: 1 }]);
+  // Owner words only: no machine word of §2.2 in any line.
+  for (const line of lines) {
+    for (const word of DETAIL_ONLY_WORDS) assert.doesNotMatch(line, new RegExp(`\\b${word}\\b`, 'i'), `${word}: ${line}`);
+  }
+});
+
+test('sections added from another step’s finding are named, and a section heading reads in its own words or its slug', (t) => {
+  const { dataDir } = fixture(t);
+  const now = Date.now();
+  change(dataDir, (store) => {
+    const op = operation(store, dataDir, 'recipes-idle', 'T1', 'implement', { state: 'dispatched', at: now - 5 * M });
+    store.journal('recipes-idle', 'reference-section-resolved', { op, anchored: 1, resolved: 1, fallback: 0 }, now - 5 * M);
+    for (const anchor of ['2-rules', '4-limits', '2-rules']) {
+      store.journal('recipes-idle', 'reading-guide-extended', { op, task: 'T1', from: { task: 'T2', finding: 'F1' }, path: 'docs/guide.md', anchor }, now - 5 * M);
+    }
+    // Another step's extension is not this step's.
+    store.journal('recipes-idle', 'reading-guide-extended', { op, task: 'T9', from: { task: 'T2', finding: 'F1' }, path: 'docs/other.md', anchor: 'x' }, now - 5 * M);
+  });
+  const reading = view(dataDir, now).step('recipes-idle', 'T1').reading;
+  assert.deepEqual(reading, { anchored: 1, fallbacks: [], misses: { section: 0, unreferenced: 0 }, extended: 3,
+    extendedSections: [{ path: 'docs/guide.md', anchor: '2-rules' }, { path: 'docs/guide.md', anchor: '4-limits' }], broke: [], nextStarted: null });
+  assert.deepEqual(copy.readingLines(reading).lines, ['This step was asked to start with 1 marked section of its documents.',
+    '3 sections were added to what it reads, because the checker found them missed in another step of this work: section #2-rules of docs/guide.md; section #4-limits of docs/guide.md.']);
+  // One fallback for each reason, in the owner's words.
+  const words = (reason) => copy.readingLines({ anchored: 1, fallbacks: [{ path: 'a.md', anchor: 'x', reason }], misses: { section: 0, unreferenced: 0 }, extended: 0, broke: [] }).lines[1];
+  assert.equal(words('ambiguous'), '1 marked section could not be found, so the whole document was given instead: a.md (#x, more than one heading matches).');
+  assert.equal(words('not-markdown'), '1 marked section could not be found, so the whole document was given instead: a.md (#x, not a document AIWorks reads by section).');
+  assert.equal(words('unreadable'), '1 marked section could not be found, so the whole document was given instead: a.md (#x, could not be read).');
+  assert.equal(words(null), '1 marked section could not be found, so the whole document was given instead: a.md (#x).');
+});
+
+test('a step whose reading is null shows nothing new: no field content, no copy, no block on the page', (t) => {
+  const { dataDir } = fixture(t);
+  const now = Date.now();
+  // A rejected check with cites but no reading event (a store before READ3): status says null, so the Step does too.
+  change(dataDir, (store) => operation(store, dataDir, 'recipes-idle', 'T1', 'verify', { at: now - 10 * M, outcome: { class: 'result',
+    value: { verdict: 'rejected', findings: [{ id: 'F1', severity: 'blocking', cites: ['docs/guide.md#2-rules'] }] },
+    reading: { cites: [{ finding: 'F1', cite: 'docs/guide.md#2-rules', path: 'docs/guide.md', anchor: '2-rules', heading: '2. Rules' }] } } }));
+  const { snapshot } = view(dataDir, now);
+  for (const c of snapshot.campaigns) {
+    for (const task of c.tasks) assert.equal(task.reading, null, `${c.id}/${task.id}`);
+  }
+  assert.equal(copy.readingLines(null), null);
+  assert.equal(copy.readingLines({ anchored: 0, fallbacks: [], misses: { section: 0, unreferenced: 0 }, extended: 0, extendedSections: [], broke: [], nextStarted: null }), null,
+    'a reading that says nothing adds nothing either');
+  // The Step screen adds its block only when the copy has lines.
+  const js = page();
+  assert.match(js, /const reading = readingLines\(task\.reading\);/);
+  assert.match(js, /reading \? el\('div', \{ class: 'instruction-list' \}, el\('h3', \{ class: 'section-title' \}, reading\.title\), \.\.\.reading\.lines\.map\(\(line\) => el\('p', \{\}, line\)\)\) : null,/);
+});
+
+test('only a path, a section slug and a heading are served: no document text, finding or worker text, nothing unsafe', (t) => {
+  const { dataDir } = fixture(t);
+  const now = Date.now();
+  change(dataDir, (store) => {
+    const { first, check } = rejectedForRules(store, dataDir, now);
+    // Planted: a heading that holds a credential, a cite and fallbacks outside the repository, and an unknown reason.
+    const op = store.get('SELECT outcome FROM operations WHERE id = ?', check);
+    op.outcome.reading.cites.push({ finding: 'F1', cite: 'docs/keys.md#k', path: 'docs/keys.md', anchor: 'k', heading: `token ghp_${'a'.repeat(36)}`, classification: 'covered' },
+      { finding: 'F1', cite: '../outside.md#a', path: '../outside.md', anchor: 'a', heading: 'Outside', classification: 'covered' },
+      { finding: 'F1', cite: 'docs/x.md#Bad Anchor', path: 'docs/x.md', anchor: 'Bad Anchor', heading: 'Bad', classification: 'WORKER-KIND-must-not-leak' });
+    store.updateOperation(check, { outcome: op.outcome }, now - 40 * M);
+    store.journal('recipes-idle', 'reference-section-fallback', { task: 'T1', op: first,
+      path: '/etc/passwd', anchor: 'x', reason: 'WORKER REASON must not leak' }, now - 39 * M);
+  });
+  const reading = view(dataDir, now).step('recipes-idle', 'T1').reading;
+  const served = JSON.stringify(reading);
+  assert.doesNotMatch(served, /must.not.leak|ghp_|outside|passwd|Bad/i);
+  assert.deepEqual(Object.keys(reading), ['anchored', 'fallbacks', 'misses', 'extended', 'extendedSections', 'broke', 'nextStarted']);
+  for (const item of reading.broke) assert.deepEqual(Object.keys(item), ['path', 'anchor', 'heading', 'kind', 'given']);
+  for (const item of reading.fallbacks) assert.deepEqual(Object.keys(item), ['path', 'anchor', 'reason']);
+  // The credential heading is withheld, and its section is named by its slug instead.
+  assert.deepEqual(reading.broke.map((item) => [item.path, item.anchor, item.heading]),
+    [['docs/guide.md', '2-rules', '2. Rules'], ['docs/runbook.md', null, null], ['docs/keys.md', 'k', null]]);
+  assert.ok(copy.readingLines(reading).lines.includes('The checker returned the last change: it broke the rule in section #k of docs/keys.md. That section was already in what this step had to read.'));
+  // The note finding's cite never shows as a broken rule; the whole campaign's served state holds no worker or document text.
+  assert.ok(!reading.broke.some((item) => item.anchor === '3-notes'));
+  assert.doesNotMatch(JSON.stringify(view(dataDir, now).campaign('recipes-idle')), /must.not.leak/i);
+  // The page reads the copy only: it renders no field of `reading` itself.
+  assert.deepEqual([...page().matchAll(/\btask\.reading\b(\.\w+)?/g)].map((m) => m[0]), ['task.reading']);
+});
+
+test('320px: the reading lines wrap long paths instead of scrolling sideways', () => {
+  // The block reuses the Guidance list's layout on the Step screen, whose paragraphs wrap anywhere.
+  const css = readFileSync(join(ROOT, 'src/dashboard/public/dashboard.css'), 'utf8');
+  assert.match(css, /\.instruction-list p\{[^}]*overflow-wrap:anywhere/);
+  assert.match(page(), /reading \? el\('div', \{ class: 'instruction-list' \}, el\('h3', \{ class: 'section-title' \}, reading\.title\), \.\.\.reading\.lines\.map\(\(line\) => el\('p', \{\}, line\)\)\)/);
+  // A path at the reference limit is one unbroken word: it still reaches the page whole, for the browser to wrap.
+  const path = `docs/${'a'.repeat(500)}.md`;
+  const line = copy.readingLines({ anchored: 0, fallbacks: [], misses: { section: 0, unreferenced: 0 }, extended: 0, extendedSections: [],
+    broke: [{ path, anchor: null, heading: null, kind: null, given: true }], nextStarted: true }).lines.at(-1);
+  assert.equal(line, `The next attempt was given ${path} (the whole document) to read.`);
 });

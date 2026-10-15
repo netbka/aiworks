@@ -8,6 +8,7 @@ import { safeText } from './roadmap.mjs';
 import { pendingInstructions } from '../supervisor/instructions.mjs';
 import { roleUnavailableReason, runNotCounted } from '../supervisor/adapters/executors.mjs';
 import { campaignLimits } from '../supervisor/campaign.mjs';
+import { parseReference } from '../supervisor/reading.mjs';
 import { coordinatorView, postOwnerMessage } from '../supervisor/coordinator.mjs';
 import { CODE_ROOT, revisionNotMerged } from '../supervisor/provenance.mjs';
 import { COMMANDS, stateCopy, stopReasonWords } from './copy.mjs';
@@ -187,6 +188,67 @@ export function costByUnit(cost) {
 /** A step's models and move up, from its status row. */
 export function stepRouting(row) {
   return { implement: modelUsed(row?.routing?.implement), verify: modelUsed(row?.routing?.verify), movedUp: movedUp(row?.routing?.escalation) };
+}
+
+// ---- Scoped reading (SCOPED_READING section 8, slice UI18, the dashboard half of READ3). The status `reading` is the
+// source; the rule a returned change broke and the sections the next attempt was given come from the supervisor's own
+// records of that check and that attempt. Only a path, a section slug and a heading leave this module: never document
+// text, a finding or any other worker text. A step whose status `reading` is null gets null, so it shows nothing new. ----
+
+const FALLBACK_REASONS = ['missing', 'ambiguous', 'not-markdown', 'unreadable'];
+const CITE_KINDS = ['covered', 'section-miss', 'unreferenced-doc'];
+const READING_LIST_LIMIT = 8;
+/** `{ path, anchor }` of a repository reference, or null when it is not one or would carry anything else. */
+function sectionOf(path, anchor) {
+  const parsed = parseReference(anchor ? `${path}#${anchor}` : path);
+  return parsed && safeText(parsed.path, 512) === parsed.path ? parsed : null;
+}
+/** A heading as the document names it, one line and bounded; null when it is missing or looks like a secret. */
+function headingOf(value) {
+  const text = String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 120);
+  return text && safeText(text, 120) === text ? text : null;
+}
+/** The newest dispatch's sections added from this work's other steps (journal `reading-guide-extended`), distinct. */
+function extendedSections(store, campaignId, taskId) {
+  const out = [];
+  for (const { detail } of store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'reading-guide-extended' ORDER BY seq DESC LIMIT 200", campaignId)) {
+    const section = detail?.task === taskId ? sectionOf(detail.path, detail.anchor) : null;
+    if (!section?.anchor || out.some((item) => item.path === section.path && item.anchor === section.anchor)) continue;
+    out.push(section);
+    if (out.length >= READING_LIST_LIMIT) break;
+  }
+  return out;
+}
+/**
+ * A step's reading, from its status `reading`: the counts and fallbacks as status has them; `broke`, the sections the
+ * blocking findings of the step's latest check cite when that check returned the change; `next`, whether an attempt
+ * started after that check, and which of those sections it was given. Null when status has none.
+ */
+export function stepReading(store, campaignId, taskId, reading) {
+  if (!reading) return null;
+  const fallbacks = (reading.fallbacks ?? []).flatMap((item) => {
+    const section = sectionOf(item?.path, item?.anchor);
+    return section?.anchor ? [{ ...section, reason: FALLBACK_REASONS.includes(item.reason) ? item.reason : null }] : [];
+  }).slice(0, READING_LIST_LIMIT);
+  const check = store.get("SELECT created_at, outcome FROM operations WHERE campaign_id = ? AND task_id = ? AND kind = 'verify' AND state = 'finished' ORDER BY created_at DESC, seq DESC LIMIT 1",
+    campaignId, taskId);
+  const value = check?.outcome?.class === 'result' ? check.outcome.value : null;
+  const blocking = new Set((Array.isArray(value?.findings) ? value.findings : []).filter((f) => f?.severity === 'blocking').map((f) => f.id));
+  const broke = [];
+  for (const cite of value?.verdict === 'rejected' && Array.isArray(check.outcome.reading?.cites) ? check.outcome.reading.cites : []) {
+    const section = blocking.has(cite?.finding) ? sectionOf(cite.path, cite.anchor) : null;
+    if (!section || broke.some((item) => item.path === section.path && item.anchor === section.anchor)) continue;
+    broke.push({ ...section, heading: section.anchor ? headingOf(cite.heading) : null, kind: CITE_KINDS.includes(cite.classification) ? cite.classification : null });
+    if (broke.length >= READING_LIST_LIMIT) break;
+  }
+  // The first attempt after that check is the one the repair round started; its references hold the sections it was given.
+  const after = broke.length ? store.get("SELECT packet FROM operations WHERE campaign_id = ? AND task_id = ? AND kind = 'implement' AND created_at > ? ORDER BY created_at, seq LIMIT 1",
+    campaignId, taskId, check.created_at) : null;
+  const given = new Set((Array.isArray(after?.packet?.references) ? after.packet.references : []).map((item) => item?.path));
+  return { anchored: count(reading.anchored), fallbacks, misses: { section: count(reading.misses?.section), unreferenced: count(reading.misses?.unreferenced) },
+    extended: count(reading.extended), extendedSections: count(reading.extended) ? extendedSections(store, campaignId, taskId) : [],
+    broke: broke.map((item) => ({ ...item, given: after ? given.has(item.anchor ? `${item.path}#${item.anchor}` : item.path) : null })),
+    nextStarted: broke.length ? Boolean(after) : null };
 }
 
 // The command names config.json may set (`commands.<name>`). Only the names leave this module, never the configured value:
@@ -491,7 +553,9 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
             costs.get(task.task_id) ?? { runs: 0, reportedUsd: 0, unreportedRuns: 0, runningRuns: 0, retries: 0 }),
           // MODEL_ROUTING R6 (UI12): its models and tiers, why it moved up, and its cost in each unit apart, from status.
           routing: stepRouting(status.tasks.find((item) => item.id === task.task_id)),
-          costByUnit: costByUnit(status.tasks.find((item) => item.id === task.task_id)?.costByUnit) })),
+          costByUnit: costByUnit(status.tasks.find((item) => item.id === task.task_id)?.costByUnit),
+          // SCOPED_READING (UI18): the rule a returned change broke and what the next attempt was given; null before READ3.
+          reading: stepReading(store, id, task.task_id, status.tasks.find((item) => item.id === task.task_id)?.reading) })),
         agents: operations.map((op) => {
           const beat = heartbeat(dataDir, op.run_dir);
           return { id: op.id, taskId: op.task_id, role: op.kind === 'verify' ? 'Verifier' : 'Implementer',
