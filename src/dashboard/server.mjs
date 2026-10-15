@@ -33,7 +33,9 @@ const pageNavigation = (req, path) => req.method === 'GET' && path === '/' && !r
  * GitHub project with read-only gh calls; `projectConnection` is for tests only (synthetic gh and branch reads, gitEnv,
  * statfs) and is never given by main.mjs.
  */
-export function createDashboardServer({ dataDir, roadmap, merges = null, host = {}, releases = {}, projectConnection = {} }) {
+// provenanceRoot: the checkout whose origin/main a Resume is checked against (AW-005); by default the code this server runs
+// from. Tests pass a disposable checkout so the check never reads this repository's own git state.
+export function createDashboardServer({ dataDir, roadmap, merges = null, host = {}, releases = {}, projectConnection = {}, provenanceRoot = undefined }) {
   const csrf = randomBytes(32).toString('hex');
   // Which machine and dashboard version this is, so a screenshot identifies its supervisor.
   const machine = { name: safeText(host.name ?? hostname(), 64) || null, revision: /^[0-9a-f]{7,40}$/.test(host.revision ?? '') ? host.revision : null };
@@ -94,7 +96,7 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       let value;
       try { value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))); }
       catch { return send(400, { error: 'Invalid JSON.' }); }
-      if (path === '/api/commands') return send(202, applyCommand(dataDir, value));
+      if (path === '/api/commands') return send(202, applyCommand(dataDir, value, Date.now(), { provenanceRoot }));
       if (path === '/api/messages') return send(202, postMessage(dataDir, value));
       // Add project (UI13): each answers 404 while it is off, as before it existed.
       if (path === '/api/projects/preflight') return send(200, previewProject(dataDir, value, projectConnection));

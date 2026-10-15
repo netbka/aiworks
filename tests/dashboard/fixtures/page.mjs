@@ -7,6 +7,7 @@ import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { createDashboardServer } from '../../../src/dashboard/server.mjs';
 import { configuredCheckouts, configuredGitCommand, MergeWatcher, publishedSteps } from '../../../src/dashboard/merges.mjs';
@@ -158,11 +159,16 @@ function call(port, path, { method = 'GET', headers = {}, body } = {}) {
 export async function openPage(t, { store = 'full', host = 'review-pc', server: serverOptions = {} } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'aiworks-page-'));
   const fixture = buildReviewFixture(join(root, 'review'), { store });
-  const { dataDir } = fixture;
+  const { dataDir, runtime } = fixture;
+  // Resume must be refused on every page here (AW-005: "not merged yet"), whatever this repository's own git state is:
+  // one commit after the fixture runtime's origin/main makes that disposable checkout unmerged, and the server checks it.
+  const unmerged = spawnSync('git', ['-c', 'user.name=Review Fixture', '-c', 'user.email=review-fixture@example.invalid',
+    'commit', '-q', '--allow-empty', '-m', 'Unmerged local change'], { cwd: runtime, encoding: 'utf8', windowsHide: true });
+  if (unmerged.status !== 0) throw new Error(`git commit in the fixture runtime: ${unmerged.stderr}`);
   const merges = new MergeWatcher({ steps: () => publishedSteps(dataDir), checkouts: configuredCheckouts(dataDir), git: configuredGitCommand(dataDir) });
   await merges.refresh();
   const roadmap = { snapshot: () => ({ entries: [], governance: { configured: false, reason: 'Not used by this test.' } }) };
-  const server = createDashboardServer({ dataDir, roadmap, merges, host: { name: host, revision: '0123456789ab' }, ...serverOptions });
+  const server = createDashboardServer({ dataDir, roadmap, merges, host: { name: host, revision: '0123456789ab' }, provenanceRoot: runtime, ...serverOptions });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const { port } = server.address();

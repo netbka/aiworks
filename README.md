@@ -326,7 +326,7 @@ This opens the dashboard at `http://127.0.0.1:4319` with three example projects 
 
 ### Validation
 
-After changing code, schemas, fixtures or documentation, run `npm install` once and then `npm run check`. It checks that no private installation files are in the commit, validates the example plans and runs the test suite.
+After changing code, schemas, fixtures or documentation, run `npm install` once and then `npm run check`. It checks that no private installation files are in the commit, validates the example plans and runs the test suite. `npm run test:quick` runs the unit and service tiers only, for a fast pass while you work; the gate is the full check.
 
 ### Start here
 
