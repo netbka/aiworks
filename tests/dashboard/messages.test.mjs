@@ -11,8 +11,10 @@ import { Store } from '../../src/supervisor/store.mjs';
 import { campaignStart } from '../../src/supervisor/api.mjs';
 import { declaration } from '../supervisor/helpers.mjs';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
-import { PLAN_GOAL_LIMIT, PLAN_SOURCES, planRequestText, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
+import { INSTRUCTION_LOOKS_SENSITIVE, PLAN_GOAL_LIMIT, PLAN_SOURCES, planRequestText, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { ownerView } from '../../src/dashboard/owner.mjs';
+import { safeText } from '../../src/dashboard/roadmap.mjs';
+import { openPage, visibleText } from './fixtures/page.mjs';
 
 test('owner messages are accepted only from the dashboard origin, stored once and shown with receipts', async (t) => {
   const dataDir = mkdtempSync(join(tmpdir(), 'aiworks-messages-'));
@@ -227,4 +229,102 @@ test('the Start work page offers Plan only, shows Plan and do with its not-built
   assert.doesNotMatch(page(), /mode: 'plan-and-do'/);
   // Start work is offered from Now, now that its screen exists.
   assert.match(page(), /nowView\(project, \{ \.\.\.state, offline \}, \{ now: Date\.now\(\), startWork: true \}\)/);
+});
+
+// An instruction the credential filter flags is refused with its own reason (aiworks#61). The filter is unchanged: the
+// same texts are flagged, nothing is recorded or queued for them, and text it does not flag is still accepted.
+test('an instruction the credential filter flags is refused as INSTRUCTION_LOOKS_SENSITIVE and nothing is recorded', async (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'aiworks-sensitive-'));
+  const store = new Store(join(dataDir, 'supervisor.db'));
+  const d = declaration(); campaignStart(store, d);
+  const server = createDashboardServer({ dataDir, roadmap: { snapshot: () => ({ governance: { configured: true, code: null, reason: null }, entries: [] }) } });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => new Promise((done) => { server.closeAllConnections(); server.close(() => { store.close(); rmSync(dataDir, { recursive: true, force: true, maxRetries: 5 }); done(); }); }));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const csrf = (await (await fetch(`${base}/api/session`)).json()).csrf;
+  const c = store.campaign(d.campaignId);
+  const instruct = async (text, extra = {}) => {
+    const response = await fetch(`${base}/api/commands`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json', 'X-Dashboard-CSRF': csrf },
+      body: JSON.stringify({ campaignId: d.campaignId, action: 'instruct', requestId: randomUUID(), version: c.version, authorizationVersion: c.authorization_version,
+        scopeDigest: c.scope_digest, taskId: 'T1', taskVersion: 1, role: 'implement', text, ...extra }) });
+    return { status: response.status, body: await response.json() };
+  };
+  const recorded = () => ({ events: store.all('SELECT seq FROM events').length, journal: store.all('SELECT * FROM journal').length });
+  const before = recorded();
+  // "session ... =" and "pass:" are the spans the owner hit in aiworks#61; the filter still flags both.
+  for (const text of ['Keep the session label as it is; the retry count = 3 stays.', 'The checker is a pass: say so in its detail.', 'Bearer synthetic-credential-material']) {
+    assert.notEqual(safeText(text, 2000), text, `the filter still flags: ${text}`);
+    assert.deepEqual(await instruct(text), { status: 400, body: { error: INSTRUCTION_LOOKS_SENSITIVE, code: 'INSTRUCTION_LOOKS_SENSITIVE' } });
+  }
+  assert.equal(INSTRUCTION_LOOKS_SENSITIVE, 'This text looks like it may contain a credential, so nothing was sent. Remove any key, token, password or session value and send again.');
+  assert.deepEqual(recorded(), before, 'nothing reaches the journal or the queue for a refused text');
+  // Any other invalid instruction keeps the generic refusal, without the code.
+  assert.deepEqual(await instruct('Explain the edge cases in the report.', { role: 'shell' }), { status: 400, body: { error: 'Invalid dashboard command.' } });
+  // Text the filter does not flag is accepted and queued once.
+  const plain = 'Keep the run limit as it is; the retry count stays at three.';
+  assert.equal(safeText(plain, 2000), plain);
+  const accepted = await instruct(plain);
+  assert.deepEqual([accepted.status, accepted.body.accepted], [202, true]);
+  assert.deepEqual(store.all("SELECT payload FROM events WHERE kind = 'agent-instruction'").map((event) => event.payload.text), [plain]);
+});
+
+test('the page shows the sensitive-text refusal next to the instruction and keeps the draft', () => {
+  const source = page();
+  // The code reaches the page, and only a successful send deletes the draft.
+  assert.match(source, /throw Object\.assign\(new Error\(value\.error\), \{ known: true, detail: value\.detail \?\? null, code: value\.code \?\? null \}\)/);
+  const deliver = /^async function deliver\([\s\S]*?\n}$/m.exec(source)?.[0] ?? '';
+  assert.match(deliver, /if \(error\.code === 'INSTRUCTION_LOOKS_SENSITIVE' && payload\.action === 'instruct'\) return refuseInstruction\(payload, error\.message, draftAddress, from\);/);
+  assert.equal(deliver.match(/drafts\.delete/g)?.length, 1);
+  assert.ok(deliver.indexOf('drafts.delete') < deliver.indexOf('catch (error)'), 'the draft is deleted only when the instruction was accepted');
+  assert.match(source, /\$\('#instruction-text'\)\.closest\('label'\)\.append\(el\('span', \{ id: 'instruction-refusal', class: 'notice warning', role: 'alert', hidden: true \}\)\);/);
+  // Run refuseInstruction with a stand-in page: it opens the dialog again, with the reason beside the text.
+  const stubs = `const nodes = { '#instruction-refusal': { hidden: true, textContent: '' }, '#instruction-text': { attributes: {}, setAttribute(k, v) { this.attributes[k] = v; } } };
+    const $ = (selector) => nodes[selector]; const calls = []; let dialogOpen = false; const current = { address: '#/p/example/work' };
+    const document = { querySelector: () => (dialogOpen ? {} : null) };
+    const campaignById = (id) => (id === 'c1' ? { id } : null);
+    const openInstructions = (c) => calls.push(['open', c.id]); const notice = (...args) => calls.push(['notice', ...args]);
+    const page = { nodes, calls, current, setDialogOpen: (open) => { dialogOpen = open; } };`;
+  const refusal = /^function refuseInstruction\([\s\S]*?\n}$/m.exec(source)?.[0];
+  assert.ok(refusal, 'dashboard.js has refuseInstruction');
+  const { refuseInstruction, page: stand } = new Function(`${stubs}\n${refusal}\nreturn { refuseInstruction, page };`)();
+  refuseInstruction({ campaignId: 'c1' }, INSTRUCTION_LOOKS_SENSITIVE, '#/p/example/work', '#/p/example/work');
+  assert.deepEqual(stand.calls, [['open', 'c1']]);
+  assert.deepEqual([stand.nodes['#instruction-refusal'].textContent, stand.nodes['#instruction-refusal'].hidden], [INSTRUCTION_LOOKS_SENSITIVE, false]);
+  assert.equal(stand.nodes['#instruction-text'].attributes['aria-invalid'], 'true');
+  // Moved to another screen meanwhile: the reason is a notice for the screen it was sent from; the draft stays saved there.
+  stand.calls.length = 0; stand.current.address = '#/needs';
+  refuseInstruction({ campaignId: 'c1' }, INSTRUCTION_LOOKS_SENSITIVE, '#/p/example/work', '#/p/example/work');
+  assert.deepEqual(stand.calls, [['notice', INSTRUCTION_LOOKS_SENSITIVE, null, null, '#/p/example/work']]);
+  // The reason is cleared whenever the dialog opens afresh.
+  const open = /^function openInstructions\([\s\S]*?\n}$/m.exec(source)?.[0] ?? '';
+  assert.match(open, /\$\('#instruction-refusal'\)\.hidden = true; \$\('#instruction-refusal'\)\.textContent = ''; \$\('#instruction-text'\)\.removeAttribute\('aria-invalid'\);/);
+});
+
+test('through the page: a flagged instruction opens again with its draft and the reason beside it; nothing is queued', async (t) => {
+  const page = await openPage(t);
+  await page.go('#/p/example%2Fshop-app/step/shop-wishlist/T1');
+  const button = [...page.$('#content').walk()].find((node) => node.tagName === 'BUTTON' && node.textContent.trim() === 'Send guidance');
+  assert.ok(button && !button.disabled, 'Send guidance is offered');
+  button.click();
+  const text = 'Keep the session label as it is; the retry count = 3 stays.';
+  page.$('#instruction-text').value = text;
+  page.$('#instruction-text').dispatchEvent({ type: 'input' });
+  const queued = () => {
+    const store = new Store(join(page.dataDir, 'supervisor.db'));
+    try { return store.all("SELECT seq FROM events WHERE kind = 'agent-instruction'").length; } finally { store.close(); }
+  };
+  const before = queued();
+  page.$('#instruction-form').dispatchEvent({ type: 'submit', defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } });
+  await page.settle();
+  const refusal = page.$('#instruction-refusal');
+  assert.equal(page.$('#instruction-dialog').open, true, 'the dialog is open again');
+  assert.equal(page.$('#instruction-text').value, text, 'the draft is kept');
+  assert.deepEqual([refusal.hidden, visibleText(refusal)], [false, INSTRUCTION_LOOKS_SENSITIVE]);
+  assert.equal(refusal.parentNode, page.$('#instruction-text').parentNode, 'the reason is beside the text it is about');
+  assert.equal(page.$('#instruction-text').getAttribute('aria-invalid'), 'true');
+  assert.equal(queued(), before, 'nothing was queued');
+  // Opened again by the owner, the dialog starts without the old reason; the draft is still there.
+  page.$('#close-instruction').click();
+  button.click();
+  assert.deepEqual([refusal.hidden, page.$('#instruction-text').value, page.$('#instruction-text').getAttribute('aria-invalid')], [true, text, null]);
 });

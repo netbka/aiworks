@@ -18,6 +18,8 @@ const readConfig = (dataDir) => {
   try { return JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { return {}; }
 };
 
+/** Why an instruction the credential filter flags is refused, and what to change. Nothing is recorded or sent for it. */
+export const INSTRUCTION_LOOKS_SENSITIVE = 'This text looks like it may contain a credential, so nothing was sent. Remove any key, token, password or session value and send again.';
 // `detail` is the machine's own reason, for the page's Details disclosure; `message` is what the owner reads.
 const fail = (status, message, detail = null) => Object.assign(new Error(message), { status, ...(detail ? { detail } : {}) });
 const identifier = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -670,9 +672,13 @@ export function applyCommand(dataDir, input, now = Date.now(), { provenanceRoot 
       !Number.isSafeInteger(input.authorizationVersion) || !/^[a-f0-9]{64}$/.test(input.scopeDigest ?? '') ||
       input.taskId !== undefined && (!identifier.test(input.taskId) || !['recheck', 'instruct'].includes(input.action) || !Number.isSafeInteger(input.taskVersion)) ||
       input.action === 'instruct' && (!input.taskId || !['implement', 'verify'].includes(input.role) || typeof input.text !== 'string' || !input.text.trim() || input.text.length > 2000 ||
-        /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(input.text) || safeText(input.text, 2000) !== input.text) ||
+        /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(input.text)) ||
       input.action !== 'instruct' && (input.text !== undefined || input.role !== undefined)) {
     throw fail(400, 'Invalid dashboard command.');
+  }
+  // The same credential filter as before, refused with its own reason so the owner knows what to change (aiworks#61).
+  if (input.action === 'instruct' && safeText(input.text, 2000) !== input.text) {
+    throw Object.assign(fail(400, INSTRUCTION_LOOKS_SENSITIVE), { code: 'INSTRUCTION_LOOKS_SENSITIVE' });
   }
   if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'AIWorks can’t read its work records on this computer right now.');
   const store = new Store(join(dataDir, 'supervisor.db'));
