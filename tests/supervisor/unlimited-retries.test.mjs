@@ -80,6 +80,22 @@ test('a resolved result resets the identical-failure count (aiworks#136)', { ski
   assert.equal(store.task(id, 'T1').blocked, null);
 });
 
+test('a failure of the same class with another detail resets the identical-failure count (aiworks#136)', { skip: skipWithoutSqlite }, async (t) => {
+  const decl = declaration({ tasks: [declaration().tasks[0]], limits: NONE });
+  // 'report' and 'dirty' both end as invalid-result for a commit task, with different details.
+  const three = ['report', 'report', 'report'];
+  const { env, store, controller, id } = setup(t, { decl, scenario: { implement: [...three, 'dirty', ...three, 'commit'] } });
+  await runUntil(controller, store, id, (c) => c.control === 'finished', { timeoutMs: 120_000 });
+  const failed = store.all("SELECT detail FROM journal WHERE kind = 'operation-finished'").map((row) => row.detail)
+    .filter((detail) => detail.op.includes('.implement.') && detail.class !== 'result');
+  assert.deepEqual(failed.map((detail) => detail.class), Array(7).fill('invalid-result'), 'seven failures of one class');
+  assert.equal(new Set(failed.map((detail) => detail.detail)).size, 2, 'with two different details');
+  assert.notEqual(failed[3].detail, failed[2].detail, 'the fourth failure carries another detail');
+  assert.equal(env.calls().filter((c) => c.role === 'implement').length, 8, 'the other detail splits the run, so the task is never held');
+  assert.equal(store.all("SELECT * FROM journal WHERE kind = 'blocker-raised'").length, 0);
+  assert.equal(store.task(id, 'T1').blocked, null);
+});
+
 test('the worker contract routes authorization and owner-decision blockers to blocked-owner-reserved (historical regression)', async () => {
   const { buildPrompt } = await import('../../src/supervisor/adapters/claude.mjs');
   const packet = { goal: 'g', constraints: [], acceptance: ['a'], references: [] };
