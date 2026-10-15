@@ -31,10 +31,11 @@ const discover = (directory) => readdirSync(directory, { withFileTypes: true }).
 // A file that starts a supervisor controller, a contained worker run, the CLI or a containment helper is a rehearsal:
 // it imports the supervisor harness's process-starting exports, or names a fault, a fixture executable or containment.
 // Every import from ./helpers.mjs except the pure ones (declaration, GOVERNANCE, ROOT, SQLITE, skipWithoutSqlite, sleep)
-// starts processes. When unsure, a file is a rehearsal.
+// starts processes.
 const REHEARSAL = /\b(environment|runUntil|runtimeCheckout|runCli|CLI)\b[^;]*from '\.\/helpers\.mjs'|from '\.\/[a-z-]+-harness\.mjs'|new Controller|keep-preload|stopOwnedRun|containment|POWERSHELL|AIWORKS_FAULT|fake-(claude|gh|agy)|browser-mcp/;
-// A file that starts a server, builds the review fixture or spawns git is a service file.
-const SERVICE = /child_process|\.listen\(|createServer|review-store|startDashboard|main\.mjs/;
+// A file that starts a server, builds the review fixture, spawns git or runs any other child process (a synthetic
+// executable started through process.execPath) is a service file. Only a file that matches neither pattern is a unit.
+const SERVICE = /child_process|process\.execPath|\.listen\(|createServer|review-store|startDashboard|main\.mjs/;
 const tierOf = (source) => (REHEARSAL.test(source) ? 'rehearsal' : SERVICE.test(source) ? 'service' : 'unit');
 
 // The slowest files of each tier, slowest first (measured 2026-10-14; the runner prints every file's time). A tier's
@@ -118,7 +119,7 @@ async function run(group, tier, limit, testArgs) {
   return status;
 }
 
-  const { tiers, rest } = parseArgs(process.argv.slice(2));
+const { tiers, rest } = parseArgs(process.argv.slice(2));
 const files = discover(join(root, 'tests')).sort();
 const byTier = Object.fromEntries(TIERS.map((tier) => [tier, []]));
 for (const file of files) byTier[tierOf(readFileSync(join(root, file), 'utf8'))].push(file);
