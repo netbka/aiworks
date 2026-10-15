@@ -27,12 +27,12 @@ The active local service uses a detached checkout of a merged, independently rev
   - **Needs you** is built from supervisor fields and local git, never from worker output or the GitHub API. It lists:
     - published steps whose merge is not seen yet, for the owner's review and merge, with the steps that build on them and any step that took many tries. When the owner delegated merging, verified ones are not listed until nothing has merged them for `merges.stallHours` ([Merging delegated by the owner](#merging-delegated-by-the-owner));
     - owner decisions and stopped steps;
-    - a supervisor that is not running. That is said only from the computer-wide state the supervisor reports (`supervisorLiveness`: no lease live for a minute), once, under AIWorks itself;
+    - a supervisor that is not running. That is said only from the computer-wide state the supervisor reports (`supervisorLiveness`: no lease live for a minute), once, under AIWorks itself. When it holds up work in several projects, AIWorks itself is listed before the project groups (OWNER_WORKSPACE §4.2);
     - one piece of work the running supervisor has not checked on, or not picked up, past the 5-minute grace. It is listed under its own project with the time its lease ended, never as a stopped supervisor (aiworks#11 review 4 F2);
     - a coordinator that cannot read messages;
     - a finished step with no recorded result link. The item says *Check on GitHub* and links the step issue.
 
-    A link to the coordinator's latest answer sits under the list. The **Needs you** metric counts these items. A published step whose merge check is still running or due is shown as `?`, never as nothing. With nothing else listed, the heading then says *Checking for merges before listing what needs you*.
+    A link to the coordinator's latest answer sits under the list. The **Needs you** metric counts these items. A published step whose merge check is still running or due is shown as `?`, never as nothing, and the Needs me count in the header reads partial, for example *7 + checking*, until the check ends. A project's state on Projects says the same (OWNER_WORKSPACE §4.1, aiworks#11 review 4 F3). With nothing else listed, the heading then says *Checking for merges before listing what needs you*.
   - **Each step item leads with its subject.** There is one item per step. The item starts with what to do (*Review and merge*, *Decision needed*, *Check on GitHub*), then what the step delivers (its declared `outcome`, else its title) and an *Open PR* or *Open step issue* link.
     - The evidence is one compact line, *Checker accepted aaaaaaa · CI and conflicts on the PR*. Opening it shows the full sentence. The dashboard does not read CI checks or conflicts: the pull request shows them.
     - The repository and campaign follow in small text.

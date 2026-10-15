@@ -63,8 +63,11 @@ test('F9: AIWorks stopped on this computer is one Needs me item for all the work
   assert.equal(stops.length, 1, JSON.stringify(stops.map((item) => item.text)));
   const [stop] = stops;
   assert.deepEqual([stop.repository, stop.campaignId, stop.text], [null, null, 'AIWorks stopped on this computer']);
-  assert.deepEqual(owner.groups.at(-1).name, SYSTEM_GROUP);
-  assert.ok(owner.groups.at(-1).items.includes(stop), 'listed once, under AIWorks itself');
+  // It holds up work in several projects, so AIWorks itself leads Needs me, with it at the top (review 4 F5).
+  assert.ok(stop.holdsUp.length > 1, JSON.stringify(stop.holdsUp));
+  assert.deepEqual(owner.groups[0].name, SYSTEM_GROUP);
+  assert.equal(owner.groups[0].items[0], stop, 'listed once, under AIWorks itself, first');
+  assert.equal(owner.items.filter((item) => item === stop).length, 1);
   // It names the work it holds up, and what the pause means for the paused one.
   for (const state of ['supervisor-stopped', 'paused-supervisor-stopped']) {
     assert.equal(owner.campaigns[REVIEW_STATES[state].campaignId].liveness, 'stopped', state);
@@ -152,4 +155,72 @@ test('F16: with several pieces of work, Now leads with what needs the owner, or 
   // No lease is live: AIWorks itself stopped, and the owner's own items still lead over it.
   assert.equal(lead(stopped), 'supervisor-stopped');
   assert.equal(lead(stopped, { ...blocked, ...lapsed(60) }), 'needs-decision');
+});
+
+test('F3: while a merge check runs, the Needs me count and each project state read as partial, then final once it ends', async (t) => {
+  // The dashboard's first answer, before any merge check finished (review 4: "Needs me 7" and shop-app "Running", then 10).
+  let merges = { refreshing: true, repositories: [], steps: {} };
+  const page = await openPage(t, { server: { merges: { refresh: () => {}, snapshot: () => merges } } });
+  const views = () => {
+    const now = Date.now(), supervisor = supervisorSnapshot(page.dataDir, now), owner = ownerView(supervisor, merges, { host: 'review-pc', now });
+    return { owner, projects: projectsView(supervisor, owner, { repositories: PROJECTS, now }).projects };
+  };
+  /** A project's state never contradicts its Needs me items, and never reads final while its results are unknown. */
+  const agree = ({ owner, projects }) => {
+    for (const project of projects) {
+      const group = owner.groups.find((item) => item.project?.toLowerCase() === project.repository.toLowerCase());
+      assert.equal(project.state.key === 'needs-you', Boolean(group?.count), `${project.id}: ${project.state.text}`);
+      assert.equal(project.details.needsYou, group?.count ?? 0, project.id);
+      if (project.details.checking) {
+        assert.ok(!['running', 'finished', 'cancelled', 'no-work'].includes(project.state.key), `${project.id}: ${project.state.key}`);
+        assert.match(project.state.text, new RegExp(`Checking GitHub… The state of ${project.details.checking} results? is not known yet\.$`), project.id);
+      } else assert.doesNotMatch(project.state.text, /Checking GitHub/, project.id);
+    }
+  };
+  const first = views();
+  assert.ok(first.owner.unknownResults > 0 && first.owner.count > 0, 'the fixture has owner items and results not checked yet');
+  agree(first);
+  const checking = first.projects.filter((project) => project.details.checking);
+  assert.ok(checking.length > 1, 'several projects wait for the check');
+  const shop = first.projects.find((project) => project.id === 'example/shop-app');
+  assert.ok(shop.details.checking && shop.state.key !== 'running', `shop-app never reads merely Running: ${shop.state.key}`);
+  // On first load the global count is partial, never the confirmed number alone.
+  assert.equal(page.$('#needs-count').textContent, `${first.owner.count} + checking`);
+  await page.go('#/projects');
+  for (const project of checking) assert.ok(screen(page).includes(project.state.text), `${project.id}: ${screen(page)}`);
+  // "Nothing changed" is never said while what merged is not known yet.
+  assert.doesNotMatch(screen(page), /Nothing changed/);
+
+  // The check ends: the final count, and every project state final.
+  const watcher = new MergeWatcher({ steps: () => publishedSteps(page.dataDir), checkouts: configuredCheckouts(page.dataDir), git: configuredGitCommand(page.dataDir) });
+  await watcher.refresh();
+  merges = watcher.snapshot();
+  const final = views();
+  assert.equal(final.owner.unknownResults, 0);
+  assert.ok(final.owner.count > first.owner.count, `${first.owner.count} then ${final.owner.count}`);
+  agree(final);
+  assert.ok(final.projects.every((project) => !project.details.checking));
+  await page.refresh();
+  assert.equal(page.$('#needs-count').textContent, String(final.owner.count));
+  assert.doesNotMatch(screen(page), /Checking GitHub/);
+});
+
+test('F5: an AIWorks itself item that holds up several projects leads Needs me; one that holds up one project stays last', async (t) => {
+  const two = ownerView({ available: true, coordinator: { configError: 'coordinator.reportTo is missing', blocked: null, messages: [] }, recent: null, campaigns: [
+    campaign('notes-a', 'example/notes', { ...lapsed(60), tasks: [decision('N1', 'example/notes')] }), campaign('shop-a', 'example/shop', lapsed(30)),
+    campaign('shop-fault', 'example/shop', { livenessDefect: true, ...lapsed(60) })] }, undefined, { now: NOW });
+  assert.deepEqual(two.groups.map((group) => [group.name, group.items.map((item) => item.kind)]),
+    [[SYSTEM_GROUP, ['controller', 'controller', 'coordinator']], ['notes', ['decision']]]);
+  assert.deepEqual(two.groups[0].items[0].holdsUp, ['example/notes', 'example/shop']);
+  // Grouping only: the same items and counts.
+  assert.deepEqual([two.headline, two.groups.reduce((n, group) => n + group.count, 0)], ['Needs you (2)', 2]);
+  const one = ownerView({ available: true, coordinator: null, recent: null, campaigns: [
+    campaign('notes-a', 'example/notes', { ...lapsed(60), tasks: [decision('N1', 'example/notes')] })] }, undefined, { now: NOW });
+  assert.deepEqual(one.groups.map((group) => group.name), ['notes', SYSTEM_GROUP]);
+  // On the page (the stopped store): AIWorks itself is the first group heading, before every project.
+  const page = await openPage(t, { store: 'stopped' });
+  await page.go('#/needs');
+  const headings = page.document.querySelectorAll('.needs-group h3').map((heading) => visibleText(heading));
+  assert.ok(headings[0].startsWith(SYSTEM_GROUP), JSON.stringify(headings));
+  assert.ok(headings.length > 1 && headings.slice(1).every((heading) => !heading.startsWith(SYSTEM_GROUP)), JSON.stringify(headings));
 });

@@ -422,7 +422,7 @@ function stoppedItem(halted, entries, onPurpose) {
   if (halted.length === 1) {
     const [{ c, at, how, paused }] = halted;
     const words = how === 'silent' ? NEEDS.silent : how === 'not-picked-up' ? NEEDS.notPickedUp(paused) : NEEDS.stopped(paused);
-    return { kind: 'controller', campaignId: c.id, repository: null, about: c.repository, at, text: words.text, points: [{ link: null, text: why(words.point) }] };
+    return { kind: 'controller', campaignId: c.id, repository: null, about: c.repository, holdsUp: [c.repository], at, text: words.text, points: [{ link: null, text: why(words.point) }] };
   }
   const known = halted.map((entry) => entry.at).filter(Number.isFinite);
   // What all of it has in common is said once, in the item's text; each piece of work notes only what differs.
@@ -432,10 +432,11 @@ function stoppedItem(halted, entries, onPurpose) {
   for (const { c, how, paused } of halted) {
     const key = c.repository.toLowerCase(), purpose = entries.find((entry) => entry.id === c.id).purpose;
     const name = purpose ? `${purpose.text}${purpose.variant ? ` (${purpose.variant})` : ''}` : c.id;
-    if (!projects.has(key)) projects.set(key, { name: short(c.repository), works: [] });
+    if (!projects.has(key)) projects.set(key, { repository: c.repository, name: short(c.repository), works: [] });
     projects.get(key).works.push(NEEDS.heldWork(name, how === common ? null : how, paused));
   }
-  return { kind: 'controller', campaignId: null, repository: null, at: known.length ? Math.max(...known) : null, text: words.text,
+  return { kind: 'controller', campaignId: null, repository: null, holdsUp: [...projects.values()].map((project) => project.repository),
+    at: known.length ? Math.max(...known) : null, text: words.text,
     points: [{ link: null, text: why(words.point) }, ...[...projects.values()].map(({ name, works }) => ({ link: null, text: NEEDS.heldUp(name, works) }))] };
 }
 
@@ -444,7 +445,9 @@ export const SYSTEM_GROUP = 'AIWorks itself';
 /**
  * Needs me (OWNER_WORKSPACE slice S3): the same items, grouped by project. One group per repository (case-insensitive,
  * in the order its first item is listed), named by its short name, or `owner/name` when two share one; then "AIWorks
- * itself" last. That group holds the items about this computer's AIWorks: the one stopped-AIWorks item, which is the
+ * itself" last, unless it holds an item that holds up work in several projects (`holdsUp`, AIWorks stopped on this
+ * computer): then it comes first, with that item at its top, because no project item it holds up can move until it is
+ * fixed (OWNER_WORKSPACE §4.2, aiworks#11 review 4 F5). That group holds the items about this computer's AIWorks: the one stopped-AIWorks item, which is the
  * owner's to restart, and the items marked `system`, which say they are not owner actions (a supervisor fault, an
  * unreadable coordinator inbox). A group's `count` is its owner actions, so a project's count is the Projects screen's
  * and the counts add up to the headline; `notCounted` is its items that are not owner actions (review F6, F17).
@@ -461,7 +464,11 @@ function needsGroups(items) {
   const projects = [...groups.values()];
   const shared = projects.filter((group) => projects.some((other) => other !== group && other.name.toLowerCase() === group.name.toLowerCase()));
   for (const group of shared) group.name = group.project;
-  if (system.length) projects.push({ key: 'aiworks-itself', project: null, name: SYSTEM_GROUP, items: system });
+  if (system.length) {
+    const root = (item) => (item.holdsUp?.length ?? 0) > 1;
+    const group = { key: 'aiworks-itself', project: null, name: SYSTEM_GROUP, items: [...system.filter(root), ...system.filter((item) => !root(item))] };
+    if (system.some(root)) projects.unshift(group); else projects.push(group);
+  }
   return projects.map((group) => {
     const count = group.items.filter((item) => !item.system).length;
     return { ...group, count, notCounted: group.items.length - count };
