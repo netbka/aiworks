@@ -98,7 +98,7 @@ test('F10: with nothing to read requests, Start work and Messages say so in owne
   assert.equal(page.$('#start-goal').value, 'A shopping list from a recipe');
   // Messages: the same words, and no "New message".
   await page.go('#/settings/messages');
-  assert.match(visibleText(page.$('#content')), new RegExp(`^Messages to the coordinator ${NOT_READ.title.replace('.', '\\.')} `));
+  assert.match(visibleText(page.$('#content')), new RegExp(`^Your messages to AIWorks ${NOT_READ.title.replace('.', '\\.')} `));
   assert.equal(visibleText(page.$('[data-not-read]')), said);
   assert.equal(buttonNamed(page, '✉ New message'), undefined, 'sending is not offered');
   // Invalid reading set-up: said in owner words, the machine's reason only under Details.

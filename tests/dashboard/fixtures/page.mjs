@@ -245,7 +245,12 @@ export function visibleText(node, { dialogs = false } = {}) {
 
 /** Internal words the owner never reads outside a details disclosure (OWNER_WORKSPACE §2.2; aiworks#11 review F3, F7). */
 export const INTERNAL_WORDS = [/\bB[2-4]\b/, /\bexecutors?\b/i, /\bcampaigns?\b/i, /\bT\d+\b/, /\bcontrollers?\b/i, /cli\.mjs/, /campaigns\//, /\bAW-\d{3}\b/,
-  /\bdeclarations?\b/i, /checker accepted/i, /owner-reserved/i];
+  /\bdeclarations?\b/i, /checker accepted/i, /owner-reserved/i,
+  // aiworks#11 review 4 F4 and F17: the machine's parts and the platform's placeholder name are not owner words (§2.1).
+  // "AIWorks Supervisor" is the name of the computer's scheduled task, which the owner may have to start.
+  /governance provider/i, /rules folder/i, /(?<!AIWorks )\bsupervisors?\b/i, /\bcoordinator\b/i,
+  // "Cursor Agent" is the name of an AI worker's product, not the word for one.
+  /(?<!Cursor )\bagents?\b/i];
 /** The internal words found in `text`, each with a little context. */
 export const internalWords = (text) => INTERNAL_WORDS.flatMap((word) => [...text.matchAll(new RegExp(word.source, `${word.flags}g`))]
   .map((m) => `${m[0]} in “…${text.slice(Math.max(0, m.index - 60), m.index + m[0].length + 60)}…”`));

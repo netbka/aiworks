@@ -412,10 +412,10 @@ Nothing is fetched or created at connect: no `git fetch`, no worktree and no bra
 | `GH_NO_ACCESS` | Needs setup | Your GitHub account can't open {repo}. Check the repository and your access. | Check again |
 | `GH_UNREACHABLE` | Temporarily unavailable | GitHub can't be reached right now. Your project is unchanged; AIWorks will check again. | Check again |
 | `BRANCH_MISSING` | Needs setup | {repo} has no branch named {branch}. Choose the branch AIWorks should start from. | Choose branch |
-| `REGISTRY_MISSING` | Needs setup | {repo} isn't in governance provider's project list, so AIWorks can plan but not start work. Add it there, then check again. | Check again |
-| `REGISTRY_AMBIGUOUS` | Needs setup | governance provider lists {repo} more than once ({ids}). AIWorks won't guess which rules apply. | Check again |
-| `REGISTRY_INVALID` | Needs setup | governance provider's entry for {repo} has an error, so AIWorks can't read its rules. | Check again |
-| `REGISTRY_CHANGED` | Ready, or the code above | (Notice) The project rules for {repo} changed in governance provider. AIWorks uses the new rules. | — |
+| `REGISTRY_MISSING` | Needs setup | {repo} isn't listed in your project rules, so AIWorks can plan but not start work. Add it there, then check again. | Check again |
+| `REGISTRY_AMBIGUOUS` | Needs setup | Your project rules list {repo} more than once ({ids}). AIWorks won't guess which rules apply. | Check again |
+| `REGISTRY_INVALID` | Needs setup | The entry for {repo} in your project rules has an error, so AIWorks can't read its rules. | Check again |
+| `REGISTRY_CHANGED` | Ready, or the code above | (Notice) The project rules for {repo} changed. AIWorks uses the new rules. | — |
 | `CONFIG_CONFLICT` | Needs setup | The AIWorks configuration file on this computer puts {repo} at {configPath}, but this project is at {root}. AIWorks won't guess which one is right. Correct that entry in the configuration file, which is outside AIWorks, or disconnect this project. Then choose Check again. | Check again |
 | `GIT_SUBFOLDER` | not saved | This folder is inside the Git repository {top}. Connect {top} instead. | Use {top} |
 | `GIT_WORKTREE` | not saved | This folder is a Git worktree. Connect the main checkout at {main} instead. | Use {main} |
@@ -452,12 +452,14 @@ Nothing is fetched or created at connect: no `git fetch`, no worktree and no bra
 | `MIRROR_SPACE` | not saved | There isn't enough free space for AIWorks's copy: {need} needed, {free} free on {drive}. | Check again |
 | `MIRROR_CHANGED` | Needs setup | AIWorks's copy of this project changed unexpectedly, so AIWorks stopped using it. | Rebuild copy |
 | `LOCAL_START_OFF` | Ready, `startWork: false` | You can open and plan work here. Starting work on projects without GitHub isn't available yet: it waits for two approvals (D2 and D4). | — |
-| `RULES_UNAVAILABLE` | Needs setup | governance provider doesn't allow projects without GitHub yet, so this project has no rules to work under. | — |
+| `RULES_UNAVAILABLE` | Needs setup | Your project rules don't allow projects without GitHub yet, so this project has no rules to work under. | — |
 | `RULES_NEED_APPROVAL` | Needs setup | Review and approve this project's rules to let AIWorks work here. | Review rules |
 | `RULES_EXPIRED` | Needs setup | Your approval of this project's rules ended on {date}. Review it again to continue. | Review rules |
-| `RULES_REVOKED` | Needs setup | governance provider no longer allows projects without GitHub. Work can't start here until that changes. | — |
+| `RULES_REVOKED` | Needs setup | Your project rules no longer allow projects without GitHub. Work can't start here until that changes. | — |
 
 `RULES_*` appear only after slice S7. Until then, local projects show `LOCAL_START_OFF`.
+
+The copy calls the governance platform "your project rules", the owner word of [OWNER_WORKSPACE §2.1](OWNER_WORKSPACE.md#21-words-the-owner-sees); its name stays in details and in this design (aiworks#11 review 4 F4). The dashboard says the `REGISTRY_*` rows and `GITHUB_REGISTERED` in these words (`src/dashboard/projects.mjs`).
 
 **Tests** (disposable repositories, no remote):
 - a no-remote repository connects. The mirror is created outside the source, and baseline 1's commit equals the branch head;

@@ -156,7 +156,7 @@ test('the dashboard serves a saved final plan and renders it as text, without a 
   assert.equal(message.replyUrl, null);
   const { messageReceipt } = fromPage(['function messageReceipt('], `
     const el = (tag, attrs, ...children) => ({ tag, attrs, children });
-    const dateTime = () => 'now'; const receiptStep = (done, label, detail) => ({ done, label, detail });
+    const dateTime = () => 'now'; const clock = dateTime; const receiptStep = (done, label, detail) => ({ done, label, detail });
     const disclosure = (id, label, content) => ({ id, label, content });`);
   const rendered = messageReceipt(message, {});
   assert.equal(rendered.children.at(-1).content.tag, 'pre');

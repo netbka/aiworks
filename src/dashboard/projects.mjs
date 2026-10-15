@@ -152,7 +152,7 @@ const STATUS_WORDS = Object.freeze({ ready: 'Ready', 'needs-setup': 'Needs setup
 
 /**
  * The owner-facing copy of PROJECT_CONNECTION §8.1 and the Git detection rows of §8.2, exactly as written there. `{…}`
- * are placeholders. The codes connect adds (§8.2 to §8.4) are worded by the supervisor's connectCopy.
+ * are placeholders. The codes connect adds (§8.2 to §8.4) are worded by the supervisor's connectCopy, except RULES_COPY's.
  */
 export const PROJECT_COPY = Object.freeze({
   PATH_NOT_ABSOLUTE: 'Enter the full folder path, for example D:\\Projects\\my-app.',
@@ -180,6 +180,16 @@ export const PROJECT_COPY = Object.freeze({
   NOT_GITHUB: 'This folder has no GitHub remote. Connect it as a local Git project or a plain folder.',
   NOT_SAME_PROJECT: `This folder doesn't hold "{name}". Choose the folder it moved to.`,
 });
+/**
+ * The project-rules rows of PROJECT_CONNECTION §8.2, worded here: the owner calls that place "your project rules", never
+ * by the platform's name (OWNER_WORKSPACE §2.1; aiworks#11 review 4 F4). `repo` and `ids` as connectCopy fills them.
+ */
+const RULES_COPY = Object.freeze({
+  REGISTRY_MISSING: (repo) => `${repo} isn't listed in your project rules, so AIWorks can plan but not start work. Add it there, then check again.`,
+  REGISTRY_AMBIGUOUS: (repo, ids) => `Your project rules list ${repo} more than once (${ids}). AIWorks won't guess which rules apply.`,
+  REGISTRY_INVALID: (repo) => `The entry for ${repo} in your project rules has an error, so AIWorks can't read its rules.`,
+  GITHUB_REGISTERED: (repo) => `${repo} is listed in your project rules, so connect it as a GitHub project.`,
+});
 /** What the connect codes need filled before connectCopy can say them; without it the status sentence stands in. */
 const NEEDS = Object.freeze({ BRANCH_MISSING: ['branch'], REGISTRY_AMBIGUOUS: ['ids'], CONFIG_CONFLICT: ['configPath', 'root'], UNCOMMITTED_NOTICE: ['sha7'],
   MIRROR_SPACE: ['need', 'free', 'drive'], SECRET_TRACKED: ['count'], LOCAL_BRANCH_MISSING: ['branch'], PROJECT_MOVED: ['was'], TOO_LARGE: ['files', 'bytes'],
@@ -187,11 +197,11 @@ const NEEDS = Object.freeze({ BRANCH_MISSING: ['branch'], REGISTRY_AMBIGUOUS: ['
 /** When a saved project's code cannot be said in full here (its detail is only known during a check). */
 const STATUS_FALLBACK = Object.freeze({ 'needs-setup': 'Needs setup. Choose Check again to see what to do.',
   unavailable: 'Temporarily unavailable. Choose Check again when it should be back.' });
-/** OWNER_WORKSPACE §5.2, step 5: a GitHub project that governance provider does not list. No button: the fix is there. */
-export const UNREGISTERED = 'This project is not registered with governance provider yet, so AIWorks cannot start work on it. Registering it is done in governance provider.';
+/** OWNER_WORKSPACE §5.2, step 5: a GitHub project the project rules do not list. No button: the fix is outside AIWorks. */
+export const UNREGISTERED = 'This project is not listed in your project rules yet, so AIWorks cannot start work on it. Adding it there is done outside AIWorks.';
 /** OWNER_WORKSPACE §5.3: what a connected project without GitHub says, and (in details) what it waits for. */
 export const LOCAL_START = Object.freeze(['Connected. Starting work in a folder without GitHub is not available yet.',
-  'It waits for a local project identity in governance provider (D2, #24) and a local approval route (D4, #32).']);
+  'It waits for a local project identity in the project rules (D2, #24) and a local approval route (D4, #32).']);
 /** OWNER_WORKSPACE §5.3, step 2: what AIWorks promises before a project without GitHub is connected. */
 export const OWN_COPY = 'AIWorks will never change this folder directly. It works on its own copy and asks you before applying a checked result.';
 
@@ -206,6 +216,7 @@ export function projectMessage(code, detail = {}) {
     return missing ? null : text;
   }
   if ((NEEDS[code] ?? []).some((key) => detail[key] === undefined || detail[key] === null)) return null;
+  if (Object.hasOwn(RULES_COPY, code)) return RULES_COPY[code](detail.repository ?? 'this repository', (detail.ids ?? []).join(', '));
   return connectCopy(code, detail);
 }
 
