@@ -2,6 +2,7 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { join, relative, isAbsolute } from 'node:path';
 import { exec } from './git.mjs';
+import { parseReference, resolveSection } from '../reading.mjs';
 
 export const safeResearchPath = (path) => typeof path === 'string' && path.length < 512
   && !/^(?:\/|[A-Za-z]:)/.test(path) && !/[\\:%?#\x00-\x1f\x7f]/.test(path)
@@ -15,12 +16,27 @@ export function researchContext({ gh, git, workspace, declaration, task, now, re
     if (Buffer.byteLength(content) > 200_000) throw new Error(`Research source exceeds bounded capture: ${source}`);
     sources.push({ source, content });
   };
-  for (const path of task.references) {
+  // A reference may name one section as `path#anchor` (SCOPED_READING section 3): the path part is read, and only the
+  // section is shipped when it resolves; otherwise the whole document is, once. A document also listed whole ships whole,
+  // and an anchor-free list ships exactly as before.
+  const references = task.references.map((reference) => parseReference(reference) ?? { path: reference, anchor: null });
+  const whole = new Set(references.filter((reference) => !reference.anchor).map((reference) => reference.path));
+  const shipped = new Set();
+  for (const { path, anchor } of references) {
+    if (anchor && whole.has(path)) continue;
     if (!safeResearchPath(path)) throw new Error(`Unsafe research reference: ${path}`);
     const resolved = realpathSync(join(root, path)), inside = relative(root, resolved);
     if (inside.startsWith('..') || isAbsolute(inside)) throw new Error('Research reference escapes checkout');
     if (!safeResearchPath(inside.replaceAll('\\', '/'))) throw new Error('Research reference resolves to a forbidden secret path');
-    add(`${declaration.target.repository}@${revision ?? 'checkout'}:${path}`, readFileSync(resolved, 'utf8'));
+    const source = `${declaration.target.repository}@${revision ?? 'checkout'}:${path}`;
+    const content = readFileSync(resolved, 'utf8');
+    const section = anchor ? resolveSection(content, anchor, path) : null;
+    if (section?.resolved) {
+      add(`${source}#${anchor} (lines ${section.from}-${section.to})`, content.split(/\r?\n/).slice(section.from - 1, section.to).join('\n'));
+    } else if (!anchor || !shipped.has(path)) {
+      shipped.add(path);
+      add(section ? `${source} (whole document: the section #${anchor} is ${section.reason} at this revision)` : source, content);
+    }
   }
   const api = (path, paginated = false) => {
     const out = exec(gh, ['api', '--hostname', 'github.com', '--method', 'GET', path, ...(paginated ? ['--paginate', '--slurp'] : [])], { timeoutMs: 30_000 });

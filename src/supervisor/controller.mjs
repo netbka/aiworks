@@ -1,12 +1,12 @@
 // AIWorks campaign controller. Deterministic code owns leases, timers, dispatch,
 // reconciliation and publication; models are called only as bounded workers/verifiers.
 // Idle ticks do not call models. Explicit integration gates refresh read-only Git refs at bounded intervals.
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { acceptsLease, packetDigest, planContext, validatePacket } from '../../scripts/lib/worker-context.mjs';
+import { SECRET_LIKE_PATH_PATTERN, acceptsLease, packetDigest, planContext, validatePacket } from '../../scripts/lib/worker-context.mjs';
 import * as executors from './adapters/executors.mjs';
 import { researchContext } from './adapters/research-context.mjs';
 import * as gitA from './adapters/git.mjs';
@@ -17,7 +17,9 @@ import { campaignBudget } from './api.mjs';
 import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountOf, accountWait, clearAccountWait, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
 import { domainOf, pathsOutside, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
-import { coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
+import { containsSecret, coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
+import { ANCHOR, MAX_DOCUMENT_BYTES, parseReference, resolveSection } from './reading.mjs';
+import { MAX_CITES } from './adapters/claude.mjs';
 import { stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions } from './instructions.mjs';
 import { POLICY as ROUTING_POLICY, autoReceipt, indicators, policyInputs, priorAttempt, receiptInputs, staticReceipt } from './router.mjs';
@@ -87,6 +89,181 @@ export const DEFAULTS = {
 };
 // Findings that reopen a published task as a repair round on its own branch and PR (aiworks#27, aiworks#42).
 const REPAIR_FINDINGS = new Set(['integration-conflict', 'ci-failure']);
+
+// ---- Scoped reading (docs/design/SCOPED_READING.md sections 4 to 6, slice READ2). ----
+// A reference may name one section of a Markdown document as `path#anchor`. Dispatch resolves it at the pinned revision
+// into a reading guide for the prompt; an anchor that does not resolve widens to the whole document and is journalled,
+// never blocks. A verifier may cite the section a finding rests on; a bad cite is dropped and journalled, never a reason
+// to refuse the verdict, and the cites of blocking findings reach the repair packet. Without an anchor or a cite, packets
+// and prompts are exactly as before.
+const SECRET_LIKE = new RegExp(SECRET_LIKE_PATH_PATTERN, 'u');
+const UNRESOLVED = { missing: 'was not found', ambiguous: 'matches more than one heading', 'not-markdown': 'is not in a Markdown document of at most 2 MiB',
+  unreadable: 'could not be read' };
+const CITE_EVENT = { covered: 'cite-covered', 'section-miss': 'section-miss', 'unreferenced-doc': 'unreferenced-doc' };
+// Heading and finding text printed into a prompt is data: control characters removed, bounded, withheld when secret-like.
+const promptText = (text, limit) => {
+  const clean = String(text ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, limit);
+  return containsSecret(clean) ? null : clean;
+};
+
+/**
+ * The bytes of `path` at `revision`, read with git in the main checkout `repoPath` (never a worker-writable worktree): a
+ * Buffer, null when no file is there, or `{ tooLarge: true }` past the 2 MiB a section is resolved in.
+ */
+export function readAtRevision({ git, repoPath, revision, path }) {
+  if (!repoPath) return null;
+  const out = spawnSync(git[0], [...git.slice(1), 'cat-file', 'blob', `${revision}:${path}`],
+    { cwd: repoPath, windowsHide: true, timeout: 60_000, maxBuffer: MAX_DOCUMENT_BYTES + 1 });
+  if (out.error?.code === 'ENOBUFS') return { tooLarge: true };
+  return !out.error && out.status === 0 ? out.stdout : null;
+}
+
+/**
+ * One record per anchored reference, in order (SCOPED_READING section 4): `{ reference, path, anchor, resolved: true,
+ * heading, level, from, to }` or `{ reference, path, anchor, resolved: false, reason }`. Each document is read once.
+ * A whole-document reference has no record and reads nothing.
+ */
+export function resolveReferences({ git, repoPath, revision, references }) {
+  const files = new Map();
+  return references.flatMap((reference) => {
+    const parsed = parseReference(reference);
+    if (!parsed?.anchor) return [];
+    if (!files.has(parsed.path)) files.set(parsed.path, readAtRevision({ git, repoPath, revision, path: parsed.path }));
+    const file = files.get(parsed.path);
+    const outcome = file === null ? { resolved: false, reason: 'unreadable' }
+      : file.tooLarge ? { resolved: false, reason: 'not-markdown' } : resolveSection(file, parsed.anchor, parsed.path);
+    return [{ reference, ...parsed, ...outcome }];
+  });
+}
+
+/**
+ * The references of a packet (SCOPED_READING section 6.4): the declared ones, then, for an implement run only, each cite
+ * of the task's blocking verifier findings, de-duplicated, while the packet holds fewer than `maxReferences`. Declared
+ * references are never dropped; a cite that does not fit is in `overflow` and stays in its finding's constraint text.
+ * `added` and `overflow` are `{ reference, finding }`.
+ */
+export function packetReferences({ declared, kind, findings, maxReferences }) {
+  const references = [...declared], added = [], overflow = [];
+  if (kind !== 'implement') return { references, added, overflow };
+  for (const finding of (findings ?? []).slice(0, 8)) {
+    if (REPAIR_FINDINGS.has(finding?.id) || !Array.isArray(finding?.cites)) continue;
+    for (const reference of finding.cites) {
+      if (!parseReference(reference) || references.includes(reference) || overflow.some((item) => item.reference === reference)) continue;
+      if (references.length < maxReferences) { references.push(reference); added.push({ reference, finding: finding.id }); }
+      else overflow.push({ reference, finding: finding.id });
+    }
+  }
+  return { references, added, overflow };
+}
+
+/** The packet constraint of one blocking finding; a verifier finding names the rule of each cite (SCOPED_READING 6.4). */
+export function findingConstraint(finding, resolutions = []) {
+  const label = finding.id === 'integration-conflict' ? 'integration' : finding.id === 'ci-failure' ? 'CI' : 'verifier';
+  const rules = (Array.isArray(finding.cites) && !REPAIR_FINDINGS.has(finding.id) ? finding.cites : []).map((cite) => {
+    const item = resolutions.find((record) => record.reference === cite && record.resolved);
+    const heading = item ? promptText(item.heading, 120) : null;
+    return ` (rule: ${cite}${heading ? ` "${heading}"` : ''})`;
+  });
+  return `Blocking ${label} finding ${finding.id}: ${finding.description}${rules.join('')}`.slice(0, 2000);
+}
+
+/**
+ * The reading guide of a packet (SCOPED_READING section 5.1): one line per declared reference, then the sections the
+ * verifier's findings added, and a note when cites did not fit. Null when no reference marks a section, so a packet
+ * without anchors gets exactly today's prompt.
+ */
+export function readingGuide({ revision, references, declared, resolutions, added = [], overflow = [] }) {
+  if (!references.some((reference) => parseReference(reference)?.anchor)) return null;
+  const entry = (reference) => {
+    const item = resolutions.find((record) => record.reference === reference);
+    if (!item) return `${reference}: whole document`;
+    if (!item.resolved) return `${item.path}: whole document (the section #${item.anchor} ${UNRESOLVED[item.reason]} at this revision)`;
+    const heading = promptText(item.heading, 120);
+    return `${reference}: ${heading === null ? 'section' : `"${'#'.repeat(item.level)} ${heading}"`}, lines ${item.from}-${item.to} (Read with offset ${item.from}, limit ${item.to - item.from + 1})`;
+  };
+  return [`Reading guide (derived from packet.references at ${revision}):`,
+    ...references.slice(0, declared).map((reference) => `- ${entry(reference)}`),
+    ...(added.length ? ['Added from the verifier\'s findings:', ...added.map((item) => `- ${entry(item.reference)} (finding ${promptText(item.finding, 40) ?? 'withheld'})`)] : []),
+    ...(overflow.length ? ['Findings cite sections not listed here: see the constraints.'] : []),
+  ].join('\n');
+}
+
+/** Why a verifier cite is dropped before it is resolved (SCOPED_READING section 6.1), or null when it is kept. */
+export function citeProblem(cite) {
+  if (typeof cite !== 'string' || cite.length > 672) return 'malformed';
+  const parts = cite.split('#');
+  if (parts.length > 2 || (parts.length === 2 && !ANCHOR.test(parts[1]))) return 'malformed';
+  if (!parseReference(cite)) return 'unsafe-path';
+  if (SECRET_LIKE.test(cite) || SECRET_LIKE.test(parts[0])) return 'secret-like';
+  return null;
+}
+
+/** How a cite relates to the implementer's references (SCOPED_READING section 6.3); `anchor` null for a whole document. */
+export function classifyCite(references, path, anchor) {
+  const listed = references.map(parseReference).filter((reference) => reference?.path === path);
+  if (listed.some((reference) => !reference.anchor || reference.anchor === anchor)) return 'covered';
+  return listed.length ? 'section-miss' : 'unreferenced-doc';
+}
+
+/**
+ * Whether the implementer's report names a cited section in its "sections read" list (SCOPED_READING section 6.3): the
+ * line that says "sections read" and the list after it, up to a blank line or a heading and at most 40 lines. Null when
+ * the report has no such list. Report text is counted here, never followed.
+ */
+export function implementerRead(report, path, anchor) {
+  const text = String(report ?? '').slice(0, 60_000);
+  const at = text.search(/\bsections\s+(?:i\s+)?read\b/i);
+  if (at < 0) return null;
+  const [first, ...rest] = text.slice(at).split(/\r?\n/).slice(0, 40);
+  const block = [first];
+  for (const line of rest) {
+    if (/^\s*#/.test(line) || (!line.trim() && block.length > 1)) break;
+    if (line.trim()) block.push(line);
+  }
+  return block.join('\n').includes(anchor ? `${path}#${anchor}` : path);
+}
+
+/**
+ * Settle the cites of a verifier result at its target revision (SCOPED_READING sections 6.1 to 6.3). Returns the result
+ * with each finding's kept cites (the section when it resolves there, its whole document when it does not), the
+ * resolution record for the operation outcome, and the journal events: `cite-dropped`, `cite-section-fallback` and, for
+ * a blocking finding, `cite-covered`, `section-miss` or `unreferenced-doc` against the implementer's packet references
+ * (`implementer` is null when no finished implement run produced the target; then nothing is classified). Nothing here
+ * changes the verdict.
+ */
+export function settleCites({ git, repoPath, targetSha, value, implementer, task, op }) {
+  const events = [], record = [], files = new Map();
+  const read = (path) => {
+    if (!files.has(path)) files.set(path, readAtRevision({ git, repoPath, revision: targetSha, path }));
+    return files.get(path);
+  };
+  const findings = value.findings.map((finding) => {
+    if (!Object.hasOwn(finding, 'cites')) return finding;
+    const { cites, ...rest } = finding;
+    const kept = [];
+    (Array.isArray(cites) ? cites : [cites]).forEach((cite, index) => {
+      const reason = index >= MAX_CITES ? 'malformed' : citeProblem(cite);
+      if (reason) return events.push(['cite-dropped', { op, finding: finding.id, cite: typeof cite === 'string' ? cite.slice(0, 672) : null, reason }]);
+      const { path, anchor } = parseReference(cite);
+      const file = read(path);
+      if (file === null) return events.push(['cite-dropped', { op, finding: finding.id, cite, reason: 'no-such-file' }]);
+      const section = !anchor ? null : file.tooLarge ? { resolved: false, reason: 'not-markdown' } : resolveSection(file, anchor, path);
+      if (section && !section.resolved) events.push(['cite-section-fallback', { op, finding: finding.id, path, anchor, reason: section.reason }]);
+      const entry = section?.resolved ? { finding: finding.id, cite, path, anchor, heading: section.heading, from: section.from, to: section.to }
+        : { finding: finding.id, cite: path, path, anchor: null };
+      if (kept.includes(entry.cite)) return;
+      kept.push(entry.cite);
+      if (finding.severity === 'blocking' && implementer) {
+        entry.classification = classifyCite(implementer.references, path, entry.anchor);
+        entry.implementerRead = implementerRead(implementer.report, path, entry.anchor);
+        events.push([CITE_EVENT[entry.classification], { task, op, finding: finding.id, path, anchor: entry.anchor, implementerRead: entry.implementerRead }]);
+      }
+      record.push(entry);
+    });
+    return kept.length ? { ...rest, cites: kept } : rest;
+  });
+  return { value: { ...value, findings }, record, events };
+}
 // Journal kinds that settle a published head's CI result; its polling stops after one of them (aiworks#42).
 const CI_SETTLED = ['ci-passed', 'ci-failed', 'ci-inconclusive', 'ci-none'];
 // GitHub resets its rate limits within the hour: a reset time further out is treated as an hour.
@@ -652,6 +829,17 @@ export class Controller {
       const problem = gitA.checkVerification({ git: this.cmd.git, path: op.workspace, targetSha: op.target_sha });
       if (problem) verdict = { ...verdict, class: 'invalid-result', detail: problem };
     }
+    // Verifier cites are settled at the target revision in the main checkout (SCOPED_READING section 6); a result without
+    // cites is applied exactly as before, and no cite can change the verdict.
+    let citeEvents = [];
+    if (verdict.class === 'result' && op.kind === 'verify' && verdict.value.findings.some((finding) => Object.hasOwn(finding, 'cites'))) {
+      let repoPath = null;
+      try { repoPath = this.repo(this.store.campaign(ctx.id).declaration).path; } catch { /* no checkout: every cite is unreadable and dropped */ }
+      const settled = settleCites({ git: this.cmd.git, repoPath, targetSha: op.target_sha, value: verdict.value,
+        implementer: this.implementerOf(ctx, op), task: op.task_id, op: op.id });
+      verdict = { ...verdict, value: settled.value, reading: { cites: settled.record } };
+      citeEvents = settled.events;
+    }
     this.fenced(ctx, () => {
       const now = this.now();
       const fresh = this.store.get('SELECT * FROM operations WHERE id = ?', op.id);
@@ -663,6 +851,7 @@ export class Controller {
       }
       if (executors.runNotCounted(verdict)) verdict = { ...verdict, refunded: true };
       this.store.updateOperation(op.id, { state: 'finished', outcome: verdict }, now);
+      for (const [kind, detail] of citeEvents) this.store.journal(ctx.id, kind, detail, now);
       // A run bound to a CAAM profile is attributed to that profile from its durable row, also after a restart: never to
       // the profile selection would choose now, nor to the executor kind's static account (ACCOUNT_ADAPTER_CAAM 3.5).
       const profile = fresh.account_identity ?? null;
@@ -728,6 +917,14 @@ export class Controller {
           `**${task.task_id}** is blocked (${change.blocked.class}): ${change.blocked.reason}\n\nThe campaign keeps ownership. After recovery or an owner decision recorded on the task issue, run \`supervisor recheck ${ctx.id} --task ${task.task_id}\`.`, now);
       }
     });
+  }
+
+  /** The references and report of the finished implement run that produced a verification's target, or null. */
+  implementerOf(ctx, op) {
+    const runs = this.store.all("SELECT packet, outcome, base_sha FROM operations WHERE campaign_id = ? AND task_id = ? AND kind = 'implement' AND state = 'finished' ORDER BY seq DESC",
+      ctx.id, op.task_id);
+    const run = runs.find((item) => item.outcome?.class === 'result' && (item.outcome.value?.headSha ?? item.base_sha) === op.target_sha);
+    return run ? { references: run.packet.references.map((reference) => reference.path), report: run.outcome.value?.report ?? '' } : null;
   }
 
   /**
@@ -1773,9 +1970,13 @@ export class Controller {
       const repairing = kind === 'implement' && Boolean(task.findings?.length);
       const report = kind === 'verify' || repairing ? String(task.result?.report ?? '') : null;
       const reportDigest = report !== null ? createHash('sha256').update(report, 'utf8').digest('hex') : null;
-      const findings = kind === 'implement' ? (task.findings ?? []).slice(0, 8)
-        .map((finding) => `Blocking ${finding.id === 'integration-conflict' ? 'integration' : finding.id === 'ci-failure' ? 'CI' : 'verifier'} finding ${finding.id}: ${finding.description}`.slice(0, 2000)) : [];
-      const packet = validatePacket({
+      // Scoped reading (SCOPED_READING sections 4 and 6.4): a repair packet adds its findings' cited sections after the
+      // declared references, and every anchored reference is resolved at this revision in the main checkout.
+      let reading = packetReferences({ declared: spec.references, kind, findings: task.findings, maxReferences: POLICY.maxReferences });
+      const resolutions = resolveReferences({ git: this.cmd.git, repoPath: repo.path, revision,
+        references: [...new Set([...reading.references, ...reading.overflow.map((item) => item.reference)])] });
+      const findings = kind === 'implement' ? (task.findings ?? []).slice(0, 8).map((finding) => findingConstraint(finding, resolutions)) : [];
+      const buildPacket = (references) => validatePacket({
         version: 1, tenantId: decl.target.tenantId, projectId: decl.target.projectId, environment: decl.target.environment,
         taskId: task.task_id, stageId: kind, runId: opId, role, revision,
         authorityDigest: binding.authority,
@@ -1788,9 +1989,18 @@ export class Controller {
           // A planning step proposes against the plan head it was given; any other basis is refused as STALE_PLAN (slice E5).
           ...(kind === 'plan' ? [`Plan head (amendment basis): ${binding.head}. Propose only steps inside the approved outcome and files; code admits or refuses every op.`] : [])],
         acceptance: spec.acceptance,
-        references: spec.references.map((path) => ({ path, revision })),
+        references: references.map((path) => ({ path, revision })),
         governance,
       }, POLICY);
+      let packet;
+      try { packet = buildPacket(reading.references); } catch (error) {
+        // Cites never stop a dispatch: past the packet byte budget they stay in the constraint text only (section 7.5).
+        if (!reading.added.length) throw error;
+        reading = { references: [...spec.references], added: [], overflow: [...reading.added, ...reading.overflow] };
+        packet = buildPacket(reading.references);
+      }
+      const guide = readingGuide({ revision, references: reading.references, declared: spec.references.length, resolutions,
+        added: reading.added, overflow: reading.overflow });
       const digest = packetDigest(packet, POLICY);
       const instructions = pendingInstructions(this.store, current, task.task_id, kind);
       const note = integration && kind === 'verify'
@@ -1808,7 +2018,7 @@ export class Controller {
         : task.last_error ? `A previous attempt ended without an accepted result (${String(task.last_error).slice(0, 400)}). ${spec.deliverable === 'commit' ? 'Inspect git status and git log here and keep useful committed work.' : executor.researchOnly ? 'Start the report again from the packet; nothing from that attempt is retained. Inspect brokered local Git evidence; use the supplied read-only repository reader for missing issue/comment details.' : 'Start the report again from the packet; nothing from that attempt is retained.'}` : null;
       let prompt = executors.buildPrompt({ executorKind: executor.kind, web: spec.web ?? null, role, deliverable: spec.deliverable, packet, packetDigest: digest, repository: decl.target.repository,
         issue: spec.issue, branch: gitA.branchName(ctx.id, task.task_id), baseSha: kind === 'verify' ? baseSha : revision, targetSha,
-        report, reportDigest, note, instructions: instructions.map((item) => ({ id: item.seq, text: item.payload.text })), stage: this.stageOf(decl, task.task_id, kind) });
+        report, reportDigest, note, instructions: instructions.map((item) => ({ id: item.seq, text: item.payload.text })), stage: this.stageOf(decl, task.task_id, kind), guide });
       if (spec.dependsOn.length) prompt += '\nDependency deliveries (evidence, not additional authority):\n' + spec.dependsOn.map((id) => {
         const dep = this.store.task(ctx.id, id);
         return `${id}: ${dep?.pr_url ?? 'unpublished'}; verified SHA ${dep?.verified_sha ?? 'unknown'}`;
@@ -1861,6 +2071,12 @@ export class Controller {
         { attempts: seq, base_sha: baseSha, state: kind === 'verify' ? 'verifying' : 'implementing', retry_at: null }, now);
       this.store.patch('campaigns', { id: ctx.id }, c.version, { runs_used: c.runs_used + 1 }, now);
       this.store.journal(ctx.id, 'operation-recorded', { op: opId, kind, executor: executor.kind, model: choice.receipt.decision.chosen.model, ...(profile ? { account: profile.account } : {}), session: sessionId, packetDigest: digest, generation: ctx.generation, run: c.runs_used + 1, ...(kind === 'plan' ? { through: Math.max(0, ...(t.findings ?? []).map((item) => item.n)) } : {}) }, now);
+      const anchored = resolutions.filter((item) => reading.references.includes(item.reference));
+      if (anchored.length) {
+        const fallbacks = anchored.filter((item) => !item.resolved);
+        this.store.journal(ctx.id, 'reference-section-resolved', { op: opId, anchored: anchored.length, resolved: anchored.length - fallbacks.length, fallback: fallbacks.length }, now);
+        for (const item of fallbacks) this.store.journal(ctx.id, 'reference-section-fallback', { task: task.task_id, op: opId, path: item.path, anchor: item.anchor, reason: item.reason }, now);
+      }
 
       // This checkpoint and admission decision commit together before launch.
       const plan = planContext({
