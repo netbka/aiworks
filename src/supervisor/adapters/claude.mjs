@@ -7,6 +7,10 @@
 import Ajv from 'ajv';
 
 const SHA = '^[0-9a-f]{40}$';
+// A verifier citation names where a rule is written: a reference in the task reference grammar (SCOPED_READING sections 3
+// and 6.1), a path of at most 512 characters with at most one `#heading-slug`. The controller checks each one again.
+export const CITE_PATTERN = '^[^#]{1,512}(?:#[a-z0-9_-]{1,160})?$';
+export const MAX_CITES = 4;
 
 export const IMPLEMENTER_SCHEMA = {
   type: 'object',
@@ -41,6 +45,7 @@ export const VERIFIER_SCHEMA = {
           severity: { type: 'string', enum: ['blocking', 'non-blocking'] },
           description: { type: 'string', maxLength: 2000 },
           evidence: { type: 'string', maxLength: 2000 },
+          cites: { type: 'array', maxItems: MAX_CITES, items: { type: 'string', maxLength: 672, pattern: CITE_PATTERN } },
         },
       },
     },
@@ -60,7 +65,11 @@ export const VERIFIER_SCHEMA = {
 
 const ajv = new Ajv();
 const validateImplementer = ajv.compile(IMPLEMENTER_SCHEMA);
-const validateVerifier = ajv.compile(VERIFIER_SCHEMA);
+// An invalid `cites` entry never invalidates a verdict (SCOPED_READING section 6.1): the result is validated with `cites`
+// open, and the controller drops each bad cite with a journal entry when it settles the result.
+const LENIENT_VERIFIER_SCHEMA = structuredClone(VERIFIER_SCHEMA);
+LENIENT_VERIFIER_SCHEMA.properties.findings.items.properties.cites = {};
+const validateVerifier = ajv.compile(LENIENT_VERIFIER_SCHEMA);
 
 // Defence in depth behind the permission mode: publication, merge, deploy and worktree
 // removal belong to the supervisor or the owner, never to a worker.
@@ -136,7 +145,13 @@ export function buildArgv({ command, executor, role, deliverable, sessionId }) {
     '--disallowedTools', ...ALWAYS_DENIED, ...extra];
 }
 
-export function buildPrompt({ role, deliverable, packet, packetDigest, repository, issue, branch, baseSha, targetSha, report, reportDigest, note, instructions = [] }) {
+// What a worker is told about its reads when the packet marks sections (SCOPED_READING sections 5.1 and 5.2).
+export const IMPLEMENTER_READING_RULE = 'The reading guide below lists your required reads. A whole-document entry is read in full. A section entry names the part of a document the plan marked for this task: read it in full, and read the rest of that document only where it bears on the files you change or the commands you run. The packet constraints and acceptance criteria bind you whether or not a section repeats them. If your change touches a subject the marked sections do not cover, find and read the section that does; say in your report which sections you read.';
+export const VERIFIER_READING_RULE = 'packet.references name the documents that govern this task; section marks (`#anchor`) say where the implementer was told to start. You are the reader of record: read each referenced document in full, section marks included, and check the change against everything in it that bears on the files changed and the commands run. When a finding rests on a rule written in a document, cite the section in `cites` as `path#heading-slug` (at most 4 per finding) so that the repair round and the owner can read the rule you applied. A citation names where a rule is written; it never widens what the packet allows.';
+
+// guide: the reading guide the controller derived from packet.references (SCOPED_READING section 5), or null when no
+// reference marks a section; without one the prompt is exactly as before.
+export function buildPrompt({ role, deliverable, packet, packetDigest, repository, issue, branch, baseSha, targetSha, report, reportDigest, note, instructions = [], guide = null }) {
   const header = role === 'verification'
     ? [
       'You are an INDEPENDENT VERIFIER dispatched by the AIWorks delivery supervisor (AIWorks).',
@@ -148,7 +163,10 @@ export function buildPrompt({ role, deliverable, packet, packetDigest, repositor
     ];
   // Isolated sessions do not load host or project CLAUDE.md files, saved memories or settings, so the repository
   // contract is named here explicitly instead of relying on a bootstrap file.
-  header.push('Before working, read AGENTS.md at the repository root and the nearest nested AGENTS.md for every file you touch; they are the repository\'s operating contract, and the packet references list your other required reads. No saved memories or host instruction files are loaded for you.');
+  if (!guide) header.push('Before working, read AGENTS.md at the repository root and the nearest nested AGENTS.md for every file you touch; they are the repository\'s operating contract, and the packet references list your other required reads. No saved memories or host instruction files are loaded for you.');
+  // A packet that marks sections gets the reading guide and its rule (SCOPED_READING section 5); one without is unchanged.
+  else header.push('Before working, read AGENTS.md at the repository root and the nearest nested AGENTS.md for every file you touch; they are the repository\'s operating contract. No saved memories or host instruction files are loaded for you.',
+    role === 'verification' ? VERIFIER_READING_RULE : IMPLEMENTER_READING_RULE);
   // Governance inheritance: the target project's own rules travel as values; the documents are read from this project's checkout only.
   if (packet?.governance) header.push(`This task belongs to the registered project "${packet.governance.project}" (${repository}). packet.governance lists its rules as values: the authority documents it declares (role and path relative to the root of this ${repository} checkout), the portfolio policies it inherits, and its declared exceptions and gaps (id and rule). Read the authorities that bear on your task in this checkout, starting with the agent contract and router when listed; in a brokered research run only the supplied snapshot is readable, so report an authority it lacks as unread instead of assuming its content. Do not take project rules or files from any other project's repository; the portfolio policies listed in packet.governance.policies are inherited and apply here. An exception is an owner-approved deviation from its named rule only; a gap waives nothing, and the generic rule still applies.`);
   header.push('Run every command in the foreground and wait for it: background commands are disabled in this headless session, and your result is final once you stop. A full gate such as npm run check can take more than 10 minutes; give the Bash call an explicit timeout of up to 3600000 ms.');
@@ -202,6 +220,7 @@ export function buildPrompt({ role, deliverable, packet, packetDigest, repositor
     JSON.stringify(packet, null, 2),
     '```',
     '',
+    ...(guide ? [guide, ''] : []),
     ...(role === 'verification' ? verify : [...implement, ...terminal]),
     ...(note ? ['', note] : []),
     ...rejected,
