@@ -11,6 +11,7 @@ import { Store } from '../../src/supervisor/store.mjs';
 import { costByUnit, projectCosts, stepRouting, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { stateCopy } from '../../src/dashboard/copy.mjs';
 import { buildReviewFixture } from './fixtures/review-store.mjs';
+import { openPage } from './fixtures/page.mjs';
 
 const ROOT = resolve(import.meta.dirname, '../..');
 const page = () => readFileSync(join(ROOT, 'src/dashboard/public/dashboard.js'), 'utf8');
@@ -156,6 +157,31 @@ test('the Cost screen never shows unknown as $0.00 and counts unreported runs ap
   assert.deepEqual([...source.matchAll(/^import \{[^}]+\} from '(\/[^']+)';$/gm)].map((m) => m[1]), ['/router.mjs', '/copy.mjs']);
   // The headline replaces today's "Cost so far" card on this tab: one cost view (plan §6.12 C8).
   assert.doesNotMatch(source, /'Cost so far'/);
+});
+
+test('a step’s run count beside its cost includes the runs still running, so the two agree (aiworks#11 review 4 F18)', async (t) => {
+  const page = await openPage(t);
+  await page.go('#/p/example%2Fshop-app/cost');
+  const state = supervisorSnapshot(page.dataDir);
+  const rows = [...page.document.body.walk()].filter((node) => node.tagName === 'TR' && /^cost\/[^/]+\/[^/]+$/.test(node.getAttribute('data-focus-scope') ?? ''));
+  assert.ok(rows.length, 'the breakdown has its steps');
+  let onlyRunning = 0;
+  for (const row of rows) {
+    const [, campaignId, taskId] = row.getAttribute('data-focus-scope').split('/');
+    const cost = state.campaigns.find((c) => c.id === campaignId).tasks.find((task) => task.id === taskId).cost;
+    const [, runs, costCell] = row.childNodes.filter((node) => node.tagName === 'TD').map((node) => node.textContent);
+    // Runs is every run of the step: the finished ones and those still running.
+    assert.equal(runs, String(cost.runs + cost.runningRuns), `${campaignId}/${taskId}`);
+    const still = /(\d+) runs? still running/.exec(costCell);
+    if (still) assert.ok(Number(runs) >= Number(still[1]), `${campaignId}/${taskId}: never fewer runs than "${still[0]}"`);
+    // The case the review saw on "Checkout form": its one run is still running, and none has finished.
+    if (!cost.runs && cost.runningRuns) {
+      onlyRunning++;
+      assert.equal(runs, String(cost.runningRuns), `${campaignId}/${taskId}`);
+      assert.match(costCell, new RegExp(`^${cost.runningRuns} runs? still running`));
+    }
+  }
+  assert.ok(onlyRunning > 0, 'the fixture has a step whose only run is still running');
 });
 
 // ---- UI12 (MODEL_ROUTING slice R6, dashboard half): model, tier, cost by unit and why a step moved up, from status (MOD6). ----

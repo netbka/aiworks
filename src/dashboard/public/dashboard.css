@@ -84,6 +84,9 @@ nav{display:grid;gap:6px}
 h1:focus{outline:none}
 h1:focus-visible{outline:3px solid #96b1ff}
 .button{padding:9px 14px;min-height:36px;border:1px solid transparent;border-radius:7px;background:var(--blue);color:white;font-size:12px;font-weight:600;white-space:nowrap}
+/* A link that looks like a button is a box of its own. Inline, its padding reached about 5px up into the text above it and
+   it ignored min-height; as a box it starts below that text and is a 44px target (aiworks#11 review 4 F15). */
+a.button{display:inline-flex;align-items:center;min-height:44px}
 .button:hover{background:#274bc6}
 .button.secondary{color:#536078;background:white;border-color:#dfe5ee}
 .button.secondary:hover{background:#f3f6fb;border-color:#c5cedd}
@@ -295,7 +298,9 @@ html{scroll-padding-bottom:76px}
 nav{margin-top:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px;width:100%}
 .nav-item{font-size:11px;flex-direction:column;justify-content:center;gap:3px;padding:6px 2px;min-height:52px;text-align:center;line-height:1.2;position:relative}
 .nav-item>span:first-child{font-size:18px;width:auto}
-.nav-count{position:absolute;right:calc(50% - 34px);top:3px;font-size:9px;padding:1px 4px;min-width:15px}
+/* Only the bar's own counts sit on their destination's corner. The Messages count stays inside the Messages link: placed
+   like these, it left the link for the top of the page (aiworks#11 review 4 F16). */
+.nav-item>.nav-count{position:absolute;right:calc(50% - 34px);top:3px;font-size:9px;padding:1px 4px;min-width:15px}
 .shell{margin-left:0;width:auto;padding-bottom:76px}
 .topbar{padding:10px 25px}
 }
