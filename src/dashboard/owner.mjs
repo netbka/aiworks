@@ -5,7 +5,7 @@
 import { DELEGATED, NEEDS, RESTART_ADVICE, blockerWords, stateCopy } from './copy.mjs';
 
 const PR_URL = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)$/;
-const COMMENT_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+#issuecomment-\d+$/;
+const COMMENT_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(?:issues|pull)\/\d+#issuecomment-\d+$/;
 /** Attempts at which a step is flagged for a closer look. Information only: it never limits work (AW-002). */
 export const CHURN_ATTEMPTS = 5;
 /** A running agent whose own record shows activity within this window is treated as still working. */
