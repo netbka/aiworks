@@ -1611,7 +1611,7 @@ $('#cancel-title').textContent = DIALOGS.cancelTitle; $('#cancel-text').textCont
 $('#keep-work').textContent = DIALOGS.cancelKeep; $('#confirm-cancel').textContent = DIALOGS.cancelConfirm;
 $('#instruction-step-label').textContent = DIALOGS.guidanceStep;
 // Why the last instruction was refused, beside the text it is about (aiworks#61).
-$('#instruction-text').closest('label').after(el('p', { id: 'instruction-refusal', class: 'notice warning', role: 'alert', hidden: true }));
+$('#instruction-text').closest('label').append(el('span', { id: 'instruction-refusal', class: 'notice warning', role: 'alert', hidden: true }));
 // The skip link moves focus to the content without changing the address.
 $('.skip-link').addEventListener('click', (event) => { event.preventDefault(); $('#main').focus(); });
 for (const selector of ['#search', '#track', '#status']) $(selector).addEventListener('input', () => { workLimit = 80; render(); });
