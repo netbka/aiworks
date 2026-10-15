@@ -329,7 +329,7 @@ const FIXED = { GIT_AUTHOR_NAME: 'Fake Worker', GIT_AUTHOR_EMAIL: 'worker@exampl
   GIT_COMMITTER_EMAIL: 'worker@example.invalid', GIT_AUTHOR_DATE: '2026-10-15T12:00:00Z', GIT_COMMITTER_DATE: '2026-10-15T12:00:00Z' };
 
 /** A synthetic environment whose base holds docs/GUIDE.md, and a controller with the reading fake (and optionally NO_BLOBS). */
-function campaign(t, { references, scenario, noBlobs = false, fixed = false, files = {}, constraints = null }) {
+function campaign(t, { references, scenario, noBlobs = false, fixed = false, files = {}, constraints = null, tasks = null }) {
   // The identities are the ones environment() sets for every test; only the dates are put back afterwards.
   const saved = Object.fromEntries(['GIT_AUTHOR_DATE', 'GIT_COMMITTER_DATE'].map((key) => [key, process.env[key]]));
   // Fixed identities and dates make two environments' base commits, and so their packets, identical.
@@ -351,7 +351,7 @@ function campaign(t, { references, scenario, noBlobs = false, fixed = false, fil
   writeFileSync(join(env.tmp, 'no-blobs-git.mjs'), NO_BLOBS);
   const store = new Store(join(env.dataDir, 'supervisor.db'));
   t.after(() => { store.close(); env.cleanup(); });
-  const decl = declaration({ tasks: [{ ...declaration().tasks[0], references }] });
+  const decl = declaration({ tasks: tasks ?? [{ ...declaration().tasks[0], references }] });
   if (constraints) decl.constraints = constraints;
   campaignStart(store, decl);
   const config = { ...env.config, commands: { ...env.config.commands, claude: [process.execPath, join(env.tmp, 'reading-claude.mjs')],
@@ -359,8 +359,8 @@ function campaign(t, { references, scenario, noBlobs = false, fixed = false, fil
   const ctl = new controller.Controller({ store, config, dataDir: env.dataDir, fault: null });
   const id = decl.campaignId;
   return { env, store, ctl, id,
-    op: (name) => store.get('SELECT * FROM operations WHERE id = ?', `${id}.T1.${name}`),
-    prompt: (name) => readFileSync(join(store.get('SELECT run_dir FROM operations WHERE id = ?', `${id}.T1.${name}`).run_dir, 'prompt.txt'), 'utf8'),
+    op: (name, task = 'T1') => store.get('SELECT * FROM operations WHERE id = ?', `${id}.${task}.${name}`),
+    prompt: (name, task = 'T1') => readFileSync(join(store.get('SELECT run_dir FROM operations WHERE id = ?', `${id}.${task}.${name}`).run_dir, 'prompt.txt'), 'utf8'),
     journal: (pattern) => store.all('SELECT kind, detail FROM journal WHERE campaign_id = ? ORDER BY seq', id).filter((row) => pattern.test(row.kind)).map((row) => [row.kind, row.detail]) };
 }
 
@@ -452,4 +452,89 @@ test('dispatch: cites that would push the repair packet past its byte budget sta
   const prompt = readFileSync(join(repair.run_dir, 'prompt.txt'), 'utf8');
   assert.ok(prompt.includes('Findings cite sections not listed here: see the constraints.') && !prompt.includes('Added from the verifier\'s findings'));
   assert.equal(c.store.task(c.id, 'T1').state, 'done');
+});
+
+// ---- Sibling carry-forward (section 7.3, slice READ3) ----
+
+test('a sibling inherits a missed section only when it marks sections of that document; at most 4 per document and 8 per dispatch', { skip: skipWithoutController }, () => {
+  const miss = (task, finding, path, anchor) => ({ task, op: `c.${task}.verify.2`, finding, path, anchor, implementerRead: null });
+  const misses = [miss('A', 'F1', 'docs/GUIDE.md', '3-lifecycle-of-one-task')];
+  assert.deepEqual(controller.siblingSections({ misses, task: 'B', references: ['AGENTS.md', 'docs/GUIDE.md#4-liveness'] }),
+    [{ reference: SECTION, from: { task: 'A', finding: 'F1' } }]);
+  assert.deepEqual(controller.siblingSections({ misses, task: 'B', references: ['docs/GUIDE.md'] }), [], 'a whole-document sibling reads it already');
+  assert.deepEqual(controller.siblingSections({ misses, task: 'B', references: ['docs/GUIDE.md', 'docs/GUIDE.md#4-liveness'] }), [], 'whole wins over sections');
+  assert.deepEqual(controller.siblingSections({ misses, task: 'B', references: ['AGENTS.md', 'docs/OTHER.md#x'] }), [], 'a sibling without the document gets nothing');
+  assert.deepEqual(controller.siblingSections({ misses, task: 'A', references: ['docs/GUIDE.md#4-liveness'] }), [], 'the task itself gets its cites through its repair packet');
+  assert.deepEqual(controller.siblingSections({ misses, task: 'B', references: [SECTION] }), [], 'a section the sibling lists already');
+  assert.deepEqual(controller.siblingSections({ misses: [miss('A', 'F1', 'docs/GUIDE.md', null)], task: 'B', references: ['docs/GUIDE.md#4-liveness'] }), [],
+    'a whole-document miss carries no section');
+  // Bounds: newest first, 4 per document, 8 per dispatch, each section once.
+  const many = [...Array.from({ length: 6 }, (_, index) => miss('A', `F${index}`, 'docs/ONE.md', `s${index}`)), miss('C', 'F9', 'docs/ONE.md', 's0'),
+    ...Array.from({ length: 6 }, (_, index) => miss('C', `G${index}`, 'docs/TWO.md', `t${index}`)),
+    ...Array.from({ length: 3 }, (_, index) => miss('D', `H${index}`, 'docs/THREE.md', `u${index}`))];
+  const extended = controller.siblingSections({ misses: many, task: 'B', references: ['docs/ONE.md#intro', 'docs/TWO.md#intro', 'docs/THREE.md#intro'] });
+  assert.equal(controller.CARRY_PER_DOCUMENT, 4);
+  assert.equal(controller.CARRY_PER_DISPATCH, 8);
+  assert.deepEqual(extended.map((item) => item.reference), ['docs/ONE.md#s0', 'docs/ONE.md#s1', 'docs/ONE.md#s2', 'docs/ONE.md#s3',
+    'docs/TWO.md#t0', 'docs/TWO.md#t1', 'docs/TWO.md#t2', 'docs/TWO.md#t3']);
+  assert.deepEqual(extended[0].from, { task: 'A', finding: 'F0' }, 'the newest finding names the section');
+});
+
+test('the guide lists inherited sections after the packet\'s own, labelled prompt only with the finding', { skip: skipWithoutController }, (t) => {
+  const { repo, a } = documents(t);
+  const references = ['AGENTS.md', 'docs/GUIDE.md#4-liveness'];
+  const extended = [{ reference: SECTION, from: { task: 'T1', finding: 'F1' } }];
+  const resolutions = controller.resolveReferences({ git: ['git'], repoPath: repo, revision: a, references: [...references, SECTION] });
+  assert.equal(controller.readingGuide({ revision: a, references, declared: 2, resolutions, extended }), [
+    `Reading guide (derived from packet.references at ${a}):`,
+    '- AGENTS.md: whole document',
+    '- docs/GUIDE.md#4-liveness: "## 4. Liveness", lines 15-17 (Read with offset 15, limit 3)',
+    'Added from this campaign\'s verifier findings (prompt only, not in the packet):',
+    `${RESOLVED_LINE} (finding T1/F1)`,
+  ].join('\n'));
+  assert.equal(controller.readingGuide({ revision: a, references, declared: 2, resolutions, extended: [] }),
+    controller.readingGuide({ revision: a, references, declared: 2, resolutions }), 'nothing inherited, nothing changed');
+});
+
+// T1 marks the boundary section and is rejected for skipping the lifecycle rule (a section-miss). T2 marks another section
+// of the same document, T3 reads it whole and T4 does not name it.
+const SIBLINGS = [
+  { id: 'T1', issue: 437, title: 'first task', deliverable: 'commit', goal: 'Produce the first artifact.', dependsOn: [], acceptance: ['artifact exists'], references: ['AGENTS.md', 'docs/GUIDE.md#1-boundary'] },
+  { id: 'T2', issue: 438, title: 'sectioned sibling', deliverable: 'commit', goal: 'Produce the second artifact.', dependsOn: ['T1'], acceptance: ['artifact exists'], references: ['AGENTS.md', 'docs/GUIDE.md#4-liveness'] },
+  { id: 'T3', issue: 439, title: 'whole sibling', deliverable: 'commit', goal: 'Produce the third artifact.', dependsOn: ['T1'], acceptance: ['artifact exists'], references: ['AGENTS.md', 'docs/GUIDE.md'] },
+  { id: 'T4', issue: 440, title: 'other sibling', deliverable: 'commit', goal: 'Produce the fourth artifact.', dependsOn: ['T1'], acceptance: ['artifact exists'], references: ['AGENTS.md'] },
+];
+
+test('dispatch: a sibling that marks sections inherits the missed section in its guide; its packet is what it would have been', { skip: skipWithoutSqlite }, async (t) => {
+  // One after the other: the synthetic workers find their scenario through the environment of the newest campaign.
+  const missed = campaign(t, { tasks: SIBLINGS, fixed: true, scenario: {
+    verify: [{ findings: [{ id: 'F1', severity: 'blocking', description: 'skips the publication rule', cites: [SECTION] }] }] } });
+  await runUntil(missed.ctl, missed.store, missed.id, (state) => state.control === 'finished');
+  const clean = campaign(t, { tasks: SIBLINGS, fixed: true, scenario: {} });
+  await runUntil(clean.ctl, clean.store, clean.id, (state) => state.control === 'finished');
+  assert.deepEqual(missed.journal(/^section-miss$/).map(([, detail]) => [detail.task, detail.finding, detail.anchor]), [['T1', 'F1', '3-lifecycle-of-one-task']]);
+  // Prompt only: every sibling's packet and digest equal those of the campaign where T1 missed nothing.
+  for (const task of ['T2', 'T3', 'T4']) {
+    const [a, b] = [missed.op('implement.1', task), clean.op('implement.1', task)];
+    assert.equal(a.base_sha, b.base_sha, `${task} implement.1 dispatched at the same revision`);
+    assert.equal(a.packet_digest, b.packet_digest, `${task} implement.1`);
+    assert.deepEqual(a.packet, b.packet, `${task} implement.1`);
+    // A verification is pinned to the worker's commit, whose time differs between the two runs; nothing else does.
+    const [x, y] = [missed.op('verify.2', task).packet, clean.op('verify.2', task).packet];
+    assert.deepEqual(x, JSON.parse(JSON.stringify(y).replaceAll(y.revision, x.revision)), `${task} verify.2`);
+    assert.deepEqual(x.references.map((item) => item.path), SIBLINGS.find((item) => item.id === task).references, `${task} verify.2 lists the declared references only`);
+  }
+  const inherited = `Added from this campaign's verifier findings (prompt only, not in the packet):\n${RESOLVED_LINE} (finding T1/F1)`;
+  assert.ok(missed.prompt('implement.1', 'T2').includes(inherited), 'the sectioned sibling inherits the missed section');
+  assert.ok(missed.prompt('verify.2', 'T2').includes(inherited));
+  assert.ok(!clean.prompt('implement.1', 'T2').includes('Added from this campaign'));
+  for (const task of ['T3', 'T4']) assert.ok(!missed.prompt('implement.1', task).includes('Added from this campaign'), `${task} gets nothing`);
+  assert.deepEqual(missed.journal(/^reading-guide-extended$/), ['implement.1', 'verify.2'].map((name) => ['reading-guide-extended',
+    { op: missed.op(name, 'T2').id, task: 'T2', from: { task: 'T1', finding: 'F1' }, path: 'docs/GUIDE.md', anchor: '3-lifecycle-of-one-task' }]));
+  assert.deepEqual(clean.journal(/^reading-guide-extended$/), []);
+  // Carry-forward writes no spec and no amendment.
+  for (const table of ['plan_amendments', 'task_specs']) {
+    assert.equal(missed.store.get(`SELECT COUNT(*) AS n FROM ${table}`).n, clean.store.get(`SELECT COUNT(*) AS n FROM ${table}`).n, table);
+  }
+  assert.deepEqual(missed.store.tasks(missed.id).map((task) => task.state), ['done', 'done', 'done', 'done']);
 });

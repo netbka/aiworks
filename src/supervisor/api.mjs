@@ -190,6 +190,7 @@ export function campaignStatus(store, id, now = Date.now(), { releaseStop = fals
   const ci = ciView(store, c, tasks);
   const waits = { store, campaign: c, tasks, open: operations, held: heldTasks(store, id), now, config };
   const routed = routingView(store, id);
+  const reading = readingView(store, id);
   return {
     campaignId: c.id,
     store: store.identity,
@@ -241,6 +242,7 @@ export function campaignStatus(store, id, now = Date.now(), { releaseStop = fals
       wait: waitReason(t, waits),
       routing: routed.tasks.get(t.task_id)?.routing ?? { implement: null, verify: null, escalation: null, sameProvider: null },
       costByUnit: routed.tasks.get(t.task_id)?.cost ?? emptyCost(),
+      reading: reading.get(t.task_id) ?? null,
       // A project without GitHub shows its verified local candidate (WORK_ENVELOPE slice E10), never a PR; only once one exists.
       ...withCandidate(store, c.id, t.task_id),
     })),
@@ -505,6 +507,36 @@ function routingView(store, campaignId) {
     item.routing.sameProvider = sameProviderView(item.steps);
   }
   return { cost, tasks };
+}
+
+const READING_EVENTS = ['reference-section-resolved', 'reference-section-fallback', 'cite-covered', 'section-miss', 'unreferenced-doc', 'reading-guide-extended'];
+
+/**
+ * Scoped reading per task (SCOPED_READING section 8, slice READ3), from the controller's journal only: `anchored` and
+ * `fallbacks` of the task's newest dispatch that resolved a section, verifier `misses` and the sections sibling
+ * carry-forward `extended` its guides with, over all its runs. Path, anchor and reason only, never document or worker text.
+ * A task without any reading event (every dispatch before this change, or no section marked and none cited) has none.
+ */
+function readingView(store, campaignId) {
+  const opTask = new Map(store.all('SELECT id, task_id FROM operations WHERE campaign_id = ?', campaignId).map((row) => [row.id, row.task_id]));
+  const view = new Map();
+  const of = (taskId) => {
+    if (!view.has(taskId)) view.set(taskId, { anchored: 0, fallbacks: [], misses: { section: 0, unreferenced: 0 }, extended: 0, op: null });
+    return view.get(taskId);
+  };
+  const rows = store.all(`SELECT kind, detail FROM journal WHERE campaign_id = ? AND kind IN (${READING_EVENTS.map(() => '?').join(', ')}) ORDER BY seq`,
+    campaignId, ...READING_EVENTS);
+  for (const { kind, detail } of rows) {
+    const taskId = detail?.task ?? opTask.get(detail?.op);
+    if (!taskId) continue;
+    const item = of(taskId);
+    if (kind === 'reference-section-resolved') Object.assign(item, { op: detail.op, anchored: detail.anchored ?? 0, fallbacks: [] });
+    else if (kind === 'reference-section-fallback' && detail.op === item.op) item.fallbacks.push({ path: detail.path, anchor: detail.anchor, reason: detail.reason });
+    else if (kind === 'section-miss') item.misses.section += 1;
+    else if (kind === 'unreferenced-doc') item.misses.unreferenced += 1;
+    else if (kind === 'reading-guide-extended') item.extended += 1;
+  }
+  return new Map([...view].map(([taskId, { op, ...item }]) => [taskId, item]));
 }
 
 const CI_STATE = { 'ci-pending': 'pending', 'ci-passed': 'success', 'ci-failed': 'failure', 'ci-inconclusive': 'inconclusive', 'ci-none': 'none' };

@@ -172,7 +172,7 @@ export function findingConstraint(finding, resolutions = []) {
  * verifier's findings added, and a note when cites did not fit. Null when no reference marks a section, so a packet
  * without anchors gets exactly today's prompt.
  */
-export function readingGuide({ revision, references, declared, resolutions, added = [], overflow = [] }) {
+export function readingGuide({ revision, references, declared, resolutions, added = [], overflow = [], extended = [] }) {
   if (!references.some((reference) => parseReference(reference)?.anchor)) return null;
   const entry = (reference) => {
     const item = resolutions.find((record) => record.reference === reference);
@@ -185,7 +185,37 @@ export function readingGuide({ revision, references, declared, resolutions, adde
     ...references.slice(0, declared).map((reference) => `- ${entry(reference)}`),
     ...(added.length ? ['Added from the verifier\'s findings:', ...added.map((item) => `- ${entry(item.reference)} (finding ${promptText(item.finding, 40) ?? 'withheld'})`)] : []),
     ...(overflow.length ? ['Findings cite sections not listed here: see the constraints.'] : []),
+    ...(extended.length ? ['Added from this campaign\'s verifier findings (prompt only, not in the packet):',
+      ...extended.map((item) => `- ${entry(item.reference)} (finding ${promptText(`${item.from.task}/${item.from.finding}`, 80) ?? 'withheld'})`)] : []),
   ].join('\n');
+}
+
+// Sibling carry-forward bounds (SCOPED_READING section 7.3).
+export const CARRY_PER_DOCUMENT = 4;
+export const CARRY_PER_DISPATCH = 8;
+
+/**
+ * The sections this campaign's verifiers found missed in other tasks that a dispatch of `task` inherits in its reading
+ * guide (SCOPED_READING section 7.3). `misses` are the detail of `section-miss` and `unreferenced-doc` events, newest
+ * first. A miss reaches the task only when its references name that document by section and never whole, and only as a
+ * section it does not list already; at most 4 per document and 8 per dispatch. Prompt text only: nothing here changes a
+ * packet, a spec or an amendment. Returns `{ reference, from: { task, finding } }`.
+ */
+export function siblingSections({ misses, task, references }) {
+  const listed = references.map(parseReference).filter(Boolean);
+  const sectioned = new Set(listed.filter((item) => item.anchor).map((item) => item.path));
+  const whole = new Set(listed.filter((item) => !item.anchor).map((item) => item.path));
+  const perDocument = new Map(), out = [];
+  for (const miss of misses) {
+    if (out.length >= CARRY_PER_DISPATCH) break;
+    if (!miss || miss.task === task || !miss.anchor || !sectioned.has(miss.path) || whole.has(miss.path)) continue;
+    const reference = `${miss.path}#${miss.anchor}`;
+    if (parseReference(reference)?.anchor !== miss.anchor || references.includes(reference) || out.some((item) => item.reference === reference)) continue;
+    if ((perDocument.get(miss.path) ?? 0) >= CARRY_PER_DOCUMENT) continue;
+    perDocument.set(miss.path, (perDocument.get(miss.path) ?? 0) + 1);
+    out.push({ reference, from: { task: miss.task, finding: miss.finding } });
+  }
+  return out;
 }
 
 /** Why a verifier cite is dropped before it is resolved (SCOPED_READING section 6.1), or null when it is kept. */
@@ -917,6 +947,12 @@ export class Controller {
           `**${task.task_id}** is blocked (${change.blocked.class}): ${change.blocked.reason}\n\nThe campaign keeps ownership. After recovery or an owner decision recorded on the task issue, run \`supervisor recheck ${ctx.id} --task ${task.task_id}\`.`, now);
       }
     });
+  }
+
+  /** This campaign's classified misses (`section-miss`, `unreferenced-doc`), newest first, for sibling carry-forward. */
+  campaignMisses(campaignId) {
+    return this.store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind IN ('section-miss', 'unreferenced-doc') ORDER BY seq DESC LIMIT 200",
+      campaignId).map((row) => row.detail);
   }
 
   /** The references and report of the finished implement run that produced a verification's target, or null. */
@@ -1999,8 +2035,13 @@ export class Controller {
         reading = { references: [...spec.references], added: [], overflow: [...reading.added, ...reading.overflow] };
         packet = buildPacket(reading.references);
       }
-      const guide = readingGuide({ revision, references: reading.references, declared: spec.references.length, resolutions,
-        added: reading.added, overflow: reading.overflow });
+      // A section another task of this campaign missed reaches this guide when the packet marks sections of that document
+      // (section 7.3). The packet, its digest and the spec are built before and without it.
+      const extended = siblingSections({ misses: this.campaignMisses(ctx.id), task: task.task_id, references: reading.references });
+      const guide = readingGuide({ revision, references: reading.references, declared: spec.references.length,
+        resolutions: extended.length ? [...resolutions, ...resolveReferences({ git: this.cmd.git, repoPath: repo.path, revision,
+          references: extended.map((item) => item.reference) })] : resolutions,
+        added: reading.added, overflow: reading.overflow, extended });
       const digest = packetDigest(packet, POLICY);
       const instructions = pendingInstructions(this.store, current, task.task_id, kind);
       const note = integration && kind === 'verify'
@@ -2076,6 +2117,10 @@ export class Controller {
         const fallbacks = anchored.filter((item) => !item.resolved);
         this.store.journal(ctx.id, 'reference-section-resolved', { op: opId, anchored: anchored.length, resolved: anchored.length - fallbacks.length, fallback: fallbacks.length }, now);
         for (const item of fallbacks) this.store.journal(ctx.id, 'reference-section-fallback', { task: task.task_id, op: opId, path: item.path, anchor: item.anchor, reason: item.reason }, now);
+      }
+      for (const item of extended) {
+        const { path, anchor } = parseReference(item.reference);
+        this.store.journal(ctx.id, 'reading-guide-extended', { op: opId, task: task.task_id, from: item.from, path, anchor }, now);
       }
 
       // This checkpoint and admission decision commit together before launch.
