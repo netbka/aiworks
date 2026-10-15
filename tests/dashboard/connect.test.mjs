@@ -18,7 +18,7 @@ import { Store } from '../../src/supervisor/store.mjs';
 import { CONNECT_CODES } from '../../src/supervisor/project-connect.mjs';
 import { PREFLIGHT_CODES } from '../../src/supervisor/project-preflight.mjs';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
-import { LOCAL_START, OWN_COPY, projectMessage, UNREGISTERED } from '../../src/dashboard/projects.mjs';
+import { LOCAL_START, OWN_COPY, PROJECT_COPY, projectAction, projectMessage, UNREGISTERED } from '../../src/dashboard/projects.mjs';
 import { openPage, visibleText } from './fixtures/page.mjs';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
@@ -292,6 +292,90 @@ test('refusals save nothing and say what to do, with their one action', async (t
   const overlap = (await r.post('/api/projects/preflight', { path: join(notes, 'src') })).json;
   assert.deepEqual([overlap.code, overlap.message, overlap.action],
     ['PATH_OVERLAP', 'This folder overlaps the project "Notes". Projects can\'t be inside each other.', { do: 'open', label: 'Open "Notes"', project: 'notes' }]);
+});
+
+/**
+ * aiworks#11 review F1: a stop the page cannot fix says what is missing and that the fix is outside AIWorks, in the
+ * owner's words, and offers only Check again. Settings has no control for these, so nothing points there.
+ */
+function assertOutside(answer, code, cause) {
+  assert.equal(answer.code, code, JSON.stringify(answer));
+  assert.match(answer.message, cause);
+  assert.match(answer.message, /outside AIWorks/, `${code} says the fix is outside AIWorks`);
+  assert.doesNotMatch(answer.message, /Settings|governance provider|rules folder/, `${code} sends the owner nowhere and names no internal part`);
+  assert.deepEqual(answer.action, { do: 'check', label: 'Check again' }, code);
+}
+
+test('Add project stopped by something outside the page: no project rules, no Git, a configuration file that disagrees (aiworks#11 F1)', async (t) => {
+  const r = await rig(t);
+  const config = JSON.parse(readFileSync(join(r.dataDir, 'config.json'), 'utf8'));
+  const setConfig = (changes) => writeFileSync(join(r.dataDir, 'config.json'), JSON.stringify({ ...config, ...changes }));
+  const notes = r.folder();
+  // No project rules on this computer: checking and connecting both stop, and nothing is saved.
+  setConfig({ governanceRoot: join(r.tmp, 'no-rules') });
+  assertOutside((await r.post('/api/projects/preflight', { path: notes })).json, 'GOVERNANCE_ROOT_MISSING', /^AIWorks can't find the project rules on this computer, so it can't add a project yet\./);
+  const notSaved = (await r.post('/api/projects/connect', { path: notes, kind: 'folder' })).json;
+  assertOutside(notSaved, 'GOVERNANCE_ROOT_MISSING', /^AIWorks can't find the project rules/);
+  assert.equal(notSaved.project, null);
+  // No Git where the configuration file says it is.
+  setConfig({ commands: { ...config.commands, git: [join(r.tmp, 'no-such-git')] } });
+  assertOutside((await r.post('/api/projects/preflight', { path: notes })).json, 'GIT_CLI_MISSING', /^AIWorks can't find Git on this computer, so it can't check this folder\./);
+  assert.equal(r.store().all('SELECT id FROM projects').length, 0);
+  // The configuration file puts the same repository in another folder: the project is saved as needing setup, and its
+  // sentence names only the other folder's name, never its full path.
+  const elsewhere = r.folder('Elsewhere', { 'README.md': 'old copy\n' });
+  setConfig({ repositories: { 'example-org/sampleapp': { path: elsewhere } } });
+  const root = r.repository('SampleApp', 'https://github.com/example-org/sampleapp.git');
+  const saved = (await r.post('/api/projects/connect', { path: root, kind: 'github' })).json;
+  const conflict = `The AIWorks configuration file on this computer puts example-org/sampleapp at Elsewhere, but this project is at ${root}. AIWorks won't guess which one is right. Correct that entry in the configuration file, which is outside AIWorks, or disconnect this project. Then choose Check again.`;
+  assertOutside(saved, 'CONFIG_CONFLICT', /^The AIWorks configuration file on this computer puts example-org\/sampleapp at Elsewhere,/);
+  assert.equal(saved.message, conflict);
+  assert.equal(saved.project.status, 'needs-setup');
+  const again = (await r.post('/api/projects/check', { projectId: saved.project.id, requestId: crypto.randomUUID() })).json;
+  assertOutside(again, 'CONFIG_CONFLICT', /^The AIWorks configuration file/);
+  assert.equal(again.message, conflict);
+  assertNoOtherPath(r, [notes, root]);
+  // No code this page can meet points to Settings, and the page has no way to.
+  for (const code of [...Object.keys(PREFLIGHT_CODES), ...Object.keys(CONNECT_CODES), ...Object.keys(PROJECT_COPY)]) {
+    assert.notEqual(projectAction(code, DETAIL)?.do, 'settings', code);
+    assert.doesNotMatch(projectMessage(code, DETAIL) ?? '', /Settings/, code);
+  }
+  const page = readFileSync(join(ROOT, 'src/dashboard/public/dashboard.js'), 'utf8');
+  assert.doesNotMatch(/^function connectAction\([\s\S]*?\n}$/m.exec(page)[0], /settings/i);
+});
+
+test('through the page: Add project without project rules says so with Check again only, and Needs me claims only work (aiworks#11 F1, F8)', async (t) => {
+  const tmp = realpathSync.native(mkdtempSync(join(tmpdir(), 'aiworks-connect-outside-')));
+  t.after(() => rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
+  const root = join(tmp, 'Recipes');
+  write(root, { 'soup.md': '# Soup\n' });
+  const page = await openPage(t, { store: 'empty', server: { projectConnection: { gitEnv: { GIT_CEILING_DIRECTORIES: tmp } } } });
+  const config = JSON.parse(readFileSync(join(page.dataDir, 'config.json'), 'utf8'));
+  const setRules = (governanceRoot) => writeFileSync(join(page.dataDir, 'config.json'), JSON.stringify({ ...config, governanceRoot, projectConnection: { enabled: true } }));
+  setRules(join(tmp, 'no-rules'));
+  await page.refresh();
+  await page.go('#/projects/add');
+  const path = page.$('#add-path');
+  path.value = root;
+  path.dispatchEvent({ type: 'input', preventDefault() {} });
+  page.$('form[data-add-form]').dispatchEvent({ type: 'submit', defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } });
+  await page.settle();
+  const answer = page.$('#add-result');
+  assert.equal(visibleText(answer), `${PROJECT_COPY.GOVERNANCE_ROOT_MISSING} Check again`);
+  assert.deepEqual(answer.querySelectorAll('a').map((node) => node.getAttribute('href')), [], 'no link leads to a screen without the control');
+  assert.deepEqual(answer.querySelectorAll('button').map((node) => node.textContent), ['Check again']);
+  assert.ok(!page.$('#content').querySelectorAll('a').some((node) => /settings/i.test(node.getAttribute('href') ?? '')), 'nothing on Add project points to Settings');
+  // Needs me lists work only, so in this state it never says that nothing is blocked.
+  await page.go('#/needs');
+  const needs = visibleText(page.$('#main'));
+  assert.match(needs, /No work is blocked on you right now/);
+  assert.doesNotMatch(needs, /Nothing is blocked/);
+  // Once the fix outside AIWorks is made, Check again finds the folder.
+  setRules(GOVERNANCE);
+  await page.go('#/projects/add');
+  page.$('#add-result').querySelectorAll('button').find((node) => node.textContent === 'Check again').click();
+  await page.settle();
+  assert.ok(visibleText(page.$('#add-result')).startsWith('Ordinary folder, no Git. Folder Recipes.'), visibleText(page.$('#add-result')));
 });
 
 test('two projects at once (PROJECT_CONNECTION §8.5): separate records, independent statuses, and no work starts', async (t) => {

@@ -151,8 +151,11 @@ export const PROJECT_COPY = Object.freeze({
   ROOT_MISSING: "AIWorks can't reach {path}. If it's on a removable drive, plug it in.",
   ROOT_REPLACED: `The folder at {path} was replaced. Confirm it's still "{name}" before work continues.`,
   IDENTITY_CHANGED: '{path} now holds a different project ({was} → {now}). AIWorks stopped work here.',
-  GOVERNANCE_ROOT_MISSING: "AIWorks can't read the project rules from governance provider. Set up the rules folder in Settings.",
-  GIT_CLI_MISSING: "AIWorks can't find Git on this computer. Set the Git path in Settings.",
+  // The fix for these three is outside AIWorks (OWNER_WORKSPACE §5.2 step 6): Settings only shows what the machine has
+  // (§4.3) and has no control for them, so they name the fix and offer Check again, never "Open Settings" (aiworks#11 F1).
+  GOVERNANCE_ROOT_MISSING: "AIWorks can't find the project rules on this computer, so it can't add a project yet. The fix is outside AIWorks: the AIWorks configuration file on this computer must name the folder that holds the project rules. Then choose Check again.",
+  GIT_CLI_MISSING: "AIWorks can't find Git on this computer, so it can't check this folder. The fix is outside AIWorks: install Git, or name where it is in the AIWorks configuration file on this computer. Then choose Check again.",
+  CONFIG_CONFLICT: "The AIWorks configuration file on this computer puts {repository} at {configPath}, but this project is at {root}. AIWorks won't guess which one is right. Correct that entry in the configuration file, which is outside AIWorks, or disconnect this project. Then choose Check again.",
   GIT_SUBFOLDER: 'This folder is inside the Git repository {top}. Connect {top} instead.',
   GIT_WORKTREE: 'This folder is a Git worktree. Connect the main checkout at {main} instead.',
   GIT_BARE: 'This is a bare Git repository with no files. Connect a normal checkout.',
@@ -202,8 +205,8 @@ export function projectAction(code, detail = {}) {
     case 'GIT_SUBFOLDER': return detail.top ? { do: 'use-path', label: `Use ${detail.top}`, path: detail.top } : null;
     case 'GIT_WORKTREE': return detail.main ? { do: 'use-path', label: `Use ${detail.main}`, path: detail.main } : null;
     case 'GIT_NO_COMMITS': return { do: 'kind', label: 'Connect as plain folder', kind: 'folder' };
-    case 'GOVERNANCE_ROOT_MISSING': case 'GIT_CLI_MISSING': case 'CONFIG_CONFLICT': return { do: 'settings', label: 'Open Settings' };
     case 'PROJECT_MOVED': return detail.projectId ? { do: 'move', label: `Move "${detail.name}" here`, projectId: detail.projectId } : null;
+    case 'GOVERNANCE_ROOT_MISSING': case 'GIT_CLI_MISSING': case 'CONFIG_CONFLICT':
     case 'PATH_UNREADABLE': case 'ROOT_MISSING': case 'GH_MISSING': case 'GH_SIGNED_OUT': case 'GH_NO_ACCESS': case 'GH_UNREACHABLE':
     case 'REGISTRY_MISSING': case 'REGISTRY_AMBIGUOUS': case 'REGISTRY_INVALID': case 'GIT_UNTRUSTED': case 'MIRROR_SPACE': case 'CHANGED_DURING_COPY':
       return { do: 'check', label: 'Check again' };

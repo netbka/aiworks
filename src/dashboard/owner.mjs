@@ -385,7 +385,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
   // Calm only about what blocks on the owner; reports and releases are said apart, never as "nothing". Items that say
   // they are not owner actions (a supervisor fault, an unreadable inbox) are listed but not counted (review F17).
   const count = items.filter((item) => !item.system).length;
-  const headline = count ? `Needs you (${count})` : unknownResults ? 'Checking for merges before listing what needs you' : 'Nothing is blocked on you right now';
+  const headline = count ? `Needs you (${count})` : unknownResults ? 'Checking for merges before listing what needs you' : 'No work is blocked on you right now';
   // Page order: campaigns with something listed for the owner, then the other active ones. Finished or cancelled
   // campaigns with nothing listed collapse into a compact list, most recent first.
   const listed = new Set(items.map((item) => item.campaignId).filter(Boolean));

@@ -89,7 +89,7 @@ test('F17: "AIWorks itself" counts toward Needs you only when it holds an owner 
   // A supervisor fault and an unreadable inbox say they are not the owner's: listed, never counted.
   const only = ownerView({ available: true, recent: null, campaigns: [campaign('shop-fault', 'example/shop', { livenessDefect: true })],
     coordinator: { configError: 'coordinator.reportTo is missing', blocked: null, messages: [] } }, undefined, { now: NOW });
-  assert.deepEqual([only.headline, only.count], ['Nothing is blocked on you right now', 0]);
+  assert.deepEqual([only.headline, only.count], ['No work is blocked on you right now', 0]);
   assert.deepEqual(only.groups.map((group) => [group.name, group.count, group.notCounted]), [[SYSTEM_GROUP, 0, 2]]);
   // With an owner action of its own (AIWorks stopped), that one is counted, and the rest still is not.
   const both = ownerView({ available: true, recent: null, coordinator: null, campaigns: [campaign('shop-fault', 'example/shop', { livenessDefect: true }),

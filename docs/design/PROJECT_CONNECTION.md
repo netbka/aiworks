@@ -388,8 +388,8 @@ The copy below is exact owner-facing English (D9). `{…}` are placeholders. Eac
 | `ROOT_MISSING` | Temporarily unavailable | AIWorks can't reach {path}. If it's on a removable drive, plug it in. | Check again |
 | `ROOT_REPLACED` | Needs setup | The folder at {path} was replaced. Confirm it's still "{name}" before work continues. | Review |
 | `IDENTITY_CHANGED` | Needs setup | {path} now holds a different project ({was} → {now}). AIWorks stopped work here. | Review |
-| `GOVERNANCE_ROOT_MISSING` | Needs setup | AIWorks can't read the project rules from governance provider. Set up the rules folder in Settings. | Open Settings |
-| `GIT_CLI_MISSING` | Needs setup | AIWorks can't find Git on this computer. Set the Git path in Settings. | Open Settings |
+| `GOVERNANCE_ROOT_MISSING` | Needs setup | AIWorks can't find the project rules on this computer, so it can't add a project yet. The fix is outside AIWorks: the AIWorks configuration file on this computer must name the folder that holds the project rules. Then choose Check again. | Check again |
+| `GIT_CLI_MISSING` | Needs setup | AIWorks can't find Git on this computer, so it can't check this folder. The fix is outside AIWorks: install Git, or name where it is in the AIWorks configuration file on this computer. Then choose Check again. | Check again |
 
 ### 8.2 GitHub project
 
@@ -416,7 +416,7 @@ Nothing is fetched or created at connect: no `git fetch`, no worktree and no bra
 | `REGISTRY_AMBIGUOUS` | Needs setup | governance provider lists {repo} more than once ({ids}). AIWorks won't guess which rules apply. | Check again |
 | `REGISTRY_INVALID` | Needs setup | governance provider's entry for {repo} has an error, so AIWorks can't read its rules. | Check again |
 | `REGISTRY_CHANGED` | Ready, or the code above | (Notice) The project rules for {repo} changed in governance provider. AIWorks uses the new rules. | — |
-| `CONFIG_CONFLICT` | Needs setup | Settings point {repo} to {configPath}, but this project is at {root}. Remove one so AIWorks doesn't guess. | Open Settings |
+| `CONFIG_CONFLICT` | Needs setup | The AIWorks configuration file on this computer puts {repo} at {configPath}, but this project is at {root}. AIWorks won't guess which one is right. Correct that entry in the configuration file, which is outside AIWorks, or disconnect this project. Then choose Check again. | Check again |
 | `GIT_SUBFOLDER` | not saved | This folder is inside the Git repository {top}. Connect {top} instead. | Use {top} |
 | `GIT_WORKTREE` | not saved | This folder is a Git worktree. Connect the main checkout at {main} instead. | Use {main} |
 | `GIT_BARE` | not saved | This is a bare Git repository with no files. Connect a normal checkout. | — |

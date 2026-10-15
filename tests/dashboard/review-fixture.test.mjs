@@ -279,7 +279,7 @@ test('the empty store is the first run: no projects and nothing blocked on the o
   const snapshot = supervisorSnapshot(dataDir);
   assert.deepEqual([snapshot.available, snapshot.campaigns.length, Object.keys(repositories).length], [true, 0, 0]);
   const view = ownerView(snapshot, await merges(dataDir));
-  assert.deepEqual([view.available, view.items.length, view.headline, view.also], [true, 0, 'Nothing is blocked on you right now', null]);
+  assert.deepEqual([view.available, view.items.length, view.headline, view.also], [true, 0, 'No work is blocked on you right now', null]);
 });
 
 test('the unreadable store shows that AIWorks cannot read its work records', (t) => {

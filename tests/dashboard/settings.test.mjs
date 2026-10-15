@@ -12,6 +12,7 @@ import { join, resolve } from 'node:path';
 import { aiWorkers, computerSettings, configuredCommandNames, releaseModes, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
 import { buildReviewFixture } from './fixtures/review-store.mjs';
+import { openPage, visibleText } from './fixtures/page.mjs';
 
 const ROOT = resolve(import.meta.dirname, '../..');
 const page = () => readFileSync(join(ROOT, 'src/dashboard/public/dashboard.js'), 'utf8');
@@ -192,4 +193,26 @@ test('Settings shows this computer, AI workers, project connections and release 
   assert.deepEqual(empty.settings.workers.map((w) => w.kind), ['claude-cli', 'codex-cli', 'cursor-cli']);
   assert.equal(supervisorSnapshot(join(root, 'missing')).settings, undefined);
   assert.deepEqual(computerSettings([], {}).commands, []);
+});
+
+test('Settings › Projects and Projects tell one story about how a project appears, with Add project off and on (aiworks#11 F7)', async (t) => {
+  const page = await openPage(t, { store: 'empty' });
+  const config = JSON.parse(readFileSync(join(page.dataDir, 'config.json'), 'utf8'));
+  const screen = async (address) => { await page.go(address); return visibleText(page.$('#content')); };
+  const links = () => page.$('#content').querySelectorAll('a').map((node) => [node.textContent, node.getAttribute('href')]);
+  // Off: both say the configuration file lists repositories; neither offers Add project.
+  const OFF = 'No projects yet. Projects appear here when the AIWorks configuration file on this computer lists a repository.';
+  assert.ok((await screen('#/projects')).startsWith(OFF));
+  assert.ok((await screen('#/settings')).includes(OFF));
+  assert.ok(!links().some(([text]) => text === 'Add project'));
+  // On: both say the §7.1 sentence after S11 and lead to Add project; Settings keeps no primary button (§4.3).
+  writeFileSync(join(page.dataDir, 'config.json'), JSON.stringify({ ...config, projectConnection: { enabled: true } }));
+  await page.refresh();
+  const ON = 'No projects yet. Add a folder on this computer. It can be a GitHub repository, a local Git repository or an ordinary folder. Add project';
+  assert.ok((await screen('#/projects')).includes(ON));
+  const settings = await screen('#/settings');
+  assert.ok(settings.includes(ON), settings);
+  assert.doesNotMatch(settings, /configuration file on this computer lists a repository/);
+  const add = page.$('#content').querySelectorAll('a').find((node) => node.textContent === 'Add project');
+  assert.deepEqual([add.getAttribute('href'), add.className], ['#/projects/add', ''], 'a plain link, not a primary button');
 });
