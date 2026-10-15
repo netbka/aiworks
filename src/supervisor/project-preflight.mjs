@@ -71,14 +71,34 @@ function absoluteInput(input, platform) {
  */
 function protectedRoot(key, io, options, platform) {
   const env = options.env ?? process.env;
+  const self = ownWorktree(key, io, options, platform);
   const own = [AIWORKS_ROOT, options.governanceRoot, ...(options.protectedRoots ?? [])];
-  for (const project of options.projects ?? []) own.push(project.mirror_root, project.worktree_root);
+  for (const project of options.projects ?? []) own.push(project.mirror_root, ...(project === self?.project ? [] : [project.worktree_root]));
+  for (const entry of options.worktreeRoots ?? []) if (!self || !sameWorktree(entry, self, io, platform)) own.push(entry?.path);
   if (own.some((path) => typeof path === 'string' && path !== '' && related(key, canonical(io, path, platform)))) return true;
   const system = [env.SystemRoot, env.ProgramFiles, env['ProgramFiles(x86)']];
   if (system.some((path) => typeof path === 'string' && path !== '' && inside(key, canonical(io, path, platform)))) return true;
   const home = options.home ?? homedir();
   return (home && key === canonical(io, home, platform)) || rootKey(parse(key).root, platform) === key;
 }
+
+/**
+ * The live GitHub project connected at exactly `key`, with its own worktree root, when that root lies strictly inside
+ * `key` (aiworks#7): its own worktrees do not make its own folder protected. Only the root that project was connected at
+ * qualifies; a new folder, another project's worktrees and a worktree root at or around the folder stay protected, and
+ * preflight still checks afterwards that the folder holds the same project (sameRoot).
+ */
+function ownWorktree(key, io, options, platform) {
+  const project = (options.projects ?? []).find((item) => item.disconnected_at == null && item.source_kind === 'github' && item.root_key === key);
+  if (typeof project?.worktree_root !== 'string' || project.worktree_root === '') return null;
+  const path = canonical(io, project.worktree_root, platform);
+  return path !== key && inside(path, key) ? { project, path } : null;
+}
+
+/** A configured worktree root ({ repository, path }) that is that project's own: the same repository and the same place. */
+const sameWorktree = (entry, self, io, platform) => typeof entry?.path === 'string' && entry.path !== '' &&
+  String(entry.repository ?? '').toLowerCase() === String(self.project.github_repository ?? self.project.fingerprint ?? '').toLowerCase() &&
+  canonical(io, entry.path, platform) === self.path;
 
 function governanceReadable(root, io) {
   if (typeof root !== 'string' || !isAbsolute(root)) return false;
@@ -244,7 +264,8 @@ function sameRoot(project, facts) {
  * Read-only preflight of the folder at `input`. The result says what was found, or the one code that stops it:
  *   { ok, code, status, detail, input, root, rootKey, rootFileId, proposedKind, kind, repository, branch, head,
  *     fingerprint, confirm, notices, scan }
- * Options: projects (live project records), governanceRoot, protectedRoots, exclusions, includeNodeModules, kind (the
+ * Options: projects (live project records), governanceRoot, protectedRoots, worktreeRoots (configured worktree roots as
+ * { repository, path }, protected like protectedRoots except a connected GitHub project's own), exclusions, includeNodeModules, kind (the
  * owner's switch: a GitHub checkout to 'local-git', or a repository without commits to 'folder'), mirrorParent (where
  * the copy would go, for MIRROR_SPACE), limits, git (the Git command line), and for tests gitEnv (for example
  * GIT_CEILING_DIRECTORIES, so a host whose profile folder is a repository cannot decide a test), env, home, now and io.

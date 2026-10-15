@@ -312,10 +312,13 @@ function readInput(action, input) {
 function connectOptions(dataDir, inject) {
   const config = readConfig(dataDir);
   const home = dirname(resolve(dataDir));
-  const worktreeRoots = Object.values(config.repositories ?? {}).map((entry) => entry?.worktreeRoot).filter((path) => typeof path === 'string' && path);
+  // Each with its repository, so a connected GitHub project's own worktrees inside its folder do not protect that folder.
+  const worktreeRoots = Object.entries(config.repositories ?? {}).filter(([, entry]) => typeof entry?.worktreeRoot === 'string' && entry.worktreeRoot)
+    .map(([repository, entry]) => ({ repository, path: entry.worktreeRoot }));
   const git = Array.isArray(config.commands?.git) && config.commands.git.length ? config.commands.git : ['git'];
   return { config, dataDir, governanceRoot: configuredGovernanceRoot(dataDir), git, ...inject,
-    protectedRoots: [dataDir, join(home, 'mirrors'), join(home, 'worktrees'), ...worktreeRoots, ...(inject.protectedRoots ?? [])] };
+    protectedRoots: [dataDir, join(home, 'mirrors'), join(home, 'worktrees'), ...(inject.protectedRoots ?? [])],
+    worktreeRoots: [...worktreeRoots, ...(inject.worktreeRoots ?? [])] };
 }
 
 /** Open the supervisor store for one request; the routes never create a missing one. */
