@@ -483,13 +483,15 @@ test('commit prompts tell implementers and verifiers how to get a completed full
     const rule = ruleLine(prompt);
     assert.ok(rule, `${role} commit prompt carries the full-gate rule`);
     assert.match(rule, /can take 20 to 30 minutes on this PC while other work runs, longer than one foreground command may wait/);
-    assert.match(rule, /Start it as a separate background process with its output in a file in this run's working directory/);
-    assert.match(rule, /wait for that process to exit/);
+    // The gate helper by its absolute path, so a gate that ended without an exit code is reported at once, never waited out.
+    const helper = `node "${fileURLToPath(new URL('../../src/supervisor/gate.mjs', import.meta.url)).replaceAll('\\', '/')}"`;
+    assert.ok(rule.includes(`Run it only through the gate helper, from this run's working directory: ${helper} start starts it as a separate process, then ${helper} wait, run in the foreground,`));
+    assert.match(rule, /prints died when it ended without an exit code: then start it once more and name both runs in the report\. Never wait on a log line or a file yourself\./);
     // #135: every gate file is git-ignored, so a verifier's checkout stays clean.
-    assert.match(rule, /Every file the gate writes ends in \.log, which git ignores: gate\.log for the output, gate-exit\.log for the exit code, never committed\./);
+    assert.match(rule, /Every file the gate writes ends in \.log, which git ignores: gate\.log for the output, gate-exit\.log for the exit code, gate-pid\.log for the process, gate-previous\.log for the run before, never committed\./);
     assert.match(rule, /A verifier's checkout must stay clean: any other new or changed file in it makes the verification result invalid\./);
     assert.doesNotMatch(rule, /gate\.exit/);
-    assert.match(rule, /copy the final summary block verbatim.*scripts\/run-tests\.mjs, the block after "# all test files"/);
+    assert.match(rule, /copy the final summary block it shows verbatim.*scripts\/run-tests\.mjs, the block after "# all test files"/);
     assert.match(rule, /Never shorten the suite, skip files or weaken a test to make it finish\./);
     assert.ok(prompt.indexOf(rule) < prompt.indexOf('Task packet (sha256 '), 'the rule precedes the packet');
     // Only the gate rules are added to the base prompt, the new one among them.

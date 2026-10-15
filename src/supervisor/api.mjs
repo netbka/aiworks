@@ -239,7 +239,7 @@ export function campaignStatus(store, id, now = Date.now(), { releaseStop = fals
       retryAt: t.retry_at ? new Date(t.retry_at).toISOString() : null, blocked: t.blocked, lastError: t.last_error,
       ci: ci.tasks.get(t.task_id) ?? null,
       wait: waitReason(t, waits),
-      routing: routed.tasks.get(t.task_id)?.routing ?? { implement: null, verify: null, escalation: null },
+      routing: routed.tasks.get(t.task_id)?.routing ?? { implement: null, verify: null, escalation: null, sameProvider: null },
       costByUnit: routed.tasks.get(t.task_id)?.cost ?? emptyCost(),
       // A project without GitHub shows its verified local candidate (WORK_ENVELOPE slice E10), never a PR; only once one exists.
       ...withCandidate(store, c.id, t.task_id),
@@ -455,6 +455,32 @@ function escalationView(ops) {
   return null;
 }
 
+// Owner words for the static router's exclusion filters and for the failure a retry follows. Fixed labels only.
+const PROVIDER_NAMES = { 'claude-cli': 'Claude', 'codex-cli': 'Codex', 'cursor-cli': 'Cursor', 'agy-cli': 'AGY' };
+const EXCLUDED = { 'research-only': 'may only research', 'web-mismatch': 'does not take this kind of step', 'cli-not-configured': 'is not set up here',
+  'role-unsupported': 'may not take this step on this computer', 'host-unavailable': 'is unavailable on this computer', 'account-wait': 'is waiting for its account' };
+const FAILED = { timeout: 'timed out', 'invalid-result': 'returned an unusable result', 'exit-without-result': 'ended without a result',
+  'evidence-unavailable': 'returned no evidence', error: 'failed', lost: 'was lost' };
+
+/**
+ * Why the newest run stayed on the provider that failed the attempt before it (static receipt basis "failed-provider-only"):
+ * each other declared provider and the first filter that excluded it. Null when the newest run moved to another provider
+ * or followed no failure. Fixed labels only, as escalationView.
+ */
+function sameProviderView(ops) {
+  const op = ops.at(-1);
+  const decision = op?.routing?.mode === 'static' ? op.routing.decision : null;
+  if (decision?.basis !== 'failed-provider-only') return null;
+  const name = (kind) => PROVIDER_NAMES[kind] ?? 'another provider';
+  const role = op.kind === 'verify' ? 'verification' : 'implementer';
+  const others = (decision.eligibility ?? []).filter((item) => item.role === role && item.kind !== decision.chosen.kind && item.reasons?.length)
+    .map((item) => `${name(item.kind)} ${EXCLUDED[item.reasons[0]] ?? 'may not take it'}`);
+  const last = op.routing.inputs?.escalation?.priorAttempts?.[0] ?? null;
+  const failed = (last?.class === 'result' ? FAILED[last.terminal] : FAILED[last?.class]) ?? 'failed';
+  return { stage: op.kind, operationId: op.id, provider: decision.chosen.kind,
+    reason: `${name(decision.chosen.kind)} again: the last ${op.kind === 'verify' ? 'review' : 'attempt'} ${failed}, and ${others.length ? others.join(', ') : 'no other provider is declared'}` };
+}
+
 /**
  * Per task: the model and tier of its newest implement and verify run, the newest move up and its cost by unit; and the
  * campaign's cost by unit. Counted runs only (runNotCounted, as campaignBudget): open runs have no cost yet.
@@ -464,7 +490,7 @@ function routingView(store, campaignId) {
   const cost = emptyCost();
   const tasks = new Map();
   for (const op of ops) {
-    const item = tasks.get(op.task_id) ?? { routing: { implement: null, verify: null, escalation: null }, cost: emptyCost(), steps: [] };
+    const item = tasks.get(op.task_id) ?? { routing: { implement: null, verify: null, escalation: null, sameProvider: null }, cost: emptyCost(), steps: [] };
     tasks.set(op.task_id, item);
     const finished = op.state === 'finished';
     if (finished && runNotCounted(op.outcome)) continue;
@@ -474,7 +500,10 @@ function routingView(store, campaignId) {
     }
     if (finished) { addCost(cost, op); addCost(item.cost, op); }
   }
-  for (const item of tasks.values()) item.routing.escalation = escalationView(item.steps);
+  for (const item of tasks.values()) {
+    item.routing.escalation = escalationView(item.steps);
+    item.routing.sameProvider = sameProviderView(item.steps);
+  }
   return { cost, tasks };
 }
 

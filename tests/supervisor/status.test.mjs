@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { CLI, declaration, SQLITE } from './helpers.mjs';
 import { campaignStart, campaignStatus } from '../../src/supervisor/api.mjs';
+import { receiptInputs, staticReceipt } from '../../src/supervisor/router.mjs';
 const Store = SQLITE ? (await import('../../src/supervisor/store.mjs')).Store : null;
 
 function setup(t) {
@@ -395,13 +396,45 @@ test('cost stays in its own unit per step and per work program; unknown is count
   assert.deepEqual(b.routing.verify, { operationId: open, executor: 'claude-cli', model: null, tier: null, tierName: null, routed: false });
   assert.equal(b.routing.escalation, null);
   assert.deepEqual(b.costByUnit, { usd: { reported: null, reportedRuns: 0 }, tokens: {}, unknownCostRuns: 1 });
-  assert.deepEqual(c.routing, { implement: null, verify: null, escalation: null }, 'a step that never ran has no model');
+  assert.deepEqual(c.routing, { implement: null, verify: null, escalation: null, sameProvider: null }, 'a step that never ran has no model');
   assert.deepEqual(c.costByUnit, { usd: { reported: null, reportedRuns: 0 }, tokens: {}, unknownCostRuns: 0 });
 
   // The work program: the same units, never added across units or providers, and the same unknown count as the budget.
   assert.deepEqual(status.costByUnit, { usd: { reported: 0.5, reportedRuns: 1 }, tokens: a.costByUnit.tokens, unknownCostRuns: 3 });
   assert.equal(status.costByUnit.unknownCostRuns, status.budget.unknownCostRuns);
   assert.ok(!JSON.stringify(status.tasks.map((task) => [task.routing, task.costByUnit])).includes(marker), 'no worker or router text in a reason');
+});
+
+test('status says why a retry stayed on the provider that failed: no other declared provider may take the step', { skip: !SQLITE }, (t) => {
+  const store = waitStore(t, 'aiworks-status-same-provider-');
+  const id = 'same-provider';
+  campaignStart(store, declaration({ campaignId: id, tasks: [commitTask('A'), commitTask('B')] }));
+  const now = Date.now();
+  let seq = 0;
+  const op = (taskId, kind, executor, routing, outcome, state = 'finished') => {
+    seq += 1;
+    store.insert('operations', { id: `op${seq}`, campaign_id: id, task_id: taskId, kind, seq, idempotency_key: `op${seq}`, lease_generation: 1,
+      state, session_id: 'synthetic', run_dir: 'synthetic', workspace: 'synthetic', packet: {}, packet_digest: 'digest',
+      created_at: now + seq, updated_at: now + seq, executor_kind: executor, outcome, routing });
+    return `op${seq}`;
+  };
+  // The receipts the controller stores: the static router's own decision for a declared Claude-then-Codex chain.
+  const providers = [{ kind: 'claude-cli', model: 'opus' }, { kind: 'codex-cli', model: 'gpt-6-astra' }];
+  const receipt = (platform, priorAttempts) => staticReceipt(receiptInputs({ stage: 'verify', chain: true, spec: { deliverable: 'commit' },
+    providers, platform, facts: () => ({ cliConfigured: true, hostUnavailable: null, wait: null }), priorAttempts }));
+  const timedOut = (failed) => [{ op: failed, kind: 'claude-cli', model: 'opus', class: 'timeout', terminal: null, denied: false, tier: null }];
+  const timeout = { class: 'timeout', detail: 'agent exceeded its time bound and was terminated' };
+  // A: on Windows Codex may not review a commit, so the review after a timed-out one stays on Claude (STA10, 2026-10-14).
+  const first = op('A', 'verify', 'claude-cli', receipt('win32', []), timeout);
+  const retry = op('A', 'verify', 'claude-cli', receipt('win32', timedOut(first)), null, 'dispatched');
+  // B: where Codex may review, the retry moves to it and there is nothing to explain.
+  const firstB = op('B', 'verify', 'claude-cli', receipt('linux', []), timeout);
+  op('B', 'verify', 'codex-cli', receipt('linux', timedOut(firstB)), null, 'dispatched');
+  const [a, b] = campaignStatus(store, id, now).tasks;
+  assert.deepEqual(a.routing.sameProvider, { stage: 'verify', operationId: retry, provider: 'claude-cli',
+    reason: 'Claude again: the last review timed out, and Codex may not take this step on this computer' });
+  assert.equal(b.routing.verify.executor, 'codex-cli');
+  assert.equal(b.routing.sameProvider, null);
 });
 
 test('a verifier move up counts unusable reviews, and staying on the moved-to tier is no new move', { skip: !SQLITE }, (t) => {
