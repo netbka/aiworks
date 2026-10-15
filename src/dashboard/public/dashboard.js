@@ -1,6 +1,6 @@
 import { formatRoute, globalOf, resolveRoute, tabOf } from '/router.mjs';
 // The state copy of OWNER_WORKSPACE §7 and the Now screen (slice S4); the server serves src/dashboard/copy.mjs here.
-import { COMMANDS, DELEGATED, DIALOGS, NEEDS, NOT_READ, busyOnCommand, costRunsLine, nowView, stateCopy, workLine } from '/copy.mjs';
+import { COMMANDS, DELEGATED, DIALOGS, NEEDS, NOT_READ, busyOnCommand, costRunsLine, nowView, readingLines, stateCopy, workLine } from '/copy.mjs';
 
 const $ = (selector) => document.querySelector(selector);
 const names = { done: 'Done', blocked: 'Blocked', unknown: 'Unknown',
@@ -1259,6 +1259,7 @@ function stepScreen(project, c, task) {
       : unfinished && c.controls?.more.length ? button('Send guidance', () => openInstructions(c, task), '', commandsOff()) : null;
   const last = task.verifiedSha ? `Passed the check at commit ${task.verifiedSha.slice(0, 7)}` : outcomeText(task.lastOutcome);
   const guidance = (c.instructions ?? []).filter((item) => item.taskId === task.id);
+  const reading = readingLines(task.reading);
   const { attempts, events } = task.history ?? { attempts: [], events: [] };
   return [el('section', { class: 'panel', 'data-focus-scope': `step/${c.id}/${task.id}` },
     el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, task.outcome ?? task.title), el('p', {}, `${campaignTitle(c, { inProject: true })} · project ${projectName(project)}`)),
@@ -1268,6 +1269,8 @@ function stepScreen(project, c, task) {
       task.stopped ? el('p', {}, task.stopped.text) : null,
       p ? el('p', { class: 'subtext' }, `From the worker’s own record: ${plural(p.turns, 'turn')} · ${plural(p.toolCalls, 'action')} · last activity ${timeAgo(p.lastActivityAt)}`) : null,
       last ? el('p', { class: 'subtext' }, `Last result: ${last}`) : null,
+      // The rule a returned change broke and what the next attempt was given (SCOPED_READING, slice UI18): paths, sections and headings only.
+      reading ? el('div', { class: 'instruction-list' }, el('h3', { class: 'section-title' }, reading.title), ...reading.lines.map((line) => el('p', {}, line))) : null,
       // The recovery the stop sentence names is shown beside its primary action, never only under More (aiworks#11 review F12).
       task.stopped && canCheckAgain(c, task) ? el('div', { class: 'campaign-controls' }, primary, button('Check again', () => command(c, 'recheck', task), 'secondary', commandsOff())) : primary,
       guidance.length ? el('div', { class: 'instruction-list' }, el('h3', { class: 'section-title' }, 'Guidance you sent'), ...guidance.map((item) => instructionReceipt(item, c))) : null,

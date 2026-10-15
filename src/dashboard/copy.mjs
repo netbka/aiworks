@@ -541,6 +541,39 @@ export const DIALOGS = {
 };
 
 /**
+ * What a step was asked to read, the rule its returned change broke and what the next attempt was given (SCOPED_READING
+ * section 8, slice UI18), in plain words. `reading` is the step's served `reading`: paths, section slugs and headings
+ * only. Null when it is null or says nothing, so a step without scoped reading shows nothing new.
+ */
+const FALLBACK_WORDS = { missing: 'no longer there', ambiguous: 'more than one heading matches', 'not-markdown': 'not a document AIWorks reads by section',
+  unreadable: 'could not be read' };
+const BROKE_WORDS = { covered: 'That section was already in what this step had to read.',
+  'section-miss': 'The plan had marked other sections of that document, not this one.',
+  'unreferenced-doc': 'The plan had not named that document for this step.' };
+const sectionName = (item) => !item.anchor ? `${item.path} (the whole document)`
+  : item.heading ? `section “${item.heading}” of ${item.path}` : `section #${item.anchor} of ${item.path}`;
+const list = (items) => items.map(sectionName).join('; ');
+export function readingLines(reading) {
+  if (!reading) return null;
+  const broke = reading.broke ?? [], given = broke.filter((item) => item.given), notGiven = broke.filter((item) => item.given === false);
+  const lines = [
+    reading.anchored ? `This step was asked to start with ${plural(reading.anchored, 'marked section')} of its documents.` : null,
+    ...broke.map((item) => `The checker returned the last change: it broke the rule in ${sectionName(item)}. ${BROKE_WORDS[item.kind] ?? ''}`.trim()),
+    broke.length && !reading.nextStarted ? `The next attempt has not started yet. It will be given ${broke.length === 1 ? 'that section' : 'those sections'} to read.` : null,
+    given.length ? `The next attempt was given ${list(given)} to read.` : null,
+    notGiven.length ? `The next attempt had no room for ${list(notGiven)}, so it reads ${notGiven.length === 1 ? 'that rule' : 'those rules'} in the checker’s finding.` : null,
+    reading.fallbacks?.length ? `${plural(reading.fallbacks.length, 'marked section')} could not be found, so the whole document was given instead: ${
+      reading.fallbacks.map((item) => `${item.path} (#${item.anchor}${FALLBACK_WORDS[item.reason] ? `, ${FALLBACK_WORDS[item.reason]}` : ''})`).join('; ')}.` : null,
+    reading.misses?.section || reading.misses?.unreferenced ? `So far the checker found ${[
+      reading.misses.section ? `${plural(reading.misses.section, 'broken rule')} in sections the plan did not mark` : null,
+      reading.misses.unreferenced ? `${plural(reading.misses.unreferenced, 'broken rule')} in documents the plan did not name` : null].filter(Boolean).join(' and ')}.` : null,
+    reading.extended ? `${plural(reading.extended, 'section')} ${reading.extended === 1 ? 'was' : 'were'} added to what it reads, because the checker found ${
+      reading.extended === 1 ? 'it' : 'them'} missed in another step of this work${reading.extendedSections?.length ? `: ${list(reading.extendedSections)}` : ''}.` : null,
+  ].filter(Boolean);
+  return lines.length ? { title: 'What it reads and the rules it broke', lines } : null;
+}
+
+/**
  * The Cost summary of a project (§4.10): its counted runs, and in how many of its pieces of work they ran, so the
  * sentence matches the breakdown under it, which lists every piece (aiworks#11 review F14). `total` is the server's
  * project total; null when no run is counted yet (runs still running are said apart).
