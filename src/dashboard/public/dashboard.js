@@ -161,7 +161,7 @@ function renderMetrics(campaigns = state.supervisor.campaigns, shown = []) {
       : agents.length ? `${verdicts.filter((v) => v === 'recent').length} working normally${verdicts.some((v) => v === 'stale') ? ` · ${verdicts.filter((v) => v === 'stale').length} possibly stuck or not started` : ''}` : 'None right now', '◎'],
     ['Needs you', !available ? '—' : unknown && !attention ? '?' : attention, available && unknown && attention ? '+ ?' : null,
       !available ? 'Execution state unknown'
-        : `${attention ? `${plural(attention, 'item')} listed below` : unknown ? 'Nothing confirmed yet' : 'Nothing is blocked on you'}${unknown ? ` · merge of ${plural(unknown, 'published step')} being checked` : ''}`, '◈'],
+        : `${attention ? `${plural(attention, 'item')} listed below` : unknown ? 'Nothing confirmed yet' : 'No work is blocked on you'}${unknown ? ` · merge of ${plural(unknown, 'published step')} being checked` : ''}`, '◈'],
   ];
   $('#metrics').replaceChildren(...metrics.filter(([title]) => shown.includes(title)).map(([title, value, total, foot, icon]) => el('div', { class: 'metric' },
     el('div', { class: 'metric-title' }, title, el('span', { class: 'metric-icon', 'aria-hidden': 'true' }, icon)),
@@ -855,7 +855,6 @@ const ADD_OFF = ['Adding a project from this page is not built yet.', 'Projects 
 function connectAction(action, retry) {
   if (!action) return null;
   if (action.do === 'open') return routeLink(action.label, { screen: 'project', project: action.project }, 'button secondary');
-  if (action.do === 'settings') return routeLink(action.label, '#/settings', 'button secondary');
   return button(action.label, () => {
     if (action.do === 'use-path') { saveAdd({ path: action.path, found: null, outcome: null, kind: null }); void checkFolder(); }
     else if (action.do === 'kind') { saveAdd({ kind: action.kind }); void checkFolder(); }
@@ -1120,9 +1119,14 @@ function settingsScreen() {
       project.connection ? el('div', { class: 'subtext' }, `${project.connection.statusWords}. Connected from the folder ${project.connection.folder}.`) : null,
       project.repository ? el('div', { class: 'subtext' }, project.details.configured ? 'Listed in the AIWorks configuration file on this computer.' : project.connection ? 'The AIWorks configuration file does not list it.' : 'Has work on this computer, but the AIWorks configuration file does not list it.') : null,
       project.repository ? el('div', { class: 'subtext' }, mergeFreshness(mergeRow(project.repository))) : null)))
-    : empty('No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository.'));
+    // The same story as the Projects screen (OWNER_WORKSPACE §5.1 step 3, §7.1; aiworks#11 review F7). Add project is a
+    // link here, not a primary action: Settings has none (§4.3).
+    : state.projects?.addProject ? settingsEmpty(stateCopy('projects-empty', { addProject: true }))
+      : empty('No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository.'));
   return [computer, workers, connections, releasePanel(settings.releases), settingsLinks()];
 }
+
+const settingsEmpty = ({ title, text, primary }) => el('div', { class: 'empty-state' }, el('strong', {}, title), ` ${text} `, routeLink(primary.label, primary.route));
 
 function settingsLinks() {
   return panel('More', null, el('ul', { class: 'settings-links' },

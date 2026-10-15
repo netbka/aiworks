@@ -166,6 +166,7 @@ Today there is no project object. Campaigns carry their target repository (obser
 - **Primary action.** None at screen level. Each row has exactly one action link.
 - **In details.** The full evidence sentence, what merging unlocks, the "took N tries" note, GitHub data age.
 - **Not here.** Waiting for an AI worker's usage limit to reset is not an owner task (AW-002). A pause by itself is not an owner task (observed: `src/dashboard/owner.mjs:268-271`).
+- **Not here: project setup.** A setup problem met in Add project (no project rules, no Git, a configuration file that disagrees) is said on Add project, where it happens, and a connected project that needs setup says so on Projects and its Now screen. Needs me lists work only, so its calm line speaks of work only: "No work is blocked on you right now" ([§7.1](#71-empty)). It never says "nothing is blocked" while setup may be (aiworks#11 review F8).
 
 The items are today's "Needs you" items, unchanged in meaning (observed: built in `src/dashboard/owner.mjs:228-294`, counted in `src/dashboard/owner.mjs:297`). The "AIWorks itself" group holds the supervisor and coordinator items, which today already say they are not owner actions (observed: `src/dashboard/owner.mjs:273-275`, `src/dashboard/owner.mjs:292-293`). They stay listed because nothing else will report them. The group is shown after the project groups.
 
@@ -315,7 +316,7 @@ Each flow is written as screen → what the owner sees → what they do. "Today"
 
 1. The owner opens AIWorks. **Projects** shows the empty state ([§7.1](#71-empty)).
 2. Before S11: the text says projects appear when this computer's AIWorks settings list a repository. There is no button. Settings › Projects shows the same.
-3. After S11: one button, "Add project", opens **Add project** (flow 5.2 or 5.3).
+3. After S11: one button, "Add project", opens **Add project** (flow 5.2 or 5.3). Settings › Projects says the same sentence, with "Add project" as a link, not a button: Settings has no primary action (aiworks#11 review F7).
 4. With one project connected, AIWorks opens its **Now** screen: "No work yet" with "Start work".
 
 ### 5.2 Adding a GitHub project (after S11)
@@ -325,6 +326,7 @@ Each flow is written as screen → what the owner sees → what they do. "Today"
 3. AIWorks finds "Git repository with GitHub remote example-org/sampleapp, main branch main". The project is in governance provider's registry, so it reads "Ready".
 4. "Connect project" → **Now** for sampleapp: "No work yet" → "Start work".
 5. If the project is not in the registry: "This project is not registered with governance provider yet, so AIWorks cannot start work on it. Registering it is done in governance provider." No button: the fix is outside AIWorks.
+6. The same rule holds when Add project cannot finish for a reason outside the page: no project rules on this computer, no Git, or a configuration file that names another folder for the same repository. The sentence says what is missing and that the fix is outside AIWorks, then offers only "Check again". It never offers "Open Settings": Settings only shows what the machine has ([§4.3](#43-settings)) and has no control for these (aiworks#11 review F1; copy in PROJECT_CONNECTION §8.1 and §8.2).
 
 ### 5.3 Adding a plain folder (after S11; starting work waits for D2 and Q2)
 
@@ -422,7 +424,7 @@ None of these texts say merged, deployed, released, live, done or accepted unles
 | Projects, before S11 | **No projects yet.** Projects appear here when this computer's AIWorks settings list a repository. Adding a project from this page is not built yet. | none |
 | Projects, after S11 | **No projects yet.** Add a folder on this computer. It can be a GitHub repository, a local Git repository or an ordinary folder. | Add project |
 | Now, no work | **No work yet.** Tell AIWorks what you want done in <project>. | Start work |
-| Needs me | **Nothing is blocked on you right now.** Keeps today's rule that calm covers only blocking items (observed: `src/dashboard/owner.mjs:297`). With reports or merged work, add: "Also: <n> reports for you to read". | none |
+| Needs me | **No work is blocked on you right now.** Keeps today's rule that calm covers only blocking items, and says "work" because Needs me checks work only: project setup is said on Add project and Projects ([§4.2](#42-needs-me)). Reports and merged work are on Results, never named here. | none |
 | Results, nothing yet | **No results yet.** Results appear here when a step finishes and passes the independent check. | none |
 | Cost, no runs | **No cost yet.** Nothing has run for this project. | none |
 

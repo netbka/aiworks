@@ -213,7 +213,7 @@ test('the calm heading is about what blocks on the owner; reports to read and re
   const supervisor = supervisorSnapshot(dataDir);
   const view = ownerView(supervisor, checked(results(d.campaignId, { T2: true, T3: true })));
   assert.deepEqual(view.items, []);
-  assert.equal(view.headline, 'Nothing is blocked on you right now');
+  assert.equal(view.headline, 'No work is blocked on you right now');
   // Reports are for the owner; who releases the merged work is the project's rule, not assumed to be the owner.
   assert.deepEqual(view.also, { reports: 1, release: [{ campaignId: d.campaignId, repository: 'example-org/sampleapp' }],
     text: 'Also: 1 report for you to read · merged work in sampleapp is ready; release follows its release policy', short: '1 report for you to read · merged work ready for release' });
@@ -224,14 +224,14 @@ test('the calm heading is about what blocks on the owner; reports to read and re
   assert.deepEqual(open.also, { reports: 1, release: [], text: 'Also: 1 report for you to read', short: '1 report for you to read' });
   assert.equal(ownerView(supervisor, { repositories: [], steps: {} }).headline, 'Checking for merges before listing what needs you', 'an unchecked merge is never calm');
   const nothing = ownerView({ ...supervisor, campaigns: [] }, checked());
-  assert.deepEqual([nothing.headline, nothing.also], ['Nothing is blocked on you right now', null]);
+  assert.deepEqual([nothing.headline, nothing.also], ['No work is blocked on you right now', null]);
   // The page shows the owner view's heading; its calm text is scoped to what blocks on the owner. Reports to read and work
   // ready for release are not on Needs me or its count (owner, 2026-10-13: only what really needs the owner).
   const page = readFileSync(join(ROOT, 'src/dashboard/public/dashboard.js'), 'utf8');
   assert.doesNotMatch(page, /Nothing needs you|Nothing is waiting for you/);
   assert.match(page, /el\('h2', \{ id: 'needs-title' \}, headline\)/);
   assert.doesNotMatch(page, /needs-also|owner\.also/);
-  assert.match(page, /'Nothing is blocked on you'/);
+  assert.match(page, /'No work is blocked on you'/);
 });
 
 test('"Needs you" items from an old or failing merge check say when it is from, and never read as merged', (t) => {
@@ -273,7 +273,7 @@ test('a pause by itself is a neutral campaign state, never a "Needs you" item', 
   assert.deepEqual([supervisor.campaigns[0].control, supervisor.campaigns[0].controllerLive], ['paused', true]);
   const view = ownerView(supervisor, [], { host: 'workstation' });
   assert.deepEqual(view.items, [], 'who paused is not recorded, so a pause with a running supervisor is not an owner action');
-  assert.equal(view.headline, 'Nothing is blocked on you right now');
+  assert.equal(view.headline, 'No work is blocked on you right now');
   assert.equal(view.campaigns[d.campaignId].liveness, 'running');
   assert.deepEqual(view.layout.cards, [d.campaignId], 'the paused campaign keeps its card, where the pause is shown');
   assert.equal(supervisor.campaigns[0].pausedReason, 'runtime upgrade window to a9e2402', 'the reason is shown as given');

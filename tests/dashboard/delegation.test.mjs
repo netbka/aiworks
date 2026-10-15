@@ -104,7 +104,7 @@ test('with every open pull request delegated, nothing needs the owner and the fi
   const view = ownerView(verified, merges, { delegation: DELEGATION });
   assert.deepEqual(view.items, []);
   assert.equal(view.count, 0);
-  assert.equal(view.headline, 'Nothing is blocked on you right now');
+  assert.equal(view.headline, 'No work is blocked on you right now');
   const now = nowView('example-org/sampleapp', { supervisor: verified, owner: view, merges }, { now: Date.now() });
   assert.equal(now.state.key, 'finished-delegated');
   assert.equal(now.state.needsYou, false);

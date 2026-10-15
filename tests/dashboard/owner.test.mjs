@@ -288,7 +288,7 @@ test('Needs me groups today\'s items by project, case-insensitively, with "AIWor
   assert.ok(!view.items.some((item) => item.campaignId === 'notes-wait'), 'a usage-limit wait is not an owner task');
   // Nothing for the owner: no group at all, not an empty one. No supervisor state: no groups either.
   const calm = ownerView({ ...supervisor, coordinator: null, campaigns: [supervisor.campaigns.at(-1)] }, merges, { now });
-  assert.deepEqual([calm.items, calm.groups, calm.headline], [[], [], 'Nothing is blocked on you right now']);
+  assert.deepEqual([calm.items, calm.groups, calm.headline], [[], [], 'No work is blocked on you right now']);
   assert.deepEqual(ownerView({ available: false }).groups, []);
 });
 
