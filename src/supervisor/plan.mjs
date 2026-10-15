@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { SECRET_LIKE_PATH_PATTERN } from '../../scripts/lib/worker-context.mjs';
 import { canonicalJson, scopeDigest, validateTask } from './campaign.mjs';
 import { containsSecret } from './coordinator.mjs';
+import { parseReference } from './reading.mjs';
 import { findWorkConflict, workFingerprint } from './work-ownership.mjs';
 
 const hasTable = (store, name) => Boolean(store.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", name));
@@ -200,7 +201,10 @@ export function admitAmendment({ declaration, stored, head, merged = true, specs
     }
     // A5: capabilities.
     if (!envelope.deliverables.includes(task.deliverable)) return at('WIDEN_CAPABILITY', `${id} wants a ${task.deliverable} deliverable, which the approval does not allow`);
-    if (task.references.some((path) => secretLike.test(path))) return at('WIDEN_CAPABILITY', `${id} names a secret-like reference`);
+    // The secret-like test runs on the whole reference and on its path without the anchor (SCOPED_READING section 3).
+    if (task.references.some((reference) => secretLike.test(reference) || secretLike.test(parseReference(reference)?.path ?? ''))) {
+      return at('WIDEN_CAPABILITY', `${id} names a secret-like reference`);
+    }
     if (task.web !== undefined && (task.web.urls.some((url) => !pages.includes(new URL(url).origin)) ||
         (task.web.resourceOrigins ?? []).some((origin) => !origins.includes(origin)))) {
       return at('WIDEN_CAPABILITY', `${id} wants a browser origin outside the approved pages`);

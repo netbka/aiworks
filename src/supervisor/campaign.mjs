@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { SECRET_LIKE_PATH_PATTERN, validGovernance } from '../../scripts/lib/worker-context.mjs';
 import { safeResearchPath } from './adapters/research-context.mjs';
+import { parseReference } from './reading.mjs';
 import { requireGovernanceRoot, roleCatalog } from './governance.mjs';
 
 // The registry's own schema (governance provider's schemas/project-contract.schema.json, read from the governance root),
@@ -181,6 +182,12 @@ export function validateDeclaration(declaration) {
   const seen = new Set();
   for (const [index, task] of (Array.isArray(tasks) ? tasks : []).entries()) validateTask(task, `tasks[${index}]`, { seen, constraints, bad });
   if (d.version === 2) validateEnvelope(d, bad);
+  // A version 1 declaration may not hide a secret-like path behind an anchor either; version 2 checks every reference in
+  // its envelope (A5). A whole-path version 1 reference keeps today's rule.
+  else for (const [index, task] of (Array.isArray(tasks) ? tasks : []).entries()) {
+    const anchored = Array.isArray(task?.references) ? task.references.filter((reference) => parseReference(reference)?.anchor) : [];
+    if (anchored.some(secretReference)) bad(`tasks[${index}].references name a secret-like path`);
+  }
   if (Array.isArray(tasks) && tasks.some((task) => task?.web !== undefined) &&
       !providers.some((provider) => provider?.kind === 'agy-cli' || (provider?.kind === 'claude-cli' && !provider.researchOnly))) {
     bad('a task with web needs a browser worker: agy-cli, or claude-cli without researchOnly');
@@ -231,7 +238,9 @@ export function validateTask(task, where, { seen, constraints, bad }) {
   if (!Array.isArray(task.acceptance) || task.acceptance.length < 1 || task.acceptance.length > 16 || !task.acceptance.every((c) => text(c, 2000))) {
     bad(`${where}.acceptance must be 1..16 strings`);
   }
-  if (!Array.isArray(task.references) || task.references.length < 1 || task.references.length > 24 || !task.references.every(safePath)) {
+  // A reference is a path, or `path#anchor` for one section of a Markdown document (SCOPED_READING section 3).
+  if (!Array.isArray(task.references) || task.references.length < 1 || task.references.length > 24 ||
+      !task.references.every((reference) => text(reference, 512) && parseReference(reference))) {
     bad(`${where}.references must be 1..24 repository-relative paths`);
   }
   // A web acceptance task: the AGY browser worker reviews these pages and reports. The pages' origins, plus any declared
@@ -273,6 +282,9 @@ const ENVELOPE_KEYS = ['scopeVersion', 'supersedes', 'request', 'outcome', 'acce
 const REQUEST_ROUTES = { goal: [], issue: ['issueUpdatedAt'], pr: ['headSha'], 'plan-file': ['path', 'blob'] };
 const COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const secretLike = new RegExp(SECRET_LIKE_PATH_PATTERN, 'u');
+// A secret-like reference, tested on the whole string and on its path without the anchor (SCOPED_READING section 3).
+const secretReference = (reference) => typeof reference === 'string' &&
+  (secretLike.test(reference) || secretLike.test(parseReference(reference)?.path ?? ''));
 // A write entry compared as WORK_ENVELOPE 6.3 A4 says: `\` read as `/`, no trailing `/`, case folded (Windows).
 const folded = (entry) => entry.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 const covers = (outer, inner) => inner === outer || inner.startsWith(`${outer}/`);
@@ -360,7 +372,7 @@ function validateEnvelope(d, bad) {
       }
     }
     if (!deliverables.includes(task.deliverable)) bad(`${where}.deliverable ${task.deliverable} is not in envelope.deliverables (WIDEN_CAPABILITY)`);
-    if (Array.isArray(task.references) && task.references.some((path) => typeof path === 'string' && secretLike.test(path))) {
+    if (Array.isArray(task.references) && task.references.some(secretReference)) {
       bad(`${where}.references name a secret-like path (WIDEN_CAPABILITY)`);
     }
     if (task.web !== undefined) {

@@ -241,3 +241,58 @@ test('amending routing follows the executor rule: refused while running, then ve
   assert.equal(store.campaign(d.campaignId).declaration.routing, undefined);
   assert.equal(store.all("SELECT * FROM journal WHERE kind = 'routing-amended'").length, 2);
 });
+
+// Scoped reading, slice READ1 (docs/design/SCOPED_READING.md sections 3 and 13): a reference may name one section.
+const withReferences = (references, version = 1) => {
+  const decl = declaration({ campaignId: `anchored-v${version}`, tasks: [{ id: 'T1', issue: 437, title: 'first task', deliverable: 'commit',
+    goal: 'Produce the first artifact.', dependsOn: [], acceptance: ['artifact exists'], references, writes: ['src/'] }] });
+  if (version === 1) return decl;
+  return { ...decl, version: 2, envelope: { scopeVersion: 1,
+    request: { route: 'issue', reference: 'example-org/sampleapp#437', pinned: { base: 'a'.repeat(40), issueUpdatedAt: '2026-10-19T08:00:00Z' } },
+    outcome: 'The first artifact exists.', acceptance: ['artifact exists'], writes: ['src/'], deliverables: ['commit'], issues: [437],
+    web: null, release: { mode: 'review-only' }, planning: 'fixed' } };
+};
+
+test('a reference may be path#anchor in a version 1 or 2 declaration; its anchor is part of the scope digest', () => {
+  for (const version of [1, 2]) {
+    const anchored = withReferences(['docs/SUPERVISOR.md#1-boundary', 'docs/SUPERVISOR.md#3-lifecycle-of-one-task', 'AGENTS.md',
+      `docs/design/SCOPED_READING.md#${'a'.repeat(160)}`, 'docs/A.md#snake_case-1'], version);
+    assert.doesNotThrow(() => validateDeclaration(structuredClone(anchored)), `version ${version}`);
+    const whole = withReferences(['docs/SUPERVISOR.md', 'AGENTS.md'], version);
+    assert.doesNotThrow(() => validateDeclaration(structuredClone(whole)), `version ${version}`);
+    assert.notEqual(scopeDigest(anchored), scopeDigest(whole), 'the anchor binds like the rest of the reference');
+  }
+});
+
+test('a malformed anchor is refused; a secret-like path is refused behind an anchor, in version 1 and 2', () => {
+  for (const version of [1, 2]) {
+    for (const reference of ['docs/A.md#x#y', 'docs/A.md#', '#x', 'docs/A.md#Upper', 'docs/A.md#a b', 'docs/A.md#a.b', `docs/A.md#${'a'.repeat(161)}`,
+      '../A.md#x', 'docs//A.md#x']) {
+      assert.throws(() => validateDeclaration(withReferences(['AGENTS.md', reference], version)), /tasks\[0\]\.references must be 1\.\.24 repository-relative paths/,
+        `version ${version}: ${reference}`);
+    }
+    for (const reference of ['docs/.env#x', 'secrets.md#y', 'config/.ENV.local#a', 'keys/server.pem#b', 'id_rsa#c']) {
+      assert.throws(() => validateDeclaration(withReferences(['AGENTS.md', reference], version)), /tasks\[0\]\.references name a secret-like path/,
+        `version ${version}: ${reference}`);
+    }
+  }
+});
+
+test('every synthetic fixture keeps its scopeDigest and authorityDigest', () => {
+  // Pinned on the task base (bc1d553): the grammar adds no key and changes no canonicalisation.
+  const pins = {
+    'sample-chain.json': ['a3969557f4d881ca8c557246194d546959165018477b965483e53698e2ec361a', 'be9dea0f84bd2c732779c05f97d0e521210550932fcc4112b56f5fc16715cd6b'],
+    'sample-report.json': ['00bfb9e3b1a88e4b539e059eb4a4d3e663d0e79e5325a03164341d12d98cab3f', '50952e4eb33f453bf6e8f9fb6ea65a7f9eec5fcac8cd7b4d8c189fc425733ac5'],
+  };
+  const dir = join(ROOT, 'tests/fixtures/campaigns');
+  assert.deepEqual(readdirSync(dir).filter((file) => file.endsWith('.json')).sort(), Object.keys(pins).sort());
+  for (const [name, [scope, authority]] of Object.entries(pins)) {
+    const committed = JSON.parse(readFileSync(join(dir, name), 'utf8'));
+    assert.doesNotThrow(() => validateDeclaration(structuredClone(committed)), name);
+    assert.equal(scopeDigest(committed), scope, name);
+    assert.equal(authorityDigest(committed), authority, name);
+  }
+  assert.doesNotThrow(() => validateDeclaration(declaration()));
+  assert.equal(scopeDigest(declaration()), '1124d02ea14c2eb0413eb8fb70c853198acb347c41d631764af37a476f9fdcc5');
+  assert.equal(authorityDigest(declaration()), '8fea051bd79254906ed767427792f66cb53050abf8ab1b85955f9d05dd75eaad');
+});
