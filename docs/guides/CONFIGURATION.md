@@ -12,7 +12,7 @@ This checks JSON syntax only, not accounts, paths or execution readiness.
 
 | Setting | Meaning |
 | --- | --- |
-| `governanceRoot` | Absolute path to the approved, read-only Engineering Platform checkout. Used for inherited rules and registered project identity. |
+| `governanceRoot` | Absolute path to the approved, read-only governance checkout. Used for inherited rules and registered project identity. |
 | `repositories` | Map of the target's actual GitHub `owner/name` to its local checkout and isolated worktree root. Listing it here does not create governance registration. |
 | `repositories[...].path` | Existing target checkout. This is not the AIWorks source or data directory. |
 | `repositories[...].worktreeRoot` | Separate directory where supervisor-owned task worktrees are created. Never another person's active checkout. |

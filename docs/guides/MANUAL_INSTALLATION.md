@@ -55,7 +55,7 @@ Run one instance at a time and stop the previous instance with Ctrl+C. Some fixt
 
 ### 1. Check access before configuring anything
 
-You need all of the following: permission to use AIWorks source; an approved Engineering Platform governance checkout; a target project's actual registered identity/rules; a clean local GitHub-backed project checkout; GitHub access for reading the relevant issues and publishing the authorized result; and a compatible, authenticated worker CLI.
+You need all of the following: permission to use AIWorks source; an approved governance checkout; a target project's actual registered identity/rules; a clean local GitHub-backed project checkout; GitHub access for reading the relevant issues and publishing the authorized result; and a compatible, authenticated worker CLI.
 
 The generic public governance bundle is not supplied by this guide. Without access, the demo still helps you explore, but real project startup is not ready for you. Do not substitute `tests/fixtures/governance`, fake a registry record or remove the admission check. [The release checklist](../publication/RELEASE_CHECKLIST.md) tracks removing this private-setup dependency through the proper product work.
 
@@ -88,7 +88,7 @@ Clone the governance repository **only when your account is authorized to access
 git clone https://github.com/netbka/engineering-platform.git $Governance
 ```
 
-Keep this checkout read-only to AIWorks. Target project registration/rule changes use Engineering Platform's own workflow, not writes into this clone.
+Keep this checkout read-only to AIWorks. Target project registration/rule changes use the governance provider's own workflow, not writes into this clone.
 
 ### 3. Create your configuration
 

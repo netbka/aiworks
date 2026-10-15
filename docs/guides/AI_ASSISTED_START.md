@@ -77,4 +77,4 @@ Your AI service's normal usage limits and costs still apply. Sign in through its
 
 ## Prefer commands or need deeper help?
 
-You can use the [manual installation guide](MANUAL_INSTALLATION.md) and [command reference](CLI_REFERENCE.md) instead. The [assistant's technical instructions](ASSISTANT_SETUP.md) cover startup checks and the optional ChatGPT/Local Commander connection. They are not required reading for your first try.
+You can use the [manual installation guide](MANUAL_INSTALLATION.md) and [command reference](CLI_REFERENCE.md) instead. The [assistant's technical instructions](ASSISTANT_SETUP.md) cover startup checks and the optional connection through a local command bridge. They are not required reading for your first try.

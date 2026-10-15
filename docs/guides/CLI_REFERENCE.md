@@ -69,7 +69,7 @@ A controller heartbeat is not task progress. Missing/unknown evidence is not suc
 
 After the report is accepted, choose one specific correction or small bug fix. An owner-authorized code declaration uses `deliverable: "commit"`, a compatible non-research executor, narrow change scope and reproducible tests. Its output is a separately checked commit and a PR, not direct edits to your working checkout. The read-only report example must not be silently repurposed in place after registration: new scope follows the existing declaration/approval rules.
 
-The supervisor does not merge/deploy in this quickstart. Keep integration, release and live acceptance separate. CI/integration repair exists behind its configured switches; do not assume either is enabled merely because its code is present.
+The supervisor never deploys, and it merges only for a repository whose owner switched on the merge gate ([runbook](../SUPERVISOR.md#merge-gate)); this quickstart leaves that off. Keep integration, release and live acceptance separate. CI/integration repair exists behind its configured switches; do not assume either is enabled merely because its code is present.
 
 ## Pause, resume and recheck
 

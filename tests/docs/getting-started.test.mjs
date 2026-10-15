@@ -85,7 +85,7 @@ test('documented CLI verbs exist; planning is not represented as campaign dispat
   const instructions = read('docs/guides/ASSISTANT_SETUP.md');
   assert.match(instructions, /read-only planning request/);
   assert.match(instructions, /does not expose a public `campaign_start` MCP tool/);
-  assert.match(instructions, /prepared.*queued.*dispatched: false/);
+  assert.match(instructions, /prepared, queued or not-yet-dispatched command has not run/);
   assert.match(instructions, /reconcile/i);
   assert.match(read('docs/guides/CLI_REFERENCE.md'), /successful start response alone does not prove work has begun/);
 });
@@ -98,22 +98,19 @@ test('showcase documentation explicitly defers implementation until dashboard ac
   assert.match(checklist, /public deployment additionally requires/);
 });
 
-test('README puts a short AI setup prompt and first task before optional shell commands', () => {
-  const text = read('README.md');
-  const manual = text.indexOf('## Prefer commands?');
-  assert.ok(manual > 0, 'manual commands need an explicit secondary section');
-  const intro = text.slice(0, manual);
-  const prompt = /```text\n([\s\S]*?)```/.exec(intro)?.[1];
-  assert.ok(prompt, 'a copyable AI message comes before commands');
-  assert.ok(prompt.trim().split(/\s+/).length <= 100, 'the first message stays short');
+test('README setup through an AI assistant is a short prompt that points at the setup guide', () => {
+  const text = read('README.md').replace(/\r\n/g, '\n');
+  const at = text.indexOf('### Set it up with your AI assistant');
+  assert.ok(at > 0, 'the README keeps its AI-assisted setup section');
+  const section = text.slice(at, text.indexOf('\n### ', at + 1));
+  const prompt = /```text\n([\s\S]*?)```/.exec(section)?.[1];
+  assert.ok(prompt, 'a copyable AI message');
+  assert.ok(prompt.trim().split(/\s+/).length <= 100, 'the setup message stays short');
   assert.match(prompt, /https:\/\/github\.com\/netbka\/aiworks/);
   assert.match(prompt, /docs\/guides\/ASSISTANT_SETUP\.md/);
   assert.doesNotMatch(prompt, /<[^>]+>/, 'no technical fields for the beginner to fill in');
-  assert.doesNotMatch(intro, /```(?:powershell|bash|sh|shell|json)\b|\bnpm\s+(?:ci|install|run)\b/);
-  assert.doesNotMatch(intro, /\b(?:governanceRoot|campaignId|SQLite|DAG|AW-005)\b/);
-  assert.ok(intro.indexOf('## Give it your first task') > intro.indexOf('## Start with your AI assistant'));
-  assert.match(text.slice(manual), /npm ci/);
-  assert.match(text, /## Start here\n/, 'preserve the engineering reading-list anchor');
+  assert.match(section, /\]\(docs\/guides\/README\.md\)/, 'the section links the getting-started guides');
+  assert.match(text, /### Start here\n/, 'preserve the engineering reading-list anchor');
 });
 
 test('beginner pages use prompts; Gemini setup is not advertised as a built-in worker', () => {

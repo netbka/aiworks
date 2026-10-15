@@ -2,7 +2,7 @@
 
 For an execution-capable AI assistant, not the beginner. Users start with [the short guide](AI_ASSISTED_START.md). Do the permitted technical work rather than asking them to fill in runtime paths, campaign IDs or configuration fields you can resolve yourself.
 
-**Source baseline:** AIWorks `437ef7837e28f9ade82dc911765c0c1d7da2855f`, 13 October 2026. Check the actual installed revision and current contracts before acting. These instructions describe an AI-assisted use of existing tools, not a newly implemented installer or a promise of universal client compatibility.
+**Source baseline:** AIWorks main of 15 October 2026. Check the actual installed revision and current contracts before acting. These instructions describe an AI-assisted use of existing tools, not a newly implemented installer or a promise of universal client compatibility.
 
 ## 1. Establish access and scope
 
@@ -18,7 +18,7 @@ AIWorks does not expose a public `campaign_start` MCP tool in the inspected rele
 
 For a demo request, obtain the permitted source, install its locked dependencies and run the existing synthetic review fixture as described in the manual. Use its disposable state and port 4319, never the live state/port. Explain that its projects, costs and worker states are synthetic. Do not connect accounts or dispatch a campaign. Keep track of the process you started and provide its exact local address.
 
-For real work, verify source access, supported native Windows execution, Node with built-in SQLite, Git and GitHub CLI, authenticated compatible workers, target identity and approved Engineering Platform governance. Install missing software only within the user's authorization and using the vendor's supported method. Package scripts are executable code; do not run arbitrary untrusted dependencies under the guise of setup.
+For real work, verify source access, supported native Windows execution, Node with built-in SQLite, Git and GitHub CLI, authenticated compatible workers, target identity and an approved governance checkout. Install missing software only within the user's authorization and using the vendor's supported method. Package scripts are executable code; do not run arbitrary untrusted dependencies under the guise of setup.
 
 The current private governance/project-registration dependency is real. Without the relevant access, report the precise missing step. Do not use tests/fixtures/governance for real work, forge a registry entry or remove an admission gate. Local-folder connection and execution are distinct capabilities; check the installed version. Never silently initialize Git in an owner's plain folder or invent a GitHub identity.
 
@@ -61,18 +61,17 @@ node src/supervisor/cli.mjs status my-approved-work --data C:/Work/aiworks/.loca
 
 The names and paths are placeholders. Use the installation's actual values. A successful start response alone does not prove work has begun. Inspect readiness, controller revision, task and operation evidence. ACTIVE means a live controller lease, not necessarily an executing worker. Distinguish a plan, registered work, working/waiting state, verified result and publication. Merge/deployment are not part of this setup flow.
 
-## 5. Optional ChatGPT and Local Commander handoff
+## 5. Optional handoff through a local command bridge
 
-For a ChatGPT session already authorized to use Local Commander, discover the connected tool schemas and follow their current contract:
+A web chat session can reach this PC only through a local command bridge that the owner already authorized, such as an MCP connector that runs approved commands on a paired device. Discover that bridge's tool schemas and follow its current contract:
 
-1. `workspace_list`: select the intended online device and approved workspace.
-2. `execution_session_open`: use the returned deviceId and workspaceGrantId.
-3. `command_batch`: submit the actual node CLI command as a command_run child with argument arrays, correct paths and workspace-relative cwd. Retain fresh operation/execution IDs for reconciliation.
-4. `operation_status` and `operation_output`: follow that same operation. `prepared`, `queued`, or `dispatched: false` is not execution. Reconcile uncertain outcomes before another write; never create a second campaign just because the first response was delayed.
-5. Read AIWorks status against the same runtime/store after confirmed command completion. Distinguish bridge acceptance from AIWorks readiness.
-6. Close the bridge session after the handoff. Only an independently running supervisor can continue beyond that session.
+1. Select the intended online device and approved workspace. Never reuse a device or workspace identifier from another installation or an earlier conversation.
+2. Submit the actual node CLI command as an argument array, with correct paths and a workspace-relative working directory. Keep the operation identifiers the bridge returns.
+3. Follow that same operation until it completes. A prepared, queued or not-yet-dispatched command has not run. Reconcile an uncertain outcome before another write; never create a second campaign just because the first response was delayed.
+4. Read AIWorks status against the same runtime and store after the command completed. Bridge acceptance is not AIWorks readiness.
+5. Close the bridge session after the handoff. Only an independently running supervisor continues beyond that session.
 
-Do not hardcode another installation's device IDs, open a listener, tunnel the dashboard or expose port 4318 as a public website. Pre-acceptance bridge rejection is not an AIWorks task failure. Do not route around a permission denial.
+Do not open a listener, tunnel the dashboard or expose port 4318 as a public website. A bridge rejection before acceptance is not an AIWorks task failure. Do not route around a permission denial.
 
 ## 6. Report to the person, not to another engineer
 
