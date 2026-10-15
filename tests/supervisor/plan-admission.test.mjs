@@ -372,3 +372,20 @@ test('the chain detects an edited spec row, a removed amendment and a forged dig
   chain = edit("UPDATE plan_amendments SET digest = ? WHERE seq = 2", 'c'.repeat(64));
   assert.match(chain.problem, /amendment 2 does not match its digest/);
 });
+
+test('A3 and A5 with section references: an anchored child is admitted, a malformed anchor is INVALID_TASK, a secret-like path behind an anchor is WIDEN_CAPABILITY', () => {
+  // docs/design/SCOPED_READING.md sections 3 and 13, slice READ1.
+  const admitted = admit([add(child('C1', { references: ['AGENTS.md', 'docs/SUPERVISOR.md#1-boundary', 'docs/SUPERVISOR.md#3-lifecycle-of-one-task'] }))]);
+  assert.equal(admitted.admitted, true);
+  assert.deepEqual(admitted.ops[0].task.references, ['AGENTS.md', 'docs/SUPERVISOR.md#1-boundary', 'docs/SUPERVISOR.md#3-lifecycle-of-one-task']);
+  for (const reference of ['docs/A.md#x#y', 'docs/A.md#', '#x', 'docs/A.md#Upper', 'docs/A.md#a b', `docs/A.md#${'a'.repeat(161)}`]) {
+    const result = admit([add(child('C1', { references: ['AGENTS.md', reference] }))]);
+    assert.equal(result.code, 'INVALID_TASK', reference);
+    assert.match(result.detail, /references must be 1\.\.24 repository-relative paths/, reference);
+  }
+  for (const reference of ['docs/.env#x', 'secrets.md#y', 'config/.ENV.local#a', 'keys/server.pem#b']) {
+    const result = admit([add(child('C1', { references: ['AGENTS.md', reference] }))]);
+    assert.equal(result.code, 'WIDEN_CAPABILITY', reference);
+    assert.match(result.detail, /C1 names a secret-like reference/, reference);
+  }
+});
