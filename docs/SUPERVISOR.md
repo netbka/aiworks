@@ -235,7 +235,7 @@ This does not authorize implementation in Wiki,
 mutation of SampleApp, merges or deployment. Cursor is a declared fallback, not proof of a
 working Cursor installation on this host.
 
-Run these from the runtime checkout, `C:/example/aiworks/.local/runtime` on workstation, so `start` takes that checkout's own merged `campaigns/` file (section 1). The development checkout's CLI refuses a runtime file, and the reverse, with `DECLARATION_NOT_ON_MAIN`.
+Run these from the runtime checkout, `C:/example/aiworks/.local/runtime` on workstation. `start` reads a private local declaration, kept in the ignored `campaigns/` or `.local/campaigns/` folder or outside the checkout, and refuses runtime code that is not merged into origin/main with `RUNTIME_NOT_MERGED` (section 1).
 
 ```sh
 node src/supervisor/cli.mjs start campaigns/<campaign>.json --data C:/example/aiworks/.local/supervisor

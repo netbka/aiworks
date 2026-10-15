@@ -49,7 +49,7 @@ Replace the example data path and request with actual approved values. Received/
 
 Show the user the outcome, material steps, checks and changes in plain language. After their scope approval, perform the permitted registration steps yourself. Do not implement the project directly in the setup chat. Check existing assignments before creating one.
 
-For a new assignment, prepare the actual approved declaration in an isolated `declare/<id>` branch, validate it and follow the existing review/merge route. The declaration must be committed unmodified in the installed runtime's campaigns/ and its code must be merged to origin/main (AW-005). Reuse an existing approval faithfully; do not invent one. Runtime updates have their own procedure. Do not submit private task contents to a public upstream as an onboarding shortcut.
+For a new assignment, write the actual approved declaration as a private file in the installation's git-ignored `campaigns/` or `.local/campaigns/` folder and validate it. Never commit or publish it. The runtime code must be merged to origin/main (AW-005); the declaration need not be. Reuse an existing approval faithfully; do not invent one. Runtime updates have their own procedure. Do not submit private task contents to a public upstream as an onboarding shortcut.
 
 For an existing approved assignment, resolve its ID and file from authorized project context; do not require a novice to know them. From the actual runtime checkout:
 

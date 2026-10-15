@@ -14,7 +14,7 @@ The sample is report-only and uses `researchOnly: true`, so workers reason from 
 
 ## Prepare the declaration under the existing rules
 
-Use an isolated development branch, not the running runtime. Put the approved declaration at `campaigns/<campaignId>.json` in the AIWorks source repository, validate it, and submit it through the existing review/merge workflow. Use a branch name such as `declare/<campaignId>`, never `campaign/<campaignId>`: that name would conflict with the supervisor's task branches.
+A declaration is private operator data. Keep it in the installation's git-ignored `campaigns/` or `.local/campaigns/` folder, or in a folder outside the checkout, and never commit or publish it. Only the runtime code must be merged into origin/main (AW-005); `start` refuses unmerged code with `RUNTIME_NOT_MERGED`. Never name a target branch `campaign/<campaignId>`: it would conflict with the supervisor's task branches.
 
 A standalone syntax/shape check can be run from a development checkout with dependencies installed:
 
@@ -24,9 +24,9 @@ node --input-type=module -e "import { readFileSync } from 'node:fs'; import { va
 
 The focused documentation tests validate the example too. For a real declaration change, run the required repository checks. Existing owner approval can be recorded faithfully without asking again for each assigned child; an example file or public issue comment does not create that approval.
 
-After review and merge, the runtime must contain the exact committed declaration. A running older runtime may not contain a newly merged file. Use [the upgrade procedure](../SUPERVISOR.md#upgrade), coordinated with its current operator; do not copy a modified JSON file into the live runtime, switch its HEAD under active workers, or disable AW-005.
+Keep the registered declaration unchanged: a resume or an upgrade passes the identical file again, and a change of scope is an amendment with a higher authorization version. A runtime update follows [the upgrade procedure](../SUPERVISOR.md#upgrade), coordinated with its current operator; do not switch the runtime's HEAD under active workers or disable AW-005.
 
-**Current public-installation gap:** today this declaration path is coupled to the installation's governed AIWorks source and approved project registry. Do not submit your private task descriptions to a public upstream project. Public self-service intake must remove that coupling before it is advertised as supported. See [the release checklist](../publication/RELEASE_CHECKLIST.md).
+**Current public-installation gap:** today registration is coupled to the installation's approved project registry in the governance checkout. Do not submit your private task descriptions to a public upstream project. Public self-service intake must remove that coupling before it is advertised as supported. See [the release checklist](../publication/RELEASE_CHECKLIST.md).
 
 ## Start an approved campaign
 
@@ -41,7 +41,7 @@ Set-Location $Runtime
 # Read first when this may be an existing assignment.
 node src/supervisor/cli.mjs status $Campaign --data $Data
 
-# Use this runtime's own reviewed, committed declaration.
+# The approved private declaration, kept in the ignored campaigns/ folder.
 node src/supervisor/cli.mjs start "campaigns/$Campaign.json" --data $Data
 node src/supervisor/cli.mjs status $Campaign --data $Data
 ```
@@ -79,7 +79,7 @@ From the runtime checkout, using the same `$Campaign` and `$Data`:
 node src/supervisor/cli.mjs pause $Campaign "Pausing this assignment" --data $Data
 node src/supervisor/cli.mjs status $Campaign --data $Data
 
-# Resume with the identical committed declaration, not a new campaign ID.
+# Resume with the identical private declaration, not a new campaign ID.
 node src/supervisor/cli.mjs start "campaigns/$Campaign.json" --data $Data
 
 # Only after the named underlying problem has actually been resolved:

@@ -20,7 +20,6 @@ On a task-installed Windows machine, inspect the existing `AIWorks Supervisor` t
 | `node:sqlite` unavailable | Use a maintained Node 22.x build at least 22.18 for the guide and run its in-memory SQLite probe. Do not install an unrelated SQLite npm package to replace the built-in module. |
 | `GOVERNANCE_ROOT_REQUIRED` / `GOVERNANCE_ROOT_INVALID` | Check the selected `governanceRoot` and approved checkout/schema availability. A test fixture is not a production rules bundle. |
 | Target is not a registered project | Configuring a repository path is not governance registration. Use the governance provider's approved registration workflow. |
-| `DECLARATION_NOT_ON_MAIN` | The file must be in this CLI checkout's own campaigns/, committed and unmodified at its HEAD. A file in the source checkout is not the runtime's file. Follow review and runtime upgrade rules. |
 | `RUNTIME_NOT_MERGED` / `runtime-not-merged` | Compare the actual runtime revision to its fetched origin/main. An old merged revision is allowed; an unmerged branch is not. Do not bypass provenance or update an active runtime in place. |
 | `STORE_NOT_FOUND` | Confirm the installed task's data path. Status is read-only and does not create a new store. Start the legitimate installation's controller only after identifying it. |
 | `CAMPAIGN_NOT_FOUND` | Check store and campaign identity. On a first assignment registration may be pending; on an existing assignment a wrong data path is a likely cause. |
