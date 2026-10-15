@@ -157,6 +157,38 @@ export function projectCosts(campaigns) {
   });
 }
 
+// ---- Model, tier, cost by unit and why a step moved up (MODEL_ROUTING slice R6, dashboard half; build slice UI12). The
+// supervisor's status (MOD6) is the one source; this only narrows it to safe values. Units are never added together: dollars
+// stay dollars, tokens stay per provider, and runs without reported dollars are counted, never shown as $0.00. ----
+
+const TIERS = ['economy', 'standard', 'strongest'];
+const modelName = (value) => /^[a-z0-9][a-z0-9._:-]{0,79}$/i.test(value ?? '') ? value : null;
+const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : 0;
+/** One run's model: the provider, the model its receipt names (null when not recorded) and its tier name. */
+const modelUsed = (view) => view ? { executor: code(view.executor), model: modelName(view.model), tier: TIERS.includes(view.tierName) ? view.tierName : null } : null;
+// The status reason is built from fixed labels only (MOD6). This keeps it to that shape, so no other text can reach the page.
+const MOVED_UP = /^Moved to the (?:economy|standard|strongest|tier \d+) model after (?:poor-quality results|(?:\w+ (?:rejected|unusable|timed-out|without evidence) (?:attempt|review)s?)(?: and \w+ (?:rejected|unusable|timed-out|without evidence) (?:attempt|review)s?)*)$/;
+/** Why a step moved to a stronger model, in the status's own words; a sentence of any other shape becomes the general one. */
+function movedUp(escalation) {
+  if (!escalation) return null;
+  const tier = TIERS.includes(escalation.toTierName) ? escalation.toTierName : null;
+  return { stage: escalation.stage === 'verify' ? 'verify' : 'implement', tier,
+    reason: MOVED_UP.test(escalation.reason ?? '') ? escalation.reason : `Moved to ${tier ? `the ${tier}` : 'a stronger'} model after poor-quality results` };
+}
+/** A step's or a work program's cost by unit: reported dollars (null, never 0, when none), tokens per provider and unknown-cost runs. */
+export function costByUnit(cost) {
+  const reported = Number.isFinite(cost?.usd?.reported) && cost.usd.reported > 0 ? cost.usd.reported : null;
+  return { usd: reported, usdRuns: reported === null ? 0 : count(cost.usd.reportedRuns),
+    tokens: Object.entries(cost?.tokens ?? {}).filter(([kind]) => code(kind)).map(([executor, item]) => ({ executor, runs: count(item.runs),
+      input: count(item.input), output: count(item.output), cacheRead: count(item.cacheRead), cacheCreation: count(item.cacheCreation),
+      cachedInInput: count(item.runs) > 0 && count(item.inputIncludesCacheReadRuns) === count(item.runs) })),
+    unknownRuns: count(cost?.unknownCostRuns) };
+}
+/** A step's models and move up, from its status row. */
+export function stepRouting(row) {
+  return { implement: modelUsed(row?.routing?.implement), verify: modelUsed(row?.routing?.verify), movedUp: movedUp(row?.routing?.escalation) };
+}
+
 // The command names config.json may set (`commands.<name>`). Only the names leave this module, never the configured value:
 // a command is an executable path and its arguments (OWNER_WORKSPACE §8, slice S8).
 const COMMAND_NAMES = ['claude', 'codex', 'cursor', 'agy', 'chrome', 'git', 'gh'];
@@ -402,6 +434,8 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
         runsUsed: status.runsUsed, maxWorkerRuns: status.maxWorkerRuns, recordedCostUsd: status.costUsd,
         // OWNER_WORKSPACE S7: today's totals, with unreported and running runs apart; null, never 0, when nothing reported a cost.
         cost: { reportedUsd: status.costUsd > 0 ? status.costUsd : null, unreportedRuns: status.budget.unknownCostRuns, runningRuns: operations.length },
+        // MODEL_ROUTING R6 (UI12): the same work's cost in each unit apart, from status.
+        costByUnit: costByUnit(status.costByUnit),
         executors: (c.declaration.executor.providers ?? [c.declaration.executor]).map((item) => code(item.kind)),
         providers: [...order, ...['codex-cli', 'claude-cli', 'cursor-cli'].filter((kind) => !order.includes(kind))].map((kind) => {
           const wait = status.executorWaits.find((item) => item.executor_kind === kind);
@@ -454,7 +488,10 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
           history: histories.get(task.task_id) ?? { attempts: [], events: [] },
           // OWNER_WORKSPACE S7: its runs and the cost they reported; null, never 0, when none reported one.
           cost: (({ reportedUsd, ...rest }) => ({ ...rest, reportedUsd: reportedUsd > 0 ? reportedUsd : null, checkerRejections: rejections.get(task.task_id) ?? 0 }))(
-            costs.get(task.task_id) ?? { runs: 0, reportedUsd: 0, unreportedRuns: 0, runningRuns: 0, retries: 0 }) })),
+            costs.get(task.task_id) ?? { runs: 0, reportedUsd: 0, unreportedRuns: 0, runningRuns: 0, retries: 0 }),
+          // MODEL_ROUTING R6 (UI12): its models and tiers, why it moved up, and its cost in each unit apart, from status.
+          routing: stepRouting(status.tasks.find((item) => item.id === task.task_id)),
+          costByUnit: costByUnit(status.tasks.find((item) => item.id === task.task_id)?.costByUnit) })),
         agents: operations.map((op) => {
           const beat = heartbeat(dataDir, op.run_dir);
           return { id: op.id, taskId: op.task_id, role: op.kind === 'verify' ? 'Verifier' : 'Implementer',

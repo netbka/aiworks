@@ -25,6 +25,7 @@ import { roleCatalog } from './governance.mjs';
 import { ACCEPT_TASK, PLAN_TASK, admitAmendment, settleAmendment, specOf as storedSpecOf, specsOf as storedSpecsOf, verifyChain } from './plan.mjs';
 import { ConflictError, FencedError } from './store.mjs';
 import { mergePass, mergeSettings } from './merge.mjs';
+import { isLocalTarget, recordCandidate } from './local-candidates.mjs';
 import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -1918,6 +1919,7 @@ export class Controller {
   async publish(ctx, campaign, task) {
     const decl = campaign.declaration;
     const spec = specOf(this.store, ctx.id, task.task_id, decl);
+    if (isLocalTarget(decl)) return this.recordLocalCandidate(ctx, decl, spec, task);
     const repo = this.repo(decl);
     const branch = gitA.branchName(ctx.id, task.task_id);
     const bodyFile = join(this.dataDir, 'runs', `${ctx.id}.${task.task_id}.publish.md`);
@@ -2037,6 +2039,23 @@ export class Controller {
         if (reset) this.store.journal(ctx.id, 'publish-rate-limited', { task: task.task_id, retryAt: reset }, now);
       });
     }
+  }
+
+  /**
+   * A project without GitHub (WORK_ENVELOPE slice E10): the verified task becomes a local candidate in the ledger, never a
+   * pushed branch, a pull request or an issue comment, and nothing is applied to the owner's folder. No git push and no gh
+   * call happens on this path. Inert until local admission is on: a local target cannot be registered (LOCAL_START_OFF).
+   */
+  recordLocalCandidate(ctx, decl, spec, task) {
+    this.fenced(ctx, () => {
+      const fresh = this.store.task(ctx.id, task.task_id);
+      if (this.store.campaign(ctx.id).control !== 'registered' || fresh.state !== 'verified' || fresh.version !== task.version) return;
+      const now = this.now();
+      const candidate = recordCandidate(this.store, { declaration: decl, task: fresh, deliverable: spec.deliverable, now });
+      this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, fresh.version, { state: 'done', retry_at: null, last_error: null }, now);
+      this.store.journal(ctx.id, 'candidate-recorded', { task: task.task_id, sha: fresh.verified_sha, seq: candidate.seq, baseline: candidate.baseline }, now);
+      this.log(`recorded local candidate ${task.task_id} #${candidate.seq} at ${fresh.verified_sha}`);
+    });
   }
 
   verificationLines(task) {
@@ -2424,6 +2443,9 @@ export class Controller {
 
   enqueue(campaignId, key, decl, body, now) {
     if (this.config.github?.comments === false) return;
+    // The outbox posts to GitHub only. A project without GitHub has no issue to post to (plan gap G4): its state stays in
+    // status and the journal, and gh is never called for it (WORK_ENVELOPE slice E10).
+    if (isLocalTarget(decl)) return;
     this.store.run("INSERT OR IGNORE INTO outbox (key, campaign_id, target, body, state, attempts, updated_at) VALUES (?, ?, ?, ?, 'pending', 0, ?)",
       key, campaignId, `${decl.target.repository}#${decl.target.trackingIssue}`, body, now);
   }

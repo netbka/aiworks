@@ -202,7 +202,7 @@ Reuse #1 for blocker dedup/Telegram recovery, #4 for owner-attention evidence, a
 
 **In short.** First, AIWorks stops losing time to its own problems: a stopped supervisor comes back by itself (#18), publishing survives a GitHub limit (#21), a pull request that conflicts after a sibling merge is repaired without a hand-written campaign (#27), and more than one step can run at a time. After that, five lanes run as parallel campaigns. Powers that wait for an owner decision (#24 D2, #32 D4, #33 D5-gate) are built switched off, or not built, and each row says which.
 
-This section consolidates the implementation slices of the six merged designs: [PROJECT_CONNECTION](design/PROJECT_CONNECTION.md#10-implementation-slices) (PC), [WORK_ENVELOPE](design/WORK_ENVELOPE.md#12-implementation-slices) (WE), [ADAPTIVE_SCHEDULER](design/ADAPTIVE_SCHEDULER.md#10-implementation-slices) (SCH), [MODEL_ROUTING](design/MODEL_ROUTING.md#13-implementation-slices) (MR), [OWNER_WORKSPACE](design/OWNER_WORKSPACE.md#11-implementation-slices) (OW) and [AUTO_RELEASE](design/AUTO_RELEASE.md#11-implementation-slices) (AR). The designs hold the detail (exact tests, acceptance, reasons). This section decides order, lanes and file ownership only. It replaces the earlier wave table.
+This section consolidates the implementation slices of the six merged designs: [PROJECT_CONNECTION](design/PROJECT_CONNECTION.md#10-implementation-slices) (PC), [WORK_ENVELOPE](design/WORK_ENVELOPE.md#12-implementation-slices) (WE), [ADAPTIVE_SCHEDULER](design/ADAPTIVE_SCHEDULER.md#10-implementation-slices) (SCH), [MODEL_ROUTING](design/MODEL_ROUTING.md#13-implementation-slices) (MR), [OWNER_WORKSPACE](design/OWNER_WORKSPACE.md#11-implementation-slices) (OW) and [AUTO_RELEASE](design/AUTO_RELEASE.md#11-implementation-slices) (AR), plus the later [SCOPED_READING](design/SCOPED_READING.md#13-implementation-slices) (SR, added 2026-10-14 as lane READ). The designs hold the detail (exact tests, acceptance, reasons). This section decides order, lanes and file ownership only. It replaces the earlier wave table.
 
 ### 6.1 Where things stand (observed on main at `f912d23`, 2026-10-12)
 
@@ -232,8 +232,9 @@ Paths: `sup/` is `src/supervisor/`, `dash/` is `src/dashboard/`, `pub/` is `src/
 | **RUN** - keep it running, several steps at once | A conflicting PR is repaired by itself; independent steps run in parallel, fairly across projects, safe across crashes. | RUN1-RUN10 | First. Owns the first turn on `controller.mjs`. |
 | **MOD** - model choice and cost | Each step uses a fitting model; cost is shown honestly, unknown stays unknown. | MOD1-MOD7 | MOD1 at once; MOD2 after RUN6. |
 | **STA** - connect projects and start work | Projects connect (GitHub, local Git, plain folder); one approval grows its own task graph. | STA1-STA17 | STA1, STA2 at once; STA3 after RUN6. |
-| **UI** - owner workspace | One question per screen, project first. Every dashboard file is changed only in this lane. | UI1-UI17 | At once. |
+| **UI** - owner workspace | One question per screen, project first. Every dashboard file is changed only in this lane. | UI1-UI17; UI18 (the dashboard half of lane READ, 6.8a) | At once. |
 | **REL** - Auto Release, switched off | Release can be checked and rehearsed, but never runs until #33. | REL1-REL11 | At once (REL1). |
+| **READ** - scoped reading | A plan marks the sections a worker must read; the verifier reads everything and cites the rule a returned change broke; the repair round receives that section. Misses are counted, never assumed away. | READ1-READ3; UI18 runs in lane UI | READ1 at once: every earlier writer of its files is merged (observed on main at `ec7b1b3`, 2026-10-15). READ2 after READ1, READ3 after READ2, UI18 after READ3. |
 
 The declared tasks R2-KEEPER, F2-DUPLICATE and F3-CARRYOVER are not repeated in a lane. They are dependencies. They overlap each other: R2-KEEPER and F2-DUPLICATE both change `sup/api.mjs` and SUPERVISOR.md, in two campaigns with no declared order (observed). Recommended order: R2-KEEPER, then F2-DUPLICATE, then F3-CARRYOVER. The one merged second needs an integration round: the `aw-integrate` workaround until RUN1 exists.
 
@@ -333,32 +334,52 @@ Every slice ships with `release.enabled: false` and no release credential (AR §
 
 REL8 to REL11 wait for decisions; REL9 does not wait for REL8.
 
+### 6.8a Lane READ - scoped reading and verifier citations
+
+Added 2026-10-14 from [SCOPED_READING](design/SCOPED_READING.md). A task reference may name one section of a Markdown document (`docs/SUPERVISOR.md#3-lifecycle-of-one-task`); the controller resolves it at the pinned revision into a reading guide for the prompt, and an anchor that does not resolve widens to the whole document and is journalled, never blocks. The verifier reads every referenced document in full and cites the section a blocking finding rests on; the repair packet carries that section as a reference and in the finding text; later siblings in the same campaign get it in their guide. The packet schema, the worker-context policy and every anchor-free declaration's digests are unchanged. No saving is claimed: `supervisor baseline` reports the miss and fallback counts and compares cohorts only when both have five finished tasks. Seven further improvements are written and parked in [SR §10](design/SCOPED_READING.md#10-parked-written-not-built) with the evidence that would un-park each.
+
+Nothing in this lane is built (planned). Every slice it waits for (STA8, STA10, MOD5, MOD6, UI12) is merged on main, and so are STA12 and STA14, which changed `sup/coordinator.mjs`, `sup/controller.mjs` and `sup/api.mjs` after the design was first written (observed at `ec7b1b3`, 2026-10-15; merged is not deployed). STA10 put the planning-step prompt in `sup/adapters/executors.mjs` (`PLAN_RULE`), so READ3 also writes that file. UI18 changes dashboard files, so it runs in lane UI (6.7) and is listed here for the outcome.
+
+| ID | Outcome | Owns | Depends on | Tests | Owner decision |
+| --- | --- | --- | --- | --- | --- |
+| **READ1** | `path#anchor` validates in declarations and child amendments; a pure resolver (slugs, headings, extents) exists. No behaviour change. | `sup/reading.mjs` (new), `sup/campaign.mjs` (reference rule), `sup/plan.mjs` (A5), SUPERVISOR.md §1, `ts/reading.test.mjs` (new) | STA8 | SR §13 READ1: slugs of every design document's headings match their own links; exact, unique-prefix, ambiguous and missing anchors; secret-like behind an anchor refused; every synthetic fixture's digests unchanged | No |
+| **READ2** | Dispatch resolves anchors into a reading guide; implementer and verifier prompts carry the SR §5 wording; verifier findings may cite `path#anchor`; cites of blocking findings reach the repair packet; brokered research reads the path part. | `sup/controller.mjs`, `sup/adapters/claude.mjs`, `sup/adapters/executors.mjs`, `sup/adapters/research-context.mjs`, `ts/reading-dispatch.test.mjs` (new) | READ1, STA10 and STA14 (controller turn; STA10 also executors), MOD5 | SR §13 READ2: heading moved between two commits resolves then falls back; anchor-free packets and prompts byte-identical; a bad cite never invalidates a verdict; cap by priority; `covered`, `section-miss`, `unreferenced-doc` classified | No |
+| **READ3** | Siblings in one campaign inherit cited sections in their guide (prompt only); the coordinator and the planning step mark sections; status and baseline report the counts. | `sup/controller.mjs`, `sup/coordinator.mjs` (both drafting prompts), `sup/adapters/executors.mjs` (`PLAN_RULE`, the STA10 planning prompt), `sup/api.mjs` (`reading` per task), `sup/baseline.mjs` (`aiworks-baseline/2`), `ts/coordinator.test.mjs`, `ts/status.test.mjs`, `ts/baseline.test.mjs` | READ2, MOD6 and STA14 (api turn; MOD6 also status test), STA10 (plan prompt), STA12 (coordinator turn) | SR §13 READ3: carry-forward only to section-referencing siblings, bounded 4 per document and 8 per dispatch, packet digests unchanged; "not comparable" below five finished tasks per cohort; store byte-identical after `baseline` | No |
+| **UI18** | The Step screen says which rule a returned change broke and which sections the next attempt was given. | `dash/supervisor.mjs`, `dash/copy.mjs`, `pub/dashboard.js`, `td/work.test.mjs` | READ3, UI12 | SR §13 UI18: copy for fallbacks, misses and extensions; nothing shown for `reading: null`; no document text served | No |
+
 ### 6.9 Shared files and the order that avoids conflicts
 
 Files touched by one lane only (for example `sup/scheduler.mjs`, `sup/router.mjs`, `sup/release/*`, `sup/adapters/mirror.mjs`, everything under `src/dashboard/`) follow the lane order. Files touched by more than one lane, or by a declared task and a lane, follow this global turn order. A slice starts only after every earlier slice in the list that touches the same file is merged:
 
 **Turn order:** R2-KEEPER → F2-DUPLICATE → F3-CARRYOVER → RUN1 → RUN1B → STA1 → MOD1 → RUN2 → RUN3 → REL2 → RUN4 → RUN5 → REL3 → REL4 → RUN6 → RUN9 → STA3 → MOD2 → MOD3 → STA6 → STA7 → STA8 → STA9 → MOD5 → MOD6 → STA10 → STA11 → STA12 → STA13 → REL6 → STA14 → RUN10 → MOD7 → STA15 → STA16 → STA17 → REL9 → REL11.
 
+**Lane READ (added 2026-10-14, re-checked against main at `ec7b1b3` on 2026-10-15)** joins the order after STA14: READ1 → READ2 → READ3, each after the slice above that last touched its files. Every earlier writer of a READ file is merged (observed). READ1 touches `sup/campaign.mjs` after STA7 and before STA15, `sup/plan.mjs` after STA8 and SUPERVISOR.md after STA7 and before RUN10. READ2 touches `sup/controller.mjs` after STA14 and `sup/adapters/executors.mjs` after STA10. READ3 touches `sup/controller.mjs` and `sup/adapters/executors.mjs` after READ2, `sup/api.mjs` after STA14, `ts/status.test.mjs` after MOD6 and `sup/coordinator.mjs` after STA12. STA14 merged first (#162), so its controller turn comes before READ2 and READ3.
+
 | Shared file | Writers, in order |
 | --- | --- |
-| `sup/controller.mjs` | RUN1, RUN1B, RUN2, RUN3, RUN4, RUN5, RUN6, STA3, MOD2, STA6, STA8, STA9, MOD5, STA10, STA14 |
+| `sup/controller.mjs` | RUN1, RUN1B, RUN2, RUN3, RUN4, RUN5, RUN6, STA3, MOD2, STA6, STA8, STA9, MOD5, STA10, STA14, READ2, READ3 |
 | `sup/store.mjs` | F2-DUPLICATE, STA1, RUN2, RUN3, RUN5, REL3, MOD2, STA6, STA12 |
-| `sup/api.mjs` | R2-KEEPER, F2-DUPLICATE, RUN1B, RUN2, RUN3, REL2, REL4, RUN9, MOD3, STA6, MOD6 |
-| `sup/campaign.mjs` | F2-DUPLICATE, RUN4, STA3, MOD3, STA7, STA15 |
+| `sup/api.mjs` | R2-KEEPER, F2-DUPLICATE, RUN1B, RUN2, RUN3, REL2, REL4, RUN9, MOD3, STA6, MOD6, STA14 (observed: #162 changed it), READ3 |
+| `sup/campaign.mjs` | F2-DUPLICATE, RUN4, STA3, MOD3, STA7, READ1, STA15 |
+| `sup/plan.mjs` | STA6 (creates), STA8, READ1 |
+| `sup/coordinator.mjs` | STA12, READ3 |
+| `sup/baseline.mjs` | MOD1 (creates), READ3 |
+| `sup/adapters/claude.mjs` | READ2 |
+| `sup/adapters/research-context.mjs` | READ2 |
 | `sup/cli.mjs` | R2-KEEPER, MOD1, REL4, STA11 |
 | `sup/work-ownership.mjs` | F2-DUPLICATE (creates), RUN4, STA8 |
 | `sup/adapters/github.mjs` | R1-REST-PUBLISH (merged), RUN1B, STA13, REL6 |
-| `sup/adapters/executors.mjs` | MOD5, STA10 |
+| `sup/adapters/executors.mjs` | MOD5, STA10, READ2, READ3 |
 | `ts/helpers.mjs` | R2-KEEPER, RUN1, STA13 |
-| `ts/status.test.mjs` | RUN9, MOD6 |
+| `ts/status.test.mjs` | RUN9, MOD6, READ3 |
 | `dash/supervisor.mjs` | R2-KEEPER, then lane UI only |
-| `docs/SUPERVISOR.md` | R2-KEEPER, F2-DUPLICATE, F3-CARRYOVER, RUN1, RUN1B, MOD1, RUN3, RUN4, RUN5, REL4, MOD3, STA7, RUN10, MOD7, STA17, REL11 |
+| `docs/SUPERVISOR.md` | R2-KEEPER, F2-DUPLICATE, F3-CARRYOVER, RUN1, RUN1B, MOD1, RUN3, RUN4, RUN5, REL4, MOD3, STA7, READ1, RUN10, MOD7, STA17, REL11 |
 | `docs/STATUS.md` | F3-CARRYOVER, RUN10, MOD7, REL9, REL11 |
 | `docs/DECISIONS.md` | F3-CARRYOVER, STA17, REL9 |
 
 Two cases need the order spelled out:
 
-- **`controller.mjs` is the bottleneck.** Fifteen slices change it, one at a time. RUN goes first because parallel work and conflict repair speed up every later slice. Meanwhile the other lanes do their slices that avoid it: STA1, STA2, MOD1, MOD4, REL1 to REL5, REL7 and all of lane UI.
+- **`controller.mjs` is the bottleneck.** Seventeen slices change it (fifteen before lane READ), one at a time. RUN goes first because parallel work and conflict repair speed up every later slice. Meanwhile the other lanes do their slices that avoid it: STA1, STA2, MOD1, MOD4, REL1 to REL5, REL7 and all of lane UI.
 - **STA17 and REL9 both append a decision** after an owner answer whose timing is unknown. The listed order holds; if #33 is answered first, REL9 may go first, and STA17 then starts after REL9 is merged. Both only append a new record.
 
 ### 6.10 What waits for #24, #32 and #33
@@ -384,6 +405,7 @@ Every design slice appears once. "Merged" means two design slices became one bui
 | OW | S0→UI1, S1→UI2, S2→UI3, S3→UI4, S4→UI5, S5→UI6, S6→UI7, S7→UI8, S8→UI9, S9→UI10, S10→UI14 (merged), S11→UI13 (merged), S12→UI17, S13→UI15 (merged with AR R9) |
 | AR | R1→REL1, R2→REL2, R3→REL3, R4→REL4, R5→REL5, R6→REL6, R7→REL7, R8→REL8, R9→UI15 (merged), R10→REL9, R11→REL10, R12→REL11 |
 | Issue #27 (no design slice) | RUN1 (gap G1) |
+| SR | READ1→READ1, READ2→READ2, READ3→READ3, UI18→UI18 (dashboard half, lane UI); SR §10 P1-P7 parked, no slice |
 
 Reasons for the merges and splits:
 

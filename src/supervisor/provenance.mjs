@@ -1,4 +1,4 @@
-// Runtime code must be merged. Campaign declarations are private operator data.
+// Runtime code must be merged. Campaign declarations and envelope approvals are private operator data.
 import { spawnSync } from 'node:child_process';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, extname, resolve } from 'node:path';
@@ -25,8 +25,8 @@ export function revisionNotMerged({ root = CODE_ROOT, revision = 'HEAD' } = {}) 
     ? `supervisor code ${sha.slice(0, 12)} is not merged: it is not an ancestor of origin/main ${mainSha.slice(0, 12)}`
     : `supervisor code ${sha.slice(0, 12)} cannot be compared with origin/main: ${ancestor.stderr.slice(0, 200) || `exit ${ancestor.status}`}`;
 }
-/** campaignStart validates owner authority and immutable scope after reading this local file. */
-export function declarationFromFile(file, { root = CODE_ROOT } = {}) {
+/** A private local JSON file, read only by merged runtime code. `code` and `what` name the refusal of an unreadable file. */
+function privateJson(file, root, code, what) {
   const notMerged = revisionNotMerged({ root });
   if (notMerged) throw new CampaignError('RUNTIME_NOT_MERGED', notMerged);
   try {
@@ -39,6 +39,14 @@ export function declarationFromFile(file, { root = CODE_ROOT } = {}) {
     return JSON.parse(readFileSync(path, 'utf8'));
   } catch (error) {
     // Never echo private file contents or parser snippets into diagnostics.
-    throw new CampaignError('DECLARATION_INVALID', `Cannot read the local declaration (${error.code ?? error.name}).`);
+    throw new CampaignError(code, `Cannot read the local ${what} (${error.code ?? error.name}).`);
   }
+}
+/** campaignStart validates owner authority and immutable scope after reading this local file. */
+export function declarationFromFile(file, { root = CODE_ROOT } = {}) {
+  return privateJson(file, root, 'DECLARATION_INVALID', 'declaration');
+}
+/** The owner's private envelope approval (WORK_ENVELOPE.md section 5, slice E7); approvals.mjs checks what it binds. */
+export function approvalFromFile(file, { root = CODE_ROOT } = {}) {
+  return privateJson(file, root, 'APPROVAL_INVALID', 'approval');
 }

@@ -224,3 +224,48 @@ test('the page draws Projects from the server’s list: one state in words and o
   assert.match(js, /const projectCampaigns = \(project\) => state\.supervisor\.campaigns\.filter\(\(c\) => sameProject\(c\.repository, project\)\);/);
   assert.match(js, /empty\('No work yet\.', `Work in \$\{projectName\(project\)\} appears here once it is registered on this computer\./);
 });
+
+// UI13 (PROJECT_CONNECTION S6, OWNER_WORKSPACE S11, resolution C5): connected projects join the Projects screen when Add
+// project is on. A GitHub project joins its repository's row; a local Git project or plain folder is a row of its own,
+// addressed by its project id. The polled state names folders, never their paths.
+const record = (fields) => ({ tenant_id: 'local', fingerprint: null, github_repository: null, base_branch: null, local_branch: null, mirror_root: null,
+  worktree_root: null, exclusions: [], governance: { kind: 'none' }, reason: null, current_baseline: null, last_preflight: null, version: 1,
+  created_at: 1, updated_at: 1, disconnected_at: null, ...fields });
+const LOCAL_CAPS = { plan: { allowed: true }, startWork: { allowed: false, reason: 'LOCAL_START_OFF' }, publish: { allowed: false, reason: 'NO_GITHUB' }, apply: { allowed: false, reason: 'APPLY_NOT_BUILT' } };
+
+test('connected projects: a GitHub project joins its row, the others have their own, and the owner’s problems come first', () => {
+  const snapshot = { available: true, campaigns: [{ id: 'waves', repository: 'example-org/sampleapp', control: 'finished', tasks: [], agents: [] }] };
+  const records = [
+    record({ id: 'sampleapp', name: 'SampleApp', source_kind: 'github', github_repository: 'EXAMPLE-ORG/sampleapp', base_branch: 'main', root_path: '/srv/work/SampleApp', status: 'ready',
+      capabilities: { plan: { allowed: true }, startWork: { allowed: true }, publish: { allowed: true }, apply: { allowed: false, reason: 'GITHUB_PUBLISHES' } } }),
+    record({ id: 'recipes', name: 'Recipes', source_kind: 'local-git', local_branch: 'main', root_path: '/srv/work/Recipes', mirror_root: '/srv/aiworks/mirrors/recipes', status: 'ready', capabilities: LOCAL_CAPS,
+      current_baseline: { seq: 1, commit: 'a'.repeat(40), at: 5 } }),
+    record({ id: 'notes', name: 'Notes', source_kind: 'folder', root_path: '/srv/work/Notes', mirror_root: '/srv/aiworks/mirrors/notes', status: 'unavailable', reason: 'ROOT_MISSING', capabilities: LOCAL_CAPS })];
+  const view = projectsView(snapshot, { items: [], campaigns: {} }, { records, addProject: true });
+  assert.equal(view.addProject, true);
+  assert.deepEqual(view.projects.map((project) => [project.id, project.name, project.kind, project.state.key]), [
+    ['notes', 'Notes', 'Folder', 'unavailable'], ['recipes', 'Recipes', 'Local Git', 'ready'], ['example-org/sampleapp', 'sampleapp', 'GitHub', 'finished']]);
+  const [notes, recipes, sampleapp] = view.projects;
+  assert.deepEqual([sampleapp.connection.id, sampleapp.connection.status, sampleapp.connection.folder, sampleapp.details.work], ['sampleapp', 'ready', 'SampleApp', 1]);
+  assert.deepEqual([recipes.state.text, recipes.action, recipes.connection.startWork.allowed],
+    ['Connected. Starting work in a folder without GitHub is not available yet.', { label: 'Open project', route: { screen: 'project', project: 'recipes', tab: 'now' } }, false]);
+  // Its folder by name: "AIWorks can't reach {path}" says the project's name here; the path is only in the owner's own project list.
+  assert.equal(notes.state.text, "AIWorks can't reach Notes. If it's on a removable drive, plug it in.");
+  assert.ok(!JSON.stringify(view).includes('/srv/'), 'no path in the polled Projects screen');
+  // Needs setup ranks with Needs you, first.
+  const setup = projectsView(snapshot, { items: [], campaigns: {} }, { records: [records[0], { ...records[2], status: 'needs-setup', reason: 'ROOT_REPLACED' }], addProject: true });
+  assert.deepEqual(setup.projects.map((project) => [project.id, project.state.key, project.state.text]), [
+    ['notes', 'needs-setup', 'The folder at Notes was replaced. Confirm it\'s still "Notes" before work continues.'], ['example-org/sampleapp', 'finished', 'All steps are finished.']]);
+});
+
+test('the page offers Add project only when this computer switches it on, as the empty screen’s and the list’s one action', () => {
+  const js = readFileSync(join(ROOT, 'src/dashboard/public/dashboard.js'), 'utf8');
+  const screen = /function projectsScreen\(\) \{[\s\S]*?\n\}/.exec(js)[0];
+  assert.match(screen, /const adding = Boolean\(state\.projects\?\.addProject\);/);
+  assert.match(screen, /if \(!projects\.length && !adding\) return \[empty\('No projects yet\.'/, 'off: the empty screen is as before');
+  assert.match(screen, /stateCopy\('projects-empty', \{ addProject: true \}\)/, 'on: OWNER_WORKSPACE §7.1 after S11, from the copy module');
+  assert.match(screen, /adding \? routeLink\('Add project', \{ screen: 'add-project' \}, 'button'\) : null/);
+  // Off, the Add project address says it is not built, exactly as before.
+  assert.match(js, /if \(!state\.projects\?\.addProject\) return \[empty\(\.\.\.ADD_OFF\)\];/);
+  assert.match(js, /const ADD_OFF = \['Adding a project from this page is not built yet\.', 'Projects appear on Projects when the AIWorks configuration file on this computer lists a repository\.'\];/);
+});
