@@ -159,7 +159,7 @@ function renderMetrics(campaigns = state.supervisor.campaigns, shown = []) {
     ['Platform roadmap items', entries.length, null, 'Definitions from the governance checkout; progress is tracked on GitHub', '☷'],
     ['Agents working', available ? agents.length : '—', null, !available ? 'Supervisor unavailable'
       : agents.length ? `${verdicts.filter((v) => v === 'recent').length} working normally${verdicts.some((v) => v === 'stale') ? ` · ${verdicts.filter((v) => v === 'stale').length} possibly stuck or not started` : ''}` : 'None right now', '◎'],
-    ['Needs you', !available ? '—' : unknown && !attention ? '?' : attention, available && unknown && attention ? '+ ?' : null,
+    ['Needs you', !available ? '—' : unknown && !attention ? '?' : attention, available && unknown && attention ? '+ checking' : null,
       !available ? 'Execution state unknown'
         : `${attention ? `${plural(attention, 'item')} listed below` : unknown ? 'Nothing confirmed yet' : 'No work is blocked on you'}${unknown ? ` · merge of ${plural(unknown, 'published step')} being checked` : ''}`, '◈'],
   ];
@@ -167,8 +167,9 @@ function renderMetrics(campaigns = state.supervisor.campaigns, shown = []) {
     el('div', { class: 'metric-title' }, title, el('span', { class: 'metric-icon', 'aria-hidden': 'true' }, icon)),
     el('div', { class: 'metric-value number' }, String(value), total ? el('small', {}, total) : null), el('div', { class: 'metric-foot' }, foot))));
   $('#metrics').hidden = !shown.length;
-  // The Needs me count in the global bar: never zero while the supervisor state is unknown.
-  $('#needs-count').textContent = !state.supervisor.available ? '?' : attention ? String(attention) : unknown ? '?' : '';
+  // The Needs me count in the global bar: never zero while the supervisor state is unknown, and never final while a merge
+  // check runs: "7 + checking" until it ends (OWNER_WORKSPACE §1 rule 3, §7.4; aiworks#11 review 4 F3).
+  $('#needs-count').textContent = !state.supervisor.available ? '?' : attention ? `${attention}${unknown ? ' + checking' : ''}` : unknown ? 'checking' : '';
 }
 
 // governance provider's own roadmap (read from the governance checkout), kept apart from project campaigns; display names replace internal track labels.
@@ -686,6 +687,8 @@ function sinceSummary() {
       recent.supervisorErrors ? `its own check failed ${plural(recent.supervisorErrors, 'time')} and was retried` : null,
       recent.livenessProblems ? plural(recent.livenessProblems, 'liveness problem') : null].filter(Boolean).join('; ')}). Not an owner action: these are supervisor faults for AIWorks's maintainers. `,
     link('Supervisor issue #2 ↗', 'https://github.com/netbka/aiworks/issues/2'), ' · ', routeLink('When, in Diagnostics', '#/settings/diagnostics')) : null,
+    // While a merge check runs, what merged is not known yet: never "Nothing changed" (aiworks#11 review 4 F3).
+    state.owner?.unknownResults ? el('li', {}, `Checking GitHub… The state of ${plural(state.owner.unknownResults, 'result')} is not known yet.`) : null,
   ].filter(Boolean);
   return el('section', { class: 'since', 'aria-labelledby': 'since-title' }, el('h2', { id: 'since-title' }, when),
     facts.length ? el('ul', {}, ...facts) : el('p', {}, 'Nothing changed.'));
@@ -807,9 +810,9 @@ const projectList = () => state.projects?.projects ?? [];
 const sameProject = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
 const projectCampaigns = (project) => state.supervisor.campaigns.filter((c) => sameProject(c.repository, project));
 const unavailable = () => empty('Supervisor unavailable', state.supervisor.message ?? 'The supervisor state cannot be read right now. This is not the same as nothing happening.');
-const stateTones = { 'needs-you': 'attention', running: 'in_progress', paused: 'pending', finished: 'done', cancelled: 'pending', 'no-work': 'pending',
+const stateTones = { 'needs-you': 'attention', checking: 'unknown', running: 'in_progress', paused: 'pending', finished: 'done', cancelled: 'pending', 'no-work': 'pending',
   ready: 'done', 'needs-setup': 'attention', unavailable: 'pending', 'possibly-stuck': 'stale', stopped: 'stale', fault: 'stale' };
-const stateWords = { 'needs-you': 'Needs you', running: 'Running', paused: 'Paused', finished: 'Finished', cancelled: 'Cancelled', 'no-work': 'No work yet',
+const stateWords = { 'needs-you': 'Needs you', checking: 'Checking', running: 'Running', paused: 'Paused', finished: 'Finished', cancelled: 'Cancelled', 'no-work': 'No work yet',
   ready: 'Ready', 'needs-setup': 'Needs setup', unavailable: 'Temporarily unavailable', 'possibly-stuck': 'Possibly stuck', stopped: 'AIWorks stopped',
   fault: 'AIWorks problem' };
 const projectAction = (action) => action.url ? link(`${action.label} ↗`, action.url, 'project-action') : routeLink(action.label, action.route, 'project-action');

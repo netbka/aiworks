@@ -130,6 +130,7 @@ Today's addresses `#overview`, `#roadmap`, `#work`, `#agents`, `#messages` and `
 ### 3.4 Global frame
 
 - **Header.** The AIWorks mark (a link to Projects), the computer's name, a connection line and a "Messages" link. The computer's name stays because each computer runs its own AIWorks (AW-006; observed: `src/dashboard/public/dashboard.js:653-658`).
+- **Needs me count.** The "Needs me" item of the navigation carries the count of owner actions. While a merge check runs it is partial, never final: "7 + checking", or "checking" with nothing confirmed yet. It shows the final count once the check ends ([§1](#1-what-changes-for-the-owner) rule 3; aiworks#11 review 4 F3).
 - **Connection line.** It says **Page connected**, or the disconnected text. It is about this page's link to the dashboard, never about AIWorks' work. A bare "Connected" read as "AIWorks is running" while Needs me said AIWorks had stopped (aiworks#11 review 4 F6). Whether AIWorks runs is said on the screens, from [§7.2](#72-disconnected).
 - **"Refresh GitHub"** moves from the header to Settings › Diagnostics. GitHub refreshes by itself every minute (observed: `src/dashboard/main.mjs:39`). Stale data is said on the screens that use it ([§7.4](#74-github-stale)).
 - **"Message coordinator"** becomes the "Messages" link. Sending a message is the primary action of Settings › Messages, not a header button on every screen.
@@ -149,7 +150,9 @@ Each screen lists: its question, what is visible first, its one primary action, 
   - **one** state in plain words, from [§7](#7-state-copy). With nothing for the owner it is the sentence the project's Now screen leads with ([§4.4](#44-now-inside-a-project)), so the two agree, also right after Pause and Resume. With more than one piece of active work it starts with the purpose of the work it is about: "Let customers save a wishlist · Possibly stuck: Wishlist page has made no progress for 25 minutes." (aiworks#11 review 4 F10, F14);
   - **one** next action as a link, for example "Review pull request #465" or "See results".
   
-  Projects that need the owner come first, then those with work running, then the rest by last activity.
+  While a merge check runs, a project's state is partial, never final: "2 things need you so far. Checking GitHub… The state of 3 results is not known yet.", or with nothing listed for the owner the state "Checking" with the same sentence, after the Now sentence when work is active. It never reads "Running" or "Finished" alone then ([§1](#1-what-changes-for-the-owner) rule 3, [§7.4](#74-github-stale); aiworks#11 review 4 F3).
+
+  Projects that need the owner or are being checked come first, then those with work running, then the rest by last activity.
 - **Primary action.** "Add project". It appears only once project connection exists (slice S11). Before that, the screen has no primary button, and the empty state says how projects appear today ([§7.1](#71-empty)).
 - **In details.** Repository owner, base branch, connection check time, the number of pieces of work.
 
@@ -158,7 +161,7 @@ Today there is no project object. Campaigns carry their target repository (obser
 ### 4.2 Needs me
 
 - **Question.** What is waiting for me, across all projects?
-- **First visible.** A heading with the count, then one group per project, then a group called "AIWorks itself". Each row is one decision, worded as today's items: what to do first, then what the step delivers, then one link to act. Examples:
+- **First visible.** A heading with the count, then one group per project, then a group called "AIWorks itself". When "AIWorks itself" holds an item that holds up work in several projects (AIWorks stopped on this computer), that group comes first, with that item at its top: no project item it holds up can move until it is fixed (aiworks#11 review 4 F5). Each row is one decision, worded as today's items: what to do first, then what the step delivers, then one link to act. Examples:
   - "Review and merge · Telegram ingestion: analysed messages are not sent again · Open PR #465";
   - "Decision needed · <step outcome> · Open the step";
   - "Closed without merging · <step outcome> · Open PR #463".
@@ -169,7 +172,7 @@ Today there is no project object. Campaigns carry their target repository (obser
 - **Not here.** Waiting for an AI worker's usage limit to reset is not an owner task (AW-002). A pause by itself is not an owner task (observed: `src/dashboard/owner.mjs:268-271`).
 - **Not here: project setup.** A setup problem met in Add project (no project rules, no Git, a configuration file that disagrees) is said on Add project, where it happens, and a connected project that needs setup says so on Projects and its Now screen. Needs me lists work only, so its calm line speaks of work only: "No work is blocked on you right now" ([§7.1](#71-empty)). It never says "nothing is blocked" while setup may be (aiworks#11 review F8).
 
-The items are today's "Needs you" items, unchanged in meaning (observed: built in `src/dashboard/owner.mjs:228-294`, counted in `src/dashboard/owner.mjs:297`). The "AIWorks itself" group holds the supervisor and coordinator items, which today already say they are not owner actions (observed: `src/dashboard/owner.mjs:273-275`, `src/dashboard/owner.mjs:292-293`). They stay listed because nothing else will report them. The group is shown after the project groups.
+The items are today's "Needs you" items, unchanged in meaning (observed: built in `src/dashboard/owner.mjs:228-294`, counted in `src/dashboard/owner.mjs:297`). The "AIWorks itself" group holds the supervisor and coordinator items, which today already say they are not owner actions (observed: `src/dashboard/owner.mjs:273-275`, `src/dashboard/owner.mjs:292-293`). They stay listed because nothing else will report them. The group is shown after the project groups, except when it holds up work in several projects: then it leads, as above. At 320 px the root problem was otherwise found only after about 2,300 px of project items it made pointless (aiworks#11 review 4 F5).
 
 ### 4.3 Settings
 
@@ -628,7 +631,7 @@ Order: S0 first, then S1. S2–S8 may run in parallel after S1, with one owner p
 
 ### S3. Needs me
 
-- **Outcome.** Today's Needs you items, grouped by project, with "AIWorks itself" last.
+- **Outcome.** Today's Needs you items, grouped by project, with "AIWorks itself" last, or first when it holds up work in several projects ([§4.2](#42-needs-me)).
 - **Files.** `src/dashboard/owner.mjs` (grouping only), `src/dashboard/public/dashboard.js`.
 - **Tests.** `tests/dashboard/owner.test.mjs` and `tests/dashboard/claims.test.mjs` keep every current claim. New cases: grouping, counts equal to today's headline count, a usage-limit wait never listed.
 - **Acceptance.** Same items and count as today on the S0 fixture.

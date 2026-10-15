@@ -78,7 +78,7 @@ test('one row per repository, grouped case-insensitively; the configured spellin
   assert.equal(projects.available, true);
   assert.deepEqual(projects.projects.map((project) => project.id).sort(), ['example-org/sampleapp', 'example/shop-app']);
   const sampleapp = projects.projects.find((project) => project.id === 'example-org/sampleapp');
-  assert.deepEqual([sampleapp.name, sampleapp.kind, sampleapp.details], ['sampleapp', 'GitHub', { owner: 'example-org', work: 2, configured: true, needsYou: 0 }]);
+  assert.deepEqual([sampleapp.name, sampleapp.kind, sampleapp.details], ['sampleapp', 'GitHub', { owner: 'example-org', work: 2, configured: true, needsYou: 0, checking: 0 }]);
   const shop = projects.projects.find((project) => project.id === 'example/shop-app');
   assert.deepEqual([shop.name, shop.details.configured, shop.details.work], ['shop-app', false, 1], 'work without configuration is still a project');
 });
@@ -167,14 +167,15 @@ test('F14: a project whose working step made no progress past the §7.6 threshol
 test('F14 and F10: on the review fixture, shop-app reads "Possibly stuck" and names the work it is about, as Now does', (t) => {
   const { dataDir } = review(t, 'aiworks-projects-review-');
   const now = Date.now(), supervisor = supervisorSnapshot(dataDir, now), owner = ownerView(supervisor, undefined, { now });
-  // Without a merge check, shop-app has nothing for the owner: the worker that stopped moving is what its row says, with
-  // the work by name and Now's own sentence (review 4: "Running · Working on: Checkout form").
+  // Without a merge check, shop-app has nothing confirmed for the owner: the worker that stopped moving is what its row
+  // says, with the work by name and Now's own sentence (review 4: "Running · Working on: Checkout form"), and the results
+  // not checked yet keep it partial (review 4 F3).
   assert.deepEqual(owner.items.filter((item) => item.repository === 'example/shop-app'), []);
   const row = projectsView(supervisor, owner, { repositories: PROJECTS, now }).projects.find((item) => item.id === 'example/shop-app');
   const now2 = nowView('example/shop-app', { supervisor, owner }, { now });
   assert.equal(row.state.key, 'possibly-stuck');
-  assert.match(row.state.text, /^Let customers save a wishlist · Possibly stuck: Wishlist page has made no progress for 2[56] minutes\.$/);
-  assert.equal(row.state.text, `${now2.goal.text} · ${now2.state.title}`, 'the work Now names, and its sentence');
+  assert.match(row.state.text, /^Let customers save a wishlist · Possibly stuck: Wishlist page has made no progress for 2[56] minutes\. · Checking GitHub… The state of 4 results is not known yet\.$/);
+  assert.equal(row.state.text, `${now2.goal.text} · ${now2.state.title} · Checking GitHub… The state of 4 results is not known yet.`, 'the work Now names, and its sentence');
 });
 
 test('F10: after Pause and after Resume, the confirmation, Now and Projects say the same about recipes', (t) => {
@@ -186,7 +187,9 @@ test('F10: after Pause and after Resume, the confirmation, Now and Projects say 
     const now = nowView(project, { supervisor, owner }, { now: at });
     const row = projectsView(supervisor, owner, { repositories: PROJECTS, now: at }).projects.find((item) => item.id === project);
     assert.equal(row.state.key === 'needs-you', now.state.needsYou, `${row.state.text} | ${now.state.title}`);
-    if (row.state.key !== 'needs-you') assert.equal(row.state.text, `${now.goal.text} · ${now.state.title}`, 'Projects names the work Now is about, with its sentence');
+    // No merge check runs here, so recipes' 3 published results stay unknown and its row says so (review 4 F3).
+    if (row.state.key !== 'needs-you') assert.equal(row.state.text, `${now.goal.text} · ${now.state.title} · Checking GitHub… The state of 3 results is not known yet.`,
+      'Projects names the work Now is about, with its sentence');
     return { supervisor, now, row };
   };
   const command = (action) => {
@@ -199,7 +202,7 @@ test('F10: after Pause and after Resume, the confirmation, Now and Projects say 
   // Paused (review 4: Projects said "Running · Waiting for an AI worker to be free" while Now said "Paused since").
   const paused = read(Date.now());
   assert.deepEqual([paused.now.state.key, paused.row.state.key], ['paused', 'paused']);
-  assert.match(paused.row.state.text, /^Import recipes from a spreadsheet · Paused since \d+ \w+ \d\d:\d\d\.$/);
+  assert.match(paused.row.state.text, /^Import recipes from a spreadsheet · Paused since \d+ \w+ \d\d:\d\d\. · Checking GitHub… The state of 3 results is not known yet\.$/);
   // Resume: the confirmation says it resumed, and neither screen says paused or stopped, then or 10 minutes later.
   assert.equal(command('resume'), 'Resumed with the goal and limits you approved.');
   for (const later of [0, 10 * 60_000]) {
@@ -223,7 +226,7 @@ test('a configured repository with no work shows "No work yet" and opens the pro
   const { projects } = view(dataDir);
   assert.deepEqual(projects.projects, [{ id: 'example/notes-site', name: 'notes-site', repository: 'example/notes-site', kind: 'GitHub',
     state: { key: 'no-work', text: 'No work yet.' }, action: { label: 'Open project', route: { screen: 'project', project: 'example/notes-site', tab: 'now' } },
-    lastActivityAt: null, details: { owner: 'example', work: 0, configured: true, needsYou: 0 } }]);
+    lastActivityAt: null, details: { owner: 'example', work: 0, configured: true, needsYou: 0, checking: 0 } }]);
   // Names only: a missing, unreadable or odd config lists nothing and never fails the screen.
   const empty = mkdtempSync(join(tmpdir(), 'aiworks-projects-config-'));
   t.after(() => rmSync(empty, { recursive: true, force: true }));

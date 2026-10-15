@@ -24,7 +24,7 @@ const PR_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/(\d+)$/;
 const ISSUE_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+$/;
 const TERMINAL = ['finished', 'cancelled'];
 /** Display order: projects that need the owner, then those with work running, then the rest by last activity. */
-const RANK = { 'needs-you': 0, 'needs-setup': 0, running: 1, 'possibly-stuck': 1, stopped: 1, fault: 1 };
+const RANK = { 'needs-you': 0, 'needs-setup': 0, checking: 0, running: 1, 'possibly-stuck': 1, stopped: 1, fault: 1 };
 /** A project's state key from the Now state it shows; every other Now state of active work is running. */
 const KEYS = { paused: 'paused', 'possibly-stuck': 'possibly-stuck', 'supervisor-stopped': 'stopped', 'paused-stopped': 'stopped', 'supervisor-fault': 'fault' };
 
@@ -38,6 +38,12 @@ export function configuredRepositories(dataDir) {
   const listed = config?.repositories;
   return listed && typeof listed === 'object' && !Array.isArray(listed) ? Object.keys(listed).filter((name) => REPOSITORY.test(name)) : [];
 }
+
+/**
+ * A merge check that can still come shortly leaves results unknown (OWNER_WORKSPACE §7.4 "Never loaded"): any of them may
+ * be waiting for the owner, so a state built without them is partial, never final (§1 rule 3; aiworks#11 review 4 F3).
+ */
+const checkingText = (n) => `Checking GitHub… The state of ${n} result${n === 1 ? '' : 's'} is not known yet.`;
 
 const lastActivity = (campaigns) => Math.max(0, ...campaigns.map((c) => Date.parse(c.lastProgressAt ?? '') || c.registeredAt || 0)) || null;
 
@@ -91,9 +97,12 @@ export function projectsView(supervisor, owner, { repositories = [], records = [
     const mine = items.filter((item) => item.repository?.toLowerCase() === repository.toLowerCase());
     const active = campaigns.filter((c) => !TERMINAL.includes(c.control));
     const connection = record ? connectionView(record, { path: false }) : null;
+    // Results whose merge is still being checked: until the check ends, the state says it is partial.
+    const checking = campaigns.reduce((n, c) => n + (owner?.campaigns?.[c.id]?.counts?.checking ?? 0), 0);
     let state, action;
     if (mine.length) {
-      state = { key: 'needs-you', text: mine.length === 1 ? 'One thing needs you.' : `${mine.length} things need you.` };
+      const needs = mine.length === 1 ? 'One thing needs you' : `${mine.length} things need you`;
+      state = { key: 'needs-you', text: checking ? `${needs} so far. ${checkingText(checking)}` : `${needs}.` };
       action = needsAction(mine);
     } else if (connection && connection.status !== 'ready') {
       // The connection needs the owner, or is away for now: its one sentence, and the project where Check again is.
@@ -101,7 +110,12 @@ export function projectsView(supervisor, owner, { repositories = [], records = [
       action = { label: 'Open project', route: route('now') };
     } else if (active.length) {
       state = activeState(repository, active, supervisor, owner, now);
+      // "Running" is never said while a result that may need the owner is unknown; a state that says more keeps its word.
+      if (checking) state = { key: state.key === 'running' ? 'checking' : state.key, text: `${state.text} · ${checkingText(checking)}` };
       action = { label: 'Open current work', route: route('work') };
+    } else if (checking) {
+      state = { key: 'checking', text: checkingText(checking) };
+      action = { label: 'See results', route: route('results') };
     } else if (campaigns.length) {
       // The most recent finished or cancelled piece of work, in the owner view's own words.
       const latest = [...campaigns].sort((a, b) => lastActivity([b]) - lastActivity([a]))[0], view = owner?.campaigns?.[latest.id];
@@ -113,7 +127,7 @@ export function projectsView(supervisor, owner, { repositories = [], records = [
       action = { label: 'Open project', route: route('now') };
     }
     return { id: repository, name: repository.split('/')[1], repository, kind: 'GitHub', state, action, lastActivityAt: lastActivity(campaigns),
-      details: { owner: repository.split('/')[0], work: campaigns.length, configured, needsYou: mine.length }, ...(connection ? { connection } : {}) };
+      details: { owner: repository.split('/')[0], work: campaigns.length, configured, needsYou: mine.length, checking }, ...(connection ? { connection } : {}) };
   });
   // Two repositories with the same name under different owners keep their owner in the name.
   const shared = projects.filter((project) => projects.some((other) => other !== project && other.name.toLowerCase() === project.name.toLowerCase()));
