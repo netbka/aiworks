@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { Store } from '../../src/supervisor/store.mjs';
 import { campaignStart } from '../../src/supervisor/api.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
-import { connectGithubProject, resolveCheckout } from '../../src/supervisor/project-connect.mjs';
+import { checkGithubProject, connectGithubProject, resolveCheckout } from '../../src/supervisor/project-connect.mjs';
 import { createProject, projects } from '../../src/supervisor/projects.mjs';
 import { declaration, environment } from './helpers.mjs';
 
@@ -243,4 +243,53 @@ test('CONFIG_CONFLICT with a task waiting for merged dependencies still raises t
   assert.deepEqual(logs.filter((line) => /step failed/.test(line)), []);
   assert.equal(store.campaign(decl.campaignId).blocker?.code, 'CONFIG_CONFLICT');
   assert.equal(store.all('SELECT id FROM operations').length, 0);
+});
+
+// aiworks#7 recheck: a GitHub project whose own worktree root is inside its folder checks again. A registry entry added
+// later clears REGISTRY_MISSING only once gh, the registry, the base branch and config.json all agree.
+test('Check again: own worktrees inside the folder are not a protected path; a later registry entry clears REGISTRY_MISSING', (t) => {
+  const r = rig(t);
+  const governanceRoot = join(r.tmp, 'governance');
+  cpSync(GOVERNANCE, governanceRoot, { recursive: true });
+  const entry = join(governanceRoot, 'registry', 'projects', 'sampleapp.json');
+  const listed = readFileSync(entry, 'utf8');
+  rmSync(entry);
+  const nested = join(r.root, '.local', 'worktrees');
+  const options = { dataDir: r.dataDir, governanceRoot, gh: (args) => r.ghCalls.push(args) && r.replies[args[0]],
+    lsRemote: (_, branch) => r.branches.has(branch), gitEnv: { GIT_CEILING_DIRECTORIES: r.tmp } };
+  const connected = connectGithubProject({ path: r.root, worktreeRoot: nested }, { store: r.store, ...options });
+  assert.equal(connected.code, 'REGISTRY_MISSING');
+  git(r.root, 'worktree', 'add', '-q', '-b', 'side', join(nested, 'side'));
+  const check = (config = {}) => checkGithubProject(r.store, connected.project.id, { config, ...options });
+  const configured = { repositories: { 'Example-Org/SampleApp': { path: r.root, worktreeRoot: nested } } };
+
+  const stillMissing = check(configured);
+  assert.deepEqual([stillMissing.code, stillMissing.status], ['REGISTRY_MISSING', 'needs-setup'], stillMissing.message);
+  writeFileSync(entry, listed);
+  r.replies.api = { status: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)' };
+  assert.equal(check(configured).code, 'GH_NO_ACCESS', 'the registry alone does not make it Ready');
+  r.replies.api = { status: 0, stdout: JSON.stringify({ full_name: 'example-org/sampleapp', default_branch: 'main' }), stderr: '' };
+  r.branches.delete('main');
+  assert.equal(check(configured).code, 'BRANCH_MISSING');
+  r.branches.add('main');
+  assert.equal(check({ repositories: { 'example-org/sampleapp': { path: r.root, worktreeRoot: join(r.tmp, 'other-trees') } } }).code, 'CONFIG_CONFLICT');
+  const ready = check(configured);
+  assert.deepEqual([ready.ok, ready.code, ready.status, ready.project.reason], [true, null, 'ready', null], ready.message);
+  assert.deepEqual([ready.project.governance.kind, ready.project.governance.entryId], ['registry', 'sampleapp']);
+  assert.equal(ready.project.root_key, connected.project.root_key, 'the same root identity');
+
+  // Reconnecting the same folder opens the same project; a different repository there is never switched to.
+  const again = connectGithubProject({ path: r.root }, { store: r.store, config: configured, ...options });
+  assert.deepEqual([again.ok, again.project.id, again.preflight.code], [true, connected.project.id, 'ALREADY_CONNECTED']);
+  git(r.root, 'remote', 'set-url', 'origin', 'https://github.com/example-org/Other.git');
+  const changed = check(configured);
+  assert.deepEqual([changed.code, changed.status], ['IDENTITY_CHANGED', 'needs-setup']);
+  assert.equal(projects(r.store)[0].github_repository, 'example-org/sampleapp');
+
+  // A new folder holding a configured worktree root is still refused at first connect.
+  const fresh = rig(t, { origin: 'https://github.com/example-org/sample-wiki.git' });
+  const refused = connectGithubProject({ path: fresh.root }, { store: fresh.store, dataDir: fresh.dataDir, governanceRoot: GOVERNANCE, gh: () => ({ status: 0, stdout: '{}', stderr: '' }),
+    lsRemote: () => true, gitEnv: { GIT_CEILING_DIRECTORIES: fresh.tmp }, worktreeRoots: [{ repository: 'example-org/sample-wiki', path: join(fresh.root, 'trees') }] });
+  assert.deepEqual([refused.code, refused.project], ['PATH_PROTECTED', null]);
+  assert.equal(projects(fresh.store).length, 0);
 });
