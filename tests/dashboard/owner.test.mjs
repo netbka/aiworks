@@ -245,7 +245,7 @@ test('stops, decisions, unchecked merges and an unreadable inbox need the owner;
   assert.ok(!view.items[1].points[0].text.includes('worker text'), 'stop reasons are supervisor words, never worker output');
   assert.equal(view.items[2].text, 'AIWorks on this computer has not picked up this work yet (it is paused)');
   assert.ok(!view.items.some((item) => /is paused$|Supervisor upgrade/.test(item.text)), 'the pause reason is never an owner item');
-  assert.equal(view.items[3].text, 'The coordinator cannot read your messages');
+  assert.equal(view.items[3].text, 'AIWorks cannot read your messages');
   assert.ok(view.layout.cards.includes(d.campaignId), 'a paused campaign keeps its card');
 });
 
@@ -282,7 +282,7 @@ test('Needs me groups today\'s items by project, case-insensitively, with "AIWor
   // The fault and the unreadable inbox are listed but not counted (review F17).
   assert.deepEqual(view.groups.at(-1).items.map((item) => [item.kind, item.repository, item.about, item.text, Boolean(item.system)]), [
     ['controller', null, 'example/shop', 'AIWorks has a problem of its own with this work', true],
-    ['coordinator', null, undefined, 'The coordinator cannot read your messages', true]]);
+    ['coordinator', null, undefined, 'AIWorks cannot read your messages', true]]);
   assert.equal(view.groups.at(-1).notCounted, 2);
   // Grouping only: the same items, in today's order within each group, and the count is today's headline count.
   const grouped = view.groups.flatMap((group) => group.items);

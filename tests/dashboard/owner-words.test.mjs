@@ -286,3 +286,39 @@ test('F13: a step stopped on invalid results says in place what that failure is 
   assert.match(resultMeaning({ outcome: 'invalid-result', role: 'Verifier' }).kind, /^Invalid result: the independent checker finished, /);
   for (const outcome of [null, { outcome: 'result', terminal: 'rejected' }, { outcome: 'timeout' }]) assert.equal(resultMeaning(outcome), null);
 });
+
+// Verifier finding B1 on UIF10: the review fixture's recent summary has merges only, so the every-screen guard never drew
+// the home summary's failed runs, AIWorks' own problems or an inbox AIWorks cannot read. These states, drawn here.
+test('F4 and F17: the Projects home, Needs me and Messages say AI worker and AIWorks when runs fail, AIWorks has problems or cannot read messages', async (t) => {
+  const page = await openPage(t);
+  const store = new Store(join(page.dataDir, 'supervisor.db'));
+  const at = Date.now() - 60 * 60_000, reason = 'invalid coordinator configuration: unknown coordinator keys: agentModel';
+  store.journal('shop-checkout', 'published', { task: 'T1' }, at);
+  store.journal('shop-checkout', 'operation-finished', { task: 'T1', class: 'failure' }, at);
+  store.journal('shop-checkout', 'operation-finished', { task: 'T1', class: 'result', terminal: 'rejected' }, at);
+  store.journal('shop-checkout', 'step-error', { message: 'supervisor step failed' }, at);
+  store.journal('shop-checkout', 'liveness-defect', { message: 'supervisor liveness defect' }, at);
+  store.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('coordinator_blocked', ?)", reason);
+  store.close();
+  await page.refresh();
+  const findings = [];
+  for (const where of ['#/projects', '#/needs', '#/settings', '#/settings/messages', address('example/shop-app')]) {
+    await page.go(where);
+    for (const found of internalWords(page.text())) findings.push(`${where}: ${found}`);
+  }
+  assert.deepEqual(findings, []);
+  await page.go('#/projects');
+  const home = screen(page);
+  assert.match(home, /1 step delivered by AI workers/);
+  assert.match(home, /2 AI worker runs did not succeed \(1 rejected by the independent checker\); AIWorks retries by itself/);
+  assert.match(home, /AIWorks itself had problems \(its own check failed 1 time and was retried; it failed to check in on time 1 time\)\. Not an owner action: these are faults in AIWorks for its maintainers\. AIWorks issue #2 ↗/);
+  await page.go('#/needs');
+  assert.match(screen(page), /AIWorks cannot read your messages .*Not yours to fix: the AIWorks configuration file on this computer needs a fix by whoever maintains AIWorks\./);
+  // The machine's reason is kept, one click away.
+  const recorded = nodes(page, 'DETAILS').find((node) => node.textContent.includes(reason));
+  assert.ok(recorded, 'the machine reason is inside a details disclosure');
+  await page.go('#/settings/messages');
+  assert.match(screen(page), /not reading now; why is under Needs me/);
+  assert.match(screen(page), /! Not read yet · AIWorks cannot read requests right now; why is under Needs me/);
+  assert.doesNotMatch(screen(page), /invalid coordinator configuration/);
+});

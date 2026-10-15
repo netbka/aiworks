@@ -442,7 +442,7 @@ function messageReceipt(m, coordinator, aiworks) {
   if (m.state === 'received') {
     steps.push(m.failure ? receiptStep(false, 'Retrying', `the last read ended without an answer (${outcomeLabels[m.failure] ?? m.failure}); next attempt ${dateTime(m.retryAt)}`, 'failed')
       : !coordinator.configured ? receiptStep(false, 'Not read', NOT_READ.receipt, 'failed')
-        : coordinator.blocked ? receiptStep(false, 'Not read yet', coordinator.blocked, 'failed')
+        : coordinator.blocked ? receiptStep(false, 'Not read yet', 'AIWorks cannot read requests right now; why is under Needs me', 'failed')
         : coordinator.maxRunsPerDay !== null && coordinator.runsToday >= coordinator.maxRunsPerDay ? receiptStep(false, 'Waiting', `AIWorks has read today's ${coordinator.maxRunsPerDay} requests; it reads this one when the 24 hours free up`)
           : receiptStep(false, 'Waiting', waitingWords(coordinator, aiworks)));
   } else if (m.readAt) {
@@ -487,7 +487,7 @@ function messagesPanel(limit) {
   const items = coordinator.messages.slice(0, limit);
   // Sending is offered only while something reads messages; otherwise the panel says so and what to do instead.
   return panel('Your messages to AIWorks', coordinator.configured
-    ? `AIWorks reads them and changes nothing · replies stay in this dashboard · ${coordinator.runsToday}${coordinator.maxRunsPerDay === null ? '' : `/${coordinator.maxRunsPerDay}`} read in the last 24h${coordinator.blocked ? ` · not reading now: ${coordinator.blocked}` : ''}`
+    ? `AIWorks reads them and changes nothing · replies stay in this dashboard · ${coordinator.runsToday}${coordinator.maxRunsPerDay === null ? '' : `/${coordinator.maxRunsPerDay}`} read in the last 24h${coordinator.blocked ? ' · not reading now; why is under Needs me' : ''}`
     : null,
   el('div', {}, notRead(coordinator), items.length ? el('div', { class: 'instruction-list' }, ...items.map((m) => messageReceipt(m, coordinator, state.supervisor.controller)))
     : empty('No messages yet', coordinator.configured ? 'Use “New message” to ask for a review or a plan.' : '')),
@@ -684,7 +684,7 @@ function activityList(limit = 80, journal = state.supervisor.activity) {
     el('time', { class: 'timeline-time', datetime: new Date(item.at).toISOString(), title: dateTime(item.at) }, timeAgo(item.at)))));
 }
 
-/** "Since you last looked": merged, delivered, newly waiting for you, failed or rejected runs, and supervisor problems apart. */
+/** "Since you last looked": merged, delivered, newly waiting for you, failed or rejected runs, and AIWorks' own problems apart. */
 function sinceSummary() {
   const recent = state.owner?.recent;
   if (!recent) return null;
@@ -692,15 +692,16 @@ function sinceSummary() {
   const prs = (list) => list.filter((item) => item.url).map((item) => link(`#${item.number} ↗`, item.url));
   const facts = [
     recent.merged.length ? el('li', {}, `${plural(recent.merged.length, 'step')} merged `, ...prs(recent.merged)) : null,
-    recent.delivered.length ? el('li', {}, `${plural(recent.delivered.length, 'step')} delivered by agents`) : null,
+    recent.delivered.length ? el('li', {}, `${plural(recent.delivered.length, 'step')} delivered by AI workers`) : null,
     recent.waiting.length ? el('li', { class: 'attention' }, `${recent.waiting.length} newly waiting for your review `, ...prs(recent.waiting)) : null,
-    recent.failures ? el('li', { class: 'warn' }, `${plural(recent.failures, 'agent run')} did not succeed${recent.rejected ? ` (${recent.rejected} rejected by the independent checker)` : ''}; the supervisor retries automatically`) : null,
-    // The supervisor's own problems, never counted as agent runs: a failing step is recorded on every 5-second check.
-    // Not an owner action, but actionable for whoever maintains the supervisor: where it is tracked, and when it happened.
-    recent.supervisorErrors || recent.livenessProblems ? el('li', { class: 'warn' }, `The supervisor itself had problems (${[
+    recent.failures ? el('li', { class: 'warn' }, `${plural(recent.failures, 'AI worker run')} did not succeed${recent.rejected ? ` (${recent.rejected} rejected by the independent checker)` : ''}; AIWorks retries by itself`) : null,
+    // AIWorks' own problems, never counted as AI worker runs: a failing step is recorded on every 5-second check.
+    // Not an owner action, but actionable for whoever maintains AIWorks: where it is tracked, and when it happened.
+    // Owner words only at this level (aiworks#11 review 4 F4 and F17); the machine's names are in Diagnostics.
+    recent.supervisorErrors || recent.livenessProblems ? el('li', { class: 'warn' }, `AIWorks itself had problems (${[
       recent.supervisorErrors ? `its own check failed ${plural(recent.supervisorErrors, 'time')} and was retried` : null,
-      recent.livenessProblems ? plural(recent.livenessProblems, 'liveness problem') : null].filter(Boolean).join('; ')}). Not an owner action: these are supervisor faults for AIWorks's maintainers. `,
-    link('Supervisor issue #2 ↗', 'https://github.com/netbka/aiworks/issues/2'), ' · ', routeLink('When, in Diagnostics', '#/settings/diagnostics')) : null,
+      recent.livenessProblems ? `it failed to check in on time ${plural(recent.livenessProblems, 'time')}` : null].filter(Boolean).join('; ')}). Not an owner action: these are faults in AIWorks for its maintainers. `,
+    link('AIWorks issue #2 ↗', 'https://github.com/netbka/aiworks/issues/2'), ' · ', routeLink('When, in Diagnostics', '#/settings/diagnostics')) : null,
     // While a merge check runs, what merged is not known yet: never "Nothing changed" (aiworks#11 review 4 F3).
     state.owner?.unknownResults ? el('li', {}, `Checking GitHub… The state of ${plural(state.owner.unknownResults, 'result')} is not known yet.`) : null,
   ].filter(Boolean);
@@ -1062,7 +1063,7 @@ function workerLine(w) {
   const notes = [
     w.state === 'waiting' ? w.overdue ? `The retry was due at ${timeOnly(w.retryAt)}; it happens at AIWorks' next check. No action needed.`
       : `${w.credits ? 'It reported exhausted credits or a billing limit. ' : ''}AIWorks tries it again at ${timeOnly(w.retryAt)}. No action needed.` : null,
-    w.state === 'unavailable' ? `${w.availabilityReason ?? 'The supervisor recorded it as unavailable'}.` : null,
+    w.state === 'unavailable' ? `${w.availabilityReason ?? 'AIWorks recorded it as unavailable'}.` : null,
     w.state === 'host-unavailable' ? 'Its native sandbox does not support Windows. Work runs without it here; no action needed.' : null,
     w.state === 'not-set-up' ? 'The AIWorks configuration file on this computer sets no command for it, so no work runs on it here.' : null,
     w.setUp === 'default' && w.state !== 'host-unavailable' ? 'Uses the claude command on this computer’s PATH; the AIWorks configuration file sets none.' : null,

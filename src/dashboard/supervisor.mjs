@@ -646,7 +646,7 @@ export function postMessage(dataDir, input, now = Date.now()) {
       (!isPlan && (typeof input.text !== 'string' || safeText(input.text, 4000) !== input.text))) {
     throw fail(400, 'Invalid message. Up to 4,000 characters, no secrets.');
   }
-  if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'Supervisor is unavailable.');
+  if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'AIWorks can’t read its work records on this computer right now.');
   const store = new Store(join(dataDir, 'supervisor.db'));
   try {
     const plan = isPlan ? planRequest(store, dataDir, input.plan) : null;
@@ -674,7 +674,7 @@ export function applyCommand(dataDir, input, now = Date.now(), { provenanceRoot 
       input.action !== 'instruct' && (input.text !== undefined || input.role !== undefined)) {
     throw fail(400, 'Invalid dashboard command.');
   }
-  if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'Supervisor is unavailable.');
+  if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'AIWorks can’t read its work records on this computer right now.');
   const store = new Store(join(dataDir, 'supervisor.db'));
   try {
     // Private Resume uses the registered declaration; executable code must still be merged.

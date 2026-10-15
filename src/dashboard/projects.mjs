@@ -321,7 +321,7 @@ function connectOptions(dataDir, inject) {
 /** Open the supervisor store for one request; the routes never create a missing one. */
 function withStore(dataDir, work, { readOnly = false } = {}) {
   const path = join(dataDir, 'supervisor.db');
-  if (!existsSync(path)) throw fail(503, 'Supervisor is unavailable.');
+  if (!existsSync(path)) throw fail(503, 'AIWorks can’t read its work records on this computer right now.');
   const store = new Store(path, readOnly ? { readOnly: true } : undefined);
   try { return work(store); } catch (error) {
     if (error instanceof ProjectError) {
