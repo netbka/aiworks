@@ -155,3 +155,96 @@ test('baseline.mjs imports no process, network or provider module', () => {
   assert.deepEqual([...source.matchAll(/^import .*$/gm)], [], 'baseline.mjs reads the store it is given and imports nothing');
   assert.doesNotMatch(source, /\b(fetch|spawn|exec(File)?Sync|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP)\b/);
 });
+
+// ---- READ3 (docs/design/SCOPED_READING.md section 8): aiworks-baseline/2 reports scoped reading and two cohorts. ----
+
+/** Two campaigns: one whose tasks mark sections and one whose tasks read whole documents, with the finished tasks given. */
+function cohortStore(t, { anchored, whole }) {
+  const root = mkdtempSync(join(tmpdir(), 'aiworks-baseline-reading-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const data = join(root, 'data');
+  const store = new Store(join(data, 'supervisor.db'));
+  let seq = 0;
+  const campaign = (id, count, references) => {
+    const tasks = Array.from({ length: count }, (_, index) => ({ id: `T${index}`, issue: index + 1, title: 't', deliverable: 'commit', goal: 'g',
+      dependsOn: [], acceptance: ['a'], references }));
+    const decl = declaration({ campaignId: id, tasks });
+    store.insert('campaigns', { id, controller_id: 'c', scope_digest: 'd', authorization_version: 1, declaration: decl,
+      control: 'finished', status: 'complete', runs_used: 0, cost_usd: 0, version: 1, created_at: at(0), updated_at: at(60) });
+    tasks.forEach((task, ord) => {
+      store.insert('tasks', { campaign_id: id, task_id: task.id, ord, state: 'done', repair_rounds: ord === 0 ? 1 : 0, version: 1, updated_at: at(60) });
+      const op = (kind, outcome, extra = {}) => {
+        seq += 1;
+        const opId = `${id}.${task.id}.${kind}.${seq}`;
+        store.insert('operations', { id: opId, campaign_id: id, task_id: task.id, kind, seq, idempotency_key: opId, lease_generation: 1, state: 'finished',
+          session_id: 's', run_dir: 'r', workspace: 'w', base_sha: 'base', target_sha: extra.target ?? null, packet: {}, packet_digest: 'p',
+          outcome, created_at: at(seq), updated_at: at(seq + 1), executor_kind: 'claude-cli' });
+        return opId;
+      };
+      const head = `${id}-${task.id}`;
+      const implement = op('implement', { class: 'result', value: { result: 'resolved', headSha: head }, receipt: { costUsd: 1, usage: null } });
+      op('verify', { class: 'result', value: { verdict: 'accepted', findings: [] }, receipt: { costUsd: 0.5, usage: null } }, { target: head });
+      if (references.some((reference) => reference.includes('#'))) store.journal(id, 'reference-section-resolved', { op: implement, anchored: 1, resolved: 1, fallback: 0 }, at(seq));
+    });
+  };
+  campaign('marked', anchored, ['AGENTS.md#rules', 'docs/GUIDE.md#1-boundary']);
+  campaign('whole', whole, ['AGENTS.md', 'docs/GUIDE.md']);
+  store.close();
+  return { data, db: join(data, 'supervisor.db') };
+}
+
+test('baseline/2 prints two cohorts side by side when each has five finished tasks, and "not comparable" with four', { skip: !SQLITE }, (t) => {
+  const comparable = cohortStore(t, { anchored: 5, whole: 5 });
+  const before = digest(comparable.db);
+  const report = JSON.parse(baseline(comparable.data, '--json').stdout);
+  assert.equal(report.report, 'aiworks-baseline/2');
+  assert.equal(report.reading.cohorts.comparison, 'comparable');
+  for (const name of ['anchored', 'unanchored']) {
+    const item = report.reading.cohorts[name];
+    assert.deepEqual([item.campaigns, item.finishedTasks, item.usdPerAcceptedOutcome, item.repairRoundsPerTask], [1, 5, 1.5, 0.2], name);
+  }
+  const text = baseline(comparable.data);
+  assert.equal(text.status, 0, text.stderr);
+  assert.match(text.stdout, /Reading cohorts \(marked sections 5 finished tasks, whole documents 5\):\r?\n {2}marked sections: 1 campaigns, reported usd per accepted outcome \$1\.50, repair rounds per task 0\.20\r?\n {2}whole documents: 1 campaigns, reported usd per accepted outcome \$1\.50, repair rounds per task 0\.20\r?\n/);
+  assert.equal(digest(comparable.db), before, 'the store is byte-identical after baseline');
+
+  const short = cohortStore(t, { anchored: 4, whole: 5 });
+  const shortBefore = digest(short.db);
+  const shortReport = JSON.parse(baseline(short.data, '--json').stdout);
+  assert.equal(shortReport.reading.cohorts.comparison, 'not comparable');
+  assert.deepEqual([shortReport.reading.cohorts.anchored.finishedTasks, shortReport.reading.cohorts.unanchored.finishedTasks], [4, 5]);
+  const shortText = baseline(short.data);
+  assert.equal(shortText.status, 0, shortText.stderr);
+  assert.match(shortText.stdout, /Reading cohorts: not comparable \(marked sections 4 finished tasks, whole documents 5; each needs 5\)\./);
+  assert.doesNotMatch(shortText.stdout, /usd per accepted outcome/);
+  assert.equal(digest(short.db), shortBefore, 'the store is byte-identical after baseline');
+});
+
+test('baseline/2 counts reading per campaign and overall, and is null where a store has no reading event', { skip: !SQLITE }, (t) => {
+  const old = JSON.parse(baseline(syntheticStore(t).data, '--json').stdout);
+  assert.equal(old.reading.overall, null, 'a store from before scoped reading has no reading numbers');
+  assert.deepEqual(old.reading.campaigns.map((item) => item.reading), [null]);
+
+  const { data, db } = cohortStore(t, { anchored: 2, whole: 1 });
+  const raw = new Store(db);
+  const repair = { constraints: ['Synthetic.', 'Blocking verifier finding F1: skips the rule (rule: docs/GUIDE.md#3-lifecycle "3. Lifecycle")'] };
+  raw.insert('operations', { id: 'marked.T1.implement.9', campaign_id: 'marked', task_id: 'T1', kind: 'implement', seq: 99, idempotency_key: 'k99',
+    lease_generation: 1, state: 'finished', session_id: 's', run_dir: 'r', workspace: 'w', base_sha: 'base', target_sha: null, packet: repair,
+    packet_digest: 'p', outcome: { class: 'result', value: { result: 'resolved', headSha: 'x' } }, created_at: at(50), updated_at: at(51), executor_kind: 'claude-cli' });
+  const miss = (kind, finding, implementerRead) => raw.journal('marked', kind, { task: 'T0', op: 'marked.T0.verify.2', finding, path: 'docs/GUIDE.md', anchor: 'a', implementerRead }, at(52));
+  miss('section-miss', 'F1', true);
+  miss('unreferenced-doc', 'F1', false);
+  miss('cite-covered', 'F2', null);
+  raw.journal('marked', 'reference-section-resolved', { op: 'marked.T1.implement.9', anchored: 2, resolved: 1, fallback: 1 }, at(53));
+  for (const anchor of ['a', 'b']) raw.journal('marked', 'reading-guide-extended', { op: 'marked.T1.implement.9', task: 'T1', from: { task: 'T0', finding: 'F1' }, path: 'docs/GUIDE.md', anchor }, at(53));
+  raw.close();
+  const before = digest(db);
+  const report = JSON.parse(baseline(data, '--json').stdout);
+  assert.equal(digest(db), before, 'the store is byte-identical after baseline');
+  const marked = report.reading.campaigns.find((item) => item.campaignId === 'marked');
+  assert.equal(marked.anchored, true);
+  assert.deepEqual(marked.reading, { dispatchesGuided: 3, anchors: { resolved: 3, fallback: 1 },
+    blockingFindings: { withCites: 2, covered: 1, sectionMiss: 1, unreferencedDoc: 1, implementerReadAnyway: 1 }, repairRoundsWithRule: 1, guidesExtended: 1 });
+  assert.deepEqual(report.reading.campaigns.find((item) => item.campaignId === 'whole'), { campaignId: 'whole', anchored: false, reading: null });
+  assert.deepEqual(report.reading.overall, marked.reading, 'overall adds the campaigns that have reading numbers');
+});

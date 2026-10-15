@@ -454,3 +454,41 @@ test('a verifier move up counts unusable reviews, and staying on the moved-to ti
   assert.equal(status.tasks[0].routing.escalation.operationId, 'm1');
   assert.deepEqual(status.costByUnit.usd, { reported: 0.2, reportedRuns: 2 });
 });
+
+// READ3 (docs/design/SCOPED_READING.md section 8): status reports scoped reading per task from the journal only.
+test('status reading is null for dispatches before scoped reading and counts anchors, fallbacks, misses and extensions', { skip: !SQLITE }, (t) => {
+  const { store, id } = setup(t);
+  const now = Date.now();
+  let seq = 0;
+  const op = (taskId, kind) => {
+    seq += 1;
+    const opId = `${id}.${taskId}.${kind}.${seq}`;
+    store.insert('operations', { id: opId, campaign_id: id, task_id: taskId, kind, seq, idempotency_key: opId, lease_generation: 1,
+      state: 'finished', session_id: 'synthetic', run_dir: 'synthetic', workspace: 'synthetic', packet: {}, packet_digest: 'digest',
+      created_at: now + seq, updated_at: now + seq, outcome: { class: 'result', value: { result: 'resolved' } } });
+    store.journal(id, 'operation-recorded', { op: opId, kind }, now + seq);
+    return opId;
+  };
+  // T1 was dispatched and verified before this change: its journal has no reading event.
+  op('T1', 'implement');
+  op('T1', 'verify');
+  const first = op('T2', 'implement');
+  store.journal(id, 'reference-section-resolved', { op: first, anchored: 3, resolved: 1, fallback: 2 }, now);
+  store.journal(id, 'reference-section-fallback', { task: 'T2', op: first, path: 'docs/A.md', anchor: 'gone', reason: 'missing' }, now);
+  store.journal(id, 'reference-section-fallback', { task: 'T2', op: first, path: 'docs/B.md', anchor: 'x', reason: 'ambiguous' }, now);
+  const verify = op('T2', 'verify');
+  store.journal(id, 'reference-section-resolved', { op: verify, anchored: 2, resolved: 1, fallback: 1 }, now);
+  store.journal(id, 'reference-section-fallback', { task: 'T2', op: verify, path: 'docs/A.md', anchor: 'gone', reason: 'missing' }, now);
+  for (const kind of ['section-miss', 'section-miss', 'unreferenced-doc', 'cite-covered']) {
+    store.journal(id, kind, { task: 'T2', op: verify, finding: 'F1', path: 'docs/C.md', anchor: 'rule', implementerRead: null }, now);
+  }
+  const repair = op('T2', 'implement');
+  store.journal(id, 'reading-guide-extended', { op: repair, task: 'T2', from: { task: 'T9', finding: 'F2' }, path: 'docs/A.md', anchor: 'other' }, now);
+  const before = store.all('SELECT * FROM journal');
+  const status = campaignStatus(store, id, now);
+  assert.equal(status.tasks.find((task) => task.id === 'T1').reading, null, 'a task whose dispatches predate scoped reading has none');
+  assert.deepEqual(status.tasks.find((task) => task.id === 'T2').reading, {
+    anchored: 2, fallbacks: [{ path: 'docs/A.md', anchor: 'gone', reason: 'missing' }], misses: { section: 2, unreferenced: 1 }, extended: 1,
+  }, 'anchors and fallbacks of the newest guided dispatch; misses and extensions over every run');
+  assert.deepEqual(store.all('SELECT * FROM journal'), before, 'status writes nothing');
+});

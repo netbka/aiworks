@@ -179,8 +179,10 @@ export function baselineReport(store, { since = null, now = Date.now() } = {}) {
     } else coordinator.usd.unknownRuns += 1;
   }
 
+  const reading = readingReport(store, { from, campaigns, operations, acceptedTasks });
+
   return {
-    report: 'aiworks-baseline/1',
+    report: 'aiworks-baseline/2',
     generatedAt: new Date(now).toISOString(),
     window: { since: since === null ? null : new Date(since).toISOString(), until: new Date(now).toISOString() },
     store: store.identity,
@@ -194,7 +196,105 @@ export function baselineReport(store, { since = null, now = Date.now() } = {}) {
     refunded: { runs: refunded.length, ...refundedCost },
     waits,
     coordinator,
+    reading,
     cannotMeasure: CANNOT_MEASURE,
+  };
+}
+
+// ---- Scoped reading (docs/design/SCOPED_READING.md section 8, slice READ3). Additive in aiworks-baseline/2. ----
+
+export const MIN_COHORT_TASKS = 5;
+const READING_KINDS = ['reference-section-resolved', 'cite-covered', 'section-miss', 'unreferenced-doc', 'reading-guide-extended'];
+const RULED = /^Blocking verifier finding .* \(rule: /s;
+
+function emptyReading() {
+  return { dispatchesGuided: 0, anchors: { resolved: 0, fallback: 0 },
+    blockingFindings: { withCites: 0, covered: 0, sectionMiss: 0, unreferencedDoc: 0, implementerReadAnyway: 0 },
+    repairRoundsWithRule: 0, guidesExtended: 0 };
+}
+
+/** A declaration whose tasks mostly mark sections: more than half of them list at least one `path#anchor` reference. */
+export function mostlyAnchored(declaration) {
+  const tasks = declaration?.tasks ?? [];
+  const anchored = tasks.filter((task) => (task.references ?? []).some((reference) => typeof reference === 'string' && reference.includes('#')));
+  return tasks.length > 0 && anchored.length * 2 > tasks.length;
+}
+
+/** One cohort's accepted outcomes: cost in its own units, and dollars and repair rounds per accepted outcome. */
+function cohort(campaignIds, outcomes) {
+  const finished = outcomes.filter((outcome) => campaignIds.has(outcome.campaignId));
+  const cost = emptyCost();
+  let repairRounds = 0, repairKnown = 0;
+  for (const outcome of finished) {
+    if (outcome.usd.reported !== null) cost.usd.reported = (cost.usd.reported ?? 0) + outcome.usd.reported;
+    cost.usd.reportedRuns += outcome.usd.reportedRuns;
+    cost.usd.unknownRuns += outcome.usd.unknownRuns;
+    for (const [kind, tokens] of Object.entries(outcome.tokens)) {
+      const sum = cost.tokens[kind] ??= { runs: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0, inputIncludesCacheReadRuns: 0 };
+      for (const key of Object.keys(sum)) sum[key] += tokens[key] ?? 0;
+    }
+    if (Number.isFinite(outcome.repairRounds)) { repairRounds += outcome.repairRounds; repairKnown += 1; }
+  }
+  return { campaigns: campaignIds.size, finishedTasks: finished.length, ...cost,
+    // Dollars per outcome only when every run reported dollars: one unknown run makes the whole figure unknown.
+    usdPerAcceptedOutcome: finished.length && cost.usd.unknownRuns === 0 && cost.usd.reported !== null ? cost.usd.reported / finished.length : null,
+    repairRoundsPerTask: repairKnown ? repairRounds / repairKnown : null };
+}
+
+/**
+ * Per campaign and overall: guided dispatches, anchors resolved and fallen back, blocking findings by citation class,
+ * repair rounds whose packet carried a cited rule and guides that sibling carry-forward extended. Null where a campaign
+ * has no reading event and no ruled repair round (a store that predates them, or nothing anchored or cited). Cohorts set
+ * campaigns whose tasks mostly mark sections against the rest; they are compared only when each has five finished tasks.
+ */
+function readingReport(store, { from, campaigns, operations, acceptedTasks }) {
+  const perCampaign = new Map();
+  const of = (id) => {
+    if (!perCampaign.has(id)) perCampaign.set(id, emptyReading());
+    return perCampaign.get(id);
+  };
+  const findings = new Map();
+  const extended = new Set();
+  const rows = store.all(`SELECT campaign_id, kind, detail FROM journal WHERE at >= ? AND kind IN (${READING_KINDS.map(() => '?').join(', ')}) ORDER BY seq`,
+    from, ...READING_KINDS);
+  for (const { campaign_id: id, kind, detail } of rows) {
+    const item = of(id);
+    if (kind === 'reference-section-resolved') {
+      item.dispatchesGuided += 1;
+      item.anchors.resolved += detail?.resolved ?? 0;
+      item.anchors.fallback += detail?.fallback ?? 0;
+    } else if (kind === 'reading-guide-extended') {
+      const key = `${id}\0${detail?.op}`;
+      if (!extended.has(key)) { extended.add(key); item.guidesExtended += 1; }
+    } else {
+      const key = `${id}\0${detail?.op}\0${detail?.finding}`;
+      if (!findings.has(key)) { findings.set(key, true); item.blockingFindings.withCites += 1; }
+      if (kind === 'cite-covered') item.blockingFindings.covered += 1;
+      else {
+        item.blockingFindings[kind === 'section-miss' ? 'sectionMiss' : 'unreferencedDoc'] += 1;
+        if (detail?.implementerRead === true) item.blockingFindings.implementerReadAnyway += 1;
+      }
+    }
+  }
+  for (const { op } of operations) {
+    if (op.kind === 'implement' && (op.packet?.constraints ?? []).some((text) => RULED.test(String(text)))) of(op.campaign_id).repairRoundsWithRule += 1;
+  }
+  const overall = perCampaign.size ? emptyReading() : null;
+  for (const item of perCampaign.values()) {
+    overall.dispatchesGuided += item.dispatchesGuided;
+    overall.repairRoundsWithRule += item.repairRoundsWithRule;
+    overall.guidesExtended += item.guidesExtended;
+    for (const key of Object.keys(overall.anchors)) overall.anchors[key] += item.anchors[key];
+    for (const key of Object.keys(overall.blockingFindings)) overall.blockingFindings[key] += item.blockingFindings[key];
+  }
+  const anchoredIds = new Set([...campaigns].filter(([, declaration]) => mostlyAnchored(declaration)).map(([id]) => id));
+  const otherIds = new Set([...campaigns.keys()].filter((id) => !anchoredIds.has(id)));
+  const anchored = cohort(anchoredIds, acceptedTasks), unanchored = cohort(otherIds, acceptedTasks);
+  const comparable = anchored.finishedTasks >= MIN_COHORT_TASKS && unanchored.finishedTasks >= MIN_COHORT_TASKS;
+  return {
+    overall,
+    campaigns: [...campaigns.keys()].sort().map((id) => ({ campaignId: id, anchored: anchoredIds.has(id), reading: perCampaign.get(id) ?? null })),
+    cohorts: { minimumFinishedTasks: MIN_COHORT_TASKS, comparison: comparable ? 'comparable' : 'not comparable', anchored, unanchored },
   };
 }
 
@@ -214,5 +314,21 @@ export function formatBaseline(report) {
     ...lines,
     `${accepted} accepted outcomes; ${report.operations.counted} runs counted, ${report.refunded.runs} refunded runs excluded.`,
     `Reported usd ${usdText(report.totals.usd)}; coordinator ${usdText(report.coordinator.usd)}. Reported, never spent.`,
+    ...readingLines(report.reading),
   ].join('\n');
+}
+
+const perOutcome = (value, digits) => value === null ? 'unknown' : value.toFixed(digits);
+
+/** Scoped reading: the two cohorts side by side, or why they are not compared. No saving is computed. */
+function readingLines(reading) {
+  if (!reading) return [];
+  const { anchored, unanchored, comparison, minimumFinishedTasks } = reading.cohorts;
+  const counts = `marked sections ${anchored.finishedTasks} finished tasks, whole documents ${unanchored.finishedTasks}`;
+  if (comparison !== 'comparable') return [`Reading cohorts: not comparable (${counts}; each needs ${minimumFinishedTasks}).`];
+  return [
+    `Reading cohorts (${counts}):`,
+    ...[['marked sections', anchored], ['whole documents', unanchored]].map(([name, item]) =>
+      `  ${name}: ${item.campaigns} campaigns, reported usd per accepted outcome ${item.usdPerAcceptedOutcome === null ? 'unknown' : `$${perOutcome(item.usdPerAcceptedOutcome, 2)}`}, repair rounds per task ${perOutcome(item.repairRoundsPerTask, 2)}`),
+  ];
 }
