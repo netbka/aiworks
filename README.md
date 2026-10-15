@@ -211,7 +211,8 @@ Open Claude Code or Codex on the Windows PC, in a session that can run commands,
 
 ```text
 Set up AIWorks on this Windows computer from https://github.com/netbka/aiworks.
-Follow the "Technical details" section of its README and docs/SUPERVISOR.md.
+Follow docs/guides/ASSISTANT_SETUP.md, the "Technical details"
+section of its README and docs/SUPERVISOR.md.
 Check what is already installed, create the data folder and config.json,
 register the two background tasks and open the dashboard.
 Ask me only for sign-ins or approvals you cannot do yourself.
@@ -219,6 +220,8 @@ Do not change any of my project files.
 ```
 
 The assistant runs the commands below. You handle any sign-in it cannot do for you.
+
+The [getting-started guides](docs/guides/README.md) explain the same setup step by step, then your first task, a manual installation, every command and what to do when something stops.
 
 ### How it works
 
