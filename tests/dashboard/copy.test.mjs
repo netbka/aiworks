@@ -55,8 +55,8 @@ const alone = ({ supervisor, owner, merges, now }, campaignId) => {
 test('every state of §7 has its text in the copy module', () => {
   // Each case of OWNER_WORKSPACE §7 (and the §4.4 primary-action states) is one key; §7.4 is the merge-check copy (C1).
   const cases = { '7.1': ['projects-empty', 'no-work', 'needs-calm', 'results-empty', 'cost-empty'],
-    '7.2': ['page-disconnected', 'unreadable', 'supervisor-stopped', 'supervisor-late'], '7.3': ['provider-wait', 'no-worker-can-run', 'nothing-running'],
-    '7.4': ['merge-old', 'merge-failed', 'merge-never'], '7.5': ['paused', 'paused-stopped'],
+    '7.2': ['page-disconnected', 'unreadable', 'supervisor-stopped', 'supervisor-late', 'work-lapsed', 'work-not-picked-up'], '7.3': ['provider-wait', 'no-worker-can-run', 'nothing-running'],
+    '7.4': ['merge-old', 'merge-failed', 'merge-never'], '7.5': ['paused', 'paused-stopped', 'paused-work-lapsed'],
     '7.6': ['builder-working', 'checker-working', 'possibly-stuck', 'waiting-for-merge', 'awaiting-pickup', 'cancelling'],
     '7.7': ['needs-decision', 'failed-attempts', 'recorded-blocker', 'others-continue', 'supervisor-fault'],
     '7.8': ['finished-open', 'finished-delegated', 'finished-merged', 'finished-unknown', 'finished-reports', 'finished-closed', 'finished-local', 'cancelled'],
@@ -78,10 +78,15 @@ test('every state of §7 has its text in the copy module', () => {
   assert.equal(exact('supervisor-stopped'), 'AIWorks has stopped on this computer at about T30. No new step starts. If nobody is updating it right now, restart it on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.');
   assert.equal(exact('supervisor-stopped', { stoppedAt: null }), 'AIWorks has stopped on this computer. No new step starts. If nobody is updating it right now, restart it on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.');
   assert.equal(exact('paused-stopped'), 'Paused since D60, and AIWorks has stopped on this computer at about T30. Nothing can resume until it runs again. If nobody is updating it right now, restart it on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.');
+  // One piece of work AIWorks, while running, does not check on (review 4 F2): its own state and one time, never "stopped".
+  assert.equal(exact('work-lapsed'), 'AIWorks is running, but last checked on this work at about T30. Other work goes on. This work does not move until AIWorks checks on it again. If it stays like this, restart AIWorks on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.');
+  assert.equal(exact('paused-work-lapsed'), 'Paused since D60; AIWorks is running, but last checked on this work at about T30. It can’t resume until AIWorks checks on it again. If it stays like this, restart AIWorks on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.');
+  assert.equal(exact('work-not-picked-up'), 'Approved at T2; AIWorks is running, but has not picked it up. Nothing of it starts until AIWorks picks it up. If it stays like this, restart AIWorks on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.');
+  for (const key of ['work-lapsed', 'paused-work-lapsed', 'work-not-picked-up']) assert.doesNotMatch(exact(key), /AIWorks (has )?stopped/, key);
   assert.equal(exact('provider-wait'), 'Waiting for an AI worker to be free. Claude can start again at T-65. Work continues by itself. Nothing for you to do.');
   assert.equal(exact('paused'), 'Paused since D60. No new step starts. A step already running may finish. Reason given: “Paused for an update”.');
   assert.equal(exact('builder-working'), 'Working on: Search page. The builder (Claude) started at T10 · last activity 2 minutes ago.');
-  assert.equal(exact('possibly-stuck'), 'Search page: no progress for 25 minutes. AIWorks retries by itself if the worker stops.');
+  assert.equal(exact('possibly-stuck'), 'Possibly stuck: Search page has made no progress for 25 minutes. AIWorks retries by itself if the worker stops.');
   assert.equal(exact('waiting-for-merge'), 'Waiting for you to merge “Search page”. “Price sync” starts once you merge it.');
   assert.equal(exact('failed-attempts'), 'Stopped: 5 attempts failed. Search page. It will not retry by itself. Fix the cause, then check it again.');
   assert.equal(exact('finished-merged', { project: 'example/recipes' }), 'All steps are finished and merged. Release follows recipes’ release policy.');
@@ -148,9 +153,9 @@ test('on the review fixture each state shows its exact copy and its one primary 
   // The project with only that piece of work: [state key, primary action]. Where two fixture states share one piece of
   // work, the Now sentence says the one that leads (a decision while other steps continue; a recorded blocker that is
   // "no AI worker can run"; a failed merge check with results to check counts what needs the owner).
-  const expected = { 'no-runs': ['awaiting-pickup', null], 'supervisor-stopped': ['supervisor-stopped', null], 'supervisor-late': ['supervisor-late', null],
+  const expected = { 'no-runs': ['awaiting-pickup', null], 'work-lapsed': ['work-lapsed', null], 'supervisor-late': ['supervisor-late', null],
     'provider-wait': ['provider-wait', null], 'no-worker-can-run': ['no-worker-can-run', null], 'nothing-running': ['nothing-running', 'Open current work'],
-    'merge-check-failed': ['several', 'See the 3 things that need you'], 'paused': ['paused', 'Resume'], 'paused-supervisor-stopped': ['paused-stopped', null],
+    'merge-check-failed': ['several', 'See the 3 things that need you'], 'paused': ['paused', 'Resume'], 'paused-work-lapsed': ['paused-work-lapsed', null],
     'builder-working': ['builder-working', 'Open current work'], 'checker-working': ['checker-working', 'Open current work'], 'possibly-stuck': ['possibly-stuck', 'Open current work'],
     'waiting-for-merge': ['waiting-for-merge', 'Review pull request #104'], 'awaiting-pickup': ['awaiting-pickup', null],
     'needs-decision': ['others-continue', 'Open the step issue'], 'others-continue': ['others-continue', 'Open the step issue'], 'failed-attempts': ['failed-attempts', 'Open the step issue'],
@@ -167,7 +172,7 @@ test('on the review fixture each state shows its exact copy and its one primary 
   assert.match(at('waiting-for-merge').state.primary.url, /^https:\/\/github\.com\/example\/shop-app\/pull\/104$/);
   assert.equal(at('finished-open-and-merged').state.text, '2 pull requests wait for your review · 1 merged.');
   assert.equal(at('finished-all-merged').state.title, 'All steps are finished and merged.');
-  assert.equal(at('possibly-stuck').state.title, 'Wishlist page: no progress for 25 minutes.');
+  assert.equal(at('possibly-stuck').state.title, 'Possibly stuck: Wishlist page has made no progress for 25 minutes.');
   assert.equal(at('failed-attempts').state.title, 'Stopped: 5 attempts failed.');
   assert.equal(at('paused').state.primary.command, 'resume');
   assert.equal(at('paused').state.primary.campaignId, 'recipes-import');
@@ -181,6 +186,11 @@ test('on the review fixture each state shows its exact copy and its one primary 
   // The goal is the work's declared purpose.
   assert.equal(at('checker-working').goal.text, 'Show product reviews');
   // The other two stores: the first run (a project with no work) and records that cannot be read.
+  // The stopped store: AIWorks itself stopped on this computer, so the same work reads §7.2 and §7.5 "has stopped".
+  const stopped = await reviewState(t, 'stopped');
+  assert.equal(stopped.supervisor.controller.state, 'stopped');
+  assert.equal(alone(stopped, REVIEW_STATES['supervisor-stopped'].campaignId).state.key, 'supervisor-stopped');
+  assert.equal(alone(stopped, REVIEW_STATES['paused-supervisor-stopped'].campaignId).state.key, 'paused-stopped');
   const empty = await reviewState(t, 'empty');
   assert.equal(nowView('example/shop-app', empty, { now: empty.now }).state.key, 'no-work');
   const unreadable = await reviewState(t, 'unreadable');

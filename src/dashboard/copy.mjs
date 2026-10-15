@@ -56,6 +56,8 @@ const DATE_TIME = (value) => new Date(value).toLocaleString('en-GB', { day: 'num
 const RESTART = 'If nobody is updating it right now, restart it on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.';
 /** What restarts AIWorks when it has stopped (docs/SUPERVISOR.md §6), in the owner's words. */
 export const RESTART_ADVICE = RESTART;
+// AIWorks runs, but has not checked on one piece of work (aiworks#11 review 4 F2): restarting is the owner's fix only if it lasts.
+const RESTART_RUNNING = 'If it stays like this, restart AIWorks on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.';
 
 /**
  * Every state of §7, by key. `d` is the data the sentence is filled from; `f` the time formatters. Keys a slice has
@@ -86,6 +88,12 @@ const STATES = {
   'supervisor-stopped': { section: '7.2', needsYou: true, copy: (d, f) => [`AIWorks has stopped on this computer${stoppedAt(d.stoppedAt, f)}.`, `No new step starts. ${RESTART}`, null] },
   'supervisor-late': { section: '7.2', needsYou: false, copy: () => ['AIWorks is a few minutes late checking in.',
     'This is normal during a restart or an update. Nothing for you to do yet.', null] },
+  // One piece of work while AIWorks itself runs (aiworks#11 review 4 F2): its own state, with its one time. "AIWorks has
+  // stopped" is said only from the computer-wide state (src/supervisor/api.mjs supervisorLiveness), never from one lease.
+  'work-lapsed': { section: '7.2', needsYou: true, copy: (d, f) => [`AIWorks is running, but last checked on this work${stoppedAt(d.stoppedAt, f)}.`,
+    `Other work goes on. This work does not move until AIWorks checks on it again. ${RESTART_RUNNING}`, null] },
+  'work-not-picked-up': { section: '7.2', needsYou: true, copy: (d, f) => [`Approved${d.registeredAt ? ` at ${f.time(d.registeredAt)}` : ''}; AIWorks is running, but has not picked it up.`,
+    `Nothing of it starts until AIWorks picks it up. ${RESTART_RUNNING}`, null] },
   // §7.3 No worker
   'provider-wait': { section: '7.3', needsYou: false, copy: (d, f) => ['Waiting for an AI worker to be free.',
     `${d.retryAt ? `${providerName(d.provider)} can start again at ${f.time(d.retryAt)}. ` : ''}Work continues by itself. Nothing for you to do.`, null] },
@@ -106,12 +114,14 @@ const STATES = {
   // One time per event, written the same on every screen: the pause with its date, the stop "at about" its time (F23).
   'paused-stopped': { section: '7.5', needsYou: true, copy: (d, f) => [`${d.pausedAt ? `Paused since ${f.dateTime(d.pausedAt)}` : 'Paused'}, and AIWorks has stopped on this computer${stoppedAt(d.stoppedAt, f)}.`,
     `Nothing can resume until it runs again. ${RESTART}`, null] },
+  'paused-work-lapsed': { section: '7.5', needsYou: true, copy: (d, f) => [`${d.pausedAt ? `Paused since ${f.dateTime(d.pausedAt)}` : 'Paused'}; AIWorks is running, but last checked on this work${stoppedAt(d.stoppedAt, f)}.`,
+    `It can’t resume until AIWorks checks on it again. ${RESTART_RUNNING}`, null] },
   // §7.6 Running
   'builder-working': { section: '7.6', needsYou: false, copy: (d, f) => [`Working on: ${sentence(d.step)}`,
     `The builder (${providerName(d.provider)}) started at ${f.time(d.startedAt)}${d.lastActivityAt ? ` · last activity ${ago(d.now - d.lastActivityAt)}` : ''}.`, openWork(d.project)] },
   'checker-working': { section: '7.6', needsYou: false, copy: (d) => [`Checking: ${sentence(d.step)}`,
     `An independent checker (${providerName(d.provider)}) is reviewing the result.`, openWork(d.project)] },
-  'possibly-stuck': { section: '7.6', needsYou: false, copy: (d) => [`${d.step}: no progress for ${plural(d.minutes, 'minute')}.`,
+  'possibly-stuck': { section: '7.6', needsYou: false, copy: (d) => [`Possibly stuck: ${d.step} has made no progress for ${plural(d.minutes, 'minute')}.`,
     'AIWorks retries by itself if the worker stops.', openWork(d.project)] },
   'waiting-for-merge': { section: '7.6', needsYou: true, copy: (d) => [`Waiting for you to merge “${d.step}”.`,
     `${d.next ? `“${d.next}” starts` : 'The next step starts'} once you merge it.`, review(d.number, d.url)] },
@@ -240,6 +250,12 @@ function itemState(item, c, d) {
       }
       return ['recorded-blocker', blockerWords(c.blocker)];
     }
+  }
+  // One piece of work AIWorks, while running, has not checked on or picked up (review 4 F2): that work's own state.
+  if (item.kind === 'unattended' && c) {
+    const view = d.owner?.campaigns?.[c.id];
+    if (view?.liveness === 'work-not-picked-up') return ['work-not-picked-up', { registeredAt: view.registeredAt }];
+    return [c.control === 'paused' ? 'paused-work-lapsed' : 'work-lapsed', { stoppedAt: view?.lastCheckIn ?? null, pausedAt: c.pausedAt ?? null }];
   }
   const [, number] = PR.exec(item.link?.url ?? '') ?? [];
   // A delegated merge that waited too long (#139): the step and how long it waited; its action opens the pull request.
@@ -437,7 +453,16 @@ export const NEEDS = {
   stopped: (paused) => paused
     ? { text: 'This work was paused, then AIWorks stopped on this computer', point: `No step starts while it is paused, and it can’t resume until AIWorks runs again. ${RESTART}` }
     : { text: 'AIWorks stopped on this computer', point: `No new step starts. ${RESTART}` },
-  // with several, it names the work it holds up per project. `pickup` when it never picked up any of it.
+  // While AIWorks runs, one piece of work it has not checked on or picked up is that work's own item, listed under its
+  // project with its one time (review 4 F2); "AIWorks stopped" is never said for it.
+  lapsed: (paused, working) => ({ text: `AIWorks is running, but last checked on this ${paused ? 'paused ' : ''}work`,
+    point: [paused ? 'It can’t resume until AIWorks checks on it again.' : 'Other work goes on. This work does not move until AIWorks checks on it again.',
+      working ? 'An AI worker is still working on it; its result is collected and checked only then.' : null, RESTART_RUNNING].filter(Boolean).join(' ') }),
+  unpicked: (paused) => ({ text: `AIWorks is running, but has not picked up this ${paused ? 'paused ' : ''}work yet`,
+    point: `It is approved${paused ? ' and paused' : ''}, and nothing of it starts until AIWorks picks it up. ${RESTART_RUNNING}` }),
+  /** Said when AIWorks was stopped on purpose (its STOP file: an update or its operator). */
+  onPurpose: 'It was stopped on purpose: an update or its operator.',
+  // AIWorks itself stopped: with several pieces of work, it names the work it holds up per project. `pickup` when it never picked up any of it.
   halted: (pickup) => pickup
     ? { text: 'AIWorks on this computer has not picked up approved work', point: `None of it starts until AIWorks runs. ${RESTART}` }
     : { text: 'AIWorks stopped on this computer', point: `No new step starts. ${RESTART}` },
@@ -473,7 +498,9 @@ export function workLine(c, owner = null, format = {}) {
   const f = { time: format.time ?? TIME, dateTime: format.dateTime ?? DATE_TIME };
   // A neutral state, not an owner item: who paused is not recorded, so the reason is shown as given and nothing is inferred.
   if (c.control === 'paused') {
-    const stopped = ['stopped', 'agent-working-supervisor-silent'].includes(owner?.liveness) ? ` · AIWorks stopped on this computer${stoppedAt(owner.lastCheckIn, f)}` : '';
+    const stopped = ['stopped', 'agent-working-supervisor-silent'].includes(owner?.liveness) ? ` · AIWorks stopped on this computer${stoppedAt(owner.lastCheckIn, f)}`
+      : owner?.liveness === 'work-lapsed' ? ` · AIWorks is running, but last checked on this work${stoppedAt(owner.lastCheckIn, f)}`
+        : owner?.liveness === 'work-not-picked-up' ? ' · AIWorks is running, but has not picked it up yet' : '';
     return `${c.pausedAt ? `Paused since ${f.dateTime(c.pausedAt)}` : 'Paused'} · no new step starts; a step already running may finish${c.pausedReason ? ` · reason given: “${c.pausedReason}”` : ''}${stopped}`;
   }
   if (c.control === 'cancel-requested') return 'Cancelling: waiting for running AI workers to stop';
@@ -482,6 +509,8 @@ export function workLine(c, owner = null, format = {}) {
   if (owner?.liveness === 'late') return `AIWorks on this computer is a few minutes late checking in (last check-in${stoppedAt(owner.lastCheckIn, f)}); nothing for you to do yet: this is normal during a restart or an update`;
   if (owner?.liveness === 'awaiting-pickup') return `Approved at about ${f.time(owner.registeredAt)}; waiting for AIWorks on this computer to pick it up · nothing for you to do yet`;
   if (owner?.liveness === 'agent-working-supervisor-silent') return `${NEEDS.silent.text}${stoppedAt(owner.lastCheckIn, f)}`;
+  if (owner?.liveness === 'work-lapsed') return `AIWorks is running, but last checked on this work${stoppedAt(owner.lastCheckIn, f)}; it does not move until AIWorks checks on it again`;
+  if (owner?.liveness === 'work-not-picked-up') return `Approved${owner.registeredAt ? ` at about ${f.time(owner.registeredAt)}` : ''}; AIWorks is running, but has not picked it up yet`;
   if (!c.controllerLive) return `AIWorks stopped on this computer${stoppedAt(owner?.lastCheckIn, f)}; this work does not move until it runs again`;
   if (c.blocker) return `Stopped: ${blockerWords(c.blocker).reason}`;
   const agent = c.agents?.[0], task = agent ? c.tasks.find((item) => item.id === agent.taskId) : null;

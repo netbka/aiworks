@@ -118,9 +118,9 @@ test('the supervisor snapshot shows one piece of work for every owner state', (t
   const paused = campaign('paused');
   assert.deepEqual([paused.control, paused.controllerLive, paused.pausedReason], ['paused', true, 'Paused for an update on this computer']);
   assert.ok(paused.pausedAt < now);
-  assert.deepEqual([campaign('paused-supervisor-stopped').control, campaign('paused-supervisor-stopped').controllerLive], ['paused', false]);
-  // §7.2 Stopped and late: both have a lease that ended, two hours and two minutes ago.
-  for (const [state, ago] of [['supervisor-stopped', 120 * M], ['supervisor-late', 2 * M]]) {
+  assert.deepEqual([campaign('paused-work-lapsed').control, campaign('paused-work-lapsed').controllerLive], ['paused', false]);
+  // §7.2 One piece of work's lease ended while AIWorks runs, and late: two hours and two minutes ago.
+  for (const [state, ago] of [['work-lapsed', 120 * M], ['supervisor-late', 2 * M]]) {
     assert.equal(campaign(state).controllerLive, false, state);
     assert.equal(now - Date.parse(campaign(state).leaseExpiresAt) >= ago - 5000, true, state);
   }
@@ -172,9 +172,11 @@ test('the owner view, with the local merge check, says where every result stands
   assert.equal(links.T3.note, 'The last check of the base branch failed; showing the last known state');
   assert.equal(owner('cancelled').outcome, 'Cancelled · 1 of 3 steps delivered');
   assert.equal(owner('cancelled').deliveries.T1.state, 'merged');
-  assert.deepEqual(Object.fromEntries(['builder-working', 'nothing-running', 'paused', 'supervisor-stopped', 'supervisor-late', 'awaiting-pickup', 'paused-supervisor-stopped', 'finished-reports']
+  // AIWorks runs in the full store (most leases are live), so a lapsed lease is that work's own state (review 4 F2).
+  assert.equal(supervisorSnapshot(dataDir, now).controller.state, 'running');
+  assert.deepEqual(Object.fromEntries(['builder-working', 'nothing-running', 'paused', 'work-lapsed', 'supervisor-late', 'awaiting-pickup', 'paused-work-lapsed', 'finished-reports']
     .map((state) => [state, owner(state).liveness])), { 'builder-working': 'running', 'nothing-running': 'running', 'paused': 'running',
-    'supervisor-stopped': 'stopped', 'supervisor-late': 'late', 'awaiting-pickup': 'awaiting-pickup', 'paused-supervisor-stopped': 'stopped', 'finished-reports': 'finished' });
+    'work-lapsed': 'work-lapsed', 'supervisor-late': 'late', 'awaiting-pickup': 'awaiting-pickup', 'paused-work-lapsed': 'work-lapsed', 'finished-reports': 'finished' });
   // Needs me: one item per piece of work that waits on the owner, and nothing for waits AIWorks handles itself.
   const items = view.items.map((item) => [item.campaignId, item.kind, item.text]);
   for (const expected of [
@@ -182,17 +184,17 @@ test('the owner view, with the local merge check, says where every result stands
     ['notes-links', 'check', 'Link redirects'], ['notes-links', 'review', 'Footer links'], ['notes-links', 'review', 'Sitemap'],
     ['notes-theme', 'decision', 'Dark theme'], ['notes-search', 'stopped', 'Notes search'], ['notes-deploy', 'stopped', 'This work is stopped'],
     ['notes-health', 'controller', 'AIWorks has a problem of its own with this work'],
-    // AIWorks stopped on this computer is one item for both pieces of work it holds up (aiworks#11 review F9).
-    [null, 'controller', 'AIWorks stopped on this computer'],
+    // AIWorks runs, so each piece of work it has not checked on is its own item, with its own time (review 4 F2).
+    ['notes-tags', 'unattended', 'AIWorks is running, but last checked on this paused work'],
+    ['notes-archive', 'unattended', 'AIWorks is running, but last checked on this work'],
   ]) assert.ok(items.some((item) => JSON.stringify(item) === JSON.stringify(expected)), `Needs me lists ${expected.join(' · ')}`);
-  assert.equal(items.length, 11, JSON.stringify(items));
-  assert.equal(view.items.find((item) => item.kind === 'controller' && !item.system).points[1].text,
-    'Held up in notes-site: “Tag notes” (paused; it can’t resume until AIWorks runs again), “Archive old notes”.');
+  assert.equal(items.length, 12, JSON.stringify(items));
+  assert.ok(!view.items.some((item) => item.kind === 'controller' && !item.system), 'no item says AIWorks stopped while it runs');
   for (const quiet of ['shop-checkout', 'shop-reviews', 'shop-wishlist', 'recipes-import', 'recipes-tags', 'recipes-idle', 'recipes-share', 'recipes-print', 'recipes-units', 'notes-drafts', 'notes-audit']) {
     assert.ok(!items.some(([id]) => id === quiet), `${quiet} is not listed for the owner`);
   }
   // The supervisor fault is listed but not counted: it is not the owner's to do (review F17).
-  assert.equal(view.headline, 'Needs you (10)');
+  assert.equal(view.headline, 'Needs you (11)');
   assert.deepEqual(view.items.find((item) => item.text === 'Contracts import').points.map((p) => p.text).at(-1), '“Price sync” cannot start until you merge it.');
   assert.equal(view.also.text, 'Also: 2 reports for you to read · merged work in recipes is ready; release follows its release policy');
   // Nothing claims more than the evidence: no deployed, released or live work, and notes-site is never merged.
@@ -347,7 +349,7 @@ test('the review command serves today\'s dashboard from the fixture on the port 
   const get = await serveReview(t, 'full');
   // Every answer starts the local merge check and never waits for it (each says it is refreshing); ask again until the
   // owner view settles on the checked results, at most for 30 seconds.
-  const settled = (body) => body.owner.headline === 'Needs you (10)';
+  const settled = (body) => body.owner.headline === 'Needs you (11)';
   let state = await get();
   for (let i = 0; i < 120 && !settled(state.body); i++) {
     await new Promise((done) => setTimeout(done, 250));
@@ -358,7 +360,7 @@ test('the review command serves today\'s dashboard from the fixture on the port 
   assert.deepEqual([...new Set(state.body.supervisor.campaigns.map((c) => c.repository))].sort(), [...PROJECTS].sort());
   assert.deepEqual(state.body.merges.repositories.map((r) => [r.repository, r.error]).sort(),
     [['example/notes-site', 'fetch-failed'], ['example/recipes', null], ['example/shop-app', null]]);
-  assert.equal(state.body.owner.headline, 'Needs you (10)');
+  assert.equal(state.body.owner.headline, 'Needs you (11)');
 });
 
 test('F2: Resume on the paused recipes work succeeds in the review dashboard, checked against its runtime main (AW-005)', async (t) => {

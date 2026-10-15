@@ -17,13 +17,16 @@ import { checkFolderProject, checkGithubProject, checkLocalGitProject, connectCo
   connectLocalGitProject, folderMatches, MirrorError, ProjectError, relocateFolderProject, relocateLocalGitProject } from '../supervisor/project-connect.mjs';
 import { preflight } from '../supervisor/project-preflight.mjs';
 import { disconnectProject, PROJECT_ID, projects as projectRecords, SOURCE_KINDS } from '../supervisor/projects.mjs';
+import { nowView } from './copy.mjs';
 
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
 const PR_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/(\d+)$/;
 const ISSUE_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+$/;
 const TERMINAL = ['finished', 'cancelled'];
 /** Display order: projects that need the owner, then those with work running, then the rest by last activity. */
-const RANK = { 'needs-you': 0, 'needs-setup': 0, running: 1 };
+const RANK = { 'needs-you': 0, 'needs-setup': 0, running: 1, 'possibly-stuck': 1, stopped: 1, fault: 1 };
+/** A project's state key from the Now state it shows; every other Now state of active work is running. */
+const KEYS = { paused: 'paused', 'possibly-stuck': 'possibly-stuck', 'supervisor-stopped': 'stopped', 'paused-stopped': 'stopped', 'supervisor-fault': 'fault' };
 
 /**
  * The repositories the supervisor's config.json lists for this computer (`repositories.<owner/name>`). Names only:
@@ -36,7 +39,6 @@ export function configuredRepositories(dataDir) {
   return listed && typeof listed === 'object' && !Array.isArray(listed) ? Object.keys(listed).filter((name) => REPOSITORY.test(name)) : [];
 }
 
-const label = (task) => task?.outcome ?? task?.title ?? 'a step';
 const lastActivity = (campaigns) => Math.max(0, ...campaigns.map((c) => Date.parse(c.lastProgressAt ?? '') || c.registeredAt || 0)) || null;
 
 /** The one next action for a project whose Needs me items are `items`: the item's own link when there is one item. */
@@ -48,17 +50,17 @@ function needsAction(items) {
   return { label: items.length === 1 ? 'See what needs you' : `See all ${items.length} in Needs me`, route: { screen: 'needs' } };
 }
 
-/** One state, in plain words, for a project with active (not finished or cancelled) work and nothing for the owner. */
-function activeState(active) {
-  const agents = active.flatMap((c) => c.agents.map((agent) => ({ agent, task: c.tasks.find((task) => task.id === agent.taskId) })));
-  const building = agents.find(({ agent }) => agent.role === 'Implementer'), checking = agents.find(({ agent }) => agent.role === 'Verifier');
-  if (building) return { key: 'running', text: `Working on: ${label(building.task)}.` };
-  if (checking) return { key: 'running', text: `Checking: ${label(checking.task)}.` };
-  const going = active.filter((c) => c.control !== 'paused');
-  if (!going.length) return { key: 'paused', text: 'Paused. No new step starts.' };
-  if (going.some((c) => c.waitingReason === 'provider-availability')) return { key: 'running', text: 'Waiting for an AI worker to be free. Work continues by itself.' };
-  if (going.every((c) => c.control === 'cancel-requested')) return { key: 'running', text: 'Cancelling: waiting for running workers to stop.' };
-  return { key: 'running', text: 'No AI worker is busy on this project right now.' };
+/**
+ * One state, in plain words, for a project with active (not finished or cancelled) work and nothing for the owner: the
+ * sentence its Now screen leads with (copy.mjs nowView), so Projects and Now agree, also after Pause and Resume, and a
+ * worker whose record stopped moving reads "Possibly stuck" here too (aiworks#11 review 4 F10, F14). With several
+ * pieces of active work it names the one the sentence is about, by its purpose, as Now's goal does.
+ */
+function activeState(repository, active, supervisor, owner, now) {
+  const { state, details } = nowView(repository, { supervisor, owner: { available: true, items: [], campaigns: {}, ...owner } }, { now });
+  // AIWorks stopped on this computer is about all of it, so no one piece of work is named.
+  const work = active.length > 1 && state.key !== 'supervisor-stopped' ? owner?.campaigns?.[details.workId]?.purpose?.text : null;
+  return { key: KEYS[state.key] ?? 'running', text: work ? `${work} · ${state.title}` : state.title };
 }
 
 /**
@@ -69,9 +71,9 @@ function activeState(active) {
  * `records` are the connected project records (connectedProjects) when Add project is on: a GitHub project joins its
  * repository's row, and a local Git project or plain folder is a row of its own, addressed by its project id. A row
  * with a record carries `connection` (connectionView, without the folder's path). `addProject` says whether the page
- * offers Add project.
+ * offers Add project. `now` is the time the active work's state is read at (Now's possibly-stuck rule).
  */
-export function projectsView(supervisor, owner, { repositories = [], records = [], addProject = false } = {}) {
+export function projectsView(supervisor, owner, { repositories = [], records = [], addProject = false, now = Date.now() } = {}) {
   if (!supervisor?.available) return { available: false, ...(addProject ? { addProject } : {}), projects: [] };
   const groups = new Map();
   const group = (repository) => {
@@ -98,7 +100,7 @@ export function projectsView(supervisor, owner, { repositories = [], records = [
       state = { key: connection.status, text: connection.message };
       action = { label: 'Open project', route: route('now') };
     } else if (active.length) {
-      state = activeState(active);
+      state = activeState(repository, active, supervisor, owner, now);
       action = { label: 'Open current work', route: route('work') };
     } else if (campaigns.length) {
       // The most recent finished or cancelled piece of work, in the owner view's own words.
