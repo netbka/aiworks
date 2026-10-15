@@ -416,3 +416,43 @@ test('preflight leaves every source byte-identical, including .git, and runs onl
   }
   assert.deepEqual(pf.READ_ONLY_GIT, ['rev-parse', 'rev-list', 'remote', 'symbolic-ref', 'status', 'ls-files']);
 });
+
+// aiworks#7 recheck: a connected GitHub project whose own worktree root is inside its folder is not protected from
+// itself. Only that project at that root, with that repository, qualifies; everything else stays protected.
+test('a connected GitHub project with its own worktrees inside its folder checks again; foreign roots stay protected', options, (t) => {
+  const dir = base(t);
+  const repo = repository(dir, 'site', { origin: 'https://github.com/example-org/site.git' });
+  const nested = join(repo, '.local', 'worktrees', 'site');
+  mkdirSync(nested, { recursive: true });
+  const first = pf.preflight(repo, defaults());
+  assert.equal(first.ok, true, JSON.stringify(first));
+  const saved = record(first, { id: 'site', name: 'Site', github_repository: 'example-org/site', worktree_root: nested });
+  const configured = { repository: 'Example-Org/Site', path: nested };
+
+  const light = pf.checkProject(saved, defaults({ worktreeRoots: [configured] }));
+  assert.equal(light.ok, true, JSON.stringify(light));
+  check(pf.preflight(repo, defaults({ projects: [saved], worktreeRoots: [configured] })), 'ALREADY_CONNECTED');
+
+  // First-time admission: no project holds the folder, so a worktree root inside it still protects it.
+  check(pf.preflight(repo, defaults({ worktreeRoots: [configured] })), 'PATH_PROTECTED');
+  check(pf.preflight(repo, defaults({ protectedRoots: [nested] })), 'PATH_PROTECTED');
+  check(pf.preflight(repo, defaults({ projects: [{ ...saved, disconnected_at: 5 }] })), 'PATH_PROTECTED');
+  // Generic protected roots, another repository's configured worktrees and another project's places are not its own.
+  check(pf.checkProject(saved, defaults({ protectedRoots: [nested] })), 'PATH_PROTECTED');
+  check(pf.checkProject(saved, defaults({ protectedRoots: [join(repo, 'data')] })), 'PATH_PROTECTED');
+  check(pf.checkProject(saved, defaults({ worktreeRoots: [{ repository: 'example-org/other', path: nested }] })), 'PATH_PROTECTED');
+  const other = { id: 'other', name: 'Other', source_kind: 'folder', root_key: rootKey(join(dir, 'elsewhere')), disconnected_at: null };
+  check(pf.checkProject(saved, defaults({ projects: [{ ...other, worktree_root: join(repo, 'other-trees') }] })), 'PATH_PROTECTED');
+  check(pf.checkProject(saved, defaults({ projects: [{ ...other, worktree_root: nested }] })), 'PATH_PROTECTED');
+  check(pf.checkProject(saved, defaults({ projects: [{ ...other, mirror_root: join(repo, 'mirror') }] })), 'PATH_PROTECTED');
+  // Its own worktree root at or around its folder, or a project that copies its folder, is still refused.
+  check(pf.checkProject({ ...saved, worktree_root: repo }, defaults()), 'PATH_PROTECTED');
+  check(pf.checkProject({ ...saved, worktree_root: dir }, defaults()), 'PATH_PROTECTED');
+  const plain = folder(dir, 'plain', { 'a.txt': 'a', 'trees/keep.txt': 'k' });
+  const plainRecord = record(pf.preflight(plain, defaults()), { worktree_root: join(plain, 'trees') });
+  check(pf.checkProject(plainRecord, defaults()), 'PATH_PROTECTED');
+
+  // A different repository at the root is never accepted as the same project.
+  git(repo, 'remote', 'set-url', 'origin', 'https://github.com/example-org/other.git');
+  check(pf.checkProject(saved, defaults({ worktreeRoots: [configured] })), 'IDENTITY_CHANGED');
+});

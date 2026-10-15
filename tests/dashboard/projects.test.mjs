@@ -5,7 +5,8 @@
 // Disposable stores and synthetic merge state only; no network, model or GitHub call.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { once } from 'node:events';
@@ -15,7 +16,8 @@ import { campaignStart } from '../../src/supervisor/api.mjs';
 import { declaration } from '../supervisor/helpers.mjs';
 import { applyCommand, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { ownerView, RESTART_GRACE_MS } from '../../src/dashboard/owner.mjs';
-import { configuredRepositories, projectsView } from '../../src/dashboard/projects.mjs';
+import { checkConnectedProject, configuredRepositories, projectsView } from '../../src/dashboard/projects.mjs';
+import { createProject } from '../../src/supervisor/projects.mjs';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
 import { COMMANDS, nowView, STUCK_MS } from '../../src/dashboard/copy.mjs';
 import { buildReviewFixture, PROJECTS } from './fixtures/review-store.mjs';
@@ -359,4 +361,47 @@ test('the page offers Add project only when this computer switches it on, as the
   // Off, the Add project address says it is not built, exactly as before.
   assert.match(js, /if \(!state\.projects\?\.addProject\) return \[empty\(\.\.\.ADD_OFF\)\];/);
   assert.match(js, /const ADD_OFF = \['Adding a project from this page is not built yet\.', 'Projects appear on Projects when the AIWorks configuration file on this computer lists a repository\.'\];/);
+});
+
+// aiworks#7 recheck, through the dashboard's Check again: config.json places the project's worktrees inside its own
+// folder, and the project was saved Needs setup before its registry entry existed. Synthetic gh and branch reads.
+test('Check again on a GitHub project with its worktrees inside its folder: Ready once the registry lists it; foreign worktree roots still protect', (t) => {
+  const tmp = realpathSync.native(mkdtempSync(join(tmpdir(), 'aiworks-recheck-')));
+  t.after(() => rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
+  const git = (cwd, ...args) => { const out = spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true }); assert.equal(out.status, 0, out.stderr); return out.stdout.trim(); };
+  const governanceRoot = join(tmp, 'governance');
+  cpSync(join(ROOT, 'tests/fixtures/governance'), governanceRoot, { recursive: true });
+  const entry = join(governanceRoot, 'registry', 'projects', 'sampleapp.json');
+  const listed = readFileSync(entry, 'utf8');
+  rmSync(entry);
+  const root = join(tmp, 'SampleApp');
+  mkdirSync(root);
+  git(root, 'init', '-q', '-b', 'main');
+  git(root, '-c', 'user.name=Owner', '-c', 'user.email=owner@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'first');
+  git(root, 'remote', 'add', 'origin', 'https://github.com/example-org/sampleapp.git');
+  const worktrees = join(root, '.local', 'worktrees');
+  git(root, 'worktree', 'add', '-q', '-b', 'side', join(worktrees, 'side'));
+  const dataDir = join(tmp, 'data');
+  mkdirSync(dataDir);
+  const writeConfig = (repositories) => writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ governanceRoot, projectConnection: { enabled: true }, repositories }));
+  writeConfig({ 'example-org/sampleapp': { path: root, worktreeRoot: worktrees } });
+  const store = new Store(join(dataDir, 'supervisor.db'));
+  createProject(store, { id: 'sampleapp', tenant_id: 'local', name: 'SampleApp', source_kind: 'github', root_path: root, github_repository: 'example-org/sampleapp',
+    base_branch: 'main', worktree_root: worktrees, status: 'needs-setup', reason: 'REGISTRY_MISSING' }, Date.now());
+  store.close();
+  const inject = { gh: (args) => (args[0] === 'auth' ? { status: 0, stdout: '', stderr: '' }
+    : { status: 0, stdout: JSON.stringify({ full_name: 'example-org/sampleapp', default_branch: 'main' }), stderr: '' }),
+  lsRemote: (_, branch) => branch === 'main', gitEnv: { GIT_CEILING_DIRECTORIES: tmp } };
+  const check = () => checkConnectedProject(dataDir, { projectId: 'sampleapp' }, inject);
+
+  const missing = check();
+  assert.deepEqual([missing.code, missing.status, missing.project.status], ['REGISTRY_MISSING', 'needs-setup', 'needs-setup'], missing.message);
+  writeFileSync(entry, listed);
+  const ready = check();
+  assert.deepEqual([ready.ok, ready.code, ready.status, ready.project.status, ready.project.root], [true, null, 'ready', 'ready', root], JSON.stringify(ready));
+
+  // Another repository's configured worktrees inside this folder are a real overlap: still refused.
+  writeConfig({ 'example-org/sampleapp': { path: root, worktreeRoot: worktrees }, 'example-org/sample-wiki': { path: join(tmp, 'Wiki'), worktreeRoot: join(root, 'wiki-trees') } });
+  const foreign = check();
+  assert.deepEqual([foreign.code, foreign.project.status], ['PATH_PROTECTED', 'needs-setup']);
 });
