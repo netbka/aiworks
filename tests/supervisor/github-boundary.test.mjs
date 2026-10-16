@@ -141,6 +141,7 @@ const PROBE = 'gh is one of the commands Diagnostics probes for presence';
 const RUNNER = "the test runner's tier pattern names the synthetic gh fixture";
 const SAYS_NO = 'a comment that says this code calls no GitHub';
 const LOCAL = 'a comment that says a project without GitHub pushes nothing and calls no gh';
+const TALLY = "a tally of workers' transcripts that sorts their recorded gh commands (added on main at 596dbda)";
 
 /** Section 3.2: lines the call forms reach that make no call. [file, line at e0ff151, start of the trimmed line, why]. */
 const NOT_CALLS = [
@@ -162,13 +163,17 @@ const NOT_CALLS = [
   ['src/supervisor/project-preflight.mjs', 4, "// writes Git configuration and never calls GitH", SAYS_NO],
   ['src/supervisor/projects.mjs', 3, "// it never reads the project's folder, runs git", SAYS_NO],
   ['scripts/run-tests.mjs', 35, "const REHEARSAL = /\\b(environment|runUntil|runti", RUNNER],
+  ['scripts/supervisor/worker-reading-cost.mjs', 31, "/** The kind of one tool call: tests, git, gh, sh", TALLY],
+  ['scripts/supervisor/worker-reading-cost.mjs', 37, "if (/\\bgh (api|issue|pr)\\b/.test(command)) retur", TALLY],
 ];
 
 /**
  * Lines the scan reaches that section 3 does not cite (findings for the design, which this slice does not edit):
- * project-connect.mjs:171 runs the G23 read through `ghRun`; controller.mjs:2353 is a comment that makes no call.
+ * project-connect.mjs:171 runs the G23 read through `ghRun`; controller.mjs:2353 is a comment that makes no call;
+ * worker-reading-cost.mjs:31 and :37 (added on main after the design) sort transcript commands and make no call.
  */
-const NOT_IN_DESIGN = ['src/supervisor/project-connect.mjs:171', 'src/supervisor/controller.mjs:2353'];
+const NOT_IN_DESIGN = ['src/supervisor/project-connect.mjs:171', 'src/supervisor/controller.mjs:2353',
+  'scripts/supervisor/worker-reading-cost.mjs:31', 'scripts/supervisor/worker-reading-cost.mjs:37'];
 
 /** The rules one line matches. */
 const rulesOf = (text) => RULES.filter(([, pattern]) => pattern.test(text)).map(([rule]) => rule);
