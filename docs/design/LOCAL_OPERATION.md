@@ -71,7 +71,7 @@ Grep basis: `gh`, `api.github.com` and `github.com` as words in `src/` and `scri
 | G28 | Trusted code | `src/supervisor/provenance.mjs:9`, `:20`, `:25-26`; `src/supervisor/cli.mjs:27`, `:108`, `:190-191`; `src/supervisor/controller.mjs:69`, `:377`, `:701`, `:715`, `:2559`; `src/supervisor/coordinator.mjs:24` | Ancestor of `origin/main`, a ref that only a fetch from GitHub updates | SELF3 |
 | G29 | Dashboard Resume | `src/dashboard/supervisor.mjs:680`, `:704`; `src/dashboard/server.mjs:36` | The same check for Resume | UI19 |
 | G30 | Dashboard merge check | `src/dashboard/merges.mjs:2`, `:134-142` | `git fetch origin` every 5 minutes while a page is open | UI19 (reads local `main` for the self-hosted repository) |
-| G31 | Dashboard connect routes | `src/dashboard/projects.mjs:17`, `:328`, `:418`, `:440`; `src/dashboard/server.mjs:33` | Run G23 for a GitHub project | Stays; covered by SELF4 for the self-hosted repository |
+| G31 | Dashboard connect routes | `src/dashboard/projects.mjs:17`, `:336`, `:436`, `:458`; `src/dashboard/server.mjs:33` | Run G23 for a GitHub project | Stays; covered by SELF4 for the self-hosted repository |
 | G32 | Deploy | `scripts/supervisor/deploy.ps1:6`, `:19-20` | `git fetch origin`, then `git rev-parse origin/main` | SELF12 |
 | G33 | Governance refresh | `scripts/supervisor/deploy.ps1:80-81` | `git pull --ff-only` of the governance checkout; a failure stops the deploy | SELF12 (with local trust, a failed pull keeps the current checkout and warns) |
 
@@ -87,7 +87,7 @@ The governance reads themselves are local file reads of the governance checkout 
 | `src/supervisor/campaign.mjs:114`, `:125` | A declaration's authorization must be a GitHub URL and its tracking issue a number | SELF7 (accepts `aiworks-work:<n>` for the self-hosted repository, switched on with STA17) |
 | `src/supervisor/intake.mjs:272-274`, `:324` | Builds issue and pull request links; a stand-in URL for validation | SELF6 (work-item links for the self-hosted repository) |
 | `src/supervisor/owner-intervention.mjs:94` | Blocker link to the tracking issue | SELF7 (tracking item link) |
-| `src/dashboard/owner.mjs:33`; `src/dashboard/public/dashboard.js:730`; `src/dashboard/copy.mjs:561` | Fixed links to AIWorks's issue #2 and the runbook on GitHub | UI19 (links into the local work list and the local runbook text) |
+| `src/dashboard/owner.mjs:33`; `src/dashboard/public/dashboard.js:730`; `src/dashboard/copy.mjs:573` | Fixed links to AIWorks's issue #2 and the runbook on GitHub | UI19 (links into the local work list and the local runbook text) |
 | `src/dashboard/supervisor.mjs:258` | `gh` is one of the commands Diagnostics probes for presence | UI19 shows it as "not needed" when no project uses it |
 | `src/dashboard/supervisor.mjs:491`, `:551`, `:565`, `:620-621`; `src/dashboard/roadmap.mjs:36` | Tracking-issue, task-issue, plan-source and roadmap links | UI19 (work-list routes for the self-hosted repository) |
 | `scripts/run-tests.mjs:35` | The test runner's tier pattern names the `fake-gh` fixture | None |
