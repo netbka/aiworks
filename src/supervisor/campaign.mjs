@@ -10,6 +10,8 @@ import { SECRET_LIKE_PATH_PATTERN, validGovernance } from '../../scripts/lib/wor
 import { safeResearchPath } from './adapters/research-context.mjs';
 import { parseReference } from './reading.mjs';
 import { requireGovernanceRoot, roleCatalog } from './governance.mjs';
+// local-overlay.mjs imports canonicalJson from here; each module calls the other's functions only at run time.
+import { OverlayError, validateOverlayEntry } from './local-overlay.mjs';
 
 // The registry's own schema (governance provider's schemas/project-contract.schema.json, read from the governance root),
 // compiled once per root on first use: it alone decides which registry fields are legal.
@@ -501,8 +503,8 @@ export function registryEntriesFor(repository, governanceRoot) {
 }
 
 /**
- * One project contract's governance values (PROJECT_CONNECTION section 6.2): schema validation and policy derivation,
- * shared by the registry path (projectGovernance) and, later, the overlay path. Throws on anything malformed.
+ * One project contract's governance values (PROJECT_CONNECTION section 6.2): the registry schema check, then the policy
+ * derivation that the overlay path (overlayGovernance) shares. Throws on anything malformed.
  */
 export function governanceForContract(contract, governanceRoot, target = contract?.repository?.github ?? '') {
   const root = requireGovernanceRoot(governanceRoot);
@@ -511,10 +513,35 @@ export function governanceForContract(contract, governanceRoot, target = contrac
     const first = schemaErrors.slice(0, 3).map((error) => `${error.instancePath || '/'} ${error.message}`).join('; ');
     throw new TypeError(`registry entry ${contract?.id ?? target} does not satisfy schemas/project-contract.schema.json: ${first}`);
   }
+  return derivedGovernance(contract, root, `registry entry ${contract.id ?? target}`);
+}
+
+/**
+ * The governance values of a project without GitHub (PROJECT_CONNECTION section 7.4): the overlay entry passes
+ * validateOverlayEntry (local-overlay.mjs, which throws an OverlayError with its RULES_* code), then gets every portfolio
+ * policy from the governance root by the same derivation as a registry entry. Its exceptions are always empty. Only
+ * reads; local admission, which would let this start work, stays off (LOCAL_START_OFF).
+ */
+export function overlayGovernance(entry, governanceRoot, options = {}) {
+  const { root } = validateOverlayEntry(entry, governanceRoot, options);
+  const { authorities = [], gaps = [] } = entry.governance;
+  let values;
+  try {
+    values = derivedGovernance({ id: entry.id, capabilities: entry.capabilities, governance: { authorities, gaps } }, root, `local project entry ${entry.id}`);
+  } catch (error) {
+    throw new OverlayError('RULES_INVALID', error.message);
+  }
+  return { ...values, exceptions: [] };
+}
+
+// The policy derivation shared by both paths: the portfolio policies in the root's policies/catalog.json that can apply
+// to the contract's capabilities, its authority pointers, and its exceptions and gaps as id and rule. `label` names the
+// contract in errors.
+function derivedGovernance(contract, root, label) {
   // Absent (optional in the schema) is an empty list; any other non-array is malformed and fails closed.
   const listed = (value, field) => {
     if (value === undefined) return [];
-    if (!Array.isArray(value)) throw new TypeError(`registry entry ${contract.id} has a malformed ${field}: not a list`);
+    if (!Array.isArray(value)) throw new TypeError(`${label} has a malformed ${field}: not a list`);
     return value;
   };
   const capabilities = new Set(listed(contract.capabilities, 'capabilities'));
@@ -537,6 +564,6 @@ export function governanceForContract(contract, governanceRoot, target = contrac
     exceptions: declared('exceptions'),
     gaps: declared('gaps'),
   };
-  if (!validGovernance(values)) throw new TypeError(`registry entry ${contract.id ?? target} declares governance values a worker packet cannot carry`);
+  if (!validGovernance(values)) throw new TypeError(`${label} declares governance values a worker packet cannot carry`);
   return values;
 }
