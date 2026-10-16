@@ -111,6 +111,7 @@ The dashboard makes no GitHub API call: no `gh`, GraphQL or REST (AIWorks design
   - Otherwise the step reads *Published, merge not seen yet*, never merged. That includes a repository with no configured checkout, a step with no recorded verified commit, and a squash or rebase merge, which rewrites the commit so it is never reachable.
   - A failed fetch keeps the last result and shows its time. A check older than 15 minutes never shows a step as merged.
 - **Who merges:** the `merges` setting in the supervisor's `config.json`, read on every page refresh. See [Merging delegated by the owner](#merging-delegated-by-the-owner).
+- **What Auto Release waits for:** `autoReleaseDecision` in the supervisor's `config.json`, read on every page refresh. It is optional: one GitHub issue link, for example `"autoReleaseDecision": "https://github.com/example-org/aiworks/issues/33"`. Settings › Release mode shows it as the release decision that Auto Release waits for. Without it, or with anything that is not a GitHub issue link, Auto Release keeps the same text and shows no link. The review fixture sets none, so a reviewer's page names no real issue.
 
 ### Merging delegated by the owner
 

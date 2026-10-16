@@ -394,7 +394,8 @@ function runtimeCheckout(root, declarations) {
  * state), 'stopped' (the full store with every lease ended two hours ago: AIWorks stopped on this computer), 'empty'
  * (first run, no projects) or 'unreadable'. Writes `<root>/data/supervisor.db`, and
  * `<root>/data/config.json` with `repositories`, a made-up `supervisorIssue` and, for the full store, a `coordinator`
- * that reports to a made-up issue (no commands, no credentials, no `gh`). Writes `<root>/governance`: a copy of
+ * that reports to a made-up issue (no commands, no credentials, no `gh`). It sets no `autoReleaseDecision`, so Auto
+ * Release links no issue. Writes `<root>/governance`: a copy of
  * GOVERNANCE whose roadmap documents and project registry are REVIEW_GOVERNANCE's (GOVERNANCE is not changed);
  * `<root>/claude`, the Claude transcripts of the working agents; and `<root>/runtime` (runtimeCheckout).
  */

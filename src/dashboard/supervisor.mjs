@@ -299,25 +299,32 @@ export function aiWorkers(campaigns, config, { platform = process.platform, now 
 /**
  * Release mode per project (OWNER_WORKSPACE §10.3, slice S8): Review only is on; Auto Release is off and not available.
  * Text only. There is no control and no field a page could turn into one: Auto Release waits for the owner's release
- * decision (#33, D5-gate) and a release grant for the project, neither of which exists.
+ * decision (D5-gate) and a release grant for the project, neither of which exists. `waitsFor` links that decision when
+ * config.json "autoReleaseDecision" names it (a GitHub issue link); otherwise it is null and the mode shows no link, so a
+ * disposable review copy names no real issue.
  */
-export function releaseModes(repositories) {
+export function releaseModes(repositories, { waitsFor = null } = {}) {
   const projects = new Map();
   for (const repository of repositories) if (/^[\w.-]+\/[\w.-]+$/.test(repository ?? '') && !projects.has(repository.toLowerCase())) projects.set(repository.toLowerCase(), repository);
   return [...projects.values()].sort((a, b) => a.localeCompare(b)).map((repository) => ({ repository, mode: 'review-only', modes: [
     { key: 'review-only', label: 'Review only', on: true, text: 'AIWorks stops when a result passes the check and is published. You merge and release.' },
     { key: 'auto-release', label: 'Auto Release', on: false, available: false,
       text: 'Not available. Turning this on needs your separate release approval for this project, which has not been given.',
-      waitsFor: 'https://github.com/netbka/aiworks/issues/33' }] }));
+      waitsFor }] }));
 }
 
 /** Settings (slice S8): configured command names, the AI workers once for this computer, and release mode per project. */
 export function computerSettings(campaigns, config, { platform = process.platform, now = Date.now(), repositories = [] } = {}) {
   return { commands: configuredCommandNames(config), workers: aiWorkers(campaigns, config, { platform, now }),
-    releases: releaseModes([...repositories, ...campaigns.map((c) => c.repository)]),
+    releases: releaseModes([...repositories, ...campaigns.map((c) => c.repository)], { waitsFor: issueLink(config?.autoReleaseDecision) }),
     // Where supervisor faults are tracked: config.json "supervisorIssue" (a GitHub issue link) when set, so a disposable
     // review copy can name a made-up one; otherwise null, and the owner view links AIWorks' own (owner.mjs SUPERVISOR_ISSUE).
-    supervisorIssue: /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+$/.test(config?.supervisorIssue ?? '') ? config.supervisorIssue : null };
+    supervisorIssue: issueLink(config?.supervisorIssue) };
+}
+
+/** `value` when it is a GitHub issue link, else null. */
+function issueLink(value) {
+  return typeof value === 'string' && /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+$/.test(value) ? value : null;
 }
 
 // The controller's own next action for a finished campaign is one of two fixed sentences naming the repository; it
