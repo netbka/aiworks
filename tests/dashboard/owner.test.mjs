@@ -121,7 +121,7 @@ test('each review names the accepted commit, points to the pull request for CI a
   assert.deepEqual(review.points.map((point) => point.text), ['Check its review history first: it took 10 tries and the independent checker rejected it 1 time before it passed the check.',
     'Merging lets “third task” build on it.']);
   assert.equal(controller.text, 'AIWorks on this computer has not picked up this work yet', 'this store never had a controller lease');
-  assert.match(controller.points[0].text, /AIWorks has not picked it up\. If nobody is updating it right now, restart it on this computer: .*“AIWorks Supervisor”/);
+  assert.match(controller.points[0].text, /AIWorks has not picked it up\. If nobody is updating it right now, sign out of this computer and sign in again, .*whoever set up AIWorks on this computer needs to look at it\.$/);
   const lapsed = { ...supervisor, campaigns: supervisor.campaigns.map((c) => ({ ...c, readiness: 'CONTROLLER_OFFLINE', leaseExpiresAt: new Date(now - 10 * 60_000).toISOString() })) };
   const stopped = ownerView(lapsed, merges, { host: 'workstation', now }).items.find((item) => item.kind === 'controller');
   assert.equal(stopped.text, 'AIWorks stopped on this computer');

@@ -247,8 +247,8 @@ export function visibleText(node, { dialogs = false } = {}) {
 export const INTERNAL_WORDS = [/\bB[2-4]\b/, /\bexecutors?\b/i, /\bcampaigns?\b/i, /\bT\d+\b/, /\bcontrollers?\b/i, /cli\.mjs/, /campaigns\//, /\bAW-\d{3}\b/,
   /\bdeclarations?\b/i, /checker accepted/i, /owner-reserved/i,
   // aiworks#11 review 4 F4 and F17: the machine's parts and the platform's placeholder name are not owner words (§2.1).
-  // "AIWorks Supervisor" is the name of the computer's scheduled task, which the owner may have to start.
-  /governance provider/i, /rules folder/i, /(?<!AIWorks )\bsupervisors?\b/i, /\bcoordinator\b/i,
+  // How AIWorks runs on the computer is not the owner's to know either: no scheduled task and no task name (review 5 G4).
+  /governance provider/i, /rules folder/i, /\bsupervisors?\b/i, /\bcoordinator\b/i, /scheduled task/i, /\bthe task\b/i,
   // "Cursor Agent" is the name of an AI worker's product, not the word for one.
   /(?<!Cursor )\bagents?\b/i];
 /** The internal words found in `text`, each with a little context. */
