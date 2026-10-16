@@ -46,6 +46,8 @@ export const NO_PROGRESS_LIMIT = 4;
 const REPEAT_GUARDED = new Set(['invalid-result', 'exit-without-result', 'timeout', 'spawn-failed', 'error', 'lost']);
 // GitHub rejects issue/PR bodies and comments over 65,536 characters.
 const BODY_LIMIT = 65536;
+// The longest refusal detail a retried verifier is told (aiworks#59): enough for every refusal the controller writes.
+const REFUSAL_DETAIL = 300;
 const RETRYABLE = new Set(['invalid-result', 'exit-without-result', 'timeout', 'spawn-failed', 'error', 'evidence-unavailable', 'lost']);
 export const dispatchBudget = (executor, role, prompt) => ({
   inputTokens: Math.ceil(Buffer.byteLength(prompt) / 3) + (executor.researchOnly ? 20_000 : 40_000),
@@ -347,6 +349,15 @@ function envelopeConstraint(envelope) {
   const deny = envelope.denyWrites ?? [];
   return `Approved outcome: ${envelope.outcome}${/[.!?]$/.test(envelope.outcome) ? '' : '.'} Change only: ${envelope.writes.length ? envelope.writes.join(', ') : 'no repository path'}${deny.length ? ` (never ${deny.join(', ')})` : ''}; anything else is a boundary violation.`.slice(0, 2000);
 }
+/**
+ * The controller note a retried verifier receives after its predecessor's result for the same head was refused
+ * (aiworks#59). Built from the recorded refusal only: no owner instruction, no reference. Null for any other run.
+ */
+export function refusalNote(kind, targetSha, refusal) {
+  if (kind !== 'verify' || !refusal?.detail || refusal.head !== targetSha) return null;
+  return `Controller note: the previous verification of ${targetSha} was refused as invalid-result: ${redact(String(refusal.detail).slice(0, REFUSAL_DETAIL))}. Verify this head again from the start and return a result that does not repeat that contradiction; scope, acceptance and your independence are unchanged.`;
+}
+
 const sameItems = (a, b) => canonicalJson(a) === canonicalJson(b);
 // The operation a runnable task needs next. PLAN runs as a read-only planning operation and is never verified (code admits).
 const opKind = (task) => task.task_id === PLAN_TASK ? 'plan' : task.state === 'pending' ? 'implement' : 'verify';
@@ -1050,6 +1061,9 @@ export class Controller {
         const key = `${cls}: ${detail}`;
         failures.repeat = { key, count: previous?.key === key ? previous.count + 1 : 1 };
       } else if (!v.refunded) delete failures.repeat;
+      // A verification result the controller refused stays recorded with the head it judged, so the next verifier of
+      // that head is told what was refused (aiworks#59); a new head never sees it.
+      if (op.kind === 'verify' && cls === 'invalid-result') failures.refusal = { head: op.target_sha, detail: String(detail).slice(0, REFUSAL_DETAIL) };
       if (cls === 'evidence-unavailable' && failures[cls] >= NO_PROGRESS_LIMIT) {
         return { state, failures, retry_at: null, last_error: `${cls}: ${detail}`,
           blocked: { class: 'B3', reason: `no progress: ${failures[cls]} evidence-unavailable results; last: ${String(detail).slice(0, 300)}`, at: now } };
@@ -2040,6 +2054,7 @@ export class Controller {
       const resolutions = resolveReferences({ git: this.cmd.git, repoPath: repo.path, revision,
         references: [...new Set([...reading.references, ...reading.overflow.map((item) => item.reference)])] });
       const findings = kind === 'implement' ? (task.findings ?? []).slice(0, 8).map((finding) => findingConstraint(finding, resolutions)) : [];
+      const refusal = refusalNote(kind, targetSha, task.failures?.refusal);
       const buildPacket = (references) => validatePacket({
         version: 1, tenantId: decl.target.tenantId, projectId: decl.target.projectId, environment: decl.target.environment,
         taskId: task.task_id, stageId: kind, runId: opId, role, revision,
@@ -2050,6 +2065,8 @@ export class Controller {
         // A child also carries the approved outcome and files (WORK_ENVELOPE 6.5); a declared task's packet is unchanged.
         constraints: [...decl.constraints, ...(binding.envelope ? [binding.envelope] : []), ...(spec.constraints ?? []),
           ...(spec.writes ? [writeDomainConstraint(spec.writes)] : []), ...findings,
+          // A retried verification of the same head carries the controller's recorded refusal (aiworks#59).
+          ...(refusal ? [refusal] : []),
           // A planning step proposes against the plan head it was given; any other basis is refused as STALE_PLAN (slice E5).
           ...(kind === 'plan' ? [`Plan head (amendment basis): ${binding.head}. Propose only steps inside the approved outcome and files; code admits or refuses every op.`] : [])],
         acceptance: spec.acceptance,
@@ -2084,6 +2101,7 @@ export class Controller {
         ? spec.deliverable === 'commit'
           ? `This is repair round ${task.repair_rounds}: the independent verifier rejected ${task.head_sha}. Fix every blocking finding listed in the packet constraints, commit, and return resolved with the new headSha.`
           : `This is repair round ${task.repair_rounds}: the independent verifier rejected the previous report (sha256 ${reportDigest}), reproduced below. Produce a corrected COMPLETE report that resolves every blocking finding listed in the packet constraints and return resolved with that report. Do not commit or change repository files; this task is report-only and read-only.`
+        : refusal ? refusal
         : task.last_error ? `A previous attempt ended without an accepted result (${String(task.last_error).slice(0, 400)}). ${spec.deliverable === 'commit' ? 'Inspect git status and git log here and keep useful committed work.' : executor.researchOnly ? 'Start the report again from the packet; nothing from that attempt is retained. Inspect brokered local Git evidence; use the supplied read-only repository reader for missing issue/comment details.' : 'Start the report again from the packet; nothing from that attempt is retained.'}` : null;
       let prompt = executors.buildPrompt({ executorKind: executor.kind, web: spec.web ?? null, role, deliverable: spec.deliverable, packet, packetDigest: digest, repository: decl.target.repository,
         issue: spec.issue, branch: gitA.branchName(ctx.id, task.task_id), baseSha: kind === 'verify' ? baseSha : revision, targetSha,
