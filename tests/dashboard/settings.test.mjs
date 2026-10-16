@@ -125,6 +125,15 @@ test('release mode is text: Review only on, Auto Release off and not available, 
   // One per project: the configured repositories and the campaigns' targets, case-insensitively.
   assert.deepEqual(releases.map((r) => r.repository), ['example/notes-site', 'example/recipes', 'example/shop-app']);
   assert.deepEqual(releaseModes(['example/App', 'example/app', 'not a repository']).map((r) => r.repository), ['example/App']);
+  // Every project Settings lists (aiworks#11 review 5 G10): a connected GitHub project by its repository, and a project
+  // without GitHub with one line that release does not apply to it yet, and no mode.
+  const connected = [{ id: 'notes', name: 'Notes', source_kind: 'folder' }, { id: 'shop', name: 'Shop', source_kind: 'github', github_repository: 'example/Shop-App' },
+    { id: 'recipes', name: 'Recipes', source_kind: 'local-git' }];
+  assert.deepEqual(releaseModes(['example/shop-app', 'example/notes-site'], { connected }).map((r) => [r.repository, r.name ?? null, r.modes.length, r.text ?? null]), [
+    ['example/notes-site', null, 2, null], ['example/shop-app', null, 2, null],
+    [null, 'Notes', 0, "Release does not apply yet to a project without GitHub: AIWorks can't start work here yet, so there is nothing to release."],
+    [null, 'Recipes', 0, "Release does not apply yet to a project without GitHub: AIWorks can't start work here yet, so there is nothing to release."]]);
+  assert.deepEqual(renderReleases(releaseModes([], { connected })).nodes.filter((node) => ['button', 'input', 'select', 'textarea', 'form'].includes(node.tag)), []);
   for (const release of releases) {
     assert.equal(release.mode, 'review-only');
     assert.deepEqual(release.modes.map((m) => [m.key, m.on]), [['review-only', true], ['auto-release', false]]);
@@ -204,7 +213,7 @@ test('Diagnostics shows how fresh each merge check is, in place of Refresh GitHu
   assert.match(js, /^async function post\(path, body\) \{\r?\n  const response = await fetch\(path,/m);
   assert.deepEqual([...js.matchAll(/\bpost\(([^,)]+)/g)].map((m) => m[1]).filter((target) => !/^'\/api\//.test(target) && target !== 'path'), []);
   // Diagnostics keeps every fact of today's Plans, Issues & PRs and Activity views, and adds the merge checks.
-  assert.match(js, /else if \(diagnostics\) patch\(content, \[trackOverview\(\), roadmapView\(\), workView\(\), mergeChecksPanel\(\),\r?\n\s+panel\('Execution journal'/);
+  assert.match(js, /else if \(diagnostics\) patch\(content, \[trackOverview\(\), roadmapView\(\), workView\(\), mergeChecksPanel\(\), projectWaitsPanel\(\),\r?\n\s+panel\('Execution journal'/);
 });
 
 test('Settings shows this computer, AI workers, project connections and release mode, then Messages and Diagnostics', (t) => {

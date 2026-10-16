@@ -149,7 +149,7 @@ Each screen lists: its question, what is visible first, its one primary action, 
 - **First visible.** "Continue with <last project>" when there is one. Then one row per project:
   - its short name (the repository name, or the folder name for a local project);
   - its kind: "GitHub", "Local Git" or "Folder";
-  - **one** state in plain words, from [§7](#7-state-copy). With nothing for the owner it is the sentence the project's Now screen leads with ([§4.4](#44-now-inside-a-project)), so the two agree, also right after Pause and Resume. With more than one piece of active work it starts with the purpose of the work it is about: "Let customers save a wishlist · Possibly stuck: Wishlist page has made no progress for 25 minutes." (aiworks#11 review 4 F10, F14);
+  - **one** state in plain words, from [§7](#7-state-copy). A connected project where work cannot start reads "Can't start work yet", in a neutral tone, beside its sentence; it is never a green "Ready" (aiworks#11 review 5 G9). Settings › Projects shows the same word. With nothing for the owner it is the sentence the project's Now screen leads with ([§4.4](#44-now-inside-a-project)), so the two agree, also right after Pause and Resume. With more than one piece of active work it starts with the purpose of the work it is about: "Let customers save a wishlist · Possibly stuck: Wishlist page has made no progress for 25 minutes." (aiworks#11 review 4 F10, F14);
   - **one** next action as a link, for example "Review pull request #465" or "See results".
   
   While a merge check runs, a project's state is partial, never final: "2 things need you so far. Checking GitHub… The state of 3 results is not known yet.", or with nothing listed for the owner the state "Checking" with the same sentence, after the Now sentence when work is active. It never reads "Running" or "Finished" alone then ([§1](#1-what-changes-for-the-owner) rule 3, [§7.4](#74-github-stale); aiworks#11 review 4 F3).
@@ -183,7 +183,7 @@ The items are today's "Needs you" items, unchanged in meaning (observed: built i
   - **This computer:** name and dashboard version (observed: `src/dashboard/server.mjs:26`).
   - **AI workers:** one line per AI worker, **once per computer**, for example "Claude · ready", "Codex · not set up on this computer", "Cursor · not available on Windows". Today the same three boxes repeat on every campaign (observed: `src/dashboard/supervisor.mjs:194-210`; reported in #4).
   - **Projects:** each project's kind and connection state.
-  - **Release mode,** per project: "Review only" (on) and "Auto Release" (off, unavailable). See [§10.3](#103-release-mode).
+  - **Release mode,** per project: "Review only" (on) and "Auto Release" (off, unavailable). See [§10.3](#103-release-mode). It lists every project Settings › Projects lists.
 - **Primary action.** None today. Settings only shows what the machine has.
 - **In details.** Provider order per piece of work, retry times, role limits, the AIWorks version of each running supervisor.
 
@@ -197,7 +197,7 @@ The items are today's "Needs you" items, unchanged in meaning (observed: built i
 #### Settings › Diagnostics
 
 - **Question.** What exactly did the machine record?
-- **First visible.** The full activity journal, Issues & pull requests, and the governance provider roadmap, each behind its own heading.
+- **First visible.** The full activity journal, Issues & pull requests, and the governance provider roadmap, each behind its own heading. "What connected projects wait for" lists each connected project where work cannot start, with its code and the decisions and issues it waits for (aiworks#11 review 5 G3).
 - **Primary action.** None. "Refresh GitHub" is a secondary button here.
 - **In details.** Everything else. This is where technical words are allowed.
 
@@ -331,15 +331,15 @@ Each flow is written as screen → what the owner sees → what they do. "Today"
 2. **Add project**: the owner pastes `C:\example\sampleapp`. AIWorks shows "Checking the folder…" within a second (UX-001 immediate acknowledgement).
 3. AIWorks finds "Git repository with GitHub remote example-org/sampleapp, main branch main". The project is listed in the owner's project rules, so it reads "Ready".
 4. "Connect project" → **Now** for sampleapp: "No work yet" → "Start work".
-5. If the project rules do not list the project: "This project is not listed in your project rules yet, so AIWorks cannot start work on it. Adding it there is done outside AIWorks." No button: the fix is outside AIWorks. The copy says "your project rules", not the governance platform's placeholder name, which the owner does not know (aiworks#11 review 4 F4).
+5. If the project rules do not list the project: "This project is not listed in your project rules yet, so AIWorks cannot start work on it. You decide which projects AIWorks may work on: listing it in your project rules lets AIWorks start work on it. Your project rules are kept outside AIWorks, in a folder on this computer that the AIWorks configuration file names. Then check again." No button: the fix is outside AIWorks. The copy says "your project rules", not the governance platform's placeholder name, which the owner does not know (aiworks#11 review 4 F4). It says who decides, what listing allows and where the rules are, because "Adding it there is done outside AIWorks" named no place (aiworks#11 review 5 G3). Once connected, such a project's Now and Work say the same sentence and offer no Start work, since work cannot start there; Settings › Diagnostics adds the code `REGISTRY_MISSING`.
 6. The same rule holds when Add project cannot finish for a reason outside the page: no project rules on this computer, no Git, or a configuration file that names another folder for the same repository. The sentence says what is missing and that the fix is outside AIWorks, then offers only "Check again". It never offers "Open Settings": Settings only shows what the machine has ([§4.3](#43-settings)) and has no control for these (aiworks#11 review F1; copy in PROJECT_CONNECTION §8.1 and §8.2).
 
 ### 5.3 Adding a plain folder (after S11; starting work waits for D2 and Q2)
 
 1. **Projects** → "Add project". The owner pastes `D:\Notes\recipes`.
 2. AIWorks finds "Ordinary folder, no Git" and says: "AIWorks will never change this folder directly. It works on its own copy and asks you before applying a checked result." (plan §3.1)
-3. "Connect project" → **Now**: "Connected. Starting work in a folder without GitHub is not available yet." The details name what it waits for: a local project identity in the project rules (D2) and a local approval route (owner question Q2).
-4. Plan only becomes available with the local intake contract (S12). Local reply storage alone does not enable it. Plan and do becomes available after D2 and Q2.
+3. "Connect project" → **Now**: "Connected. AIWorks can't plan or start work in a project without GitHub yet." Work says the same sentence, and there is no Start work. The details say, in owner words, who makes each decision, what it allows and where: "Two decisions come first, and neither is made on this page. Your project rules on this computer must accept a project without GitHub; that lets AIWorks know which rules this project follows, and it is changed in the project rules, outside AIWorks. And you decide whether work here may be approved on this computer instead of on GitHub; that lets you approve a plan here so AIWorks can start it. Settings › Diagnostics says where both decisions are tracked. Until both are made and built, you can check this project again or disconnect it here." Settings › Diagnostics names them in machine words: D2, a local project identity in the project rules (AIWorks issue #24), and D4, owner question Q2, a local approval route (AIWorks issue #32). Decision codes and issue numbers stay out of the project's screens: the owner could not read "(D2, #24)" (aiworks#11 review 5 G3). The notice after connecting says only "Connected "<name>"." with any other notices, because Now leads with the sentence (review 5 G2).
+4. Plan only becomes available with the local intake contract (S12). Local reply storage alone does not enable it. Plan and do becomes available after D2 and Q2. Until then no screen of the project claims planning (review 5 G2).
 
 ### 5.4 Starting work
 
@@ -591,6 +591,8 @@ Settings shows, per project:
 - **Auto Release** · Off · "Not available. Turning this on needs your separate release approval for this project, which has not been given." (#13, D5-gate)
 
 There is no switch until the D5-gate decision and #13 exist. Text only, no disabled control.
+
+A project without GitHub is listed too, with one line and no modes: "Release does not apply yet to a project without GitHub: AIWorks can't start work here yet, so there is nothing to release." So Release mode lists every project Settings lists (aiworks#11 review 5 G10).
 
 ### 10.4 Powers not enabled by this design
 

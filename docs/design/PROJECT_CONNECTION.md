@@ -21,10 +21,10 @@ The design was first written before slices S1 to S6 were built. Every row below 
 
 | Area | Current behaviour | Evidence |
 | --- | --- | --- |
-| Project identity | A campaign names `target.repository` as GitHub `owner/name`. *(since built)* A project record exists in the store, but a campaign binds to a project only through that GitHub name. | `src/supervisor/campaign.mjs:27`, `:123`; `src/supervisor/store.mjs:133-142`; `src/supervisor/project-connect.mjs:98-110` |
+| Project identity | A campaign names `target.repository` as GitHub `owner/name`. *(since built)* A project record exists in the store, but a campaign binds to a project only through that GitHub name. | `src/supervisor/campaign.mjs:27`, `:123`; `src/supervisor/store.mjs:133-142`; `src/supervisor/project-connect.mjs:99-111` |
 | Campaign authority | `authorization.reference` must be a GitHub URL. | `src/supervisor/campaign.mjs:114` |
-| Local checkout | `config.json` `repositories["owner/name"]` gives `path` and `worktreeRoot`; *(since built)* a connected GitHub project gives them instead, and a disagreement between the two is `CONFIG_CONFLICT`. Dispatch fails without them. | `src/supervisor/controller.mjs:1604-1609`; `src/supervisor/project-connect.mjs:98-110`; `docs/SUPERVISOR.md:336` |
-| Config readers | The dashboard and coordinator accept only `owner/name` keys. | `src/dashboard/projects.mjs:35-40`; `src/dashboard/merges.mjs:34-40`; `src/supervisor/coordinator.mjs:133-134` |
+| Local checkout | `config.json` `repositories["owner/name"]` gives `path` and `worktreeRoot`; *(since built)* a connected GitHub project gives them instead, and a disagreement between the two is `CONFIG_CONFLICT`. Dispatch fails without them. | `src/supervisor/controller.mjs:1604-1609`; `src/supervisor/project-connect.mjs:99-111`; `docs/SUPERVISOR.md:336` |
+| Config readers | The dashboard and coordinator accept only `owner/name` keys. | `src/dashboard/projects.mjs:36-41`; `src/dashboard/merges.mjs:34-40`; `src/supervisor/coordinator.mjs:133-134` |
 | Registration gate | A **new** campaign needs a registry entry whose `repository.github` matches `target.repository`, ignoring case. Resume and amendment are not gated. | `src/supervisor/campaign.mjs:444-451`, `:468-473`; `src/supervisor/cli.mjs:119-127` |
 | Governance for packets | `projectGovernance` needs exactly one matching entry, refuses several, validates it against the governance contract's `schemas/project-contract.schema.json`, and derives policies from `policies/catalog.json`. Anything else throws and the worker is not dispatched. | `src/supervisor/campaign.mjs:489-496`, `:507-542`, `:16-24`; `src/supervisor/controller.mjs:1929-1938` |
 | Governance checkout | `governanceRoot` must be absolute and hold `registry/projects`. There is no fallback. | `src/supervisor/governance.mjs:1-4`, `:29-40` |
@@ -221,12 +221,12 @@ For `local-git` the manifest is the commit's tree, and `manifest_digest` is the 
 ### 6.1 `config.json` `repositories`
 
 - It stays readable and keeps working for every existing GitHub campaign. AIWorks never writes it.
-- **Resolution in `Controller.repo()`** (observed: built; `src/supervisor/controller.mjs:1600-1609`, `src/supervisor/project-connect.mjs:98-110`):
+- **Resolution in `Controller.repo()`** (observed: built; `src/supervisor/controller.mjs:1600-1609`, `src/supervisor/project-connect.mjs:99-111`):
   1. Look for a live project with `github_repository` equal to the campaign's `target.repository`, ignoring case.
   2. If there is none, use `config.repositories[...]`, as today.
   3. If both exist and their canonical paths or worktree roots differ, raise a B2 `project-connection` blocker with the `CONFIG_CONFLICT` copy and dispatch nothing. AIWorks never picks one.
 - **Import:** for every `config.repositories` entry with no project, the dashboard offers *Add as project*. That runs the normal GitHub connect flow on `path` and reuses its `worktreeRoot`. Nothing is imported without the owner's click, so a stale entry cannot silently become a project.
-- The dashboard lists the `config.json` repositories (`src/dashboard/projects.mjs:35-40`) and, when Add project is on, the connected projects (`src/dashboard/server.mjs:73-78`). It fetches no GitHub metadata for either (observed: `src/dashboard/server.mjs:30-32`).
+- The dashboard lists the `config.json` repositories (`src/dashboard/projects.mjs:36-41`) and, when Add project is on, the connected projects (`src/dashboard/server.mjs:73-78`). It fetches no GitHub metadata for either (observed: `src/dashboard/server.mjs:30-32`).
 
 ### 6.2 `assertRegisteredTarget` and `projectGovernance`
 
@@ -234,7 +234,7 @@ For `local-git` the manifest is the commit's tree, and `manifest_digest` is the 
 - **Refactor, same behaviour (observed: built).** The body of `projectGovernance` is now `governanceForContract(contract, root)` (`src/supervisor/campaign.mjs:489-496`, `:507-542`), so the registry path and the overlay path (section 7) can share one policy derivation:
   - `projectGovernance(repository, root)` = registry match + `governanceForContract`;
   - `overlayGovernance(entry, root)` (planned, slice S7) = overlay validation (section 7.4) + the same policy derivation, with `exceptions: []`.
-- `assertRegisteredTarget` does not change in this design. A campaign for a local project needs a declaration without `target.repository` and an authorization that is not a GitHub URL. Both belong to local admission ([WORK_ENVELOPE.md §8](WORK_ENVELOPE.md#8-decision-d4-local-admission-without-github)). Until that is built and switched on (planned), starting work stays off for `local-git` and `folder` in code, not in a setting: `validateDeclaration` refuses every local target (`src/supervisor/campaign.mjs:355-358`), the project record refuses `startWork` for every kind but `github` (`src/supervisor/projects.mjs:68-71`), and a connected local project records `startWork` as not allowed (`src/supervisor/project-connect.mjs:257-262`). Turning it on is one reviewed code change (WORK_ENVELOPE slice E12) after D2 and D4, both decided by the owner on 2026-10-16. No `config.json` key enables it.
+- `assertRegisteredTarget` does not change in this design. A campaign for a local project needs a declaration without `target.repository` and an authorization that is not a GitHub URL. Both belong to local admission ([WORK_ENVELOPE.md §8](WORK_ENVELOPE.md#8-decision-d4-local-admission-without-github)). Until that is built and switched on (planned), starting work stays off for `local-git` and `folder` in code, not in a setting: `validateDeclaration` refuses every local target (`src/supervisor/campaign.mjs:355-358`), the project record refuses `startWork` for every kind but `github` (`src/supervisor/projects.mjs:68-71`), and a connected local project records `startWork` as not allowed (`src/supervisor/project-connect.mjs:258-263`). Turning it on is one reviewed code change (WORK_ENVELOPE slice E12) after D2 and D4, both decided by the owner on 2026-10-16. No `config.json` key enables it.
 
 ## 7. Decision D2: the rules a project without GitHub follows
 
@@ -400,7 +400,7 @@ Nothing is fetched or created at connect: no `git fetch`, no worktree and no bra
 | `GH_NO_ACCESS` | Needs setup | Your GitHub account can't open {repo}. Check the repository and your access. | Check again |
 | `GH_UNREACHABLE` | Temporarily unavailable | GitHub can't be reached right now. Your project is unchanged; AIWorks will check again. | Check again |
 | `BRANCH_MISSING` | Needs setup | {repo} has no branch named {branch}. Choose the branch AIWorks should start from. | Choose branch |
-| `REGISTRY_MISSING` | Needs setup | {repo} isn't listed in your project rules, so AIWorks can plan but not start work. Add it there, then check again. | Check again |
+| `REGISTRY_MISSING` | Needs setup | {repo} isn't listed in your project rules, so AIWorks can't start work on it. You decide which projects AIWorks may work on: listing it in your project rules lets AIWorks start work on it. Your project rules are kept outside AIWorks, in a folder on this computer that the AIWorks configuration file names. Then check again. | Check again |
 | `REGISTRY_AMBIGUOUS` | Needs setup | Your project rules list {repo} more than once ({ids}). AIWorks won't guess which rules apply. | Check again |
 | `REGISTRY_INVALID` | Needs setup | The entry for {repo} in your project rules has an error, so AIWorks can't read its rules. | Check again |
 | `REGISTRY_CHANGED` | Ready, or the code above | (Notice) The project rules for {repo} changed. AIWorks uses the new rules. | — |
@@ -410,6 +410,8 @@ Nothing is fetched or created at connect: no `git fetch`, no worktree and no bra
 | `GIT_BARE` | not saved | This is a bare Git repository with no files. Connect a normal checkout. | — |
 | `GIT_UNTRUSTED` | Needs setup | Git doesn't trust this folder because another Windows account owns it. Fix the owner, or add it to Git's safe.directory yourself; AIWorks won't change Git settings. | Check again |
 | `SECRET_TRACKED` | notice | {count} committed files look like secrets, for example {path}. Workers will see them. | — |
+
+`SECRET_TRACKED` has a singular form: "1 committed file looks like a secret, for example {path}. Workers will see it." (aiworks#11 review 5 G15). `REGISTRY_MISSING` says who decides, what listing the project allows and where the project rules are, and never claims planning: a connected project that is not listed has no planning control either (review 5 G3).
 
 **Tests** (synthetic `gh` and `git` remotes from `tests/supervisor/helpers.mjs`; no network):
 - a GitHub checkout connects, gives *Ready*, and stores `owner/name` without the URL's user info;
@@ -439,13 +441,13 @@ Nothing is fetched or created at connect: no `git fetch`, no worktree and no bra
 | `UNCOMMITTED_NOTICE` | notice | You have changes that aren't committed. AIWorks works from your last commit ({sha7}) and never touches your files. | — |
 | `MIRROR_SPACE` | not saved | There isn't enough free space for AIWorks's copy: {need} needed, {free} free on {drive}. | Check again |
 | `MIRROR_CHANGED` | Needs setup | AIWorks's copy of this project changed unexpectedly, so AIWorks stopped using it. | Rebuild copy |
-| `LOCAL_START_OFF` | Ready, `startWork: false` | You can open and plan work here. Starting work on projects without GitHub isn't available yet: it waits for two approvals (D2 and D4). | — |
+| `LOCAL_START_OFF` | Ready, `startWork: false` | AIWorks can't plan or start work in a project without GitHub yet. That waits for two decisions, one in your project rules and one of yours; the project's Details say what each allows. | — |
 | `RULES_UNAVAILABLE` | Needs setup | AIWorks can't read your project rules right now, so this project has no rules to work under. Check the rules folder in Settings. | Check again |
 | `RULES_NEED_APPROVAL` | Needs setup | Confirm this project's rules to let AIWorks work here. You do this once; it lasts up to 12 months. | Review rules |
 | `RULES_EXPIRED` | Needs setup | Your approval of this project's rules ended on {date}. Review it again to continue. | Review rules |
 | `RULES_REVOKED` | Needs setup | You revoked this project's rules, so work can't start here. Confirm them again to continue. | Review rules |
 
-`RULES_*` appear only after slice S7 (planned). Until then, local projects show `LOCAL_START_OFF`, with the copy above, which is today's shipped copy (observed, `src/supervisor/project-connect.mjs:49`). It still names D2 and D4 as waiting, although the owner decided both on 2026-10-16. Slice E12 of WORK_ENVELOPE replaces the copy in code and in this row together, because `tests/dashboard/connect.test.mjs` checks that they are equal.
+`RULES_*` appear only after slice S7 (planned). Until then, local projects show `LOCAL_START_OFF`, with the copy above, which is today's shipped copy (observed, `src/supervisor/project-connect.mjs:49`). Its copy names no decision code. Planning such a project from the page waits for the local intake contract ([OWNER_WORKSPACE §5.3](OWNER_WORKSPACE.md#53-adding-a-plain-folder-after-s11-starting-work-waits-for-d2-and-q2) step 4), so the copy claims neither planning nor starting, and D2 and D4 are named in Settings › Diagnostics only (aiworks#11 review 5 G2, G3). The stored capability `plan: true` is not shown to the owner. The dashboard does not repeat this notice after connecting, because the project's Now screen leads with the same fact. The copy still says the project waits for two decisions, although the owner made both (D2 and D4) on 2026-10-16. Slice E12 of WORK_ENVELOPE replaces the copy in code and in this row together, because `tests/dashboard/connect.test.mjs` checks that they are equal.
 
 The copy calls the governance platform "your project rules", the owner word of [OWNER_WORKSPACE §2.1](OWNER_WORKSPACE.md#21-words-the-owner-sees); its name stays in details and in this design (aiworks#11 review 4 F4). The dashboard says the `REGISTRY_*` rows and `GITHUB_REGISTERED` in these words (`src/dashboard/projects.mjs`).
 

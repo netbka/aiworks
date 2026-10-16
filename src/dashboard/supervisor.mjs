@@ -12,7 +12,7 @@ import { parseReference } from '../supervisor/reading.mjs';
 import { coordinatorView, LANE as COORDINATOR_LANE, postOwnerMessage } from '../supervisor/coordinator.mjs';
 import { CODE_ROOT, revisionNotMerged } from '../supervisor/provenance.mjs';
 import { COMMANDS, stateCopy, stopReasonWords } from './copy.mjs';
-import { configuredRepositories } from './projects.mjs';
+import { configuredRepositories, connectedProjects, projectConnectionEnabled } from './projects.mjs';
 
 const readConfig = (dataDir) => {
   try { return JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { return {}; }
@@ -302,21 +302,28 @@ export function aiWorkers(campaigns, config, { platform = process.platform, now 
  * decision (D5-gate) and a release grant for the project, neither of which exists. `waitsFor` links that decision when
  * config.json "autoReleaseDecision" names it (a GitHub issue link); otherwise it is null and the mode shows no link, so a
  * disposable review copy names no real issue.
+ * `connected` are the connected project records when Add project is on, so Release mode lists every project Settings
+ * lists: a connected GitHub project by its repository, and a project without GitHub with the sentence that release does
+ * not apply to it yet, since no work can start there (aiworks#11 review 5 G10).
  */
-export function releaseModes(repositories, { waitsFor = null } = {}) {
+export function releaseModes(repositories, { waitsFor = null, connected = [] } = {}) {
   const projects = new Map();
-  for (const repository of repositories) if (/^[\w.-]+\/[\w.-]+$/.test(repository ?? '') && !projects.has(repository.toLowerCase())) projects.set(repository.toLowerCase(), repository);
-  return [...projects.values()].sort((a, b) => a.localeCompare(b)).map((repository) => ({ repository, mode: 'review-only', modes: [
+  const github = connected.filter((record) => record.source_kind === 'github').map((record) => record.github_repository);
+  for (const repository of [...repositories, ...github]) if (/^[\w.-]+\/[\w.-]+$/.test(repository ?? '') && !projects.has(repository.toLowerCase())) projects.set(repository.toLowerCase(), repository);
+  const local = connected.filter((record) => record.source_kind !== 'github').sort((a, b) => String(a.name).localeCompare(String(b.name)))
+    .map((record) => ({ repository: null, project: record.id, name: record.name, mode: null, modes: [], text: RELEASE_LOCAL }));
+  return [...[...projects.values()].sort((a, b) => a.localeCompare(b)).map((repository) => ({ repository, mode: 'review-only', modes: [
     { key: 'review-only', label: 'Review only', on: true, text: 'Release is not enabled here. Merging follows the project’s merge permissions.' },
     { key: 'auto-release', label: 'Auto Release', on: false, available: false,
       text: 'Not available. Turning this on needs your separate release approval for this project, which has not been given.',
-      waitsFor }] }));
+      waitsFor }] })), ...local];
 }
+const RELEASE_LOCAL = "Release does not apply yet to a project without GitHub: AIWorks can't start work here yet, so there is nothing to release.";
 
 /** Settings (slice S8): configured command names, the AI workers once for this computer, and release mode per project. */
-export function computerSettings(campaigns, config, { platform = process.platform, now = Date.now(), repositories = [] } = {}) {
+export function computerSettings(campaigns, config, { platform = process.platform, now = Date.now(), repositories = [], connected = [] } = {}) {
   return { commands: configuredCommandNames(config), workers: aiWorkers(campaigns, config, { platform, now }),
-    releases: releaseModes([...repositories, ...campaigns.map((c) => c.repository)], { waitsFor: issueLink(config?.autoReleaseDecision) }),
+    releases: releaseModes([...repositories, ...campaigns.map((c) => c.repository)], { waitsFor: issueLink(config?.autoReleaseDecision), connected }),
     // Where supervisor faults are tracked: config.json "supervisorIssue" (a GitHub issue link) when set, so a disposable
     // review copy can name a made-up one; otherwise null, and the owner view links AIWorks' own (owner.mjs SUPERVISOR_ISSUE).
     supervisorIssue: issueLink(config?.supervisorIssue) };
@@ -593,7 +600,8 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
           const run = view.runs.find((item) => item.id === m.runId);
           return run ? workerProgress(dataDir, { executor_kind: 'claude-cli', workspace: run.workspace, session_id: run.session_id, run_dir: run.run_dir }) : null;
         })() : null })) };
-    const settings = computerSettings(campaigns, readConfig(dataDir), { now, repositories: configuredRepositories(dataDir) });
+    const settings = computerSettings(campaigns, readConfig(dataDir), { now, repositories: configuredRepositories(dataDir),
+      connected: projectConnectionEnabled(dataDir) ? connectedProjects(dataDir) : [] });
     return { available: true, observedAt: new Date(now).toISOString(), controller, campaigns, costs: projectCosts(campaigns), activity, coordinator, recent, settings };
   } catch { return { available: false, message: "AIWorks can't read its work records right now. What you see may be out of date. Buttons are off until it can read them again.", campaigns: [], costs: [], activity: [] }; }
   finally { store?.close(); }

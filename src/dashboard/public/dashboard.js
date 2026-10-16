@@ -852,9 +852,9 @@ const sameProject = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').
 const projectCampaigns = (project) => state.supervisor.campaigns.filter((c) => sameProject(c.repository, project));
 const unavailable = () => empty('Not known right now', state.supervisor.message ?? `${stateCopy('unreadable').title} This is not the same as nothing happening.`);
 const stateTones = { 'needs-you': 'attention', checking: 'unknown', running: 'in_progress', paused: 'pending', finished: 'done', cancelled: 'pending', 'no-work': 'pending',
-  ready: 'done', 'needs-setup': 'attention', unavailable: 'pending', 'possibly-stuck': 'stale', stopped: 'stale', fault: 'stale' };
+  ready: 'done', 'cannot-start': 'pending', 'needs-setup': 'attention', unavailable: 'pending', 'possibly-stuck': 'stale', stopped: 'stale', fault: 'stale' };
 const stateWords = { 'needs-you': 'Needs you', checking: 'Checking', running: 'Running', paused: 'Paused', finished: 'Finished', cancelled: 'Cancelled', 'no-work': 'No work yet',
-  ready: 'Ready', 'needs-setup': 'Needs setup', unavailable: 'Temporarily unavailable', 'possibly-stuck': 'Possibly stuck', stopped: 'AIWorks stopped',
+  ready: 'Ready', 'cannot-start': "Can't start work yet", 'needs-setup': 'Needs setup', unavailable: 'Temporarily unavailable', 'possibly-stuck': 'Possibly stuck', stopped: 'AIWorks stopped',
   fault: 'AIWorks problem' };
 const projectAction = (action) => action.url ? link(`${action.label} ↗`, action.url, 'project-action') : routeLink(action.label, action.route, 'project-action');
 
@@ -958,11 +958,12 @@ function addProjectScreen() {
     const id = el('input', { id: 'add-id', type: 'text', autocomplete: 'off', spellcheck: 'false', maxlength: 40, pattern: '[a-z0-9][a-z0-9\\-]{1,39}', 'aria-describedby': 'add-id-hint',
       oninput: () => saveAdd({ id: id.value }) });
     id.value = draft.id;
-    area.append(el('p', {}, el('strong', {}, `${found.text}.`), ` Folder ${found.folder}.`),
+    // Node.append says null as the text "null", so what is not there is left out (aiworks#11 review 5 G14).
+    area.append(...[el('p', {}, el('strong', {}, `${found.text}.`), ` Folder ${found.folder}.`),
       ...found.notes.map((text) => el('p', {}, text)), noticeLines(result.notices),
       result.confirm ? el('p', {}, result.confirm.message) : null, result.confirm ? connectAction(result.confirm.action, checkFolder) : null,
       kinds, result.confirm ? null : el('label', { class: 'field' }, el('strong', {}, 'Short name (optional)'), id,
-        el('span', { class: 'subtext', id: 'add-id-hint' }, 'Lowercase letters, digits and hyphens. Without one, AIWorks uses the folder name.')));
+        el('span', { class: 'subtext', id: 'add-id-hint' }, 'Lowercase letters, digits and hyphens. Without one, AIWorks uses the folder name.'))].filter(Boolean));
   }
   // One primary action at a time: Check folder until the folder is checked, then Connect project.
   const ready = Boolean(found && !result.confirm && !draft.outcome && !addBusy);
@@ -1015,7 +1016,9 @@ async function connectFolder(extra = {}) {
       addBusy = null;
       await poll();
       go(formatRoute({ screen: 'project', project: result.project.route }));
-      notice(result.ok ? [`Connected "${result.project.name}".`, ...(result.notices ?? []).map((item) => item.message)].join(' ') : result.message, null, null, current.address);
+      // The project's Now leads with what it can do, so the notice does not say that a second time (review 5 G2).
+      notice(result.ok ? [`Connected "${result.project.name}".`, ...(result.notices ?? []).filter((item) => item.code !== 'LOCAL_START_OFF').map((item) => item.message)].join(' ')
+        : result.message, null, null, current.address);
       return;
     }
     saveAdd({ outcome: result });
@@ -1052,7 +1055,9 @@ async function checkConnection(connection) {
   addBusy = connection.id; render();
   try {
     const result = await post('/api/projects/check', { projectId: connection.id, requestId: crypto.randomUUID() });
-    notice(result.ok ? `"${connection.name}" is ready.` : result.message, null, null, current.address);
+    // "Ready" only where work can start; otherwise what the project can do, as its Now says (review 5 G9).
+    notice(!result.ok ? result.message : result.project?.startWork?.allowed === false ? `Checked "${connection.name}". ${result.project.startWork.text}`
+      : `"${connection.name}" is ready.`, null, null, current.address);
   } catch (error) {
     notice(error.known ? error.message : 'Check again could not be confirmed. It is safe to try again.', null, null, current.address);
   } finally { addBusy = null; await poll(); }
@@ -1130,7 +1135,9 @@ function workerLine(w) {
  */
 function releasePanel(releases) {
   return panel('Release mode', 'Per project. Merging and releasing follow separate permissions.', releases.length
-    ? el('ul', { class: 'settings-links' }, ...releases.map((r) => el('li', { 'data-focus-scope': `release/${r.repository}` }, el('strong', {}, projectName(r.repository)),
+    ? el('ul', { class: 'settings-links' }, ...releases.map((r) => el('li', { 'data-focus-scope': `release/${r.repository ?? r.project}` }, el('strong', {}, r.repository ? projectName(r.repository) : r.name),
+      // A project without GitHub: release does not apply to it yet (aiworks#11 review 5 G10).
+      r.text ? el('div', { class: 'subtext' }, r.text) : null,
       ...r.modes.map((m) => el('div', {}, el('div', {}, `${m.label} · ${m.on ? 'On' : 'Off'}`), el('div', { class: 'subtext' }, m.text,
         m.waitsFor ? ' It waits for the release decision in ' : null, m.waitsFor ? link('issue #33 ↗', m.waitsFor) : null, m.waitsFor ? '.' : null))))))
     : empty('No projects yet.', 'Release mode is shown per project once this computer has one.'));
@@ -1153,6 +1160,17 @@ function mergeFreshness(repo, now = Date.now()) {
     : `Merge check from ${whenAt(repo.fetchedAt)}; checking again.`;
 }
 const mergeRow = (repository) => (state.merges?.repositories ?? []).find((repo) => sameProject(repo.repository, repository));
+
+/**
+ * Diagnostics: what each connected project waits for before work can start there, with its code and the decisions and
+ * issues it waits for. The project's own screens say this in owner words only (aiworks#11 review 5 G3).
+ */
+function projectWaitsPanel() {
+  const waiting = projectList().filter((project) => project.connection?.diagnostic);
+  return waiting.length ? panel('What connected projects wait for', 'Why work cannot start in a connected project yet, in the machine’s words.',
+    el('ul', { class: 'settings-links' }, ...waiting.map((project) => el('li', { 'data-focus-scope': `waits/${project.id}` },
+      el('div', { class: 'subtext' }, `${project.name}: ${project.connection.diagnostic}`))))) : null;
+}
 
 /** Diagnostics: how fresh each project's merge check is, in place of "Refresh GitHub" (plan §6.12 C1). */
 function mergeChecksPanel() {
@@ -1226,7 +1244,9 @@ function nowScreen(project) {
   // A connected project (UI13): one without GitHub has no work yet, so its connection is its Now; a GitHub project's
   // connection follows its work.
   const row = projectList().find((item) => sameProject(item.id, project));
-  if (row?.connection && !row.repository) return [connectionPanel(row)];
+  // A GitHub project where work cannot start (one the project rules do not list) has no work yet either: its
+  // connection is its Now, so the page never offers Start work there (aiworks#11 review 5 G2).
+  if (row?.connection && (!row.repository || (!projectCampaigns(project).length && !row.connection.startWork.allowed))) return [connectionPanel(row)];
   // Start work exists since slice S9 (Plan only), so the no-work state offers it as its primary action.
   const view = nowView(project, { ...state, offline }, { now: Date.now(), startWork: true }), { state: now, details } = view;
   const startWork = now.primary?.route?.screen === 'start' || offline || !state.supervisor.available ? null : routeLink('Plan work', { screen: 'start', project }, 'button secondary');
@@ -1461,6 +1481,9 @@ function projectScreen(route) {
     projectList().some((item) => sameProject(item.id, project)))) return nowScreen(project);
   if (!state.supervisor.available) return [unavailable()];
   if (route.screen === 'start' && (all.length || projectList().some((item) => sameProject(item.id, project)))) return startScreen(project);
+  // A connected project where work cannot start says what its Now says, never a reason that is not its own (review 5 G2).
+  const cannot = !all.length ? projectList().find((item) => sameProject(item.id, project) && item.connection && !item.connection.startWork.allowed) : null;
+  if (cannot) return [empty('No work yet.', cannot.connection.startWork.text)];
   // A repository this computer's settings list, with no work yet (OWNER_WORKSPACE §7.1). Starting work here is not built yet.
   if (!all.length && projectList().some((item) => sameProject(item.id, project))) return [empty('No work yet.', `Work in ${projectName(project)} appears here once it is registered on this computer. Starting work from this page is not built yet.`)];
   if (!all.length) return [empty('This project has no work on this computer', 'The address may be mistyped, or its work was removed.'), routeLink('All projects', '#/projects', 'button secondary')];
@@ -1520,8 +1543,8 @@ function render() {
     : route.screen === 'project' && route.tab === 'work' ? ['AI workers working'] : []);
   if (route.screen === 'needs') patch(content, [needsYou() ?? unavailable()]);
   else if (route.screen === 'settings' && route.section === 'messages') patch(content, [messagesPanel(20)]);
-  else if (diagnostics) patch(content, [trackOverview(), roadmapView(), workView(), mergeChecksPanel(),
-    panel('Execution journal', 'Latest 80 events · raw agent transcripts and secrets are never shown', activityList())]);
+  else if (diagnostics) patch(content, [trackOverview(), roadmapView(), workView(), mergeChecksPanel(), projectWaitsPanel(),
+    panel('Execution journal', 'Latest 80 events · raw agent transcripts and secrets are never shown', activityList())].filter(Boolean));
   else if (route.screen === 'settings') patch(content, settingsScreen());
   else if (route.screen === 'add-project' && refreshAdd(content)) { /* the form stays as the owner typed it */ }
   else if (route.screen === 'add-project') patch(content, addProjectScreen());
