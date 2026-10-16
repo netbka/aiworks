@@ -121,6 +121,12 @@ switch (mode) {
   case 'reject':
     ok({ verdict: 'rejected', targetSha: target, reportDigest, summary: 'criterion 1 fails', findings: [{ id: 'F1', severity: 'blocking', description: 'missing evidence for criterion 1' }], checks: [] });
     break;
+  case 'accept-failed-check': // the contradiction the controller refuses (aiworks#59): accepted, with a check marked fail
+    ok({ verdict: 'accepted', targetSha: target, reportDigest, summary: 'all acceptance criteria hold', findings: [], checks: [{ command: 'npm test', result: 'fail', detail: 'expected failure on the base' }] });
+    break;
+  case 'reject-unblocked': // rejected with no blocking finding, also refused (aiworks#59)
+    ok({ verdict: 'rejected', targetSha: target, reportDigest, summary: 'minor notes', findings: [{ id: 'N1', severity: 'non-blocking', description: 'wording' }], checks: [] });
+    break;
   case 'wrong-target':
     ok({ verdict: 'accepted', targetSha: '0'.repeat(40), reportDigest, summary: 'looked at something else', findings: [], checks: [] });
     break;
