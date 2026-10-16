@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aiworks.local/schemas/local-approval.schema.json",
+  "title": "Owner's dashboard approval of one local plan (aiworks-local-approval/1)",
+  "description": "The record the dashboard writes when the owner approves a plan for a project without GitHub (docs/design/WORK_ENVELOPE.md section 8.4, decision D4, slice E11). It binds the exact plan (declarationDigest = authorityDigest of the declaration), the project, its confirmed rules (overlayDigest) and the code revision. There is no signing key. It is private installation data: it lives in the supervisor store, never in a source branch or pull request. This schema checks the shape only; src/supervisor/local-admission.mjs checks the receipt, the nonce, the ledger, the dates and the digests.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "approvalId", "campaignId", "projectId", "overlayDigest", "declarationDigest", "codeRevision", "approvedAt", "startBy", "nonce", "method"],
+  "properties": {
+    "schema": { "const": "aiworks-local-approval/1" },
+    "approvalId": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+    "campaignId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+    "projectId": { "type": "string", "pattern": "^lp-[a-z0-9][a-z0-9-]{0,38}$" },
+    "overlayDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "declarationDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "codeRevision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "approvedAt": { "$ref": "#/$defs/time" },
+    "startBy": { "$ref": "#/$defs/time" },
+    "nonce": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "method": { "const": "owner-local-ui" }
+  },
+  "$defs": {
+    "time": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" }
+  }
+}
