@@ -145,7 +145,7 @@ test('F18: the empty state names the configuration file on this computer, never 
 test('F22: AIWorks stopped "on this computer", with the restart on this computer, never "there" or "that computer"', async (t) => {
   // AIWorks itself stopped is the stopped store (review 4 F2: in the full store it runs).
   const page = await openPage(t, { host: 'review-pc', store: 'stopped' });
-  const restart = 'If nobody is updating it right now, restart it on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.';
+  const restart = 'If nobody is updating it right now, sign out of this computer and sign in again, or restart the computer: AIWorks starts again by itself when you sign in. If AIWorks still does not start, whoever set up AIWorks on this computer needs to look at it.';
   for (const where of ['#/needs', address('example/notes-site'), address('example/notes-site', '/work')]) {
     await page.go(where);
     const text = screen(page);
@@ -276,7 +276,15 @@ test('F13: a step stopped on invalid results says in place what that failure is 
   const meaning = visibleText(page.$('[data-result-meaning]'));
   assert.equal(meaning, `${said.kind} ${said.fix}`);
   assert.match(meaning, /^Invalid result: the builder finished, but what it handed back failed AIWorks’ own checks, /);
-  assert.match(meaning, /Fixing the cause means changing what an AI worker is given: .* Then choose Check again\.$/);
+  // Review 5 G4: what "the plan" is, where it is kept and who changes it; the fix is outside this page, and says so.
+  assert.match(meaning, /Fixing the cause is done outside this page\. What each step must deliver, and which AI workers may do it, are set in the plan approved for this work\./);
+  assert.match(meaning, /That plan is a file kept on this computer, and this page can’t change it\. Whoever set up AIWorks on this computer changes it: /);
+  assert.doesNotMatch(meaning, /the plan on this computer/);
+  // Review 5 G8: the Check again it names is on this screen.
+  assert.match(meaning, /When the cause is fixed, choose Check again\.$/);
+  assert.ok(buttonNamed(page, 'Check again', page.$('#content')), 'the Check again the sentence names is on the Step screen');
+  assert.doesNotMatch(resultMeaning({ outcome: 'invalid-result', role: 'Implementer' }, { stopped: true, check: false }).fix, /Check again/,
+    'where the screen has no Check again, the sentence does not name it');
   // In place: right after the last result, outside any Details disclosure, in owner words.
   assert.ok(step.indexOf('Last result: Builder (Claude): invalid result') < step.indexOf(meaning), step);
   assert.equal(page.$('[data-result-meaning]').closest('details'), null);
@@ -321,4 +329,40 @@ test('F4 and F17: the Projects home, Needs me and Messages say AI worker and AIW
   assert.match(screen(page), /not reading now; why is under Needs me/);
   assert.match(screen(page), /! Not read yet · AIWorks cannot read requests right now; why is under Needs me/);
   assert.doesNotMatch(screen(page), /invalid coordinator configuration/);
+});
+
+/** The controls an advice sentence names: "choose Check again", "under More", "choose Open …" (aiworks#11 review 5 G8). */
+const namedControls = (text) => [...text.matchAll(/\bchoose (Check again|More|Open [^.,;]+)|\bunder (More)\b/g)].map((m) => m[1] ?? m[2]);
+/** Every control in `node` by its visible name: buttons, links and disclosure summaries. */
+const controlsIn = (node) => [...node.walk()].filter((item) => ['BUTTON', 'A', 'SUMMARY'].includes(item.tagName)).map((item) => item.textContent.replace(/ ↗$/, '').trim());
+
+test('review 5 G4, G8: Needs me advice is followable from the card: no task name or other internal, and each control it names is on the card', async (t) => {
+  const page = await openPage(t);
+  await page.go('#/needs');
+  const cards = nodes(page, 'LI').filter((node) => node.className.startsWith('needs-item'));
+  assert.ok(cards.length > 5, 'the review fixture lists its Needs me items');
+  const named = [];
+  for (const card of cards) {
+    const text = visibleText(card);
+    assert.deepEqual(internalWords(text), [], text);
+    assert.doesNotMatch(text, /scheduled task|AIWorks Supervisor|start the task/i, text);
+    for (const control of namedControls(text)) {
+      named.push(control);
+      assert.ok(controlsIn(card).includes(control), `“${control}” is named on a card without it: ${text}`);
+    }
+  }
+  assert.ok(named.includes('Check again'), 'the fixture has a card that names Check again');
+  // The lapsed check (review 5 G4, second scope): what to do, and who to turn to when that does not help.
+  const lapsed = cards.map((card) => visibleText(card)).find((text) => text.includes('AIWorks is running, but last checked on this work'));
+  assert.ok(lapsed, 'the lapsed-check card');
+  assert.match(lapsed, /If it stays like this, sign out of this computer and sign in again, or restart the computer: AIWorks starts again by itself when you sign in\. If that does not help, whoever set up AIWorks on this computer needs to look at it\./);
+  // The stopped work's carried Check again works from the card.
+  const stopped = cards.find((card) => visibleText(card).includes('No AI worker on this computer can do this step'));
+  assert.match(visibleText(stopped), /What to do: Set up an AI worker that can do it on this computer \(see Settings\), then choose Check again\. Check again$/);
+  buttonNamed(page, 'Check again', stopped).click();
+  await page.settle();
+  assert.equal(visibleText(page.$('#notice')), 'Check again requested. AIWorks looks at this work again; its limits and the independent check still apply.');
+  // The same stop on the project's Now carries the same control as its primary action.
+  await page.go(address('example/notes-site', '/work'));
+  assert.doesNotMatch(screen(page), /under More/);
 });

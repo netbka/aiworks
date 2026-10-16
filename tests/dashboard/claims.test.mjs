@@ -182,7 +182,7 @@ test('restart advice waits a few minutes after the controller lease lapses', () 
   }
   const stopped = view(campaign(10 * 60_000));
   assert.equal(stopped.campaigns.c1.liveness, 'stopped');
-  assert.equal(stopped.items[0].points[0].text, 'No new step starts. If nobody is updating it right now, restart it on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.');
+  assert.equal(stopped.items[0].points[0].text, 'No new step starts. If nobody is updating it right now, sign out of this computer and sign in again, or restart the computer: AIWorks starts again by itself when you sign in. If AIWorks still does not start, whoever set up AIWorks on this computer needs to look at it.');
 });
 
 test('a campaign no supervisor has picked up yet gets the same grace from its registration', (t) => {
@@ -199,7 +199,7 @@ test('a campaign no supervisor has picked up yet gets the same grace from its re
   const late = view(registered + 6 * 60_000);
   assert.equal(late.campaigns[d.campaignId].liveness, 'stopped');
   assert.equal(late.items[0].text, 'AIWorks on this computer has not picked up this work yet');
-  assert.match(late.items[0].points[0].text, /^It is approved, but AIWorks has not picked it up\. If nobody is updating it right now, restart it on this computer: /);
+  assert.match(late.items[0].points[0].text, /^It is approved, but AIWorks has not picked it up\. If nobody is updating it right now, sign out of this computer and sign in again, /);
   // A campaign that had a lease uses the lease, not its registration.
   const lapsed = { ...supervisor, campaigns: supervisor.campaigns.map((c) => ({ ...c, readiness: 'CONTROLLER_OFFLINE', leaseExpiresAt: new Date(registered - 60 * 60_000).toISOString() })) };
   assert.equal(ownerView(lapsed, [], { now: registered + 60_000 }).campaigns[d.campaignId].liveness, 'stopped');
@@ -317,7 +317,7 @@ test('a paused campaign whose supervisor stopped, or never started, is listed wi
   const stopped = ownerView(paused(new Date(now - 10 * 60_000).toISOString()), [], { host: 'workstation', now });
   assert.equal(stopped.campaigns[d.campaignId].liveness, 'stopped');
   assert.deepEqual(stopped.items.map((item) => [item.kind, item.text, item.at]), [['controller', 'This work was paused, then AIWorks stopped on this computer', now - 10 * 60_000]]);
-  assert.match(stopped.items[0].points[0].text, /^No step starts while it is paused, and it can’t resume until AIWorks runs again\. If nobody is updating it right now, restart it on this computer: /);
+  assert.match(stopped.items[0].points[0].text, /^No step starts while it is paused, and it can’t resume until AIWorks runs again\. If nobody is updating it right now, sign out of this computer and sign in again, /);
   assert.equal(stopped.headline, 'Needs you (1)', 'never "nothing is blocked" while the supervisor is down');
   // Within the grace period it is a restart in progress: late, not yet listed.
   const late = ownerView(paused(new Date(now - 2 * 60_000).toISOString()), [], { host: 'workstation', now });
@@ -325,7 +325,7 @@ test('a paused campaign whose supervisor stopped, or never started, is listed wi
   // Paused before any supervisor picked it up, registered an hour ago: not started, with the restart action.
   const never = ownerView(paused(null), [], { host: 'workstation', now });
   assert.deepEqual(never.items.map((item) => item.text), ['AIWorks on this computer has not picked up this work yet (it is paused)']);
-  assert.match(never.items[0].points[0].text, /^It is approved and paused, but AIWorks has not picked it up\. If nobody is updating it right now, restart it on this computer: /);
+  assert.match(never.items[0].points[0].text, /^It is approved and paused, but AIWorks has not picked it up\. If nobody is updating it right now, sign out of this computer and sign in again, /);
   // The work's line is not calm either: it says AIWorks stopped on this computer, and when.
   const c = paused(new Date(now - 10 * 60_000).toISOString()).campaigns[0];
   assert.match(workLine(c, stopped.campaigns[d.campaignId], { time: () => '12:31', dateTime: () => '13 Oct 11:31' }),

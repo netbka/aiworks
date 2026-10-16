@@ -195,9 +195,15 @@ const RULES_COPY = Object.freeze({
 const NEEDS = Object.freeze({ BRANCH_MISSING: ['branch'], REGISTRY_AMBIGUOUS: ['ids'], CONFIG_CONFLICT: ['configPath', 'root'], UNCOMMITTED_NOTICE: ['sha7'],
   MIRROR_SPACE: ['need', 'free', 'drive'], SECRET_TRACKED: ['count'], LOCAL_BRANCH_MISSING: ['branch'], PROJECT_MOVED: ['was'], TOO_LARGE: ['files', 'bytes'],
   FILE_TOO_LARGE: ['count'], UNREADABLE_FILES: ['count'], CASE_COLLISION: ['a', 'b'] });
-/** When a saved project's code cannot be said in full here (its detail is only known during a check). */
+/**
+ * When a saved project's code cannot be said in full here (its detail is only known during a check): on its Now screen,
+ * which has Check again. Add project has Check again only for a code that offers it, so there the sentence names Check
+ * folder, its own button (aiworks#11 review 5 G8).
+ */
 const STATUS_FALLBACK = Object.freeze({ 'needs-setup': 'Needs setup. Choose Check again to see what to do.',
   unavailable: 'Temporarily unavailable. Choose Check again when it should be back.' });
+const ADD_FALLBACK = Object.freeze({ 'needs-setup': "AIWorks can't use this folder as it is now. Check the path, then choose Check folder again.",
+  unavailable: "AIWorks can't reach this folder right now. Choose Check folder again when it should be back." });
 /**
  * OWNER_WORKSPACE §5.2, step 5: a GitHub project the project rules do not list, with who decides, what it allows and
  * where to act. No button: the fix is outside AIWorks. The code is said only in Diagnostics (aiworks#11 review 5 G3).
@@ -239,7 +245,9 @@ export function projectMessage(code, detail = {}) {
  */
 export function projectAction(code, detail = {}) {
   switch (code) {
-    case 'PATH_OVERLAP': case 'ALREADY_CONNECTED':
+    // A folder at a connected project's place that no longer holds it (§4.6): that project's Now says what to do, with
+    // its Check again and Disconnect (aiworks#11 review 5 G8).
+    case 'PATH_OVERLAP': case 'ALREADY_CONNECTED': case 'IDENTITY_CHANGED': case 'ROOT_REPLACED':
       return detail.route ? { do: 'open', label: `Open "${detail.name}"`, project: detail.route } : null;
     case 'PATH_IS_LINK': return detail.canonical ? { do: 'use-path', label: 'Use this folder', path: detail.canonical } : null;
     case 'GIT_SUBFOLDER': return detail.top ? { do: 'use-path', label: `Use ${detail.top}`, path: detail.top } : null;
@@ -356,12 +364,16 @@ function withStore(dataDir, work, { readOnly = false } = {}) {
   } finally { store.close(); }
 }
 
-/** A refusal or problem, in the page's words: { ok: false, code, status, message, action }. */
-function outcome(code, status, detail, records) {
+/**
+ * A refusal or problem, in the page's words: { ok: false, code, status, message, action }. `fallback` is the sentence
+ * set for a code that cannot be said in full: it names only a control of the screen that shows it, unless the code's
+ * own action is Check again. A connected project is named by its folder, never its full path.
+ */
+function outcome(code, status, detail, records, fallback = STATUS_FALLBACK) {
   const route = detail?.projectId ? records.find((record) => record.id === detail.projectId) : null;
-  const filled = { ...shown(detail), ...(route ? { route: routeOf(route), name: route.name } : {}) };
-  return { ok: false, code, status: status ?? null, message: projectMessage(code, filled) ?? STATUS_FALLBACK[status] ?? STATUS_FALLBACK['needs-setup'],
-    action: projectAction(code, filled) };
+  const filled = { ...shown(detail), ...(route ? { route: routeOf(route), name: route.name, path: detail.path ?? basename(route.root_path) } : {}) };
+  const action = projectAction(code, filled), said = action?.do === 'check' ? STATUS_FALLBACK : fallback;
+  return { ok: false, code, status: status ?? null, message: projectMessage(code, filled) ?? said[status] ?? said['needs-setup'], action };
 }
 const noticesOf = (notices = []) => notices.map((notice) => ({ code: notice.code, message: projectMessage(notice.code, notice) })).filter((notice) => notice.message);
 
@@ -383,8 +395,14 @@ export function previewProject(dataDir, input, inject = {}) {
   return withStore(dataDir, (store) => {
     const records = projectRecords(store);
     const home = dirname(resolve(dataDir));
-    const found = preflight(path, { ...options, projects: records, kind, mirrorParent: home, io: inject.statfs ? { statfs: inject.statfs } : undefined });
-    if (!found.ok) return outcome(found.code, found.status, found.code === 'MIRROR_SPACE' ? { ...found.detail, drive: parse(home).root } : found.detail, records);
+    const check = (as) => preflight(path, { ...options, projects: records, kind: as, mirrorParent: home, io: inject.statfs ? { statfs: inject.statfs } : undefined });
+    let found = check(kind);
+    // Without a kind, preflight proposes one from the folder, and a connected project is the same project only as the kind
+    // it was connected as: a GitHub checkout connected as Local Git read as a changed identity (aiworks#11 review 5 G8).
+    // Checked as its own kind, an unchanged folder is already connected and opens; a changed one still says so.
+    const connected = !kind && found.code === 'IDENTITY_CHANGED' ? records.find((record) => record.id === found.detail?.projectId) : null;
+    if (connected && connected.source_kind !== found.kind) found = check(connected.source_kind);
+    if (!found.ok) return outcome(found.code, found.status, found.code === 'MIRROR_SPACE' ? { ...found.detail, drive: parse(home).root } : found.detail, records, ADD_FALLBACK);
     let registered = null;
     if (found.kind === 'github') { try { registered = registryEntriesFor(found.repository, options.governanceRoot).length > 0; } catch { registered = false; } }
     const notes = [found.kind === 'github' && registered === false ? UNREGISTERED : null,
@@ -411,7 +429,7 @@ export function connectProject(dataDir, input, inject = {}) {
     const records = projectRecords(store);
     if (!kind) {
       const found = preflight(path, { ...options, projects: records });
-      if (!found.ok && found.code !== 'ALREADY_CONNECTED') return outcome(found.code, found.status, found.detail, records);
+      if (!found.ok && found.code !== 'ALREADY_CONNECTED') return outcome(found.code, found.status, found.detail, records, ADD_FALLBACK);
       kind = found.kind;
     }
     const request = { path, ...(name ? { name: name.trim() } : {}), ...(id ? { id } : {}), ...(asNewProject ? { asNewProject } : {}) };
@@ -428,10 +446,10 @@ export function connectProject(dataDir, input, inject = {}) {
       // Saved with a problem (a GitHub project that needs setup): the project exists and says what to do.
       const configured = Object.entries(options.config.repositories ?? {}).find(([key]) => key.toLowerCase() === String(result.project.github_repository).toLowerCase())?.[1];
       const detail = { repository: result.project.github_repository, branch: result.project.base_branch, configPath: configured?.path, root: result.project.root_path };
-      const said = outcome(result.code, result.status, detail, after);
+      const said = outcome(result.code, result.status, detail, after, ADD_FALLBACK);
       return { ...said, message: result.code === 'REGISTRY_AMBIGUOUS' ? result.message : said.message, notices: [], project: connectionView(result.project) };
     }
-    return { ...outcome(result.code, result.status, result.detail ?? result.preflight?.detail ?? {}, after), notices: [], project: null };
+    return { ...outcome(result.code, result.status, result.detail ?? result.preflight?.detail ?? {}, after, ADD_FALLBACK), notices: [], project: null };
   });
 }
 

@@ -52,12 +52,15 @@ const review = (number, url) => ({ label: `Review pull request #${number}`, url 
 const TIME = (value) => new Date(value).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 const DATE_TIME = (value) => new Date(value).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).replace(',', '');
 // The dashboard reads the AIWorks records of the computer it runs on (AW-006), so the computer AIWorks runs on is always
-// "this computer"; its name is in the page header (aiworks#11 review F22).
-const RESTART = 'If nobody is updating it right now, restart it on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.';
+// "this computer"; its name is in the page header (aiworks#11 review F22). AIWorks starts by itself when the owner signs
+// in (docs/SUPERVISOR.md §6), so the advice needs no name of how it runs; when that does not help, the fix is outside
+// this page, and the sentence says who makes it (aiworks#11 review 5 G4).
+const SIGN_IN = 'sign out of this computer and sign in again, or restart the computer: AIWorks starts again by itself when you sign in.';
+const RESTART = `If nobody is updating it right now, ${SIGN_IN} If AIWorks still does not start, whoever set up AIWorks on this computer needs to look at it.`;
 /** What restarts AIWorks when it has stopped (docs/SUPERVISOR.md §6), in the owner's words. */
 export const RESTART_ADVICE = RESTART;
 // AIWorks runs, but has not checked on one piece of work (aiworks#11 review 4 F2): restarting is the owner's fix only if it lasts.
-const RESTART_RUNNING = 'If it stays like this, restart AIWorks on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.';
+const RESTART_RUNNING = `If it stays like this, ${SIGN_IN} If that does not help, whoever set up AIWorks on this computer needs to look at it.`;
 
 /**
  * Every state of §7, by key. `d` is the data the sentence is filled from; `f` the time formatters. Keys a slice has
@@ -141,7 +144,7 @@ const STATES = {
   'failed-attempts': { section: '7.7', needsYou: true, copy: (d) => [`Stopped: ${plural(d.attempts, 'attempt')} failed.`,
     `${sentence(d.step)} It will not retry by itself. Fix the cause, then check it again.`, stepIssue(d.url)] },
   'recorded-blocker': { section: '7.7', needsYou: true, copy: (d) => ['Stopped: AIWorks needs a fix on this computer.',
-    `${sentence(d.reason)}${d.action ? ` What to do: ${sentence(d.action)}` : ''}`, null] },
+    `${sentence(d.reason)}${d.action ? ` What to do: ${sentence(d.action)}` : ''}`, d.check ?? null] },
   'others-continue': { section: '7.7', needsYou: true, copy: (d) => ['One step is stopped; the others continue.',
     d.decision ? `${d.step} needs your decision.` : `${d.step} stopped after ${plural(d.attempts, 'failed attempt')}.`, stepIssue(d.url)] },
   // §7.8 Finished. "Merged" only with a current merge check; unknown is said, never counted as nothing.
@@ -248,7 +251,9 @@ function itemState(item, c, d) {
         const reasons = [...new Set((c.providers ?? []).filter((p) => p.priority !== null).map((p) => p.hostLimit ?? p.availabilityReason).filter(Boolean))];
         return ['no-worker-can-run', { reasons }];
       }
-      return ['recorded-blocker', blockerWords(c.blocker)];
+      // The Check again its sentence names is this state's primary action, while the work takes it (review 5 G8).
+      const check = (c.controls?.more ?? []).includes('recheck') ? blockerCheck(c.blocker, c.id) : null;
+      return ['recorded-blocker', { ...blockerWords(c.blocker, { check: Boolean(check) }), check }];
     }
   }
   // One piece of work AIWorks, while running, has not checked on or picked up (review 4 F2): that work's own state.
@@ -388,15 +393,22 @@ export function nowView(project, data = {}, { now = Date.now(), format = {}, sta
  * class, the AI worker's internal name, step and work IDs, the rule a refusal cites) stay in Details or Diagnostics.
  */
 
-/** Why work is stopped by a recorded blocker, by its kind: what happened and what to do. Never the stored text. */
-export function blockerWords(kind) {
+/**
+ * Why work is stopped by a recorded blocker, by its kind: what happened and what to do. Never the stored text. `check`
+ * when the screen that says it carries Check again for this work (the Needs me card and Now do, while the work takes
+ * commands): the sentence names a control only where it is (aiworks#11 review 5 G8).
+ */
+export function blockerWords(kind, { check = true } = {}) {
+  const then = check ? ', then choose Check again' : '';
   if (kind === 'executors') return { reason: 'No AI worker on this computer can do this step',
-    action: 'Set up an AI worker that can do it on this computer (see Settings), then choose Check again under More' };
+    action: `Set up an AI worker that can do it on this computer (see Settings)${then}` };
   if (kind === 'budget') return { reason: 'This work has used all the runs or cost it was approved for',
     action: 'Decide whether to allow more. If you do, approve it again with higher limits' };
   return { reason: 'AIWorks stopped this work and needs a fix on this computer',
-    action: 'See Settings › Diagnostics for what it recorded, fix it, then choose Check again under More' };
+    action: `See Settings › Diagnostics for what it recorded, and fix it${then}` };
 }
+/** The Check again a recorded blocker's sentence names, carried on the screen that says it (review 5 G8). */
+export const blockerCheck = (kind, campaignId) => kind === 'budget' ? null : { label: 'Check again', command: 'recheck', campaignId };
 
 /**
  * Why a step stopped, from the supervisor-known stop record of the step only (`blocked`: { class, reason }), never its
@@ -563,18 +575,25 @@ export const NOT_READ = {
 };
 
 /**
+ * What fixing the cause of a step stopped on invalid results involves, in owner words (aiworks#11 review 5 G4): what
+ * "the plan" is, where it is kept and who changes it. Nothing on this page changes it, so the sentence says the fix is
+ * outside the page; Check again is beside it on the Step screen.
+ */
+const PLAN_FIX = 'Fixing the cause is done outside this page. What each step must deliver, and which AI workers may do it, are set in the plan approved for this work. That plan is a file kept on this computer, and this page can’t change it. Whoever set up AIWorks on this computer changes it: they can let another AI worker do this step, or replace this work with a plan where the step is smaller or clearer. If a clear step keeps failing this way, AIWorks itself needs a fix, which is for AIWorks’ maintainers.';
+/**
  * What a last result of "invalid result" means, said beside it on the Step screen (OWNER_WORKSPACE §4.8 item 4 and §7.7;
  * aiworks#11 review 4 F13). Built from the result's class and role only, never from the worker's own text. `stopped`
- * when the step will not retry by itself: then it says what "Fix the cause" involves.
+ * when the step will not retry by itself: then it says what "Fix the cause" involves. `check` when the screen shows Check
+ * again for the step: the sentence names it only then (review 5 G8).
  */
-export function resultMeaning(outcome, { stopped = false } = {}) {
+export function resultMeaning(outcome, { stopped = false, check = true } = {}) {
   if (outcome?.outcome !== 'invalid-result') return null;
   const checker = outcome.role === 'Verifier';
   const kind = checker
     ? 'Invalid result: the independent checker finished, but its answer failed AIWorks’ own checks, for example it checked an older version of the step, or its answer was not in the form AIWorks reads. The step’s change is kept.'
     : 'Invalid result: the builder finished, but what it handed back failed AIWorks’ own checks, for example no commit, a commit that does not start where the step began, or an answer not in the form AIWorks reads. Nothing it made was used.';
   const fix = stopped
-    ? 'Fixing the cause means changing what an AI worker is given: make the step smaller or clearer in the plan on this computer, or let another AI worker do it. If a clear step keeps failing this way, AIWorks itself needs a fix. Then choose Check again.'
+    ? `${PLAN_FIX}${check ? ' When the cause is fixed, choose Check again.' : ''}`
     : 'AIWorks tries again by itself. Nothing for you to do yet.';
   return { kind, fix };
 }

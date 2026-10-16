@@ -13,7 +13,7 @@ import { supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { ownerView } from '../../src/dashboard/owner.mjs';
 import { projectsView } from '../../src/dashboard/projects.mjs';
 import { configuredCheckouts, configuredGitCommand, MergeWatcher, publishedSteps } from '../../src/dashboard/merges.mjs';
-import { DETAIL_ONLY_WORDS, NOT_FOR_OPEN, STATE_KEYS, nowView, progressText, sinceLines, stateCopy } from '../../src/dashboard/copy.mjs';
+import { DETAIL_ONLY_WORDS, NOT_FOR_OPEN, STATE_KEYS, blockerCheck, blockerWords, nowView, progressText, sinceLines, stateCopy } from '../../src/dashboard/copy.mjs';
 import { buildReviewFixture, PROJECTS, REVIEW_STATES } from './fixtures/review-store.mjs';
 
 const ROOT = resolve(import.meta.dirname, '../..');
@@ -75,13 +75,13 @@ test('every state of §7 has its text in the copy module', () => {
   // The exact sentences of §7, filled from data.
   const exact = (key, data = {}) => { const copy = stateCopy(key, { ...SAMPLE, ...data }, FORMAT); return `${copy.title} ${copy.text}`.trim(); };
   assert.equal(exact('page-disconnected'), 'Can’t reach AIWorks on this computer. Showing what was loaded at T3. Buttons are off until it reconnects. Trying again every 5 seconds.');
-  assert.equal(exact('supervisor-stopped'), 'AIWorks has stopped on this computer at about T30. No new step starts. If nobody is updating it right now, restart it on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.');
-  assert.equal(exact('supervisor-stopped', { stoppedAt: null }), 'AIWorks has stopped on this computer. No new step starts. If nobody is updating it right now, restart it on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.');
-  assert.equal(exact('paused-stopped'), 'Paused since D60, and AIWorks has stopped on this computer at about T30. Nothing can resume until it runs again. If nobody is updating it right now, restart it on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.');
+  assert.equal(exact('supervisor-stopped'), 'AIWorks has stopped on this computer at about T30. No new step starts. If nobody is updating it right now, sign out of this computer and sign in again, or restart the computer: AIWorks starts again by itself when you sign in. If AIWorks still does not start, whoever set up AIWorks on this computer needs to look at it.');
+  assert.equal(exact('supervisor-stopped', { stoppedAt: null }), 'AIWorks has stopped on this computer. No new step starts. If nobody is updating it right now, sign out of this computer and sign in again, or restart the computer: AIWorks starts again by itself when you sign in. If AIWorks still does not start, whoever set up AIWorks on this computer needs to look at it.');
+  assert.equal(exact('paused-stopped'), 'Paused since D60, and AIWorks has stopped on this computer at about T30. Nothing can resume until it runs again. If nobody is updating it right now, sign out of this computer and sign in again, or restart the computer: AIWorks starts again by itself when you sign in. If AIWorks still does not start, whoever set up AIWorks on this computer needs to look at it.');
   // One piece of work AIWorks, while running, does not check on (review 4 F2): its own state and one time, never "stopped".
-  assert.equal(exact('work-lapsed'), 'AIWorks is running, but last checked on this work at about T30. Other work goes on. This work does not move until AIWorks checks on it again. If it stays like this, restart AIWorks on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.');
-  assert.equal(exact('paused-work-lapsed'), 'Paused since D60; AIWorks is running, but last checked on this work at about T30. It can’t resume until AIWorks checks on it again. If it stays like this, restart AIWorks on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.');
-  assert.equal(exact('work-not-picked-up'), 'Approved at T2; AIWorks is running, but has not picked it up. Nothing of it starts until AIWorks picks it up. If it stays like this, restart AIWorks on this computer: sign out and sign in again, or start the task “AIWorks Supervisor”.');
+  assert.equal(exact('work-lapsed'), 'AIWorks is running, but last checked on this work at about T30. Other work goes on. This work does not move until AIWorks checks on it again. If it stays like this, sign out of this computer and sign in again, or restart the computer: AIWorks starts again by itself when you sign in. If that does not help, whoever set up AIWorks on this computer needs to look at it.');
+  assert.equal(exact('paused-work-lapsed'), 'Paused since D60; AIWorks is running, but last checked on this work at about T30. It can’t resume until AIWorks checks on it again. If it stays like this, sign out of this computer and sign in again, or restart the computer: AIWorks starts again by itself when you sign in. If that does not help, whoever set up AIWorks on this computer needs to look at it.');
+  assert.equal(exact('work-not-picked-up'), 'Approved at T2; AIWorks is running, but has not picked it up. Nothing of it starts until AIWorks picks it up. If it stays like this, sign out of this computer and sign in again, or restart the computer: AIWorks starts again by itself when you sign in. If that does not help, whoever set up AIWorks on this computer needs to look at it.');
   for (const key of ['work-lapsed', 'paused-work-lapsed', 'work-not-picked-up']) assert.doesNotMatch(exact(key), /AIWorks (has )?stopped/, key);
   assert.equal(exact('provider-wait'), 'Waiting for an AI worker to be free. Claude can start again at T-65. Work continues by itself. Nothing for you to do.');
   assert.equal(exact('paused'), 'Paused since D60. No new step starts. A step already running may finish. Reason given: “Paused for an update”.');
@@ -92,6 +92,19 @@ test('every state of §7 has its text in the copy module', () => {
   assert.equal(exact('finished-merged', { project: 'example/recipes' }), 'All steps are finished and merged. Release follows recipes’ release policy.');
   assert.equal(exact('finished-merged', { standing: true }), 'All steps are finished and merged. Release follows shop-app’s standing deploy authorization.');
   assert.equal(exact('cancelled'), 'Cancelled. 4 of 9 steps had results before it stopped.');
+  // Review 5 G4: restarting needs no knowledge of how AIWorks runs, and says who to turn to when it does not help.
+  for (const key of ['supervisor-stopped', 'paused-stopped', 'work-lapsed', 'paused-work-lapsed', 'work-not-picked-up']) {
+    assert.doesNotMatch(exact(key), /scheduled task|AIWorks Supervisor|the task/i, key);
+    assert.match(exact(key), /whoever set up AIWorks on this computer needs to look at it\.$/, key);
+  }
+  // Review 5 G8: a recorded blocker names Check again only with the control on the same screen, never "under More".
+  const blocked = (check) => stateCopy('recorded-blocker', { ...blockerWords('other', { check: Boolean(check) }), check }, FORMAT);
+  const withCheck = blocked(blockerCheck('other', 'w1'));
+  assert.equal(withCheck.text, 'AIWorks stopped this work and needs a fix on this computer. What to do: See Settings › Diagnostics for what it recorded, and fix it, then choose Check again.');
+  assert.deepEqual(withCheck.primary, { label: 'Check again', command: 'recheck', campaignId: 'w1' });
+  assert.doesNotMatch(blocked(null).text, /Check again/);
+  assert.equal(blocked(null).primary, null);
+  for (const kind of ['executors', 'budget', 'other']) for (const check of [true, false]) assert.doesNotMatch(blockerWords(kind, { check }).action, /\bMore\b/, kind);
 });
 
 test('powers not built yet stay off: Start work and Add project are offered only when switched on', () => {
