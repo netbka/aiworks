@@ -812,3 +812,14 @@ Before each task, the reviewer answers the pass-A questions: Where am I? What br
 - Whether each AI worker records a cost for every run, which per-step cost depends on (**unknown**; #10).
 - The local intake contract for a project with no GitHub (S12); replies stay in the dashboard under AW-004.
 - Whether the live workstation dashboard matches the code at `acb9e66` (**unknown**; not checked by this design).
+
+## Implemented visual refresh
+
+The current visual system and canonical UI ownership are maintained in the root
+[DESIGN.md](../../DESIGN.md). The owner workflows and evidence rules above remain
+binding. The refresh adds a full-width header, compact project rows, a server-derived
+attention summary, neutral action cards, and an inline active-worker metric.
+The planning entry is labeled **Plan work**; `/start` remains the compatible route.
+Only Plan only is available, with the unavailable execution mode explained in a
+disclosure. Merge and release permissions are described separately. These changes
+introduce no new execution, merge, or release authority.
