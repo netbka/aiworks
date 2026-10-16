@@ -97,3 +97,21 @@ test('wait with no gate started says how to start one', (t) => {
   assert.equal(none.code, 4);
   assert.match(none.out, /^no gate was started in this directory\. Start it with: node ".+gate\.mjs" start\n$/);
 });
+
+test('readGateRun: the exit code and the final node:test summary the controller keeps with a verification (#43)', async (t) => {
+  const { gateFailure, readGateRun, testSummary } = await import('../../src/supervisor/gate.mjs');
+  const dir = workdir(t);
+  assert.equal(readGateRun(dir), null, 'no gate ran here');
+  writeFileSync(join(dir, 'gate.log'), 'noise\r\n# all test files: 1 unit (of 1)\r\n# tests 3\r\n# pass 3\r\n# fail 0\r\n');
+  assert.deepEqual(readGateRun(dir), { exit: null, summary: '# all test files: 1 unit (of 1)\n# tests 3\n# pass 3\n# fail 0' }, 'an unfinished gate has no exit code');
+  writeFileSync(join(dir, 'gate-exit.log'), '0\n');
+  assert.equal(readGateRun(dir).exit, '0');
+  // A plain node --test run has no "# all test files" line: its last run of count lines is the summary, never other output.
+  assert.equal(testSummary('# tests 1\n# pass 1\nok\n# tests 2\n# pass 1\n# fail 1\n# duration_ms 5.5\nnpm ERR! after'), '# tests 2\n# pass 1\n# fail 1\n# duration_ms 5.5');
+  assert.equal(testSummary('no summary here\n'), null);
+  assert.equal(gateFailure(null), null);
+  assert.equal(gateFailure({ exit: '0', summary: '# tests 2\n# pass 2\n# fail 0' }), null);
+  assert.equal(gateFailure({ exit: null, summary: null }), null, 'an unfinished gate is shown, not refused');
+  assert.equal(gateFailure({ exit: '1', summary: '# fail 0' }), 'exited 1');
+  assert.equal(gateFailure({ exit: '0', summary: '# tests 4\n# fail 2' }), 'reports 2 failed tests');
+});

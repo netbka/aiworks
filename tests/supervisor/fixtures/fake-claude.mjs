@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Synthetic stand-in for `claude -p` in supervisor tests. It makes no model or network calls.
-// Behaviour per call comes from <FAKE_CLAUDE_STATE>/scenario.json: { implement: [mode...], verify: [mode...] }.
+// Behaviour per call comes from <FAKE_CLAUDE_STATE>/scenario.json: { implement: [mode...], verify: [mode...], gate }.
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -33,6 +33,15 @@ const ok = (value) => emit({ type: 'result', subtype: 'success', is_error: false
   permission_denials: [], structured_output: value, result: JSON.stringify(value) });
 const target = (/Target commit: ([0-9a-f]{40})/.exec(prompt) ?? /MUST carry targetSha ([0-9a-f]{40})/.exec(prompt))?.[1];
 const reportDigest = /reportDigest ([0-9a-f]{64})/.exec(prompt)?.[1];
+
+// scenario.gate leaves the gate helper's files in a verifier's checkout, as src/supervisor/gate.mjs does: one { log, exit }
+// for every verification, or a list with one per verification call. exit null leaves no gate-exit.log (an unfinished gate).
+const gate = role === 'verify' ? (Array.isArray(scenario.gate) ? scenario.gate[previous] : scenario.gate) : null;
+if (gate) {
+  writeFileSync(join(process.cwd(), 'gate.log'), gate.log);
+  if (gate.exit !== null) writeFileSync(join(process.cwd(), 'gate-exit.log'), `${gate.exit}
+`);
+}
 
 const sleep = /^sleep:(\d+):(.+)$/.exec(mode);
 if (sleep) {
