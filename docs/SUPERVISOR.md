@@ -320,6 +320,34 @@ node src/supervisor/cli.mjs baseline --data C:/example/aiworks/.local/supervisor
 - The model is not stored on an operation yet. It is inferred from the declaration and its `executor-amended` journal entries; a provider without a declared model shows `cli-default (unknown)`.
 - What it cannot measure is listed in the report (`cannotMeasure`).
 
+### What fills workers' context, and cheaper declarations
+
+Most of a worker's cost is its context: the CLI re-reads everything said so far on every turn, from its cache. `worker-reading-cost` shows what fills it, measured from the workers' own session transcripts. Run it before and after a change meant to cut cost.
+
+```sh
+node scripts/supervisor/worker-reading-cost.mjs --data C:/example/aiworks/.local/supervisor [--hours 48] [--transcripts <Claude projects directory>] [--json]
+```
+
+- It opens the store read-only and finds each finished operation's transcript by its session id (default `~/.claude/projects`). It makes no model, network or GitHub call.
+- It reports, by kind of tool result (shell reads, Read, git, gh, tests, browser and so on): calls, characters, share, and share weighted by the turns that re-read it.
+- Per role, it reports whole-file re-reads, whole-file reads over 20 KB and full `git diff` or `show` output.
+- It reports the share of reported dollars spent on repeated runs: each task's later implement and verify runs.
+- A screenshot counts as an estimated 1,600 tokens, not its base64 length. Dollars are as the CLI reported them, and unknown is never zero.
+- Test output is small: the gate helper returns only the summary block. Reading files and diffs is most of the context.
+
+Three habits keep a declaration cheap without narrowing what a worker or verifier must do:
+
+- **Reference sections, not whole documents.** A long design or runbook can be referenced as `path#slug`, so the implementer reads that section; the verifier still reads every referenced document in full ([SCOPED_READING §5](design/SCOPED_READING.md#5-what-each-role-is-told)). `section-ref` lists a document's slugs with their lines and checks one before it goes into a declaration:
+
+  ```sh
+  node scripts/supervisor/section-ref.mjs docs/SUPERVISOR.md --rev main            # every section, with its lines
+  node scripts/supervisor/section-ref.mjs docs/SUPERVISOR.md#1-boundary --rev main # exit 1, with the reason, if it is not there
+  ```
+
+  A generator can import `sectionReference(path, slug, { repo, rev })` from the same file.
+- **Declare `writes`** on every commit task, using directory prefixes where a task needs room. Without it a task owns the whole repository, and with the scheduler on it waits for every other commit task to be integrated.
+- **Do not run two campaigns that change the same files at the same time** unless the scheduler is on and both declare `writes`. Otherwise every merge moves main under the other campaign's task, and an integration repair round runs again.
+
 ## 6. Installation and maintenance
 
 Keep AIWorks-owned local files under the AIWorks root, outside version control:
