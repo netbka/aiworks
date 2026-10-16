@@ -19,28 +19,30 @@ Refs #8, Refs #14, Refs #5.
 
 ## 2. Where things stand today (observed)
 
+The design was first written before slices E1 to E7, E9 and E10 were built. Every row below was re-checked against the code in this tree on 2026-10-16; a row marked *(since built)* describes code that was added after the design.
+
 | Area | Current behaviour | Evidence |
 | --- | --- | --- |
-| Campaign | One JSON declaration, validated once. Its tasks (1 to 32) are fixed when it is registered. | `src/supervisor/campaign.mjs:1-3`, `:165-166`; `src/supervisor/api.mjs:23-25` |
-| Immutable scope | `scopeDigest` covers everything except `authorization`, `limits`, `purpose` and task `outcome`. `authorityDigest` covers the whole declaration. | `src/supervisor/campaign.mjs:56-63` |
-| Changing a campaign | A different scope is refused with `SCOPE_CONFLICT`. The executor may change only while paused with no open operation. A lower authorization version is refused. Any other edit needs `authorization.version + 1`, which replaces the stored declaration. | `src/supervisor/api.mjs:29-43`, `:80-81`; `docs/SUPERVISOR.md:108`, `:312` |
-| GitHub assumptions | `authorization.reference` must be a GitHub URL, `target.repository` must be `owner/name`, and every campaign and task needs an issue number. | `src/supervisor/campaign.mjs:100`, `:109`, `:111`, `:178` |
-| Registration | `cli.mjs start <file>` reads a declaration from any path. Only a **new** campaign is checked against the governance registry. Dashboard Resume restarts a paused campaign from its stored declaration. | `src/supervisor/cli.mjs:66-72`; `src/supervisor/campaign.mjs:230-236`; `src/dashboard/supervisor.mjs:326-328` |
-| AW-005 | Decided: campaigns run only from merged code and a private approved declaration. **Not enforced in code yet**; the port of archived governance PR #139 is planned as `example-foundation/F1-AW005`. | `docs/DECISIONS.md:31-39`; `docs/STATUS.md:22` |
-| Duplicate work (#5) | Not enforced in code yet; scope A (archived governance PR #126) is planned as `example-foundation/F2-DUPLICATE`. | `docs/STATUS.md:23`; `docs/design/ADAPTIVE_SCHEDULER.md:59-62` |
-| Coordinator | Read-only by allowlist. It answers owner messages and may return a draft declaration as a **string** (`proposedCampaign`), which the supervisor posts to a GitHub issue as "draft, not registered". It reads only its own AIWorks checkout; other repositories only through `gh`. A changed checkout is a boundary violation. Its prompt asks for a run cap and a cost ceiling in drafts. | `src/supervisor/coordinator.mjs:1-4`, `:24-47`, `:56-70`, `:131-147`, `:196-200`, `:245-247`, `:360-366`, `:392-398` |
-| Coordinator config | Needs 1 to 10 GitHub `owner/name` repositories and a GitHub `reportTo` issue. | `src/supervisor/coordinator.mjs:105-107` |
-| Task specs | Every controller path reads a task's spec from the stored declaration (`decl.tasks.find`), including status. A task that is not in the declaration would break them. | `src/supervisor/controller.mjs:261`, `:522`, `:571`, `:629`, `:808`; `src/supervisor/api.mjs:129-130` |
-| Packets | Built at dispatch from the declaration: goal, campaign + task constraints, task acceptance, revision-pinned references and governance values. `authorityDigest(decl)` is bound in. The packet digest is SHA-256 of the canonical packet. | `src/supervisor/controller.mjs:674-685`; `scripts/lib/worker-context.mjs:74-109` |
-| Admission check | `planContext` is called with `authorityCurrent: true`, a constant. | `src/supervisor/controller.mjs:754-760`; `scripts/lib/worker-context.mjs:118` |
-| Idempotency | Operation id `campaign.task.kind.seq` is also its `idempotency_key`, which is `UNIQUE`. | `src/supervisor/controller.mjs:632`, `:742-747`; `src/supervisor/store.mjs:38-44` |
-| Fencing | Every controller write runs in `BEGIN IMMEDIATE` after `assertLease`. A lease is taken over only after expiry, with generation + 1. Dispatch re-reads the campaign version inside that transaction. | `src/supervisor/controller.mjs:141-150`, `:595-598`; `src/supervisor/store.mjs:132-146`, `:201-229` |
-| Store growth | New tables are added with `CREATE TABLE IF NOT EXISTS`; the store version stays 1. | `src/supervisor/store.mjs:10`, `:19-77`, `:180-181` |
-| Boundary violation | A worker that leaves its boundary is never retried on the same provider; the task waits for the owner (B3). | `src/supervisor/controller.mjs:380-382` |
-| Reports | A verified report is posted as a marked comment on the task's issue. | `src/supervisor/controller.mjs:842-863` |
-| Slots | One open operation per campaign. | `src/supervisor/controller.mjs:504`; `src/supervisor/campaign.mjs:118` |
+| Campaign | One JSON declaration, validated once. Its declared tasks (1 to 32) are fixed when it is registered. | `src/supervisor/campaign.mjs:1-3`, `:180-181`; `src/supervisor/api.mjs:35-37` |
+| Immutable scope | `scopeDigest` covers everything except `authorization`, `limits`, `purpose` and task `outcome`. `authorityDigest` covers the whole declaration. | `src/supervisor/campaign.mjs:68-75` |
+| Changing a campaign | A different scope is refused with `SCOPE_CONFLICT`. The executor may change only while paused with no open operation. A lower authorization version is refused. Any other edit needs `authorization.version + 1`, which replaces the stored declaration. | `src/supervisor/api.mjs:44-59`, `:100-101`; `docs/SUPERVISOR.md:13`, `:468` |
+| GitHub assumptions | `authorization.reference` must be a GitHub URL, `target.repository` must be `owner/name`, and every campaign and task needs an issue number. | `src/supervisor/campaign.mjs:114`, `:123`, `:125`, `:215` |
+| Registration | `cli.mjs start <file>` reads a declaration from any path. Only a **new** campaign is checked against the governance registry. Dashboard Resume restarts a paused campaign from its stored declaration. | `src/supervisor/cli.mjs:119-127`; `src/supervisor/campaign.mjs:444-451`; `src/dashboard/supervisor.mjs:693-698`, `:721-724` |
+| AW-005 | Decided: campaigns run only from merged code and a private approved declaration. *(since built)* New work, a coordinator read and a dashboard Resume wait while the runtime revision is not an ancestor of `origin/main`. | `docs/DECISIONS.md:23-25`; `src/supervisor/provenance.mjs:15-27`; `src/supervisor/controller.mjs:542-544`, `:677-686`; `src/supervisor/coordinator.mjs:377-378`; `src/supervisor/cli.mjs:106-109`; `src/dashboard/supervisor.mjs:693-698` |
+| Duplicate work (#5) | *(since built, scope A)* Registering a new campaign is refused with `WORK_ALREADY_ASSIGNED` when one of its tasks is already owned by another campaign. | `src/supervisor/api.mjs:24-28`; `src/supervisor/work-ownership.mjs:33` |
+| Coordinator | Read-only by allowlist. It answers owner messages and may return a draft declaration as a **string** (`proposedCampaign`). *(since changed)* Replies, plans and drafts are stored locally and shown in the dashboard; nothing is posted to GitHub. It reads its own AIWorks checkout, and other repositories only through read-only `gh` commands. A changed checkout is a boundary violation. Its prompt asks for a run cap and a cost ceiling in drafts. | `src/supervisor/coordinator.mjs:1-4`, `:28-50`, `:76-91`, `:150-178`, `:292-299`, `:326-347`, `:508-512` |
+| Coordinator config | Needs 1 to 10 GitHub `owner/name` repositories. A GitHub `reportTo` issue is still accepted, but no reply uses it. | `src/supervisor/coordinator.mjs:133-136` |
+| Task specs | *(since built, slice E1)* Every controller path reads a task's spec through one accessor: the declared task, else the live child revision in `task_specs`. | `src/supervisor/plan.mjs:1-5`, `:27-39`; `src/supervisor/controller.mjs:337-338` |
+| Packets | Built at dispatch from the declaration: goal, campaign + task constraints, task acceptance, revision-pinned references and governance values. `authorityDigest(decl)` is bound in for a declared task. The packet digest is SHA-256 of the canonical packet. | `src/supervisor/controller.mjs:2058-2075`, `:2090`; `scripts/lib/worker-context.mjs:74-109` |
+| Admission check | *(since built, slice E4)* `planContext` gets `authorityCurrent` from the plan binding, recomputed from the plan rows before every dispatch. A failure raises B2 `plan-integrity` and dispatches nothing. | `src/supervisor/controller.mjs:1881-1909`, `:1921-1928`, `:2173-2174`; `scripts/lib/worker-context.mjs:118` |
+| Idempotency | Operation id `campaign.task.kind.seq` is also its `idempotency_key`, which is `UNIQUE`. | `src/supervisor/controller.mjs:1999`, `:2151-2152`; `src/supervisor/store.mjs:38-44` |
+| Fencing | Every controller write runs in `BEGIN IMMEDIATE` after `assertLease`. A lease is taken over only after expiry, with generation + 1. Dispatch re-reads the campaign version inside that transaction. | `src/supervisor/controller.mjs:505-514`, `:1912-1918`; `src/supervisor/store.mjs:214-229`, `:296-330` |
+| Store growth | New tables are added with `CREATE TABLE IF NOT EXISTS`; the store version stays 1. | `src/supervisor/store.mjs:10`, `:19-150`, `:179-181`, `:279-283` |
+| Boundary violation | A worker that leaves its boundary is never retried on the same provider; the task waits for the owner (B3). | `src/supervisor/controller.mjs:1083-1085` |
+| Reports | A verified report is posted as a marked comment on the task's issue. | `src/supervisor/controller.mjs:2292-2315` |
+| Slots | One open operation per campaign while the scheduler is off, which is the default. | `src/supervisor/controller.mjs:1914-1918`; `src/supervisor/campaign.mjs:132`; `docs/SUPERVISOR.md:190` |
 
-**What this means:** today the owner hand-writes a complete, fixed task list, and nothing can add a task without a new campaign. The coordinator can draft, but its draft is free text that nobody validates. There is no place to store an approval, and no way to tell "the owner approved this exact plan" from "a file appeared".
+**What this means:** when this design was written, the owner hand-wrote a complete, fixed task list, and nothing could add a task without a new campaign. The coordinator could draft, but only as free text that nobody validated. Slices E1 to E7, E9 and E10 have since added child tasks, validated drafts and private approvals (rows marked *since built*; adaptive planning stays behind its own switch). What is still missing is a way to start and finish work on a project without GitHub (section 8).
 
 ## 3. Intake: from a request to a draft plan
 
@@ -51,22 +53,22 @@ Refs #8, Refs #14, Refs #5.
 | **Describe a result** | Every project | Project base revision: GitHub base-branch SHA, or the local baseline (`project_baselines`, [PROJECT_CONNECTION.md §5.3](PROJECT_CONNECTION.md#53-the-baseline-it-binds)) | Up to 4000 characters of plain text |
 | **Use an issue** | GitHub projects only | Base SHA, issue number and its `updated_at` | An issue of the project's own repository |
 | **Continue a PR** | GitHub projects only | Base SHA, PR number, head ref and **head SHA** | A PR whose head branch is in the same repository. A PR from a fork is refused (`PR_FROM_FORK`): AIWorks never pushes to another repository. |
-| **Use a plan or task file** | Every project | Base revision plus the file's path and blob SHA at that revision | A repository-relative path (`safePath`, `src/supervisor/campaign.mjs:43-44`). Secret-like paths are refused (`scripts/lib/worker-context.mjs:36-40`). |
+| **Use a plan or task file** | Every project | Base revision plus the file's path and blob SHA at that revision | A repository-relative path (`safePath`, `src/supervisor/campaign.mjs:45-46`). Secret-like paths are refused (`scripts/lib/worker-context.mjs:36-40`). |
 | **Plan only** | Every project, combined with any route above | Same as the route | A switch. The result is a draft and nothing else. |
 
-Issue, PR and plan-file text is **data, not instructions**, as the coordinator prompt already says (`src/supervisor/coordinator.mjs:200`). It can describe work. It cannot set the write scope, providers, limits, release mode or acceptance: those come only from the owner's Review screen (section 4.2).
+Issue, PR and plan-file text is **data, not instructions**, as the coordinator prompts already say (`src/supervisor/coordinator.mjs:263`, `:298`). It can describe work. It cannot set the write scope, providers, limits, release mode or acceptance: those come only from the owner's Review screen (section 4.2).
 
 ### 3.2 How the coordinator drafts without registering (AW-004)
 
-1. **Request.** The dashboard's *Start work* screen posts `{ projectId, route, text | reference, planOnly, requestId }` to a new owner route with the existing origin, CSRF and 16 KiB checks (`src/dashboard/server.mjs:60-69`, `:79-80`). The supervisor stores a `work_requests` row with an idempotent `requestId`, exactly as owner messages are stored (`src/supervisor/coordinator.mjs:161-182`). Nothing is dispatched.
-2. **Evidence the code gathers, not the model.** Before the coordinator runs, deterministic code resolves and pins: the project and its governance values (`projectGovernance`, `src/supervisor/campaign.mjs:259-299`, or the D2 overlay); the base revision; the issue or PR metadata through the existing read-only reader (`src/supervisor/github-reader.mjs`); and the open campaigns of the same project with their tasks.
-3. **Read-only checkout of the target.** The coordinator today reads only an AIWorks checkout (`src/supervisor/coordinator.mjs:131-147`). For intake it also gets a detached, read-only checkout of the target at the pinned revision: from the project's checkout for GitHub, from the managed mirror for local projects ([PROJECT_CONNECTION.md §5.2](PROJECT_CONNECTION.md#52-shape)). The existing "checkout still clean at that revision" rule applies to both checkouts (`:122-126`, `:360-366`). No `gh` command is offered for a local project, so it never fails because `gh` is missing.
+1. **Request.** The dashboard's *Start work* screen posts `{ projectId, route, text | reference, planOnly, requestId }` to a new owner route with the existing origin, CSRF and 16 KiB checks (`src/dashboard/server.mjs:85-89`, `:90-95`). The supervisor stores a `work_requests` row with an idempotent `requestId`, exactly as owner messages are stored (`src/supervisor/coordinator.mjs:211-236`). Nothing is dispatched.
+2. **Evidence the code gathers, not the model.** Before the coordinator runs, deterministic code resolves and pins: the project and its governance values (`projectGovernance`, `src/supervisor/campaign.mjs:489-496`, or the D2 overlay); the base revision; the issue or PR metadata through the existing read-only reader (`src/supervisor/github-reader.mjs`); and the open campaigns of the same project with their tasks.
+3. **Read-only checkout of the target.** The coordinator reads its own AIWorks checkout (`src/supervisor/coordinator.mjs:163-178`). For intake it also gets a detached, read-only checkout of the target at the pinned revision (observed: built, `:180-197`): from the project's checkout for GitHub, from the managed mirror for local projects ([PROJECT_CONNECTION.md §5.2](PROJECT_CONNECTION.md#52-shape)). The existing "checkout still clean at that revision" rule applies to both checkouts (`:150-158`, `:508-512`). No `gh` command is offered for a local project, so it never fails because `gh` is missing.
 4. **Structured draft, not a string.** An intake run uses its own output schema: `{ summary, plan, steps[], questions[], declaration }`, where `declaration` is a **declaration object** (section 4.1). The supervisor validates it with `validateDeclaration` and the envelope rules (section 4.3). An invalid draft is retried once with a fresh session, then shown as "AIWorks couldn't draft a plan" with the reason.
 5. **Draft stored, never registered.** A valid draft is stored as a `work_drafts` row: request id, version, declaration, `scopeDigest`, `authorityDigest`, pinned revisions and `state = 'draft'`. Revising creates a new draft version. Nothing reads `work_drafts` when scheduling, so a draft cannot run.
 6. **Conflicts are computed, not guessed.** Duplicate or overlapping work is found by code: scope A's `findWorkConflict` (planned, F2-DUPLICATE) and the scheduler's write-domain holders ([ADAPTIVE_SCHEDULER.md §4.3](ADAPTIVE_SCHEDULER.md#43-write-domains-and-work-ownership)). The coordinator's text may explain a conflict; it never decides one.
-7. **Not posted to GitHub.** Drafts are shown only in the local dashboard. The coordinator's existing GitHub reply path for owner messages (`src/supervisor/coordinator.mjs:392-398`) is unchanged and is not used for intake.
+7. **Not posted to GitHub.** Drafts are shown only in the local dashboard. The coordinator's replies to owner messages are local too: it posts nothing to GitHub (`src/supervisor/coordinator.mjs:299`, `:345`).
 8. **Stale drafts.** A draft is stale when its pinned base SHA, baseline, issue `updated_at`, PR head SHA or plan-file blob changed. A stale draft cannot be approved; the owner gets *Plan again*.
-9. **Limits.** The current prompt asks the coordinator for a run cap and a cost ceiling (`src/supervisor/coordinator.mjs:198`). Intake drafts leave `limits` out: no limit is the default ([AW-002](../DECISIONS.md#aw-002---campaigns-have-no-capacity-limits-by-default)). Limits appear only when the owner sets them on the Review screen.
+9. **Limits.** The current prompt asks the coordinator for a run cap and a cost ceiling (`src/supervisor/coordinator.mjs:295`). Intake drafts leave `limits` out: no limit is the default ([AW-002](../DECISIONS.md#aw-002---campaigns-have-no-capacity-limits-by-default)). Limits appear only when the owner sets them on the Review screen.
 
 The coordinator keeps its role: it reads and proposes. Code stores, validates and decides. The owner approves. The coordinator never registers or changes a campaign.
 
@@ -112,10 +114,10 @@ The envelope is a **version 2 campaign declaration**. Version 1 declarations sta
 | `envelope.acceptance` | How "done" is checked | 1 to 16 items; becomes the closing check's acceptance verbatim (section 6.6) |
 | `envelope.writes` | Path prefixes any step may change | Repository-relative, `safePath`, no secret-like path. Empty means report-only work. Same prefix format as the scheduler's task `writes` ([ADAPTIVE_SCHEDULER.md §4.3](ADAPTIVE_SCHEDULER.md#43-write-domains-and-work-ownership)). |
 | `envelope.denyWrites` | Prefixes inside `writes` that stay off limits | Optional |
-| `envelope.deliverables` | `commit`, `report` or both | Today's two kinds (`src/supervisor/campaign.mjs:176`) |
+| `envelope.deliverables` | `commit`, `report` or both | Today's two kinds (`src/supervisor/campaign.mjs:213`) |
 | `envelope.issues` | GitHub issues steps may report to | GitHub only; may be empty |
-| `envelope.web` | Pages and origins a browser step may open | Today's `web` rules (`src/supervisor/campaign.mjs:197-210`), or `null` |
-| `executor` | Providers, models and permission modes (unchanged block) | Today's rules (`src/supervisor/campaign.mjs:129-158`). This is "providers and roles": the role a provider may take is already fixed by deliverable and `web` (`src/supervisor/controller.mjs:572-583`). |
+| `envelope.web` | Pages and origins a browser step may open | Today's `web` rules (`src/supervisor/campaign.mjs:264-275`), or `null` |
+| `executor` | Providers, models and permission modes (unchanged block) | Today's rules (`src/supervisor/campaign.mjs:143-172`). This is "providers and roles": the role a provider may take is already fixed by deliverable and `web` (`src/supervisor/router.mjs:51-56`). |
 | `limits` | Optional owner limits (unchanged block) | Omitted means no limit (AW-002) |
 | `envelope.release.mode` | `review-only` | The only accepted value until D5-gate and #13. `auto-release` is refused with `RELEASE_MODE_UNAVAILABLE`. |
 | `envelope.planning` | `adaptive` lets AIWorks add steps; `fixed` keeps today's fixed list | |
@@ -124,7 +126,7 @@ The envelope is a **version 2 campaign declaration**. Version 1 declarations sta
 
 **Relaxed for version 2:**
 
-- `target.trackingIssue` and task `issue` are optional. Without an issue, only `commit` deliverables are allowed on a GitHub project, because a report needs a place to be posted (`src/supervisor/controller.mjs:842-863`). A local project never has issues; its reports go to the local evidence ledger (slice E10).
+- `target.trackingIssue` and task `issue` are optional. Without an issue, only `commit` deliverables are allowed on a GitHub project, because a report needs a place to be posted (`src/supervisor/controller.mjs:2292-2315`). A local project never has issues; its reports go to the local evidence ledger (slice E10).
 - `authorization.reference` is the request's issue or PR URL. For a goal without an issue it is an explicitly authorized request reference; a future local-reference contract remains a design proposal. For a local project it is `aiworks-local:<approvalId>` (section 8), accepted only while local admission is on.
 - A local target replaces `repository`, `baseBranch` and `trackingIssue` with `{ source: "local-git" | "folder", baseline: { seq, commit } }`, and `projectId` must be the project's D2 overlay id (`lp-…`).
 
@@ -138,17 +140,17 @@ The owner may narrow `writes`, add `denyWrites`, remove providers, set limits an
 
 ### 4.3 Validation
 
-`validateDeclaration` (`src/supervisor/campaign.mjs:84-222`) gains a version 2 branch. It keeps every version 1 rule and adds:
+`validateDeclaration` (`src/supervisor/campaign.mjs:96-200`) gains a version 2 branch. It keeps every version 1 rule and adds:
 
-- `envelope` keys are exactly those in 4.1; unknown keys are refused, as today (`:89-90`);
-- every initial task passes `validateTask` (today's per-task rules, extracted unchanged from `:168-212`) and the child admission rules of section 6.3, with the envelope as the boundary;
+- `envelope` keys are exactly those in 4.1; unknown keys are refused, as today (`:102-104`);
+- every initial task passes `validateTask` (today's per-task rules, already extracted unchanged, `:202-261`) and the child admission rules of section 6.3, with the envelope as the boundary;
 - a task id may not be `ACCEPT` or `PLAN` (reserved, section 6).
 
 ### 4.4 Digests
 
-No new digest function. `scopeDigest` and `authorityDigest` (`src/supervisor/campaign.mjs:60-63`) already cover the new block:
+No new digest function. `scopeDigest` and `authorityDigest` (`src/supervisor/campaign.mjs:68-75`) already cover the new block:
 
-- **Envelope digest** = `scopeDigest(declaration)`. It covers `envelope`, `target`, `executor`, `constraints` and the initial tasks, and is stored as `campaigns.scope_digest` (`src/supervisor/store.mjs:21-27`). Because the existing rules refuse a changed scope (`src/supervisor/api.mjs:29-33`), the envelope cannot change for a registered campaign.
+- **Envelope digest** = `scopeDigest(declaration)`. It covers `envelope`, `target`, `executor`, `constraints` and the initial tasks, and is stored as `campaigns.scope_digest` (`src/supervisor/store.mjs:21-27`). Because the existing rules refuse a changed scope (`src/supervisor/api.mjs:44-47`), the envelope cannot change for a registered campaign.
 - **Approval digest** = `authorityDigest(declaration)`, which adds `authorization` and `limits`. The owner's approval record binds this value (sections 5 and 8). The dashboard shows its first 12 characters as the plan's fingerprint, under details.
 - Version 1 declarations do not contain `envelope`, so their digests do not change. Slice E2 tests every synthetic fixture declaration in `tests/fixtures/campaigns/` against its digest before the change.
 
@@ -169,13 +171,13 @@ Dashboard-generated envelope approval remains a proposed feature; it must preser
 
 ### 6.1 What changes and what stays
 
-- The declaration, its `scopeDigest` and its `authorityDigest` **never change** when a child is added. `campaignStart` with the same file stays idempotent (`src/supervisor/api.mjs:80-81`), and `SCOPE_CONFLICT` keeps protecting the envelope (`:29-33`).
+- The declaration, its `scopeDigest` and its `authorityDigest` **never change** when a child is added. `campaignStart` with the same file stays idempotent (`src/supervisor/api.mjs:100-102`), and `SCOPE_CONFLICT` keeps protecting the envelope (`:44-47`).
 - Children live in two new, additive tables. They are bound to the envelope digest by a hash chain, admitted only by deterministic code, and checked again before every dispatch.
 - Declared tasks stay as approved. An amendment can **add** children and **revise or cancel children that have not started**. It cannot revise or cancel a declared task, and it cannot touch `ACCEPT` (6.6).
 
 ### 6.2 Where proposals come from
 
-A proposal is the structured output of a **planning step**. That is an operation of kind `plan` on the reserved task `PLAN`, run by deterministic code under the campaign lease like any other operation. It uses a fresh session, read-only access and a validated packet. It reuses the packet contract unchanged: role `implementer`, access `read-only`, stage `plan`, which is allowed today for report work (`src/supervisor/controller.mjs:665-666`; `scripts/lib/worker-context.mjs:85-86`).
+A proposal is the structured output of a **planning step**. That is an operation of kind `plan` on the reserved task `PLAN`, run by deterministic code under the campaign lease like any other operation. It uses a fresh session, read-only access and a validated packet. It reuses the packet contract unchanged: role `implementer`, access `read-only`, stage `plan`, which is allowed today for report work (`src/supervisor/controller.mjs:2044-2045`; `scripts/lib/worker-context.mjs:85-86`).
 
 A planning step runs only on an event, never on a timer:
 
@@ -193,7 +195,7 @@ Its result adds one field to the report result: `amendment = { basis, ops[], rat
 
 ### 6.3 Admission checks against unchanged boundaries
 
-Admission is one pure function, `admitAmendment({ envelope, specs, holders, ops, basis })`. It runs inside the same fenced transaction that settles the planning operation (`src/supervisor/controller.mjs:292-310` today). Either the operation finishes **and** the amendment is admitted with its task rows, or neither happens. A refusal names the first failing check and the operation index.
+Admission is one pure function, `admitAmendment({ envelope, specs, holders, ops, basis })`. It runs inside the same fenced transaction that settles the planning operation (`src/supervisor/controller.mjs:1002-1049`, observed: built). Either the operation finishes **and** the amendment is admitted with its task rows, or neither happens. A refusal names the first failing check and the operation index.
 
 | # | Check | Refusal code | Kind |
 | --- | --- | --- | --- |
@@ -208,16 +210,16 @@ Admission is one pure function, `admitAmendment({ envelope, specs, holders, ops,
 | A8 | **Release mode:** no `release`, `merge`, `deploy`, `apply` or `publish` key; deliverables stay `commit` or `report`. | `WIDEN_RELEASE` | owner |
 | A9 | **Limits:** no `limits`, `slots`, `maxCostUsd` or similar key; children cannot change campaign limits. | `WIDEN_LIMITS` | owner |
 | A10 | **Acceptance:** no operation names `ACCEPT` or a declared task. Each child's own `acceptance` list (1 to 16 items) only adds checks for that child. | `WIDEN_ACCEPTANCE` | owner |
-| A11 | **Constraints:** a child's constraints add to the campaign's, within today's limit of 24 together (`src/supervisor/campaign.mjs:188`), counting the one constraint the envelope adds (6.5). | `INVALID_TASK` | replan |
+| A11 | **Constraints:** a child's constraints add to the campaign's, within today's limit of 24 together (`src/supervisor/campaign.mjs:237`), counting the one constraint the envelope adds (6.5). | `INVALID_TASK` | replan |
 | A12 | **Duplicate work (#5):** the child's fingerprint and optional `workKey` are not owned by another active campaign (`findWorkConflict`, F2) and do not repeat a live child of this campaign. Overlap with a write domain held elsewhere is not refused; the scheduler waits for it. | `DUPLICATE_WORK` | that op is dropped; the rest continue |
-| A13 | **Injected content:** every text field is within its length limit, contains no control characters, and passes the coordinator's credential check (`containsSecret`, `src/supervisor/coordinator.mjs:80-85`). | `UNSAFE_TEXT` | replan |
+| A13 | **Injected content:** every text field is within its length limit, contains no control characters, and passes the coordinator's credential check (`containsSecret`, `src/supervisor/coordinator.mjs:106-111`). | `UNSAFE_TEXT` | replan |
 
 **Refusal handling:**
 
-- *replan*: the amendment is not admitted, the journal records `amendment-refused` with the code, and the next planning step gets the refusal as a constraint. After 4 refusals in a row with no task finished in between (the existing `NO_PROGRESS_LIMIT`, `src/supervisor/controller.mjs:30`), the campaign raises B3 *stalled*.
+- *replan*: the amendment is not admitted, the journal records `amendment-refused` with the code, and the next planning step gets the refusal as a constraint. After 4 refusals in a row with no task finished in between (the existing `NO_PROGRESS_LIMIT`, `src/supervisor/controller.mjs:42`), the campaign raises B3 *stalled*.
 - *owner*: a widening is never retried and never admitted in part. The supervisor raises one B3 owner decision (OWNER_INTERVENTION.md) with the exact widening, such as "wants to change `src/billing/`", and two actions: *Approve wider scope* (section 6.7) or *Keep current scope*. Other in-scope work keeps running. Only the steps that would depend on the refused child wait.
 
-**What no check can prove:** whether a child's *goal text* stays faithful to the outcome. That is bounded three ways instead. A child can only change files inside `writes`. Every child packet carries the approved outcome as a constraint (6.5). And the changed paths of each commit are checked after the run: a path outside the child's `writes` is a boundary violation (B3, `src/supervisor/controller.mjs:380-382`; the changed-path check is the scheduler's S3). The closing check `ACCEPT` and its independent verifier judge the outcome against the original acceptance.
+**What no check can prove:** whether a child's *goal text* stays faithful to the outcome. That is bounded three ways instead. A child can only change files inside `writes`. Every child packet carries the approved outcome as a constraint (6.5). And the changed paths of each commit are checked after the run: a path outside the child's `writes` is a boundary violation (B3, `src/supervisor/controller.mjs:1083-1085`; the changed-path check is the scheduler's S3). The closing check `ACCEPT` and its independent verifier judge the outcome against the original acceptance.
 
 ### 6.4 Storage, idempotency across crash and retry, and fencing
 
@@ -234,20 +236,20 @@ CREATE TABLE IF NOT EXISTS task_specs (
   PRIMARY KEY (campaign_id, task_id, revision));
 ```
 
-- **Append-only.** Rows in `plan_amendments` are only inserted. A revision of a child is a new `task_specs` row with `revision + 1`. A cancel sets `cancelled_at` on the live revision and moves the `tasks` row to a new state, `cancelled`, which is not runnable (`src/supervisor/controller.mjs:40`). Nothing is deleted.
+- **Append-only.** Rows in `plan_amendments` are only inserted. A revision of a child is a new `task_specs` row with `revision + 1`. A cancel sets `cancelled_at` on the live revision and moves the `tasks` row to a new state, `cancelled`, which is not runnable (`src/supervisor/controller.mjs:58`). Nothing is deleted.
 - **Hash chain.** `digest = sha256(canonicalJson({ campaignId, seq, parent: parent_digest, scopeDigest, authorizationVersion, sourceOperation, sourcePacketDigest, ops }))`. The `parent_digest` of seq 1 is the envelope digest. The plan head is the latest digest, or the envelope digest when there is no amendment.
 - **Idempotency key** = `sha256(campaignId, sourceOperation, canonicalJson(ops))`, unique. An operation is settled once (`src/supervisor/store.mjs:40`). After a crash its result is read again from `result.json` and settled with the same key. A different planning operation proposing the same child is stopped by A3 (same id) or A12 (same fingerprint).
-- **Crash windows.** Crash before the settling transaction commits: the operation is still open, and reconcile settles it later with the same key. Crash after: the operation is finished and nothing is applied twice. Slice E3 tests both with the controller's fault injection (`src/supervisor/controller.mjs:100-104`) at new points `after-plan-settle` and `before-plan-settle`.
-- **Fencing.** Admission runs in `fenced(ctx)`. A controller whose lease generation is stale gets `FencedError` and writes nothing (`src/supervisor/store.mjs:224-229`). `lease_generation` and `code_revision` are recorded for audit.
+- **Crash windows.** Crash before the settling transaction commits: the operation is still open, and reconcile settles it later with the same key. Crash after: the operation is finished and nothing is applied twice. Slice E3 tests both with the controller's fault injection (`src/supervisor/controller.mjs:439-444`) at new points `after-plan-settle` and `before-plan-settle`.
+- **Fencing.** Admission runs in `fenced(ctx)`. A controller whose lease generation is stale gets `FencedError` and writes nothing (`src/supervisor/store.mjs:325-330`). `lease_generation` and `code_revision` are recorded for audit.
 - **Retries reuse ownership and revision.** A child's attempts, repair rounds, worktree, branch `campaign/<id>/<task>` and base SHA are the existing per-task rows (`src/supervisor/store.mjs:31-37`; `src/supervisor/adapters/git.mjs:25-39`). Retrying a child after a crash reuses them. It never re-admits the child.
 - **One accessor.** `specOf(store, campaignId, taskId)` returns the declared spec or the live child revision. It replaces each `decl.tasks.find` in the controller and in status (section 2). `ACCEPT` and `PLAN` are generated from the envelope by the same accessor.
 
 ### 6.5 Packet digests for children
 
-- **Declared tasks:** the packet is unchanged, including `authorityDigest = authorityDigest(decl)` (`src/supervisor/controller.mjs:677`). Running campaigns keep their packet digests.
+- **Declared tasks:** the packet is unchanged, including `authorityDigest = authorityDigest(decl)` (`src/supervisor/controller.mjs:1885`). Running campaigns keep their packet digests.
 - **Children:** `authorityDigest = sha256(canonicalJson({ authority: authorityDigest(decl), amendment: <digest of the amendment that set this spec revision> }))`. This is still a 64-hex value, so the packet schema and `acceptsLease` do not change (`scripts/lib/worker-context.mjs:14-15`, `:162-168`). A revised child gets a new digest, which forces a fresh session (`docs/WORKER_CONTEXT_LIFECYCLE.md:47`).
-- **Packet content:** goal, acceptance and references come from the child spec. Constraints are the campaign's, then one envelope constraint ("Approved outcome: …. Change only: …; anything else is a boundary violation."), then the child's own, then verifier findings, as today (`src/supervisor/controller.mjs:680`).
-- **Checked again before every dispatch.** Inside the fenced dispatch transaction, before the operation is recorded, the controller (1) recomputes the chain from the rows, (2) re-runs A3 to A11 for the live spec against the envelope, and (3) for a local project, re-verifies the approval and ledger (section 8). Any failure raises B2 `plan-integrity` and dispatches nothing. The result becomes the real `authorityCurrent` input to `planContext`, replacing the constant `true` (`src/supervisor/controller.mjs:755`).
+- **Packet content:** goal, acceptance and references come from the child spec. Constraints are the campaign's, then one envelope constraint ("Approved outcome: …. Change only: …; anything else is a boundary violation."), then the child's own, then verifier findings, as today (`src/supervisor/controller.mjs:2066-2071`).
+- **Checked again before every dispatch.** Inside the fenced dispatch transaction, before the operation is recorded, the controller (1) recomputes the chain from the rows, (2) re-runs A3 to A11 for the live spec against the envelope, and (3) for a local project, re-verifies the approval and ledger (section 8). Any failure raises B2 `plan-integrity` and dispatches nothing. The result is the real `authorityCurrent` input to `planContext` (observed: built, `src/supervisor/controller.mjs:2173-2174`).
 
 ### 6.6 The closing check and parent ownership
 
@@ -257,9 +259,9 @@ If items remain uncovered, a planning step runs (6.2). If two closing checks in 
 
 ### 6.7 How it meets the immutable `scopeDigest` and #5 work ownership
 
-- **Immutable scope stays immutable.** A wider scope is a new envelope: `scopeVersion + 1` and `supersedes: { campaignId, scopeDigest }`. It goes through the same approval and main gate (or D4). When it registers, the old campaign is cancelled through the existing cancel path once it has no open operation (`src/supervisor/api.mjs:232-234`). Its done tasks become dependency evidence of the new one. Its published but unmerged PRs keep their write domains until merged or closed ([ADAPTIVE_SCHEDULER.md §4.3](ADAPTIVE_SCHEDULER.md#43-write-domains-and-work-ownership)).
-- **Executor amendments** may still change `scope_digest` (`src/supervisor/api.mjs:41-46`). Children stay valid only if the new declaration differs from the old one in `executor` alone, using the same test as `api.mjs:30-31`. The journal records `plan-rebound` with both digests.
-- **Work ownership.** F2's `findWorkConflict` reads declarations. Slice E3 extends it to read live `task_specs` too, so a child is visible to other campaigns' registration exactly like a declared task. The scheduler's `domainHolders` reads children through `specOf`. A child's `writes` is its write domain, as the scheduler design already expects ([ADAPTIVE_SCHEDULER.md:139](ADAPTIVE_SCHEDULER.md#43-write-domains-and-work-ownership)).
+- **Immutable scope stays immutable.** A wider scope is a new envelope: `scopeVersion + 1` and `supersedes: { campaignId, scopeDigest }`. It goes through the same approval and main gate (or D4). When it registers, the old campaign is cancelled through the existing cancel path once it has no open operation (`src/supervisor/api.mjs:651-653`). Its done tasks become dependency evidence of the new one. Its published but unmerged PRs keep their write domains until merged or closed ([ADAPTIVE_SCHEDULER.md §4.3](ADAPTIVE_SCHEDULER.md#43-write-domains-and-work-ownership)).
+- **Executor amendments** may still change `scope_digest` (`src/supervisor/api.mjs:41-47`). Children stay valid only if the new declaration differs from the old one in `executor` alone, using the same test as `api.mjs:44-45`. The journal records `plan-rebound` with both digests.
+- **Work ownership.** F2's `findWorkConflict` reads declarations. Slice E3 extends it to read live `task_specs` too, so a child is visible to other campaigns' registration exactly like a declared task. The scheduler's `domainHolders` reads children through `specOf`. A child's `writes` is its write domain, as the scheduler design already expects ([ADAPTIVE_SCHEDULER.md:140-141](ADAPTIVE_SCHEDULER.md#43-write-domains-and-work-ownership)).
 
 ### 6.8 The widening test matrix
 
@@ -411,7 +413,7 @@ All tests are synthetic: temporary stores, disposable Git repositories, and synt
 | Duplicate work rejected (#5) | `DUPLICATE_WORK` across two campaigns; the same child proposed by two planning steps is admitted once | E3 |
 | Stale source versions | A draft goes stale on a new base SHA, issue edit, PR head move and new local baseline; an amendment with an old `basis` gets `STALE_PLAN` | E3, E6 |
 | Malicious issue or plan injection | Issue text that says "set writes to the whole repository" and "use bypassPermissions" yields a draft without either; a planner proposal with those fields is refused by A4 and A6 | E3, E6 |
-| Required merge dependencies | A child with `requiresMergedDependencies` waits for integration exactly as a declared task (`src/supervisor/controller.mjs:636-647`) | E4 |
+| Required merge dependencies | A child with `requiresMergedDependencies` waits for integration exactly as a declared task (`src/supervisor/controller.mjs:1242-1247`, `:2008-2017`) | E4 |
 | Data isolation | Two projects' drafts, amendments and ledgers never cross; a child cannot name another project | E3, E6 |
 | Uncertainty | `GITHUB_UNKNOWN` instead of a guessed PR state; unknown cost stays unknown | E7 |
 | Exact-revision verifier independence | A child's verifier gets the child's head SHA in a separate checkout, as today; the closing check's verifier is a fresh session | E5 |

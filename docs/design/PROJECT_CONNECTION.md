@@ -17,22 +17,24 @@ Refs #7, Refs #14.
 
 ## 2. Where things stand today (observed)
 
+The design was first written before slices S1 to S6 were built. Every row below was re-checked against the code in this tree on 2026-10-16; a row marked *(since built)* describes code that was added after the design.
+
 | Area | Current behaviour | Evidence |
 | --- | --- | --- |
-| Project identity | There is no project object. A campaign names `target.repository` as GitHub `owner/name`. | `src/supervisor/campaign.mjs:25`, `:109` |
-| Campaign authority | `authorization.reference` must be a GitHub URL. | `src/supervisor/campaign.mjs:100` |
-| Local checkout | `config.json` `repositories["owner/name"]` gives `path` and `worktreeRoot`. Dispatch fails without them. | `src/supervisor/controller.mjs:542-546`; `docs/SUPERVISOR.md:218`, `:221` |
-| Config readers | The dashboard and coordinator accept only `owner/name` keys. | `src/dashboard/roadmap.mjs:24-29`; `src/supervisor/coordinator.mjs:105-106` |
-| Registration gate | A **new** campaign needs a registry entry whose `repository.github` matches `target.repository`, ignoring case. Resume and amendment are not gated. | `src/supervisor/campaign.mjs:230-236`, `:239-243`; `src/supervisor/cli.mjs:66-72` |
-| Governance for packets | `projectGovernance` needs exactly one matching entry, refuses several, validates it against the governance contract's `schemas/project-contract.schema.json`, and derives policies from `policies/catalog.json`. Anything else throws and the worker is not dispatched. | `src/supervisor/campaign.mjs:259-299`, `:15-22`; `src/supervisor/controller.mjs:603-608` |
-| Governance checkout | `governanceRoot` must be absolute and hold `registry/projects`. There is no fallback. | `src/supervisor/governance.mjs:12-20`, `:27-38` |
+| Project identity | A campaign names `target.repository` as GitHub `owner/name`. *(since built)* A project record exists in the store, but a campaign binds to a project only through that GitHub name. | `src/supervisor/campaign.mjs:27`, `:123`; `src/supervisor/store.mjs:133-142`; `src/supervisor/project-connect.mjs:98-110` |
+| Campaign authority | `authorization.reference` must be a GitHub URL. | `src/supervisor/campaign.mjs:114` |
+| Local checkout | `config.json` `repositories["owner/name"]` gives `path` and `worktreeRoot`; *(since built)* a connected GitHub project gives them instead, and a disagreement between the two is `CONFIG_CONFLICT`. Dispatch fails without them. | `src/supervisor/controller.mjs:1604-1609`; `src/supervisor/project-connect.mjs:98-110`; `docs/SUPERVISOR.md:336` |
+| Config readers | The dashboard and coordinator accept only `owner/name` keys. | `src/dashboard/projects.mjs:35-40`; `src/dashboard/merges.mjs:34-40`; `src/supervisor/coordinator.mjs:133-134` |
+| Registration gate | A **new** campaign needs a registry entry whose `repository.github` matches `target.repository`, ignoring case. Resume and amendment are not gated. | `src/supervisor/campaign.mjs:444-451`, `:468-473`; `src/supervisor/cli.mjs:119-127` |
+| Governance for packets | `projectGovernance` needs exactly one matching entry, refuses several, validates it against the governance contract's `schemas/project-contract.schema.json`, and derives policies from `policies/catalog.json`. Anything else throws and the worker is not dispatched. | `src/supervisor/campaign.mjs:489-496`, `:507-542`, `:16-24`; `src/supervisor/controller.mjs:1929-1938` |
+| Governance checkout | `governanceRoot` must be absolute and hold `registry/projects`. There is no fallback. | `src/supervisor/governance.mjs:1-4`, `:29-40` |
 | governance contract | `repository.github` is required, so the contract cannot describe a project without GitHub. `governance.observedAt` must be `<owner>/<repo>@<sha>`. | `tests/fixtures/governance/schemas/project-contract.schema.json:6`, `:10-17`, `:68-71`. Live governance main has the same schema; only one `$comment` differs. |
-| Workspaces | Implementer worktrees are created in the owner's checkout (`git worktree add`, new branch), after `git fetch origin` unless a base SHA is given. Verified commits are pushed to `origin`. | `src/supervisor/adapters/git.mjs:25-39`, `:33`, `:35`, `:81-85`; `src/supervisor/controller.mjs:648`, `:660`, `:830` |
-| Store | SQLite is the only place state changes, with compare-and-swap on `version`. New tables are added with `CREATE TABLE IF NOT EXISTS`, and the store version stays the same. | `src/supervisor/store.mjs:1-4`, `:10`, `:19-77`, `:157-165`, `:180-181` |
-| Dashboard | Listens on `127.0.0.1` only. Commands need the same origin, a CSRF token and JSON of 16 KiB or less. | `src/dashboard/main.mjs:35`; `src/dashboard/server.mjs:39-40`, `:60-69`, `:79-80` |
-| Secret-like paths | One pattern, shared with the governance contract's `projectPath`, rejects `.env*`, `.git`, `.ssh`, keys, certificates and credential or secret files. | `scripts/lib/worker-context.mjs:36-40`, `:47-56` |
+| Workspaces | Implementer worktrees are created in the owner's checkout (`git worktree add`, new branch), after `git fetch origin` unless a base SHA is given. Verified commits are pushed to `origin`. | `src/supervisor/adapters/git.mjs:25-39`, `:33`, `:35`, `:89-94`; `src/supervisor/controller.mjs:2019-2020`, `:2039-2040`, `:2261`, `:2281` |
+| Store | SQLite is the only place state changes, with compare-and-swap on `version`. New tables are added with `CREATE TABLE IF NOT EXISTS`, and the store version stays the same. | `src/supervisor/store.mjs:1-4`, `:10`, `:19-150`, `:256-264`, `:179-181`, `:279-283` |
+| Dashboard | Listens on `127.0.0.1` only. Commands need the same origin, a CSRF token and JSON of 16 KiB or less. | `src/dashboard/main.mjs:34`; `src/dashboard/server.mjs:39`, `:54-55`, `:85-95` |
+| Secret-like paths | One pattern, shared with the governance contract's `projectPath`, rejects `.env*`, `.git`, `.ssh`, keys, certificates and credential or secret files. | `scripts/lib/worker-context.mjs:30-40`, `:52` |
 
-**What this means:** today a project *is* a GitHub repository, and a project without GitHub cannot be expressed anywhere: not in the campaign, not in `config.json`, and not in governance.
+**What this means:** for starting work, a project still *is* a GitHub repository. A project without GitHub can now be connected and planned, but it cannot be expressed in a campaign or in governance.
 
 ## 3. The project record
 
@@ -43,12 +45,12 @@ A project is a row in the supervisor store. It holds no credentials and no secre
 | Field | Meaning and rule |
 | --- | --- |
 | `id` | Stable, owner-scoped project id. Set once at connect, from a short name the owner can edit before saving: lowercase, `^[a-z0-9][a-z0-9-]{1,39}$`, unique in this store. **It never changes**: not when the folder moves, the remote changes or the display name changes. After disconnect the id is kept as a tombstone and is never reused, so old work history cannot attach to a new folder. |
-| `tenant_id` | The owner scope, for example `example-org`, as in campaign `target.tenantId` (`src/supervisor/campaign.mjs:108`). Together with `id` it is the project's identity. |
+| `tenant_id` | The owner scope, for example `example-org`, as in campaign `target.tenantId` (`src/supervisor/campaign.mjs:122`). Together with `id` it is the project's identity. |
 | `name` | Display name, at most 80 characters. The owner can change it. |
 | `source_kind` | `github`, `local-git` or `folder`. It changes only through an explicit owner action, *Change connection type*, never as a side effect of a check. |
 | `root_path` | Canonical root: `realpathSync.native` of the chosen folder. It is shown only in the owner's local dashboard. |
 | `root_key` | The comparison key: `root_path` with `\` changed to `/` and, on Windows, lowercased. All overlap and duplicate checks use it. |
-| `root_file_id` | `sha256(dev:ino)` from a bigint `stat` of the root, as the store already does for its own file (`src/supervisor/store.mjs:108-113`). It shows when a folder at the same path was replaced. |
+| `root_file_id` | `sha256(dev:ino)` from a bigint `stat` of the root, as the store already does for its own file (`src/supervisor/store.mjs:182-187`). It shows when a folder at the same path was replaced. |
 | `fingerprint` | What makes this the *same* project. `github`: `owner/name`. `local-git`: the sorted root commit SHAs of the chosen branch (`git rev-list --max-parents=0`). `folder`: null, because a folder has nothing AIWorks may mark; moves are confirmed by the owner (section 4.6). |
 | `github_repository`, `base_branch` | Only for `github`. `owner/name` with no URL, user info or token. |
 | `local_branch` | Only for `local-git`: the branch AIWorks reads. |
@@ -66,9 +68,9 @@ A project is a row in the supervisor store. It holds no credentials and no secre
 
 **Decision:** additive SQLite tables in the existing `supervisor.db`, not a new file and not `config.json`.
 
-- The store is already the single mutation boundary with compare-and-swap (`src/supervisor/store.mjs:1-4`, `:157-165`). The owner and the dashboard can act on a project at the same time, and a JSON file would need its own locking.
-- Adding tables keeps the store version, exactly as the owner-intervention tables do (`src/supervisor/store.mjs:180-181`). Older code ignores the new tables.
-- `config.json` is the owner's hand-edited host configuration, read when `serve` starts (`src/supervisor/cli.mjs:98`). It stays the place for executable paths and the governance root. AIWorks never writes it.
+- The store is already the single mutation boundary with compare-and-swap (`src/supervisor/store.mjs:1-4`, `:256-264`). The owner and the dashboard can act on a project at the same time, and a JSON file would need its own locking.
+- Adding tables keeps the store version, exactly as the owner-intervention tables do (`src/supervisor/store.mjs:279-283`). Older code ignores the new tables.
+- `config.json` is the owner's hand-edited host configuration, read when `serve` starts (`src/supervisor/cli.mjs:180-181`). It stays the place for executable paths and the governance root. AIWorks never writes it.
 
 Planned tables:
 
@@ -92,7 +94,7 @@ CREATE TABLE IF NOT EXISTS project_overlays (
   approved_at INTEGER NOT NULL, revoked_at INTEGER);
 ```
 
-Project events go to the existing `journal` table with `campaign_id` null and kind `project-*` (`src/supervisor/store.mjs:54-55`). The kinds are connected, preflight changed, baseline taken, relocated, disconnected, overlay approved and overlay revoked.
+Project events go to the existing `journal` table with `campaign_id` null and kind `project-*` (`src/supervisor/store.mjs:108-109`). The kinds are connected, preflight changed, baseline taken, relocated, disconnected, overlay approved and overlay revoked.
 
 ### 3.3 Status
 
@@ -125,7 +127,7 @@ Preflight is read-only. It runs in the supervisor's Node process when the local 
 
 ### 4.2 Telling the kinds apart
 
-Git is always run with `GIT_OPTIONAL_LOCKS=0` and `--no-optional-locks`, so `git status` cannot rewrite the index. AIWorks also passes `-c core.fsmonitor=false`, so a repository's own configuration cannot start an fsmonitor command. This is a per-command setting and writes no configuration. It never writes Git configuration and never adds `safe.directory`. (Workers already get a per-command `safe.directory` only for their own worktree: `src/supervisor/adapters/executors.mjs:190`.)
+Git is always run with `GIT_OPTIONAL_LOCKS=0` and `--no-optional-locks`, so `git status` cannot rewrite the index. AIWorks also passes `-c core.fsmonitor=false`, so a repository's own configuration cannot start an fsmonitor command. This is a per-command setting and writes no configuration. It never writes Git configuration and never adds `safe.directory`. (Workers already get a per-command `safe.directory` only for their own worktree: `src/supervisor/adapters/executors.mjs:291-295`.)
 
 1. `git -C <root> rev-parse --show-toplevel --git-dir --git-common-dir --is-bare-repository`.
    - Not a repository → **plain folder**.
@@ -196,7 +198,7 @@ These limits apply to a `folder` scan. Each one stops before copying.
 
 - **Local Git:** `git init --bare <mirror_root>/repo.git`, then, inside the mirror, `git fetch --no-tags <root> +refs/heads/<local_branch>:refs/heads/source/<local_branch>`. The fetch reads the owner's repository and writes only into the mirror. *Refresh* repeats the same fetch. The owner's `.git` gets no worktree records, branches or configuration. Uncommitted owner changes are not included, and the dashboard says so (`UNCOMMITTED_NOTICE`).
 - **Plain folder:** `<mirror_root>/snapshot/` is a normal Git repository that AIWorks owns. Its work tree is AIWorks's *copy*, never the source. Import syncs included files from the source into `snapshot/` (it reads the source and writes only the copy), removes copies of files that are gone from the source, then runs `git add -A` and commits on branch `aiworks/baseline` with `-c user.name="AIWorks" -c user.email=aiworks@localhost`. The repository's own `info/attributes` is `* -text -eol -filter -ident`, so content is stored byte for byte. Its hooks path is empty.
-- Workers never get `mirror_root`. Task worktrees are created from the mirror with the existing adapter, `prepareImplementWorkspace({ repoPath: <mirror repo>, baseSha: <baseline commit> })`. The explicit `baseSha` skips the `fetch origin` (`src/supervisor/adapters/git.mjs:33`), so no remote is needed. Verification uses `prepareVerifyWorkspace` unchanged. `pushVerified` (`:81-85`) is never called for local kinds. Their result is a local revision plus evidence, never a fake PR (#8).
+- Workers never get `mirror_root`. Task worktrees are created from the mirror with the existing adapter, `prepareImplementWorkspace({ repoPath: <mirror repo>, baseSha: <baseline commit> })`. The explicit `baseSha` skips the `fetch origin` (`src/supervisor/adapters/git.mjs:33`), so no remote is needed. Verification uses `prepareVerifyWorkspace` unchanged. `pushVerified` (`:89-94`) is never called for local kinds. Their result is a local revision plus evidence, never a fake PR (#8).
 
 ### 5.3 The baseline it binds
 
@@ -219,12 +221,12 @@ For `local-git` the manifest is the commit's tree, and `manifest_digest` is the 
 ### 6.1 `config.json` `repositories`
 
 - It stays readable and keeps working for every existing GitHub campaign. AIWorks never writes it.
-- **Resolution, planned for `Controller.repo()`** (`src/supervisor/controller.mjs:542-546`):
+- **Resolution in `Controller.repo()`** (observed: built; `src/supervisor/controller.mjs:1600-1609`, `src/supervisor/project-connect.mjs:98-110`):
   1. Look for a live project with `github_repository` equal to the campaign's `target.repository`, ignoring case.
   2. If there is none, use `config.repositories[...]`, as today.
   3. If both exist and their canonical paths or worktree roots differ, raise a B2 `project-connection` blocker with the `CONFIG_CONFLICT` copy and dispatch nothing. AIWorks never picks one.
 - **Import:** for every `config.repositories` entry with no project, the dashboard offers *Add as project*. That runs the normal GitHub connect flow on `path` and reuses its `worktreeRoot`. Nothing is imported without the owner's click, so a stale entry cannot silently become a project.
-- The dashboard's `configuredRepositories` (`src/dashboard/roadmap.mjs:24-29`) adds the `github_repository` of live projects, so their GitHub metadata is fetched in the same way.
+- The dashboard lists the `config.json` repositories (`src/dashboard/projects.mjs:35-40`) and, when Add project is on, the connected projects (`src/dashboard/server.mjs:73-78`). It fetches no GitHub metadata for either (observed: `src/dashboard/server.mjs:30-32`).
 
 ### 6.2 `assertRegisteredTarget` and `projectGovernance`
 
@@ -538,7 +540,7 @@ Each slice is one reviewable PR. Every change under `src/supervisor/` needs inde
 | **S4** | Local Git projects connect with a managed mirror | `src/supervisor/adapters/mirror.mjs` (new, local-Git part); `src/supervisor/project-connect.mjs` | `tests/supervisor/project-local-git.test.mjs` (8.3 list) | 8.3 complete; `startWork` false with `LOCAL_START_OFF`; the owner's `.git` is untouched | S1, S2 | No (starting work waits for S7, S8 and WORK_ENVELOPE E12) |
 | **S5** | Plain folders connect with a managed snapshot and baselines | `src/supervisor/adapters/mirror.mjs` (folder part) | `tests/supervisor/project-folder.test.mjs` (8.4 list) | 8.4 complete; the source is byte-identical after connect, refresh and rebuild; secret-like files are absent from the mirror's objects | S1, S2, S4 | No |
 | **S6** | The owner adds and sees projects in the dashboard | `src/dashboard/projects.mjs` (new); `src/dashboard/server.mjs` (routes `GET /api/projects`, `POST /api/projects/preflight`, `/connect`, `/check`, `/relocate`, `/disconnect`, with the same origin, CSRF and 16 KiB rules); `src/dashboard/public/*` (the Projects area only); `docs/OPERATIONS_DASHBOARD.md` | `tests/dashboard/projects.test.mjs`: route security (origin, CSRF, size); exact copy for each code; no absolute path in any response except the owner's own project root; the two-project acceptance (8.5); keyboard and 320px checks per UX-001/UX-002 | 8.5 and 8.6 pass; the blind owner review from #11 has run | S3, S4, S5; the DS-WORKSPACE design (#11) | No |
-| **S7** | The AIWorks side of D2: overlay entries are validated against the schema AIWorks ships, and get the same policies as a registry entry | `schemas/local-project-overlay.schema.json` (new); `src/supervisor/local-overlay.mjs` (new: rules 2 to 7 of 7.3(b), `project_overlays` table created on first write, as `src/supervisor/local-candidates.mjs:25-29` does); `src/supervisor/campaign.mjs` (split `governanceForContract` into schema check and derivation, same behaviour; add `overlayGovernance`) | `tests/supervisor/local-overlay.test.mjs`: a missing governance root gives `RULES_UNAVAILABLE`; an unknown capability is refused; `lp-` prefix, registry-id collision and reuse refused; digest mismatch; expired `reviewBy` and a `reviewBy` more than 365 days out; `exceptions`, `releaseAuthorization`, `environments: ["prod"]`, gate `not-enabled`, a secret-like authority path and `repository` each refused; policies equal to the registry derivation for the same capabilities; the existing `campaign-registry` and `packet-governance` tests pass unchanged | Rules 1 to 10 of 7.3(b) hold; local admission stays off | S1, S4 | No (decided 2026-10-16, #24) |
+| **S7** | The AIWorks side of D2: overlay entries are validated against the schema AIWorks ships, and get the same policies as a registry entry | `schemas/local-project-overlay.schema.json` (new); `src/supervisor/local-overlay.mjs` (new: rules 2 to 7 of 7.3(b), the `project_overlays` table already exists in the store, `src/supervisor/store.mjs:147-149`); `src/supervisor/campaign.mjs` (split `governanceForContract` into schema check and derivation, same behaviour; add `overlayGovernance`) | `tests/supervisor/local-overlay.test.mjs`: a missing governance root gives `RULES_UNAVAILABLE`; an unknown capability is refused; `lp-` prefix, registry-id collision and reuse refused; digest mismatch; expired `reviewBy` and a `reviewBy` more than 365 days out; `exceptions`, `releaseAuthorization`, `environments: ["prod"]`, gate `not-enabled`, a secret-like authority path and `repository` each refused; policies equal to the registry derivation for the same capabilities; the existing `campaign-registry` and `packet-governance` tests pass unchanged | Rules 1 to 10 of 7.3(b) hold; local admission stays off | S1, S4 | No (decided 2026-10-16, #24) |
 | **S8** | The owner confirms, renews and revokes a local project's rules once, in the dashboard | `src/dashboard/projects.mjs`; `src/dashboard/server.mjs` (rules routes, same origin, CSRF and 16 KiB rules); `src/dashboard/public/*` (rules review screen) | Typed project name required; only the owner route writes `project_overlays`; renewal changes the digest and `reviewBy`; revoke makes the entry inadmissible at the next check; a confirmation more than 365 days old is refused; the screen lists every inherited policy id | `RULES_*` copy shown; no worker or coordinator path can write overlays (asserted by a code search test and by route tests); keyboard and 320px checks per UX-001/UX-002 | S6, S7 | No (decided 2026-10-16, #24) |
 
 Starting work on local projects is not a slice of #7. It is built in [WORK_ENVELOPE.md §12](WORK_ENVELOPE.md#12-implementation-slices) (E11, E12), after S7 and S8. Applying a result to the owner's folder is the owner's Apply action (WORK_ENVELOPE §8.6, slice E13). It uses the baselines from S5 and is not Auto Release.
