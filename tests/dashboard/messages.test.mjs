@@ -197,7 +197,7 @@ function fromPage(names, stubs = '') {
   return new Function(`${stubs}\n${parts.join('\n')}\nreturn { ${names.map((name) => name.replace(/^function |\($/g, '')).join(', ')} };`)();
 }
 
-test('the Start work page offers Plan only, shows Plan and do with its not-built line, and sends only Plan only', () => {
+test('the Plan work page explains Plan only without a disabled execution option, and sends only Plan only', () => {
   const el = (tag, attributes = {}, ...children) => ({ tag, attributes, children: children.flat().filter((child) => child !== null && child !== undefined) });
   const stubs = `const el = ${el}; const empty = (title, detail) => el('div', { class: 'empty-state' }, title, detail);
     const routeLink = (text, route) => el('a', { href: route }, text); const formatRoute = (route) => '#/p/' + route.project + '/start';
@@ -213,7 +213,7 @@ test('the Start work page offers Plan only, shows Plan and do with its not-built
   for (const label of ['Just my description', 'A GitHub issue', 'A GitHub pull request']) assert.ok(text.includes(label), label);
   const radios = (name) => nodes.filter((node) => node.tag === 'input' && node.attributes.name === name).map((node) => node.attributes);
   assert.deepEqual(radios('start-from').map(({ value, checked }) => [value, checked]), [['description', true], ['issue', false], ['pull', false]]);
-  assert.deepEqual(radios('start-mode').map(({ value, checked, disabled }) => [value, checked, disabled]), [['plan-only', true, undefined], ['plan-and-do', undefined, true]]);
+  assert.deepEqual(radios('start-mode'), []);
   assert.match(text, /AIWorks looks and proposes a plan\. Nothing in your project changes\./);
   assert.match(text, /The plan appears here\. Nothing is posted to GitHub\./);
   assert.match(text, /Starting work from this page is not built yet\. Today, work starts when an authorized private plan is registered on this computer\./);

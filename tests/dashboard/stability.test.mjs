@@ -62,8 +62,8 @@ test('F4: at 320px every focusable element reached with the keyboard is moved fu
       assert.ok(655 - page.window.scrollY >= 0, 'and its top is still in the window');
     }
   }
-  // Wide screens: the bar is a sidebar from the top of the window, so focus moves nothing.
-  page.$('.sidebar').rect = { top: 0, bottom: 720 };
+  // Wide screens: the sidebar starts below the new 68px header, so focus moves nothing.
+  page.$('.sidebar').rect = { top: 68, bottom: 720 };
   const link = page.$('#main').querySelector('a');
   link.rect = { top: 655, bottom: 673.6 };
   page.window.scrollY = 0;
@@ -207,7 +207,7 @@ test('F25: Start work uses the dialogs’ form styles: the box inside its label,
   assert.ok(goal.parentNode.classList.contains('field'));
   assert.equal(goal.parentNode.childNodes[0].textContent, 'What should be true when this is finished?', 'the question comes first');
   const radios = form.querySelectorAll('input[type="radio"]');
-  assert.equal(radios.length, 5);
+  assert.equal(radios.length, 3);
   for (const radio of radios) {
     assert.ok(radio.parentNode.classList.contains('choice'), radio.getAttribute('value'));
     assert.equal(radio.parentNode.parentNode.tagName, 'FIELDSET');
