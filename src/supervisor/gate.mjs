@@ -9,10 +9,11 @@
 //
 // Every file is a git-ignored .log in the working directory (#135): gate.log (output), gate-exit.log (exit code),
 // gate-pid.log (process id) and gate-previous.log (the log of the run before). wait exits 0 when the gate passed, 1 when
-// it failed, 2 while it still runs, 3 when it died and 4 when no gate was started here.
+// it failed, 2 while it still runs, 3 when it died and 4 when no gate was started here. When a verification of a commit
+// task ends, the controller reads gate.log and gate-exit.log through readGateRun (#43).
 import { spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
@@ -27,6 +28,39 @@ const summary = (text) => {
   const at = (text ?? '').lastIndexOf('# all test files');
   return at >= 0 ? text.slice(at).trimEnd() : tail(text, 15);
 };
+// The final node:test summary only: the block after "# all test files", else the last run of node:test count lines.
+// Unlike `summary`, never the log's last lines, so nothing but the tally reaches a published PR body.
+const COUNT_LINE = /^# (tests|suites|pass|fail|cancelled|skipped|todo|duration_ms) \d+(\.\d+)?$/;
+export function testSummary(text) {
+  const lines = (text ?? '').replaceAll('\r\n', '\n').trimEnd().split('\n');
+  const all = lines.findLastIndex((line) => line.startsWith('# all test files'));
+  if (all >= 0) return lines.slice(all).join('\n');
+  const first = lines.findLastIndex((line) => /^# tests \d+$/.test(line));
+  if (first < 0) return null;
+  let end = first;
+  while (end + 1 < lines.length && COUNT_LINE.test(lines[end + 1])) end += 1;
+  return lines.slice(first, end + 1).join('\n');
+}
+
+/**
+ * The gate run the helper left in `dir` (#43), as the controller reads it when a verification ends: the exit code it
+ * recorded (null when the gate never finished) and its final node:test summary (null when the log has none). Null when no
+ * gate ran in `dir`. gate.log holds only the last run; the run before is gate-previous.log, which is not read.
+ */
+export function readGateRun(dir) {
+  const log = read(join(dir, GATE_FILES.log));
+  if (log === null) return null;
+  return { exit: read(join(dir, GATE_FILES.exit))?.trim() || null, summary: testSummary(log) };
+}
+
+/** Why a recorded gate run failed: a non-zero exit code or a failed test in its summary. Null when it did not. */
+export function gateFailure(run) {
+  if (!run) return null;
+  if (run.exit !== null && run.exit !== '0') return `exited ${run.exit}`;
+  const failed = Number(/^# fail (\d+)$/m.exec(run.summary ?? '')?.[1] ?? 0);
+  return failed > 0 ? `reports ${failed} failed test${failed === 1 ? '' : 's'}` : null;
+}
+
 const recordedPid = () => {
   const pid = Number(read(GATE_FILES.pid)?.trim());
   return Number.isSafeInteger(pid) && pid > 0 ? pid : null;

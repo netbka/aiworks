@@ -27,6 +27,7 @@ import { roleCatalog } from './governance.mjs';
 import { ACCEPT_TASK, PLAN_TASK, admitAmendment, settleAmendment, specOf as storedSpecOf, specsOf as storedSpecsOf, verifyChain } from './plan.mjs';
 import { ConflictError, FencedError } from './store.mjs';
 import { mergePass, mergeSettings } from './merge.mjs';
+import { GATE_FILES, gateFailure, readGateRun } from './gate.mjs';
 import { isLocalTarget, recordCandidate } from './local-candidates.mjs';
 import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
 
@@ -862,6 +863,18 @@ export class Controller {
     if (verdict.class === 'result' && op.kind === 'verify') {
       const problem = gitA.checkVerification({ git: this.cmd.git, path: op.workspace, targetSha: op.target_sha });
       if (problem) verdict = { ...verdict, class: 'invalid-result', detail: problem };
+    }
+    // The test tally comes from the verifier's own gate run, never from a worker's prose (#43). It is kept with the
+    // verification for the PR body; the key is always set, so a worker cannot supply it. An acceptance whose last gate
+    // run failed is refused.
+    if (verdict.class === 'result' && op.kind === 'verify' && this.deliverable(ctx, op.task_id) === 'commit') {
+      const gate = readGateRun(op.workspace);
+      verdict = { ...verdict, value: { ...verdict.value, gate } };
+      const failure = verdict.value.verdict === 'accepted' ? gateFailure(gate) : null;
+      if (failure) {
+        verdict = { ...verdict, class: 'invalid-result',
+          detail: `accepted, but the verifier's last gate run ${failure}:\n${gate.summary ?? `no node:test summary in ${GATE_FILES.log}`}` };
+      }
     }
     // Verifier cites are settled at the target revision in the main checkout (SCOPED_READING section 6); a result without
     // cites is applied exactly as before, and no cite can change the verdict.
@@ -2402,6 +2415,18 @@ export class Controller {
     ].join('\n');
   }
 
+  /** The verifier's own gate run as the supervisor read it (#43), verbatim; a worker's typed tally is never shown here. */
+  gateLines(task) {
+    const gate = task.verification?.gate;
+    if (!gate) return [`No gate output was found: the verifier's checkout had no \`${GATE_FILES.log}\` from the gate helper (\`src/supervisor/gate.mjs\`).`];
+    return [
+      `Read by the supervisor from the verifier's own gate output (\`${GATE_FILES.log}\`), not typed by a worker. ` +
+        (gate.exit === null ? `No exit code was recorded in \`${GATE_FILES.exit}\`: the gate did not finish.` : `Exit code ${gate.exit}.`),
+      '',
+      ...(gate.summary === null ? [`\`${GATE_FILES.log}\` has no node:test summary block.`] : ['```text', gate.summary, '```']),
+    ];
+  }
+
   prBody(decl, spec, task, { verificationElsewhere = false } = {}) {
     return [
       `## ${spec.id}: ${spec.title}`,
@@ -2419,6 +2444,8 @@ export class Controller {
       ...(verificationElsewhere ? ['Accepted. The full independent verification is posted as a separate supervisor comment on this PR (split to stay within the GitHub body limit).'] : this.verificationLines(task)),
       '',
       '### Gate',
+      '',
+      ...this.gateLines(task),
       '',
       `Opened by the supervisor after independent verification. Not merged and not deployed: merge and release follow ${decl.target.repository}'s release gate.`,
       '',
