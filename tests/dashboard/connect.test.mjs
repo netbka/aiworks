@@ -513,7 +513,7 @@ test('keyboard only, through the page: Add project is the empty screen’s one a
   // The notice says it connected; the Now screen it opens leads with what the project can do, said once (review 5 G2).
   assert.ok(screen().includes(`Connected "Recipes". ${LOCAL_START[0]}`), screen());
   assert.ok(screen().includes(LOCAL_START[0]), screen());
-  assert.ok(!page.$('#content').querySelectorAll('a').some((node) => node.textContent === 'Start work'), 'no Start work for a project without GitHub');
+  assert.ok(!page.$('#content').querySelectorAll('a').some((node) => node.textContent === 'Plan work'), 'no Start work for a project without GitHub');
   assert.deepEqual(snapshot(root), before, 'the folder is unchanged');
   // The Projects screen lists it, with Add project as the screen's action.
   await page.go('#/projects');
@@ -592,7 +592,7 @@ test('a connected project AIWorks cannot start work in says so truthfully on eve
   assert.match(screen(), /Connected "Recipes"\./);
   assert.ok(screen().includes(LOCAL_START[0]), screen());
   owner(screen(), 'connect notice and Now, Local Git');
-  assert.ok(!page.$('#content').querySelectorAll('a').some((node) => node.textContent === 'Start work'));
+  assert.ok(!page.$('#content').querySelectorAll('a').some((node) => /^(Start|Plan) work$/.test(node.textContent) || /\/start$/.test(node.getAttribute('href') ?? '')));
   // Now › Details: who decides, what each decision allows and where to act, in owner words.
   owner(details(), 'Now › Details, Local Git');
   assert.ok(details().includes(LOCAL_START[1]), details());
@@ -613,7 +613,7 @@ test('a connected project AIWorks cannot start work in says so truthfully on eve
   owner(screen(), 'connect notice and Now, unlisted GitHub');
   owner(details(), 'Now › Details, unlisted GitHub');
   assert.ok(screen().includes(UNREGISTERED), screen());
-  assert.ok(!page.$('#content').querySelectorAll('a').some((node) => node.textContent === 'Start work'), 'no Start work where work cannot start');
+  assert.ok(!page.$('#content').querySelectorAll('a').some((node) => /^(Start|Plan) work$/.test(node.textContent) || /\/start$/.test(node.getAttribute('href') ?? '')), 'no Start work where work cannot start');
   await page.go('#/p/example-org%2Funlisted-app/work');
   owner(screen(), 'Work, unlisted GitHub');
   assert.ok(screen().includes(UNREGISTERED), screen());

@@ -72,7 +72,7 @@ const STATES = {
     : ['No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository. Adding a project from this page is not built yet.', null] },
   'no-work': { section: '7.1', needsYou: false, copy: (d) => d.startWork
     // After Start work exists (OW S9, build slice UI10).
-    ? ['No work yet.', `Tell AIWorks what you want done in ${shortName(d.project)}.`, { label: 'Start work', route: { screen: 'start', project: d.project } }]
+    ? ['No work yet.', `Tell AIWorks what you want done in ${shortName(d.project)}.`, { label: 'Plan work', route: { screen: 'start', project: d.project } }]
     : ['No work yet.', `Work in ${shortName(d.project)} appears here once it is registered on this computer. Starting work from this page is not built yet.`, null] },
   // Calm means nothing at all for the owner: reports and releases are on Results, never named here (owner, 2026-10-13).
   // It speaks of work only, because work is all Needs me checks: a setup problem met in Add project is said there and on

@@ -98,13 +98,13 @@ test('powers not built yet stay off: Start work and Add project are offered only
   const noWork = stateCopy('no-work', { project: 'example/shop-app' });
   assert.equal(noWork.primary, null, 'Start work (OW S9) is not built: no button that leads nowhere');
   assert.match(noWork.text, /Starting work from this page is not built yet\.$/);
-  assert.deepEqual(stateCopy('no-work', { project: 'example/shop-app', startWork: true }).primary, { label: 'Start work', route: { screen: 'start', project: 'example/shop-app' } });
+  assert.deepEqual(stateCopy('no-work', { project: 'example/shop-app', startWork: true }).primary, { label: 'Plan work', route: { screen: 'start', project: 'example/shop-app' } });
   assert.equal(stateCopy('projects-empty').primary, null, 'Add project (OW S11) is not built');
   assert.equal(stateCopy('projects-empty', { addProject: true }).primary.label, 'Add project');
   // nowView keeps Start work off unless asked.
   const supervisor = { available: true, campaigns: [] }, owner = { available: true, items: [], campaigns: {} };
   assert.equal(nowView('example/shop-app', { supervisor, owner }).state.primary, null);
-  assert.equal(nowView('example/shop-app', { supervisor, owner }, { startWork: true }).state.primary.label, 'Start work');
+  assert.equal(nowView('example/shop-app', { supervisor, owner }, { startWork: true }).state.primary.label, 'Plan work');
 });
 
 test('no primary text uses a machine word', async (t) => {

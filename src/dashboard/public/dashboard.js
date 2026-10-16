@@ -103,6 +103,30 @@ const notice = (text, retry, detail = null, address = current.address) => {
   if (detail) node.append(el('details', {}, el('summary', {}, COMMANDS.details), el('p', { class: 'subtext' }, detail)));
 };
 
+/** Product forms own required/number errors; native selects retain platform keyboard and popup behavior. */
+function validateForm(form) {
+  let first = null;
+  for (const field of form.querySelectorAll('input, textarea, select')) {
+    if (field.disabled || field.closest('[hidden]') || field.type === 'radio') continue;
+    const required = field.hasAttribute('required'), value = field.value.trim();
+    const min = field.getAttribute('min');
+    const message = required && !value ? 'Fill in this field before continuing.'
+      : value && field.getAttribute('type') === 'number' && (!Number.isSafeInteger(Number(value)) || min !== null && Number(value) < Number(min))
+        ? 'Enter a whole number of 1 or more.' : null;
+    const id = `${field.id}-validation`;
+    let error = form.querySelector(`#${id}`);
+    if (message) {
+      if (!error) { error = el('span', { id, class: 'validation-error', role: 'alert' }); field.closest('label')?.append(error); }
+      error.textContent = message; error.hidden = false;
+      field.setAttribute('aria-invalid', 'true');
+      field.setAttribute('aria-describedby', [...new Set(`${field.getAttribute('aria-describedby') ?? ''} ${id}`.trim().split(/\s+/))].join(' '));
+      first ??= field;
+    } else { if (error) error.hidden = true; field.removeAttribute('aria-invalid'); }
+  }
+  first?.focus();
+  return !first;
+}
+
 /** A link to another screen of this page: a real link, so it opens in a new tab and Back works. */
 const routeLink = (text, route, cls = '') => el('a', { href: typeof route === 'string' ? route : formatRoute(route), class: cls }, text);
 // A connected project without GitHub is addressed by its project id and named by its own name.
@@ -112,7 +136,7 @@ const screenText = { projects: ['Projects', 'Which project should I open?'], nee
   settings: ['Settings', 'What can AIWorks use on this computer?'], messages: ['Messages', 'What did I ask AIWorks, and what did it answer?'],
   diagnostics: ['Diagnostics', 'What exactly did the machine record?'], now: ['Now', 'Where are we now?'],
   work: ['Work', 'What is running or waiting, and why?'], results: ['Results', 'What has been delivered, and what remains?'],
-  cost: ['Cost', 'What did this cost?'], step: ['Step', 'What is happening on this step?'], start: ['Start work', 'What should AIWorks do?'],
+  cost: ['Cost', 'What did this cost?'], step: ['Step', 'What is happening on this step?'], start: ['Plan work', 'Describe the result. AIWorks proposes the steps.'],
   review: ['Review', 'Is this the right goal and limits?'], 'add-project': ['Add project', 'Which folder should AIWorks work on?'] };
 const screenKey = (route) => route.screen === 'settings' ? route.section ?? 'settings' : route.screen === 'project' ? route.tab : route.screen;
 const tabLabels = { now: 'Now', work: 'Work', results: 'Results', cost: 'Cost' };
@@ -124,6 +148,7 @@ function showRoute() {
   $('#view-eyebrow').textContent = project ? `PROJECT · ${projectName(project).toUpperCase()}` : route.screen === 'settings' && route.section ? 'SETTINGS' : 'AIWORKS';
   $('#view-title').textContent = project && route.screen === 'project' && route.tab === 'now' ? projectName(project) : title;
   $('#view-description').textContent = question;
+  $('#project-back').hidden = !project;
   document.title = [title, project ? projectName(project) : null, 'AIWorks'].filter(Boolean).join(' · ');
   const place = globalOf(route);
   for (const node of document.querySelectorAll('[data-global]')) {
@@ -170,6 +195,7 @@ function renderMetrics(campaigns = state.supervisor.campaigns, shown = []) {
     el('div', { class: 'metric-title' }, title, el('span', { class: 'metric-icon', 'aria-hidden': 'true' }, icon)),
     el('div', { class: 'metric-value number' }, String(value), total ? el('small', {}, total) : null), el('div', { class: 'metric-foot' }, foot))));
   $('#metrics').hidden = !shown.length;
+  $('#metrics').classList.toggle('metrics-inline', shown.includes('AI workers working'));
   // The Needs me count in the global bar: never zero while the supervisor state is unknown, and never final while a merge
   // check runs: "7 + checking" until it ends (OWNER_WORKSPACE §1 rule 3, §7.4; aiworks#11 review 4 F3).
   $('#needs-count').textContent = !state.supervisor.available ? '?' : attention ? `${attention}${unknown ? ' + checking' : ''}` : unknown ? 'checking' : '';
@@ -591,15 +617,13 @@ function startScreen(project) {
   // The form wears the dialogs' styles: each box inside its label, and the choices in framed groups (aiworks#11 review F25).
   // When nothing reads requests, the form keeps the goal but offers no send: it says so and what to do instead (F10).
   const reads = Boolean(coordinator?.configured);
-  const form = el('form', { class: 'panel-body start-form', 'data-start-form': project, 'data-reads': readsKey(coordinator), 'data-focus-scope': `start/${project}`,
-    onsubmit: (event) => { event.preventDefault(); save(); if (reads) void askForPlan(project, address); } },
+  const form = el('form', { novalidate: true, class: 'panel-body start-form', 'data-start-form': project, 'data-reads': readsKey(coordinator), 'data-focus-scope': `start/${project}`,
+    onsubmit: (event) => { event.preventDefault(); save(); if (reads && validateForm(form)) void askForPlan(project, address); } },
     el('label', { class: 'field' }, el('strong', {}, 'What should be true when this is finished?'), goal),
     el('fieldset', {}, el('legend', {}, 'Start from'), ...START_FROM.map(from), numberLabel),
-    el('fieldset', {}, el('legend', {}, 'How far AIWorks goes'),
-      el('label', { class: 'choice' }, el('input', { type: 'radio', name: 'start-mode', value: 'plan-only', checked: true }), ' Plan only'),
-      el('p', { class: 'subtext' }, 'AIWorks looks and proposes a plan. Nothing in your project changes.'),
-      el('label', { class: 'choice' }, el('input', { type: 'radio', name: 'start-mode', value: 'plan-and-do', disabled: true, 'aria-describedby': 'plan-and-do-note' }), ' Plan and do'),
-      el('p', { class: 'subtext', id: 'plan-and-do-note' }, 'AIWorks proposes a plan. After you approve it once, it does the work. ', PLAN_AND_DO_OFF.join(' '))),
+    el('div', { class: 'planning-mode' }, el('strong', {}, 'Plan only'),
+      el('p', {}, 'AIWorks looks and proposes a plan. Nothing in your project changes.'),
+      el('details', {}, el('summary', {}, 'About starting work'), el('p', { class: 'subtext' }, PLAN_AND_DO_OFF.join(' ')))),
     reads ? el('p', { class: 'subtext' }, 'The plan appears here. Nothing is posted to GitHub. No secrets; up to 2,000 characters.') : notRead(coordinator),
     reads ? el('button', { class: 'button', type: 'submit', disabled: startBlocked() }, 'Ask for a plan') : null,
     el('div', { id: 'start-receipt', 'aria-live': 'polite' }, startReceipt(address)));
@@ -757,17 +781,17 @@ const mergeAsOf = (check) => `Merge check from ${!check.at ? 'an unknown time' :
 
 /** One Needs me row: what to do, then the subject (what the step delivers) with its link, then the evidence in one line. */
 const needsItem = (item) => el('li', { class: `needs-item ${item.kind}` },
-  item.action ? el('div', { class: 'needs-action' }, item.action) : null,
-  // A time, when known, completes the sentence: "…stopped checking in at about 12:31".
-  el('div', { class: 'needs-text' }, el('span', {}, `${item.text}${item.at ? ` at about ${timeOnly(item.at)}` : ''}`),
-    item.link ? link(`${item.link.label} ↗`, item.link.url, 'needs-link') : null),
-  item.mergeCheck ? el('div', { class: 'needs-stale' }, mergeAsOf(item.mergeCheck)) : null,
-  item.evidence ? disclosure(`needs/${item.link?.url ?? item.text}`, el('span', { class: 'evidence' }, item.evidence),
-    el('p', { class: 'needs-detail' }, item.detail)) : null,
-  ...item.points.map((point) => el('div', { class: 'needs-point' }, point.link ? link(`${point.link.label} ↗`, point.link.url, 'needs-link') : null, el('span', {}, point.text))),
-  // Under "AIWorks itself", an item about one project's work still names that project (`about`, never counted for it).
-  el('div', { class: 'subtext' }, [item.about ? `Project ${projectName(item.about)}` : null,
-    item.campaignId ? campaignContext(item.campaignId) : null].filter(Boolean).join(' · ')));
+  el('div', { class: 'needs-body' },
+    el('div', { class: 'needs-context' }, [item.about ? `Project ${projectName(item.about)}` : null,
+      item.campaignId ? campaignContext(item.campaignId) : null].filter(Boolean).join(' · ')),
+    item.action ? el('div', { class: 'needs-action' }, item.action) : null,
+    el('div', { class: 'needs-text' }, el('span', {}, `${item.text}${item.at ? ` at about ${timeOnly(item.at)}` : ''}`)),
+    item.mergeCheck ? el('div', { class: 'needs-stale' }, mergeAsOf(item.mergeCheck)) : null,
+    item.link ? el('div', { class: 'needs-actions' }, link(`${item.link.label} ↗`, item.link.url, 'button secondary needs-link')) : null,
+    item.evidence ? disclosure(`needs/${item.link?.url ?? item.text}`, el('span', { class: 'evidence' }, item.evidence),
+      el('p', { class: 'needs-detail' }, item.detail)) : null),
+  item.points.length ? el('div', { class: 'needs-impact' }, ...item.points.map((point) => el('div', { class: 'needs-point' },
+    point.link ? link(`${point.link.label} ↗`, point.link.url, 'needs-link') : null, el('span', {}, point.text)))) : null);
 
 /**
  * One Needs me group (OWNER_WORKSPACE S3): a project, named and linked to its own screen, or "AIWorks itself" (always
@@ -848,6 +872,15 @@ function continueWith(projects, saved, all) {
   return project ? { project, draft: drafted.includes(project) } : null;
 }
 
+function attentionSummary() {
+  const owner = state.owner;
+  if (!owner?.available) return null;
+  const waiting = owner.count > 0, checking = owner.unknownResults > 0;
+  return el('section', { class: `attention-summary${waiting ? '' : checking ? ' checking' : ' calm'}`, 'aria-label': 'What needs you' },
+    el('div', {}, el('h2', {}, owner.headline), checking ? el('p', {}, `Merge of ${plural(owner.unknownResults, 'published step')} being checked.`) : null),
+    waiting || checking ? routeLink('Open Needs me →', { screen: 'needs' }, waiting ? 'button' : 'button secondary') : null);
+}
+
 function projectsScreen() {
   if (!state.supervisor.available) return [unavailable()];
   const projects = projectList(), resume = continueWith(projects, readLastProject(), readDrafts());
@@ -861,18 +894,19 @@ function projectsScreen() {
   }
   return [resume ? el('p', { class: 'continue' }, routeLink(`Continue with ${projectName(resume.project)} →`, { screen: 'project', project: resume.project }, 'continue-link'),
     resume.draft ? el('span', { class: 'subtext' }, ' Your unsent draft is kept there.') : null) : null,
-    sinceSummary(),
+    attentionSummary(),
     panel('Your projects', adding ? 'One row per project this computer works on. Those that need you come first, then those with work running.'
       : 'One row per repository this computer works on. Those that need you come first, then those with work running.',
       el('ul', { class: 'project-list' }, ...projects.map((project) => el('li', { class: 'project-row', 'data-focus-scope': project.id },
-        el('div', { class: 'row-line' }, routeLink(project.name, { screen: 'project', project: project.id }, 'project-name'), el('span', { class: 'subtext' }, project.kind)),
-        // One state, said in words (never by colour alone), and one next action.
-        el('div', { class: 'row-line' }, badge(stateTones[project.state.key] ?? 'unknown', stateWords[project.state.key] ?? 'Not known'), el('span', {}, project.state.text)),
+        el('div', { class: 'project-identity' }, el('span', { class: 'project-initial', 'aria-hidden': 'true' }, Array.from(project.name)[0]?.toUpperCase() ?? ''),
+          el('div', {}, routeLink(project.name, { screen: 'project', project: project.id }, 'project-name'), el('div', { class: 'project-kind' }, project.kind))),
+        el('div', { class: 'project-status' }, badge(stateTones[project.state.key] ?? 'unknown', stateWords[project.state.key] ?? 'Not known'),
+          el('div', { class: 'subtext' }, project.state.text)),
         projectAction(project.action),
         disclosure(`project/${project.id}`, 'Details', el('div', { class: 'subtext' }, (project.repository ? [`Repository ${project.repository}`, `owner ${project.details.owner}`,
           plural(project.details.work, 'piece of work', 'pieces of work'), project.details.configured ? 'listed in the AIWorks configuration file on this computer' : null]
           : [`${project.kind} project`]).concat(project.connection ? [`connected from the folder ${project.connection.folder}`] : []).filter(Boolean).join(' · ')))))),
-      adding ? routeLink('Add project', { screen: 'add-project' }, 'button') : null)].filter(Boolean);
+      adding ? routeLink('Add project', { screen: 'add-project' }, 'button') : null), sinceSummary()].filter(Boolean);
 }
 
 /**
@@ -1100,7 +1134,7 @@ function workerLine(w) {
  * there is no switch and no disabled control until the owner's release decision (#33) and a grant for the project exist.
  */
 function releasePanel(releases) {
-  return panel('Release mode', 'Per project. AIWorks never merges or releases by itself.', releases.length
+  return panel('Release mode', 'Per project. Merging and releasing follow separate permissions.', releases.length
     ? el('ul', { class: 'settings-links' }, ...releases.map((r) => el('li', { 'data-focus-scope': `release/${r.repository ?? r.project}` }, el('strong', {}, r.repository ? projectName(r.repository) : r.name),
       // A project without GitHub: release does not apply to it yet (aiworks#11 review 5 G10).
       r.text ? el('div', { class: 'subtext' }, r.text) : null,
@@ -1215,7 +1249,7 @@ function nowScreen(project) {
   if (row?.connection && (!row.repository || (!projectCampaigns(project).length && !row.connection.startWork.allowed))) return [connectionPanel(row)];
   // Start work exists since slice S9 (Plan only), so the no-work state offers it as its primary action.
   const view = nowView(project, { ...state, offline }, { now: Date.now(), startWork: true }), { state: now, details } = view;
-  const startWork = now.primary?.route?.screen === 'start' || offline || !state.supervisor.available ? null : routeLink('Start work', { screen: 'start', project }, 'button secondary');
+  const startWork = now.primary?.route?.screen === 'start' || offline || !state.supervisor.available ? null : routeLink('Plan work', { screen: 'start', project }, 'button secondary');
   const goal = view.goal ? `${view.goal.text}${view.goal.variant ? ` (${view.goal.variant})` : ''}` : null;
   const since = view.since?.length ? el('section', { class: 'since', 'aria-labelledby': 'since-title' },
     el('h2', { id: 'since-title' }, previousVisit ? `Since you last looked (${dateTime(previousVisit)})` : 'In the last 24 hours'),
@@ -1614,13 +1648,13 @@ function go(address, { restore = false } = {}) {
 }
 // At narrow widths navigation is a bar fixed to the bottom of the window. Keyboard focus is kept above it, never under it
 // (OWNER_WORKSPACE §6.2; aiworks#11 review F4); the stylesheet's scroll-padding does the same where the browser applies it.
-// On wide screens the bar is a full-height sidebar that starts at the top of the window, and nothing moves.
+// On wide screens the sidebar starts below the header; only a bar in the lower half of the viewport needs clearance.
 const FOCUS_GAP = 8;
 document.addEventListener('focusin', (event) => {
   const bar = $('.sidebar'), target = event.target;
   if (!bar || !target?.getBoundingClientRect || bar.contains(target) || target.closest?.('dialog')) return;
   const edge = bar.getBoundingClientRect().top, bottom = target.getBoundingClientRect().bottom;
-  if (edge > 0 && bottom > edge - FOCUS_GAP) window.scrollBy(0, bottom - edge + FOCUS_GAP);
+  if (edge > window.innerHeight / 2 && bottom > edge - FOCUS_GAP) window.scrollBy(0, bottom - edge + FOCUS_GAP);
 });
 // Destinations are links. A plain click opens the address here; a click that asks for a new tab or window is left to the browser.
 document.addEventListener('click', (event) => {
@@ -1637,12 +1671,14 @@ $('#instruction-step-label').textContent = DIALOGS.guidanceStep;
 $('#instruction-text').closest('label').append(el('span', { id: 'instruction-refusal', class: 'notice warning', role: 'alert', hidden: true }));
 // The skip link moves focus to the content without changing the address.
 $('.skip-link').addEventListener('click', (event) => { event.preventDefault(); $('#main').focus(); });
-for (const selector of ['#search', '#track', '#status']) $(selector).addEventListener('input', () => { workLimit = 80; render(); });
+for (const selector of ['#search', '#track', '#status']) $(selector).addEventListener('input', () => { workLimit = 80; $('#clear-search').hidden = !$('#search').value; render(); });
+$('#clear-search').addEventListener('click', () => { $('#search').value = ''; $('#clear-search').hidden = true; workLimit = 80; render(); $('#search').focus(); });
 $('#confirm-cancel').addEventListener('click', () => { $('#cancel-dialog').close(); if (pendingCancel) void command(pendingCancel, 'cancel'); pendingCancel = null; });
 $('#close-instruction').addEventListener('click', () => { saveDraft(); $('#instruction-dialog').close(); });
 $('#instruction-dialog').addEventListener('cancel', saveDraft);
 $('#instruction-form').addEventListener('submit', (event) => {
   event.preventDefault();
+  if (!validateForm($('#instruction-form'))) return;
   if (offline || sending) return;
   saveDraft();
   const task = instructionCampaign.tasks.find((t) => t.id === $('#instruction-task').value);
@@ -1657,6 +1693,7 @@ $('#close-message').addEventListener('click', () => { messageDraft.text = $('#me
 $('#message-dialog').addEventListener('cancel', () => { messageDraft.text = $('#message-text').value; });
 $('#message-form').addEventListener('submit', (event) => {
   event.preventDefault();
+  if (!validateForm($('#message-form'))) return;
   if (offline || sending) return;
   const text = $('#message-text').value;
   messageDraft.text = text;

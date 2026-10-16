@@ -70,9 +70,9 @@ test('the sidebar shows a neutral placeholder until the host is known, never "Th
 
 test('the page background is explicit under a dark preference, and large screens get larger text and a wider column', () => {
   const css = page('dashboard.css');
-  assert.match(css, /^body\{margin:0;font-size:14px;background:var\(--page\);color:#1d2839\}/m);
-  assert.match(css, /@media\(prefers-color-scheme:dark\)\{:root,body\{background:var\(--page\);color:#1d2839\}\}/);
-  assert.match(css, /color-scheme:light;--page:#f6f8fb/);
+  assert.match(css, /^body\{margin:0;font-size:14px;background:var\(--page\);color:var\(--ink\)\}/m);
+  assert.match(css, /@media\(prefers-color-scheme:dark\)\{:root,body\{background:var\(--page\);color:var\(--ink\)\}\}/);
+  assert.match(css, /color-scheme:light;--page:#f5f7fb/);
   assert.match(css, /@media\(min-width:1900px\)\{body\{zoom:1\.12\}\}/);
   assert.match(css, /@media\(min-width:2300px\)\{body\{zoom:1\.25\}main\{max-width:1700px\}\}/);
 });
@@ -182,7 +182,7 @@ test('the layout follows OWNER_WORKSPACE §6.1, and no action exists at only one
   const narrow = rules('max-width:959px'), phone = rules('max-width:599px');
   assert.ok(narrow.some(([s, d]) => s === 'nav' && /grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/.test(d)));
   assert.ok(narrow.some(([s, d]) => s === '.sidebar' && /inset:auto 0 0 0/.test(d)), 'the bar sits at the bottom');
-  assert.ok(narrow.some(([s, d]) => s === '.nav-item' && /font-size:11px/.test(d)), 'each destination keeps its label');
+  assert.ok(narrow.some(([s, d]) => s === '.nav-item' && /font-size:12px/.test(d)), 'each destination keeps its label');
   assert.ok(phone.some(([s, d]) => s === '.tab' && /flex:1 1 0/.test(d)), 'four tabs fit without scrolling');
   // Touch targets are at least 44 by 44 CSS px.
   for (const selector of ['.nav-item', '.tab', '.messages-link', '.brand', '.continue-link', 'a.button']) {
