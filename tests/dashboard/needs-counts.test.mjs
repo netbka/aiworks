@@ -89,7 +89,7 @@ test('F9: AIWorks stopped on this computer is one Needs me item for all the work
   assert.deepEqual(view.items[0].points.map((point) => point.text).slice(1), [
     'Held up in notes: “Purpose of notes-a”, “Purpose of notes-b” (paused; it can’t resume until AIWorks runs again).',
     'Held up in shop: “Purpose of shop-a”, “Purpose of shop-b” (not picked up yet).']);
-  assert.equal(view.items[0].points.filter((point) => /restart it on this computer/.test(point.text)).length, 1);
+  assert.equal(view.items[0].points.filter((point) => /sign out of this computer and sign in again/.test(point.text)).length, 1);
   assert.equal(view.items[0].at, NOW - 30 * 60_000, 'the last time AIWorks checked in');
   assert.deepEqual([view.headline, view.groups.map((group) => [group.name, group.count])], ['Needs you (1)', [[SYSTEM_GROUP, 1]]]);
 });

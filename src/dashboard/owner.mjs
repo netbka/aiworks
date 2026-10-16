@@ -2,7 +2,7 @@
 // with the merge state the dashboard reads from local git (merges.mjs); it never calls GitHub. Unknown or stale merge
 // state never reads as merged; every sentence is built from supervisor or local git fields, never from worker output.
 
-import { DELEGATED, NEEDS, RESTART_ADVICE, blockerWords, stateCopy } from './copy.mjs';
+import { DELEGATED, NEEDS, RESTART_ADVICE, blockerCheck, blockerWords, stateCopy } from './copy.mjs';
 
 const PR_URL = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)$/;
 const COMMENT_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(?:issues|pull)\/\d+#issuecomment-\d+$/;
@@ -355,9 +355,11 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     // pull requests above still are, because a published result can still be merged.
     const cancelled = c.control === 'cancelled';
     if (c.blocker && !cancelled) {
-      // What happened and what to do in owner words; what the supervisor recorded is one click away.
-      const words = blockerWords(c.blocker);
-      items.push({ ...base, kind: c.blockerClass === 'B3' ? 'decision' : 'stopped', text: NEEDS.workStopped,
+      // What happened and what to do in owner words; what the supervisor recorded is one click away. The card carries the
+      // Check again its sentence names, while the work takes it: a Needs me card has no More menu (review 5 G8).
+      const check = (c.controls?.more ?? []).includes('recheck') ? blockerCheck(c.blocker, c.id) : null;
+      const words = blockerWords(c.blocker, { check: Boolean(check) });
+      items.push({ ...base, kind: c.blockerClass === 'B3' ? 'decision' : 'stopped', text: NEEDS.workStopped, command: check,
         evidence: NEEDS.recorded, detail: [c.blockerClass, c.blockerReason, c.blockerAction].filter(Boolean).join(' · '),
         points: [{ link: { label: 'Tracking issue', url: c.trackingUrl }, text: `${words.reason}. What to do: ${words.action}.` }] });
     }

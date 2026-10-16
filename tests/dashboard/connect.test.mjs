@@ -378,6 +378,77 @@ test('through the page: Add project without project rules says so with Check aga
   assert.ok(visibleText(page.$('#add-result')).startsWith('Ordinary folder, no Git. Folder Recipes.'), visibleText(page.$('#add-result')));
 });
 
+/**
+ * aiworks#11 review 5 G8: checking a folder that is already connected gives a true next step on Add project. A GitHub
+ * checkout connected as Local Git read as a changed identity when Check folder proposed GitHub, and said "Choose Check
+ * again", which Add project does not show. A folder that really holds another project still says so, with the project
+ * to open; neither names a control the screen lacks.
+ */
+test('Add project: a folder already connected opens its project, and a changed one names its folder and the project to open (review 5 G8)', async (t) => {
+  const r = await rig(t);
+  const root = r.repository('SampleApp', 'https://github.com/example-org/notes-tool.git');
+  const connected = (await r.post('/api/projects/connect', { path: root, kind: 'local-git' })).json;
+  assert.equal(connected.ok, true, JSON.stringify(connected));
+  const again = (await r.post('/api/projects/preflight', { path: root })).json;
+  assert.deepEqual([again.ok, again.code, again.message, again.action],
+    [false, 'ALREADY_CONNECTED', 'This folder is already connected as "SampleApp".', { do: 'open', label: 'Open "SampleApp"', project: connected.project.route }]);
+  // Asked as GitHub on purpose, the kind it was not connected as: a different project at that place, with its folder named.
+  const asGithub = (await r.post('/api/projects/preflight', { path: root, kind: 'github' })).json;
+  assert.equal(asGithub.code, 'IDENTITY_CHANGED');
+  assert.match(asGithub.message, /^SampleApp now holds a different project \(.+ → example-org\/notes-tool\)\. AIWorks stopped work here\.$/);
+  assert.deepEqual(asGithub.action, { do: 'open', label: 'Open "SampleApp"', project: connected.project.route });
+  // The folder now holds another repository: still not the same project, and said the same way.
+  rmSync(join(root, '.git'), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  git(root, 'init', '-q', '-b', 'main');
+  git(root, 'add', '-A');
+  git(root, '-c', 'user.name=Owner', '-c', 'user.email=owner@example.invalid', 'commit', '-q', '-m', 'another project');
+  const changed = (await r.post('/api/projects/preflight', { path: root })).json;
+  assert.equal(changed.code, 'IDENTITY_CHANGED', JSON.stringify(changed));
+  assert.match(changed.message, /^SampleApp now holds a different project \(.+ → .+\)\. AIWorks stopped work here\.$/);
+  assert.deepEqual(changed.action, { do: 'open', label: 'Open "SampleApp"', project: connected.project.route });
+  for (const answer of [again, asGithub, changed]) assert.doesNotMatch(answer.message, /Check again|Needs setup/);
+  assertNoOtherPath(r, [root]);
+});
+
+test('through the page: Add project with an already-connected folder names only controls it shows (review 5 G8)', async (t) => {
+  const tmp = realpathSync.native(mkdtempSync(join(tmpdir(), 'aiworks-connect-again-')));
+  t.after(() => rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
+  const root = join(tmp, 'SampleApp');
+  mkdirSync(root);
+  git(root, 'init', '-q', '-b', 'main');
+  write(root, { 'README.md': '# SampleApp\n' });
+  git(root, 'add', '-A');
+  git(root, '-c', 'user.name=Owner', '-c', 'user.email=owner@example.invalid', 'commit', '-q', '-m', 'first');
+  git(root, 'remote', 'add', 'origin', 'https://github.com/example-org/notes-tool.git');
+  const page = await openPage(t, { store: 'empty', server: { projectConnection: { gitEnv: { GIT_CEILING_DIRECTORIES: tmp } } } });
+  const config = JSON.parse(readFileSync(join(page.dataDir, 'config.json'), 'utf8'));
+  writeFileSync(join(page.dataDir, 'config.json'), JSON.stringify({ ...config, governanceRoot: GOVERNANCE, projectConnection: { enabled: true } }));
+  await page.refresh();
+  const checkFolder = async () => {
+    await page.go('#/projects/add');
+    const path = page.$('#add-path');
+    path.value = root;
+    path.dispatchEvent({ type: 'input', preventDefault() {} });
+    page.$('form[data-add-form]').dispatchEvent({ type: 'submit', defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } });
+    await page.settle();
+    return page.$('#add-result');
+  };
+  // Connected as Local Git, as the blind reviewer did (BLIND-FIRST N2).
+  const first = await checkFolder();
+  page.$('#content').querySelectorAll('input').find((node) => node.getAttribute('value') === 'local-git').dispatchEvent({ type: 'change', preventDefault() {} });
+  page.$('#content').querySelectorAll('button').find((node) => node.textContent === 'Connect project').click();
+  await page.settle();
+  assert.ok(first, 'Add project answered');
+  const answer = await checkFolder();
+  assert.equal(visibleText(answer), 'This folder is already connected as "SampleApp". Open "SampleApp"');
+  assert.doesNotMatch(visibleText(page.$('#content')), /Check again|Needs setup/);
+  const open = answer.querySelectorAll('a').find((node) => node.textContent === 'Open "SampleApp"');
+  assert.ok(open, 'the project to open is on the screen');
+  open.click();
+  await page.settle();
+  assert.match(visibleText(page.$('#main')), /PROJECT · SAMPLEAPP SampleApp Where are we now?.* Connected. AIWorks can't plan or start work in a project without GitHub yet./, 'it opens the connected project');
+});
+
 test('two projects at once (PROJECT_CONNECTION §8.5): separate records, independent statuses, and no work starts', async (t) => {
   const r = await rig(t);
   const github = r.repository('SampleApp', 'https://github.com/example-org/sampleapp.git');

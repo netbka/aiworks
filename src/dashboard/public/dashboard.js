@@ -790,8 +790,10 @@ const needsItem = (item) => el('li', { class: `needs-item ${item.kind}` },
     item.link ? el('div', { class: 'needs-actions' }, link(`${item.link.label} ↗`, item.link.url, 'button secondary needs-link')) : null,
     item.evidence ? disclosure(`needs/${item.link?.url ?? item.text}`, el('span', { class: 'evidence' }, item.evidence),
       el('p', { class: 'needs-detail' }, item.detail)) : null),
-  item.points.length ? el('div', { class: 'needs-impact' }, ...item.points.map((point) => el('div', { class: 'needs-point' },
-    point.link ? link(`${point.link.label} ↗`, point.link.url, 'needs-link') : null, el('span', {}, point.text)))) : null);
+  // The Check again a stopped work's sentence names is on its card, after that sentence: a card has no More menu (aiworks#11 review 5 G8).
+  item.points.length || item.command ? el('div', { class: 'needs-impact' }, ...item.points.map((point) => el('div', { class: 'needs-point' },
+    point.link ? link(`${point.link.label} ↗`, point.link.url, 'needs-link') : null, el('span', {}, point.text))),
+    item.command ? el('div', { class: 'needs-actions' }, primaryAction(item.command)) : null) : null);
 
 /**
  * One Needs me group (OWNER_WORKSPACE S3): a project, named and linked to its own screen, or "AIWorks itself" (always
@@ -1225,14 +1227,18 @@ function settingsLinks() {
     el('li', {}, routeLink('Diagnostics', '#/settings/diagnostics'), el('div', { class: 'subtext' }, 'The full activity journal, every step with its issue and pull request, the roadmap of the platform that keeps your project rules, and how fresh each merge check is.'))));
 }
 
-/** The one primary action of a state (OWNER_WORKSPACE §4.4), or nothing: a screen link, a GitHub link or Resume. */
+/**
+ * The one primary action of a state (OWNER_WORKSPACE §4.4), or nothing: a screen link, a GitHub link, Resume, or the
+ * Check again of work a recorded blocker stopped, each only while the work allows it.
+ */
 function primaryAction(primary) {
   if (!primary) return null;
   if (primary.route) return routeLink(primary.label, primary.route, 'button');
   if (primary.url) return link(`${primary.label} ↗`, primary.url, 'button');
-  const c = primary.command === 'resume' ? campaignById(primary.campaignId) : null;
-  if (!c) return null;
-  return button(primary.label, () => command(c, 'resume'), '', sending || offline || !state.supervisor.available);
+  const c = campaignById(primary.campaignId);
+  const allowed = primary.command === 'resume' ? c?.controls?.primary === 'resume' : primary.command === 'recheck' && (c?.controls?.more ?? []).includes('recheck');
+  if (!allowed) return null;
+  return button(primary.label, () => command(c, primary.command), '', sending || offline || !state.supervisor.available);
 }
 
 /**
@@ -1355,7 +1361,7 @@ function stepScreen(project, c, task) {
     : task.resultUrl ? link(number ? `Open pull request #${number} ↗` : 'Open the result ↗', task.resultUrl, 'button')
       : unfinished && c.controls?.more.length ? button('Send guidance', () => openInstructions(c, task), '', commandsOff()) : null;
   const last = task.verifiedSha ? `Passed the check at commit ${task.verifiedSha.slice(0, 7)}` : outcomeText(task.lastOutcome);
-  const meaning = task.verifiedSha ? null : resultMeaning(task.lastOutcome, { stopped: Boolean(task.stopped) });
+  const meaning = task.verifiedSha ? null : resultMeaning(task.lastOutcome, { stopped: Boolean(task.stopped), check: canCheckAgain(c, task) });
   const guidance = (c.instructions ?? []).filter((item) => item.taskId === task.id);
   const reading = readingLines(task.reading);
   const { attempts, events } = task.history ?? { attempts: [], events: [] };
