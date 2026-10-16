@@ -206,7 +206,7 @@ test('a plain folder connects through the dashboard: the folder is byte-identica
     ['notes', 'notes', 'Folder', 'ready', root]);
   assert.deepEqual(connected.project.startWork, { allowed: false, text: LOCAL_START[0], detail: LOCAL_START[1] });
   // PROJECT_CONNECTION §8.3: the exact LOCAL_START_OFF copy, with the exclusions it left out.
-  assert.equal(connected.notices[0].message, "You can open and plan work here. Starting work on projects without GitHub isn't available yet: it waits for two approvals (D2 and D4).");
+  assert.equal(connected.notices[0].message, "AIWorks can't plan or start work in a project without GitHub yet. That waits for two decisions, one in your project rules and one of yours; the project's Details say what each allows.");
   assert.deepEqual(snapshot(root), before, 'connecting changes no file, listing or time in the folder');
   assert.ok(!existsSync(join(root, '.git')), 'no .git appears in the folder');
   // A repeat of the same request opens the same project: nothing is connected twice.
@@ -217,7 +217,7 @@ test('a plain folder connects through the dashboard: the folder is byte-identica
   const state = (await r.get('/api/state')).json;
   assert.equal(state.projects.addProject, true);
   assert.deepEqual(state.projects.projects.map((row) => [row.id, row.name, row.kind, row.state.key, row.state.text, row.action.label]),
-    [['notes', 'Notes', 'Folder', 'ready', LOCAL_START[0], 'Open project']]);
+    [['notes', 'Notes', 'Folder', 'cannot-start', LOCAL_START[0], 'Open project']]);
   assert.equal(state.projects.projects[0].connection.root, undefined, 'the polled state never carries the folder path');
   assertNoOtherPath(r, [root]);
   assert.ok(!existsSync(r.spawned), 'no worker started');
@@ -257,7 +257,7 @@ test('a GitHub checkout connects Ready; an unregistered one is saved and reads a
   const saved = (await r.post('/api/projects/connect', { path: unlisted, kind: 'github' })).json;
   // PROJECT_CONNECTION §8.2: the exact REGISTRY_MISSING copy, and its one action.
   assert.deepEqual([saved.ok, saved.code, saved.status, saved.message, saved.action],
-    [false, 'REGISTRY_MISSING', 'needs-setup', "example-org/unlisted-app isn't listed in your project rules, so AIWorks can plan but not start work. Add it there, then check again.",
+    [false, 'REGISTRY_MISSING', 'needs-setup', "example-org/unlisted-app isn't listed in your project rules, so AIWorks can't start work on it. You decide which projects AIWorks may work on: listing it in your project rules lets AIWorks start work on it. Your project rules are kept outside AIWorks, in a folder on this computer that the AIWorks configuration file names. Then check again.",
       { do: 'check', label: 'Check again' }]);
   assert.deepEqual([saved.project.status, saved.project.startWork], ['needs-setup', { allowed: false, text: UNREGISTERED, detail: null }]);
   const row = (await r.get('/api/state')).json.projects.projects.find((item) => item.id === 'example-org/unlisted-app');
@@ -510,13 +510,14 @@ test('keyboard only, through the page: Add project is the empty screen’s one a
   buttons[1].click();
   await page.settle();
   assert.equal(page.location.hash, '#/p/recipes');
-  assert.match(screen(), new RegExp(`Connected "Recipes"\\. You can open and plan work here\\. Starting work on projects without GitHub isn't available yet`));
+  // The notice says it connected; the Now screen it opens leads with what the project can do, said once (review 5 G2).
+  assert.ok(screen().includes(`Connected "Recipes". ${LOCAL_START[0]}`), screen());
   assert.ok(screen().includes(LOCAL_START[0]), screen());
   assert.ok(!page.$('#content').querySelectorAll('a').some((node) => node.textContent === 'Start work'), 'no Start work for a project without GitHub');
   assert.deepEqual(snapshot(root), before, 'the folder is unchanged');
   // The Projects screen lists it, with Add project as the screen's action.
   await page.go('#/projects');
-  assert.match(screen(), /Recipes Folder Ready Connected\. Starting work in a folder without GitHub is not available yet\. Open project/);
+  assert.ok(screen().includes(`Recipes Folder Can't start work yet ${LOCAL_START[0]} Open project`), screen());
   assert.ok(page.$('#content').querySelectorAll('a').some((node) => node.textContent === 'Add project'));
 });
 
@@ -526,4 +527,112 @@ test('320px: the Add project form and the paths it shows wrap instead of scrolli
   assert.match(css, /\.add-form,\.add-form \.button\{overflow-wrap:anywhere\}\.add-form \.button\{white-space:normal;min-height:44px;/);
   const rules = css.slice(css.indexOf('/* Add project (UI13)'), css.indexOf('.instruction-list'));
   assert.doesNotMatch(rules, /(?:^|[;{])(?:min-)?width:\s*\d{3,}px/, 'no fixed width wider than a phone');
+});
+
+// aiworks#11 review 5 G2, G3, G9, G10, G14 and G15, through the page: after connecting a project AIWorks cannot start
+// work in (a Local Git project, and a GitHub project the project rules do not list), every screen tells one true story
+// in owner words. None claims planning or starting, none shows a decision code or issue number outside Settings ›
+// Diagnostics, none shows a green Ready, and Release mode lists the project.
+test('a connected project AIWorks cannot start work in says so truthfully on every screen, in owner words (review 5 G2, G3, G9, G10, G14, G15)', async (t) => {
+  const tmp = realpathSync.native(mkdtempSync(join(tmpdir(), 'aiworks-connect-story-')));
+  t.after(() => rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
+  const repo = (name, files, origin = null) => {
+    const root = join(tmp, name);
+    mkdirSync(root);
+    git(root, 'init', '-q', '-b', 'main');
+    write(root, files);
+    git(root, 'add', '-A');
+    git(root, '-c', 'user.name=Owner', '-c', 'user.email=owner@example.invalid', 'commit', '-q', '-m', 'first');
+    if (origin) git(root, 'remote', 'add', 'origin', origin);
+    return root;
+  };
+  // One committed file that looks like a secret (G15).
+  const local = repo('Recipes', { 'README.md': '# Recipes\n', 'certs/site.pem': 'synthetic\n' });
+  const unlisted = repo('Unlisted', { 'README.md': '# Unlisted\n' }, 'https://github.com/example-org/unlisted-app.git');
+  const gh = (args) => args[0] === 'auth' ? { status: 0, stdout: '', stderr: '' }
+    : { status: 0, stdout: JSON.stringify({ full_name: args[1].replace(/^repos\//, ''), default_branch: 'main' }), stderr: '' };
+  const page = await openPage(t, { store: 'empty', server: { projectConnection: { gh, lsRemote: (_, branch) => branch === 'main', gitEnv: { GIT_CEILING_DIRECTORIES: tmp } } } });
+  const config = JSON.parse(readFileSync(join(page.dataDir, 'config.json'), 'utf8'));
+  writeFileSync(join(page.dataDir, 'config.json'), JSON.stringify({ ...config, governanceRoot: GOVERNANCE, projectConnection: { enabled: true } }));
+  await page.refresh();
+  const screen = () => visibleText(page.$('#main'));
+  // What the Details disclosures hold, which visibleText leaves out.
+  const details = () => page.$('#content').querySelectorAll('details').map((node) => node.textContent).join(' ');
+  // A claim of planning or starting, a Ready, and decision codes or issue numbers.
+  const claims = /plan work here|can plan|You can open|not built yet|\bReady\b|is ready/;
+  const codes = /\b[DQ]\d+\b|#\d+|\b[A-Z]+_[A-Z_]+\b/;
+  const owner = (text, where) => {
+    assert.doesNotMatch(text, claims, `${where}: ${text}`);
+    assert.doesNotMatch(text, codes, `${where}: ${text}`);
+  };
+  const check = async (root) => {
+    await page.go('#/projects/add');
+    const path = page.$('#add-path');
+    path.value = root;
+    path.dispatchEvent({ type: 'input', preventDefault() {} });
+    page.$('form[data-add-form]').dispatchEvent({ type: 'submit', defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } });
+    await page.settle();
+    return page.$('#add-result');
+  };
+  const connect = async () => {
+    page.$('#content').querySelectorAll('button').find((node) => node.textContent === 'Connect project').click();
+    await page.settle();
+  };
+
+  // Local Git. Check folder: no stray "null" (G14), and the secrets warning in its singular form (G15).
+  const found = await check(local);
+  assert.doesNotMatch(found.textContent, /null/, 'a check without a confirm step adds no "null" text');
+  const answer = visibleText(found);
+  assert.match(answer, /^Git repository, no GitHub remote\. Folder Recipes\./);
+  assert.ok(answer.includes('1 committed file looks like a secret, for example certs/site.pem. Workers will see it.'), answer);
+  owner(answer, 'Add project result, Local Git');
+  await connect();
+  assert.equal(page.location.hash, '#/p/recipes');
+  // The connect notice and Now: one true sentence, and no Start work.
+  assert.match(screen(), /Connected "Recipes"\./);
+  assert.ok(screen().includes(LOCAL_START[0]), screen());
+  owner(screen(), 'connect notice and Now, Local Git');
+  assert.ok(!page.$('#content').querySelectorAll('a').some((node) => node.textContent === 'Start work'));
+  // Now › Details: who decides, what each decision allows and where to act, in owner words.
+  owner(details(), 'Now › Details, Local Git');
+  assert.ok(details().includes(LOCAL_START[1]), details());
+  assert.match(LOCAL_START[1], /your project rules on this computer/i);
+  assert.match(LOCAL_START[1], /\byou decide\b/i);
+  assert.match(LOCAL_START[1], /Settings › Diagnostics/);
+  await page.go('#/p/recipes/work');
+  owner(screen(), 'Work, Local Git');
+  assert.ok(screen().includes(LOCAL_START[0]), screen());
+
+  // A GitHub project the project rules do not list. Check folder offers the two ways to connect, with no "null".
+  const seen = await check(unlisted);
+  assert.doesNotMatch(seen.textContent, /null/);
+  owner(visibleText(seen), 'Add project result, unlisted GitHub');
+  assert.ok(visibleText(seen).includes(UNREGISTERED), visibleText(seen));
+  await connect();
+  assert.equal(page.location.hash, '#/p/example-org%2Funlisted-app');
+  owner(screen(), 'connect notice and Now, unlisted GitHub');
+  owner(details(), 'Now › Details, unlisted GitHub');
+  assert.ok(screen().includes(UNREGISTERED), screen());
+  assert.ok(!page.$('#content').querySelectorAll('a').some((node) => node.textContent === 'Start work'), 'no Start work where work cannot start');
+  await page.go('#/p/example-org%2Funlisted-app/work');
+  owner(screen(), 'Work, unlisted GitHub');
+  assert.ok(screen().includes(UNREGISTERED), screen());
+
+  // Projects: one state that matches its sentence, never a green Ready (G9).
+  await page.go('#/projects');
+  owner(screen(), 'Projects');
+  assert.ok(screen().includes(`Recipes Local Git Can't start work yet ${LOCAL_START[0]} Open project`), screen());
+  assert.ok(!page.$('#content').querySelectorAll('.badge').some((node) => node.className.includes('done')), 'no green badge');
+  // Settings: the same state, and a Release mode entry for each project Settings lists (G10).
+  await page.go('#/settings');
+  owner(screen(), 'Settings');
+  assert.ok(screen().includes("Recipes · Local Git Can't start work yet. Connected from the folder Recipes."), screen());
+  assert.ok(screen().includes('unlisted-app · GitHub Needs setup.'), screen());
+  const release = screen().slice(screen().indexOf('Release mode'));
+  assert.ok(release.includes('Recipes Release does not apply yet to a project without GitHub'), release);
+  assert.ok(release.includes('unlisted-app Review only · On'), release);
+  // The decision codes and issue numbers are in Diagnostics.
+  await page.go('#/settings/diagnostics');
+  assert.match(screen(), /Recipes: starting work is off \(LOCAL_START_OFF\)\. It waits for D2\b.*#24.*D4\b.*Q2.*#32/);
+  assert.match(screen(), /unlisted-app: needs setup \(REGISTRY_MISSING\)/);
 });

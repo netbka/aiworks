@@ -46,8 +46,9 @@ export function connectCopy(code, detail = {}) {
     UNCOMMITTED_NOTICE: `You have changes that aren't committed. AIWorks works from your last commit (${detail.sha7}) and never touches your files.`,
     MIRROR_SPACE: `There isn't enough free space for AIWorks's copy: ${size(detail.need)} needed, ${size(detail.free)} free on ${detail.drive}.`,
     MIRROR_CHANGED: "AIWorks's copy of this project changed unexpectedly, so AIWorks stopped using it.",
-    LOCAL_START_OFF: "You can open and plan work here. Starting work on projects without GitHub isn't available yet: it waits for two approvals (D2 and D4).",
-    SECRET_TRACKED: `${detail.count} committed files look like secrets, for example ${detail.examples?.[0]}. Workers will see them.`,
+    LOCAL_START_OFF: "AIWorks can't plan or start work in a project without GitHub yet. That waits for two decisions, one in your project rules and one of yours; the project's Details say what each allows.",
+    SECRET_TRACKED: detail.count === 1 ? `1 committed file looks like a secret, for example ${detail.examples?.[0]}. Workers will see it.`
+      : `${detail.count} committed files look like secrets, for example ${detail.examples?.[0]}. Workers will see them.`,
     // The design names these outcomes (4.2 point 4, 4.6) but gives no copy; these follow its style.
     LOCAL_BRANCH_MISSING: `This repository has no branch named ${detail.branch}. Choose the branch AIWorks should copy.`,
     GITHUB_REGISTERED: `${repo} is in governance provider's project list, so connect it as a GitHub project.`,

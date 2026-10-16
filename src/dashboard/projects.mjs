@@ -7,7 +7,8 @@
 // checkout, a local Git repository or a plain folder through the supervisor's project connection API
 // (src/supervisor/project-connect.mjs). Connecting only reads the owner's folder. It is off unless the data directory's
 // config.json says "projectConnection": { "enabled": true }; off, the page and the routes are exactly as before.
-// Starting work on a project without GitHub stays off (LOCAL_START_OFF) until the owner decides #24 and #32.
+// Starting work on a project without GitHub stays off (LOCAL_START_OFF) until the owner decides #24 and #32; the page says
+// so in owner words, and names those decisions only in Settings › Diagnostics (aiworks#11 review 5 G3).
 import { existsSync, readFileSync } from 'node:fs';
 import { basename, dirname, join, parse, resolve } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
@@ -136,7 +137,7 @@ export function projectsView(supervisor, owner, { repositories = [], records = [
   for (const record of records.filter((item) => item.source_kind !== 'github')) {
     const connection = connectionView(record, { path: false });
     projects.push({ id: record.id, name: record.name, repository: null, kind: connection.kind,
-      state: connection.status === 'ready' ? { key: 'ready', text: connection.startWork.text } : { key: connection.status, text: connection.message },
+      state: connection.status === 'ready' ? { key: 'cannot-start', text: connection.startWork.text } : { key: connection.status, text: connection.message },
       action: { label: 'Open project', route: { screen: 'project', project: record.id, tab: 'now' } }, lastActivityAt: record.updated_at ?? null,
       details: { owner: null, work: 0, configured: false, needsYou: 0 }, connection });
   }
@@ -185,7 +186,7 @@ export const PROJECT_COPY = Object.freeze({
  * by the platform's name (OWNER_WORKSPACE §2.1; aiworks#11 review 4 F4). `repo` and `ids` as connectCopy fills them.
  */
 const RULES_COPY = Object.freeze({
-  REGISTRY_MISSING: (repo) => `${repo} isn't listed in your project rules, so AIWorks can plan but not start work. Add it there, then check again.`,
+  REGISTRY_MISSING: (repo) => `${repo} isn't listed in your project rules, so AIWorks can't start work on it. ${LISTING}`,
   REGISTRY_AMBIGUOUS: (repo, ids) => `Your project rules list ${repo} more than once (${ids}). AIWorks won't guess which rules apply.`,
   REGISTRY_INVALID: (repo) => `The entry for ${repo} in your project rules has an error, so AIWorks can't read its rules.`,
   GITHUB_REGISTERED: (repo) => `${repo} is listed in your project rules, so connect it as a GitHub project.`,
@@ -197,11 +198,23 @@ const NEEDS = Object.freeze({ BRANCH_MISSING: ['branch'], REGISTRY_AMBIGUOUS: ['
 /** When a saved project's code cannot be said in full here (its detail is only known during a check). */
 const STATUS_FALLBACK = Object.freeze({ 'needs-setup': 'Needs setup. Choose Check again to see what to do.',
   unavailable: 'Temporarily unavailable. Choose Check again when it should be back.' });
-/** OWNER_WORKSPACE §5.2, step 5: a GitHub project the project rules do not list. No button: the fix is outside AIWorks. */
-export const UNREGISTERED = 'This project is not listed in your project rules yet, so AIWorks cannot start work on it. Adding it there is done outside AIWorks.';
-/** OWNER_WORKSPACE §5.3: what a connected project without GitHub says, and (in details) what it waits for. */
-export const LOCAL_START = Object.freeze(['Connected. Starting work in a folder without GitHub is not available yet.',
-  'It waits for a local project identity in the project rules (D2, #24) and a local approval route (D4, #32).']);
+/**
+ * OWNER_WORKSPACE §5.2, step 5: a GitHub project the project rules do not list, with who decides, what it allows and
+ * where to act. No button: the fix is outside AIWorks. The code is said only in Diagnostics (aiworks#11 review 5 G3).
+ */
+const LISTING = 'You decide which projects AIWorks may work on: listing it in your project rules lets AIWorks start work on it. Your project rules are kept outside AIWorks, in a folder on this computer that the AIWorks configuration file names. Then check again.';
+export const UNREGISTERED = `This project is not listed in your project rules yet, so AIWorks cannot start work on it. ${LISTING}`;
+/**
+ * OWNER_WORKSPACE §5.3: what a connected project without GitHub says, and (in details) who decides what it waits for,
+ * what each decision allows and where to act. Planning waits too (§5.3 step 4), so neither is claimed (review 5 G2, G3).
+ * The decision codes and issue numbers are said only in Diagnostics (LOCAL_START_DIAGNOSTIC).
+ */
+export const LOCAL_START = Object.freeze(["Connected. AIWorks can't plan or start work in a project without GitHub yet.",
+  'Two decisions come first, and neither is made on this page. Your project rules on this computer must accept a project without GitHub; that lets AIWorks know which rules this project follows, and it is changed in the project rules, outside AIWorks. And you decide whether work here may be approved on this computer instead of on GitHub; that lets you approve a plan here so AIWorks can start it. Settings › Diagnostics says where both decisions are tracked. Until both are made and built, you can check this project again or disconnect it here.']);
+/** The state word of a project that is connected but where work cannot start: never a green Ready (review 5 G9). */
+export const CANNOT_START = "Can't start work yet";
+/** Settings › Diagnostics: what a connected project waits for, in machine words (OWNER_WORKSPACE §2.2). */
+export const LOCAL_START_DIAGNOSTIC = 'starting work is off (LOCAL_START_OFF). It waits for D2, a local project identity in the project rules (AIWorks issue #24), and D4, owner question Q2, a local approval route without a GitHub plan (AIWorks issue #32).';
 /** OWNER_WORKSPACE §5.3, step 2: what AIWorks promises before a project without GitHub is connected. */
 export const OWN_COPY = 'AIWorks will never change this folder directly. It works on its own copy and asks you before applying a checked result.';
 
@@ -258,8 +271,13 @@ export function connectionView(record, { path = true } = {}) {
   const startWork = record.capabilities?.startWork?.allowed ? { allowed: true, text: null, detail: null }
     : local ? { allowed: false, text: LOCAL_START[0], detail: LOCAL_START[1] }
       : { allowed: false, text: record.reason === 'REGISTRY_MISSING' ? UNREGISTERED : 'Work can’t start here until this project is ready.', detail: null };
+  // A Ready record where work cannot start reads "Can't start work yet", so its word matches its sentence (review 5 G9).
+  const statusWords = record.status === 'ready' && !startWork.allowed ? CANNOT_START : STATUS_WORDS[record.status];
+  // Machine words for Settings › Diagnostics only: why work cannot start here, with its code.
+  const diagnostic = startWork.allowed ? null : local && record.status === 'ready' ? LOCAL_START_DIAGNOSTIC
+    : record.reason ? `${(STATUS_WORDS[record.status] ?? record.status).toLowerCase()} (${record.reason})${record.reason === 'REGISTRY_MISSING' ? `: the project rules do not list ${record.github_repository}` : ''}.` : null;
   return { id: record.id, route: routeOf(record), name: record.name, kind: KIND_WORDS[record.source_kind], sourceKind: record.source_kind,
-    version: record.version, status: record.status, statusWords: STATUS_WORDS[record.status], reason: record.reason ?? null, message,
+    version: record.version, status: record.status, statusWords, reason: record.reason ?? null, message, diagnostic,
     ...(path ? { root: record.root_path } : {}), folder: basename(record.root_path), repository: record.github_repository ?? null,
     branch: record.base_branch ?? record.local_branch ?? null,
     baseline: record.current_baseline ? { seq: record.current_baseline.seq, at: record.current_baseline.at } : null,

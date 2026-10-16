@@ -337,11 +337,11 @@ test('connected projects: a GitHub project joins its row, the others have their 
   const view = projectsView(snapshot, { items: [], campaigns: {} }, { records, addProject: true });
   assert.equal(view.addProject, true);
   assert.deepEqual(view.projects.map((project) => [project.id, project.name, project.kind, project.state.key]), [
-    ['notes', 'Notes', 'Folder', 'unavailable'], ['recipes', 'Recipes', 'Local Git', 'ready'], ['example-org/sampleapp', 'sampleapp', 'GitHub', 'finished']]);
+    ['notes', 'Notes', 'Folder', 'unavailable'], ['recipes', 'Recipes', 'Local Git', 'cannot-start'], ['example-org/sampleapp', 'sampleapp', 'GitHub', 'finished']]);
   const [notes, recipes, sampleapp] = view.projects;
   assert.deepEqual([sampleapp.connection.id, sampleapp.connection.status, sampleapp.connection.folder, sampleapp.details.work], ['sampleapp', 'ready', 'SampleApp', 1]);
   assert.deepEqual([recipes.state.text, recipes.action, recipes.connection.startWork.allowed],
-    ['Connected. Starting work in a folder without GitHub is not available yet.', { label: 'Open project', route: { screen: 'project', project: 'recipes', tab: 'now' } }, false]);
+    ["Connected. AIWorks can't plan or start work in a project without GitHub yet.", { label: 'Open project', route: { screen: 'project', project: 'recipes', tab: 'now' } }, false]);
   // Its folder by name: "AIWorks can't reach {path}" says the project's name here; the path is only in the owner's own project list.
   assert.equal(notes.state.text, "AIWorks can't reach Notes. If it's on a removable drive, plug it in.");
   assert.ok(!JSON.stringify(view).includes('/srv/'), 'no path in the polled Projects screen');

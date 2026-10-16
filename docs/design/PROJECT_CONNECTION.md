@@ -412,7 +412,7 @@ Nothing is fetched or created at connect: no `git fetch`, no worktree and no bra
 | `GH_NO_ACCESS` | Needs setup | Your GitHub account can't open {repo}. Check the repository and your access. | Check again |
 | `GH_UNREACHABLE` | Temporarily unavailable | GitHub can't be reached right now. Your project is unchanged; AIWorks will check again. | Check again |
 | `BRANCH_MISSING` | Needs setup | {repo} has no branch named {branch}. Choose the branch AIWorks should start from. | Choose branch |
-| `REGISTRY_MISSING` | Needs setup | {repo} isn't listed in your project rules, so AIWorks can plan but not start work. Add it there, then check again. | Check again |
+| `REGISTRY_MISSING` | Needs setup | {repo} isn't listed in your project rules, so AIWorks can't start work on it. You decide which projects AIWorks may work on: listing it in your project rules lets AIWorks start work on it. Your project rules are kept outside AIWorks, in a folder on this computer that the AIWorks configuration file names. Then check again. | Check again |
 | `REGISTRY_AMBIGUOUS` | Needs setup | Your project rules list {repo} more than once ({ids}). AIWorks won't guess which rules apply. | Check again |
 | `REGISTRY_INVALID` | Needs setup | The entry for {repo} in your project rules has an error, so AIWorks can't read its rules. | Check again |
 | `REGISTRY_CHANGED` | Ready, or the code above | (Notice) The project rules for {repo} changed. AIWorks uses the new rules. | — |
@@ -422,6 +422,8 @@ Nothing is fetched or created at connect: no `git fetch`, no worktree and no bra
 | `GIT_BARE` | not saved | This is a bare Git repository with no files. Connect a normal checkout. | — |
 | `GIT_UNTRUSTED` | Needs setup | Git doesn't trust this folder because another Windows account owns it. Fix the owner, or add it to Git's safe.directory yourself; AIWorks won't change Git settings. | Check again |
 | `SECRET_TRACKED` | notice | {count} committed files look like secrets, for example {path}. Workers will see them. | — |
+
+`SECRET_TRACKED` has a singular form: "1 committed file looks like a secret, for example {path}. Workers will see it." (aiworks#11 review 5 G15). `REGISTRY_MISSING` says who decides, what listing the project allows and where the project rules are, and never claims planning: a connected project that is not listed has no planning control either (review 5 G3).
 
 **Tests** (synthetic `gh` and `git` remotes from `tests/supervisor/helpers.mjs`; no network):
 - a GitHub checkout connects, gives *Ready*, and stores `owner/name` without the URL's user info;
@@ -451,13 +453,13 @@ Nothing is fetched or created at connect: no `git fetch`, no worktree and no bra
 | `UNCOMMITTED_NOTICE` | notice | You have changes that aren't committed. AIWorks works from your last commit ({sha7}) and never touches your files. | — |
 | `MIRROR_SPACE` | not saved | There isn't enough free space for AIWorks's copy: {need} needed, {free} free on {drive}. | Check again |
 | `MIRROR_CHANGED` | Needs setup | AIWorks's copy of this project changed unexpectedly, so AIWorks stopped using it. | Rebuild copy |
-| `LOCAL_START_OFF` | Ready, `startWork: false` | You can open and plan work here. Starting work on projects without GitHub isn't available yet: it waits for two approvals (D2 and D4). | — |
+| `LOCAL_START_OFF` | Ready, `startWork: false` | AIWorks can't plan or start work in a project without GitHub yet. That waits for two decisions, one in your project rules and one of yours; the project's Details say what each allows. | — |
 | `RULES_UNAVAILABLE` | Needs setup | Your project rules don't allow projects without GitHub yet, so this project has no rules to work under. | — |
 | `RULES_NEED_APPROVAL` | Needs setup | Review and approve this project's rules to let AIWorks work here. | Review rules |
 | `RULES_EXPIRED` | Needs setup | Your approval of this project's rules ended on {date}. Review it again to continue. | Review rules |
 | `RULES_REVOKED` | Needs setup | Your project rules no longer allow projects without GitHub. Work can't start here until that changes. | — |
 
-`RULES_*` appear only after slice S7. Until then, local projects show `LOCAL_START_OFF`.
+`RULES_*` appear only after slice S7. Until then, local projects show `LOCAL_START_OFF`. Its copy names no decision code. Planning such a project from the page waits for the local intake contract ([OWNER_WORKSPACE §5.3](OWNER_WORKSPACE.md#53-adding-a-plain-folder-after-s11-starting-work-waits-for-d2-and-q2) step 4), so the copy claims neither planning nor starting, and D2 and D4 are named in Settings › Diagnostics only (aiworks#11 review 5 G2, G3). The stored capability `plan: true` is not shown to the owner. The dashboard does not repeat this notice after connecting, because the project's Now screen leads with the same fact.
 
 The copy calls the governance platform "your project rules", the owner word of [OWNER_WORKSPACE §2.1](OWNER_WORKSPACE.md#21-words-the-owner-sees); its name stays in details and in this design (aiworks#11 review 4 F4). The dashboard says the `REGISTRY_*` rows and `GITHUB_REGISTERED` in these words (`src/dashboard/projects.mjs`).
 

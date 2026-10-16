@@ -400,7 +400,7 @@ test('startWork is false with LOCAL_START_OFF, and cannot be switched on', (t) =
   assert.equal(saved.capabilities.plan.allowed, true);
   assert.equal(saved.capabilities.publish.allowed, false);
   const off = result.notices.find((notice) => notice.code === 'LOCAL_START_OFF');
-  assert.equal(off.message, "You can open and plan work here. Starting work on projects without GitHub isn't available yet: it waits for two approvals (D2 and D4).");
+  assert.equal(off.message, "AIWorks can't plan or start work in a project without GitHub yet. That waits for two decisions, one in your project rules and one of yours; the project's Details say what each allows.");
   assert.throws(() => updateProject(r.store, saved.id, saved.version,
     { capabilities: { ...saved.capabilities, startWork: { allowed: true } } }, Date.now()), { code: 'LOCAL_START_OFF' });
   const again = r.connect();
