@@ -160,6 +160,7 @@ const NOT_CALLS = [
   ['src/supervisor/coordinator.mjs', 89, "'Bash(gh issue edit:*)', 'Bash(gh issue delete:*", DENY],
   ['src/supervisor/coordinator.mjs', 90, "'Bash(gh pr edit:*)', 'Bash(gh pr review:*)', 'B", DENY],
   ['src/supervisor/coordinator.mjs', 91, "'Bash(gh label:*)', 'Bash(git -C:*)', 'Bash(git ", DENY],
+  ['src/supervisor/local-admission.mjs', 13, "// store; STA17 removes it. This module never re", SAYS_NO],
   ['src/supervisor/project-preflight.mjs', 4, "// writes Git configuration and never calls GitH", SAYS_NO],
   ['src/supervisor/projects.mjs', 3, "// it never reads the project's folder, runs git", SAYS_NO],
   ['scripts/run-tests.mjs', 35, "const REHEARSAL = /\\b(environment|runUntil|runti", RUNNER],
@@ -170,10 +171,12 @@ const NOT_CALLS = [
 /**
  * Lines the scan reaches that section 3 does not cite (findings for the design, which this slice does not edit):
  * project-connect.mjs:171 runs the G23 read through `ghRun`; controller.mjs:2353 is a comment that makes no call;
- * worker-reading-cost.mjs:31 and :37 (added on main after the design) sort transcript commands and make no call.
+ * worker-reading-cost.mjs:31 and :37 (added on main after the design) sort transcript commands and make no call;
+ * local-admission.mjs:13 (added on main after the design) is a comment saying the module never calls gh.
  */
 const NOT_IN_DESIGN = ['src/supervisor/project-connect.mjs:171', 'src/supervisor/controller.mjs:2353',
-  'scripts/supervisor/worker-reading-cost.mjs:31', 'scripts/supervisor/worker-reading-cost.mjs:37'];
+  'scripts/supervisor/worker-reading-cost.mjs:31', 'scripts/supervisor/worker-reading-cost.mjs:37',
+  'src/supervisor/local-admission.mjs:13'];
 
 /** The rules one line matches. */
 const rulesOf = (text) => RULES.filter(([, pattern]) => pattern.test(text)).map(([rule]) => rule);
