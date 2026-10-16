@@ -69,13 +69,14 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
           if (merges) void merges.refresh();
           const merged = merges?.snapshot() ?? { refreshing: false, repositories: [], steps: {} };
           // The owner's merge delegation is read on every request, so a change to config.json shows without a restart.
-          const owner = ownerView(supervisor, merged, { host: machine.name, now, releases, delegation: configuredMergeDelegation(dataDir) });
-          // Add project is read on every request too; off, the Projects screen is exactly as before.
-          const addProject = projectConnectionEnabled(dataDir);
+          // Add project is read on every request too; off, the Projects screen is exactly as before. Its records also let
+          // Needs me name a project held up by the owner's decisions (aiworks#11 review 5 G7).
+          const addProject = projectConnectionEnabled(dataDir), records = addProject ? connectedProjects(dataDir) : [];
+          const owner = ownerView(supervisor, merged, { host: machine.name, now, releases, delegation: configuredMergeDelegation(dataDir), connected: records });
           return send(200, { observedAt: new Date(now).toISOString(), host: machine, supervisor, roadmap: roadmap.snapshot(),
             merges: { refreshing: merged.refreshing, repositories: merged.repositories }, owner,
             // Projects: campaign repositories, the repositories config.json lists and connected projects, by name only (never a path).
-            projects: projectsView(supervisor, owner, { repositories: configuredRepositories(dataDir), ...(addProject ? { records: connectedProjects(dataDir), addProject } : {}) }) });
+            projects: projectsView(supervisor, owner, { repositories: configuredRepositories(dataDir), ...(addProject ? { records, addProject } : {}) }) });
         }
         // The connected projects with each one's own folder, the one path a response may carry (404 while Add project is off).
         if (path === '/api/projects') return send(200, listConnectedProjects(dataDir));

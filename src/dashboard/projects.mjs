@@ -18,7 +18,7 @@ import { checkFolderProject, checkGithubProject, checkLocalGitProject, connectCo
   connectLocalGitProject, folderMatches, MirrorError, ProjectError, relocateFolderProject, relocateLocalGitProject } from '../supervisor/project-connect.mjs';
 import { preflight } from '../supervisor/project-preflight.mjs';
 import { disconnectProject, PROJECT_ID, projects as projectRecords, SOURCE_KINDS } from '../supervisor/projects.mjs';
-import { nowView } from './copy.mjs';
+import { alsoSummary, nowView } from './copy.mjs';
 
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
 const PR_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/(\d+)$/;
@@ -61,14 +61,23 @@ function needsAction(items) {
  * One state, in plain words, for a project with active (not finished or cancelled) work and nothing for the owner: the
  * sentence its Now screen leads with (copy.mjs nowView), so Projects and Now agree, also after Pause and Resume, and a
  * worker whose record stopped moving reads "Possibly stuck" here too (aiworks#11 review 4 F10, F14). With several
- * pieces of active work it names the one the sentence is about, by its purpose, as Now's goal does.
+ * pieces of active work it names the one the sentence is about, by its purpose, as Now's goal does. What else Now
+ * keeps in view follows in short (review 5 G5): "· Also: 1 AI worker possibly stuck · 1 piece of work paused, …".
  */
 function activeState(repository, active, supervisor, owner, now) {
-  const { state, details } = nowView(repository, { supervisor, owner: { available: true, items: [], campaigns: {}, ...owner } }, { now });
+  const { state, details, also } = nowView(repository, { supervisor, owner: { available: true, items: [], campaigns: {}, ...owner } }, { now });
   // AIWorks stopped on this computer is about all of it, so no one piece of work is named.
   const work = active.length > 1 && state.key !== 'supervisor-stopped' ? owner?.campaigns?.[details.workId]?.purpose?.text : null;
-  return { key: KEYS[state.key] ?? 'running', text: work ? `${work} · ${state.title}` : state.title };
+  const more = alsoSummary(also);
+  return { key: KEYS[state.key] ?? 'running', text: [work ? `${work} · ${state.title}` : state.title, more].filter(Boolean).join(' · ') };
 }
+
+/**
+ * Now's other lines, in short, for a project whose Needs me items lead its row: running, possibly stuck and paused work
+ * stay in view beside them (aiworks#11 review 5 G5, review 4 F14).
+ */
+const alsoOf = (repository, supervisor, owner, now) =>
+  alsoSummary(nowView(repository, { supervisor, owner: { available: true, items: [], campaigns: {}, ...owner } }, { now }).also);
 
 /**
  * The Projects screen. `supervisor` is supervisorSnapshot, `owner` is ownerView of it, `repositories` the configured
@@ -102,8 +111,9 @@ export function projectsView(supervisor, owner, { repositories = [], records = [
     const checking = campaigns.reduce((n, c) => n + (owner?.campaigns?.[c.id]?.counts?.checking ?? 0), 0);
     let state, action;
     if (mine.length) {
-      const needs = mine.length === 1 ? 'One thing needs you' : `${mine.length} things need you`;
-      state = { key: 'needs-you', text: checking ? `${needs} so far. ${checkingText(checking)}` : `${needs}.` };
+      const needs = mine.length === 1 ? 'One thing needs you' : `${mine.length} things need you`, more = alsoOf(repository, supervisor, owner, now);
+      const text = checking ? `${needs} so far.` : `${needs}.`;
+      state = { key: 'needs-you', text: [text, more ? `${more}.` : null, checking ? checkingText(checking) : null].filter(Boolean).join(' ') };
       action = needsAction(mine);
     } else if (connection && connection.status !== 'ready') {
       // The connection needs the owner, or is away for now: its one sentence, and the project where Check again is.
