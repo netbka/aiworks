@@ -512,7 +512,7 @@ test('keyboard only, through the page: Add project is the empty screen’s one a
   assert.equal(page.location.hash, '#/p/recipes');
   assert.match(screen(), new RegExp(`Connected "Recipes"\\. You can open and plan work here\\. Starting work on projects without GitHub isn't available yet`));
   assert.ok(screen().includes(LOCAL_START[0]), screen());
-  assert.ok(!page.$('#content').querySelectorAll('a').some((node) => node.textContent === 'Start work'), 'no Start work for a project without GitHub');
+  assert.ok(!page.$('#content').querySelectorAll('a').some((node) => node.textContent === 'Plan work'), 'no Start work for a project without GitHub');
   assert.deepEqual(snapshot(root), before, 'the folder is unchanged');
   // The Projects screen lists it, with Add project as the screen's action.
   await page.go('#/projects');

@@ -32,7 +32,7 @@ test('F5: switching to another project and back keeps the screen, the draft and 
   // shop-app, then its Start work, half-way through a plan request, scrolled down.
   await click(page, linkNamed(page, 'shop-app', 'project-name'));
   assert.equal(page.location.hash, address('example/shop-app'));
-  await click(page, linkNamed(page, 'Start work'));
+  await click(page, linkNamed(page, 'Plan work'));
   assert.equal(page.location.hash, address('example/shop-app', '/start'));
   type(page.$('#start-goal'), 'Customers can pay with a saved card');
   page.window.scrollY = 178;
@@ -48,7 +48,7 @@ test('F5: switching to another project and back keeps the screen, the draft and 
   await click(page, page.$('a[data-global="projects"]'));
   await click(page, linkNamed(page, 'shop-app', 'project-name'));
   assert.equal(page.location.hash, address('example/shop-app', '/start'), 'the screen shop-app was left on');
-  assert.equal(page.$('#view-title').textContent, 'Start work');
+  assert.equal(page.$('#view-title').textContent, 'Plan work');
   assert.equal(page.$('#start-goal').value, 'Customers can pay with a saved card', 'the draft');
   assert.equal(page.window.scrollY, 178, 'the scroll');
   // A project's name on Needs me opens it the same way.
@@ -59,7 +59,7 @@ test('F5: switching to another project and back keeps the screen, the draft and 
   page.window.scrollY = 178;
   await click(page, linkNamed(page, 'Now', 'tab'));
   assert.equal(page.location.hash, address('example/shop-app'));
-  await click(page, linkNamed(page, 'Start work'));
+  await click(page, linkNamed(page, 'Plan work'));
   assert.equal(page.location.hash, address('example/shop-app', '/start'));
   assert.equal(page.window.scrollY, 178, 'the Start work link returns to the scroll it was left at');
   // recipes kept its own place too, and Back still returns to the exact address before it, with its scroll.
@@ -143,7 +143,7 @@ test('F19: "Continue with" offers the project with an unsent draft before the la
   await page.go('#/projects');
   // shop-app's Start work holds a half-written plan request; recipes is opened after it.
   await click(page, linkNamed(page, 'shop-app', 'project-name'));
-  await click(page, linkNamed(page, 'Start work'));
+  await click(page, linkNamed(page, 'Plan work'));
   type(page.$('#start-goal'), 'Customers can pay with a saved card');
   await click(page, page.$('a[data-global="projects"]'));
   await click(page, linkNamed(page, 'recipes', 'project-name'));
@@ -159,4 +159,18 @@ test('F19: "Continue with" offers the project with an unsent draft before the la
   await click(page, page.$('a[data-global="projects"]'));
   const last = linkNamed(page, 'Continue with recipes →', 'continue-link');
   assert.doesNotMatch(last.parentNode.textContent, /unsent draft/);
+});
+
+test('Plan work keeps empty goals local and focuses an inline error instead of sending', async (t) => {
+  const page = await openPage(t);
+  await page.go(address('example/shop-app', '/start'));
+  const form = page.$('form[data-start-form]'), goal = page.$('#start-goal');
+  type(goal, '   ');
+  form.dispatchEvent({ type: 'submit', target: form, preventDefault() {} });
+  await page.settle();
+  assert.equal(goal.getAttribute('aria-invalid'), 'true');
+  assert.equal(page.document.activeElement, goal);
+  assert.match(visibleText(page.$('#start-goal-validation')), /Fill in this field/);
+  assert.equal(page.$('#start-receipt').textContent.trim(), '');
+  assert.ok(goal.getAttribute('aria-describedby').includes('start-goal-validation'));
 });

@@ -307,7 +307,7 @@ export function releaseModes(repositories, { waitsFor = null } = {}) {
   const projects = new Map();
   for (const repository of repositories) if (/^[\w.-]+\/[\w.-]+$/.test(repository ?? '') && !projects.has(repository.toLowerCase())) projects.set(repository.toLowerCase(), repository);
   return [...projects.values()].sort((a, b) => a.localeCompare(b)).map((repository) => ({ repository, mode: 'review-only', modes: [
-    { key: 'review-only', label: 'Review only', on: true, text: 'AIWorks stops when a result passes the check and is published. You merge and release.' },
+    { key: 'review-only', label: 'Review only', on: true, text: 'Release is not enabled here. Merging follows the project’s merge permissions.' },
     { key: 'auto-release', label: 'Auto Release', on: false, available: false,
       text: 'Not available. Turning this on needs your separate release approval for this project, which has not been given.',
       waitsFor }] }));
