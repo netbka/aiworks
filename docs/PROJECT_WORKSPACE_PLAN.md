@@ -200,9 +200,9 @@ Reuse #1 for blocker dedup/Telegram recovery, #4 for owner-attention evidence, a
 
 ## 6. Build order, lanes and file ownership
 
-**In short.** First, AIWorks stops losing time to its own problems: a stopped supervisor comes back by itself (#18), publishing survives a GitHub limit (#21), a pull request that conflicts after a sibling merge is repaired without a hand-written campaign (#27), and more than one step can run at a time. After that, five lanes run as parallel campaigns. Powers that wait for an owner decision (#33 D5-gate) are built switched off, or not built, and each row says which. The owner answered #24 D2 and #32 D4 on 2026-10-16 (section 8), so a project without GitHub can be planned, started and finished once lane STA and lane UI build it.
+**In short.** First, AIWorks stops losing time to its own problems: a stopped supervisor comes back by itself (#18), publishing survives a GitHub limit (#21), a pull request that conflicts after a sibling merge is repaired without a hand-written campaign (#27), and more than one step can run at a time. After that, five lanes run as parallel campaigns. Powers that wait for an owner decision (#33 D5-gate) are built switched off, or not built, and each row says which. The owner answered #24 D2 and #32 D4 on 2026-10-16 (section 8), so a project without GitHub can be planned, started and finished once lane STA and lane UI build it. Lane SELF (6.8b, added 2026-10-16) lets AIWorks maintain itself without GitHub: local main is trusted, the merge gate merges there, GitHub becomes an optional backup, and a local work list replaces AIWorks's own GitHub issues.
 
-This section consolidates the implementation slices of the six merged designs: [PROJECT_CONNECTION](design/PROJECT_CONNECTION.md#10-implementation-slices) (PC), [WORK_ENVELOPE](design/WORK_ENVELOPE.md#12-implementation-slices) (WE), [ADAPTIVE_SCHEDULER](design/ADAPTIVE_SCHEDULER.md#10-implementation-slices) (SCH), [MODEL_ROUTING](design/MODEL_ROUTING.md#13-implementation-slices) (MR), [OWNER_WORKSPACE](design/OWNER_WORKSPACE.md#11-implementation-slices) (OW) and [AUTO_RELEASE](design/AUTO_RELEASE.md#11-implementation-slices) (AR), plus the later [SCOPED_READING](design/SCOPED_READING.md#13-implementation-slices) (SR, added 2026-10-14 as lane READ). The designs hold the detail (exact tests, acceptance, reasons). This section decides order, lanes and file ownership only. It replaces the earlier wave table.
+This section consolidates the implementation slices of the six merged designs: [PROJECT_CONNECTION](design/PROJECT_CONNECTION.md#10-implementation-slices) (PC), [WORK_ENVELOPE](design/WORK_ENVELOPE.md#12-implementation-slices) (WE), [ADAPTIVE_SCHEDULER](design/ADAPTIVE_SCHEDULER.md#10-implementation-slices) (SCH), [MODEL_ROUTING](design/MODEL_ROUTING.md#13-implementation-slices) (MR), [OWNER_WORKSPACE](design/OWNER_WORKSPACE.md#11-implementation-slices) (OW) and [AUTO_RELEASE](design/AUTO_RELEASE.md#11-implementation-slices) (AR), plus the later [SCOPED_READING](design/SCOPED_READING.md#13-implementation-slices) (SR, added 2026-10-14 as lane READ) and [LOCAL_OPERATION](design/LOCAL_OPERATION.md#9-implementation-slices) (LO, added 2026-10-16 as lane SELF). The designs hold the detail (exact tests, acceptance, reasons). This section decides order, lanes and file ownership only. It replaces the earlier wave table.
 
 ### 6.1 Where things stand (observed on main at `f912d23`, 2026-10-12)
 
@@ -235,6 +235,7 @@ Paths: `sup/` is `src/supervisor/`, `dash/` is `src/dashboard/`, `pub/` is `src/
 | **UI** - owner workspace | One question per screen, project first. Every dashboard file is changed only in this lane. | UI1-UI17; UI18 (the dashboard half of lane READ, 6.8a) | At once. |
 | **REL** - Auto Release, switched off | Release can be checked and rehearsed, but never runs until #33. | REL1-REL11 | At once (REL1). |
 | **READ** - scoped reading | A plan marks the sections a worker must read; the verifier reads everything and cites the rule a returned change broke; the repair round receives that section. Misses are counted, never assumed away. | READ1-READ3; UI18 runs in lane UI | READ1 at once: every earlier writer of its files is merged (observed on main at `ec7b1b3`, 2026-10-15). READ2 after READ1, READ3 after READ2, UI18 after READ3. |
+| **SELF** - AIWorks maintains itself without GitHub | AIWorks's own code is trusted from local main and merged there; GitHub is an optional backup that nothing waits on; AIWorks's own findings, decisions and reviews live in a local work list. | SELF1-SELF13; UI19, UI20 run in lane UI | SELF1 at once, after `aw-ui-fix-5` (new test file only). SELF2 onwards after STA17, READ3 and the slices 6.9 names for each shared file. UI19 after UI18. |
 
 The declared tasks R2-KEEPER, F2-DUPLICATE and F3-CARRYOVER are not repeated in a lane. They are dependencies. They overlap each other: R2-KEEPER and F2-DUPLICATE both change `sup/api.mjs` and SUPERVISOR.md, in two campaigns with no declared order (observed). Recommended order: R2-KEEPER, then F2-DUPLICATE, then F3-CARRYOVER. The one merged second needs an integration round: the `aw-integrate` workaround until RUN1 exists.
 
@@ -348,11 +349,37 @@ Nothing in this lane is built (planned). Every slice it waits for (STA8, STA10, 
 | **READ3** | Siblings in one campaign inherit cited sections in their guide (prompt only); the coordinator and the planning step mark sections; status and baseline report the counts. | `sup/controller.mjs`, `sup/coordinator.mjs` (both drafting prompts), `sup/adapters/executors.mjs` (`PLAN_RULE`, the STA10 planning prompt), `sup/api.mjs` (`reading` per task), `sup/baseline.mjs` (`aiworks-baseline/2`), `ts/coordinator.test.mjs`, `ts/status.test.mjs`, `ts/baseline.test.mjs` | READ2, MOD6 and STA14 (api turn; MOD6 also status test), STA10 (plan prompt), STA12 (coordinator turn) | SR §13 READ3: carry-forward only to section-referencing siblings, bounded 4 per document and 8 per dispatch, packet digests unchanged; "not comparable" below five finished tasks per cohort; store byte-identical after `baseline` | No |
 | **UI18** | The Step screen says which rule a returned change broke and which sections the next attempt was given. | `dash/supervisor.mjs`, `dash/copy.mjs`, `pub/dashboard.js`, `td/work.test.mjs` | READ3, UI12 | SR §13 UI18: copy for fallbacks, misses and extensions; nothing shown for `reading: null`; no document text served | No |
 
+### 6.8b Lane SELF - AIWorks maintains itself without GitHub
+
+Added 2026-10-16 from [LOCAL_OPERATION](design/LOCAL_OPERATION.md) for the owner's decisions (e) and (f) (section 8). The design lists every GitHub call in `src/` and `scripts/` with the slice that removes it or makes it optional ([LO §3](design/LOCAL_OPERATION.md#3-every-place-aiworks-calls-github-today)). Only AIWorks's own repository is affected, and only once `config.json` `selfHosting.trustedMain` is `"local"`; every other project keeps today's behaviour. A **main ledger** in the store records each commit the merge gate puts on local `main`, so a worker that moves `main` by hand cannot make its code trusted ([LO §4.2](design/LOCAL_OPERATION.md#42-the-main-ledger)). The amended AW-001, AW-005, AGENTS.md and runbook text ([LO §8](design/LOCAL_OPERATION.md#8-proposed-amended-text)) land with SELF12, before SELF13 switches anything on.
+
+Nothing in this lane is built (planned). The UI halves, UI19 and UI20, change dashboard files, so they run in lane UI and are listed here for the outcome.
+
+| ID | Outcome | Owns | Depends on | Tests | Owner decision |
+| --- | --- | --- | --- | --- | --- |
+| **SELF1** | A static test lists every GitHub call site; a new one fails with its `file:line`. Later SELF slices shrink the list. | `ts/github-boundary.test.mjs` (new) | none | LO L1: the scanner first catches planted `gh api`, `fetch origin`, `push origin`, `ls-remote origin` calls; then the tree matches the list | No |
+| **SELF2** | `selfHosting` validates; the main ledger and the trusted tip exist. Off by default. | `sup/self-hosting.mjs` (new), `sup/store.mjs` (`main_ledger`, additive), `ts/self-hosting.test.mjs` (new) | SELF1, STA12 (store turn, merged) | LO L2: malformed is off; anchor only equal to `origin/main` and local `main`; unrecorded commits; `MAIN_REWRITTEN` | No |
+| **SELF3** | Runtime provenance against the trusted tip of local main; CLI `trusted-main`. Off: messages byte-identical. | `sup/provenance.mjs`, `sup/cli.mjs`, `sup/controller.mjs` (AW-005 texts only), `sup/coordinator.mjs` (one text), `ts/provenance-local.test.mjs` (new) | SELF2, STA17 (controller turn), READ3 (coordinator turn), STA11 (cli turn) | LO L3: passes with no `origin` remote; a forged `update-ref` from a worker worktree is not trusted; no fetch | No (decided 2026-10-16 (e)) |
+| **SELF4** | Bases, worktrees, dependency integration and the project check of the self-hosted repository use local refs and the ledger: no `gh`, no fetch; `ciRepair` refused for it. | `sup/controller.mjs`, `sup/adapters/git.mjs`, `sup/intake.mjs` (base pin), `sup/project-connect.mjs` (check without `gh`), `ts/local-base.test.mjs` (new) | SELF3, STA17 (`project-connect.mjs` turn), RUN4 (`git.mjs`, merged) | LO L4: a full implement, verify and repair cycle in a repository with no remote; a fake `gh` fails the test if run | No |
+| **SELF5** | The local work list: items, append-only comments, numbering that keeps imported issue numbers, bounds, secret check; CLI `work-list`. | `sup/work-list.mjs` (new), `sup/store.mjs` (`work_items`, `work_item_comments`), `sup/cli.mjs`, `ts/work-list.test.mjs` (new) | SELF2 (store turn), SELF3 (cli turn) | LO L5 | No (decided 2026-10-16 (f)) |
+| **SELF6** | Workers, research snapshots, the coordinator and intake read the work list through a scoped local reader for the self-hosted repository. | `sup/work-list-reader.mjs` (new), `sup/adapters/executors.mjs`, `sup/adapters/claude.mjs`, `sup/adapters/research-context.mjs`, `sup/coordinator.mjs`, `sup/intake.mjs` (issue route), `ts/work-list-reader.test.mjs` (new) | SELF5, SELF4 (intake turn), SELF3 (coordinator turn), READ3 (executors turn), READ2 (claude and research-context turn) | LO L6: scope fixed at run start; no write; packet digests and other repositories' prompts byte-identical | No |
+| **SELF7** | Publication, reports, repair notes, outbox and blockers of the self-hosted repository go to the work list, with no push and no `gh`; review campaigns record reports there; `aiworks-work:<n>` authorization accepted, off until STA17 is on. | `sup/controller.mjs` (`publish`, `enqueue`, `drainOutbox`), `sup/campaign.mjs`, `sup/owner-intervention.mjs` (link), `ts/local-review.test.mjs` (new) | SELF6, SELF4 (controller turn), STA17 (campaign turn) | LO L7: crash after recording leaves one item; a report over 65,536 characters stored whole; GitHub targets byte-identical | No. The local authorization form switches on with STA17 (#32 answered 2026-10-16). |
+| **SELF8** | The local merge gate, built off: merge commit made locally with the trusted tip and the verified head as parents and the verified tree; `main` moved only from the trusted tip; ledger row. | `sup/merge.mjs`, `sup/release/local-merge.mjs` (new), `ts/local-merge.test.mjs` (new), SUPERVISOR.md (merge gate, local form) | SELF7, SELF3 | LO §6 rows for SELF8: base moved means repair; tree mismatch refused; crash leaves one merge commit; dirty checkout waits; `ts/release-boundary.test.mjs` unchanged | No to build. Turning it on is SELF13. |
+| **SELF9** | Optional GitHub backup of trusted `main`, never forced, nothing waits on it; status shows trusted tip, unrecorded commits and backup. | `sup/github-backup.mjs` (new), `sup/merge.mjs`, `sup/api.mjs` (`selfHosting`), `ts/github-backup.test.mjs` (new), `ts/status.test.mjs` | SELF8, READ3 (api and status-test turn) | LO L9: bare-repository remote; no force argument; refused and unreachable remotes reported and the next merge still happens | No to build. Off until SELF13. |
+| **SELF10** | One-time import of the open GitHub issues and all their comments, read-only towards GitHub. | `sup/work-list-import.mjs` (new), `sup/cli.mjs` (`work-list import`, dry run by default), `ts/work-list-import.test.mjs` (new) | SELF5 | LO L10: fake `gh` sees only `GET`; pull requests skipped; numbers kept; re-run idempotent | No (decided 2026-10-16 (f)) |
+| **SELF11** | After the owner confirms the list in the dashboard, each imported issue that has not changed gets one pointer comment and is closed on GitHub. | `sup/work-list-import.mjs`, `sup/adapters/github.mjs` (`closeIssue`), `ts/work-list-import.test.mjs` | SELF10, STA16 (caller check), REL6 (`github.mjs` turn) | LO L11: only the confirmed list; changed issue skipped; no second comment after a crash; synthetic AIWorks caller refused | Built now; it closes issues only after the owner's confirmation in UI20 and the amended AW-001 of SELF12. |
+| **SELF12** | The amended AW-001, AW-005, AGENTS.md and runbook text land; `deploy.ps1 -Main local` pins the trusted tip and keeps the current governance checkout if its pull fails. | `docs/DECISIONS.md`, `docs/PRODUCT_CONSTITUTION.md`, `AGENTS.md`, SUPERVISOR.md, `scripts/supervisor/deploy.ps1`, `docs/STATUS.md` | SELF3-SELF11, UI19, UI20 | `npm run check`; text checked against the owner's words of 2026-10-16; verified-tree, merge-commit and merged-runtime rules not weakened | No new question; records decisions (e) and (f). |
+| **SELF13** | AIWorks runs from local main: disposable rehearsal, then the switch on workstation through the upgrade procedure. Runbook only. | SUPERVISOR.md (switch on, switch back), `docs/STATUS.md` | SELF12 merged and deployed | Full suite at the deployed SHA; a whole task cycle with `gh` off `PATH`; status before and after | No new question: the owner sets `selfHosting` and the merge-gate opt-in in `config.json`, as for the merge gate today. |
+| **UI19** | Dashboard: Resume checks the trusted tip; merge check of the self-hosted repository reads local `main` without fetch; Settings shows trusted main and backup; links point into the work list. | `dash/supervisor.mjs`, `dash/merges.mjs`, `dash/owner.mjs`, `dash/copy.mjs`, `pub/dashboard.js`, `td/self-hosting.test.mjs` (new) | UI18, SELF3, SELF9 | LO L12: no `git fetch` for the self-hosted repository; Resume refused on an unrecorded runtime; keyboard and 320px | No |
+| **UI20** | Dashboard: the work list screen, owner decisions in Needs me, review items in Results, import and the confirmed close. | `dash/work-list.mjs` (new), `dash/server.mjs` (routes with origin, CSRF, 16 KiB and the caller check), `dash/owner.mjs`, `pub/*`, `docs/OPERATIONS_DASHBOARD.md`, `td/work-list.test.mjs` (new) | UI19, SELF5, SELF10, SELF11, STA16 | LO L13: workers cannot write; close only after the typed confirmation; plain copy | No |
+
 ### 6.9 Shared files and the order that avoids conflicts
 
 Files touched by one lane only (for example `sup/scheduler.mjs`, `sup/router.mjs`, `sup/release/*`, `sup/adapters/mirror.mjs`, everything under `src/dashboard/`) follow the lane order. Files touched by more than one lane, or by a declared task and a lane, follow this global turn order. A slice starts only after every earlier slice in the list that touches the same file is merged:
 
-**Turn order:** R2-KEEPER → F2-DUPLICATE → F3-CARRYOVER → RUN1 → RUN1B → STA1 → MOD1 → RUN2 → RUN3 → REL2 → RUN4 → RUN5 → REL3 → REL4 → RUN6 → RUN9 → STA3 → MOD2 → MOD3 → STA6 → STA7 → STA8 → STA9 → MOD5 → MOD6 → STA10 → STA11 → STA12 → STA13 → REL6 → STA14 → RUN10 → MOD7 → STA15 → STA16 → STA17 → REL9 → REL11.
+**Turn order:** R2-KEEPER → F2-DUPLICATE → F3-CARRYOVER → RUN1 → RUN1B → STA1 → MOD1 → RUN2 → RUN3 → REL2 → RUN4 → RUN5 → REL3 → REL4 → RUN6 → RUN9 → STA3 → MOD2 → MOD3 → STA6 → STA7 → STA8 → STA9 → MOD5 → MOD6 → STA10 → STA11 → STA12 → STA13 → REL6 → STA14 → RUN10 → MOD7 → STA15 → STA16 → STA17 → SELF2 → SELF3 → SELF4 → SELF5 → SELF6 → SELF7 → SELF8 → SELF9 → SELF10 → SELF11 → SELF12 → SELF13 → REL9 → REL11.
+
+**Lane SELF (added 2026-10-16).** SELF1 creates one test file, so it waits for no other slice; like every slice it starts after campaign `aw-ui-fix-5` (decision (g)). Every later SELF slice that changes `ts/github-boundary.test.mjs` takes it in lane order. SELF2 to SELF13 sit after STA17 and before REL9 and REL11, which wait for #33: a SELF slice never waits for them. If #33 is answered and REL9 is ready before SELF12, REL9 may go first; both then edit `docs/DECISIONS.md`, `AGENTS.md` and `docs/PRODUCT_CONSTITUTION.md` one after the other, and the second keeps the first one's text. `sup/merge.mjs` (merged with the merge gate, #138) and the new files of the lane are written by lane SELF only. UI19 follows UI18, and UI20 follows UI19, in lane UI.
 
 **Local projects (re-checked 2026-10-16).** STA15 takes its `sup/campaign.mjs` turn after READ1; STA17 takes its `sup/campaign.mjs` turn after STA15 and its `sup/controller.mjs` turn after READ3. STA16 and STA18 create new files only, so they follow their lane order: STA18 after REL8, which is lane REL's only file. `sup/projects.mjs` and `sup/project-connect.mjs` are lane STA files (STA1, STA3, STA4, STA5, then STA17). The dashboard halves run in lane UI: UI16 after STA16, UI17 after STA17 and STA18. The owner also decided on 2026-10-16 that campaign `aw-ui-fix-5` runs first, before any of these slices.
 
@@ -360,29 +387,35 @@ Files touched by one lane only (for example `sup/scheduler.mjs`, `sup/router.mjs
 
 | Shared file | Writers, in order |
 | --- | --- |
-| `sup/controller.mjs` | RUN1, RUN1B, RUN2, RUN3, RUN4, RUN5, RUN6, STA3, MOD2, STA6, STA8, STA9, MOD5, STA10, STA14, READ2, READ3, STA17 |
-| `sup/store.mjs` | F2-DUPLICATE, STA1, RUN2, RUN3, RUN5, REL3, MOD2, STA6, STA12 |
-| `sup/api.mjs` | R2-KEEPER, F2-DUPLICATE, RUN1B, RUN2, RUN3, REL2, REL4, RUN9, MOD3, STA6, MOD6, STA14 (observed: #162 changed it), READ3 |
-| `sup/campaign.mjs` | F2-DUPLICATE, RUN4, STA3, MOD3, STA7, READ1, STA15, STA17 |
+| `sup/controller.mjs` | RUN1, RUN1B, RUN2, RUN3, RUN4, RUN5, RUN6, STA3, MOD2, STA6, STA8, STA9, MOD5, STA10, STA14, READ2, READ3, STA17, SELF3, SELF4, SELF7 |
+| `sup/store.mjs` | F2-DUPLICATE, STA1, RUN2, RUN3, RUN5, REL3, MOD2, STA6, STA12, SELF2, SELF5 |
+| `sup/api.mjs` | R2-KEEPER, F2-DUPLICATE, RUN1B, RUN2, RUN3, REL2, REL4, RUN9, MOD3, STA6, MOD6, STA14 (observed: #162 changed it), READ3, SELF9 |
+| `sup/campaign.mjs` | F2-DUPLICATE, RUN4, STA3, MOD3, STA7, READ1, STA15, STA17, SELF7 |
 | `sup/plan.mjs` | STA6 (creates), STA8, READ1 |
-| `sup/coordinator.mjs` | STA12, READ3 |
+| `sup/coordinator.mjs` | STA12, READ3, SELF3, SELF6 |
 | `sup/baseline.mjs` | MOD1 (creates), READ3 |
-| `sup/adapters/claude.mjs` | READ2 |
-| `sup/adapters/research-context.mjs` | READ2 |
-| `sup/cli.mjs` | R2-KEEPER, MOD1, REL4, STA11 |
+| `sup/adapters/claude.mjs` | READ2, SELF6 |
+| `sup/adapters/research-context.mjs` | READ2, SELF6 |
+| `sup/cli.mjs` | R2-KEEPER, MOD1, REL4, STA11, SELF3, SELF5, SELF10 |
 | `sup/work-ownership.mjs` | F2-DUPLICATE (creates), RUN4, STA8 |
-| `sup/adapters/github.mjs` | R1-REST-PUBLISH (merged), RUN1B, STA13, REL6 |
-| `sup/adapters/executors.mjs` | MOD5, STA10, READ2, READ3 |
+| `sup/adapters/github.mjs` | R1-REST-PUBLISH (merged), RUN1B, STA13, REL6, SELF11 |
+| `sup/adapters/executors.mjs` | MOD5, STA10, READ2, READ3, SELF6 |
 | `ts/helpers.mjs` | R2-KEEPER, RUN1, STA13 |
-| `ts/status.test.mjs` | RUN9, MOD6, READ3 |
+| `ts/status.test.mjs` | RUN9, MOD6, READ3, SELF9 |
 | `dash/supervisor.mjs` | R2-KEEPER, then lane UI only |
-| `docs/SUPERVISOR.md` | R2-KEEPER, F2-DUPLICATE, F3-CARRYOVER, RUN1, RUN1B, MOD1, RUN3, RUN4, RUN5, REL4, MOD3, STA7, READ1, RUN10, MOD7, STA17, REL11 |
-| `docs/STATUS.md` | F3-CARRYOVER, RUN10, MOD7, REL9, REL11 |
-| `docs/DECISIONS.md` | F3-CARRYOVER, STA17, REL9 |
+| `docs/SUPERVISOR.md` | R2-KEEPER, F2-DUPLICATE, F3-CARRYOVER, RUN1, RUN1B, MOD1, RUN3, RUN4, RUN5, REL4, MOD3, STA7, READ1, RUN10, MOD7, STA17, SELF8, SELF12, SELF13, REL11 |
+| `docs/STATUS.md` | F3-CARRYOVER, RUN10, MOD7, SELF12, SELF13, REL9, REL11 |
+| `docs/DECISIONS.md` | F3-CARRYOVER, STA17, SELF12, REL9 |
+| `AGENTS.md`, `docs/PRODUCT_CONSTITUTION.md` | SELF12, REL9 (either order, see lane SELF above) |
+| `sup/adapters/git.mjs` | RUN1, RUN4, SELF4 |
+| `sup/intake.mjs` | STA12 (creates), SELF4, SELF6 |
+| `sup/project-connect.mjs` | STA3 (creates), STA4, STA5, STA17, SELF4 |
+| `sup/merge.mjs` | MERGE-GATE (merged, #138), SELF8, SELF9 |
+| `scripts/supervisor/deploy.ps1` | SELF12 |
 
 Two cases need the order spelled out:
 
-- **`controller.mjs` is the bottleneck.** Eighteen slices change it (fifteen before lane READ, then READ2, READ3 and STA17), one at a time. RUN goes first because parallel work and conflict repair speed up every later slice. Meanwhile the other lanes do their slices that avoid it: STA1, STA2, MOD1, MOD4, REL1 to REL5, REL7 and all of lane UI.
+- **`controller.mjs` is the bottleneck.** Twenty-one slices change it (fifteen before lane READ, then READ2, READ3, STA17, SELF3, SELF4 and SELF7), one at a time. RUN goes first because parallel work and conflict repair speed up every later slice. Meanwhile the other lanes do their slices that avoid it: STA1, STA2, MOD1, MOD4, REL1 to REL5, REL7 and all of lane UI.
 - **STA17 and REL9 both append a decision.** STA17's owner answer is in (2026-10-16); REL9's (#33) is not. The listed order holds; if #33 is answered and REL9 is ready first, REL9 may go first, and STA17 then starts after REL9 is merged. Both only append a new record.
 
 ### 6.10 What waits for an owner decision
@@ -392,6 +425,8 @@ Two cases need the order spelled out:
 | Decision | Built switched off meanwhile | Stays off or unbuilt until answered |
 | --- | --- | --- |
 | #33 D5-gate - Auto Release | REL1-REL7 (`release.enabled: false`, no credential); UI15 (Review only, Stop all releases, no switch without a grant); STA7 refuses `auto-release` | REL9, REL10, REL11; any real grant, credential or canary, including a local Auto Release grant. The owner's own Apply (STA18) is Review only and does not wait. |
+
+Lane SELF waits for no owner decision: the owner answered (e) and (f) on 2026-10-16. Its powers are built switched off and SELF13 switches them on through the upgrade procedure once the owner sets `selfHosting` in `config.json`. Its local authorization form (`aiworks-work:<n>`) stays off until STA17 turns local admission on, and imported issues are closed on GitHub only after the owner confirms the list in the dashboard (SELF11, UI20).
 
 Telegram delivery (#1) has no slice in this order and stays off. Needs me stays the one source it would later send.
 
@@ -409,6 +444,7 @@ Every design slice appears once. "Merged" means two design slices became one bui
 | AR | R1→REL1, R2→REL2, R3→REL3, R4→REL4, R5→REL5, R6→REL6, R7→REL7, R8→REL8, R9→UI15 (merged), R10→REL9, R11→REL10, R12→REL11 |
 | Issue #27 (no design slice) | RUN1 (gap G1) |
 | SR | READ1→READ1, READ2→READ2, READ3→READ3, UI18→UI18 (dashboard half, lane UI); SR §10 P1-P7 parked, no slice |
+| LO | L1→SELF1, L2→SELF2, L3→SELF3, L4→SELF4, L5→SELF5, L6→SELF6, L7→SELF7, L8→SELF8, L9→SELF9, L10→SELF10, L11→SELF11, L12→UI19 (dashboard half, lane UI), L13→UI20 (dashboard half, lane UI), L14→SELF12, L15→SELF13 |
 
 Reasons for the merges and splits:
 
@@ -445,7 +481,7 @@ Reasons for the merges and splits:
 - **G6.** After #33, whether the envelope's `release.mode` is dropped or shown only (C10).
 - **G7.** The one governance-side change left is the release schema for REL10, proposed as text in AR §10.2 and made by the governance contract's own process, never from here. D2 needs none: its overlay schema ships with AIWorks (PC §7.3, #24 answered 2026-10-16).
 - **G8.** workstation state is unknown here. Whether R1-REST-PUBLISH, LD1-LOCAL-DATA or F1-AW005 is deployed has not been checked.
-- **G9.** Two owner decisions of 2026-10-16 have no design or slice in this plan yet: (e) AIWorks's own code trusts **local main**, with GitHub as an optional mirror (AW-005 and the provenance check name `origin/main` today, so this needs its own decision record and slice), and (f) AIWorks's own issues move to a **local work list**, with the open GitHub issues imported once. Each gets its own design task; nothing here builds them.
+- **G9.** Designed 2026-10-16: the owner's decisions (e) AIWorks's own code trusts **local main**, with GitHub as an optional backup, and (f) AIWorks's own issues move to a **local work list**, with the open GitHub issues imported once, are [LOCAL_OPERATION](design/LOCAL_OPERATION.md) and lane SELF (6.8b). AW-005 and the provenance check name `origin/main` today; the amended text lands with SELF12. Nothing is built (planned).
 
 ### 6.14 Implementation boundaries (kept)
 
@@ -486,8 +522,8 @@ Acceptance must use source-appropriate evidence: L0 plan, L1 interactive UI revi
 - **(b) Project rules (D2, #24 option 1):** the owner confirms a project's rules once in the dashboard, valid for up to 12 months. The overlay schema ships with AIWorks, so the governance contract is not changed ([PC §7](design/PROJECT_CONNECTION.md#7-decision-d2-the-rules-a-project-without-github-follows); slices STA15, UI16).
 - **(c) Starting work (D4, #32):** approving a plan in the local dashboard admits exactly that plan, bound to its digest, with no signing key ([WE §8](design/WORK_ENVELOPE.md#8-decision-d4-local-admission-without-github); slices STA16, STA17, UI14, UI17).
 - **(d) Results:** reviewed in the dashboard, then applied when the owner presses Apply, after a rescan that refuses changed files, with a backup and Undo apply. An owner action under Review only, not Auto Release ([WE §8.6](design/WORK_ENVELOPE.md#86-results-review-then-apply); slices REL8, STA18, UI17).
-- **(e) AIWorks's own code:** local main is the trusted source; GitHub is an optional mirror (no slice yet, gap G9).
-- **(f) AIWorks's own issues:** a local work list, with the open GitHub issues imported once (no slice yet, gap G9).
+- **(e) AIWorks's own code:** local main is the trusted source; GitHub is an optional mirror ([LO §4](design/LOCAL_OPERATION.md#4-local-main-is-the-trusted-source); slices SELF2 to SELF4, SELF8, SELF9, SELF12, SELF13, UI19).
+- **(f) AIWorks's own issues:** a local work list, with the open GitHub issues imported once ([LO §5](design/LOCAL_OPERATION.md#5-the-local-work-list); slices SELF5 to SELF7, SELF10, SELF11, UI20).
 - **(g) Order:** campaign `aw-ui-fix-5` runs first.
 
 These are recorded design decisions. None of them is built or deployed by this plan (planned).
