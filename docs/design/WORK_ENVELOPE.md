@@ -2,7 +2,7 @@
 
 **Privacy boundary:** this is a design proposal, not a live installation record. Campaign declarations and approval records stay private under [AW-009](../DECISIONS.md#aw-009---public-commits-contain-no-installation-data). Any proposal to publish declarations through source branches or pull requests is superseded. Merged executable code, explicit owner authorization, scope binding and independent verification remain required.
 
-**Status:** design only, for AIWorks design work. Nothing here is built, enabled or deployed. It implements sections 3.2, 3.3 and 5.1 of [PROJECT_WORKSPACE_PLAN.md](../PROJECT_WORKSPACE_PLAN.md) under the owner's decision D3 (section 8 there). It builds on the merged [PROJECT_CONNECTION.md](PROJECT_CONNECTION.md) (#7) and [ADAPTIVE_SCHEDULER.md](ADAPTIVE_SCHEDULER.md) (#9). It proposes decision D4 (section 8) and does not enable it.
+**Status:** design only, for AIWorks design work. Nothing here is built, enabled or deployed. It implements sections 3.2, 3.3 and 5.1 of [PROJECT_WORKSPACE_PLAN.md](../PROJECT_WORKSPACE_PLAN.md) under the owner's decision D3 (section 8 there). It builds on the merged [PROJECT_CONNECTION.md](PROJECT_CONNECTION.md) (#7) and [ADAPTIVE_SCHEDULER.md](ADAPTIVE_SCHEDULER.md) (#9). Section 8 designs decision D4 as the owner decided it on 2026-10-16 (#32): it is planned, not built.
 
 **Basis:** design notes; implementation status must be checked against the selected runtime revision.
 
@@ -14,8 +14,8 @@ Refs #8, Refs #14, Refs #5.
 - **Plan only, if you just want to look.** A plan-only request changes nothing and starts no work. You can turn it into real work later with one click, as long as the project has not changed in the meantime.
 - **Approve once.** After you approve, AIWorks plans, splits, assigns, checks, repairs and retries on its own. It adds new steps when the work needs them. It does not ask you to approve each step.
 - **It can't quietly do more than you approved.** A new step may never change files outside what you allowed, use a provider or permission you did not allow, publish somewhere else, release, raise your limits, or change what "done" means. If the work needs any of that, only the affected step stops, and you get one clear question.
-- **Honest states.** For a GitHub project you see the real steps before work starts: plan file opened for review, checked, merged, started. For a project without GitHub you never see a fake pull request. Starting work there waits for two decisions that are not taken yet (D2 and D4), and the dashboard says so.
-- **Nothing is merged, deployed or copied into your folder by this design.** Results stop at a verified pull request, or at a verified local candidate. Release is a separate, separately approved mode (#13).
+- **Honest states.** For a GitHub project you see the real steps before work starts: plan file opened for review, checked, merged, started. For a project without GitHub you never see a fake pull request. You confirm its rules once and approve its plan in the dashboard, with no GitHub step and no signing key (section 8, decided 2026-10-16). Until that is built, the dashboard says starting work there is not available yet.
+- **Nothing is merged or deployed by this design, and nothing reaches your folder until you press Apply.** Results stop at a verified pull request, or at a verified local candidate that you review and apply yourself (section 8.6). Release is a separate, separately approved mode (#13).
 
 ## 2. Where things stand today (observed)
 
@@ -298,13 +298,13 @@ The copy is exact owner-facing English (D9). `{…}` are placeholders. Screens a
 | `DECLARATION_READY` | Ready to merge | The plan file passed its checks. Work starts when it's merged; AIWorks doesn't merge by itself. | Open PR #{n} |
 | `DECLARATION_DIFFERS` | Plan file differs from your approval | Pull request #{n} no longer matches what you approved, so AIWorks won't start it. | Review changes |
 | `DECLARATION_CLOSED` | Plan file closed | Pull request #{n} was closed without merging. Nothing started. | Approve again |
-| `READY_TO_START` | Ready to start (until Q2) | The plan file is merged. Start the work to let AIWorks begin. | Start work |
+| `READY_TO_START` | Ready to start (until slice E8 is switched on) | The plan file is merged. Start the work to let AIWorks begin. | Start work |
 | `STARTING` | Starting | Merged at {sha7}. AIWorks is starting the work. | — |
 | `START_REFUSED` | Couldn't start | AIWorks didn't start this work: {reason}. | {action from reason} |
 | `GITHUB_UNKNOWN` | Can't check GitHub | GitHub can't be reached, so AIWorks doesn't know the state of pull request #{n}. It will check again. | Check again |
-| `LOCAL_START_OFF` | Not available yet | You can plan work here. Starting work on projects without GitHub waits for two approvals (D2 and D4). | — |
-| `LOCAL_SIGNATURE_NEEDED` | Waiting for your signature | Sign this plan with your AIWorks key to start it. | Show how to sign |
-| `LOCAL_SIGNATURE_INVALID` | Signature doesn't match | This signature isn't valid for this plan, so nothing started. | Sign again |
+| `LOCAL_START_OFF` | Not available yet | You can plan work here. Starting work on projects without GitHub isn't built yet. | — |
+| `LOCAL_RULES_NEEDED` | Confirm this project's rules | Before work can start here, confirm the rules this project follows. You do this once; it lasts up to 12 months. | Review rules |
+| `LOCAL_APPROVAL_REFUSED` | Couldn't approve | AIWorks couldn't confirm this approval came from you in this browser, so nothing started. | Approve again |
 
 `START_REFUSED` reasons: `DECLARATION_DIFFERS_FROM_APPROVAL`, `DUPLICATE_WORK` with the other campaign, `REGISTRY_*` from [PROJECT_CONNECTION.md §8.2](PROJECT_CONNECTION.md#82-github-project), and `RUNTIME_NOT_MERGED` (F1).
 
@@ -322,64 +322,86 @@ The copy is exact owner-facing English (D9). `{…}` are placeholders. Screens a
 
 ## 8. Decision D4: local admission without GitHub
 
+**Decided by the owner on 2026-10-16 (#32).** The owner said: "This AIworks should work with no dependency on Github." Approving a plan in the local dashboard admits exactly that plan, bound to its digest. There is **no signing key**. Nothing in this section is built yet (planned).
+
 ### 8.1 The problem
 
-AW-005 requires merged executable code and an explicitly authorized private declaration. Projects without GitHub still need a separate governed project-identity contract before local execution is supported. Any additional signed local-approval mechanism below is a design proposal; it is not a new gate on current CLI registration.
+AW-005 requires merged executable code and an explicitly registered private declaration. Today the only way to register one is the owner's `cli.mjs start` (`src/supervisor/cli.mjs:106`, `:119`), and the declaration format needs a GitHub authorization URL and a GitHub repository (`src/supervisor/campaign.mjs:114`, `:123`). Every local target is refused (`src/supervisor/campaign.mjs:355-358`). A project without GitHub therefore has no way to start work. The decision gives it one: the owner's approval in the dashboard.
 
 ### 8.2 Threat model
 
-- AIWorks, its workers and the owner's own tools run under the **same Windows account**. Anything that account can write, a misbehaving worker could in principle write, including the supervisor store (`supervisor.db`). Claude's deny rules are not an operating-system boundary (governance Constitution §9).
-- So a hash chain in the store alone is **not** tamper-evident against that account: a full rewrite can recompute it. The approval must rest on something no process can use without the owner present, and on a trust root that is itself reviewed.
-- Executable code is the other risk AW-005 answered: unmerged controller code must never admit new execution ([AW-005](../DECISIONS.md#aw-005---runtime-code-must-be-merged-declarations-remain-private)). D4 must not reopen that.
+**Who the boundary is.** AIWorks, its workers, its dashboard and the owner's own tools run under the **same Windows account**. Anything that account can run could, in principle, write the supervisor store (`supervisor.db`) or send a request to the dashboard. Claude's deny rules are not an operating-system boundary (governance Constitution §9). A hash chain in the store alone is not tamper-evident against that account: a full rewrite can recompute it.
 
-### 8.3 Proposed decision text
+**What the owner chose.** With no signing key, AIWorks cannot prove that the owner was present for an approval. The design does not claim to. It names who could try to forge an approval and what stops each of them:
 
-> **AW-005 amendment (proposed, D4) - Local projects may start a campaign from an owner-signed local approval**
->
-> Status: proposed in `docs/design/WORK_ENVELOPE.md` for #8; takes the next free AW number when the owner accepts it.
+| Who | What they could try | What stops it |
+| --- | --- | --- |
+| A web page open in the owner's browser | Send an approval to the dashboard | The dashboard listens on `127.0.0.1` only (`src/dashboard/main.mjs:34`). It refuses any other host or origin (`src/dashboard/server.mjs:54-55`). A command needs the exact origin and a CSRF token (`:85-88`), JSON (`:89`) and at most 16 KiB (`:90-95`). (Observed in code.) |
+| An AIWorks worker or the coordinator, for example after a prompt injection | Open the dashboard in its browser | A browser worker may not name the dashboard's port 4318 (`src/supervisor/campaign.mjs:271-273`, observed). |
+| The same, from a shell | Read the CSRF token with a plain GET (a non-browser client can omit the `Origin` header) and send the approval | Planned **caller check**: the approval and rules routes find the process at the other end of the loopback connection and refuse it when that process belongs to AIWorks's own process tree. On Windows every worker and coordinator run starts through `runner.mjs` (`src/supervisor/controller.mjs:36`, `src/supervisor/coordinator.mjs:20`) inside a job object AIWorks creates for that run, which its descendants cannot leave (`src/supervisor/windows-process.ps1:88-96`, `:116-117`: no breakaway flag; observed). The check asks whether the caller is in the job of an open run. The refusal is `APPROVAL_FROM_AIWORKS`. Where the check cannot run (another platform, or the lookup fails), the route refuses with `APPROVAL_UNCHECKED`: it fails closed. |
+| The same | Write an approval straight into `supervisor.db` | **Detected, not prevented.** Every approval is journaled by the dashboard route with its request id, and appended to the ledger (8.4). The supervisor re-checks the ledger before every dispatch. The owner sees every approval, with its time and fingerprint, in the project's history and can revoke it. A worker's writes outside its worktree are outside its packet; whether they are noticed is **unknown** today. |
+| Any program the owner runs with full rights | All of the above | **Not stopped.** Such a program can already change the owner's folders and AIWorks's data directly, so an approval gives it no write it lacks. What it could gain is AI work in the owner's name, which shows up as above. This is the residual risk of choosing no key. |
+
+**What an approval can admit.** Even a forged approval admits only one plan that already exists as a draft, inside its own envelope: the boundaries of section 6 are checked again before every dispatch. It can never merge, deploy or write the owner's folder: applying a result needs the owner's own Apply (8.6), which repeats the caller check.
+
+**Code is still the other risk.** Unmerged controller code must never admit new execution ([AW-005](../DECISIONS.md#aw-005---runtime-code-must-be-merged-declarations-remain-private)). D4 does not reopen that.
+
+### 8.3 Decision text
+
+Slice E12 records this as a new decision with the next free AW number. It quotes the owner's words of 2026-10-16 and does not change AW-001 to AW-007 as written.
+
+> **Local projects start from an owner approval in the dashboard (D4, owner decision 2026-10-16)**
 >
 > All campaign declarations remain private. Merged, reviewed executable code and explicit owner authority stay required for every project.
 >
-> In addition, a campaign whose target is a connected **local project** (Local Git or plain folder, D1) may use an optional owner-signed **private approval** when all of the following hold. The supervisor checks each one at registration, at resume and before every dispatch, and fails closed:
+> A campaign whose target is a connected **local project** (Local Git or plain folder, D1) is registered when the owner approves its plan in the local dashboard. The supervisor checks each point below at registration, at resume and before every dispatch, and fails closed:
 >
-> 1. **Merged, reviewed, pinned code.** The supervisor runs from a revision that is an ancestor of `example-org/aiworks` `origin/main`, deployed by the documented upgrade procedure. Any change to `src/supervisor` had independent approval of its exact head. Nothing in a local approval or declaration is executed as code. It is data validated by that merged code under the same private declaration and scope rules as other campaigns.
-> 2. **Private installation trust root.** If this optional approval design is accepted, permitted signing keys and revocations are installation data. They are not committed to the public source repository. Adding this stronger admission gate requires explicit operator authority.
-> 3. **Owner signature with presence.** The owner signs the canonical approval record (8.4) with one of those keys. The signature is made in a way that needs the owner's physical action, such as touching a security key or typing a passphrase. The private key is never given to the supervisor, the dashboard, the coordinator or any worker.
-> 4. **Governed project.** The target has an admissible D2 local overlay entry, and the approval binds that entry's digest. A project with a GitHub remote can never use this path.
-> 5. **Append-only ledger.** The approval, every child amendment of that campaign and every revocation are appended to a local hash-chained ledger. Each entry binds the previous entry's hash. A break, a missing entry or a signature that no longer verifies stops new dispatches for the affected campaigns (B2) until the owner signs again.
-> 6. **Same limits as every campaign.** Child tasks follow the same envelope admission. The supervisor still never merges, deploys or writes the owner's folder ([AW-001](../DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception)). A local result is a verified local candidate. Applying it is separately governed (#13).
-> 7. **Revocation.** Removing the key from main, revoking or expiring the project's overlay entry, or the owner's *Revoke* action stops new dispatches at the next check. Running operations finish and are recorded, as with a pause.
+> 1. **Merged, reviewed, pinned code.** The supervisor runs from a reviewed revision, deployed by the documented upgrade procedure. Any change to `src/supervisor` had independent approval of its exact head. Nothing in an approval or declaration is executed as code.
+> 2. **Owner approval in the dashboard.** The owner reviews the plan on one screen and presses *Approve and start*. The approval record (8.4) binds that exact plan by its digest. There is no signing key.
+> 3. **From the owner, not from AIWorks.** The dashboard refuses an approval that comes from a process AIWorks started, and refuses when it cannot tell (8.2).
+> 4. **Governed project.** The target has an admissible local overlay entry ([PROJECT_CONNECTION.md §7](PROJECT_CONNECTION.md#7-decision-d2-the-rules-a-project-without-github-follows)), and the approval binds that entry's digest. A project with a GitHub remote can never use this path.
+> 5. **Append-only ledger.** The approval, every child amendment of that campaign and every revocation are appended to a local hash-chained ledger. A break or a missing entry stops new dispatches for the affected campaigns (B2) until the owner approves again.
+> 6. **Same limits as every campaign.** Child tasks follow the same envelope admission. The supervisor never merges, deploys or writes the owner's folder by itself ([AW-001](../DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception)). A local result is a verified local candidate. Only the owner's *Apply* writes it to the folder.
+> 7. **Revocation.** Revoking or expiring the project's overlay entry, or the owner's *Revoke*, stops new dispatches at the next check. Running operations finish and are recorded, as with a pause.
 >
-> This amendment changes where an owner approval may come from, for local projects only. It does not let unmerged code run, and it does not change the GitHub main path.
+> This changes where an owner approval may come from, for local projects only. It does not let unmerged code run, and it does not change the GitHub path.
 
-### 8.4 The evidence that makes an approval tamper-evident
+**Which main is trusted.** The owner also decided on 2026-10-16 that AIWorks's own **local main** is the trusted source of its code, and GitHub is an optional mirror. AW-005 today names `origin/main`, and the provenance check reads it. Moving that check to local main needs its own decision record and slice, which this design does not contain (plan §6.13, G9). Until then point 1 means what AW-005 says today.
+
+### 8.4 The evidence that binds an approval
 
 | Evidence | What it binds | What it defeats |
 | --- | --- | --- |
-| **Approval record** `aiworks-envelope-approval@1`: `{ approvalId (UUID), campaignId, projectId (lp-…), overlayDigest, declarationDigest = authorityDigest(declaration), codeRevision, approvedAt, startBy (≤ 30 days), nonce }`, as `canonicalJson` | The exact plan, project, rules and code revision at approval | A different plan, project or rules set reusing the approval |
-| **Signature** over the record, OpenSSH `SSHSIG` with namespace `aiworks-envelope`, verified by `ssh-keygen -Y verify` against the trust-root file | That the owner, holding the key, approved this record | A worker or agent writing an approval: it cannot sign without the owner's key and presence |
-| **Trust-root file** on `example-org/aiworks` main, read from the merged runtime revision (the `allowed_signers` format) | Which keys count | A key planted in the data directory |
-| **Ledger** table `local_ledger(seq, kind, campaign_id, payload, payload_digest, signature, prev_hash, hash, created_at)`: `kind` is `approval`, `amendment` or `revocation`; `hash = sha256(prev_hash ‖ kind ‖ payload_digest ‖ signature)` | The order and completeness of approvals and amendments | Silently removing, reordering or adding entries, as far as the signed approvals reach. Unsigned amendments stay bounded by the signed envelope (section 6). |
-| **Journal and status** | `local-approval-verified` with the record digest, key fingerprint and ledger head; status shows the key fingerprint and approval date | Unexplained state; it gives the owner something to check |
+| **Approval record** `aiworks-local-approval/1`: `{ approvalId (UUID), campaignId, projectId (lp-…), overlayDigest, declarationDigest = authorityDigest(declaration), codeRevision, approvedAt, startBy (≤ 30 days), nonce }`, as `canonicalJson`, with method `owner-local-ui` | The exact plan, project, rules and code revision at approval | A different plan, project or rules set reusing the approval |
+| **Request receipt** written by the dashboard route: the request id, the caller-check result (`owner-browser`) and the record digest | That the approval came through the owner route and passed the caller check | An approval row with no matching receipt, which is refused |
+| **Single use** | Each `nonce` admits one registration | Replaying an old approval after a revoke |
+| **Ledger** table `local_ledger(seq, kind, campaign_id, payload, payload_digest, prev_hash, hash, created_at)`: `kind` is `approval`, `amendment` or `revocation`; `hash = sha256(prev_hash ‖ kind ‖ payload_digest)` | The order and completeness of approvals and amendments | Silently removing or reordering entries by code that does not also rewrite the chain. Unapproved amendments stay bounded by the approved envelope (section 6). |
+| **Journal and status** | `local-approval-recorded` with the record digest and ledger head; the project's history shows each approval's date and the plan's fingerprint | Unexplained state; it gives the owner something to check |
 
-Why unsigned amendments are still safe: a forged amendment that passes section 6's checks adds only work the signed envelope already allows. One that does not pass is refused at admission **and** again before every dispatch. Widening a local envelope always needs a new signature.
-
-The signing step for the owner (planned): the dashboard shows the approval record as a file and one command:
-
-```text
-ssh-keygen -Y sign -f <your AIWorks key> -n aiworks-envelope approval-<id>.json
-```
-
-The owner runs it in their own terminal and pastes or drops the `.sig` file. Which kind of key is owner question Q4. Whether `ssh-keygen` on workstation supports security-key (`-sk`) signatures is **unknown**. Slice E11 probes it.
+Why amendments without a new approval are still safe: one that passes section 6's checks adds only work the approved envelope already allows. One that does not pass is refused at admission **and** again before every dispatch. Widening a local envelope always needs a new owner approval in the dashboard.
 
 ### 8.5 What stays the same
 
 - GitHub projects: section 5, unchanged by D4. A local approval naming a project with `source_kind = github` is refused (`LOCAL_PATH_NOT_FOR_GITHUB`).
-- `LOCAL_ADMISSION` stays `false`, a code constant, as [PROJECT_CONNECTION.md §6.2](PROJECT_CONNECTION.md#62-assertregisteredtarget-and-projectgovernance) set out. Slice E11 builds everything behind it. Slice E12 turns it on, naming D2 and D4, in a reviewed PR.
+- Starting work on a local project stays off in code until slice E12 (observed: `src/supervisor/campaign.mjs:355-358`, `src/supervisor/projects.mjs:68-71`). Slice E11 builds everything behind that refusal. Slice E12 lifts it in a reviewed PR that names D2 and D4.
+
+### 8.6 Results: review, then Apply
+
+**Decided by the owner on 2026-10-16.** A finished local result is reviewed in the dashboard and written to the owner's folder only when the owner presses **Apply**. This is an owner action under Review only. It is **not** Auto Release: it needs no release grant, creates no release record and never runs by itself ([AUTO_RELEASE.md §3](AUTO_RELEASE.md#3-the-two-modes)). Nothing here is built yet (planned).
+
+1. **Review.** A verified local candidate shows *Ready for your review* (observed copy: `src/supervisor/local-candidates.mjs:16-20`). The review screen lists every changed file and the independent check's result. Nothing in the folder has changed yet.
+2. **Rescan.** When the owner presses *Apply*, AIWorks reads the folder again first. Local Git: the branch head must equal the candidate's baseline commit and the working tree must be clean. Plain folder: every file Apply writes or deletes must still have its baseline hash. If any file changed, Apply refuses with `APPLY_FOLDER_CHANGED`, lists the changed files and writes nothing.
+3. **Backup.** Local Git: a ref `refs/aiworks/apply-backup/<apply id>` at the current head. Plain folder: a copy of every file that will change or be deleted, with a manifest of paths and hashes, under AIWorks's data directory. No file is written before the backup is recorded.
+4. **Apply.** Local Git: fast-forward only, after the candidate's commit is fetched from AIWorks's mirror into the owner's repository. Plain folder: each file is written to a temporary file in the same directory and renamed over the target; deletions come last.
+5. **Confirm.** Every path equals the candidate (Local Git: head equals the candidate and the tree is clean). The result shows *Applied*, with *Undo apply*.
+6. **The way back.** *Undo apply* restores the backup only where the folder still equals what Apply wrote. Where the owner has changed a file since, AIWorks stops, keeps the backup and says which files; it never writes over the owner's work.
+7. **Crash.** An apply left open by a crash is reconciled by reading the folder, never by repeating it blindly ([AUTO_RELEASE.md §8](AUTO_RELEASE.md#8-restart-reconcile-never-repeat), local rows).
+
+The adapters are the ones AUTO_RELEASE R8 designs (`local-git-apply`, `local-folder-apply`, [§7.5](AUTO_RELEASE.md#75-local-apply-with-a-reversible-backup)), so apply code stays under `src/supervisor/release/`. *Apply* and *Undo apply* go through the same dashboard route rules and caller check as an approval (8.2). Auto Release for a local project stays off until #33.
 
 ## 9. Threats and acceptance tests from #8
 
-All tests are synthetic: temporary stores, disposable Git repositories, and synthetic `git`, `gh`, `claude`, `codex` and `ssh-keygen` executables as in `tests/supervisor/helpers.mjs`. They make no model, network or GitHub calls.
+All tests are synthetic: temporary stores, disposable Git repositories, and synthetic `git`, `gh`, `claude` and `codex` executables as in `tests/supervisor/helpers.mjs`. They make no model, network or GitHub calls.
 
 | #8 acceptance | Test | Slice |
 | --- | --- | --- |
@@ -394,8 +416,9 @@ All tests are synthetic: temporary stores, disposable Git repositories, and synt
 | Uncertainty | `GITHUB_UNKNOWN` instead of a guessed PR state; unknown cost stays unknown | E7 |
 | Exact-revision verifier independence | A child's verifier gets the child's head SHA in a separate checkout, as today; the closing check's verifier is a fresh session | E5 |
 | No automatic merge or deploy; no new recurring spend | `auto-release` refused; no code path calls a merge; planning steps are event-driven only (a test asserts no planning operation without a trigger) | E2, E5 |
-| A plain folder without a remote can plan, and implement after D2 and D4 | Planning works with `LOCAL_ADMISSION = false`; registration is refused with `LOCAL_START_OFF`; with the constant flipped in-process and a synthetic signer, a folder project runs to a local candidate | E6, E11 |
-| Approval tampering | A changed declaration byte, a wrong key, a key not trusted by the private installation, an expired `startBy`, a removed ledger entry and a reordered ledger each block dispatch | E11 |
+| A plain folder without a remote can plan, start and finish | Planning works while local admission is off; registration is refused with `LOCAL_START_OFF`; with local admission on and a synthetic dashboard approval, a folder project runs to a local candidate, survives a restart and finishes | E6, E11, E12 |
+| Approval tampering and forgery | A changed declaration byte, a changed overlay digest, an expired `startBy`, a reused nonce, an approval row with no request receipt, a removed ledger entry and a reordered ledger each block dispatch; an approval request from a process in AIWorks's own process tree is refused (`APPROVAL_FROM_AIWORKS`); a failed caller lookup is refused (`APPROVAL_UNCHECKED`) | E11 |
+| Apply only on the owner's press, only on an unchanged folder, with a way back | No code path applies without the owner route; one changed file refuses with nothing written; the backup is recorded before the first write; *Undo apply* restores the folder byte for byte and refuses over a file changed since; a crash midway is reconciled, never repeated; no release record or grant is created | E13 |
 
 ## 10. Decisions taken here (not owner-reserved)
 
@@ -413,25 +436,14 @@ All tests are synthetic: temporary stores, disposable Git repositories, and synt
 
 ## 11. Owner-reserved questions
 
-D1, D3, D5 and D9 are settled and are not asked again. D2 is asked in [PROJECT_CONNECTION.md §9](PROJECT_CONNECTION.md#9-owner-reserved-questions). Each question below keeps current behaviour until it is answered, and other work continues.
+D1, D3, D5 and D9 are settled and are not asked again. **The owner answered the rest on 2026-10-16 (#32, #24).** Nothing in this section asks the owner any more:
 
-1. **Accept D4 as written in section 8.3?** It changes AW-005, an owner decision, and how a campaign may be authorized (governance Constitution §2).
-   *Recommended answer:* **yes.** Code stays merged and pinned, the trust root is reviewed on main, and the GitHub path is unchanged.
-   *Default until answered:* projects without GitHub can be planned but not started (`LOCAL_START_OFF`).
-   *Unblocks:* slice E12, together with D2 and Q4.
-2. **Does approving a plan in the local dashboard count as your explicit registration of that exact plan?** For GitHub projects, AIWorks would then start the work by itself once the plan file is merged and matches your approval. AW-001 and AW-005 speak of campaigns "the owner explicitly registered", so what counts as that act is yours to decide.
-   *Recommended answer:* **yes**, with the approval bound to the plan's digest. The dashboard is local-only with origin and CSRF checks ([AW-003](../DECISIONS.md#aw-003---the-operations-dashboard-is-local-only)). Answer it together with PROJECT_CONNECTION question 2, which asks the same about a project's rules.
-   *Default until answered:* after the merge, the dashboard shows *Ready to start* and the owner's `cli.mjs start` registers the campaign, as today.
-   *Unblocks:* slice E8, a true one-approval start.
-3. **May campaign declarations be published through AIWorks branches or pull requests?** No. AW-009 keeps them private. The initial approval and any authorized amendments use private installation storage.
-   *Recommended answer:* **yes, narrowly**: only a private local declaration with the exact approved bytes; never a declaration branch or public pull request.
-   *Default until answered:* the dashboard shows the file (`DECLARATION_TO_OPEN`), and the owner's session opens the PR, as today.
-   *Unblocks:* slice E9.
-4. **Which key signs local approvals?** It is the owner's own credential.
-   *Options:* (a) a FIDO2 security key (`ed25519-sk`), where each signature needs a touch; (b) a passphrase-protected SSH key kept out of `ssh-agent`, where each signature needs the passphrase.
-   *Recommended answer:* **(a)** if you have a security key, otherwise **(b)**. Either way the public key goes to main by one reviewed PR.
-   *Default until answered:* local admission stays off.
-   *Unblocks:* slice E12. E11 builds and tests both kinds with synthetic keys.
+1. **D4.** Accepted in the form of section 8.3: a local project starts from the owner's approval in the dashboard, with **no signing key**.
+2. **Does approving a plan in the local dashboard count as your explicit registration of that exact plan?** Yes, bound to the plan's digest. For a GitHub project this lets slice E8 start the work once the plan matches the approval; for a local project, slice E12.
+3. **May declarations be published through AIWorks branches or pull requests?** No. AW-009 keeps them private. No supervisor-opened declaration pull request is built.
+4. **Which key signs local approvals?** None. The owner chose no key; section 8.2 states what that leaves open.
+
+The rules question that used to be asked with Q2 is answered in [PROJECT_CONNECTION.md §9](PROJECT_CONNECTION.md#9-owner-reserved-questions).
 
 ## 12. Implementation slices
 
@@ -446,10 +458,11 @@ Each slice is one reviewable PR. Every change under `src/supervisor/` needs an i
 | **E5** | AIWorks adds steps by itself and closes the outcome | `src/supervisor/adapters/executors.mjs` (plan-stage schema, optional `followUps`); `src/supervisor/controller.mjs` (planning triggers, `PLAN`, `ACCEPT`) | `tests/supervisor/envelope-e2e.test.mjs` (section 9 row 2); no planning operation without a trigger; two identical uncovered closing checks raise B3 | #8 acceptance "one start, child, verify, restart, finish without the owner" passes | E4 | No |
 | **E6** | The owner can ask for work by goal, issue, PR or plan file, or plan only | `src/supervisor/intake.mjs` (new: requests, drafts, staleness, conflicts); `src/supervisor/coordinator.mjs` (intake mode, schema, target checkout); `src/supervisor/store.mjs` (additive `work_requests`, `work_drafts`) | `tests/supervisor/intake.test.mjs`: each route; plan-only writes no campaign; injection cases; staleness for each pinned item; fork PR refused; local project without `gh` drafts | Drafts are never scheduled; coordinator checkouts stay clean | E2; PROJECT_CONNECTION S1, S4 (project records, mirror) | No |
 | **E7** | An approved GitHub plan can only start as approved | `src/supervisor/approvals.mjs` (new: `envelope_approvals`, declaration rendering, digest compare); `src/supervisor/provenance.mjs` (load the private declaration, retaining merged-runtime enforcement); `src/supervisor/cli.mjs` | `tests/supervisor/approval-private.test.mjs` with a disposable `origin/main`: identical file starts; one changed byte gives `DECLARATION_DIFFERS_FROM_APPROVAL`; unmerged file is not started; revoked private approval starts nothing | No start without matching private approval and merged runtime code | E2, F1-AW005 | No |
-| **E8** | The owner approves once in the dashboard and sees each real step | `src/dashboard/work.mjs` (new); `src/dashboard/server.mjs` (routes with origin, CSRF, 16 KiB); `src/dashboard/public/*` (Start work and Review areas only); `docs/OPERATIONS_DASHBOARD.md` | `tests/dashboard/work.test.mjs`: route security; exact copy for every code of section 7; no fabricated PR state; keyboard and 320px checks per UX-001/UX-002 | Approve-to-start needs no CLI when Q2 is yes; *Ready to start* otherwise | E6, E7; the #11 design and its file owner | **Yes:** Q2 for automatic start (screens ship without it) |
+| **E8** | The owner approves once in the dashboard and sees each real step | `src/dashboard/work.mjs` (new); `src/dashboard/server.mjs` (routes with origin, CSRF, 16 KiB); `src/dashboard/public/*` (Start work and Review areas only); `docs/OPERATIONS_DASHBOARD.md` | `tests/dashboard/work.test.mjs`: route security; exact copy for every code of section 7; no fabricated PR state; keyboard and 320px checks per UX-001/UX-002 | Approve-to-start needs no CLI (answered: Q2 yes, 2026-10-16) | E6, E7; the #11 design and its file owner | No |
 | **E9** | Private declaration persistence and idempotent registration | Private approval store and local declaration loader | Restart preserves the approved digest and registers only once; no declaration branch, PR or upload is created | Campaign data never enters source Git | E7 | No publication authority |
-| **E10** | Local projects get verified candidates, never a fake PR | `src/supervisor/local-candidates.mjs` (new ledger of verified revisions and reports); `src/supervisor/controller.mjs` (publish branch for local kinds) | `tests/supervisor/local-candidates.test.mjs`: a verified local task records `{ sha, verifier evidence, baseline }`; `pushVerified` and `gh` are never called; status shows *Ready for your review* | Inert until local admission is on | E4; PROJECT_CONNECTION S4, S5 | No (used after E12) |
-| **E11** | D4 built and tested, switched off | `src/supervisor/local-admission.mjs` (new: record, `ssh-keygen -Y verify` adapter, ledger, revocation); trust-root reader | `tests/supervisor/local-admission.test.mjs` with a synthetic `ssh-keygen`: every tampering case of section 9; GitHub project refused; `LOCAL_ADMISSION` false refuses all; workstation `-sk` support probe documented as a manual runbook step | `LOCAL_ADMISSION` stays `false`; no installation trust key provisioned yet | E3, E7, E10; PROJECT_CONNECTION S7 | No to build; **yes** to use (D4) |
-| **E12** | Start work on projects without GitHub | `src/supervisor/local-admission.mjs` (`LOCAL_ADMISSION = true`); private installation trust-root file; `docs/DECISIONS.md` (record the accepted D4); `docs/SUPERVISOR.md` | Full local end-to-end with a synthetic signer: plain folder → signed approval → child → verified candidate → restart → finish | A plain folder without a remote runs to a verified local candidate; GitHub projects unchanged | E11; PROJECT_CONNECTION S7, S8 | **Yes:** D4 (Q1), D2 (governance merge and PROJECT_CONNECTION Q1, Q2), Q4 |
+| **E10** | Local projects get verified candidates, never a fake PR | `src/supervisor/local-candidates.mjs` (new ledger of verified revisions and reports); `src/supervisor/controller.mjs` (publish branch for local kinds) | `tests/supervisor/local-candidates.test.mjs`: a verified local task records `{ sha, verifier evidence, baseline }`; `pushVerified` and `gh` are never called; status shows *Ready for your review* | Inert until local admission is on | E4; PROJECT_CONNECTION S4, S5 | No (built; used after E12) |
+| **E11** | D4 built and tested, switched off | `src/supervisor/local-admission.mjs` (new: approval record, request receipt, single-use nonce, ledger, revocation, caller check with an injectable process lookup); `schemas/local-approval.schema.json` (new) | `tests/supervisor/local-admission.test.mjs`: every tampering and forgery case of section 9; a synthetic caller in AIWorks's process tree refused; a failed lookup refused; GitHub project refused; with local admission off every approval is refused | Local admission stays off; no store table exists until the first approval | E3, E7, E10; PROJECT_CONNECTION S7 | No (decided 2026-10-16, #32) |
+| **E12** | Start work on projects without GitHub | `src/supervisor/campaign.mjs` (accept a local target with an admitted approval and no issue numbers, in place of the refusal at `:355-358`); `src/supervisor/controller.mjs` (a local campaign's reports and blockers stay in the store and Needs me; no issue comment); `src/supervisor/projects.mjs` (`startWork` for local kinds with an admissible overlay, in place of `:68-71`); `src/supervisor/project-connect.mjs` (local capabilities and the `LOCAL_START_OFF` copy); `src/supervisor/local-admission.mjs` (switch on); `docs/DECISIONS.md` (record D4 as in 8.3); `docs/SUPERVISOR.md` | Full local end-to-end with a synthetic dashboard approval: plain folder → rules confirmed → plan approved → child → verified candidate → restart → finish; no `gh` call in the whole run; GitHub tests unchanged | A plain folder without a remote runs to a verified local candidate; GitHub projects unchanged | E11; PROJECT_CONNECTION S7, S8 | No (decided 2026-10-16); the decision record's wording is checked against the owner's words |
+| **E13** | The owner applies a verified local result, and can undo it | `src/supervisor/release/owner-apply.mjs` (new: rescan, backup, apply, confirm, undo, reconcile; calls the AUTO_RELEASE R8 adapters) | `tests/supervisor/owner-apply.test.mjs` with temporary folders and disposable Git repositories: the section 9 Apply row; Local Git is fast-forward only and never resets owner work; symlink, junction and outside paths refused; none skipped on Windows | Apply writes only after the owner's press, a clean rescan and a recorded backup; *Undo apply* works; no release record or grant exists | AUTO_RELEASE R8; E10; PROJECT_CONNECTION S5 | No (decided 2026-10-16). Auto Release stays off (#33) |
 
-Applying a local candidate to the owner's folder and any Auto Release belong to #13, not to these slices.
+Slice E13 is the owner's Apply only. Any Auto Release, local or not, belongs to #13 and stays off until #33. The screens for local rules, approval and Apply are OWNER_WORKSPACE S12 (plan UI16, UI17).
