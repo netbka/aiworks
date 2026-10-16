@@ -389,9 +389,6 @@ test('F2: private Resume still refuses unmerged runtime code', (t) => {
   assert.deepEqual(applyCommand(dataDir, command(), Date.now(), { provenanceRoot: runtime }), { accepted: true, duplicate: false, action: 'resume' });
 });
 
-// AIWorks' own issue link, fixed in src/dashboard: the Auto Release decision (#33, supervisor.mjs). It is the tool's own
-// state, not a project. The supervisor-fault item links the fixture's made-up issue (F26).
-const OWN_LINKS = /https:\/\/github\.com\/netbka\/aiworks\/issues\/33(?!\d)/g;
 /** Every string a `repository` or `about` key holds anywhere in `value`. */
 function repositoriesIn(value, found = []) {
   if (Array.isArray(value)) for (const item of value) repositoriesIn(item, found);
@@ -403,13 +400,16 @@ function repositoriesIn(value, found = []) {
   }
   return found;
 }
+/** The owner of every github.com URL in `text`, and every standalone owner/repo name (also as owner/repo#N), wherever it is. */
+const githubOwners = (text) => [...text.matchAll(/github\.com\/([^\/"\s]+)/gi)].map((m) => m[1]);
+const repositoryNames = (text) => [...text.matchAll(/(?<![\w.\/-])[\w.-]+\/[\w.-]+(?![\w.\/-])/g)].map((m) => m[0]);
 
 test('the review dashboard shows only made-up projects, for the full, empty and unreadable stores', async (t) => {
   for (const store of ['full', 'empty', 'unreadable']) {
     const get = await serveReview(t, store);
     let state = await get();
     // The full store's owner view names its projects once the local merge check settles; read it then.
-    for (let i = 0; store === 'full' && i < 120 && state.body.owner.headline !== 'Needs you (10)'; i++) {
+    for (let i = 0; store === 'full' && i < 120 && state.body.owner.headline !== 'Needs you (11)'; i++) {
       await new Promise((done) => setTimeout(done, 250));
       state = await get();
     }
@@ -418,8 +418,14 @@ test('the review dashboard shows only made-up projects, for the full, empty and 
     assert.equal(state.body.roadmap.governance.configured, true, store);
     const outside = repositoriesIn(state.body).filter((name) => !name.startsWith('example/'));
     assert.deepEqual(outside, [], `${store}: no repository outside example/`);
-    const text = state.text.replace(OWN_LINKS, '');
-    assert.doesNotMatch(text, /example-org\//i, `${store}: nothing of the owner's beyond the Auto Release decision link`);
-    for (const [, owner] of text.matchAll(/github\.com\/([\w.-]+)\//g)) assert.equal(owner, 'example', `${store}: links point at made-up projects`);
+    // Anywhere in the answer, not only under the keys above: every GitHub link and every owner/repo name is a made-up one.
+    // That includes the Auto Release decision link, which the fixture's config.json does not set (#76).
+    assert.deepEqual(githubOwners(state.text).filter((owner) => owner !== 'example'), [], `${store}: links point at made-up projects only`);
+    assert.deepEqual(repositoryNames(state.text).filter((name) => !name.startsWith('example/')), [], `${store}: names only made-up projects`);
+    assert.doesNotMatch(state.text, /example-org\//i, store);
+    for (const release of state.body.supervisor.settings?.releases ?? []) assert.equal(release.modes.find((m) => m.key === 'auto-release').waitsFor, null, store);
   }
+  // The checks themselves: they find a real-looking owner in a link and in a bare name, and pass the made-up ones.
+  assert.deepEqual(githubOwners('{"a":"https://github.com/someone/tool/issues/3","b":"https://github.com/example/recipes/pull/1"}'), ['someone', 'example']);
+  assert.deepEqual(repositoryNames('{"a":"someone/tool","b":"see example/recipes#1","c":"https://github.com/example/x/issues/1"}'), ['someone/tool', 'example/recipes']);
 });

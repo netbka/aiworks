@@ -104,8 +104,23 @@ test('no command path is in the response: only the names of the commands config.
   assert.ok(!/codex\.exe|wrapper\.cmd|--no-daemon/.test(body));
 });
 
+const DECISION = 'https://github.com/netbka/aiworks/issues/33';
+/** The release panel as dashboard.js renders it, as a tree of { tag, attributes, children }. */
+function renderReleases(releases) {
+  const el = (tag, attributes = {}, ...children) => ({ tag, attributes, children: children.flat().filter((child) => child !== null && child !== undefined) });
+  const { releasePanel } = fromPage(['function releasePanel('], `const el = ${el}; const panel = (title, description, body) => el('section', {}, title, description, body);
+    const empty = (title, detail) => el('div', {}, title, detail); const link = (text, url) => el('a', { href: url }, text); const projectName = (r) => r.split('/')[1];`);
+  const tree = releasePanel(releases);
+  const nodes = [], walk = (node) => { if (node && typeof node === 'object') { nodes.push(node); node.children.forEach(walk); } };
+  walk(tree);
+  return { tree, nodes };
+}
+
 test('release mode is text: Review only on, Auto Release off and not available, with no control', (t) => {
   const { dataDir } = fixture(t);
+  // config.json "autoReleaseDecision" names the decision Auto Release waits for: the link shown before it was configurable.
+  const config = JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ...config, autoReleaseDecision: DECISION }));
   const releases = supervisorSnapshot(dataDir).settings.releases;
   // One per project: the configured repositories and the campaigns' targets, case-insensitively.
   assert.deepEqual(releases.map((r) => r.repository), ['example/notes-site', 'example/recipes', 'example/shop-app']);
@@ -116,22 +131,40 @@ test('release mode is text: Review only on, Auto Release off and not available, 
     const auto = release.modes[1];
     assert.equal(auto.available, false);
     assert.equal(auto.text, 'Not available. Turning this on needs your separate release approval for this project, which has not been given.');
-    assert.equal(auto.waitsFor, 'https://github.com/netbka/aiworks/issues/33');
+    assert.equal(auto.waitsFor, DECISION);
     for (const mode of release.modes) assert.deepEqual(Object.keys(mode).filter((key) => /control|toggle|switch|action|enabl/i.test(key)), [], 'nothing a page could turn into a control');
   }
   // The page renders it with no button, input, select or switch, and nothing clickable but the link to the decision.
-  const el = (tag, attributes = {}, ...children) => ({ tag, attributes, children: children.flat().filter((child) => child !== null && child !== undefined) });
-  const { releasePanel } = fromPage(['function releasePanel('], `const el = ${el}; const panel = (title, description, body) => el('section', {}, title, description, body);
-    const empty = (title, detail) => el('div', {}, title, detail); const link = (text, url) => el('a', { href: url }, text); const projectName = (r) => r.split('/')[1];`);
-  const tree = releasePanel(releases);
-  const nodes = [], walk = (node) => { if (node && typeof node === 'object') { nodes.push(node); node.children.forEach(walk); } };
-  walk(tree);
+  const { tree, nodes } = renderReleases(releases);
   assert.deepEqual(nodes.filter((node) => ['button', 'input', 'select', 'textarea', 'form'].includes(node.tag) || node.attributes.role === 'switch' ||
     Object.keys(node.attributes).some((key) => key.startsWith('on') || key === 'disabled')), []);
-  assert.deepEqual(nodes.filter((node) => node.tag === 'a').map((node) => node.attributes.href), releases.map(() => 'https://github.com/netbka/aiworks/issues/33'));
+  assert.deepEqual(nodes.filter((node) => node.tag === 'a').map((node) => [node.attributes.href, node.children]), releases.map(() => [DECISION, ['issue #33 ↗']]));
   const text = JSON.stringify(tree);
   assert.match(text, /Review only · On/);
   assert.match(text, /Auto Release · Off/);
+  assert.match(text, /It waits for the release decision in /);
+});
+
+test('without a configured decision link, Auto Release keeps its text and shows no link', (t) => {
+  const { dataDir } = fixture(t);
+  for (const autoReleaseDecision of [undefined, '', 'not a link', 'https://example.com/issues/33', 33]) {
+    const config = JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8'));
+    writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ...config, autoReleaseDecision }));
+    const releases = supervisorSnapshot(dataDir).settings.releases;
+    assert.equal(releases.length, 3);
+    for (const release of releases) {
+      const auto = release.modes[1];
+      assert.deepEqual([auto.key, auto.on, auto.available, auto.waitsFor], ['auto-release', false, false, null], String(autoReleaseDecision));
+      assert.equal(auto.text, 'Not available. Turning this on needs your separate release approval for this project, which has not been given.');
+    }
+    const { tree, nodes } = renderReleases(releases);
+    assert.deepEqual(nodes.filter((node) => node.tag === 'a'), [], 'no link');
+    const text = JSON.stringify(tree);
+    assert.match(text, /Auto Release · Off/);
+    assert.match(text, /Not available\. Turning this on needs your separate release approval for this project, which has not been given\./);
+    assert.doesNotMatch(text, /waits for the release decision|github\.com/);
+  }
+  assert.equal(releaseModes(['example/app'])[0].modes[1].waitsFor, null);
 });
 
 test('each AI worker is one plain line: “Claude · ready”, “Codex · not set up on this computer”, “Cursor · not available on Windows”', () => {
