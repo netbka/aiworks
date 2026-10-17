@@ -421,7 +421,6 @@ html{scrollbar-gutter:stable;scroll-padding-top:88px}
 @media(min-width:960px){.nav-item{display:grid;grid-template-columns:20px minmax(0,1fr);gap:8px 10px}.nav-item>.nav-count{grid-column:2;margin-left:0;justify-self:start;max-width:100%;overflow-wrap:anywhere}.project-action{grid-column:auto;max-width:190px}}
 @media(min-width:600px) and (max-width:959px){.project-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.project-action{grid-column:1/-1}}
 @media(max-width:959px){.nav-icon:has(~.nav-count:not(:empty)){visibility:hidden}.nav-item>.nav-count{max-width:90px;line-height:1.05}}
-.account-actions{display:flex;gap:10px;padding:12px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap}
 .account-header{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .account-pill{display:inline-flex;align-items:center;padding:3px 8px;border-radius:6px;font-size:12px;font-weight:600}
 .account-pill.pill-ready{background:#eaf6ef;color:#14724f}

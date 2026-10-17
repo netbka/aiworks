@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
@@ -14,7 +14,7 @@ import { CODE_ROOT, revisionNotMerged } from '../supervisor/provenance.mjs';
 import { COMMANDS, stateCopy, stopReasonWords } from './copy.mjs';
 import { configuredRepositories, connectedProjects, projectConnectionEnabled } from './projects.mjs';
 import { accountUsageSummary, removeAccount } from '../supervisor/accounts.mjs';
-import { exportProfileCredentials, importProfileCredentials, removeShallowProfile } from '../supervisor/adapters/caam.mjs';
+import { removeShallowProfile } from '../supervisor/adapters/caam.mjs';
 
 const readConfig = (dataDir) => {
   try { return JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { return {}; }
@@ -387,44 +387,9 @@ export function computerSettings(campaigns, config, { platform = process.platfor
     supervisorIssue: issueLink(config?.supervisorIssue) };
 }
 
-export function addDashboardAccount(dataDir, { provider, name, token, apiKey } = {}) {
-  if (!provider || !name) {
-    const err = new Error('Provider and name are required.');
-    err.status = 400;
-    throw err;
-  }
-  if (!['claude', 'codex'].includes(provider)) {
-    const err = new Error('Provider must be claude or codex.');
-    err.status = 400;
-    throw err;
-  }
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
-    const err = new Error('Account name must contain only letters, numbers, dots, dashes and underscores.');
-    err.status = 400;
-    throw err;
-  }
-  const config = readConfig(dataDir);
-  const root = shallowHomesRoot(config, dataDir);
-  const home = join(root, name);
-  if (provider === 'claude') {
-    const claudeDir = join(home, '.claude');
-    mkdirSync(claudeDir, { recursive: true });
-    if (token) {
-      writeFileSync(join(claudeDir, '.credentials.json'), JSON.stringify({ token }), { encoding: 'utf8', mode: 0o600 });
-    }
-  } else if (provider === 'codex') {
-    const codexDir = join(home, '.codex');
-    mkdirSync(codexDir, { recursive: true });
-    if (apiKey) {
-      writeFileSync(join(codexDir, 'auth.json'), JSON.stringify({ api_key: apiKey }), { encoding: 'utf8', mode: 0o600 });
-    }
-  }
-  return { success: true, account: `${provider}/${name}`, home };
-}
-
-export function removeDashboardAccount(dataDir, { provider, name } = {}, now = Date.now()) {
-  if (!provider || !name) {
-    const err = new Error('Provider and name are required.');
+export function removeDashboardAccount(dataDir, { provider, name } = {}) {
+  if (!['claude', 'codex'].includes(provider) || typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
+    const err = new Error('Provider must be claude or codex, and the account name only letters, numbers, dots, dashes and underscores.');
     err.status = 400;
     throw err;
   }
@@ -439,53 +404,6 @@ export function removeDashboardAccount(dataDir, { provider, name } = {}, now = D
     return { success: true, account, removed: res.removed, pathRemoved: profileRes.removed };
   } finally {
     store.close();
-  }
-}
-
-export function exportDashboardAccounts(dataDir, { passphrase } = {}) {
-  if (!passphrase || typeof passphrase !== 'string') {
-    const err = new Error('Passphrase is required to encrypt the export bundle.');
-    err.status = 400;
-    throw err;
-  }
-  const config = readConfig(dataDir);
-  const root = shallowHomesRoot(config, dataDir);
-  const store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true });
-  try {
-    const profiles = [];
-    const accounts = configuredAccounts(store, config, { dataDir });
-    for (const a of accounts) {
-      profiles.push({ provider: a.provider, name: a.name });
-    }
-    const bundleBuffer = exportProfileCredentials({ root, profiles, passphrase });
-    return { success: true, bundleBase64: bundleBuffer.toString('base64'), count: profiles.length };
-  } finally {
-    store.close();
-  }
-}
-
-export function importDashboardAccounts(dataDir, { bundleBase64, passphrase } = {}) {
-  if (!bundleBase64 || !passphrase) {
-    const err = new Error('Export bundle and passphrase are required.');
-    err.status = 400;
-    throw err;
-  }
-  const config = readConfig(dataDir);
-  const root = shallowHomesRoot(config, dataDir);
-  let buffer;
-  try {
-    buffer = Buffer.from(bundleBase64, 'base64');
-  } catch {
-    const err = new Error('Invalid export bundle format.');
-    err.status = 400;
-    throw err;
-  }
-  try {
-    return importProfileCredentials({ root, bundleBuffer: buffer, passphrase });
-  } catch (e) {
-    const err = new Error(e.message || 'Failed to import accounts.');
-    err.status = 400;
-    throw err;
   }
 }
 

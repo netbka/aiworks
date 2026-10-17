@@ -1186,24 +1186,6 @@ function mergeChecksPanel() {
 
 let pendingRemoveAccount = null;
 
-function openAddAccount() {
-  $('#account-name').value = '';
-  $('#account-token').value = '';
-  $('#account-dialog').showModal();
-}
-
-function openExportAccounts() {
-  $('#export-passphrase').value = '';
-  $('#export-accounts-dialog').showModal();
-}
-
-function openImportAccounts() {
-  $('#import-accounts-text').value = '';
-  $('#import-accounts-file').value = '';
-  $('#import-passphrase').value = '';
-  $('#import-accounts-dialog').showModal();
-}
-
 function openRemoveAccount(provider, name) {
   pendingRemoveAccount = { provider, name };
   const label = provider === 'claude' ? 'Claude Code' : provider === 'codex' ? 'Codex' : provider;
@@ -1212,10 +1194,6 @@ function openRemoveAccount(provider, name) {
 }
 
 function accountsSection(accounts = []) {
-  const actions = el('div', { class: 'account-actions' },
-    button('Add account…', openAddAccount, 'secondary small'),
-    accounts.length ? button('Export accounts…', openExportAccounts, 'secondary small') : null,
-    button('Import accounts…', openImportAccounts, 'secondary small'));
   const list = accounts.length ? el('ul', { class: 'settings-links' }, ...accounts.map((acct) => {
     const { id, provider: p, name, usage } = acct;
     const providerLabel = p === 'claude' ? 'Claude Code' : p === 'codex' ? 'Codex' : p;
@@ -1246,11 +1224,10 @@ function accountsSection(accounts = []) {
         button('Remove…', () => openRemoveAccount(p, name), 'danger small')),
       capacityText ? el('div', { class: 'subtext' }, capacityText) : null,
       el('div', { class: 'subtext' }, usageSubtext));
-  })) : empty('No worker accounts added yet.', 'Add accounts or import them from another computer to allow AI workers to run with isolated logins.');
+  })) : empty('No worker accounts yet.', 'An account appears here once an AI worker runs with its own login on this computer.');
 
   return el('div', { class: 'accounts-section' },
     el('div', { class: 'panel-header' }, el('h3', {}, 'Logins and usage')),
-    actions,
     list);
 }
 
@@ -1777,77 +1754,6 @@ $('#message-form').addEventListener('submit', (event) => {
   $('#message-dialog').close();
   askNotifications();
   void sendMessage(text);
-});
-$('#close-account').addEventListener('click', () => $('#account-dialog').close());
-$('#account-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  if (!validateForm($('#account-form'))) return;
-  const provider = $('#account-provider').value;
-  const name = $('#account-name').value.trim();
-  const token = $('#account-token').value.trim();
-  $('#account-dialog').close();
-  try {
-    await post('/api/accounts/add', { provider, name, token: token || undefined, apiKey: token || undefined });
-    notice(`Account ${name} added.`);
-    await poll();
-  } catch (err) {
-    notice(err.message ?? 'Could not add account.');
-  }
-});
-$('#close-export-accounts').addEventListener('click', () => $('#export-accounts-dialog').close());
-$('#export-accounts-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  if (!validateForm($('#export-accounts-form'))) return;
-  const passphrase = $('#export-passphrase').value;
-  $('#export-accounts-dialog').close();
-  try {
-    const res = await post('/api/accounts/export', { passphrase });
-    if (res.bundleBase64) {
-      if (typeof URL.createObjectURL === 'function') {
-        const blob = new Blob([res.bundleBase64], { type: 'text/plain' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `aiworks-accounts-${new Date().toISOString().slice(0, 10)}.aiworks-accounts`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-      }
-      notice(`Exported ${res.count} account${res.count === 1 ? '' : 's'}.`);
-    }
-  } catch (err) {
-    notice(err.message ?? 'Could not export accounts.');
-  }
-});
-$('#close-import-accounts').addEventListener('click', () => $('#import-accounts-dialog').close());
-$('#import-accounts-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  if (!validateForm($('#import-accounts-form'))) return;
-  const passphrase = $('#import-passphrase').value;
-  const textInput = $('#import-accounts-text').value.trim();
-  const fileInput = $('#import-accounts-file');
-  let bundleBase64 = textInput;
-  if (!bundleBase64 && fileInput?.files?.length) {
-    try {
-      bundleBase64 = (await fileInput.files[0].text()).trim();
-    } catch {
-      notice('Could not read the accounts bundle file.');
-      return;
-    }
-  }
-  if (!bundleBase64) {
-    notice('Select an accounts bundle file or paste bundle text.');
-    return;
-  }
-  $('#import-accounts-dialog').close();
-  try {
-    const res = await post('/api/accounts/import', { bundleBase64, passphrase });
-    notice(`Imported ${res.count} account${res.count === 1 ? '' : 's'}.`);
-    await poll();
-  } catch (err) {
-    notice(err.message ?? 'Could not import accounts.');
-  }
 });
 $('#close-remove-account').addEventListener('click', () => { pendingRemoveAccount = null; $('#remove-account-dialog').close(); });
 $('#confirm-remove-account').addEventListener('click', async () => {
