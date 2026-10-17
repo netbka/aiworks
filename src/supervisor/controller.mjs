@@ -14,7 +14,7 @@ import * as github from './adapters/github.mjs';
 import { authorityDigest, campaignLimits, canonicalJson, executorOrder, projectGovernance } from './campaign.mjs';
 import { resolveCheckout } from './project-connect.mjs';
 import { campaignBudget } from './api.mjs';
-import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountOf, accountWait, clearAccountWait, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
+import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountOf, accountWait, buildTaskSignature, clearAccountWait, formatSignatureLines, formatTokensUsage, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
 import { domainOf, pathsOutside, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
 import { containsSecret, coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
@@ -1157,15 +1157,37 @@ export class Controller {
     if (op.kind === 'implement') {
       if (value.result === 'resolved') {
         // A report deliverable is bound to the revision it was produced against.
-        const head = specOf(this.store, ctx.id, task.task_id, decl).deliverable === 'commit' ? value.headSha : op.base_sha;
-        return { state: 'implemented', head_sha: head, result: value, retry_at: null, last_error: null, failures: {} };
+        const spec = specOf(this.store, ctx.id, task.task_id, decl);
+        const head = spec.deliverable === 'commit' ? value.headSha : op.base_sha;
+        const chosenModel = op.routing?.decision?.chosen?.model ?? decl.executor?.model ?? op.executor_kind;
+        const effort = op.routing?.decision?.chosen?.effort ?? (decl.routing?.risk === 'high' || spec?.routing?.risk === 'high' ? 'high' : 'standard');
+        const signature = buildTaskSignature({
+          model: chosenModel,
+          executorKind: op.executor_kind,
+          effort,
+          usage: v.receipt?.usage,
+        });
+        return { state: 'implemented', head_sha: head, result: value, signature, retry_at: null, last_error: null, failures: {} };
       }
       if (value.result === 'blocked-owner-reserved') {
         return { state: 'pending', result: value, blocked: { class: 'B3', reason: `owner-reserved: ${value.ownerTrigger}`, at: now } };
       }
       return retry('evidence-unavailable', value.tried || value.summary, 'pending');
     }
-    if (value.verdict === 'accepted') return { state: 'verified', verified_sha: op.target_sha, verification: value, retry_at: null, last_error: null, failures: {} };
+    if (value.verdict === 'accepted') {
+      const spec = specOf(this.store, ctx.id, task.task_id, decl);
+      const verifierModel = op.routing?.decision?.chosen?.model ?? decl.executor?.model ?? op.executor_kind;
+      const verifierEffort = op.routing?.decision?.chosen?.effort ?? (decl.routing?.risk === 'high' || spec?.routing?.risk === 'high' ? 'high' : 'standard');
+      const verifierSig = buildTaskSignature({
+        model: verifierModel,
+        executorKind: op.executor_kind,
+        effort: verifierEffort,
+        usage: v.receipt?.usage,
+      });
+      const existingSig = task.signature ? (typeof task.signature === 'string' ? JSON.parse(task.signature) : task.signature) : null;
+      const signature = existingSig ? { ...existingSig, verifier: verifierSig } : { ...verifierSig, verifier: verifierSig };
+      return { state: 'verified', verified_sha: op.target_sha, verification: value, signature, retry_at: null, last_error: null, failures: {} };
+    }
     if (value.verdict === 'rejected') {
       const blocking = value.findings.filter((finding) => finding.severity === 'blocking');
       if (!blocking.length) return retry('invalid-result', 'rejected without a blocking finding', 'implemented');
@@ -1701,13 +1723,16 @@ export class Controller {
       return { cliConfigured: true, hostUnavailable: null, wait: profile && !profile.account ? { retryAt: profile.retryAt, reason: profile.reason } : null };
     };
     if (decl.routing?.mode === 'auto') return this.routedChoice(decl, task, now, { facts, waits, session, history, hostUnavailable });
+    // Stored dashboard preferences cannot rewrite a registered declaration.
+    const providers = executorOrder(decl.executor);
     const receipt = staticReceipt(receiptInputs({
       stage: task.state === 'implemented' ? 'verify' : 'implement', chain: decl.executor.kind === 'cli-chain',
-      spec: specOf(this.store, decl.campaignId, task.task_id, decl), providers: executorOrder(decl.executor),
+      spec: specOf(this.store, decl.campaignId, task.task_id, decl), providers,
       platform: process.platform, facts, priorAttempts: this.priorAttempts(decl, task),
     }));
     const chosen = receipt.decision.chosen;
-    return { executor: chosen ? executorOrder(decl.executor).find((provider) => provider.kind === chosen.kind) : null,
+    const matched = chosen ? providers.find((provider) => provider.kind === chosen.kind) : null;
+    return { executor: matched ? { ...matched } : null,
       retryAt: receipt.decision.retryAt, receipt };
   }
 
@@ -1738,7 +1763,8 @@ export class Controller {
     const receipt = autoReceipt(inputs);
     const chosen = receipt.decision.chosen;
     const provider = chosen && providers.find((item) => item.kind === chosen.kind);
-    return { executor: provider ? { ...provider, model: chosen.model } : null, retryAt: receipt.decision.retryAt, receipt };
+    const effort = chosen?.effort;
+    return { executor: provider ? { ...provider, model: chosen.model, ...(effort ? { effort } : {}) } : null, retryAt: receipt.decision.retryAt, receipt };
   }
 
   /** This task's finished implement and verify operations, newest first (seq counts both kinds). */
@@ -2428,6 +2454,7 @@ export class Controller {
       '### Independent verification',
       '',
       ...(verificationElsewhere ? ['Accepted. The full independent verification is posted as a separate supervisor comment on this issue (split to stay within the GitHub body limit).'] : this.verificationLines(task)),
+      ...(task.signature ? ['', ...formatSignatureLines(task.signature)] : []),
       '',
       'Generated by the AIWorks delivery supervisor.',
     ].join('\n');
@@ -2464,6 +2491,7 @@ export class Controller {
       '### Gate',
       '',
       ...this.gateLines(task),
+      ...(task.signature ? ['', ...formatSignatureLines(task.signature)] : []),
       '',
       `Opened by the supervisor after independent verification. Not merged and not deployed: merge and release follow ${decl.target.repository}'s release gate.`,
       '',

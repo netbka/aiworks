@@ -8,7 +8,8 @@
 // Robot status carries no credentials. The adapter keeps only the fields below, never the email, auth paths or raw
 // output, and its errors quote CAAM's own error code and message, never stdout or stderr.
 import { spawnSync } from 'node:child_process';
-import { existsSync, statSync } from 'node:fs';
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
@@ -221,3 +222,176 @@ export function ensureShallowProfile({ command, kind, name, root, timeoutMs = 60
   if (!isDirectory(home)) throw new CaamError('shallow-profile-missing', `CAAM reported success but ${provider}/${name} has no shallow home under the configured directory`);
   return home;
 }
+
+/**
+ * Remove the shallow home of profile `name` for an executor kind: deletes the shallow directory under `root`
+ * and optionally informs CAAM via `shallow-profile remove`. Returns removal status.
+ */
+export function removeShallowProfile({ command = null, kind, name, root, spawn = spawnSync }) {
+  const provider = Object.hasOwn(PROVIDERS, kind) ? PROVIDERS[kind] : (kind.endsWith('-cli') ? kind.slice(0, -4) : kind);
+  const home = shallowHomeOf(root, name);
+  let removed = false;
+  if (existsSync(home)) {
+    rmSync(home, { recursive: true, force: true, maxRetries: 3 });
+    removed = true;
+  }
+  if (Object.hasOwn(PROVIDERS, kind) && Array.isArray(command) && command.length && command[0]) {
+    try {
+      spawn(command[0], [...command.slice(1), 'shallow-profile', 'remove', name, '--from-vault', `${provider}/${name}`, '--json'], {
+        encoding: 'utf8', windowsHide: true, timeout: 15_000,
+      });
+    } catch { /* best-effort notification to CAAM */ }
+  }
+  return { removed, name, provider, path: home };
+}
+
+/**
+ * Export configured profile credentials into an AES-256-GCM encrypted binary bundle using PBKDF2/scrypt.
+ */
+const SHARE_PROVIDERS = new Set(['claude', 'codex', 'cursor', 'agy']);
+const DEVICE_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
+const invalidBundle = () => new CaamError('invalid-bundle', 'invalid account profile, file path or contents');
+const portableSegment = value => typeof value === 'string' && value.length > 0 && value.length <= 255
+  && !/[\\/:\x00-\x1f<>"|?*]/.test(value) && value !== '.' && value !== '..' && !/[. ]$/.test(value) && !DEVICE_NAME.test(value);
+function shareHome(root, item) {
+  if (!item || !SHARE_PROVIDERS.has(item.provider) || !portableSegment(item.name) || !NAME.test(item.name)) throw invalidBundle();
+  const home = shallowHomeOf(root, item.name), host = relative(home, resolve(homedir()));
+  if (!host || !host.startsWith('..') && !isAbsolute(host)) throw invalidBundle();
+  return home;
+}
+// Check existing ancestors without following a symlink/junction or hard-linked file.
+// The operator supplies the root; bundle contents can only name descendants of it.
+function sharePath(root, target, file = false) {
+  const base = resolve(root), rel = relative(base, resolve(target));
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) throw invalidBundle();
+  const parts = rel.split(sep); let current = base;
+  for (let i = -1; i < parts.length; i++) {
+    if (i >= 0) current = join(current, parts[i]);
+    let stat;
+    try { stat = lstatSync(current); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    const last = i === parts.length - 1;
+    if (stat.isSymbolicLink() || stat.isFile() && stat.nlink > 1
+      || (last && file ? !stat.isFile() : !stat.isDirectory())) throw invalidBundle();
+  }
+  return resolve(target);
+}
+function bundleFile(root, home, relPath) {
+  if (typeof relPath !== 'string' || relPath.length > 1024 || !relPath.split('/').every(portableSegment)) throw invalidBundle();
+  return sharePath(root, join(home, ...relPath.split('/')), true);
+}
+function collectProfileFiles(root, home, budget) {
+  const files = {};
+  if (!existsSync(home)) return files;
+  const walk = (dir) => {
+    try {
+      sharePath(root, dir);
+      for (const dirent of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, dirent.name);
+        if (dirent.isDirectory()) {
+          if (['node_modules', '.git', 'cache', 'logs'].includes(dirent.name)) continue;
+          walk(full);
+        } else if (dirent.isFile()) {
+          const rel = relative(home, full).replace(/\\/g, '/');
+          bundleFile(root, home, rel);
+          const stat = statSync(full);
+          if (stat.size <= 1_048_576) {
+            if (++budget.files > 1000 || (budget.bytes += stat.size) > 16 * 1024 * 1024) throw invalidBundle();
+            files[rel] = readFileSync(full, 'utf8');
+          }
+        }
+      }
+    } catch (error) { if (error instanceof CaamError) throw error; /* ignore unreadable dirs */ }
+  };
+  walk(home);
+  return files;
+}
+
+export function exportProfileCredentials({ root, profiles, passphrase }) {
+  if (typeof passphrase !== 'string' || passphrase.length < 8) {
+    throw new CaamError('invalid-passphrase', 'passphrase must be at least 8 characters');
+  }
+  const payload = {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    items: [],
+  };
+  if (!Array.isArray(profiles) || profiles.length > 100) throw invalidBundle();
+  const selected = profiles.map(item => ({ ...item, home: sharePath(root, shareHome(root, item)) }));
+  if (new Set(selected.map(item => item.home.toLowerCase())).size !== selected.length) throw invalidBundle();
+  const budget = { files: 0, bytes: 0 };
+  for (const { provider, name, home } of selected) {
+    if (!existsSync(home)) continue;
+    const files = collectProfileFiles(root, home, budget);
+    payload.items.push({ provider, name, files });
+  }
+  const salt = randomBytes(16);
+  const iv = randomBytes(12);
+  const key = scryptSync(passphrase, salt, 32);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const json = JSON.stringify(payload);
+  if (Buffer.byteLength(json) + 44 > 16 * 1024 * 1024) throw invalidBundle();
+  const encrypted = Buffer.concat([cipher.update(json, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([salt, iv, tag, encrypted]);
+}
+
+/**
+ * Import and unpack profile credentials from an AES-256-GCM encrypted binary bundle.
+ */
+export function importProfileCredentials({ root, bundleBuffer, passphrase }) {
+  if (typeof passphrase !== 'string' || passphrase.length < 8) throw new CaamError('invalid-passphrase', 'passphrase must be at least 8 characters');
+  if (!Buffer.isBuffer(bundleBuffer) || bundleBuffer.length < 44 || bundleBuffer.length > 16 * 1024 * 1024) {
+    throw new CaamError('invalid-bundle', 'corrupted or truncated accounts bundle');
+  }
+  const salt = bundleBuffer.subarray(0, 16);
+  const iv = bundleBuffer.subarray(16, 28);
+  const tag = bundleBuffer.subarray(28, 44);
+  const ciphertext = bundleBuffer.subarray(44);
+  const key = scryptSync(passphrase, salt, 32);
+  let decrypted;
+  try {
+    const decipher = createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(tag);
+    decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+  } catch {
+    throw new CaamError('auth-failed', 'incorrect passphrase or corrupted accounts bundle');
+  }
+  let payload;
+  try { payload = JSON.parse(decrypted); } catch { throw new CaamError('invalid-bundle', 'decrypted bundle is not valid JSON'); }
+  if (!payload || payload.version !== 1 || !Array.isArray(payload.items) || payload.items.length > 100) {
+    throw new CaamError('invalid-bundle', 'unsupported accounts bundle format');
+  }
+  // Validate the complete bundle before creating any directory or changing a file.
+  const plan = [], targets = new Set(), profiles = new Set(); let count = 0;
+  for (const item of payload.items) {
+    const home = sharePath(root, shareHome(root, item));
+    const identity = home.toLowerCase();
+    if (profiles.has(identity) || !item.files || typeof item.files !== 'object' || Array.isArray(item.files)) throw invalidBundle();
+    profiles.add(identity);
+    const files = [];
+    for (const [relPath, content] of Object.entries(item.files)) {
+      if (++count > 1000 || typeof content !== 'string' || Buffer.byteLength(content) > 1_048_576) throw invalidBundle();
+      const fullPath = bundleFile(root, home, relPath), key = fullPath.toLowerCase();
+      if ([...targets].some(existing => existing === key || existing.startsWith(key + sep) || key.startsWith(existing + sep))) throw invalidBundle();
+      targets.add(key); files.push({ fullPath, content });
+    }
+    plan.push({ provider: item.provider, name: item.name, home, files });
+  }
+  const imported = [];
+  for (const item of plan) {
+    sharePath(root, item.home);
+    for (const { fullPath, content } of item.files) {
+      sharePath(root, fullPath, true);
+      mkdirSync(resolve(fullPath, '..'), { recursive: true, mode: 0o700 });
+      writeFileSync(fullPath, content, { encoding: 'utf8', mode: 0o600 });
+    }
+    imported.push({ provider: item.provider, name: item.name, home: item.home });
+  }
+  return {
+    success: true,
+    count: imported.length,
+    imported: imported.map((i) => `${i.provider}/${i.name}`),
+    profiles: imported,
+  };
+}
+

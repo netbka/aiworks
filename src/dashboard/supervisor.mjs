@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
@@ -13,6 +13,10 @@ import { coordinatorView, LANE as COORDINATOR_LANE, postOwnerMessage } from '../
 import { CODE_ROOT, revisionNotMerged } from '../supervisor/provenance.mjs';
 import { COMMANDS, stateCopy, stopReasonWords } from './copy.mjs';
 import { configuredRepositories, connectedProjects, projectConnectionEnabled } from './projects.mjs';
+import { accountUsageSummary, removeAccount, modelPreferences, saveModelPreferences, setRoleModelPreference,
+  shallowHomesRoot, configuredAccounts } from '../supervisor/accounts.mjs';
+export { shallowHomesRoot, configuredAccounts };
+import { removeShallowProfile } from '../supervisor/adapters/caam.mjs';
 
 const readConfig = (dataDir) => {
   try { return JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { return {}; }
@@ -320,13 +324,52 @@ export function releaseModes(repositories, { waitsFor = null, connected = [] } =
 }
 const RELEASE_LOCAL = "Release does not apply yet to a project without GitHub: AIWorks can't start work here yet, so there is nothing to release.";
 
-/** Settings (slice S8): configured command names, the AI workers once for this computer, and release mode per project. */
-export function computerSettings(campaigns, config, { platform = process.platform, now = Date.now(), repositories = [], connected = [] } = {}) {
+/** Settings (slice S8): configured command names, the AI workers once for this computer, accounts, and release mode per project. */
+export function computerSettings(campaigns, config, { platform = process.platform, now = Date.now(), repositories = [], connected = [], accounts = [] } = {}) {
   return { commands: configuredCommandNames(config), workers: aiWorkers(campaigns, config, { platform, now }),
+    accounts,
+    modelPreferences: modelPreferences(config),
     releases: releaseModes([...repositories, ...campaigns.map((c) => c.repository)], { waitsFor: issueLink(config?.autoReleaseDecision), connected }),
     // Where supervisor faults are tracked: config.json "supervisorIssue" (a GitHub issue link) when set, so a disposable
     // review copy can name a made-up one; otherwise null, and the owner view links AIWorks' own (owner.mjs SUPERVISOR_ISSUE).
     supervisorIssue: issueLink(config?.supervisorIssue) };
+}
+
+export function removeDashboardAccount(dataDir, { provider, name } = {}) {
+  if (!['claude', 'codex', 'agy', 'cursor'].includes(provider) || typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
+    const err = new Error('Provider must be claude, codex, agy or cursor, and the account name only letters, numbers, dots, dashes and underscores.');
+    err.status = 400;
+    throw err;
+  }
+  const kind = `${provider}-cli`;
+  const account = `${provider}/${name}`;
+  const config = readConfig(dataDir);
+  const root = shallowHomesRoot(config, dataDir);
+  const store = new Store(join(dataDir, 'supervisor.db'));
+  try {
+    const res = removeAccount(store, config, { kind, account });
+    const profileRes = removeShallowProfile({ kind, name, root });
+    return { success: true, account, removed: res.removed, pathRemoved: profileRes.removed };
+  } finally {
+    store.close();
+  }
+}
+
+export function configuredModelPreferences(dataDir) {
+  const config = readConfig(dataDir);
+  return modelPreferences(config);
+}
+
+export function saveDashboardModelPreferences(dataDir, { preferences, role, models } = {}) {
+  if (role && models) {
+    return setRoleModelPreference(dataDir, role, models);
+  }
+  if (!preferences || typeof preferences !== 'object') {
+    const err = new Error('Preferences object or role and models are required.');
+    err.status = 400;
+    throw err;
+  }
+  return saveModelPreferences(dataDir, preferences);
 }
 
 /** `value` when it is a GitHub issue link, else null. */
@@ -601,7 +644,8 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
           return run ? workerProgress(dataDir, { executor_kind: 'claude-cli', workspace: run.workspace, session_id: run.session_id, run_dir: run.run_dir }) : null;
         })() : null })) };
     const settings = computerSettings(campaigns, readConfig(dataDir), { now, repositories: configuredRepositories(dataDir),
-      connected: projectConnectionEnabled(dataDir) ? connectedProjects(dataDir) : [] });
+      connected: projectConnectionEnabled(dataDir) ? connectedProjects(dataDir) : [],
+      accounts: configuredAccounts(store, readConfig(dataDir), { now, dataDir }) });
     return { available: true, observedAt: new Date(now).toISOString(), controller, campaigns, costs: projectCosts(campaigns), activity, coordinator, recent, settings };
   } catch { return { available: false, message: "AIWorks can't read its work records right now. What you see may be out of date. Buttons are off until it can read them again.", campaigns: [], costs: [], activity: [] }; }
   finally { store?.close(); }
