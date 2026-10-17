@@ -9,17 +9,19 @@ import { mergeWithMergeCommit } from './release/github-merge.mjs';
 import { campaignLimits } from './campaign.mjs';
 import { specsOf } from './plan.mjs';
 import { resolveCheckout } from './project-connect.mjs';
+import { refreshSettings, refreshStep } from './merge-refresh.mjs';
 import { ConflictError, FencedError } from './store.mjs';
 
 const SHA = /^[0-9a-f]{40}$/;
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
-const OFF = Object.freeze({ enabled: false, repositories: new Set(), held: new Set(), problem: null });
+const OFF = Object.freeze({ enabled: false, repositories: new Set(), held: new Set(), refresh: null, problem: null });
 
 /**
  * Merge settings from config.json `merges`, the setting the dashboard already reads (src/dashboard/merges.mjs):
  * `"delegatedTo": "supervisor"` and an explicit `"repositories": ["owner/name", ...]` turn merging on for exactly those
- * repositories. `held` (pull request URL to reason) still holds a pull request back. Absent, delegated to anyone else
- * (for example "monitor"), or malformed: off, and `problem` says what is malformed.
+ * repositories. `held` (pull request URL to reason) still holds a pull request back. `refresh` (merge-refresh.mjs) gates
+ * the merge result itself when the base moved without touching the pull request's files. Absent, delegated to anyone
+ * else (for example "monitor"), or malformed: off, and `problem` says what is malformed.
  */
 export function mergeSettings(config) {
   const merges = config?.merges;
@@ -34,7 +36,9 @@ export function mergeSettings(config) {
   if (merges.held !== undefined && (!merges.held || typeof merges.held !== 'object' || Array.isArray(merges.held))) {
     return off('merges.held must map pull request URLs to reasons');
   }
-  return { enabled: true, repositories: new Set(list.map((item) => item.toLowerCase())), problem: null,
+  const refresh = refreshSettings(merges.refresh);
+  if (refresh?.problem) return off(refresh.problem);
+  return { enabled: true, repositories: new Set(list.map((item) => item.toLowerCase())), problem: null, refresh,
     held: new Set(Object.keys(merges.held ?? {}).map((url) => url.toLowerCase())) };
 }
 
@@ -168,11 +172,15 @@ function mergeOne(controller, item, settings, repoPath, baseSha) {
   if (pr.baseRef !== base) return wait(controller, item, `the pull request base ${pr.baseRef} is not the declared base ${base}`);
   if (pr.headSha !== sha) return wait(controller, item, `the pull request head ${pr.headSha} is not the verified ${sha}`);
 
-  // The verified head must contain the current base, or the merge result is a tree no verifier ran: integration repair.
+  // The verified head must contain the current base, or the merge result is a tree no verifier ran: integration repair,
+  // unless the refresh (merges.refresh) ran the gate on that exact merge result itself. While its gate runs, the
+  // repository waits, so the next pull request is judged against the base this one leaves.
   if (!gitA.isAncestor({ git, path: repoPath, ancestor: baseSha, descendant: sha })) {
     const ctx = lease(controller, campaignId);
     if (!ctx) return false;
-    return controller.fenced(ctx, () => repair(controller, ctx, item, repoPath, baseSha));
+    const step = settings.refresh ? refreshStep(controller, ctx, item, repoPath, baseSha, settings.refresh) : { next: 'repair' };
+    if (step.next === 'wait') { wait(controller, item, step.reason); return true; }
+    if (step.next === 'repair') return controller.fenced(ctx, () => repair(controller, ctx, item, repoPath, baseSha, step.detail));
   }
   // With CI repair on, CI is read: merge only a head whose CI passed or that has no CI, never one still running or red.
   if (controller.ci && !ciMergeable(store, campaignId, task.task_id, sha)) {
@@ -225,9 +233,10 @@ function record(controller, ctx, { campaignId, decl, task }, mergeCommit, { reco
 /**
  * The base moved past the verified head: reopen the task as an integration repair round on its own branch and PR (the
  * existing aiworks#27 repair). The round merges the base in and needs a fresh independent verification; the pull request
- * is merged only once that new head is verified and published. Inside fenced(). Returns true.
+ * is merged only once that new head is verified and published. `refreshed` says why a refresh did not merge it. Inside
+ * fenced(). Returns true.
  */
-function repair(controller, ctx, item, repoPath, baseSha) {
+function repair(controller, ctx, item, repoPath, baseSha, refreshed) {
   const { store } = controller, git = controller.cmd.git, { campaignId, decl, task } = item;
   const fresh = store.task(campaignId, task.task_id);
   if (fresh.version !== task.version || fresh.state !== 'done') return false;
@@ -239,6 +248,7 @@ function repair(controller, ctx, item, repoPath, baseSha) {
     id: 'integration-conflict', severity: 'blocking', moved: true, base: baseSha, verified: sha, paths, commits,
     description: `Base moved: the verified commit ${sha} (${task.pr_url}) does not contain ${base} at ${baseSha}, so merging it would put a tree on ${base} that no verifier ran. ` +
       `${paths.length ? `Conflicting paths: ${paths.join(', ')}. ` : 'It merges without a textual conflict; a semantic conflict is still possible. '}` +
+      `${refreshed ? `The supervisor's refresh did not merge it: ${refreshed}. ` : ''}` +
       `Sibling commits on ${base}: ${commits.map((entry) => `${entry.sha.slice(0, 12)} ${entry.subject}`).join('; ') || 'unknown'}. ` +
       `Merge ${baseSha} into this branch (git merge ${baseSha}), resolve any conflicts, run the full gate and commit the merge. Never rebase, reset or amend: ${sha} must stay an ancestor of the new head.`,
   };
