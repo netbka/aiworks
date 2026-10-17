@@ -65,13 +65,13 @@
     <div class="dialog-actions"><button id="close-remove-account" class="button secondary" type="button">Keep login</button><button id="confirm-remove-account" class="button danger" type="button">Remove login</button></div>
   </form></dialog>
   <dialog id="preference-dialog" aria-labelledby="preference-title"><form id="preference-form" novalidate>
-    <h2 id="preference-title">Model order</h2>
-    <p id="preference-role-description">Model names, best first, exactly as the AI worker expects them. Leave empty for AIWorks' own order.</p>
+    <h2 id="preference-title">Saved model order</h2>
+    <p id="preference-role-description">Model names, best first, exactly as the AI worker expects them. Work does not use this order yet.</p>
     <input id="preference-role" type="hidden" />
     <label>Models, best first (separated by commas or spaces)<input id="preference-models" type="text" autocomplete="off" spellcheck="false" /></label>
     <label>Only for this AI worker<select id="preference-kind"><option value="">Any AI worker</option><option value="claude-cli">Claude</option><option value="codex-cli">Codex</option><option value="cursor-cli">Cursor Agent</option><option value="agy-cli">AGY (Antigravity) browser</option></select></label>
     <div class="dialog-actions">
-      <button id="clear-preference-button" class="button secondary" type="button">Use AIWorks' own order</button>
+      <button id="clear-preference-button" class="button secondary" type="button">Clear saved order</button>
       <button id="close-preference" class="button secondary" type="button">Cancel</button>
       <button id="save-preference" class="button" type="submit">Save order</button>
     </div>

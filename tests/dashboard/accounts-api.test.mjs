@@ -5,12 +5,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { once } from 'node:events';
+import fs from 'node:fs';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
 import { Store } from '../../src/supervisor/store.mjs';
-import { preferenceFor } from '../../src/supervisor/accounts.mjs';
 import { buildReviewFixture } from './fixtures/review-store.mjs';
 
 const M = 60_000;
@@ -18,7 +20,7 @@ const M = 60_000;
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'aiworks-accounts-api-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5 }));
-  return buildReviewFixture(root);
+  return { ...buildReviewFixture(root), fixtureRoot: root };
 }
 
 /** A made-up login folder: `<dataDir>/profiles/<name>/<folder>/<file>`. */
@@ -133,12 +135,49 @@ test('dashboard accounts API: a login that runs work is kept, and a removed logi
   assert.deepEqual([after.hasLogin, after.state], [false, 'usage-limit'], 'listed from its records, with no saved login');
 });
 
-test('dashboard accounts API: each role’s model order, saved in the shape the supervisor reads', async (t) => {
+test('dashboard cannot start credential pickup, inspect host logins or write a chosen profile path', async (t) => {
+  const { dataDir, fixtureRoot } = fixture(t);
+  const server = createDashboardServer({ dataDir,
+    roadmap: { snapshot: () => ({ entries: [], governance: { configured: false, reason: 'Synthetic test.' } }) } });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => server.close());
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const { csrf } = await (await fetch(`${origin}/api/session`, { headers: { origin } })).json();
+  const before = readdirSync(fixtureRoot).sort();
+  let credentialProbes = 0, browserLaunches = 0;
+  // A regression must fail before touching an operator's real credential files.
+  const secretPath = value => /\/(?:\.claude\/\.credentials\.json|\.claude\.json|\.codex\/(?:auth\.json|config\.toml)|\.cursor\/cli-config\.json|\.(?:gemini|agy)\/(?:oauth_creds|oauth_credentials|google_accounts|credentials)\.json)$/.test(String(value).replaceAll('\\', '/'));
+  for (const method of ['existsSync', 'statSync', 'readFileSync', 'copyFileSync']) {
+    const original = fs[method];
+    t.mock.method(fs, method, (...args) => {
+      if (secretPath(args[0])) { credentialProbes++; throw Error('Host credential access refused by synthetic test'); }
+      return original(...args);
+    });
+  }
+  t.mock.method(childProcess, 'spawn', () => { browserLaunches++; throw Error('Browser launch refused by synthetic test'); });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const cases = [{ provider: 'claude', name: 'team', force: true },
+    { provider: 'codex', name: '../../escaped', startedAt: 0 },
+    { provider: 'cursor', name: 'C:\\outside', force: true },
+    { provider: 'agy', name: '\\\\server\\share', force: true }, {}];
+  for (const route of ['/api/accounts/connect/start', '/api/accounts/connect/check']) for (const value of cases) {
+    const response = await fetch(origin + route, { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-dashboard-csrf': csrf, origin },
+      body: JSON.stringify({ openBrowser: false, ...value }) });
+    assert.equal(response.status, 404, route);
+    assert.deepEqual(await response.json(), { error: 'Not found.' });
+  }
+  assert.equal(credentialProbes, 0); assert.equal(browserLaunches, 0);
+  assert.deepEqual(readdirSync(fixtureRoot).sort(), before);
+});
+
+test('dashboard accounts API: each role’s saved model order, one role at a time', async (t) => {
   const { dataDir } = fixture(t);
   const { get, post } = await serve(t, dataDir);
   const preferences = async () => JSON.parse(await get('/api/accounts/preferences')).preferences;
 
-  assert.deepEqual(await preferences(), { implementer: [], verification: [] }, 'only the roles the supervisor reads');
+  assert.deepEqual(await preferences(), { implementer: [], verification: [] }, 'the two roles the page shows');
 
   const setRes = await post('/api/accounts/preferences', { role: 'implementer', models: ['model-a', 'model-b'] });
   assert.equal(setRes.status, 200);
@@ -147,7 +186,7 @@ test('dashboard accounts API: each role’s model order, saved in the shape the 
   const saved = { implementer: ['model-a', 'model-b'], verification: [{ model: 'model-c', kind: 'codex-cli' }] };
   assert.deepEqual(await preferences(), saved, 'saving one role keeps the other');
 
-  // The shapes that once replaced every role, or that dispatch could not read, are refused before anything is written.
+  // The shapes that once replaced every role, or that no reader understands, are refused before anything is written.
   const refusedBodies = [
     { preferences: { implementer: { models: ['model-x'], effort: 'high' } } },
     { role: 'coordinator', models: ['model-x'] },
@@ -160,10 +199,9 @@ test('dashboard accounts API: each role’s model order, saved in the shape the 
   assert.deepEqual(await preferences(), saved);
 
   assert.equal((await post('/api/accounts/preferences', { role: 'implementer', models: [] })).status, 200);
-  assert.deepEqual(await preferences(), { implementer: [], verification: saved.verification }, 'an empty list is AIWorks’ own order');
+  assert.deepEqual(await preferences(), { implementer: [], verification: saved.verification }, 'an empty list clears it');
 
-  // What dispatch reads from that config.json (controller.mjs executorChoice and routedChoice).
+  // What config.json holds afterwards. Work does not read it (SUPERVISOR.md section 13).
   const config = JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8'));
-  assert.deepEqual(preferenceFor(config, 'verification', { kind: 'codex-cli', model: 'model-c' }), { model: 'model-c', kind: 'codex-cli' });
-  assert.equal(preferenceFor(config, 'implementer', { kind: 'claude-cli', model: 'model-a' }), null);
+  assert.deepEqual(config.modelPreferences, { implementer: [], verification: [{ model: 'model-c', kind: 'codex-cli' }] });
 });

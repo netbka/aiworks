@@ -328,14 +328,17 @@ export function formatSignatureLines(signature) {
 }
 
 /**
- * A role's model order from config.json: its list, or an empty list when the value is missing or not a list. Dispatch
- * reads it on every choice, so a malformed config.json value must never throw there.
+ * Read configured role model preferences from config.
  */
-export const roleModelOrder = (config, role) => Array.isArray(config?.modelPreferences?.[role]) ? config.modelPreferences[role] : [];
-
-/** The model order of the two roles dispatch reads (executorChoice and routedChoice): implementer and verification. */
 export function modelPreferences(config) {
-  return { implementer: roleModelOrder(config, 'implementer'), verification: roleModelOrder(config, 'verification') };
+  const prefs = config?.modelPreferences;
+  if (!prefs || typeof prefs !== 'object') return { implementer: [], verification: [], coordinator: [] };
+  return {
+    implementer: Array.isArray(prefs.implementer) ? prefs.implementer : [],
+    verification: Array.isArray(prefs.verification) ? prefs.verification : [],
+    coordinator: Array.isArray(prefs.coordinator) ? prefs.coordinator : [],
+    ...prefs,
+  };
 }
 
 /**
@@ -385,8 +388,8 @@ export function clearRoleModelPreferences(dataDir, role = null) {
  */
 export function applyModelPreferences(candidates, role, config) {
   if (!Array.isArray(candidates) || !candidates.length) return candidates ?? [];
-  const prefs = roleModelOrder(config, role);
-  if (!prefs.length) return candidates;
+  const prefs = config?.modelPreferences?.[role];
+  if (!Array.isArray(prefs) || !prefs.length) return candidates;
   const rank = (c) => {
     const idx = prefs.findIndex((p) => {
       if (typeof p === 'string') return p === c.model || p === c.kind;
@@ -401,10 +404,6 @@ export function applyModelPreferences(candidates, role, config) {
   };
   return [...candidates].sort((a, b) => rank(a) - rank(b));
 }
-
-/** The role's preference entry for the chosen candidate: an object naming its model (and its kind, when set), or null. */
-export const preferenceFor = (config, role, chosen) => roleModelOrder(config, role)
-  .find((p) => typeof p === 'object' && p !== null && p.model === chosen?.model && (!p.kind || p.kind === chosen?.kind)) ?? null;
 
 const readConfig = (dataDir) => {
   try { return JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { return {}; }

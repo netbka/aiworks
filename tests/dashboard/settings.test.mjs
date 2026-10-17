@@ -313,8 +313,8 @@ test('Settings › Worker accounts: each login’s state in plain words, Remove 
   assert.ok(rowText('codex/team-bot').includes('No saved login on this computer'));
   assert.equal(removeIn('codex/team-bot'), undefined, 'nothing to remove without a saved login');
 
-  // Model order: the two roles AIWorks reads, in owner words.
-  for (const words of ['Model order', 'Builder', 'Independent checker', 'AIWorks’ own order']) assert.ok(text.includes(words), words);
+  // The saved model order, in owner words, and honest that work does not use it (SUPERVISOR.md section 13).
+  for (const words of ['Saved model order', 'Work does not use it yet', 'Builder', 'Independent checker', 'Nothing saved']) assert.ok(text.includes(words), words);
   assert.ok(!text.includes('Planner'));
 
   // Remove deletes the saved login; the account stays listed from its wait, which AIWorks keeps.
@@ -334,5 +334,55 @@ test('Settings › Worker accounts: each login’s state in plain words, Remove 
   assert.ok(visibleText(settings).includes('In use · 1 running'));
   assert.equal(settings.querySelectorAll('button').find((node) => node.textContent === 'Remove…'), undefined);
 });
+
+test('Dashboard version is meaningful, below 1.0.0, and names each version with features on', async (t) => {
+  const { DASHBOARD_VERSION, DASHBOARD_VERSION_NAME, DASHBOARD_VERSIONS } = await import('../../src/dashboard/copy.mjs');
+  // Must be below 1.0.0 until roadmap completes
+  assert.match(DASHBOARD_VERSION, /^0\.\d+\.\d+$/, 'current version is below 1.0.0');
+  assert.ok(DASHBOARD_VERSION_NAME && typeof DASHBOARD_VERSION_NAME === 'string', 'version name exists');
+  assert.ok(DASHBOARD_VERSIONS.length >= 9, 'has version milestones leading up to 1.0.0');
+
+  // Each version has a name, description, and list of features
+  for (const v of DASHBOARD_VERSIONS) {
+    assert.match(v.version, /^\d+\.\d+\.\d+$/, `version ${v.version} is semantic`);
+    assert.ok(v.name && v.name.length > 0, `version ${v.version} has a name`);
+    assert.ok(v.description && v.description.length > 0, `version ${v.version} has a description`);
+    assert.ok(Array.isArray(v.features) && v.features.length > 0, `version ${v.version} lists features on`);
+    for (const f of v.features) assert.ok(typeof f === 'string' && f.length > 0, 'feature is non-empty string');
+    assert.ok(['completed', 'current', 'roadmap'].includes(v.status), `version ${v.version} has valid status`);
+  }
+
+  // Pre-1.0 versions lead to the 1.0.0 roadmap target
+  const roadmap = DASHBOARD_VERSIONS.find((v) => v.version === '1.0.0');
+  assert.ok(roadmap, '1.0.0 roadmap target exists');
+  assert.equal(roadmap.status, 'roadmap');
+
+  // Verify page rendering on #/settings and #/settings/version
+  const page = await openPage(t, { store: 'empty' });
+  await page.go('#/settings');
+  const settingsText = visibleText(page.$('#content'));
+  assert.ok(settingsText.includes(`Dashboard v${DASHBOARD_VERSION} (${DASHBOARD_VERSION_NAME})`));
+  assert.ok(settingsText.includes(`Active version: v${DASHBOARD_VERSION} — ${DASHBOARD_VERSION_NAME}`));
+  assert.ok(settingsText.includes('Features on in this version:'));
+  assert.ok(settingsText.includes('Version and roadmap'));
+
+  // Header displays meaningful version linking to #/settings/version
+  const headerDetail = page.$('#host-detail');
+  assert.ok(headerDetail.textContent.includes(`v${DASHBOARD_VERSION}`));
+  assert.ok(headerDetail.textContent.includes(DASHBOARD_VERSION_NAME));
+  const link = headerDetail.querySelector('a');
+  assert.ok(link, 'header version is a link');
+  assert.equal(link.getAttribute('href'), '#/settings/version');
+
+  // Dedicated version and roadmap screen
+  await page.go('#/settings/version');
+  const versionText = visibleText(page.$('#content'));
+  assert.ok(versionText.includes('Active version'));
+  assert.ok(versionText.includes(`v${DASHBOARD_VERSION} — ${DASHBOARD_VERSION_NAME}`));
+  assert.ok(versionText.includes('Version milestones and roadmap'));
+  assert.ok(versionText.includes('v1.0.0 · Autonomous Project Delivery'));
+  assert.ok(versionText.includes('Back to Settings'));
+});
+
 
 

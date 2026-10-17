@@ -22,6 +22,39 @@ const deepFreeze = (value) => {
   return value;
 };
 
+test('stored model preferences cannot rewrite a declared static chain or its effort for either role', { skip: !SQLITE }, () => {
+  const spec = { id: 'T1', deliverable: 'report', acceptance: [], references: [], dependsOn: [] };
+  const decl = { campaignId: 'synthetic-routing', tasks: [spec], executor: { kind: 'cli-chain', providers: [
+    { kind: 'claude-cli', model: 'opus', permissionMode: 'auto', effort: 'low' }, { kind: 'codex-cli', model: 'synthetic-model' }
+  ] } };
+  const preference = [{ kind: 'codex-cli', model: 'synthetic-model', effort: 'xhigh' }, { kind: 'claude-cli', model: 'opus', effort: 'max' }];
+  const context = { store: { all: () => [], get: () => null }, cmd: { claude: ['synthetic'], codex: ['synthetic'] },
+    config: { modelPreferences: { implementer: preference, verification: preference } }, profileChoice: () => null, priorAttempts: () => [] };
+  const before = structuredClone(context.config);
+  for (const state of ['pending', 'implemented']) {
+    const choice = Controller.prototype.executorChoice.call(context, decl, { task_id: 'T1', state }, 1000);
+    assert.equal(choice.executor.kind, 'claude-cli'); assert.equal(choice.executor.model, 'opus');
+    assert.equal(choice.executor.effort, 'low'); assert.equal(choice.receipt.decision.basis, 'declared-order');
+  }
+  assert.deepEqual(context.config, before, 'saved metadata is preserved without granting execution authority');
+});
+
+test('stored preferences cannot reorder auto-policy inputs or override its pinned choice and effort', { skip: !SQLITE }, () => {
+  const decl = { campaignId: 'synthetic-auto', tasks: [{ id: 'T1', deliverable: 'report', acceptance: [], references: [], dependsOn: [] }],
+    executor: { kind: 'cli-chain', providers: [{ kind: 'claude-cli', model: 'opus', permissionMode: 'auto', effort: 'low' }] },
+    routing: { mode: 'auto', candidates: [{ kind: 'claude-cli', model: 'haiku', tier: 1 }, { kind: 'claude-cli', model: 'opus', tier: 3 }],
+      pin: { implementer: { kind: 'claude-cli', model: 'haiku' } } } };
+  const context = { store: { all: () => [], get: () => null }, cmd: { claude: ['synthetic'] }, config: {},
+    profileChoice: () => null, priorAttempts: () => [], taskOperations: () => [], routedAttempts: () => [], reviewedHead: () => ({}),
+    routedChoice: Controller.prototype.routedChoice };
+  const step = { task_id: 'T1', state: 'pending' };
+  const before = Controller.prototype.executorChoice.call(context, decl, step, 1000);
+  assert.equal(before.executor.model, 'haiku');
+  context.config.modelPreferences = { implementer: [{ kind: 'claude-cli', model: 'opus', effort: 'max' }] };
+  const after = Controller.prototype.executorChoice.call(context, decl, step, 1000);
+  assert.deepEqual(after, before, 'execution and replayable policy inputs remain exactly those authorized by the declaration');
+});
+
 /** Receipt inputs as the controller builds them, for a pure route() test. */
 const inputs = ({ deliverable = 'commit', web = false, platform = 'win32', chain: isChain = true, priorAttempts = [], waits = {} } = {}) => ({
   stage: 'implement', chain: isChain, task: { deliverable, web },

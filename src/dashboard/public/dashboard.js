@@ -1,6 +1,6 @@
 import { formatRoute, globalOf, resolveRoute, tabOf } from '/router.mjs';
 // The state copy of OWNER_WORKSPACE §7 and the Now screen (slice S4); the server serves src/dashboard/copy.mjs here.
-import { COMMANDS, DELEGATED, DIALOGS, NEEDS, NOT_READ, busyOnCommand, costRunsLine, nowView, readingLines, resultMeaning, stateCopy, workLine } from '/copy.mjs';
+import { COMMANDS, DELEGATED, DIALOGS, NEEDS, NOT_READ, busyOnCommand, costRunsLine, nowView, readingLines, resultMeaning, stateCopy, workLine, DASHBOARD_VERSION, DASHBOARD_VERSION_NAME, DASHBOARD_VERSIONS } from '/copy.mjs';
 
 const $ = (selector) => document.querySelector(selector);
 const names = { done: 'Done', blocked: 'Blocked', unknown: 'Unknown',
@@ -134,6 +134,7 @@ const projectName = (project) => state?.projects?.projects?.find((item) => !item
 // Each screen's heading and the one question it answers (OWNER_WORKSPACE §3.1).
 const screenText = { projects: ['Projects', 'Which project should I open?'], needs: ['Needs me', 'What is waiting for me, across projects?'],
   settings: ['Settings', 'What can AIWorks use on this computer?'], accounts: ['Worker accounts', 'Which AI worker logins and accounts are on this computer?'],
+  version: ['Version and roadmap', 'Which capabilities are turned on in this version?'],
   messages: ['Messages', 'What did I ask AIWorks, and what did it answer?'],
   diagnostics: ['Diagnostics', 'What exactly did the machine record?'], now: ['Now', 'Where are we now?'],
   work: ['Work', 'What is running or waiting, and why?'], results: ['Results', 'What has been delivered, and what remains?'],
@@ -824,17 +825,21 @@ const needsGroup = (group) => el('section', { class: 'needs-group', 'aria-labell
 function needsYou() {
   const owner = state.owner;
   if (!owner?.available) return null;
-  const { headline, count, groups = [], unknownResults: unknown, reply } = owner;
+  const { headline, count, groups = [], held = [], unknownResults: unknown, reply } = owner;
   // aiworks#18: a stopped supervisor leads, with the time it last renewed its leases, unless the one item for AIWorks
   // stopped already says it with its time (one fact, once; review 4 F2).
   const controller = state.supervisor.controller;
   const said = owner.items.some((item) => item.kind === 'controller' && !item.system);
-  return el('section', { class: `needs${count ? '' : unknown ? ' checking' : ' calm'}`, 'aria-labelledby': 'needs-title' },
+  return el('section', { class: `needs${count || held.length ? '' : unknown ? ' checking' : ' calm'}`, 'aria-labelledby': 'needs-title' },
     controller?.stopped && !said ? el('p', { class: 'needs-stopped' }, NEEDS.banner(controller.lastLeaseRenewalAt, { dateTime }, controller.stopRequested)) : null,
     el('div', { class: 'needs-head' }, el('h2', { id: 'needs-title' }, headline),
       unknown ? el('span', { class: 'needs-unknown' }, `Merge of ${unknown} published step${unknown === 1 ? '' : 's'} being checked`) : null),
     // Only owner actions here (owner, 2026-10-13): posted reports and merged work ready for release are on Results.
     ...groups.map(needsGroup),
+    // Projects held up by the owner's decisions: no work is blocked, so they are not counted, but each is named with a
+    // link to its Now, which says which decisions (aiworks#11 review 5 G7).
+    held.length ? el('ul', { class: 'needs-list', 'data-focus-scope': 'needs/held' }, ...held.map((project) => el('li', {},
+      el('strong', {}, project.name), ` · ${project.text} `, routeLink(`Open ${project.name}`, { screen: 'project', project: project.id })))) : null,
     reply ? el('div', { class: 'needs-reply' }, `AIWorks answered your message #${reply.messageId} (${dateTime(reply.answeredAt)}). `,
       reply.url ? link('Read its “What needs you” ↗', reply.url) : routeLink('Read the plan', MESSAGES_ADDRESS)) : null);
 }
@@ -1251,8 +1256,8 @@ function openRemoveAccount(account) {
 
 // The two roles whose model order AIWorks reads, in owner words (OWNER_WORKSPACE §2.1).
 const PREFERENCE_ROLES = [
-  { key: 'implementer', title: 'Builder', text: 'Which models build each step’s change, best first.' },
-  { key: 'verification', title: 'Independent checker', text: 'Which models check each result, best first.' },
+  { key: 'implementer', title: 'Builder', text: 'Models for building each step’s change, best first.' },
+  { key: 'verification', title: 'Independent checker', text: 'Models for checking each result, best first.' },
 ];
 /** The usable entries of a role's order: model names, or objects naming a model and maybe its AI worker. */
 const orderEntries = (order) => (Array.isArray(order) ? order : []).filter((entry) => typeof entry === 'string' || typeof entry?.model === 'string');
@@ -1288,14 +1293,50 @@ function accountsScreen() {
 }
 
 function modelPreferencesPanel(prefs = {}) {
-  return panel('Model order', 'Which models AIWorks tries first for each role.', el('ul', { class: 'settings-links' },
+  return panel('Saved model order', 'Kept here for later. Work does not use it yet: each piece of work uses the AI workers and models its approved plan names.', el('ul', { class: 'settings-links' },
     ...PREFERENCE_ROLES.map((role) => {
       const entries = orderEntries(prefs[role.key]);
       return el('li', { 'data-focus-scope': `preference/${role.key}` },
         el('div', { class: 'account-header' }, el('strong', {}, role.title), button('Configure…', () => openSetPreference(role, entries), 'secondary small')),
         el('div', { class: 'subtext' }, role.text),
-        el('div', { class: 'subtext' }, entries.length ? `Order: ${entries.map(orderEntry).join(', ')}` : 'AIWorks’ own order'));
+        el('div', { class: 'subtext' }, entries.length ? `Saved: ${entries.map(orderEntry).join(', ')}` : 'Nothing saved'));
     })));
+}
+
+function versionScreen() {
+  const host = state.host ?? {};
+  const ver = host.version ?? DASHBOARD_VERSION;
+  const verName = host.versionName ?? DASHBOARD_VERSION_NAME;
+  const current = DASHBOARD_VERSIONS.find((v) => v.version === ver || v.status === 'current') ?? DASHBOARD_VERSIONS[DASHBOARD_VERSIONS.length - 2];
+  const back = el('p', { class: 'breadcrumb' }, routeLink('← Back to Settings', '#/settings'));
+
+  const currentPanel = panel('Active version', 'Which capabilities are turned on in this version.', el('div', {},
+    el('div', { class: 'version-badge-row' },
+      el('h3', {}, `v${current.version} — ${current.name}`),
+      el('span', { class: 'account-pill pill-ready' }, 'Active')),
+    el('p', { class: 'version-summary-text' }, current.description),
+    el('div', { class: 'features-block' },
+      el('strong', { class: 'features-heading' }, 'Features turned on in this version:'),
+      el('ul', { class: 'version-features-bullets' },
+        ...current.features.map((f) => el('li', {}, `✓ ${f}`))))));
+
+  const milestonesPanel = panel('Version milestones and roadmap', 'All dashboard versions before 1.0.0, and the remaining roadmap.', el('div', {},
+    el('ul', { class: 'settings-links' },
+      ...DASHBOARD_VERSIONS.map((v) => {
+        const isCurrent = v.version === current.version;
+        const isRoadmap = v.status === 'roadmap';
+        const statusLabel = isCurrent ? 'Active now' : isRoadmap ? 'Roadmap' : 'On';
+        const pillClass = isCurrent ? 'pill-ready' : isRoadmap ? 'pill-waiting' : 'pill-done';
+        return el('li', { 'data-version': v.version },
+          el('div', { class: 'account-header' },
+            el('strong', {}, `v${v.version} · ${v.name}`),
+            el('span', { class: `account-pill ${pillClass}` }, statusLabel)),
+          el('p', { class: 'subtext' }, v.description),
+          el('ul', { class: 'subtext-list' },
+            ...v.features.map((f) => el('li', {}, `${isRoadmap ? '○' : '✓'} ${f}`))));
+      }))));
+
+  return [back, currentPanel, milestonesPanel];
 }
 
 /**
@@ -1304,8 +1345,19 @@ function modelPreferencesPanel(prefs = {}) {
  */
 function settingsScreen() {
   const host = state.host ?? {};
+  const ver = host.version ?? DASHBOARD_VERSION;
+  const verName = host.versionName ?? DASHBOARD_VERSION_NAME;
+  const currentVer = DASHBOARD_VERSIONS.find((v) => v.version === ver || v.status === 'current') ?? DASHBOARD_VERSIONS[DASHBOARD_VERSIONS.length - 2];
   const computer = panel('This computer', 'Each computer runs its own AIWorks. This page shows only this one.', el('div', { class: 'panel-body' },
-    el('p', {}, `${host.name ?? 'Unknown computer'} · dashboard version ${host.revision?.slice(0, 7) ?? 'unknown'}`)));
+    el('p', {}, `${host.name ?? 'Unknown computer'} · Dashboard v${ver} (${verName}) · revision ${host.revision?.slice(0, 7) ?? 'unknown'}`),
+    el('div', { class: 'version-card' },
+      el('div', { class: 'version-card-header' },
+        el('strong', {}, `Active version: v${ver} — ${verName}`),
+        routeLink('See all versions & roadmap →', '#/settings/version', 'button secondary small')),
+      el('p', { class: 'subtext' }, currentVer.description),
+      el('strong', { class: 'features-heading' }, 'Features on in this version:'),
+      el('ul', { class: 'version-features-list' },
+        ...currentVer.features.map((feat) => el('li', {}, `✓ ${feat}`))))));
   const settings = state.supervisor.settings;
   if (!state.supervisor.available || !settings) return [computer, unavailable(), settingsLinks()];
   const active = state.supervisor.campaigns.filter((c) => !['finished', 'cancelled'].includes(c.control));
@@ -1338,7 +1390,9 @@ const settingsEmpty = ({ title, text, primary }) => el('div', { class: 'empty-st
 
 function settingsLinks() {
   return panel('More', null, el('ul', { class: 'settings-links' },
-    el('li', {}, routeLink('Worker accounts', '#/settings/accounts'), el('div', { class: 'subtext' }, 'Each AI worker login on this computer, whether it can take work now, and which models each role tries first.')),
+    el('li', {}, routeLink('Worker accounts', '#/settings/accounts'), el('div', { class: 'subtext' }, 'Each AI worker login on this computer, and whether it can take work now.')),
+    el('li', {}, routeLink('Worker accounts', '#/settings/accounts'), el('div', { class: 'subtext' }, 'Connect and manage isolated worker logins, view live quota usage, and export encrypted bundles.')),
+    el('li', {}, routeLink('Version and roadmap', '#/settings/version'), el('div', { class: 'subtext' }, `Dashboard v${DASHBOARD_VERSION} (${DASHBOARD_VERSION_NAME}), active features and pre-1.0 roadmap.`)),
     el('li', {}, routeLink('Messages', '#/settings/messages'), el('div', { class: 'subtext' }, 'What you asked AIWorks, and what it answered.')),
     el('li', {}, routeLink('Diagnostics', '#/settings/diagnostics'), el('div', { class: 'subtext' }, 'The full activity journal, every step with its issue and pull request, the roadmap of the platform that keeps your project rules, and how fresh each merge check is.'))));
 }
@@ -1377,10 +1431,18 @@ function nowScreen(project) {
     el('h2', { id: 'since-title' }, previousVisit ? `Since you last looked (${dateTime(previousVisit)})` : 'In the last 24 hours'),
     el('ul', {}, ...view.since.map((line) => el('li', { class: line.tone ?? '' }, `${line.text} `, ...line.links.map((item) => link(`${item.label} ↗`, item.url)))))) : null;
   const others = details.others.map((item) => `${item.purpose ?? item.id} (campaign ${item.id})`);
+  // What else goes on in the project stays in view, whatever leads (aiworks#11 review 5 G5): a pause carries its Resume.
+  const also = view.also?.length ? el('section', { 'aria-labelledby': `now-also-${project}` },
+    el('h3', { id: `now-also-${project}`, class: 'section-title' }, 'Also in this project'),
+    el('ul', { class: 'settings-links' }, ...view.also.map((line) => {
+      const c = line.primary ? campaignById(line.primary.campaignId) : null;
+      return el('li', { 'data-state': line.kind }, line.text, ' ',
+        c?.controls?.primary === 'resume' ? button(line.primary.label, () => command(c, 'resume'), 'secondary', commandsOff()) : null);
+    }))) : null;
   return [el('section', { class: 'panel', 'data-focus-scope': `now/${project}` }, el('div', { class: 'panel-body' },
     goal ? el('p', { class: 'eyebrow' }, goal) : null,
     el('p', { role: 'status', 'aria-live': 'polite', 'data-state': now.key }, el('strong', {}, now.title), now.text ? ` ${now.text}` : ''),
-    primaryAction(now.primary), startWork,
+    primaryAction(now.primary), startWork, also,
     view.progress ? el('p', { class: 'subtext' }, view.progress) : null,
     view.note ? el('p', { class: 'subtext' }, `${view.note.title} ${view.note.text}`) : null,
     details.workId || others.length ? disclosure(`now/${project}/details`, 'Details', el('div', { class: 'subtext' }, [
@@ -1672,6 +1734,7 @@ function render() {
   if (route.screen === 'needs') patch(content, [needsYou() ?? unavailable()]);
   else if (route.screen === 'settings' && route.section === 'messages') patch(content, [messagesPanel(20)]);
   else if (route.screen === 'settings' && route.section === 'accounts') patch(content, accountsScreen());
+  else if (route.screen === 'settings' && route.section === 'version') patch(content, versionScreen());
   else if (diagnostics) patch(content, [trackOverview(), roadmapView(), workView(), mergeChecksPanel(), projectWaitsPanel(),
     panel('Execution journal', 'Latest 80 events · raw agent transcripts and secrets are never shown', activityList())].filter(Boolean));
   else if (route.screen === 'settings') patch(content, settingsScreen());
@@ -1693,7 +1756,11 @@ function render() {
     // The page starts with a neutral "…" so it never names the wrong computer before the first answer.
     $('#host-name').textContent = `${state.host.name ?? 'Unknown computer'} · this computer`;
     $('#host-name').removeAttribute('aria-busy');
-    $('#host-detail').textContent = `Dashboard version ${state.host.revision?.slice(0, 7) ?? 'unknown'}`;
+    const ver = state.host.version ?? DASHBOARD_VERSION;
+    const verName = state.host.versionName ?? DASHBOARD_VERSION_NAME;
+    const versionLabel = `v${ver} · ${verName}`;
+    $('#host-detail').replaceChildren(routeLink(versionLabel, '#/settings/version', 'host-version-link'));
+    $('#host-detail').title = `Dashboard v${ver} "${verName}" (revision ${state.host.revision?.slice(0, 7) ?? 'unknown'})`;
   }
 }
 
@@ -1845,13 +1912,13 @@ $('#confirm-remove-account').addEventListener('click', async () => {
     notice(err.message ?? 'Could not remove the login.');
   }
 });
-/** Save one role's model order; an empty list returns it to AIWorks' own order. */
+/** Save one role's model order; an empty list clears it. */
 async function saveModelOrder(key, models, kind) {
   const role = PREFERENCE_ROLES.find((item) => item.key === key);
   if (!role) return;
   try {
     await post('/api/accounts/preferences', { role: role.key, models, kind: models.length && kind ? kind : null });
-    notice(models.length ? `Saved the model order for ${role.title}.` : `${role.title} uses AIWorks’ own order again.`);
+    notice(models.length ? `Saved the model order for ${role.title}.` : `Cleared the saved order for ${role.title}.`);
     await poll();
   } catch (err) {
     notice(err.message ?? 'Could not save the model order.');

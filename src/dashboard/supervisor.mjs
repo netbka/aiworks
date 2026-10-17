@@ -13,7 +13,7 @@ import { coordinatorView, LANE as COORDINATOR_LANE, postOwnerMessage } from '../
 import { CODE_ROOT, revisionNotMerged } from '../supervisor/provenance.mjs';
 import { COMMANDS, stateCopy, stopReasonWords } from './copy.mjs';
 import { configuredRepositories, connectedProjects, projectConnectionEnabled } from './projects.mjs';
-import { modelPreferences, openOnProfile, setRoleModelPreference, shallowHomesRoot, configuredAccounts } from '../supervisor/accounts.mjs';
+import { openOnProfile, setRoleModelPreference, shallowHomesRoot, configuredAccounts } from '../supervisor/accounts.mjs';
 export { shallowHomesRoot };
 import { removeShallowProfile } from '../supervisor/adapters/caam.mjs';
 
@@ -327,7 +327,7 @@ const RELEASE_LOCAL = "Release does not apply yet to a project without GitHub: A
 export function computerSettings(campaigns, config, { platform = process.platform, now = Date.now(), repositories = [], connected = [], accounts = [] } = {}) {
   return { commands: configuredCommandNames(config), workers: aiWorkers(campaigns, config, { platform, now }),
     accounts,
-    modelPreferences: modelPreferences(config),
+    modelPreferences: savedModelOrder(config),
     releases: releaseModes([...repositories, ...campaigns.map((c) => c.repository)], { waitsFor: issueLink(config?.autoReleaseDecision), connected }),
     // Where supervisor faults are tracked: config.json "supervisorIssue" (a GitHub issue link) when set, so a disposable
     // review copy can name a made-up one; otherwise null, and the owner view links AIWorks' own (owner.mjs SUPERVISOR_ISSUE).
@@ -341,6 +341,10 @@ const LOGIN_FOLDER = { claude: '.claude', codex: '.codex', agy: '.agy', cursor: 
 // An account's wait by the outcome class its reason starts with (src/supervisor/accounts.mjs ACCOUNT_SCOPED).
 const WAIT_STATE = { quota: 'usage-limit', auth: 'sign-in', unavailable: 'unavailable' };
 const PREFERENCE_ROLES = ['implementer', 'verification'];
+// The saved model order of each role the page shows; any other value reads as nothing saved. Work does not read it:
+// each piece of work uses the order its approved plan names (SUPERVISOR.md section 13).
+const savedModelOrder = (config) => Object.fromEntries(PREFERENCE_ROLES.map((role) =>
+  [role, Array.isArray(config?.modelPreferences?.[role]) ? config.modelPreferences[role] : []]));
 const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,99}$/;
 
 function refusal(status, message) {
@@ -393,7 +397,7 @@ export function removeDashboardAccount(dataDir, { provider, name } = {}) {
 }
 
 export function configuredModelPreferences(dataDir) {
-  return modelPreferences(readConfig(dataDir));
+  return savedModelOrder(readConfig(dataDir));
 }
 
 /**

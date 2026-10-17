@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { campaignStart, campaignStatus } from '../../src/supervisor/api.mjs';
 import { buildTaskSignature, formatSignatureLines, formatTokensUsage, formatTokensSummary,
-  modelPreferences, setRoleModelPreference, clearRoleModelPreferences, applyModelPreferences, preferenceFor, roleModelOrder } from '../../src/supervisor/accounts.mjs';
+  modelPreferences, setRoleModelPreference, clearRoleModelPreferences, applyModelPreferences } from '../../src/supervisor/accounts.mjs';
 import { declaration, environment, SQLITE, skipWithoutSqlite } from './helpers.mjs';
 
 const { Store } = SQLITE ? await import('../../src/supervisor/store.mjs') : {};
@@ -207,18 +207,4 @@ test('cli.mjs account commands manage preferences and list accounts', (t) => {
   // 5. account list
   const listOut = JSON.parse(execFileSync(process.execPath, [cliPath, 'account', 'list', '--data', env.dataDir], { encoding: 'utf8' }));
   assert.ok(Array.isArray(listOut.accounts));
-});
-
-test('a malformed model order in config.json never throws in dispatch: it reads as AIWorks’ own order', () => {
-  // The shape an earlier dashboard saved ({ models, effort, kind } per role) made executorChoice throw on every tick.
-  const broken = { modelPreferences: { implementer: { models: ['model-a'], effort: 'high' }, verification: [null, 'model-b', { model: 'model-c', kind: 'codex-cli' }] } };
-  const chosen = { kind: 'claude-cli' };
-  assert.deepEqual(roleModelOrder(broken, 'implementer'), []);
-  assert.equal(preferenceFor(broken, 'implementer', chosen), null);
-  assert.equal(preferenceFor(broken, 'verification', chosen), null, 'a null entry matches no candidate');
-  assert.deepEqual(preferenceFor(broken, 'verification', { kind: 'codex-cli', model: 'model-c' }), { model: 'model-c', kind: 'codex-cli' });
-  const candidates = [{ kind: 'claude-cli', model: 'model-a' }, { kind: 'codex-cli', model: 'model-b' }];
-  assert.deepEqual(applyModelPreferences(candidates, 'implementer', broken), candidates);
-  assert.deepEqual(modelPreferences(broken), { implementer: [], verification: broken.modelPreferences.verification });
-  assert.deepEqual(modelPreferences({ modelPreferences: { coordinator: ['model-a'] } }), { implementer: [], verification: [] }, 'only the roles dispatch reads');
 });
