@@ -11,6 +11,7 @@ import { configuredMergeDelegation } from './merges.mjs';
 import { checkConnectedProject, configuredRepositories, connectedProjects, connectProject, disconnectConnectedProject, listConnectedProjects,
   previewProject, projectConnectionEnabled, projectsView, relocateConnectedProject } from './projects.mjs';
 import { safeText } from './roadmap.mjs';
+import { approvePlan, requestPlanAndDo, workView } from './work.mjs';
 
 const staticFiles = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
@@ -35,9 +36,10 @@ const pageNavigation = (req, path) => req.method === 'GET' && path === '/' && !r
  * GitHub project with read-only gh calls; `projectConnection` is for tests only (synthetic gh and branch reads, gitEnv,
  * statfs) and is never given by main.mjs.
  */
-// provenanceRoot: the checkout whose origin/main a Resume is checked against (AW-005); by default the code this server runs
-// from. Tests pass a disposable checkout so the check never reads this repository's own git state.
-export function createDashboardServer({ dataDir, roadmap, merges = null, host = {}, releases = {}, projectConnection = {}, provenanceRoot = undefined }) {
+// provenanceRoot: the checkout whose origin/main a Resume or an Approve and start is checked against (AW-005); by default
+// the code this server runs from. Tests pass a disposable checkout so the check never reads this repository's own git
+// state. `work` is for tests only (governanceRoot, synthetic git and gh for the plan's freshness check); main.mjs gives none.
+export function createDashboardServer({ dataDir, roadmap, merges = null, host = {}, releases = {}, projectConnection = {}, provenanceRoot = undefined, work = {} }) {
   const csrf = randomBytes(32).toString('hex');
   // Which machine and dashboard version this is, so a screenshot identifies its supervisor.
   const machine = { name: safeText(host.name ?? hostname(), 64) || null, revision: /^[0-9a-f]{7,40}$/.test(host.revision ?? '') ? host.revision : null,
@@ -80,7 +82,9 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
           return send(200, { observedAt: new Date(now).toISOString(), host: machine, supervisor, roadmap: roadmap.snapshot(),
             merges: { refreshing: merged.refreshing, repositories: merged.repositories }, owner,
             // Projects: campaign repositories, the repositories config.json lists and connected projects, by name only (never a path).
-            projects: projectsView(supervisor, owner, { repositories: configuredRepositories(dataDir), ...(addProject ? { records, addProject } : {}) }) });
+            projects: projectsView(supervisor, owner, { repositories: configuredRepositories(dataDir), ...(addProject ? { records, addProject } : {}) }),
+            // Plan and do and Review (UI14): requests and draft plans of connected GitHub projects, allowlisted fields only.
+            work: workView(dataDir) });
         }
         // The connected projects with each one's own folder, the one path a response may carry (404 while Add project is off).
         if (path === '/api/projects') return send(200, listConnectedProjects(dataDir));
@@ -117,6 +121,9 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       catch { return send(400, { error: 'Invalid JSON.' }); }
       if (path === '/api/commands') return send(202, applyCommand(dataDir, value, Date.now(), { provenanceRoot }));
       if (path === '/api/messages') return send(202, postMessage(dataDir, value));
+      // Plan and do (UI14): store a work request; Approve and start: register exactly the reviewed plan (work.mjs).
+      if (path === '/api/work/requests') return send(202, requestPlanAndDo(dataDir, value));
+      if (path === '/api/work/approve') return send(200, approvePlan(dataDir, value, Date.now(), { provenanceRoot, ...work }));
       if (path === '/api/accounts/remove') return send(200, removeDashboardAccount(dataDir, value));
       if (path === '/api/accounts/preferences') return send(200, saveDashboardModelPreferences(dataDir, value));
       // Add project (UI13): each answers 404 while it is off, as before it existed.
