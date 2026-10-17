@@ -36,7 +36,7 @@ test('every owner screen of the review fixture is in owner words, outside a deta
   }
   // Every state of the full store: the global screens, each project's tabs and Start work, and every step.
   const page = await openPage(t);
-  const screens = ['#/projects', '#/needs', '#/settings', '#/settings/messages', '#/projects/add'];
+  const screens = ['#/projects', '#/needs', '#/settings', '#/settings/accounts', '#/settings/messages', '#/projects/add'];
   for (const project of PROJECTS) for (const tab of PROJECT_TABS) screens.push(address(project, tab));
   for (const c of supervisorSnapshot(page.dataDir).campaigns) for (const task of c.tasks) screens.push(address(c.repository, `/step/${c.id}/${task.id}`));
   assert.ok(screens.length > 40, `${screens.length} screens`);

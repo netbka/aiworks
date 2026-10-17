@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
-import { supervisorSnapshot, applyCommand, postMessage, configuredAccounts, removeDashboardAccount, startIncognitoConnect, checkIncognitoConnect, configuredModelPreferences, saveDashboardModelPreferences } from './supervisor.mjs';
+import { supervisorSnapshot, applyCommand, postMessage, dashboardAccounts, removeDashboardAccount, configuredModelPreferences, saveDashboardModelPreferences } from './supervisor.mjs';
 import { Store } from '../supervisor/store.mjs';
 import { ownerView } from './owner.mjs';
 import { configuredMergeDelegation } from './merges.mjs';
@@ -87,7 +87,7 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
             store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true });
             let config = {};
             try { config = JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { /* ignore */ }
-            return send(200, { accounts: configuredAccounts(store, config, { dataDir }) });
+            return send(200, { accounts: dashboardAccounts(store, config, { dataDir }) });
           } finally {
             store?.close();
           }
@@ -114,8 +114,7 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       catch { return send(400, { error: 'Invalid JSON.' }); }
       if (path === '/api/commands') return send(202, applyCommand(dataDir, value, Date.now(), { provenanceRoot }));
       if (path === '/api/messages') return send(202, postMessage(dataDir, value));
-      if (path === '/api/accounts/connect/start') return send(200, startIncognitoConnect(dataDir, value));
-      if (path === '/api/accounts/connect/check') return send(200, checkIncognitoConnect(dataDir, value));
+      // No route adds, connects, exports or imports a login: any local process can read the CSRF token (aiworks#197).
       if (path === '/api/accounts/remove') return send(200, removeDashboardAccount(dataDir, value));
       if (path === '/api/accounts/preferences') return send(200, saveDashboardModelPreferences(dataDir, value));
       // Add project (UI13): each answers 404 while it is off, as before it existed.

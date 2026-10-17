@@ -429,3 +429,5 @@ html{scrollbar-gutter:stable;scroll-padding-top:88px}
 .accounts-section{margin-bottom:16px;border-bottom:1px solid var(--line);padding-bottom:16px}
 .accounts-section .panel-header{padding:12px 20px 0}
 .accounts-section h3{margin:0;font-size:14px;font-weight:600;color:#24324a}
+.breadcrumb{margin:0 0 8px}
+.breadcrumb a{display:inline-flex;align-items:center;min-height:44px}

@@ -1,5 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
@@ -14,9 +13,8 @@ import { coordinatorView, LANE as COORDINATOR_LANE, postOwnerMessage } from '../
 import { CODE_ROOT, revisionNotMerged } from '../supervisor/provenance.mjs';
 import { COMMANDS, stateCopy, stopReasonWords } from './copy.mjs';
 import { configuredRepositories, connectedProjects, projectConnectionEnabled } from './projects.mjs';
-import { accountUsageSummary, removeAccount, modelPreferences, saveModelPreferences, setRoleModelPreference,
-  shallowHomesRoot, configuredAccounts } from '../supervisor/accounts.mjs';
-export { shallowHomesRoot, configuredAccounts };
+import { modelPreferences, openOnProfile, setRoleModelPreference, shallowHomesRoot, configuredAccounts } from '../supervisor/accounts.mjs';
+export { shallowHomesRoot };
 import { removeShallowProfile } from '../supervisor/adapters/caam.mjs';
 
 const readConfig = (dataDir) => {
@@ -336,175 +334,81 @@ export function computerSettings(campaigns, config, { platform = process.platfor
     supervisorIssue: issueLink(config?.supervisorIssue) };
 }
 
+const ACCOUNT_PROVIDERS = ['claude', 'codex', 'agy', 'cursor'];
+const ACCOUNT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// The folder a provider's login is saved in inside a profile (src/supervisor/accounts.mjs configuredAccounts).
+const LOGIN_FOLDER = { claude: '.claude', codex: '.codex', agy: '.agy', cursor: '.cursor' };
+// An account's wait by the outcome class its reason starts with (src/supervisor/accounts.mjs ACCOUNT_SCOPED).
+const WAIT_STATE = { quota: 'usage-limit', auth: 'sign-in', unavailable: 'unavailable' };
+const PREFERENCE_ROLES = ['implementer', 'verification'];
+const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,99}$/;
+
+function refusal(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
+/**
+ * The worker accounts as the page shows them: whose login, whether it is saved on this computer, and one state. The wait
+ * reason itself is never served: it can carry a worker's raw error text (OWNER_WORKSPACE §10.1). Neither is any path.
+ */
+export function dashboardAccounts(store, config, { now = Date.now(), dataDir } = {}) {
+  const root = shallowHomesRoot(config, dataDir);
+  return configuredAccounts(store, config, { now, dataDir }).map(({ id, provider, kind, name, usage }) => {
+    const open = usage.open ?? 0;
+    const waitClass = typeof usage.waitReason === 'string' ? usage.waitReason.split(':')[0] : null;
+    const outcomes = usage.outcomes ?? {};
+    return { id, provider, kind, name: safeText(name, 64),
+      hasLogin: ACCOUNT_PROVIDERS.includes(provider) && ACCOUNT_NAME.test(name) && existsSync(join(root, name, LOGIN_FOLDER[provider])),
+      state: usage.coolingDown ? WAIT_STATE[waitClass] ?? 'unavailable' : open > 0 ? 'in-use' : 'ready',
+      retryAt: usage.coolingDown && Number.isFinite(usage.retryAt) ? new Date(usage.retryAt).toISOString() : null,
+      open, limit: usage.limit ?? null,
+      runs: { finished: (usage.totalOperations ?? 0) - (outcomes.open ?? 0), withResult: outcomes.result ?? 0, usageLimit: outcomes.quota ?? 0 },
+      runMinutes: Math.round((usage.totalDurationMs ?? 0) / 60_000) };
+  });
+}
+
+/**
+ * Remove an account's saved login folder from this computer: only a login saved here, and never while it runs work. Its
+ * run history, usage-limit wait and learned limit stay. They are AIWorks' records, not the login, and ending a wait here
+ * would send work straight back to an account at its limit. The dashboard never writes the supervisor store.
+ */
 export function removeDashboardAccount(dataDir, { provider, name } = {}) {
-  if (!['claude', 'codex', 'agy', 'cursor'].includes(provider) || typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
-    const err = new Error('Provider must be claude, codex, agy or cursor, and the account name only letters, numbers, dots, dashes and underscores.');
-    err.status = 400;
-    throw err;
+  if (!ACCOUNT_PROVIDERS.includes(provider) || typeof name !== 'string' || !ACCOUNT_NAME.test(name)) {
+    throw refusal(400, 'Provider must be claude, codex, agy or cursor, and the account name only letters, numbers, dots, dashes and underscores.');
   }
-  const kind = `${provider}-cli`;
+  const root = shallowHomesRoot(readConfig(dataDir), dataDir);
+  if (!existsSync(join(root, name, LOGIN_FOLDER[provider]))) throw refusal(404, 'This account has no saved login on this computer.');
   const account = `${provider}/${name}`;
-  const config = readConfig(dataDir);
-  const root = shallowHomesRoot(config, dataDir);
-  const store = new Store(join(dataDir, 'supervisor.db'));
-  try {
-    const res = removeAccount(store, config, { kind, account });
-    const profileRes = removeShallowProfile({ kind, name, root });
-    return { success: true, account, removed: res.removed, pathRemoved: profileRes.removed };
-  } finally {
-    store.close();
-  }
-}
-
-export const DEFAULT_CREDENTIAL_FILES = {
-  claude: [
-    { source: join(homedir(), '.claude', '.credentials.json'), dest: '.claude/.credentials.json' },
-    { source: join(homedir(), '.claude.json'), dest: '.claude.json' },
-  ],
-  codex: [
-    { source: join(homedir(), '.codex', 'auth.json'), dest: '.codex/auth.json' },
-    { source: join(homedir(), '.codex', 'config.toml'), dest: '.codex/config.toml' },
-  ],
-  cursor: [
-    { source: join(homedir(), '.cursor', 'cli-config.json'), dest: '.cursor/cli-config.json' },
-  ],
-  agy: [
-    { source: join(homedir(), '.gemini', 'oauth_creds.json'), dest: '.agy/oauth_creds.json' },
-    { source: join(homedir(), '.gemini', 'oauth_credentials.json'), dest: '.agy/credentials.json' },
-    { source: join(homedir(), '.gemini', 'google_accounts.json'), dest: '.agy/google_accounts.json' },
-    { source: join(homedir(), '.agy', 'credentials.json'), dest: '.agy/credentials.json' },
-  ],
-};
-
-export const PROVIDER_LOGIN_URLS = {
-  claude: 'https://claude.ai/login',
-  codex: 'https://chatgpt.com/',
-  cursor: 'https://www.cursor.com/login',
-  agy: 'https://accounts.google.com/',
-};
-
-export function findIncognitoBrowser(platform = process.platform) {
-  if (platform === 'win32') {
-    const candidates = [
-      { bin: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', arg: '--incognito' },
-      { bin: 'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe', arg: '--incognito' },
-      { bin: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe', arg: '--inprivate' },
-      { bin: 'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe', arg: '--inprivate' },
-    ];
-    for (const { bin, arg } of candidates) {
-      if (existsSync(bin)) return { command: bin, arg };
-    }
-    return { command: 'chrome.exe', arg: '--incognito' };
-  }
-  if (platform === 'darwin') {
-    return { command: 'open', arg: '-na', extra: ['Google Chrome', '--args', '--incognito'] };
-  }
-  return { command: 'google-chrome', arg: '--incognito' };
-}
-
-export function startIncognitoConnect(dataDir, { provider, name, openBrowser = true } = {}) {
-  if (!provider || !name) {
-    const err = new Error('Provider and name are required.');
-    err.status = 400;
-    throw err;
-  }
-  if (!['claude', 'codex', 'agy', 'cursor'].includes(provider)) {
-    const err = new Error('Provider must be claude, codex, agy, or cursor.');
-    err.status = 400;
-    throw err;
-  }
-  const url = PROVIDER_LOGIN_URLS[provider];
-  let browserOpened = false;
-  if (openBrowser && url) {
+  const path = join(dataDir, 'supervisor.db');
+  if (existsSync(path)) {
+    const store = new Store(path, { readOnly: true });
     try {
-      const browser = findIncognitoBrowser();
-      const args = browser.extra ? [...browser.extra, url] : [browser.arg, url];
-      const child = spawn(browser.command, args, { detached: true, stdio: 'ignore' });
-      child.unref();
-      browserOpened = true;
-    } catch { /* browser spawn failed or headless */ }
+      if (openOnProfile(store, account) > 0) throw refusal(409, 'This account is running work right now. Remove its login after that work finishes.');
+    } finally { store.close(); }
   }
-  const files = DEFAULT_CREDENTIAL_FILES[provider] ?? [];
-  return {
-    success: true,
-    provider,
-    name,
-    loginUrl: url,
-    defaultLocation: files[0]?.source ?? null,
-    startedAt: Date.now(),
-    browserOpened,
-  };
-}
-
-export function checkIncognitoConnect(dataDir, { provider, name, startedAt = 0, force = false } = {}) {
-  if (!provider || !name) {
-    const err = new Error('Provider and name are required.');
-    err.status = 400;
-    throw err;
-  }
-  const config = readConfig(dataDir);
-  const root = shallowHomesRoot(config, dataDir);
-  const home = join(root, name);
-  const files = DEFAULT_CREDENTIAL_FILES[provider] ?? [];
-  let found = null;
-
-  for (const { source, dest } of files) {
-    if (existsSync(source)) {
-      const stat = statSync(source);
-      if (force || stat.mtimeMs >= (startedAt - 5000)) {
-        found = { source, dest, mtimeMs: stat.mtimeMs };
-        break;
-      }
-    }
-  }
-
-  if (!found) {
-    return {
-      connected: false,
-      provider,
-      name,
-      waitingFor: files[0]?.source ?? null,
-      startedAt,
-    };
-  }
-
-  let copiedCount = 0;
-  for (const { source, dest } of files) {
-    if (existsSync(source)) {
-      const target = join(home, dest);
-      mkdirSync(join(target, '..'), { recursive: true });
-      copyFileSync(source, target);
-      copiedCount++;
-    }
-  }
-
-  return {
-    connected: true,
-    account: `${provider}/${name}`,
-    provider,
-    name,
-    sourcePath: found.source,
-    savedTo: home,
-    modifiedAt: found.mtimeMs,
-    copiedFiles: copiedCount,
-  };
+  const { removed } = removeShallowProfile({ kind: `${provider}-cli`, name, root });
+  return { success: true, account, removed };
 }
 
 export function configuredModelPreferences(dataDir) {
-  const config = readConfig(dataDir);
-  return modelPreferences(config);
+  return modelPreferences(readConfig(dataDir));
 }
 
-export function saveDashboardModelPreferences(dataDir, { preferences, role, models } = {}) {
-  if (role && models) {
-    return setRoleModelPreference(dataDir, role, models);
+/**
+ * Save one role's model order in the shape the supervisor reads (src/supervisor/accounts.mjs applyModelPreferences): a
+ * list of model names, each tied to one AI worker when `kind` is given. Only Builder and Independent checker have an
+ * order, because nothing reads one for another role. The other role's order is kept. An empty list returns the role to
+ * AIWorks' own order.
+ */
+export function saveDashboardModelPreferences(dataDir, { role, models, kind = null } = {}) {
+  if (!PREFERENCE_ROLES.includes(role)) throw refusal(400, 'Choose Builder or Independent checker.');
+  if (!Array.isArray(models) || models.length > 10 || !models.every((model) => typeof model === 'string' && MODEL_NAME.test(model))) {
+    throw refusal(400, 'List up to 10 model names, each in letters, numbers, dots, colons, slashes or dashes.');
   }
-  if (!preferences || typeof preferences !== 'object') {
-    const err = new Error('Preferences object or role and models are required.');
-    err.status = 400;
-    throw err;
-  }
-  return saveModelPreferences(dataDir, preferences);
+  if (kind !== null && !WORKERS.some((worker) => worker.kind === kind)) throw refusal(400, 'Choose an AI worker from the list.');
+  return setRoleModelPreference(dataDir, role, models.map((model) => kind ? { model, kind } : model));
 }
 
 /** `value` when it is a GitHub issue link, else null. */
@@ -780,7 +684,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
         })() : null })) };
     const settings = computerSettings(campaigns, readConfig(dataDir), { now, repositories: configuredRepositories(dataDir),
       connected: projectConnectionEnabled(dataDir) ? connectedProjects(dataDir) : [],
-      accounts: configuredAccounts(store, readConfig(dataDir), { now, dataDir }) });
+      accounts: dashboardAccounts(store, readConfig(dataDir), { now, dataDir }) });
     return { available: true, observedAt: new Date(now).toISOString(), controller, campaigns, costs: projectCosts(campaigns), activity, coordinator, recent, settings };
   } catch { return { available: false, message: "AIWorks can't read its work records right now. What you see may be out of date. Buttons are off until it can read them again.", campaigns: [], costs: [], activity: [] }; }
   finally { store?.close(); }

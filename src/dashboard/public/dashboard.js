@@ -1202,277 +1202,100 @@ function mergeChecksPanel() {
 }
 
 let pendingRemoveAccount = null;
-let lastConnectReceipt = null;
-let incognitoPollTimer = null;
 
-function stopIncognitoPolling() {
-  if (incognitoPollTimer) {
-    clearInterval(incognitoPollTimer);
-    incognitoPollTimer = null;
-  }
+/** An account by its AI worker and login: "Claude · work-a", or this computer's own login when it has no name of its own. */
+const accountName = (account) => `${provider(account.kind)} · ${account.name === account.kind ? 'this computer’s own login' : account.name}`;
+
+/** One account's state in plain words. The server never sends the wait reason itself, only its kind (OWNER_WORKSPACE §10.1). */
+function accountState(account) {
+  const at = account.retryAt ? timeOnly(account.retryAt) : null;
+  if (account.state === 'usage-limit') return { text: `Waiting for its usage limit${at ? ` · back at ${at}` : ''}`, tone: 'pill-waiting' };
+  if (account.state === 'sign-in') return { text: `Sign-in failed${at ? ` · tries again at ${at}` : ''}`, tone: 'pill-waiting' };
+  if (account.state === 'unavailable') return { text: `Not available right now${at ? ` · tries again at ${at}` : ''}`, tone: 'pill-waiting' };
+  if (account.state === 'in-use') return { text: `In use · ${account.open} running`, tone: 'pill-running' };
+  return { text: 'Ready', tone: 'pill-ready' };
 }
 
-let connectStatusMessage = '';
-let connectProvider = 'codex';
-let connectAccountName = '';
-
-const providerDisplayName = (p) => p === 'claude' ? 'Claude' : p === 'codex' ? 'ChatGPT (Codex)' : p === 'agy' ? 'Agy' : 'Cursor Agent';
-
-async function startConnectInBrowser() {
-  const provider = connectProvider;
-  const name = connectAccountName.trim();
-  if (!name || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
-    connectStatusMessage = 'Please enter a valid account name (letters, numbers, dots, dashes, underscores).';
-    render();
-    return;
-  }
-  const providerLabel = providerDisplayName(provider);
-  connectStatusMessage = `Opening incognito browser for ${providerLabel}…`;
-  render();
-  try {
-    const res = await post('/api/accounts/connect/start', { provider, name });
-    connectStatusMessage = `Incognito browser opened for ${providerLabel}. Log in there. Watching ${res.defaultLocation || 'credentials'}…`;
-    stopIncognitoPolling();
-    const startedAt = res.startedAt || Date.now();
-    let checks = 0;
-    incognitoPollTimer = setInterval(async () => {
-      checks++;
-      if (checks > 90) {
-        stopIncognitoPolling();
-        connectStatusMessage = 'Login wait timed out. You can try again or pick up from default location.';
-        render();
-        return;
-      }
-      try {
-        const check = await post('/api/accounts/connect/check', { provider, name, startedAt });
-        if (check.connected) {
-          stopIncognitoPolling();
-          connectStatusMessage = '';
-          connectAccountName = '';
-          lastConnectReceipt = {
-            provider,
-            providerLabel,
-            name,
-            sourcePath: check.sourcePath,
-            modifiedAt: check.modifiedAt,
-            savedTo: check.savedTo,
-          };
-          notice(`Connected ${providerLabel} · ${name}! Picked up from ${check.sourcePath}`);
-          await poll();
-          render();
-        }
-      } catch { /* ignore polling errors */ }
-    }, 2000);
-    render();
-  } catch (err) {
-    connectStatusMessage = err.message ?? 'Could not open browser.';
-    render();
-  }
+/** What the account's finished runs came to, and the time they took. */
+function accountRuns({ runs, runMinutes }) {
+  if (!runs?.finished) return 'No finished runs yet.';
+  const other = runs.finished - runs.withResult - runs.usageLimit;
+  return `${plural(runs.finished, 'finished run')}: ${runs.withResult} with a result, ${runs.usageLimit} stopped by the usage limit, ${other} other · ${runMinutes} min in all.`;
 }
 
-async function pickupDefaultLocation() {
-  const provider = connectProvider;
-  const name = connectAccountName.trim();
-  if (!name || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
-    connectStatusMessage = 'Please enter a valid account name (letters, numbers, dots, dashes, underscores).';
-    render();
-    return;
-  }
-  const providerLabel = providerDisplayName(provider);
-  connectStatusMessage = `Checking default location for ${providerLabel} credentials…`;
-  render();
-  try {
-    const check = await post('/api/accounts/connect/check', { provider, name, force: true });
-    if (check.connected) {
-      stopIncognitoPolling();
-      connectStatusMessage = '';
-      connectAccountName = '';
-      lastConnectReceipt = {
-        provider,
-        providerLabel,
-        name,
-        sourcePath: check.sourcePath,
-        modifiedAt: check.modifiedAt,
-        savedTo: check.savedTo,
-      };
-      notice(`Connected ${providerLabel} · ${name}! Picked up from ${check.sourcePath}`);
-      await poll();
-      render();
-    } else {
-      connectStatusMessage = `No credentials found at ${check.waitingFor || 'default location'}. Complete login first or click Connect in incognito browser.`;
-      render();
-    }
-  } catch (err) {
-    connectStatusMessage = err.message ?? 'Could not check default location.';
-    render();
-  }
+/**
+ * The worker accounts as rows: login, state, learned limit and runs. With `manage` (Settings › Worker accounts) a login
+ * saved on this computer can be removed while it runs nothing. Settings itself only shows (OWNER_WORKSPACE §4.3).
+ */
+function accountRows(accounts, { manage = false } = {}) {
+  if (!accounts.length) return empty('No worker accounts yet.', 'Logins are set up on this computer outside this page. Each one appears here with its usage.');
+  return el('ul', { class: 'settings-links' }, ...accounts.map((account) => {
+    const { text, tone } = accountState(account);
+    return el('li', { 'data-focus-scope': `account/${account.id}` },
+      el('div', { class: 'account-header' },
+        el('strong', {}, accountName(account)),
+        el('span', { class: `account-pill ${tone}` }, text),
+        manage && account.hasLogin && !account.open ? button('Remove…', () => openRemoveAccount(account), 'secondary small') : null),
+      account.limit ? el('div', { class: 'subtext' }, `Runs at most ${account.limit} at once: AIWorks learned this from its usage limit.`) : null,
+      el('div', { class: 'subtext' }, accountRuns(account)),
+      manage && !account.hasLogin ? el('div', { class: 'subtext' }, 'No saved login on this computer: listed from earlier runs.') : null,
+      manage && account.hasLogin && account.open ? el('div', { class: 'subtext' }, 'Its login can be removed once its running work finishes.') : null);
+  }));
 }
 
-function openRemoveAccount(provider, name) {
-  pendingRemoveAccount = { provider, name };
-  const label = provider === 'claude' ? 'Claude' : provider === 'codex' ? 'ChatGPT (Codex)' : provider === 'agy' ? 'Agy' : provider === 'cursor' ? 'Cursor Agent' : provider;
-  $('#remove-account-description').textContent = `Remove login for ${label} · ${name} from this computer?`;
+function openRemoveAccount(account) {
+  pendingRemoveAccount = { provider: account.provider, name: account.name, label: accountName(account) };
+  $('#remove-account-description').textContent = `Remove the saved login for ${accountName(account)} from this computer?`;
   $('#remove-account-dialog').showModal();
 }
 
-function openSetPreference(role, pref = {}) {
-  $('#preference-role').value = role;
-  $('#preference-title').textContent = `Role model preference: ${role}`;
-  $('#preference-models').value = Array.isArray(pref.models) ? pref.models.join(', ') : '';
-  $('#preference-effort').value = pref.effort ?? '';
-  $('#preference-kind').value = pref.kind ?? '';
+// The two roles whose model order AIWorks reads, in owner words (OWNER_WORKSPACE §2.1).
+const PREFERENCE_ROLES = [
+  { key: 'implementer', title: 'Builder', text: 'Which models build each step’s change, best first.' },
+  { key: 'verification', title: 'Independent checker', text: 'Which models check each result, best first.' },
+];
+/** The usable entries of a role's order: model names, or objects naming a model and maybe its AI worker. */
+const orderEntries = (order) => (Array.isArray(order) ? order : []).filter((entry) => typeof entry === 'string' || typeof entry?.model === 'string');
+const orderEntry = (entry) => typeof entry === 'string' ? entry : `${entry.model}${entry.kind ? ` (${provider(entry.kind)})` : ''}`;
+
+function openSetPreference(role, order) {
+  const entries = orderEntries(order);
+  $('#preference-role').value = role.key;
+  $('#preference-title').textContent = `${role.title}: model order`;
+  $('#preference-models').value = entries.map((entry) => typeof entry === 'string' ? entry : entry.model).join(', ');
+  $('#preference-kind').value = entries.find((entry) => typeof entry === 'object')?.kind ?? '';
   $('#preference-dialog').showModal();
 }
 
 function accountsSection(accounts = []) {
-  const list = accounts.length ? el('ul', { class: 'settings-links' }, ...accounts.map((acct) => {
-    const { id, provider: p, name, usage } = acct;
-    const providerLabel = p === 'claude' ? 'Claude' : p === 'codex' ? 'ChatGPT (Codex)' : p === 'agy' ? 'Agy' : p === 'cursor' ? 'Cursor Agent' : p;
-    let statusText = 'Ready';
-    let statusPillClass = 'pill-ready';
-    if (usage?.cooldown?.active) {
-      const remainingSec = Math.max(0, Math.round((usage.cooldown.retryAt - Date.now()) / 1000));
-      const mins = Math.floor(remainingSec / 60);
-      const secs = remainingSec % 60;
-      statusText = `Waiting for quota (${mins}m ${secs}s)`;
-      statusPillClass = 'pill-waiting';
-    } else if (usage?.openRuns > 0) {
-      statusText = `In use (${usage.openRuns} active)`;
-      statusPillClass = 'pill-running';
-    }
-    const capacityText = usage?.learnedLimit ? `Learned limit: ${usage.learnedLimit} concurrent runs.` : null;
-    const stats = usage?.outcomes ?? {};
-    const successCount = stats.result ?? stats.success ?? 0;
-    const retryCount = stats.retry ?? 0;
-    const failCount = stats.failure ?? 0;
-    const durationMin = usage?.totalDurationMs ? Math.round(usage.totalDurationMs / 60000) : 0;
-    const usageSubtext = `Runs: ${successCount} successful, ${retryCount} retries, ${failCount} errors · ${durationMin}m total run time.`;
-
-    return el('li', { 'data-focus-scope': `account/${id}` },
-      el('div', { class: 'account-header' },
-        el('strong', {}, `${providerLabel} · ${name}`),
-        el('span', { class: `account-pill ${statusPillClass}` }, statusText),
-        button('Remove…', () => openRemoveAccount(p, name), 'danger small')),
-      capacityText ? el('div', { class: 'subtext' }, capacityText) : null,
-      el('div', { class: 'subtext' }, usageSubtext));
-  })) : empty('No worker accounts yet.', 'Accounts set up on this computer appear here.');
-
   return el('div', { class: 'accounts-section' },
     el('div', { class: 'panel-header' }, el('h3', {}, 'Logins and usage'), routeLink('Manage on separate page →', '#/settings/accounts')),
-    list);
+    accountRows(accounts));
 }
 
+/**
+ * Settings › Worker accounts: which AI worker logins are on this computer, whether each can take work now, and the model
+ * order of Builder and Independent checker. No primary action. No control adds, connects, exports or imports a login:
+ * any local process can read the dashboard's command token (aiworks#197).
+ */
 function accountsScreen() {
   const settings = state.supervisor.settings;
-  const accounts = settings?.accounts ?? [];
   const back = el('p', { class: 'breadcrumb' }, routeLink('← Back to Settings', '#/settings'));
-
-  let receiptNode = null;
-  if (lastConnectReceipt) {
-    const timeStr = lastConnectReceipt.modifiedAt ? timeOnly(lastConnectReceipt.modifiedAt) : 'just now';
-    receiptNode = el('div', { class: 'notice notice-success', id: 'account-receipt-notice' },
-      el('p', {},
-        el('strong', {}, `Connected ${lastConnectReceipt.providerLabel} · ${lastConnectReceipt.name}! `),
-        `Picked up credentials from ${lastConnectReceipt.sourcePath} (modified ${timeStr}) and saved to isolated profile ${lastConnectReceipt.name}.`
-      ),
-      button('Dismiss', () => { lastConnectReceipt = null; render(); }, 'secondary small')
-    );
-  }
-
-  const providerSelect = el('select', { id: 'connect-provider' },
-    el('option', { value: 'codex', selected: connectProvider === 'codex' }, 'ChatGPT (Codex)'),
-    el('option', { value: 'claude', selected: connectProvider === 'claude' }, 'Claude'),
-    el('option', { value: 'agy', selected: connectProvider === 'agy' }, 'Agy'),
-    el('option', { value: 'cursor', selected: connectProvider === 'cursor' }, 'Cursor Agent')
-  );
-  providerSelect.addEventListener('change', (e) => { connectProvider = e.target.value; });
-
-  const nameInput = el('input', {
-    id: 'connect-name',
-    type: 'text',
-    placeholder: 'e.g. work-main or team-bot',
-    value: connectAccountName,
-  });
-  nameInput.addEventListener('input', (e) => { connectAccountName = e.target.value; });
-
-  const connectCard = panel('Connect account', 'Connect an account in an incognito browser without affecting your active sessions. AIWorks picks up credentials directly from the default CLI location.', el('div', { class: 'panel-body' },
-    el('div', { class: 'connect-form' },
-      el('label', {}, 'AI worker', providerSelect),
-      el('label', {}, 'Account name', nameInput),
-      el('div', { class: 'dialog-actions' },
-        button('Connect in incognito browser', startConnectInBrowser, 'button'),
-        button('Pick up from default location', pickupDefaultLocation, 'button secondary')
-      ),
-      connectStatusMessage ? el('div', { class: 'notice' }, el('p', {}, connectStatusMessage)) : null
-    )
-  ));
-
-  const list = accounts.length ? el('ul', { class: 'settings-links' }, ...accounts.map((acct) => {
-    const { id, provider: p, name, usage } = acct;
-    const providerLabel = p === 'claude' ? 'Claude' : p === 'codex' ? 'ChatGPT (Codex)' : p === 'agy' ? 'Agy' : p === 'cursor' ? 'Cursor Agent' : p;
-    let statusText = 'Ready';
-    let statusPillClass = 'pill-ready';
-    if (usage?.cooldown?.active) {
-      const remainingSec = Math.max(0, Math.round((usage.cooldown.retryAt - Date.now()) / 1000));
-      const mins = Math.floor(remainingSec / 60);
-      const secs = remainingSec % 60;
-      statusText = `Waiting for quota (${mins}m ${secs}s)`;
-      statusPillClass = 'pill-waiting';
-    } else if (usage?.openRuns > 0) {
-      statusText = `In use (${usage.openRuns} active)`;
-      statusPillClass = 'pill-running';
-    }
-    const capacityText = usage?.learnedLimit ? `Learned limit: ${usage.learnedLimit} concurrent runs.` : null;
-    const stats = usage?.outcomes ?? {};
-    const successCount = stats.result ?? stats.success ?? 0;
-    const retryCount = stats.retry ?? 0;
-    const failCount = stats.failure ?? 0;
-    const durationMin = usage?.totalDurationMs ? Math.round(usage.totalDurationMs / 60000) : 0;
-    const usageSubtext = `Runs: ${successCount} successful, ${retryCount} retries, ${failCount} errors · ${durationMin}m total run time.`;
-
-    return el('li', { 'data-focus-scope': `account/${id}` },
-      el('div', { class: 'account-header' },
-        el('strong', {}, `${providerLabel} · ${name}`),
-        el('span', { class: `account-pill ${statusPillClass}` }, statusText),
-        button('Remove…', () => openRemoveAccount(p, name), 'danger small')),
-      capacityText ? el('div', { class: 'subtext' }, capacityText) : null,
-      el('div', { class: 'subtext' }, usageSubtext));
-  })) : empty('No worker accounts yet.', 'Connect an account above to allow AI workers to run with isolated logins.');
-
-  const accountsPanel = panel('Worker accounts', 'Which AI worker logins and accounts are on this computer?', el('div', {},
-    receiptNode,
-    list));
-
-  const preferencesPanel = modelPreferencesPanel(settings?.modelPreferences ?? {});
-  return [back, connectCard, accountsPanel, preferencesPanel];
+  if (!state.supervisor.available || !settings) return [back, unavailable()];
+  const logins = panel('Logins on this computer', 'Each login an AI worker uses here, and whether it can take work now.',
+    accountRows(settings.accounts ?? [], { manage: true }));
+  return [back, logins, modelPreferencesPanel(settings.modelPreferences ?? {})];
 }
 
 function modelPreferencesPanel(prefs = {}) {
-  const roles = [
-    { key: 'implementer', title: 'Builder / Implementation', desc: 'Order of models used for implementing task steps and writing code.' },
-    { key: 'verification', title: 'Checker / Verification', desc: 'Order of models used for independent verification and review.' },
-    { key: 'coordinator', title: 'Coordinator / Planner', desc: 'Models used for roadmap drafting, task breakdown, and planning.' },
-  ];
-
-  const items = roles.map((r) => {
-    const rolePref = prefs[r.key] ?? {};
-    const models = Array.isArray(rolePref.models) && rolePref.models.length ? rolePref.models.join(', ') : 'Default supervisor order';
-    const effort = rolePref.effort ? `${rolePref.effort} effort` : 'standard effort';
-    const kind = rolePref.kind ? `(${rolePref.kind})` : '';
-
-    return el('li', { 'data-focus-scope': `preference/${r.key}` },
-      el('div', { class: 'account-header' },
-        el('strong', {}, r.title),
-        button('Configure…', () => openSetPreference(r.key, rolePref), 'secondary small')
-      ),
-      el('div', { class: 'subtext' }, r.desc),
-      el('div', { class: 'subtext' }, `Models: ${models} · ${effort} ${kind}`.trim())
-    );
-  });
-
-  return panel('Role model preferences', 'Which models and order should AIWorks use for each worker role?', el('div', {},
-    el('ul', { class: 'settings-links' }, ...items)
-  ));
+  return panel('Model order', 'Which models AIWorks tries first for each role.', el('ul', { class: 'settings-links' },
+    ...PREFERENCE_ROLES.map((role) => {
+      const entries = orderEntries(prefs[role.key]);
+      return el('li', { 'data-focus-scope': `preference/${role.key}` },
+        el('div', { class: 'account-header' }, el('strong', {}, role.title), button('Configure…', () => openSetPreference(role, entries), 'secondary small')),
+        el('div', { class: 'subtext' }, role.text),
+        el('div', { class: 'subtext' }, entries.length ? `Order: ${entries.map(orderEntry).join(', ')}` : 'AIWorks’ own order'));
+    })));
 }
 
 /**
@@ -1515,7 +1338,7 @@ const settingsEmpty = ({ title, text, primary }) => el('div', { class: 'empty-st
 
 function settingsLinks() {
   return panel('More', null, el('ul', { class: 'settings-links' },
-    el('li', {}, routeLink('Worker accounts', '#/settings/accounts'), el('div', { class: 'subtext' }, 'Connect and manage isolated worker logins, view live quota usage, and export encrypted bundles.')),
+    el('li', {}, routeLink('Worker accounts', '#/settings/accounts'), el('div', { class: 'subtext' }, 'Each AI worker login on this computer, whether it can take work now, and which models each role tries first.')),
     el('li', {}, routeLink('Messages', '#/settings/messages'), el('div', { class: 'subtext' }, 'What you asked AIWorks, and what it answered.')),
     el('li', {}, routeLink('Diagnostics', '#/settings/diagnostics'), el('div', { class: 'subtext' }, 'The full activity journal, every step with its issue and pull request, the roadmap of the platform that keeps your project rules, and how fresh each merge check is.'))));
 }
@@ -2015,46 +1838,34 @@ $('#confirm-remove-account').addEventListener('click', async () => {
   $('#remove-account-dialog').close();
   if (!target) return;
   try {
-    await post('/api/accounts/remove', target);
-    notice(`Account ${target.name} removed.`);
+    await post('/api/accounts/remove', { provider: target.provider, name: target.name });
+    notice(`Removed the saved login for ${target.label}.`);
     await poll();
   } catch (err) {
-    notice(err.message ?? 'Could not remove account.');
+    notice(err.message ?? 'Could not remove the login.');
   }
 });
+/** Save one role's model order; an empty list returns it to AIWorks' own order. */
+async function saveModelOrder(key, models, kind) {
+  const role = PREFERENCE_ROLES.find((item) => item.key === key);
+  if (!role) return;
+  try {
+    await post('/api/accounts/preferences', { role: role.key, models, kind: models.length && kind ? kind : null });
+    notice(models.length ? `Saved the model order for ${role.title}.` : `${role.title} uses AIWorks’ own order again.`);
+    await poll();
+  } catch (err) {
+    notice(err.message ?? 'Could not save the model order.');
+  }
+}
 $('#close-preference').addEventListener('click', () => $('#preference-dialog').close());
-$('#clear-preference-button').addEventListener('click', async () => {
-  const role = $('#preference-role').value;
+$('#clear-preference-button').addEventListener('click', () => {
   $('#preference-dialog').close();
-  if (!role) return;
-  try {
-    await post('/api/accounts/preferences', { role, models: [] });
-    notice(`Reset model preferences for ${role}.`);
-    await poll();
-  } catch (err) {
-    notice(err.message ?? 'Could not reset model preferences.');
-  }
+  void saveModelOrder($('#preference-role').value, [], null);
 });
-$('#preference-form').addEventListener('submit', async (event) => {
+$('#preference-form').addEventListener('submit', (event) => {
   event.preventDefault();
-  const role = $('#preference-role').value;
-  const rawModels = $('#preference-models').value;
-  const models = rawModels.split(/[\s,]+/).map((m) => m.trim()).filter(Boolean);
-  const effort = $('#preference-effort').value || undefined;
-  const kind = $('#preference-kind').value || undefined;
   $('#preference-dialog').close();
-  if (!role) return;
-  try {
-    await post('/api/accounts/preferences', {
-      preferences: {
-        [role]: { models, effort, kind }
-      }
-    });
-    notice(`Saved model preferences for ${role}.`);
-    await poll();
-  } catch (err) {
-    notice(err.message ?? 'Could not save model preferences.');
-  }
+  void saveModelOrder($('#preference-role').value, $('#preference-models').value.split(/[\s,]+/).filter(Boolean), $('#preference-kind').value);
 });
 // Our own navigation already set the address; any other change (Back, Forward, an edited address) restores that address's position.
 window.addEventListener('hashchange', () => { if (location.hash !== current.address) go(location.hash, { restore: true }); });

@@ -322,16 +322,26 @@ export function importProfileCredentials({ root, bundleBuffer, passphrase }) {
   if (payload.version !== 1 || !Array.isArray(payload.items)) {
     throw new CaamError('invalid-bundle', 'unsupported accounts bundle format');
   }
+  // Every file is checked before any is written: each stays inside its own profile folder, so a bundle cannot write
+  // anywhere else this user can.
   const imported = [];
+  const writes = [];
   for (const item of payload.items) {
-    if (!item?.provider || !item?.name || typeof item.files !== 'object') continue;
+    if (!item?.provider || !item?.name || typeof item.files !== 'object' || item.files === null) continue;
     const home = shallowHomeOf(root, item.name);
     for (const [relPath, content] of Object.entries(item.files)) {
-      const fullPath = join(home, relPath);
-      mkdirSync(resolve(fullPath, '..'), { recursive: true });
-      writeFileSync(fullPath, content, { encoding: 'utf8', mode: 0o600 });
+      const fullPath = resolve(home, relPath);
+      const inside = relative(home, fullPath);
+      if (!relPath || isAbsolute(relPath) || !inside || inside.startsWith('..') || isAbsolute(inside) || typeof content !== 'string') {
+        throw new CaamError('invalid-bundle', 'the accounts bundle names a file outside its profile folder');
+      }
+      writes.push([fullPath, content]);
     }
     imported.push({ provider: item.provider, name: item.name, home });
+  }
+  for (const [fullPath, content] of writes) {
+    mkdirSync(resolve(fullPath, '..'), { recursive: true });
+    writeFileSync(fullPath, content, { encoding: 'utf8', mode: 0o600 });
   }
   return {
     success: true,

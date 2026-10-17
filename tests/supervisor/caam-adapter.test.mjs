@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { createCipheriv, randomBytes, scryptSync } from 'node:crypto';
 import { CaamError, caamProfileHealth, caamProvider, caamRobotStatus, exportProfileCredentials, importProfileCredentials, parseRobotStatus, removeShallowProfile } from '../../src/supervisor/adapters/caam.mjs';
 
 const NOW = Date.parse('2026-10-13T12:00:00Z');
@@ -251,3 +252,23 @@ test('exportProfileCredentials and importProfileCredentials roundtrip encrypted 
   assert.equal(readFileSync(restored2, 'utf8'), '{"api_key":"secret-codex-key"}');
 });
 
+
+test('importProfileCredentials refuses a bundle that names a file outside its profile folder, and writes nothing', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'aiworks-caam-import-escape-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const passphrase = 'SuperSecretPassphrase123!';
+  const seal = (files) => {
+    const salt = randomBytes(16), iv = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', scryptSync(passphrase, salt, 32), iv);
+    const encrypted = Buffer.concat([cipher.update(JSON.stringify({ version: 1, items: [{ provider: 'claude', name: 'acc', files }] }), 'utf8'), cipher.final()]);
+    return Buffer.concat([salt, iv, cipher.getAuthTag(), encrypted]);
+  };
+  const root2 = join(root, 'profiles');
+  mkdirSync(root2);
+  for (const escape of [join('..', '..', 'escaped.json'), join(root, 'escaped.json'), '']) {
+    rejects(() => importProfileCredentials({ root: root2, bundleBuffer: seal({ '.claude/ok.json': '{}', [escape]: '{}' }), passphrase }),
+      'invalid-bundle', /outside its profile folder/);
+  }
+  assert.equal(existsSync(join(root2, 'acc')), false, 'no file of the bundle was written');
+  assert.equal(existsSync(join(root, 'escaped.json')), false);
+});

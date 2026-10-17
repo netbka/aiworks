@@ -14,7 +14,7 @@ import * as github from './adapters/github.mjs';
 import { authorityDigest, campaignLimits, canonicalJson, executorOrder, projectGovernance } from './campaign.mjs';
 import { resolveCheckout } from './project-connect.mjs';
 import { campaignBudget } from './api.mjs';
-import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountOf, accountWait, applyModelPreferences, buildTaskSignature, clearAccountWait, formatSignatureLines, formatTokensUsage, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
+import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountOf, accountWait, applyModelPreferences, buildTaskSignature, clearAccountWait, formatSignatureLines, formatTokensUsage, laterWait, preferenceFor, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
 import { domainOf, pathsOutside, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
 import { containsSecret, coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
@@ -1731,7 +1731,7 @@ export class Controller {
       platform: process.platform, facts, priorAttempts: this.priorAttempts(decl, task),
     }));
     const chosen = receipt.decision.chosen;
-    const pref = this.config?.modelPreferences?.[role]?.find((p) => (typeof p === 'object' && p?.model === chosen?.model && (!p.kind || p.kind === chosen?.kind)));
+    const pref = preferenceFor(this.config, role, chosen);
     const matched = chosen ? providers.find((provider) => provider.kind === chosen.kind) : null;
     return { executor: matched ? { ...matched, ...(pref?.effort ? { effort: pref.effort } : {}) } : null,
       retryAt: receipt.decision.retryAt, receipt };
@@ -1766,7 +1766,7 @@ export class Controller {
     const receipt = autoReceipt(inputs);
     const chosen = receipt.decision.chosen;
     const provider = chosen && providers.find((item) => item.kind === chosen.kind);
-    const pref = this.config?.modelPreferences?.[role]?.find((p) => (typeof p === 'object' && p?.model === chosen?.model && (!p.kind || p.kind === chosen?.kind)));
+    const pref = preferenceFor(this.config, role, chosen);
     const effort = pref?.effort ?? chosen?.effort;
     return { executor: provider ? { ...provider, model: chosen.model, ...(effort ? { effort } : {}) } : null, retryAt: receipt.decision.retryAt, receipt };
   }

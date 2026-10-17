@@ -6,13 +6,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { once } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { aiWorkers, computerSettings, configuredCommandNames, releaseModes, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
 import { buildReviewFixture } from './fixtures/review-store.mjs';
-import { openPage, visibleText } from './fixtures/page.mjs';
+import { internalWords, openPage, visibleText } from './fixtures/page.mjs';
+import { Store } from '../../src/supervisor/store.mjs';
 
 const ROOT = resolve(import.meta.dirname, '../..');
 const page = () => readFileSync(join(ROOT, 'src/dashboard/public/dashboard.js'), 'utf8');
@@ -269,14 +270,69 @@ test('Settings displays AI worker accounts and their usage, with no action that 
   for (const id of ['account-dialog', 'export-accounts-dialog', 'import-accounts-dialog']) assert.equal(page.$(`#${id}`), null, id);
 });
 
-test('Settings › Accounts dedicated page displays worker accounts and back link', async (t) => {
-  const page = await openPage(t, { store: 'empty' });
+test('Settings › Worker accounts: each login’s state in plain words, Remove only for a saved login that runs nothing, no control that adds one', async (t) => {
+  const page = await openPage(t);
+  const { dataDir } = page;
+  // Made-up accounts in the synthetic store: one waiting for its usage limit, one running work, one whose sign-in failed
+  // and that has no saved login here.
+  for (const name of ['work-a', 'work-b']) mkdirSync(join(dataDir, 'profiles', name, '.claude'), { recursive: true });
+  const now = Date.now(), back = now + 42 * M;
+  const store = new Store(join(dataDir, 'supervisor.db'));
+  try {
+    const open = store.get("SELECT id FROM operations WHERE state IN ('recorded', 'dispatched') LIMIT 1");
+    store.run('UPDATE operations SET account_identity = ? WHERE id = ?', 'claude/work-b', open.id);
+    const wait = `INSERT INTO provider_waits (account, executor_kind, retry_at, reason, campaign_id, updated_at) VALUES (?, ?, ?, ?, ?, ?)`;
+    store.run(wait, 'claude/work-a', 'claude-cli', back, 'quota: raw worker text', 'example-shop-1', now);
+    store.run(wait, 'codex/team-bot', 'codex-cli', null, 'auth: raw worker text', 'example-shop-1', now);
+    store.run(`INSERT INTO capacity (scope, id, value, reason, updated_at) VALUES ('account', ?, ?, ?, ?)`, 'claude/work-a', 2, 'synthetic', now);
+  } finally { store.close(); }
+
   await page.go('#/settings/accounts');
-  const text = visibleText(page.$('#content'));
-  assert.ok(text.includes('Worker accounts'));
-  assert.ok(text.includes('Which AI worker logins and accounts are on this computer?'));
-  assert.ok(text.includes('Connect account'));
-  assert.ok(text.includes('No worker accounts yet.'));
+  await page.refresh();
+  const content = page.$('#content');
+  const text = visibleText(content);
+  assert.equal(page.$('#view-title').textContent, 'Worker accounts');
+  assert.equal(page.$('#view-description').textContent, 'Which AI worker logins and accounts are on this computer?');
+  assert.ok(text.includes('Back to Settings'));
+  assert.deepEqual(internalWords(text), [], 'owner words only (OWNER_WORKSPACE §2.2)');
+  assert.ok(!text.includes('raw worker text'), 'never the wait reason itself');
+  for (const word of ['Connect', 'incognito', 'Pick up', 'Export', 'Import', 'credentials']) assert.ok(!text.includes(word), word);
+  // No primary action: Settings only shows what the machine has (§4.3); Remove… is a quiet secondary button.
+  assert.deepEqual(content.querySelectorAll('button').filter((node) => !/\bsecondary\b/.test(node.className)).map((node) => node.textContent), []);
+
+  const row = (id) => content.querySelectorAll('li').find((node) => node.getAttribute('data-focus-scope') === `account/${id}`);
+  const rowText = (id) => visibleText(row(id));
+  const removeIn = (id) => row(id).querySelectorAll('button').find((node) => node.textContent === 'Remove…');
+  const hhmm = new Date(back).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  assert.ok(rowText('claude/work-a').includes(`Claude · work-a Waiting for its usage limit · back at ${hhmm}`), rowText('claude/work-a'));
+  assert.ok(rowText('claude/work-a').includes('Runs at most 2 at once'));
+  assert.ok(rowText('claude/work-b').includes('In use · 1 running'));
+  assert.ok(rowText('claude/work-b').includes('Its login can be removed once its running work finishes.'));
+  assert.equal(removeIn('claude/work-b'), undefined, 'no Remove while it runs work');
+  assert.ok(rowText('codex/team-bot').includes('Codex · team-bot Sign-in failed'));
+  assert.ok(rowText('codex/team-bot').includes('No saved login on this computer'));
+  assert.equal(removeIn('codex/team-bot'), undefined, 'nothing to remove without a saved login');
+
+  // Model order: the two roles AIWorks reads, in owner words.
+  for (const words of ['Model order', 'Builder', 'Independent checker', 'AIWorks’ own order']) assert.ok(text.includes(words), words);
+  assert.ok(!text.includes('Planner'));
+
+  // Remove deletes the saved login; the account stays listed from its wait, which AIWorks keeps.
+  removeIn('claude/work-a').click();
+  assert.equal(page.$('#remove-account-dialog').open, true);
+  assert.equal(page.$('#remove-account-description').textContent, 'Remove the saved login for Claude · work-a from this computer?');
+  page.$('#confirm-remove-account').click();
+  await page.settle();
+  assert.equal(page.$('#notice').textContent, 'Removed the saved login for Claude · work-a.');
+  assert.equal(existsSync(join(dataDir, 'profiles', 'work-a')), false);
+  assert.ok(rowText('claude/work-a').includes('Waiting for its usage limit'), 'its usage-limit wait stays');
+  assert.equal(removeIn('claude/work-a'), undefined);
+
+  // Settings shows the same rows and changes nothing.
+  await page.go('#/settings');
+  const settings = page.$('#content');
+  assert.ok(visibleText(settings).includes('In use · 1 running'));
+  assert.equal(settings.querySelectorAll('button').find((node) => node.textContent === 'Remove…'), undefined);
 });
 
 

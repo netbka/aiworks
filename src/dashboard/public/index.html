@@ -59,22 +59,21 @@
 
   <dialog id="remove-account-dialog" aria-labelledby="remove-account-title"><form id="remove-account-form" novalidate>
     <div class="dialog-icon" aria-hidden="true">!</div>
-    <h2 id="remove-account-title">Remove account</h2>
-    <p id="remove-account-description">Remove this account login from this computer?</p>
-    <p class="subtext">Saved credentials for this account will be removed from this computer. Any active wait timers will be cleared.</p>
-    <div class="dialog-actions"><button id="close-remove-account" class="button secondary" type="button">Keep account</button><button id="confirm-remove-account" class="button danger" type="button">Remove account</button></div>
+    <h2 id="remove-account-title">Remove saved login</h2>
+    <p id="remove-account-description">Remove this account's saved login from this computer?</p>
+    <p class="subtext">Its login folder is deleted from this computer. AIWorks keeps its run history and any usage-limit wait, so no work goes back to an account that is at its limit.</p>
+    <div class="dialog-actions"><button id="close-remove-account" class="button secondary" type="button">Keep login</button><button id="confirm-remove-account" class="button danger" type="button">Remove login</button></div>
   </form></dialog>
   <dialog id="preference-dialog" aria-labelledby="preference-title"><form id="preference-form" novalidate>
-    <h2 id="preference-title">Role model preferences</h2>
-    <p id="preference-role-description">Order and preferences for models used in this role.</p>
+    <h2 id="preference-title">Model order</h2>
+    <p id="preference-role-description">Model names, best first, exactly as the AI worker expects them. Leave empty for AIWorks' own order.</p>
     <input id="preference-role" type="hidden" />
-    <label>Model order (comma or space separated)<input id="preference-models" type="text" placeholder="e.g. claude-3-7-sonnet, gpt-4o, claude-3-5-sonnet" /></label>
-    <label>Preferred effort<select id="preference-effort"><option value="">Default (standard)</option><option value="low">Low</option><option value="medium">Medium</option><option value="standard">Standard</option><option value="high">High</option></select></label>
-    <label>Worker kind<select id="preference-kind"><option value="">Any eligible provider</option><option value="claude-cli">Claude CLI</option><option value="codex">ChatGPT (Codex)</option><option value="cursor">Cursor Agent</option><option value="agy">Agy</option></select></label>
+    <label>Models, best first (separated by commas or spaces)<input id="preference-models" type="text" autocomplete="off" spellcheck="false" /></label>
+    <label>Only for this AI worker<select id="preference-kind"><option value="">Any AI worker</option><option value="claude-cli">Claude</option><option value="codex-cli">Codex</option><option value="cursor-cli">Cursor Agent</option><option value="agy-cli">AGY (Antigravity) browser</option></select></label>
     <div class="dialog-actions">
-      <button id="clear-preference-button" class="button secondary danger" type="button">Reset to defaults</button>
+      <button id="clear-preference-button" class="button secondary" type="button">Use AIWorks' own order</button>
       <button id="close-preference" class="button secondary" type="button">Cancel</button>
-      <button id="save-preference" class="button" type="submit">Save preference</button>
+      <button id="save-preference" class="button" type="submit">Save order</button>
     </div>
   </form></dialog>
 </body>
