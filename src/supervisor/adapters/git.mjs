@@ -2,8 +2,9 @@
 // existing state before creating anything, so a controller restarted at any point can call
 // it again. Worktrees are never removed here (cleanup stays a separate owner/maintenance step).
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
+import { GATE_FILES } from '../gate.mjs';
 
 const SHA = /^[0-9a-f]{40}$/;
 
@@ -20,6 +21,21 @@ function must(result, what) {
 }
 
 export const branchName = (campaignId, taskId) => `campaign/${campaignId}/${taskId}`;
+
+// The helper owns these root-level artifacts even when a target does not ignore *.log.
+// Tracked changes, other untracked files, directories and linked files remain dirty.
+function verificationCheckoutClean(git, path) {
+  const status = exec(git, ['status', '--porcelain=v1', '-z', '--untracked-files=all'], { cwd: path });
+  if (!status.ok) return false;
+  const artifacts = new Set(Object.values(GATE_FILES));
+  return status.stdout.split('\0').filter(Boolean).every((entry) => {
+    if (!entry.startsWith('?? ') || !artifacts.has(entry.slice(3))) return false;
+    try {
+      const file = lstatSync(join(path, entry.slice(3)));
+      return file.isFile() && !file.isSymbolicLink() && file.nlink === 1;
+    } catch { return false; }
+  });
+}
 
 /** Isolated implementer worktree on the task branch; created from origin/<base> once, then reused. */
 export function prepareImplementWorkspace({ git, repoPath, worktreeRoot, campaignId, taskId, baseBranch, baseSha }) {
@@ -45,8 +61,7 @@ export function prepareVerifyWorkspace({ git, repoPath, worktreeRoot, campaignId
   const path = join(worktreeRoot, `${campaignId}-${taskId}-verify-${targetSha.slice(0, 12)}-${attempt}`);
   if (existsSync(path)) {
     const head = must(exec(git, ['rev-parse', 'HEAD'], { cwd: path }), 'read verify head');
-    const dirty = must(exec(git, ['status', '--porcelain'], { cwd: path }), 'read verify status');
-    if (head !== targetSha || dirty) throw new Error(`verify worktree ${path} is not a clean checkout of ${targetSha}`);
+    if (head !== targetSha || !verificationCheckoutClean(git, path)) throw new Error(`verify worktree ${path} is not a clean checkout of ${targetSha}`);
   } else {
     must(exec(git, ['worktree', 'add', '--detach', path, targetSha], { cwd: repoPath }), 'create verify worktree');
   }
@@ -81,8 +96,7 @@ export function currentHead({ git, path }) {
 /** A verifier may only accept the unchanged checkout it was dispatched to inspect. */
 export function checkVerification({ git, path, targetSha }) {
   if (currentHead({ git, path }) !== targetSha) return 'verifier checkout no longer matches the target SHA';
-  const status = exec(git, ['status', '--porcelain'], { cwd: path });
-  if (!status.ok || status.stdout) return 'verifier checkout is not clean';
+  if (!verificationCheckoutClean(git, path)) return 'verifier checkout is not clean';
   return null;
 }
 

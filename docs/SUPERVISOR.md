@@ -645,6 +645,12 @@ Project connectors accept an explicit `tenantId`. When omitted, the installation
 
 ## 13. CAAM account profiles (built, not enabled)
 
+Account-management boundaries in the code:
+
+- Configure logins through the provider's native CLI. The dashboard displays configured accounts and usage; its account-connect and credential-pickup routes are unavailable. A generic browser login cannot establish which CLI credentials belong to an account.
+- An operator-invoked portable bundle import validates every provider, plain profile name, portable relative file path and string payload before writing any profile. Absolute paths, traversal, Windows aliases/streams, duplicate or conflicting paths, symlinks/junctions and existing hard-linked files are refused. Export applies the same profile containment checks. Tests use disposable synthetic files only.
+- Stored model preferences are metadata. Registered campaigns keep their declared static executor order, models and effort; auto routing keeps its authorized candidates and pins. Changing execution authority follows the existing declaration/version handover.
+
 **In short.** AIWorks can share work between several logins of one provider, for example two Claude subscriptions, so that a usage limit on one login does not stop the work. The logins come from CAAM, the Coding Agent Account Manager. This is off on every install. Nothing in a running supervisor uses it yet (observed: `cli.mjs` gives the controller no CAAM inventory and no profile homes). Design: [ACCOUNT_ADAPTER_CAAM.md](design/ACCOUNT_ADAPTER_CAAM.md). Work item: [#9](https://github.com/example-org/aiworks/issues/9).
 
 What the code does when the switch is on and an inventory is supplied (observed in code, verified by the synthetic tests only):
