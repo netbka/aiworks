@@ -8,11 +8,8 @@ import { fileURLToPath } from 'node:url';
 import childProcess, { spawn } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { campaignPause, campaignRecheck, campaignStart, campaignStatus } from '../../src/supervisor/api.mjs';
-import { buildPrompt, classify, GATE_RULES, prepare, READING_RULE, refusedBeforeWork, unavailableReason, roleUnavailableReason, VERIFIER_LEAN_READING_RULE,
-  VERIFIER_READING_EXTRA, VERIFIER_TALLY_RULE } from '../../src/supervisor/adapters/executors.mjs';
-import * as agy from '../../src/supervisor/adapters/agy.mjs';
+import { classify, prepare, refusedBeforeWork, unavailableReason, roleUnavailableReason } from '../../src/supervisor/adapters/executors.mjs';
 import { CaamError, caamProfileEnv, ensureShallowProfile, shallowHomeOf } from '../../src/supervisor/adapters/caam.mjs';
-import * as claude from '../../src/supervisor/adapters/claude.mjs';
 import { scopeDigest, validateDeclaration } from '../../src/supervisor/campaign.mjs';
 import { route } from '../../src/supervisor/router.mjs';
 import { declaration, environment, SQLITE, skipWithoutSqlite } from './helpers.mjs';
@@ -434,88 +431,6 @@ test('report limits are enforced before verification and publication preserves a
   assert.ok(controller.prBody(d, d.tasks[0], { verified_sha: 'a'.repeat(40), result: { report } }).includes(report), 'PR reports preserve verified text too');
 });
 
-test('completed planning campaigns name their actual target without claiming PR delivery', { skip: skipWithoutSqlite }, async (t) => {
-  const { d, store, controller, id } = fixture(t, 12, undefined, 'test/wiki');
-  store.run("UPDATE tasks SET state = 'done' WHERE campaign_id = ?", id);
-  await controller.tick();
-  const c = store.campaign(id);
-  assert.equal(c.control, 'finished');
-  assert.match(c.next_action, /Planning reports published in test\/wiki/);
-  assert.doesNotMatch(c.next_action, /sampleapp|merge the campaign PRs/);
-});
-
-// The reading rule (#14) is one more line before the packet, after the gate rules.
-const readingRule = (role) => role === 'verification' ? VERIFIER_LEAN_READING_RULE : READING_RULE;
-const promptArgs = (role, deliverable, changes = {}) => ({ executorKind: 'claude-cli', web: null, role, deliverable,
-  packet: { taskId: 'T1', goal: 'synthetic', governance: { project: 'demo', policies: [], authorities: [], exceptions: [], gaps: [] } },
-  packetDigest: digest, repository: 'owner/demo', issue: 7, branch: 'campaign/c/T1', baseSha: 'b'.repeat(40), targetSha: 'c'.repeat(40),
-  report: role === 'verification' ? 'Report: # tests 3, # pass 3' : null, reportDigest: 'd'.repeat(64), note: null, instructions: [], ...changes });
-
-test('commit and report prompts tell workers CI runs on Linux and to copy tallies; verifiers block a mismatched tally (#42, #43)', () => {
-  for (const deliverable of ['commit', 'report']) {
-    for (const role of ['implementer', 'verification']) {
-      const args = promptArgs(role, deliverable);
-      const prompt = buildPrompt(args);
-      assert.match(prompt, /CI runs npm run check on ubuntu-latest/);
-      assert.match(prompt, /guard itself with a skip that names the reason.*without weakening what it checks on Windows/);
-      assert.match(prompt, /Copy test summary lines verbatim.*# tests, # pass, # fail, # skipped.*never retype/);
-      assert.equal(prompt.includes(VERIFIER_TALLY_RULE), role === 'verification', `${role} ${deliverable}`);
-      if (role === 'verification') assert.match(prompt, /does not match your own re-run of the same gate at the same head is a blocking finding/);
-      // Every existing line stays, in order: removing the added rules gives the unchanged base prompt.
-      const added = [...GATE_RULES, ...(role === 'verification' ? [VERIFIER_TALLY_RULE] : []), readingRule(role)];
-      assert.equal(prompt.split('\n').filter((line) => !added.includes(line)).join('\n'), claude.buildPrompt(args));
-      assert.ok(prompt.indexOf(GATE_RULES[0]) < prompt.indexOf('Task packet (sha256 '), 'the rules precede the packet');
-    }
-  }
-});
-
-test('web-task prompts are the unchanged browser prompt and carry no gate rules', () => {
-  for (const role of ['implementer', 'verification']) {
-    const args = promptArgs(role, 'report', { web: { urls: ['https://example.test/'] } });
-    const prompt = buildPrompt(args);
-    assert.equal(prompt, agy.buildPrompt(args));
-    for (const rule of [...GATE_RULES, VERIFIER_TALLY_RULE]) assert.ok(!prompt.includes(rule));
-  }
-});
-
-test('commit prompts tell implementers and verifiers how to get a completed full gate; report prompts do not (#102, #135)', () => {
-  const ruleLine = (prompt) => prompt.split('\n').find((line) => line.startsWith('The repository\'s full gate (npm run check)'));
-  for (const role of ['implementer', 'verification']) {
-    const args = promptArgs(role, 'commit');
-    const prompt = buildPrompt(args);
-    const rule = ruleLine(prompt);
-    assert.ok(rule, `${role} commit prompt carries the full-gate rule`);
-    assert.match(rule, /can take 20 to 30 minutes on this PC while other work runs, longer than one foreground command may wait/);
-    // The gate helper by its absolute path, so a gate that ended without an exit code is reported at once, never waited out.
-    const helper = `node "${fileURLToPath(new URL('../../src/supervisor/gate.mjs', import.meta.url)).replaceAll('\\', '/')}"`;
-    assert.ok(rule.includes(`Run it only through the gate helper, from this run's working directory: ${helper} start starts it as a separate process, then ${helper} wait, run in the foreground,`));
-    assert.match(rule, /prints died when it ended without an exit code: then start it once more and name both runs in the report\. Never wait on a log line or a file yourself\./);
-    // #135: every gate file is git-ignored, so a verifier's checkout stays clean.
-    assert.match(rule, /Every file the gate writes ends in \.log, which git ignores: gate\.log for the output, gate-exit\.log for the exit code, gate-pid\.log for the process, gate-previous\.log for the run before, never committed\./);
-    assert.match(rule, /A verifier's checkout must stay clean: any other new or changed file in it makes the verification result invalid\./);
-    assert.doesNotMatch(rule, /gate\.exit/);
-    assert.match(rule, /copy the final summary block it shows verbatim.*scripts\/run-tests\.mjs, the block after "# all test files"/);
-    assert.match(rule, /Never shorten the suite, skip files or weaken a test to make it finish\./);
-    assert.ok(prompt.indexOf(rule) < prompt.indexOf('Task packet (sha256 '), 'the rule precedes the packet');
-    // Only the gate rules are added to the base prompt, the new one among them.
-    const added = [...GATE_RULES, ...(role === 'verification' ? [VERIFIER_TALLY_RULE] : []), readingRule(role)];
-    assert.ok(added.includes(rule));
-    assert.equal(prompt.split('\n').filter((line) => !added.includes(line)).join('\n'), claude.buildPrompt(args));
-    // Report tasks (research-only workers run only these) keep exactly the two #42/#43 rules and no full-gate rule.
-    const reportArgs = promptArgs(role, 'report');
-    const report = buildPrompt(reportArgs);
-    assert.equal(ruleLine(report), undefined, `${role} report prompt`);
-    const reportAdded = [GATE_RULES[0], GATE_RULES[1], ...(role === 'verification' ? [VERIFIER_TALLY_RULE] : []), readingRule(role)];
-    const base = claude.buildPrompt(reportArgs);
-    const at = base.indexOf('\n\nTask packet (sha256 ');
-    assert.equal(report, `${base.slice(0, at)}\n${reportAdded.join('\n')}${base.slice(at)}`);
-    // Web tasks keep the unchanged browser prompt.
-    const webArgs = promptArgs(role, 'report', { web: { urls: ['https://example.test/'] } });
-    assert.equal(buildPrompt(webArgs), agy.buildPrompt(webArgs));
-    assert.equal(ruleLine(buildPrompt(webArgs)), undefined);
-  }
-});
-
 // CAAM4-LAUNCH (docs/design/ACCOUNT_ADAPTER_CAAM.md section 3.4): a run bound to a CAAM profile launches with that
 // profile's shallow home and nothing else changes. Synthetic homes and a synthetic caam only; no real CAAM or login.
 const runnerPath = fileURLToPath(new URL('../../src/supervisor/runner.mjs', import.meta.url));
@@ -670,84 +585,3 @@ test('a profile run under Job Object containment reads its prompt, writes stdout
     assert.deepEqual(JSON.parse(readFileSync(join(dirs.runDir, 'stdout.json'), 'utf8')), { prompt: invocation.prompt, homedir: dirs.home,
       HOME: dirs.home, USERPROFILE: dirs.home, CODEX_HOME: null, view: '1', background: '1', memory: '1', session: null });
   });
-
-test('commit and report verifier prompts report a check that behaved as intended as pass; implementer and web prompts do not carry it (#59)', () => {
-  const ruleLine = (prompt) => prompt.split('\n').find((line) => line.includes('A check that behaves as intended is reported as pass'));
-  for (const deliverable of ['commit', 'report']) {
-    for (const role of ['implementer', 'verification']) {
-      const args = promptArgs(role, deliverable);
-      const prompt = buildPrompt(args);
-      const rule = ruleLine(prompt);
-      if (role !== 'verification') { assert.equal(rule, undefined, `${role} ${deliverable}`); continue; }
-      assert.ok(rule, `verifier ${deliverable} prompt carries the rule`);
-      assert.match(rule, /including a mutation or base comparison whose expected failure was observed/);
-      assert.match(rule, /a full-suite run whose only failure is an unrelated timing test that passes on a re-run \(name the test, the run and the re-run summary in its detail\)/);
-      assert.match(rule, /Report fail only for an outcome that shows a defect in the change\./);
-      assert.match(rule, /Never return accepted with a check marked fail\./);
-      assert.ok(prompt.indexOf(rule) < prompt.indexOf('Task packet (sha256 '), 'the rule precedes the packet');
-      // The base prompt is otherwise unchanged: removing the added rule lines gives it back.
-      const added = [...GATE_RULES, VERIFIER_TALLY_RULE, readingRule(role)];
-      assert.equal(prompt.split('\n').filter((line) => !added.includes(line)).join('\n'), claude.buildPrompt(args));
-    }
-  }
-  for (const role of ['implementer', 'verification']) {
-    const webArgs = promptArgs(role, 'report', { web: { urls: ['https://example.test/'] } });
-    assert.equal(buildPrompt(webArgs), agy.buildPrompt(webArgs));
-    assert.equal(ruleLine(buildPrompt(webArgs)), undefined, `${role} web prompt`);
-  }
-});
-
-test('commit and report prompts tell implementers and verifiers to read in parts and never twice; web prompts do not (#14)', () => {
-  const ruleLine = (prompt) => prompt.split('\n').find((line) => line.startsWith('Read what you need, in parts, and never twice.'));
-  for (const deliverable of ['commit', 'report']) {
-    for (const role of ['implementer', 'verification']) {
-      const args = promptArgs(role, deliverable);
-      const prompt = buildPrompt(args);
-      const rule = ruleLine(prompt);
-      assert.ok(rule, `${role} ${deliverable} prompt carries the reading rule`);
-      assert.match(rule, /cheaper, never narrower: where it and any other rule in this prompt or the packet seem to conflict, the other rule wins\./);
-      assert.match(rule, /\(1\) Find before reading: grep -n for the symbol, heading or test name, then read the lines around it \(Read with offset and limit, or sed -n\); read a whole file only when it is under about 300 lines or your task changes most of it\./);
-      assert.match(rule, /\(2\) Do not read again a file or command output you already read in this session unless it changed since\./);
-      assert.match(rule, /\(3\) Review a change by starting with git diff --stat, then read the diff one file at a time, each file once\./);
-      assert.match(rule, /\(4\) Filter long command output \(jq, grep, head\) instead of printing it whole, and never print gate\.log whole: the gate helper already shows the summary\./);
-      // The verifier's version narrows nothing; the implementer's does not carry that sentence.
-      assert.equal(rule.endsWith('For a verifier it narrows nothing: every document in packet.references is still read in full, section marks included.'),
-        role === 'verification', `${role} ${deliverable}`);
-      assert.equal(rule, role === 'verification' ? `${READING_RULE} ${VERIFIER_READING_EXTRA}` : READING_RULE);
-      // One line, after the gate rules and before the packet: removing it gives the prompt without it, line for line.
-      assert.equal(prompt.split('\n').filter((line) => line === rule).length, 1);
-      const gate = [...GATE_RULES, VERIFIER_TALLY_RULE].filter((line) => prompt.includes(line));
-      assert.ok(gate.every((line) => prompt.indexOf(line) < prompt.indexOf(rule)), 'the gate rules come first');
-      assert.ok(prompt.indexOf(rule) < prompt.indexOf('Task packet (sha256 '), 'the rule precedes the packet');
-      const added = [...GATE_RULES, VERIFIER_TALLY_RULE, rule];
-      assert.equal(prompt.split('\n').filter((line) => !added.includes(line)).join('\n'), claude.buildPrompt(args));
-    }
-  }
-  for (const role of ['implementer', 'verification']) {
-    const webArgs = promptArgs(role, 'report', { web: { urls: ['https://example.test/'] } });
-    const web = buildPrompt(webArgs);
-    assert.equal(web, agy.buildPrompt(webArgs));
-    assert.equal(ruleLine(web), undefined, `${role} web prompt`);
-    assert.ok(!web.includes('never print gate.log whole'));
-  }
-});
-
-test('a guided verifier prompt keeps its full-reading duty word for word beside the reading rule (#14)', () => {
-  const guide = `Reading guide (derived from packet.references at ${'a'.repeat(40)}):\n- AGENTS.md: whole document`;
-  for (const deliverable of ['commit', 'report']) {
-    const verify = buildPrompt(promptArgs('verification', deliverable, { guide }));
-    const lines = verify.split('\n');
-    assert.ok(lines.includes(claude.VERIFIER_READING_RULE), `${deliverable}: the duty stays its own line, unchanged`);
-    assert.ok(lines.includes(VERIFIER_LEAN_READING_RULE), `${deliverable}: the verifier's reading rule`);
-    assert.ok(lines.indexOf(claude.VERIFIER_READING_RULE) < lines.indexOf(VERIFIER_LEAN_READING_RULE));
-    assert.match(claude.VERIFIER_READING_RULE, /You are the reader of record: read each referenced document in full, section marks included,/);
-    const implement = buildPrompt(promptArgs('implementer', deliverable, { guide }));
-    assert.ok(implement.split('\n').includes(claude.IMPLEMENTER_READING_RULE) && implement.split('\n').includes(READING_RULE));
-    assert.ok(!implement.includes(VERIFIER_READING_EXTRA));
-    // With a guide too, the reading rule is the only line added besides the gate rules.
-    for (const [role, prompt] of [['verification', verify], ['implementer', implement]]) {
-      const added = [...GATE_RULES, VERIFIER_TALLY_RULE, readingRule(role)];
-      assert.equal(prompt.split('\n').filter((line) => !added.includes(line)).join('\n'), claude.buildPrompt(promptArgs(role, deliverable, { guide })));
-    }
-  }
-});

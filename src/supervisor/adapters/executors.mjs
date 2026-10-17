@@ -22,10 +22,10 @@ export const BROWSER_KINDS = ['agy-cli', 'claude-cli'];
 // summary line until its two-hour bound; the helper's wait reports a gate process that ended without one at once.
 const GATE_HELPER = `node "${fileURLToPath(new URL('../gate.mjs', import.meta.url)).replaceAll('\\', '/')}"`;
 export const FULL_GATE_RULE = `The repository's full gate (npm run check) can take 20 to 30 minutes on this PC while other work runs, longer than one foreground command may wait. Run it only through the gate helper, from this run's working directory: ${GATE_HELPER} start starts it as a separate process, then ${GATE_HELPER} wait, run in the foreground, returns when it ends or after 25 minutes (--minutes sets fewer); while it prints running, run wait again. wait checks every 10 seconds that the gate process still runs and prints died when it ended without an exit code: then start it once more and name both runs in the report. Never wait on a log line or a file yourself. When wait prints finished, copy the final summary block it shows verbatim (with scripts/run-tests.mjs, the block after "# all test files"). Every file the gate writes ends in .log, which git ignores: gate.log for the output, gate-exit.log for the exit code, gate-pid.log for the process, gate-previous.log for the run before, never committed. A verifier's checkout must stay clean: any other new or changed file in it makes the verification result invalid. Never shorten the suite, skip files or weaken a test to make it finish.`;
-// Gate evidence rules for commit and report tasks (#42, #43): CI runs on Linux while workers run on Windows, and a
-// tally is copied from the output, never retyped. A browser review runs no gate, so web prompts do not carry them.
+// Gate evidence rules for commit and report tasks (#43): a tally is copied from the output, never retyped. A browser
+// review runs no gate, so web prompts do not carry them. The rule that CI runs on Linux (#42) is gone: GitHub Actions are
+// off (owner decision 2026-10-13), so nothing runs the gate on Linux and workers no longer guard tests for it.
 export const GATE_RULES = [
-  'Repository CI runs npm run check on ubuntu-latest (Linux), not only on this host: a test that depends on the platform must guard itself with a skip that names the reason, or a platform-appropriate equivalent, without weakening what it checks on Windows.',
   'Copy test summary lines verbatim from the command output (for node:test: # tests, # pass, # fail, # skipped); never retype or recall a tally.',
   FULL_GATE_RULE,
 ];
