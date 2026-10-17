@@ -235,6 +235,7 @@ Paths: `sup/` is `src/supervisor/`, `dash/` is `src/dashboard/`, `pub/` is `src/
 | **UI** - owner workspace | One question per screen, project first. Every dashboard file is changed only in this lane. | UI1-UI17; UI18 (the dashboard half of lane READ, 6.8a) | At once. |
 | **REL** - Auto Release, switched off | Release can be checked and rehearsed, and runs only after the rehearsal and under a grant (#33 answered 2026-10-17). | REL1-REL11, REL5a | At once (REL1). |
 | **CLN** - cleanup after finished work | Finished tasks leave no worktrees and no merged local branches behind; nothing unsaved is lost. | CLN1, CLN2 | CLN1 after SELF7 (`controller.mjs` turn). |
+| **PROG** - the next wave starts by itself | When a wave's last slice merges, the next unblocked slices of this plan start without a session or the owner declaring them, inside the program record the owner approved once. | PROG1-PROG5 | At once (PROG1, PROG2). |
 | **READ** - scoped reading | A plan marks the sections a worker must read; the verifier reads everything and cites the rule a returned change broke; the repair round receives that section. Misses are counted, never assumed away. | READ1-READ3; UI18 runs in lane UI | READ1 at once: every earlier writer of its files is merged (observed on main at `ec7b1b3`, 2026-10-15). READ2 after READ1, READ3 after READ2, UI18 after READ3. |
 | **SELF** - AIWorks maintains itself without GitHub | AIWorks's own code is trusted from local main and merged there; GitHub is an optional backup that nothing waits on; AIWorks's own findings, decisions and reviews live in a local work list. | SELF1-SELF13; UI19, UI20 run in lane UI | SELF1 at once, after `aw-ui-fix-5` (new test file only). SELF2 onwards after STA17, READ3 and the slices 6.9 names for each shared file. UI19 after UI18. |
 
@@ -386,11 +387,49 @@ A task is **finished** for cleanup when the trusted main (`origin/main`, or loca
 | **CLN1** | Cleanup, built off (`cleanup.enabled` in `config.json`; absent or malformed means off). Once per pass, for each finished task: remove each of its worktrees with `git worktree remove`, never `--force`; keep and report one with uncommitted or untracked files; then delete its local `campaign/<campaign>/<task>` branch with `git branch -d` only when the trusted main contains it. Coordinator and planning checkouts of finished runs follow the same rule. A worktree no task or run owns is kept and listed. It never deletes a remote branch, a run directory or anything outside the registered worktree folder. Each removal is journaled before and after, so a crash resumes and never repeats. | `sup/cleanup.mjs` (new), `sup/adapters/git.mjs` (remove and delete helpers), `sup/controller.mjs` (one call per pass), SUPERVISOR.md (cleanup, "built, not enabled"), `ts/cleanup.test.mjs` (new) | SELF4 (`git.mjs` turn), SELF7 (`controller.mjs` turn) | A worktree with changes is kept and reported; a branch main does not contain is kept; an open operation's worktree is never touched; a path outside the registered folder is refused; a crash between removal and branch deletion finishes once; a later repair round recreates a removed worktree; `ts/release-boundary.test.mjs` unchanged | No (decided 2026-10-17 (l)). Switched on only by CLN2. |
 | **CLN2** | Baseline, then switch on through the upgrade procedure: record privately the number and size of worktrees and local task branches, set `cleanup.enabled: true`, and compare after the first passes, which also clear the backlog of earlier tasks. Runbook only. | SUPERVISOR.md (switch on, switch back), `docs/STATUS.md` | CLN1 merged and deployed; REL9 merged (the amended AW-001 sentence) | Full suite at the deployed SHA; counts before and after; every kept worktree still has its files | No new question (l) |
 
+### 6.8d Lane PROG - the next wave starts by itself
+
+Added 2026-10-17 for the owner's decision (n) (#153 option B, section 8). Today a wave ends and AIWorks goes idle until a session writes the next declarations and someone runs `start` (observed, #153). Nothing in this lane is built (planned).
+
+**The program record.** One private JSON file, `aiworks-program/1`, kept outside source Git like an envelope approval (`sup/approvals.mjs`). It names:
+- the repository and base branch;
+- the plan file;
+- `allow`, the slice IDs or lane prefixes it covers, and `exclude`, the slices it never covers;
+- the executor chain and the constraints every task carries, copied into each declaration unchanged;
+- an `authorization` block with the owner's words and a version that only goes up.
+
+The store keeps its canonical digest. A newer version replaces it; `revoked: true` or a `PROGRAM-STOP` file in the data directory stops every new wave at once.
+
+**A wave, by fixed rules.** At most once an hour, and only while no wave of the program has unfinished tasks, the supervisor reads this plan from the trusted main. A slice is **ready** when all of these hold:
+- the record allows it and does not exclude it;
+- its row is not runbook-only;
+- no task with its ID is done or running in this repository;
+- every slice ID in its *Depends on* cell is done, with its verified commit on main;
+- no earlier slice in the turn order (6.9) that writes one of its files is unfinished.
+
+The ready slices become one version 1 declaration, `<program>-w<n>`:
+- each task's goal is its row: outcome, files, dependencies and tests, with the section it comes from;
+- `writes` are the files its *Owns* cell names;
+- `dependsOn` links slices of the same wave;
+- `requiresMergedDependencies` is true.
+
+The same plan revision and record always give the same declaration and digest.
+
+**Registration.** The supervisor registers a wave only if every task fits the record exactly and the runtime passes the AW-005 merged-code check. It journals `program-registered` with both digests, and Results shows it. A wave that does not fit is not registered: it becomes one Needs me item with the reason and the proposed declaration. Registration is idempotent across restarts, so one wave number is never registered twice.
+
+| ID | Outcome | Owns | Depends on | Tests | Owner decision |
+| --- | --- | --- | --- | --- | --- |
+| **PROG1** | The program record validates and is stored by digest; CLI `program-approve <file>`, `program-stop` and `program-status`. Built off: `program.enabled` in `config.json`, absent or malformed means off. | `schemas/program-record.schema.json` (new), `sup/program.mjs` (new), `sup/cli.mjs`, `ts/program.test.mjs` (new) | none | An unknown field, a missing field or a lower version is refused without echoing the file; a newer version replaces the old one; revoked stays revoked; `PROGRAM-STOP` is read without the database; nothing is registered by this slice | No (decided 2026-10-17 (n)) |
+| **PROG2** | The wave proposal: plan rows, turn order and shared-file lists parsed from the plan text; ready slices computed by the rules above; one declaration built that `validateDeclaration` accepts. Pure: reads text and task facts, writes nothing. | `sup/program-plan.mjs` (new), `ts/program-plan.test.mjs` (new, a synthetic plan fixture) | none | A slice with an unfinished dependency, an earlier unfinished writer of the same file, a runbook-only row, an excluded slice or a running task is not proposed, each with its reason; the same inputs give the same digest; this plan parses without error | No |
+| **PROG3** | Registration in the supervisor pass, built off: one wave at a time, the exact-fit check, the journal event, Needs me on a misfit, `PROGRAM-STOP` and crash safety. | `sup/program.mjs`, `sup/controller.mjs` (one call per pass), SUPERVISOR.md (program section, "built, not enabled"), `ts/program-register.test.mjs` (new) | PROG1, PROG2 | Off: nothing registered and status unchanged; on: a fitting wave registered once, also after a crash between registration and journal; a misfit becomes one Needs me item and registers nothing; a wave never starts while an earlier wave has unfinished tasks | No |
+| **PROG4** | The decision text: (n) recorded with the next free AW number, and the constitution sentence "runs only campaigns the owner explicitly registered" amended to include waves registered under an owner-approved program record. | `docs/DECISIONS.md`, `docs/PRODUCT_CONSTITUTION.md`, `AGENTS.md`, `docs/STATUS.md` | PROG3, REL9 | `npm run check`; the text quotes the owner's words of 2026-10-17 | No |
+| **PROG5** | Switch on: the owner's first program record, approved with `program-approve`, then `program.enabled: true` through the upgrade procedure. Runbook only. | SUPERVISOR.md (switch on, switch back) | PROG1-PROG4 merged and deployed | Status before and after; the first wave proposed from main matches a hand check of section 6 | No new question (n) |
+
 ### 6.9 Shared files and the order that avoids conflicts
 
 Files touched by one lane only (for example `sup/scheduler.mjs`, `sup/router.mjs`, `sup/release/*`, `sup/adapters/mirror.mjs`, everything under `src/dashboard/`) follow the lane order. Files touched by more than one lane, or by a declared task and a lane, follow this global turn order. A slice starts only after every earlier slice in the list that touches the same file is merged:
 
-**Turn order:** R2-KEEPER → F2-DUPLICATE → F3-CARRYOVER → RUN1 → RUN1B → STA1 → MOD1 → RUN2 → RUN3 → REL2 → RUN4 → RUN5 → REL3 → REL4 → RUN6 → RUN9 → STA3 → MOD2 → MOD3 → STA6 → STA7 → STA8 → STA9 → MOD5 → MOD6 → STA10 → STA11 → STA12 → STA13 → REL6 → STA14 → RUN10 → MOD7 → STA15 → STA16 → STA17 → SELF2 → SELF3 → SELF4 → SELF5 → SELF6 → SELF7 → CLN1 → SELF8 → SELF9 → SELF10 → SELF11 → SELF12 → SELF13 → REL9 → CLN2 → REL11.
+**Turn order:** R2-KEEPER → F2-DUPLICATE → F3-CARRYOVER → RUN1 → RUN1B → STA1 → MOD1 → RUN2 → RUN3 → REL2 → RUN4 → RUN5 → REL3 → REL4 → RUN6 → RUN9 → STA3 → MOD2 → MOD3 → STA6 → STA7 → STA8 → STA9 → MOD5 → MOD6 → STA10 → STA11 → STA12 → STA13 → REL6 → STA14 → RUN10 → MOD7 → STA15 → STA16 → PROG1 → PROG3 → STA17 → SELF2 → SELF3 → SELF4 → SELF5 → SELF6 → SELF7 → CLN1 → SELF8 → SELF9 → SELF10 → SELF11 → SELF12 → SELF13 → REL9 → PROG4 → CLN2 → REL11.
 
 **Lane SELF (added 2026-10-16).** SELF1 creates one test file, so it waits for no other slice; like every slice it starts after campaign `aw-ui-fix-5` (decision (g)). Every later SELF slice that changes `ts/github-boundary.test.mjs` takes it in lane order. SELF2 to SELF13 sit after STA17 and before REL9 and REL11: a SELF slice never waits for them. #33 was answered on 2026-10-17, so if REL9 is ready before SELF12, REL9 may go first; both then edit `docs/DECISIONS.md`, `AGENTS.md` and `docs/PRODUCT_CONSTITUTION.md` one after the other, and the second keeps the first one's text. `sup/merge.mjs` (merged with the merge gate, #138) and the new files of the lane are written by lane SELF only. UI19 follows UI18, and UI20 follows UI19, in lane UI.
 
@@ -400,7 +439,7 @@ Files touched by one lane only (for example `sup/scheduler.mjs`, `sup/router.mjs
 
 | Shared file | Writers, in order |
 | --- | --- |
-| `sup/controller.mjs` | RUN1, RUN1B, RUN2, RUN3, RUN4, RUN5, RUN6, STA3, MOD2, STA6, STA8, STA9, MOD5, STA10, STA14, READ2, READ3, STA17, SELF3, SELF4, SELF7, CLN1 |
+| `sup/controller.mjs` | RUN1, RUN1B, RUN2, RUN3, RUN4, RUN5, RUN6, STA3, MOD2, STA6, STA8, STA9, MOD5, STA10, STA14, READ2, READ3, PROG3, STA17, SELF3, SELF4, SELF7, CLN1 |
 | `sup/store.mjs` | F2-DUPLICATE, STA1, RUN2, RUN3, RUN5, REL3, MOD2, STA6, STA12, SELF2, SELF5 |
 | `sup/api.mjs` | R2-KEEPER, F2-DUPLICATE, RUN1B, RUN2, RUN3, REL2, REL4, RUN9, MOD3, STA6, MOD6, STA14 (observed: #162 changed it), READ3, SELF9 |
 | `sup/campaign.mjs` | F2-DUPLICATE, RUN4, STA3, MOD3, STA7, READ1, STA15, STA17, SELF7 |
@@ -409,17 +448,17 @@ Files touched by one lane only (for example `sup/scheduler.mjs`, `sup/router.mjs
 | `sup/baseline.mjs` | MOD1 (creates), READ3 |
 | `sup/adapters/claude.mjs` | READ2, SELF6 |
 | `sup/adapters/research-context.mjs` | READ2, SELF6 |
-| `sup/cli.mjs` | R2-KEEPER, MOD1, REL4, STA11, SELF3, SELF5, SELF10 |
+| `sup/cli.mjs` | R2-KEEPER, MOD1, REL4, STA11, PROG1, SELF3, SELF5, SELF10 |
 | `sup/work-ownership.mjs` | F2-DUPLICATE (creates), RUN4, STA8 |
 | `sup/adapters/github.mjs` | R1-REST-PUBLISH (merged), RUN1B, STA13, REL6, SELF11 |
 | `sup/adapters/executors.mjs` | MOD5, STA10, READ2, READ3, SELF6 |
 | `ts/helpers.mjs` | R2-KEEPER, RUN1, STA13 |
 | `ts/status.test.mjs` | RUN9, MOD6, READ3, SELF9 |
 | `dash/supervisor.mjs` | R2-KEEPER, then lane UI only |
-| `docs/SUPERVISOR.md` | R2-KEEPER, F2-DUPLICATE, F3-CARRYOVER, RUN1, RUN1B, MOD1, RUN3, RUN4, RUN5, REL4, MOD3, STA7, READ1, RUN10, MOD7, STA17, CLN1, SELF8, SELF12, SELF13, CLN2, REL11 |
-| `docs/STATUS.md` | F3-CARRYOVER, RUN10, MOD7, SELF12, SELF13, REL9, CLN2, REL11 |
-| `docs/DECISIONS.md` | F3-CARRYOVER, STA17, SELF12, REL9 |
-| `AGENTS.md`, `docs/PRODUCT_CONSTITUTION.md` | SELF12, REL9 (either order, see lane SELF above) |
+| `docs/SUPERVISOR.md` | R2-KEEPER, F2-DUPLICATE, F3-CARRYOVER, RUN1, RUN1B, MOD1, RUN3, RUN4, RUN5, REL4, MOD3, STA7, READ1, RUN10, MOD7, PROG3, STA17, CLN1, SELF8, SELF12, SELF13, CLN2, REL11, PROG5 |
+| `docs/STATUS.md` | F3-CARRYOVER, RUN10, MOD7, SELF12, SELF13, REL9, PROG4, CLN2, REL11 |
+| `docs/DECISIONS.md` | F3-CARRYOVER, STA17, SELF12, REL9, PROG4 |
+| `AGENTS.md`, `docs/PRODUCT_CONSTITUTION.md` | SELF12, REL9, PROG4 (REL9 and SELF12 in either order, see lane SELF above; PROG4 after REL9) |
 | `sup/adapters/git.mjs` | RUN1, RUN4, SELF4, CLN1 |
 | `sup/intake.mjs` | STA12 (creates), SELF4, SELF6 |
 | `sup/project-connect.mjs` | STA3 (creates), STA4, STA5, STA17, SELF4 |
@@ -438,6 +477,7 @@ Two cases need the order spelled out:
 | Decision | Built switched off meanwhile | Stays off or unbuilt until answered |
 | --- | --- | --- |
 | #33 D5-gate - Auto Release, **answered 2026-10-17** (section 8 (h) to (k)) | REL1-REL7 and REL5a (`release.enabled: false`, never a credential); UI15 (Review only, Stop all releases, no switch without a grant); STA7 refuses `auto-release` | Nothing waits for an answer. A real grant exists only from REL11, after the rehearsal, with the owner's approval link in the grant record. The owner's own Apply (STA18) is Review only. |
+| #153 - waves start by themselves, **answered 2026-10-17** (section 8 (n)) | PROG1-PROG3 (`program.enabled` off) | Nothing waits for an answer. PROG5 switches it on with the owner's first program record. |
 
 Lane SELF waits for no owner decision: the owner answered (e) and (f) on 2026-10-16. Its powers are built switched off and SELF13 switches them on through the upgrade procedure once the owner sets `selfHosting` in `config.json`. Its local authorization form (`aiworks-work:<n>`) stays off until STA17 turns local admission on, and imported issues are closed on GitHub only after the owner confirms the list in the dashboard (SELF11, UI20).
 
@@ -547,6 +587,7 @@ Acceptance must use source-appropriate evidence: L0 plan, L1 interactive UI revi
 - **(k) One merge path per repository:** in a repository the merge gate covers, only the merge gate merges. A release there deploys the merge commit the gate recorded, after the tree check of AR §7.2 step 3, and never makes a merge call of its own (destination kind `deploy`). A GitHub project whose own rules let an agent merge a verified, conflict-free PR may be listed in `merges.repositories`; that list stays private configuration. The release merge adapter (REL6) is built only for a project that wants releases without the merge gate.
 - **(l) Cleanup after finished work:** AIWorks removes the worktrees of finished tasks and deletes the local task branches that the trusted main already contains. It never deletes a remote branch, a worktree with uncommitted files, or run evidence. Nothing is cleaned before lane CLN is built; CLN2 records a baseline before it switches cleanup on and compares after (section 6.8c). REL9 amends the AW-001 sentence "never ... removes worktrees or deletes branches" to match.
 - **(m) AIWorks's own live runtime:** upgrades stay manual, through the upgrade procedure (AR §12).
+- **(n) AIWorks starts the next wave by itself (#153 option B).** The owner said: "stop asking me questions. just do it." The owner approves one private, digest-bound program record once. It names this plan, the slices allowed and the slices excluded, the executor chain and the constraints. AIWorks then builds each next wave's declaration from section 6 by fixed rules, not by a model, and registers it only when every slice fits the record exactly. Anything that does not fit becomes one Needs me item. Runbook-only slices, which change the live install, are never proposed. Lane PROG (section 6.8d) builds it switched off; PROG4 records the decision; PROG5 switches it on.
 
 These are recorded design decisions. None of them is built or deployed by this plan (planned).
 
