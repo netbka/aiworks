@@ -4,8 +4,10 @@
 // grant, creates no release record (the `releases` and `release_locks` tables are never touched) and never runs by
 // itself. Auto Release for a local project stays off until example-org/aiworks#33.
 //
-// Every Apply and Undo apply passes the dashboard's caller check first (local-admission.mjs checkCaller, section 8.2):
-// a request from a process AIWorks started is refused, and so is one the check cannot place. Then:
+// Every Apply and Undo apply passes the dashboard's caller check first (section 8.2): the route passes it in as
+// `caller(store)`, checkCaller of local admission bound to the request's connection, and it must answer `owner-browser`.
+// A request from a process AIWorks started is refused, and so is one without a check or one the check cannot place.
+// The check is passed in, not imported, so local admission keeps no runtime caller until STA17 switches it on. Then:
 // 1. bind: the candidate's project, its recorded baseline (`project_baselines`) and, for a plain folder, that baseline's
 //    manifest of paths and hashes (adapters/mirror.mjs folderManifest);
 // 2. rescan, backup, apply, confirm: REL8's adapters (local-apply.mjs). Local Git: the branch head must equal the
@@ -23,12 +25,13 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { folderManifest, MIRROR_REPO, SNAPSHOT_DIR } from '../adapters/mirror.mjs';
 import { candidates } from '../local-candidates.mjs';
-import { checkCaller, LocalAdmissionError, OWNER_CALLER } from '../local-admission.mjs';
 import { project as projectRow } from '../projects.mjs';
 import { LOCAL_FOLDER_APPLY, LOCAL_GIT_APPLY, localFolderApply, localGitApply, reconcileLocalFolderApply, reconcileLocalGitApply,
   undoLocalFolderApply, undoLocalGitApply } from './local-apply.mjs';
 
 const SHA = /^[0-9a-f]{40}$/;
+/** The caller check's answer for a request that did not come from AIWorks's own processes (local admission). */
+export const OWNER_CALLER = 'owner-browser';
 const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 // The adapters' record states that end an apply. Anything else is open and is reconciled, never repeated.
 const FINAL = Object.freeze(['applied', 'rolled-back', 'stopped']);
@@ -61,16 +64,14 @@ const recordOf = (row) => {
 /** An attempt that may have written the folder and is not settled. A backup cut short never wrote it (REL8, step 3). */
 const isOpen = (row) => { const record = recordOf(row); return Boolean(record) && !FINAL.includes(record.state) && record.state !== 'backing-up'; };
 
-/** The caller check of an approval, with Apply's own words. */
+/** The caller check of an approval, with Apply's own words. It fails closed: no check, a throw or any other answer refuses. */
 async function ownerCaller(store, caller, action) {
-  try {
-    return await checkCaller(store, caller);
-  } catch (error) {
-    if (!(error instanceof LocalAdmissionError)) throw error;
-    if (error.code === 'APPROVAL_FROM_AIWORKS') refuse('APPLY_FROM_AIWORKS', `this ${action} came from a program AIWorks started, not from you, so nothing was written. Press it yourself in the dashboard`);
-    refuse('APPLY_UNCHECKED', `AIWorks could not check that this ${action} came from you, so nothing was written. Try again from your browser`);
-  }
-  return null;
+  let answer = null;
+  let code = null;
+  try { answer = typeof caller === 'function' ? await caller(store) : null; } catch (error) { code = error?.code ?? null; }
+  if (code === 'APPROVAL_FROM_AIWORKS') refuse('APPLY_FROM_AIWORKS', `this ${action} came from a program AIWorks started, not from you, so nothing was written. Press it yourself in the dashboard`);
+  if (answer !== OWNER_CALLER) refuse('APPLY_UNCHECKED', `AIWorks could not check that this ${action} came from you, so nothing was written. Try again from your browser`);
+  return answer;
 }
 
 /** A repeated owner request: the attempt it already named, or a refusal when the id was used for something else. */
@@ -178,10 +179,10 @@ const reconcileAdapter = (row, options) => (row.kind === LOCAL_GIT_APPLY
  * An earlier attempt left open by a crash is reconciled first, and an applied one is only reported: Apply is never
  * repeated. Otherwise the folder is rescanned, backed up and written through REL8's adapter. Returns
  * { applyId, outcome: applied | refused | rolled-back | stopped | unknown | not-done, code, files, reason, undo, ... }.
- * Throws OwnerApplyError for a request it will not act on (APPLY_FROM_AIWORKS, APPLY_UNCHECKED, APPLY_REQUEST_REUSED,
+ * `caller(store)` is the dashboard route's caller check. Throws OwnerApplyError for a request it will not act on (APPLY_FROM_AIWORKS, APPLY_UNCHECKED, APPLY_REQUEST_REUSED,
  * APPLY_BUSY and the candidate checks). `hooks` reach the adapter so tests can stop the process at a chosen point.
  */
-export async function ownerApply(store, { campaignId, taskId, seq = null, requestId, caller = {}, dataDir, git = ['git'], gitEnv, hooks = {}, now = Date.now() } = {}) {
+export async function ownerApply(store, { campaignId, taskId, seq = null, requestId, caller = null, dataDir, git = ['git'], gitEnv, hooks = {}, now = Date.now() } = {}) {
   const callerResult = await ownerCaller(store, caller, 'Apply');
   const { candidate, project, baseline, kind } = bound(store, { campaignId, taskId, seq });
   const repeated = earlierReceipt(store, requestId, 'apply', (row) => row.campaign_id === campaignId && row.task_id === taskId && row.seq === candidate.seq);
@@ -240,7 +241,7 @@ export async function ownerApply(store, { campaignId, taskId, seq = null, reques
  * The owner pressed Undo apply on an applied attempt. The same caller check. The backup is put back only where the
  * folder still holds what Apply wrote; over a file changed since, it is refused with the files named and nothing written.
  */
-export async function undoOwnerApply(store, { applyId, requestId, caller = {}, git = ['git'], gitEnv, hooks = {}, now = Date.now() } = {}) {
+export async function undoOwnerApply(store, { applyId, requestId, caller = null, git = ['git'], gitEnv, hooks = {}, now = Date.now() } = {}) {
   const callerResult = await ownerCaller(store, caller, 'Undo apply');
   const row = hasTables(store) ? store.get('SELECT * FROM local_applies WHERE apply_id = ?', applyId) : null;
   if (!row) refuse('APPLY_NOT_FOUND', `there is no Apply ${applyId} to undo`);
@@ -278,4 +279,3 @@ export function ownerApplies(store, campaignId) {
   });
 }
 
-export { OWNER_CALLER };

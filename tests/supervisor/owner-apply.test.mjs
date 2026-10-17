@@ -16,15 +16,17 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from '../../src/supervisor/store.mjs';
 import { MIRROR_REPO, SNAPSHOT_DIR } from '../../src/supervisor/adapters/mirror.mjs';
+import { checkCaller, OWNER_CALLER as ADMISSION_OWNER } from '../../src/supervisor/local-admission.mjs';
 import { recordCandidate } from '../../src/supervisor/local-candidates.mjs';
 import { connectFolderProject, connectLocalGitProject } from '../../src/supervisor/project-connect.mjs';
 import { projects } from '../../src/supervisor/projects.mjs';
 import { APPLY_BACKUP_PREFIX } from '../../src/supervisor/release/local-apply.mjs';
-import { ownerApplies, ownerApply, OwnerApplyError, reconcileOwnerApplies, undoOwnerApply } from '../../src/supervisor/release/owner-apply.mjs';
+import { OWNER_CALLER, ownerApplies, ownerApply, OwnerApplyError, reconcileOwnerApplies, undoOwnerApply } from '../../src/supervisor/release/owner-apply.mjs';
 
 const GOVERNANCE = fileURLToPath(new URL('../fixtures/governance', import.meta.url));
 const MODULE = fileURLToPath(new URL('../../src/supervisor/release/owner-apply.mjs', import.meta.url));
 const STORE_MODULE = fileURLToPath(new URL('../../src/supervisor/store.mjs', import.meta.url));
+const ADMISSION_MODULE = fileURLToPath(new URL('../../src/supervisor/local-admission.mjs', import.meta.url));
 const CAMPAIGN = 'owner-apply';
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const NO_PR = /[Pp]ull|[Mm]erge|^pr(?:[A-Z_]|$)/;
@@ -86,11 +88,15 @@ function candidateCommit(repo, parent, { files = {}, links = {} }, tmp) {
   return sha;
 }
 
-/** The dashboard's caller check, answered by a synthetic process lookup (local-admission.mjs checkCaller). */
-const OWNER = Object.freeze({ platform: 'win32', lookup: async () => ({ pid: 999_991, ancestors: [999_990], jobs: [] }) });
-const FROM_AIWORKS = Object.freeze({ platform: 'win32', lookup: async () => ({ pid: 999_992, ancestors: [process.pid], jobs: [] }) });
-const NO_LOOKUP = Object.freeze({ platform: 'win32' });
-const OTHER_PLATFORM = Object.freeze({ platform: 'linux', lookup: OWNER.lookup });
+/**
+ * The dashboard route's caller check: local-admission.mjs checkCaller with a synthetic process lookup. It names its
+ * platform, so the Windows check runs on every host.
+ */
+const checked = (options) => (store) => checkCaller(store, options);
+const OWNER = checked({ platform: 'win32', lookup: async () => ({ pid: 999_991, ancestors: [999_990], jobs: [] }) });
+const FROM_AIWORKS = checked({ platform: 'win32', lookup: async () => ({ pid: 999_992, ancestors: [process.pid], jobs: [] }) });
+const NO_LOOKUP = checked({ platform: 'win32' });
+const OTHER_PLATFORM = checked({ platform: 'linux', lookup: async () => ({ pid: 999_991, ancestors: [], jobs: [] }) });
 
 let requests = 0;
 const nextRequest = () => `req-${(requests += 1)}`;
@@ -161,18 +167,19 @@ function crash(r, hook) {
   const script = join(r.tmp, `crash-${hook}.mjs`);
   writeFileSync(script, [
     "import { pathToFileURL } from 'node:url';",
-    'const [moduleUrl, storeUrl, input, hook] = process.argv.slice(2);',
+    'const [moduleUrl, storeUrl, admissionUrl, input, hook] = process.argv.slice(2);',
     'const { ownerApply } = await import(pathToFileURL(moduleUrl).href);',
     'const { Store } = await import(pathToFileURL(storeUrl).href);',
+    'const { checkCaller } = await import(pathToFileURL(admissionUrl).href);',
     'const options = JSON.parse(input);',
     'const store = new Store(options.db);',
-    'options.caller = { platform: "win32", lookup: async () => ({ pid: 999991, ancestors: [], jobs: [] }) };',
+    'options.caller = (store) => checkCaller(store, { platform: "win32", lookup: async () => ({ pid: 999991, ancestors: [], jobs: [] }) });',
     'options.hooks = { [hook]: () => process.exit(70) };',
     'await ownerApply(store, options);',
     'process.exit(0);',
   ].join('\n'));
   const { caller, ...input } = r.options();
-  const result = spawnSync(process.execPath, [script, MODULE, STORE_MODULE, JSON.stringify({ ...input, db: join(r.dataDir, 'supervisor.db') }), hook],
+  const result = spawnSync(process.execPath, [script, MODULE, STORE_MODULE, ADMISSION_MODULE, JSON.stringify({ ...input, db: join(r.dataDir, 'supervisor.db') }), hook],
     { encoding: 'utf8', windowsHide: true });
   assert.equal(result.status, 70, `the child stopped at ${hook}: ${result.stderr}`);
 }
@@ -184,7 +191,8 @@ test('Apply runs only on the owner route: a request from AIWorks, or one the che
   const r = rig(t, { files: FOLDER_FILES, result: FOLDER_RESULT });
   const before = snapshot(r.root);
   for (const [caller, code] of [[FROM_AIWORKS, 'APPLY_FROM_AIWORKS'], [NO_LOOKUP, 'APPLY_UNCHECKED'], [OTHER_PLATFORM, 'APPLY_UNCHECKED'],
-    [{ platform: 'win32', lookup: async () => { throw new Error('lookup failed'); } }, 'APPLY_UNCHECKED']]) {
+    [checked({ platform: 'win32', lookup: async () => { throw new Error('lookup failed'); } }), 'APPLY_UNCHECKED'],
+    [null, 'APPLY_UNCHECKED'], [{ answer: OWNER_CALLER }, 'APPLY_UNCHECKED'], [async () => 'owner', 'APPLY_UNCHECKED']]) {
     await assert.rejects(r.apply({ caller }), (error) => error instanceof OwnerApplyError && error.code === code);
   }
   assert.deepEqual(snapshot(r.root), before, 'the folder is byte-identical');
@@ -194,7 +202,7 @@ test('Apply runs only on the owner route: a request from AIWorks, or one the che
   r.store.insert('operations', { id: 'op-1', campaign_id: CAMPAIGN, task_id: 'T1', kind: 'implement', seq: 1, idempotency_key: 'op-1', lease_generation: 1,
     state: 'dispatched', session_id: 's-1', run_dir: r.tmp, workspace: r.tmp, packet: '{}', packet_digest: 'd', created_at: Date.now(), updated_at: Date.now() });
   writeFileSync(join(r.tmp, 'runner.json'), JSON.stringify({ pid: 999_993, jobName: 'aiworks-run-op-1' }));
-  await assert.rejects(r.apply({ caller: { platform: 'win32', lookup: async () => ({ pid: 999_994, ancestors: [], jobs: ['aiworks-run-op-1'] }) } }),
+  await assert.rejects(r.apply({ caller: checked({ platform: 'win32', lookup: async () => ({ pid: 999_994, ancestors: [], jobs: ['aiworks-run-op-1'] }) }) }),
     (error) => error.code === 'APPLY_FROM_AIWORKS');
   assert.deepEqual(snapshot(r.root), before);
   r.store.run("UPDATE operations SET state = 'finished' WHERE id = 'op-1'");
@@ -203,7 +211,8 @@ test('Apply runs only on the owner route: a request from AIWorks, or one the che
   assert.equal(result.undo, true, 'the result offers Undo apply');
   assertApplied(r.root);
   const [receipt] = r.store.all('SELECT * FROM local_apply_receipts');
-  assert.equal(receipt.caller, 'owner-browser', 'the receipt records the caller check');
+  assert.equal(receipt.caller, ADMISSION_OWNER, 'the receipt records the caller check');
+  assert.equal(OWNER_CALLER, ADMISSION_OWNER, 'Apply accepts exactly the answer an approval accepts');
 });
 
 test('one changed file the result touches refuses with nothing written; a change elsewhere does not', async (t) => {
