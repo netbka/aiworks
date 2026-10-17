@@ -3,7 +3,7 @@
 // small synthetic gate scripts in a temporary directory: no model, network or GitHub calls.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -29,13 +29,17 @@ function workdir(t) {
   t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }));
   return dir;
 }
-const gate = (dir, ...args) => {
-  const env = { ...process.env };
+// Each test's gates take slots in its own directory, never the PC's, and not as a gate nested in the suite's own gate.
+const gateIn = (dir, extra, ...args) => {
+  const env = { ...process.env, AIWORKS_GATE_SLOTS_DIR: join(dir, 'slots'), ...extra };
   delete env.NODE_TEST_CONTEXT;
+  if (!extra.AIWORKS_GATE_SLOT_HELD) delete env.AIWORKS_GATE_SLOT_HELD;
   const result = spawnSync(process.execPath, [GATE, ...args], { cwd: dir, env, encoding: 'utf8', windowsHide: true, timeout: 60_000 });
   return { code: result.status, out: result.stdout };
 };
+const gate = (dir, ...args) => gateIn(dir, {}, ...args);
 const waitFast = (dir, ...more) => gate(dir, 'wait', '--poll-seconds', '0.1', ...more);
+const ended = () => spawnSync(process.execPath, ['-e', '']).pid;
 
 test('a gate that passes: wait returns its exit code and the final summary block, and every file it wrote is a .log', (t) => {
   const dir = workdir(t);
@@ -45,7 +49,56 @@ test('a gate that passes: wait returns its exit code and the final summary block
   const done = waitFast(dir);
   assert.equal(done.code, 0, done.out);
   assert.match(done.out, /^finished: exit 0\. Final summary from gate\.log:\n# all test files\n# tests 3\n# pass 3\n# fail 0\n$/);
-  assert.deepEqual(readdirSync(dir).filter((name) => !(name in SCRIPTS)).sort(), ['gate-exit.log', 'gate-pid.log', 'gate.log']);
+  assert.deepEqual(readdirSync(dir).filter((name) => !(name in SCRIPTS)).sort(), ['gate-exit.log', 'gate-pid.log', 'gate.log', 'slots']);
+  assert.deepEqual(readdirSync(join(dir, 'slots')), [], 'the slot is given back when the gate ends');
+});
+
+test('gate slots: a gate waits while every slot is held, says so in gate.log, and starts once one is free', (t) => {
+  const dir = workdir(t);
+  mkdirSync(join(dir, 'slots'));
+  const lock = join(dir, 'slots', 'slot-1.lock');
+  writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now(), cwd: 'elsewhere' }));
+  assert.equal(gateIn(dir, { AIWORKS_GATE_SLOTS: '1' }, 'start', 'node', 'pass.mjs').code, 0);
+  const queued = waitFast(dir, '--minutes', '0.01');
+  assert.equal(queued.code, 2, queued.out);
+  assert.match(queued.out, /# waiting for a free gate slot: 1 full gate\(s\) already run on this PC/);
+  assert.doesNotMatch(readFileSync(join(dir, 'gate.log'), 'utf8'), /# all test files/, 'the command has not started');
+  rmSync(lock);
+  const done = waitFast(dir);
+  assert.equal(done.code, 0, done.out);
+  assert.match(readFileSync(join(dir, 'gate.log'), 'utf8'), /# gate slot .+slot-1\.lock taken; the gate starts now\n# start tests\/a\.test\.mjs/);
+  assert.deepEqual(readdirSync(join(dir, 'slots')), []);
+});
+
+test('gate slots: a gate inside a gate (the suite testing the gate helper) takes no slot', (t) => {
+  const dir = workdir(t);
+  mkdirSync(join(dir, 'slots'));
+  writeFileSync(join(dir, 'slots', 'slot-1.lock'), JSON.stringify({ pid: process.pid, at: Date.now() }));
+  gateIn(dir, { AIWORKS_GATE_SLOTS: '1', AIWORKS_GATE_SLOT_HELD: '1' }, 'start', 'node', 'pass.mjs');
+  const done = waitFast(dir, '--minutes', '0.5');
+  assert.equal(done.code, 0, done.out);
+  assert.doesNotMatch(readFileSync(join(dir, 'gate.log'), 'utf8'), /gate slot/);
+});
+
+test('gate slots: takeSlot takes a free slot or one whose process ended, is too old or was left empty, never a held one', async (t) => {
+  const { slotSettings, takeSlot } = await import('../../src/supervisor/gate.mjs');
+  const dir = join(workdir(t), 'slots');
+  const now = Date.now();
+  const lock = (i, holder) => writeFileSync(join(dir, `slot-${i}.lock`), holder === '' ? '' : JSON.stringify(holder));
+  assert.equal(takeSlot({ count: 2, dir }, now), join(dir, 'slot-1.lock'));
+  assert.equal(takeSlot({ count: 2, dir }, now), join(dir, 'slot-2.lock'));
+  assert.equal(takeSlot({ count: 2, dir }, now), null, 'both held by this live process');
+  assert.equal(JSON.parse(readFileSync(join(dir, 'slot-1.lock'), 'utf8')).pid, process.pid);
+  lock(2, { pid: ended(), at: now });
+  assert.equal(takeSlot({ count: 2, dir }, now), join(dir, 'slot-2.lock'), 'its process ended');
+  lock(2, { pid: process.pid, at: now - 5 * 60 * 60_000 });
+  assert.equal(takeSlot({ count: 2, dir }, now), join(dir, 'slot-2.lock'), 'older than four hours');
+  lock(2, '');
+  assert.equal(takeSlot({ count: 2, dir }, now), null, 'an empty lock may be being written');
+  assert.equal(takeSlot({ count: 2, dir }, now + 120_000), join(dir, 'slot-2.lock'), 'empty for over a minute');
+  assert.deepEqual(slotSettings({}), { count: 2, dir: join(tmpdir(), 'aiworks-gate-slots') });
+  assert.deepEqual(slotSettings({ AIWORKS_GATE_SLOTS: '1', AIWORKS_GATE_SLOTS_DIR: dir }), { count: 1, dir });
+  for (const bad of ['0', '9', '1.5', 'many']) assert.equal(slotSettings({ AIWORKS_GATE_SLOTS: bad }).count, 2, bad);
 });
 
 test('a gate that fails: wait reports its exit code and exits 1', (t) => {
