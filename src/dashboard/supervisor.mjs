@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
@@ -13,9 +13,8 @@ import { coordinatorView, LANE as COORDINATOR_LANE, postOwnerMessage } from '../
 import { CODE_ROOT, revisionNotMerged } from '../supervisor/provenance.mjs';
 import { COMMANDS, stateCopy, stopReasonWords } from './copy.mjs';
 import { configuredRepositories, connectedProjects, projectConnectionEnabled } from './projects.mjs';
-import { accountUsageSummary, removeAccount, modelPreferences, saveModelPreferences, setRoleModelPreference,
-  shallowHomesRoot, configuredAccounts } from '../supervisor/accounts.mjs';
-export { shallowHomesRoot, configuredAccounts };
+import { openOnProfile, setRoleModelPreference, shallowHomesRoot, configuredAccounts } from '../supervisor/accounts.mjs';
+export { shallowHomesRoot };
 import { removeShallowProfile } from '../supervisor/adapters/caam.mjs';
 
 const readConfig = (dataDir) => {
@@ -328,48 +327,92 @@ const RELEASE_LOCAL = "Release does not apply yet to a project without GitHub: A
 export function computerSettings(campaigns, config, { platform = process.platform, now = Date.now(), repositories = [], connected = [], accounts = [] } = {}) {
   return { commands: configuredCommandNames(config), workers: aiWorkers(campaigns, config, { platform, now }),
     accounts,
-    modelPreferences: modelPreferences(config),
+    modelPreferences: savedModelOrder(config),
     releases: releaseModes([...repositories, ...campaigns.map((c) => c.repository)], { waitsFor: issueLink(config?.autoReleaseDecision), connected }),
     // Where supervisor faults are tracked: config.json "supervisorIssue" (a GitHub issue link) when set, so a disposable
     // review copy can name a made-up one; otherwise null, and the owner view links AIWorks' own (owner.mjs SUPERVISOR_ISSUE).
     supervisorIssue: issueLink(config?.supervisorIssue) };
 }
 
-export function removeDashboardAccount(dataDir, { provider, name } = {}) {
-  if (!['claude', 'codex', 'agy', 'cursor'].includes(provider) || typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
-    const err = new Error('Provider must be claude, codex, agy or cursor, and the account name only letters, numbers, dots, dashes and underscores.');
-    err.status = 400;
-    throw err;
-  }
-  const kind = `${provider}-cli`;
-  const account = `${provider}/${name}`;
-  const config = readConfig(dataDir);
+const ACCOUNT_PROVIDERS = ['claude', 'codex', 'agy', 'cursor'];
+const ACCOUNT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// The folder a provider's login is saved in inside a profile (src/supervisor/accounts.mjs configuredAccounts).
+const LOGIN_FOLDER = { claude: '.claude', codex: '.codex', agy: '.agy', cursor: '.cursor' };
+// An account's wait by the outcome class its reason starts with (src/supervisor/accounts.mjs ACCOUNT_SCOPED).
+const WAIT_STATE = { quota: 'usage-limit', auth: 'sign-in', unavailable: 'unavailable' };
+const PREFERENCE_ROLES = ['implementer', 'verification'];
+// The saved model order of each role the page shows; any other value reads as nothing saved. Work does not read it:
+// each piece of work uses the order its approved plan names (SUPERVISOR.md section 13).
+const savedModelOrder = (config) => Object.fromEntries(PREFERENCE_ROLES.map((role) =>
+  [role, Array.isArray(config?.modelPreferences?.[role]) ? config.modelPreferences[role] : []]));
+const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,99}$/;
+
+function refusal(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
+/**
+ * The worker accounts as the page shows them: whose login, whether it is saved on this computer, and one state. The wait
+ * reason itself is never served: it can carry a worker's raw error text (OWNER_WORKSPACE §10.1). Neither is any path.
+ */
+export function dashboardAccounts(store, config, { now = Date.now(), dataDir } = {}) {
   const root = shallowHomesRoot(config, dataDir);
-  const store = new Store(join(dataDir, 'supervisor.db'));
-  try {
-    const res = removeAccount(store, config, { kind, account });
-    const profileRes = removeShallowProfile({ kind, name, root });
-    return { success: true, account, removed: res.removed, pathRemoved: profileRes.removed };
-  } finally {
-    store.close();
+  return configuredAccounts(store, config, { now, dataDir }).map(({ id, provider, kind, name, usage }) => {
+    const open = usage.open ?? 0;
+    const waitClass = typeof usage.waitReason === 'string' ? usage.waitReason.split(':')[0] : null;
+    const outcomes = usage.outcomes ?? {};
+    return { id, provider, kind, name: safeText(name, 64),
+      hasLogin: ACCOUNT_PROVIDERS.includes(provider) && ACCOUNT_NAME.test(name) && existsSync(join(root, name, LOGIN_FOLDER[provider])),
+      state: usage.coolingDown ? WAIT_STATE[waitClass] ?? 'unavailable' : open > 0 ? 'in-use' : 'ready',
+      retryAt: usage.coolingDown && Number.isFinite(usage.retryAt) ? new Date(usage.retryAt).toISOString() : null,
+      open, limit: usage.limit ?? null,
+      runs: { finished: (usage.totalOperations ?? 0) - (outcomes.open ?? 0), withResult: outcomes.result ?? 0, usageLimit: outcomes.quota ?? 0 },
+      runMinutes: Math.round((usage.totalDurationMs ?? 0) / 60_000) };
+  });
+}
+
+/**
+ * Remove an account's saved login folder from this computer: only a login saved here, and never while it runs work. Its
+ * run history, usage-limit wait and learned limit stay. They are AIWorks' records, not the login, and ending a wait here
+ * would send work straight back to an account at its limit. The dashboard never writes the supervisor store.
+ */
+export function removeDashboardAccount(dataDir, { provider, name } = {}) {
+  if (!ACCOUNT_PROVIDERS.includes(provider) || typeof name !== 'string' || !ACCOUNT_NAME.test(name)) {
+    throw refusal(400, 'Provider must be claude, codex, agy or cursor, and the account name only letters, numbers, dots, dashes and underscores.');
   }
+  const root = shallowHomesRoot(readConfig(dataDir), dataDir);
+  if (!existsSync(join(root, name, LOGIN_FOLDER[provider]))) throw refusal(404, 'This account has no saved login on this computer.');
+  const account = `${provider}/${name}`;
+  const path = join(dataDir, 'supervisor.db');
+  if (existsSync(path)) {
+    const store = new Store(path, { readOnly: true });
+    try {
+      if (openOnProfile(store, account) > 0) throw refusal(409, 'This account is running work right now. Remove its login after that work finishes.');
+    } finally { store.close(); }
+  }
+  const { removed } = removeShallowProfile({ kind: `${provider}-cli`, name, root });
+  return { success: true, account, removed };
 }
 
 export function configuredModelPreferences(dataDir) {
-  const config = readConfig(dataDir);
-  return modelPreferences(config);
+  return savedModelOrder(readConfig(dataDir));
 }
 
-export function saveDashboardModelPreferences(dataDir, { preferences, role, models } = {}) {
-  if (role && models) {
-    return setRoleModelPreference(dataDir, role, models);
+/**
+ * Save one role's model order in the shape the supervisor reads (src/supervisor/accounts.mjs applyModelPreferences): a
+ * list of model names, each tied to one AI worker when `kind` is given. Only Builder and Independent checker have an
+ * order, because nothing reads one for another role. The other role's order is kept. An empty list returns the role to
+ * AIWorks' own order.
+ */
+export function saveDashboardModelPreferences(dataDir, { role, models, kind = null } = {}) {
+  if (!PREFERENCE_ROLES.includes(role)) throw refusal(400, 'Choose Builder or Independent checker.');
+  if (!Array.isArray(models) || models.length > 10 || !models.every((model) => typeof model === 'string' && MODEL_NAME.test(model))) {
+    throw refusal(400, 'List up to 10 model names, each in letters, numbers, dots, colons, slashes or dashes.');
   }
-  if (!preferences || typeof preferences !== 'object') {
-    const err = new Error('Preferences object or role and models are required.');
-    err.status = 400;
-    throw err;
-  }
-  return saveModelPreferences(dataDir, preferences);
+  if (kind !== null && !WORKERS.some((worker) => worker.kind === kind)) throw refusal(400, 'Choose an AI worker from the list.');
+  return setRoleModelPreference(dataDir, role, models.map((model) => kind ? { model, kind } : model));
 }
 
 /** `value` when it is a GitHub issue link, else null. */
@@ -645,7 +688,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
         })() : null })) };
     const settings = computerSettings(campaigns, readConfig(dataDir), { now, repositories: configuredRepositories(dataDir),
       connected: projectConnectionEnabled(dataDir) ? connectedProjects(dataDir) : [],
-      accounts: configuredAccounts(store, readConfig(dataDir), { now, dataDir }) });
+      accounts: dashboardAccounts(store, readConfig(dataDir), { now, dataDir }) });
     return { available: true, observedAt: new Date(now).toISOString(), controller, campaigns, costs: projectCosts(campaigns), activity, coordinator, recent, settings };
   } catch { return { available: false, message: "AIWorks can't read its work records right now. What you see may be out of date. Buttons are off until it can read them again.", campaigns: [], costs: [], activity: [] }; }
   finally { store?.close(); }
