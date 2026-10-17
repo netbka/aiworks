@@ -1,15 +1,74 @@
 // CAAM read-only discovery (docs/design/ACCOUNT_ADAPTER_CAAM.md section 3.2): provider mapping, robot status parsing,
 // health flags and every failure path, against a synthetic caam script. No real CAAM, model, network or GitHub access.
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createCipheriv, randomBytes, scryptSync } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { CaamError, caamProfileHealth, caamProvider, caamRobotStatus, parseRobotStatus } from '../../src/supervisor/adapters/caam.mjs';
+import { CaamError, caamProfileHealth, caamProvider, caamRobotStatus, exportProfileCredentials, importProfileCredentials, parseRobotStatus, removeShallowProfile } from '../../src/supervisor/adapters/caam.mjs';
 
 const NOW = Date.parse('2026-10-13T12:00:00Z');
 const at = (offsetMs) => new Date(NOW + offsetMs).toISOString();
 const HOUR = 3_600_000;
+
+const bundlePassphrase = 'synthetic-bundle-passphrase';
+function encryptedFixture(items) {
+  const salt = randomBytes(16), iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', scryptSync(bundlePassphrase, salt, 32), iv);
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify({ version: 1, items }), 'utf8'), cipher.final()]);
+  return Buffer.concat([salt, iv, cipher.getAuthTag(), encrypted]);
+}
+function bundleFixture(t) {
+  const directory = mkdtempSync(join(tmpdir(), 'aiworks-synthetic-bundle-')), root = join(directory, 'profiles');
+  mkdirSync(root); t.after(() => rmSync(directory, { recursive: true, force: true }));
+  return { directory, root, receive: items => importProfileCredentials({ root, bundleBuffer: encryptedFixture(items), passphrase: bundlePassphrase }) };
+}
+
+test('credential import rejects the entire malformed bundle before any profile write', t => {
+  const { directory, root, receive } = bundleFixture(t);
+  const sentinel = join(directory, 'escaped.txt'); writeFileSync(sentinel, 'synthetic-outside');
+  const first = { provider: 'claude', name: 'first', files: { '.claude/.credentials.json': 'synthetic-first' } };
+  const paths = ['../escaped.txt', '../../escaped.txt', join(directory, 'absolute.txt'), 'Z:/synthetic/outside.txt',
+    'Z:\\synthetic\\outside.txt', '\\\\invalid.example\\share\\outside.txt', 'a\\..\\escaped.txt', 'a/../escaped.txt',
+    'a//file', 'a/./file', 'a/file:stream', 'a/name.', 'a/name ', 'a/CON.txt', 'a/nu\u0000l'];
+  const invalid = paths.map(path => ({ provider: 'codex', name: 'second', files: { [path]: 'synthetic-second' } }));
+  invalid.push({ provider: 'unknown', name: 'second', files: {} }, { provider: 'claude', name: '../escape', files: {} },
+    { provider: 'codex', name: 'CON', files: {} }, { provider: 'claude', name: 'second', files: null },
+    { provider: 'claude', name: 'second', files: [] }, { provider: 'claude', name: 'second', files: { x: {} } },
+    { provider: 'claude', name: 'second', files: { x: 'x'.repeat(1_048_577) } },
+    { provider: 'codex', name: 'FIRST', files: {} },
+    { provider: 'claude', name: 'second', files: { folder: 'x', 'folder/child': 'y' } },
+    { provider: 'claude', name: 'second', files: { 'a/file': 'x', 'A/FILE': 'y' } });
+  for (const item of invalid) {
+    rejects(() => receive([first, item]), 'invalid-bundle');
+    assert.deepEqual(readdirSync(root), [], 'an invalid later item must not leave the earlier valid profile behind');
+    assert.equal(readFileSync(sentinel, 'utf8'), 'synthetic-outside');
+  }
+});
+
+test('credential sharing rejects profile and nested directory links', t => {
+  const { directory, root, receive } = bundleFixture(t), outside = join(directory, 'outside');
+  mkdirSync(outside); writeFileSync(join(outside, 'marker'), 'synthetic-outside');
+  const profile = join(root, 'linked');
+  symlinkSync(outside, profile, process.platform === 'win32' ? 'junction' : 'dir');
+  const item = { provider: 'claude', name: 'linked', files: { marker: 'replacement' } };
+  rejects(() => receive([item]), 'invalid-bundle');
+  rejects(() => exportProfileCredentials({ root, profiles: [item], passphrase: bundlePassphrase }), 'invalid-bundle');
+  assert.equal(readFileSync(join(outside, 'marker'), 'utf8'), 'synthetic-outside');
+  rmSync(profile); mkdirSync(profile);
+  symlinkSync(outside, join(profile, '.claude'), process.platform === 'win32' ? 'junction' : 'dir');
+  rejects(() => receive([{ ...item, files: { '.claude/marker': 'replacement' } }]), 'invalid-bundle');
+  assert.equal(readFileSync(join(outside, 'marker'), 'utf8'), 'synthetic-outside');
+});
+
+test('credential sharing refuses existing hard links before import and export', t => {
+  const { directory, root, receive } = bundleFixture(t), outside = join(directory, 'outside.txt'), home = join(root, 'work');
+  writeFileSync(outside, 'synthetic-original'); mkdirSync(home); linkSync(outside, join(home, 'linked.txt'));
+  rejects(() => receive([{ provider: 'claude', name: 'work', files: { 'linked.txt': 'replacement' } }]), 'invalid-bundle');
+  rejects(() => exportProfileCredentials({ root, profiles: [{ provider: 'claude', name: 'work' }], passphrase: bundlePassphrase }), 'invalid-bundle');
+  assert.equal(readFileSync(outside, 'utf8'), 'synthetic-original');
+});
 
 const profile = (name, extra = {}) => ({ name, active: false, system: false, email: `${name}@example.invalid`, plan_type: 'max',
   health: { status: 'healthy', expires_at: at(24 * HOUR), expires_in: '24h', error_count_1h: 0, renewable: true }, ...extra });
@@ -177,3 +236,77 @@ test('malformed robot documents and profiles fail closed', () => {
   rejects(read(status([profile('a'), profile('a')])), 'invalid-output', /lists profile a twice/);
   assert.deepEqual(parseRobotStatus(JSON.stringify(status([])), 'claude', NOW), [], 'no profiles is an empty list, not an error');
 });
+
+test('removeShallowProfile cleans up shallow profile directory and informs CAAM', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'aiworks-caam-remove-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const home = join(root, 'work-test');
+  mkdirSync(join(home, '.claude'), { recursive: true });
+  writeFileSync(join(home, '.claude', '.credentials.json'), '{"login":"test"}');
+
+  assert.equal(existsSync(home), true);
+  const result = removeShallowProfile({ kind: 'claude-cli', name: 'work-test', root });
+  assert.equal(result.removed, true);
+  assert.equal(existsSync(home), false, 'shallow profile home was deleted');
+
+  // Deleting already missing profile returns removed: false without error
+  const again = removeShallowProfile({ kind: 'claude-cli', name: 'work-test', root });
+  assert.equal(again.removed, false);
+});
+
+test('exportProfileCredentials and importProfileCredentials roundtrip encrypted credentials', (t) => {
+  const rootA = mkdtempSync(join(tmpdir(), 'aiworks-caam-export-'));
+  const rootB = mkdtempSync(join(tmpdir(), 'aiworks-caam-import-'));
+  t.after(() => {
+    rmSync(rootA, { recursive: true, force: true });
+    rmSync(rootB, { recursive: true, force: true });
+  });
+
+  // Prepare profile 1 (claude)
+  const home1 = join(rootA, 'acc-claude');
+  mkdirSync(join(home1, '.claude'), { recursive: true });
+  writeFileSync(join(home1, '.claude', '.credentials.json'), '{"token":"secret-claude-token"}');
+  writeFileSync(join(home1, '.claude.json'), '{"settings":{"theme":"dark"}}');
+
+  // Prepare profile 2 (codex)
+  const home2 = join(rootA, 'acc-codex');
+  mkdirSync(join(home2, '.codex'), { recursive: true });
+  writeFileSync(join(home2, '.codex', 'auth.json'), '{"api_key":"secret-codex-key"}');
+
+  // Short passphrase throws
+  rejects(() => exportProfileCredentials({ root: rootA, profiles: [{ provider: 'claude', name: 'acc-claude' }], passphrase: 'short' }),
+    'invalid-passphrase', /at least 8 characters/);
+
+  // Export encrypted bundle
+  const passphrase = 'SuperSecretPassphrase123!';
+  const bundle = exportProfileCredentials({
+    root: rootA,
+    profiles: [
+      { provider: 'claude', name: 'acc-claude' },
+      { provider: 'codex', name: 'acc-codex' },
+    ],
+    passphrase,
+  });
+
+  assert.ok(Buffer.isBuffer(bundle));
+  assert.ok(!bundle.includes(Buffer.from('secret-claude-token')), 'ciphertext does not contain plain secrets');
+
+  // Import with wrong passphrase fails
+  rejects(() => importProfileCredentials({ root: rootB, bundleBuffer: bundle, passphrase: 'WrongPassword456!' }),
+    'auth-failed', /incorrect passphrase/);
+
+  // Import into rootB with correct passphrase
+  const imported = importProfileCredentials({ root: rootB, bundleBuffer: bundle, passphrase });
+  assert.equal(imported.success, true);
+  assert.equal(imported.count, 2);
+
+  // Verify unpacked credential files match exact content
+  const restored1 = join(rootB, 'acc-claude', '.claude', '.credentials.json');
+  assert.equal(existsSync(restored1), true);
+  assert.equal(readFileSync(restored1, 'utf8'), '{"token":"secret-claude-token"}');
+
+  const restored2 = join(rootB, 'acc-codex', '.codex', 'auth.json');
+  assert.equal(existsSync(restored2), true);
+  assert.equal(readFileSync(restored2, 'utf8'), '{"api_key":"secret-codex-key"}');
+});
+

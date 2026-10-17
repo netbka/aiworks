@@ -18,6 +18,7 @@ import { clearCoordinatorViolation, coordinatorView, postOwnerMessage } from './
 import { approvalFromFile, CODE_ROOT, declarationFromFile, revisionNotMerged } from './provenance.mjs';
 import { Store } from './store.mjs';
 import { RELEASE_STOP, REVIEW_ONLY, releaseNarrowings, setReviewOnly } from './release/state.mjs';
+import { modelPreferences, setRoleModelPreference, clearRoleModelPreferences, configuredAccounts, addDashboardAccount, removeDashboardAccount, exportDashboardAccounts, importDashboardAccounts } from './accounts.mjs';
 
 const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--governance <governance-checkout>] ...
   serve                                 run the controller loop (exits cleanly when <data>/STOP exists)
@@ -50,6 +51,18 @@ const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--go
   release-mode <project> <destination> review-only
                                         narrow one destination to Review only. review-only is the only mode accepted:
                                         no command switches a destination to Auto Release, only a newer valid grant does
+  account list                          list configured accounts and profile cooldown / usage metrics
+  account add <provider> <name> [--token <tok>] [--api-key <key>]
+                                        add a local login profile under the shallow homes root
+  account remove <provider> <name>      remove an account profile from local storage and store
+  account export [<file>] --passphrase <pass>
+                                        export encrypted credential bundle of all profiles
+  account import <file> --passphrase <pass>
+                                        import encrypted credential bundle into profile folders
+  account preferences                   list role model order and preferences (implementer, verification, etc.)
+  account set-preference <role> <model1> [model2...] [--kind <kind>] [--effort <effort>]
+                                        set model order and preferences for a role
+  account clear-preferences [<role>]    clear model preferences for a role or all roles
 The data directory defaults to AIWORKS_DATA and holds config.json, supervisor.db, runs/ and supervisor.log.
 The governance checkout (an operator-configured read-only directory) is --governance, else config.json "governanceRoot".`;
 
@@ -68,6 +81,11 @@ const approvalFlag = take('--approval');
 const approvedFlag = take('--approved');
 const explicitGovernance = take('--governance');
 const sinceFlag = take('--since');
+const tokenFlag = take('--token');
+const apiKeyFlag = take('--api-key');
+const passphraseFlag = take('--passphrase');
+const kindFlag = take('--kind');
+const effortFlag = take('--effort');
 const jsonOnly = args.includes('--json') ? Boolean(args.splice(args.indexOf('--json'), 1)) : false;
 const [command, ...rest] = args;
 if (!command || !selectedData) {
@@ -101,7 +119,9 @@ try {
   if (command === 'status' && explicitData && environmentData && canonical(explicitData) !== canonical(environmentData)) {
     throw new CampaignError('DATA_DIR_MISMATCH', '--data differs from AIWORKS_DATA; confirm the installed task path and unset or correct the stale value');
   }
-  store = new Store(join(dataDir, 'supervisor.db'), { readOnly: ['status', 'messages', 'baseline'].includes(command) });
+  const readOnlyCommand = ['status', 'messages', 'baseline'].includes(command) ||
+    ((command === 'account' || command === 'accounts') && existsSync(join(dataDir, 'supervisor.db')) && (!rest[0] || ['list', 'preferences', 'prefs'].includes(rest[0])));
+  store = new Store(join(dataDir, 'supervisor.db'), { readOnly: readOnlyCommand });
   if (command === 'serve') await serve();
   else if (command === 'start' && approvedFlag !== null) {
     // The owner's private approved declaration (WORK_ENVELOPE.md section 5, slice E9), registered by merged code only.
@@ -168,6 +188,58 @@ try {
     const config = existsSync(join(dataDir, 'config.json')) ? JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')) : {};
     const view = coordinatorView(store, config);
     print({ ...view, runs: view.runs.map((run) => ({ id: run.id, state: run.state, messages: run.message_ids, createdAt: new Date(run.created_at).toISOString() })) });
+  }
+  else if (command === 'account' || command === 'accounts') {
+    const sub = rest[0];
+    let config = {};
+    try { config = JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { /* default empty config */ }
+    if (!sub || sub === 'list') {
+      const accounts = configuredAccounts(store, config, { dataDir });
+      print({ accounts });
+    } else if (sub === 'add') {
+      const provider = rest[1];
+      const name = rest[2];
+      const token = tokenFlag ?? apiKeyFlag;
+      print(addDashboardAccount(dataDir, { provider, name, token, apiKey: apiKeyFlag }));
+    } else if (sub === 'remove') {
+      const provider = rest[1];
+      const name = rest[2];
+      print(removeDashboardAccount(dataDir, { provider, name }));
+    } else if (sub === 'export') {
+      const outPath = rest[1] && !rest[1].startsWith('--') ? rest[1] : null;
+      const res = exportDashboardAccounts(dataDir, { passphrase: passphraseFlag });
+      if (outPath) {
+        writeFileSync(resolve(outPath), Buffer.from(res.bundleBase64, 'base64'));
+        print({ success: true, count: res.count, exportedTo: resolve(outPath) });
+      } else {
+        print(res);
+      }
+    } else if (sub === 'import') {
+      const inPath = rest[1] && !rest[1].startsWith('--') ? rest[1] : null;
+      if (!inPath) throw new CampaignError('FILE_REQUIRED', 'account import <bundleFile> requires file path');
+      const bundleBase64 = readFileSync(resolve(inPath)).toString('base64');
+      print(importDashboardAccounts(dataDir, { bundleBase64, passphrase: passphraseFlag }));
+    } else if (sub === 'preferences' || sub === 'prefs') {
+      print({ preferences: modelPreferences(config) });
+    } else if (sub === 'set-preference') {
+      const role = rest[1];
+      if (!role) throw new CampaignError('ROLE_REQUIRED', 'account set-preference <role> <model1> [model2...]');
+      const models = rest.slice(2).filter((item) => !item.startsWith('--'));
+      if (!models.length) throw new CampaignError('MODEL_REQUIRED', 'account set-preference requires at least one model');
+      const modelEntries = models.map((m) => {
+        const entry = { model: m };
+        if (kindFlag) entry.kind = kindFlag;
+        if (effortFlag) entry.effort = effortFlag;
+        return entry;
+      });
+      print(setRoleModelPreference(dataDir, role, modelEntries));
+    } else if (sub === 'clear-preferences') {
+      const role = rest[1] && !rest[1].startsWith('--') ? rest[1] : null;
+      print(clearRoleModelPreferences(dataDir, role));
+    } else {
+      console.error(USAGE);
+      process.exitCode = 2;
+    }
   }
   else { console.error(USAGE); process.exitCode = 2; }
 } catch (error) {
