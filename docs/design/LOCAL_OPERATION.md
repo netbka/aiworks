@@ -51,7 +51,7 @@ Grep basis: `gh`, `api.github.com` and `github.com` as words in `src/` and `scri
 | G8 | Find a marked comment | `src/supervisor/adapters/github.mjs:137-143` (`:138-139`, `:141`) | `gh api .../comments --paginate`, so a retry never posts twice | SELF7 |
 | G9 | Post a comment | `src/supervisor/adapters/github.mjs:145-150` (`:147`) | `POST issues/{n}/comments` | SELF7 |
 | G10 | Merge call | `src/supervisor/release/github-merge.mjs:3`, `:14-16` | `PUT pulls/{n}/merge`, `merge_method=merge`, `sha=<verified>` | SELF8 (local merge commit in `src/supervisor/release/local-merge.mjs`) |
-| G11 | Merge gate | `src/supervisor/merge.mjs:66`, `:140`, `:150`, `:200` | Selects candidates by GitHub pull request URL, reads the pull request, calls G10 | SELF8 |
+| G11 | Merge gate | `src/supervisor/merge.mjs:66`, `:140`, `:150`, `:200`, `src/supervisor/merge-queue.mjs:98`, `:148`, `:159`, `:181` | Selects candidates by GitHub pull request URL, reads the pull request, calls G10; the merge queue reads each pull request it stacks, and again before pushing | SELF8 |
 | G12 | Dependency integration | `src/supervisor/controller.mjs:1224-1226` | Asks GitHub whether a dependency's pull request was merged | SELF4 |
 | G13 | CI repair | `src/supervisor/controller.mjs:1381`, `:1383` | Reads CI and the open pull request of a published head | Off for AIWorks itself (G6) |
 | G14 | Merged heads | `src/supervisor/controller.mjs:1554-1556` | Same receipt as G12, for published holders of work | SELF4 |
