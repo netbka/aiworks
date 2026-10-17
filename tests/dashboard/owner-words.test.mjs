@@ -32,11 +32,11 @@ test('every owner screen of the review fixture is in owner words, outside a deta
   // The first run and records that cannot be read: the global screens.
   for (const store of ['empty', 'unreadable']) {
     const page = await openPage(t, { store });
-    for (const where of ['#/projects', '#/needs', '#/settings', '#/settings/messages', '#/projects/add']) { await page.go(where); check(`${store} ${where}`, page.text()); }
+    for (const where of ['#/projects', '#/needs', '#/settings', '#/settings/messages', '#/settings/instructions', '#/projects/add']) { await page.go(where); check(`${store} ${where}`, page.text()); }
   }
   // Every state of the full store: the global screens, each project's tabs and Start work, and every step.
   const page = await openPage(t);
-  const screens = ['#/projects', '#/needs', '#/settings', '#/settings/accounts', '#/settings/messages', '#/projects/add'];
+  const screens = ['#/projects', '#/needs', '#/settings', '#/settings/accounts', '#/settings/messages', '#/settings/instructions', '#/projects/add'];
   for (const project of PROJECTS) for (const tab of PROJECT_TABS) screens.push(address(project, tab));
   for (const c of supervisorSnapshot(page.dataDir).campaigns) for (const task of c.tasks) screens.push(address(c.repository, `/step/${c.id}/${task.id}`));
   assert.ok(screens.length > 40, `${screens.length} screens`);
