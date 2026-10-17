@@ -41,15 +41,13 @@ const REHEARSAL = /\b(environment|runUntil|runtimeCheckout|runCli|CLI)\b[^;]*fro
 const SERVICE = /child_process|process\.execPath|\.listen\(|createServer|review-store|startDashboard|main\.mjs/;
 const tierOf = (source) => (REHEARSAL.test(source) ? 'rehearsal' : SERVICE.test(source) ? 'service' : 'unit');
 
-// The slowest files of each tier, slowest first (measured 2026-10-14; the runner prints every file's time). A tier's
+// The slowest files of each tier, slowest first (measured 2026-10-17; the runner prints every file's time). A tier's
 // slowest files start first so a long file never runs alone at the end. A file missing here only starts later; the
 // order changes no result.
 const SLOWEST = {
-  rehearsal: ['restart-parallel', 'supervisor', 'restart-publish', 'restart', 'unlimited', 'owner-intervention-recheck',
-    'unlimited-retries', 'routing', 'parallel', 'integration-repair', 'merged-code', 'owner-intervention', 'merge-gate',
-    'provider-accounts', 'process', 'rest-publish', 'routing-receipt', 'packet-governance'].map((name) => `tests/supervisor/${name}.test.mjs`),
-  service: ['dashboard/review-fixture', 'dashboard/owner-words', 'dashboard/stability', 'dashboard/needs-counts', 'supervisor/project-local-git',
-    'dashboard/merges', 'dashboard/work', 'supervisor/project-folder', 'dashboard/copy', 'dashboard/settings', 'dashboard/cost'].map((name) => `tests/${name}.test.mjs`),
+  rehearsal: ['supervisor', 'unlimited-retries', 'restart-parallel', 'restart', 'restart-publish', 'integration-repair', 'merge-gate',
+    'merged-code', 'rest-publish', 'gate-tally', 'process', 'coordinator', 'agy'].map((name) => `tests/supervisor/${name}.test.mjs`),
+  service: ['supervisor/release-local', 'dashboard/accounts-api', 'supervisor/github-reader'].map((name) => `tests/${name}.test.mjs`),
   unit: [],
 };
 const ordered = (tier, files) => {
