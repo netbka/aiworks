@@ -200,7 +200,7 @@ Reuse #1 for blocker dedup/Telegram recovery, #4 for owner-attention evidence, a
 
 ## 6. Build order, lanes and file ownership
 
-**In short.** First, AIWorks stops losing time to its own problems: a stopped supervisor comes back by itself (#18), publishing survives a GitHub limit (#21), a pull request that conflicts after a sibling merge is repaired without a hand-written campaign (#27), and more than one step can run at a time. After that, five lanes run as parallel campaigns. Powers that wait for an owner decision (#33 D5-gate) are built switched off, or not built, and each row says which. The owner answered #24 D2 and #32 D4 on 2026-10-16 (section 8), so a project without GitHub can be planned, started and finished once lane STA and lane UI build it. Lane SELF (6.8b, added 2026-10-16) lets AIWorks maintain itself without GitHub: local main is trusted, the merge gate merges there, GitHub becomes an optional backup, and a local work list replaces AIWorks's own GitHub issues.
+**In short.** First, AIWorks stops losing time to its own problems: a stopped supervisor comes back by itself (#18), publishing survives a GitHub limit (#21), a pull request that conflicts after a sibling merge is repaired without a hand-written campaign (#27), and more than one step can run at a time. After that, five lanes run as parallel campaigns. Release powers are built switched off, or not built, and each row says which; the owner answered #33 D5-gate on 2026-10-17 (section 8), and lane CLN (6.8c) adds cleanup after finished work. The owner answered #24 D2 and #32 D4 on 2026-10-16 (section 8), so a project without GitHub can be planned, started and finished once lane STA and lane UI build it. Lane SELF (6.8b, added 2026-10-16) lets AIWorks maintain itself without GitHub: local main is trusted, the merge gate merges there, GitHub becomes an optional backup, and a local work list replaces AIWorks's own GitHub issues.
 
 This section consolidates the implementation slices of the six merged designs: [PROJECT_CONNECTION](design/PROJECT_CONNECTION.md#10-implementation-slices) (PC), [WORK_ENVELOPE](design/WORK_ENVELOPE.md#12-implementation-slices) (WE), [ADAPTIVE_SCHEDULER](design/ADAPTIVE_SCHEDULER.md#10-implementation-slices) (SCH), [MODEL_ROUTING](design/MODEL_ROUTING.md#13-implementation-slices) (MR), [OWNER_WORKSPACE](design/OWNER_WORKSPACE.md#11-implementation-slices) (OW) and [AUTO_RELEASE](design/AUTO_RELEASE.md#11-implementation-slices) (AR), plus the later [SCOPED_READING](design/SCOPED_READING.md#13-implementation-slices) (SR, added 2026-10-14 as lane READ) and [LOCAL_OPERATION](design/LOCAL_OPERATION.md#9-implementation-slices) (LO, added 2026-10-16 as lane SELF). The designs hold the detail (exact tests, acceptance, reasons). This section decides order, lanes and file ownership only. It replaces the earlier wave table.
 
@@ -233,7 +233,9 @@ Paths: `sup/` is `src/supervisor/`, `dash/` is `src/dashboard/`, `pub/` is `src/
 | **MOD** - model choice and cost | Each step uses a fitting model; cost is shown honestly, unknown stays unknown. | MOD1-MOD7 | MOD1 at once; MOD2 after RUN6. |
 | **STA** - connect projects and start work | Projects connect (GitHub, local Git, plain folder); one approval grows its own task graph. | STA1-STA18 | STA1, STA2 at once; STA3 after RUN6. |
 | **UI** - owner workspace | One question per screen, project first. Every dashboard file is changed only in this lane. | UI1-UI17; UI18 (the dashboard half of lane READ, 6.8a) | At once. |
-| **REL** - Auto Release, switched off | Release can be checked and rehearsed, but never runs until #33. | REL1-REL11 | At once (REL1). |
+| **REL** - Auto Release, switched off | Release can be checked and rehearsed, and runs only after the rehearsal and under a grant (#33 answered 2026-10-17). | REL1-REL11, REL5a | At once (REL1). |
+| **CLN** - cleanup after finished work | Finished tasks leave no worktrees and no merged local branches behind; nothing unsaved is lost. | CLN1, CLN2 | CLN1 after SELF7 (`controller.mjs` turn). |
+| **PROG** - the next wave starts by itself | When a wave's last slice merges, the next unblocked slices of this plan start without a session or the owner declaring them, inside the program record the owner approved once. | PROG1-PROG5 | At once (PROG1, PROG2). |
 | **READ** - scoped reading | A plan marks the sections a worker must read; the verifier reads everything and cites the rule a returned change broke; the repair round receives that section. Misses are counted, never assumed away. | READ1-READ3; UI18 runs in lane UI | READ1 at once: every earlier writer of its files is merged (observed on main at `ec7b1b3`, 2026-10-15). READ2 after READ1, READ3 after READ2, UI18 after READ3. |
 | **SELF** - AIWorks maintains itself without GitHub | AIWorks's own code is trusted from local main and merged there; GitHub is an optional backup that nothing waits on; AIWorks's own findings, decisions and reviews live in a local work list. | SELF1-SELF13; UI19, UI20 run in lane UI | SELF1 at once, after `aw-ui-fix-5` (new test file only). SELF2 onwards after STA17, READ3 and the slices 6.9 names for each shared file. UI19 after UI18. |
 
@@ -318,7 +320,7 @@ After UI9, run the blind review of [OW §13](design/OWNER_WORKSPACE.md#13-blind-
 
 ### 6.8 Lane REL - Auto Release, switched off
 
-Every slice ships with `release.enabled: false` and no release credential (AR §11). No release can run before #33.
+Every slice ships with `release.enabled: false` (AR §11). #33 was answered on 2026-10-17 (section 8 (h) to (k)): no release credential is ever created, and REL11 is the first slice that switches anything on.
 
 | ID | Outcome | Owns | Depends on | Tests | Owner decision |
 | --- | --- | --- | --- | --- | --- |
@@ -326,15 +328,16 @@ Every slice ships with `release.enabled: false` and no release credential (AR §
 | **REL2** | Status reports, per done task and destination, "would be eligible" or "not eligible, because ...". Report only. | `sup/release/classify.mjs`, `sup/release/eligibility.mjs` (new), `sup/api.mjs` (`release` field), `ts/release-eligibility.test.mjs` (new) | REL1, RUN3 (api turn) | AR R2 tests: every check fails on missing or unknown evidence | Built off (#33) |
 | **REL3** | Durable release rows, one lock per destination, intent before effect, reconciliation with a fake adapter. | `sup/store.mjs` (`releases`, `release_locks`), `sup/release/state.mjs` (new), `ts/release-state.test.mjs` (new) | REL2, RUN5 (store turn) | AR R3 tests | Built off (#33) |
 | **REL4** | `RELEASE-STOP`, per-project mode (default Review only) and `release.enabled` checked before every step; CLI `release-stop`, `release-mode ... review-only`. | `sup/release/state.mjs`, `sup/cli.mjs`, `sup/api.mjs`, SUPERVISOR.md (release section, "built, not enabled"), `ts/release-switches.test.mjs` (new) | REL3, MOD1 (cli turn) | AR R4 tests; no command can switch a project to Auto Release | Built off (#33) |
-| **REL5** | A release step runs in its own clean process; the credential is fetched by reference only. | `sup/release/runner.mjs`, `sup/release/credential.mjs` (new), `ts/release-runner.test.mjs` (new), a static test under `ts/` that merge, deploy and apply calls live only in `sup/release/` | REL4 | AR R5 tests; synthetic credential never in journal, row, log or packet | Built off; using it waits for **#33** item 2 |
-| **REL6** | GitHub merge adapter: `--match-head-commit`, tree equality, reconciliation, revert-PR proposal. | `sup/release/github-merge.mjs` (new), `sup/adapters/github.mjs` (read-only `pullRequestState`), `ts/release-github.test.mjs` (new) | REL5, STA13 (github.mjs turn) | AR R6 tests: never two merge calls for one release | Built off; running on a real repository waits for **#33** |
-| **REL7** | Deploy, check and rollback through the project's own commands at the exact revision, with drift check and automatic rollback. | `sup/release/deploy.mjs` (new), `ts/release-deploy.test.mjs` (new) | REL6 | AR R7 tests | Built off; a real destination waits for **#33** |
+| **REL5** | A release step runs in its own clean process; the credential is fetched by reference only. | `sup/release/runner.mjs`, `sup/release/credential.mjs` (new), `ts/release-runner.test.mjs` (new), a static test under `ts/` that merge, deploy and apply calls live only in `sup/release/` | REL4 | AR R5 tests; synthetic credential never in journal, row, log or packet | Built off. #33 item 2 answered 2026-10-17 (i): no release credential; REL5a changes the runner. |
+| **REL5a** | A destination names no credential: the runner uses the logins already on this computer (the operator's `gh` login for a merge; the project's commands with the access they already have), still in its own clean process with only the variables those logins need. New destination kind `deploy`: it deploys the merge commit the merge gate recorded and never merges; a `merge` or `merge-then-deploy` destination in a repository the merge gate covers is invalid. | `schemas/release-authorization.schema.json`, `sup/release/authorization.mjs`, `sup/release/eligibility.mjs`, `sup/release/runner.mjs`, `ts/release-authorization.test.mjs`, `ts/release-eligibility.test.mjs`, `ts/release-runner.test.mjs` | REL5 | AR R1, R2 and R5 tests kept, plus: no credential store is read; the runner never sets `GH_TOKEN`; a merge destination in a merge-gate repository is refused by name; a `deploy` release without a recorded `merged` event is not eligible | No (decided 2026-10-17 (i), (k)) |
+| **REL6** | GitHub merge adapter: `--match-head-commit`, tree equality, reconciliation, revert-PR proposal. | `sup/release/github-merge.mjs` (new), `sup/adapters/github.mjs` (read-only `pullRequestState`), `ts/release-github.test.mjs` (new) | REL5, STA13 (github.mjs turn) | AR R6 tests: never two merge calls for one release | Deferred (k): built only when a project wants releases without the merge gate. The merge gate's own call (`github-merge.mjs`, #138) is not this slice. |
+| **REL7** | Deploy, check and rollback through the project's own commands at the exact revision, with drift check and automatic rollback; for kind `deploy`, the revision is the merge commit the merge gate recorded, after the tree check of AR §7.2 step 3. | `sup/release/deploy.mjs` (new), `ts/release-deploy.test.mjs` (new) | REL5a | AR R7 tests; a `deploy` release whose merge commit's tree differs from the verified tree is refused | Built off; a real destination waits for REL11 |
 | **REL8** | `local-git-apply` and `local-folder-apply` with backup, apply, confirm, rollback and reconciliation. First used by the owner's Apply (STA18). | `sup/release/local-apply.mjs` (new), `ts/release-local.test.mjs` (new) | REL4, STA5 | AR R8 tests, none skipped on Windows | No to build or for the owner's Apply (decided 2026-10-16). A local **Auto Release** grant waits for #33. |
-| **REL9** | The release decision and its three cross-references are recorded with the next free AW number (C2). | `docs/DECISIONS.md`, `docs/PRODUCT_CONSTITUTION.md`, `AGENTS.md`, `docs/STATUS.md` | REL7, F3-CARRYOVER (REL8 not needed) | `npm run check`; text matches the owner's accepted wording | **#33** item 1. Not written before. |
-| **REL10** | the governance contract's project-contract schema accepts the release executor and record; AIWorks's registry entry carries it. **An governance pull request by the governance contract's process, proposed from here as text only.** | In `example-org/governance`: `schemas/project-contract.schema.json`, `registry/projects/aiworks.json` | REL9 | the governance contract's own validation | **#33** and governance review |
-| **REL11** | Disposable rehearsal on workstation, then one granted canary. Runbook only. | SUPERVISOR.md (enable and roll back), `docs/STATUS.md` | REL1-REL7, REL9, REL10 merged and deployed (REL8 for a local canary, UI15 recommended) | Full suite at the deployed SHA; forced check failure with rollback; controller killed mid-merge and mid-deploy | **#33** items 1-3. Nothing before. |
+| **REL9** | The release decision and its three cross-references are recorded with the next free AW number (C2). | `docs/DECISIONS.md`, `docs/PRODUCT_CONSTITUTION.md`, `AGENTS.md`, `docs/STATUS.md` | REL7, F3-CARRYOVER (REL8 not needed) | `npm run check`; text matches the owner's accepted wording | #33 item 1 answered 2026-10-17 (h). Records AW-010 with (i) to (m), including the cleanup sentence of AW-001 (l). |
+| **REL10** | the governance contract's project-contract schema accepts the release executor and record; AIWorks's registry entry carries it. **An governance pull request by the governance contract's process, proposed from here as text only.** | In `example-org/governance`: `schemas/project-contract.schema.json`, `registry/projects/aiworks.json` | REL9 | the governance contract's own validation | #33 answered 2026-10-17; the proposal carries (i) (no credential field) and (k) (kind `deploy`). Governance review still needed. |
+| **REL11** | Disposable rehearsal on workstation, then one granted canary. Runbook only. | SUPERVISOR.md (enable and roll back), `docs/STATUS.md` | REL1-REL5, REL5a, REL7, REL9, REL10 merged and deployed (REL8 for a local canary, UI15 recommended) | Full suite at the deployed SHA; forced check failure with rollback; controller killed mid-merge and mid-deploy | #33 answered 2026-10-17: the rehearsal, then the canary of (j). The canary's grant record carries the owner's approval link (AR §4.2 `approval`). |
 
-REL9 to REL11 wait for #33. REL8 does not: the owner's Apply (STA18) uses it, and REL9 does not wait for REL8.
+Since 2026-10-17 no slice in this lane waits for an owner answer. The one owner act left is approving the canary's grant record in REL11. REL8 is already merged; the owner's Apply (STA18) uses it.
 
 ### 6.8a Lane READ - scoped reading and verifier citations
 
@@ -373,13 +376,62 @@ Nothing in this lane is built (planned). The UI halves, UI19 and UI20, change da
 | **UI19** | Dashboard: Resume checks the trusted tip; merge check of the self-hosted repository reads local `main` without fetch; Settings shows trusted main and backup; links point into the work list. | `dash/supervisor.mjs`, `dash/merges.mjs`, `dash/owner.mjs`, `dash/copy.mjs`, `pub/dashboard.js`, `td/self-hosting.test.mjs` (new) | UI18, SELF3, SELF9 | LO L12: no `git fetch` for the self-hosted repository; Resume refused on an unrecorded runtime; keyboard and 320px | No |
 | **UI20** | Dashboard: the work list screen, owner decisions in Needs me, review items in Results, import and the confirmed close. | `dash/work-list.mjs` (new), `dash/server.mjs` (routes with origin, CSRF, 16 KiB and the caller check), `dash/owner.mjs`, `pub/*`, `docs/OPERATIONS_DASHBOARD.md`, `td/work-list.test.mjs` (new) | UI19, SELF5, SELF10, SELF11, STA16 | LO L13: workers cannot write; close only after the typed confirmation; plain copy | No |
 
+### 6.8c Lane CLN - cleanup after finished work
+
+Added 2026-10-17 for the owner's decision (l) (section 8). Today nothing removes a worktree or a branch (observed: `sup/adapters/git.mjs:3`, SUPERVISOR.md section 1), so every task leaves its implementer and verifier checkouts and its local branch behind. Nothing in this lane is built (planned), and nothing is cleaned before CLN2.
+
+A task is **finished** for cleanup when the trusted main (`origin/main`, or local main once SELF13 is on) contains its verified commit, or when its campaign is completed or cancelled, and it has no open operation.
+
+| ID | Outcome | Owns | Depends on | Tests | Owner decision |
+| --- | --- | --- | --- | --- | --- |
+| **CLN1** | Cleanup, built off (`cleanup.enabled` in `config.json`; absent or malformed means off). Once per pass, for each finished task: remove each of its worktrees with `git worktree remove`, never `--force`; keep and report one with uncommitted or untracked files; then delete its local `campaign/<campaign>/<task>` branch with `git branch -d` only when the trusted main contains it. Coordinator and planning checkouts of finished runs follow the same rule. A worktree no task or run owns is kept and listed. It never deletes a remote branch, a run directory or anything outside the registered worktree folder. Each removal is journaled before and after, so a crash resumes and never repeats. | `sup/cleanup.mjs` (new), `sup/adapters/git.mjs` (remove and delete helpers), `sup/controller.mjs` (one call per pass), SUPERVISOR.md (cleanup, "built, not enabled"), `ts/cleanup.test.mjs` (new) | SELF4 (`git.mjs` turn), SELF7 (`controller.mjs` turn) | A worktree with changes is kept and reported; a branch main does not contain is kept; an open operation's worktree is never touched; a path outside the registered folder is refused; a crash between removal and branch deletion finishes once; a later repair round recreates a removed worktree; `ts/release-boundary.test.mjs` unchanged | No (decided 2026-10-17 (l)). Switched on only by CLN2. |
+| **CLN2** | Baseline, then switch on through the upgrade procedure: record privately the number and size of worktrees and local task branches, set `cleanup.enabled: true`, and compare after the first passes, which also clear the backlog of earlier tasks. Runbook only. | SUPERVISOR.md (switch on, switch back), `docs/STATUS.md` | CLN1 merged and deployed; REL9 merged (the amended AW-001 sentence) | Full suite at the deployed SHA; counts before and after; every kept worktree still has its files | No new question (l) |
+
+### 6.8d Lane PROG - the next wave starts by itself
+
+Added 2026-10-17 for the owner's decision (n) (#153 option B, section 8). Today a wave ends and AIWorks goes idle until a session writes the next declarations and someone runs `start` (observed, #153). Nothing in this lane is built (planned).
+
+**The program record.** One private JSON file, `aiworks-program/1`, kept outside source Git like an envelope approval (`sup/approvals.mjs`). It names:
+- the repository and base branch;
+- the plan file;
+- `allow`, the slice IDs or lane prefixes it covers, and `exclude`, the slices it never covers;
+- the executor chain and the constraints every task carries, copied into each declaration unchanged;
+- an `authorization` block with the owner's words and a version that only goes up.
+
+The store keeps its canonical digest. A newer version replaces it; `revoked: true` or a `PROGRAM-STOP` file in the data directory stops every new wave at once.
+
+**A wave, by fixed rules.** At most once an hour, and only while no wave of the program has unfinished tasks, the supervisor reads this plan from the trusted main. A slice is **ready** when all of these hold:
+- the record allows it and does not exclude it;
+- its row is not runbook-only;
+- no task with its ID is done or running in this repository;
+- every slice ID in its *Depends on* cell is done, with its verified commit on main;
+- no earlier slice in the turn order (6.9) that writes one of its files is unfinished.
+
+The ready slices become one version 1 declaration, `<program>-w<n>`:
+- each task's goal is its row: outcome, files, dependencies and tests, with the section it comes from;
+- `writes` are the files its *Owns* cell names;
+- `dependsOn` links slices of the same wave;
+- `requiresMergedDependencies` is true.
+
+The same plan revision and record always give the same declaration and digest.
+
+**Registration.** The supervisor registers a wave only if every task fits the record exactly and the runtime passes the AW-005 merged-code check. It journals `program-registered` with both digests, and Results shows it. A wave that does not fit is not registered: it becomes one Needs me item with the reason and the proposed declaration. Registration is idempotent across restarts, so one wave number is never registered twice.
+
+| ID | Outcome | Owns | Depends on | Tests | Owner decision |
+| --- | --- | --- | --- | --- | --- |
+| **PROG1** | The program record validates and is stored by digest; CLI `program-approve <file>`, `program-stop` and `program-status`. Built off: `program.enabled` in `config.json`, absent or malformed means off. | `schemas/program-record.schema.json` (new), `sup/program.mjs` (new), `sup/cli.mjs`, `ts/program.test.mjs` (new) | none | An unknown field, a missing field or a lower version is refused without echoing the file; a newer version replaces the old one; revoked stays revoked; `PROGRAM-STOP` is read without the database; nothing is registered by this slice | No (decided 2026-10-17 (n)) |
+| **PROG2** | The wave proposal: plan rows, turn order and shared-file lists parsed from the plan text; ready slices computed by the rules above; one declaration built that `validateDeclaration` accepts. Pure: reads text and task facts, writes nothing. | `sup/program-plan.mjs` (new), `ts/program-plan.test.mjs` (new, a synthetic plan fixture) | none | A slice with an unfinished dependency, an earlier unfinished writer of the same file, a runbook-only row, an excluded slice or a running task is not proposed, each with its reason; the same inputs give the same digest; this plan parses without error | No |
+| **PROG3** | Registration in the supervisor pass, built off: one wave at a time, the exact-fit check, the journal event, Needs me on a misfit, `PROGRAM-STOP` and crash safety. | `sup/program.mjs`, `sup/controller.mjs` (one call per pass), SUPERVISOR.md (program section, "built, not enabled"), `ts/program-register.test.mjs` (new) | PROG1, PROG2 | Off: nothing registered and status unchanged; on: a fitting wave registered once, also after a crash between registration and journal; a misfit becomes one Needs me item and registers nothing; a wave never starts while an earlier wave has unfinished tasks | No |
+| **PROG4** | The decision text: (n) recorded with the next free AW number, and the constitution sentence "runs only campaigns the owner explicitly registered" amended to include waves registered under an owner-approved program record. | `docs/DECISIONS.md`, `docs/PRODUCT_CONSTITUTION.md`, `AGENTS.md`, `docs/STATUS.md` | PROG3, REL9 | `npm run check`; the text quotes the owner's words of 2026-10-17 | No |
+| **PROG5** | Switch on: the owner's first program record, approved with `program-approve`, then `program.enabled: true` through the upgrade procedure. Runbook only. | SUPERVISOR.md (switch on, switch back) | PROG1-PROG4 merged and deployed | Status before and after; the first wave proposed from main matches a hand check of section 6 | No new question (n) |
+
 ### 6.9 Shared files and the order that avoids conflicts
 
 Files touched by one lane only (for example `sup/scheduler.mjs`, `sup/router.mjs`, `sup/release/*`, `sup/adapters/mirror.mjs`, everything under `src/dashboard/`) follow the lane order. Files touched by more than one lane, or by a declared task and a lane, follow this global turn order. A slice starts only after every earlier slice in the list that touches the same file is merged:
 
-**Turn order:** R2-KEEPER → F2-DUPLICATE → F3-CARRYOVER → RUN1 → RUN1B → STA1 → MOD1 → RUN2 → RUN3 → REL2 → RUN4 → RUN5 → REL3 → REL4 → RUN6 → RUN9 → STA3 → MOD2 → MOD3 → STA6 → STA7 → STA8 → STA9 → MOD5 → MOD6 → STA10 → STA11 → STA12 → STA13 → REL6 → STA14 → RUN10 → MOD7 → STA15 → STA16 → STA17 → SELF2 → SELF3 → SELF4 → SELF5 → SELF6 → SELF7 → SELF8 → SELF9 → SELF10 → SELF11 → SELF12 → SELF13 → REL9 → REL11.
+**Turn order:** R2-KEEPER → F2-DUPLICATE → F3-CARRYOVER → RUN1 → RUN1B → STA1 → MOD1 → RUN2 → RUN3 → REL2 → RUN4 → RUN5 → REL3 → REL4 → RUN6 → RUN9 → STA3 → MOD2 → MOD3 → STA6 → STA7 → STA8 → STA9 → MOD5 → MOD6 → STA10 → STA11 → STA12 → STA13 → REL6 → STA14 → RUN10 → MOD7 → STA15 → STA16 → PROG1 → PROG3 → STA17 → SELF2 → SELF3 → SELF4 → SELF5 → SELF6 → SELF7 → CLN1 → SELF8 → SELF9 → SELF10 → SELF11 → SELF12 → SELF13 → REL9 → PROG4 → CLN2 → REL11.
 
-**Lane SELF (added 2026-10-16).** SELF1 creates one test file, so it waits for no other slice; like every slice it starts after campaign `aw-ui-fix-5` (decision (g)). Every later SELF slice that changes `ts/github-boundary.test.mjs` takes it in lane order. SELF2 to SELF13 sit after STA17 and before REL9 and REL11, which wait for #33: a SELF slice never waits for them. If #33 is answered and REL9 is ready before SELF12, REL9 may go first; both then edit `docs/DECISIONS.md`, `AGENTS.md` and `docs/PRODUCT_CONSTITUTION.md` one after the other, and the second keeps the first one's text. `sup/merge.mjs` (merged with the merge gate, #138) and the new files of the lane are written by lane SELF only. UI19 follows UI18, and UI20 follows UI19, in lane UI.
+**Lane SELF (added 2026-10-16).** SELF1 creates one test file, so it waits for no other slice; like every slice it starts after campaign `aw-ui-fix-5` (decision (g)). Every later SELF slice that changes `ts/github-boundary.test.mjs` takes it in lane order. SELF2 to SELF13 sit after STA17 and before REL9 and REL11: a SELF slice never waits for them. #33 was answered on 2026-10-17, so if REL9 is ready before SELF12, REL9 may go first; both then edit `docs/DECISIONS.md`, `AGENTS.md` and `docs/PRODUCT_CONSTITUTION.md` one after the other, and the second keeps the first one's text. `sup/merge.mjs` (merged with the merge gate, #138) and the new files of the lane are written by lane SELF only. UI19 follows UI18, and UI20 follows UI19, in lane UI.
 
 **Local projects (re-checked 2026-10-16).** STA15 takes its `sup/campaign.mjs` turn after READ1; STA17 takes its `sup/campaign.mjs` turn after STA15 and its `sup/controller.mjs` turn after READ3. STA16 and STA18 create new files only, so they follow their lane order: STA18 after REL8, which is lane REL's only file. `sup/projects.mjs` and `sup/project-connect.mjs` are lane STA files (STA1, STA3, STA4, STA5, then STA17). The dashboard halves run in lane UI: UI16 after STA16, UI17 after STA17 and STA18. The owner also decided on 2026-10-16 that campaign `aw-ui-fix-5` runs first, before any of these slices.
 
@@ -387,7 +439,7 @@ Files touched by one lane only (for example `sup/scheduler.mjs`, `sup/router.mjs
 
 | Shared file | Writers, in order |
 | --- | --- |
-| `sup/controller.mjs` | RUN1, RUN1B, RUN2, RUN3, RUN4, RUN5, RUN6, STA3, MOD2, STA6, STA8, STA9, MOD5, STA10, STA14, READ2, READ3, STA17, SELF3, SELF4, SELF7 |
+| `sup/controller.mjs` | RUN1, RUN1B, RUN2, RUN3, RUN4, RUN5, RUN6, STA3, MOD2, STA6, STA8, STA9, MOD5, STA10, STA14, READ2, READ3, PROG3, STA17, SELF3, SELF4, SELF7, CLN1 |
 | `sup/store.mjs` | F2-DUPLICATE, STA1, RUN2, RUN3, RUN5, REL3, MOD2, STA6, STA12, SELF2, SELF5 |
 | `sup/api.mjs` | R2-KEEPER, F2-DUPLICATE, RUN1B, RUN2, RUN3, REL2, REL4, RUN9, MOD3, STA6, MOD6, STA14 (observed: #162 changed it), READ3, SELF9 |
 | `sup/campaign.mjs` | F2-DUPLICATE, RUN4, STA3, MOD3, STA7, READ1, STA15, STA17, SELF7 |
@@ -396,18 +448,18 @@ Files touched by one lane only (for example `sup/scheduler.mjs`, `sup/router.mjs
 | `sup/baseline.mjs` | MOD1 (creates), READ3 |
 | `sup/adapters/claude.mjs` | READ2, SELF6 |
 | `sup/adapters/research-context.mjs` | READ2, SELF6 |
-| `sup/cli.mjs` | R2-KEEPER, MOD1, REL4, STA11, SELF3, SELF5, SELF10 |
+| `sup/cli.mjs` | R2-KEEPER, MOD1, REL4, STA11, PROG1, SELF3, SELF5, SELF10 |
 | `sup/work-ownership.mjs` | F2-DUPLICATE (creates), RUN4, STA8 |
 | `sup/adapters/github.mjs` | R1-REST-PUBLISH (merged), RUN1B, STA13, REL6, SELF11 |
 | `sup/adapters/executors.mjs` | MOD5, STA10, READ2, READ3, SELF6 |
 | `ts/helpers.mjs` | R2-KEEPER, RUN1, STA13 |
 | `ts/status.test.mjs` | RUN9, MOD6, READ3, SELF9 |
 | `dash/supervisor.mjs` | R2-KEEPER, then lane UI only |
-| `docs/SUPERVISOR.md` | R2-KEEPER, F2-DUPLICATE, F3-CARRYOVER, RUN1, RUN1B, MOD1, RUN3, RUN4, RUN5, REL4, MOD3, STA7, READ1, RUN10, MOD7, STA17, SELF8, SELF12, SELF13, REL11 |
-| `docs/STATUS.md` | F3-CARRYOVER, RUN10, MOD7, SELF12, SELF13, REL9, REL11 |
-| `docs/DECISIONS.md` | F3-CARRYOVER, STA17, SELF12, REL9 |
-| `AGENTS.md`, `docs/PRODUCT_CONSTITUTION.md` | SELF12, REL9 (either order, see lane SELF above) |
-| `sup/adapters/git.mjs` | RUN1, RUN4, SELF4 |
+| `docs/SUPERVISOR.md` | R2-KEEPER, F2-DUPLICATE, F3-CARRYOVER, RUN1, RUN1B, MOD1, RUN3, RUN4, RUN5, REL4, MOD3, STA7, READ1, RUN10, MOD7, PROG3, STA17, CLN1, SELF8, SELF12, SELF13, CLN2, REL11, PROG5 |
+| `docs/STATUS.md` | F3-CARRYOVER, RUN10, MOD7, SELF12, SELF13, REL9, PROG4, CLN2, REL11 |
+| `docs/DECISIONS.md` | F3-CARRYOVER, STA17, SELF12, REL9, PROG4 |
+| `AGENTS.md`, `docs/PRODUCT_CONSTITUTION.md` | SELF12, REL9, PROG4 (REL9 and SELF12 in either order, see lane SELF above; PROG4 after REL9) |
+| `sup/adapters/git.mjs` | RUN1, RUN4, SELF4, CLN1 |
 | `sup/intake.mjs` | STA12 (creates), SELF4, SELF6 |
 | `sup/project-connect.mjs` | STA3 (creates), STA4, STA5, STA17, SELF4 |
 | `sup/merge.mjs` | MERGE-GATE (merged, #138), SELF8, SELF9 |
@@ -415,8 +467,8 @@ Files touched by one lane only (for example `sup/scheduler.mjs`, `sup/router.mjs
 
 Two cases need the order spelled out:
 
-- **`controller.mjs` is the bottleneck.** Twenty-one slices change it (fifteen before lane READ, then READ2, READ3, STA17, SELF3, SELF4 and SELF7), one at a time. RUN goes first because parallel work and conflict repair speed up every later slice. Meanwhile the other lanes do their slices that avoid it: STA1, STA2, MOD1, MOD4, REL1 to REL5, REL7 and all of lane UI.
-- **STA17 and REL9 both append a decision.** STA17's owner answer is in (2026-10-16); REL9's (#33) is not. The listed order holds; if #33 is answered and REL9 is ready first, REL9 may go first, and STA17 then starts after REL9 is merged. Both only append a new record.
+- **`controller.mjs` is the bottleneck.** Twenty-two slices change it (fifteen before lane READ, then READ2, READ3, STA17, SELF3, SELF4, SELF7 and CLN1), one at a time. RUN goes first because parallel work and conflict repair speed up every later slice. Meanwhile the other lanes do their slices that avoid it: STA1, STA2, MOD1, MOD4, REL1 to REL5, REL7 and all of lane UI.
+- **STA17 and REL9 both append a decision.** Both owner answers are in (2026-10-16 for STA17, 2026-10-17 for REL9). The listed order holds; if REL9 is ready first, REL9 may go first, and STA17 then starts after REL9 is merged. Both only append a new record.
 
 ### 6.10 What waits for an owner decision
 
@@ -424,7 +476,8 @@ Two cases need the order spelled out:
 
 | Decision | Built switched off meanwhile | Stays off or unbuilt until answered |
 | --- | --- | --- |
-| #33 D5-gate - Auto Release | REL1-REL7 (`release.enabled: false`, no credential); UI15 (Review only, Stop all releases, no switch without a grant); STA7 refuses `auto-release` | REL9, REL10, REL11; any real grant, credential or canary, including a local Auto Release grant. The owner's own Apply (STA18) is Review only and does not wait. |
+| #33 D5-gate - Auto Release, **answered 2026-10-17** (section 8 (h) to (k)) | REL1-REL7 and REL5a (`release.enabled: false`, never a credential); UI15 (Review only, Stop all releases, no switch without a grant); STA7 refuses `auto-release` | Nothing waits for an answer. A real grant exists only from REL11, after the rehearsal, with the owner's approval link in the grant record. The owner's own Apply (STA18) is Review only. |
+| #153 - waves start by themselves, **answered 2026-10-17** (section 8 (n)) | PROG1-PROG3 (`program.enabled` off) | Nothing waits for an answer. PROG5 switches it on with the owner's first program record. |
 
 Lane SELF waits for no owner decision: the owner answered (e) and (f) on 2026-10-16. Its powers are built switched off and SELF13 switches them on through the upgrade procedure once the owner sets `selfHosting` in `config.json`. Its local authorization form (`aiworks-work:<n>`) stays off until STA17 turns local admission on, and imported issues are closed on GitHub only after the owner confirms the list in the dashboard (SELF11, UI20).
 
@@ -478,7 +531,7 @@ Reasons for the merges and splits:
 - **G3.** "Changes requested" in Results needs GitHub's review state, which the dashboard no longer reads and the supervisor does not store. No design supplies it.
 - **G4.** Answered: the coordinator's plans and answers stay in the local dashboard ([AW-004](DECISIONS.md#aw-004---the-coordinator-is-read-only), observed), so a plan for a project without GitHub needs no GitHub place. UI17 no longer waits for it.
 - **G5.** Owner questions with no issue yet: SCH Q2 and Q3 (live scheduler, host ceiling; RUN10), MR Q1 and Q2 (models per account, live routing; MOD7). Under [AGENTS.md](../AGENTS.md#owner-intervention) each becomes one `owner-reserved` issue when its slice is reached, with today's behaviour as the default. SCH Q1 ships with its default. OW Q3 (Telegram) is answered "not in this program" by the design.
-- **G6.** After #33, whether the envelope's `release.mode` is dropped or shown only (C10).
+- **G6.** Answered 2026-10-17: the envelope's `release.mode` stays and accepts only `review-only`. A release mode belongs to a destination and comes only from a grant (AR §3), so the field is shown, never acted on (C10).
 - **G7.** The one governance-side change left is the release schema for REL10, proposed as text in AR §10.2 and made by the governance contract's own process, never from here. D2 needs none: its overlay schema ships with AIWorks (PC §7.3, #24 answered 2026-10-16).
 - **G8.** workstation state is unknown here. Whether R1-REST-PUBLISH, LD1-LOCAL-DATA or F1-AW005 is deployed has not been checked.
 - **G9.** Designed 2026-10-16: the owner's decisions (e) AIWorks's own code trusts **local main**, with GitHub as an optional backup, and (f) AIWorks's own issues move to a **local work list**, with the open GitHub issues imported once, are [LOCAL_OPERATION](design/LOCAL_OPERATION.md) and lane SELF (6.8b). AW-005 and the provenance check name `origin/main` today; the amended text lands with SELF12. Nothing is built (planned).
@@ -526,13 +579,23 @@ Acceptance must use source-appropriate evidence: L0 plan, L1 interactive UI revi
 - **(f) AIWorks's own issues:** a local work list, with the open GitHub issues imported once ([LO §5](design/LOCAL_OPERATION.md#5-the-local-work-list); slices SELF5 to SELF7, SELF10, SELF11, UI20).
 - **(g) Order:** campaign `aw-ui-fix-5` runs first.
 
+**Owner decisions of 2026-10-17 (#33, cleanup).** The owner answered #33 item 1 "yes". On item 2 they said: "do it easier. I don't want to watch after tokens now", and left the rest to be decided from these documents. Decided:
+
+- **(h) The release decision (#33 item 1):** accepted. REL9 records [AR §10.1](design/AUTO_RELEASE.md#101-proposed-aiworks-decision-aw-008) under the next free number (AW-010 at this revision: AW-008 and AW-009 are taken, C2), with decisions (i) to (m).
+- **(i) The release identity (#33 item 2):** no release token. A release uses the logins already on this computer: the operator's `gh` login for a merge, as the merge gate does today, and the project's own `deploy`, `observe`, `check` and `rollback` commands with the access they already have. Nothing is created, stored or renewed. The grant, checked in code before every step, limits a release to its repository and destination; the credential no longer does ([AR §6](design/AUTO_RELEASE.md#6-the-release-role), slice REL5a). Grants still expire after at most 90 days, and an expired grant only returns the destination to Review only.
+- **(j) The first canary (#33 item 3):** the disposable rehearsal of REL11 first. Then one grant for one owner project's production destination, `docs` and `tests` changes only, for 30 days; `app-code` only through a newer grant after those releases ran cleanly. The merge-only canary on AIWorks's `main` (AR §12 Q3) is dropped: since #138 the merge gate already merges every verified AIWorks campaign PR, so it would test nothing new, and AIWorks never releases into its own live runtime.
+- **(k) One merge path per repository:** in a repository the merge gate covers, only the merge gate merges. A release there deploys the merge commit the gate recorded, after the tree check of AR §7.2 step 3, and never makes a merge call of its own (destination kind `deploy`). A GitHub project whose own rules let an agent merge a verified, conflict-free PR may be listed in `merges.repositories`; that list stays private configuration. The release merge adapter (REL6) is built only for a project that wants releases without the merge gate.
+- **(l) Cleanup after finished work:** AIWorks removes the worktrees of finished tasks and deletes the local task branches that the trusted main already contains. It never deletes a remote branch, a worktree with uncommitted files, or run evidence. Nothing is cleaned before lane CLN is built; CLN2 records a baseline before it switches cleanup on and compares after (section 6.8c). REL9 amends the AW-001 sentence "never ... removes worktrees or deletes branches" to match.
+- **(m) AIWorks's own live runtime:** upgrades stay manual, through the upgrade procedure (AR §12).
+- **(n) AIWorks starts the next wave by itself (#153 option B).** The owner said: "stop asking me questions. just do it." The owner approves one private, digest-bound program record once. It names this plan, the slices allowed and the slices excluded, the executor chain and the constraints. AIWorks then builds each next wave's declaration from section 6 by fixed rules, not by a model, and registers it only when every slice fits the record exactly. Anything that does not fit becomes one Needs me item. Runbook-only slices, which change the live install, are never proposed. Lane PROG (section 6.8d) builds it switched off; PROG4 records the decision; PROG5 switches it on.
+
 These are recorded design decisions. None of them is built or deployed by this plan (planned).
 
 | ID | Detailed design/authority question | Resolution (decided, or proposed pending review) | Dependency |
 | --- | --- | --- | --- |
 | **D2** | How does a **local-only project** inherit governance without per-folder GitHub PRs? | **Decided 2026-10-16 (b).** An owner-confirmed local overlay entry, validated by a schema that ships with AIWorks; it can only add or tighten rules and inherits every portfolio policy from the governance directory. No governance change. | STA15, UI16 |
 | **D4** | How can fully local projects authorize campaigns and produce new child tasks while AW-005 requires an AIWorks main declaration? | **Decided 2026-10-16 (c).** Trusted, reviewed, pinned code stays required. The owner's approval in the local dashboard admits exactly that plan, bound to its digest, with no signing key; a caller check refuses approvals from AIWorks's own processes; an append-only ledger records approvals and child amendments, bounded by the approved envelope. The GitHub path stays available. STA17 records the decision. | STA16, STA17, UI17; #5, #8 |
-| **D5-gate** | Exactly which releases can **Auto Release** perform, and to which destinations? | Default OFF. Separate owner-approved standing capability scoped to project/environment/change classes/target, independent exact-revision verifier, eligibility/rollback/health gates; narrowly amend AW-001 via a separate reviewed change. | #13 + governance release governance |
+| **D5-gate** | Exactly which releases can **Auto Release** perform, and to which destinations? | **Decided 2026-10-17 (h) to (k).** Default OFF. A standing grant per project, destination and change class, expiring within 90 days, with an independent exact-revision verifier and eligibility, rollback and health gates; no release token (i); one merge path per repository (k). AW-001 is amended by REL9; nothing runs before REL11. | REL5a, REL7, REL9 to REL11; governance review (REL10) |
 | **D6** | Cross-machine aggregation? | Keep the existing AW-006 single-machine dashboard. Multiple projects on the same machine do not require a second-PC view. No change requested. | none |
 | **D7** | Worker count? | Adaptive Auto with an optional manual resource concurrency setting. Do not introduce default campaign run/cost ceilings under AW-002. | #9 |
 | **D8** | Model choice? | Automatic capability-, role-, quality- and cost-aware routing across existing authorized providers, with optional model pin. Unknown billing stays unknown. | #10 |

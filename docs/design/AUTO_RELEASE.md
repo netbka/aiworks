@@ -103,7 +103,7 @@ governance-029 says a standing deploy authorization is "recorded in the project"
 - **GitHub-backed project:** a JSON file in the project's repository, on its base branch, for example `release/aiworks-release.json`. the governance contract's registry entry names it in `releaseAuthorization` (the proposed `record` field, section 10.2). AIWorks reads it from the **base branch head fetched at evaluation time**, records the commit SHA and the file's sha256, and binds every release to that digest. A grant on an unmerged branch does not count.
 - **Local-only project** (D1): the record lives in the owner-approved local project overlay that D2 will define ([plan §3.1](../PROJECT_WORKSPACE_PLAN.md#31-project-connection---github-optional-owner-approved-d1-2026-10-12)). Until D2 is settled, a local-only project cannot hold a valid grant, so local Auto Release stays unavailable. Local apply in Review only (an explicit owner "Apply" click) does not need a grant and is part of #7.
 
-The record holds no secrets. It names a credential by reference only.
+The record holds no secrets. Since 2026-10-17 it names no credential at all (section 6, plan section 8 (i)).
 
 ### 4.2 Fields
 
@@ -120,12 +120,12 @@ All fields are required unless marked optional. An unknown field, a missing fiel
 | `destinations[]` | One or more destinations, each with the fields below | |
 | `destinations[].id` | Stable destination id | `"production"` |
 | `destinations[].environment` | The governance environment name | `"production"` |
-| `destinations[].kind` | `merge`, `merge-then-deploy`, `local-git-apply` or `local-folder-apply` | `"merge-then-deploy"` |
+| `destinations[].kind` | `merge`, `merge-then-deploy`, `deploy`, `local-git-apply` or `local-folder-apply`. `deploy` (added 2026-10-17, plan (k)) deploys the merge commit the merge gate recorded and never merges; in a repository the merge gate covers, `merge` and `merge-then-deploy` are invalid | `"deploy"` |
 | `destinations[].baseBranch` | For `merge` kinds: the only branch that may be merged into | `"main"` |
 | `destinations[].mergeMethod` | For `merge` kinds: `merge`, `squash` or `rebase` | `"squash"` |
 | `destinations[].changeClasses[]` | The classes this destination accepts (4.3) | `["docs", "app-code"]` |
 | `destinations[].commands` | For deploy and local kinds: paths in the project to its own `deploy`, `observe`, `check` and `rollback` commands (4.4) | `{ "deploy": "deploy/release.ps1", ... }` |
-| `destinations[].credential` | Name of the release credential and who owns it; never a value | `{ "ref": "aiworks-release/sampleapp", "owner": "example-org" }` |
+| `destinations[].credential` | **Removed 2026-10-17** (plan (i)): a release uses the logins already on this computer (section 6). The REL1 schema still requires it; REL5a drops it | none |
 | `destinations[].rollback` | `automatic` or `report-only`; `automatic` needs a `rollback` command and a retained previous artifact | `"automatic"` |
 | `destinations[].checkWindowMinutes` | How long post-release checks may take before the result counts as failed | `10` |
 | `classes` | The path rules that put a changed file in a class (4.3) | |
@@ -199,13 +199,13 @@ The release role is the governance `release-agent` role (`evaluate-release`, `de
 Separation from implementer and verifier:
 
 - **Separate process.** The release step runs in its own short-lived process (`release-runner`), started by the controller with a **clean environment**: only `PATH`, `SystemRoot`, the release working directory and the variables the release step needs. It does not use `workerEnv`, which copies the supervisor's environment (`proc.mjs:33-36`).
-- **Separate credential.** The release credential is a distinct GitHub identity (owner question Q2) stored in the Windows Credential Manager or Infisical under the record's `credential.ref`. Only the release runner fetches it, at the moment of the step, and passes it to `gh` through `GH_TOKEN` for that one command. It is never written to disk, SQLite, logs, the journal or a packet, and never placed in the supervisor's own environment.
+- **No separate credential (owner answer to Q2, 2026-10-17, plan (i)).** The owner chose not to maintain release tokens. The release runner uses the logins already on this computer: the operator's `gh` login for a merge, as the merge gate does, and the project's own commands with the access they already have. Its clean environment gains only the variables those logins need to find themselves; it never sets `GH_TOKEN`. AIWorks creates, stores and renews no credential. The grant, checked in code before every step, is what limits a release to one repository and destination (slice REL5a).
 - **No release credential for workers.** Implementer and verifier sessions keep today's deny list (`claude.mjs:67-71`), and in addition cannot reach the credential: it is not in their environment and they are not given the credential store reference. The supervisor's own `gh` login keeps doing only what AW-001 allows.
 - **No release power in the controller code path.** The controller decides *that* a step is due and records the intent. Only the release runner holds the code that calls `gh pr merge`, the project's `deploy` or a local apply. A unit test asserts that no module other than the release adapters contains those calls.
 - **Cannot release its own result.** The release role never produces content. E4 proves the verifier session is not an implementer session for this task. The release role cannot mark anything verified.
 - **Audited.** Every step writes intent, command (without secrets), start, end, exit code and output digest to the journal and the release row.
 
-Honest limit (observed, section 2.4): the owner's `gh` login on workstation can technically merge, and the deny list is a tool allowlist, not an operating-system sandbox. This design does not narrow that login. It makes the release identity separate and auditable; narrowing the supervisor's own login is a separate hardening question (not in this scope).
+Honest limit (observed, section 2.4): the owner's `gh` login on workstation can technically merge, and the deny list is a tool allowlist, not an operating-system sandbox. This design does not narrow that login. With the answer to Q2 a release also acts with that login, so GitHub cannot tell a release merge from any other merge by the owner; the journal and the release row can. What keeps a release to its repository is the grant check in code and the release-boundary test, not the credential's scope. Narrowing the login is a separate hardening question (not in this scope).
 
 ## 7. Releasing
 
@@ -244,6 +244,8 @@ Rules:
 5. **Deploy.** In a clean detached release checkout at the merge commit, run `observe` (records the previous digest), then `deploy`. The deployed revision is the merge commit, whose tree is the verified tree.
 6. **Confirm the deploy.** Run `observe`. It must report the merge commit and the digest `deploy` printed (the drift check of Delivery Practices). Anything else is `unknown` (section 8).
 7. **Check.** Run `check` until it passes or `checkWindowMinutes` ends. A pass → `accepted`. A fail, or still unknown at the end of the window, counts as failed → rollback (7.4).
+
+**In a repository the merge gate covers** (decided 2026-10-17, plan (k)): there is one merge path. The merge gate merges ([runbook](../SUPERVISOR.md#merge-gate)); the release role never calls merge there. A `deploy` destination starts at step 3 with the merge commit the gate journaled as `merged`, checks its tree against the verified tree, and continues with steps 5 to 7. No `merged` event means not eligible.
 
 ### 7.3 Rolling back a merge
 
@@ -490,6 +492,12 @@ Only these need the owner. Everything else above is decided under existing autho
 | Q1 | Accept AW-008 (section 10.1) as written? | It widens the supervisor's execution authority beyond AW-001 (governance Constitution §2: "security defaults that materially widen execution authority") | **Accept as written.** It keeps AW-001 for the supervisor, limits releases to per-project grants that expire, and excludes migrations, infrastructure, permissions and new spend. Default if unanswered: Review only everywhere, as today. | R10, R11, R12 |
 | Q2 | Which identity does the release role use on GitHub? | Third-party account and credential ownership is owner-reserved (§2); only the owner can create it | **One fine-grained personal access token per granted repository**, owned by the owner's account, with only `contents: write` and `pull_requests: write` on that one repository, 90-day expiry matching the grant, stored in Windows Credential Manager as `aiworks-release/<project>`. A GitHub App is cleaner but needs a new app registration; start with the token. Default: none, so Auto Release stays unavailable. | Running R5 to R7 on a real repository; R12 |
 | Q3 | Which destination is the first canary? | Granting a project a standing release authorization is the owner's act (governance-029) | **First a disposable repository and folder for the rehearsal; then `merge` (not deploy) of `docs` and `tests` changes to `example-org/aiworks` `main`**, a 30-day grant. Merges of verified AIWorks PRs are already not an owner stop for agents (`AGENTS.md:55`), deployment of AIWorks stays manual, and nothing reaches a production user. A deploy canary on sampleapp follows only after that has run cleanly. | R12 |
+
+**Answered 2026-10-17** ([#33](https://github.com/example-org/aiworks/issues/33), plan section 8 (h) to (k)):
+
+- **Q1:** accepted. REL9 records it under the next free number (AW-010 at that revision).
+- **Q2:** no release token. The owner said: "do it easier. I don't want to watch after tokens now". A release uses the logins already on this computer (section 6).
+- **Q3:** the disposable rehearsal first; then a 30-day grant for one owner project's production destination, `docs` and `tests` changes only; `app-code` only through a newer grant after those ran cleanly. The merge-only canary on AIWorks's `main` is dropped, because the merge gate (#138) already merges every verified AIWorks campaign PR.
 
 Decided here, not asked (engineering decisions under existing authority):
 
