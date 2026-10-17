@@ -102,13 +102,43 @@ function git(cwd, ...args) {
   return out.stdout.trim();
 }
 
+// The git side of one fixture is about 70 git processes, 10 s or more on Windows, and a test file builds the fixture up
+// to 14 times. Each repository is built once per process under a template directory and copied after that: the same
+// commits and SHAs, a fresh copy per fixture, origin pointed at the copy's own bare repository. The templates are never
+// changed and are deleted when the process exits.
+const templates = new Map();
+let templateDir = null;
+function fromTemplate(key, build) {
+  if (!templates.has(key)) {
+    if (!templateDir) {
+      templateDir = mkdtempSync(join(tmpdir(), 'aiworks-review-template-'));
+      process.once('exit', () => rmSync(templateDir, { recursive: true, force: true, maxRetries: 5 }));
+    }
+    templates.set(key, build(join(templateDir, String(templates.size))));
+  }
+  return templates.get(key);
+}
+/** Copies a template's checkout and bare origin to `path` and `bare`, and points the copy's origin at `bare`. */
+function copyRepository(built, path, bare) {
+  if (existsSync(built.origin)) cpSync(built.origin, bare, { recursive: true });
+  cpSync(built.path, path, { recursive: true, filter: (source) => source !== join(built.path, 'node_modules') });
+  git(path, 'remote', 'set-url', 'origin', bare);
+}
+
 /**
  * A local repository with an `origin` that is a bare repository on disk (never a URL). Each branch gets one commit
  * from main; `merged` branches are merged into main with a merge commit, `pushed` ones are pushed, the rest stay
  * local and their branch is deleted (a pull request closed without merging). `origin: false` points origin at a
  * directory that does not exist, so every merge check of that project fails.
  */
-function repository(root, name, branches, { origin = true } = {}) {
+function repository(root, name, branches, options = {}) {
+  const built = fromTemplate(JSON.stringify(['repository', name, branches, options]), (dir) => buildRepository(dir, name, branches, options));
+  const bare = join(root, 'git', `${name}.git`), path = join(root, 'checkouts', name);
+  copyRepository(built, path, bare);
+  return { path, origin: bare, shas: built.shas };
+}
+
+function buildRepository(root, name, branches, { origin = true } = {}) {
   const bare = join(root, 'git', `${name}.git`), path = join(root, 'checkouts', name);
   mkdirSync(path, { recursive: true });
   if (origin) { mkdirSync(bare, { recursive: true }); git(bare, 'init', '-q', '--bare', '-b', 'main'); }
@@ -371,6 +401,15 @@ function fill(store, dataDir, root, now) {
  * Resume's AW-005 check reads this checkout, never this repository.
  */
 function runtimeCheckout(root, declarations) {
+  const built = fromTemplate(JSON.stringify(['runtime', declarations]), (dir) => buildRuntime(dir, declarations));
+  const path = join(root, 'runtime'), origin = join(root, 'git', 'aiworks.git');
+  copyRepository(built, path, origin);
+  // A junction needs no privilege on Windows. Deleting the fixture removes the link, never what it points at.
+  symlinkSync(join(ROOT, 'node_modules'), join(path, 'node_modules'), 'junction');
+  return path;
+}
+
+function buildRuntime(root, declarations) {
   const path = join(root, 'runtime'), origin = join(root, 'git', 'aiworks.git');
   mkdirSync(origin, { recursive: true });
   git(origin, 'init', '-q', '--bare', '-b', 'main');
@@ -384,9 +423,7 @@ function runtimeCheckout(root, declarations) {
   git(path, 'remote', 'add', 'origin', origin);
   git(path, 'push', '-q', 'origin', 'main');
   git(path, 'fetch', '-q', 'origin');
-  // A junction needs no privilege on Windows. Deleting the fixture removes the link, never what it points at.
-  symlinkSync(join(ROOT, 'node_modules'), join(path, 'node_modules'), 'junction');
-  return path;
+  return { path, origin };
 }
 
 /**
