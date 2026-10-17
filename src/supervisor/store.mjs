@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   attempts INTEGER NOT NULL DEFAULT 0, repair_rounds INTEGER NOT NULL DEFAULT 0,
   failures TEXT NOT NULL DEFAULT '{}', base_sha TEXT, head_sha TEXT, verified_sha TEXT,
   findings TEXT, result TEXT, verification TEXT, pr_url TEXT, retry_at INTEGER, blocked TEXT,
-  last_error TEXT, version INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  last_error TEXT, signature TEXT, version INTEGER NOT NULL, updated_at INTEGER NOT NULL,
   PRIMARY KEY (campaign_id, task_id));
 CREATE TABLE IF NOT EXISTS operations (
   id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL, task_id TEXT NOT NULL, kind TEXT NOT NULL,
@@ -151,7 +151,7 @@ CREATE TABLE IF NOT EXISTS project_overlays (
 
 const JSON_COLUMNS = new Set(['declaration', 'blocker', 'failures', 'findings', 'result', 'verification',
   'blocked', 'packet', 'outcome', 'payload', 'detail', 'message_ids', 'probe', 'last_evidence', 'resolution', 'message',
-  'eligibility', 'steps', 'history', 'routing', 'ops', 'spec', 'pinned', 'questions', 'conflicts', 'notes', 'stale_what']);
+  'eligibility', 'steps', 'history', 'routing', 'ops', 'spec', 'pinned', 'questions', 'conflicts', 'notes', 'stale_what', 'signature']);
 
 function decode(row) {
   if (!row) return null;
@@ -202,6 +202,8 @@ export class Store {
         // The provider account an operation ran under (docs/design/ACCOUNT_ADAPTER_CAAM.md section 3.1) is additive too:
         // a legacy operation reads account_identity as null, and the store version does not change.
         if (!columns.includes('account_identity')) this.db.exec('ALTER TABLE operations ADD COLUMN account_identity TEXT');
+        const taskColumns = this.db.prepare('PRAGMA table_info(tasks)').all().map((column) => column.name);
+        if (!taskColumns.includes('signature')) this.db.exec('ALTER TABLE tasks ADD COLUMN signature TEXT');
       });
     } catch (error) {
       this.db.close();

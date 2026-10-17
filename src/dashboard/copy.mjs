@@ -300,6 +300,71 @@ function activeState(active, d) {
   return [c, 'nothing-running', { next: ready ? label(ready) : null }];
 }
 
+/**
+ * Now's progress line: the whole project's, counted as Results counts it, so the two screens give the same numbers
+ * (aiworks#11 review 5 G11). With more than one piece of work it says so, so it never reads as the count of the one
+ * piece Now's sentence is about.
+ */
+function projectProgress(campaigns, owner) {
+  const all = campaigns.map((c) => owner?.campaigns?.[c.id]?.counts);
+  if (!all.length || all.some((counts) => !counts || !Number.isSafeInteger(counts.total))) return progressText(null);
+  const sum = {};
+  for (const counts of all) for (const [key, n] of Object.entries(counts)) sum[key] = (sum[key] ?? 0) + (Number.isSafeInteger(n) ? n : 0);
+  const text = progressText(sum);
+  return all.length > 1 ? `All work in this project: ${text}` : text;
+}
+
+/** Work AIWorks is not checking on: its own Needs me item, or AIWorks stopped, says what it means. */
+const UNATTENDED = ['stopped', 'agent-working-supervisor-silent', 'work-lapsed', 'work-not-picked-up'];
+
+/**
+ * What else goes on in this project beside the sentence Now leads with (aiworks#11 review 5 G5, review 4 F14): each
+ * worker possibly stuck, each pause the owner can resume, with its Resume, and each worker at work, in that order. Each
+ * line is { kind, workId, title, text, primary }; `text` names the work by its purpose when the project has more than
+ * one piece of active work. Work AIWorks is not checking on is left out: its own item says so.
+ */
+function alsoLines(campaigns, d, make) {
+  const view = (c) => d.owner?.campaigns?.[c.id];
+  const active = campaigns.filter((c) => !['finished', 'cancelled'].includes(c.control) && !UNATTENDED.includes(view(c)?.liveness));
+  const line = (kind, c, copy) => {
+    const purpose = active.length > 1 ? view(c)?.purpose?.text : null;
+    return { kind, workId: c.id, title: copy.title, text: purpose ? `${purpose} · ${copy.title}` : copy.title, primary: kind === 'paused' ? copy.primary : null };
+  };
+  const lines = [];
+  for (const c of active) {
+    // Resume works only while AIWorks runs this work, as for Now's own paused sentence.
+    if (c.control === 'paused') {
+      if (view(c)?.liveness === 'running') lines.push(line('paused', c, make('paused', { pausedAt: c.pausedAt, reason: c.pausedReason, campaignId: c.id })));
+      continue;
+    }
+    // Workers of work being cancelled are stopping, not at work.
+    if (c.control === 'cancel-requested') continue;
+    for (const agent of c.agents ?? []) {
+      const task = c.tasks.find((item) => item.id === agent.taskId), last = agent.progress?.lastActivityAt ?? agent.outputAt ?? null;
+      if (last && d.now - last >= STUCK_MS && busyOnCommand(agent, d.now) === null) {
+        lines.push(line('possibly-stuck', c, make('possibly-stuck', { step: capital(label(task)), minutes: Math.floor((d.now - last) / 60_000) })));
+      } else {
+        lines.push(line('working', c, make(agent.role === 'Verifier' ? 'checker-working' : 'builder-working',
+          { step: label(task), provider: agent.executor, startedAt: agent.startedAt, lastActivityAt: last })));
+      }
+    }
+  }
+  const order = ['possibly-stuck', 'paused', 'working'];
+  return lines.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
+}
+
+/**
+ * The Projects row's short form of Now's other lines (alsoLines): "Also: 2 AI workers possibly stuck · 1 piece of work
+ * paused, with Resume on Now · 1 AI worker working", or null when there are none.
+ */
+export function alsoSummary(also) {
+  const n = (kind) => (also ?? []).filter((line) => line.kind === kind).length;
+  const parts = [n('possibly-stuck') ? `${plural(n('possibly-stuck'), 'AI worker')} possibly stuck` : null,
+    n('paused') ? `${plural(n('paused'), 'piece')} of work paused, with Resume on Now` : null,
+    n('working') ? `${plural(n('working'), 'AI worker')} working` : null].filter(Boolean);
+  return parts.length ? `Also: ${parts.join(' · ')}` : null;
+}
+
 /** The state of finished or cancelled work: the most recent piece. */
 function finishedState(c, d) {
   const view = d.owner?.campaigns?.[c.id], counts = view?.counts;
@@ -326,8 +391,10 @@ function mergeNote(project, merges, counts, now) {
 }
 
 /**
- * The project's Now screen (§4.4): its goal, one state sentence with at most one primary action, progress, a merge
- * note when the merge check is not current, and "since you last looked" for this project only. `data` is the page's
+ * The project's Now screen (§4.4): its goal, one state sentence with at most one primary action, what else goes on in
+ * the project (`also`: possibly stuck workers, pauses with their Resume, workers at work; review 5 G5), the whole
+ * project's progress, a merge note when the merge check is not current, and "since you last looked" for this project
+ * only. `data` is the page's
  * /api/state answer ({ supervisor, owner, merges, host, observedAt }) plus `offline` when the page cannot reach the
  * dashboard. The state is about this project alone: it needs the owner when this project has Needs me items, or when
  * AIWorks stopped on this computer holds up its work (that one item is listed under AIWorks itself).
@@ -339,11 +406,14 @@ export function nowView(project, data = {}, { now = Date.now(), format = {}, sta
   const make = (key, values = {}) => stateCopy(key, { project, host, now, ...values }, format);
   const campaigns = (supervisor?.campaigns ?? []).filter((c) => same(c.repository, project));
   const recency = (c) => Date.parse(c.lastProgressAt ?? '') || c.registeredAt || 0;
+  const readable = !offline && supervisor?.available && owner?.available;
   const result = (state, c = null) => {
     const view = c ? owner?.campaigns?.[c.id] : null, merge = c ? mergeNote(project, merges, view?.counts, now) : null;
-    return { project, name: shortName(project), state,
+    // What the leading sentence already says about the same work is not said again.
+    const also = readable ? alsoLines(campaigns, d, make).filter((line) => !(line.workId === c?.id && line.title === state.title)) : [];
+    return { project, name: shortName(project), state, also,
       goal: view?.purpose ? { text: view.purpose.text, variant: view.purpose.variant ?? null } : null,
-      progress: c ? progressText(view?.counts) : null, note: merge ? make(...merge) : null,
+      progress: c ? projectProgress(campaigns, owner) : null, note: merge ? make(...merge) : null,
       since: sinceLines(owner?.recent ?? null, campaigns.map((item) => item.id), supervisor?.recent?.failures ?? []),
       details: { workId: c?.id ?? null, trackingUrl: c?.trackingUrl ?? null, trackingIssue: c?.trackingIssue ?? null,
         others: campaigns.filter((item) => item !== c).map((item) => ({ id: item.id, purpose: owner?.campaigns?.[item.id]?.purpose?.text ?? null, control: item.control })) } };
@@ -356,6 +426,7 @@ export function nowView(project, data = {}, { now = Date.now(), format = {}, sta
   const byId = (id) => campaigns.find((c) => c.id === id) ?? null;
   // With several pieces of work, what needs the owner leads (review F16): this project's Needs me items, then a pause the
   // owner can resume, then AIWorks stopped for its work, then a fault of AIWorks itself; then work that goes on by itself.
+  // Whatever leads, `also` keeps possibly stuck, paused and running work in view (review 5 G5).
   if (items.length) {
     const first = byId(items[0].campaignId), counts = owner.campaigns?.[first?.id]?.counts;
     // Only pull requests of one finished piece of work: §7.8 says it more exactly than a count.
@@ -452,6 +523,12 @@ export const DELEGATED = {
 /** Needs me items about AIWorks itself and about stopped work, in the owner's words. */
 export const NEEDS = {
   stepIssue: 'Open the step issue',
+  // A connected project where work can't start until the owner's decisions are made (review 5 G7): not an item, since no
+  // work is blocked, but the calm headline names it and a row links to its Now, which says what the decisions are.
+  held: {
+    headline: (names) => `No work is blocked on you right now, but ${names.length === 1 ? `${names[0]} waits` : `${names.length} projects wait`} for your decisions before work can start`,
+    row: 'Can’t start work until your decisions are made. Its Now says which, and where each is made.',
+  },
   workStopped: 'This work is stopped',
   recorded: 'What AIWorks recorded',
   fault: { text: 'AIWorks has a problem of its own with this work', link: 'AIWorks issue #2',
@@ -650,3 +727,133 @@ export function costRunsLine(total) {
   const ran = total.worksWithRuns ?? total.works;
   return `${plural(total.runs, 'run')} in ${ran === total.works ? plural(ran, 'piece') : `${ran} of ${plural(total.works, 'piece')}`} of work.`;
 }
+
+/** The current dashboard semantic version, kept below 1.0.0 until the roadmap is completed. */
+export const DASHBOARD_VERSION = '0.9.0';
+/** The name of the current dashboard version describing its primary feature theme. */
+export const DASHBOARD_VERSION_NAME = 'Model Routing & Task Signatures';
+
+/**
+ * Meaningful version milestones for the dashboard: each release below 1.0.0 has a name
+ * and a list of features enabled in that version, leading up to the 1.0.0 roadmap target.
+ */
+export const DASHBOARD_VERSIONS = [
+  {
+    version: '0.1.0',
+    name: 'Foundation & Review Fixture',
+    description: 'Core AIWorks runtime with synthetic store and review fixture.',
+    features: [
+      'Deterministic SQLite state storage',
+      'Synthetic review store and fixture',
+      'Loopback dashboard HTTP server with CSRF protection',
+    ],
+    status: 'completed',
+  },
+  {
+    version: '0.2.0',
+    name: 'Owner Navigation',
+    description: 'Project-first navigation shell with responsive 320px layout.',
+    features: [
+      'Navigation shell (Projects, Needs me, Settings)',
+      'Needs me owner-attention inbox',
+      'Hash-based routing with deep-link state preservation',
+      'Responsive mobile-first layout',
+    ],
+    status: 'completed',
+  },
+  {
+    version: '0.3.0',
+    name: 'Project State & Copy',
+    description: 'Calm owner copy and project overview.',
+    features: [
+      'Project Now overview screen',
+      'Plain-language owner copy without machine jargon',
+      'Per-project calm rule and status summaries',
+    ],
+    status: 'completed',
+  },
+  {
+    version: '0.4.0',
+    name: 'Work & Step Observability',
+    description: 'Execution inspection and lifecycle controls.',
+    features: [
+      'Step timeline and history inspection',
+      'Independent verification results view',
+      'Pause, cancel, resume, and check-again controls',
+      'Retry tracking and wait reason reporting',
+    ],
+    status: 'completed',
+  },
+  {
+    version: '0.5.0',
+    name: 'Usage & Cost Transparency',
+    description: 'Token math and cost tracking per project and step.',
+    features: [
+      'Detailed token counts (input, cache read, cache write, output)',
+      'Cost calculation per project and per step',
+      'Unreported run accounting',
+    ],
+    status: 'completed',
+  },
+  {
+    version: '0.6.0',
+    name: 'Project Connection',
+    description: 'Local directory and Git project onboarding.',
+    features: [
+      'Connect ordinary local folders without Git metadata',
+      'Connect local Git repositories and GitHub remotes',
+      'Project rules confirmation and review',
+    ],
+    status: 'completed',
+  },
+  {
+    version: '0.7.0',
+    name: 'Release Ladder & Diagnostics',
+    description: 'Five-step release readiness ladder and diagnostics.',
+    features: [
+      'Five-step release readiness ladder',
+      'Execution journal with event timeline',
+      'Local merge-check freshness tracking',
+      'Project rules diagnostics',
+    ],
+    status: 'completed',
+  },
+  {
+    version: '0.8.0',
+    name: 'Multi-Account Quota Management',
+    description: 'Isolated login profiles and usage observability.',
+    features: [
+      'Multiple account logins per AI worker provider',
+      'Isolated account profile directories with CAAM integration',
+      'Account usage observability and rate-limit cooldown tracking',
+      'CLI account credential management with strict web boundary',
+    ],
+    status: 'completed',
+  },
+  {
+    version: '0.9.0',
+    name: 'Model Routing & Task Signatures',
+    description: 'Role-based model preferences and durable task model signatures.',
+    features: [
+      'Task model signatures (model name, type, effort, tokens consumed)',
+      'Role-based model preferences (implementer, checker, assistant)',
+      'Model signature badges in Step, Work, and Results views',
+      'Interactive preference configuration in Settings',
+      'CLI model preference management commands',
+    ],
+    status: 'current',
+  },
+  {
+    version: '1.0.0',
+    name: 'Autonomous Project Delivery',
+    description: 'Full autonomous multi-project delivery and automated release gates.',
+    features: [
+      'Autonomous end-to-end plan-and-do across projects',
+      'Adaptive multi-worker parallel scheduling',
+      'Opt-in automatic release gate execution',
+      'Complete self-hosting workspace workflow',
+    ],
+    status: 'roadmap',
+  },
+];
+

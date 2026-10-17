@@ -1,9 +1,11 @@
 import { createServer } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
-import { supervisorSnapshot, applyCommand, postMessage } from './supervisor.mjs';
+import { supervisorSnapshot, applyCommand, postMessage, configuredAccounts, removeDashboardAccount, configuredModelPreferences, saveDashboardModelPreferences } from './supervisor.mjs';
+import { Store } from '../supervisor/store.mjs';
 import { ownerView } from './owner.mjs';
 import { configuredMergeDelegation } from './merges.mjs';
 import { checkConnectedProject, configuredRepositories, connectedProjects, connectProject, disconnectConnectedProject, listConnectedProjects,
@@ -38,7 +40,9 @@ const pageNavigation = (req, path) => req.method === 'GET' && path === '/' && !r
 export function createDashboardServer({ dataDir, roadmap, merges = null, host = {}, releases = {}, projectConnection = {}, provenanceRoot = undefined }) {
   const csrf = randomBytes(32).toString('hex');
   // Which machine and dashboard version this is, so a screenshot identifies its supervisor.
-  const machine = { name: safeText(host.name ?? hostname(), 64) || null, revision: /^[0-9a-f]{7,40}$/.test(host.revision ?? '') ? host.revision : null };
+  const machine = { name: safeText(host.name ?? hostname(), 64) || null, revision: /^[0-9a-f]{7,40}$/.test(host.revision ?? '') ? host.revision : null,
+    ...(host.version !== undefined ? { version: safeText(host.version, 32) } : {}),
+    ...(host.versionName !== undefined ? { versionName: safeText(host.versionName, 64) } : {}) };
   const server = createServer(async (req, res) => {
     const origin = `http://127.0.0.1:${server.address().port}`;
     const send = (status, body, type = 'application/json; charset=utf-8') => {
@@ -69,16 +73,31 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
           if (merges) void merges.refresh();
           const merged = merges?.snapshot() ?? { refreshing: false, repositories: [], steps: {} };
           // The owner's merge delegation is read on every request, so a change to config.json shows without a restart.
-          const owner = ownerView(supervisor, merged, { host: machine.name, now, releases, delegation: configuredMergeDelegation(dataDir) });
-          // Add project is read on every request too; off, the Projects screen is exactly as before.
-          const addProject = projectConnectionEnabled(dataDir);
+          // Add project is read on every request too; off, the Projects screen is exactly as before. Its records also let
+          // Needs me name a project held up by the owner's decisions (aiworks#11 review 5 G7).
+          const addProject = projectConnectionEnabled(dataDir), records = addProject ? connectedProjects(dataDir) : [];
+          const owner = ownerView(supervisor, merged, { host: machine.name, now, releases, delegation: configuredMergeDelegation(dataDir), connected: records });
           return send(200, { observedAt: new Date(now).toISOString(), host: machine, supervisor, roadmap: roadmap.snapshot(),
             merges: { refreshing: merged.refreshing, repositories: merged.repositories }, owner,
             // Projects: campaign repositories, the repositories config.json lists and connected projects, by name only (never a path).
-            projects: projectsView(supervisor, owner, { repositories: configuredRepositories(dataDir), ...(addProject ? { records: connectedProjects(dataDir), addProject } : {}) }) });
+            projects: projectsView(supervisor, owner, { repositories: configuredRepositories(dataDir), ...(addProject ? { records, addProject } : {}) }) });
         }
         // The connected projects with each one's own folder, the one path a response may carry (404 while Add project is off).
         if (path === '/api/projects') return send(200, listConnectedProjects(dataDir));
+        if (path === '/api/accounts') {
+          let store;
+          try {
+            store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true });
+            let config = {};
+            try { config = JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { /* ignore */ }
+            return send(200, { accounts: configuredAccounts(store, config, { dataDir }) });
+          } finally {
+            store?.close();
+          }
+        }
+        if (path === '/api/accounts/preferences') {
+          return send(200, { preferences: configuredModelPreferences(dataDir) });
+        }
         return send(404, { error: 'Not found.' });
       }
       if (req.method !== 'POST') return send(405, { error: 'Method not allowed.' });
@@ -98,6 +117,8 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       catch { return send(400, { error: 'Invalid JSON.' }); }
       if (path === '/api/commands') return send(202, applyCommand(dataDir, value, Date.now(), { provenanceRoot }));
       if (path === '/api/messages') return send(202, postMessage(dataDir, value));
+      if (path === '/api/accounts/remove') return send(200, removeDashboardAccount(dataDir, value));
+      if (path === '/api/accounts/preferences') return send(200, saveDashboardModelPreferences(dataDir, value));
       // Add project (UI13): each answers 404 while it is off, as before it existed.
       if (path === '/api/projects/preflight') return send(200, previewProject(dataDir, value, projectConnection));
       if (path === '/api/projects/connect') return send(200, connectProject(dataDir, value, projectConnection));

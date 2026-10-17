@@ -1,6 +1,6 @@
 import { formatRoute, globalOf, resolveRoute, tabOf } from '/router.mjs';
 // The state copy of OWNER_WORKSPACE §7 and the Now screen (slice S4); the server serves src/dashboard/copy.mjs here.
-import { COMMANDS, DELEGATED, DIALOGS, NEEDS, NOT_READ, busyOnCommand, costRunsLine, nowView, readingLines, resultMeaning, stateCopy, workLine } from '/copy.mjs';
+import { COMMANDS, DELEGATED, DIALOGS, NEEDS, NOT_READ, busyOnCommand, costRunsLine, nowView, readingLines, resultMeaning, stateCopy, workLine, DASHBOARD_VERSION, DASHBOARD_VERSION_NAME, DASHBOARD_VERSIONS } from '/copy.mjs';
 
 const $ = (selector) => document.querySelector(selector);
 const names = { done: 'Done', blocked: 'Blocked', unknown: 'Unknown',
@@ -133,7 +133,9 @@ const routeLink = (text, route, cls = '') => el('a', { href: typeof route === 's
 const projectName = (project) => state?.projects?.projects?.find((item) => !item.repository && item.id === project)?.name ?? (shortRepo(project) || project);
 // Each screen's heading and the one question it answers (OWNER_WORKSPACE §3.1).
 const screenText = { projects: ['Projects', 'Which project should I open?'], needs: ['Needs me', 'What is waiting for me, across projects?'],
-  settings: ['Settings', 'What can AIWorks use on this computer?'], messages: ['Messages', 'What did I ask AIWorks, and what did it answer?'],
+  settings: ['Settings', 'What can AIWorks use on this computer?'], accounts: ['Worker accounts', 'Which AI worker logins and accounts are on this computer?'],
+  version: ['Version and roadmap', 'Which capabilities are turned on in this version?'],
+  messages: ['Messages', 'What did I ask AIWorks, and what did it answer?'],
   diagnostics: ['Diagnostics', 'What exactly did the machine record?'], now: ['Now', 'Where are we now?'],
   work: ['Work', 'What is running or waiting, and why?'], results: ['Results', 'What has been delivered, and what remains?'],
   cost: ['Cost', 'What did this cost?'], step: ['Step', 'What is happening on this step?'], start: ['Plan work', 'Describe the result. AIWorks proposes the steps.'],
@@ -331,6 +333,21 @@ document.addEventListener('toggle', (event) => {
   if (event.target.open) { opened.add(key); opened.delete(`${key}:closed`); } else { opened.delete(key); opened.add(`${key}:closed`); }
 }, true);
 
+/** Formats a compact model signature string for task rows, results, and previews. */
+function formatTaskSignatureBrief(sig) {
+  if (!sig || typeof sig !== 'object') return null;
+  const parts = [];
+  if (sig.name) {
+    const tokens = sig.tokens?.total ? ` · ${sig.tokens.total.toLocaleString()} tokens` : '';
+    parts.push(`Signed: ${sig.name} (${sig.type ?? 'model'} · ${sig.effort ?? 'standard'} effort${tokens})`);
+  }
+  if (sig.verifier?.name) {
+    const vTokens = sig.verifier.tokens?.total ? ` · ${sig.verifier.tokens.total.toLocaleString()} tokens` : '';
+    parts.push(`Verified: ${sig.verifier.name} (${sig.verifier.type ?? 'model'} · ${sig.verifier.effort ?? 'standard'} effort${vTokens})`);
+  }
+  return parts.length ? parts.join(' | ') : null;
+}
+
 // Step rows: on a phone, CSS turns each row into a stacked card (name, where it stands, link) with no clipped columns.
 function taskRow(c, task) {
   const canRecheck = !sending && !offline && state.supervisor.available && ['registered', 'paused'].includes(c.control) && Boolean(task.blocked || task.retryAt || task.errorClass) && task.state !== 'done';
@@ -344,6 +361,7 @@ function taskRow(c, task) {
       delivery?.state === 'merged' && delivery.mergedAt ? el('div', { class: 'subtext' }, `Merged ${dateTime(delivery.mergedAt)}`)
         : delivery?.note ? el('div', { class: 'subtext' }, delivery.note) : null,
       delivery?.asOf ? el('div', { class: 'subtext' }, mergeAsOf(delivery.asOf)) : null,
+      task.signature ? el('div', { class: 'subtext task-signature' }, formatTaskSignatureBrief(task.signature)) : null,
       // Supervisor-authored wait (for example, dependencies that must be merged first); never worker text.
       task.waitingReason && !task.blocked && task.state !== 'done' ? el('div', { class: 'subtext' }, task.waitingReason) : null,
       task.retryAt ? el('div', { class: 'subtext' }, `Next check ${timeOnly(task.retryAt)}`) : null,
@@ -807,17 +825,21 @@ const needsGroup = (group) => el('section', { class: 'needs-group', 'aria-labell
 function needsYou() {
   const owner = state.owner;
   if (!owner?.available) return null;
-  const { headline, count, groups = [], unknownResults: unknown, reply } = owner;
+  const { headline, count, groups = [], held = [], unknownResults: unknown, reply } = owner;
   // aiworks#18: a stopped supervisor leads, with the time it last renewed its leases, unless the one item for AIWorks
   // stopped already says it with its time (one fact, once; review 4 F2).
   const controller = state.supervisor.controller;
   const said = owner.items.some((item) => item.kind === 'controller' && !item.system);
-  return el('section', { class: `needs${count ? '' : unknown ? ' checking' : ' calm'}`, 'aria-labelledby': 'needs-title' },
+  return el('section', { class: `needs${count || held.length ? '' : unknown ? ' checking' : ' calm'}`, 'aria-labelledby': 'needs-title' },
     controller?.stopped && !said ? el('p', { class: 'needs-stopped' }, NEEDS.banner(controller.lastLeaseRenewalAt, { dateTime }, controller.stopRequested)) : null,
     el('div', { class: 'needs-head' }, el('h2', { id: 'needs-title' }, headline),
       unknown ? el('span', { class: 'needs-unknown' }, `Merge of ${unknown} published step${unknown === 1 ? '' : 's'} being checked`) : null),
     // Only owner actions here (owner, 2026-10-13): posted reports and merged work ready for release are on Results.
     ...groups.map(needsGroup),
+    // Projects held up by the owner's decisions: no work is blocked, so they are not counted, but each is named with a
+    // link to its Now, which says which decisions (aiworks#11 review 5 G7).
+    held.length ? el('ul', { class: 'needs-list', 'data-focus-scope': 'needs/held' }, ...held.map((project) => el('li', {},
+      el('strong', {}, project.name), ` · ${project.text} `, routeLink(`Open ${project.name}`, { screen: 'project', project: project.id })))) : null,
     reply ? el('div', { class: 'needs-reply' }, `AIWorks answered your message #${reply.messageId} (${dateTime(reply.answeredAt)}). `,
       reply.url ? link('Read its “What needs you” ↗', reply.url) : routeLink('Read the plan', MESSAGES_ADDRESS)) : null);
 }
@@ -1184,18 +1206,195 @@ function mergeChecksPanel() {
       : empty('No projects yet.', 'Merge checks appear here once this computer has a project.'));
 }
 
+let pendingRemoveAccount = null;
+function openRemoveAccount(provider, name) {
+  pendingRemoveAccount = { provider, name };
+  const label = provider === 'claude' ? 'Claude' : provider === 'codex' ? 'ChatGPT (Codex)' : provider === 'agy' ? 'Agy' : provider === 'cursor' ? 'Cursor Agent' : provider;
+  $('#remove-account-description').textContent = `Remove login for ${label} · ${name} from this computer?`;
+  $('#remove-account-dialog').showModal();
+}
+
+function openSetPreference(role, pref = {}) {
+  $('#preference-role').value = role;
+  $('#preference-title').textContent = `Role model preference: ${role}`;
+  $('#preference-models').value = Array.isArray(pref.models) ? pref.models.join(', ') : '';
+  $('#preference-effort').value = pref.effort ?? '';
+  $('#preference-kind').value = pref.kind ?? '';
+  $('#preference-dialog').showModal();
+}
+
+function accountsSection(accounts = []) {
+  const list = accounts.length ? el('ul', { class: 'settings-links' }, ...accounts.map((acct) => {
+    const { id, provider: p, name, usage } = acct;
+    const providerLabel = p === 'claude' ? 'Claude' : p === 'codex' ? 'ChatGPT (Codex)' : p === 'agy' ? 'Agy' : p === 'cursor' ? 'Cursor Agent' : p;
+    let statusText = 'Ready';
+    let statusPillClass = 'pill-ready';
+    if (usage?.cooldown?.active) {
+      const remainingSec = Math.max(0, Math.round((usage.cooldown.retryAt - Date.now()) / 1000));
+      const mins = Math.floor(remainingSec / 60);
+      const secs = remainingSec % 60;
+      statusText = `Waiting for quota (${mins}m ${secs}s)`;
+      statusPillClass = 'pill-waiting';
+    } else if (usage?.openRuns > 0) {
+      statusText = `In use (${usage.openRuns} active)`;
+      statusPillClass = 'pill-running';
+    }
+    const capacityText = usage?.learnedLimit ? `Learned limit: ${usage.learnedLimit} concurrent runs.` : null;
+    const stats = usage?.outcomes ?? {};
+    const successCount = stats.result ?? stats.success ?? 0;
+    const retryCount = stats.retry ?? 0;
+    const failCount = stats.failure ?? 0;
+    const durationMin = usage?.totalDurationMs ? Math.round(usage.totalDurationMs / 60000) : 0;
+    const usageSubtext = `Runs: ${successCount} successful, ${retryCount} retries, ${failCount} errors · ${durationMin}m total run time.`;
+
+    return el('li', { 'data-focus-scope': `account/${id}` },
+      el('div', { class: 'account-header' },
+        el('strong', {}, `${providerLabel} · ${name}`),
+        el('span', { class: `account-pill ${statusPillClass}` }, statusText),
+        button('Remove…', () => openRemoveAccount(p, name), 'danger small')),
+      capacityText ? el('div', { class: 'subtext' }, capacityText) : null,
+      el('div', { class: 'subtext' }, usageSubtext));
+  })) : empty('No worker accounts yet.', 'Accounts set up on this computer appear here.');
+
+  return el('div', { class: 'accounts-section' },
+    el('div', { class: 'panel-header' }, el('h3', {}, 'Logins and usage'), routeLink('Manage on separate page →', '#/settings/accounts')),
+    list);
+}
+
+function accountsScreen() {
+  const settings = state.supervisor.settings;
+  const accounts = settings?.accounts ?? [];
+  const back = el('p', { class: 'breadcrumb' }, routeLink('← Back to Settings', '#/settings'));
+
+  const setup = panel('Account setup', 'Manage sign-in with the native AI provider CLI on this computer. Configured accounts and usage appear below.');
+
+  const list = accounts.length ? el('ul', { class: 'settings-links' }, ...accounts.map((acct) => {
+    const { id, provider: p, name, usage } = acct;
+    const providerLabel = p === 'claude' ? 'Claude' : p === 'codex' ? 'ChatGPT (Codex)' : p === 'agy' ? 'Agy' : p === 'cursor' ? 'Cursor Agent' : p;
+    let statusText = 'Ready';
+    let statusPillClass = 'pill-ready';
+    if (usage?.cooldown?.active) {
+      const remainingSec = Math.max(0, Math.round((usage.cooldown.retryAt - Date.now()) / 1000));
+      const mins = Math.floor(remainingSec / 60);
+      const secs = remainingSec % 60;
+      statusText = `Waiting for quota (${mins}m ${secs}s)`;
+      statusPillClass = 'pill-waiting';
+    } else if (usage?.openRuns > 0) {
+      statusText = `In use (${usage.openRuns} active)`;
+      statusPillClass = 'pill-running';
+    }
+    const capacityText = usage?.learnedLimit ? `Learned limit: ${usage.learnedLimit} concurrent runs.` : null;
+    const stats = usage?.outcomes ?? {};
+    const successCount = stats.result ?? stats.success ?? 0;
+    const retryCount = stats.retry ?? 0;
+    const failCount = stats.failure ?? 0;
+    const durationMin = usage?.totalDurationMs ? Math.round(usage.totalDurationMs / 60000) : 0;
+    const usageSubtext = `Runs: ${successCount} successful, ${retryCount} retries, ${failCount} errors · ${durationMin}m total run time.`;
+
+    return el('li', { 'data-focus-scope': `account/${id}` },
+      el('div', { class: 'account-header' },
+        el('strong', {}, `${providerLabel} · ${name}`),
+        el('span', { class: `account-pill ${statusPillClass}` }, statusText),
+        button('Remove…', () => openRemoveAccount(p, name), 'danger small')),
+      capacityText ? el('div', { class: 'subtext' }, capacityText) : null,
+      el('div', { class: 'subtext' }, usageSubtext));
+  })) : empty('No worker accounts yet.', 'Accounts set up on this computer appear here.');
+
+  const accountsPanel = panel('Worker accounts', 'Which AI worker logins and accounts are on this computer?', el('div', {},
+    list));
+
+  const preferencesPanel = modelPreferencesPanel(settings?.modelPreferences ?? {});
+  return [back, setup, accountsPanel, preferencesPanel];
+}
+
+function modelPreferencesPanel(prefs = {}) {
+  const roles = [
+    { key: 'implementer', title: 'Builder / Implementation', desc: 'Stored implementation choices.' },
+    { key: 'verification', title: 'Checker / Verification', desc: 'Stored independent verification choices.' },
+    { key: 'coordinator', title: 'Coordinator / Planner', desc: 'Stored planning choices.' },
+  ];
+
+  const items = roles.map((r) => {
+    const rolePref = prefs[r.key] ?? {};
+    const models = Array.isArray(rolePref.models) && rolePref.models.length ? rolePref.models.join(', ') : 'No stored choice';
+    const effort = rolePref.effort ? `${rolePref.effort} effort` : 'standard effort';
+    const kind = rolePref.kind ? `(${rolePref.kind})` : '';
+
+    return el('li', { 'data-focus-scope': `preference/${r.key}` },
+      el('div', { class: 'account-header' },
+        el('strong', {}, r.title),
+        button('Configure…', () => openSetPreference(r.key, rolePref), 'secondary small')
+      ),
+      el('div', { class: 'subtext' }, r.desc),
+      el('div', { class: 'subtext' }, `Models: ${models} · ${effort} ${kind}`.trim())
+    );
+  });
+
+  return panel('Role model preferences', 'Saved choices. Campaign routing follows its declared executors, models and effort.', el('div', {},
+    el('ul', { class: 'settings-links' }, ...items)
+  ));
+}
+
+function versionScreen() {
+  const host = state.host ?? {};
+  const ver = host.version ?? DASHBOARD_VERSION;
+  const verName = host.versionName ?? DASHBOARD_VERSION_NAME;
+  const current = DASHBOARD_VERSIONS.find((v) => v.version === ver || v.status === 'current') ?? DASHBOARD_VERSIONS[DASHBOARD_VERSIONS.length - 2];
+  const back = el('p', { class: 'breadcrumb' }, routeLink('← Back to Settings', '#/settings'));
+
+  const currentPanel = panel('Active version', 'Which capabilities are turned on in this version.', el('div', {},
+    el('div', { class: 'version-badge-row' },
+      el('h3', {}, `v${current.version} — ${current.name}`),
+      el('span', { class: 'account-pill pill-ready' }, 'Active')),
+    el('p', { class: 'version-summary-text' }, current.description),
+    el('div', { class: 'features-block' },
+      el('strong', { class: 'features-heading' }, 'Features turned on in this version:'),
+      el('ul', { class: 'version-features-bullets' },
+        ...current.features.map((f) => el('li', {}, `✓ ${f}`))))));
+
+  const milestonesPanel = panel('Version milestones and roadmap', 'All dashboard versions before 1.0.0, and the remaining roadmap.', el('div', {},
+    el('ul', { class: 'settings-links' },
+      ...DASHBOARD_VERSIONS.map((v) => {
+        const isCurrent = v.version === current.version;
+        const isRoadmap = v.status === 'roadmap';
+        const statusLabel = isCurrent ? 'Active now' : isRoadmap ? 'Roadmap' : 'On';
+        const pillClass = isCurrent ? 'pill-ready' : isRoadmap ? 'pill-waiting' : 'pill-done';
+        return el('li', { 'data-version': v.version },
+          el('div', { class: 'account-header' },
+            el('strong', {}, `v${v.version} · ${v.name}`),
+            el('span', { class: `account-pill ${pillClass}` }, statusLabel)),
+          el('p', { class: 'subtext' }, v.description),
+          el('ul', { class: 'subtext-list' },
+            ...v.features.map((f) => el('li', {}, `${isRoadmap ? '○' : '✓'} ${f}`))));
+      }))));
+
+  return [back, currentPanel, milestonesPanel];
+}
+
 /**
  * Settings (OWNER_WORKSPACE §4.3, slice S8): this computer, its AI workers once, each project's kind and connection, and
  * release mode as text. No primary action: Settings only shows what the machine has. Messages and Diagnostics are linked.
  */
 function settingsScreen() {
   const host = state.host ?? {};
+  const ver = host.version ?? DASHBOARD_VERSION;
+  const verName = host.versionName ?? DASHBOARD_VERSION_NAME;
+  const currentVer = DASHBOARD_VERSIONS.find((v) => v.version === ver || v.status === 'current') ?? DASHBOARD_VERSIONS[DASHBOARD_VERSIONS.length - 2];
   const computer = panel('This computer', 'Each computer runs its own AIWorks. This page shows only this one.', el('div', { class: 'panel-body' },
-    el('p', {}, `${host.name ?? 'Unknown computer'} · dashboard version ${host.revision?.slice(0, 7) ?? 'unknown'}`)));
+    el('p', {}, `${host.name ?? 'Unknown computer'} · Dashboard v${ver} (${verName}) · revision ${host.revision?.slice(0, 7) ?? 'unknown'}`),
+    el('div', { class: 'version-card' },
+      el('div', { class: 'version-card-header' },
+        el('strong', {}, `Active version: v${ver} — ${verName}`),
+        routeLink('See all versions & roadmap →', '#/settings/version', 'button secondary small')),
+      el('p', { class: 'subtext' }, currentVer.description),
+      el('strong', { class: 'features-heading' }, 'Features on in this version:'),
+      el('ul', { class: 'version-features-list' },
+        ...currentVer.features.map((feat) => el('li', {}, `✓ ${feat}`))))));
   const settings = state.supervisor.settings;
   if (!state.supervisor.available || !settings) return [computer, unavailable(), settingsLinks()];
   const active = state.supervisor.campaigns.filter((c) => !['finished', 'cancelled'].includes(c.control));
   const workers = panel('AI workers', `Once for ${host.name ?? 'this computer'}, whatever the work.`, el('div', {},
+    accountsSection(settings.accounts ?? []),
     el('ul', { class: 'settings-links' }, ...settings.workers.map((w) => {
       const { text, notes } = workerLine(w);
       return el('li', { 'data-focus-scope': `worker/${w.kind}` }, el('strong', {}, text), ...notes.map((note) => el('div', { class: 'subtext' }, note)));
@@ -1223,6 +1422,8 @@ const settingsEmpty = ({ title, text, primary }) => el('div', { class: 'empty-st
 
 function settingsLinks() {
   return panel('More', null, el('ul', { class: 'settings-links' },
+    el('li', {}, routeLink('Worker accounts', '#/settings/accounts'), el('div', { class: 'subtext' }, 'Connect and manage isolated worker logins, view live quota usage, and export encrypted bundles.')),
+    el('li', {}, routeLink('Version and roadmap', '#/settings/version'), el('div', { class: 'subtext' }, `Dashboard v${DASHBOARD_VERSION} (${DASHBOARD_VERSION_NAME}), active features and pre-1.0 roadmap.`)),
     el('li', {}, routeLink('Messages', '#/settings/messages'), el('div', { class: 'subtext' }, 'What you asked AIWorks, and what it answered.')),
     el('li', {}, routeLink('Diagnostics', '#/settings/diagnostics'), el('div', { class: 'subtext' }, 'The full activity journal, every step with its issue and pull request, the roadmap of the platform that keeps your project rules, and how fresh each merge check is.'))));
 }
@@ -1261,10 +1462,18 @@ function nowScreen(project) {
     el('h2', { id: 'since-title' }, previousVisit ? `Since you last looked (${dateTime(previousVisit)})` : 'In the last 24 hours'),
     el('ul', {}, ...view.since.map((line) => el('li', { class: line.tone ?? '' }, `${line.text} `, ...line.links.map((item) => link(`${item.label} ↗`, item.url)))))) : null;
   const others = details.others.map((item) => `${item.purpose ?? item.id} (campaign ${item.id})`);
+  // What else goes on in the project stays in view, whatever leads (aiworks#11 review 5 G5): a pause carries its Resume.
+  const also = view.also?.length ? el('section', { 'aria-labelledby': `now-also-${project}` },
+    el('h3', { id: `now-also-${project}`, class: 'section-title' }, 'Also in this project'),
+    el('ul', { class: 'settings-links' }, ...view.also.map((line) => {
+      const c = line.primary ? campaignById(line.primary.campaignId) : null;
+      return el('li', { 'data-state': line.kind }, line.text, ' ',
+        c?.controls?.primary === 'resume' ? button(line.primary.label, () => command(c, 'resume'), 'secondary', commandsOff()) : null);
+    }))) : null;
   return [el('section', { class: 'panel', 'data-focus-scope': `now/${project}` }, el('div', { class: 'panel-body' },
     goal ? el('p', { class: 'eyebrow' }, goal) : null,
     el('p', { role: 'status', 'aria-live': 'polite', 'data-state': now.key }, el('strong', {}, now.title), now.text ? ` ${now.text}` : ''),
-    primaryAction(now.primary), startWork,
+    primaryAction(now.primary), startWork, also,
     view.progress ? el('p', { class: 'subtext' }, view.progress) : null,
     view.note ? el('p', { class: 'subtext' }, `${view.note.title} ${view.note.text}`) : null,
     details.workId || others.length ? disclosure(`now/${project}/details`, 'Details', el('div', { class: 'subtext' }, [
@@ -1373,6 +1582,11 @@ function stepScreen(project, c, task) {
       task.stopped ? el('p', {}, task.stopped.text) : null,
       p ? el('p', { class: 'subtext' }, `From the worker’s own record: ${plural(p.turns, 'turn')} · ${plural(p.toolCalls, 'action')} · last activity ${timeAgo(p.lastActivityAt)}`) : null,
       last ? el('p', { class: 'subtext' }, `Last result: ${last}`) : null,
+      task.signature ? el('div', { class: 'instruction-list', 'data-task-signature': '' },
+        el('h3', { class: 'section-title' }, 'Model signature'),
+        task.signature.name ? el('p', {}, el('strong', {}, 'Implementer: '), `${task.signature.name} (${task.signature.type ?? 'model'} · ${task.signature.effort ?? 'standard'} effort${task.signature.tokens ? ` · ${task.signature.tokens.total?.toLocaleString?.() ?? task.signature.tokens.total} tokens` : ' · tokens not reported'})`) : null,
+        task.signature.verifier ? el('p', {}, el('strong', {}, 'Verifier: '), `${task.signature.verifier.name} (${task.signature.verifier.type ?? 'model'} · ${task.signature.verifier.effort ?? 'standard'} effort${task.signature.verifier.tokens ? ` · ${task.signature.verifier.tokens.total?.toLocaleString?.() ?? task.signature.verifier.tokens.total} tokens` : ' · tokens not reported'})`) : null
+      ) : null,
       // What that result means and, when stopped, what fixing it involves, in place (aiworks#11 review 4 F13).
       meaning ? el('div', { class: 'instruction-list', 'data-result-meaning': '' }, el('p', {}, meaning.kind), el('p', {}, meaning.fix)) : null,
       // The rule a returned change broke and what the next attempt was given (SCOPED_READING, slice UI18): paths, sections and headings only.
@@ -1396,6 +1610,7 @@ const resultRow = (row) => el('li', { class: `result-row ${row.group}`, 'data-fo
   row.asOf ? el('div', { class: 'needs-stale' }, mergeAsOf(row.asOf)) : null,
   row.evidence ? disclosure(`results/${row.campaignId}/${row.taskId}`, el('span', { class: 'evidence' }, row.evidence),
     el('p', { class: 'needs-detail' }, row.detail)) : null,
+  row.signature ? el('div', { class: 'subtext task-signature' }, formatTaskSignatureBrief(row.signature)) : null,
   el('div', { class: 'subtext' }, campaignContext(row.campaignId)));
 
 /**
@@ -1549,6 +1764,8 @@ function render() {
     : route.screen === 'project' && route.tab === 'work' ? ['AI workers working'] : []);
   if (route.screen === 'needs') patch(content, [needsYou() ?? unavailable()]);
   else if (route.screen === 'settings' && route.section === 'messages') patch(content, [messagesPanel(20)]);
+  else if (route.screen === 'settings' && route.section === 'accounts') patch(content, accountsScreen());
+  else if (route.screen === 'settings' && route.section === 'version') patch(content, versionScreen());
   else if (diagnostics) patch(content, [trackOverview(), roadmapView(), workView(), mergeChecksPanel(), projectWaitsPanel(),
     panel('Execution journal', 'Latest 80 events · raw agent transcripts and secrets are never shown', activityList())].filter(Boolean));
   else if (route.screen === 'settings') patch(content, settingsScreen());
@@ -1570,7 +1787,11 @@ function render() {
     // The page starts with a neutral "…" so it never names the wrong computer before the first answer.
     $('#host-name').textContent = `${state.host.name ?? 'Unknown computer'} · this computer`;
     $('#host-name').removeAttribute('aria-busy');
-    $('#host-detail').textContent = `Dashboard version ${state.host.revision?.slice(0, 7) ?? 'unknown'}`;
+    const ver = state.host.version ?? DASHBOARD_VERSION;
+    const verName = state.host.versionName ?? DASHBOARD_VERSION_NAME;
+    const versionLabel = `v${ver} · ${verName}`;
+    $('#host-detail').replaceChildren(routeLink(versionLabel, '#/settings/version', 'host-version-link'));
+    $('#host-detail').title = `Dashboard v${ver} "${verName}" (revision ${state.host.revision?.slice(0, 7) ?? 'unknown'})`;
   }
 }
 
@@ -1706,6 +1927,55 @@ $('#message-form').addEventListener('submit', (event) => {
   $('#message-dialog').close();
   askNotifications();
   void sendMessage(text);
+});
+
+$('#close-remove-account').addEventListener('click', () => { pendingRemoveAccount = null; $('#remove-account-dialog').close(); });
+$('#confirm-remove-account').addEventListener('click', async () => {
+  const target = pendingRemoveAccount;
+  pendingRemoveAccount = null;
+  $('#remove-account-dialog').close();
+  if (!target) return;
+  try {
+    await post('/api/accounts/remove', target);
+    notice(`Account ${target.name} removed.`);
+    await poll();
+  } catch (err) {
+    notice(err.message ?? 'Could not remove account.');
+  }
+});
+$('#close-preference').addEventListener('click', () => $('#preference-dialog').close());
+$('#clear-preference-button').addEventListener('click', async () => {
+  const role = $('#preference-role').value;
+  $('#preference-dialog').close();
+  if (!role) return;
+  try {
+    await post('/api/accounts/preferences', { role, models: [] });
+    notice(`Reset model preferences for ${role}.`);
+    await poll();
+  } catch (err) {
+    notice(err.message ?? 'Could not reset model preferences.');
+  }
+});
+$('#preference-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const role = $('#preference-role').value;
+  const rawModels = $('#preference-models').value;
+  const models = rawModels.split(/[\s,]+/).map((m) => m.trim()).filter(Boolean);
+  const effort = $('#preference-effort').value || undefined;
+  const kind = $('#preference-kind').value || undefined;
+  $('#preference-dialog').close();
+  if (!role) return;
+  try {
+    await post('/api/accounts/preferences', {
+      preferences: {
+        [role]: { models, effort, kind }
+      }
+    });
+    notice(`Saved model preferences for ${role}.`);
+    await poll();
+  } catch (err) {
+    notice(err.message ?? 'Could not save model preferences.');
+  }
 });
 // Our own navigation already set the address; any other change (Back, Forward, an edited address) restores that address's position.
 window.addEventListener('hashchange', () => { if (location.hash !== current.address) go(location.hash, { restore: true }); });
