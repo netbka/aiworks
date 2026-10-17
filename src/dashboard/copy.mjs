@@ -727,3 +727,133 @@ export function costRunsLine(total) {
   const ran = total.worksWithRuns ?? total.works;
   return `${plural(total.runs, 'run')} in ${ran === total.works ? plural(ran, 'piece') : `${ran} of ${plural(total.works, 'piece')}`} of work.`;
 }
+
+/** The current dashboard semantic version, kept below 1.0.0 until the roadmap is completed. */
+export const DASHBOARD_VERSION = '0.9.0';
+/** The name of the current dashboard version describing its primary feature theme. */
+export const DASHBOARD_VERSION_NAME = 'Model Routing & Task Signatures';
+
+/**
+ * Meaningful version milestones for the dashboard: each release below 1.0.0 has a name
+ * and a list of features enabled in that version, leading up to the 1.0.0 roadmap target.
+ */
+export const DASHBOARD_VERSIONS = [
+  {
+    version: '0.1.0',
+    name: 'Foundation & Review Fixture',
+    description: 'Core AIWorks runtime with synthetic store and review fixture.',
+    features: [
+      'Deterministic SQLite state storage',
+      'Synthetic review store and fixture',
+      'Loopback dashboard HTTP server with CSRF protection',
+    ],
+    status: 'completed',
+  },
+  {
+    version: '0.2.0',
+    name: 'Owner Navigation',
+    description: 'Project-first navigation shell with responsive 320px layout.',
+    features: [
+      'Navigation shell (Projects, Needs me, Settings)',
+      'Needs me owner-attention inbox',
+      'Hash-based routing with deep-link state preservation',
+      'Responsive mobile-first layout',
+    ],
+    status: 'completed',
+  },
+  {
+    version: '0.3.0',
+    name: 'Project State & Copy',
+    description: 'Calm owner copy and project overview.',
+    features: [
+      'Project Now overview screen',
+      'Plain-language owner copy without machine jargon',
+      'Per-project calm rule and status summaries',
+    ],
+    status: 'completed',
+  },
+  {
+    version: '0.4.0',
+    name: 'Work & Step Observability',
+    description: 'Execution inspection and lifecycle controls.',
+    features: [
+      'Step timeline and history inspection',
+      'Independent verification results view',
+      'Pause, cancel, resume, and check-again controls',
+      'Retry tracking and wait reason reporting',
+    ],
+    status: 'completed',
+  },
+  {
+    version: '0.5.0',
+    name: 'Usage & Cost Transparency',
+    description: 'Token math and cost tracking per project and step.',
+    features: [
+      'Detailed token counts (input, cache read, cache write, output)',
+      'Cost calculation per project and per step',
+      'Unreported run accounting',
+    ],
+    status: 'completed',
+  },
+  {
+    version: '0.6.0',
+    name: 'Project Connection',
+    description: 'Local directory and Git project onboarding.',
+    features: [
+      'Connect ordinary local folders without Git metadata',
+      'Connect local Git repositories and GitHub remotes',
+      'Project rules confirmation and review',
+    ],
+    status: 'completed',
+  },
+  {
+    version: '0.7.0',
+    name: 'Release Ladder & Diagnostics',
+    description: 'Five-step release readiness ladder and diagnostics.',
+    features: [
+      'Five-step release readiness ladder',
+      'Execution journal with event timeline',
+      'Local merge-check freshness tracking',
+      'Project rules diagnostics',
+    ],
+    status: 'completed',
+  },
+  {
+    version: '0.8.0',
+    name: 'Multi-Account Quota Management',
+    description: 'Isolated login profiles and usage observability.',
+    features: [
+      'Multiple account logins per AI worker provider',
+      'Isolated account profile directories with CAAM integration',
+      'Account usage observability and rate-limit cooldown tracking',
+      'CLI account credential management with strict web boundary',
+    ],
+    status: 'completed',
+  },
+  {
+    version: '0.9.0',
+    name: 'Model Routing & Task Signatures',
+    description: 'Role-based model preferences and durable task model signatures.',
+    features: [
+      'Task model signatures (model name, type, effort, tokens consumed)',
+      'Role-based model preferences (implementer, checker, assistant)',
+      'Model signature badges in Step, Work, and Results views',
+      'Interactive preference configuration in Settings',
+      'CLI model preference management commands',
+    ],
+    status: 'current',
+  },
+  {
+    version: '1.0.0',
+    name: 'Autonomous Project Delivery',
+    description: 'Full autonomous multi-project delivery and automated release gates.',
+    features: [
+      'Autonomous end-to-end plan-and-do across projects',
+      'Adaptive multi-worker parallel scheduling',
+      'Opt-in automatic release gate execution',
+      'Complete self-hosting workspace workflow',
+    ],
+    status: 'roadmap',
+  },
+];
+

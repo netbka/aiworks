@@ -4,6 +4,13 @@
 // kind ("providerAccounts": { "claude-cli": "claude-main" }); without a name the account is the executor kind itself, so
 // every campaign using that CLI here shares it. Only a name the owner chooses is stored, never a credential.
 
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { writeAtomic } from './proc.mjs';
+import { Store } from './store.mjs';
+import { exportProfileCredentials, importProfileCredentials, removeShallowProfile } from './adapters/caam.mjs';
+
 /** Outcome classes that describe the account (or this host's CLI), not the task: they hold every campaign on the account. */
 export const ACCOUNT_SCOPED = new Set(['quota', 'auth', 'unavailable']);
 
@@ -249,4 +256,328 @@ export function accountUsageSummary(store, config, { kind, account = null, now =
     lastUsedAt,
   };
 }
+
+// ---- Task model signature and role model preferences ----
+
+/**
+ * Format raw usage tokens into a structured breakdown.
+ * Returns null if no numeric tokens are reported.
+ */
+export function formatTokensUsage(usage) {
+  if (!usage || typeof usage !== 'object') return null;
+  const input = Number.isFinite(usage.input) ? usage.input : Number.isFinite(usage.input_tokens) ? usage.input_tokens : null;
+  const output = Number.isFinite(usage.output) ? usage.output : Number.isFinite(usage.output_tokens) ? usage.output_tokens : null;
+  const cacheRead = Number.isFinite(usage.cacheRead) ? usage.cacheRead : Number.isFinite(usage.cache_read_input_tokens) ? usage.cache_read_input_tokens : null;
+  const cacheCreation = Number.isFinite(usage.cacheCreation) ? usage.cacheCreation : Number.isFinite(usage.cache_creation_input_tokens) ? usage.cache_creation_input_tokens : null;
+  const total = (input ?? 0) + (output ?? 0) + (cacheCreation ?? 0);
+  if (input === null && output === null && cacheRead === null && cacheCreation === null) return null;
+  return { input, output, cacheRead, cacheCreation, total: total > 0 ? total : null };
+}
+
+/**
+ * Format a human-readable tokens summary string.
+ */
+export function formatTokensSummary(tokens) {
+  if (!tokens || typeof tokens !== 'object' || tokens.total == null) return 'unreported';
+  const parts = [];
+  if (tokens.input != null) parts.push(`${tokens.input.toLocaleString()} in`);
+  if (tokens.output != null) parts.push(`${tokens.output.toLocaleString()} out`);
+  if (tokens.cacheRead != null && tokens.cacheRead > 0) parts.push(`${tokens.cacheRead.toLocaleString()} cached`);
+  return `${tokens.total.toLocaleString()} tokens (${parts.join(', ')})`;
+}
+
+/**
+ * Build a model signature record for a task run.
+ * Fields: Name, Type, Effort, Tokens consumed.
+ */
+export function buildTaskSignature({ model, executorKind, effort = 'standard', usage = null, verifier = null }) {
+  const tokens = formatTokensUsage(usage);
+  let verifierObj = null;
+  if (verifier && typeof verifier === 'object') {
+    if (verifier.name && verifier.type) {
+      verifierObj = verifier;
+    } else {
+      verifierObj = buildTaskSignature({
+        model: verifier.model,
+        executorKind: verifier.executorKind,
+        effort: verifier.effort,
+        usage: verifier.usage,
+      });
+    }
+  }
+  return {
+    name: model ?? 'unknown-model',
+    type: executorKind ?? 'unknown-type',
+    effort: effort ?? 'standard',
+    tokens,
+    ...(verifierObj ? { verifier: verifierObj } : {}),
+  };
+}
+
+/**
+ * Format markdown lines representing the task's model signature.
+ */
+export function formatSignatureLines(signature) {
+  if (!signature) return [];
+  const lines = ['### Model signature', ''];
+  lines.push(`- **Implementer**: \`${signature.name}\` (${signature.type}) · Effort: ${signature.effort} · Tokens: ${formatTokensSummary(signature.tokens)}`);
+  if (signature.verifier) {
+    lines.push(`- **Verifier**: \`${signature.verifier.name}\` (${signature.verifier.type}) · Effort: ${signature.verifier.effort} · Tokens: ${formatTokensSummary(signature.verifier.tokens)}`);
+  }
+  return lines;
+}
+
+/**
+ * Read configured role model preferences from config.
+ */
+export function modelPreferences(config) {
+  const prefs = config?.modelPreferences;
+  if (!prefs || typeof prefs !== 'object') return { implementer: [], verification: [], coordinator: [] };
+  return {
+    implementer: Array.isArray(prefs.implementer) ? prefs.implementer : [],
+    verification: Array.isArray(prefs.verification) ? prefs.verification : [],
+    coordinator: Array.isArray(prefs.coordinator) ? prefs.coordinator : [],
+    ...prefs,
+  };
+}
+
+/**
+ * Save model preferences to <dataDir>/config.json.
+ */
+export function saveModelPreferences(dataDir, preferences) {
+  const configFile = join(dataDir, 'config.json');
+  let config = {};
+  try { config = JSON.parse(readFileSync(configFile, 'utf8')); } catch { config = {}; }
+  config.modelPreferences = preferences;
+  writeAtomic(configFile, JSON.stringify(config, null, 2));
+  return { success: true, modelPreferences: preferences };
+}
+
+/**
+ * Set model preferences for a single role.
+ */
+export function setRoleModelPreference(dataDir, role, modelList) {
+  const configFile = join(dataDir, 'config.json');
+  let config = {};
+  try { config = JSON.parse(readFileSync(configFile, 'utf8')); } catch { config = {}; }
+  config.modelPreferences = config.modelPreferences ?? {};
+  config.modelPreferences[role] = Array.isArray(modelList) ? modelList : [modelList];
+  writeAtomic(configFile, JSON.stringify(config, null, 2));
+  return { success: true, role, preferences: config.modelPreferences[role] };
+}
+
+/**
+ * Clear model preferences for a role or all roles.
+ */
+export function clearRoleModelPreferences(dataDir, role = null) {
+  const configFile = join(dataDir, 'config.json');
+  let config = {};
+  try { config = JSON.parse(readFileSync(configFile, 'utf8')); } catch { config = {}; }
+  if (role) {
+    if (config.modelPreferences) delete config.modelPreferences[role];
+  } else {
+    delete config.modelPreferences;
+  }
+  writeAtomic(configFile, JSON.stringify(config, null, 2));
+  return { success: true, cleared: role ?? 'all' };
+}
+
+/**
+ * Apply model preferences to order candidates for a given role.
+ * Candidates matching the preferred models for that role rank ahead of others.
+ */
+export function applyModelPreferences(candidates, role, config) {
+  if (!Array.isArray(candidates) || !candidates.length) return candidates ?? [];
+  const prefs = config?.modelPreferences?.[role];
+  if (!Array.isArray(prefs) || !prefs.length) return candidates;
+  const rank = (c) => {
+    const idx = prefs.findIndex((p) => {
+      if (typeof p === 'string') return p === c.model || p === c.kind;
+      if (p && typeof p === 'object') {
+        const matchKind = !p.kind || p.kind === c.kind;
+        const matchModel = !p.model || p.model === c.model;
+        return matchKind && matchModel;
+      }
+      return false;
+    });
+    return idx >= 0 ? idx : Infinity;
+  };
+  return [...candidates].sort((a, b) => rank(a) - rank(b));
+}
+
+const readConfig = (dataDir) => {
+  try { return JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { return {}; }
+};
+
+export const shallowHomesRoot = (config, dataDir) => config?.caam?.shallowHomes ?? (dataDir ? join(dataDir, 'profiles') : join(homedir(), '.caam', 'shallow-homes'));
+
+/** Configured AI worker accounts from active operations, provider waits, and local shallow profiles. */
+export function configuredAccounts(store, config, { now = Date.now(), dataDir = null } = {}) {
+  if (!store) return [];
+  const seen = new Set();
+  const accounts = [];
+  try {
+    const opAccounts = store.all('SELECT DISTINCT account_identity, executor_kind FROM operations WHERE account_identity IS NOT NULL');
+    for (const { account_identity: id, executor_kind: kind } of opAccounts) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const [provider, name] = id.includes('/') ? id.split('/', 2) : [kind.replace('-cli', ''), id];
+      const usage = accountUsageSummary(store, config, { kind, account: id, now });
+      accounts.push({ id, provider, kind, name, usage });
+    }
+  } catch { /* operations table may not have account_identity in review fixture */ }
+
+  try {
+    const waitAccounts = store.all('SELECT DISTINCT account, executor_kind FROM provider_waits WHERE account IS NOT NULL');
+    for (const { account: id, executor_kind: kind } of waitAccounts) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const [provider, name] = id.includes('/') ? id.split('/', 2) : [kind.replace('-cli', ''), id];
+      const usage = accountUsageSummary(store, config, { kind, account: id, now });
+      accounts.push({ id, provider, kind, name, usage });
+    }
+  } catch { /* table may be empty or missing */ }
+
+  if (dataDir) {
+    const root = shallowHomesRoot(config, dataDir);
+    if (existsSync(root)) {
+      try {
+        for (const dirent of readdirSync(root, { withFileTypes: true })) {
+          if (dirent.isDirectory()) {
+            const name = dirent.name;
+            const hasClaude = existsSync(join(root, name, '.claude'));
+            const hasCodex = existsSync(join(root, name, '.codex'));
+            const hasAgy = existsSync(join(root, name, '.agy'));
+            const hasCursor = existsSync(join(root, name, '.cursor'));
+            const provider = hasClaude ? 'claude' : hasCodex ? 'codex' : hasAgy ? 'agy' : hasCursor ? 'cursor' : 'claude';
+            const kind = `${provider}-cli`;
+            const id = `${provider}/${name}`;
+            if (!seen.has(id)) {
+              seen.add(id);
+              const usage = accountUsageSummary(store, config, { kind, account: id, now });
+              accounts.push({ id, provider, kind, name, usage });
+            }
+          }
+        }
+      } catch { /* ignore directory read errors */ }
+    }
+  }
+
+  return accounts.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+export function addDashboardAccount(dataDir, { provider, name, token, apiKey } = {}) {
+  if (!provider || !name) {
+    const err = new Error('Provider and name are required.');
+    err.status = 400;
+    throw err;
+  }
+  if (!['claude', 'codex', 'agy', 'cursor'].includes(provider)) {
+    const err = new Error('Provider must be claude, codex, agy, or cursor.');
+    err.status = 400;
+    throw err;
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
+    const err = new Error('Account name must contain only letters, numbers, dots, dashes and underscores.');
+    err.status = 400;
+    throw err;
+  }
+  const config = readConfig(dataDir);
+  const root = shallowHomesRoot(config, dataDir);
+  const home = join(root, name);
+  if (provider === 'claude') {
+    const claudeDir = join(home, '.claude');
+    mkdirSync(claudeDir, { recursive: true });
+    if (token) {
+      writeFileSync(join(claudeDir, '.credentials.json'), JSON.stringify({ token }), { encoding: 'utf8', mode: 0o600 });
+    }
+  } else if (provider === 'codex') {
+    const codexDir = join(home, '.codex');
+    mkdirSync(codexDir, { recursive: true });
+    if (apiKey || token) {
+      writeFileSync(join(codexDir, 'auth.json'), JSON.stringify({ api_key: apiKey || token }), { encoding: 'utf8', mode: 0o600 });
+    }
+  } else if (provider === 'agy') {
+    const agyDir = join(home, '.agy');
+    mkdirSync(agyDir, { recursive: true });
+    if (token || apiKey) {
+      writeFileSync(join(agyDir, 'credentials.json'), JSON.stringify({ token: token || apiKey }), { encoding: 'utf8', mode: 0o600 });
+    }
+  } else if (provider === 'cursor') {
+    const cursorDir = join(home, '.cursor');
+    mkdirSync(cursorDir, { recursive: true });
+    if (token || apiKey) {
+      writeFileSync(join(cursorDir, 'cli-config.json'), JSON.stringify({ token: token || apiKey }), { encoding: 'utf8', mode: 0o600 });
+    }
+  }
+  return { success: true, account: `${provider}/${name}`, home };
+}
+
+export function removeDashboardAccount(dataDir, { provider, name } = {}) {
+  if (!provider || !name) {
+    const err = new Error('Provider and name are required.');
+    err.status = 400;
+    throw err;
+  }
+  const kind = `${provider}-cli`;
+  const account = `${provider}/${name}`;
+  const config = readConfig(dataDir);
+  const root = shallowHomesRoot(config, dataDir);
+  const store = new Store(join(dataDir, 'supervisor.db'));
+  try {
+    const res = removeAccount(store, config, { kind, account });
+    const profileRes = removeShallowProfile({ kind, name, root });
+    return { success: true, account, removed: res.removed, pathRemoved: profileRes.removed };
+  } finally {
+    store.close();
+  }
+}
+
+export function exportDashboardAccounts(dataDir, { passphrase } = {}) {
+  if (!passphrase || typeof passphrase !== 'string') {
+    const err = new Error('Passphrase is required to encrypt the export bundle.');
+    err.status = 400;
+    throw err;
+  }
+  const config = readConfig(dataDir);
+  const root = shallowHomesRoot(config, dataDir);
+  const store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true });
+  try {
+    const profiles = [];
+    const accounts = configuredAccounts(store, config, { dataDir });
+    for (const a of accounts) {
+      profiles.push({ provider: a.provider, name: a.name });
+    }
+    const bundleBuffer = exportProfileCredentials({ root, profiles, passphrase });
+    return { success: true, bundleBase64: bundleBuffer.toString('base64'), count: profiles.length };
+  } finally {
+    store.close();
+  }
+}
+
+export function importDashboardAccounts(dataDir, { bundleBase64, passphrase } = {}) {
+  if (!bundleBase64 || !passphrase) {
+    const err = new Error('Export bundle and passphrase are required.');
+    err.status = 400;
+    throw err;
+  }
+  const config = readConfig(dataDir);
+  const root = shallowHomesRoot(config, dataDir);
+  let buffer;
+  try {
+    buffer = Buffer.from(bundleBase64, 'base64');
+  } catch {
+    const err = new Error('Invalid export bundle format.');
+    err.status = 400;
+    throw err;
+  }
+  try {
+    return importProfileCredentials({ root, bundleBuffer: buffer, passphrase });
+  } catch (e) {
+    const err = new Error(e.message || 'Failed to import accounts.');
+    err.status = 400;
+    throw err;
+  }
+}
+
 

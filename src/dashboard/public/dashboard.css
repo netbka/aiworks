@@ -427,7 +427,6 @@ html{scrollbar-gutter:stable;scroll-padding-top:88px}
 @media(min-width:960px){.nav-item{display:grid;grid-template-columns:20px minmax(0,1fr);gap:8px 10px}.nav-item>.nav-count{grid-column:2;margin-left:0;justify-self:start;max-width:100%;overflow-wrap:anywhere}.project-action{grid-column:auto;max-width:190px}}
 @media(min-width:600px) and (max-width:959px){.project-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.project-action{grid-column:1/-1}}
 @media(max-width:959px){.nav-icon:has(~.nav-count:not(:empty)){visibility:hidden}.nav-item>.nav-count{max-width:90px;line-height:1.05}}
-.account-actions{display:flex;gap:10px;padding:12px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap}
 .account-header{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .account-pill{display:inline-flex;align-items:center;padding:3px 8px;border-radius:6px;font-size:12px;font-weight:600}
 .account-pill.pill-ready{background:#eaf6ef;color:#14724f}
@@ -436,3 +435,17 @@ html{scrollbar-gutter:stable;scroll-padding-top:88px}
 .accounts-section{margin-bottom:16px;border-bottom:1px solid var(--line);padding-bottom:16px}
 .accounts-section .panel-header{padding:12px 20px 0}
 .accounts-section h3{margin:0;font-size:14px;font-weight:600;color:#24324a}
+.host-version-link{color:var(--muted);text-decoration:none;transition:color .15s ease}
+.host-version-link:hover{color:#335ed8;text-decoration:underline}
+.version-card{margin-top:12px;padding:12px 14px;background:#f8fafc;border:1px solid var(--line);border-radius:8px}
+.version-card-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px;flex-wrap:wrap}
+.version-features-list{list-style:none;padding:0;margin:8px 0 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:6px;font-size:12px;color:#2c3a4e}
+.version-badge-row{display:flex;align-items:center;gap:12px;margin-bottom:8px;flex-wrap:wrap}
+.version-badge-row h3{margin:0;font-size:16px;font-weight:600}
+.version-summary-text{color:#536078;font-size:13px;margin:0 0 12px}
+.features-block{margin-top:10px}
+.features-heading{display:block;font-size:13px;font-weight:600;margin-bottom:6px}
+.version-features-bullets{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:6px;font-size:13px;color:#2c3a4e}
+.subtext-list{list-style:none;padding:0;margin:6px 0 0;display:flex;flex-direction:column;gap:4px;font-size:12px;color:#536078}
+.account-pill.pill-done{background:#eaf6ef;color:#14724f}
+

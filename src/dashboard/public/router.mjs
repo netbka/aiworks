@@ -29,7 +29,7 @@ function parse(hash) {
   if (first === 'needs') return rest.length ? null : { screen: 'needs' };
   if (first === 'settings') {
     if (!rest.length) return { screen: 'settings' };
-    return rest.length === 1 && ['messages', 'diagnostics'].includes(rest[0]) ? { screen: 'settings', section: rest[0] } : null;
+    return rest.length === 1 && ['messages', 'diagnostics', 'accounts', 'version'].includes(rest[0]) ? { screen: 'settings', section: rest[0] } : null;
   }
   if (first !== 'p' || !rest.length) return null;
   const project = projectId(rest[0]), tail = rest.slice(1);

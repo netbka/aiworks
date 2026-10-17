@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
-import { supervisorSnapshot, applyCommand, postMessage, configuredAccounts, addDashboardAccount, removeDashboardAccount, exportDashboardAccounts, importDashboardAccounts } from './supervisor.mjs';
+import { supervisorSnapshot, applyCommand, postMessage, configuredAccounts, removeDashboardAccount, configuredModelPreferences, saveDashboardModelPreferences } from './supervisor.mjs';
 import { Store } from '../supervisor/store.mjs';
 import { ownerView } from './owner.mjs';
 import { configuredMergeDelegation } from './merges.mjs';
@@ -42,7 +42,9 @@ const pageNavigation = (req, path) => req.method === 'GET' && path === '/' && !r
 export function createDashboardServer({ dataDir, roadmap, merges = null, host = {}, releases = {}, projectConnection = {}, provenanceRoot = undefined, work = {} }) {
   const csrf = randomBytes(32).toString('hex');
   // Which machine and dashboard version this is, so a screenshot identifies its supervisor.
-  const machine = { name: safeText(host.name ?? hostname(), 64) || null, revision: /^[0-9a-f]{7,40}$/.test(host.revision ?? '') ? host.revision : null };
+  const machine = { name: safeText(host.name ?? hostname(), 64) || null, revision: /^[0-9a-f]{7,40}$/.test(host.revision ?? '') ? host.revision : null,
+    ...(host.version !== undefined ? { version: safeText(host.version, 32) } : {}),
+    ...(host.versionName !== undefined ? { versionName: safeText(host.versionName, 64) } : {}) };
   const server = createServer(async (req, res) => {
     const origin = `http://127.0.0.1:${server.address().port}`;
     const send = (status, body, type = 'application/json; charset=utf-8') => {
@@ -97,6 +99,9 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
             store?.close();
           }
         }
+        if (path === '/api/accounts/preferences') {
+          return send(200, { preferences: configuredModelPreferences(dataDir) });
+        }
         return send(404, { error: 'Not found.' });
       }
       if (req.method !== 'POST') return send(405, { error: 'Method not allowed.' });
@@ -106,10 +111,9 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       }
       if (req.headers['content-type'] !== 'application/json') return send(415, { error: 'Commands require JSON.' });
       const chunks = []; let size = 0;
-      const maxSize = path === '/api/accounts/import' ? 1_048_576 : 16_384;
       for await (const chunk of req) {
         size += chunk.length;
-        if (size > maxSize) return send(413, { error: 'Command is too large.' });
+        if (size > 16_384) return send(413, { error: 'Command is too large.' });
         chunks.push(chunk);
       }
       let value;
@@ -120,10 +124,8 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       // Plan and do (UI14): store a work request; Approve and start: register exactly the reviewed plan (work.mjs).
       if (path === '/api/work/requests') return send(202, requestPlanAndDo(dataDir, value));
       if (path === '/api/work/approve') return send(200, approvePlan(dataDir, value, Date.now(), { provenanceRoot, ...work }));
-      if (path === '/api/accounts/add') return send(200, addDashboardAccount(dataDir, value));
       if (path === '/api/accounts/remove') return send(200, removeDashboardAccount(dataDir, value));
-      if (path === '/api/accounts/export') return send(200, exportDashboardAccounts(dataDir, value));
-      if (path === '/api/accounts/import') return send(200, importDashboardAccounts(dataDir, value));
+      if (path === '/api/accounts/preferences') return send(200, saveDashboardModelPreferences(dataDir, value));
       // Add project (UI13): each answers 404 while it is off, as before it existed.
       if (path === '/api/projects/preflight') return send(200, previewProject(dataDir, value, projectConnection));
       if (path === '/api/projects/connect') return send(200, connectProject(dataDir, value, projectConnection));
