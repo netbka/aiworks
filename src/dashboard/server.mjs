@@ -40,7 +40,9 @@ const pageNavigation = (req, path) => req.method === 'GET' && path === '/' && !r
 export function createDashboardServer({ dataDir, roadmap, merges = null, host = {}, releases = {}, projectConnection = {}, provenanceRoot = undefined }) {
   const csrf = randomBytes(32).toString('hex');
   // Which machine and dashboard version this is, so a screenshot identifies its supervisor.
-  const machine = { name: safeText(host.name ?? hostname(), 64) || null, revision: /^[0-9a-f]{7,40}$/.test(host.revision ?? '') ? host.revision : null };
+  const machine = { name: safeText(host.name ?? hostname(), 64) || null, revision: /^[0-9a-f]{7,40}$/.test(host.revision ?? '') ? host.revision : null,
+    ...(host.version !== undefined ? { version: safeText(host.version, 32) } : {}),
+    ...(host.versionName !== undefined ? { versionName: safeText(host.versionName, 64) } : {}) };
   const server = createServer(async (req, res) => {
     const origin = `http://127.0.0.1:${server.address().port}`;
     const send = (status, body, type = 'application/json; charset=utf-8') => {

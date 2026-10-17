@@ -1,6 +1,6 @@
 import { formatRoute, globalOf, resolveRoute, tabOf } from '/router.mjs';
 // The state copy of OWNER_WORKSPACE §7 and the Now screen (slice S4); the server serves src/dashboard/copy.mjs here.
-import { COMMANDS, DELEGATED, DIALOGS, NEEDS, NOT_READ, busyOnCommand, costRunsLine, nowView, readingLines, resultMeaning, stateCopy, workLine } from '/copy.mjs';
+import { COMMANDS, DELEGATED, DIALOGS, NEEDS, NOT_READ, busyOnCommand, costRunsLine, nowView, readingLines, resultMeaning, stateCopy, workLine, DASHBOARD_VERSION, DASHBOARD_VERSION_NAME, DASHBOARD_VERSIONS } from '/copy.mjs';
 
 const $ = (selector) => document.querySelector(selector);
 const names = { done: 'Done', blocked: 'Blocked', unknown: 'Unknown',
@@ -134,6 +134,7 @@ const projectName = (project) => state?.projects?.projects?.find((item) => !item
 // Each screen's heading and the one question it answers (OWNER_WORKSPACE §3.1).
 const screenText = { projects: ['Projects', 'Which project should I open?'], needs: ['Needs me', 'What is waiting for me, across projects?'],
   settings: ['Settings', 'What can AIWorks use on this computer?'], accounts: ['Worker accounts', 'Which AI worker logins and accounts are on this computer?'],
+  version: ['Version and roadmap', 'Which capabilities are turned on in this version?'],
   messages: ['Messages', 'What did I ask AIWorks, and what did it answer?'],
   diagnostics: ['Diagnostics', 'What exactly did the machine record?'], now: ['Now', 'Where are we now?'],
   work: ['Work', 'What is running or waiting, and why?'], results: ['Results', 'What has been delivered, and what remains?'],
@@ -1330,14 +1331,61 @@ function modelPreferencesPanel(prefs = {}) {
   ));
 }
 
+function versionScreen() {
+  const host = state.host ?? {};
+  const ver = host.version ?? DASHBOARD_VERSION;
+  const verName = host.versionName ?? DASHBOARD_VERSION_NAME;
+  const current = DASHBOARD_VERSIONS.find((v) => v.version === ver || v.status === 'current') ?? DASHBOARD_VERSIONS[DASHBOARD_VERSIONS.length - 2];
+  const back = el('p', { class: 'breadcrumb' }, routeLink('← Back to Settings', '#/settings'));
+
+  const currentPanel = panel('Active version', 'Which capabilities are turned on in this version.', el('div', {},
+    el('div', { class: 'version-badge-row' },
+      el('h3', {}, `v${current.version} — ${current.name}`),
+      el('span', { class: 'account-pill pill-ready' }, 'Active')),
+    el('p', { class: 'version-summary-text' }, current.description),
+    el('div', { class: 'features-block' },
+      el('strong', { class: 'features-heading' }, 'Features turned on in this version:'),
+      el('ul', { class: 'version-features-bullets' },
+        ...current.features.map((f) => el('li', {}, `✓ ${f}`))))));
+
+  const milestonesPanel = panel('Version milestones and roadmap', 'All dashboard versions before 1.0.0, and the remaining roadmap.', el('div', {},
+    el('ul', { class: 'settings-links' },
+      ...DASHBOARD_VERSIONS.map((v) => {
+        const isCurrent = v.version === current.version;
+        const isRoadmap = v.status === 'roadmap';
+        const statusLabel = isCurrent ? 'Active now' : isRoadmap ? 'Roadmap' : 'On';
+        const pillClass = isCurrent ? 'pill-ready' : isRoadmap ? 'pill-waiting' : 'pill-done';
+        return el('li', { 'data-version': v.version },
+          el('div', { class: 'account-header' },
+            el('strong', {}, `v${v.version} · ${v.name}`),
+            el('span', { class: `account-pill ${pillClass}` }, statusLabel)),
+          el('p', { class: 'subtext' }, v.description),
+          el('ul', { class: 'subtext-list' },
+            ...v.features.map((f) => el('li', {}, `${isRoadmap ? '○' : '✓'} ${f}`))));
+      }))));
+
+  return [back, currentPanel, milestonesPanel];
+}
+
 /**
  * Settings (OWNER_WORKSPACE §4.3, slice S8): this computer, its AI workers once, each project's kind and connection, and
  * release mode as text. No primary action: Settings only shows what the machine has. Messages and Diagnostics are linked.
  */
 function settingsScreen() {
   const host = state.host ?? {};
+  const ver = host.version ?? DASHBOARD_VERSION;
+  const verName = host.versionName ?? DASHBOARD_VERSION_NAME;
+  const currentVer = DASHBOARD_VERSIONS.find((v) => v.version === ver || v.status === 'current') ?? DASHBOARD_VERSIONS[DASHBOARD_VERSIONS.length - 2];
   const computer = panel('This computer', 'Each computer runs its own AIWorks. This page shows only this one.', el('div', { class: 'panel-body' },
-    el('p', {}, `${host.name ?? 'Unknown computer'} · dashboard version ${host.revision?.slice(0, 7) ?? 'unknown'}`)));
+    el('p', {}, `${host.name ?? 'Unknown computer'} · Dashboard v${ver} (${verName}) · revision ${host.revision?.slice(0, 7) ?? 'unknown'}`),
+    el('div', { class: 'version-card' },
+      el('div', { class: 'version-card-header' },
+        el('strong', {}, `Active version: v${ver} — ${verName}`),
+        routeLink('See all versions & roadmap →', '#/settings/version', 'button secondary small')),
+      el('p', { class: 'subtext' }, currentVer.description),
+      el('strong', { class: 'features-heading' }, 'Features on in this version:'),
+      el('ul', { class: 'version-features-list' },
+        ...currentVer.features.map((feat) => el('li', {}, `✓ ${feat}`))))));
   const settings = state.supervisor.settings;
   if (!state.supervisor.available || !settings) return [computer, unavailable(), settingsLinks()];
   const active = state.supervisor.campaigns.filter((c) => !['finished', 'cancelled'].includes(c.control));
@@ -1371,6 +1419,7 @@ const settingsEmpty = ({ title, text, primary }) => el('div', { class: 'empty-st
 function settingsLinks() {
   return panel('More', null, el('ul', { class: 'settings-links' },
     el('li', {}, routeLink('Worker accounts', '#/settings/accounts'), el('div', { class: 'subtext' }, 'Connect and manage isolated worker logins, view live quota usage, and export encrypted bundles.')),
+    el('li', {}, routeLink('Version and roadmap', '#/settings/version'), el('div', { class: 'subtext' }, `Dashboard v${DASHBOARD_VERSION} (${DASHBOARD_VERSION_NAME}), active features and pre-1.0 roadmap.`)),
     el('li', {}, routeLink('Messages', '#/settings/messages'), el('div', { class: 'subtext' }, 'What you asked AIWorks, and what it answered.')),
     el('li', {}, routeLink('Diagnostics', '#/settings/diagnostics'), el('div', { class: 'subtext' }, 'The full activity journal, every step with its issue and pull request, the roadmap of the platform that keeps your project rules, and how fresh each merge check is.'))));
 }
@@ -1704,6 +1753,7 @@ function render() {
   if (route.screen === 'needs') patch(content, [needsYou() ?? unavailable()]);
   else if (route.screen === 'settings' && route.section === 'messages') patch(content, [messagesPanel(20)]);
   else if (route.screen === 'settings' && route.section === 'accounts') patch(content, accountsScreen());
+  else if (route.screen === 'settings' && route.section === 'version') patch(content, versionScreen());
   else if (diagnostics) patch(content, [trackOverview(), roadmapView(), workView(), mergeChecksPanel(), projectWaitsPanel(),
     panel('Execution journal', 'Latest 80 events · raw agent transcripts and secrets are never shown', activityList())].filter(Boolean));
   else if (route.screen === 'settings') patch(content, settingsScreen());
@@ -1725,7 +1775,11 @@ function render() {
     // The page starts with a neutral "…" so it never names the wrong computer before the first answer.
     $('#host-name').textContent = `${state.host.name ?? 'Unknown computer'} · this computer`;
     $('#host-name').removeAttribute('aria-busy');
-    $('#host-detail').textContent = `Dashboard version ${state.host.revision?.slice(0, 7) ?? 'unknown'}`;
+    const ver = state.host.version ?? DASHBOARD_VERSION;
+    const verName = state.host.versionName ?? DASHBOARD_VERSION_NAME;
+    const versionLabel = `v${ver} · ${verName}`;
+    $('#host-detail').replaceChildren(routeLink(versionLabel, '#/settings/version', 'host-version-link'));
+    $('#host-detail').title = `Dashboard v${ver} "${verName}" (revision ${state.host.revision?.slice(0, 7) ?? 'unknown'})`;
   }
 }
 
