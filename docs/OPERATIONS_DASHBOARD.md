@@ -179,11 +179,33 @@ Controls apply to existing **supervisor-managed campaigns**. Other chat/IDE agen
 | Cancel | Requires a confirmation explaining that the controller terminates its owned workers and that cancelled campaigns cannot resume. Completed results remain available. |
 | Send instructions | Select an unfinished task and implementer/verifier role. Up to 2,000 characters are queued for that role's next run on the task; an already running worker is not interrupted. |
 
-Acknowledgement means the command was recorded. A queued recheck/cancel still needs a live controller to act. No command changes authorization, budget, provider order, project scope or declarations; arbitrary shell commands are not executed. No new campaign can be registered through this surface.
+Acknowledgement means the command was recorded. A queued recheck/cancel still needs a live controller to act. No command changes authorization, budget, provider order, project scope or declarations; arbitrary shell commands are not executed. These commands register no new campaign. The one way the dashboard starts new work is *Approve and start* on a reviewed plan ([below](#plan-and-do-review-and-approve-and-start-built-off-by-default)).
 
 Free-text guidance is supplemental to the immutable task packet and never changes its permissions, acceptance criteria or independent review requirement. Credential-like text and control characters are rejected. There can be five pending instructions per task. Delivery is committed atomically with an admitted operation and recorded in its immutable prompt; a preflight failure leaves instructions queued. Receipts distinguish queued, attached to a specific run, outdated authorization, and no future run. "Attached" does not claim the model has read or followed it, or that the run succeeded. If that run fails, the owner can inspect its outcome and send guidance again. Older controllers cannot deliver instructions; upgrade the controller to this change before using this command. Drafts survive polling and are cleared only after an accepted receipt.
 
 Commands use the existing supervisor APIs within one transaction. The request is bound to campaign row version, authorization version, scope digest and, for task recheck, task version. Changed state returns a conflict. A durable request ID is bound to the exact payload; repeating it acknowledges the original command without applying it twice. Commands and receipts use the existing events/journal tables.
+
+## Plan and do, Review and Approve and start (built, off by default)
+
+**In short.** For a connected GitHub project, the owner asks AIWorks for a plan, reads it on **Review** and presses *Approve and start*. That registers exactly the plan on the screen, with the same checks as the command-line start. No command line is needed. (Design: [OWNER_WORKSPACE S10](design/OWNER_WORKSPACE.md#s10-review-and-approve-github-projects) and WORK_ENVELOPE slice E8 ([§12](design/WORK_ENVELOPE.md#12-implementation-slices)); build slice UI14 of [the plan](PROJECT_WORKSPACE_PLAN.md). The owner answered #32 on 2026-10-16: approving in the dashboard registers that exact plan.)
+
+- **Off by default.** Plan and do appears on Start work only while the data directory's `config.json` switches drafting on (`"coordinator": { "intake": true }`), and only for a connected GitHub project that is ready to start work. Without it, Start work offers Plan only, as before. The dashboard reads the setting on every request. Like any runtime change, it goes through the upgrade procedure ([SUPERVISOR.md §6](SUPERVISOR.md#6-installation-and-maintenance)).
+- **Asking.** *Plan and do* stores one work request (`src/supervisor/intake.mjs`). It registers nothing. The receipt says AIWorks is drafting; once the draft is stored, it links to Review. Start work also lists the project's plans.
+- **Review.** It shows the goal, how it is checked, the main steps, overlaps with other work, what the plan may change, the AI workers and limits, and *Release: Review only*. Details holds the plan text, its fingerprint and its version.
+- **Approve and start.** The page sends the plan's version and authority digest as shown. The server (`src/dashboard/work.mjs`) refuses, and keeps or registers nothing, when:
+  - another version was drafted, the digest differs, or the stored plan no longer hashes to that digest. The owner reads *This plan changed since you opened it. Review it again.*, stays on Review, and the new version loads;
+  - the plan is out of date: the supervisor marked it stale, or the project's base branch moved since drafting. The dashboard fetches the base branch again with `git`; if it cannot be read, nothing starts (unknown is never fresh). It never runs `gh`, so an edited issue or a moved pull request is caught only by the supervisor's own freshness check;
+  - any check the CLI `start --approved` makes fails, in its order: merged runtime code (AW-005, `RUNTIME_NOT_MERGED`), the project listed in the project rules, the declaration rules, the duplicate-work check (`WORK_ALREADY_ASSIGNED`) and the private store. The owner reads *AIWorks didn't start this work: {reason}.*; Details keeps the machine's code.
+
+  Otherwise the private approval and the plan are kept with `persistApproved` and registered with `registerApproved` (`src/supervisor/approved-declarations.mjs`) in one transaction. The page opens Work with *Approved at 12:40 · waiting for AIWorks to pick it up*. A repeat with the same request ID is acknowledged once; a second approval of a started plan is refused.
+- **Projects without GitHub.** Their plans are not listed here and cannot be approved here (`LOCAL_START_OFF`). They start through slice UI17, after local admission is switched on (STA17).
+
+| Route | Effect |
+| --- | --- |
+| `POST /api/work/requests` | Plan and do: stores one work request (`requestId`, `project`, `goal`, `from`, and `number` or `reportTo`); 409 while drafting is off |
+| `POST /api/work/approve` | Approve and start (`requestId`, `plan`, `version`, `authorityDigest`): registers exactly that plan, or refuses |
+
+Both keep the command rules: exact Origin, the CSRF token, JSON of at most 16 KiB, and only their own fields. `/api/state` carries the plans under `work`, allowlisted fields only, never a path. `tests/dashboard/approve.test.mjs` checks each refusal against the CLI, with disposable repositories and a synthetic `gh`.
 
 ## Add project (built, off by default)
 

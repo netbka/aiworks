@@ -408,6 +408,12 @@ html{scrollbar-gutter:stable;scroll-padding-top:88px}
 .planning-mode>p{font-size:13px}
 .planning-mode summary{padding:8px 0;border:0;font-size:12px}
 .start-form>.field:first-child{margin-top:0}
+.review .panel-body{max-width:800px}
+.review-part{margin-top:18px}
+.review-part h3{font-size:13px;margin:0 0 6px;color:#24324a}
+.review-part ul,.review-part ol,.plan-list{margin:0;padding-left:20px;font-size:13px;line-height:1.5;overflow-wrap:anywhere}
+.review .plan-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;max-width:100%}
+.review>.panel-body>.button{margin-top:20px}
 .search-clear{display:grid;place-items:center;flex:none;width:32px;height:32px;border:0;border-radius:5px;background:transparent;color:var(--muted);font-size:20px}
 .search-clear:hover{background:var(--blue-soft)}
 .search-clear[hidden]{display:none}
