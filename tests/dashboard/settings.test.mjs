@@ -330,5 +330,63 @@ test('Dashboard version is meaningful, below 1.0.0, and names each version with 
   assert.ok(versionText.includes('Back to Settings'));
 });
 
+test('Settings › Model instructions page provides role guidance, work type recommendations and effort guidelines', async (t) => {
+  const page = await openPage(t, { store: 'empty' });
+
+  // Settings links to Model instructions
+  await page.go('#/settings');
+  const settingsText = visibleText(page.$('#content'));
+  assert.ok(settingsText.includes('Model instructions'));
+  assert.ok(settingsText.includes('Which AI models should handle what kind of work, by role, domain and reasoning effort.'));
+
+  // Navigate to #/settings/instructions
+  await page.go('#/settings/instructions');
+  assert.equal(page.$('#view-title').textContent, 'Model instructions');
+  assert.equal(page.$('#view-description').textContent, 'Which AI models should handle what kind of work?');
+
+  const contentText = visibleText(page.$('#content'));
+  // Overview from 140+ deliveries
+  assert.ok(contentText.includes('Overview: findings from 140+ deliveries'));
+  assert.ok(contentText.includes('Review of 140+ recent delivery PRs'));
+  assert.ok(contentText.includes('State persistence and concurrency'));
+
+  // Role recommendations
+  assert.ok(contentText.includes('Recommended models by role'));
+  assert.ok(contentText.includes('Builder (Primary Implementer)'));
+  assert.ok(contentText.includes('Independent Checker (Verifier)'));
+  assert.ok(contentText.includes('Planner / Assistant'));
+  assert.ok(contentText.includes('Claude 3.7 Sonnet (Thinking)'));
+  assert.ok(contentText.includes('OpenAI o1 / o3-mini'));
+
+  // Work type recommendations
+  assert.ok(contentText.includes('Recommended models by kind of work'));
+  assert.ok(contentText.includes('Engine, Concurrency & State Persistence'));
+  assert.ok(contentText.includes('Dashboard UI, Styling & Owner Experience'));
+  assert.ok(contentText.includes('Verification & Independent Checks'));
+  assert.ok(contentText.includes('Multi-Account Security & Quota Boundaries'));
+  assert.ok(contentText.includes('Test Suite Optimization & Fast Turnaround'));
+  assert.ok(contentText.includes('Documentation, Synthetics & Release Notes'));
+
+  // Reasoning effort guidelines
+  assert.ok(contentText.includes('Reasoning effort guidelines'));
+  assert.ok(contentText.includes('High Effort / Deep Thinking'));
+  assert.ok(contentText.includes('Standard Effort'));
+  assert.ok(contentText.includes('Low Effort / Economy'));
+
+  // Configuration guidance & links
+  assert.ok(contentText.includes('How to configure model preferences'));
+  assert.ok(contentText.includes('In Worker Accounts'));
+  assert.ok(contentText.includes('In Local Configuration'));
+  assert.ok(contentText.includes('Per Step Signatures'));
+
+  // Back link to Settings
+  const breadcrumb = page.$('#content').querySelector('.breadcrumb');
+  assert.ok(breadcrumb, 'breadcrumb exists');
+  const backLink = breadcrumb.querySelector('a');
+  assert.ok(backLink, 'back link exists');
+  assert.equal(backLink.getAttribute('href'), '#/settings');
+  assert.equal(backLink.textContent, '← Back to Settings');
+});
+
 
 

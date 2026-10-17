@@ -135,6 +135,7 @@ const projectName = (project) => state?.projects?.projects?.find((item) => !item
 const screenText = { projects: ['Projects', 'Which project should I open?'], needs: ['Needs me', 'What is waiting for me, across projects?'],
   settings: ['Settings', 'What can AIWorks use on this computer?'], accounts: ['Worker accounts', 'Which AI worker logins and accounts are on this computer?'],
   version: ['Version and roadmap', 'Which capabilities are turned on in this version?'],
+  instructions: ['Model instructions', 'Which AI models should handle what kind of work?'],
   messages: ['Messages', 'What did I ask AIWorks, and what did it answer?'],
   diagnostics: ['Diagnostics', 'What exactly did the machine record?'], now: ['Now', 'Where are we now?'],
   work: ['Work', 'What is running or waiting, and why?'], results: ['Results', 'What has been delivered, and what remains?'],
@@ -602,7 +603,9 @@ async function sendMessage(text) {
  * Start work (OWNER_WORKSPACE §4.5, slice S9; build slice UI10): the goal, where the work starts from, and Plan only.
  * "Ask for a plan" sends those parts; the supervisor module writes them into one coordinator message and stores it like
  * any owner message, so the receipt (Received, Read, Answered) shows here in place. Plan only never changes a project
- * file or registers work. Plan and do is shown but cannot be chosen until slice S10 and the admission API (#8).
+ * file or registers work. Plan and do (slice UI14) is offered only for a connected GitHub project while drafting is
+ * switched on: it stores a work request (work.mjs), and its draft plan comes back for Review, where the owner presses
+ * Approve and start. Nothing starts before that press.
  */
 const PLAN_AND_DO_OFF = ['Starting work from this page is not built yet.', 'Today, work starts when an authorized private plan is registered on this computer.'];
 const START_FROM = [['description', 'Just my description'], ['issue', 'A GitHub issue'], ['pull', 'A GitHub pull request']];
@@ -612,6 +615,14 @@ const startDraft = (address) => ({ goal: '', from: 'description', number: '', se
 
 /** The receipt of the last plan request sent from this project's Start work, or null. */
 function startReceipt(address) {
+  // Plan and do: the request's own state, then Review once its plan is drafted (OWNER_WORKSPACE §5.4 step 4).
+  const asked = startDraft(address).sentPlan;
+  if (asked) {
+    const plan = state.work?.plans?.find((item) => item.id === asked);
+    if (!plan || plan.code === 'DRAFTING') return el('p', { class: 'subtext' }, 'Sent · AIWorks is drafting a plan. Nothing changes yet. The plan appears here when it is ready.');
+    if (plan.code === 'DRAFT_FAILED') return el('p', { class: 'subtext' }, 'AIWorks couldn’t draft a plan for this request. Ask again, or change the goal.');
+    return el('p', { class: 'subtext' }, 'Your plan is ready. ', routeLink('Review the plan', { screen: 'review', project: plan.project, plan: plan.id }), '.');
+  }
   const id = startDraft(address).sent, coordinator = state.supervisor.coordinator;
   if (!id || !coordinator) return null;
   const m = coordinator.messages.find((item) => item.id === id);
@@ -624,24 +635,46 @@ function startScreen(project) {
   if (!projectCampaigns(project).length && projectList().find((item) => sameProject(item.id, project))?.kind !== 'GitHub') {
     return [empty('Plan only is not available for this project yet.', 'Planning for projects without a GitHub repository is not available yet.')];
   }
-  const save = () => drafts.set(address, 'start', { goal: goal.value, from: form.elements['start-from'].value, number: number.value, sent: startDraft(address).sent });
+  // Plan and do is offered only where it can start: a connected GitHub project, with drafting switched on (UI14).
+  const doable = Boolean(state.work?.planAndDo && state.work.projects?.some((name) => sameProject(name, project)));
+  const doing = doable && draft.doing === true;
+  const save = () => drafts.set(address, 'start', { goal: goal.value, from: form.elements['start-from'].value, number: number.value, sent: startDraft(address).sent,
+    ...(doable ? { doing: form.elements['start-mode'].value === 'plan-and-do', report: report.value, sentPlan: startDraft(address).sentPlan } : {}) });
   const goal = el('textarea', { id: 'start-goal', rows: 5, maxlength: 2000, required: true, oninput: save });
   goal.value = draft.goal;
   const number = el('input', { id: 'start-number', type: 'number', min: 1, step: 1, inputmode: 'numeric', required: draft.from !== 'description', oninput: save });
   number.value = draft.number;
   const numberLabel = el('label', { class: 'field', hidden: draft.from === 'description' }, 'Number', number);
+  // A described goal on GitHub names the issue AIWorks reports the work to (WORK_ENVELOPE 4.1).
+  const report = el('input', { id: 'start-report', type: 'number', min: 1, step: 1, inputmode: 'numeric', required: doing && draft.from === 'description', oninput: save });
+  report.value = draft.report ?? '';
+  const reportLabel = doable ? el('label', { class: 'field', hidden: !(doing && draft.from === 'description') }, 'Issue AIWorks reports this work to', report) : null;
+  const showReport = () => {
+    if (!reportLabel) return;
+    const on = form.elements['start-mode'].value === 'plan-and-do' && form.elements['start-from'].value === 'description';
+    reportLabel.hidden = !on; report.required = on;
+  };
   const from = ([value, label]) => el('label', { class: 'choice' }, el('input', { type: 'radio', name: 'start-from', value, checked: draft.from === value,
-    onchange: () => { numberLabel.hidden = value === 'description'; number.required = value !== 'description'; save(); } }), ` ${label}`);
+    onchange: () => { numberLabel.hidden = value === 'description'; number.required = value !== 'description'; showReport(); save(); } }), ` ${label}`);
+  const MODE_TEXT = { 'plan-only': 'AIWorks looks and proposes a plan. Nothing in your project changes.',
+    'plan-and-do': 'AIWorks drafts a plan and shows it to you on Review. Nothing starts until you press Approve and start.' };
+  const modeText = el('p', {}, MODE_TEXT[doing ? 'plan-and-do' : 'plan-only']);
+  const mode = ([value, label]) => el('label', { class: 'choice' }, el('input', { type: 'radio', name: 'start-mode', value, checked: (doing ? 'plan-and-do' : 'plan-only') === value,
+    onchange: () => { modeText.textContent = MODE_TEXT[value]; showReport(); save(); } }), ` ${label}`);
   // The form wears the dialogs' styles: each box inside its label, and the choices in framed groups (aiworks#11 review F25).
   // When nothing reads requests, the form keeps the goal but offers no send: it says so and what to do instead (F10).
   const reads = Boolean(coordinator?.configured);
-  const form = el('form', { novalidate: true, class: 'panel-body start-form', 'data-start-form': project, 'data-reads': readsKey(coordinator), 'data-focus-scope': `start/${project}`,
-    onsubmit: (event) => { event.preventDefault(); save(); if (reads && validateForm(form)) void askForPlan(project, address); } },
+  const form = el('form', { novalidate: true, class: 'panel-body start-form', 'data-start-form': project, 'data-reads': readsKey(coordinator), 'data-doable': String(doable), 'data-focus-scope': `start/${project}`,
+    onsubmit: (event) => {
+      event.preventDefault(); save();
+      if (reads && validateForm(form)) void (doable && form.elements['start-mode'].value === 'plan-and-do' ? askForWork(project, address) : askForPlan(project, address));
+    } },
     el('label', { class: 'field' }, el('strong', {}, 'What should be true when this is finished?'), goal),
-    el('fieldset', {}, el('legend', {}, 'Start from'), ...START_FROM.map(from), numberLabel),
-    el('div', { class: 'planning-mode' }, el('strong', {}, 'Plan only'),
-      el('p', {}, 'AIWorks looks and proposes a plan. Nothing in your project changes.'),
-      el('details', {}, el('summary', {}, 'About starting work'), el('p', { class: 'subtext' }, PLAN_AND_DO_OFF.join(' ')))),
+    el('fieldset', {}, el('legend', {}, 'Start from'), ...START_FROM.map(from), numberLabel, reportLabel),
+    doable ? el('fieldset', { class: 'planning-mode' }, el('legend', {}, 'How far'), mode(['plan-only', 'Plan only']), mode(['plan-and-do', 'Plan and do']), modeText)
+      : el('div', { class: 'planning-mode' }, el('strong', {}, 'Plan only'),
+        el('p', {}, 'AIWorks looks and proposes a plan. Nothing in your project changes.'),
+        el('details', {}, el('summary', {}, 'About starting work'), el('p', { class: 'subtext' }, PLAN_AND_DO_OFF.join(' ')))),
     reads ? el('p', { class: 'subtext' }, 'The plan appears here. Nothing is posted to GitHub. No secrets; up to 2,000 characters.') : notRead(coordinator),
     reads ? el('button', { class: 'button', type: 'submit', disabled: startBlocked() }, 'Ask for a plan') : null,
     el('div', { id: 'start-receipt', 'aria-live': 'polite' }, startReceipt(address)));
@@ -654,10 +687,16 @@ function refreshStart(content, project) {
   if (!form || form.dataset.startForm !== project || !state.supervisor.available) return false;
   // Whether anything reads requests changed: the form is built again from the saved draft, with or without its send.
   if (form.dataset.reads !== readsKey(state.supervisor.coordinator)) return false;
+  // Plan and do became available or was switched off: built again, so a choice that cannot be sent is never offered.
+  if (form.dataset.doable !== String(Boolean(state.work?.planAndDo && state.work.projects?.some((name) => sameProject(name, project))))) return false;
   const submit = form.querySelector('button[type="submit"]');
   if (submit) submit.disabled = startBlocked();
   const receipt = startReceipt(formatRoute({ screen: 'start', project }));
   patch(form.querySelector('#start-receipt'), receipt ? [receipt] : []);
+  // This project's plans under the form: kept in place, or the screen is built again when the first one appears.
+  const plans = content.querySelector('#start-plans'), rows = planRows(project);
+  if (plans) patch(plans, rows);
+  else if (rows.length) return false;
   return true;
 }
 
@@ -678,6 +717,99 @@ async function askForPlan(project, address) {
     }
   };
   try { await attempt(); } finally { sending = false; await poll(); }
+}
+
+// Plan and do (UI14): one work request; its plan comes back for Review. A retry reuses the request id, so it is stored once.
+async function askForWork(project, address) {
+  const draft = startDraft(address);
+  const body = { project, goal: draft.goal, from: draft.from, ...(draft.from === 'description' ? { reportTo: Number(draft.report) } : { number: Number(draft.number) }) };
+  sending = true; render();
+  const requestId = crypto.randomUUID();
+  const attempt = async () => {
+    try {
+      const result = await post('/api/work/requests', { requestId, ...body });
+      drafts.set(address, 'start', { doing: true, sentPlan: result.requestId });
+      document.querySelector('form[data-start-form]')?.remove();
+      notice(result.duplicate ? 'This request was already received; it was not stored twice.' : `Sent · AIWorks received your request at ${clock(Date.now())}. The plan appears here when it is drafted.`, null, null, address);
+    } catch (error) {
+      notice(error.known ? error.message : 'Delivery could not be confirmed. Retry: the same request is never stored twice.', error.known ? null : attempt, null, address);
+    }
+  };
+  try { await attempt(); } finally { sending = false; await poll(); }
+}
+
+/*
+ * Review, then Approve and start (OWNER_WORKSPACE §5.5 and S10; WORK_ENVELOPE E8; slice UI14). Review shows the goal,
+ * the checks, the steps, overlaps, what may change, the AI workers, limits and "Release: Review only". Approve and start
+ * sends the version and digest that were shown; the server registers exactly that plan, or refuses and starts nothing.
+ */
+const PLAN_WORDS = { DRAFTING: 'Drafting a plan', DRAFT_READY: 'Plan ready', PLAN_ONLY_READY: 'Plan ready (plan only)', CONFLICT: 'Overlaps other work',
+  DRAFT_STALE: 'Plan out of date', DRAFT_FAILED: 'Couldn’t draft a plan', APPROVED: 'Approved' };
+const projectPlans = (project) => (state.work?.plans ?? []).filter((plan) => sameProject(plan.project, project));
+const approvedText = (at) => `Approved at ${clock(at)} · waiting for AIWorks to pick it up`;
+let approving = null;
+
+/** This project's plans, newest first, each with its state and a link to Review. */
+function planRows(project) {
+  const plans = projectPlans(project);
+  if (!plans.length) return [];
+  return [el('h2', {}, 'Plans for this project'), el('ul', { class: 'plan-list' }, ...plans.map((plan) => el('li', { 'data-focus-scope': `plan/${plan.id}` },
+    routeLink(plan.outcome || 'A plan being drafted', { screen: 'review', project, plan: plan.id }),
+    el('span', { class: 'subtext' }, ` · ${PLAN_WORDS[plan.code] ?? 'State unknown'}`))))];
+}
+
+function reviewScreen(project, id) {
+  const plan = projectPlans(project).find((item) => item.id === id);
+  const back = routeLink('Start work', { screen: 'start', project }, 'button secondary');
+  if (!plan) return [empty('This plan is not on this computer', 'It may belong to another project, or the address is mistyped.'), back];
+  if (!plan.version) {
+    return [plan.code === 'DRAFT_FAILED' ? empty('AIWorks couldn’t draft a plan', 'Ask again from Start work, or change the goal.')
+      : empty('AIWorks is drafting a plan', 'Nothing changes yet. This page shows the plan when it is ready.'), back];
+  }
+  const items = (values) => el('ul', {}, ...values.map((value) => el('li', {}, value)));
+  const part = (title, ...body) => el('div', { class: 'review-part' }, el('h3', {}, title), ...body);
+  const status = plan.code === 'APPROVED' ? el('p', { class: 'notice' }, approvedText(plan.approvedAt), ' · ', routeLink('Open Work', { screen: 'project', project, tab: 'work' }))
+    : plan.code === 'DRAFT_STALE' ? el('p', { class: 'notice warning' }, `${projectName(project)} changed since this plan was drafted (${plan.staleWhat.join(', ') || 'its source changed'}). Draft it again before approving. `,
+      routeLink('Plan again', { screen: 'start', project }))
+      : plan.code === 'CONFLICT' ? el('p', { class: 'notice warning' }, 'This plan overlaps other work. Approve anyway and the overlapping step waits for it, or ask for a new plan without that step.')
+        : el('p', {}, plan.planOnly ? 'This plan changes nothing yet. You can start it while the project stays as it is.' : 'Here’s what AIWorks would do, what it may change and how it will be checked.');
+  const busy = approving === plan.id;
+  const approve = el('button', { class: 'button', type: 'button', disabled: !plan.startable || Boolean(approving) || sending || offline || !state.supervisor.available,
+    'aria-busy': busy ? 'true' : null, onclick: () => void approvePlan(project, plan) }, busy ? 'Starting…' : 'Approve and start');
+  const limits = plan.limits && Object.keys(plan.limits).length ? `Limits: ${Object.entries(plan.limits).map(([key, value]) => `${key} ${value}`).join(', ')}.` : 'No limits. You can pause or cancel it at any time.';
+  return [el('section', { class: 'panel review', 'data-focus-scope': `review/${plan.id}` }, el('div', { class: 'panel-body' },
+    el('h2', {}, plan.outcome || 'Review the plan'), status,
+    part('How it is checked', items(plan.acceptance)),
+    part('Main steps', plan.steps.length ? el('ol', {}, ...plan.steps.map((step) => el('li', {}, step.title, step.check ? el('span', { class: 'subtext' }, ` · checked by: ${step.check}`) : null)))
+      : items(plan.tasks.map((task) => task.title))),
+    part('Overlaps with other work', plan.conflicts.length ? items(plan.conflicts.map((item) => item.code === 'DUPLICATE_WORK'
+      ? `"${item.campaignId}" already does this step (${item.taskId}). Starting is refused until that work finishes or is cancelled.`
+      : `"${item.campaignId}" is changing the same files (${item.taskId}). This step waits for it.`)) : el('p', {}, 'None found.')),
+    part('What it may change', plan.writes.length ? items(plan.writes) : el('p', {}, 'No files: it only reports.'),
+      plan.denyWrites.length ? el('p', { class: 'subtext' }, `Never: ${plan.denyWrites.join(', ')}`) : null),
+    part('AI workers and limits', el('p', {}, plan.providers.length ? `Uses ${plan.providers.join(', ')}.` : 'AI workers: not stated.'), el('p', {}, limits)),
+    part('Release', el('p', {}, 'Release: Review only. AIWorks stops when a result passes the check and is published. You merge and release.')),
+    plan.questions.length ? part('Open questions', items(plan.questions)) : null,
+    el('details', {}, el('summary', {}, 'Plan details'), el('p', { class: 'subtext' }, plan.summary), el('pre', { class: 'plan-text' }, plan.plan),
+      el('p', { class: 'subtext' }, `Plan fingerprint ${plan.fingerprint} · version ${plan.version}`)),
+    plan.code === 'APPROVED' ? null : approve))];
+}
+
+async function approvePlan(project, plan) {
+  const from = current.address, requestId = crypto.randomUUID();
+  approving = plan.id; render();
+  const attempt = async () => {
+    try {
+      const result = await post('/api/work/approve', { requestId, plan: plan.id, version: plan.version, authorityDigest: plan.authorityDigest });
+      const work = formatRoute({ screen: 'project', project, tab: 'work' });
+      if (current.address === from) go(work);
+      notice(approvedText(result.approvedAt), null, null, work);
+    } catch (error) {
+      // A changed plan is refused: the refresh below loads it again and the owner stays on Review; Details keeps the machine's reason.
+      notice(error.known ? error.message : 'Approval could not be confirmed. Retry: the same approval never starts work twice.', error.known ? null : attempt, error.known ? error.detail : null, from);
+    }
+  };
+  try { await attempt(); } finally { approving = null; await poll(); }
 }
 
 // An instruction draft belongs to the address its dialog was opened from, and to its campaign.
@@ -1371,6 +1503,115 @@ function versionScreen() {
   return [back, currentPanel, milestonesPanel];
 }
 
+function modelInstructionsScreen() {
+  const back = el('p', { class: 'breadcrumb' }, routeLink('← Back to Settings', '#/settings'));
+
+  const overviewPanel = panel('Overview: findings from 140+ deliveries', 'Observed delivery patterns across core engine concurrency, web interfaces, verification gates, and multi-account security.', el('div', { class: 'panel-body' },
+    el('p', {}, 'Review of 140+ recent delivery PRs (UI, account management, runtime, and verification slices) shows distinct strengths and failure modes across model families. Matching the right model family and reasoning effort to each role and work type directly prevents race conditions, test flakiness, confirmation bias, and quota exhaustion.'),
+    el('ul', { class: 'subtext-list' },
+      el('li', {}, el('strong', {}, 'State persistence and concurrency: '), 'Multi-file async boundaries and SQLite transactions require deep reasoning to avoid deadlocks and lock contention.'),
+      el('li', {}, el('strong', {}, 'User interfaces and owner copy: '), 'Strict adherence to negative styling constraints and copy rules requires precision models that follow fine-grained guidelines.'),
+      el('li', {}, el('strong', {}, 'Independent verification: '), 'Fresh worker sessions using a different model family than the builder eliminate confirmation bias.'),
+      el('li', {}, el('strong', {}, 'Multi-account security: '), 'Boundary-checking for encrypted credentials and quota management needs defensive reasoning.'))));
+
+  const rolePanel = panel('Recommended models by role', 'How to staff Builder, Independent Checker, and Planner roles.', el('div', {},
+    el('ul', { class: 'settings-links' },
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'Builder (Primary Implementer)'),
+          el('span', { class: 'account-pill pill-ready' }, 'Core role')),
+        el('p', { class: 'subtext' }, 'Responsible for writing code, fixing test failures, refactoring, and producing clean pull requests.'),
+        el('p', {}, el('strong', {}, 'Recommended models: '), 'Claude 3.7 Sonnet (Thinking), Claude 3.5 Sonnet, OpenAI o1.'),
+        el('p', { class: 'subtext' }, 'Why: Strongest code synthesis and refactoring performance across multi-file JavaScript and Node.js codebases. Thinking models excel when resolving complex test failures or tricky async loops.')),
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'Independent Checker (Verifier)'),
+          el('span', { class: 'account-pill pill-ready' }, 'Safety gate')),
+        el('p', { class: 'subtext' }, 'Responsible for reviewing diffs, running checks, verifying invariant boundaries, and preventing regressions in a clean session.'),
+        el('p', {}, el('strong', {}, 'Recommended models: '), 'OpenAI o1 / o3-mini (checking Claude changes), or Claude 3.7 Sonnet (checking OpenAI changes).'),
+        el('p', { class: 'subtext' }, 'Why: Independent checks require an opposing model family to avoid shared blind spots. High reasoning models catch subtle security boundary leaks and unhandled edge cases.')),
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'Planner / Assistant'),
+          el('span', { class: 'account-pill pill-ready' }, 'Strategy')),
+        el('p', { class: 'subtext' }, 'Responsible for breaking down goals into discrete steps, ordering dependencies, and specifying clear acceptance criteria.'),
+        el('p', {}, el('strong', {}, 'Recommended models: '), 'Claude 3.7 Sonnet, OpenAI o1, GPT-4o.'),
+        el('p', { class: 'subtext' }, 'Why: Broad architectural comprehension and ability to sequence multi-step work without circular dependencies.')))));
+
+  const workTypePanel = panel('Recommended models by kind of work', 'Model assignments tailored to specific engineering domains.', el('div', {},
+    el('ul', { class: 'settings-links' },
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'Engine, Concurrency & State Persistence'),
+          el('span', { class: 'account-pill pill-waiting' }, 'High reasoning')),
+        el('p', {}, el('strong', {}, 'Recommended: '), 'Claude 3.7 Sonnet (Thinking), OpenAI o1 (High effort)'),
+        el('p', { class: 'subtext' }, 'Deep reasoning is required to prevent race conditions in asynchronous file I/O, SQLite transaction serialization, and process lifecycle handling.')),
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'Dashboard UI, Styling & Owner Experience'),
+          el('span', { class: 'account-pill pill-done' }, 'Precision & copy')),
+        el('p', {}, el('strong', {}, 'Recommended: '), 'Claude 3.5 Sonnet, Claude 3.7 Sonnet (Standard effort)'),
+        el('p', { class: 'subtext' }, 'Excels at vanilla DOM patching, CSS flex/grid layouts, responsive typography, and strict compliance with owner-words copy rules.')),
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'Verification & Independent Checks'),
+          el('span', { class: 'account-pill pill-ready' }, 'Cross-check')),
+        el('p', {}, el('strong', {}, 'Recommended: '), 'OpenAI o1, o3-mini, Claude 3.7 Sonnet'),
+        el('p', { class: 'subtext' }, 'Adversarial testing mindset, spotting missing regression tests, mocking leaks, and edge conditions across clean environments.')),
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'Multi-Account Security & Quota Boundaries'),
+          el('span', { class: 'account-pill pill-waiting' }, 'Security-critical')),
+        el('p', {}, el('strong', {}, 'Recommended: '), 'Claude 3.7 Sonnet, OpenAI o1'),
+        el('p', { class: 'subtext' }, 'Cryptographic operations (AES-256-GCM), key rotation, sensitive token masking in logs, and rate-limit backoff logic.')),
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'Test Suite Optimization & Fast Turnaround'),
+          el('span', { class: 'account-pill pill-done' }, 'Fast cycle')),
+        el('p', {}, el('strong', {}, 'Recommended: '), 'Claude 3.5 Sonnet, OpenAI Codex'),
+        el('p', { class: 'subtext' }, 'Fast parallel test execution, mocking external dependencies, and isolating flaky tests without slowing the build.')),
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'Documentation, Synthetics & Release Notes'),
+          el('span', { class: 'account-pill pill-done' }, 'Economy')),
+        el('p', {}, el('strong', {}, 'Recommended: '), 'Claude 3.5 Haiku, Gemini 1.5 Flash / Pro, GPT-4o-mini'),
+        el('p', { class: 'subtext' }, 'Token-efficient, rapid summarization of PR diffs, clear release notes, and synthetic test fixtures.')))));
+
+  const effortPanel = panel('Reasoning effort guidelines', 'When to use High, Standard, or Low reasoning effort.', el('div', {},
+    el('ul', { class: 'settings-links' },
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'High Effort / Deep Thinking'),
+          el('span', { class: 'account-pill pill-waiting' }, 'Deep thinking')),
+        el('p', { class: 'subtext' }, 'Use for core engine algorithms, cryptographic and multi-account boundaries, complex database migrations, and tricky asynchronous race conditions. Generates thorough chain-of-thought exploration before writing code.')),
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'Standard Effort'),
+          el('span', { class: 'account-pill pill-ready' }, 'Default')),
+        el('p', { class: 'subtext' }, 'Use for standard feature development, DOM panels, API endpoints, bug fixes, and regular test additions. Balanced speed and reasoning depth.')),
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'Low Effort / Economy'),
+          el('span', { class: 'account-pill pill-done' }, 'Fast')),
+        el('p', { class: 'subtext' }, 'Use for documentation, simple copy adjustments, synthetic fixtures, and routine reviews where deep reasoning is unnecessary.')))));
+
+  const configurePanel = panel('How to configure model preferences', 'Setting up model order, roles, and accounts in AIWorks.', el('div', { class: 'panel-body' },
+    el('ul', { class: 'settings-links' },
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'In Worker Accounts'),
+          routeLink('Open Worker accounts →', '#/settings/accounts', 'button secondary small')),
+        el('p', { class: 'subtext' }, 'Open Worker accounts to configure and test worker logins, priority order, and view quota usage.')),
+      el('li', {},
+        el('strong', {}, 'In Local Configuration'),
+        el('p', { class: 'subtext' }, 'Model selection and priority order can be set in the configuration file under commands and accounts.')),
+      el('li', {},
+        el('strong', {}, 'Per Step Signatures'),
+        el('p', { class: 'subtext' }, 'Completed steps display model signatures (name, type, effort, and tokens) on the Step and Results screens.')))));
+
+  return [back, overviewPanel, rolePanel, workTypePanel, effortPanel, configurePanel];
+}
+
 /**
  * Settings (OWNER_WORKSPACE §4.3, slice S8): this computer, its AI workers once, each project's kind and connection, and
  * release mode as text. No primary action: Settings only shows what the machine has. Messages and Diagnostics are linked.
@@ -1423,6 +1664,7 @@ const settingsEmpty = ({ title, text, primary }) => el('div', { class: 'empty-st
 function settingsLinks() {
   return panel('More', null, el('ul', { class: 'settings-links' },
     el('li', {}, routeLink('Worker accounts', '#/settings/accounts'), el('div', { class: 'subtext' }, 'Connect and manage isolated worker logins, view live quota usage, and export encrypted bundles.')),
+    el('li', {}, routeLink('Model instructions', '#/settings/instructions'), el('div', { class: 'subtext' }, 'Which AI models should handle what kind of work, by role, domain and reasoning effort.')),
     el('li', {}, routeLink('Version and roadmap', '#/settings/version'), el('div', { class: 'subtext' }, `Dashboard v${DASHBOARD_VERSION} (${DASHBOARD_VERSION_NAME}), active features and pre-1.0 roadmap.`)),
     el('li', {}, routeLink('Messages', '#/settings/messages'), el('div', { class: 'subtext' }, 'What you asked AIWorks, and what it answered.')),
     el('li', {}, routeLink('Diagnostics', '#/settings/diagnostics'), el('div', { class: 'subtext' }, 'The full activity journal, every step with its issue and pull request, the roadmap of the platform that keeps your project rules, and how fresh each merge check is.'))));
@@ -1701,7 +1943,11 @@ function projectScreen(route) {
   if (route.screen === 'project' && route.tab === 'now' && (offline || !state.supervisor.available || all.length ||
     projectList().some((item) => sameProject(item.id, project)))) return nowScreen(project);
   if (!state.supervisor.available) return [unavailable()];
-  if (route.screen === 'start' && (all.length || projectList().some((item) => sameProject(item.id, project)))) return startScreen(project);
+  if (route.screen === 'start' && (all.length || projectList().some((item) => sameProject(item.id, project)))) {
+    const plans = planRows(project);
+    return plans.length ? [...startScreen(project), el('section', { class: 'panel' }, el('div', { class: 'panel-body', id: 'start-plans' }, ...plans))] : startScreen(project);
+  }
+  if (route.screen === 'review') return reviewScreen(project, route.plan);
   // A connected project where work cannot start says what its Now says, never a reason that is not its own (review 5 G2).
   const cannot = !all.length ? projectList().find((item) => sameProject(item.id, project) && item.connection && !item.connection.startWork.allowed) : null;
   if (cannot) return [empty('No work yet.', cannot.connection.startWork.text)];
@@ -1716,7 +1962,6 @@ function projectScreen(route) {
     if (!task) return [empty('This step is not recorded for this project', 'It may belong to another project, or the address is mistyped.'), routeLink('All work in this project', { screen: 'project', project, tab: 'work' }, 'button secondary')];
     return stepScreen(project, c, task);
   }
-  if (route.screen === 'review') return [empty(...PLAN_AND_DO_OFF)];
   if (route.tab === 'work') {
     return [...cards.map((c) => workPanel(project, c)), cards.some((c) => c.agents.length) ? verdictExplanation() : null,
       cards.some((c) => !['finished', 'cancelled'].includes(c.control)) ? providerNote() : null,
@@ -1766,6 +2011,7 @@ function render() {
   else if (route.screen === 'settings' && route.section === 'messages') patch(content, [messagesPanel(20)]);
   else if (route.screen === 'settings' && route.section === 'accounts') patch(content, accountsScreen());
   else if (route.screen === 'settings' && route.section === 'version') patch(content, versionScreen());
+  else if (route.screen === 'settings' && route.section === 'instructions') patch(content, modelInstructionsScreen());
   else if (diagnostics) patch(content, [trackOverview(), roadmapView(), workView(), mergeChecksPanel(), projectWaitsPanel(),
     panel('Execution journal', 'Latest 80 events · raw agent transcripts and secrets are never shown', activityList())].filter(Boolean));
   else if (route.screen === 'settings') patch(content, settingsScreen());

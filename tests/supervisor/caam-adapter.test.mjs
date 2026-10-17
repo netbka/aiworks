@@ -1,7 +1,7 @@
 // CAAM read-only discovery (docs/design/ACCOUNT_ADAPTER_CAAM.md section 3.2): provider mapping, robot status parsing,
 // health flags and every failure path, against a synthetic caam script. No real CAAM, model, network or GitHub access.
 import assert from 'node:assert/strict';
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createCipheriv, randomBytes, scryptSync } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -56,7 +56,9 @@ test('credential sharing rejects profile and nested directory links', t => {
   rejects(() => receive([item]), 'invalid-bundle');
   rejects(() => exportProfileCredentials({ root, profiles: [item], passphrase: bundlePassphrase }), 'invalid-bundle');
   assert.equal(readFileSync(join(outside, 'marker'), 'utf8'), 'synthetic-outside');
-  rmSync(profile); mkdirSync(profile);
+  // A Windows junction is removed with rmdir, which drops the link and never its target; rmSync refuses it (EISDIR).
+  if (process.platform === 'win32') rmdirSync(profile); else unlinkSync(profile);
+  mkdirSync(profile);
   symlinkSync(outside, join(profile, '.claude'), process.platform === 'win32' ? 'junction' : 'dir');
   rejects(() => receive([{ ...item, files: { '.claude/marker': 'replacement' } }]), 'invalid-bundle');
   assert.equal(readFileSync(join(outside, 'marker'), 'utf8'), 'synthetic-outside');
