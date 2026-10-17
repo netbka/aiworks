@@ -190,11 +190,13 @@ test('a pinned model holds through its account wait and never falls back', { ski
     routed: routing({ candidates: [claudeTiers[0], { kind: 'codex-cli', model: 'gpt-synthetic', tier: 1 }],
       pin: { implementer: { kind: 'claude-cli', model: 'haiku' } } }) });
   await controller.tick();
-  finish(store.openOperations(id)[0], { class: 'quota', retryAt: Date.now() + 400, detail: 'synthetic usage limit' });
+  // The wait must outlast five ticks on a loaded host, so it is long and the test sleeps only until it ends.
+  const resetAt = Date.now() + 3000;
+  finish(store.openOperations(id)[0], { class: 'quota', retryAt: resetAt, detail: 'synthetic usage limit' });
   for (let i = 0; i < 5; i += 1) await controller.tick();
   assert.equal(ops().length, 1, 'the step waits for its pinned model');
   assert.ok(store.task(id, 'T1').retry_at > Date.now() - 1000);
-  await sleep(450);
+  await sleep(Math.max(0, resetAt - Date.now()) + 50);
   await controller.tick();
   assert.deepEqual(ops().map((op) => [op.executor_kind, op.routing.decision.chosen.model]), [['claude-cli', 'haiku'], ['claude-cli', 'haiku']]);
   assert.equal(ops()[1].routing.decision.basis, 'pin');
