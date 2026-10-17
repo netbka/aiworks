@@ -15,7 +15,7 @@ Small, reproducible fixes and documentation corrections can go straight to a pul
 3. Keep code and tests together in one small pull request. One topic per pull request keeps review quick. Test behaviour once, at the lowest layer that shows it: assert exact wording only where the sentence itself is the requirement, and never pin documentation prose, source text or line numbers.
 4. Run `npm run check` again before you push.
 
-CI runs on Linux. Real worker execution, process containment and the Windows task installers are Windows-only. Test the platform your change affects, and say clearly in the pull request what was tested where. Do not weaken a Windows-specific test to make Linux CI pass.
+No CI runs on pull requests: GitHub Actions are off for this repository, so the checks are the ones you run. Real worker execution, process containment and the Windows task installers are Windows-only. Test the platform your change affects, and say clearly in the pull request what was tested where.
 
 ## What a pull request should say
 

@@ -451,13 +451,13 @@ const promptArgs = (role, deliverable, changes = {}) => ({ executorKind: 'claude
   packetDigest: digest, repository: 'owner/demo', issue: 7, branch: 'campaign/c/T1', baseSha: 'b'.repeat(40), targetSha: 'c'.repeat(40),
   report: role === 'verification' ? 'Report: # tests 3, # pass 3' : null, reportDigest: 'd'.repeat(64), note: null, instructions: [], ...changes });
 
-test('commit and report prompts tell workers CI runs on Linux and to copy tallies; verifiers block a mismatched tally (#42, #43)', () => {
+test('commit and report prompts tell workers to copy tallies and no longer that CI runs on Linux; verifiers block a mismatched tally (#43)', () => {
   for (const deliverable of ['commit', 'report']) {
     for (const role of ['implementer', 'verification']) {
       const args = promptArgs(role, deliverable);
       const prompt = buildPrompt(args);
-      assert.match(prompt, /CI runs npm run check on ubuntu-latest/);
-      assert.match(prompt, /guard itself with a skip that names the reason.*without weakening what it checks on Windows/);
+      // GitHub Actions are off (2026-10-13): no prompt claims a Linux CI run any more.
+      assert.doesNotMatch(prompt, /ubuntu-latest|Repository CI runs/);
       assert.match(prompt, /Copy test summary lines verbatim.*# tests, # pass, # fail, # skipped.*never retype/);
       assert.equal(prompt.includes(VERIFIER_TALLY_RULE), role === 'verification', `${role} ${deliverable}`);
       if (role === 'verification') assert.match(prompt, /does not match your own re-run of the same gate at the same head is a blocking finding/);
@@ -501,11 +501,11 @@ test('commit prompts tell implementers and verifiers how to get a completed full
     const added = [...GATE_RULES, ...(role === 'verification' ? [VERIFIER_TALLY_RULE] : []), readingRule(role)];
     assert.ok(added.includes(rule));
     assert.equal(prompt.split('\n').filter((line) => !added.includes(line)).join('\n'), claude.buildPrompt(args));
-    // Report tasks (research-only workers run only these) keep exactly the two #42/#43 rules and no full-gate rule.
+    // Report tasks (research-only workers run only these) keep exactly the #43 tally rule and no full-gate rule.
     const reportArgs = promptArgs(role, 'report');
     const report = buildPrompt(reportArgs);
     assert.equal(ruleLine(report), undefined, `${role} report prompt`);
-    const reportAdded = [GATE_RULES[0], GATE_RULES[1], ...(role === 'verification' ? [VERIFIER_TALLY_RULE] : []), readingRule(role)];
+    const reportAdded = [GATE_RULES[0], ...(role === 'verification' ? [VERIFIER_TALLY_RULE] : []), readingRule(role)];
     const base = claude.buildPrompt(reportArgs);
     const at = base.indexOf('\n\nTask packet (sha256 ');
     assert.equal(report, `${base.slice(0, at)}\n${reportAdded.join('\n')}${base.slice(at)}`);
