@@ -17,6 +17,7 @@ import { configuredGovernanceRoot, requireGovernanceRoot } from './governance.mj
 import { clearCoordinatorViolation, coordinatorView, postOwnerMessage } from './coordinator.mjs';
 import { approvalFromFile, CODE_ROOT, declarationFromFile, revisionNotMerged } from './provenance.mjs';
 import { Store } from './store.mjs';
+import { approveProgram, programFromFile, programStatus, stopPrograms } from './program.mjs';
 import { RELEASE_STOP, REVIEW_ONLY, releaseNarrowings, setReviewOnly } from './release/state.mjs';
 import { modelPreferences, setRoleModelPreference, clearRoleModelPreferences, configuredAccounts, addDashboardAccount, removeDashboardAccount, exportDashboardAccounts, importDashboardAccounts } from './accounts.mjs';
 
@@ -51,6 +52,11 @@ const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--go
   release-mode <project> <destination> review-only
                                         narrow one destination to Review only. review-only is the only mode accepted:
                                         no command switches a destination to Auto Release, only a newer valid grant does
+  program-approve <program.json>        keep the owner's private program record (aiworks-program/1) by its digest. A higher
+                                        authorization.version replaces it; a lower or equal one is refused; revoked stays
+                                        revoked. Registers nothing (built switched off: config.json "program": { "enabled": true })
+  program-stop [reason]                 create <data>/PROGRAM-STOP: no program starts a new wave (removing it is the owner's action)
+  program-status                        print whether programs are switched on or stopped, and the approved records (read-only)
   account list                          list configured accounts and profile cooldown / usage metrics
   account add <provider> <name> [--token <tok>] [--api-key <key>]
                                         add a local login profile under the shallow homes root
@@ -103,6 +109,12 @@ if (command === 'release-stop') {
   console.log(`created ${file}: every release stops before its next step. Delete the file to allow releases again.`);
   process.exit(0);
 }
+// Like release-stop, the program stop is a file: it works without SQLite and without healthy program code.
+if (command === 'program-stop') {
+  const file = stopPrograms(dataDir, { reason: rest.join(' ') || null });
+  console.log(`created ${file}: no program starts a new wave. Delete the file to allow new waves again.`);
+  process.exit(0);
+}
 // The mode only narrows. Anything but `release-mode <project> <destination> review-only` is refused before the store opens.
 if (command === 'release-mode' && (rest.length !== 3 || !rest[0]?.trim() || !rest[1]?.trim() || rest[2] !== REVIEW_ONLY)) {
   console.error(`RELEASE_MODE_REFUSED: release-mode only narrows: use release-mode <project> <destination> ${REVIEW_ONLY}. No command switches a destination to Auto Release; only a newer valid release grant makes it available (docs/design/AUTO_RELEASE.md section 3).`);
@@ -119,9 +131,10 @@ try {
   if (command === 'status' && explicitData && environmentData && canonical(explicitData) !== canonical(environmentData)) {
     throw new CampaignError('DATA_DIR_MISMATCH', '--data differs from AIWORKS_DATA; confirm the installed task path and unset or correct the stale value');
   }
-  const readOnlyCommand = ['status', 'messages', 'baseline'].includes(command) ||
+  const readOnlyCommand = ['status', 'messages', 'baseline', 'program-status'].includes(command) ||
     ((command === 'account' || command === 'accounts') && existsSync(join(dataDir, 'supervisor.db')) && (!rest[0] || ['list', 'preferences', 'prefs'].includes(rest[0])));
-  store = new Store(join(dataDir, 'supervisor.db'), { readOnly: readOnlyCommand });
+  // program-status never creates a store: without one there is no approved program to list.
+  if (command !== 'program-status' || existsSync(join(dataDir, 'supervisor.db'))) store = new Store(join(dataDir, 'supervisor.db'), { readOnly: readOnlyCommand });
   if (command === 'serve') await serve();
   else if (command === 'start' && approvedFlag !== null) {
     // The owner's private approved declaration (WORK_ENVELOPE.md section 5, slice E9), registered by merged code only.
@@ -173,6 +186,12 @@ try {
       print(report);
     }
     finally { store.db.exec('ROLLBACK'); }
+  }
+  else if (command === 'program-approve') print(approveProgram(store, programFromFile(rest[0], { root: CODE_ROOT })));
+  else if (command === 'program-status') {
+    let config = {};
+    try { config = JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { /* no or malformed config: programs stay off */ }
+    print(programStatus({ store, dataDir, config }));
   }
   else if (command === 'pause') print(campaignPause(store, rest[0], rest.slice(1).join(' ') || null));
   else if (command === 'cancel') print(campaignCancel(store, rest[0], rest.slice(1).join(' ') || null));
