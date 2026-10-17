@@ -7,19 +7,21 @@ import * as gitA from './adapters/git.mjs';
 import * as github from './adapters/github.mjs';
 import { mergeWithMergeCommit } from './release/github-merge.mjs';
 import { campaignLimits } from './campaign.mjs';
+import { advanceQueue, queuedAt, startQueue, topMerge, topWaits } from './merge-queue.mjs';
 import { specsOf } from './plan.mjs';
 import { resolveCheckout } from './project-connect.mjs';
 import { ConflictError, FencedError } from './store.mjs';
 
 const SHA = /^[0-9a-f]{40}$/;
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
-const OFF = Object.freeze({ enabled: false, repositories: new Set(), held: new Set(), problem: null });
+const OFF = Object.freeze({ enabled: false, repositories: new Set(), held: new Set(), queue: false, problem: null });
 
 /**
  * Merge settings from config.json `merges`, the setting the dashboard already reads (src/dashboard/merges.mjs):
  * `"delegatedTo": "supervisor"` and an explicit `"repositories": ["owner/name", ...]` turn merging on for exactly those
- * repositories. `held` (pull request URL to reason) still holds a pull request back. Absent, delegated to anyone else
- * (for example "monitor"), or malformed: off, and `problem` says what is malformed.
+ * repositories. `held` (pull request URL to reason) still holds a pull request back. `"queue": true` integrates waiting
+ * pull requests through the merge queue (merge-queue.mjs) instead of one model repair round each. Absent, delegated to
+ * anyone else (for example "monitor"), or malformed: off, and `problem` says what is malformed.
  */
 export function mergeSettings(config) {
   const merges = config?.merges;
@@ -34,7 +36,8 @@ export function mergeSettings(config) {
   if (merges.held !== undefined && (!merges.held || typeof merges.held !== 'object' || Array.isArray(merges.held))) {
     return off('merges.held must map pull request URLs to reasons');
   }
-  return { enabled: true, repositories: new Set(list.map((item) => item.toLowerCase())), problem: null,
+  if (merges.queue !== undefined && typeof merges.queue !== 'boolean') return off('merges.queue must be true or false');
+  return { enabled: true, repositories: new Set(list.map((item) => item.toLowerCase())), problem: null, queue: merges.queue === true,
     held: new Set(Object.keys(merges.held ?? {}).map((url) => url.toLowerCase())) };
 }
 
@@ -95,13 +98,21 @@ export async function mergePass(controller) {
     if (resolveCheckout(controller.store, controller.config, decl.target.repository)?.conflict) { controller.log(`merge pass for ${decl.target.repository} skipped: CONFIG_CONFLICT`); continue; }
     let repoPath;
     try { repoPath = controller.repo(decl).path; } catch (error) { controller.log(`merge pass for ${decl.target.repository} skipped: ${error.message}`); continue; }
+    if (settings.queue) {
+      try {
+        if (advanceQueue(controller, { repository: decl.target.repository, repoPath, lease, repair })) continue;
+      } catch (error) {
+        controller.log(`merge queue for ${decl.target.repository} failed: ${error.stack || error}`);
+        continue;
+      }
+    }
     const bases = new Map();
-    for (const item of items) {
+    for (const [index, item] of items.entries()) {
       const branch = item.decl.target.baseBranch;
       if (!bases.has(branch)) bases.set(branch, controller.fetchBase(repoPath, branch).sha);
       if (!SHA.test(bases.get(branch) ?? '')) { controller.log(`merge of ${item.campaignId}/${item.task.task_id} waits: ${branch} could not be fetched`); continue; }
       try {
-        if (mergeOne(controller, item, settings, repoPath, bases.get(branch))) break;
+        if (mergeOne(controller, item, settings, repoPath, bases.get(branch), items.slice(index + 1))) break;
       } catch (error) {
         if (error instanceof FencedError || error instanceof ConflictError) { controller.log(`merge of ${item.campaignId}/${item.task.task_id} retried later: ${error.message}`); break; }
         controller.log(`merge of ${item.campaignId}/${item.task.task_id} failed: ${error.stack || error}`);
@@ -135,15 +146,29 @@ function wait(controller, item, reason) {
  * Judge one published pull request against the gate and act on it. Returns true when it acted on the repository (a
  * merge call, a recorded merge or an integration repair), so the pass moves on to the next repository.
  */
-function mergeOne(controller, item, settings, repoPath, baseSha) {
+function mergeOne(controller, item, settings, repoPath, baseSha, rest = []) {
   const { store } = controller, { campaignId, decl, task, number } = item;
   const git = controller.cmd.git, gh = controller.cmd.gh;
   const sha = task.verified_sha, url = task.pr_url, base = decl.target.baseBranch, repository = decl.target.repository;
   if (settings.held.has(url.toLowerCase())) return wait(controller, item, 'held by the owner (merges.held)');
   const requested = journaled(store, campaignId, 'merge-requested').has(`${task.task_id}:${sha}`);
   const inBase = gitA.isAncestor({ git, path: repoPath, ancestor: sha, descendant: baseSha });
+  // Below the top of a merge-queue stack: its head was gated only with the pull requests above it, so it merges with
+  // the top and is recorded with the top's merge commit. A top that no longer waits leaves it to be gated on its own.
+  const queued = queuedAt(store, campaignId, task.task_id, sha);
+  const below = queued && !(queued.top.campaign === campaignId && queued.top.task === task.task_id);
+  if (below && inBase && !requested) {
+    const mergeCommit = topMerge(store, queued);
+    if (!mergeCommit) return false;
+    const ctx = lease(controller, campaignId);
+    if (!ctx) return false;
+    controller.fenced(ctx, () => record(controller, ctx, item, mergeCommit, { reconciled: false, requested: false, with: queued.top.url }));
+    return true;
+  }
   // Already in the base and never requested here: merged by someone else; nothing to do or read.
   if (inBase && !requested) return false;
+  if (below && topWaits(store, queued)) return wait(controller, item, `integrated by the merge queue; it merges with ${queued.top.url}`);
+  if (below && settings.queue && !requested) return startQueue(controller, { first: item, rest: [], settings, repoPath, baseSha, lease });
 
   // Every attempt starts by reading the pull request, so an unknown outcome is settled before any retry.
   let pr;
@@ -170,6 +195,8 @@ function mergeOne(controller, item, settings, repoPath, baseSha) {
 
   // The verified head must contain the current base, or the merge result is a tree no verifier ran: integration repair.
   if (!gitA.isAncestor({ git, path: repoPath, ancestor: baseSha, descendant: sha })) {
+    // The merge queue integrates a clean merge without a model; a conflict still goes to the model repair round.
+    if (settings.queue && gitA.mergeCheck({ git, repoPath, baseSha, sha }).clean) return startQueue(controller, { first: item, rest, settings, repoPath, baseSha, lease });
     const ctx = lease(controller, campaignId);
     if (!ctx) return false;
     return controller.fenced(ctx, () => repair(controller, ctx, item, repoPath, baseSha));
@@ -210,15 +237,16 @@ function mergeOne(controller, item, settings, repoPath, baseSha) {
 }
 
 /** Journal the merge and tell the tracking issue. Inside fenced(). */
-function record(controller, ctx, { campaignId, decl, task }, mergeCommit, { reconciled, requested }) {
+function record(controller, ctx, { campaignId, decl, task }, mergeCommit, { reconciled, requested, with: top = null }) {
   const now = controller.now(), base = decl.target.baseBranch;
-  controller.store.journal(campaignId, 'merged', { task: task.task_id, sha: task.verified_sha, url: task.pr_url, mergeCommit, reconciled, requested }, now);
+  controller.store.journal(campaignId, 'merged', { task: task.task_id, sha: task.verified_sha, url: task.pr_url, mergeCommit, reconciled, requested,
+    ...(top ? { with: top } : {}) }, now);
   controller.mergeWaits.delete(`${campaignId}:${task.task_id}:${task.verified_sha}`);
-  controller.log(`merged ${campaignId}/${task.task_id}: ${task.pr_url} as ${mergeCommit}`);
-  if (requested) {
+  controller.log(`merged ${campaignId}/${task.task_id}: ${task.pr_url} as ${mergeCommit}${top ? ` with ${top}` : ''}`);
+  if (requested || top) {
     controller.enqueue(campaignId, `${campaignId}:${task.task_id}:merged:${task.verified_sha}`, decl,
-      `**${task.task_id}** is merged into ${base} under the merge gate: ${task.pr_url}, verified \`${task.verified_sha}\`, merge commit \`${mergeCommit}\`. ` +
-      'Merged is not deployed: nothing was released or deployed.', now);
+      `**${task.task_id}** is merged into ${base} under the merge gate: ${task.pr_url}, verified \`${task.verified_sha}\`, merge commit \`${mergeCommit}\`` +
+      `${top ? `, together with ${top} through the merge queue` : ''}. Merged is not deployed: nothing was released or deployed.`, now);
   }
 }
 
@@ -227,7 +255,7 @@ function record(controller, ctx, { campaignId, decl, task }, mergeCommit, { reco
  * existing aiworks#27 repair). The round merges the base in and needs a fresh independent verification; the pull request
  * is merged only once that new head is verified and published. Inside fenced(). Returns true.
  */
-function repair(controller, ctx, item, repoPath, baseSha) {
+function repair(controller, ctx, item, repoPath, baseSha, queueNote = null) {
   const { store } = controller, git = controller.cmd.git, { campaignId, decl, task } = item;
   const fresh = store.task(campaignId, task.task_id);
   if (fresh.version !== task.version || fresh.state !== 'done') return false;
@@ -240,6 +268,7 @@ function repair(controller, ctx, item, repoPath, baseSha) {
     description: `Base moved: the verified commit ${sha} (${task.pr_url}) does not contain ${base} at ${baseSha}, so merging it would put a tree on ${base} that no verifier ran. ` +
       `${paths.length ? `Conflicting paths: ${paths.join(', ')}. ` : 'It merges without a textual conflict; a semantic conflict is still possible. '}` +
       `Sibling commits on ${base}: ${commits.map((entry) => `${entry.sha.slice(0, 12)} ${entry.subject}`).join('; ') || 'unknown'}. ` +
+      `${queueNote ? `${queueNote} ` : ''}` +
       `Merge ${baseSha} into this branch (git merge ${baseSha}), resolve any conflicts, run the full gate and commit the merge. Never rebase, reset or amend: ${sha} must stay an ancestor of the new head.`,
   };
   const stalled = controller.reopenPublished(ctx, fresh, finding, { limits: campaignLimits(decl), now,

@@ -278,6 +278,127 @@ test('a moved base starts the integration repair, and the pull request merges on
   assert.deepEqual(r.journal(B, 'merged').map((entry) => entry.sha), [repaired]);
 });
 
+const QUEUE = { ...ON, queue: true };
+const C = 'camp-c';
+const PASSED = { exit: '0', summary: '# all test files\n# tests 3\n# pass 3\n# fail 0' };
+/** The merge queue's gate, played by the test: each started gate is listed, and its `result` is what read() returns. */
+function playGate(r, runs = []) {
+  r.controller.queueGate = { start: (spec) => { runs.push({ ...spec, result: null }); }, read: (state) => runs.find((run) => run.runDir === state.runDir)?.result ?? null };
+  return runs;
+}
+const noModelRun = (r, ...ids) => { for (const id of ids) assert.deepEqual(r.store.openOperations(id), [], `${id}: no model operation`); };
+
+test('merge settings: merges.queue is off unless true, and anything but a boolean turns merging off', () => {
+  assert.equal(mergeSettings({ merges: ON }).queue, false);
+  assert.equal(mergeSettings({ merges: QUEUE }).queue, true);
+  const bad = mergeSettings({ merges: { ...ON, queue: 'yes' } });
+  assert.equal(bad.enabled, false);
+  assert.match(bad.problem, /merges\.queue/);
+});
+
+test('merge queue: waiting pull requests are stacked on the base, gated once, pushed as fast-forwards and merged with the top, with no model run', async (t) => {
+  const r = rig(t, { [A]: [task('A1', 501, 'a.txt')], [B]: [task('B1', 502, 'b.txt')], [C]: [task('C1', 503, 'c.txt')] });
+  const heads = await publish(r, [A, B, C], { [A]: 'a.txt', [B]: 'b.txt', [C]: 'c.txt' });
+  const url = (id) => r.store.tasks(id)[0].pr_url;
+  r.start({ merges: QUEUE });
+  const runs = playGate(r);
+  await r.tick();
+  assert.deepEqual(r.mergeCalls().map((call) => call.fields.sha), [heads[A]], 'A contains the base and merges as before');
+  const mergedA = r.main();
+
+  r.advance();
+  await r.tick();
+  assert.equal(runs.length, 1, 'one gate for B and C together');
+  const [started] = r.journal(B, 'queue-started'), [startedC] = r.journal(C, 'queue-started');
+  assert.equal(started.base, mergedA);
+  assert.equal(started.size, 2);
+  const stackedB = started.stacked, stackedC = startedC.stacked;
+  // Not pushed yet: read from the supervisor's checkout through the gate worktree.
+  const local = (sha) => git(runs[0].cwd, 'rev-list', '--parents', '-n', '1', sha).split(' ').slice(1);
+  assert.deepEqual(local(stackedB), [heads[B], mergedA], 'the verified head first, then the base');
+  assert.deepEqual(local(stackedC), [heads[C], stackedB], 'C stacks on B');
+  assert.equal(git(runs[0].cwd, 'rev-parse', 'HEAD'), stackedC, 'the gate runs on the top of the stack');
+  for (const file of ['a.txt', 'b.txt', 'c.txt']) assert.ok(existsSync(join(runs[0].cwd, file)), `${file} is in the gated tree`);
+  noModelRun(r, B, C);
+  assert.equal(r.journal(B, 'merge-base-moved').length, 0, 'no model repair round');
+  for (let i = 0; i < 2; i++) { r.advance(); await r.tick(); }
+  assert.equal(r.mergeCalls().length, 1, 'nothing merges while the gate runs');
+  assert.equal(r.env.remoteHead(branchName(B, 'B1')), heads[B]);
+
+  r.start({ merges: QUEUE }); // a restart while the gate runs
+  playGate(r, runs);
+  runs[0].result = PASSED;
+  r.advance();
+  await r.tick();
+  assert.equal(r.env.remoteHead(branchName(B, 'B1')), stackedB, 'pushed as a fast-forward');
+  assert.equal(r.env.remoteHead(branchName(C, 'C1')), stackedC);
+  assert.equal(r.store.task(B, 'B1').verified_sha, stackedB);
+  assert.equal(r.store.task(C, 'C1').verified_sha, stackedC);
+  assert.deepEqual({ by: r.store.task(C, 'C1').verification.by, from: r.store.task(C, 'C1').verification.from }, { by: 'merge-queue', from: heads[C] });
+  assert.equal(r.journal(C, 'queue-integrated')[0].top.sha, stackedC);
+  assert.ok(!existsSync(runs[0].cwd), 'the gate worktree is removed');
+
+  r.advance();
+  await r.tick();
+  assert.deepEqual(r.mergeCalls().map((call) => call.fields.sha), [heads[A], stackedC], 'only the top merges, at the gated head');
+  const mergedC = r.main();
+  assert.deepEqual(r.parents(mergedC), [mergedA, stackedC]);
+  assert.equal(r.tree(mergedC), r.tree(stackedC), 'the base gets exactly the gated tree');
+  r.advance();
+  await r.tick();
+  assert.deepEqual(r.journal(B, 'merged'), [{ task: 'B1', sha: stackedB, url: url(B), mergeCommit: mergedC, reconciled: false, requested: false, with: url(C) }]);
+  for (let i = 0; i < 2; i++) { r.advance(); await r.tick(); }
+  assert.equal(r.mergeCalls().length, 2);
+  assert.equal(runs.length, 1);
+  noModelRun(r, B, C);
+});
+
+test('merge queue: a failed gate pushes nothing and sends the first pull request to the model repair round', async (t) => {
+  const r = rig(t, { [A]: [task('A1', 501, 'a.txt')], [B]: [task('B1', 502, 'b.txt')] });
+  const heads = await publish(r, [A, B]);
+  r.start({ merges: QUEUE });
+  const runs = playGate(r);
+  await r.tick();
+  r.advance();
+  await r.tick();
+  assert.equal(runs.length, 1);
+  runs[0].result = { exit: '1', summary: '# tests 3\n# pass 2\n# fail 1' };
+  r.advance();
+  await r.tick();
+  assert.equal(r.env.remoteHead(branchName(B, 'B1')), heads[B], 'nothing pushed');
+  assert.equal(r.journal(B, 'queue-failed')[0].exit, '1');
+  const b = r.store.task(B, 'B1');
+  assert.equal(b.state, 'pending', 'B1 reopens as a repair round');
+  assert.match(b.findings[0].description, /merge queue .* failed \(exit 1; # tests 3; # pass 2; # fail 1\)/);
+  assert.equal(r.mergeCalls().length, 1);
+});
+
+test('merge queue: a base that moved while the gate ran discards the stack, and the next pass gates a new one', async (t) => {
+  const r = rig(t, { [A]: [task('A1', 501, 'a.txt')], [B]: [task('B1', 502, 'b.txt')] });
+  const heads = await publish(r, [A, B]);
+  r.start({ merges: QUEUE });
+  const runs = playGate(r);
+  await r.tick();
+  r.advance();
+  await r.tick();
+  const clone = join(r.env.tmp, 'other');
+  git(r.env.tmp, 'clone', '-q', '-b', 'main', r.env.origin, clone);
+  writeFileSync(join(clone, 'other.txt'), 'someone else\n');
+  git(clone, '-c', 'user.name=Someone', '-c', 'user.email=someone@example.invalid', 'add', '-A');
+  git(clone, '-c', 'user.name=Someone', '-c', 'user.email=someone@example.invalid', 'commit', '-qm', 'elsewhere');
+  git(clone, 'push', '-q', 'origin', 'HEAD:main');
+  runs[0].result = PASSED;
+  r.advance();
+  await r.tick();
+  assert.match(r.journal(B, 'queue-discarded')[0].reason, /moved/);
+  assert.equal(r.env.remoteHead(branchName(B, 'B1')), heads[B]);
+  assert.equal(r.store.task(B, 'B1').state, 'done');
+  r.advance();
+  await r.tick();
+  assert.equal(runs.length, 2, 'a new stack on the new base');
+  assert.equal(r.journal(B, 'queue-started')[1].base, r.main());
+});
+
 test('with CI repair on, a head merges only after its CI passed: never while CI is unread, pending or failed', async (t) => {
   const r = rig(t);
   const { [A]: verified } = await publish(r);
