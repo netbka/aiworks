@@ -1,4 +1,4 @@
-import { mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdir, writeFile, stat } from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
@@ -71,7 +71,7 @@ test('existing GET and new POST contract', async () => {
 };
 for (const [name, files] of Object.entries(fixtures)) {
   const dir = join(root,name);
-  await rm(dir,{recursive:true,force:true});
+  if (await stat(dir).then(() => true, () => false)) throw new Error('Refusing to overwrite existing fixture: ' + dir);
   for (const [path, contents] of Object.entries(files)) {
     const dest = join(dir,path);
     await mkdir(dirname(dest),{recursive:true});
