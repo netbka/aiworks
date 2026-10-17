@@ -275,7 +275,9 @@ test('Settings › Accounts dedicated page displays worker accounts and back lin
   const text = visibleText(page.$('#content'));
   assert.ok(text.includes('Worker accounts'));
   assert.ok(text.includes('Which AI worker logins and accounts are on this computer?'));
-  assert.ok(text.includes('Connect account'));
+  assert.ok(text.includes('Manage sign-in with the native AI provider CLI'));
+  assert.ok(!text.includes('Connect in incognito browser'));
+  assert.ok(!text.includes('Pick up from default location'));
   assert.ok(text.includes('No worker accounts yet.'));
 });
 

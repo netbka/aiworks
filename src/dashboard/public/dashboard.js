@@ -1202,112 +1202,6 @@ function mergeChecksPanel() {
 }
 
 let pendingRemoveAccount = null;
-let lastConnectReceipt = null;
-let incognitoPollTimer = null;
-
-function stopIncognitoPolling() {
-  if (incognitoPollTimer) {
-    clearInterval(incognitoPollTimer);
-    incognitoPollTimer = null;
-  }
-}
-
-let connectStatusMessage = '';
-let connectProvider = 'codex';
-let connectAccountName = '';
-
-const providerDisplayName = (p) => p === 'claude' ? 'Claude' : p === 'codex' ? 'ChatGPT (Codex)' : p === 'agy' ? 'Agy' : 'Cursor Agent';
-
-async function startConnectInBrowser() {
-  const provider = connectProvider;
-  const name = connectAccountName.trim();
-  if (!name || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
-    connectStatusMessage = 'Please enter a valid account name (letters, numbers, dots, dashes, underscores).';
-    render();
-    return;
-  }
-  const providerLabel = providerDisplayName(provider);
-  connectStatusMessage = `Opening incognito browser for ${providerLabel}…`;
-  render();
-  try {
-    const res = await post('/api/accounts/connect/start', { provider, name });
-    connectStatusMessage = `Incognito browser opened for ${providerLabel}. Log in there. Watching ${res.defaultLocation || 'credentials'}…`;
-    stopIncognitoPolling();
-    const startedAt = res.startedAt || Date.now();
-    let checks = 0;
-    incognitoPollTimer = setInterval(async () => {
-      checks++;
-      if (checks > 90) {
-        stopIncognitoPolling();
-        connectStatusMessage = 'Login wait timed out. You can try again or pick up from default location.';
-        render();
-        return;
-      }
-      try {
-        const check = await post('/api/accounts/connect/check', { provider, name, startedAt });
-        if (check.connected) {
-          stopIncognitoPolling();
-          connectStatusMessage = '';
-          connectAccountName = '';
-          lastConnectReceipt = {
-            provider,
-            providerLabel,
-            name,
-            sourcePath: check.sourcePath,
-            modifiedAt: check.modifiedAt,
-            savedTo: check.savedTo,
-          };
-          notice(`Connected ${providerLabel} · ${name}! Picked up from ${check.sourcePath}`);
-          await poll();
-          render();
-        }
-      } catch { /* ignore polling errors */ }
-    }, 2000);
-    render();
-  } catch (err) {
-    connectStatusMessage = err.message ?? 'Could not open browser.';
-    render();
-  }
-}
-
-async function pickupDefaultLocation() {
-  const provider = connectProvider;
-  const name = connectAccountName.trim();
-  if (!name || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
-    connectStatusMessage = 'Please enter a valid account name (letters, numbers, dots, dashes, underscores).';
-    render();
-    return;
-  }
-  const providerLabel = providerDisplayName(provider);
-  connectStatusMessage = `Checking default location for ${providerLabel} credentials…`;
-  render();
-  try {
-    const check = await post('/api/accounts/connect/check', { provider, name, force: true });
-    if (check.connected) {
-      stopIncognitoPolling();
-      connectStatusMessage = '';
-      connectAccountName = '';
-      lastConnectReceipt = {
-        provider,
-        providerLabel,
-        name,
-        sourcePath: check.sourcePath,
-        modifiedAt: check.modifiedAt,
-        savedTo: check.savedTo,
-      };
-      notice(`Connected ${providerLabel} · ${name}! Picked up from ${check.sourcePath}`);
-      await poll();
-      render();
-    } else {
-      connectStatusMessage = `No credentials found at ${check.waitingFor || 'default location'}. Complete login first or click Connect in incognito browser.`;
-      render();
-    }
-  } catch (err) {
-    connectStatusMessage = err.message ?? 'Could not check default location.';
-    render();
-  }
-}
-
 function openRemoveAccount(provider, name) {
   pendingRemoveAccount = { provider, name };
   const label = provider === 'claude' ? 'Claude' : provider === 'codex' ? 'ChatGPT (Codex)' : provider === 'agy' ? 'Agy' : provider === 'cursor' ? 'Cursor Agent' : provider;
@@ -1367,45 +1261,7 @@ function accountsScreen() {
   const accounts = settings?.accounts ?? [];
   const back = el('p', { class: 'breadcrumb' }, routeLink('← Back to Settings', '#/settings'));
 
-  let receiptNode = null;
-  if (lastConnectReceipt) {
-    const timeStr = lastConnectReceipt.modifiedAt ? timeOnly(lastConnectReceipt.modifiedAt) : 'just now';
-    receiptNode = el('div', { class: 'notice notice-success', id: 'account-receipt-notice' },
-      el('p', {},
-        el('strong', {}, `Connected ${lastConnectReceipt.providerLabel} · ${lastConnectReceipt.name}! `),
-        `Picked up credentials from ${lastConnectReceipt.sourcePath} (modified ${timeStr}) and saved to isolated profile ${lastConnectReceipt.name}.`
-      ),
-      button('Dismiss', () => { lastConnectReceipt = null; render(); }, 'secondary small')
-    );
-  }
-
-  const providerSelect = el('select', { id: 'connect-provider' },
-    el('option', { value: 'codex', selected: connectProvider === 'codex' }, 'ChatGPT (Codex)'),
-    el('option', { value: 'claude', selected: connectProvider === 'claude' }, 'Claude'),
-    el('option', { value: 'agy', selected: connectProvider === 'agy' }, 'Agy'),
-    el('option', { value: 'cursor', selected: connectProvider === 'cursor' }, 'Cursor Agent')
-  );
-  providerSelect.addEventListener('change', (e) => { connectProvider = e.target.value; });
-
-  const nameInput = el('input', {
-    id: 'connect-name',
-    type: 'text',
-    placeholder: 'e.g. work-main or team-bot',
-    value: connectAccountName,
-  });
-  nameInput.addEventListener('input', (e) => { connectAccountName = e.target.value; });
-
-  const connectCard = panel('Connect account', 'Connect an account in an incognito browser without affecting your active sessions. AIWorks picks up credentials directly from the default CLI location.', el('div', { class: 'panel-body' },
-    el('div', { class: 'connect-form' },
-      el('label', {}, 'AI worker', providerSelect),
-      el('label', {}, 'Account name', nameInput),
-      el('div', { class: 'dialog-actions' },
-        button('Connect in incognito browser', startConnectInBrowser, 'button'),
-        button('Pick up from default location', pickupDefaultLocation, 'button secondary')
-      ),
-      connectStatusMessage ? el('div', { class: 'notice' }, el('p', {}, connectStatusMessage)) : null
-    )
-  ));
+  const setup = panel('Account setup', 'Manage sign-in with the native AI provider CLI on this computer. Configured accounts and usage appear below.');
 
   const list = accounts.length ? el('ul', { class: 'settings-links' }, ...accounts.map((acct) => {
     const { id, provider: p, name, usage } = acct;
@@ -1437,26 +1293,25 @@ function accountsScreen() {
         button('Remove…', () => openRemoveAccount(p, name), 'danger small')),
       capacityText ? el('div', { class: 'subtext' }, capacityText) : null,
       el('div', { class: 'subtext' }, usageSubtext));
-  })) : empty('No worker accounts yet.', 'Connect an account above to allow AI workers to run with isolated logins.');
+  })) : empty('No worker accounts yet.', 'Accounts set up on this computer appear here.');
 
   const accountsPanel = panel('Worker accounts', 'Which AI worker logins and accounts are on this computer?', el('div', {},
-    receiptNode,
     list));
 
   const preferencesPanel = modelPreferencesPanel(settings?.modelPreferences ?? {});
-  return [back, connectCard, accountsPanel, preferencesPanel];
+  return [back, setup, accountsPanel, preferencesPanel];
 }
 
 function modelPreferencesPanel(prefs = {}) {
   const roles = [
-    { key: 'implementer', title: 'Builder / Implementation', desc: 'Order of models used for implementing task steps and writing code.' },
-    { key: 'verification', title: 'Checker / Verification', desc: 'Order of models used for independent verification and review.' },
-    { key: 'coordinator', title: 'Coordinator / Planner', desc: 'Models used for roadmap drafting, task breakdown, and planning.' },
+    { key: 'implementer', title: 'Builder / Implementation', desc: 'Stored implementation choices.' },
+    { key: 'verification', title: 'Checker / Verification', desc: 'Stored independent verification choices.' },
+    { key: 'coordinator', title: 'Coordinator / Planner', desc: 'Stored planning choices.' },
   ];
 
   const items = roles.map((r) => {
     const rolePref = prefs[r.key] ?? {};
-    const models = Array.isArray(rolePref.models) && rolePref.models.length ? rolePref.models.join(', ') : 'Default supervisor order';
+    const models = Array.isArray(rolePref.models) && rolePref.models.length ? rolePref.models.join(', ') : 'No stored choice';
     const effort = rolePref.effort ? `${rolePref.effort} effort` : 'standard effort';
     const kind = rolePref.kind ? `(${rolePref.kind})` : '';
 
@@ -1470,7 +1325,7 @@ function modelPreferencesPanel(prefs = {}) {
     );
   });
 
-  return panel('Role model preferences', 'Which models and order should AIWorks use for each worker role?', el('div', {},
+  return panel('Role model preferences', 'Saved choices. Campaign routing follows its declared executors, models and effort.', el('div', {},
     el('ul', { class: 'settings-links' }, ...items)
   ));
 }

@@ -14,7 +14,7 @@ import * as github from './adapters/github.mjs';
 import { authorityDigest, campaignLimits, canonicalJson, executorOrder, projectGovernance } from './campaign.mjs';
 import { resolveCheckout } from './project-connect.mjs';
 import { campaignBudget } from './api.mjs';
-import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountOf, accountWait, applyModelPreferences, buildTaskSignature, clearAccountWait, formatSignatureLines, formatTokensUsage, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
+import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountOf, accountWait, buildTaskSignature, clearAccountWait, formatSignatureLines, formatTokensUsage, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
 import { domainOf, pathsOutside, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
 import { containsSecret, coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
@@ -1723,24 +1723,22 @@ export class Controller {
       return { cliConfigured: true, hostUnavailable: null, wait: profile && !profile.account ? { retryAt: profile.retryAt, reason: profile.reason } : null };
     };
     if (decl.routing?.mode === 'auto') return this.routedChoice(decl, task, now, { facts, waits, session, history, hostUnavailable });
-    const role = task.state === 'implemented' ? 'verification' : 'implementer';
-    const providers = applyModelPreferences(executorOrder(decl.executor), role, this.config);
+    // Stored dashboard preferences cannot rewrite a registered declaration.
+    const providers = executorOrder(decl.executor);
     const receipt = staticReceipt(receiptInputs({
       stage: task.state === 'implemented' ? 'verify' : 'implement', chain: decl.executor.kind === 'cli-chain',
       spec: specOf(this.store, decl.campaignId, task.task_id, decl), providers,
       platform: process.platform, facts, priorAttempts: this.priorAttempts(decl, task),
     }));
     const chosen = receipt.decision.chosen;
-    const pref = this.config?.modelPreferences?.[role]?.find((p) => (typeof p === 'object' && p?.model === chosen?.model && (!p.kind || p.kind === chosen?.kind)));
     const matched = chosen ? providers.find((provider) => provider.kind === chosen.kind) : null;
-    return { executor: matched ? { ...matched, ...(pref?.effort ? { effort: pref.effort } : {}) } : null,
+    return { executor: matched ? { ...matched } : null,
       retryAt: receipt.decision.retryAt, receipt };
   }
 
   /** The routing-policy/1 choice of executorChoice: the facts observed here once, routeAuto deciding from them alone. */
   routedChoice(decl, task, now, { facts, waits, session, history, hostUnavailable }) {
     const stage = task.state === 'implemented' ? 'verify' : 'implement';
-    const role = stage === 'verify' ? 'verification' : 'implementer';
     const spec = specOf(this.store, decl.campaignId, task.task_id, decl);
     const providers = executorOrder(decl.executor);
     const ops = this.taskOperations(decl, task);
@@ -1748,7 +1746,6 @@ export class Controller {
       facts: (kind) => ({ ...facts(kind), ...(hostUnavailable?.has(kind) ? { hostUnavailable: hostUnavailable.get(kind) } : {}) }),
       priorAttempts: this.routedAttempts(ops, stage), catalog: spec.role ? this.routingCatalog() : null,
       session: stage === 'verify' ? session ?? randomUUID() : null, ...this.reviewedHead(ops, task, stage) });
-    inputs.candidates = applyModelPreferences(inputs.candidates, role, this.config);
     // A candidate whose model the provider refused waits alone: its own host fact, with the later of both waits.
     for (const candidate of inputs.candidates) {
       const own = waits.find((item) => item.executor_kind === modelWaitKey(candidate.kind, candidate.model));
@@ -1766,8 +1763,7 @@ export class Controller {
     const receipt = autoReceipt(inputs);
     const chosen = receipt.decision.chosen;
     const provider = chosen && providers.find((item) => item.kind === chosen.kind);
-    const pref = this.config?.modelPreferences?.[role]?.find((p) => (typeof p === 'object' && p?.model === chosen?.model && (!p.kind || p.kind === chosen?.kind)));
-    const effort = pref?.effort ?? chosen?.effort;
+    const effort = chosen?.effort;
     return { executor: provider ? { ...provider, model: chosen.model, ...(effort ? { effort } : {}) } : null, retryAt: receipt.decision.retryAt, receipt };
   }
 

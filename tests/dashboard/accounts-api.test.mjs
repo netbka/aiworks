@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { once } from 'node:events';
+import fs from 'node:fs';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,7 +13,7 @@ import { buildReviewFixture } from './fixtures/review-store.mjs';
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'aiworks-accounts-api-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5 }));
-  return buildReviewFixture(root);
+  return { ...buildReviewFixture(root), fixtureRoot: root };
 }
 
 test('dashboard accounts API: list and remove; no route adds, exports or imports a login', async (t) => {
@@ -69,45 +72,41 @@ test('dashboard accounts API: list and remove; no route adds, exports or imports
   assert.ok(!afterRemove.some((a) => a.id === 'claude/work-account'));
 });
 
-test('dashboard accounts API: incognito connect start and check', async (t) => {
-  const { dataDir } = fixture(t);
-  const server = createDashboardServer({
-    dataDir,
-    roadmap: { snapshot: () => ({ entries: [], governance: { configured: false, reason: 'Synthetic test.' } }) },
-  });
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
+test('dashboard cannot start credential pickup, inspect host logins or write a chosen profile path', async (t) => {
+  const { dataDir, fixtureRoot } = fixture(t);
+  const server = createDashboardServer({ dataDir,
+    roadmap: { snapshot: () => ({ entries: [], governance: { configured: false, reason: 'Synthetic test.' } }) } });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(() => server.close());
-
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const sessionRes = await fetch(`${origin}/api/session`, { headers: { origin } });
-  const { csrf } = await sessionRes.json();
-
-  // 1. POST /api/accounts/connect/start
-  const startRes = await fetch(`${origin}/api/accounts/connect/start`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-dashboard-csrf': csrf, origin },
-    body: JSON.stringify({ provider: 'claude', name: 'incognito-test', openBrowser: false }),
-  });
-  assert.equal(startRes.status, 200);
-  const startBody = await startRes.json();
-  assert.equal(startBody.success, true);
-  assert.equal(startBody.provider, 'claude');
-  assert.equal(startBody.name, 'incognito-test');
-  assert.equal(startBody.loginUrl, 'https://claude.ai/login');
-  assert.ok(startBody.defaultLocation);
-
-  // 2. POST /api/accounts/connect/check before credentials exist or force
-  const checkRes = await fetch(`${origin}/api/accounts/connect/check`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-dashboard-csrf': csrf, origin },
-    body: JSON.stringify({ provider: 'claude', name: 'incognito-test', startedAt: startBody.startedAt }),
-  });
-  assert.equal(checkRes.status, 200);
-  const checkBody = await checkRes.json();
-  assert.equal(checkBody.provider, 'claude');
-  assert.equal(checkBody.name, 'incognito-test');
-  assert.equal(typeof checkBody.connected, 'boolean');
+  const { csrf } = await (await fetch(`${origin}/api/session`, { headers: { origin } })).json();
+  const before = readdirSync(fixtureRoot).sort();
+  let credentialProbes = 0, browserLaunches = 0;
+  // A regression must fail before touching an operator's real credential files.
+  const secretPath = value => /\/(?:\.claude\/\.credentials\.json|\.claude\.json|\.codex\/(?:auth\.json|config\.toml)|\.cursor\/cli-config\.json|\.(?:gemini|agy)\/(?:oauth_creds|oauth_credentials|google_accounts|credentials)\.json)$/.test(String(value).replaceAll('\\', '/'));
+  for (const method of ['existsSync', 'statSync', 'readFileSync', 'copyFileSync']) {
+    const original = fs[method];
+    t.mock.method(fs, method, (...args) => {
+      if (secretPath(args[0])) { credentialProbes++; throw Error('Host credential access refused by synthetic test'); }
+      return original(...args);
+    });
+  }
+  t.mock.method(childProcess, 'spawn', () => { browserLaunches++; throw Error('Browser launch refused by synthetic test'); });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const cases = [{ provider: 'claude', name: 'team', force: true },
+    { provider: 'codex', name: '../../escaped', startedAt: 0 },
+    { provider: 'cursor', name: 'C:\\outside', force: true },
+    { provider: 'agy', name: '\\\\server\\share', force: true }, {}];
+  for (const route of ['/api/accounts/connect/start', '/api/accounts/connect/check']) for (const value of cases) {
+    const response = await fetch(origin + route, { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-dashboard-csrf': csrf, origin },
+      body: JSON.stringify({ openBrowser: false, ...value }) });
+    assert.equal(response.status, 404, route);
+    assert.deepEqual(await response.json(), { error: 'Not found.' });
+  }
+  assert.equal(credentialProbes, 0); assert.equal(browserLaunches, 0);
+  assert.deepEqual(readdirSync(fixtureRoot).sort(), before);
 });
 
 test('dashboard accounts API: get and set model preferences', async (t) => {
