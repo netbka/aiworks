@@ -176,8 +176,10 @@ test('F14 and F10: on the review fixture, shop-app reads "Possibly stuck" and na
   const row = projectsView(supervisor, owner, { repositories: PROJECTS, now }).projects.find((item) => item.id === 'example/shop-app');
   const now2 = nowView('example/shop-app', { supervisor, owner }, { now });
   assert.equal(row.state.key, 'possibly-stuck');
-  assert.match(row.state.text, /^Let customers save a wishlist · Possibly stuck: Wishlist page has made no progress for 2[56] minutes\. · Checking GitHub… The state of 4 results is not known yet\.$/);
-  assert.equal(row.state.text, `${now2.goal.text} · ${now2.state.title} · Checking GitHub… The state of 4 results is not known yet.`, 'the work Now names, and its sentence');
+  // The other two workers stay in view after it, in short (review 5 G5).
+  assert.match(row.state.text, /^Let customers save a wishlist · Possibly stuck: Wishlist page has made no progress for 2[56] minutes\. · Also: 2 AI workers working · Checking GitHub… The state of 4 results is not known yet\.$/);
+  assert.equal(row.state.text, `${now2.goal.text} · ${now2.state.title} · Also: 2 AI workers working · Checking GitHub… The state of 4 results is not known yet.`, 'the work Now names, and its sentence');
+  assert.deepEqual(now2.also.map((line) => line.kind), ['working', 'working'], 'Now lists the same two workers');
 });
 
 test('F10: after Pause and after Resume, the confirmation, Now and Projects say the same about recipes', (t) => {

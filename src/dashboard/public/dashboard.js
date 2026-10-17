@@ -825,17 +825,21 @@ const needsGroup = (group) => el('section', { class: 'needs-group', 'aria-labell
 function needsYou() {
   const owner = state.owner;
   if (!owner?.available) return null;
-  const { headline, count, groups = [], unknownResults: unknown, reply } = owner;
+  const { headline, count, groups = [], held = [], unknownResults: unknown, reply } = owner;
   // aiworks#18: a stopped supervisor leads, with the time it last renewed its leases, unless the one item for AIWorks
   // stopped already says it with its time (one fact, once; review 4 F2).
   const controller = state.supervisor.controller;
   const said = owner.items.some((item) => item.kind === 'controller' && !item.system);
-  return el('section', { class: `needs${count ? '' : unknown ? ' checking' : ' calm'}`, 'aria-labelledby': 'needs-title' },
+  return el('section', { class: `needs${count || held.length ? '' : unknown ? ' checking' : ' calm'}`, 'aria-labelledby': 'needs-title' },
     controller?.stopped && !said ? el('p', { class: 'needs-stopped' }, NEEDS.banner(controller.lastLeaseRenewalAt, { dateTime }, controller.stopRequested)) : null,
     el('div', { class: 'needs-head' }, el('h2', { id: 'needs-title' }, headline),
       unknown ? el('span', { class: 'needs-unknown' }, `Merge of ${unknown} published step${unknown === 1 ? '' : 's'} being checked`) : null),
     // Only owner actions here (owner, 2026-10-13): posted reports and merged work ready for release are on Results.
     ...groups.map(needsGroup),
+    // Projects held up by the owner's decisions: no work is blocked, so they are not counted, but each is named with a
+    // link to its Now, which says which decisions (aiworks#11 review 5 G7).
+    held.length ? el('ul', { class: 'needs-list', 'data-focus-scope': 'needs/held' }, ...held.map((project) => el('li', {},
+      el('strong', {}, project.name), ` · ${project.text} `, routeLink(`Open ${project.name}`, { screen: 'project', project: project.id })))) : null,
     reply ? el('div', { class: 'needs-reply' }, `AIWorks answered your message #${reply.messageId} (${dateTime(reply.answeredAt)}). `,
       reply.url ? link('Read its “What needs you” ↗', reply.url) : routeLink('Read the plan', MESSAGES_ADDRESS)) : null);
 }
@@ -1458,10 +1462,18 @@ function nowScreen(project) {
     el('h2', { id: 'since-title' }, previousVisit ? `Since you last looked (${dateTime(previousVisit)})` : 'In the last 24 hours'),
     el('ul', {}, ...view.since.map((line) => el('li', { class: line.tone ?? '' }, `${line.text} `, ...line.links.map((item) => link(`${item.label} ↗`, item.url)))))) : null;
   const others = details.others.map((item) => `${item.purpose ?? item.id} (campaign ${item.id})`);
+  // What else goes on in the project stays in view, whatever leads (aiworks#11 review 5 G5): a pause carries its Resume.
+  const also = view.also?.length ? el('section', { 'aria-labelledby': `now-also-${project}` },
+    el('h3', { id: `now-also-${project}`, class: 'section-title' }, 'Also in this project'),
+    el('ul', { class: 'settings-links' }, ...view.also.map((line) => {
+      const c = line.primary ? campaignById(line.primary.campaignId) : null;
+      return el('li', { 'data-state': line.kind }, line.text, ' ',
+        c?.controls?.primary === 'resume' ? button(line.primary.label, () => command(c, 'resume'), 'secondary', commandsOff()) : null);
+    }))) : null;
   return [el('section', { class: 'panel', 'data-focus-scope': `now/${project}` }, el('div', { class: 'panel-body' },
     goal ? el('p', { class: 'eyebrow' }, goal) : null,
     el('p', { role: 'status', 'aria-live': 'polite', 'data-state': now.key }, el('strong', {}, now.title), now.text ? ` ${now.text}` : ''),
-    primaryAction(now.primary), startWork,
+    primaryAction(now.primary), startWork, also,
     view.progress ? el('p', { class: 'subtext' }, view.progress) : null,
     view.note ? el('p', { class: 'subtext' }, `${view.note.title} ${view.note.text}`) : null,
     details.workId || others.length ? disclosure(`now/${project}/details`, 'Details', el('div', { class: 'subtext' }, [

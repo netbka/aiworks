@@ -149,7 +149,7 @@ Each screen lists: its question, what is visible first, its one primary action, 
 - **First visible.** "Continue with <last project>" when there is one. Then one row per project:
   - its short name (the repository name, or the folder name for a local project);
   - its kind: "GitHub", "Local Git" or "Folder";
-  - **one** state in plain words, from [§7](#7-state-copy). A connected project where work cannot start reads "Can't start work yet", in a neutral tone, beside its sentence; it is never a green "Ready" (aiworks#11 review 5 G9). Settings › Projects shows the same word. With nothing for the owner it is the sentence the project's Now screen leads with ([§4.4](#44-now-inside-a-project)), so the two agree, also right after Pause and Resume. With more than one piece of active work it starts with the purpose of the work it is about: "Let customers save a wishlist · Possibly stuck: Wishlist page has made no progress for 25 minutes." (aiworks#11 review 4 F10, F14);
+  - **one** state in plain words, from [§7](#7-state-copy). A connected project where work cannot start reads "Can't start work yet", in a neutral tone, beside its sentence; it is never a green "Ready" (aiworks#11 review 5 G9). Settings › Projects shows the same word. With nothing for the owner it is the sentence the project's Now screen leads with ([§4.4](#44-now-inside-a-project)), so the two agree, also right after Pause and Resume. With more than one piece of active work it starts with the purpose of the work it is about: "Let customers save a wishlist · Possibly stuck: Wishlist page has made no progress for 25 minutes." (aiworks#11 review 4 F10, F14). What else Now keeps in view ([§4.4](#44-now-inside-a-project)) follows in short, whatever leads, Needs me items included: "One thing needs you. Also: 1 AI worker possibly stuck · 1 piece of work paused, with Resume on Now · 1 AI worker working." So a possibly stuck worker or a pause never hides behind the count of Needs me items (aiworks#11 review 5 G5);
   - **one** next action as a link, for example "Review pull request #465" or "See results".
   
   While a merge check runs, a project's state is partial, never final: "2 things need you so far. Checking GitHub… The state of 3 results is not known yet.", or with nothing listed for the owner the state "Checking" with the same sentence, after the Now sentence when work is active. It never reads "Running" or "Finished" alone then ([§1](#1-what-changes-for-the-owner) rule 3, [§7.4](#74-github-stale); aiworks#11 review 4 F3).
@@ -173,6 +173,7 @@ Today there is no project object. Campaigns carry their target repository (obser
 - **In details.** The full evidence sentence, what merging unlocks, the "took N tries" note, GitHub data age.
 - **Not here.** Waiting for an AI worker's usage limit to reset is not an owner task (AW-002). A pause by itself is not an owner task (observed: `src/dashboard/owner.mjs:268-271`).
 - **Not here: project setup.** A setup problem met in Add project (no project rules, no Git, a configuration file that disagrees) is said on Add project, where it happens, and a connected project that needs setup says so on Projects and its Now screen. Needs me lists work only, so its calm line speaks of work only: "No work is blocked on you right now" ([§7.1](#71-empty)). It never says "nothing is blocked" while setup may be (aiworks#11 review F8).
+- **Named, not counted: a project held up by the owner's decisions.** A connected project without GitHub, where work cannot start until two decisions are made (D2 and D4, owner question Q2; [§5.3](#53-adding-a-plain-folder-after-s11-starting-work-waits-for-d2-and-q2)), is no Needs me item: no work is blocked there, so no count includes it. But Needs me is where the owner looks for their decisions, so it is never an all-clear while such a project waits. The calm headline names it: "No work is blocked on you right now, but Recipes waits for your decisions before work can start" (with several, "but 2 projects wait…"). One row per such project follows: "Recipes · Can't start work until your decisions are made. Its Now says which, and where each is made. Open Recipes". The owner read the bare calm line as wrong while their own decision held the only project (aiworks#11 review 5 G7, review 4 F8).
 
 The items are today's "Needs you" items, unchanged in meaning (observed: built in `src/dashboard/owner.mjs:228-294`, counted in `src/dashboard/owner.mjs:297`). The "AIWorks itself" group holds the supervisor and coordinator items, which today already say they are not owner actions (observed: `src/dashboard/owner.mjs:273-275`, `src/dashboard/owner.mjs:292-293`). They stay listed because nothing else will report them. The group is shown after the project groups, except when it holds up work in several projects: then it leads, as above. At 320 px the root problem was otherwise found only after about 2,300 px of project items it made pointless (aiworks#11 review 4 F5).
 
@@ -206,10 +207,11 @@ The items are today's "Needs you" items, unchanged in meaning (observed: built i
 - **Question.** Where are we now?
 - **First visible.**
   1. The project's goal: the purpose of its active work, else its latest finished work. Purpose comes from the declaration, then a one-step work's outcome, then the tracking issue title (observed: `src/dashboard/owner.mjs:147-155`).
-  2. **One sentence** for where it stands, from [§7](#7-state-copy).
-  3. Progress in the owner's terms: "6 of 9 steps have results · 3 merged · 2 waiting for your review".
-  4. "Since you last looked", only for this project (observed today across all projects: `src/dashboard/owner.mjs:325-340`).
-- **Primary action,** by state (one at a time):
+  2. **One sentence** for where it stands, from [§7](#7-state-copy). What needs the owner leads it.
+  3. **Also in this project:** whatever the sentence leads with, every worker possibly stuck, every pause the owner can resume, with its own "Resume" button, and every worker at work, one line each, in that order. A line the sentence already says is not repeated. Work AIWorks is not checking on has its own item and is not listed here. With several pieces of active work each line starts with the work's purpose. Now answers "Where are we now?" for the whole project, not only "Is anything waiting on me?" (aiworks#11 review 5 G5, review 4 F14).
+  4. Progress in the owner's terms, for the whole project, counted as Results counts it: "6 of 9 steps have results · 3 merged · 2 waiting for your review". With more than one piece of work it says what it counts: "All work in this project: 6 of 9 steps have results · …". It never counts only the piece of work the sentence is about, so Now and Results give one number (aiworks#11 review 5 G11).
+  5. "Since you last looked", only for this project (observed today across all projects: `src/dashboard/owner.mjs:325-340`).
+- **Primary action,** by state (one at a time). The Resume of a pause listed under "Also in this project" is a secondary button on its own line:
 
   | State | Primary action | Goes to |
   | --- | --- | --- |
@@ -434,6 +436,7 @@ None of these texts say merged, deployed, released, live, done or accepted unles
 | Projects, after S11 | **No projects yet.** Add a folder on this computer. It can be a GitHub repository, a local Git repository or an ordinary folder. | Add project |
 | Now, no work | **No work yet.** Tell AIWorks what you want done in <project>. | Start work |
 | Needs me | **No work is blocked on you right now.** Keeps today's rule that calm covers only blocking items, and says "work" because Needs me checks work only: project setup is said on Add project and Projects ([§4.2](#42-needs-me)). Reports and merged work are on Results, never named here. | none |
+| Needs me, a project held up by the owner's decisions | **No work is blocked on you right now, but <Recipes> waits for your decisions before work can start.** Then one row per such project: "<Recipes> · Can't start work until your decisions are made. Its Now says which, and where each is made. Open <Recipes>" ([§4.2](#42-needs-me); aiworks#11 review 5 G7). | none (each row links to the project) |
 | Results, nothing yet | **No results yet.** Results appear here when a step finishes and passes the independent check. | none |
 | Cost, no runs | **No cost yet.** Nothing has run for this project. | none |
 
@@ -493,7 +496,7 @@ A pause is neutral. It is not counted in Needs me (observed: `src/dashboard/owne
 | Waiting for a merge (observed: `src/dashboard/supervisor.mjs:23`) | **Waiting for you to merge <"Contracts import">.** <"Search page"> starts after it is merged. | Review pull request #<N> |
 | Waiting for AIWorks to pick it up (observed: `src/dashboard/owner.mjs:212-214`) | **Approved at <12:40>; waiting for AIWorks to pick it up.** Nothing for you to do yet. | none |
 
-The possibly-stuck words lead the project's row on Projects too ([§4.1](#41-projects)), so a stuck worker never reads as normal work there (aiworks#11 review 4 F14).
+The possibly-stuck words lead the project's row on Projects too ([§4.1](#41-projects)), so a stuck worker never reads as normal work there (aiworks#11 review 4 F14). Possibly stuck is not a Needs me item, so it must not depend on leading: when Needs me items or a pause lead Now, each possibly stuck and working worker is still a line under "Also in this project" ([§4.4](#44-now-inside-a-project)), and the project's row says "Also: <2> AI workers possibly stuck · …" after its Needs me count (aiworks#11 review 5 G5).
 
 ### 7.7 Blocked
 

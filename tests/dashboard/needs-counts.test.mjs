@@ -5,9 +5,11 @@
 // server (tests/dashboard/fixtures/page.mjs) and synthetic snapshots; local git and a loopback server only.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { Store } from '../../src/supervisor/store.mjs';
+import { createProject } from '../../src/supervisor/projects.mjs';
 import { supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { ownerView, SYSTEM_GROUP } from '../../src/dashboard/owner.mjs';
 import { projectsView } from '../../src/dashboard/projects.mjs';
@@ -223,4 +225,95 @@ test('F5: an AIWorks itself item that holds up several projects leads Needs me; 
   const headings = page.document.querySelectorAll('.needs-group h3').map((heading) => visibleText(heading));
   assert.ok(headings[0].startsWith(SYSTEM_GROUP), JSON.stringify(headings));
   assert.ok(headings.length > 1 && headings.slice(1).every((heading) => !heading.startsWith(SYSTEM_GROUP)), JSON.stringify(headings));
+});
+
+// aiworks#11 review 5 G5 (and review 4 F14): a project's Now answers "Where are we now?" for the whole project. The
+// owner's items lead, but running work, possibly stuck work and a pause with its Resume stay in view, on Now and in
+// short on the project's row.
+test('G5 and F14: beside Needs me items, Now and the Projects row keep running, possibly stuck and paused work in view', async (t) => {
+  const step = (id, outcome) => ({ id, title: id, outcome, state: 'implementing', dependsOn: [] });
+  const agent = (taskId, minutesAgo) => ({ taskId, role: 'Implementer', executor: 'claude-cli', startedAt: NOW - 600 * 60_000, progress: { lastActivityAt: NOW - minutesAgo * 60_000 } });
+  const busy = campaign('shop-import', 'example/shop-app', { tasks: [step('T1', 'Import supplier contracts'), step('T2', 'Checkout form'), decision('D1', 'example/shop-app')],
+    agents: [agent('T1', 1), agent('T2', 565)] });
+  const paused = campaign('shop-search', 'example/shop-app', { control: 'paused', pausedAt: NOW - 3600_000, pausedReason: 'Paused for an update on this computer', controls: { primary: 'resume' } });
+  const supervisor = { available: true, coordinator: null, recent: null, campaigns: [busy, paused] };
+  const owner = ownerView(supervisor, undefined, { now: NOW });
+  assert.equal(owner.groups.find((group) => group.project === 'example/shop-app').count, 1, 'one Needs me item: the decision');
+  const now = nowView('example/shop-app', { supervisor, owner }, { now: NOW });
+  assert.equal(now.state.needsYou, true, 'the owner’s item still leads');
+  assert.deepEqual(now.also.map((line) => [line.kind, line.workId, line.primary]), [
+    ['possibly-stuck', 'shop-import', null],
+    ['paused', 'shop-search', { label: 'Resume', command: 'resume', campaignId: 'shop-search' }],
+    ['working', 'shop-import', null]]);
+  const [stuck, pause, working] = now.also;
+  assert.equal(stuck.text, `${owner.campaigns['shop-import'].purpose.text} · Possibly stuck: Checkout form has made no progress for 565 minutes.`);
+  assert.match(pause.text, /^.+ · Paused since .+\.$/);
+  assert.equal(working.title, 'Working on: Import supplier contracts.');
+  // The Projects row: Needs me leads, and what Now keeps in view follows in short.
+  const row = projectsView(supervisor, owner, { now: NOW }).projects.find((project) => project.id === 'example/shop-app');
+  assert.deepEqual(row.state, { key: 'needs-you',
+    text: 'One thing needs you. Also: 1 AI worker possibly stuck · 1 piece of work paused, with Resume on Now · 1 AI worker working.' });
+  // What Now leads with is not said twice: with no item, the pause leads and the workers follow.
+  const calm = { ...busy, tasks: busy.tasks.filter((task) => !task.blocked) }, lead = { available: true, coordinator: null, recent: null, campaigns: [calm, paused] };
+  const view = nowView('example/shop-app', { supervisor: lead, owner: ownerView(lead, undefined, { now: NOW }) }, { now: NOW });
+  assert.deepEqual([view.state.key, ...view.also.map((line) => line.kind)], ['paused', 'possibly-stuck', 'working']);
+  // Work AIWorks is not checking on is its own item, not a line here.
+  const away = { available: true, coordinator: null, recent: null, campaigns: [{ ...calm, ...lapsed(60) }, paused] };
+  assert.deepEqual(nowView('example/shop-app', { supervisor: away, owner: ownerView(away, undefined, { now: NOW }) }, { now: NOW }).also.map((line) => line.kind), ['paused']);
+  // On the page, shop-app's items lead its Now, and its possibly stuck worker is in view below them.
+  const page = await openPage(t);
+  await page.go(address('example/shop-app'));
+  assert.match(screen(page), /Also in this project.*Possibly stuck: .+ has made no progress for \d+ minutes\./s, screen(page));
+});
+
+// aiworks#11 review 5 G7: Needs me never gives an all-clear while an owner decision holds a project. A project without
+// GitHub waits for two decisions (D2, D4) before work can start: no work is blocked, so it is no counted item, but the
+// calm headline names it and a row links to its Now.
+test('G7: with one project waiting for the owner’s decisions and no work, Needs me names that project', async (t) => {
+  const empty = { available: true, coordinator: null, recent: null, campaigns: [] };
+  const local = { id: 'recipes-local', name: 'Recipes', source_kind: 'local-git', status: 'ready', capabilities: { startWork: { allowed: false, reason: 'LOCAL_START_OFF' } } };
+  assert.equal(ownerView(empty, undefined, { now: NOW }).headline, 'No work is blocked on you right now');
+  const owner = ownerView(empty, undefined, { now: NOW, connected: [local] });
+  assert.equal(owner.count, 0, 'no work is blocked, so nothing is counted');
+  assert.equal(owner.headline, 'No work is blocked on you right now, but Recipes waits for your decisions before work can start');
+  assert.deepEqual(owner.held, [{ id: 'recipes-local', name: 'Recipes', text: 'Can’t start work until your decisions are made. Its Now says which, and where each is made.' }]);
+  assert.equal(ownerView(empty, undefined, { now: NOW, connected: [local, { ...local, id: 'notes', name: 'Notes', source_kind: 'folder' }] }).headline,
+    'No work is blocked on you right now, but 2 projects wait for your decisions before work can start');
+  // Setup problems are said on Projects and Now (§4.2), and a project where work can start waits for nothing.
+  const other = ownerView(empty, undefined, { now: NOW, connected: [{ ...local, status: 'needs-setup' },
+    { ...local, id: 'shop', source_kind: 'github', capabilities: { startWork: { allowed: true } } }] });
+  assert.deepEqual([other.headline, other.held], ['No work is blocked on you right now', []]);
+  // Through the dashboard server and on the page: a connected Local Git project and no work.
+  const page = await openPage(t, { store: 'empty' });
+  const config = JSON.parse(readFileSync(join(page.dataDir, 'config.json'), 'utf8'));
+  writeFileSync(join(page.dataDir, 'config.json'), JSON.stringify({ ...config, projectConnection: { enabled: true } }));
+  const store = new Store(join(page.dataDir, 'supervisor.db'));
+  try {
+    createProject(store, { id: 'recipes-local', tenant_id: 'local', name: 'Recipes', source_kind: 'local-git', root_path: join(page.dataDir, 'Recipes'), local_branch: 'main',
+      status: 'ready', capabilities: { plan: { allowed: true }, startWork: { allowed: false, reason: 'LOCAL_START_OFF' }, publish: { allowed: false, reason: 'NO_GITHUB' } } }, NOW);
+  } finally { store.close(); }
+  await page.refresh();
+  await page.go('#/needs');
+  const text = screen(page);
+  assert.match(text, /No work is blocked on you right now, but Recipes waits for your decisions before work can start/, text);
+  assert.match(text, /Recipes · Can’t start work until your decisions are made\. Its Now says which, and where each is made\. Open Recipes/, text);
+  assert.doesNotMatch(text, /No work is blocked on you right now(?!, but)/, 'never the bare all-clear');
+});
+
+// aiworks#11 review 5 G11: Now's progress counts the whole project, as Results does, and says so with several pieces of
+// work, so the two screens never give two numbers for one question.
+test('G11: Now’s progress counts what Results counts, and names it with several pieces of work', async (t) => {
+  const data = await review(t);
+  for (const project of PROJECTS) {
+    const view = nowView(project, { ...data, host: { name: 'review-pc' } }, { now: data.now });
+    const groups = data.owner.results[project.toLowerCase()]?.groups ?? [];
+    const count = (key) => groups.find((group) => group.key === key)?.count ?? 0;
+    const several = data.supervisor.campaigns.filter((c) => c.repository === project).length > 1;
+    assert.equal(view.progress.startsWith('All work in this project: '), several, `${project}: ${view.progress}`);
+    const awaiting = Number(/(\d+) waiting for your review/.exec(view.progress)?.[1] ?? 0);
+    const merged = Number(/(\d+) merged/.exec(view.progress)?.[1] ?? 0);
+    assert.deepEqual([awaiting, merged], [count('review'), count('merged')], `${project}: Now “${view.progress}” and Results agree`);
+    const results = /(\d+) of \d+ steps? ha(?:s|ve) results/.exec(view.progress)?.[1];
+    assert.equal(Number(results), data.owner.results[project.toLowerCase()]?.total ?? 0, `${project}: steps with results, as Results counts them`);
+  }
 });
