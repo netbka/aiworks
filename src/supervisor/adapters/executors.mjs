@@ -22,23 +22,29 @@ export const BROWSER_KINDS = ['agy-cli', 'claude-cli'];
 // summary line until its two-hour bound; the helper's wait reports a gate process that ended without one at once.
 const GATE_HELPER = `node "${fileURLToPath(new URL('../gate.mjs', import.meta.url)).replaceAll('\\', '/')}"`;
 export const FULL_GATE_RULE = `The repository's full gate (npm run check) can take 20 to 30 minutes on this PC while other work runs, longer than one foreground command may wait. Run it only through the gate helper, from this run's working directory: ${GATE_HELPER} start starts it as a separate process, then ${GATE_HELPER} wait, run in the foreground, returns when it ends or after 25 minutes (--minutes sets fewer); while it prints running, run wait again. wait checks every 10 seconds that the gate process still runs and prints died when it ended without an exit code: then start it once more and name both runs in the report. Never wait on a log line or a file yourself. When wait prints finished, copy the final summary block it shows verbatim (with scripts/run-tests.mjs, the block after "# all test files"). Every file the gate writes ends in .log, which git ignores: gate.log for the output, gate-exit.log for the exit code, gate-pid.log for the process, gate-previous.log for the run before, never committed. A verifier's checkout must stay clean: any other new or changed file in it makes the verification result invalid. Never shorten the suite, skip files or weaken a test to make it finish.`;
+// Commit-task implementers only: one full gate per head, the verifier's. On 16-17 Oct every implement run and every
+// verify run ran the full gate (95 runs in 40 hours, 18.5 minutes each on average, up to five at once on one PC), and
+// the controller trusts only the verifier's run (#43). The implementer runs the tests its change can reach instead.
+export const IMPLEMENTER_TEST_RULE = `Do not run the full gate (npm run check) yourself: the independent verifier runs it on your exact head, and a second full run here only slows every other worker on this PC. Where the packet or a finding asks you to run the full gate, run these tests instead. Run the tests your change can reach: where package.json has a test:affected script, ${GATE_HELPER} start npm run test:affected starts them as a separate process from this run's working directory (add -- origin/<base branch> when the base is not main), then ${GATE_HELPER} wait, in the foreground, returns when they end or after 25 minutes; while it prints running, run wait again, and when it prints died, start once more. Where there is no such script, run the test files that cover the code you changed. Fix every failure before you return, name the command in the report and copy the summary block it printed verbatim. Every file the helper writes ends in .log, which git ignores, and is never committed. Never skip or weaken a test to make it pass.`;
 // Gate evidence rules for commit and report tasks (#43): a tally is copied from the output, never retyped. A browser
 // review runs no gate, so web prompts do not carry them. The rule that CI runs on Linux (#42) is gone: GitHub Actions are
-// off (owner decision 2026-10-13), so nothing runs the gate on Linux and workers no longer guard tests for it.
+// off (owner decision 2026-10-13), so nothing runs the gate on Linux and workers no longer guard tests for it. Of the
+// last two rules a commit prompt carries one: the verifier's full gate, or the implementer's tests.
 export const GATE_RULES = [
   'Copy test summary lines verbatim from the command output (for node:test: # tests, # pass, # fail, # skipped); never retype or recall a tally.',
   FULL_GATE_RULE,
+  IMPLEMENTER_TEST_RULE,
 ];
 // Verifiers only (#59): verifiers returned accepted with a check marked fail (an expected mutation failure, an unrelated
 // flaky timeout that passed on a re-run), and the controller refused each result and ran the whole verification again.
 export const VERIFIER_CHECK_RULE = 'A check that behaves as intended is reported as pass, including a mutation or base comparison whose expected failure was observed, and a full-suite run whose only failure is an unrelated timing test that passes on a re-run (name the test, the run and the re-run summary in its detail). Report fail only for an outcome that shows a defect in the change. Never return accepted with a check marked fail.';
 // The check rule shares the tally rule's line, so the verifier rules stay one line after the gate rules.
-export const VERIFIER_TALLY_RULE = `A test tally or other count in the report that does not match your own re-run of the same gate at the same head is a blocking finding: a wrong number is a false claim. ${VERIFIER_CHECK_RULE}`;
+export const VERIFIER_TALLY_RULE = `A test tally or other count in the report for a command you also ran at the same head that does not match your own run is a blocking finding: a wrong number is a false claim. The implementer runs only the tests its change can reach; your full gate decides. ${VERIFIER_CHECK_RULE}`;
 // The rules follow the role header, before the packet, so every existing prompt line stays as it was.
 function withGateRules(prompt, role, deliverable) {
   const at = prompt.indexOf('\n\nTask packet (sha256 ');
-  const rules = [...GATE_RULES.filter((rule) => rule !== FULL_GATE_RULE || deliverable === 'commit'),
-    ...(role === 'verification' ? [VERIFIER_TALLY_RULE] : [])];
+  const tests = deliverable !== 'commit' ? [] : [role === 'verification' ? FULL_GATE_RULE : IMPLEMENTER_TEST_RULE];
+  const rules = [GATE_RULES[0], ...tests, ...(role === 'verification' ? [VERIFIER_TALLY_RULE] : [])];
   return `${prompt.slice(0, at)}\n${rules.join('\n')}${prompt.slice(at)}`;
 }
 // Reading cost for commit and report tasks (#14): over 96 worker sessions measured on 2026-10-16, verifiers' whole-file
