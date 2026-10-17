@@ -1,9 +1,11 @@
 import { createServer } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
-import { supervisorSnapshot, applyCommand, postMessage } from './supervisor.mjs';
+import { supervisorSnapshot, applyCommand, postMessage, configuredAccounts, addDashboardAccount, removeDashboardAccount, exportDashboardAccounts, importDashboardAccounts } from './supervisor.mjs';
+import { Store } from '../supervisor/store.mjs';
 import { ownerView } from './owner.mjs';
 import { configuredMergeDelegation } from './merges.mjs';
 import { checkConnectedProject, configuredRepositories, connectedProjects, connectProject, disconnectConnectedProject, listConnectedProjects,
@@ -84,6 +86,17 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
         }
         // The connected projects with each one's own folder, the one path a response may carry (404 while Add project is off).
         if (path === '/api/projects') return send(200, listConnectedProjects(dataDir));
+        if (path === '/api/accounts') {
+          let store;
+          try {
+            store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true });
+            let config = {};
+            try { config = JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { /* ignore */ }
+            return send(200, { accounts: configuredAccounts(store, config, { dataDir }) });
+          } finally {
+            store?.close();
+          }
+        }
         return send(404, { error: 'Not found.' });
       }
       if (req.method !== 'POST') return send(405, { error: 'Method not allowed.' });
@@ -93,9 +106,10 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       }
       if (req.headers['content-type'] !== 'application/json') return send(415, { error: 'Commands require JSON.' });
       const chunks = []; let size = 0;
+      const maxSize = path === '/api/accounts/import' ? 1_048_576 : 16_384;
       for await (const chunk of req) {
         size += chunk.length;
-        if (size > 16_384) return send(413, { error: 'Command is too large.' });
+        if (size > maxSize) return send(413, { error: 'Command is too large.' });
         chunks.push(chunk);
       }
       let value;
@@ -106,6 +120,10 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       // Plan and do (UI14): store a work request; Approve and start: register exactly the reviewed plan (work.mjs).
       if (path === '/api/work/requests') return send(202, requestPlanAndDo(dataDir, value));
       if (path === '/api/work/approve') return send(200, approvePlan(dataDir, value, Date.now(), { provenanceRoot, ...work }));
+      if (path === '/api/accounts/add') return send(200, addDashboardAccount(dataDir, value));
+      if (path === '/api/accounts/remove') return send(200, removeDashboardAccount(dataDir, value));
+      if (path === '/api/accounts/export') return send(200, exportDashboardAccounts(dataDir, value));
+      if (path === '/api/accounts/import') return send(200, importDashboardAccounts(dataDir, value));
       // Add project (UI13): each answers 404 while it is off, as before it existed.
       if (path === '/api/projects/preflight') return send(200, previewProject(dataDir, value, projectConnection));
       if (path === '/api/projects/connect') return send(200, connectProject(dataDir, value, projectConnection));

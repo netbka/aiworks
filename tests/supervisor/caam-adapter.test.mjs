@@ -1,11 +1,11 @@
 // CAAM read-only discovery (docs/design/ACCOUNT_ADAPTER_CAAM.md section 3.2): provider mapping, robot status parsing,
 // health flags and every failure path, against a synthetic caam script. No real CAAM, model, network or GitHub access.
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { CaamError, caamProfileHealth, caamProvider, caamRobotStatus, parseRobotStatus } from '../../src/supervisor/adapters/caam.mjs';
+import { CaamError, caamProfileHealth, caamProvider, caamRobotStatus, exportProfileCredentials, importProfileCredentials, parseRobotStatus, removeShallowProfile } from '../../src/supervisor/adapters/caam.mjs';
 
 const NOW = Date.parse('2026-10-13T12:00:00Z');
 const at = (offsetMs) => new Date(NOW + offsetMs).toISOString();
@@ -177,3 +177,77 @@ test('malformed robot documents and profiles fail closed', () => {
   rejects(read(status([profile('a'), profile('a')])), 'invalid-output', /lists profile a twice/);
   assert.deepEqual(parseRobotStatus(JSON.stringify(status([])), 'claude', NOW), [], 'no profiles is an empty list, not an error');
 });
+
+test('removeShallowProfile cleans up shallow profile directory and informs CAAM', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'aiworks-caam-remove-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const home = join(root, 'work-test');
+  mkdirSync(join(home, '.claude'), { recursive: true });
+  writeFileSync(join(home, '.claude', '.credentials.json'), '{"login":"test"}');
+
+  assert.equal(existsSync(home), true);
+  const result = removeShallowProfile({ kind: 'claude-cli', name: 'work-test', root });
+  assert.equal(result.removed, true);
+  assert.equal(existsSync(home), false, 'shallow profile home was deleted');
+
+  // Deleting already missing profile returns removed: false without error
+  const again = removeShallowProfile({ kind: 'claude-cli', name: 'work-test', root });
+  assert.equal(again.removed, false);
+});
+
+test('exportProfileCredentials and importProfileCredentials roundtrip encrypted credentials', (t) => {
+  const rootA = mkdtempSync(join(tmpdir(), 'aiworks-caam-export-'));
+  const rootB = mkdtempSync(join(tmpdir(), 'aiworks-caam-import-'));
+  t.after(() => {
+    rmSync(rootA, { recursive: true, force: true });
+    rmSync(rootB, { recursive: true, force: true });
+  });
+
+  // Prepare profile 1 (claude)
+  const home1 = join(rootA, 'acc-claude');
+  mkdirSync(join(home1, '.claude'), { recursive: true });
+  writeFileSync(join(home1, '.claude', '.credentials.json'), '{"token":"secret-claude-token"}');
+  writeFileSync(join(home1, '.claude.json'), '{"settings":{"theme":"dark"}}');
+
+  // Prepare profile 2 (codex)
+  const home2 = join(rootA, 'acc-codex');
+  mkdirSync(join(home2, '.codex'), { recursive: true });
+  writeFileSync(join(home2, '.codex', 'auth.json'), '{"api_key":"secret-codex-key"}');
+
+  // Short passphrase throws
+  rejects(() => exportProfileCredentials({ root: rootA, profiles: [{ provider: 'claude', name: 'acc-claude' }], passphrase: 'short' }),
+    'invalid-passphrase', /at least 8 characters/);
+
+  // Export encrypted bundle
+  const passphrase = 'SuperSecretPassphrase123!';
+  const bundle = exportProfileCredentials({
+    root: rootA,
+    profiles: [
+      { provider: 'claude', name: 'acc-claude' },
+      { provider: 'codex', name: 'acc-codex' },
+    ],
+    passphrase,
+  });
+
+  assert.ok(Buffer.isBuffer(bundle));
+  assert.ok(!bundle.includes(Buffer.from('secret-claude-token')), 'ciphertext does not contain plain secrets');
+
+  // Import with wrong passphrase fails
+  rejects(() => importProfileCredentials({ root: rootB, bundleBuffer: bundle, passphrase: 'WrongPassword456!' }),
+    'auth-failed', /incorrect passphrase/);
+
+  // Import into rootB with correct passphrase
+  const imported = importProfileCredentials({ root: rootB, bundleBuffer: bundle, passphrase });
+  assert.equal(imported.success, true);
+  assert.equal(imported.count, 2);
+
+  // Verify unpacked credential files match exact content
+  const restored1 = join(rootB, 'acc-claude', '.claude', '.credentials.json');
+  assert.equal(existsSync(restored1), true);
+  assert.equal(readFileSync(restored1, 'utf8'), '{"token":"secret-claude-token"}');
+
+  const restored2 = join(rootB, 'acc-codex', '.codex', 'auth.json');
+  assert.equal(existsSync(restored2), true);
+  assert.equal(readFileSync(restored2, 'utf8'), '{"api_key":"secret-codex-key"}');
+});
+

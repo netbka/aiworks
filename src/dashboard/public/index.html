@@ -56,5 +56,34 @@
     <p id="message-help">You get a receipt at each step: <strong>Received</strong> when the supervisor stores it, <strong>Read</strong> when the coordinator agent starts with it, and <strong>Answered</strong> with a link to its reply. This page shows a notice and a desktop notification for each step while it is open. The coordinator is read-only: it reviews and plans, and never starts work by itself. No secrets; up to 4,000 characters.</p>
     <div class="dialog-actions"><button id="close-message" class="button secondary" type="button">Keep draft</button><button id="send-message" class="button" type="submit">Send message</button></div>
   </form></dialog>
+  <dialog id="account-dialog" aria-labelledby="account-title"><form id="account-form" novalidate>
+    <h2 id="account-title">Add account</h2>
+    <p>Add a login for Claude Code or Codex. Credentials are saved only on this computer in isolated profile folders.</p>
+    <label>AI worker<select id="account-provider" required><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label>
+    <label>Account name<input id="account-name" type="text" required pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,63}" placeholder="e.g. work-account or personal" /></label>
+    <label id="account-token-label">Session token or API key (optional)<input id="account-token" type="password" placeholder="Leave empty to log in via CLI" /></label>
+    <div class="dialog-actions"><button id="close-account" class="button secondary" type="button">Cancel</button><button id="save-account" class="button" type="submit">Save account</button></div>
+  </form></dialog>
+  <dialog id="export-accounts-dialog" aria-labelledby="export-accounts-title"><form id="export-accounts-form" novalidate>
+    <h2 id="export-accounts-title">Export accounts</h2>
+    <p>Encrypt all worker logins on this computer into a protected bundle to share with your other computers.</p>
+    <label>Encryption passphrase<input id="export-passphrase" type="password" required minlength="8" placeholder="Passphrase (at least 8 characters)" /></label>
+    <div class="dialog-actions"><button id="close-export-accounts" class="button secondary" type="button">Cancel</button><button id="confirm-export-accounts" class="button" type="submit">Download bundle</button></div>
+  </form></dialog>
+  <dialog id="import-accounts-dialog" aria-labelledby="import-accounts-title"><form id="import-accounts-form" novalidate>
+    <h2 id="import-accounts-title">Import accounts</h2>
+    <p>Import and decrypt an accounts bundle from another computer.</p>
+    <label>Accounts bundle file<input id="import-accounts-file" type="file" accept=".aiworks-accounts,.bin,.txt" /></label>
+    <label>Or paste bundle text<textarea id="import-accounts-text" rows="3" placeholder="Base64 accounts bundle"></textarea></label>
+    <label>Decryption passphrase<input id="import-passphrase" type="password" required minlength="8" placeholder="Passphrase used when exporting" /></label>
+    <div class="dialog-actions"><button id="close-import-accounts" class="button secondary" type="button">Cancel</button><button id="confirm-import-accounts" class="button" type="submit">Import accounts</button></div>
+  </form></dialog>
+  <dialog id="remove-account-dialog" aria-labelledby="remove-account-title"><form id="remove-account-form" novalidate>
+    <div class="dialog-icon" aria-hidden="true">!</div>
+    <h2 id="remove-account-title">Remove account</h2>
+    <p id="remove-account-description">Remove this account login from this computer?</p>
+    <p class="subtext">Saved credentials for this account will be removed from this computer. Any active wait timers will be cleared.</p>
+    <div class="dialog-actions"><button id="close-remove-account" class="button secondary" type="button">Keep account</button><button id="confirm-remove-account" class="button danger" type="button">Remove account</button></div>
+  </form></dialog>
 </body>
 </html>

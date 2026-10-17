@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
@@ -13,6 +13,8 @@ import { coordinatorView, LANE as COORDINATOR_LANE, postOwnerMessage } from '../
 import { CODE_ROOT, revisionNotMerged } from '../supervisor/provenance.mjs';
 import { COMMANDS, stateCopy, stopReasonWords } from './copy.mjs';
 import { configuredRepositories, connectedProjects, projectConnectionEnabled } from './projects.mjs';
+import { accountUsageSummary, removeAccount } from '../supervisor/accounts.mjs';
+import { exportProfileCredentials, importProfileCredentials, removeShallowProfile } from '../supervisor/adapters/caam.mjs';
 
 const readConfig = (dataDir) => {
   try { return JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { return {}; }
@@ -320,14 +322,173 @@ export function releaseModes(repositories, { waitsFor = null, connected = [] } =
 }
 const RELEASE_LOCAL = "Release does not apply yet to a project without GitHub: AIWorks can't start work here yet, so there is nothing to release.";
 
-/** Settings (slice S8): configured command names, the AI workers once for this computer, and release mode per project. */
-export function computerSettings(campaigns, config, { platform = process.platform, now = Date.now(), repositories = [], connected = [] } = {}) {
+export const shallowHomesRoot = (config, dataDir) => config?.caam?.shallowHomes ?? (dataDir ? join(dataDir, 'profiles') : join(homedir(), '.caam', 'shallow-homes'));
+
+/** Configured AI worker accounts from active operations, provider waits, and local shallow profiles. */
+export function configuredAccounts(store, config, { now = Date.now(), dataDir = null } = {}) {
+  if (!store) return [];
+  const seen = new Set();
+  const accounts = [];
+  try {
+    const opAccounts = store.all('SELECT DISTINCT account_identity, executor_kind FROM operations WHERE account_identity IS NOT NULL');
+    for (const { account_identity: id, executor_kind: kind } of opAccounts) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const [provider, name] = id.includes('/') ? id.split('/', 2) : [kind.replace('-cli', ''), id];
+      const usage = accountUsageSummary(store, config, { kind, account: id, now });
+      accounts.push({ id, provider, kind, name, usage });
+    }
+  } catch { /* operations table may not have account_identity in review fixture */ }
+
+  try {
+    const waitAccounts = store.all('SELECT DISTINCT account, executor_kind FROM provider_waits WHERE account IS NOT NULL');
+    for (const { account: id, executor_kind: kind } of waitAccounts) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const [provider, name] = id.includes('/') ? id.split('/', 2) : [kind.replace('-cli', ''), id];
+      const usage = accountUsageSummary(store, config, { kind, account: id, now });
+      accounts.push({ id, provider, kind, name, usage });
+    }
+  } catch { /* table may be empty or missing */ }
+
+  if (dataDir) {
+    const root = shallowHomesRoot(config, dataDir);
+    if (existsSync(root)) {
+      try {
+        for (const dirent of readdirSync(root, { withFileTypes: true })) {
+          if (dirent.isDirectory()) {
+            const name = dirent.name;
+            const hasClaude = existsSync(join(root, name, '.claude'));
+            const hasCodex = existsSync(join(root, name, '.codex'));
+            const provider = hasClaude ? 'claude' : hasCodex ? 'codex' : 'claude';
+            const kind = `${provider}-cli`;
+            const id = `${provider}/${name}`;
+            if (!seen.has(id)) {
+              seen.add(id);
+              const usage = accountUsageSummary(store, config, { kind, account: id, now });
+              accounts.push({ id, provider, kind, name, usage });
+            }
+          }
+        }
+      } catch { /* ignore directory read errors */ }
+    }
+  }
+
+  return accounts.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/** Settings (slice S8): configured command names, the AI workers once for this computer, accounts, and release mode per project. */
+export function computerSettings(campaigns, config, { platform = process.platform, now = Date.now(), repositories = [], connected = [], accounts = [] } = {}) {
   return { commands: configuredCommandNames(config), workers: aiWorkers(campaigns, config, { platform, now }),
+    accounts,
     releases: releaseModes([...repositories, ...campaigns.map((c) => c.repository)], { waitsFor: issueLink(config?.autoReleaseDecision), connected }),
     // Where supervisor faults are tracked: config.json "supervisorIssue" (a GitHub issue link) when set, so a disposable
     // review copy can name a made-up one; otherwise null, and the owner view links AIWorks' own (owner.mjs SUPERVISOR_ISSUE).
     supervisorIssue: issueLink(config?.supervisorIssue) };
 }
+
+export function addDashboardAccount(dataDir, { provider, name, token, apiKey } = {}) {
+  if (!provider || !name) {
+    const err = new Error('Provider and name are required.');
+    err.status = 400;
+    throw err;
+  }
+  if (!['claude', 'codex'].includes(provider)) {
+    const err = new Error('Provider must be claude or codex.');
+    err.status = 400;
+    throw err;
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
+    const err = new Error('Account name must contain only letters, numbers, dots, dashes and underscores.');
+    err.status = 400;
+    throw err;
+  }
+  const config = readConfig(dataDir);
+  const root = shallowHomesRoot(config, dataDir);
+  const home = join(root, name);
+  if (provider === 'claude') {
+    const claudeDir = join(home, '.claude');
+    mkdirSync(claudeDir, { recursive: true });
+    if (token) {
+      writeFileSync(join(claudeDir, '.credentials.json'), JSON.stringify({ token }), { encoding: 'utf8', mode: 0o600 });
+    }
+  } else if (provider === 'codex') {
+    const codexDir = join(home, '.codex');
+    mkdirSync(codexDir, { recursive: true });
+    if (apiKey) {
+      writeFileSync(join(codexDir, 'auth.json'), JSON.stringify({ api_key: apiKey }), { encoding: 'utf8', mode: 0o600 });
+    }
+  }
+  return { success: true, account: `${provider}/${name}`, home };
+}
+
+export function removeDashboardAccount(dataDir, { provider, name } = {}, now = Date.now()) {
+  if (!provider || !name) {
+    const err = new Error('Provider and name are required.');
+    err.status = 400;
+    throw err;
+  }
+  const kind = `${provider}-cli`;
+  const account = `${provider}/${name}`;
+  const config = readConfig(dataDir);
+  const root = shallowHomesRoot(config, dataDir);
+  const store = new Store(join(dataDir, 'supervisor.db'));
+  try {
+    const res = removeAccount(store, config, { kind, account });
+    const profileRes = removeShallowProfile({ kind, name, root });
+    return { success: true, account, removed: res.removed, pathRemoved: profileRes.removed };
+  } finally {
+    store.close();
+  }
+}
+
+export function exportDashboardAccounts(dataDir, { passphrase } = {}) {
+  if (!passphrase || typeof passphrase !== 'string') {
+    const err = new Error('Passphrase is required to encrypt the export bundle.');
+    err.status = 400;
+    throw err;
+  }
+  const config = readConfig(dataDir);
+  const root = shallowHomesRoot(config, dataDir);
+  const store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true });
+  try {
+    const profiles = [];
+    const accounts = configuredAccounts(store, config, { dataDir });
+    for (const a of accounts) {
+      profiles.push({ provider: a.provider, name: a.name });
+    }
+    const bundleBuffer = exportProfileCredentials({ root, profiles, passphrase });
+    return { success: true, bundleBase64: bundleBuffer.toString('base64'), count: profiles.length };
+  } finally {
+    store.close();
+  }
+}
+
+export function importDashboardAccounts(dataDir, { bundleBase64, passphrase } = {}) {
+  if (!bundleBase64 || !passphrase) {
+    const err = new Error('Export bundle and passphrase are required.');
+    err.status = 400;
+    throw err;
+  }
+  const config = readConfig(dataDir);
+  const root = shallowHomesRoot(config, dataDir);
+  let buffer;
+  try {
+    buffer = Buffer.from(bundleBase64, 'base64');
+  } catch {
+    const err = new Error('Invalid export bundle format.');
+    err.status = 400;
+    throw err;
+  }
+  try {
+    return importProfileCredentials({ root, bundleBuffer: buffer, passphrase });
+  } catch (e) {
+    const err = new Error(e.message || 'Failed to import accounts.');
+    err.status = 400;
+    throw err;
+  }
+}
+
 
 /** `value` when it is a GitHub issue link, else null. */
 function issueLink(value) {
@@ -601,7 +762,8 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
           return run ? workerProgress(dataDir, { executor_kind: 'claude-cli', workspace: run.workspace, session_id: run.session_id, run_dir: run.run_dir }) : null;
         })() : null })) };
     const settings = computerSettings(campaigns, readConfig(dataDir), { now, repositories: configuredRepositories(dataDir),
-      connected: projectConnectionEnabled(dataDir) ? connectedProjects(dataDir) : [] });
+      connected: projectConnectionEnabled(dataDir) ? connectedProjects(dataDir) : [],
+      accounts: configuredAccounts(store, readConfig(dataDir), { now, dataDir }) });
     return { available: true, observedAt: new Date(now).toISOString(), controller, campaigns, costs: projectCosts(campaigns), activity, coordinator, recent, settings };
   } catch { return { available: false, message: "AIWorks can't read its work records right now. What you see may be out of date. Buttons are off until it can read them again.", campaigns: [], costs: [], activity: [] }; }
   finally { store?.close(); }

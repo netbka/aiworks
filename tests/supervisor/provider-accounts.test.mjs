@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { Store } from '../../src/supervisor/store.mjs';
 import { campaignRecheck, campaignStart, campaignStatus } from '../../src/supervisor/api.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
-import { PROFILE_RECHECK_MS, accountAfterRun, accountFull, accountLimit, accountOf, accountWait, laterWait, openOnAccount, selectProfile } from '../../src/supervisor/accounts.mjs';
+import { PROFILE_RECHECK_MS, accountAfterRun, accountFull, accountLimit, accountOf, accountUsageSummary, accountWait, laterWait, openOnAccount, removeAccount, selectProfile } from '../../src/supervisor/accounts.mjs';
 import { WAIT_REASONS, admissionCheck, classifyRun } from '../../src/supervisor/scheduler.mjs';
 import { declaration, environment } from './helpers.mjs';
 
@@ -616,3 +616,54 @@ test('after a restart an open run keeps its durable profile, without a second op
   await next.controller.tick();
   assert.deepEqual(r.opened('crash-1').map((op) => op.account_identity), ['claude/work-a', 'claude/work-b'], 'one retry, on B');
 });
+
+test('removeAccount clears wait and capacity for the specified profile', (t) => {
+  const clock = Date.now();
+  const r = rig(t, CAAM, { now: () => clock, profiles: inventory(() => [profile('work-a')]) });
+  // Set up wait and capacity
+  profileWait(r, 'claude/work-a', clock + HOUR, 'quota: usage limit', clock);
+  r.store.run("INSERT INTO capacity (scope, id, value, reason, updated_at) VALUES ('account', 'claude/work-a', 2, 'test', ?)", clock);
+
+  assert.equal(waitRows(r).length, 1);
+  assert.equal(limits(r).length, 1);
+
+  const res = removeAccount(r.store, r.env.config, { kind: 'claude-cli', account: 'claude/work-a' });
+  assert.equal(res.removed, true);
+  assert.equal(res.waitCleared, true);
+  assert.equal(res.capCleared, true);
+
+  assert.deepEqual(waitRows(r), [], 'wait was deleted');
+  assert.deepEqual(limits(r), [], 'capacity limit was deleted');
+});
+
+test('accountUsageSummary aggregates open, limits, wait cooldowns and historical outcomes', (t) => {
+  const clock = Date.now();
+  const r = rig(t, CAAM, { now: () => clock, profiles: inventory(() => [profile('work-a')]) });
+  // Record some operations for claude/work-a
+  r.store.run(`INSERT INTO operations (id, campaign_id, task_id, kind, seq, idempotency_key, lease_generation, state, session_id,
+    run_dir, workspace, packet, packet_digest, outcome, created_at, updated_at, executor_kind, account_identity)
+    VALUES ('op-1', 'camp-1', 'T1', 'implement', 1, 'op-1', 1, 'settled', 's1', 'r1', 'w1', '{}', 'h1', '{"class":"result"}', ?, ?, 'claude-cli', 'claude/work-a'),
+           ('op-2', 'camp-1', 'T2', 'implement', 2, 'op-2', 1, 'settled', 's2', 'r2', 'w2', '{}', 'h2', '{"class":"quota"}', ?, ?, 'claude-cli', 'claude/work-a'),
+           ('op-3', 'camp-1', 'T3', 'implement', 3, 'op-3', 1, 'dispatched', 's3', 'r3', 'w3', '{}', 'h3', null, ?, ?, 'claude-cli', 'claude/work-a')`,
+    clock - 2000, clock - 1000,
+    clock - 1000, clock - 500,
+    clock - 200, clock - 100);
+
+  // Set cooldown wait
+  profileWait(r, 'claude/work-a', clock + 30_000, 'quota: usage limit', clock);
+  r.store.run("INSERT INTO capacity (scope, id, value, reason, updated_at) VALUES ('account', 'claude/work-a', 3, 'test', ?)", clock);
+
+  const summary = accountUsageSummary(r.store, r.env.config, { kind: 'claude-cli', account: 'claude/work-a', now: clock });
+  assert.equal(summary.account, 'claude/work-a');
+  assert.equal(summary.executorKind, 'claude-cli');
+  assert.equal(summary.open, 1, 'one dispatched operation is open');
+  assert.equal(summary.limit, 3, 'learned capacity is 3');
+  assert.equal(summary.coolingDown, true);
+  assert.equal(summary.resetInMs, 30_000);
+  assert.equal(summary.retryAt, clock + 30_000);
+  assert.equal(summary.totalOperations, 3);
+  assert.deepEqual(summary.outcomes, { result: 1, quota: 1, open: 1 });
+  assert.equal(summary.totalDurationMs, 1000 + 500 + 100);
+  assert.equal(summary.lastUsedAt, clock - 200);
+});
+
