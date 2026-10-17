@@ -142,11 +142,14 @@ const RUNNER = "the test runner's tier pattern names the synthetic gh fixture";
 const SAYS_NO = 'a comment that says this code calls no GitHub';
 const LOCAL = 'a comment that says a project without GitHub pushes nothing and calls no gh';
 const TALLY = "a tally of workers' transcripts that sorts their recorded gh commands (added on main at 596dbda)";
+const APPROVE = "a comment on Approve and start, whose freshness check reuses G22's git read and runs no gh (added by UI14)";
 
 /** Section 3.2: lines the call forms reach that make no call. [file, line at e0ff151, start of the trimmed line, why]. */
 const NOT_CALLS = [
   ['src/dashboard/roadmap.mjs', 11, "return containsCredentialMaterial(text) || /(?:g", TOKEN],
+  ['src/dashboard/server.mjs', 39, "// state. `work` is for tests only (governanceRoot", APPROVE],
   ['src/dashboard/supervisor.mjs', 258, "const COMMAND_NAMES = ['claude', 'codex', 'curso", PROBE],
+  ['src/dashboard/work.mjs', 198, "// fresh. The dashboard runs git only, never gh:", APPROVE],
   ['src/shared/credential-metadata.mjs', 12, "/(?:^|[^A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{30,}", TOKEN],
   ['src/supervisor/adapters/claude.mjs', 76, "export const ALWAYS_DENIED = ['Bash(git push:*)'", DENY],
   ['src/supervisor/adapters/claude.mjs', 77, "'Bash(gh issue comment:*)', 'Bash(gh issue close", DENY],
@@ -172,11 +175,12 @@ const NOT_CALLS = [
  * Lines the scan reaches that section 3 does not cite (findings for the design, which this slice does not edit):
  * project-connect.mjs:171 runs the G23 read through `ghRun`; controller.mjs:2353 is a comment that makes no call;
  * worker-reading-cost.mjs:31 and :37 (added on main after the design) sort transcript commands and make no call;
- * local-admission.mjs:13 (added on main after the design) is a comment saying the module never calls gh.
+ * local-admission.mjs:13 (added on main after the design) is a comment saying the module never calls gh;
+ * dashboard server.mjs:39 and work.mjs:198 (added by UI14) are comments: Approve and start reuses G22 and runs no gh.
  */
 const NOT_IN_DESIGN = ['src/supervisor/project-connect.mjs:171', 'src/supervisor/controller.mjs:2353',
   'scripts/supervisor/worker-reading-cost.mjs:31', 'scripts/supervisor/worker-reading-cost.mjs:37',
-  'src/supervisor/local-admission.mjs:13'];
+  'src/supervisor/local-admission.mjs:13', 'src/dashboard/server.mjs:39', 'src/dashboard/work.mjs:198'];
 
 /** The rules one line matches. */
 const rulesOf = (text) => RULES.filter(([, pattern]) => pattern.test(text)).map(([rule]) => rule);
