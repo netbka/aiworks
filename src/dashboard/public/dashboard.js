@@ -135,6 +135,7 @@ const projectName = (project) => state?.projects?.projects?.find((item) => !item
 const screenText = { projects: ['Projects', 'Which project should I open?'], needs: ['Needs me', 'What is waiting for me, across projects?'],
   settings: ['Settings', 'What can AIWorks use on this computer?'], accounts: ['Worker accounts', 'Which AI worker logins and accounts are on this computer?'],
   version: ['Version and roadmap', 'Which capabilities are turned on in this version?'],
+  instructions: ['Model instructions', 'Which AI models should handle what kind of work?'],
   messages: ['Messages', 'What did I ask AIWorks, and what did it answer?'],
   diagnostics: ['Diagnostics', 'What exactly did the machine record?'], now: ['Now', 'Where are we now?'],
   work: ['Work', 'What is running or waiting, and why?'], results: ['Results', 'What has been delivered, and what remains?'],
@@ -1371,6 +1372,115 @@ function versionScreen() {
   return [back, currentPanel, milestonesPanel];
 }
 
+function modelInstructionsScreen() {
+  const back = el('p', { class: 'breadcrumb' }, routeLink('← Back to Settings', '#/settings'));
+
+  const overviewPanel = panel('Overview: findings from 140+ deliveries', 'Observed delivery patterns across core engine concurrency, web interfaces, verification gates, and multi-account security.', el('div', { class: 'panel-body' },
+    el('p', {}, 'Review of 140+ recent delivery PRs (UI, account management, runtime, and verification slices) shows distinct strengths and failure modes across model families. Matching the right model family and reasoning effort to each role and work type directly prevents race conditions, test flakiness, confirmation bias, and quota exhaustion.'),
+    el('ul', { class: 'subtext-list' },
+      el('li', {}, el('strong', {}, 'State persistence and concurrency: '), 'Multi-file async boundaries and SQLite transactions require deep reasoning to avoid deadlocks and lock contention.'),
+      el('li', {}, el('strong', {}, 'User interfaces and owner copy: '), 'Strict adherence to negative styling constraints and copy rules requires precision models that follow fine-grained guidelines.'),
+      el('li', {}, el('strong', {}, 'Independent verification: '), 'Fresh worker sessions using a different model family than the builder eliminate confirmation bias.'),
+      el('li', {}, el('strong', {}, 'Multi-account security: '), 'Boundary-checking for encrypted credentials and quota management needs defensive reasoning.'))));
+
+  const rolePanel = panel('Recommended models by role', 'How to staff Builder, Independent Checker, and Planner roles.', el('div', {},
+    el('ul', { class: 'settings-links' },
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'Builder (Primary Implementer)'),
+          el('span', { class: 'account-pill pill-ready' }, 'Core role')),
+        el('p', { class: 'subtext' }, 'Responsible for writing code, fixing test failures, refactoring, and producing clean pull requests.'),
+        el('p', {}, el('strong', {}, 'Recommended models: '), 'Claude 3.7 Sonnet (Thinking), Claude 3.5 Sonnet, OpenAI o1.'),
+        el('p', { class: 'subtext' }, 'Why: Strongest code synthesis and refactoring performance across multi-file JavaScript and Node.js codebases. Thinking models excel when resolving complex test failures or tricky async loops.')),
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'Independent Checker (Verifier)'),
+          el('span', { class: 'account-pill pill-ready' }, 'Safety gate')),
+        el('p', { class: 'subtext' }, 'Responsible for reviewing diffs, running checks, verifying invariant boundaries, and preventing regressions in a clean session.'),
+        el('p', {}, el('strong', {}, 'Recommended models: '), 'OpenAI o1 / o3-mini (checking Claude changes), or Claude 3.7 Sonnet (checking OpenAI changes).'),
+        el('p', { class: 'subtext' }, 'Why: Independent checks require an opposing model family to avoid shared blind spots. High reasoning models catch subtle security boundary leaks and unhandled edge cases.')),
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'Planner / Assistant'),
+          el('span', { class: 'account-pill pill-ready' }, 'Strategy')),
+        el('p', { class: 'subtext' }, 'Responsible for breaking down goals into discrete steps, ordering dependencies, and specifying clear acceptance criteria.'),
+        el('p', {}, el('strong', {}, 'Recommended models: '), 'Claude 3.7 Sonnet, OpenAI o1, GPT-4o.'),
+        el('p', { class: 'subtext' }, 'Why: Broad architectural comprehension and ability to sequence multi-step work without circular dependencies.')))));
+
+  const workTypePanel = panel('Recommended models by kind of work', 'Model assignments tailored to specific engineering domains.', el('div', {},
+    el('ul', { class: 'settings-links' },
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'Engine, Concurrency & State Persistence'),
+          el('span', { class: 'account-pill pill-waiting' }, 'High reasoning')),
+        el('p', {}, el('strong', {}, 'Recommended: '), 'Claude 3.7 Sonnet (Thinking), OpenAI o1 (High effort)'),
+        el('p', { class: 'subtext' }, 'Deep reasoning is required to prevent race conditions in asynchronous file I/O, SQLite transaction serialization, and process lifecycle handling.')),
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'Dashboard UI, Styling & Owner Experience'),
+          el('span', { class: 'account-pill pill-done' }, 'Precision & copy')),
+        el('p', {}, el('strong', {}, 'Recommended: '), 'Claude 3.5 Sonnet, Claude 3.7 Sonnet (Standard effort)'),
+        el('p', { class: 'subtext' }, 'Excels at vanilla DOM patching, CSS flex/grid layouts, responsive typography, and strict compliance with owner-words copy rules.')),
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'Verification & Independent Checks'),
+          el('span', { class: 'account-pill pill-ready' }, 'Cross-check')),
+        el('p', {}, el('strong', {}, 'Recommended: '), 'OpenAI o1, o3-mini, Claude 3.7 Sonnet'),
+        el('p', { class: 'subtext' }, 'Adversarial testing mindset, spotting missing regression tests, mocking leaks, and edge conditions across clean environments.')),
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'Multi-Account Security & Quota Boundaries'),
+          el('span', { class: 'account-pill pill-waiting' }, 'Security-critical')),
+        el('p', {}, el('strong', {}, 'Recommended: '), 'Claude 3.7 Sonnet, OpenAI o1'),
+        el('p', { class: 'subtext' }, 'Cryptographic operations (AES-256-GCM), key rotation, sensitive token masking in logs, and rate-limit backoff logic.')),
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'Test Suite Optimization & Fast Turnaround'),
+          el('span', { class: 'account-pill pill-done' }, 'Fast cycle')),
+        el('p', {}, el('strong', {}, 'Recommended: '), 'Claude 3.5 Sonnet, OpenAI Codex'),
+        el('p', { class: 'subtext' }, 'Fast parallel test execution, mocking external dependencies, and isolating flaky tests without slowing the build.')),
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'Documentation, Synthetics & Release Notes'),
+          el('span', { class: 'account-pill pill-done' }, 'Economy')),
+        el('p', {}, el('strong', {}, 'Recommended: '), 'Claude 3.5 Haiku, Gemini 1.5 Flash / Pro, GPT-4o-mini'),
+        el('p', { class: 'subtext' }, 'Token-efficient, rapid summarization of PR diffs, clear release notes, and synthetic test fixtures.')))));
+
+  const effortPanel = panel('Reasoning effort guidelines', 'When to use High, Standard, or Low reasoning effort.', el('div', {},
+    el('ul', { class: 'settings-links' },
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'High Effort / Deep Thinking'),
+          el('span', { class: 'account-pill pill-waiting' }, 'Deep thinking')),
+        el('p', { class: 'subtext' }, 'Use for core engine algorithms, cryptographic and multi-account boundaries, complex database migrations, and tricky asynchronous race conditions. Generates thorough chain-of-thought exploration before writing code.')),
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'Standard Effort'),
+          el('span', { class: 'account-pill pill-ready' }, 'Default')),
+        el('p', { class: 'subtext' }, 'Use for standard feature development, DOM panels, API endpoints, bug fixes, and regular test additions. Balanced speed and reasoning depth.')),
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'Low Effort / Economy'),
+          el('span', { class: 'account-pill pill-done' }, 'Fast')),
+        el('p', { class: 'subtext' }, 'Use for documentation, simple copy adjustments, synthetic fixtures, and routine reviews where deep reasoning is unnecessary.')))));
+
+  const configurePanel = panel('How to configure model preferences', 'Setting up model order, roles, and accounts in AIWorks.', el('div', { class: 'panel-body' },
+    el('ul', { class: 'settings-links' },
+      el('li', {},
+        el('div', { class: 'account-header' },
+          el('strong', {}, 'In Worker Accounts'),
+          routeLink('Open Worker accounts →', '#/settings/accounts', 'button secondary small')),
+        el('p', { class: 'subtext' }, 'Open Worker accounts to configure and test worker logins, priority order, and view quota usage.')),
+      el('li', {},
+        el('strong', {}, 'In Local Configuration'),
+        el('p', { class: 'subtext' }, 'Model selection and priority order can be set in the configuration file under commands and accounts.')),
+      el('li', {},
+        el('strong', {}, 'Per Step Signatures'),
+        el('p', { class: 'subtext' }, 'Completed steps display model signatures (name, type, effort, and tokens) on the Step and Results screens.')))));
+
+  return [back, overviewPanel, rolePanel, workTypePanel, effortPanel, configurePanel];
+}
+
 /**
  * Settings (OWNER_WORKSPACE §4.3, slice S8): this computer, its AI workers once, each project's kind and connection, and
  * release mode as text. No primary action: Settings only shows what the machine has. Messages and Diagnostics are linked.
@@ -1423,6 +1533,7 @@ const settingsEmpty = ({ title, text, primary }) => el('div', { class: 'empty-st
 function settingsLinks() {
   return panel('More', null, el('ul', { class: 'settings-links' },
     el('li', {}, routeLink('Worker accounts', '#/settings/accounts'), el('div', { class: 'subtext' }, 'Connect and manage isolated worker logins, view live quota usage, and export encrypted bundles.')),
+    el('li', {}, routeLink('Model instructions', '#/settings/instructions'), el('div', { class: 'subtext' }, 'Which AI models should handle what kind of work, by role, domain and reasoning effort.')),
     el('li', {}, routeLink('Version and roadmap', '#/settings/version'), el('div', { class: 'subtext' }, `Dashboard v${DASHBOARD_VERSION} (${DASHBOARD_VERSION_NAME}), active features and pre-1.0 roadmap.`)),
     el('li', {}, routeLink('Messages', '#/settings/messages'), el('div', { class: 'subtext' }, 'What you asked AIWorks, and what it answered.')),
     el('li', {}, routeLink('Diagnostics', '#/settings/diagnostics'), el('div', { class: 'subtext' }, 'The full activity journal, every step with its issue and pull request, the roadmap of the platform that keeps your project rules, and how fresh each merge check is.'))));
@@ -1766,6 +1877,7 @@ function render() {
   else if (route.screen === 'settings' && route.section === 'messages') patch(content, [messagesPanel(20)]);
   else if (route.screen === 'settings' && route.section === 'accounts') patch(content, accountsScreen());
   else if (route.screen === 'settings' && route.section === 'version') patch(content, versionScreen());
+  else if (route.screen === 'settings' && route.section === 'instructions') patch(content, modelInstructionsScreen());
   else if (diagnostics) patch(content, [trackOverview(), roadmapView(), workView(), mergeChecksPanel(), projectWaitsPanel(),
     panel('Execution journal', 'Latest 80 events · raw agent transcripts and secrets are never shown', activityList())].filter(Boolean));
   else if (route.screen === 'settings') patch(content, settingsScreen());
