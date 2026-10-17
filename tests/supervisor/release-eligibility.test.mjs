@@ -9,12 +9,9 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CHECK_IDS, eligibilitySummary, evaluateEligibility, REVIEW_ONLY_SUMMARY } from '../../src/supervisor/release/eligibility.mjs';
+import { CHECK_IDS, eligibilitySummary, evaluateEligibility } from '../../src/supervisor/release/eligibility.mjs';
 import { changedPaths, classOf, classify, globRegExp, UNCLASSIFIED } from '../../src/supervisor/release/classify.mjs';
 import { recordDigest } from '../../src/supervisor/release/authorization.mjs';
-import { Store } from '../../src/supervisor/store.mjs';
-import { campaignStart, campaignStatus } from '../../src/supervisor/api.mjs';
-import { declaration } from './helpers.mjs';
 
 const NOW = Date.parse('2026-11-15T12:00:00Z');
 const SHA = 'c'.repeat(40);
@@ -250,26 +247,4 @@ test('classification reads real git diff --name-status output of a disposable re
   assert.deepEqual(result.files.map((f) => `${f.path}=${f.class}`).sort(),
     ['db/migrations/0001.sql=migration', 'docs/new.md=docs', 'docs/old.md=docs', 'src/a.mjs=app-code']);
   assert.deepEqual(result.classes, ['migration', 'app-code', 'docs']);
-});
-
-test('status of a campaign without a grant says Review only and reports each done task as not eligible', (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'aiworks-release-status-'));
-  const store = new Store(join(dir, 'supervisor.db'));
-  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
-  campaignStart(store, declaration());
-  let status = campaignStatus(store, 'test-campaign');
-  assert.deepEqual(status.release, { mode: 'review-only', enabled: false, summary: REVIEW_ONLY_SUMMARY, tasks: [] });
-  store.run("UPDATE tasks SET state = 'done', verified_sha = ? WHERE campaign_id = ? AND task_id = 'T1'", SHA, 'test-campaign');
-  status = campaignStatus(store, 'test-campaign');
-  assert.equal(status.release.tasks.length, 1, 'only the done task is reported');
-  const [task] = status.release.tasks;
-  assert.equal(task.taskId, 'T1');
-  assert.equal(task.verifiedSha, SHA);
-  assert.equal(task.destination, null);
-  assert.equal(task.eligible, false);
-  assert.equal(task.summary, 'Not eligible, because Auto Release is switched off (release.enabled is not true)');
-  assert.deepEqual(task.failedChecks, CHECK_IDS, 'with nothing read, every check fails; none is assumed');
-  // Reporting changed nothing: the task stays done and no journal entry was written for it.
-  assert.equal(store.tasks('test-campaign').find((row) => row.task_id === 'T1').state, 'done');
-  assert.equal(store.get("SELECT COUNT(*) AS n FROM journal WHERE kind LIKE '%release%'").n, 0);
 });

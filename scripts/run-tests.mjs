@@ -47,7 +47,7 @@ const tierOf = (source) => (REHEARSAL.test(source) ? 'rehearsal' : SERVICE.test(
 const SLOWEST = {
   rehearsal: ['supervisor', 'unlimited-retries', 'restart-parallel', 'restart', 'restart-publish', 'integration-repair', 'merge-gate',
     'merged-code', 'rest-publish', 'gate-tally', 'process', 'coordinator', 'agy'].map((name) => `tests/supervisor/${name}.test.mjs`),
-  service: ['supervisor/release-local', 'dashboard/accounts-api', 'supervisor/github-reader'].map((name) => `tests/${name}.test.mjs`),
+  service: ['dashboard/accounts-api', 'supervisor/github-reader'].map((name) => `tests/${name}.test.mjs`),
   unit: [],
 };
 const ordered = (tier, files) => {
