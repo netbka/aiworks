@@ -41,6 +41,17 @@ function withGateRules(prompt, role, deliverable) {
     ...(role === 'verification' ? [VERIFIER_TALLY_RULE] : [])];
   return `${prompt.slice(0, at)}\n${rules.join('\n')}${prompt.slice(at)}`;
 }
+// Reading cost for commit and report tasks (#14): over 96 worker sessions measured on 2026-10-16, verifiers' whole-file
+// reads over 20 KB were 27% of their tool output and full diffs 23%. The rule changes how a worker reads, never what it
+// must read; a browser review reads no checkout, so web prompts do not carry it.
+export const READING_RULE = 'Read what you need, in parts, and never twice. This rule makes reading cheaper, never narrower: where it and any other rule in this prompt or the packet seem to conflict, the other rule wins. (1) Find before reading: grep -n for the symbol, heading or test name, then read the lines around it (Read with offset and limit, or sed -n); read a whole file only when it is under about 300 lines or your task changes most of it. (2) Do not read again a file or command output you already read in this session unless it changed since. (3) Review a change by starting with git diff --stat, then read the diff one file at a time, each file once. (4) Filter long command output (jq, grep, head) instead of printing it whole, and never print gate.log whole: the gate helper already shows the summary.';
+export const VERIFIER_READING_EXTRA = 'For a verifier it narrows nothing: every document in packet.references is still read in full, section marks included.';
+export const VERIFIER_LEAN_READING_RULE = `${READING_RULE} ${VERIFIER_READING_EXTRA}`;
+// One line after the gate rules, placed as withGateRules places them, so every existing prompt line stays as it was.
+function withReadingRule(prompt, role) {
+  const at = prompt.indexOf('\n\nTask packet (sha256 ');
+  return `${prompt.slice(0, at)}\n${role === 'verification' ? VERIFIER_LEAN_READING_RULE : READING_RULE}${prompt.slice(at)}`;
+}
 // ---- Adaptive planning results (docs/design/WORK_ENVELOPE.md sections 6.2 and 6.6, slice E5). ----
 // A stage names the extra fields a result of an envelope campaign may carry while adaptive planning is on. Without a stage
 // (every version 1 campaign, and every campaign while the switch is off) schema, prompt and validation are today's.
@@ -102,7 +113,7 @@ function withStageRule(prompt, role, stage) {
 
 // A browser worker reviews pages, not a checkout, so a web task gets the browser prompt whichever worker runs it.
 export const buildPrompt = (args) => args.web ? agy.buildPrompt(args)
-  : withStageRule(withGateRules(claude.buildPrompt(args), args.role, args.deliverable), args.role, args.stage ?? null);
+  : withStageRule(withReadingRule(withGateRules(claude.buildPrompt(args), args.role, args.deliverable), args.role), args.role, args.stage ?? null);
 const nativeKind = (kind) => kind ?? 'claude-cli';
 // Codex/Cursor do not report measured dollar cost or Claude turn counts: unknown is not a free refusal.
 export const refusedBeforeWork = (verdict) => nativeKind(verdict?.executorKind) === 'claude-cli' && claude.refusedBeforeWork(verdict);
