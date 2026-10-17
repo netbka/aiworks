@@ -11,8 +11,8 @@ Small, reproducible fixes and documentation corrections can go straight to a pul
 ## Making a change
 
 1. Fork the repository and create a branch from `main`.
-2. Install dependencies with `npm install` and run `npm run check`. It verifies that no private installation files are in the commit, validates the example plans and runs the test suite. While you work, `npm run test:quick` runs the unit and service tests in a few minutes and leaves out the supervisor rehearsals; the full gate is still `npm run check`.
-3. Keep code and tests together in one small pull request. One topic per pull request keeps review quick.
+2. Install dependencies with `npm install` and run `npm run check`. It verifies that no private installation files are in the commit, validates the example plans and runs the test suite. While you work, `npm run test:affected` runs only the test files your changes since `origin/main` can reach, and `npm run test:quick` runs the unit and service tests and leaves out the supervisor rehearsals; the full gate is still `npm run check`.
+3. Keep code and tests together in one small pull request. One topic per pull request keeps review quick. Test behaviour once, at the lowest layer that shows it: assert exact wording only where the sentence itself is the requirement, and never pin documentation prose, source text or line numbers.
 4. Run `npm run check` again before you push.
 
 CI runs on Linux. Real worker execution, process containment and the Windows task installers are Windows-only. Test the platform your change affects, and say clearly in the pull request what was tested where. Do not weaken a Windows-specific test to make Linux CI pass.

@@ -34,4 +34,6 @@ Distinguish observed code, verified runtime behaviour, planned design and unknow
 
 ## Validation
 
-Run `npm install` once, then `npm run check` after changes to code, schemas, fixtures or documentation. The checks use synthetic campaigns and governance fixtures, never private operator campaigns. Review the staged file list and run the public-scope check before committing.
+Run `npm install` once, then `npm run check` after changes to code, schemas, fixtures or documentation. The checks use synthetic campaigns and governance fixtures, never private operator campaigns. While you work, `npm run test:affected` runs only the test files your changes can reach; it is not the gate.
+
+Test behaviour, once, at the lowest layer that shows it. Assert exact owner-facing wording only where the sentence itself is the requirement; never pin documentation prose, source text or line numbers. A test that only repeats what another test already covers may be removed, when the change names the test that still covers it. Review the staged file list and run the public-scope check before committing.

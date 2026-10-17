@@ -11,14 +11,17 @@
 //
 // The unit tier runs first, then the service and rehearsal tiers run side by side (service files wait on servers and
 // git, rehearsal files on supervisor timers, so neither starves the other). `--tiers unit,service` runs only those
-// tiers (`npm run test:quick`); the full gate is always every tier. AIWORKS_TEST_CONCURRENCY sets how many unit and
-// service files run at once, AIWORKS_HEAVY_CONCURRENCY how many rehearsal files (1 = one at a time, in the order before
-// #102). Any other argument goes to node --test.
-import { spawn } from 'node:child_process';
+// tiers (`npm run test:quick`); the full gate is always every tier. `--affected [base]` (default origin/main; `npm run
+// test:affected`) runs only the files that the changes since the merge base with `base` can reach, committed or not
+// (scripts/lib/affected-tests.mjs): a fast check while working, never the gate. AIWORKS_TEST_CONCURRENCY sets how many
+// unit and service files run at once, AIWORKS_HEAVY_CONCURRENCY how many rehearsal files (1 = one at a time, in the
+// order before #102). Any other argument goes to node --test.
+import { spawn, spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { availableParallelism } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { affectedTests, referenceGraph, repositoryFiles } from './lib/affected-tests.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const TIERS = ['unit', 'service', 'rehearsal'];
@@ -54,11 +57,16 @@ const ordered = (tier, files) => {
   return [...files].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
 };
 
-/** `--tiers a,b` (or `--tiers=a,b`) selects tiers; every other argument goes to node --test. */
+/** `--tiers a,b` (or `--tiers=a,b`) selects tiers, `--affected [base]` the files a change can reach; every other argument goes to node --test. */
 function parseArgs(argv) {
   const rest = [];
-  let tiers = TIERS;
+  let tiers = TIERS, affected = null;
   for (let i = 0; i < argv.length; i++) {
+    const since = /^--affected(?:=(.+))?$/.exec(argv[i]);
+    if (since) {
+      affected = since[1] ?? (argv[i + 1] && !argv[i + 1].startsWith('-') ? argv[++i] : 'origin/main');
+      continue;
+    }
     const match = /^--tiers(?:=(.*))?$/.exec(argv[i]);
     if (!match) { rest.push(argv[i]); continue; }
     const value = match[1] ?? argv[++i] ?? '';
@@ -66,7 +74,18 @@ function parseArgs(argv) {
     const unknown = tiers.filter((name) => !TIERS.includes(name));
     if (!tiers.length || unknown.length) throw new Error(`--tiers takes a comma-separated subset of ${TIERS.join(', ')}; got "${value}"`);
   }
-  return { tiers, rest };
+  return { tiers, affected, rest };
+}
+
+/** The paths changed since the merge base of HEAD and `base`: commits, staged and unstaged changes, and new files. */
+function changedSince(base) {
+  const git = (...args) => {
+    const out = spawnSync('git', args, { cwd: root, encoding: 'utf8', windowsHide: true });
+    if (out.status !== 0) throw new Error(`--affected ${base}: git ${args.join(' ')} failed: ${(out.stderr || out.error?.message || '').trim()}`);
+    return out.stdout.split(/\r?\n/).filter(Boolean);
+  };
+  const [mergeBase] = git('merge-base', base, 'HEAD');
+  return { mergeBase, changed: [...new Set([...git('diff', '--name-only', '--no-renames', mergeBase), ...git('ls-files', '--others', '--exclude-standard')])] };
 }
 
 const setting = (name, fallback) => {
@@ -119,10 +138,19 @@ async function run(group, tier, limit, testArgs) {
   return status;
 }
 
-const { tiers, rest } = parseArgs(process.argv.slice(2));
+const { tiers, affected, rest } = parseArgs(process.argv.slice(2));
 const files = discover(join(root, 'tests')).sort();
 const byTier = Object.fromEntries(TIERS.map((tier) => [tier, []]));
-for (const file of files) byTier[tierOf(readFileSync(join(root, file), 'utf8'))].push(file);
+let reachable = files;
+if (affected) {
+  const { mergeBase, changed } = changedSince(affected);
+  const repository = repositoryFiles(root);
+  const graph = referenceGraph([...new Set([...repository, ...changed])], (path) => (repository.includes(path) ? readFileSync(join(root, path), 'utf8') : ''));
+  const result = affectedTests({ graph, tests: files, changed });
+  reachable = result.tests;
+  console.log(`# affected: ${changed.length} changed files since ${affected} (merge base ${mergeBase.slice(0, 12)}) reach ${reachable.length} of ${files.length} test files${result.everything.length ? `; every file runs because ${result.everything.join(', ')} changed` : ''}`);
+}
+for (const file of reachable) byTier[tierOf(readFileSync(join(root, file), 'utf8'))].push(file);
 const selected = (tier) => (tiers.includes(tier) ? (heavyConcurrency > 1 || tier !== 'rehearsal' ? ordered(tier, byTier[tier]) : byTier[tier]) : []);
 
 const started = Date.now();
