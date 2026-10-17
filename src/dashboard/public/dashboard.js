@@ -133,7 +133,8 @@ const routeLink = (text, route, cls = '') => el('a', { href: typeof route === 's
 const projectName = (project) => state?.projects?.projects?.find((item) => !item.repository && item.id === project)?.name ?? (shortRepo(project) || project);
 // Each screen's heading and the one question it answers (OWNER_WORKSPACE §3.1).
 const screenText = { projects: ['Projects', 'Which project should I open?'], needs: ['Needs me', 'What is waiting for me, across projects?'],
-  settings: ['Settings', 'What can AIWorks use on this computer?'], messages: ['Messages', 'What did I ask AIWorks, and what did it answer?'],
+  settings: ['Settings', 'What can AIWorks use on this computer?'], accounts: ['Worker accounts', 'Which AI worker logins and accounts are on this computer?'],
+  messages: ['Messages', 'What did I ask AIWorks, and what did it answer?'],
   diagnostics: ['Diagnostics', 'What exactly did the machine record?'], now: ['Now', 'Where are we now?'],
   work: ['Work', 'What is running or waiting, and why?'], results: ['Results', 'What has been delivered, and what remains?'],
   cost: ['Cost', 'What did this cost?'], step: ['Step', 'What is happening on this step?'], start: ['Plan work', 'Describe the result. AIWorks proposes the steps.'],
@@ -331,6 +332,21 @@ document.addEventListener('toggle', (event) => {
   if (event.target.open) { opened.add(key); opened.delete(`${key}:closed`); } else { opened.delete(key); opened.add(`${key}:closed`); }
 }, true);
 
+/** Formats a compact model signature string for task rows, results, and previews. */
+function formatTaskSignatureBrief(sig) {
+  if (!sig || typeof sig !== 'object') return null;
+  const parts = [];
+  if (sig.name) {
+    const tokens = sig.tokens?.total ? ` · ${sig.tokens.total.toLocaleString()} tokens` : '';
+    parts.push(`Signed: ${sig.name} (${sig.type ?? 'model'} · ${sig.effort ?? 'standard'} effort${tokens})`);
+  }
+  if (sig.verifier?.name) {
+    const vTokens = sig.verifier.tokens?.total ? ` · ${sig.verifier.tokens.total.toLocaleString()} tokens` : '';
+    parts.push(`Verified: ${sig.verifier.name} (${sig.verifier.type ?? 'model'} · ${sig.verifier.effort ?? 'standard'} effort${vTokens})`);
+  }
+  return parts.length ? parts.join(' | ') : null;
+}
+
 // Step rows: on a phone, CSS turns each row into a stacked card (name, where it stands, link) with no clipped columns.
 function taskRow(c, task) {
   const canRecheck = !sending && !offline && state.supervisor.available && ['registered', 'paused'].includes(c.control) && Boolean(task.blocked || task.retryAt || task.errorClass) && task.state !== 'done';
@@ -344,6 +360,7 @@ function taskRow(c, task) {
       delivery?.state === 'merged' && delivery.mergedAt ? el('div', { class: 'subtext' }, `Merged ${dateTime(delivery.mergedAt)}`)
         : delivery?.note ? el('div', { class: 'subtext' }, delivery.note) : null,
       delivery?.asOf ? el('div', { class: 'subtext' }, mergeAsOf(delivery.asOf)) : null,
+      task.signature ? el('div', { class: 'subtext task-signature' }, formatTaskSignatureBrief(task.signature)) : null,
       // Supervisor-authored wait (for example, dependencies that must be merged first); never worker text.
       task.waitingReason && !task.blocked && task.state !== 'done' ? el('div', { class: 'subtext' }, task.waitingReason) : null,
       task.retryAt ? el('div', { class: 'subtext' }, `Next check ${timeOnly(task.retryAt)}`) : null,
@@ -1185,18 +1202,252 @@ function mergeChecksPanel() {
 }
 
 let pendingRemoveAccount = null;
+let lastConnectReceipt = null;
+let incognitoPollTimer = null;
+
+function stopIncognitoPolling() {
+  if (incognitoPollTimer) {
+    clearInterval(incognitoPollTimer);
+    incognitoPollTimer = null;
+  }
+}
+
+let connectStatusMessage = '';
+let connectProvider = 'codex';
+let connectAccountName = '';
+
+const providerDisplayName = (p) => p === 'claude' ? 'Claude' : p === 'codex' ? 'ChatGPT (Codex)' : p === 'agy' ? 'Agy' : 'Cursor Agent';
+
+async function startConnectInBrowser() {
+  const provider = connectProvider;
+  const name = connectAccountName.trim();
+  if (!name || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
+    connectStatusMessage = 'Please enter a valid account name (letters, numbers, dots, dashes, underscores).';
+    render();
+    return;
+  }
+  const providerLabel = providerDisplayName(provider);
+  connectStatusMessage = `Opening incognito browser for ${providerLabel}…`;
+  render();
+  try {
+    const res = await post('/api/accounts/connect/start', { provider, name });
+    connectStatusMessage = `Incognito browser opened for ${providerLabel}. Log in there. Watching ${res.defaultLocation || 'credentials'}…`;
+    stopIncognitoPolling();
+    const startedAt = res.startedAt || Date.now();
+    let checks = 0;
+    incognitoPollTimer = setInterval(async () => {
+      checks++;
+      if (checks > 90) {
+        stopIncognitoPolling();
+        connectStatusMessage = 'Login wait timed out. You can try again or pick up from default location.';
+        render();
+        return;
+      }
+      try {
+        const check = await post('/api/accounts/connect/check', { provider, name, startedAt });
+        if (check.connected) {
+          stopIncognitoPolling();
+          connectStatusMessage = '';
+          connectAccountName = '';
+          lastConnectReceipt = {
+            provider,
+            providerLabel,
+            name,
+            sourcePath: check.sourcePath,
+            modifiedAt: check.modifiedAt,
+            savedTo: check.savedTo,
+          };
+          notice(`Connected ${providerLabel} · ${name}! Picked up from ${check.sourcePath}`);
+          await poll();
+          render();
+        }
+      } catch { /* ignore polling errors */ }
+    }, 2000);
+    render();
+  } catch (err) {
+    connectStatusMessage = err.message ?? 'Could not open browser.';
+    render();
+  }
+}
+
+async function pickupDefaultLocation() {
+  const provider = connectProvider;
+  const name = connectAccountName.trim();
+  if (!name || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
+    connectStatusMessage = 'Please enter a valid account name (letters, numbers, dots, dashes, underscores).';
+    render();
+    return;
+  }
+  const providerLabel = providerDisplayName(provider);
+  connectStatusMessage = `Checking default location for ${providerLabel} credentials…`;
+  render();
+  try {
+    const check = await post('/api/accounts/connect/check', { provider, name, force: true });
+    if (check.connected) {
+      stopIncognitoPolling();
+      connectStatusMessage = '';
+      connectAccountName = '';
+      lastConnectReceipt = {
+        provider,
+        providerLabel,
+        name,
+        sourcePath: check.sourcePath,
+        modifiedAt: check.modifiedAt,
+        savedTo: check.savedTo,
+      };
+      notice(`Connected ${providerLabel} · ${name}! Picked up from ${check.sourcePath}`);
+      await poll();
+      render();
+    } else {
+      connectStatusMessage = `No credentials found at ${check.waitingFor || 'default location'}. Complete login first or click Connect in incognito browser.`;
+      render();
+    }
+  } catch (err) {
+    connectStatusMessage = err.message ?? 'Could not check default location.';
+    render();
+  }
+}
 
 function openRemoveAccount(provider, name) {
   pendingRemoveAccount = { provider, name };
-  const label = provider === 'claude' ? 'Claude Code' : provider === 'codex' ? 'Codex' : provider;
+  const label = provider === 'claude' ? 'Claude' : provider === 'codex' ? 'ChatGPT (Codex)' : provider === 'agy' ? 'Agy' : provider === 'cursor' ? 'Cursor Agent' : provider;
   $('#remove-account-description').textContent = `Remove login for ${label} · ${name} from this computer?`;
   $('#remove-account-dialog').showModal();
+}
+
+function openSetPreference(role, pref = {}) {
+  $('#preference-role').value = role;
+  $('#preference-title').textContent = `Role model preference: ${role}`;
+  $('#preference-models').value = Array.isArray(pref.models) ? pref.models.join(', ') : '';
+  $('#preference-effort').value = pref.effort ?? '';
+  $('#preference-kind').value = pref.kind ?? '';
+  $('#preference-dialog').showModal();
 }
 
 function accountsSection(accounts = []) {
   const list = accounts.length ? el('ul', { class: 'settings-links' }, ...accounts.map((acct) => {
     const { id, provider: p, name, usage } = acct;
-    const providerLabel = p === 'claude' ? 'Claude Code' : p === 'codex' ? 'Codex' : p;
+    const providerLabel = p === 'claude' ? 'Claude' : p === 'codex' ? 'ChatGPT (Codex)' : p === 'agy' ? 'Agy' : p === 'cursor' ? 'Cursor Agent' : p;
+    let statusText = 'Ready';
+    let statusPillClass = 'pill-ready';
+    if (usage?.cooldown?.active) {
+      const remainingSec = Math.max(0, Math.round((usage.cooldown.retryAt - Date.now()) / 1000));
+      const mins = Math.floor(remainingSec / 60);
+      const secs = remainingSec % 60;
+      statusText = `Waiting for quota (${mins}m ${secs}s)`;
+      statusPillClass = 'pill-waiting';
+    } else if (usage?.openRuns > 0) {
+      statusText = `In use (${usage.openRuns} active)`;
+      statusPillClass = 'pill-running';
+    }
+    const capacityText = usage?.learnedLimit ? `Learned limit: ${usage.learnedLimit} concurrent runs.` : null;
+    const stats = usage?.outcomes ?? {};
+    const successCount = stats.result ?? stats.success ?? 0;
+    const retryCount = stats.retry ?? 0;
+    const failCount = stats.failure ?? 0;
+    const durationMin = usage?.totalDurationMs ? Math.round(usage.totalDurationMs / 60000) : 0;
+    const usageSubtext = `Runs: ${successCount} successful, ${retryCount} retries, ${failCount} errors · ${durationMin}m total run time.`;
+
+    return el('li', { 'data-focus-scope': `account/${id}` },
+      el('div', { class: 'account-header' },
+        el('strong', {}, `${providerLabel} · ${name}`),
+        el('span', { class: `account-pill ${statusPillClass}` }, statusText),
+        button('Remove…', () => openRemoveAccount(p, name), 'danger small')),
+      capacityText ? el('div', { class: 'subtext' }, capacityText) : null,
+      el('div', { class: 'subtext' }, usageSubtext));
+  })) : empty('No worker accounts yet.', 'Accounts set up on this computer appear here.');
+
+  return el('div', { class: 'accounts-section' },
+    el('div', { class: 'panel-header' }, el('h3', {}, 'Logins and usage'), routeLink('Manage on separate page →', '#/settings/accounts')),
+    list);
+}
+
+function accountsScreen() {
+  const settings = state.supervisor.settings;
+  const accounts = settings?.accounts ?? [];
+  const back = el('p', { class: 'breadcrumb' }, routeLink('← Back to Settings', '#/settings'));
+
+  let receiptNode = null;
+  if (lastConnectReceipt) {
+    const timeStr = lastConnectReceipt.modifiedAt ? timeOnly(lastConnectReceipt.modifiedAt) : 'just now';
+    receiptNode = el('div', { class: 'notice notice-success', id: 'account-receipt-notice' },
+      el('p', {},
+        el('strong', {}, `Connected ${lastConnectReceipt.providerLabel} · ${lastConnectReceipt.name}! `),
+        `Picked up credentials from ${lastConnectReceipt.sourcePath} (modified ${timeStr}) and saved to isolated profile ${lastConnectReceipt.name}.`
+      ),
+      button('Dismiss', () => { lastConnectReceipt = null; render(); }, 'secondary small')
+    );
+  }
+
+  const providerSelect = el('select', { id: 'connect-provider' },
+    el('option', { value: 'codex', selected: connectProvider === 'codex' }, 'ChatGPT (Codex)'),
+    el('option', { value: 'claude', selected: connectProvider === 'claude' }, 'Claude'),
+    el('option', { value: 'agy', selected: connectProvider === 'agy' }, 'Agy'),
+    el('option', { value: 'cursor', selected: connectProvider === 'cursor' }, 'Cursor Agent')
+  );
+  providerSelect.addEventListener('change', (e) => { connectProvider = e.target.value; });
+
+  const nameInput = el('input', {
+    id: 'connect-name',
+    type: 'text',
+    placeholder: 'e.g. work-main or team-bot',
+    value: connectAccountName,
+  });
+  nameInput.addEventListener('input', (e) => { connectAccountName = e.target.value; });
+
+  const connectCard = panel('Connect account', 'Connect an account in an incognito browser without affecting your active sessions. AIWorks picks up credentials directly from the default CLI location.', el('div', { class: 'panel-body' },
+    el('div', { class: 'connect-form' },
+      el('label', {}, 'AI worker', providerSelect),
+      el('label', {}, 'Account name', nameInput),
+      el('div', { class: 'dialog-actions' },
+        button('Connect in incognito browser', startConnectInBrowser, 'button'),
+        button('Pick up from default location', pickupDefaultLocation, 'button secondary')
+      ),
+      connectStatusMessage ? el('div', { class: 'notice' }, el('p', {}, connectStatusMessage)) : null
+    )
+  ));
+
+  const list = accounts.length ? el('ul', { class: 'settings-links' }, ...accounts.map((acct) => {
+    const { id, provider: p, name, usage } = acct;
+    const providerLabel = p === 'claude' ? 'Claude' : p === 'codex' ? 'ChatGPT (Codex)' : p === 'agy' ? 'Agy' : p === 'cursor' ? 'Cursor Agent' : p;
+    let statusText = 'Ready';
+    let statusPillClass = 'pill-ready';
+    if (usage?.cooldown?.active) {
+      const remainingSec = Math.max(0, Math.round((usage.cooldown.retryAt - Date.now()) / 1000));
+      const mins = Math.floor(remainingSec / 60);
+      const secs = remainingSec % 60;
+      statusText = `Waiting for quota (${mins}m ${secs}s)`;
+      statusPillClass = 'pill-waiting';
+    } else if (usage?.openRuns > 0) {
+      statusText = `In use (${usage.openRuns} active)`;
+      statusPillClass = 'pill-running';
+    }
+    const capacityText = usage?.learnedLimit ? `Learned limit: ${usage.learnedLimit} concurrent runs.` : null;
+    const stats = usage?.outcomes ?? {};
+    const successCount = stats.result ?? stats.success ?? 0;
+    const retryCount = stats.retry ?? 0;
+    const failCount = stats.failure ?? 0;
+    const durationMin = usage?.totalDurationMs ? Math.round(usage.totalDurationMs / 60000) : 0;
+    const usageSubtext = `Runs: ${successCount} successful, ${retryCount} retries, ${failCount} errors · ${durationMin}m total run time.`;
+
+    return el('li', { 'data-focus-scope': `account/${id}` },
+      el('div', { class: 'account-header' },
+        el('strong', {}, `${providerLabel} · ${name}`),
+        el('span', { class: `account-pill ${statusPillClass}` }, statusText),
+        button('Remove…', () => openRemoveAccount(p, name), 'danger small')),
+      capacityText ? el('div', { class: 'subtext' }, capacityText) : null,
+      el('div', { class: 'subtext' }, usageSubtext));
+  })) : empty('No worker accounts yet.', 'Connect an account above to allow AI workers to run with isolated logins.');
+
+  const accountsPanel = panel('Worker accounts', 'Which AI worker logins and accounts are on this computer?', el('div', {},
+    receiptNode,
+    list));
+
+  return [back, connectCard, accountsPanel];
+}
+  const list = accounts.length ? el('ul', { class: 'settings-links' }, ...accounts.map((acct) => {
+    const { id, provider: p, name, usage } = acct;
+    const providerLabel = p === 'claude' ? 'Claude' : p === 'codex' ? 'ChatGPT (Codex)' : p === 'agy' ? 'Agy' : p === 'cursor' ? 'Cursor Agent' : p;
     let statusText = 'Ready';
     let statusPillClass = 'pill-ready';
     if (usage?.cooldown?.active) {
@@ -1229,6 +1480,97 @@ function accountsSection(accounts = []) {
   return el('div', { class: 'accounts-section' },
     el('div', { class: 'panel-header' }, el('h3', {}, 'Logins and usage')),
     list);
+}
+
+function accountsScreen() {
+  const settings = state.supervisor.settings;
+  const accounts = settings?.accounts ?? [];
+  const back = el('p', { class: 'breadcrumb' }, routeLink('← Back to Settings', '#/settings'));
+
+  let receiptNode = null;
+  if (lastConnectReceipt) {
+    const timeStr = lastConnectReceipt.modifiedAt ? timeOnly(lastConnectReceipt.modifiedAt) : 'just now';
+    receiptNode = el('div', { class: 'notice notice-success', id: 'account-receipt-notice' },
+      el('p', {},
+        el('strong', {}, `Connected ${lastConnectReceipt.providerLabel} · ${lastConnectReceipt.name}! `),
+        `Picked up credentials from ${lastConnectReceipt.sourcePath} (modified ${timeStr}) and saved to isolated profile ${lastConnectReceipt.name}.`
+      ),
+      button('Dismiss', () => { lastConnectReceipt = null; render(); }, 'secondary small')
+    );
+  }
+
+  const actions = el('div', { class: 'account-actions' },
+    button('Connect account…', openAddAccount, 'button small'),
+    accounts.length ? button('Export accounts…', openExportAccounts, 'secondary small') : null,
+    button('Import accounts…', openImportAccounts, 'secondary small'));
+
+  const list = accounts.length ? el('ul', { class: 'settings-links' }, ...accounts.map((acct) => {
+    const { id, provider: p, name, usage } = acct;
+    const providerLabel = p === 'claude' ? 'Claude' : p === 'codex' ? 'ChatGPT (Codex)' : p === 'agy' ? 'Agy' : p === 'cursor' ? 'Cursor Agent' : p;
+    let statusText = 'Ready';
+    let statusPillClass = 'pill-ready';
+    if (usage?.cooldown?.active) {
+      const remainingSec = Math.max(0, Math.round((usage.cooldown.retryAt - Date.now()) / 1000));
+      const mins = Math.floor(remainingSec / 60);
+      const secs = remainingSec % 60;
+      statusText = `Waiting for quota (${mins}m ${secs}s)`;
+      statusPillClass = 'pill-waiting';
+    } else if (usage?.openRuns > 0) {
+      statusText = `In use (${usage.openRuns} active)`;
+      statusPillClass = 'pill-running';
+    }
+    const capacityText = usage?.learnedLimit ? `Learned limit: ${usage.learnedLimit} concurrent runs.` : null;
+    const stats = usage?.outcomes ?? {};
+    const successCount = stats.result ?? stats.success ?? 0;
+    const retryCount = stats.retry ?? 0;
+    const failCount = stats.failure ?? 0;
+    const durationMin = usage?.totalDurationMs ? Math.round(usage.totalDurationMs / 60000) : 0;
+    const usageSubtext = `Runs: ${successCount} successful, ${retryCount} retries, ${failCount} errors · ${durationMin}m total run time.`;
+
+    return el('li', { 'data-focus-scope': `account/${id}` },
+      el('div', { class: 'account-header' },
+        el('strong', {}, `${providerLabel} · ${name}`),
+        el('span', { class: `account-pill ${statusPillClass}` }, statusText),
+        button('Remove…', () => openRemoveAccount(p, name), 'danger small')),
+      capacityText ? el('div', { class: 'subtext' }, capacityText) : null,
+      el('div', { class: 'subtext' }, usageSubtext));
+  })) : empty('No worker accounts added yet.', 'Connect accounts or import them from another computer to allow AI workers to run with isolated logins.');
+
+  const accountsPanel = panel('Worker accounts', 'Which AI worker logins and accounts are on this computer?', el('div', {},
+    receiptNode,
+    actions,
+    list));
+
+  const preferencesPanel = modelPreferencesPanel(settings?.modelPreferences ?? {});
+  return [back, accountsPanel, preferencesPanel];
+}
+
+function modelPreferencesPanel(prefs = {}) {
+  const roles = [
+    { key: 'implementer', title: 'Builder / Implementation', desc: 'Order of models used for implementing task steps and writing code.' },
+    { key: 'verification', title: 'Checker / Verification', desc: 'Order of models used for independent verification and review.' },
+    { key: 'coordinator', title: 'Coordinator / Planner', desc: 'Models used for roadmap drafting, task breakdown, and planning.' },
+  ];
+
+  const items = roles.map((r) => {
+    const rolePref = prefs[r.key] ?? {};
+    const models = Array.isArray(rolePref.models) && rolePref.models.length ? rolePref.models.join(', ') : 'Default supervisor order';
+    const effort = rolePref.effort ? `${rolePref.effort} effort` : 'standard effort';
+    const kind = rolePref.kind ? `(${rolePref.kind})` : '';
+
+    return el('li', { 'data-focus-scope': `preference/${r.key}` },
+      el('div', { class: 'account-header' },
+        el('strong', {}, r.title),
+        button('Configure…', () => openSetPreference(r.key, rolePref), 'secondary small')
+      ),
+      el('div', { class: 'subtext' }, r.desc),
+      el('div', { class: 'subtext' }, `Models: ${models} · ${effort} ${kind}`.trim())
+    );
+  });
+
+  return panel('Role model preferences', 'Which models and order should AIWorks use for each worker role?', el('div', {},
+    el('ul', { class: 'settings-links' }, ...items)
+  ));
 }
 
 /**
@@ -1271,6 +1613,7 @@ const settingsEmpty = ({ title, text, primary }) => el('div', { class: 'empty-st
 
 function settingsLinks() {
   return panel('More', null, el('ul', { class: 'settings-links' },
+    el('li', {}, routeLink('Worker accounts', '#/settings/accounts'), el('div', { class: 'subtext' }, 'Connect and manage isolated worker logins, view live quota usage, and export encrypted bundles.')),
     el('li', {}, routeLink('Messages', '#/settings/messages'), el('div', { class: 'subtext' }, 'What you asked AIWorks, and what it answered.')),
     el('li', {}, routeLink('Diagnostics', '#/settings/diagnostics'), el('div', { class: 'subtext' }, 'The full activity journal, every step with its issue and pull request, the roadmap of the platform that keeps your project rules, and how fresh each merge check is.'))));
 }
@@ -1421,6 +1764,11 @@ function stepScreen(project, c, task) {
       task.stopped ? el('p', {}, task.stopped.text) : null,
       p ? el('p', { class: 'subtext' }, `From the worker’s own record: ${plural(p.turns, 'turn')} · ${plural(p.toolCalls, 'action')} · last activity ${timeAgo(p.lastActivityAt)}`) : null,
       last ? el('p', { class: 'subtext' }, `Last result: ${last}`) : null,
+      task.signature ? el('div', { class: 'instruction-list', 'data-task-signature': '' },
+        el('h3', { class: 'section-title' }, 'Model signature'),
+        task.signature.name ? el('p', {}, el('strong', {}, 'Implementer: '), `${task.signature.name} (${task.signature.type ?? 'model'} · ${task.signature.effort ?? 'standard'} effort${task.signature.tokens ? ` · ${task.signature.tokens.total?.toLocaleString?.() ?? task.signature.tokens.total} tokens` : ' · tokens not reported'})`) : null,
+        task.signature.verifier ? el('p', {}, el('strong', {}, 'Verifier: '), `${task.signature.verifier.name} (${task.signature.verifier.type ?? 'model'} · ${task.signature.verifier.effort ?? 'standard'} effort${task.signature.verifier.tokens ? ` · ${task.signature.verifier.tokens.total?.toLocaleString?.() ?? task.signature.verifier.tokens.total} tokens` : ' · tokens not reported'})`) : null
+      ) : null,
       // What that result means and, when stopped, what fixing it involves, in place (aiworks#11 review 4 F13).
       meaning ? el('div', { class: 'instruction-list', 'data-result-meaning': '' }, el('p', {}, meaning.kind), el('p', {}, meaning.fix)) : null,
       // The rule a returned change broke and what the next attempt was given (SCOPED_READING, slice UI18): paths, sections and headings only.
@@ -1444,6 +1792,7 @@ const resultRow = (row) => el('li', { class: `result-row ${row.group}`, 'data-fo
   row.asOf ? el('div', { class: 'needs-stale' }, mergeAsOf(row.asOf)) : null,
   row.evidence ? disclosure(`results/${row.campaignId}/${row.taskId}`, el('span', { class: 'evidence' }, row.evidence),
     el('p', { class: 'needs-detail' }, row.detail)) : null,
+  row.signature ? el('div', { class: 'subtext task-signature' }, formatTaskSignatureBrief(row.signature)) : null,
   el('div', { class: 'subtext' }, campaignContext(row.campaignId)));
 
 /**
@@ -1597,6 +1946,7 @@ function render() {
     : route.screen === 'project' && route.tab === 'work' ? ['AI workers working'] : []);
   if (route.screen === 'needs') patch(content, [needsYou() ?? unavailable()]);
   else if (route.screen === 'settings' && route.section === 'messages') patch(content, [messagesPanel(20)]);
+  else if (route.screen === 'settings' && route.section === 'accounts') patch(content, accountsScreen());
   else if (diagnostics) patch(content, [trackOverview(), roadmapView(), workView(), mergeChecksPanel(), projectWaitsPanel(),
     panel('Execution journal', 'Latest 80 events · raw agent transcripts and secrets are never shown', activityList())].filter(Boolean));
   else if (route.screen === 'settings') patch(content, settingsScreen());
@@ -1755,6 +2105,7 @@ $('#message-form').addEventListener('submit', (event) => {
   askNotifications();
   void sendMessage(text);
 });
+
 $('#close-remove-account').addEventListener('click', () => { pendingRemoveAccount = null; $('#remove-account-dialog').close(); });
 $('#confirm-remove-account').addEventListener('click', async () => {
   const target = pendingRemoveAccount;
@@ -1767,6 +2118,40 @@ $('#confirm-remove-account').addEventListener('click', async () => {
     await poll();
   } catch (err) {
     notice(err.message ?? 'Could not remove account.');
+  }
+});
+$('#close-preference').addEventListener('click', () => $('#preference-dialog').close());
+$('#clear-preference-button').addEventListener('click', async () => {
+  const role = $('#preference-role').value;
+  $('#preference-dialog').close();
+  if (!role) return;
+  try {
+    await post('/api/accounts/preferences', { role, models: [] });
+    notice(`Reset model preferences for ${role}.`);
+    await poll();
+  } catch (err) {
+    notice(err.message ?? 'Could not reset model preferences.');
+  }
+});
+$('#preference-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const role = $('#preference-role').value;
+  const rawModels = $('#preference-models').value;
+  const models = rawModels.split(/[\s,]+/).map((m) => m.trim()).filter(Boolean);
+  const effort = $('#preference-effort').value || undefined;
+  const kind = $('#preference-kind').value || undefined;
+  $('#preference-dialog').close();
+  if (!role) return;
+  try {
+    await post('/api/accounts/preferences', {
+      preferences: {
+        [role]: { models, effort, kind }
+      }
+    });
+    notice(`Saved model preferences for ${role}.`);
+    await poll();
+  } catch (err) {
+    notice(err.message ?? 'Could not save model preferences.');
   }
 });
 // Our own navigation already set the address; any other change (Back, Forward, an edited address) restores that address's position.

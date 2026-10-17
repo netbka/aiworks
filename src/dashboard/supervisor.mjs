@@ -1,4 +1,5 @@
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
@@ -13,7 +14,9 @@ import { coordinatorView, LANE as COORDINATOR_LANE, postOwnerMessage } from '../
 import { CODE_ROOT, revisionNotMerged } from '../supervisor/provenance.mjs';
 import { COMMANDS, stateCopy, stopReasonWords } from './copy.mjs';
 import { configuredRepositories, connectedProjects, projectConnectionEnabled } from './projects.mjs';
-import { accountUsageSummary, removeAccount } from '../supervisor/accounts.mjs';
+import { accountUsageSummary, removeAccount, modelPreferences, saveModelPreferences, setRoleModelPreference,
+  shallowHomesRoot, configuredAccounts } from '../supervisor/accounts.mjs';
+export { shallowHomesRoot, configuredAccounts };
 import { removeShallowProfile } from '../supervisor/adapters/caam.mjs';
 
 const readConfig = (dataDir) => {
@@ -322,65 +325,11 @@ export function releaseModes(repositories, { waitsFor = null, connected = [] } =
 }
 const RELEASE_LOCAL = "Release does not apply yet to a project without GitHub: AIWorks can't start work here yet, so there is nothing to release.";
 
-export const shallowHomesRoot = (config, dataDir) => config?.caam?.shallowHomes ?? (dataDir ? join(dataDir, 'profiles') : join(homedir(), '.caam', 'shallow-homes'));
-
-/** Configured AI worker accounts from active operations, provider waits, and local shallow profiles. */
-export function configuredAccounts(store, config, { now = Date.now(), dataDir = null } = {}) {
-  if (!store) return [];
-  const seen = new Set();
-  const accounts = [];
-  try {
-    const opAccounts = store.all('SELECT DISTINCT account_identity, executor_kind FROM operations WHERE account_identity IS NOT NULL');
-    for (const { account_identity: id, executor_kind: kind } of opAccounts) {
-      if (seen.has(id)) continue;
-      seen.add(id);
-      const [provider, name] = id.includes('/') ? id.split('/', 2) : [kind.replace('-cli', ''), id];
-      const usage = accountUsageSummary(store, config, { kind, account: id, now });
-      accounts.push({ id, provider, kind, name, usage });
-    }
-  } catch { /* operations table may not have account_identity in review fixture */ }
-
-  try {
-    const waitAccounts = store.all('SELECT DISTINCT account, executor_kind FROM provider_waits WHERE account IS NOT NULL');
-    for (const { account: id, executor_kind: kind } of waitAccounts) {
-      if (seen.has(id)) continue;
-      seen.add(id);
-      const [provider, name] = id.includes('/') ? id.split('/', 2) : [kind.replace('-cli', ''), id];
-      const usage = accountUsageSummary(store, config, { kind, account: id, now });
-      accounts.push({ id, provider, kind, name, usage });
-    }
-  } catch { /* table may be empty or missing */ }
-
-  if (dataDir) {
-    const root = shallowHomesRoot(config, dataDir);
-    if (existsSync(root)) {
-      try {
-        for (const dirent of readdirSync(root, { withFileTypes: true })) {
-          if (dirent.isDirectory()) {
-            const name = dirent.name;
-            const hasClaude = existsSync(join(root, name, '.claude'));
-            const hasCodex = existsSync(join(root, name, '.codex'));
-            const provider = hasClaude ? 'claude' : hasCodex ? 'codex' : 'claude';
-            const kind = `${provider}-cli`;
-            const id = `${provider}/${name}`;
-            if (!seen.has(id)) {
-              seen.add(id);
-              const usage = accountUsageSummary(store, config, { kind, account: id, now });
-              accounts.push({ id, provider, kind, name, usage });
-            }
-          }
-        }
-      } catch { /* ignore directory read errors */ }
-    }
-  }
-
-  return accounts.sort((a, b) => a.id.localeCompare(b.id));
-}
-
 /** Settings (slice S8): configured command names, the AI workers once for this computer, accounts, and release mode per project. */
 export function computerSettings(campaigns, config, { platform = process.platform, now = Date.now(), repositories = [], connected = [], accounts = [] } = {}) {
   return { commands: configuredCommandNames(config), workers: aiWorkers(campaigns, config, { platform, now }),
     accounts,
+    modelPreferences: modelPreferences(config),
     releases: releaseModes([...repositories, ...campaigns.map((c) => c.repository)], { waitsFor: issueLink(config?.autoReleaseDecision), connected }),
     // Where supervisor faults are tracked: config.json "supervisorIssue" (a GitHub issue link) when set, so a disposable
     // review copy can name a made-up one; otherwise null, and the owner view links AIWorks' own (owner.mjs SUPERVISOR_ISSUE).
@@ -388,8 +337,8 @@ export function computerSettings(campaigns, config, { platform = process.platfor
 }
 
 export function removeDashboardAccount(dataDir, { provider, name } = {}) {
-  if (!['claude', 'codex'].includes(provider) || typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
-    const err = new Error('Provider must be claude or codex, and the account name only letters, numbers, dots, dashes and underscores.');
+  if (!['claude', 'codex', 'agy', 'cursor'].includes(provider) || typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
+    const err = new Error('Provider must be claude, codex, agy or cursor, and the account name only letters, numbers, dots, dashes and underscores.');
     err.status = 400;
     throw err;
   }
@@ -407,6 +356,156 @@ export function removeDashboardAccount(dataDir, { provider, name } = {}) {
   }
 }
 
+export const DEFAULT_CREDENTIAL_FILES = {
+  claude: [
+    { source: join(homedir(), '.claude', '.credentials.json'), dest: '.claude/.credentials.json' },
+    { source: join(homedir(), '.claude.json'), dest: '.claude.json' },
+  ],
+  codex: [
+    { source: join(homedir(), '.codex', 'auth.json'), dest: '.codex/auth.json' },
+    { source: join(homedir(), '.codex', 'config.toml'), dest: '.codex/config.toml' },
+  ],
+  cursor: [
+    { source: join(homedir(), '.cursor', 'cli-config.json'), dest: '.cursor/cli-config.json' },
+  ],
+  agy: [
+    { source: join(homedir(), '.gemini', 'oauth_creds.json'), dest: '.agy/oauth_creds.json' },
+    { source: join(homedir(), '.gemini', 'oauth_credentials.json'), dest: '.agy/credentials.json' },
+    { source: join(homedir(), '.gemini', 'google_accounts.json'), dest: '.agy/google_accounts.json' },
+    { source: join(homedir(), '.agy', 'credentials.json'), dest: '.agy/credentials.json' },
+  ],
+};
+
+export const PROVIDER_LOGIN_URLS = {
+  claude: 'https://claude.ai/login',
+  codex: 'https://chatgpt.com/',
+  cursor: 'https://www.cursor.com/login',
+  agy: 'https://accounts.google.com/',
+};
+
+export function findIncognitoBrowser(platform = process.platform) {
+  if (platform === 'win32') {
+    const candidates = [
+      { bin: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', arg: '--incognito' },
+      { bin: 'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe', arg: '--incognito' },
+      { bin: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe', arg: '--inprivate' },
+      { bin: 'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe', arg: '--inprivate' },
+    ];
+    for (const { bin, arg } of candidates) {
+      if (existsSync(bin)) return { command: bin, arg };
+    }
+    return { command: 'chrome.exe', arg: '--incognito' };
+  }
+  if (platform === 'darwin') {
+    return { command: 'open', arg: '-na', extra: ['Google Chrome', '--args', '--incognito'] };
+  }
+  return { command: 'google-chrome', arg: '--incognito' };
+}
+
+export function startIncognitoConnect(dataDir, { provider, name, openBrowser = true } = {}) {
+  if (!provider || !name) {
+    const err = new Error('Provider and name are required.');
+    err.status = 400;
+    throw err;
+  }
+  if (!['claude', 'codex', 'agy', 'cursor'].includes(provider)) {
+    const err = new Error('Provider must be claude, codex, agy, or cursor.');
+    err.status = 400;
+    throw err;
+  }
+  const url = PROVIDER_LOGIN_URLS[provider];
+  let browserOpened = false;
+  if (openBrowser && url) {
+    try {
+      const browser = findIncognitoBrowser();
+      const args = browser.extra ? [...browser.extra, url] : [browser.arg, url];
+      const child = spawn(browser.command, args, { detached: true, stdio: 'ignore' });
+      child.unref();
+      browserOpened = true;
+    } catch { /* browser spawn failed or headless */ }
+  }
+  const files = DEFAULT_CREDENTIAL_FILES[provider] ?? [];
+  return {
+    success: true,
+    provider,
+    name,
+    loginUrl: url,
+    defaultLocation: files[0]?.source ?? null,
+    startedAt: Date.now(),
+    browserOpened,
+  };
+}
+
+export function checkIncognitoConnect(dataDir, { provider, name, startedAt = 0, force = false } = {}) {
+  if (!provider || !name) {
+    const err = new Error('Provider and name are required.');
+    err.status = 400;
+    throw err;
+  }
+  const config = readConfig(dataDir);
+  const root = shallowHomesRoot(config, dataDir);
+  const home = join(root, name);
+  const files = DEFAULT_CREDENTIAL_FILES[provider] ?? [];
+  let found = null;
+
+  for (const { source, dest } of files) {
+    if (existsSync(source)) {
+      const stat = statSync(source);
+      if (force || stat.mtimeMs >= (startedAt - 5000)) {
+        found = { source, dest, mtimeMs: stat.mtimeMs };
+        break;
+      }
+    }
+  }
+
+  if (!found) {
+    return {
+      connected: false,
+      provider,
+      name,
+      waitingFor: files[0]?.source ?? null,
+      startedAt,
+    };
+  }
+
+  let copiedCount = 0;
+  for (const { source, dest } of files) {
+    if (existsSync(source)) {
+      const target = join(home, dest);
+      mkdirSync(join(target, '..'), { recursive: true });
+      copyFileSync(source, target);
+      copiedCount++;
+    }
+  }
+
+  return {
+    connected: true,
+    account: `${provider}/${name}`,
+    provider,
+    name,
+    sourcePath: found.source,
+    savedTo: home,
+    modifiedAt: found.mtimeMs,
+    copiedFiles: copiedCount,
+  };
+}
+
+export function configuredModelPreferences(dataDir) {
+  const config = readConfig(dataDir);
+  return modelPreferences(config);
+}
+
+export function saveDashboardModelPreferences(dataDir, { preferences, role, models } = {}) {
+  if (role && models) {
+    return setRoleModelPreference(dataDir, role, models);
+  }
+  if (!preferences || typeof preferences !== 'object') {
+    const err = new Error('Preferences object or role and models are required.');
+    err.status = 400;
+    throw err;
+  }
+  return saveModelPreferences(dataDir, preferences);
+}
 
 /** `value` when it is a GitHub issue link, else null. */
 function issueLink(value) {

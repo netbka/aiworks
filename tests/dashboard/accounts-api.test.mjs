@@ -68,3 +68,108 @@ test('dashboard accounts API: list and remove; no route adds, exports or imports
   const { accounts: afterRemove } = await (await fetch(`${origin}/api/accounts`, { headers: { origin } })).json();
   assert.ok(!afterRemove.some((a) => a.id === 'claude/work-account'));
 });
+
+test('dashboard accounts API: incognito connect start and check', async (t) => {
+  const { dataDir } = fixture(t);
+  const server = createDashboardServer({
+    dataDir,
+    roadmap: { snapshot: () => ({ entries: [], governance: { configured: false, reason: 'Synthetic test.' } }) },
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const sessionRes = await fetch(`${origin}/api/session`, { headers: { origin } });
+  const { csrf } = await sessionRes.json();
+
+  // 1. POST /api/accounts/connect/start
+  const startRes = await fetch(`${origin}/api/accounts/connect/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-dashboard-csrf': csrf, origin },
+    body: JSON.stringify({ provider: 'claude', name: 'incognito-test', openBrowser: false }),
+  });
+  assert.equal(startRes.status, 200);
+  const startBody = await startRes.json();
+  assert.equal(startBody.success, true);
+  assert.equal(startBody.provider, 'claude');
+  assert.equal(startBody.name, 'incognito-test');
+  assert.equal(startBody.loginUrl, 'https://claude.ai/login');
+  assert.ok(startBody.defaultLocation);
+
+  // 2. POST /api/accounts/connect/check before credentials exist or force
+  const checkRes = await fetch(`${origin}/api/accounts/connect/check`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-dashboard-csrf': csrf, origin },
+    body: JSON.stringify({ provider: 'claude', name: 'incognito-test', startedAt: startBody.startedAt }),
+  });
+  assert.equal(checkRes.status, 200);
+  const checkBody = await checkRes.json();
+  assert.equal(checkBody.provider, 'claude');
+  assert.equal(checkBody.name, 'incognito-test');
+  assert.equal(typeof checkBody.connected, 'boolean');
+});
+
+test('dashboard accounts API: get and set model preferences', async (t) => {
+  const { dataDir } = fixture(t);
+  const server = createDashboardServer({
+    dataDir,
+    roadmap: { snapshot: () => ({ entries: [], governance: { configured: false, reason: 'Synthetic test.' } }) },
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const sessionRes = await fetch(`${origin}/api/session`, { headers: { origin } });
+  const { csrf } = await sessionRes.json();
+
+  // 1. GET /api/accounts/preferences (initial empty)
+  const getInitial = await fetch(`${origin}/api/accounts/preferences`, { headers: { origin } });
+  assert.equal(getInitial.status, 200);
+  const initialBody = await getInitial.json();
+  assert.ok(initialBody.preferences);
+  assert.deepEqual(initialBody.preferences.implementer, []);
+  assert.deepEqual(initialBody.preferences.verification, []);
+
+  // 2. POST /api/accounts/preferences to set role models
+  const setRes = await fetch(`${origin}/api/accounts/preferences`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-dashboard-csrf': csrf, origin },
+    body: JSON.stringify({
+      role: 'implementer',
+      models: ['claude-3-7-sonnet', 'claude-3-5-sonnet'],
+    }),
+  });
+  assert.equal(setRes.status, 200);
+  const setBody = await setRes.json();
+  assert.equal(setBody.success, true);
+  assert.equal(setBody.role, 'implementer');
+  assert.deepEqual(setBody.preferences, ['claude-3-7-sonnet', 'claude-3-5-sonnet']);
+
+  // 3. GET /api/accounts/preferences to verify saved preference
+  const getUpdated = await fetch(`${origin}/api/accounts/preferences`, { headers: { origin } });
+  assert.equal(getUpdated.status, 200);
+  const updatedBody = await getUpdated.json();
+  assert.deepEqual(updatedBody.preferences.implementer, ['claude-3-7-sonnet', 'claude-3-5-sonnet']);
+
+  // 4. POST /api/accounts/preferences with full preferences object
+  const setFullRes = await fetch(`${origin}/api/accounts/preferences`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-dashboard-csrf': csrf, origin },
+    body: JSON.stringify({
+      preferences: {
+        implementer: { models: ['gpt-4o'], effort: 'high' },
+        verification: { models: ['claude-3-7-sonnet'], effort: 'standard' },
+      },
+    }),
+  });
+  assert.equal(setFullRes.status, 200);
+
+  const getFinal = await fetch(`${origin}/api/accounts/preferences`, { headers: { origin } });
+  assert.equal(getFinal.status, 200);
+  const finalBody = await getFinal.json();
+  assert.deepEqual(finalBody.preferences.implementer, { models: ['gpt-4o'], effort: 'high' });
+  assert.deepEqual(finalBody.preferences.verification, { models: ['claude-3-7-sonnet'], effort: 'standard' });
+});
+

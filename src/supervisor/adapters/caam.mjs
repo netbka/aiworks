@@ -228,14 +228,14 @@ export function ensureShallowProfile({ command, kind, name, root, timeoutMs = 60
  * and optionally informs CAAM via `shallow-profile remove`. Returns removal status.
  */
 export function removeShallowProfile({ command = null, kind, name, root, spawn = spawnSync }) {
-  const provider = caamProvider(kind);
+  const provider = Object.hasOwn(PROVIDERS, kind) ? PROVIDERS[kind] : (kind.endsWith('-cli') ? kind.slice(0, -4) : kind);
   const home = shallowHomeOf(root, name);
   let removed = false;
   if (existsSync(home)) {
     rmSync(home, { recursive: true, force: true, maxRetries: 3 });
     removed = true;
   }
-  if (Array.isArray(command) && command.length && command[0]) {
+  if (Object.hasOwn(PROVIDERS, kind) && Array.isArray(command) && command.length && command[0]) {
     try {
       spawn(command[0], [...command.slice(1), 'shallow-profile', 'remove', name, '--from-vault', `${provider}/${name}`, '--json'], {
         encoding: 'utf8', windowsHide: true, timeout: 15_000,

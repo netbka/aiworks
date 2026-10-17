@@ -238,6 +238,7 @@ export function campaignStatus(store, id, now = Date.now(), { releaseStop = fals
       id: t.task_id, state: t.state, attempts: t.attempts, repairRounds: t.repair_rounds,
       headSha: t.head_sha, verifiedSha: t.verified_sha, prUrl: t.pr_url,
       retryAt: t.retry_at ? new Date(t.retry_at).toISOString() : null, blocked: t.blocked, lastError: t.last_error,
+      signature: t.signature ?? null,
       ci: ci.tasks.get(t.task_id) ?? null,
       wait: waitReason(t, waits),
       routing: routed.tasks.get(t.task_id)?.routing ?? { implement: null, verify: null, escalation: null, sameProvider: null },

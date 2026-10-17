@@ -134,7 +134,7 @@ export const RESULT_GROUPS = [
 
 /** One finished step as a Results row: its group, its state word, what it means, and the link to the result. */
 function resultRow(c, task, d, releases) {
-  const base = { campaignId: c.id, taskId: task.id, repository: c.repository, text: label(task), mergedAt: null, release: null, asOf: d.asOf ?? null };
+  const base = { campaignId: c.id, taskId: task.id, repository: c.repository, text: label(task), mergedAt: null, release: null, asOf: d.asOf ?? null, signature: task.signature ?? null };
   if (d.state === 'report-posted') {
     const evidence = task.verifiedSha ? resultEvidence(task, false) : null;
     return { ...base, group: 'reports', word: 'Report posted · for you to read', note: null, link: { label: 'Read the report', url: d.url },

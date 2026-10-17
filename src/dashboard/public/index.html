@@ -56,12 +56,26 @@
     <p id="message-help">You get a receipt at each step: <strong>Received</strong> when the supervisor stores it, <strong>Read</strong> when the coordinator agent starts with it, and <strong>Answered</strong> with a link to its reply. This page shows a notice and a desktop notification for each step while it is open. The coordinator is read-only: it reviews and plans, and never starts work by itself. No secrets; up to 4,000 characters.</p>
     <div class="dialog-actions"><button id="close-message" class="button secondary" type="button">Keep draft</button><button id="send-message" class="button" type="submit">Send message</button></div>
   </form></dialog>
+
   <dialog id="remove-account-dialog" aria-labelledby="remove-account-title"><form id="remove-account-form" novalidate>
     <div class="dialog-icon" aria-hidden="true">!</div>
     <h2 id="remove-account-title">Remove account</h2>
     <p id="remove-account-description">Remove this account login from this computer?</p>
     <p class="subtext">Saved credentials for this account will be removed from this computer. Any active wait timers will be cleared.</p>
     <div class="dialog-actions"><button id="close-remove-account" class="button secondary" type="button">Keep account</button><button id="confirm-remove-account" class="button danger" type="button">Remove account</button></div>
+  </form></dialog>
+  <dialog id="preference-dialog" aria-labelledby="preference-title"><form id="preference-form" novalidate>
+    <h2 id="preference-title">Role model preferences</h2>
+    <p id="preference-role-description">Order and preferences for models used in this role.</p>
+    <input id="preference-role" type="hidden" />
+    <label>Model order (comma or space separated)<input id="preference-models" type="text" placeholder="e.g. claude-3-7-sonnet, gpt-4o, claude-3-5-sonnet" /></label>
+    <label>Preferred effort<select id="preference-effort"><option value="">Default (standard)</option><option value="low">Low</option><option value="medium">Medium</option><option value="standard">Standard</option><option value="high">High</option></select></label>
+    <label>Worker kind<select id="preference-kind"><option value="">Any eligible provider</option><option value="claude-cli">Claude CLI</option><option value="codex">ChatGPT (Codex)</option><option value="cursor">Cursor Agent</option><option value="agy">Agy</option></select></label>
+    <div class="dialog-actions">
+      <button id="clear-preference-button" class="button secondary danger" type="button">Reset to defaults</button>
+      <button id="close-preference" class="button secondary" type="button">Cancel</button>
+      <button id="save-preference" class="button" type="submit">Save preference</button>
+    </div>
   </form></dialog>
 </body>
 </html>

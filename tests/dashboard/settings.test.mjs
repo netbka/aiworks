@@ -269,3 +269,15 @@ test('Settings displays AI worker accounts and their usage, with no action that 
   for (const id of ['account-dialog', 'export-accounts-dialog', 'import-accounts-dialog']) assert.equal(page.$(`#${id}`), null, id);
 });
 
+test('Settings › Accounts dedicated page displays worker accounts and back link', async (t) => {
+  const page = await openPage(t, { store: 'empty' });
+  await page.go('#/settings/accounts');
+  const text = visibleText(page.$('#content'));
+  assert.ok(text.includes('Worker accounts'));
+  assert.ok(text.includes('Which AI worker logins and accounts are on this computer?'));
+  assert.ok(text.includes('Back to Settings'));
+  assert.ok(text.includes('Connect account…'));
+  assert.ok(text.includes('No worker accounts added yet.'));
+});
+
+
