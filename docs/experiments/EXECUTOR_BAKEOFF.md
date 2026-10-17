@@ -23,6 +23,18 @@ AIWorks owns authorization, planning, task identity, scheduling, verifier, accep
 
 A source-level claim of Windows support is **not** a successful E0 run. A process spawned in an isolated environment must not be confused with a host process. No production migration is authorized.
 
+## Reproduce synthetic fixture baselines
+
+From the repository root, on a machine with Node.js and Git installed:
+
+```sh
+node experiments/executor-bakeoff/create-fixtures.mjs ./tmp-executor-fixtures
+cd tmp-executor-fixtures/BUG-1 && node --test
+cd ../FEATURE-1 && node --test
+```
+
+Both baseline test suites are **expected to fail**: they are tasks for the coding agents to fix. The generator refuses to overwrite existing fixture directories. Run each benchmark repetition from a fresh copy of the generated baseline commit, not the same mutated working directory. These fixture tests are not part of AIWorks's own green test suite.
+
 ## E1: Identical ordinary tasks
 
 Two small **synthetic** fixture repositories, prepared at pinned commits:
