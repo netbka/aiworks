@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
-import { supervisorSnapshot, applyCommand, postMessage, configuredAccounts, addDashboardAccount, removeDashboardAccount, exportDashboardAccounts, importDashboardAccounts } from './supervisor.mjs';
+import { supervisorSnapshot, applyCommand, postMessage, configuredAccounts, removeDashboardAccount } from './supervisor.mjs';
 import { Store } from '../supervisor/store.mjs';
 import { ownerView } from './owner.mjs';
 import { configuredMergeDelegation } from './merges.mjs';
@@ -101,10 +101,9 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       }
       if (req.headers['content-type'] !== 'application/json') return send(415, { error: 'Commands require JSON.' });
       const chunks = []; let size = 0;
-      const maxSize = path === '/api/accounts/import' ? 1_048_576 : 16_384;
       for await (const chunk of req) {
         size += chunk.length;
-        if (size > maxSize) return send(413, { error: 'Command is too large.' });
+        if (size > 16_384) return send(413, { error: 'Command is too large.' });
         chunks.push(chunk);
       }
       let value;
@@ -112,10 +111,9 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       catch { return send(400, { error: 'Invalid JSON.' }); }
       if (path === '/api/commands') return send(202, applyCommand(dataDir, value, Date.now(), { provenanceRoot }));
       if (path === '/api/messages') return send(202, postMessage(dataDir, value));
-      if (path === '/api/accounts/add') return send(200, addDashboardAccount(dataDir, value));
+      // No route writes or returns credentials: any local process can obtain the CSRF token, so adding, exporting and
+      // importing logins answer 404 like any unknown path.
       if (path === '/api/accounts/remove') return send(200, removeDashboardAccount(dataDir, value));
-      if (path === '/api/accounts/export') return send(200, exportDashboardAccounts(dataDir, value));
-      if (path === '/api/accounts/import') return send(200, importDashboardAccounts(dataDir, value));
       // Add project (UI13): each answers 404 while it is off, as before it existed.
       if (path === '/api/projects/preflight') return send(200, previewProject(dataDir, value, projectConnection));
       if (path === '/api/projects/connect') return send(200, connectProject(dataDir, value, projectConnection));
