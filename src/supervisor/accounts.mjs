@@ -188,3 +188,65 @@ export function selectProfile(store, kind, profiles, now, waited = null) {
   const reason = skipped.length ? `every ${kind} profile waits (${skipped.join('; ')})`.slice(0, 500) : `CAAM lists no ${kind} profile`;
   return { account: null, retryAt: resets.length ? Math.min(...resets) : now + PROFILE_RECHECK_MS, reason };
 }
+
+/**
+ * Remove an account profile from active state: clears its wait row and capacity row in the store.
+ */
+export function removeAccount(store, config, { kind, account }) {
+  const waitCleared = clearAccountWait(store, config, kind, account);
+  const capChanges = store.run("DELETE FROM capacity WHERE scope = 'account' AND id = ?", account).changes > 0;
+  return { removed: true, account, waitCleared, capCleared: capChanges };
+}
+
+/**
+ * Detailed usage and workload metrics for an account or executor kind.
+ * Aggregates live running operations, learned capacity limit, current cooldown reset timer,
+ * and historical run counts (outcomes) and execution duration.
+ */
+export function accountUsageSummary(store, config, { kind, account = null, now = Date.now() }) {
+  const accountId = account ?? accountOf(config, kind);
+  const limit = account ? profileLimit(store, accountId) : accountLimit(store, config, kind);
+  const open = account ? openOnProfile(store, accountId) : openOnAccount(store, config, kind);
+  const wait = store.get('SELECT * FROM provider_waits WHERE account = ? AND executor_kind = ?', accountId, kind) ?? null;
+
+  const ops = account
+    ? store.all('SELECT outcome, created_at, updated_at FROM operations WHERE account_identity = ?', accountId)
+    : store.all('SELECT outcome, created_at, updated_at FROM operations WHERE executor_kind = ?', kind);
+
+  const outcomes = {};
+  let totalDurationMs = 0;
+  let lastUsedAt = null;
+
+  for (const op of ops) {
+    const outcomeObj = op.outcome;
+    const outcome = typeof outcomeObj === 'object' && outcomeObj !== null
+      ? (outcomeObj.class ?? 'unknown')
+      : (typeof outcomeObj === 'string' ? outcomeObj : 'open');
+    outcomes[outcome] = (outcomes[outcome] ?? 0) + 1;
+    if (op.updated_at && op.created_at && op.updated_at >= op.created_at) {
+      totalDurationMs += (op.updated_at - op.created_at);
+    }
+    if (op.created_at && (lastUsedAt === null || op.created_at > lastUsedAt)) {
+      lastUsedAt = op.created_at;
+    }
+  }
+
+  const coolingDown = wait !== null && (wait.retry_at === null || wait.retry_at > now);
+  const resetInMs = coolingDown && wait.retry_at !== null ? Math.max(0, wait.retry_at - now) : 0;
+
+  return {
+    account: accountId,
+    executorKind: kind,
+    open,
+    limit,
+    coolingDown,
+    resetInMs,
+    retryAt: wait?.retry_at ?? null,
+    waitReason: wait?.reason ?? null,
+    totalOperations: ops.length,
+    outcomes,
+    totalDurationMs,
+    lastUsedAt,
+  };
+}
+

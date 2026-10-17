@@ -8,7 +8,8 @@
 // Robot status carries no credentials. The adapter keeps only the fields below, never the email, auth paths or raw
 // output, and its errors quote CAAM's own error code and message, never stdout or stderr.
 import { spawnSync } from 'node:child_process';
-import { existsSync, statSync } from 'node:fs';
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
@@ -221,3 +222,122 @@ export function ensureShallowProfile({ command, kind, name, root, timeoutMs = 60
   if (!isDirectory(home)) throw new CaamError('shallow-profile-missing', `CAAM reported success but ${provider}/${name} has no shallow home under the configured directory`);
   return home;
 }
+
+/**
+ * Remove the shallow home of profile `name` for an executor kind: deletes the shallow directory under `root`
+ * and optionally informs CAAM via `shallow-profile remove`. Returns removal status.
+ */
+export function removeShallowProfile({ command = null, kind, name, root, spawn = spawnSync }) {
+  const provider = caamProvider(kind);
+  const home = shallowHomeOf(root, name);
+  let removed = false;
+  if (existsSync(home)) {
+    rmSync(home, { recursive: true, force: true, maxRetries: 3 });
+    removed = true;
+  }
+  if (Array.isArray(command) && command.length && command[0]) {
+    try {
+      spawn(command[0], [...command.slice(1), 'shallow-profile', 'remove', name, '--from-vault', `${provider}/${name}`, '--json'], {
+        encoding: 'utf8', windowsHide: true, timeout: 15_000,
+      });
+    } catch { /* best-effort notification to CAAM */ }
+  }
+  return { removed, name, provider, path: home };
+}
+
+/**
+ * Export configured profile credentials into an AES-256-GCM encrypted binary bundle using PBKDF2/scrypt.
+ */
+function collectProfileFiles(home) {
+  const files = {};
+  if (!existsSync(home)) return files;
+  const walk = (dir) => {
+    try {
+      for (const dirent of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, dirent.name);
+        if (dirent.isDirectory()) {
+          if (['node_modules', '.git', 'cache', 'logs'].includes(dirent.name)) continue;
+          walk(full);
+        } else if (dirent.isFile()) {
+          const stat = statSync(full);
+          if (stat.size <= 1_048_576) {
+            const rel = relative(home, full).replace(/\\/g, '/');
+            files[rel] = readFileSync(full, 'utf8');
+          }
+        }
+      }
+    } catch { /* ignore unreadable dirs */ }
+  };
+  walk(home);
+  return files;
+}
+
+export function exportProfileCredentials({ root, profiles, passphrase }) {
+  if (typeof passphrase !== 'string' || passphrase.length < 8) {
+    throw new CaamError('invalid-passphrase', 'passphrase must be at least 8 characters');
+  }
+  const payload = {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    items: [],
+  };
+  for (const { provider, name } of (Array.isArray(profiles) ? profiles : [])) {
+    const home = shallowHomeOf(root, name);
+    if (!existsSync(home)) continue;
+    const files = collectProfileFiles(home);
+    payload.items.push({ provider, name, files });
+  }
+  const salt = randomBytes(16);
+  const iv = randomBytes(12);
+  const key = scryptSync(passphrase, salt, 32);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const json = JSON.stringify(payload);
+  const encrypted = Buffer.concat([cipher.update(json, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([salt, iv, tag, encrypted]);
+}
+
+/**
+ * Import and unpack profile credentials from an AES-256-GCM encrypted binary bundle.
+ */
+export function importProfileCredentials({ root, bundleBuffer, passphrase }) {
+  if (!Buffer.isBuffer(bundleBuffer) || bundleBuffer.length < 44) {
+    throw new CaamError('invalid-bundle', 'corrupted or truncated accounts bundle');
+  }
+  const salt = bundleBuffer.subarray(0, 16);
+  const iv = bundleBuffer.subarray(16, 28);
+  const tag = bundleBuffer.subarray(28, 44);
+  const ciphertext = bundleBuffer.subarray(44);
+  const key = scryptSync(passphrase, salt, 32);
+  let decrypted;
+  try {
+    const decipher = createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(tag);
+    decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+  } catch {
+    throw new CaamError('auth-failed', 'incorrect passphrase or corrupted accounts bundle');
+  }
+  let payload;
+  try { payload = JSON.parse(decrypted); } catch { throw new CaamError('invalid-bundle', 'decrypted bundle is not valid JSON'); }
+  if (payload.version !== 1 || !Array.isArray(payload.items)) {
+    throw new CaamError('invalid-bundle', 'unsupported accounts bundle format');
+  }
+  const imported = [];
+  for (const item of payload.items) {
+    if (!item?.provider || !item?.name || typeof item.files !== 'object') continue;
+    const home = shallowHomeOf(root, item.name);
+    for (const [relPath, content] of Object.entries(item.files)) {
+      const fullPath = join(home, relPath);
+      mkdirSync(resolve(fullPath, '..'), { recursive: true });
+      writeFileSync(fullPath, content, { encoding: 'utf8', mode: 0o600 });
+    }
+    imported.push({ provider: item.provider, name: item.name, home });
+  }
+  return {
+    success: true,
+    count: imported.length,
+    imported: imported.map((i) => `${i.provider}/${i.name}`),
+    profiles: imported,
+  };
+}
+

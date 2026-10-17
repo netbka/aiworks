@@ -258,3 +258,14 @@ test('Settings › Projects and Projects tell one story about how a project appe
   const add = page.$('#content').querySelectorAll('a').find((node) => node.textContent === 'Add project');
   assert.deepEqual([add.getAttribute('href'), add.className], ['#/projects/add', ''], 'a plain link, not a primary button');
 });
+
+test('Settings displays AI worker accounts and logins roster with actions and live usage', async (t) => {
+  const page = await openPage(t, { store: 'empty' });
+  await page.go('#/settings');
+  const text = visibleText(page.$('#content'));
+  assert.ok(text.includes('Logins and usage'));
+  assert.ok(text.includes('Add account…'));
+  assert.ok(text.includes('Import accounts…'));
+  assert.ok(text.includes('No worker accounts added yet.'));
+});
+

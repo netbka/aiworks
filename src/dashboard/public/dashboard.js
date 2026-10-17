@@ -1184,6 +1184,76 @@ function mergeChecksPanel() {
       : empty('No projects yet.', 'Merge checks appear here once this computer has a project.'));
 }
 
+let pendingRemoveAccount = null;
+
+function openAddAccount() {
+  $('#account-name').value = '';
+  $('#account-token').value = '';
+  $('#account-dialog').showModal();
+}
+
+function openExportAccounts() {
+  $('#export-passphrase').value = '';
+  $('#export-accounts-dialog').showModal();
+}
+
+function openImportAccounts() {
+  $('#import-accounts-text').value = '';
+  $('#import-accounts-file').value = '';
+  $('#import-passphrase').value = '';
+  $('#import-accounts-dialog').showModal();
+}
+
+function openRemoveAccount(provider, name) {
+  pendingRemoveAccount = { provider, name };
+  const label = provider === 'claude' ? 'Claude Code' : provider === 'codex' ? 'Codex' : provider;
+  $('#remove-account-description').textContent = `Remove login for ${label} · ${name} from this computer?`;
+  $('#remove-account-dialog').showModal();
+}
+
+function accountsSection(accounts = []) {
+  const actions = el('div', { class: 'account-actions' },
+    button('Add account…', openAddAccount, 'secondary small'),
+    accounts.length ? button('Export accounts…', openExportAccounts, 'secondary small') : null,
+    button('Import accounts…', openImportAccounts, 'secondary small'));
+  const list = accounts.length ? el('ul', { class: 'settings-links' }, ...accounts.map((acct) => {
+    const { id, provider: p, name, usage } = acct;
+    const providerLabel = p === 'claude' ? 'Claude Code' : p === 'codex' ? 'Codex' : p;
+    let statusText = 'Ready';
+    let statusPillClass = 'pill-ready';
+    if (usage?.cooldown?.active) {
+      const remainingSec = Math.max(0, Math.round((usage.cooldown.retryAt - Date.now()) / 1000));
+      const mins = Math.floor(remainingSec / 60);
+      const secs = remainingSec % 60;
+      statusText = `Waiting for quota (${mins}m ${secs}s)`;
+      statusPillClass = 'pill-waiting';
+    } else if (usage?.openRuns > 0) {
+      statusText = `In use (${usage.openRuns} active)`;
+      statusPillClass = 'pill-running';
+    }
+    const capacityText = usage?.learnedLimit ? `Learned limit: ${usage.learnedLimit} concurrent runs.` : null;
+    const stats = usage?.outcomes ?? {};
+    const successCount = stats.result ?? stats.success ?? 0;
+    const retryCount = stats.retry ?? 0;
+    const failCount = stats.failure ?? 0;
+    const durationMin = usage?.totalDurationMs ? Math.round(usage.totalDurationMs / 60000) : 0;
+    const usageSubtext = `Runs: ${successCount} successful, ${retryCount} retries, ${failCount} errors · ${durationMin}m total run time.`;
+
+    return el('li', { 'data-focus-scope': `account/${id}` },
+      el('div', { class: 'account-header' },
+        el('strong', {}, `${providerLabel} · ${name}`),
+        el('span', { class: `account-pill ${statusPillClass}` }, statusText),
+        button('Remove…', () => openRemoveAccount(p, name), 'danger small')),
+      capacityText ? el('div', { class: 'subtext' }, capacityText) : null,
+      el('div', { class: 'subtext' }, usageSubtext));
+  })) : empty('No worker accounts added yet.', 'Add accounts or import them from another computer to allow AI workers to run with isolated logins.');
+
+  return el('div', { class: 'accounts-section' },
+    el('div', { class: 'panel-header' }, el('h3', {}, 'Logins and usage')),
+    actions,
+    list);
+}
+
 /**
  * Settings (OWNER_WORKSPACE §4.3, slice S8): this computer, its AI workers once, each project's kind and connection, and
  * release mode as text. No primary action: Settings only shows what the machine has. Messages and Diagnostics are linked.
@@ -1196,6 +1266,7 @@ function settingsScreen() {
   if (!state.supervisor.available || !settings) return [computer, unavailable(), settingsLinks()];
   const active = state.supervisor.campaigns.filter((c) => !['finished', 'cancelled'].includes(c.control));
   const workers = panel('AI workers', `Once for ${host.name ?? 'this computer'}, whatever the work.`, el('div', {},
+    accountsSection(settings.accounts ?? []),
     el('ul', { class: 'settings-links' }, ...settings.workers.map((w) => {
       const { text, notes } = workerLine(w);
       return el('li', { 'data-focus-scope': `worker/${w.kind}` }, el('strong', {}, text), ...notes.map((note) => el('div', { class: 'subtext' }, note)));
@@ -1706,6 +1777,91 @@ $('#message-form').addEventListener('submit', (event) => {
   $('#message-dialog').close();
   askNotifications();
   void sendMessage(text);
+});
+$('#close-account').addEventListener('click', () => $('#account-dialog').close());
+$('#account-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!validateForm($('#account-form'))) return;
+  const provider = $('#account-provider').value;
+  const name = $('#account-name').value.trim();
+  const token = $('#account-token').value.trim();
+  $('#account-dialog').close();
+  try {
+    await post('/api/accounts/add', { provider, name, token: token || undefined, apiKey: token || undefined });
+    notice(`Account ${name} added.`);
+    await poll();
+  } catch (err) {
+    notice(err.message ?? 'Could not add account.');
+  }
+});
+$('#close-export-accounts').addEventListener('click', () => $('#export-accounts-dialog').close());
+$('#export-accounts-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!validateForm($('#export-accounts-form'))) return;
+  const passphrase = $('#export-passphrase').value;
+  $('#export-accounts-dialog').close();
+  try {
+    const res = await post('/api/accounts/export', { passphrase });
+    if (res.bundleBase64) {
+      if (typeof URL.createObjectURL === 'function') {
+        const blob = new Blob([res.bundleBase64], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `aiworks-accounts-${new Date().toISOString().slice(0, 10)}.aiworks-accounts`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      }
+      notice(`Exported ${res.count} account${res.count === 1 ? '' : 's'}.`);
+    }
+  } catch (err) {
+    notice(err.message ?? 'Could not export accounts.');
+  }
+});
+$('#close-import-accounts').addEventListener('click', () => $('#import-accounts-dialog').close());
+$('#import-accounts-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!validateForm($('#import-accounts-form'))) return;
+  const passphrase = $('#import-passphrase').value;
+  const textInput = $('#import-accounts-text').value.trim();
+  const fileInput = $('#import-accounts-file');
+  let bundleBase64 = textInput;
+  if (!bundleBase64 && fileInput?.files?.length) {
+    try {
+      bundleBase64 = (await fileInput.files[0].text()).trim();
+    } catch {
+      notice('Could not read the accounts bundle file.');
+      return;
+    }
+  }
+  if (!bundleBase64) {
+    notice('Select an accounts bundle file or paste bundle text.');
+    return;
+  }
+  $('#import-accounts-dialog').close();
+  try {
+    const res = await post('/api/accounts/import', { bundleBase64, passphrase });
+    notice(`Imported ${res.count} account${res.count === 1 ? '' : 's'}.`);
+    await poll();
+  } catch (err) {
+    notice(err.message ?? 'Could not import accounts.');
+  }
+});
+$('#close-remove-account').addEventListener('click', () => { pendingRemoveAccount = null; $('#remove-account-dialog').close(); });
+$('#confirm-remove-account').addEventListener('click', async () => {
+  const target = pendingRemoveAccount;
+  pendingRemoveAccount = null;
+  $('#remove-account-dialog').close();
+  if (!target) return;
+  try {
+    await post('/api/accounts/remove', target);
+    notice(`Account ${target.name} removed.`);
+    await poll();
+  } catch (err) {
+    notice(err.message ?? 'Could not remove account.');
+  }
 });
 // Our own navigation already set the address; any other change (Back, Forward, an edited address) restores that address's position.
 window.addEventListener('hashchange', () => { if (location.hash !== current.address) go(location.hash, { restore: true }); });

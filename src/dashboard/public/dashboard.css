@@ -7,7 +7,7 @@ button,input,select{font:inherit}
 textarea{font:inherit;min-height:120px}
 textarea,.resize-none{resize:none}
 dialog label,.start-form .field{display:grid;gap:7px;font-size:12px;margin-top:16px}
-dialog select,dialog textarea,.start-form textarea,.start-form input[type=number]{width:100%;border:1px solid #ccd5e3;border-radius:7px;padding:10px;background:var(--surface);color:#24324a}
+dialog select,dialog textarea,dialog input[type=text],dialog input[type=password],dialog input[type=file],.start-form textarea,.start-form input[type=number]{width:100%;border:1px solid #ccd5e3;border-radius:7px;padding:10px;background:var(--surface);color:#24324a}
 /* Start work is a form on the page, styled like the dialogs (aiworks#11 review F25). */
 .start-form .field[hidden]{display:none}
 .start-form .field strong{font-size:13px;color:#24324a}
@@ -421,3 +421,12 @@ html{scrollbar-gutter:stable;scroll-padding-top:88px}
 @media(min-width:960px){.nav-item{display:grid;grid-template-columns:20px minmax(0,1fr);gap:8px 10px}.nav-item>.nav-count{grid-column:2;margin-left:0;justify-self:start;max-width:100%;overflow-wrap:anywhere}.project-action{grid-column:auto;max-width:190px}}
 @media(min-width:600px) and (max-width:959px){.project-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.project-action{grid-column:1/-1}}
 @media(max-width:959px){.nav-icon:has(~.nav-count:not(:empty)){visibility:hidden}.nav-item>.nav-count{max-width:90px;line-height:1.05}}
+.account-actions{display:flex;gap:10px;padding:12px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.account-header{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.account-pill{display:inline-flex;align-items:center;padding:3px 8px;border-radius:6px;font-size:12px;font-weight:600}
+.account-pill.pill-ready{background:#eaf6ef;color:#14724f}
+.account-pill.pill-waiting{background:#fff5e5;color:#805114}
+.account-pill.pill-running{background:#edf2ff;color:#335eea}
+.accounts-section{margin-bottom:16px;border-bottom:1px solid var(--line);padding-bottom:16px}
+.accounts-section .panel-header{padding:12px 20px 0}
+.accounts-section h3{margin:0;font-size:14px;font-weight:600;color:#24324a}
