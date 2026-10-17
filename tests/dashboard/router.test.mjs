@@ -13,6 +13,7 @@ const ADDRESSES = [
   ['#/settings/messages', { screen: 'settings', section: 'messages' }],
   ['#/settings/diagnostics', { screen: 'settings', section: 'diagnostics' }],
   ['#/settings/accounts', { screen: 'settings', section: 'accounts' }],
+  ['#/settings/version', { screen: 'settings', section: 'version' }],
   ['#/p/example-org%2Fsampleapp', { screen: 'project', project: 'example-org/sampleapp', tab: 'now' }],
   ['#/p/example-org%2Fsampleapp/work', { screen: 'project', project: 'example-org/sampleapp', tab: 'work' }],
   ['#/p/example-org%2Fsampleapp/step/sampleapp-455-telegram-ingest/FIX-455', { screen: 'step', project: 'example-org/sampleapp', work: 'sampleapp-455-telegram-ingest', step: 'FIX-455' }],
@@ -84,6 +85,7 @@ test('each route belongs to one global place and at most one project tab, for ar
   assert.deepEqual(places, {
     '#/projects': ['projects', null], '#/projects/add': ['projects', null], '#/needs': ['needs', null], '#/settings': ['settings', null],
     '#/settings/messages': ['settings', null], '#/settings/diagnostics': ['settings', null], '#/settings/accounts': ['settings', null],
+    '#/settings/version': ['settings', null],
     '#/p/example-org%2Fsampleapp': ['projects', 'now'], '#/p/example-org%2Fsampleapp/work': ['projects', 'work'],
     '#/p/example-org%2Fsampleapp/step/sampleapp-455-telegram-ingest/FIX-455': ['projects', 'work'], '#/p/example-org%2Fsampleapp/results': ['projects', 'results'],
     '#/p/example-org%2Fsampleapp/cost': ['projects', 'cost'], '#/p/example-org%2Fsampleapp/start': ['projects', 'now'], '#/p/example-org%2Fsampleapp/review/plan-7': ['projects', 'now'],
