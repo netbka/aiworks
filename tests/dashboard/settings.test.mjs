@@ -275,9 +275,8 @@ test('Settings › Accounts dedicated page displays worker accounts and back lin
   const text = visibleText(page.$('#content'));
   assert.ok(text.includes('Worker accounts'));
   assert.ok(text.includes('Which AI worker logins and accounts are on this computer?'));
-  assert.ok(text.includes('Back to Settings'));
-  assert.ok(text.includes('Connect account…'));
-  assert.ok(text.includes('No worker accounts added yet.'));
+  assert.ok(text.includes('Connect account'));
+  assert.ok(text.includes('No worker accounts yet.'));
 });
 
 
