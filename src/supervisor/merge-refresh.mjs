@@ -10,8 +10,8 @@
 // merge of the unchanged pull request head into that same base writes that same tree. A shared file, a textual
 // conflict, a failed or stuck gate, or a git failure falls back to the integration repair (merge.mjs repair). The
 // journal records every step, so a restart continues the same refresh: `merge-refresh-started` (with the worktree and
-// gate process), then `merge-refresh-passed` or `merge-refresh-failed`. Worktrees are left in place, like every
-// supervisor worktree (adapters/git.mjs).
+// gate process), then `merge-refresh-passed` or `merge-refresh-failed`. A gate is never killed. Worktrees are left in
+// place, like every supervisor worktree (adapters/git.mjs).
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -129,11 +129,11 @@ export function refreshStep(controller, ctx, item, repoPath, baseSha, settings) 
   const run = readGateRun(path);
   if (run?.exit === null || run === null) {
     const pid = gatePid(path);
-    if (now - started.at > settings.timeoutMs) {
-      if (pid !== null && alive(pid)) { try { process.kill(pid); } catch { /* already gone */ } }
-      return fail(`the gate did not finish within ${Math.round(settings.timeoutMs / 60_000)} minutes`);
-    }
-    // A gate that ended without an exit code (a supervisor restart, a reboot) starts once more in the same worktree.
+    // Never killed: after a reboot the recorded process id can belong to another process, and the gate's own children
+    // run outside any Job Object. A gate past its bound fails the refresh, and the repair takes over.
+    if (now - started.at > settings.timeoutMs) return fail(`the gate did not finish within ${Math.round(settings.timeoutMs / 60_000)} minutes`);
+    // A gate that ended without an exit code (a supervisor restart, a reboot) starts again in the same worktree. A reused
+    // process id reads as alive, so that gate waits out its bound instead, which is slow but safe.
     if (pid === null || !alive(pid)) {
       try { startGate(path, started.detail.command ?? settings.command); } catch (error) { return fail(`the gate could not restart: ${error.message}`); }
       controller.log(`refresh of ${campaignId}/${task.task_id}: gate restarted in ${path}`);
@@ -142,6 +142,11 @@ export function refreshStep(controller, ctx, item, repoPath, baseSha, settings) 
   }
   const failure = gateFailure(run);
   if (failure) return fail(`the gate on the merge result ${failure}`, { summary: run.summary });
+  // The pass counts only for the checkout it was meant for: still at the recorded commit, whose tree is the merge tree.
+  const head = gitA.exec(git, ['rev-parse', 'HEAD', 'HEAD^{tree}'], { cwd: path });
+  if (!head.ok || head.stdout.split(/\s+/).join(' ') !== `${started.detail.commit} ${started.detail.tree}`) {
+    return fail(`the gate passed, but its checkout is no longer at the merge result ${started.detail.commit}`);
+  }
   journal('merge-refresh-passed', { tree: started.detail.tree, summary: run.summary });
   controller.log(`refresh of ${campaignId}/${task.task_id}: the merge with ${baseSha} passed the gate`);
   return { next: 'merge' };
