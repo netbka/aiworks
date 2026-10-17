@@ -268,11 +268,13 @@ const agentWorking = (agent, now) => agent.heartbeatState === 'recent' || (agent
  * `delegation` is the owner's merge delegation from config.json (configuredMergeDelegation), or null: with it, a
  * verified, unmerged pull request is no Needs me item and is counted as `delegated`, never as awaiting the owner, until
  * it waited longer than `delegation.stallHours` since its check: then it is a counted Needs me item that opens it (#139).
+ * `connected` are the connected project records when Add project is on (connectedProjects): a project held up by the
+ * owner's decisions is in `held`, and the calm headline names it (aiworks#11 review 5 G7).
  */
-export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = Date.now(), releases = {}, delegation = null } = {}) {
+export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = Date.now(), releases = {}, delegation = null, connected = [] } = {}) {
   // Results with nothing finished in a project show the §7.1 empty copy, written once in copy.mjs.
   const { title, text } = stateCopy('results-empty'), noResults = { title, text };
-  if (!supervisor?.available) return { available: false, headline: null, count: 0, items: [], groups: [], unknownResults: 0, also: null, layout: { cards: [], finished: [] }, reply: null, campaigns: {}, results: {}, noResults, recent: null };
+  if (!supervisor?.available) return { available: false, headline: null, count: 0, items: [], groups: [], held: [], unknownResults: 0, also: null, layout: { cards: [], finished: [] }, reply: null, campaigns: {}, results: {}, noResults, recent: null };
   // `host` names this computer in the page header; the items say "this computer" (aiworks#11 review F22).
   const items = [], campaigns = {}, halted = [];
   let unknownResults = 0;
@@ -403,14 +405,17 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
   // Calm only about what blocks on the owner; reports and releases are said apart, never as "nothing". Items that say
   // they are not owner actions (a supervisor fault, an unreadable inbox) are listed but not counted (review F17).
   const count = items.filter((item) => !item.system).length;
-  const headline = count ? `Needs you (${count})` : unknownResults ? 'Checking for merges before listing what needs you' : 'No work is blocked on you right now';
+  // No work is blocked, but a project waiting for the owner's decisions is named, never hidden behind an all-clear.
+  const held = heldProjects(connected);
+  const headline = count ? `Needs you (${count})` : unknownResults ? 'Checking for merges before listing what needs you'
+    : held.length ? NEEDS.held.headline(held.map((project) => project.name)) : 'No work is blocked on you right now';
   // Page order: campaigns with something listed for the owner, then the other active ones. Finished or cancelled
   // campaigns with nothing listed collapse into a compact list, most recent first.
   const listed = new Set(items.map((item) => item.campaignId).filter(Boolean));
   const terminal = (c) => ['finished', 'cancelled'].includes(c.control), recency = (c) => Date.parse(c.lastProgressAt ?? '') || 0;
   const layout = { cards: [...supervisor.campaigns.filter((c) => listed.has(c.id)), ...supervisor.campaigns.filter((c) => !listed.has(c.id) && !terminal(c))].map((c) => c.id),
     finished: supervisor.campaigns.filter((c) => !listed.has(c.id) && terminal(c)).sort((a, b) => recency(b) - recency(a)).map((c) => c.id) };
-  return { available: true, headline, count, items, groups: needsGroups(items), unknownResults, also: alsoForYou(supervisor, campaigns, releases), layout, campaigns,
+  return { available: true, headline, count, items, groups: needsGroups(items), held, unknownResults, also: alsoForYou(supervisor, campaigns, releases), layout, campaigns,
     results: resultsByProject(supervisor, campaigns, releases), noResults, recent: recentSummary(supervisor, campaigns), reply: answered ? { messageId: answered.id, answeredAt: answered.answeredAt, url: answered.replyBody ? null : answered.replyUrl } : null };
 }
 
@@ -442,6 +447,18 @@ function stoppedItem(halted, entries, onPurpose) {
   return { kind: 'controller', campaignId: null, repository: null, holdsUp: [...projects.values()].map((project) => project.repository),
     at: known.length ? Math.max(...known) : null, text: words.text,
     points: [{ link: null, text: why(words.point) }, ...[...projects.values()].map(({ name, works }) => ({ link: null, text: NEEDS.heldUp(name, works) }))] };
+}
+
+/**
+ * Connected projects held up by the owner's decisions (aiworks#11 review 5 G7): a project without GitHub, connected and
+ * checked, where work cannot start until two decisions are made (D2 in the project rules and D4, owner question Q2;
+ * OWNER_WORKSPACE §5.3). No work is blocked there, so they are no Needs me items and no count includes them, but Needs
+ * me names each and links to its Now, which says what the decisions are. A setup problem is not here: Projects and the
+ * project's Now say it (§4.2).
+ */
+function heldProjects(records) {
+  return (records ?? []).filter((record) => record && record.source_kind !== 'github' && record.status === 'ready' && record.capabilities?.startWork?.allowed !== true)
+    .map((record) => ({ id: record.id, name: record.name, text: NEEDS.held.row }));
 }
 
 export const SYSTEM_GROUP = 'AIWorks itself';
