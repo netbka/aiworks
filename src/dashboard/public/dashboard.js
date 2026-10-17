@@ -1339,132 +1339,100 @@ function mergeChecksPanel() {
 }
 
 let pendingRemoveAccount = null;
-function openRemoveAccount(provider, name) {
-  pendingRemoveAccount = { provider, name };
-  const label = provider === 'claude' ? 'Claude' : provider === 'codex' ? 'ChatGPT (Codex)' : provider === 'agy' ? 'Agy' : provider === 'cursor' ? 'Cursor Agent' : provider;
-  $('#remove-account-description').textContent = `Remove login for ${label} · ${name} from this computer?`;
+
+/** An account by its AI worker and login: "Claude · work-a", or this computer's own login when it has no name of its own. */
+const accountName = (account) => `${provider(account.kind)} · ${account.name === account.kind ? 'this computer’s own login' : account.name}`;
+
+/** One account's state in plain words. The server never sends the wait reason itself, only its kind (OWNER_WORKSPACE §10.1). */
+function accountState(account) {
+  const at = account.retryAt ? timeOnly(account.retryAt) : null;
+  if (account.state === 'usage-limit') return { text: `Waiting for its usage limit${at ? ` · back at ${at}` : ''}`, tone: 'pill-waiting' };
+  if (account.state === 'sign-in') return { text: `Sign-in failed${at ? ` · tries again at ${at}` : ''}`, tone: 'pill-waiting' };
+  if (account.state === 'unavailable') return { text: `Not available right now${at ? ` · tries again at ${at}` : ''}`, tone: 'pill-waiting' };
+  if (account.state === 'in-use') return { text: `In use · ${account.open} running`, tone: 'pill-running' };
+  return { text: 'Ready', tone: 'pill-ready' };
+}
+
+/** What the account's finished runs came to, and the time they took. */
+function accountRuns({ runs, runMinutes }) {
+  if (!runs?.finished) return 'No finished runs yet.';
+  const other = runs.finished - runs.withResult - runs.usageLimit;
+  return `${plural(runs.finished, 'finished run')}: ${runs.withResult} with a result, ${runs.usageLimit} stopped by the usage limit, ${other} other · ${runMinutes} min in all.`;
+}
+
+/**
+ * The worker accounts as rows: login, state, learned limit and runs. With `manage` (Settings › Worker accounts) a login
+ * saved on this computer can be removed while it runs nothing. Settings itself only shows (OWNER_WORKSPACE §4.3).
+ */
+function accountRows(accounts, { manage = false } = {}) {
+  if (!accounts.length) return empty('No worker accounts yet.', 'Logins are set up on this computer outside this page. Each one appears here with its usage.');
+  return el('ul', { class: 'settings-links' }, ...accounts.map((account) => {
+    const { text, tone } = accountState(account);
+    return el('li', { 'data-focus-scope': `account/${account.id}` },
+      el('div', { class: 'account-header' },
+        el('strong', {}, accountName(account)),
+        el('span', { class: `account-pill ${tone}` }, text),
+        manage && account.hasLogin && !account.open ? button('Remove…', () => openRemoveAccount(account), 'secondary small') : null),
+      account.limit ? el('div', { class: 'subtext' }, `Runs at most ${account.limit} at once: AIWorks learned this from its usage limit.`) : null,
+      el('div', { class: 'subtext' }, accountRuns(account)),
+      manage && !account.hasLogin ? el('div', { class: 'subtext' }, 'No saved login on this computer: listed from earlier runs.') : null,
+      manage && account.hasLogin && account.open ? el('div', { class: 'subtext' }, 'Its login can be removed once its running work finishes.') : null);
+  }));
+}
+
+function openRemoveAccount(account) {
+  pendingRemoveAccount = { provider: account.provider, name: account.name, label: accountName(account) };
+  $('#remove-account-description').textContent = `Remove the saved login for ${accountName(account)} from this computer?`;
   $('#remove-account-dialog').showModal();
 }
 
-function openSetPreference(role, pref = {}) {
-  $('#preference-role').value = role;
-  $('#preference-title').textContent = `Role model preference: ${role}`;
-  $('#preference-models').value = Array.isArray(pref.models) ? pref.models.join(', ') : '';
-  $('#preference-effort').value = pref.effort ?? '';
-  $('#preference-kind').value = pref.kind ?? '';
+// The two roles whose model order AIWorks reads, in owner words (OWNER_WORKSPACE §2.1).
+const PREFERENCE_ROLES = [
+  { key: 'implementer', title: 'Builder', text: 'Models for building each step’s change, best first.' },
+  { key: 'verification', title: 'Independent checker', text: 'Models for checking each result, best first.' },
+];
+/** The usable entries of a role's order: model names, or objects naming a model and maybe its AI worker. */
+const orderEntries = (order) => (Array.isArray(order) ? order : []).filter((entry) => typeof entry === 'string' || typeof entry?.model === 'string');
+const orderEntry = (entry) => typeof entry === 'string' ? entry : `${entry.model}${entry.kind ? ` (${provider(entry.kind)})` : ''}`;
+
+function openSetPreference(role, order) {
+  const entries = orderEntries(order);
+  $('#preference-role').value = role.key;
+  $('#preference-title').textContent = `${role.title}: model order`;
+  $('#preference-models').value = entries.map((entry) => typeof entry === 'string' ? entry : entry.model).join(', ');
+  $('#preference-kind').value = entries.find((entry) => typeof entry === 'object')?.kind ?? '';
   $('#preference-dialog').showModal();
 }
 
 function accountsSection(accounts = []) {
-  const list = accounts.length ? el('ul', { class: 'settings-links' }, ...accounts.map((acct) => {
-    const { id, provider: p, name, usage } = acct;
-    const providerLabel = p === 'claude' ? 'Claude' : p === 'codex' ? 'ChatGPT (Codex)' : p === 'agy' ? 'Agy' : p === 'cursor' ? 'Cursor Agent' : p;
-    let statusText = 'Ready';
-    let statusPillClass = 'pill-ready';
-    if (usage?.cooldown?.active) {
-      const remainingSec = Math.max(0, Math.round((usage.cooldown.retryAt - Date.now()) / 1000));
-      const mins = Math.floor(remainingSec / 60);
-      const secs = remainingSec % 60;
-      statusText = `Waiting for quota (${mins}m ${secs}s)`;
-      statusPillClass = 'pill-waiting';
-    } else if (usage?.openRuns > 0) {
-      statusText = `In use (${usage.openRuns} active)`;
-      statusPillClass = 'pill-running';
-    }
-    const capacityText = usage?.learnedLimit ? `Learned limit: ${usage.learnedLimit} concurrent runs.` : null;
-    const stats = usage?.outcomes ?? {};
-    const successCount = stats.result ?? stats.success ?? 0;
-    const retryCount = stats.retry ?? 0;
-    const failCount = stats.failure ?? 0;
-    const durationMin = usage?.totalDurationMs ? Math.round(usage.totalDurationMs / 60000) : 0;
-    const usageSubtext = `Runs: ${successCount} successful, ${retryCount} retries, ${failCount} errors · ${durationMin}m total run time.`;
-
-    return el('li', { 'data-focus-scope': `account/${id}` },
-      el('div', { class: 'account-header' },
-        el('strong', {}, `${providerLabel} · ${name}`),
-        el('span', { class: `account-pill ${statusPillClass}` }, statusText),
-        button('Remove…', () => openRemoveAccount(p, name), 'danger small')),
-      capacityText ? el('div', { class: 'subtext' }, capacityText) : null,
-      el('div', { class: 'subtext' }, usageSubtext));
-  })) : empty('No worker accounts yet.', 'Accounts set up on this computer appear here.');
-
   return el('div', { class: 'accounts-section' },
     el('div', { class: 'panel-header' }, el('h3', {}, 'Logins and usage'), routeLink('Manage on separate page →', '#/settings/accounts')),
-    list);
+    accountRows(accounts));
 }
 
+/**
+ * Settings › Worker accounts: which AI worker logins are on this computer, whether each can take work now, and the model
+ * order of Builder and Independent checker. No primary action. No control adds, connects, exports or imports a login:
+ * any local process can read the dashboard's command token (aiworks#197).
+ */
 function accountsScreen() {
   const settings = state.supervisor.settings;
-  const accounts = settings?.accounts ?? [];
   const back = el('p', { class: 'breadcrumb' }, routeLink('← Back to Settings', '#/settings'));
-
-  const setup = panel('Account setup', 'Manage sign-in with the native AI provider CLI on this computer. Configured accounts and usage appear below.');
-
-  const list = accounts.length ? el('ul', { class: 'settings-links' }, ...accounts.map((acct) => {
-    const { id, provider: p, name, usage } = acct;
-    const providerLabel = p === 'claude' ? 'Claude' : p === 'codex' ? 'ChatGPT (Codex)' : p === 'agy' ? 'Agy' : p === 'cursor' ? 'Cursor Agent' : p;
-    let statusText = 'Ready';
-    let statusPillClass = 'pill-ready';
-    if (usage?.cooldown?.active) {
-      const remainingSec = Math.max(0, Math.round((usage.cooldown.retryAt - Date.now()) / 1000));
-      const mins = Math.floor(remainingSec / 60);
-      const secs = remainingSec % 60;
-      statusText = `Waiting for quota (${mins}m ${secs}s)`;
-      statusPillClass = 'pill-waiting';
-    } else if (usage?.openRuns > 0) {
-      statusText = `In use (${usage.openRuns} active)`;
-      statusPillClass = 'pill-running';
-    }
-    const capacityText = usage?.learnedLimit ? `Learned limit: ${usage.learnedLimit} concurrent runs.` : null;
-    const stats = usage?.outcomes ?? {};
-    const successCount = stats.result ?? stats.success ?? 0;
-    const retryCount = stats.retry ?? 0;
-    const failCount = stats.failure ?? 0;
-    const durationMin = usage?.totalDurationMs ? Math.round(usage.totalDurationMs / 60000) : 0;
-    const usageSubtext = `Runs: ${successCount} successful, ${retryCount} retries, ${failCount} errors · ${durationMin}m total run time.`;
-
-    return el('li', { 'data-focus-scope': `account/${id}` },
-      el('div', { class: 'account-header' },
-        el('strong', {}, `${providerLabel} · ${name}`),
-        el('span', { class: `account-pill ${statusPillClass}` }, statusText),
-        button('Remove…', () => openRemoveAccount(p, name), 'danger small')),
-      capacityText ? el('div', { class: 'subtext' }, capacityText) : null,
-      el('div', { class: 'subtext' }, usageSubtext));
-  })) : empty('No worker accounts yet.', 'Accounts set up on this computer appear here.');
-
-  const accountsPanel = panel('Worker accounts', 'Which AI worker logins and accounts are on this computer?', el('div', {},
-    list));
-
-  const preferencesPanel = modelPreferencesPanel(settings?.modelPreferences ?? {});
-  return [back, setup, accountsPanel, preferencesPanel];
+  if (!state.supervisor.available || !settings) return [back, unavailable()];
+  const logins = panel('Logins on this computer', 'Each login an AI worker uses here, and whether it can take work now.',
+    accountRows(settings.accounts ?? [], { manage: true }));
+  return [back, logins, modelPreferencesPanel(settings.modelPreferences ?? {})];
 }
 
 function modelPreferencesPanel(prefs = {}) {
-  const roles = [
-    { key: 'implementer', title: 'Builder / Implementation', desc: 'Stored implementation choices.' },
-    { key: 'verification', title: 'Checker / Verification', desc: 'Stored independent verification choices.' },
-    { key: 'coordinator', title: 'Coordinator / Planner', desc: 'Stored planning choices.' },
-  ];
-
-  const items = roles.map((r) => {
-    const rolePref = prefs[r.key] ?? {};
-    const models = Array.isArray(rolePref.models) && rolePref.models.length ? rolePref.models.join(', ') : 'No stored choice';
-    const effort = rolePref.effort ? `${rolePref.effort} effort` : 'standard effort';
-    const kind = rolePref.kind ? `(${rolePref.kind})` : '';
-
-    return el('li', { 'data-focus-scope': `preference/${r.key}` },
-      el('div', { class: 'account-header' },
-        el('strong', {}, r.title),
-        button('Configure…', () => openSetPreference(r.key, rolePref), 'secondary small')
-      ),
-      el('div', { class: 'subtext' }, r.desc),
-      el('div', { class: 'subtext' }, `Models: ${models} · ${effort} ${kind}`.trim())
-    );
-  });
-
-  return panel('Role model preferences', 'Saved choices. Campaign routing follows its declared executors, models and effort.', el('div', {},
-    el('ul', { class: 'settings-links' }, ...items)
-  ));
+  return panel('Saved model order', 'Kept here for later. Work does not use it yet: each piece of work uses the AI workers and models its approved plan names.', el('ul', { class: 'settings-links' },
+    ...PREFERENCE_ROLES.map((role) => {
+      const entries = orderEntries(prefs[role.key]);
+      return el('li', { 'data-focus-scope': `preference/${role.key}` },
+        el('div', { class: 'account-header' }, el('strong', {}, role.title), button('Configure…', () => openSetPreference(role, entries), 'secondary small')),
+        el('div', { class: 'subtext' }, role.text),
+        el('div', { class: 'subtext' }, entries.length ? `Saved: ${entries.map(orderEntry).join(', ')}` : 'Nothing saved'));
+    })));
 }
 
 function versionScreen() {
@@ -1663,6 +1631,7 @@ const settingsEmpty = ({ title, text, primary }) => el('div', { class: 'empty-st
 
 function settingsLinks() {
   return panel('More', null, el('ul', { class: 'settings-links' },
+    el('li', {}, routeLink('Worker accounts', '#/settings/accounts'), el('div', { class: 'subtext' }, 'Each AI worker login on this computer, and whether it can take work now.')),
     el('li', {}, routeLink('Worker accounts', '#/settings/accounts'), el('div', { class: 'subtext' }, 'Connect and manage isolated worker logins, view live quota usage, and export encrypted bundles.')),
     el('li', {}, routeLink('Model instructions', '#/settings/instructions'), el('div', { class: 'subtext' }, 'Which AI models should handle what kind of work, by role, domain and reasoning effort.')),
     el('li', {}, routeLink('Version and roadmap', '#/settings/version'), el('div', { class: 'subtext' }, `Dashboard v${DASHBOARD_VERSION} (${DASHBOARD_VERSION_NAME}), active features and pre-1.0 roadmap.`)),
@@ -2182,46 +2151,34 @@ $('#confirm-remove-account').addEventListener('click', async () => {
   $('#remove-account-dialog').close();
   if (!target) return;
   try {
-    await post('/api/accounts/remove', target);
-    notice(`Account ${target.name} removed.`);
+    await post('/api/accounts/remove', { provider: target.provider, name: target.name });
+    notice(`Removed the saved login for ${target.label}.`);
     await poll();
   } catch (err) {
-    notice(err.message ?? 'Could not remove account.');
+    notice(err.message ?? 'Could not remove the login.');
   }
 });
+/** Save one role's model order; an empty list clears it. */
+async function saveModelOrder(key, models, kind) {
+  const role = PREFERENCE_ROLES.find((item) => item.key === key);
+  if (!role) return;
+  try {
+    await post('/api/accounts/preferences', { role: role.key, models, kind: models.length && kind ? kind : null });
+    notice(models.length ? `Saved the model order for ${role.title}.` : `Cleared the saved order for ${role.title}.`);
+    await poll();
+  } catch (err) {
+    notice(err.message ?? 'Could not save the model order.');
+  }
+}
 $('#close-preference').addEventListener('click', () => $('#preference-dialog').close());
-$('#clear-preference-button').addEventListener('click', async () => {
-  const role = $('#preference-role').value;
+$('#clear-preference-button').addEventListener('click', () => {
   $('#preference-dialog').close();
-  if (!role) return;
-  try {
-    await post('/api/accounts/preferences', { role, models: [] });
-    notice(`Reset model preferences for ${role}.`);
-    await poll();
-  } catch (err) {
-    notice(err.message ?? 'Could not reset model preferences.');
-  }
+  void saveModelOrder($('#preference-role').value, [], null);
 });
-$('#preference-form').addEventListener('submit', async (event) => {
+$('#preference-form').addEventListener('submit', (event) => {
   event.preventDefault();
-  const role = $('#preference-role').value;
-  const rawModels = $('#preference-models').value;
-  const models = rawModels.split(/[\s,]+/).map((m) => m.trim()).filter(Boolean);
-  const effort = $('#preference-effort').value || undefined;
-  const kind = $('#preference-kind').value || undefined;
   $('#preference-dialog').close();
-  if (!role) return;
-  try {
-    await post('/api/accounts/preferences', {
-      preferences: {
-        [role]: { models, effort, kind }
-      }
-    });
-    notice(`Saved model preferences for ${role}.`);
-    await poll();
-  } catch (err) {
-    notice(err.message ?? 'Could not save model preferences.');
-  }
+  void saveModelOrder($('#preference-role').value, $('#preference-models').value.split(/[\s,]+/).filter(Boolean), $('#preference-kind').value);
 });
 // Our own navigation already set the address; any other change (Back, Forward, an edited address) restores that address's position.
 window.addEventListener('hashchange', () => { if (location.hash !== current.address) go(location.hash, { restore: true }); });

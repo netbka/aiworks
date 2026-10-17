@@ -1,0 +1,23 @@
+{
+  "governance-guard": {
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "node guard.mjs",
+        "timeout": 15
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "run_command|replace_file_content|write_to_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node guard.mjs",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

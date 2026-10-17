@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
-import { supervisorSnapshot, applyCommand, postMessage, configuredAccounts, removeDashboardAccount, configuredModelPreferences, saveDashboardModelPreferences } from './supervisor.mjs';
+import { supervisorSnapshot, applyCommand, postMessage, dashboardAccounts, removeDashboardAccount, configuredModelPreferences, saveDashboardModelPreferences } from './supervisor.mjs';
 import { Store } from '../supervisor/store.mjs';
 import { ownerView } from './owner.mjs';
 import { configuredMergeDelegation } from './merges.mjs';
@@ -94,7 +94,7 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
             store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true });
             let config = {};
             try { config = JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { /* ignore */ }
-            return send(200, { accounts: configuredAccounts(store, config, { dataDir }) });
+            return send(200, { accounts: dashboardAccounts(store, config, { dataDir }) });
           } finally {
             store?.close();
           }
@@ -124,6 +124,7 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       // Plan and do (UI14): store a work request; Approve and start: register exactly the reviewed plan (work.mjs).
       if (path === '/api/work/requests') return send(202, requestPlanAndDo(dataDir, value));
       if (path === '/api/work/approve') return send(200, approvePlan(dataDir, value, Date.now(), { provenanceRoot, ...work }));
+      // No route adds, connects, exports or imports a login: any local process can read the CSRF token (aiworks#197).
       if (path === '/api/accounts/remove') return send(200, removeDashboardAccount(dataDir, value));
       if (path === '/api/accounts/preferences') return send(200, saveDashboardModelPreferences(dataDir, value));
       // Add project (UI13): each answers 404 while it is off, as before it existed.
