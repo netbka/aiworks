@@ -11,8 +11,15 @@
 // gate-pid.log (process id) and gate-previous.log (the log of the run before). wait exits 0 when the gate passed, 1 when
 // it failed, 2 while it still runs, 3 when it died and 4 when no gate was started here. When a verification of a commit
 // task ends, the controller reads gate.log and gate-exit.log through readGateRun (#43).
+//
+// Gate slots: on 2026-10-17 four full gates ran at once on one PC and failed with "git init: not enough memory" and timing
+// tests, and the supervisor refused the verifications (12 since 16 Oct). The gate command now runs only while it holds one
+// of AIWORKS_GATE_SLOTS (default 2) machine-wide slots, lock files under AIWORKS_GATE_SLOTS_DIR (default <tmp>/aiworks-gate-
+// slots); until then gate.log says it waits, and wait keeps reporting running. A gate started inside a gate (the suite's
+// own gate tests) takes no slot. A slot whose process is gone, or older than SLOT_MAX_AGE_MS, is taken over.
 import { spawn } from 'node:child_process';
-import { closeSync, existsSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -96,15 +103,67 @@ function start(command) {
   return 0;
 }
 
+const NESTED = 'AIWORKS_GATE_SLOT_HELD';
+const SLOT_MAX_AGE_MS = 4 * 60 * 60_000;
+export function slotSettings(env = process.env) {
+  const count = Number(env.AIWORKS_GATE_SLOTS ?? 2);
+  return { count: Number.isSafeInteger(count) && count >= 1 && count <= 8 ? count : 2,
+    dir: env.AIWORKS_GATE_SLOTS_DIR || join(tmpdir(), 'aiworks-gate-slots') };
+}
+
+/** Whether the lock file is held: its process runs and it is younger than SLOT_MAX_AGE_MS. Unreadable for a minute: no. */
+function held(file, now) {
+  let holder = null;
+  try { holder = JSON.parse(readFileSync(file, 'utf8')); } catch { /* being written, or left empty */ }
+  if (holder) return Number.isSafeInteger(holder.pid) && alive(holder.pid) && now - holder.at < SLOT_MAX_AGE_MS;
+  try { return now - statSync(file).mtimeMs < 60_000; } catch { return false; }
+}
+/** Takes a free or abandoned slot for this process: its lock file path, or null when every slot is held. */
+export function takeSlot({ count, dir }, now = Date.now()) {
+  mkdirSync(dir, { recursive: true });
+  for (let i = 1; i <= count; i += 1) {
+    const file = join(dir, `slot-${i}.lock`);
+    if (existsSync(file)) {
+      if (held(file, now)) continue;
+      // Two gates taking over the same abandoned slot at once can both run: the limit is a throttle, not a lock.
+      rmSync(file, { force: true });
+    }
+    try {
+      writeFileSync(file, JSON.stringify({ pid: process.pid, at: now, cwd: process.cwd() }), { flag: 'wx' });
+      return file;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+    }
+  }
+  return null;
+}
+
+async function slot(settings) {
+  let said = false;
+  for (;;) {
+    const file = takeSlot(settings);
+    if (file) {
+      if (said) console.log(`# gate slot ${file} taken; the gate starts now`);
+      return file;
+    }
+    if (!said) console.log(`# waiting for a free gate slot: ${settings.count} full gate(s) already run on this PC (${settings.dir})`);
+    said = true;
+    await sleep(5_000);
+  }
+}
+
 // The detached process: runs the command through the shell (npm is npm.cmd on Windows) and records how it ended.
-function run(command) {
-  let recorded = false;
+async function run(command) {
+  let recorded = false, lock = null;
   const record = (value) => {
     if (recorded) return;
     recorded = true;
+    if (lock) rmSync(lock, { force: true });
     writeFileSync(GATE_FILES.exit, `${value}\n`);
   };
-  const child = spawn(command.join(' '), { shell: true, stdio: 'inherit', windowsHide: true });
+  try { lock = process.env[NESTED] ? null : await slot(slotSettings()); }
+  catch (error) { console.log(`# gate slots unavailable (${error.code ?? error.message}); the gate runs without one`); }
+  const child = spawn(command.join(' '), { shell: true, stdio: 'inherit', windowsHide: true, env: { ...process.env, [NESTED]: '1' } });
   child.on('error', (error) => record(`spawn-error ${error.code ?? error.message}`));
   child.on('close', (code, signal) => record(code ?? signal));
 }
@@ -151,7 +210,7 @@ const samePath = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b
 if (process.argv[1] && samePath(resolve(process.argv[1]), SELF)) {
   const [action, ...args] = process.argv.slice(2);
   if (action === 'start') process.exitCode = start(args.length ? args : ['npm', 'run', 'check']);
-  else if (action === 'run') run(args);
+  else if (action === 'run') await run(args);
   else if (action === 'wait') process.exitCode = await wait({ minutes: option(args, '--minutes', 25), pollSeconds: option(args, '--poll-seconds', 10) });
   else {
     console.error('usage: node gate.mjs start [command...] | wait [--minutes 25] [--poll-seconds 10]');
