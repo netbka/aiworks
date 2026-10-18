@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AIWorks · Home</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;font-family:'IBM Plex Sans',system-ui,sans-serif;color:#1D2939;background:#F4F7FA;font-size:15px;line-height:1.5}
+a{color:#3154B8;text-decoration:none}a:hover{color:#23408F}
+.side{flex:0 0 228px;box-sizing:border-box;background:#EDF2F7;padding:28px 18px;display:flex;flex-direction:column;gap:4px}
+.brand{font-size:22px;font-weight:700;padding:0 10px;color:#1D2939}
+.ws{font-size:13px;color:#5B6676;padding:0 10px 22px}
+.nav{display:flex;align-items:center;gap:8px;padding:10px;border-radius:8px;color:#1D2939;font-weight:500}
+.nav:hover{background:#E2E9F1;color:#1D2939}
+.on{background:#fff;color:#3154B8;font-weight:600}
+.badge{margin-left:auto;background:#FFF4DB;color:#8A5800;border-radius:6px;padding:0 8px;font-size:13px;font-weight:600}
+.sec{font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#5B6676;padding:20px 10px 6px;border-top:1px solid #D9E1EA;margin-top:14px}
+.pin{padding:7px 10px;color:#1D2939;border-radius:8px}
+.pin:hover{background:#E2E9F1;color:#1D2939}
+.top{display:flex;align-items:center;gap:16px;padding:16px 32px;border-bottom:1px solid #E3E8EF;color:#5B6676}
+.av{background:#EDF2F7;border-radius:8px;padding:4px 10px;font-weight:600;color:#1D2939;font-size:13px}
+.btn{font:inherit;font-weight:600;font-size:15px;border-radius:8px;padding:10px 18px;border:1px solid #CBD4DF;background:#fff;color:#1D2939;cursor:pointer;min-height:44px;display:inline-flex;align-items:center;gap:8px;box-sizing:border-box}
+.btn:hover{background:#F4F7FA;color:#1D2939}
+.pri{background:#3154B8;border-color:#3154B8;color:#fff}.pri:hover{background:#23408F;color:#fff}
+.lbl{font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#5B6676}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:6px;font-size:13px;font-weight:600;white-space:nowrap}
+.cw{background:#EAF0FC;color:#3154B8}.cy{background:#FFF4DB;color:#8A5800}.cg{background:#E3F2EC;color:#1D6A53}.cm{background:#EDF2F7;color:#4A5565}.cr{background:#FBEAEA;color:#AD353B}
+.muted{color:#5B6676}
+.row{display:flex;flex-wrap:wrap;align-items:center;gap:8px 20px;padding:16px 4px;border-top:1px solid #E3E8EF;color:#1D2939}
+.row:hover{background:#F8FAFC;color:#1D2939}
+</style>
+</head>
+<body>
+<div style="display: flex; flex-wrap: wrap; min-height: 1000px; background: #fff">
+  <aside class="side">
+    <div class="brand">AIWorks</div>
+    <div class="ws">Personal workspace</div>
+    <a class="nav on" href="02-home.html">Home</a>
+    <a class="nav" href="03-overview.html">Projects</a>
+    <a class="nav" href="05-decision.html">Needs you <span class="badge">1</span></a>
+    <div class="sec">Pinned projects</div>
+    <a class="pin" href="03-overview.html">Studio bookings</a>
+    <a class="pin" href="03-overview.html">Client portal</a>
+    <a class="pin" href="03-overview.html">Weekend guide</a>
+    <div style="flex: 1; min-height: 40px"></div>
+    <a class="nav" href="10-settings.html" style="color: #5B6676">Help</a>
+    <a class="nav" href="10-settings.html" style="color: #5B6676">Settings</a>
+  </aside>
+  <main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column">
+    <div class="top"><span style="color: #1D2939">Home</span><span style="margin-left: auto">Search</span><span class="av">AP</span></div>
+    <div style="box-sizing: border-box; width: 100%; max-width: 1060px; padding: 36px 36px 48px; display: flex; flex-direction: column; gap: 28px">
+      <div style="display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px">
+        <div style="flex: 1 1 420px">
+          <h1 style="margin: 0; font-size: 32px; line-height: 1.2">Your work, at a glance</h1>
+          <p class="muted" style="margin: 6px 0 0; font-size: 17px">One decision needs you. A new result is ready to try.</p>
+        </div>
+        <button class="btn" type="button">Pause all</button>
+      </div>
+
+      <section style="display: flex; flex-wrap: wrap; gap: 8px 22px; padding: 14px 18px; border-radius: 10px; background: #F4F7FA; color: #3B4656">
+        <span style="font-weight: 600; color: #1D2939">Since your last visit, yesterday 22:40</span>
+        <span>2 results ready to try</span>
+        <span>1 sent back by the checker and fixed</span>
+        <span>Claude reached its limit at 01:40 and resumed at 03:00</span>
+      </section>
+
+      <section style="display: flex; flex-direction: column; gap: 10px">
+        <div class="lbl">Needs your decision</div>
+        <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 22px 24px; border-radius: 10px; background: #FFF4DB">
+          <div style="flex: 1 1 420px">
+            <div style="color: #8A5800; font-weight: 600; font-size: 14px">Studio bookings</div>
+            <div style="font-size: 22px; font-weight: 700; margin: 4px 0">Should a booking require a payment?</div>
+            <div class="muted">Booking confirmation is waiting. Calendar work continues.</div>
+          </div>
+          <a class="btn pri" href="05-decision.html">Review options</a>
+        </div>
+      </section>
+
+      <section style="display: flex; flex-direction: column">
+        <div class="lbl" style="padding-bottom: 8px">Projects</div>
+        <a class="row" href="03-overview.html">
+          <div style="flex: 1 1 360px"><div style="font-weight: 600; font-size: 17px">Studio bookings</div><div class="muted" style="font-size: 14px">Clients can choose a time and get a confirmation · needs one decision</div></div>
+          <span class="chip cy">Needs you</span>
+        </a>
+        <a class="row" href="06-review.html">
+          <div style="flex: 1 1 360px"><div style="font-weight: 600; font-size: 17px">Client portal</div><div class="muted" style="font-size: 14px">Document upload is ready to try</div></div>
+          <span class="chip cg">Review ready</span>
+        </a>
+        <a class="row" href="03-overview.html">
+          <div style="flex: 1 1 360px"><div style="font-weight: 600; font-size: 17px">Weekend guide</div><div class="muted" style="font-size: 14px">Search by neighbourhood is being built · no action needed</div></div>
+          <span class="chip cw">Working</span>
+        </a>
+        <a class="row" href="03-overview.html" style="border-bottom: 1px solid #E3E8EF">
+          <div style="flex: 1 1 360px"><div style="font-weight: 600; font-size: 17px">Price list</div><div class="muted" style="font-size: 14px">New prices are available to visitors since Friday</div></div>
+          <span class="chip cm">Live</span>
+        </a>
+      </section>
+      <a href="01-first-run.html" style="font-weight: 600">+ New project</a>
+    </div>
+  </main>
+</div>
+</body>
+</html>

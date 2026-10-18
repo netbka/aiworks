@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AIWorks · Studio bookings · Knowledge</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;font-family:'IBM Plex Sans',system-ui,sans-serif;color:#1D2939;background:#F4F7FA;font-size:15px;line-height:1.5}
+a{color:#3154B8;text-decoration:none}a:hover{color:#23408F}
+.side{flex:0 0 228px;box-sizing:border-box;background:#EDF2F7;padding:28px 18px;display:flex;flex-direction:column;gap:4px}
+.brand{font-size:22px;font-weight:700;padding:0 10px;color:#1D2939}
+.ws{font-size:13px;color:#5B6676;padding:0 10px 22px}
+.nav{display:flex;align-items:center;gap:8px;padding:10px;border-radius:8px;color:#1D2939;font-weight:500}
+.nav:hover{background:#E2E9F1;color:#1D2939}
+.on{background:#fff;color:#3154B8;font-weight:600}
+.badge{margin-left:auto;background:#FFF4DB;color:#8A5800;border-radius:6px;padding:0 8px;font-size:13px;font-weight:600}
+.sec{font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#5B6676;padding:20px 10px 6px;border-top:1px solid #D9E1EA;margin-top:14px}
+.pin{padding:7px 10px;color:#1D2939;border-radius:8px}
+.pin:hover{background:#E2E9F1;color:#1D2939}
+.top{display:flex;align-items:center;gap:16px;padding:16px 32px;border-bottom:1px solid #E3E8EF;color:#5B6676}
+.av{background:#EDF2F7;border-radius:8px;padding:4px 10px;font-weight:600;color:#1D2939;font-size:13px}
+.tabs{display:flex;flex-wrap:wrap;gap:4px 28px;padding:0 32px;border-bottom:1px solid #E3E8EF;align-items:center}
+.tab{padding:16px 0 13px;color:#3B4656;border-bottom:3px solid transparent}
+.tab:hover{color:#1D2939}
+.cur{color:#3154B8;font-weight:600;border-bottom-color:#3154B8}
+.btn{font:inherit;font-weight:600;font-size:15px;border-radius:8px;padding:10px 18px;border:1px solid #CBD4DF;background:#fff;color:#1D2939;cursor:pointer;min-height:44px;display:inline-flex;align-items:center;gap:8px;box-sizing:border-box}
+.btn:hover{background:#F4F7FA;color:#1D2939}
+.pri{background:#3154B8;border-color:#3154B8;color:#fff}.pri:hover{background:#23408F;color:#fff}
+.lbl{font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#5B6676}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:6px;font-size:13px;font-weight:600;white-space:nowrap}
+.cg{background:#E3F2EC;color:#1D6A53}.cm{background:#EDF2F7;color:#4A5565}.cy{background:#FFF4DB;color:#8A5800}
+.muted{color:#5B6676}
+.fact{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;padding:12px 0;border-top:1px solid #E3E8EF}
+.bubble{padding:10px 14px;border-radius:10px;background:#fff;border:1px solid #E3E8EF}
+</style>
+</head>
+<body>
+<div style="display: flex; flex-wrap: wrap; min-height: 1100px; background: #fff">
+  <aside class="side">
+    <div class="brand">AIWorks</div>
+    <div class="ws">Personal workspace</div>
+    <a class="nav" href="02-home.html">Home</a>
+    <a class="nav on" href="03-overview.html">Projects</a>
+    <a class="nav" href="05-decision.html">Needs you <span class="badge">1</span></a>
+    <div class="sec">Pinned projects</div>
+    <a class="pin" href="03-overview.html" style="color: #3154B8; font-weight: 600">Studio bookings</a>
+    <a class="pin" href="03-overview.html">Client portal</a>
+    <a class="pin" href="03-overview.html">Weekend guide</a>
+    <div style="flex: 1; min-height: 40px"></div>
+    <a class="nav" href="10-settings.html" style="color: #5B6676">Help</a>
+    <a class="nav" href="10-settings.html" style="color: #5B6676">Settings</a>
+  </aside>
+  <main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column">
+    <div class="top"><span style="color: #1D2939">Studio bookings</span><span style="margin-left: auto">Search</span><span class="av">AP</span></div>
+    <nav class="tabs" aria-label="Project">
+      <a class="tab" href="03-overview.html">Overview</a>
+      <a class="tab" href="04-plan.html">Plan</a>
+      <a class="tab" href="06-review.html">Review</a>
+      <a class="tab" href="07-releases.html">Releases</a>
+      <a class="tab cur" href="08-knowledge.html">Knowledge</a>
+      <a class="tab" href="09-project-settings.html" style="margin-left: auto">Project settings</a>
+    </nav>
+    <div style="display: flex; flex-wrap: wrap; align-items: stretch; flex: 1">
+      <div style="flex: 999 1 520px; min-width: 0; box-sizing: border-box; padding: 28px 36px 48px; display: flex; flex-direction: column; gap: 26px">
+        <div>
+          <h1 style="margin: 0; font-size: 32px; line-height: 1.2">What AIWorks knows about this product</h1>
+          <p class="muted" style="margin: 4px 0 0">Every builder and checker reads this. Each line shows where it came from.</p>
+        </div>
+        <section>
+          <h2 style="margin: 0 0 4px; font-size: 19px">About the product</h2>
+          <div class="fact"><span style="flex: 1 1 320px">For a small studio. Clients book from their phones, mostly in the evening.</span><span class="chip cg">Confirmed by you</span></div>
+          <div class="fact"><span style="flex: 1 1 320px">Opening hours: 09:00–19:00, closed on Sundays.</span><span class="chip cm">Found in brief.pdf</span></div>
+        </section>
+        <section>
+          <h2 style="margin: 0 0 4px; font-size: 19px">Requirements and decisions</h2>
+          <div class="fact"><span style="flex: 1 1 320px">No payments in the first version.</span><span class="chip cg">Confirmed by you · 17 Oct</span></div>
+          <div class="fact"><span style="flex: 1 1 320px">A slot lasts 60 minutes.</span><span class="chip cm">Found in brief.pdf</span></div>
+          <div class="fact"><span style="flex: 1 1 320px">Clients can cancel up to 24 hours before the visit.</span><span class="chip cy">Suggested by AI · not confirmed</span><span style="display: flex; gap: 10px"><a href="08-knowledge.html">Confirm</a><a href="08-knowledge.html">Change</a></span></div>
+        </section>
+        <section>
+          <h2 style="margin: 0 0 4px; font-size: 19px">Materials</h2>
+          <div class="fact"><span style="flex: 1 1 320px">brief.pdf · added 17 Oct</span><a href="08-knowledge.html">Open</a></div>
+          <div class="fact" style="border-bottom: 1px solid #E3E8EF"><span style="flex: 1 1 320px">GitHub: studio/bookings</span><a href="09-project-settings.html">Connection</a></div>
+        </section>
+        <section>
+          <h2 style="margin: 0 0 8px; font-size: 19px">History</h2>
+          <ul style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px">
+            <li><span class="muted" style="font-size: 14px">Today 10:12</span> · You accepted version 3 of Online booking</li>
+            <li><span class="muted" style="font-size: 14px">Today 08:55</span> · Checker found a double-booking problem; fixed in round 2</li>
+            <li><span class="muted" style="font-size: 14px">17 Oct 18:05</span> · You approved the plan for Online booking ($40 budget, manual release)</li>
+          </ul>
+          <a href="08-knowledge.html" style="display: inline-block; margin-top: 10px; font-size: 14px">Full log with filters</a>
+        </section>
+      </div>
+      <aside style="flex: 1 1 320px; min-width: 0; box-sizing: border-box; padding: 24px; background: #F4F7FA; border-left: 1px solid #E3E8EF; display: flex; flex-direction: column; gap: 14px" aria-label="Ask about this project">
+        <div style="display: flex; align-items: center"><b style="font-size: 17px">Ask about this project</b><button class="btn" type="button" style="margin-left: auto; min-height: 36px; padding: 4px 12px" aria-label="Close panel">Close</button></div>
+        <div class="bubble" style="align-self: flex-end; background: #EAF0FC; border-color: #D3DFF8">Why is confirmation paused?</div>
+        <div class="bubble">The booking confirmation step waits for your answer about payments: the agreed plan leaves payments for later, but a new note asks for deposits. Calendar work continues. <a href="05-decision.html">Open the decision</a></div>
+        <div class="bubble" style="align-self: flex-end; background: #EAF0FC; border-color: #D3DFF8">Add reminders by text to Next.</div>
+        <div class="bubble">I can add "Reminders by text the day before" to Next. Nothing starts until you approve its plan.<div style="margin-top: 8px"><button class="btn pri" type="button" style="min-height: 36px; padding: 4px 12px">Add to Next</button></div></div>
+        <label for="ask" class="muted" style="font-size: 14px; margin-top: auto">Your question</label>
+        <input id="ask" placeholder="What changed since Friday?" style="font: inherit; padding: 12px 14px; border: 1px solid #CBD4DF; border-radius: 8px; background: #fff">
+      </aside>
+    </div>
+  </main>
+</div>
+</body>
+</html>

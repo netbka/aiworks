@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AIWorks · Settings</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;font-family:'IBM Plex Sans',system-ui,sans-serif;color:#1D2939;background:#F4F7FA;font-size:15px;line-height:1.5}
+a{color:#3154B8;text-decoration:none}a:hover{color:#23408F}
+.side{flex:0 0 228px;box-sizing:border-box;background:#EDF2F7;padding:28px 18px;display:flex;flex-direction:column;gap:4px}
+.brand{font-size:22px;font-weight:700;padding:0 10px;color:#1D2939}
+.ws{font-size:13px;color:#5B6676;padding:0 10px 22px}
+.nav{display:flex;align-items:center;gap:8px;padding:10px;border-radius:8px;color:#1D2939;font-weight:500}
+.nav:hover{background:#E2E9F1;color:#1D2939}
+.on{background:#fff;color:#3154B8;font-weight:600}
+.badge{margin-left:auto;background:#FFF4DB;color:#8A5800;border-radius:6px;padding:0 8px;font-size:13px;font-weight:600}
+.sec{font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#5B6676;padding:20px 10px 6px;border-top:1px solid #D9E1EA;margin-top:14px}
+.pin{padding:7px 10px;color:#1D2939;border-radius:8px}
+.pin:hover{background:#E2E9F1;color:#1D2939}
+.top{display:flex;align-items:center;gap:16px;padding:16px 32px;border-bottom:1px solid #E3E8EF;color:#5B6676}
+.av{background:#EDF2F7;border-radius:8px;padding:4px 10px;font-weight:600;color:#1D2939;font-size:13px}
+.btn{font:inherit;font-weight:600;font-size:15px;border-radius:8px;padding:10px 18px;border:1px solid #CBD4DF;background:#fff;color:#1D2939;cursor:pointer;min-height:44px;display:inline-flex;align-items:center;gap:8px;box-sizing:border-box}
+.btn:hover{background:#F4F7FA;color:#1D2939}
+.lbl{font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#5B6676}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:6px;font-size:13px;font-weight:600;white-space:nowrap}
+.cg{background:#E3F2EC;color:#1D6A53}.cm{background:#EDF2F7;color:#4A5565}.cy{background:#FFF4DB;color:#8A5800}.cw{background:#EAF0FC;color:#3154B8}
+.muted{color:#5B6676}
+.block{padding:22px 24px;border:1px solid #E3E8EF;border-radius:10px;display:flex;flex-direction:column;gap:8px}
+.line{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;padding:10px 0;border-top:1px solid #EEF2F6}
+.meter{flex:0 0 140px;height:8px;border-radius:4px;background:#E3E8EF;overflow:hidden}
+h2{margin:0;font-size:19px}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:9px 8px;border-top:1px solid #EEF2F6}
+th{font-size:13px;color:#5B6676;font-weight:600;border-top:0}
+td.r,th.r{text-align:right;font-family:'IBM Plex Mono',monospace}
+</style>
+</head>
+<body>
+<div style="display: flex; flex-wrap: wrap; min-height: 1200px; background: #fff">
+  <aside class="side">
+    <div class="brand">AIWorks</div>
+    <div class="ws">Personal workspace</div>
+    <a class="nav" href="02-home.html">Home</a>
+    <a class="nav" href="03-overview.html">Projects</a>
+    <a class="nav" href="05-decision.html">Needs you <span class="badge">1</span></a>
+    <div class="sec">Pinned projects</div>
+    <a class="pin" href="03-overview.html">Studio bookings</a>
+    <a class="pin" href="03-overview.html">Client portal</a>
+    <a class="pin" href="03-overview.html">Weekend guide</a>
+    <div style="flex: 1; min-height: 40px"></div>
+    <a class="nav" href="10-settings.html" style="color: #5B6676">Help</a>
+    <a class="nav on" href="10-settings.html">Settings</a>
+  </aside>
+  <main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column">
+    <div class="top"><span style="color: #1D2939">Settings</span><span style="margin-left: auto">Search</span><span class="av">AP</span></div>
+    <div style="box-sizing: border-box; width: 100%; max-width: 1060px; padding: 28px 36px 48px; display: flex; flex-direction: column; gap: 20px">
+      <h1 style="margin: 0; font-size: 32px; line-height: 1.2">Settings</h1>
+
+      <section class="block" aria-labelledby="conn">
+        <h2 id="conn">Connections</h2>
+        <div class="line"><span style="flex: 1 1 220px"><b style="font-weight: 600">Claude</b> · Max subscription<br><span class="muted" style="font-size: 14px">Builds most of the work</span></span><span class="meter" role="img" aria-label="62 percent of limit used"><span style="display: block; width: 62%; height: 100%; background: #3154B8"></span></span><span class="muted" style="font-size: 14px">62% used · resets 15:00</span></div>
+        <div class="line"><span style="flex: 1 1 220px"><b style="font-weight: 600">Codex</b> · ChatGPT Plus<br><span class="muted" style="font-size: 14px">Independent checks</span></span><span class="chip cg">Available</span></div>
+        <div class="line"><span style="flex: 1 1 220px"><b style="font-weight: 600">Studio PC</b><br><span class="muted" style="font-size: 14px">Where the work runs</span></span><span class="chip cg">Online · seen now</span><span class="muted" style="font-size: 14px">2 of 4 work slots busy</span></div>
+        <div class="line"><span style="flex: 1 1 220px"><b style="font-weight: 600">GitHub</b> · signed in as alex-p</span><span class="chip cg">Connected</span></div>
+        <div class="line"><button class="btn" type="button">Add a connection</button><span class="muted" style="font-size: 14px">Which AI does what, model choice and switching rules are under Details.</span></div>
+      </section>
+
+      <section class="block" aria-labelledby="usage">
+        <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px"><h2 id="usage">Usage · October</h2><span style="margin-left: auto" class="muted">Period: this month</span><button class="btn" type="button" style="min-height: 36px; padding: 4px 12px">Export</button></div>
+        <div style="overflow-x: auto">
+          <table>
+            <thead><tr><th>Project</th><th class="r">Pay-as-you-go</th><th class="r">Subscription use</th><th class="r">Hosting</th><th>Accepted results</th></tr></thead>
+            <tbody>
+              <tr><td>Studio bookings</td><td class="r">$12.40</td><td class="r">31% of Claude</td><td class="r">unknown</td><td>3</td></tr>
+              <tr><td>Client portal</td><td class="r">$22.10</td><td class="r">18% of Claude</td><td class="r">$5.00</td><td>5</td></tr>
+              <tr><td>Weekend guide</td><td class="r">$4.80</td><td class="r">9% of Claude</td><td class="r">—</td><td>1</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="muted" style="font-size: 14px">Subscription use is part of your paid plan, not free. "Unknown" means the provider has not reported it yet.</div>
+      </section>
+
+      <section class="block" aria-labelledby="alerts">
+        <h2 id="alerts">Alerts</h2>
+        <div class="line"><span style="flex: 1 1 260px">A decision blocks work</span><span class="chip cw">Phone · now</span></div>
+        <div class="line"><span style="flex: 1 1 260px">A result is ready to try</span><span class="chip cm">Morning summary</span></div>
+        <div class="line"><span style="flex: 1 1 260px">Budget reached, or something AIWorks cannot fix itself</span><span class="chip cw">Phone · now, even in quiet hours</span></div>
+        <div class="line"><span style="flex: 1 1 260px">Usage limits, retries, rework, normal progress</span><span class="chip cm">Never</span></div>
+        <div class="line"><span style="flex: 1 1 260px">Quiet hours</span><span style="font-family: 'IBM Plex Mono', monospace">22:00 – 07:00</span></div>
+        <div class="line"><span style="flex: 1 1 260px">Channels</span><span>AIWorks app · Telegram · Email</span></div>
+      </section>
+    </div>
+  </main>
+</div>
+</body>
+</html>
