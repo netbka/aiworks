@@ -23,7 +23,12 @@
             "type": "object", "required": ["role", "path"],
             "properties": {
               "role": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "maxLength": 64 },
-              "path": { "type": "string", "minLength": 1, "maxLength": 512 }
+              "path": {
+                "$comment": "Relative to the project repository root, optional #anchor, never a secret-like path. The `not` pattern is SECRET_LIKE_PATH_PATTERN in scripts/lib/worker-context.mjs, identical in the worker packet schema.",
+                "type": "string", "minLength": 1, "maxLength": 512,
+                "pattern": "^(?!(?:[^#]*/)?\\.{1,2}(?:[/#]|$))[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*(?:#[A-Za-z0-9._-]+)?$",
+                "not": { "pattern": "(?:^|/)(?:\\.[Ee][Nn][Vv][^/#]*|[^/#]+\\.[Ee][Nn][Vv]|\\.[Gg][Ii][Tt]|\\.[Ss][Ss][Hh]|\\.[Gg][Nn][Uu][Pp][Gg]|\\.[Nn][Pp][Mm][Rr][Cc]|\\.[Nn][Ee][Tt][Rr][Cc]|\\.[Gg][Ii][Tt]-[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll][Ss]|\\.[Kk][Uu][Bb][Ee]/[Cc][Oo][Nn][Ff][Ii][Gg]|[Ii][Dd]_[Rr][Ss][Aa][^/#]*|[Ii][Dd]_[Ee][Dd]25519[^/#]*|[Ii][Dd]_[Ee][Cc][Dd][Ss][Aa][^/#]*|[^/#]*\\.[Tt][Ff][Ss][Tt][Aa][Tt][Ee](?:\\.[^/#]*)?|[^/#]*\\.[Tt][Ff][Vv][Aa][Rr][Ss](?:\\.[Jj][Ss][Oo][Nn])?|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll][Ss]?(?:\\.[^/#]*)?|[Ss][Ee][Cc][Rr][Ee][Tt][Ss]?(?:\\.[^/#]*)?)(?:[/#]|$)|\\.(?:[Pp][Ee][Mm]|[Kk][Ee][Yy]|[Pp]12|[Pp][Ff][Xx]|[Jj][Kk][Ss]|[Kk][Ee][Yy][Ss][Tt][Oo][Rr][Ee]|[Cc][Rr][Tt]|[Cc][Ee][Rr]|[Dd][Ee][Rr]|[Pp][Pp][Kk])(?:#|$)" }
+              }
             },
             "additionalProperties": false
           }

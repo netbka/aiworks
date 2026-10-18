@@ -28,15 +28,20 @@ const LOCAL_ID = /^[a-z0-9][a-z0-9-]*$/;
 const RULE = /^(?:constitution#(?:[1-9]|1[0-8])|baseline:[a-z][a-z0-9-]*|policy:[A-Z][A-Z0-9]*-[0-9]{3}#[a-z][a-z0-9-]*)$/;
 /**
  * A secret-like repository path, which no authority pointer may name, since workers are told to read authorities. It
- * matches a segment starting `.env`; a `.git`, `.ssh` or `.gnupg` segment; a segment named `id_rsa*`, `id_ed25519*`,
- * `credential(s)` or `secret(s)`, with or without an extension; and a key, certificate or keystore file. Case is ignored
- * through character classes, because JSON schema patterns take no flags. The packet schema and the registry's
- * `projectPath` (schemas/project-contract.schema.json) carry this exact string, so a registry entry cannot declare one.
+ * matches a segment starting `.env` or ending `.env` (`prod.env`); a `.git`, `.ssh` or `.gnupg` segment; a `.npmrc`,
+ * `.netrc` or `.git-credentials` file and `.kube/config`; a segment named `id_rsa*`, `id_ed25519*`, `id_ecdsa*`,
+ * `credential(s)` or `secret(s)`, with or without an extension; Terraform state and variable files (`*.tfstate*`,
+ * `*.tfvars`, `*.tfvars.json`); and a key, certificate, keystore or PuTTY key file. Case is ignored through character
+ * classes, because JSON schema patterns take no flags. The packet schema and the registry's `projectPath`
+ * (schemas/project-contract.schema.json) carry this exact string, so a registry entry cannot declare one.
  */
-export const SECRET_LIKE_PATH_PATTERN = '(?:^|/)(?:\\.[Ee][Nn][Vv][^/#]*|\\.[Gg][Ii][Tt]|\\.[Ss][Ss][Hh]|\\.[Gg][Nn][Uu][Pp][Gg]|' +
-  '[Ii][Dd]_[Rr][Ss][Aa][^/#]*|[Ii][Dd]_[Ee][Dd]25519[^/#]*|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll][Ss]?(?:\\.[^/#]*)?|' +
-  '[Ss][Ee][Cc][Rr][Ee][Tt][Ss]?(?:\\.[^/#]*)?)(?:[/#]|$)|\\.(?:[Pp][Ee][Mm]|[Kk][Ee][Yy]|[Pp]12|[Pp][Ff][Xx]|[Jj][Kk][Ss]|' +
-  '[Kk][Ee][Yy][Ss][Tt][Oo][Rr][Ee]|[Cc][Rr][Tt]|[Cc][Ee][Rr]|[Dd][Ee][Rr])(?:#|$)';
+export const SECRET_LIKE_PATH_PATTERN = '(?:^|/)(?:\\.[Ee][Nn][Vv][^/#]*|[^/#]+\\.[Ee][Nn][Vv]|\\.[Gg][Ii][Tt]|\\.[Ss][Ss][Hh]|' +
+  '\\.[Gg][Nn][Uu][Pp][Gg]|\\.[Nn][Pp][Mm][Rr][Cc]|\\.[Nn][Ee][Tt][Rr][Cc]|\\.[Gg][Ii][Tt]-[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll][Ss]|' +
+  '\\.[Kk][Uu][Bb][Ee]/[Cc][Oo][Nn][Ff][Ii][Gg]|[Ii][Dd]_[Rr][Ss][Aa][^/#]*|[Ii][Dd]_[Ee][Dd]25519[^/#]*|[Ii][Dd]_[Ee][Cc][Dd][Ss][Aa][^/#]*|' +
+  '[^/#]*\\.[Tt][Ff][Ss][Tt][Aa][Tt][Ee](?:\\.[^/#]*)?|[^/#]*\\.[Tt][Ff][Vv][Aa][Rr][Ss](?:\\.[Jj][Ss][Oo][Nn])?|' +
+  '[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll][Ss]?(?:\\.[^/#]*)?|[Ss][Ee][Cc][Rr][Ee][Tt][Ss]?(?:\\.[^/#]*)?)(?:[/#]|$)|' +
+  '\\.(?:[Pp][Ee][Mm]|[Kk][Ee][Yy]|[Pp]12|[Pp][Ff][Xx]|[Jj][Kk][Ss]|[Kk][Ee][Yy][Ss][Tt][Oo][Rr][Ee]|[Cc][Rr][Tt]|[Cc][Ee][Rr]|' +
+  '[Dd][Ee][Rr]|[Pp][Pp][Kk])(?:#|$)';
 const SECRET_LIKE_PATH = new RegExp(SECRET_LIKE_PATH_PATTERN, 'u');
 
 /**
