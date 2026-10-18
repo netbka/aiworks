@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AIWorks · Studio bookings · Project settings</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;font-family:'IBM Plex Sans',system-ui,sans-serif;color:#1D2939;background:#F4F7FA;font-size:15px;line-height:1.5}
+a{color:#3154B8;text-decoration:none}a:hover{color:#23408F}
+.side{flex:0 0 228px;box-sizing:border-box;background:#EDF2F7;padding:28px 18px;display:flex;flex-direction:column;gap:4px}
+.brand{font-size:22px;font-weight:700;padding:0 10px;color:#1D2939}
+.ws{font-size:13px;color:#5B6676;padding:0 10px 22px}
+.nav{display:flex;align-items:center;gap:8px;padding:10px;border-radius:8px;color:#1D2939;font-weight:500}
+.nav:hover{background:#E2E9F1;color:#1D2939}
+.on{background:#fff;color:#3154B8;font-weight:600}
+.badge{margin-left:auto;background:#FFF4DB;color:#8A5800;border-radius:6px;padding:0 8px;font-size:13px;font-weight:600}
+.sec{font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#5B6676;padding:20px 10px 6px;border-top:1px solid #D9E1EA;margin-top:14px}
+.pin{padding:7px 10px;color:#1D2939;border-radius:8px}
+.pin:hover{background:#E2E9F1;color:#1D2939}
+.top{display:flex;align-items:center;gap:16px;padding:16px 32px;border-bottom:1px solid #E3E8EF;color:#5B6676}
+.av{background:#EDF2F7;border-radius:8px;padding:4px 10px;font-weight:600;color:#1D2939;font-size:13px}
+.tabs{display:flex;flex-wrap:wrap;gap:4px 28px;padding:0 32px;border-bottom:1px solid #E3E8EF;align-items:center}
+.tab{padding:16px 0 13px;color:#3B4656;border-bottom:3px solid transparent}
+.tab:hover{color:#1D2939}
+.cur{color:#3154B8;font-weight:600;border-bottom-color:#3154B8}
+.btn{font:inherit;font-weight:600;font-size:15px;border-radius:8px;padding:10px 18px;border:1px solid #CBD4DF;background:#fff;color:#1D2939;cursor:pointer;min-height:44px;display:inline-flex;align-items:center;gap:8px;box-sizing:border-box}
+.btn:hover{background:#F4F7FA;color:#1D2939}
+.lbl{font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#5B6676}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:6px;font-size:13px;font-weight:600;white-space:nowrap}
+.cg{background:#E3F2EC;color:#1D6A53}.cm{background:#EDF2F7;color:#4A5565}.cy{background:#FFF4DB;color:#8A5800}
+.muted{color:#5B6676}
+.block{padding:22px 24px;border:1px solid #E3E8EF;border-radius:10px;display:flex;flex-direction:column;gap:10px}
+.line{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;padding:10px 0;border-top:1px solid #EEF2F6}
+.inp{font:inherit;width:96px;padding:8px 10px;border:1px solid #CBD4DF;border-radius:8px;text-align:right}
+h2{margin:0;font-size:19px}
+</style>
+</head>
+<body>
+<div style="display: flex; flex-wrap: wrap; min-height: 1200px; background: #fff">
+  <aside class="side">
+    <div class="brand">AIWorks</div>
+    <div class="ws">Personal workspace</div>
+    <a class="nav" href="02-home.html">Home</a>
+    <a class="nav on" href="03-overview.html">Projects</a>
+    <a class="nav" href="05-decision.html">Needs you <span class="badge">1</span></a>
+    <div class="sec">Pinned projects</div>
+    <a class="pin" href="03-overview.html" style="color: #3154B8; font-weight: 600">Studio bookings</a>
+    <a class="pin" href="03-overview.html">Client portal</a>
+    <a class="pin" href="03-overview.html">Weekend guide</a>
+    <div style="flex: 1; min-height: 40px"></div>
+    <a class="nav" href="10-settings.html" style="color: #5B6676">Help</a>
+    <a class="nav" href="10-settings.html" style="color: #5B6676">Settings</a>
+  </aside>
+  <main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column">
+    <div class="top"><span style="color: #1D2939">Studio bookings</span><span style="margin-left: auto">Search</span><span class="av">AP</span></div>
+    <nav class="tabs" aria-label="Project">
+      <a class="tab" href="03-overview.html">Overview</a>
+      <a class="tab" href="04-plan.html">Plan</a>
+      <a class="tab" href="06-review.html">Review</a>
+      <a class="tab" href="07-releases.html">Releases</a>
+      <a class="tab" href="08-knowledge.html">Knowledge</a>
+      <a class="tab cur" href="09-project-settings.html" style="margin-left: auto">Project settings</a>
+    </nav>
+    <div style="box-sizing: border-box; width: 100%; max-width: 1060px; padding: 28px 36px 48px; display: flex; flex-direction: column; gap: 20px">
+      <div>
+        <h1 style="margin: 0; font-size: 32px; line-height: 1.2">Project settings</h1>
+        <p class="muted" style="margin: 4px 0 0">Set once for the project. Each goal works inside these rules.</p>
+      </div>
+
+      <section class="block">
+        <h2>How work runs</h2>
+        <p style="margin: 0">After you start a goal, AIWorks splits it into steps, builds, checks independently, fixes what the check finds and continues after crashes and usage limits. It comes back to you before it changes what the goal includes, its criteria, its budget, client data or the release.</p>
+      </section>
+
+      <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px">
+        <section class="block">
+          <h2>Release</h2>
+          <div class="line"><span style="flex: 1">Manual: you press Publish</span><span class="chip cg">On</span></div>
+          <div class="line"><span style="flex: 1">Automatic release<br><span class="muted" style="font-size: 14px">Publishes a checked version without waiting for you, only under rules you set</span></span><button class="btn" type="button">Set up</button></div>
+          <div class="muted" style="font-size: 14px">Setting up shows where it publishes, which changes are allowed, which checks are required, who is told and what can be restored.</div>
+        </section>
+        <section class="block">
+          <h2>Budget</h2>
+          <label class="line"><span style="flex: 1">Default limit per goal</span><input class="inp" value="$40" aria-label="Default limit per goal"></label>
+          <label class="line"><span style="flex: 1">Limit per month for this project</span><input class="inp" value="$150" aria-label="Limit per month for this project"></label>
+          <div class="muted" style="font-size: 14px">Reaching a limit becomes a question for you. AIWorks does not start work it cannot cover.</div>
+        </section>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px">
+        <section class="block">
+          <h2>Ask before changing</h2>
+          <p class="muted" style="margin: 0">Parts of the product where any change becomes a question for you.</p>
+          <div class="line"><span style="flex: 1">Client data and stored bookings</span><span class="chip cy">Always ask</span></div>
+          <div class="line"><span style="flex: 1">Anything that touches payments</span><span class="chip cy">Always ask</span></div>
+          <a href="09-project-settings.html" style="padding-top: 6px">+ Add an area</a>
+        </section>
+        <section class="block">
+          <h2>Notes for the AI</h2>
+          <p class="muted" style="margin: 0">Every builder and checker reads these.</p>
+          <label for="notes" style="position: absolute; left: -9999px">Notes for the AI</label>
+          <textarea id="notes" style="font: inherit; min-height: 110px; padding: 10px 12px; border: 1px solid #CBD4DF; border-radius: 8px; resize: vertical">Keep the booking page simple and fast on old phones.
+Texts for clients: friendly, short, no jargon.</textarea>
+        </section>
+      </div>
+
+      <section class="block">
+        <h2>Where the work happens</h2>
+        <div class="line"><span style="flex: 1">Computer</span><span>Studio PC</span><span class="chip cg">Online</span></div>
+        <div class="line"><span style="flex: 1">Project folder</span><span style="font-family: 'IBM Plex Mono', monospace; font-size: 14px">C:\Projects\studio-bookings</span><a href="09-project-settings.html">Move</a></div>
+        <div class="line"><span style="flex: 1">GitHub</span><span>studio/bookings</span><span class="chip cg">Connected</span></div>
+        <div class="line"><span style="flex: 1">Test mail connection<br><span class="muted" style="font-size: 14px">Needed to check real email delivery before release</span></span><button class="btn" type="button">Connect</button></div>
+      </section>
+
+      <section class="block" style="background: #F4F7FA; border-color: #F4F7FA">
+        <h2>AIWorks never, in any project</h2>
+        <ul style="margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px">
+          <li>publishes without your Publish or an automatic-release rule you set</li>
+          <li>creates accounts, buys services or changes payment settings</li>
+          <li>deletes your data or work it did not create</li>
+          <li>hands a refused task to another AI to get around the refusal</li>
+        </ul>
+      </section>
+
+      <div style="display: flex; flex-wrap: wrap; gap: 16px; font-size: 14px">
+        <span class="muted">Owner: Alex P.</span>
+        <a href="09-project-settings.html">Archive project</a>
+        <a href="09-project-settings.html">Export project data</a>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

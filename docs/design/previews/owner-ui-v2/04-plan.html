@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AIWorks · Studio bookings · Plan</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;font-family:'IBM Plex Sans',system-ui,sans-serif;color:#1D2939;background:#F4F7FA;font-size:15px;line-height:1.5}
+a{color:#3154B8;text-decoration:none}a:hover{color:#23408F}
+.side{flex:0 0 228px;box-sizing:border-box;background:#EDF2F7;padding:28px 18px;display:flex;flex-direction:column;gap:4px}
+.brand{font-size:22px;font-weight:700;padding:0 10px;color:#1D2939}
+.ws{font-size:13px;color:#5B6676;padding:0 10px 22px}
+.nav{display:flex;align-items:center;gap:8px;padding:10px;border-radius:8px;color:#1D2939;font-weight:500}
+.nav:hover{background:#E2E9F1;color:#1D2939}
+.on{background:#fff;color:#3154B8;font-weight:600}
+.badge{margin-left:auto;background:#FFF4DB;color:#8A5800;border-radius:6px;padding:0 8px;font-size:13px;font-weight:600}
+.sec{font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#5B6676;padding:20px 10px 6px;border-top:1px solid #D9E1EA;margin-top:14px}
+.pin{padding:7px 10px;color:#1D2939;border-radius:8px}
+.pin:hover{background:#E2E9F1;color:#1D2939}
+.top{display:flex;align-items:center;gap:16px;padding:16px 32px;border-bottom:1px solid #E3E8EF;color:#5B6676}
+.av{background:#EDF2F7;border-radius:8px;padding:4px 10px;font-weight:600;color:#1D2939;font-size:13px}
+.tabs{display:flex;flex-wrap:wrap;gap:4px 28px;padding:0 32px;border-bottom:1px solid #E3E8EF;align-items:center}
+.tab{padding:16px 0 13px;color:#3B4656;border-bottom:3px solid transparent}
+.tab:hover{color:#1D2939}
+.cur{color:#3154B8;font-weight:600;border-bottom-color:#3154B8}
+.btn{font:inherit;font-weight:600;font-size:15px;border-radius:8px;padding:10px 18px;border:1px solid #CBD4DF;background:#fff;color:#1D2939;cursor:pointer;min-height:44px;display:inline-flex;align-items:center;gap:8px;box-sizing:border-box}
+.btn:hover{background:#F4F7FA;color:#1D2939}
+.pri{background:#3154B8;border-color:#3154B8;color:#fff}.pri:hover{background:#23408F;color:#fff}
+.lbl{font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#5B6676}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:6px;font-size:13px;font-weight:600;white-space:nowrap}
+.cw{background:#EAF0FC;color:#3154B8}.cy{background:#FFF4DB;color:#8A5800}.cg{background:#E3F2EC;color:#1D6A53}.cm{background:#EDF2F7;color:#4A5565}
+.muted{color:#5B6676}
+.card{background:#fff;border:1px solid #E3E8EF;border-radius:10px}
+.goal{display:block;padding:10px 12px;border-radius:8px;color:#1D2939}
+.goal:hover{background:#F4F7FA;color:#1D2939}
+.cap{display:flex;gap:14px;align-items:flex-start;padding:12px 0}
+.n{flex:none;width:28px;height:28px;border-radius:6px;background:#EDF2F7;display:inline-flex;align-items:center;justify-content:center;font-size:13px;font-weight:600}
+.crit{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:baseline;padding:10px 0;border-top:1px solid #EEF2F6}
+</style>
+</head>
+<body>
+<div style="display: flex; flex-wrap: wrap; min-height: 1000px; background: #fff">
+  <aside class="side">
+    <div class="brand">AIWorks</div>
+    <div class="ws">Personal workspace</div>
+    <a class="nav" href="02-home.html">Home</a>
+    <a class="nav on" href="03-overview.html">Projects</a>
+    <a class="nav" href="05-decision.html">Needs you <span class="badge">1</span></a>
+    <div class="sec">Pinned projects</div>
+    <a class="pin" href="03-overview.html" style="color: #3154B8; font-weight: 600">Studio bookings</a>
+    <a class="pin" href="03-overview.html">Client portal</a>
+    <a class="pin" href="03-overview.html">Weekend guide</a>
+    <div style="flex: 1; min-height: 40px"></div>
+    <a class="nav" href="10-settings.html" style="color: #5B6676">Help</a>
+    <a class="nav" href="10-settings.html" style="color: #5B6676">Settings</a>
+  </aside>
+  <main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column">
+    <div class="top"><span style="color: #1D2939">Studio bookings</span><span style="margin-left: auto">Search</span><span class="av">AP</span></div>
+    <nav class="tabs" aria-label="Project">
+      <a class="tab" href="03-overview.html">Overview</a>
+      <a class="tab cur" href="04-plan.html">Plan</a>
+      <a class="tab" href="06-review.html">Review</a>
+      <a class="tab" href="07-releases.html">Releases</a>
+      <a class="tab" href="08-knowledge.html">Knowledge</a>
+      <a class="tab" href="09-project-settings.html" style="margin-left: auto">Project settings</a>
+    </nav>
+    <div style="box-sizing: border-box; width: 100%; padding: 28px 36px 48px; display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start">
+      <nav style="flex: 1 1 220px; max-width: 260px; display: flex; flex-direction: column; gap: 4px" aria-label="Goals">
+        <div class="lbl" style="padding: 0 12px 4px">Now</div>
+        <a class="goal" href="04-plan.html" style="background: #EAF0FC"><b style="font-weight: 600">Online booking</b><br><span class="muted" style="font-size: 14px">Plan ready · not started</span></a>
+        <div class="lbl" style="padding: 16px 12px 4px">Next</div>
+        <a class="goal" href="04-plan.html">Reminders by text<br><span class="muted" style="font-size: 14px">Agreed, starts after Now</span></a>
+        <div class="lbl" style="padding: 16px 12px 4px">Later</div>
+        <a class="goal" href="04-plan.html">Payments and deposits<br><span class="muted" style="font-size: 14px">Idea, not committed</span></a>
+        <a class="goal" href="04-plan.html">Recurring appointments<br><span class="muted" style="font-size: 14px">Idea, not committed</span></a>
+        <a href="01-first-run.html" style="padding: 12px; font-weight: 600">+ Add a goal</a>
+      </nav>
+
+      <div style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 22px">
+        <div style="display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px">
+          <div style="flex: 1 1 360px">
+            <h1 style="margin: 0; font-size: 32px; line-height: 1.2">Online booking</h1>
+            <p class="muted" style="margin: 4px 0 0; font-size: 17px">Agree on the result. AIWorks handles the steps.</p>
+          </div>
+          <span class="chip cw">Plan ready</span>
+        </div>
+
+        <div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start">
+          <div style="flex: 999 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 20px">
+            <section class="card" style="padding: 22px 24px">
+              <h2 style="margin: 0 0 4px; font-size: 19px">What clients will be able to do</h2>
+              <div class="cap"><span class="n">1</span><div><b style="font-weight: 600; font-size: 17px">Choose an available time</b><div class="muted">See open slots and select a service.</div></div></div>
+              <div class="cap"><span class="n">2</span><div><b style="font-weight: 600; font-size: 17px">Confirm the booking</b><div class="muted">Leave contact details and receive a confirmation email.</div></div></div>
+              <div class="cap"><span class="n">3</span><div><b style="font-weight: 600; font-size: 17px">Never be double-booked</b><div class="muted">The same slot cannot be reserved twice.</div></div></div>
+            </section>
+            <section class="card" style="padding: 22px 24px 12px">
+              <h2 style="margin: 0 0 6px; font-size: 19px">How we will know it is done</h2>
+              <div class="crit"><span style="flex: 1 1 280px">A client books a free slot and sees it confirmed.</span><span class="chip cm">Automatic test</span></div>
+              <div class="crit"><span style="flex: 1 1 280px">Two clients trying the same slot: the second is told it is taken.</span><span class="chip cm">Automatic test</span></div>
+              <div class="crit"><span style="flex: 1 1 280px">The booking page works on a phone.</span><span class="chip cm">Screenshots</span></div>
+              <div class="crit"><span style="flex: 1 1 280px">The confirmation email arrives in a real mailbox.</span><span class="chip cy">You check, before release</span></div>
+            </section>
+            <details class="card" style="padding: 16px 24px">
+              <summary style="cursor: pointer; font-weight: 600">How AIWorks will do it · 5 steps</summary>
+              <ol class="muted" style="margin: 12px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px">
+                <li>Store opening hours and services</li>
+                <li>Show free slots for a chosen day</li>
+                <li>Save a booking and block the slot</li>
+                <li>Send the confirmation email</li>
+                <li>Tests for the whole booking path</li>
+              </ol>
+            </details>
+          </div>
+
+          <aside style="flex: 1 1 280px; min-width: 0; padding: 22px 24px; border-radius: 10px; background: #F4F7FA; display: flex; flex-direction: column; gap: 14px">
+            <h2 style="margin: 0; font-size: 19px">Agreed boundaries</h2>
+            <div><b style="font-weight: 600">Included</b><div>Booking, confirmation, time conflicts.</div></div>
+            <div><b style="font-weight: 600">Later</b><div>Payments and recurring appointments.</div></div>
+            <div style="border-top: 1px solid #D9E1EA; padding-top: 14px; display: flex; flex-direction: column; gap: 6px">
+              <div><b style="font-weight: 600">Work budget:</b> $40 maximum</div>
+              <div><b style="font-weight: 600">Release:</b> manual</div>
+              <div class="muted" style="font-size: 14px">Estimate: about $25–35, ready in about a day</div>
+            </div>
+            <div class="muted" style="font-size: 14px">Changing what is included, the budget or the release later comes back to you as a new version of this plan.</div>
+          </aside>
+        </div>
+
+        <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px">
+          <button class="btn" type="button">Edit the plan</button>
+          <span class="muted" style="font-size: 14px">Includes planning, building, independent checks and fixes.</span>
+          <a class="btn pri" href="03-overview.html" style="margin-left: auto">Start work</a>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>
