@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AIWorks · Studio bookings · Releases</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;font-family:'IBM Plex Sans',system-ui,sans-serif;color:#1D2939;background:#F4F7FA;font-size:15px;line-height:1.5}
+a{color:#3154B8;text-decoration:none}a:hover{color:#23408F}
+.side{flex:0 0 228px;box-sizing:border-box;background:#EDF2F7;padding:28px 18px;display:flex;flex-direction:column;gap:4px}
+.brand{font-size:22px;font-weight:700;padding:0 10px;color:#1D2939}
+.ws{font-size:13px;color:#5B6676;padding:0 10px 22px}
+.nav{display:flex;align-items:center;gap:8px;padding:10px;border-radius:8px;color:#1D2939;font-weight:500}
+.nav:hover{background:#E2E9F1;color:#1D2939}
+.on{background:#fff;color:#3154B8;font-weight:600}
+.badge{margin-left:auto;background:#FFF4DB;color:#8A5800;border-radius:6px;padding:0 8px;font-size:13px;font-weight:600}
+.sec{font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#5B6676;padding:20px 10px 6px;border-top:1px solid #D9E1EA;margin-top:14px}
+.pin{padding:7px 10px;color:#1D2939;border-radius:8px}
+.pin:hover{background:#E2E9F1;color:#1D2939}
+.top{display:flex;align-items:center;gap:16px;padding:16px 32px;border-bottom:1px solid #E3E8EF;color:#5B6676}
+.av{background:#EDF2F7;border-radius:8px;padding:4px 10px;font-weight:600;color:#1D2939;font-size:13px}
+.tabs{display:flex;flex-wrap:wrap;gap:4px 28px;padding:0 32px;border-bottom:1px solid #E3E8EF;align-items:center}
+.tab{padding:16px 0 13px;color:#3B4656;border-bottom:3px solid transparent}
+.tab:hover{color:#1D2939}
+.cur{color:#3154B8;font-weight:600;border-bottom-color:#3154B8}
+.btn{font:inherit;font-weight:600;font-size:15px;border-radius:8px;padding:10px 18px;border:1px solid #CBD4DF;background:#fff;color:#1D2939;cursor:pointer;min-height:44px;display:inline-flex;align-items:center;gap:8px;box-sizing:border-box}
+.btn:hover{background:#F4F7FA;color:#1D2939}
+.pri{background:#3154B8;border-color:#3154B8;color:#fff}.pri:hover{background:#23408F;color:#fff}
+.lbl{font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#5B6676}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:6px;font-size:13px;font-weight:600;white-space:nowrap}
+.cg{background:#E3F2EC;color:#1D6A53}.cm{background:#EDF2F7;color:#4A5565}.cw{background:#EAF0FC;color:#3154B8}
+.muted{color:#5B6676}
+.ok{color:#1D6A53;font-weight:600}
+.hist{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;padding:12px 0;border-top:1px solid #E3E8EF}
+</style>
+</head>
+<body>
+<div style="display: flex; flex-wrap: wrap; min-height: 1100px; background: #fff">
+  <aside class="side">
+    <div class="brand">AIWorks</div>
+    <div class="ws">Personal workspace</div>
+    <a class="nav" href="02-home.html">Home</a>
+    <a class="nav on" href="03-overview.html">Projects</a>
+    <a class="nav" href="05-decision.html">Needs you <span class="badge">1</span></a>
+    <div class="sec">Pinned projects</div>
+    <a class="pin" href="03-overview.html" style="color: #3154B8; font-weight: 600">Studio bookings</a>
+    <a class="pin" href="03-overview.html">Client portal</a>
+    <a class="pin" href="03-overview.html">Weekend guide</a>
+    <div style="flex: 1; min-height: 40px"></div>
+    <a class="nav" href="10-settings.html" style="color: #5B6676">Help</a>
+    <a class="nav" href="10-settings.html" style="color: #5B6676">Settings</a>
+  </aside>
+  <main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column">
+    <div class="top"><span style="color: #1D2939">Studio bookings</span><span style="margin-left: auto">Search</span><span class="av">AP</span></div>
+    <nav class="tabs" aria-label="Project">
+      <a class="tab" href="03-overview.html">Overview</a>
+      <a class="tab" href="04-plan.html">Plan</a>
+      <a class="tab" href="06-review.html">Review</a>
+      <a class="tab cur" href="07-releases.html">Releases</a>
+      <a class="tab" href="08-knowledge.html">Knowledge</a>
+      <a class="tab" href="09-project-settings.html" style="margin-left: auto">Project settings</a>
+    </nav>
+    <div style="box-sizing: border-box; width: 100%; max-width: 1100px; padding: 28px 36px 48px; display: flex; flex-direction: column; gap: 24px">
+      <div style="display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px">
+        <div style="flex: 1 1 420px">
+          <h1 style="margin: 0; font-size: 32px; line-height: 1.2">Ready to publish</h1>
+          <p class="muted" style="margin: 4px 0 0">Online booking · version 3, accepted by you today at 10:12</p>
+        </div>
+        <span class="chip cm">Manual release</span>
+      </div>
+
+      <div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: stretch">
+        <section style="flex: 999 1 420px; min-width: 0; padding: 24px; border: 1px solid #E3E8EF; border-radius: 10px; display: flex; flex-direction: column; gap: 14px">
+          <h2 style="margin: 0; font-size: 22px">Clients will be able to book online</h2>
+          <div><div class="muted" style="font-size: 14px">Destination</div><div style="font-size: 18px; font-weight: 600">booking.example · Production</div></div>
+          <div style="border-top: 1px solid #E3E8EF; padding-top: 14px; display: flex; flex-direction: column; gap: 6px">
+            <div><span class="ok">✓</span> Checks passed on this exact version.</div>
+            <div><span class="ok">✓</span> Real email delivery verified with the test mail connection.</div>
+            <div><span class="ok">✓</span> No existing client data will be changed.</div>
+          </div>
+          <div class="muted" style="font-size: 14px">After publishing, AIWorks books a test visit on the live site and reports the result here.</div>
+        </section>
+        <aside style="flex: 1 1 300px; min-width: 0; padding: 24px; border-radius: 10px; background: #F4F7FA; display: flex; flex-direction: column; gap: 12px">
+          <h2 style="margin: 0; font-size: 18px">If something goes wrong</h2>
+          <p style="margin: 0">The previous site version can be restored.</p>
+          <p style="margin: 0">Confirmation emails already sent cannot be recalled.</p>
+          <p style="margin: 0">Bookings made in the meantime stay in the calendar.</p>
+        </aside>
+      </div>
+
+      <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px">
+        <span class="muted" style="font-size: 14px">Automatic release is off for this project. <a href="09-project-settings.html">Change</a></span>
+        <button class="btn pri" type="button" style="margin-left: auto">Publish to production</button>
+      </div>
+
+      <section>
+        <div class="lbl" style="margin-bottom: 4px">Earlier releases</div>
+        <div class="hist"><span class="chip cg">Live</span><span style="flex: 1 1 260px">Opening hours page</span><span class="muted" style="font-size: 14px">14 Oct · checked after release</span></div>
+        <div class="hist"><span class="chip cm">Restored</span><span style="flex: 1 1 260px">New services list</span><span class="muted" style="font-size: 14px">12 Oct · previous version restored the same day</span></div>
+        <div class="hist" style="border-bottom: 1px solid #E3E8EF"><span class="chip cw">Status unknown</span><span style="flex: 1 1 260px">Contact form</span><span class="muted" style="font-size: 14px">9 Oct · no confirmation received; AIWorks checks the site before any retry</span></div>
+      </section>
+    </div>
+  </main>
+</div>
+</body>
+</html>
