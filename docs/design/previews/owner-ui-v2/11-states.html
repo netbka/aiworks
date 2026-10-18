@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AIWorks · States when work goes off plan</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;font-family:'IBM Plex Sans',system-ui,sans-serif;color:#1D2939;background:#F4F7FA;font-size:15px;line-height:1.5}
+a{color:#3154B8;text-decoration:none}a:hover{color:#23408F}
+.btn{font:inherit;font-weight:600;font-size:14px;border-radius:8px;padding:8px 14px;border:1px solid #CBD4DF;background:#fff;color:#1D2939;cursor:pointer;min-height:44px;display:inline-flex;align-items:center;box-sizing:border-box}
+.btn:hover{background:#F4F7FA}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:6px;font-size:13px;font-weight:600;white-space:nowrap}
+.cw{background:#EAF0FC;color:#3154B8}.cy{background:#FFF4DB;color:#8A5800}.cm{background:#EDF2F7;color:#4A5565}.cr{background:#FBEAEA;color:#AD353B}
+.muted{color:#5B6676}
+.st{background:#fff;border:1px solid #E3E8EF;border-radius:10px;padding:18px 20px;display:flex;flex-direction:column;gap:8px}
+.st b{font-size:17px}
+.acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px}
+</style>
+</head>
+<body>
+<div style="min-height: 1200px; box-sizing: border-box; padding: 36px 40px 48px; display: flex; flex-direction: column; gap: 24px; background: #F4F7FA">
+  <div>
+    <h1 style="margin: 0; font-size: 32px; line-height: 1.2">When work goes off plan</h1>
+    <p class="muted" style="margin: 6px 0 0; font-size: 17px">Every stop leaves a clear state, saved work and a way to continue. Colour shows who has to act.</p>
+  </div>
+  <div style="display: flex; flex-wrap: wrap; gap: 10px">
+    <span class="chip cy">You act</span><span class="chip cw">AIWorks is working</span><span class="chip cm">Waiting, under control</span><span class="chip cr">Broken, needs you</span>
+  </div>
+  <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px">
+    <section class="st"><span class="chip cm" style="align-self: flex-start">Waiting</span><b>Work on Studio PC is waiting for the computer</b><span class="muted">Last answer at 12:34. Nothing is lost and nothing will run twice.</span><div class="acts"><button class="btn" type="button">How to reconnect</button></div></section>
+    <section class="st"><span class="chip cm" style="align-self: flex-start">Waiting</span><b>Claude reached its usage limit</b><span class="muted">Work on this account continues at 15:00. Other work goes on. AIWorks does not buy or add another account by itself.</span></section>
+    <section class="st"><span class="chip cw" style="align-self: flex-start">Working</span><b>The check found a problem: two clients can take one slot</b><span class="muted">Fixing inside the goal and budget. Round 2 of up to 3.</span></section>
+    <section class="st"><span class="chip cy" style="align-self: flex-start">Needs you</span><b>Three fixes did not help</b><span class="muted">Double booking still fails the check. Choose how to continue.</span><div class="acts"><button class="btn" type="button">Give a hint</button><button class="btn" type="button">Make the step smaller</button><button class="btn" type="button">Stop this goal</button></div></section>
+    <section class="st"><span class="chip cm" style="align-self: flex-start">Stopping</span><b>Pausing work. One step is still finishing</b><span class="muted">No new steps start. You will see "Paused" when it is confirmed.</span><div class="acts"><button class="btn" type="button">Stop now</button></div></section>
+    <section class="st"><span class="chip cy" style="align-self: flex-start">Needs you</span><b>A change touched client data</b><span class="muted">This area always needs your permission. The result is held back, not published.</span><div class="acts"><button class="btn" type="button">Allow this once</button><button class="btn" type="button">Redo without it</button></div></section>
+    <section class="st"><span class="chip cy" style="align-self: flex-start">Needs you</span><b>The plan no longer matches the project</b><span class="muted">Version 2 of the plan is ready with the differences highlighted. Affected steps wait.</span><div class="acts"><a class="btn" href="04-plan.html">Compare versions</a></div></section>
+    <section class="st"><span class="chip cm" style="align-self: flex-start">Waiting</span><b>Newer changes appeared in the project</b><span class="muted">Someone changed the files outside AIWorks. Their work is kept; affected checks run again.</span></section>
+    <section class="st"><span class="chip cr" style="align-self: flex-start">Status unknown</span><b>Could not confirm whether version 3 was published</b><span class="muted">AIWorks checks the live site before offering a retry, so nothing is published twice.</span><div class="acts"><button class="btn" type="button">Check the site now</button></div></section>
+    <section class="st"><span class="chip cm" style="align-self: flex-start">Back again</span><b>Your session ended. Work continued while you were away</b><span class="muted">Here is what changed since 18:20. Your unsent note was kept.</span><div class="acts"><a class="btn" href="02-home.html">See what changed</a></div></section>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AIWorks · Needs you · Decision</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;font-family:'IBM Plex Sans',system-ui,sans-serif;color:#1D2939;background:#F4F7FA;font-size:15px;line-height:1.5}
+a{color:#3154B8;text-decoration:none}a:hover{color:#23408F}
+.side{flex:0 0 228px;box-sizing:border-box;background:#EDF2F7;padding:28px 18px;display:flex;flex-direction:column;gap:4px}
+.brand{font-size:22px;font-weight:700;padding:0 10px;color:#1D2939}
+.ws{font-size:13px;color:#5B6676;padding:0 10px 22px}
+.nav{display:flex;align-items:center;gap:8px;padding:10px;border-radius:8px;color:#1D2939;font-weight:500}
+.nav:hover{background:#E2E9F1;color:#1D2939}
+.on{background:#fff;color:#3154B8;font-weight:600}
+.badge{margin-left:auto;background:#FFF4DB;color:#8A5800;border-radius:6px;padding:0 8px;font-size:13px;font-weight:600}
+.sec{font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#5B6676;padding:20px 10px 6px;border-top:1px solid #D9E1EA;margin-top:14px}
+.pin{padding:7px 10px;color:#1D2939;border-radius:8px}
+.pin:hover{background:#E2E9F1;color:#1D2939}
+.top{display:flex;align-items:center;gap:16px;padding:16px 32px;border-bottom:1px solid #E3E8EF;color:#5B6676}
+.av{background:#EDF2F7;border-radius:8px;padding:4px 10px;font-weight:600;color:#1D2939;font-size:13px}
+.btn{font:inherit;font-weight:600;font-size:15px;border-radius:8px;padding:10px 18px;border:1px solid #CBD4DF;background:#fff;color:#1D2939;cursor:pointer;min-height:44px;display:inline-flex;align-items:center;gap:8px;box-sizing:border-box}
+.btn:hover{background:#F4F7FA;color:#1D2939}
+.pri{background:#3154B8;border-color:#3154B8;color:#fff}.pri:hover{background:#23408F;color:#fff}
+.lbl{font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#5B6676}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:6px;font-size:13px;font-weight:600;white-space:nowrap}
+.cw{background:#EAF0FC;color:#3154B8}.cy{background:#FFF4DB;color:#8A5800}
+.muted{color:#5B6676}
+.opt{flex:1 1 300px;min-width:0;display:flex;flex-direction:column;gap:8px;text-align:left;font:inherit;padding:20px 22px;border:1px solid #CBD4DF;border-radius:10px;background:#fff;cursor:pointer;color:#1D2939}
+.opt:hover{border-color:#3154B8}
+</style>
+</head>
+<body>
+<div style="display: flex; flex-wrap: wrap; min-height: 1100px; background: #fff">
+  <aside class="side">
+    <div class="brand">AIWorks</div>
+    <div class="ws">Personal workspace</div>
+    <a class="nav" href="02-home.html">Home</a>
+    <a class="nav" href="03-overview.html">Projects</a>
+    <a class="nav on" href="05-decision.html">Needs you <span class="badge">1</span></a>
+    <div class="sec">Pinned projects</div>
+    <a class="pin" href="03-overview.html">Studio bookings</a>
+    <a class="pin" href="03-overview.html">Client portal</a>
+    <a class="pin" href="03-overview.html">Weekend guide</a>
+    <div style="flex: 1; min-height: 40px"></div>
+    <a class="nav" href="10-settings.html" style="color: #5B6676">Help</a>
+    <a class="nav" href="10-settings.html" style="color: #5B6676">Settings</a>
+  </aside>
+  <main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column">
+    <div class="top"><span style="color: #1D2939">Needs you</span><span style="margin-left: auto">Search</span><span class="av">AP</span></div>
+    <div style="box-sizing: border-box; width: 100%; max-width: 1000px; padding: 32px 36px 48px; display: flex; flex-direction: column; gap: 24px">
+      <div>
+        <h1 style="margin: 0; font-size: 30px; line-height: 1.2">One decision, with the context</h1>
+        <div class="muted" style="margin-top: 6px"><a href="03-overview.html">Studio bookings</a> / <a href="04-plan.html">Online booking</a> · asked today at 07:40</div>
+      </div>
+
+      <section style="display: flex; flex-direction: column; gap: 10px">
+        <h2 style="margin: 0; font-size: 26px; line-height: 1.25">Should a booking require a payment?</h2>
+        <p style="margin: 0; font-size: 17px">A new request asks for deposits. The agreed plan leaves payments for later. Choose whether to change what this goal includes.</p>
+      </section>
+
+      <div style="display: flex; flex-wrap: wrap; gap: 16px" role="group" aria-label="Options">
+        <button class="opt" type="button" style="border-color: #3154B8; background: #F5F8FE">
+          <span style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center"><b style="font-size: 19px">Confirm without payment</b><span class="chip cw">AIWorks suggests</span></span>
+          <span class="muted">Fits the agreed plan. Clients receive a confirmation email. Payments stay in Later.</span>
+          <span style="font-size: 14px; color: #3B4656">Why suggested: it keeps the goal within budget and lets you try booking this week.</span>
+        </button>
+        <button class="opt" type="button">
+          <b style="font-size: 19px">Require a deposit</b>
+          <span class="muted">Adds payment setup, refunds and a payment account connection. The plan becomes version 2 and comes back to you for approval: about +$30 and +2 days.</span>
+        </button>
+      </div>
+
+      <section style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px">
+        <div style="padding: 16px 18px; border-radius: 10px; background: #F4F7FA">
+          <div class="lbl" style="margin-bottom: 4px">While you decide</div>
+          <div>Booking confirmation is paused. Calendar and time-conflict work continue.</div>
+        </div>
+        <div style="padding: 16px 18px; border-radius: 10px; background: #F4F7FA">
+          <div class="lbl" style="margin-bottom: 4px">If you do not answer</div>
+          <div>Nothing changes and nothing is charged. You get a reminder tomorrow at 09:00.</div>
+        </div>
+      </section>
+
+      <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px">
+        <a class="btn pri" href="03-overview.html">Use email confirmation</a>
+        <button class="btn" type="button">Write another answer</button>
+        <button class="btn" type="button">Remind me later</button>
+        <a href="02-home.html" style="margin-left: auto; color: #5B6676; font-size: 14px">This did not need me</a>
+      </div>
+
+      <details style="border-top: 1px solid #E3E8EF; padding-top: 16px">
+        <summary style="cursor: pointer; font-weight: 600">Details</summary>
+        <div class="muted" style="padding-top: 10px; display: flex; flex-direction: column; gap: 6px">
+          <div>Request came from: your note in Knowledge, 17 Oct.</div>
+          <div>Affected step: Send the confirmation email (step 4 of 5).</div>
+          <div>Plan version: 1, approved 17 Oct 18:05.</div>
+        </div>
+      </details>
+    </div>
+  </main>
+</div>
+</body>
+</html>
