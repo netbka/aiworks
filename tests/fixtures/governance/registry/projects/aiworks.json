@@ -1,0 +1,44 @@
+{
+  "id": "aiworks",
+  "name": "AIWorks",
+  "repository": {
+    "github": "example-org/aiworks"
+  },
+  "lifecycle": "active",
+  "capabilities": [
+    "ui",
+    "worker"
+  ],
+  "environments": [
+    "local"
+  ],
+  "governance": {
+    "observedAt": "example-org/aiworks@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "parentLink": "linked",
+    "authorities": [
+      {
+        "role": "agent-contract",
+        "path": "AGENTS.md"
+      },
+      {
+        "role": "product-constitution",
+        "path": "docs/PRODUCT_CONSTITUTION.md"
+      },
+      {
+        "role": "decisions",
+        "path": "docs/DECISIONS.md"
+      }
+    ],
+    "exceptions": [
+      {
+        "id": "campaign-external-write",
+        "rule": "constitution#8",
+        "source": "AGENTS.md",
+        "approval": "docs/DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception",
+        "reviewBy": "2027-04-12",
+        "summary": "Synthetic fixture requirement."
+      }
+    ],
+    "independentVerificationGate": "not-enabled"
+  }
+}

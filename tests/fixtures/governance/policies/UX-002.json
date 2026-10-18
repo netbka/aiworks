@@ -1,0 +1,9 @@
+{
+  "id": "UX-002",
+  "scope": "portfolio",
+  "applies_when": {
+    "boundaries": [
+      "ui"
+    ]
+  }
+}

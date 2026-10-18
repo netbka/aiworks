@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "roles": [
+    { "id": "implementer", "purpose": "Perform the explicitly authorized project work." },
+    { "id": "verification", "purpose": "Independently verify the exact result.", "independent_from": ["implementer"] }
+  ],
+  "programs": []
+}

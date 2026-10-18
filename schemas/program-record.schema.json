@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aiworks.local/schemas/program-record.schema.json",
+  "title": "Private program record (aiworks-program/1)",
+  "description": "The owner's standing approval of a delivery program (docs/PROJECT_WORKSPACE_PLAN.md section 6.8d, slice PROG1; netbka/aiworks#153 option B). It names one repository and base branch, the plan file, the slices it allows and excludes, and the executor chain and constraints every wave's tasks carry unchanged. It is private installation data: it lives outside source Git, like an envelope approval. An `allow` or `exclude` entry is a slice ID (PROG1) or a lane prefix (PROG). This schema checks the shape only; src/supervisor/program.mjs also checks the executor and constraints with the declaration rules, versions and revocation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "programId", "repository", "baseBranch", "plan", "allow", "exclude", "executor", "constraints", "authorization"],
+  "properties": {
+    "schema": { "const": "aiworks-program/1" },
+    "programId": { "$ref": "#/$defs/id" },
+    "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+    "baseBranch": { "$ref": "#/$defs/id" },
+    "plan": { "type": "string", "maxLength": 512, "pattern": "^(?!/)(?!.*(^|/)\\.{1,2}(/|$))(?!.*//)[A-Za-z0-9._/-]+\\.md$" },
+    "allow": { "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/slice" } },
+    "exclude": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/slice" } },
+    "executor": {
+      "description": "The declaration executor shape (src/supervisor/campaign.mjs validateDeclaration): one CLI provider with its timeouts, or a cli-chain of 1 to 4 providers.",
+      "oneOf": [
+        {
+          "type": "object",
+          "allOf": [{ "$ref": "#/$defs/provider" }],
+          "required": ["kind", "implementerTimeoutMinutes", "verifierTimeoutMinutes"],
+          "properties": {
+            "kind": true, "model": true, "permissionMode": true, "researchOnly": true,
+            "implementerTimeoutMinutes": { "$ref": "#/$defs/implementerTimeout" },
+            "verifierTimeoutMinutes": { "$ref": "#/$defs/verifierTimeout" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "providers", "implementerTimeoutMinutes", "verifierTimeoutMinutes"],
+          "properties": {
+            "kind": { "const": "cli-chain" },
+            "providers": {
+              "type": "array", "minItems": 1, "maxItems": 4,
+              "items": {
+                "type": "object",
+                "allOf": [{ "$ref": "#/$defs/provider" }],
+                "properties": { "kind": true, "model": true, "permissionMode": true, "researchOnly": true },
+                "additionalProperties": false
+              }
+            },
+            "implementerTimeoutMinutes": { "$ref": "#/$defs/implementerTimeout" },
+            "verifierTimeoutMinutes": { "$ref": "#/$defs/verifierTimeout" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "constraints": { "type": "array", "minItems": 1, "maxItems": 12, "items": { "$ref": "#/$defs/text2000" } },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "grantedBy", "grantedAt", "reference", "text"],
+      "properties": {
+        "version": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "grantedBy": { "type": "string", "maxLength": 80, "pattern": "\\S" },
+        "grantedAt": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "reference": { "type": "string", "maxLength": 500, "pattern": "^https://github\\.com/" },
+        "text": { "$ref": "#/$defs/text2000" }
+      }
+    },
+    "revoked": { "type": "boolean", "description": "true stops every new wave of this program for good: a later version never revives it." }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+    "slice": { "type": "string", "maxLength": 32, "pattern": "^[A-Z][A-Z0-9]*(-[A-Z0-9]+)*$" },
+    "text2000": { "type": "string", "maxLength": 2000, "pattern": "\\S" },
+    "implementerTimeout": { "type": "integer", "minimum": 1, "maximum": 720 },
+    "verifierTimeout": { "type": "integer", "minimum": 1, "maximum": 360 },
+    "provider": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["codex-cli", "cursor-cli", "claude-cli", "agy-cli"] },
+        "model": { "type": "string", "maxLength": 80, "pattern": "\\S" },
+        "permissionMode": { "enum": ["auto", "dontAsk", "acceptEdits", "plan"] },
+        "researchOnly": { "const": true }
+      },
+      "allOf": [
+        { "if": { "properties": { "kind": { "const": "claude-cli" } } }, "then": { "required": ["model", "permissionMode"] }, "else": { "not": { "required": ["permissionMode"] } } },
+        { "if": { "properties": { "kind": { "const": "agy-cli" } } }, "then": { "required": ["model"], "not": { "required": ["researchOnly"] } } }
+      ]
+    }
+  }
+}

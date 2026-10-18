@@ -1,0 +1,5 @@
+{
+  "sourceRoots": ["src/dashboard/public"],
+  "canonicalMap": "DESIGN.md",
+  "ownership": { "Select/Listbox": "native" }
+}

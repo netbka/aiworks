@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "cleanupTimeoutMs": 10000,
+  "maxCleanupAttempts": 1,
+  "maxReplacementAttempts": 1,
+  "maxQuarantinedSessions": 2,
+  "maxReaperAttempts": 3,
+  "maxPacketBytes": 32768,
+  "maxReferences": 24,
+  "softOccupancy": 0.7,
+  "hardOccupancy": 0.9
+}

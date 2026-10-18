@@ -1,0 +1,4 @@
+{
+  "version": 1,
+  "policies": ["policies/BASE-001.json"]
+}

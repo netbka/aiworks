@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "roles": [],
+  "programs": [
+    {
+      "id": "product-control-plane",
+      "task_controller": "orchestrator",
+      "assignments": []
+    }
+  ]
+}

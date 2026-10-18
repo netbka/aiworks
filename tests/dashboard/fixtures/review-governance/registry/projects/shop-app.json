@@ -1,0 +1,11 @@
+{
+  "id": "shop-app",
+  "name": "Shop app",
+  "repository": {
+    "github": "example/shop-app"
+  },
+  "lifecycle": "support",
+  "notes": [
+    "Made up for the review dashboard. No release authorization is recorded, so its release follows its own policy."
+  ]
+}

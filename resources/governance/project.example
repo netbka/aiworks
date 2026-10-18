@@ -1,0 +1,12 @@
+{
+  "id": "example-project",
+  "name": "Example project",
+  "repository": { "github": "example/project" },
+  "lifecycle": "active",
+  "capabilities": [],
+  "environments": ["local"],
+  "governance": {
+    "authorities": [{ "role": "agent-contract", "path": "AGENTS.md" }],
+    "independentVerificationGate": "enabled"
+  }
+}

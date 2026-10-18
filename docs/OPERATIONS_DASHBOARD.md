@@ -1,0 +1,338 @@
+# Operations dashboard
+
+Coordinator plans and replies stay in the local dashboard, under their message receipt and the requesting project's Start work receipt. "Read the plan" shows the checked final answer as text. Planning creates no GitHub issue, PR or comment. Each plan request retains its selected repository and runs separately; only registered campaign work publishes to its declared target repository ([AW-004](DECISIONS.md#aw-004---the-coordinator-is-read-only)).
+
+Owner request, 2026-10-09: see the entire roadmap, completed and ongoing work, and send basic commands to agents. First delivered in governance provider (#60); the owner view is tracked in AIWorks design work. This is the local operations surface for the AIWorks delivery supervisor. It is not governance provider's project portal.
+
+## Run
+
+Requires Node 22.5 or newer and `git`. The dashboard needs no `gh` sign-in: it makes no GitHub API call (AIWorks design work). From this checkout:
+
+```sh
+npm install
+npm run dashboard -- --data C:/example/aiworks/.local/supervisor --governance C:/example/aiworks/.local/governance
+```
+
+Open **http://127.0.0.1:4318**. Optional arguments are `--port` and `--governance`. `--cache` is still accepted so existing launch commands keep working, but nothing is cached: an old `.local/dashboard-cache/roadmap-cache.json` is no longer read and can be deleted. `--governance` names the governance checkout and defaults to `governanceRoot` in the data directory's `config.json` ([SUPERVISOR.md §6](SUPERVISOR.md#governance-checkout)). Without one, the roadmap panel says "governance checkout not configured". Launch background instances with a hidden process, as required by the Windows command-window rule. On workstation it runs as the per-user task `AIWorks Dashboard`. Starting the dashboard does not start, pause, resume, upgrade or restart the supervisor.
+
+## Ownership and updates
+
+The dashboard (`src/dashboard`) and delivery supervisor (`src/supervisor`) belong to the AIWorks repository. GitHub branches and PRs hold unmerged work; merge status remains in GitHub rather than this runbook.
+
+The active local service uses a detached checkout of a merged, independently reviewed commit on main at `C:/example/aiworks/.local/runtime`. Updating the main development checkout does not change that running version; upgrade the pin using the [supervisor procedure](SUPERVISOR.md#upgrade). Local state lives at `.local/supervisor`, generated target worktrees at `.local/worktrees/<repo>` and the governance checkout at `.local/governance`, relative to the AIWorks root. `.local/` is ignored by Git and is not part of a source update. Target checkouts remain at `C:/example/<project>`. See the [supervisor layout and relocation procedure](SUPERVISOR.md#6-installation-and-maintenance).
+
+## What the owner sees
+
+- Overview: **Needs you** first, then a card for each campaign that has something listed for the owner or is still active, then live agents and roadmap progress. Finished and cancelled campaigns with nothing listed come after that, as one line each.
+  - **Needs you** is built from supervisor fields and local git, never from worker output or the GitHub API. It lists:
+    - published steps whose merge is not seen yet, for the owner's review and merge, with the steps that build on them and any step that took many tries. When the owner delegated merging, verified ones are not listed until nothing has merged them for `merges.stallHours` ([Merging delegated by the owner](#merging-delegated-by-the-owner));
+    - owner decisions and stopped steps;
+    - a supervisor that is not running. That is said only from the computer-wide state the supervisor reports (`supervisorLiveness`: no lease live for a minute), once, under AIWorks itself. When it holds up work in several projects, AIWorks itself is listed before the project groups (OWNER_WORKSPACE §4.2);
+    - one piece of work the running supervisor has not checked on, or not picked up, past the 5-minute grace. It is listed under its own project with the time its lease ended, never as a stopped supervisor (aiworks#11 review 4 F2);
+    - a coordinator that cannot read messages;
+    - a finished step with no recorded result link. The item says *Check on GitHub* and links the step issue.
+
+    A link to the coordinator's latest answer sits under the list. The **Needs you** metric counts these items. A published step whose merge check is still running or due is shown as `?`, never as nothing, and the Needs me count in the header reads partial, for example *7 + checking*, until the check ends. A project's state on Projects says the same (OWNER_WORKSPACE §4.1, aiworks#11 review 4 F3). With nothing else listed, the heading then says *Checking for merges before listing what needs you*.
+  - **Each step item leads with its subject.** There is one item per step. The item starts with what to do (*Review and merge*, *Decision needed*, *Check on GitHub*), then what the step delivers (its declared `outcome`, else its title) and an *Open PR* or *Open step issue* link.
+    - The evidence is one compact line, *Checker accepted aaaaaaa · CI and conflicts on the PR*. Opening it shows the full sentence. The dashboard does not read CI checks or conflicts: the pull request shows them.
+    - The repository and campaign follow in small text.
+  - **A pause is not an owner item by itself.** The store does not record who paused a campaign, so the dashboard does not guess from the reason text. The campaign card shows the pause in a neutral state: the chip reads, for example, *AIWorks running · work paused*, and the banner gives the time and the reason as given. A blocker or a stopped step in a paused campaign is still listed.
+    - A paused campaign still needs a running supervisor, because the controller renews its lease too. A stopped or absent supervisor is listed once the 5-minute grace period has passed:
+      - *The supervisor on &lt;host&gt; stopped while &lt;campaign&gt; was paused*, with the restart action, for example when an upgrade paused campaigns and the restart failed;
+      - *The supervisor on &lt;host&gt; has not started &lt;campaign&gt; yet (it is paused)*.
+
+      The card's chip then uses the warning tone, and the banner names the stopped supervisor.
+  - **Calm text covers only blocking items.** With no item and no merge check pending, the heading says *No work is blocked on you right now*, never "nothing needs you": Needs me checks work only, and a project setup problem is said on Add project and Projects (OWNER_WORKSPACE §4.2). Reports to read and finished campaigns whose merged work is ready are not blocking. When they exist, a line names them, for example *Also: 2 reports for you to read · merged work in sampleapp is ready; release follows its standing deploy authorization*. The metric says the same in short form.
+    - The dashboard has no read or release state. The line counts reports that were posted and merged work that is ready, not what is still unread or unreleased.
+  - **Release follows the project's registry entry.** The dashboard does not assume the owner releases.
+    - Where a project records a standing deploy authorization (`governance.releaseAuthorization`, GOVERNANCE_INHERITANCE §9, governance-029), release sentences say *release follows sampleapp's standing deploy authorization*.
+    - Otherwise they say *release follows &lt;repository&gt;'s release policy*.
+    - The registry is read once at dashboard start from the governance checkout.
+  - **Finished campaigns** with nothing listed for the owner collapse into *Finished campaigns (N)*, most recent first. Each has one line saying where its results stand and a *See all steps* disclosure. A finished or cancelled campaign card shows no controls. The Agents page uses the same order.
+  - **Old or failing merge checks in Needs you.** A review item says *Merge check from 12:31; the last fetch failed, retrying within 5 minutes* when the last fetch of the base branch failed. The result of the last successful fetch is kept and its time is shown.
+    - A merge check is current for 15 minutes after a successful fetch. Older data never shows a step as merged. While a new check is due, the step counts as being checked; once a fetch has failed, it is listed for review with the time of the last good check.
+  - **Campaign heading:** declared wording first.
+    - It is the campaign's `purpose` or, for a campaign of one step, that step's `outcome`, else its title.
+    - Otherwise it is the campaign id. Issue titles are not read from GitHub.
+    - Campaigns that share a heading get a distinguishing name in parentheses, built from the words of their ids that differ. Issue numbers are dropped (*Open runtime PRs*, *Design contracts*) unless names would otherwise be the same.
+  - **Each step:** the declared plain-language `outcome` first (the slice title is secondary) and where it stands for the owner: *Merged*, *Published, merge not seen yet*, *Report posted* or *Result not known*. A step that took 5 or more tries, or was rejected by the verifier, carries a "Took N tries" note. This is information only and never a limit.
+    - The line under *Published, merge not seen yet* says why when the merge cannot be seen yet: the check is still running, the last fetch failed, this computer has no checkout of the repository configured, or no verified commit is recorded. A finished step with a missing or unrecognised result link is *Result not known*, never settled.
+  - **Runs, cost and the provider chain** are folded into a details row.
+  - **Since you last looked** comes first. It covers steps merged, steps delivered, steps newly waiting for the owner, and agent runs that failed or were rejected by the independent checker.
+    - A merge counts by the time of its merge commit in local git. A fast-forward has no merge commit, so it is shown as merged but not counted here.
+    - The supervisor's own step errors and liveness problems are a separate line for whoever maintains AIWorks. They are never counted as agent runs; a failing supervisor step is recorded on every check.
+    - The window starts at the viewer's last visit, kept in that browser's `localStorage` (a per-viewer convenience).
+    - A first visit, or a browser that blocks storage, shows the last 24 hours.
+    - The server counts from the journal through `/api/state?since=`, bounded to 30 days.
+  - **Needs you, per pull request.** Each pull request item says:
+    - which commit the independent checker accepted, and that CI checks and conflicts are on the pull request. The dashboard never says *Ready to merge*;
+    - why the merge cannot be seen on this computer, when there is no checkout of the repository or no verified commit;
+    - what to check first (many tries or rejections);
+    - what merging unlocks or, when nothing else waits on it, the project's release rule. Only steps that have not started yet are named, as *cannot start until you merge it* or *Merging lets X build on it*. A step starts from the base branch as it is at its first run and keeps that base, so a dependent that has already started is named as *already started without it, so merging now does not change that step*.
+  - **Supervisor not checking in.** If an agent is still working, the item says so and names the host, the last check-in time and the concrete restart action. For the first 5 minutes after the controller lease lapses, the campaign shows *Supervisor checking in late* and no restart advice, because a restart or an upgrade is usually in progress.
+    - A campaign that no supervisor has picked up yet gets the same 5 minutes from its registration. During that time it shows *Waiting for AIWorks* and no restart advice. After that, Needs you says *The supervisor on &lt;host&gt; has not started &lt;campaign&gt; yet* with the restart action.
+  - **Reports.** A posted report says *For you to read and decide on*. It is for the owner to read, not "nothing to do".
+  - **Finished campaigns.** The banner says *nothing waits for you* only when every step is merged or a report. Otherwise it says plainly what is open:
+    - merges still being checked, or a missing result link;
+    - steps waiting for review (merge not seen yet);
+    - reports to read. A campaign of reports only shows the supervisor's own next action (review the recommendations before assigning implementation), or *N reports posted for you to read*;
+    - merged work that is ready, with the project's release rule.
+  - **Agent verdicts.** Each agent shows *Working normally*, *Possibly stuck (no progress for N min)*, *Starting* or *Not started*, from its own session record. The rule is explained once on the page.
+  - **Cost so far** totals the reported cost across campaigns with a cost per delivered step. A run without a reported cost, including one still in progress, is *not reported*, never $0.00.
+  - **At 520px or narrower:**
+    - step tables become stacked rows;
+    - the progress line shortens;
+    - navigation becomes a labeled bottom bar.
+  - **Dates** are English (`10 Oct 12:23`) whatever the computer's locale.
+  - **Navigation.** Choosing a view opens it at its top. Back and Forward return to where that view was left (UX-001 preserve-context).
+  - **Large screens.** From 1900px wide the whole page is scaled by 1.12. From 2300px it is scaled by 1.25 and the column is wider, so text is not 10–12px on a 2560px screen.
+  - **Background.** The page is light only, and its background is explicit, so a dark system preference never shows through.
+  - **Supervisor faults** say they are not an owner action and link the supervisor issue (AIWorks design work). The "since you last looked" line also links to Activity, which shows when they happened.
+  - **Owner words only** (OWNER_WORKSPACE §2.1, aiworks#11 review 4 F4 and F17). Outside Details and Settings › Diagnostics, the page never says *supervisor*, *coordinator*, *agent* or the governance platform's name. It says *AIWorks*, *AI worker* and *your project rules*. No test pins these words (AGENTS.md test rule); the owner review checks them.
+  - **Message and Start work receipts** read like OWNER_WORKSPACE §5.4: *Sent · AIWorks received your request at 12:31*, then *Read*, then *Answered*. A waiting request gets a pickup time (*usually starts on a request within a minute*) only while the request reader holds a live lease. Otherwise the receipt says AIWorks reads it when it next runs, or that AIWorks has stopped (aiworks#11 review 4 F12).
+  - **A last result of *invalid result*** on the Step screen is explained in place: what kind of failure it is and, when the step has stopped, what *Fix the cause* involves. The words come from the result's class and role only, never from the worker's text (aiworks#11 review 4 F13).
+- Roadmap: registered project campaign plans and their results, followed by the governance provider roadmap from the governance checkout: its product phases, post-MVP increments and governance rollout packages, with their roles and dependencies. These are definitions only: their progress is tracked on GitHub and not read here. Search and the track filter apply to the platform packages. A campaign plan is its authorized scope, not the target repository's entire backlog.
+- Issues & PRs: every campaign step with its issue, its pull request or report and where it stands, from the supervisor's own records (issue numbers and titles come from the declarations). Search and the status filter apply. Issues and pull requests that no campaign owns are not shown.
+- Agents & tasks: running implementer/verifier operations; for active campaigns only, configured provider priority, waiting reasons and retry times, worker slot limit, role restrictions, queue/dependencies, outcomes and result links. A heartbeat proves the runner is alive, not that the task is progressing. Last output time is file metadata only; providers emitting only a terminal receipt may have no output until completion.
+- Activity: worker starts/outcomes, provider switches with their reason, verified publications and owner commands. Duplicate dashboard processing and lease-renewal bookkeeping are omitted.
+
+The sidebar and footer name the computer and the dashboard revision. Until the first answer arrives, the sidebar shows a neutral "…" rather than a guess. Each computer runs its own supervisor, campaigns and dashboard, so a screenshot shows which one it came from. A provider that cannot run on this computer at all (Cursor's native sandbox on Windows) shows as *Not available on this machine*, not as eligible for retry.
+
+## Where the data comes from
+
+The dashboard makes no GitHub API call: no `gh`, GraphQL or REST (AIWorks design work).
+
+- **Campaigns, steps, published pull request and report links, verified commits:** the supervisor store, read-only.
+- **Issue numbers and step titles:** the stored campaign declarations.
+- **Platform roadmap and release rules:** the governance checkout, read once at start.
+- **Merged or not:** local git. A published step is merged when its verified commit is reachable from `origin/<baseBranch>` in the repository's checkout configured in the supervisor's `config.json` (`git merge-base --is-ancestor`).
+  - The dashboard refreshes that branch with `git fetch --no-tags origin <baseBranch>`, over the git protocol, at most once per repository every 5 minutes, one repository at a time. A failed fetch waits the same 5 minutes.
+  - Fetches happen only while a dashboard page is open: each state request starts a check, and the answer never waits for it.
+  - Otherwise the step reads *Published, merge not seen yet*, never merged. That includes a repository with no configured checkout, a step with no recorded verified commit, and a squash or rebase merge, which rewrites the commit so it is never reachable.
+  - A failed fetch keeps the last result and shows its time. A check older than 15 minutes never shows a step as merged.
+- **Who merges:** the `merges` setting in the supervisor's `config.json`, read on every page refresh. See [Merging delegated by the owner](#merging-delegated-by-the-owner).
+- **What Auto Release waits for:** `autoReleaseDecision` in the supervisor's `config.json`, read on every page refresh. It is optional: one GitHub issue link, for example `"autoReleaseDecision": "https://github.com/example-org/aiworks/issues/33"`. Settings › Release mode shows it as the release decision that Auto Release waits for. Without it, or with anything that is not a GitHub issue link, Auto Release keeps the same text and shows no link. The review fixture sets none, so a reviewer's page names no real issue.
+
+### Merging delegated by the owner
+
+The owner decided that a pull request which passed the supervisor's independent check of its exact head is merged without an owner step ([#17](https://github.com/example-org/aiworks/issues/17), AGENTS.md "When to stop for the owner"). The dashboard learns this from one setting. It is absent by default:
+
+```json
+"merges": {
+  "delegatedTo": "monitor",
+  "decision": "#17",
+  "held": { "https://github.com/example-org/aiworks/pull/88": "newer-work" },
+  "stallHours": 3
+}
+```
+
+- `delegatedTo` names who merges for the owner. `decision` is the owner decision that delegated it, as `#<issue>`. Both are required; without them the setting is ignored.
+- `held` is optional. It lists pull requests held from merging, with the reason: `newer-work` reads *Held: waiting to be combined with newer work*. Any other reason reads *Held for now; the pull request says why*. Whoever holds a pull request records it here and removes it when the hold ends.
+- `stallHours` is optional, 3 by default. It is how many hours a verified, unmerged, not-held pull request may wait since it passed the check before it comes back to the owner ([#139](https://github.com/example-org/aiworks/issues/139)). It is a whole number from 1 to 720; anything else means 3.
+
+With the setting:
+
+- a verified pull request whose merge is not seen is **not** a Needs me item. No count, project or headline counts it as an owner action;
+- the project's Work shows it as *Passed the check*, with *Will be merged for you. Nothing for you to do.* or its held reason;
+- Results lists it under *Being merged for you*, as *Pull request #N · passed the check · will be merged for you*, or with its held reason;
+- with `"delegatedTo": "supervisor"` ([#138](https://github.com/example-org/aiworks/issues/138)), Work says *AIWorks merges it after it passes the check against the latest main. Nothing for you to do.* and Results *Pull request #N · passed the check · AIWorks merges it after it passes the check against the latest main*. There is no CI step, so no text waits for CI;
+- it reads *merged* only once the merge check sees it on the base branch, as before. A step with no recorded verified commit stays a Needs me item.
+
+A delegated merge that waits too long comes back to the owner. When a verified, unmerged pull request that is not held has waited longer than `stallHours` since it passed the check, nothing has merged it:
+
+- it is a counted Needs me item, *Check why it is not merged*, with *Checked and waiting to be merged for N hours. Nothing has merged it.* Its one action opens the pull request;
+- Work shows the same sentence, and Results *Pull request #N · checked and waiting to be merged for N hours*;
+- N is whole hours, rounded down. The time it passed the check is the latest finished check that accepted its verified commit, from the supervisor store. Without a recorded check run, it is when the step last changed, which is never earlier;
+- before the threshold, and while it is held, it reads as above. It is never called merged until the merge check sees it on the base branch.
+
+This uses the supervisor store and local git only, never the GitHub API.
+
+Without the setting, nothing changes: every verified, unmerged pull request is a *Review and merge* item.
+
+The dashboard only reads this setting. It never merges. Whether the supervisor merges is decided by [AW-001](DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception) and the owner's own configuration (#138); the `supervisor` wording is ready for it. Setting it on workstation is a configuration change for the owner or the upgrade procedure ([SUPERVISOR.md §6](SUPERVISOR.md#6-installation-and-maintenance)).
+
+### What the dashboard no longer shows
+
+- CI check results and merge conflicts of pull requests, and so *Ready to merge*. Each review item points to the pull request instead.
+- Pull requests closed without merging. They read *Published, merge not seen yet*.
+- Issues and pull requests that no campaign owns, including governance provider's issue list and tracked extensions.
+- Progress of governance provider roadmap items (done, in progress, in review).
+- Tracking-issue titles as campaign headings.
+
+These are on GitHub.
+
+Provider credit/rate failures come from execution receipts. Account balances are not queried, and unknown balances are never displayed as zero. Fallback retains the authorized cap and never overrides a permission denial. “Not running” means no operation currently uses that provider; it is not proof of native readiness. A campaign allows one worker slot, so three configured providers do not mean three simultaneous agents. Attempts include recorded refused attempts, while counted runs apply the explicit zero-work refund rule.
+
+Definitions come from governance provider's `docs/PRODUCT_ROADMAP.md`, the PR program in its `docs/AUTONOMOUS_ROLLOUT.md`, and its agent-role catalog `registry/agents.json`, all read from the governance checkout. GitHub owns their work state, and the dashboard does not read it. A planned role is not a running process. Merged is not deployed.
+
+Supervisor state is read from its existing SQLite store with a read-only connection; GET requests never bootstrap a missing store. Runtime refresh is every 5 seconds. Merge checks follow the rules in [Where the data comes from](#where-the-data-comes-from); missing evidence stays unknown and never reads as merged.
+
+## Commands
+
+Controls apply to existing **supervisor-managed campaigns**. Other chat/IDE agents have no command transport attached to this dashboard.
+
+| Command | Effect |
+| --- | --- |
+| Pause | Stops new dispatch; an existing worker can finish. |
+| Resume | Resumes the private stored declaration with its existing authorization and limits. Current version, scope and authorization are checked atomically. No declaration commit is required; the controller separately checks merged runtime code (AW-005). |
+| Recheck | Queues the existing recovery event, for a campaign or a selected unfinished task. It does not force acceptance or bypass owner-reserved conditions. |
+| Cancel | Requires a confirmation explaining that the controller terminates its owned workers and that cancelled campaigns cannot resume. Completed results remain available. |
+| Send instructions | Select an unfinished task and implementer/verifier role. Up to 2,000 characters are queued for that role's next run on the task; an already running worker is not interrupted. |
+
+Acknowledgement means the command was recorded. A queued recheck/cancel still needs a live controller to act. No command changes authorization, budget, provider order, project scope or declarations; arbitrary shell commands are not executed. These commands register no new campaign. The one way the dashboard starts new work is *Approve and start* on a reviewed plan ([below](#plan-and-do-review-and-approve-and-start-built-off-by-default)).
+
+Free-text guidance is supplemental to the immutable task packet and never changes its permissions, acceptance criteria or independent review requirement. Credential-like text and control characters are rejected. There can be five pending instructions per task. Delivery is committed atomically with an admitted operation and recorded in its immutable prompt; a preflight failure leaves instructions queued. Receipts distinguish queued, attached to a specific run, outdated authorization, and no future run. "Attached" does not claim the model has read or followed it, or that the run succeeded. If that run fails, the owner can inspect its outcome and send guidance again. Older controllers cannot deliver instructions; upgrade the controller to this change before using this command. Drafts survive polling and are cleared only after an accepted receipt.
+
+Commands use the existing supervisor APIs within one transaction. The request is bound to campaign row version, authorization version, scope digest and, for task recheck, task version. Changed state returns a conflict. A durable request ID is bound to the exact payload; repeating it acknowledges the original command without applying it twice. Commands and receipts use the existing events/journal tables.
+
+## Plan and do, Review and Approve and start (built, off by default)
+
+**In short.** For a connected GitHub project, the owner asks AIWorks for a plan, reads it on **Review** and presses *Approve and start*. That registers exactly the plan on the screen, with the same checks as the command-line start. No command line is needed. (Design: [OWNER_WORKSPACE S10](design/OWNER_WORKSPACE.md#s10-review-and-approve-github-projects) and WORK_ENVELOPE slice E8 ([§12](design/WORK_ENVELOPE.md#12-implementation-slices)); build slice UI14 of [the plan](PROJECT_WORKSPACE_PLAN.md). The owner answered #32 on 2026-10-16: approving in the dashboard registers that exact plan.)
+
+- **Off by default.** Plan and do appears on Start work only while the data directory's `config.json` switches drafting on (`"coordinator": { "intake": true }`), and only for a connected GitHub project that is ready to start work. Without it, Start work offers Plan only, as before. The dashboard reads the setting on every request. Like any runtime change, it goes through the upgrade procedure ([SUPERVISOR.md §6](SUPERVISOR.md#6-installation-and-maintenance)).
+- **Asking.** *Plan and do* stores one work request (`src/supervisor/intake.mjs`). It registers nothing. The receipt says AIWorks is drafting; once the draft is stored, it links to Review. Start work also lists the project's plans.
+- **Review.** It shows the goal, how it is checked, the main steps, overlaps with other work, what the plan may change, the AI workers and limits, and *Release: Review only*. Details holds the plan text, its fingerprint and its version.
+- **Approve and start.** The page sends the plan's version and authority digest as shown. The server (`src/dashboard/work.mjs`) refuses, and keeps or registers nothing, when:
+  - another version was drafted, the digest differs, or the stored plan no longer hashes to that digest. The owner reads *This plan changed since you opened it. Review it again.*, stays on Review, and the new version loads;
+  - the plan is out of date: the supervisor marked it stale, or the project's base branch moved since drafting. The dashboard fetches the base branch again with `git`; if it cannot be read, nothing starts (unknown is never fresh). It never runs `gh`, so an edited issue or a moved pull request is caught only by the supervisor's own freshness check;
+  - any check the CLI `start --approved` makes fails, in its order: merged runtime code (AW-005, `RUNTIME_NOT_MERGED`), the project listed in the project rules, the declaration rules, the duplicate-work check (`WORK_ALREADY_ASSIGNED`) and the private store. The owner reads *AIWorks didn't start this work: {reason}.*; Details keeps the machine's code.
+
+  Otherwise the private approval and the plan are kept with `persistApproved` and registered with `registerApproved` (`src/supervisor/approved-declarations.mjs`) in one transaction. The page opens Work with *Approved at 12:40 · waiting for AIWorks to pick it up*. A repeat with the same request ID is acknowledged once; a second approval of a started plan is refused.
+- **Projects without GitHub.** They follow the next section.
+
+| Route | Effect |
+| --- | --- |
+| `POST /api/work/requests` | Plan and do: stores one work request (`requestId`, `project`, `goal`, `from`, and `number` or `reportTo`); 409 while drafting is off |
+| `POST /api/work/approve` | Approve and start (`requestId`, `plan`, `version`, `authorityDigest`): registers exactly that plan, or refuses |
+
+Both keep the command rules: exact Origin, the CSRF token, JSON of at most 16 KiB, and only their own fields. `/api/state` carries the plans under `work`, allowlisted fields only, never a path. `tests/dashboard/approve.test.mjs` checks each refusal against the CLI, with disposable repositories and a synthetic `gh`.
+
+## A project without GitHub: plan, approve, review and apply (built, off by default)
+
+**In short.** For a local Git project or a plain folder, the owner confirms the project's rules once, asks for a plan, reads it on **Review** and presses *Approve and start*. AIWorks works on its own copy. When a step passes the independent check, its result waits under **Results** as *Ready for your review*. Nothing in the owner's folder changes until they press **Apply**, and **Undo apply** puts the folder back. No pull request is ever shown, and nothing here calls `gh` or a network service. (Design: [OWNER_WORKSPACE S12 and §5.3](design/OWNER_WORKSPACE.md#53-adding-a-plain-folder-after-s11), WORK_ENVELOPE section 8 and 8.6; build slice UI17 of [the plan](PROJECT_WORKSPACE_PLAN.md#67-lane-ui---owner-workspace). The owner decided on 2026-10-16: rules confirmed once in the dashboard (#24), a dashboard approval admits exactly that plan with no signing key (#32), and a result is applied only when the owner presses Apply.)
+
+- **Off by default.** It needs Add project (`"projectConnection": { "enabled": true }`) and drafting (`"coordinator": { "intake": true }`) in the data directory's `config.json`. Read on every request.
+- **Confirm this project's rules.** Until the owner confirms them on the project's Now screen, Now says *Connected. Confirm this project's rules on this page before AIWorks plans or starts work here.*, Start work offers no plan, and Needs me names the project. Expired or revoked rules stop new plans the same way.
+- **Plan and do.** Start work offers *Plan and do* from a description only: the project has no issues or pull requests to start from, and nothing reports to GitHub. The draft names the project by its rules' `lp-` id and is a fixed plan (`src/supervisor/intake.mjs`).
+- **Approve and start.** The same Review checks as a GitHub plan, then merged runtime code (AW-005) and AIWorks's copy still at the version the plan was drafted from (read from the store, never from the folder). Then the **caller check** runs on the request's connection: a press from a program AIWorks started (`APPROVAL_FROM_AIWORKS`), or one the check cannot place (`APPROVAL_UNCHECKED`), records nothing and starts nothing. Otherwise the owner's approval of exactly that plan goes into the local approval ledger and `registerLocalPlan` admits it once and registers it (`src/supervisor/local-admission.mjs`). A refused registration starts nothing; the owner reads *AIWorks didn't start this work: {reason}.*
+- **Work and Results.** Work lists each approved plan's steps in plain words. Results lists each step's checked result: *Ready for your review* with **Apply**, *Applied to your folder* with **Undo apply**, or why an Apply was refused, with the files.
+- **Apply.** The same caller check runs first. Then AIWorks reads the folder again: if any file the result touches changed since AIWorks copied it, Apply is refused with nothing written (`APPLY_FOLDER_CHANGED`). Otherwise it keeps a backup and writes the result (`src/supervisor/release/owner-apply.mjs`). Apply is an owner action under Review only: it creates no release record and needs no release grant. Auto Release stays off (#33).
+- **Undo apply.** The same caller check, then the backup is put back where the folder still holds what Apply wrote; over a file changed since, it is refused with the files named and nothing written.
+- **Known gap.** The dashboard as `npm run dashboard` starts it gives the caller check no process lookup yet, so on a running system every local approval, Apply and Undo apply (and every rules confirmation, UI16) is refused with `APPROVAL_UNCHECKED`. It fails closed. The tests use a synthetic lookup.
+- **Not shown yet.** Needs me does not list a stopped step of local work, and Cost does not add up local work.
+
+| Route | Effect |
+| --- | --- |
+| `POST /api/work/apply` | Apply (`requestId`, `campaignId`, `taskId`, `seq`): writes the checked result to the owner's folder, or refuses |
+| `POST /api/work/undo` | Undo apply (`requestId`, `applyId`): puts the folder back, or refuses |
+
+Both keep the command rules: exact Origin, the CSRF token, JSON of at most 16 KiB, and only their own fields. A repeat with the same request ID is answered, never acted on twice. `/api/state` carries each local project's work and results under `work.local`, allowlisted fields only, never a path. `tests/dashboard/local.test.mjs` checks the flow with a disposable folder and a synthetic process lookup.
+
+## Add project (built, off by default)
+
+**In short.** With it on, the owner adds a project from the Projects screen: a GitHub checkout, a local Git repository or a plain folder. Connecting only reads the folder. A project without GitHub starts work once the owner confirms its rules. (Planned design: [PROJECT_CONNECTION §8](design/PROJECT_CONNECTION.md#8-connect-flows-failure-copy-and-tests) and [OWNER_WORKSPACE §4.11](design/OWNER_WORKSPACE.md#411-add-project-after-project-connection-exists); build slice UI13 of [the plan](PROJECT_WORKSPACE_PLAN.md#67-lane-ui---owner-workspace).)
+
+- **Off by default.** With no `projectConnection` block in the data directory's `config.json`, the Projects screen and `#/projects/add` read exactly as before, and every route below answers 404. Turn it on with `"projectConnection": { "enabled": true }`. The dashboard reads it on every request. Turning it on waits for no owner decision (plan §6.7, UI13 row). Like any runtime change, it goes through the upgrade procedure ([SUPERVISOR.md §6](SUPERVISOR.md#6-installation-and-maintenance)).
+- **How it works.** The owner types or pastes a folder path. *Check folder* says what AIWorks found: *Git repository with GitHub remote owner/name*, *Git repository, no GitHub remote* or *Ordinary folder, no Git*. *Connect project* then connects it through the supervisor's project connection API (`src/supervisor/project-connect.mjs`), and the project's Now screen opens. A refusal shows the design's sentence for its code and its one action, such as *Use this folder* or *Check again*.
+- **Your folder stays untouched.** Connect runs read-only Git commands and never writes in the folder. A local Git project or plain folder gets AIWorks's own copy outside it, next to the data directory. A GitHub project needs `gh` signed in; connect reads the repository over REST only.
+- **Starting work.** On a GitHub project it works as before. On a local Git project or plain folder it starts once the owner confirms the project's rules, as the section above says. A GitHub project that governance provider does not list reads *This project is not listed in your project rules yet, so AIWorks cannot start work on it.*, followed by who decides and where the project rules are.
+- **On a connected project.** Its Now screen offers *Check again*. When a local project's folder moved, it offers *Move "{name}" here*; a plain folder first shows how many files match AIWorks's last copy. Under the connection's details sits *Disconnect…*, which deletes no history, copy or worktree.
+- **Known limit.** Connecting a large plain folder copies it inside the dashboard's request. The page does not refresh until the copy ends (at most the 120-second scan limit, plus the copy).
+
+| Route | Effect |
+| --- | --- |
+| `GET /api/projects` | The connected projects, each with its own folder path |
+| `POST /api/projects/preflight` | What the folder is; saves nothing |
+| `POST /api/projects/connect` | Connects it as `github`, `local-git` or `folder`; the same folder again opens the same project |
+| `POST /api/projects/check` | Check again; saves the status |
+| `POST /api/projects/relocate` | Move here (a plain folder needs `confirm: true` after the match count) |
+| `POST /api/projects/disconnect` | Disconnects; bound to the version the page saw |
+
+The POST routes keep the command rules: exact Origin, the CSRF token, JSON of at most 16 KiB, and only their own fields. The one absolute path a response may carry is the owner's own project root (plan §6.7 and §6.14), and only in these routes. `/api/state` names a project's folder, never its path. Mirror, worktree and data paths are never served.
+
+## Remove a project from Projects
+
+**In short.** A GitHub project whose work is all finished or cancelled, or that has no work, can be taken off the Projects screen: its row's Details offer *Remove from Projects…*, then *Remove*. Only the row goes. Its work, results and history stay in the work records, and `config.json`, the repository and its folder are not touched. The removal is kept in `removed-projects.json` in the data directory and works whether Add project is on or off.
+
+- **Refused** while the project has work that is not finished (paused counts), something in Needs me, a result whose merge is still being checked, or a connected folder (that has *Disconnect…* on its Now screen). The server checks this against the Projects screen as it reads at that moment.
+- **It comes back** by itself when new work is registered in it, or when it again has work running or something that needs the owner. Settings › Projects lists the removed projects, each with *Show again*. Its release mode is not listed while it is removed.
+
+| Route | Effect |
+| --- | --- |
+| `POST /api/projects/remove` | Removes `repository` from Projects, or refuses (409) |
+| `POST /api/projects/restore` | Shows `repository` on Projects again |
+
+Both keep the command rules and take only `repository` and an optional `requestId`.
+
+## Local access boundary
+
+The server binds only to `127.0.0.1`; the local host is the trust boundary. This is not a remote or multi-user authentication service. Do not expose it through a proxy, tunnel or public interface without a separately reviewed authentication layer.
+
+Requests require the exact loopback Host.
+
+**Links from other apps.** Following a dashboard link from another site (GitHub, Telegram, email) is a top-level `GET /` with `Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document` and no `Origin`, and it returns only the static page. All other cross-site requests are still refused, including:
+- `/api/*`, including the CSRF session;
+- scripts and styles;
+- framing;
+- every POST.
+
+The page then loads its data with same-origin requests.
+
+Commands are JSON POSTs with exact same Origin and a per-process CSRF token; foreign/null/missing command origins are rejected. Responses prohibit framing and cross-origin reads. They also set `Cross-Origin-Opener-Policy: same-origin`, so a dashboard page opened from another site shares no window reference with that site. All remote labels/titles render as text and links are constrained to GitHub. Snapshot fields are allowlisted: raw worker output, prompt packets, session identities, local workspace paths, secrets and raw error text are not served. The one exception is a connected project's own folder path, in the [Add project](#add-project-built-off-by-default) routes only. Heartbeat reads are confined to the configured runs directory.
+
+## Verification
+
+Completed/cancelled campaigns do not appear as controller failures when their historical leases expire. Their task rows distinguish verified PR/report publication from repository or product completion. They expose provider, dependency-integration and blocker waits with retry times. Execution snapshots are read live every five seconds. The connection label says when a merge check is running or has failed, rather than treating a successful local connection as a fresh remote observation.
+
+`tests/dashboard/merges.test.mjs` uses disposable git repositories, a synthetic git wrapper and a synthetic `gh`:
+- a step whose verified commit is reachable from `origin/main` after a fetch is merged, with its merge commit time; one that is not reads *Published, merge not seen yet*; old data never shows merged;
+- `git fetch` runs at most once per repository per 5 minutes, never two at once;
+- a failed fetch keeps the last state, shows its age and is not retried for 5 minutes; a repository with no checkout is never fetched;
+- the running dashboard (`main.mjs`) makes zero `gh` calls across startup, merge checks and every page and API route, with the synthetic `gh` both configured and first on `PATH`; no dashboard source names the GitHub API;
+- a delegated merge that waited past `merges.stallHours` becomes a counted Needs me item from the store and local git alone, with zero `gh` calls.
+
+`tests/dashboard/delegation.test.mjs` checks the delegated merge copy, holds, `stallHours` and the stalled Needs me item with a fixed clock.
+
+`tests/dashboard/dashboard.test.mjs` exercises the roadmap definitions (no GitHub work state, no cache), read-only snapshots, safe metadata, real API transitions, stale/ABA protection, authority preservation, duplicate delivery and HTTP request protections and response headers using disposable data.
+
+`tests/dashboard/owner.test.mjs` exercises:
+- the owner view: merged only from a current local git check, review items, the steps they unblock, churn notes, merges not seen, decisions and an unreadable coordinator inbox;
+- the page order: campaigns with something for the owner and active ones first, finished ones collapsed to one line each, newest first;
+- `purpose`/`outcome` validation and the unchanged scope digest;
+- the host label;
+- cross-site link navigation, with `/api/*` still refused.
+
+`tests/dashboard/claims.test.mjs` checks that owner-facing statements claim no more than the state supports:
+- a posted report is for the owner to read, and a finished reports campaign shows the supervisor's next action;
+- a finished campaign is calm only when every step is merged or a report, including before the first merge check, when a fetch fails and when data is old;
+- a missing or unrecognised result link is unknown and becomes a *Check on GitHub* item; only a merge check that can still come shortly keeps *Checking for merges*;
+- the dashboard never says *Ready to merge*; it names the accepted commit and points to the pull request;
+- restart advice waits for the grace period after the lease lapses, or after registration for a campaign no supervisor has picked up;
+- *Merging lets X build on it* names only steps that have not started;
+- the calm heading covers only blocking items, and reports to read and merged work ready for release are named apart;
+- Needs-you items built from an old or failing merge check say when it is from, and never read as merged;
+- a pause by itself is a neutral campaign state, never a Needs-you item, but a paused campaign whose supervisor stopped or never started is listed with the restart action;
+- each Needs-you item leads with what its step delivers, with the evidence in one line;
+- release wording follows the registry: a recorded standing deploy authorization, else the project's own release policy, and never "your release".
+
+`tests/dashboard/presentation.test.mjs` checks the presentation follow-ups from the live reviews (AIWorks design work):
+- campaign titles from declared wording, and humanized distinguishing names;
+- views that open at their top, with Back restoring the position;
+- provider detail for active campaigns only;
+- the neutral host placeholder;
+- the explicit page background and large-screen scaling;
+- supervisor-fault wording that links where faults are tracked.
+
+`tests/dashboard/connect.test.mjs` checks Add project with disposable folders and git repositories, a synthetic `gh` and synthetic branch reads:
+- off by default, every route answers as before;
+- the routes keep the Origin, Host, CSRF, JSON and 16 KiB rules;
+- a plain folder, a local Git repository and a GitHub checkout connect, and each folder is byte-identical afterwards, `.git` included;
+- every code's copy matches PROJECT_CONNECTION §8;
+- no response names a path other than the owner's own project root;
+- the two-project acceptance (§8.5);
+- Check again, Move here and Disconnect;
+- a keyboard-only connect through the page, and the 320px rules.
+
+No verification command pauses or cancels a live campaign.
+
+Run the focused suite with `node --test tests/dashboard/dashboard.test.mjs`, then the repository gate with `npm run check`.

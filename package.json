@@ -1,0 +1,28 @@
+{
+  "name": "aiworks",
+  "version": "0.9.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "AIWorks: the AI delivery machine (delivery supervisor, operations dashboard and campaigns).",
+  "repository": "https://github.com/netbka/aiworks",
+  "scripts": {
+    "prepare": "node scripts/install-hooks.mjs",
+    "setup:local": "node scripts/setup-local.mjs",
+    "test": "node scripts/run-tests.mjs",
+    "test:quick": "node scripts/run-tests.mjs --tiers unit,service",
+    "test:affected": "node scripts/run-tests.mjs --affected",
+    "check": "node scripts/check-public-scope.mjs && node scripts/check-campaigns.mjs && npm test",
+    "dashboard": "node src/dashboard/main.mjs",
+    "supervisor": "node src/supervisor/cli.mjs"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.3.0",
+    "ajv": "^8.20.0",
+    "chrome-devtools-mcp": "1.10.1",
+    "zod": "^4.6.5"
+  }
+}

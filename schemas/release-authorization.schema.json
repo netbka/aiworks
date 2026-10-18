@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aiworks.local/schemas/release-authorization.schema.json",
+  "title": "Standing release authorization record (aiworks-release-authorization/1)",
+  "description": "A project's standing grant for AIWorks Auto Release, read from the project's base branch (docs/design/AUTO_RELEASE.md section 4). This schema checks the shape only. src/supervisor/release/authorization.mjs adds the rules a schema cannot state plainly: project match, real dates, expiry at most 90 days after the grant, expired or revoked grants, forbidden change classes, unique destination ids, an observe command for deploys, a rollback command for automatic rollback, and no merge or merge-then-deploy destination in a repository the merge gate covers. The record holds no secrets. Since 2026-10-17 a destination names no credential: a release uses the logins already on this computer (docs/design/AUTO_RELEASE.md section 6); credential stays optional, by reference only, for an older record. Kind deploy deploys the merge commit the merge gate recorded and never merges. Nothing acts on a valid record while release.enabled is false.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "project", "version", "approval", "grantedAt", "expiresAt", "revoked", "destinations", "classes"],
+  "properties": {
+    "schema": { "const": "aiworks-release-authorization/1" },
+    "project": { "$ref": "#/$defs/id" },
+    "version": { "type": "integer", "minimum": 1 },
+    "approval": {
+      "type": "string",
+      "pattern": "^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/(issues|pull)/[1-9][0-9]*$"
+    },
+    "grantedAt": { "$ref": "#/$defs/date" },
+    "expiresAt": { "$ref": "#/$defs/date" },
+    "revoked": { "type": "boolean" },
+    "destinations": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/destination" } },
+    "classes": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "$ref": "#/$defs/className" },
+      "additionalProperties": {
+        "type": "array", "minItems": 1, "uniqueItems": true,
+        "items": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\\\:\\u0000-\\u001f]+$" }
+      }
+    },
+    "ownerConfirm": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/className" } }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[a-z0-9][a-z0-9._-]*$" },
+    "className": { "type": "string", "minLength": 1, "maxLength": 80, "pattern": "^[a-z][a-z0-9-]*$" },
+    "date": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+    "projectPath": {
+      "type": "string", "minLength": 1, "maxLength": 512,
+      "allOf": [
+        { "not": { "pattern": "(^/)|[\\\\:%\\u0000-\\u001f\\u007f]" } },
+        { "not": { "pattern": "(^|/)\\.\\.?(/|$)|//|/$" } }
+      ]
+    },
+    "destination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "environment", "kind", "changeClasses", "rollback", "checkWindowMinutes"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "environment": { "$ref": "#/$defs/id" },
+        "kind": { "enum": ["merge", "merge-then-deploy", "deploy", "local-git-apply", "local-folder-apply"] },
+        "baseBranch": { "type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[A-Za-z0-9._/-]+$" },
+        "mergeMethod": { "enum": ["merge", "squash", "rebase"] },
+        "changeClasses": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/className" } },
+        "commands": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "deploy": { "$ref": "#/$defs/projectPath" },
+            "observe": { "$ref": "#/$defs/projectPath" },
+            "check": { "$ref": "#/$defs/projectPath" },
+            "rollback": { "$ref": "#/$defs/projectPath" }
+          }
+        },
+        "credential": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ref", "owner"],
+          "properties": {
+            "ref": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[A-Za-z0-9._/-]+$" },
+            "owner": { "type": "string", "minLength": 1, "maxLength": 100, "pattern": "^[A-Za-z0-9-]+$" }
+          }
+        },
+        "rollback": { "enum": ["automatic", "report-only"] },
+        "checkWindowMinutes": { "type": "integer", "minimum": 1, "maximum": 1440 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "enum": ["merge", "merge-then-deploy"] } }, "required": ["kind"] },
+          "then": { "required": ["baseBranch", "mergeMethod"] },
+          "else": { "not": { "anyOf": [{ "required": ["baseBranch"] }, { "required": ["mergeMethod"] }] } }
+        },
+        {
+          "if": { "properties": { "kind": { "enum": ["merge-then-deploy", "deploy", "local-git-apply", "local-folder-apply"] } }, "required": ["kind"] },
+          "then": { "required": ["commands"] }
+        }
+      ]
+    }
+  }
+}

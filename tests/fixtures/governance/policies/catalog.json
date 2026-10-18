@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "evidence_kinds": ["project-product-authority", "affected-journey", "current-ui-authority", "independent-verification", "blind-intent-review", "constitutional-review", "behavioral-interaction-review", "visual-accessibility-localization", "node-contract", "docs-links", "schema-validation", "dependency-recheck", "continuation-review", "release-preflight", "post-release-verification", "rollback-evidence", "blocker-classification", "uncoached-usability", "evidence-ledger", "release-artifact-identity"],
+  "reviewer_kinds": ["independent-verifier", "customer-eye", "schema-reviewer", "uncoached-participant"],
+  "authority_roles": ["product-constitution", "principles", "workflow-contract", "ui-authority", "experience-review"],
+  "owner_trigger_kinds": ["product-scope-change", "constitution-change", "new-recurring-spend", "price-plan-refund-change", "legal-consent-change", "provider-account-ownership", "irreversible-user-data-action", "major-platform-vendor-migration", "new-ai-provider-or-major-ai-platform-change", "execution-authority-widening"],
+  "policies": ["policies/GOV-001.json", "policies/UX-001.json", "policies/UX-002.json", "policies/VERIFY-001.json", "policies/AGENT-001.json", "policies/RELEASE-001.json", "policies/OPS-001.json", "policies/DELIVERY-001.json"]
+}

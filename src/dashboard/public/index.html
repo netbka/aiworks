@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Projects · AIWorks</title>
+  <link rel="stylesheet" href="/dashboard.css">
+  <script src="/dashboard.js" type="module"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+    <header class="topbar">
+      <a class="brand" href="#/projects"><span class="brand-mark" aria-hidden="true">aw<span>↗</span></span><span>AI<strong>Works</strong></span></a>
+      <div class="host"><span class="local-dot" aria-hidden="true"></span><div><strong id="host-name" aria-busy="true">…</strong><small id="host-detail">&nbsp;</small></div></div>
+      <div class="topbar-actions"><span id="connection" role="status" class="connection">Connecting…</span><a id="messages-link" class="messages-link" href="#/settings/messages">✉ Messages <span id="message-count" class="nav-count"></span></a></div>
+    </header>
+  <aside class="sidebar">
+    <nav class="global-nav" aria-label="Main navigation">
+      <a href="#/projects" data-global="projects" class="nav-item"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M3 9h18M9 9v11"></path></svg></span> <span>Projects</span></a>
+      <a href="#/needs" data-global="needs" class="nav-item"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="3"></circle></svg></span> <span>Needs me</span> <span id="needs-count" class="nav-count"></span></a>
+      <a href="#/settings" data-global="settings" class="nav-item"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 7h16M4 17h16"></path><circle cx="9" cy="7" r="3" fill="white"></circle><circle cx="15" cy="17" r="3" fill="white"></circle></svg></span> <span>Settings</span></a>
+    </nav>
+  </aside>
+  <div class="shell">
+
+    <main id="main" tabindex="-1">
+      <a id="project-back" class="project-back" href="#/projects" hidden>← All projects</a>
+      <div class="page-heading"><div><div id="view-eyebrow" class="eyebrow">AIWORKS</div><h1 id="view-title" tabindex="-1">Projects</h1><p id="view-description">Which project should I open?</p></div></div>
+      <nav id="project-tabs" class="project-tabs" aria-label="Project" hidden></nav>
+      <div id="notice" class="notice" role="status" hidden></div>
+      <div id="source-warning" class="notice warning" hidden></div>
+      <section id="metrics" class="metrics" aria-label="Summary" hidden></section>
+      <div id="filters" class="filters" hidden>
+        <label class="search-label"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search steps, campaigns or roadmap items" aria-label="Search work"><button id="clear-search" type="button" class="search-clear" aria-label="Clear search" hidden>×</button></label>
+        <label><span class="sr-only">Filter by track</span><select id="track"><option value="">All tracks</option><option value="Product control plane">Control plane: first release</option><option value="Product · next">Control plane: after the first release</option><option value="Autonomous governance">Portfolio rules rollout</option><option value="Tracked extensions">Other tracked platform work</option></select></label>
+        <label><span class="sr-only">Filter by status</span><select id="status"><option value="">All steps</option><option value="done">Merged or report posted</option><option value="review">Published, merge not seen yet</option><option value="in_progress">In progress</option><option value="blocked">Stopped</option><option value="unknown">Result not known</option></select></label>
+      </div>
+      <div id="content"><div class="empty-state">Connecting to roadmap and supervisor sources…</div></div>
+      <footer class="page-footer"><span id="updated"></span></footer>
+    </main>
+  </div>
+  <dialog id="cancel-dialog" aria-labelledby="cancel-title"><form method="dialog" novalidate><div class="dialog-icon" aria-hidden="true">!</div><h2 id="cancel-title"></h2><p id="cancel-description"></p><p id="cancel-text"></p><div class="dialog-actions"><button id="keep-work" class="button secondary" value="close" autofocus></button><button id="confirm-cancel" type="button" class="button danger"></button></div></form></dialog>
+  <dialog id="instruction-dialog" aria-labelledby="instruction-title"><form id="instruction-form" novalidate>
+    <h2 id="instruction-title">Send instructions</h2><p id="instruction-campaign"></p>
+    <label><span id="instruction-step-label"></span><select id="instruction-task" required></select></label>
+    <label>Recipient<select id="instruction-role"><option value="implement">Builder — its next run</option><option value="verify">Independent checker — its next run</option></select></label>
+    <label>Instruction<textarea class="resize-none" id="instruction-text" rows="5" maxlength="2000" required aria-describedby="instruction-help" placeholder="What should the AI worker focus on?"></textarea></label>
+    <p id="instruction-help">Queued for this task's next run by the selected role. Running workers are not interrupted. Existing scope, acceptance and budget still apply. No secrets; up to 2,000 characters.</p>
+    <div class="dialog-actions"><button id="close-instruction" class="button secondary" type="button">Keep draft</button><button id="send-instruction" class="button" type="submit">Queue instruction</button></div>
+  </form></dialog>
+  <dialog id="message-dialog" aria-labelledby="message-title"><form id="message-form" novalidate>
+    <h2 id="message-title">Message the coordinator</h2>
+    <p id="message-target"></p>
+    <label>Message<textarea class="resize-none" id="message-text" rows="6" maxlength="4000" required aria-describedby="message-help" placeholder="For example: review new PRs and issues and plan their execution."></textarea></label>
+    <p id="message-help">You get a receipt at each step: <strong>Received</strong> when the supervisor stores it, <strong>Read</strong> when the coordinator agent starts with it, and <strong>Answered</strong> with a link to its reply. This page shows a notice and a desktop notification for each step while it is open. The coordinator is read-only: it reviews and plans, and never starts work by itself. No secrets; up to 4,000 characters.</p>
+    <div class="dialog-actions"><button id="close-message" class="button secondary" type="button">Keep draft</button><button id="send-message" class="button" type="submit">Send message</button></div>
+  </form></dialog>
+
+  <dialog id="remove-account-dialog" aria-labelledby="remove-account-title"><form id="remove-account-form" novalidate>
+    <div class="dialog-icon" aria-hidden="true">!</div>
+    <h2 id="remove-account-title">Remove saved login</h2>
+    <p id="remove-account-description">Remove this account's saved login from this computer?</p>
+    <p class="subtext">Its login folder is deleted from this computer. AIWorks keeps its run history and any usage-limit wait, so no work goes back to an account that is at its limit.</p>
+    <div class="dialog-actions"><button id="close-remove-account" class="button secondary" type="button">Keep login</button><button id="confirm-remove-account" class="button danger" type="button">Remove login</button></div>
+  </form></dialog>
+  <dialog id="preference-dialog" aria-labelledby="preference-title"><form id="preference-form" novalidate>
+    <h2 id="preference-title">Saved model order</h2>
+    <p id="preference-role-description">Model names, best first, exactly as the AI worker expects them. Work does not use this order yet.</p>
+    <input id="preference-role" type="hidden" />
+    <label>Models, best first (separated by commas or spaces)<input id="preference-models" type="text" autocomplete="off" spellcheck="false" /></label>
+    <label>Only for this AI worker<select id="preference-kind"><option value="">Any AI worker</option><option value="claude-cli">Claude</option><option value="codex-cli">Codex</option><option value="cursor-cli">Cursor Agent</option><option value="agy-cli">AGY (Antigravity) browser</option></select></label>
+    <div class="dialog-actions">
+      <button id="clear-preference-button" class="button secondary" type="button">Clear saved order</button>
+      <button id="close-preference" class="button secondary" type="button">Cancel</button>
+      <button id="save-preference" class="button" type="submit">Save order</button>
+    </div>
+  </form></dialog>
+</body>
+</html>

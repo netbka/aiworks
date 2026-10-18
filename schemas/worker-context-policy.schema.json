@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aiworks.local/schemas/worker-context-policy.schema.json",
+  "title": "Bounded worker context policy",
+  "description": "Initial C0 policy, not enabled runtime. validatePolicy additionally requires softOccupancy < hardOccupancy.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "cleanupTimeoutMs", "maxCleanupAttempts", "maxReplacementAttempts", "maxQuarantinedSessions", "maxReaperAttempts", "maxPacketBytes", "maxReferences", "softOccupancy", "hardOccupancy"],
+  "properties": {
+    "version": { "const": 1 },
+    "cleanupTimeoutMs": { "type": "integer", "minimum": 1, "maximum": 60000 },
+    "maxCleanupAttempts": { "const": 1 },
+    "maxReplacementAttempts": { "type": "integer", "minimum": 1, "maximum": 2 },
+    "maxQuarantinedSessions": { "type": "integer", "minimum": 1, "maximum": 16 },
+    "maxReaperAttempts": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "maxPacketBytes": { "type": "integer", "minimum": 1024, "maximum": 131072 },
+    "maxReferences": { "type": "integer", "minimum": 1, "maximum": 128 },
+    "softOccupancy": { "type": "number", "exclusiveMinimum": 0, "maximum": 0.95 },
+    "hardOccupancy": { "type": "number", "exclusiveMinimum": 0, "maximum": 0.95 }
+  }
+}

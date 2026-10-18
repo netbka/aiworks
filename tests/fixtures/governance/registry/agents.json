@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "roles": [
+    { "id": "orchestrator", "purpose": "Synthetic test role." },
+    { "id": "backend-engineer", "purpose": "Synthetic test role." },
+    { "id": "infrastructure-sre", "purpose": "Synthetic test role." },
+    { "id": "security-reviewer", "purpose": "Synthetic test role.", "independent_from": ["backend-engineer", "infrastructure-sre"] },
+    { "id": "verification-agent", "purpose": "Synthetic test role.", "independent_from": ["backend-engineer"] }
+  ],
+  "programs": [
+    {
+      "id": "product-control-plane",
+      "task_controller": "orchestrator",
+      "assignments": [
+        { "package": "P0/#1", "controller": "orchestrator", "responsible": "product-architect", "acceptance": ["verification-agent"] },
+        { "package": "P1/#2", "controller": "orchestrator", "responsible": "backend-engineer", "acceptance": ["verification-agent"] }
+      ]
+    }
+  ]
+}

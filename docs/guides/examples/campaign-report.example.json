@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "campaignId": "example-readme-report",
+  "purpose": "Identify missing installation guidance in a sample project's README.",
+  "authorization": {
+    "version": 1,
+    "grantedBy": "EXAMPLE ONLY - replace with the actual approving owner",
+    "grantedAt": "2026-10-13",
+    "reference": "https://github.com/example/project/issues/1",
+    "text": "EXAMPLE ONLY. This file grants no authority. Replace this record with the owner's actual scoped approval before using a reviewed declaration."
+  },
+  "target": {
+    "tenantId": "example-owner",
+    "projectId": "example-project",
+    "environment": "research",
+    "repository": "example/project",
+    "baseBranch": "main",
+    "trackingIssue": 1
+  },
+  "limits": {
+    "slots": 1,
+    "maxWorkerRuns": 6,
+    "maxRepairRounds": 1,
+    "maxRetriesPerTask": 1
+  },
+  "executor": {
+    "kind": "claude-cli",
+    "model": "opus",
+    "permissionMode": "dontAsk",
+    "researchOnly": true,
+    "implementerTimeoutMinutes": 30,
+    "verifierTimeoutMinutes": 20
+  },
+  "constraints": [
+    "Read only the approved project evidence. Do not edit files, run project commands, merge, deploy or access production.",
+    "Do not read or reproduce credentials, private conversations or customer data. Report unavailable evidence as unavailable.",
+    "Provide a report only. The supervisor may publish it only to the owner's actual authorized issue after independent verification."
+  ],
+  "tasks": [
+    {
+      "id": "T1",
+      "issue": 1,
+      "title": "Review the README installation instructions",
+      "outcome": "A new reader can see which installation instructions are missing.",
+      "deliverable": "report",
+      "goal": "Inspect the supplied README evidence, identify missing prerequisites or unclear startup instructions, and propose precise corrections. Do not claim to have installed or run the project.",
+      "dependsOn": [],
+      "acceptance": [
+        "Every finding names its supporting README section or line, or explicitly identifies missing evidence.",
+        "Recommendations are separated from observed behavior; no claim says the project was executed.",
+        "No code change, production action or secret value is included."
+      ],
+      "references": ["README.md"]
+    }
+  ]
+}
