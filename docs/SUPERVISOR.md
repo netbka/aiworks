@@ -74,6 +74,10 @@ governance provider's governance files (project registry, policies, project-cont
 
 ## 2. State and ownership
 
+Before registering a task, inspect the callers, existing tests, fixtures and schema copies affected by its goal. Include necessary compatibility repairs in its `writes`; shared code may need a test directory rather than a guessed list of individual tests. A registered task cannot expand its own scope. If a required file was omitted, the operator checks the existing authority, preserves the work and findings, cancels and drains the old campaign, then registers a corrected replacement with the same acceptance. This is routine recovery when existing authority covers it; genuinely wider authority still needs the owner.
+
+`cancel <campaignId> [reason]` also accepts a finished campaign. It stops later merge and integration/CI repair attempts while preserving its declaration, task outcomes, costs, commits and run evidence. Use this to retire historical automation before redirecting a checkout to a replacement repository; never reinterpret old issue or PR numbers as objects in the new repository. Cancellation does not close remote PRs or remove their write-domain holds. Record the replacement mapping privately and start fresh work under its own declaration.
+
 | Concern | Owner |
 | --- | --- |
 | Campaign scope, assignment, findings, published status | GitHub issues/PRs; the declaration file in `campaigns/` |
