@@ -22,6 +22,7 @@ import { ANCHOR, MAX_DOCUMENT_BYTES, parseReference, resolveSection } from './re
 import { MAX_CITES } from './adapters/claude.mjs';
 import { stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions } from './instructions.mjs';
+import { answerGuidance, decisionId, isDecision, structuredDecision } from './decisions.mjs';
 import { POLICY as ROUTING_POLICY, autoReceipt, indicators, policyInputs, priorAttempt, receiptInputs, staticReceipt } from './router.mjs';
 import { roleCatalog } from './governance.mjs';
 import { ACCEPT_TASK, PLAN_TASK, admitAmendment, settleAmendment, specOf as storedSpecOf, specsOf as storedSpecsOf, verifyChain } from './plan.mjs';
@@ -794,10 +795,38 @@ export class Controller {
           else if (record) { /* a recheck is already running, or ownerInterventionTick releases a resolved record */ }
           else if (c.blocker && c.blocker.kind !== 'budget') this.store.patch('campaigns', { id: ctx.id }, c.version, { blocker: null }, now);
         }
-        this.store.journal(ctx.id, `event-${event.kind}`, event.payload, now);
+        if (event.kind === 'decision-answer') this.answerDecision(ctx, event.payload, now);
+        // An owner's decision feedback keeps its words in its event; the journal names the decision only.
+        this.store.journal(ctx.id, `event-${event.kind}`, event.kind.startsWith('decision-')
+          ? { task: event.payload?.taskId ?? null, decision: event.payload?.decision ?? null } : event.payload, now);
         this.store.run('UPDATE events SET processed_at = ? WHERE seq = ?', now, event.seq);
       });
     }
+  }
+
+  /**
+   * The owner's answer to one decision (OWNER_UI_V2 WP2), inside processEvents' fence. It clears only the stop it was
+   * given for: when the task has stopped again since, or is no longer a decision, nothing changes. Then the step's next
+   * worker gets the answer as guidance under the same authority and scope, exactly once, and the step resumes in its
+   * phase. It never touches the campaign's own blocker, another task or a limit.
+   */
+  answerDecision(ctx, payload, now) {
+    const c = this.store.campaign(ctx.id);
+    const task = this.store.task(ctx.id, payload?.taskId);
+    if (!task || !isDecision(task) || decisionId(ctx.id, task.task_id, task.blocked) !== payload.decision ||
+        c.authorization_version !== payload.authorizationVersion || c.scope_digest !== payload.scopeDigest) {
+      this.store.journal(ctx.id, 'decision-answer-stale', { task: payload?.taskId ?? null, decision: payload?.decision ?? null }, now);
+      return;
+    }
+    this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version, { blocked: null, failures: {}, retry_at: null, last_error: null }, now);
+    const record = this.oi && task.blocked.fingerprint ? this.store.blocker(task.blocked.fingerprint) : null;
+    if (record && record.status !== 'resolved') {
+      this.resolveBlocker(ctx, record, { trigger: 'owner-decision', probe: 'decision', pass: true, detail: `owner answer to decision ${payload.decision.slice(0, 12)}`, at: now }, now);
+    }
+    this.store.addEvent(ctx.id, 'agent-instruction', { taskId: task.task_id, role: 'implement',
+      text: answerGuidance(task.blocked.decision, payload), authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest },
+    `instruction:decision:${ctx.id}:${payload.decision}`, now);
+    this.store.journal(ctx.id, 'decision-answered', { task: task.task_id, decision: payload.decision, option: payload.option ?? null }, now);
   }
 
   async reconcile(ctx, op) {
@@ -1215,7 +1244,8 @@ export class Controller {
         return { state: 'implemented', head_sha: head, result: value, signature, retry_at: null, last_error: null, failures: {} };
       }
       if (value.result === 'blocked-owner-reserved') {
-        return { state: 'pending', result: value, blocked: { class: 'B3', reason: `owner-reserved: ${value.ownerTrigger}`, at: now } };
+        const decision = structuredDecision(value);
+        return { state: 'pending', result: value, blocked: { class: 'B3', reason: `owner-reserved: ${value.ownerTrigger}`, at: now, ...(decision ? { decision } : {}) } };
       }
       return retry('evidence-unavailable', value.tried || value.summary, 'pending');
     }
@@ -1240,8 +1270,9 @@ export class Controller {
       const repair = this.publishedRepair(task);
       const findings = repair ? [...blocking, repair] : blocking;
       if (limits.maxRepairRounds !== null && task.repair_rounds >= limits.maxRepairRounds) {
+        const decision = structuredDecision(value);
         return { state: 'pending', verification: value, findings,
-          blocked: { class: 'stalled', reason: `verifier still rejects after ${task.repair_rounds} repair rounds`, at: now } };
+          blocked: { class: 'stalled', reason: `verifier still rejects after ${task.repair_rounds} repair rounds`, at: now, ...(decision ? { decision } : {}) } };
       }
       return { state: 'pending', verification: value, findings, repair_rounds: task.repair_rounds + 1, retry_at: null, last_error: null };
     }
