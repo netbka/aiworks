@@ -110,6 +110,7 @@ const SITES = [
   ['G11', 'src/supervisor/merge.mjs', 140, "const git = controller.cmd.git, gh = controller."],
   ['G11', 'src/supervisor/merge.mjs', 150, "try { pr = github.pullRequest({ gh, repository, "],
   ['G11', 'src/supervisor/merge.mjs', 200, "const { mergeCommit } = mergeWithMergeCommit({ g"],
+  ['G11', 'src/supervisor/merge.mjs', 249, "const gh = controller.cmd.gh, sha = task.verifie"],
   ['G23', 'src/supervisor/project-connect.mjs', 2, "// a campaign's checkout through it. Connect rea"],
   ['G23', 'src/supervisor/project-connect.mjs', 3, "// (never GraphQL: gh repo view is GraphQL-backe"],
   ['G23', 'src/supervisor/project-connect.mjs', 36, "GH_MISSING: 'GitHub projects need the GitHub CLI"],

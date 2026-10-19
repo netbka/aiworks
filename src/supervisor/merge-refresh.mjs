@@ -21,7 +21,7 @@ import { GATE_FILES, gateFailure, readGateRun } from './gate.mjs';
 const GATE = fileURLToPath(new URL('./gate.mjs', import.meta.url));
 const KINDS = ['merge-refresh-started', 'merge-refresh-passed', 'merge-refresh-failed'];
 const DEFAULT_TIMEOUT_MINUTES = 120;
-const IDENTITY = ['-c', 'user.name=AIWorks Supervisor', '-c', 'user.email=supervisor@aiworks.invalid'];
+export const IDENTITY = ['-c', 'user.name=AIWorks Supervisor', '-c', 'user.email=supervisor@aiworks.invalid'];
 
 /**
  * `merges.refresh` from config.json: `{ "command": ["npm", "ci", "&&", "npm", "run", "check"], "timeoutMinutes": 120 }`.
@@ -46,23 +46,23 @@ function records(store, campaignId, taskId, sha, base) {
   campaignId, ...KINDS, taskId, sha, base);
 }
 
-const alive = (pid) => {
+export const alive = (pid) => {
   try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; }
 };
-const gatePid = (path) => {
+export const gatePid = (path) => {
   const file = join(path, GATE_FILES.pid);
   const pid = existsSync(file) ? Number(readFileSync(file, 'utf8').trim()) : NaN;
   return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
 };
 
 /** Starts the gate helper in `path` as a separate process; it returns at once. */
-function startGate(path, command) {
+export function startGate(path, command) {
   const started = gitA.exec([process.execPath], [GATE, 'start', ...command], { cwd: path, timeoutMs: 60_000 });
   if (!started.ok) throw new Error(`gate start failed: ${started.stderr || started.stdout || `exit ${started.status}`}`.slice(0, 500));
 }
 
 /** A clean detached checkout of `commit` in `path`, reusing one that is already there. */
-function checkout(git, repoPath, path, commit) {
+export function checkout(git, repoPath, path, commit) {
   if (existsSync(path)) {
     const head = gitA.exec(git, ['rev-parse', 'HEAD'], { cwd: path });
     if (head.ok && head.stdout === commit) return;
