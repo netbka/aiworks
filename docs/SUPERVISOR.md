@@ -111,7 +111,25 @@ preserves it exactly. When the report and its verification together exceed GitHu
 body limit, the verification is published as a separate marked supervisor comment (on the task issue
 for a report, on the PR for a commit); each part is found by its marker before posting, so a retry
 never posts twice. Nothing is truncated; a publication blocker is raised only if a part alone still
-exceeds the limit. Completion guidance names the actual target and
+exceeds the limit.
+
+Every PR title and body and every issue or PR comment passes one privacy check before it is sent
+([#8](https://github.com/example-org/aiworks/issues/8), `src/shared/public-text.mjs`). It reuses the public-scope
+rules (credential material, personal installation paths, the installation's private terms from
+`.local/publication.json` in the runtime and target checkouts) and also refuses any absolute local path. Naming the
+upstream owner's other projects is refused only for the AIWorks repository itself. `publish` checks every part of a
+publication (PR body, split verification comment, repair comment) before the push and before the first GitHub call,
+and the GitHub adapter checks again at each call. A refusal names categories only, never the matched text:
+
+- The verified report, its digest and the verification stay in the task row and the run evidence; the journal records
+  `publication-refused` with the categories, sources and report digest. Nothing is redacted or truncated.
+- A refused report reopens the task as a publication repair round (a `publication-text` finding): the implementer
+  rewrites the report, keeping the same head when the code needs no change, and a fresh verifier checks it. A refused
+  verification alone goes to a fresh verifier of the same head. At most two such rounds, within `maxRepairRounds`;
+  then, or when the supervisor's own text is refused, the task stalls. No new owner decision is needed for wording.
+- A refused outbox note is marked `refused` and never sent or retried; one note without its text says it was withheld.
+
+Completion guidance names the actual target and
 deliverable. SQLite uses FULL synchronization; atomic file writes fsync their contents,
 but Windows rename metadata persistence under power loss remains unverified. Missing
 process ownership proof fails closed; these tests do not establish power-loss durability.

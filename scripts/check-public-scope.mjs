@@ -3,7 +3,9 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
-import { containsKnownSecretValue } from '../src/shared/credential-metadata.mjs';
+import { contentFindings, privateTerms } from '../src/shared/public-text.mjs';
+
+export { contentFindings };
 
 export function privatePaths(paths) {
   return paths.filter(path => /^(?:campaigns|\.local|runs|backups|state|governance|artifacts|reports|screenshots|registry\/projects)\//i.test(path) ||
@@ -17,27 +19,6 @@ function git(root, args, input) {
   const result = spawnSync('git', args, { cwd: root, input, windowsHide: true, maxBuffer: 128 * 1024 * 1024 });
   if (result.error || result.status !== 0) throw new Error('Cannot inspect the public commit scope.');
   return result.stdout;
-}
-
-function privateTerms(root) {
-  try {
-    const value = JSON.parse(readFileSync(resolve(root, '.local/publication.json'), 'utf8'));
-    if (!Array.isArray(value.privateTerms) || !value.privateTerms.every(term => typeof term === 'string' && term.trim().length >= 3)) throw new Error();
-    return value.privateTerms;
-  } catch (error) {
-    if (error.code === 'ENOENT') return [];
-    throw new Error('Invalid private publication settings in .local/publication.json.');
-  }
-}
-
-export function contentFindings(text, terms = []) {
-  const findings = [];
-  if (containsKnownSecretValue(text) || /(?:https?|postgres(?:ql)?|mongodb(?:\+srv)?|mysql|redis):\/\/[^\s/@:]+:[^\s/@]+@/i.test(text) ||
-      /\b(?:api[_-]?key|client[_-]?secret|password|access[_-]?token)\b["']?\s*[:=]\s*["'][A-Za-z0-9_+\/=-]{16,}["']/i.test(text)) findings.push('credential material');
-  if (/\bnetbka\/(?!aiworks(?:\.git)?(?![\w.-]))[\w.-]+/i.test(text)) findings.push('another upstream-owner project');
-  if (/[A-Z]:[\\/]+(?:Users|Git)[\\/]+[\w.-]+/i.test(text) || /\/home\/(?!example\b|user\b)[\w.-]+/i.test(text)) findings.push('personal installation path');
-  if (terms.some(term => text.toLowerCase().includes(term.toLowerCase()))) findings.push('private installation reference');
-  return findings;
 }
 
 function inspect(root, entries, terms) {
