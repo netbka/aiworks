@@ -180,9 +180,12 @@ export function worktreeList({ git, repoPath }) {
   return list;
 }
 
-/** Uncommitted and untracked entries of a checkout (ignored files are not listed); null when git cannot read it. */
+/**
+ * Uncommitted, untracked (`?? `) and ignored (`!! `) entries of a checkout; null when git cannot read it. A non-forced
+ * `git worktree remove` deletes ignored files, so they are listed too: an ignored directory as one `!! dir/` entry.
+ */
 export function worktreeChanges({ git, path }) {
-  const out = exec(git, ['status', '--porcelain=v1', '-z', '--untracked-files=all'], { cwd: path, timeoutMs: 60_000 });
+  const out = exec(git, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=matching'], { cwd: path, timeoutMs: 60_000 });
   return out.ok ? out.stdout.split('\0').filter(Boolean) : null;
 }
 

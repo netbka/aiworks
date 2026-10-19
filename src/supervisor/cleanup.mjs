@@ -6,7 +6,8 @@
 // campaign is finished or cancelled. Its worktrees are the workspaces its operations recorded; a coordinator or planning
 // checkout is owned by the coordinator runs that recorded it, and is finished when none of them is open. Only a
 // registered worktree inside its registered folder is removed, with `git worktree remove` (never --force); one with
-// changes or untracked files is kept and reported, and so is a worktree nobody owns. A local task branch goes with
+// changes, untracked files or ignored files other than installed dependencies is kept and reported, and so is a
+// worktree nobody owns. A local task branch goes with
 // `git branch -d` (never -D) only when the trusted main contains its tip. Nothing deletes a remote branch, a run
 // directory or a folder recursively. Each removal is journaled `cleanup-started` before and `cleanup-finished` after,
 // so a restart settles an interrupted one from what git shows and never repeats it.
@@ -130,8 +131,10 @@ function cleanRepository(ctl, repo, coordinator, report, keep) {
 }
 
 /**
- * Remove one finished, owned, registered worktree inside its folder. The verifier's gate files at its root are copied
- * into the owning run directory first: git would delete them when ignored, and refuse the removal when untracked.
+ * Remove one finished, owned, registered worktree inside its folder. git deletes ignored files with it, so any ignored
+ * entry keeps the worktree unless it is an installed node_modules directory or a gate file. The verifier's gate files at
+ * its root are copied into the owning run directory first: git would delete them when ignored, and refuse the removal
+ * when untracked.
  */
 function removeWorktree(ctl, repoPath, wt, owner, report, keep) {
   const git = ctl.cmd.git, item = { path: wt.path, task: owner.task, run: owner.run };
@@ -139,8 +142,11 @@ function removeWorktree(ctl, repoPath, wt, owner, report, keep) {
   const present = existsSync(wt.path);
   const changes = present ? gitA.worktreeChanges({ git, path: wt.path }) : [];
   if (changes === null) { keep(owner.campaignId, { ...item, reason: 'status-unreadable' }); return; }
-  const gateArtifact = (entry) => entry.startsWith('?? ') && GATE_NAMES.has(entry.slice(3));
-  if (changes.some((entry) => !gateArtifact(entry))) { keep(owner.campaignId, { ...item, reason: 'changes', entries: changes.slice(0, 5) }); return; }
+  const gateArtifact = (entry) => /^(\?\?|!!) /.test(entry) && GATE_NAMES.has(entry.slice(3));
+  const disposable = (entry) => entry.startsWith('!! ') && /(^|\/)node_modules\/$/.test(entry.slice(3));
+  const ignored = changes.filter((entry) => entry.startsWith('!! ') && !gateArtifact(entry) && !disposable(entry));
+  if (ignored.length) { keep(owner.campaignId, { ...item, reason: 'ignored-files', entries: ignored.slice(0, 5) }); return; }
+  if (changes.some((entry) => !gateArtifact(entry) && !disposable(entry))) { keep(owner.campaignId, { ...item, reason: 'changes', entries: changes.slice(0, 5) }); return; }
   // A detached checkout whose commit no branch or remote ref holds would lose that commit with it.
   if (present && !wt.branch && !gitA.exec(git, ['for-each-ref', '--count=1', '--contains', wt.head, 'refs/heads', 'refs/remotes', 'refs/aiworks'], { cwd: repoPath }).stdout) {
     keep(owner.campaignId, { ...item, reason: 'unreferenced-commit' }); return;
@@ -148,8 +154,8 @@ function removeWorktree(ctl, repoPath, wt, owner, report, keep) {
   const gateFiles = present ? [...GATE_NAMES].filter((name) => existsSync(join(wt.path, name))) : [];
   if (gateFiles.length && !preserveGateFiles(wt.path, owner.runDir, gateFiles)) { keep(owner.campaignId, { ...item, reason: 'evidence-not-preserved' }); return; }
   const started = ctl.store.journal(owner.campaignId, 'cleanup-started', { action: 'remove-worktree', ...item, repoPath }, ctl.now());
-  // Only the untracked gate files, each one file and already copied; every other file is git's to refuse.
-  for (const entry of changes) unlinkSync(join(wt.path, entry.slice(3)));
+  // Only the untracked gate files, each one file and already copied; every other file is git's to refuse or delete.
+  for (const entry of changes) if (entry.startsWith('?? ')) unlinkSync(join(wt.path, entry.slice(3)));
   const result = gitA.removeWorktree({ git, repoPath, path: wt.path });
   const reason = result.ok ? null : (result.stderr || result.error || `exit ${result.status}`).slice(0, 300);
   ctl.store.journal(owner.campaignId, 'cleanup-finished', { started, outcome: result.ok ? 'removed' : 'kept', reason }, ctl.now());
