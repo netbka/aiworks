@@ -313,7 +313,15 @@ function fill(store, dataDir, root, now) {
   id = start(declaration('notes-theme', notes, 'Give the site a dark theme', 110, [task('T1', 111, 'dark theme', 'Dark theme'),
     task('T2', 112, 'theme switch', 'Theme switch')]), now - 7 * H);
   live(id);
-  setTask(id, 'T1', { attempts: 1, blocked: { class: 'B3', reason: 'owner-reserved: the colour palette is a brand decision' } });
+  // A structured decision (OWNER_UI_V2 WP2): options with consequences, a suggestion, what continues and what happens unanswered.
+  setTask(id, 'T1', { attempts: 1, blocked: { class: 'B3', reason: 'owner-reserved: the colour palette is a brand decision', at: now - 6 * H, decision: {
+    question: 'Which palette should the dark theme use?',
+    options: [{ id: 'brand', label: 'Brand colours', consequence: 'Matches the logo; two contrast fixes are needed.' },
+      { id: 'neutral', label: 'Neutral greys', consequence: 'Passes contrast as is; looks plainer.' }],
+    suggestion: { option: 'neutral', reason: 'It passes the contrast check without extra work.' },
+    continues: 'Other work on the site keeps going.', unanswered: 'Dark theme stays stopped; nothing is published.' } } });
+  // A free-text decision: the worker described no options, so the owner answers in their own words.
+  setTask(id, 'T2', { attempts: 1, blocked: { class: 'B3', reason: 'owner-reserved: where the switch goes is a design decision', at: now - 5 * H } });
 
   id = start(declaration('notes-search', notes, 'Search notes', 120, [task('T1', 121, 'notes search', 'Notes search')]), now - 8 * H);
   live(id);

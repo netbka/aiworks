@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
@@ -6,6 +7,7 @@ import { campaignStatus, campaignPause, campaignCancel, campaignRecheck, campaig
 import { DEFAULTS } from '../supervisor/controller.mjs';
 import { safeText } from './roadmap.mjs';
 import { pendingInstructions } from '../supervisor/instructions.mjs';
+import { decisionId, isDecision, structuredDecision } from '../supervisor/decisions.mjs';
 import { roleUnavailableReason, runNotCounted } from '../supervisor/adapters/executors.mjs';
 import { campaignLimits } from '../supervisor/campaign.mjs';
 import { parseReference } from '../supervisor/reading.mjs';
@@ -624,6 +626,32 @@ export function stopAllReleases(dataDir, input, now = Date.now()) {
   return { accepted: true, duplicate: false, action: 'release-stop' };
 }
 
+const DECISION_EVENTS = ['decision-answer', 'decision-snooze', 'decision-not-needed'];
+const decisionFeedback = (store, campaignId) =>
+  store.all(`SELECT kind, payload, received_at FROM events WHERE campaign_id = ? AND kind IN (${DECISION_EVENTS.map(() => '?').join(', ')}) ORDER BY seq`,
+    campaignId, ...DECISION_EVENTS);
+
+/**
+ * A step's open decision (OWNER_UI_V2 WP2), or null. Its question, options, suggestion, what continues and what happens
+ * unanswered are served only when they came from a validated worker result field, and each passes the credential filter;
+ * a stop without them is a free-text decision (`structured: false`) answered in the owner's own words. `id` binds every
+ * answer, snooze and "did not need me" to this one stop. The owner's own words are never served back.
+ */
+function decisionView(campaignId, task, feedback, now) {
+  if (!isDecision(task)) return null;
+  const id = decisionId(campaignId, task.task_id, task.blocked);
+  const mine = feedback.filter((event) => event.payload?.taskId === task.task_id && event.payload?.decision === id);
+  const d = structuredDecision({ decision: task.blocked.decision });
+  const answer = mine.find((event) => event.kind === 'decision-answer');
+  const until = Math.max(0, ...mine.filter((event) => event.kind === 'decision-snooze').map((event) => event.payload.until));
+  return { id, structured: Boolean(d), question: d ? safeText(d.question, 500) : null,
+    options: d ? d.options.map((o) => ({ id: o.id, label: safeText(o.label, 120), consequence: safeText(o.consequence, 500) })) : [],
+    suggestion: d?.suggestion ? { option: d.suggestion.option, reason: safeText(d.suggestion.reason, 500) } : null,
+    continues: d?.continues ? safeText(d.continues, 500) : null, unanswered: d?.unanswered ? safeText(d.unanswered, 500) : null,
+    answered: answer ? { at: answer.received_at, option: answer.payload.option ?? null } : null,
+    snoozedUntil: until > now ? until : null, notNeeded: mine.some((event) => event.kind === 'decision-not-needed') };
+}
+
 export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
   const path = join(dataDir, 'supervisor.db');
   if (!existsSync(path)) return { available: false, message: 'No supervisor store at the configured location.', campaigns: [], costs: [], activity: [] };
@@ -639,6 +667,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
       .filter(({ id }) => !isLocalTarget(store.campaign(id).declaration)).map(({ id }) => {
       const c = store.campaign(id), status = campaignStatus(store, id, now, { config });
       const taskRows = store.tasks(id);
+      const feedback = decisionFeedback(store, id);
       const specs = new Map(c.declaration.tasks.map((task) => [task.id, task]));
       const operations = store.openOperations(id);
       const order = status.executorOrder;
@@ -723,6 +752,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
             })() };
         }),
         tasks: taskRows.map((task) => ({ id: task.task_id, title: safeText(specs.get(task.task_id)?.title),
+          decision: decisionView(id, task, feedback, now),
           outcome: specs.get(task.task_id)?.outcome ? safeText(specs.get(task.task_id).outcome) : null,
           deliverable: code(specs.get(task.task_id)?.deliverable), verifierRejections: rejections.get(task.task_id) ?? 0,
           version: task.version, issueUrl: `https://github.com/${c.declaration.target.repository}/issues/${specs.get(task.task_id)?.issue}`,
@@ -998,6 +1028,80 @@ export function applyScopedControl(dataDir, input, now = Date.now(), { provenanc
       store.addEvent(expected[0].campaignId, 'dashboard-command', payload, dedup, now);
       for (const goal of expected) store.journal(goal.campaignId, 'dashboard-command', { action: input.action, scope: scope.kind, requestId: input.requestId }, now);
       return { accepted: true, duplicate: false, action: input.action, scope: input.scope, goals: expected.length };
+    });
+  } finally { store.close(); }
+}
+
+const SNOOZE = { '1h': 3_600_000, '4h': 4 * 3_600_000, '1d': 86_400_000 };
+const DECISION_KEYS = ['requestId', 'campaignId', 'taskId', 'taskVersion', 'version', 'authorizationVersion', 'scopeDigest', 'decision', 'option', 'text', 'snooze'];
+
+/**
+ * Answer, snooze or "this did not need me" on one decision (OWNER_UI_V2 WP2; `action` comes from the address). The
+ * request binds the goal's version, authorization and scope, the step's version and the decision's id, so a stale,
+ * wrong-step or replayed request changes nothing. An answer is recorded once per decision: the controller then clears
+ * exactly that stop and gives the step's next worker the answer as guidance under the same packet, so it can never widen
+ * the work, clear another blocker or start a second run. A wider change goes through a new plan approval. Snooze and
+ * "did not need me" are feedback only: the step stays stopped until it is answered.
+ */
+export function applyDecision(dataDir, action, input, now = Date.now()) {
+  if (!['answer', 'snooze', 'not-needed'].includes(action) || !input || typeof input !== 'object' || Array.isArray(input) ||
+      Object.keys(input).some((key) => !DECISION_KEYS.includes(key)) || !/^[0-9a-f-]{36}$/i.test(input.requestId ?? '') ||
+      !identifier.test(input.campaignId ?? '') || !identifier.test(input.taskId ?? '') || !Number.isSafeInteger(input.taskVersion) ||
+      !Number.isSafeInteger(input.version) || input.version < 1 || !Number.isSafeInteger(input.authorizationVersion) ||
+      !/^[a-f0-9]{64}$/.test(input.scopeDigest ?? '') || !/^[a-f0-9]{32}$/.test(input.decision ?? '') ||
+      input.option !== undefined && (action !== 'answer' || !/^[a-z][a-z0-9-]{0,31}$/.test(input.option)) ||
+      input.text !== undefined && (action === 'snooze' || typeof input.text !== 'string' || !input.text.trim() || input.text.length > 2000 ||
+        /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(input.text)) ||
+      (input.snooze !== undefined) !== (action === 'snooze') || action === 'snooze' && !Object.hasOwn(SNOOZE, input.snooze) ||
+      action === 'answer' && input.option === undefined && input.text === undefined) {
+    throw fail(400, 'Invalid dashboard command.');
+  }
+  if (input.text !== undefined && safeText(input.text, 2000) !== input.text) {
+    throw Object.assign(fail(400, INSTRUCTION_LOOKS_SENSITIVE), { code: 'INSTRUCTION_LOOKS_SENSITIVE' });
+  }
+  if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'AIWorks can’t read its work records on this computer right now.');
+  const store = new Store(join(dataDir, 'supervisor.db'));
+  try {
+    return store.tx(() => {
+      const id = input.campaignId;
+      const payload = { taskId: input.taskId, decision: input.decision, action, taskVersion: input.taskVersion, version: input.version,
+        authorizationVersion: input.authorizationVersion, scopeDigest: input.scopeDigest, option: input.option ?? null,
+        // The receipt binds the owner's words by digest: they are kept once, in the decision's own event.
+        text: input.text === undefined ? null : createHash('sha256').update(input.text, 'utf8').digest('hex'), snooze: input.snooze ?? null };
+      const dedup = `dashboard:${input.requestId}`;
+      const previous = store.get('SELECT campaign_id, payload FROM events WHERE dedup_key = ?', dedup);
+      if (previous) {
+        if (previous.campaign_id !== id || JSON.stringify(previous.payload) !== JSON.stringify(payload)) throw fail(409, 'That command identifier was already used for a different request.');
+        return { accepted: true, duplicate: true, action };
+      }
+      const c = store.campaign(id);
+      if (!c) throw fail(404, COMMANDS.notFound);
+      if (c.version !== input.version || c.authorization_version !== input.authorizationVersion || c.scope_digest !== input.scopeDigest) {
+        throw fail(409, 'Work changed since this view was loaded. Refresh and try again.');
+      }
+      if (!['registered', 'paused'].includes(c.control)) throw fail(409, COMMANDS.closed);
+      const task = store.task(id, input.taskId);
+      if (!task || task.version !== input.taskVersion || !isDecision(task) || decisionId(id, task.task_id, task.blocked) !== input.decision) {
+        throw fail(409, COMMANDS.decision.stale);
+      }
+      const answered = `decision-answer:${id}:${input.decision}`;
+      if (store.get('SELECT 1 FROM events WHERE dedup_key = ?', answered)) throw fail(409, COMMANDS.decision.answered);
+      const event = { taskId: input.taskId, decision: input.decision, requestId: input.requestId };
+      if (action === 'answer') {
+        const d = structuredDecision({ decision: task.blocked.decision });
+        if (input.option !== undefined && !d?.options.some((o) => o.id === input.option)) throw fail(400, COMMANDS.decision.notOption);
+        store.addEvent(id, 'decision-answer', { ...event, option: input.option ?? null, text: input.text ?? null,
+          authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest }, answered, now);
+      } else if (action === 'snooze') {
+        store.addEvent(id, 'decision-snooze', { ...event, until: now + SNOOZE[input.snooze] }, null, now);
+      } else {
+        if (!store.addEvent(id, 'decision-not-needed', { ...event, text: input.text ?? null }, `decision-not-needed:${id}:${input.decision}`, now)) {
+          throw fail(409, COMMANDS.decision.noted);
+        }
+      }
+      store.addEvent(id, 'dashboard-command', payload, dedup, now);
+      store.journal(id, 'dashboard-command', { action: `decision-${action}`, task: input.taskId, requestId: input.requestId }, now);
+      return { accepted: true, duplicate: false, action, ...(action === 'snooze' ? { until: now + SNOOZE[input.snooze] } : {}) };
     });
   } finally { store.close(); }
 }
