@@ -247,7 +247,8 @@ function record(controller, ctx, { campaignId, decl, task }, mergeCommit, { reco
 function repair(controller, ctx, item, repoPath, baseSha, refreshed) {
   const { store } = controller, git = controller.cmd.git, { campaignId, decl, task } = item;
   const fresh = store.task(campaignId, task.task_id);
-  if (fresh.version !== task.version || fresh.state !== 'done') return false;
+  // A cancellation or pause committed after this task was selected keeps the completed task as it is (aiworks#5).
+  if (fresh.version !== task.version || fresh.state !== 'done' || !controller.takesRepair(campaignId)) return false;
   const sha = task.verified_sha, base = decl.target.baseBranch, now = controller.now();
   const check = gitA.mergeCheck({ git, repoPath, baseSha, sha });
   const paths = check.paths.slice(0, 20);
