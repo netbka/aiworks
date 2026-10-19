@@ -669,9 +669,12 @@ function setControl(store, id, allowed, control, kind, detail, now) {
   return campaignStatus(store, id, now);
 }
 
-/** Stop new dispatch; in-flight operations finish and their results are still recorded. */
-export const campaignPause = (store, id, reason = null, now = Date.now()) =>
-  setControl(store, id, ['registered'], 'paused', 'paused', { reason }, now);
+/**
+ * Stop new dispatch; in-flight operations finish and their results are still recorded. `scope` (dashboard pause for all,
+ * a project or a goal, OWNER_UI_V2 WP1) is journaled with the pause so a later resume of that scope finds only its own.
+ */
+export const campaignPause = (store, id, reason = null, now = Date.now(), { scope = null } = {}) =>
+  setControl(store, id, ['registered'], 'paused', 'paused', { reason, ...(scope ? { scope } : {}) }, now);
 
 /** Stop dispatch and post-completion automation; retain finished outcomes and evidence. */
 export const campaignCancel = (store, id, reason = null, now = Date.now()) =>

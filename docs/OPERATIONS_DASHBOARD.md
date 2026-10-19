@@ -110,6 +110,7 @@ The dashboard makes no GitHub API call: no `gh`, GraphQL or REST (AIWorks design
   - Fetches happen only while a dashboard page is open: each state request starts a check, and the answer never waits for it.
   - Otherwise the step reads *Published, merge not seen yet*, never merged. That includes a repository with no configured checkout, a step with no recorded verified commit, and a squash or rebase merge, which rewrites the commit so it is never reachable.
   - A failed fetch keeps the last result and shows its time. A check older than 15 minutes never shows a step as merged.
+- **AIWorks's own repository with local main trusted** (`selfHosting.trustedMain` `"local"`, UI19): never fetched. Its merge check reads the local `<baseBranch>` (`refs/heads/main`) at every check, and a verified local review (`aiworks-work:<n>`) counts as published. Every other repository keeps the fetch above.
 - **Who merges:** the `merges` setting in the supervisor's `config.json`, read on every page refresh. See [Merging delegated by the owner](#merging-delegated-by-the-owner).
 - **What Auto Release waits for:** `autoReleaseDecision` in the supervisor's `config.json`, read on every page refresh. It is optional: one GitHub issue link, for example `"autoReleaseDecision": "https://github.com/example-org/aiworks/issues/33"`. Settings › Release mode shows it as the release decision that Auto Release waits for. Without it, or with anything that is not a GitHub issue link, Auto Release keeps the same text and shows no link. The review fixture sets none, so a reviewer's page names no real issue.
 
@@ -174,7 +175,9 @@ Controls apply to existing **supervisor-managed campaigns**. Other chat/IDE agen
 | Command | Effect |
 | --- | --- |
 | Pause | Stops new dispatch; an existing worker can finish. |
-| Resume | Resumes the private stored declaration with its existing authorization and limits. Current version, scope and authorization are checked atomically. No declaration commit is required; the controller separately checks merged runtime code (AW-005). |
+| Pause all work, Pause project, Pause goal | Home, Overview (owner UI v2 WP1). The same pause for every running goal the scope covers, in one transaction. The request lists exactly those goals, each bound to its row version, authorization version and scope digest; a missing, extra or changed goal refuses the whole request with nothing written. A paused goal reads *stopping* while a run it started is still open and *stopped* once none is. |
+| Resume all work, Resume project, Resume goal | Resumes only the goals that this very scope paused (for a goal: that goal). A goal paused another way keeps its own Resume and is never resumed by a wider one. |
+| Resume | Resumes the private stored declaration with its existing authorization and limits. Current version, scope and authorization are checked atomically. No declaration commit is required. Every Resume, the scoped ones included, first checks that the running dashboard code is part of the trusted main (AW-005): `origin/main`, or with `selfHosting.trustedMain` `"local"` the trusted tip of the main ledger. It never fetches; a refused Resume changes nothing. |
 | Recheck | Queues the existing recovery event, for a campaign or a selected unfinished task. It does not force acceptance or bypass owner-reserved conditions. |
 | Cancel | Requires a confirmation explaining that the controller terminates its owned workers and that cancelled campaigns cannot resume. Completed results remain available. |
 | Send instructions | Select an unfinished task and implementer/verifier role. Up to 2,000 characters are queued for that role's next run on the task; an already running worker is not interrupted. |
@@ -184,6 +187,21 @@ Acknowledgement means the command was recorded. A queued recheck/cancel still ne
 Free-text guidance is supplemental to the immutable task packet and never changes its permissions, acceptance criteria or independent review requirement. Credential-like text and control characters are rejected. There can be five pending instructions per task. Delivery is committed atomically with an admitted operation and recorded in its immutable prompt; a preflight failure leaves instructions queued. Receipts distinguish queued, attached to a specific run, outdated authorization, and no future run. "Attached" does not claim the model has read or followed it, or that the run succeeded. If that run fails, the owner can inspect its outcome and send guidance again. Older controllers cannot deliver instructions; upgrade the controller to this change before using this command. Drafts survive polling and are cleared only after an accepted receipt.
 
 Commands use the existing supervisor APIs within one transaction. The request is bound to campaign row version, authorization version, scope digest and, for task recheck, task version. Changed state returns a conflict. A durable request ID is bound to the exact payload; repeating it acknowledges the original command without applying it twice. Commands and receipts use the existing events/journal tables.
+
+## Home, Overview and Connections (owner UI v2, WP1)
+
+Read-only views beside `/api/state` (`src/dashboard/views.mjs`), each built server-side from the same readers and returning allowlisted fields only: codes, counts, times, identifiers and sentences the supervisor or dashboard wrote. No worker text, recorded reason or local path. `/api/state` carries `home`, `overviews` and `connections`, so the page still polls one route.
+
+| Route | Answers |
+| --- | --- |
+| `GET /api/v2/home` | What changed after the last-seen marker, the first Needs me item, each project in one sentence, and the pause of all work. |
+| `GET /api/v2/projects/<project>` | Each goal with Built, Checked and Available to users counted apart (available stays *Not published: release is off* until a release is recorded, *Not known* while one is unknown), its budget, next action and pause. |
+| `GET /api/v2/settings` | Settings › Connections: AIWorks itself, each AI worker account, where each repository's merges are seen from, and the trusted main with its backup (state codes only, read locally). |
+| `GET /api/v2/events?since&cursor&project&type` | Typed events from the journal, newest first: type, time, work, step and project, never the entry's detail. |
+| `POST /api/v2/events/seen` `{ seq }` | Moves the last-seen marker forward (`dashboard-last-seen.json` in the data directory, beside `config.json`); never past the newest entry, never back. |
+| `POST /api/v2/pause`, `POST /api/v2/resume` | The scoped pause and resume above. |
+
+The POST routes keep the command rules: exact Origin, the CSRF token, JSON of at most 16 KiB, and only their own fields. Plan, Decision, Review, Releases, Knowledge, notifications and previews are not built (WP2 onwards) and are not shown.
 
 ## Plan and do, Review and Approve and start (built, off by default)
 
