@@ -1,0 +1,122 @@
+// Structured decisions (docs/design/OWNER_UI_V2.md WP2) and the scoped pause body limit. Synthetic store and campaigns only.
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { join } from 'node:path';
+import { once } from 'node:events';
+import { randomUUID } from 'node:crypto';
+import { Store } from '../../src/supervisor/store.mjs';
+import { campaignStart } from '../../src/supervisor/api.mjs';
+import { Controller } from '../../src/supervisor/controller.mjs';
+import { pendingInstructions } from '../../src/supervisor/instructions.mjs';
+import { validResult } from '../../src/supervisor/adapters/claude.mjs';
+import { applyDecision, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
+import { createDashboardServer, SCOPED_CONTROL_BYTES } from '../../src/dashboard/server.mjs';
+import { declaration, environment } from '../supervisor/helpers.mjs';
+
+const DECISION = { question: 'Which palette?', options: [{ id: 'brand', label: 'Brand', consequence: 'Two contrast fixes.' },
+  { id: 'neutral', label: 'Neutral', consequence: 'Plainer.' }], suggestion: { option: 'neutral', reason: 'Passes contrast.' } };
+
+test('an answer clears only its own decision, once; stale, wrong-step and replayed answers change nothing', (t) => {
+  const env = environment();
+  const store = new Store(join(env.dataDir, 'supervisor.db'));
+  t.after(() => { store.close(); env.cleanup(); });
+  const d = declaration(); campaignStart(store, d);
+  const block = (taskId, blocked) => { const task = store.task(d.campaignId, taskId); store.patch('tasks', { campaign_id: d.campaignId, task_id: taskId }, task.version, { blocked }, Date.now()); };
+  block('T1', { class: 'B3', reason: 'owner-reserved: palette', at: 1000, decision: DECISION });
+  block('T2', { class: 'B3', reason: 'owner-reserved: free text', at: 2000 });
+  const c0 = store.campaign(d.campaignId);
+  store.patch('campaigns', { id: d.campaignId }, c0.version, { blocker: { kind: 'budget', class: 'B3', reason: 'synthetic campaign blocker' } }, Date.now());
+  const view = () => supervisorSnapshot(env.dataDir).campaigns[0];
+  const bind = (taskId, extra = {}) => {
+    const c = store.campaign(d.campaignId), task = view().tasks.find((item) => item.id === taskId);
+    return { requestId: randomUUID(), campaignId: c.id, taskId, taskVersion: task.version, version: c.version, authorizationVersion: c.authorization_version,
+      scopeDigest: c.scope_digest, decision: task.decision?.id ?? 'f'.repeat(32), ...extra };
+  };
+  const events = () => store.all("SELECT kind FROM events WHERE kind LIKE 'decision-%' OR kind = 'agent-instruction'").length;
+
+  const t1 = view().tasks.find((item) => item.id === 'T1').decision;
+  assert.deepEqual([t1.structured, t1.options.map((o) => o.id), t1.suggestion.option], [true, ['brand', 'neutral'], 'neutral']);
+  assert.equal(view().tasks.find((item) => item.id === 'T2').decision.structured, false, 'a free-text stop stays answerable');
+
+  // Wrong step, stale step version, an option the decision does not offer, an unknown field: refused with nothing written.
+  assert.throws(() => applyDecision(env.dataDir, 'answer', { ...bind('T1', { option: 'brand' }), taskId: 'T2' }), (error) => error.status === 409);
+  assert.throws(() => applyDecision(env.dataDir, 'answer', bind('T1', { option: 'brand', taskVersion: 99 })), (error) => error.status === 409);
+  assert.throws(() => applyDecision(env.dataDir, 'answer', bind('T1', { option: 'other' })), (error) => error.status === 400);
+  assert.throws(() => applyDecision(env.dataDir, 'answer', bind('T1', { option: 'brand', maxWorkerRuns: 99 })), (error) => error.status === 400);
+  assert.equal(events(), 0);
+
+  const answer = bind('T1', { option: 'brand', text: 'Keep the logo blue.' });
+  assert.equal(applyDecision(env.dataDir, 'answer', answer).duplicate, false);
+  assert.equal(applyDecision(env.dataDir, 'answer', answer).duplicate, true, 'an exact retry is acknowledged, never recorded twice');
+  assert.throws(() => applyDecision(env.dataDir, 'answer', { ...answer, option: 'neutral' }), (error) => error.status === 409, 'one request id, one request');
+  assert.throws(() => applyDecision(env.dataDir, 'answer', bind('T1', { option: 'neutral' })), (error) => error.status === 409, 'a decision is answered once');
+
+  const controller = new Controller({ store, config: env.config, dataDir: env.dataDir, fault: null });
+  const lease = store.acquireLease(d.campaignId, controller.instanceId, Date.now(), 60_000);
+  const ctx = { id: d.campaignId, generation: lease.generation };
+  controller.processEvents(ctx);
+  controller.processEvents(ctx);
+  const campaign = store.campaign(d.campaignId);
+  assert.equal(store.task(d.campaignId, 'T1').blocked, null, 'the answered stop is cleared');
+  assert.equal(store.task(d.campaignId, 'T2').blocked.class, 'B3', 'another step keeps its decision');
+  assert.equal(campaign.blocker.reason, 'synthetic campaign blocker', 'the campaign blocker is not cleared');
+  const guidance = pendingInstructions(store, campaign, 'T1', 'implement');
+  assert.equal(guidance.length, 1, 'the next run gets the answer exactly once');
+  assert.match(guidance[0].payload.text, /Brand \(brand\).*Keep the logo blue\./);
+  assert.equal(store.task(d.campaignId, 'T1').state, 'pending');
+
+  // After the step stopped again, the old answer's decision is gone: a replay of it, or of the old id, changes nothing.
+  block('T1', { class: 'B3', reason: 'owner-reserved: palette again', at: 3000, decision: DECISION });
+  assert.throws(() => applyDecision(env.dataDir, 'answer', { ...bind('T1', { option: 'brand' }), decision: t1.id }), (error) => error.status === 409);
+  const again = bind('T1', { option: 'neutral' });
+  applyDecision(env.dataDir, 'answer', again);
+  block('T1', { class: 'B3', reason: 'owner-reserved: a newer stop before the controller read the answer', at: 4000 });
+  controller.processEvents(ctx);
+  assert.equal(store.task(d.campaignId, 'T1').blocked.at, 4000, 'an answer to an earlier stop never clears a newer one');
+  assert.equal(pendingInstructions(store, campaign, 'T1', 'implement').length, 1, 'and gives no second guidance');
+
+  // Snooze and "did not need me" are feedback only: the step stays stopped.
+  applyDecision(env.dataDir, 'snooze', bind('T2', { snooze: '4h' }));
+  applyDecision(env.dataDir, 'not-needed', bind('T2', { text: 'AIWorks could have chosen this.' }));
+  assert.throws(() => applyDecision(env.dataDir, 'not-needed', bind('T2')), (error) => error.status === 409);
+  controller.processEvents(ctx);
+  const t2 = view().tasks.find((item) => item.id === 'T2');
+  assert.equal(store.task(d.campaignId, 'T2').blocked.class, 'B3');
+  assert.ok(t2.decision.snoozedUntil > Date.now() && t2.decision.notNeeded);
+  assert.equal(pendingInstructions(store, campaign, 'T2').length, 0);
+});
+
+test('worker results may carry a structured decision; a result without one is valid as before and an unknown field is refused', () => {
+  const expect = { deliverable: 'commit', targetSha: null, reportDigest: null };
+  const base = { result: 'blocked-owner-reserved', summary: 'needs owner', ownerTrigger: 'Synthetic owner-reserved trigger' };
+  assert.equal(validResult('implementation', base, expect), null);
+  assert.equal(validResult('implementation', { ...base, decision: DECISION }, expect), null);
+  assert.match(validResult('implementation', { ...base, decision: { ...DECISION, run: 'git push' } }, expect), /structured_output invalid/);
+  assert.match(validResult('implementation', { ...base, decision: { ...DECISION, options: DECISION.options.slice(0, 1) } }, expect), /structured_output invalid/);
+});
+
+test('scoped pause accepts its largest valid selection and refuses a larger body unread, with nothing paused', async (t) => {
+  const env = environment();
+  const store = new Store(join(env.dataDir, 'supervisor.db'));
+  t.after(() => { store.close(); env.cleanup(); });
+  const d = declaration(); campaignStart(store, d);
+  const server = createDashboardServer({ dataDir: env.dataDir, roadmap: { snapshot: () => ({ entries: [] }) } });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const csrf = (await (await fetch(`${base}/api/session`)).json()).csrf;
+  const headers = { Origin: base, 'Content-Type': 'application/json', 'X-Dashboard-CSRF': csrf };
+  // 200 goal bindings, each field at its largest valid size: the parser lets it through to the all-or-nothing check,
+  // which refuses it as not the scope's goals (409), never as too large.
+  const goals = Array.from({ length: 200 }, (_, n) => ({ campaignId: `g${String(n).padStart(3, '0')}${'x'.repeat(60)}`, version: Number.MAX_SAFE_INTEGER,
+    authorizationVersion: Number.MIN_SAFE_INTEGER, scopeDigest: 'a'.repeat(64) }));
+  const largest = JSON.stringify({ requestId: randomUUID(), scope: 'all', goals });
+  assert.ok(largest.length > 16_384 && largest.length <= SCOPED_CONTROL_BYTES);
+  const post = (path, body) => fetch(`${base}${path}`, { method: 'POST', headers, body });
+  assert.equal((await post('/api/v2/pause', largest)).status, 409);
+  assert.equal((await post('/api/v2/pause', JSON.stringify({ requestId: randomUUID(), scope: 'all', goals: [...goals, goals[0]] }))).status, 400);
+  assert.equal((await post('/api/v2/pause', 'x'.repeat(SCOPED_CONTROL_BYTES + 1))).status, 413);
+  assert.equal((await post('/api/commands', 'x'.repeat(16_385))).status, 413, 'every other command keeps its 16 KiB limit');
+  assert.equal(store.campaign(d.campaignId).control, 'registered');
+  assert.equal(store.get("SELECT COUNT(*) AS n FROM events WHERE kind = 'dashboard-command'").n, 0);
+});

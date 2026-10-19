@@ -67,6 +67,17 @@ export const INTAKE_SCHEMA = {
     },
     questions: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 1000 } },
     declaration: { type: 'object' },
+    // The plan in the owner's terms (intake.mjs proposedOutline, OWNER_UI_V2 WP3): optional, and never a power.
+    outline: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        checks: { type: 'array', maxItems: 16, items: { anyOf: [{ type: 'null' }, { type: 'string', maxLength: 300 }] } },
+        included: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 300 } },
+        later: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 300 } },
+        estimate: { anyOf: [{ type: 'null' }, { type: 'object', additionalProperties: false, required: ['amount', 'unit'],
+          properties: { amount: { type: 'number', exclusiveMinimum: 0, maximum: 1000 }, unit: { enum: ['hours', 'days'] } } }] },
+      },
+    },
   },
 };
 const validateIntake = new Ajv().compile(INTAKE_SCHEMA);
@@ -161,6 +172,8 @@ const runtimeIntact = (ctl, cfg) => !ctl.codeRevision || intact(ctl, cfg.runtime
 
 /** The coordinator's own detached checkout of the deployed revision, reused across runs; never the live runtime. */
 const worktreeBase = (ctl, cfg) => cfg.worktreeRoot ?? join(dirname(resolve(ctl.dataDir)), 'worktrees', 'aiworks');
+/** The registered folder of the coordinator and planning checkouts (cleanup.mjs removes only inside it). */
+export const coordinatorWorktreeRoot = (ctl) => worktreeBase(ctl, ctl.config.coordinator ?? {});
 
 function prepareWorkspace(ctl, cfg) {
   const source = cfg.sourceRepo ?? AIWORKS_ROOT;
@@ -268,6 +281,7 @@ export function buildIntakePrompt({ request, project: found, pinned, evidence })
     '- summary: the plan in two or three plain sentences; plan: the plan in Markdown; steps: the main steps, each with how it is checked; questions: anything only the owner can answer.',
     '- declaration: { purpose?, outcome (the result in plain words, max 300 characters), acceptance (1..16 checks that prove it is done), writes (the smallest set of folders and files the work may change; never the whole repository, never a pattern), denyWrites? (folders inside writes that stay untouched), deliverables (commit, report or both), planning (adaptive or fixed), constraints (1..12 rules every step follows), tasks }.',
     '- Each task: id, title, goal, acceptance, references (repository paths to read first), deliverable, writes (commit tasks: inside declaration.writes), dependsOn (earlier task ids).',
+    '- outline (optional): { checks (for each declaration.acceptance entry in order, how it is checked, or null when you cannot say), included (what this goal delivers, in plain words), later (what it deliberately leaves for later), estimate ({ amount, unit: hours or days } of AI work, or null when you cannot estimate it honestly) }.',
     'Before choosing writes, trace the changed code to its callers, existing tests, fixtures and schema copies. Include the files needed to keep those callers and checks working in both the task and declaration write domains. Use a relevant test folder when shared code affects several tests; do not authorize unrelated source folders. A short file list that omits a necessary test leaves a fixed task unable to finish. Explain any uncertain scope in the draft before approval; never weaken a check to fit the file list.',
     MARK_SECTIONS_RULE,
     'AIWorks and the owner set the providers, models, permissions, limits, release mode, target and issue numbers. Leave them out: anything else you add is dropped.',

@@ -10,6 +10,10 @@ import { admissionCheck, hostCeiling, schedulerEnabled } from './scheduler.mjs';
 import { releaseStatus } from './release/eligibility.mjs';
 import { releaseNarrowings } from './release/state.mjs';
 import { candidateStatus } from './local-candidates.mjs';
+import { selfHostingSettings, trustedTip, trustsLocalMain } from './self-hosting.mjs';
+import { resolveCheckout } from './project-connect.mjs';
+import { backupStatus } from './github-backup.mjs';
+import { projectBudget, projectOf, protectedWriteConflicts } from './project-settings.mjs';
 
 export class CampaignError extends Error {
   constructor(code, message) { super(message); this.name = 'CampaignError'; this.code = code; }
@@ -20,6 +24,13 @@ export function campaignStart(store, declaration, now = Date.now()) {
   const scope = scopeDigest(decl);
   store.tx(() => {
     const existing = store.campaign(decl.campaignId);
+    // The project's standing protected areas (WP5): neither a new campaign nor a new authorization version may declare
+    // writes inside one, so no approval, new or stale, reaches a protected area. A resume with the same declaration is
+    // not a new authorization: the commit check keeps the areas untouched for work already registered.
+    if (!existing || decl.authorization.version > existing.authorization_version) {
+      const inside = protectedWriteConflicts(store, decl);
+      if (inside.length) throw new CampaignError('PROTECTED_AREA', `the plan changes ${inside.slice(0, 5).join(', ')}, inside the project's protected areas; remove the area in project settings or change the plan`);
+    }
     if (!existing) {
       // Registration and admission share BEGIN IMMEDIATE: another connection cannot register
       // the same repair between this ownership check and the campaign insert (aiworks#5 A).
@@ -134,6 +145,17 @@ export function campaignBudget(store, c) {
     reservedRuns, unknownRunCostUsd, chargedCostUsd: charged, maxCostUsd, exhausted };
 }
 
+/**
+ * What admission checks before a paid worker run starts (WP5): the campaign's own budget, then its project's standing
+ * budget (project-settings.mjs projectBudget). `exhausted` is the first reason either gives, or null; `project` is the
+ * project's spend with what remains and what is unknown.
+ */
+export function admissionBudget(store, c, now = Date.now()) {
+  const own = campaignBudget(store, c);
+  const project = projectBudget(store, projectOf(c.declaration), now);
+  return { ...own, project, exhausted: own.exhausted ?? project.exhausted };
+}
+
 const hasTable = (store, name) => Boolean(store.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", name));
 
 /**
@@ -161,8 +183,10 @@ function releaseView(store, project, tasks, releaseStop) {
 /**
  * `config` (optional) is the supervisor's config.json: with `scheduler.enabled` the `wait` of each task names the
  * scheduler's admission reason; without it, waits follow the one-worker-per-campaign rule the controller uses when off.
+ * `selfHostingConfig` (default `config`) adds the `selfHosting` field to a campaign of AIWorks's own repository with
+ * local main trusted.
  */
-export function campaignStatus(store, id, now = Date.now(), { releaseStop = false, config = null } = {}) {
+export function campaignStatus(store, id, now = Date.now(), { releaseStop = false, config = null, selfHostingConfig = config } = {}) {
   const c = store.campaign(id);
   if (!c) throw new CampaignError('CAMPAIGN_NOT_FOUND', `campaign ${id} is not registered in the selected store; check the installed task --data argument`);
   const lease = store.lease(id);
@@ -250,7 +274,26 @@ export function campaignStatus(store, id, now = Date.now(), { releaseStop = fals
     openOperations: operations.map((op) => ({ id: op.id, taskId: op.task_id, kind: op.kind, executor: op.executor_kind ?? 'claude-cli', state: op.state,
       createdAt: new Date(op.created_at).toISOString(), updatedAt: new Date(op.updated_at).toISOString() })),
     ...(ownerBlockers.length ? { ownerBlockers } : {}),
+    ...selfHostingView(store, selfHostingConfig, c.declaration.target?.repository),
   };
+}
+
+/**
+ * LOCAL_OPERATION.md sections 4.2 and 4.6 (slice SELF9), read-only and never fetching: for AIWorks's own repository with
+ * local main trusted, { selfHosting: { trustedTip, main, unrecordedCount, unrecorded, state, reason, backup } }. The
+ * trusted tip is the main ledger's, never whatever main points at; every other repository gets nothing.
+ */
+function selfHostingView(store, config, repository) {
+  if (!config) return {};
+  const settings = selfHostingSettings(config);
+  if (!trustsLocalMain(settings, repository)) return {};
+  const checkout = resolveCheckout(store, config, repository);
+  const tip = checkout?.path && !checkout.conflict
+    ? trustedTip(store, { git: config.commands?.git ?? ['git'], repoPath: checkout.path, repository })
+    : { state: 'UNREADABLE', reason: checkout?.conflict ? checkout.conflict.message : 'no local checkout is configured for this repository' };
+  return { selfHosting: { repository: settings.repository, trustedMain: settings.trustedMain, state: tip.state,
+    trustedTip: tip.tip ?? null, main: tip.main ?? null, unrecordedCount: tip.unrecordedCount ?? null, unrecorded: tip.unrecorded ?? [],
+    reason: tip.reason ?? null, backup: backupStatus(store, settings, repository, tip.tip ?? null) } };
 }
 
 const withCandidate = (store, campaignId, taskId) => {
@@ -372,7 +415,7 @@ export function waitReason(task, { store, campaign: c, tasks, open, held = new M
     return providerReset ? reason('provider-cooldown', `AI provider usage limit; resets at ${iso(providerReset)}`, `Tries again at ${iso(providerReset)}`, providerReset)
       : reason('provider-cooldown', 'The AI provider is unavailable', 'Tries again after a recheck succeeds');
   }
-  const budget = campaignBudget(store, c);
+  const budget = admissionBudget(store, c, now);
   if (budget.exhausted && !open.length) return reason('owner', BLOCKER_TEXT.budget, OWNER_NEXT);
   if (!schedulerEnabled(config) || !hasTable(store, 'capacity')) {
     // Scheduler off: one worker at a time per campaign, the first runnable task in declaration order first.
@@ -645,9 +688,12 @@ function setControl(store, id, allowed, control, kind, detail, now) {
   return campaignStatus(store, id, now);
 }
 
-/** Stop new dispatch; in-flight operations finish and their results are still recorded. */
-export const campaignPause = (store, id, reason = null, now = Date.now()) =>
-  setControl(store, id, ['registered'], 'paused', 'paused', { reason }, now);
+/**
+ * Stop new dispatch; in-flight operations finish and their results are still recorded. `scope` (dashboard pause for all,
+ * a project or a goal, OWNER_UI_V2 WP1) is journaled with the pause so a later resume of that scope finds only its own.
+ */
+export const campaignPause = (store, id, reason = null, now = Date.now(), { scope = null } = {}) =>
+  setControl(store, id, ['registered'], 'paused', 'paused', { reason, ...(scope ? { scope } : {}) }, now);
 
 /** Stop dispatch and post-completion automation; retain finished outcomes and evidence. */
 export const campaignCancel = (store, id, reason = null, now = Date.now()) =>

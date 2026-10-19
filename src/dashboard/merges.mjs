@@ -1,12 +1,15 @@
 // Merged state of published campaign steps, from local git only: a step is merged when its verified commit is
 // reachable from origin/<baseBranch> in the repository's configured checkout. The dashboard never calls GitHub's API;
 // it refreshes the base branch with at most one `git fetch` per repository every 5 minutes, one repository at a time.
+// AIWorks's own repository with local main trusted (config.json `selfHosting`, UI19) is never fetched: its local
+// branch is read instead, because its merges happen on this computer (LOCAL_OPERATION.md section 4.4).
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
 import { DELEGATED } from './copy.mjs';
 import { MERGE_STALL_HOURS } from './owner.mjs';
+import { selfHostingSettings } from '../supervisor/self-hosting.mjs';
 
 /** At most one fetch of a repository's base branches per this interval, whether the last one succeeded or failed. */
 export const FETCH_INTERVAL_MS = 5 * 60_000;
@@ -14,6 +17,8 @@ const SHA = /^[0-9a-f]{40}$/;
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
 const BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
 const PULL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/;
+// A verified local review of AIWorks's own repository (aiworks-work:<n>), merged by the local merge gate.
+const LOCAL_REVIEW = /^aiworks-work:[1-9]\d{0,8}$/;
 
 const readConfig = (dataDir) => {
   const path = join(dataDir, 'config.json');
@@ -28,6 +33,14 @@ export function configuredGitCommand(dataDir) {
     throw new Error('Supervisor commands.git must be a non-empty command array');
   }
   return configured;
+}
+
+/** The repositories whose main is trusted locally (config.json `selfHosting`): at most AIWorks's own, lower-cased. */
+export function configuredLocalMain(dataDir) {
+  let config;
+  try { config = readConfig(dataDir); } catch { return new Set(); }
+  const settings = selfHostingSettings(config);
+  return new Set(settings.local ? [settings.repository] : []);
 }
 
 /** Local checkouts by repository, from the supervisor's config.json `repositories.<owner/name>.path`. */
@@ -77,7 +90,7 @@ export function publishedSteps(dataDir) {
       const target = store.campaign(id).declaration.target;
       if (!REPOSITORY.test(target.repository ?? '') || !BRANCH.test(target.baseBranch ?? '')) continue;
       for (const task of store.tasks(id)) {
-        if (task.state === 'done' && PULL.test(task.pr_url ?? '') && SHA.test(task.verified_sha ?? '')) {
+        if (task.state === 'done' && (PULL.test(task.pr_url ?? '') || LOCAL_REVIEW.test(task.pr_url ?? '')) && SHA.test(task.verified_sha ?? '')) {
           steps.push({ campaignId: id, taskId: task.task_id, repository: target.repository, baseBranch: target.baseBranch, sha: task.verified_sha });
         }
       }
@@ -96,10 +109,11 @@ function run(command, args, options) {
 export class MergeWatcher {
   /**
    * steps: returns the published steps to check (publishedSteps). checkouts: lowercased repository → local path.
+   * localMain: lowercased repositories read from their local branches without any fetch (configuredLocalMain).
    * now: the clock, replaceable in tests.
    */
-  constructor({ steps, checkouts = {}, git = ['git'], now = Date.now, intervalMs = FETCH_INTERVAL_MS }) {
-    this.steps = steps; this.checkouts = checkouts; this.git = git; this.now = now; this.intervalMs = intervalMs;
+  constructor({ steps, checkouts = {}, localMain = new Set(), git = ['git'], now = Date.now, intervalMs = FETCH_INTERVAL_MS }) {
+    this.steps = steps; this.checkouts = checkouts; this.localMain = localMain; this.git = git; this.now = now; this.intervalMs = intervalMs;
     // Lowercased repository → { repository, fetchedAt, attemptedAt, error, results: Map<baseBranch/sha, { merged, mergedAt, tip }> }.
     this.repositories = new Map();
     this.known = [];
@@ -129,7 +143,10 @@ export class MergeWatcher {
       const path = this.checkouts[key];
       if (!path) continue;
       const branches = [...new Set(steps.map((step) => step.baseBranch))];
-      if (state.attemptedAt === null || this.now() - state.attemptedAt >= this.intervalMs) {
+      const local = this.localMain.has(key);
+      // The self-hosted repository: its local branches are the truth and are read now; nothing is fetched.
+      if (local) { state.attemptedAt = state.fetchedAt = this.now(); state.error = null; }
+      else if (state.attemptedAt === null || this.now() - state.attemptedAt >= this.intervalMs) {
         state.attemptedAt = this.now();
         // The git protocol, never the GitHub API. A failed fetch keeps the last results and their time.
         const fetched = await run(this.git, ['fetch', '--no-tags', '--quiet', 'origin', ...branches.map((b) => `+refs/heads/${b}:refs/remotes/origin/${b}`)],
@@ -139,7 +156,7 @@ export class MergeWatcher {
       }
       if (state.fetchedAt === null) continue;
       for (const branch of branches) {
-        const tip = (await run(this.git, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`], { cwd: path, timeout: 10_000 })).stdout.trim();
+        const tip = (await run(this.git, ['rev-parse', '--verify', '--quiet', local ? `refs/heads/${branch}` : `refs/remotes/origin/${branch}`], { cwd: path, timeout: 10_000 })).stdout.trim();
         if (!SHA.test(tip)) continue;
         for (const step of steps.filter((item) => item.baseBranch === branch)) {
           const id = `${branch}/${step.sha}`, known = state.results.get(id);
@@ -166,7 +183,7 @@ export class MergeWatcher {
   /** Plain data for the owner view: per repository, whether a checkout is configured and when it was fetched; per step, the result. */
   snapshot() {
     const repositories = [...this.repositories.entries()].map(([key, state]) => ({ repository: state.repository, configured: Boolean(this.checkouts[key]),
-      fetchedAt: state.fetchedAt, attemptedAt: state.attemptedAt, error: state.error }));
+      fetchedAt: state.fetchedAt, attemptedAt: state.attemptedAt, error: state.error, ...(this.localMain.has(key) ? { local: true } : {}) }));
     const steps = {};
     for (const step of this.known) {
       const result = this.repositories.get(step.repository.toLowerCase())?.results.get(`${step.baseBranch}/${step.sha}`);
