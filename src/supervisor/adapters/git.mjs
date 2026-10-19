@@ -93,9 +93,23 @@ export function currentHead({ git, path }) {
   return exec(git, ['rev-parse', 'HEAD'], { cwd: path }).stdout;
 }
 
+/**
+ * The root gate artifacts the target itself tracks (aiworks#1), matched case-insensitively because a case-insensitive
+ * file system reads GATE.LOG as gate.log; null when git fails. A committed artifact is worker-controlled and clean, so it
+ * could pass as the verifier's own gate run.
+ */
+function trackedGateFiles(git, path) {
+  const specs = Object.values(GATE_FILES).map((name) => `:(top,icase,literal)${name}`);
+  const out = exec(git, ['ls-files', '-z', '--full-name', '--', ...specs], { cwd: path });
+  return out.ok ? out.stdout.split('\0').filter(Boolean) : null;
+}
+
 /** A verifier may only accept the unchanged checkout it was dispatched to inspect. */
 export function checkVerification({ git, path, targetSha }) {
   if (currentHead({ git, path }) !== targetSha) return 'verifier checkout no longer matches the target SHA';
+  const tracked = trackedGateFiles(git, path);
+  if (tracked === null) return 'verifier checkout is not clean: cannot read the files it tracks';
+  if (tracked.length) return `verifier checkout is not clean: the target tracks reserved gate evidence: ${tracked.slice(0, 5).join(', ')}`;
   if (!verificationCheckoutClean(git, path)) return 'verifier checkout is not clean';
   return null;
 }
