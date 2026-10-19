@@ -15,6 +15,7 @@ import { checkCaller } from '../supervisor/local-admission.mjs';
 import { safeText } from './roadmap.mjs';
 import { applyResult, approvePlan, editPlan, requestPlanAndDo, undoApply, workView } from './work.mjs';
 import { projectSettingsView, saveProjectSettings } from './project-settings.mjs';
+import { alertsView, saveAlerts } from './alerts.mjs';
 import { closeImportedIssues, commentWorkItem, createWorkItem, setWorkItemState, workItemView, workListView } from './work-list.mjs';
 import { connectionsView, EVENT_TYPES, homeView, markSeen, overviewView, readLastSeen, trustedMainView, typedEvents, withReadOnlyStore } from './views.mjs';
 
@@ -129,6 +130,8 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
           const { supervisor, merged } = readState(Date.now());
           return send(200, connections(supervisor, merged));
         }
+        // Settings -> Alerts (WP6): the owner's alert rules and the transport's state, never a secret store reference.
+        if (path === '/api/v2/settings/alerts') return send(200, alertsView(dataDir));
         // Project settings (WP5): the project id is one encoded segment, so `owner%2Fname/settings` is never an Overview.
         const settings = /^\/api\/v2\/projects\/([^/]+)\/settings$/.exec(path);
         if (settings) {
@@ -257,6 +260,8 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       if (path === '/api/projects/rules/revoke') return send(200, await revokeProjectRules(dataDir, value, { caller }));
       // Project settings (WP5): the caller check runs first; the save binds the version the page showed and a request id.
       if (path === '/api/v2/projects/settings') return send(200, await saveProjectSettings(dataDir, value, { caller }));
+      // Alert rules (WP6): the caller check runs first, so no program AIWorks started can mute the owner's alerts.
+      if (path === '/api/v2/settings/alerts') return send(200, await saveAlerts(dataDir, value, { caller }));
       // The local work list (UI20): every change runs the caller check first and binds the version and request id it was sent with.
       if (path === '/api/work-list/items') return send(200, await createWorkItem(dataDir, value, { caller }));
       if (path === '/api/work-list/comment') return send(200, await commentWorkItem(dataDir, value, { caller }));
