@@ -6,6 +6,23 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { checkPublicScope, checkPublicHistory } from '../scripts/check-public-scope.mjs';
+import { assertPublishable, contentFindings, PUBLIC_REPOSITORY } from '../src/shared/public-text.mjs';
+
+test('publication accepts the public repository followed by punctuation but refuses other repository names', () => {
+  for (const name of [PUBLIC_REPOSITORY, `${PUBLIC_REPOSITORY}.git`, PUBLIC_REPOSITORY.toUpperCase()]) {
+    for (const suffix of ['', '.', '...', ',', ')', "'s"]) {
+      const text = `Reviewed ${name}${suffix}`;
+      assert.deepEqual(contentFindings(text), []);
+      assert.doesNotThrow(() => assertPublishable('report', text, { repository: PUBLIC_REPOSITORY }));
+    }
+  }
+  for (const suffix of ['-private', '.private', '_private', '.git.private']) {
+    const text = `Reviewed ${PUBLIC_REPOSITORY}${suffix}.`;
+    assert.deepEqual(contentFindings(text), ['another upstream-owner project']);
+    assert.throws(() => assertPublishable('report', text, { repository: PUBLIC_REPOSITORY }),
+      error => error.code === 'PUBLICATION_TEXT_REFUSED' && !error.message.includes(text));
+  }
+});
 
 test('public scope rejects private files even when force-added, while allowing synthetic fixtures', t => {
   const root = mkdtempSync(join(tmpdir(), 'aiworks-public-scope-'));
