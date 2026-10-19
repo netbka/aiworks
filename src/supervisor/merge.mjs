@@ -10,6 +10,7 @@ import { campaignLimits } from './campaign.mjs';
 import { specsOf } from './plan.mjs';
 import { resolveCheckout } from './project-connect.mjs';
 import { refreshSettings, refreshStep } from './merge-refresh.mjs';
+import { batchStep } from './merge-batch.mjs';
 import { ConflictError, FencedError } from './store.mjs';
 
 const SHA = /^[0-9a-f]{40}$/;
@@ -39,7 +40,9 @@ export function mergeSettings(config) {
   }
   const refresh = refreshSettings(merges.refresh);
   if (refresh?.problem) return off(refresh.problem);
-  return { enabled: true, repositories: new Set(list.map((item) => item.toLowerCase())), problem: null, refresh,
+  if (merges.batch !== undefined && typeof merges.batch !== 'boolean') return off('merges.batch must be true or false');
+  if (merges.batch === true && !refresh) return off('merges.batch needs merges.refresh, the gate command it runs on the combined result');
+  return { enabled: true, repositories: new Set(list.map((item) => item.toLowerCase())), problem: null, refresh, batch: merges.batch === true,
     held: new Set(Object.keys(merges.held ?? {}).map((url) => url.toLowerCase())) };
 }
 
@@ -78,7 +81,8 @@ function candidates(store, repositories) {
 /**
  * One merge pass, after the campaign steps of a tick. Each listed repository is visited at most once per
  * integrationPollMs; its base is fetched first, and at most one of its pull requests is merged or sent back for an
- * integration repair, so the next one is judged against the refreshed base.
+ * integration repair, so the next one is judged against the refreshed base. With merges.batch, the waiting pull requests
+ * of a base first merge as one group after one gate run (merge-batch.mjs); only what the group leaves goes one at a time.
  */
 export async function mergePass(controller) {
   const settings = controller.merges;
@@ -101,6 +105,19 @@ export async function mergePass(controller) {
     let repoPath;
     try { repoPath = controller.repo(decl).path; } catch (error) { controller.log(`merge pass for ${decl.target.repository} skipped: ${error.message}`); continue; }
     const bases = new Map();
+    controller.mergePassReads = new Map();
+    if (settings.batch) {
+      const branch = decl.target.baseBranch;
+      bases.set(branch, controller.fetchBase(repoPath, branch).sha);
+      try {
+        if (SHA.test(bases.get(branch) ?? '') && batchStep(controller, items.filter((item) => item.decl.target.baseBranch === branch), settings, repoPath, bases.get(branch))) continue;
+      } catch (error) {
+        if (error instanceof FencedError || error instanceof ConflictError) { controller.log(`group merge for ${decl.target.repository} retried later: ${error.message}`); continue; }
+        controller.log(`group merge for ${decl.target.repository} failed: ${error.stack || error}`);
+        continue;
+      }
+      bases.set(branch, controller.fetchBase(repoPath, branch).sha);
+    }
     for (const item of items) {
       const branch = item.decl.target.baseBranch;
       if (!bases.has(branch)) bases.set(branch, controller.fetchBase(repoPath, branch).sha);
@@ -125,7 +142,7 @@ function lease(controller, campaignId) {
 }
 
 /** Why a pull request is not merged yet: logged and journaled when it changes, so the journal does not grow per poll. */
-function wait(controller, item, reason) {
+export function wait(controller, item, reason) {
   const key = `${item.campaignId}:${item.task.task_id}:${item.task.verified_sha}`;
   if (controller.mergeWaits.get(key) === reason) return false;
   controller.mergeWaits.set(key, reason);
@@ -137,66 +154,99 @@ function wait(controller, item, reason) {
 }
 
 /**
- * Judge one published pull request against the gate and act on it. Returns true when it acted on the repository (a
- * merge call, a recorded merge or an integration repair), so the pass moves on to the next repository.
+ * Read and judge one published pull request on everything but the tree it would put on the base. Returns { pr } when it
+ * is open at the verified head on the declared branches, or { acted } after recording why not (acted: a merge done
+ * elsewhere was reconciled). Shared by mergeOne and the group merge (merge-batch.mjs).
  */
-function mergeOne(controller, item, settings, repoPath, baseSha) {
+export function inspect(controller, item, settings, repoPath, baseSha) {
   const { store } = controller, { campaignId, decl, task, number } = item;
   const git = controller.cmd.git, gh = controller.cmd.gh;
   const sha = task.verified_sha, url = task.pr_url, base = decl.target.baseBranch, repository = decl.target.repository;
-  if (settings.held.has(url.toLowerCase())) return wait(controller, item, 'held by the owner (merges.held)');
+  const not = (acted = false) => ({ pr: null, acted });
+  if (settings.held.has(url.toLowerCase())) return not(wait(controller, item, 'held by the owner (merges.held)'));
   const requested = journaled(store, campaignId, 'merge-requested').has(`${task.task_id}:${sha}`);
   const inBase = gitA.isAncestor({ git, path: repoPath, ancestor: sha, descendant: baseSha });
   // Already in the base and never requested here: merged by someone else; nothing to do or read.
-  if (inBase && !requested) return false;
+  if (inBase && !requested) return not();
 
   // A pull request GitHub reports missing cannot merge; reading it every pass spends the account's shared REST quota.
   const key = `${campaignId}:${task.task_id}:${sha}`;
-  if ((controller.mergeMissingUntil.get(key) ?? -Infinity) > controller.now()) return false;
-  // Every attempt starts by reading the pull request, so an unknown outcome is settled before any retry.
-  let pr;
-  try { pr = github.pullRequest({ gh, repository, number }); }
-  catch (error) {
-    if (error.status === 404) {
-      controller.mergeMissingUntil.set(key, controller.now() + MISSING_RECHECK_MS);
-      return wait(controller, item, 'GitHub reports the pull request does not exist; it is read again hourly');
+  if ((controller.mergeMissingUntil.get(key) ?? -Infinity) > controller.now()) return not();
+  // Every attempt starts by reading the pull request, so an unknown outcome is settled before any retry. One read per pass.
+  let pr = controller.mergePassReads?.get(key);
+  if (!pr) {
+    try { pr = github.pullRequest({ gh, repository, number }); }
+    catch (error) {
+      if (error.status === 404) {
+        controller.mergeMissingUntil.set(key, controller.now() + MISSING_RECHECK_MS);
+        return not(wait(controller, item, 'GitHub reports the pull request does not exist; it is read again hourly'));
+      }
+      controller.log(`merge of ${campaignId}/${task.task_id}: GET pull failed: ${error.message}`);
+      return not(wait(controller, item, 'the pull request could not be read'));
     }
-    controller.log(`merge of ${campaignId}/${task.task_id}: GET pull failed: ${error.message}`);
-    return wait(controller, item, 'the pull request could not be read');
+    controller.mergePassReads?.set(key, pr);
   }
   const branch = gitA.branchName(campaignId, task.task_id);
   if (pr.merged) {
     if (pr.url !== url || pr.headSha !== sha || pr.baseRef !== base || pr.headRef !== branch || !SHA.test(pr.mergeCommit ?? '')) {
-      return wait(controller, item, `merged on GitHub at ${pr.headSha ?? 'an unknown head'}, not as verified`);
+      return not(wait(controller, item, `merged on GitHub at ${pr.headSha ?? 'an unknown head'}, not as verified`));
     }
     const ctx = lease(controller, campaignId);
-    if (!ctx) return false;
+    if (!ctx) return not();
     controller.fenced(ctx, () => record(controller, ctx, item, pr.mergeCommit, { reconciled: true, requested }));
-    return true;
+    return not(true);
   }
-  if (inBase) return wait(controller, item, 'the verified head is in the base but GitHub does not report the pull request merged');
-  if (pr.url !== url || pr.state !== 'open') return wait(controller, item, 'the pull request is not open');
-  if (pr.headRef !== branch) return wait(controller, item, `the pull request head ${pr.headRef} is not the campaign branch ${branch}`);
-  if (pr.baseRef !== base) return wait(controller, item, `the pull request base ${pr.baseRef} is not the declared base ${base}`);
-  if (pr.headSha !== sha) return wait(controller, item, `the pull request head ${pr.headSha} is not the verified ${sha}`);
+  if (inBase) return not(wait(controller, item, 'the verified head is in the base but GitHub does not report the pull request merged'));
+  if (pr.url !== url || pr.state !== 'open') return not(wait(controller, item, 'the pull request is not open'));
+  if (pr.headRef !== branch) return not(wait(controller, item, `the pull request head ${pr.headRef} is not the campaign branch ${branch}`));
+  if (pr.baseRef !== base) return not(wait(controller, item, `the pull request base ${pr.baseRef} is not the declared base ${base}`));
+  if (pr.headSha !== sha) return not(wait(controller, item, `the pull request head ${pr.headSha} is not the verified ${sha}`));
+  return { pr, acted: false };
+}
+
+/** Why CI or GitHub holds a pull request back right now, or null. With CI repair on, only a passed or absent CI merges. */
+export function mergeBlocker(controller, { campaignId, task }, pr) {
+  const sha = task.verified_sha;
+  if (controller.ci && !ciMergeable(controller.store, campaignId, task.task_id, sha)) {
+    return ciAt(controller.store, campaignId, task.task_id, sha) === 'ci-failed' ? 'CI failed at the verified head; CI repair runs first'
+      : 'CI has not passed at the verified head yet';
+  }
+  if (pr.mergeable !== true) return pr.mergeable === false ? 'GitHub reports it not mergeable' : 'GitHub has not computed mergeability yet';
+  return null;
+}
+
+/**
+ * Judge one published pull request against the gate and act on it. Returns true when it acted on the repository (a
+ * merge call, a recorded merge or an integration repair), so the pass moves on to the next repository.
+ */
+function mergeOne(controller, item, settings, repoPath, baseSha) {
+  const git = controller.cmd.git, sha = item.task.verified_sha;
+  const { pr, acted } = inspect(controller, item, settings, repoPath, baseSha);
+  if (!pr) return acted;
 
   // The verified head must contain the current base, or the merge result is a tree no verifier ran: integration repair,
   // unless the refresh (merges.refresh) ran the gate on that exact merge result itself. While its gate runs, the
   // repository waits, so the next pull request is judged against the base this one leaves.
   if (!gitA.isAncestor({ git, path: repoPath, ancestor: baseSha, descendant: sha })) {
-    const ctx = lease(controller, campaignId);
+    const ctx = lease(controller, item.campaignId);
     if (!ctx) return false;
     const step = settings.refresh ? refreshStep(controller, ctx, item, repoPath, baseSha, settings.refresh) : { next: 'repair' };
     if (step.next === 'wait') { wait(controller, item, step.reason); return true; }
     if (step.next === 'repair') return controller.fenced(ctx, () => repair(controller, ctx, item, repoPath, baseSha, step.detail));
   }
-  // With CI repair on, CI is read: merge only a head whose CI passed or that has no CI, never one still running or red.
-  if (controller.ci && !ciMergeable(store, campaignId, task.task_id, sha)) {
-    return wait(controller, item, ciAt(store, campaignId, task.task_id, sha) === 'ci-failed' ? 'CI failed at the verified head; CI repair runs first'
-      : 'CI has not passed at the verified head yet');
-  }
-  if (pr.mergeable !== true) return wait(controller, item, pr.mergeable === false ? 'GitHub reports it not mergeable' : 'GitHub has not computed mergeability yet');
+  const blocker = mergeBlocker(controller, item, pr);
+  if (blocker) return wait(controller, item, blocker);
+  return mergeNow(controller, item, baseSha);
+}
 
+/**
+ * The merge call for a pull request already judged mergeable onto a checked tree: journal the request, merge the exact
+ * verified SHA with a merge commit, record it. Returns false when the campaign lease or the task changed, true otherwise
+ * (merged, or refused or unknown, which the next pass settles by reading the pull request first).
+ */
+export function mergeNow(controller, item, baseSha) {
+  const { store } = controller, { campaignId, decl, task, number } = item;
+  const gh = controller.cmd.gh, sha = task.verified_sha, url = task.pr_url, repository = decl.target.repository;
   const ctx = lease(controller, campaignId);
   if (!ctx) return false;
   // The request is committed before the call: after a crash the next pass reads the pull request before any retry.
