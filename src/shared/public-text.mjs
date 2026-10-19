@@ -30,11 +30,13 @@ export function contentFindings(text, terms = []) {
   return findings;
 }
 
-// Published reports cite repository-relative paths only: any drive, UNC or per-user absolute path is local detail.
+// Published reports cite repository-relative paths only: any drive or UNC path, and any path under a POSIX or macOS
+// filesystem root, is local detail. Relative paths, URLs and REST routes (`GET /repos/o/r/issues`) pass: a route
+// starts with no filesystem root, and the slash in a relative path or URL follows a word character.
 const ABSOLUTE_PATH = [
   /(?<![A-Za-z0-9])[A-Za-z]:[\\/]+[\w.$~-]/,
   /(?<![\w\\])\\\\[\w.$-]+\\[\w.$-]+/,
-  /(?<![\w.-])\/(?:home|Users|root|mnt|var\/folders|private\/var)\/(?!example\b|user\b)[\w.-]+/,
+  /(?<![\w.-])\/(?:home|Users|root|mnt|media|opt|tmp|srv|etc|var|usr(?!\/bin\/env\b)|private|Volumes|Library|Applications|System|run|snap|nix)\/(?!example\b|user\b)[\w.-]+/,
 ];
 
 /** Categories of private content in text published to `repository` (PR title and body, issue or PR comment). */

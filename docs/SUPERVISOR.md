@@ -116,7 +116,9 @@ exceeds the limit.
 Every PR title and body and every issue or PR comment passes one privacy check before it is sent
 ([#8](https://github.com/example-org/aiworks/issues/8), `src/shared/public-text.mjs`). It reuses the public-scope
 rules (credential material, personal installation paths, the installation's private terms from
-`.local/publication.json` in the runtime and target checkouts) and also refuses any absolute local path. Naming the
+`.local/publication.json` in the runtime and target checkouts) and also refuses drive and UNC paths and paths under a POSIX or macOS filesystem root (`/opt`, `/tmp`, `/srv`,
+`/etc`, `/var`, `/usr`, `/home`, `/Users`, `/Volumes` and similar); repository-relative paths, URLs and REST routes
+such as `GET /repos/o/r/issues` pass. Naming the
 upstream owner's other projects is refused only for the AIWorks repository itself. `publish` checks every part of a
 publication (PR body, split verification comment, repair comment) before the push and before the first GitHub call,
 and the GitHub adapter checks again at each call. A refusal names categories only, never the matched text:
