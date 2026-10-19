@@ -889,7 +889,7 @@ export class Controller {
       const decl = this.store.campaign(ctx.id).declaration;
       const spec = specOf(this.store, ctx.id, op.task_id, decl);
       const domain = verdict.class === 'result' ? domainOf(decl, spec) : null;
-      if (domain && !domain.whole) {
+      if (domain) {
         const changed = gitA.changedPaths({ git: this.cmd.git, path: op.workspace, from: integration ? integration.base : before.base_sha, to: verdict.value.headSha });
         const { forbidden } = changed === null ? {} : outsideWrites(decl, domain, changed);
         if (!forbidden) verdict = { ...verdict, class: 'invalid-result', detail: 'cannot list the paths the commit changed' };
