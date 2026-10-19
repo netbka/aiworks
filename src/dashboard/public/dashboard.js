@@ -2896,7 +2896,7 @@ function alertsParts() {
 }
 
 function alertsScreen() {
-  if (!alertsEntry.view && !alertsEntry.loading) void loadAlerts();
+  if (!alertsEntry.view && !alertsEntry.loading && !alertsEntry.error) void loadAlerts();
   const v = alertsEntry.view;
   if (!v) return [alertsEntry.error ? empty('Not known right now', ` ${alertsEntry.error.message}`) : empty('Reading the alert settings…', '')];
   const draft = alertsDraft(v);
@@ -2933,11 +2933,10 @@ function alertsScreen() {
     el('div', { class: 'panel-body', id: 'alerts-dynamic' }, ...alertsParts()), form)];
 }
 
-/** The 5-second refresh reads the settings again and keeps the form as typed: only the state lines and the button change. */
+/** The 5-second refresh keeps the form as typed: only the state lines and the button change. The poll reads the settings again. */
 function refreshAlerts(content) {
   const form = content.querySelector('form[data-alerts-form]');
   if (!form || !alertsEntry.view) return false;
-  void loadAlerts();
   patch(content.querySelector('#alerts-dynamic'), alertsParts());
   form.querySelector('button[type="submit"]').disabled = alertsOff();
   return true;
@@ -3406,6 +3405,7 @@ async function poll() {
     // An open work list item is read again with every refresh, so a change shows and a stale draft says so.
     if (current.route.screen === 'worklist-item') void loadItem(current.route.number);
     if (current.route.screen === 'project-settings') void loadProjectSettings(current.route.project);
+    if (current.route.screen === 'settings' && current.route.section === 'alerts') void loadAlerts();
     checkCloseStale();
     if (!document.querySelector('dialog[open]')) render();
     $('#confirm-cancel').disabled = $('#send-instruction').disabled = $('#send-message').disabled = sending;
