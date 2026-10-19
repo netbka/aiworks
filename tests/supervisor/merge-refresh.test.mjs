@@ -44,7 +44,8 @@ async function published(t, files) {
   t.after(async () => {
     // Release any held synthetic gate and wait for it to exit, so no gate child or gate slot outlives the test.
     writeFileSync(join(gate, 'release'), '');
-    const paths = ids.flatMap((id) => r.journal(id, 'merge-refresh-started').map((detail) => detail.path));
+    const paths = [...ids.flatMap((id) => r.journal(id, 'merge-refresh-started').map((detail) => detail.path)),
+      ...store.all("SELECT detail FROM journal WHERE campaign_id IS NULL AND kind = 'merge-batch-started'").map((row) => row.detail.path)];
     for (const path of paths) for (let i = 0; i < 600 && existsSync(join(path, 'gate-pid.log')) && !existsSync(join(path, 'gate-exit.log')); i++) await sleep(50);
     r.controller?.release(); store.close(); env.cleanup();
   });
@@ -111,6 +112,7 @@ test('refresh settings: absent is off, a command list turns it on, anything else
     assert.match(settings.problem, /merges\.refresh/);
   }
   assert.equal(mergeSettings({ merges: { ...ON().merges, refresh: undefined } }).refresh, null);
+  assert.equal(mergeSettings({ merges: { ...ON().merges, refresh: undefined, batch: true } }).enabled, false, 'a group merge needs the gate command');
   assert.deepEqual(mergeSettings(ON()).refresh.command, GATE);
 });
 
@@ -220,6 +222,72 @@ test('a restart while the gate runs keeps the same refresh; a gate that ended wi
   await r.pass();
   assert.deepEqual(r.mergeCalls().at(-1).fields, { merge_method: 'merge', sha: heads[B] });
   assert.equal(r.journal(B, 'merged').length, 1);
+});
+
+const BATCH = () => ({ merges: { ...ON().merges, batch: true } });
+const groupRows = (r, kind) => r.store.all('SELECT detail FROM journal WHERE campaign_id IS NULL AND kind = ? ORDER BY seq', kind).map((row) => row.detail);
+
+test('with merges.batch, waiting pull requests merge after one gate run on their combined result, which is what lands on the base', async (t) => {
+  const { r, heads } = await published(t, { [A]: 'a.txt', [B]: 'b.txt', [C]: 'c.txt' });
+  const before = r.main();
+  r.start(BATCH());
+  await r.controller.tick();
+  const [started] = groupRows(r, 'merge-batch-started');
+  assert.deepEqual(started.members.map((m) => m.sha), [heads[A], heads[B], heads[C]]);
+  assert.equal(r.mergeCalls().length, 0, 'nothing merges before the combined result passed the gate');
+  await r.gateEnds(started.path);
+  await r.pass();
+  assert.deepEqual(r.mergeCalls().map((call) => call.fields.sha), [heads[A], heads[B], heads[C]]);
+  const runs = r.runs();
+  assert.equal(runs.length, 1, 'one gate run for the whole group');
+  assert.equal(r.tree(r.main()), runs[0].tree, 'the base now carries exactly the tree the gate ran');
+  const [mergedA] = r.journal(A, 'merged'), [mergedB] = r.journal(B, 'merged');
+  assert.deepEqual(r.parents(mergedA.mergeCommit), [before, heads[A]]);
+  assert.deepEqual(r.parents(mergedB.mergeCommit), [mergedA.mergeCommit, heads[B]]);
+  assert.deepEqual(r.parents(r.main()), [mergedB.mergeCommit, heads[C]]);
+  assert.equal(groupRows(r, 'merge-batch-done').length, 1);
+  for (const id of [A, B, C]) {
+    assert.equal(r.journal(id, 'merge-refresh-started').length, 0, `${id}: no gate of its own`);
+    assert.equal(r.journal(id, 'merge-base-moved').length, 0, `${id}: no repair round`);
+  }
+});
+
+test('a group whose gate fails merges none of it together; each pull request then goes alone through its own checked tree', async (t) => {
+  const { r, heads } = await published(t, { [A]: 'a.txt', [B]: 'b.txt' });
+  r.mode('fail');
+  r.start(BATCH());
+  await r.controller.tick();
+  const [started] = groupRows(r, 'merge-batch-started');
+  await r.gateEnds(started.path);
+  r.mode('pass');
+  await r.pass();
+  assert.match(groupRows(r, 'merge-batch-failed')[0].reason, /the gate on the combined result exited 1/);
+  // Alone, A's verified head contains the base and merges as verified; B is not merged onto it without a gate of its own.
+  assert.deepEqual(r.mergeCalls().map((call) => call.fields.sha), [heads[A]]);
+  await r.pass();
+  const [refresh] = r.journal(B, 'merge-refresh-started');
+  assert.equal(refresh.sha, heads[B]);
+  assert.equal(r.mergeCalls().length, 1);
+  assert.equal(groupRows(r, 'merge-batch-started').length, 1, 'the failed group is not gated again');
+});
+
+test('a group merge whose response was lost is settled after a restart by reading the pull request, never by a second merge', async (t) => {
+  const { r, heads } = await published(t, { [A]: 'a.txt', [B]: 'b.txt' });
+  r.start(BATCH());
+  await r.controller.tick();
+  const [started] = groupRows(r, 'merge-batch-started');
+  await r.gateEnds(started.path);
+  writeFileSync(join(r.env.env.FAKE_GH_STATE, 'lose-merge-response'), '');
+  await r.pass();
+  assert.equal(r.mergeCalls().length, 1);
+  assert.equal(r.journal(A, 'merged').length, 0, 'the outcome is unknown');
+  r.start(BATCH()); // a restart
+  await r.pass();
+  await r.pass();
+  assert.deepEqual(r.mergeCalls().map((call) => call.fields.sha), [heads[A], heads[B]], 'A was never merged twice');
+  assert.equal(r.journal(A, 'merged')[0].reconciled, true);
+  assert.equal(r.tree(r.main()), r.runs()[0].tree);
+  assert.equal(groupRows(r, 'merge-batch-done').length, 1);
 });
 
 test('a gate that runs past its time bound fails the refresh and the integration repair runs', async (t) => {
