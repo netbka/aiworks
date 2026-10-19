@@ -41,7 +41,13 @@ async function published(t, files) {
   mkdirSync(gate);
   process.env.FAKE_REFRESH_STATE = gate;
   const store = new Store(join(env.dataDir, 'supervisor.db'));
-  t.after(() => { writeFileSync(join(gate, 'release'), ''); r.controller?.release(); store.close(); env.cleanup(); });
+  t.after(async () => {
+    // Release any held synthetic gate and wait for it to exit, so no gate child or gate slot outlives the test.
+    writeFileSync(join(gate, 'release'), '');
+    const paths = ids.flatMap((id) => r.journal(id, 'merge-refresh-started').map((detail) => detail.path));
+    for (const path of paths) for (let i = 0; i < 600 && existsSync(join(path, 'gate-pid.log')) && !existsSync(join(path, 'gate-exit.log')); i++) await sleep(50);
+    r.controller?.release(); store.close(); env.cleanup();
+  });
   const ids = Object.keys(files);
   ids.forEach((id, i) => campaignStart(store, declaration({ campaignId: id, tasks: [task(`${id.at(-1).toUpperCase()}1`, 501 + i, files[id])] })));
   let now = Date.now();
