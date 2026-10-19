@@ -31,7 +31,8 @@ import { mainLedger, selfHostingSettings, trustedTip, trustsLocalMain } from './
 import { programPass } from './program.mjs';
 import { GATE_FILES, gateFailure, readGateRun } from './gate.mjs';
 import { isLocalTarget, recordCandidate } from './local-candidates.mjs';
-import { checkLocalDispatch } from './local-admission.mjs';
+import { checkLocalDispatch, LOCAL_ADMISSION_ON } from './local-admission.mjs';
+import { addComment, createItem, reviewItem, WorkListError, workAuthorization, workLink } from './work-list.mjs';
 import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -49,6 +50,8 @@ export const NO_PROGRESS_LIMIT = 4;
 const REPEAT_GUARDED = new Set(['invalid-result', 'exit-without-result', 'timeout', 'spawn-failed', 'error', 'lost']);
 // GitHub rejects issue/PR bodies and comments over 65,536 characters.
 const BODY_LIMIT = 65536;
+// An outbox row bound for the local work list (enqueue for the self-hosted repository): `aiworks-work:<item number>`.
+const WORK_TARGET = /^aiworks-work:([1-9]\d*)$/;
 // The longest refusal detail a retried verifier is told (aiworks#59): enough for every refusal the controller writes.
 const REFUSAL_DETAIL = 300;
 const RETRYABLE = new Set(['invalid-result', 'exit-without-result', 'timeout', 'spawn-failed', 'error', 'evidence-unavailable', 'lost']);
@@ -1233,6 +1236,28 @@ export class Controller {
     return retry('evidence-unavailable', value.summary, 'implemented');
   }
 
+  /**
+   * AIWorks's own repository may be authorized by an owner-written work item (`aiworks-work:<n>`, LOCAL_OPERATION.md
+   * section 5.2): only under local admission, with local main trusted and the owner's open item linked to this campaign,
+   * re-read before every dispatch. A declaration with a GitHub URL reference passes unchanged. Refused: a B2 blocker and
+   * no new worker.
+   */
+  workAuthorized(ctx, decl) {
+    try {
+      if (workAuthorization(this.store, decl, { selfHosting: this.selfHosting }) && !LOCAL_ADMISSION_ON) {
+        throw new WorkListError('WORK_AUTHORIZATION_OFF', 'local admission is off');
+      }
+      return true;
+    } catch (error) {
+      if (!(error instanceof WorkListError)) throw error;
+      this.raiseBlocker(ctx, decl, { kind: 'work-authorization', class: 'B2', code: error.code,
+        reason: `No new worker started for ${decl.target.repository}: ${String(error.message).slice(0, 400)} (${error.code})`,
+        requestedAction: `Name an open work item you wrote for campaign ${ctx.id} as its authorization, then run: supervisor recheck ${ctx.id}` },
+      this.now(), { identity: error.code });
+      return false;
+    }
+  }
+
   /** `identity` and `subject` name the failure for the aiworks#1 fingerprint; they are used only when the feature is enabled. */
   raiseBlocker(ctx, decl, blocker, now, { identity = null, subject = null } = {}) {
     const c = this.store.campaign(ctx.id);
@@ -2105,12 +2130,15 @@ export class Controller {
           this.now(), { identity: error.code });
           return null;
         }
-      } else try { governance = projectGovernance(decl.target.repository, this.governanceRoot); }
-      catch (error) {
-        this.raiseBlocker(ctx, decl, { kind: 'project-governance', class: 'B2',
-          reason: `No new worker dispatched: the governance of ${decl.target.repository} cannot be resolved from the governance checkout (${error.code ? `${error.code}: ` : ''}${String(error.message).slice(0, 400)})`,
-          requestedAction: `Make sure governanceRoot in the supervisor config.json names a current governance provider checkout in which exactly one registry/projects entry declares repository.github ${decl.target.repository}, then run: supervisor recheck ${ctx.id}` }, this.now());
-        return null;
+      } else {
+        if (!this.workAuthorized(ctx, decl)) return null;
+        try { governance = projectGovernance(decl.target.repository, this.governanceRoot); }
+        catch (error) {
+          this.raiseBlocker(ctx, decl, { kind: 'project-governance', class: 'B2',
+            reason: `No new worker dispatched: the governance of ${decl.target.repository} cannot be resolved from the governance checkout (${error.code ? `${error.code}: ` : ''}${String(error.message).slice(0, 400)})`,
+            requestedAction: `Make sure governanceRoot in the supervisor config.json names a current governance provider checkout in which exactly one registry/projects entry declares repository.github ${decl.target.repository}, then run: supervisor recheck ${ctx.id}` }, this.now());
+          return null;
+        }
       }
       // A project and a config.json entry that disagree about this repository: B2, and nothing is dispatched (design 8.2).
       const checkout = local ? local.checkout : resolveCheckout(this.store, this.config, decl.target.repository);
@@ -2428,7 +2456,12 @@ export class Controller {
         const repair = spec.deliverable === 'commit' ? this.publishedRepair(fresh) : null;
         const integration = repair?.id === 'integration-conflict' ? repair : null;
         const repairKind = integration ? 'integration' : 'ci';
-        if (repair) {
+        const local = this.selfHosted(decl.target.repository);
+        if (local) {
+          url = this.recordLocalReview(ctx, decl, spec, fresh, { repair, integration, repairKind });
+          if (!url) return;
+          this.injectFault('after-work-item');
+        } else if (repair) {
           // aiworks#27, aiworks#42: the repaired head goes to the same branch and PR. The push is a plain fast-forward (the
           // earlier verified head is an ancestor), never a force-push; without an open PR nothing is pushed and no PR is opened.
           const key = `${ctx.id}:${task.task_id}:${repairKind}:${task.verified_sha}`;
@@ -2510,8 +2543,10 @@ export class Controller {
         else if (repair) this.store.journal(ctx.id, 'ci-repaired', { task: task.task_id, from: repair.verified, checks: repair.checks.map((check) => check.name), sha: task.verified_sha, url }, now);
         if (this.oi) this.probeSucceeded(ctx, task.task_id, { detail: `publication of ${task.verified_sha} succeeded` }, now);
         // With CI repair on, a published head is never announced as if its CI had passed (aiworks#42).
-        const ciNote = this.ci && spec.deliverable === 'commit' ? ' CI on this head is not known yet; the supervisor reads it and reopens the task if it fails.' : '';
-        this.enqueue(ctx.id, `${ctx.id}:${task.task_id}:published:${task.verified_sha}`, decl, (integration
+        const ciNote = this.ci && !local && spec.deliverable === 'commit' ? ' CI on this head is not known yet; the supervisor reads it and reopens the task if it fails.' : '';
+        this.enqueue(ctx.id, `${ctx.id}:${task.task_id}:published:${task.verified_sha}`, decl, (local
+          ? this.localPublishedNote(decl, spec, task, { repair, integration, url })
+          : integration
           ? `**${task.task_id}** (#${spec.issue}) ${integration.moved ? 'did not contain the current' : 'conflicted with'} ${decl.target.baseBranch} after a sibling merge. The supervisor merged the base, a fresh independent verification accepted \`${task.verified_sha}\`, and it is pushed to the same PR: ${url}. Not merged; merge follows ${decl.target.repository}'s release gate.`
           : repair
           ? `**${task.task_id}** (#${spec.issue}) failed CI at \`${repair.verified}\`. A repair round fixed it, a fresh independent verification accepted \`${task.verified_sha}\`, and it is pushed to the same PR: ${url}. Not merged; merge follows ${decl.target.repository}'s release gate.`
@@ -2523,6 +2558,14 @@ export class Controller {
     } catch (error) {
       if (error instanceof FencedError) throw error;
       this.log(`publish ${task.task_id} failed: ${error.message}`);
+      // The work list refuses a body over 1 MiB or one that looks like a credential: retrying cannot fix either.
+      if (error instanceof WorkListError && ['WORK_ITEM_TOO_LARGE', 'WORK_ITEM_SECRET'].includes(error.code)) {
+        this.fenced(ctx, () => this.raiseBlocker(ctx, decl, { kind: 'publication-size', class: 'B2', code: error.code,
+          reason: `The work list refused the verified result (${error.code}); nothing was truncated or recorded.`,
+          requestedAction: 'Provide an authorized publication format that preserves the verified report, then recheck.' }, this.now(),
+        { identity: task.task_id }));
+        return;
+      }
       this.fenced(ctx, () => {
         const t = this.store.task(ctx.id, task.task_id), now = this.now();
         // A rate-limit refusal with a reset time waits until that reset; any other failure retries after publishRetryMs.
@@ -2535,6 +2578,50 @@ export class Controller {
         if (reset) this.store.journal(ctx.id, 'publish-rate-limited', { task: task.task_id, retryAt: reset }, now);
       });
     }
+  }
+
+  /**
+   * AIWorks's own repository with local main trusted (LOCAL_OPERATION.md section 5.2, slice SELF7): the verified result
+   * goes to the local work list, never a push, a pull request or a GitHub comment. A verified commit becomes a `review`
+   * item, a repaired head a comment on that item, a report a comment on the task's item, each whole (the work list holds
+   * 1 MiB, so nothing is split). Runs inside publish's fenced transaction, so the record and the task's `done` commit
+   * together; the review item is found again by campaign, task and verified SHA and every comment has a stable key, so a
+   * retry records nothing twice. Returns the work-list link, or null when nothing was recorded.
+   */
+  recordLocalReview(ctx, decl, spec, task, { repair, integration, repairKind }) {
+    const now = this.now(), links = { campaignId: ctx.id, taskId: task.task_id, verifiedSha: task.verified_sha };
+    const branch = gitA.branchName(ctx.id, task.task_id);
+    if (repair) {
+      const review = reviewItem(this.store, { campaignId: ctx.id, taskId: task.task_id });
+      if (!review) {
+        this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version, { retry_at: null,
+          blocked: { class: 'stalled', reason: `${repairKind === 'ci' ? 'CI' : 'integration'} repair ${task.verified_sha} verified, but ${branch} has no review item in the work list; nothing was recorded`, at: now } }, now);
+        this.store.journal(ctx.id, `${repairKind}-repair-unpublished`, { task: task.task_id, sha: task.verified_sha }, now);
+        return null;
+      }
+      addComment(this.store, { number: review.number, idempotencyKey: `${ctx.id}:${task.task_id}:${repairKind}:${task.verified_sha}`,
+        body: integration ? this.integrationBody(decl, spec, task, integration, { local: true }) : this.ciBody(decl, spec, task, repair),
+        authorKind: 'supervisor', now });
+      return workLink(review.number);
+    }
+    if (spec.deliverable === 'commit') {
+      const review = reviewItem(this.store, links) ?? createItem(this.store, { kind: 'review', title: `${spec.id}: ${spec.title}`,
+        body: this.prBody(decl, spec, task, { local: true }), labels: [`branch:${branch}`], links, authorKind: 'supervisor', now });
+      return workLink(review.number);
+    }
+    const digest = createHash('sha256').update(String(task.result?.report ?? ''), 'utf8').digest('hex');
+    addComment(this.store, { number: spec.issue, idempotencyKey: `${ctx.id}:${task.task_id}:report:${digest}`,
+      body: this.reportBody(decl, spec, task, digest), authorKind: 'supervisor', now });
+    return workLink(spec.issue);
+  }
+
+  /** The tracking item's note for a result recorded in the work list (recordLocalReview). */
+  localPublishedNote(decl, spec, task, { repair, integration, url }) {
+    if (integration) return `**${task.task_id}** (#${spec.issue}) ${integration.moved ? 'did not contain the current' : 'conflicted with'} ${decl.target.baseBranch} after a sibling merge. The supervisor merged the base, a fresh independent verification accepted \`${task.verified_sha}\`, and it is recorded on the same review item: ${url}. Nothing was pushed; not merged; merge follows ${decl.target.repository}'s release gate.`;
+    if (repair) return `**${task.task_id}** (#${spec.issue}) failed CI at \`${repair.verified}\`. A repair round fixed it, a fresh independent verification accepted \`${task.verified_sha}\`, and it is recorded on the same review item: ${url}. Nothing was pushed; not merged; merge follows ${decl.target.repository}'s release gate.`;
+    return spec.deliverable === 'commit'
+      ? `**${task.task_id}** (#${spec.issue}) passed independent verification and is recorded for review in the work list: ${url} at \`${task.verified_sha}\` on the local branch \`${gitA.branchName(decl.campaignId, task.task_id)}\`. Nothing was pushed; not merged; merge follows ${decl.target.repository}'s release gate.`
+      : `**${task.task_id}** (#${spec.issue}) passed independent verification; the verified report is recorded in the work list: ${url} (revision \`${task.verified_sha}\`).`;
   }
 
   /**
@@ -2575,7 +2662,7 @@ export class Controller {
   }
 
   /** PR comment for a repaired head pushed to an already open PR (aiworks#27). */
-  integrationBody(decl, spec, task, integration) {
+  integrationBody(decl, spec, task, integration, { local = false } = {}) {
     return [
       `## ${spec.id}: integration repair, independently verified`,
       '',
@@ -2583,7 +2670,7 @@ export class Controller {
         ? `The verified commit \`${integration.verified}\` did not contain \`${decl.target.baseBranch}\` at \`${integration.base}\` after a sibling merge, so merging it would have put an unverified tree on the base (merge gate, aiworks#138).${integration.paths.length ? ` Conflicting paths: ${integration.paths.map((path) => `\`${path}\``).join(', ')}.` : ''}`
         : `The verified commit \`${integration.verified}\` stopped merging into \`${decl.target.baseBranch}\` at \`${integration.base}\` after a sibling merge. Conflicting paths: ${integration.paths.map((path) => `\`${path}\``).join(', ')}.`,
       '',
-      `The base was merged into this branch and ${integration.paths.length ? 'the conflicts resolved' : 'the result checked again'}. A separate fresh verifier session accepted exactly \`${task.verified_sha}\`, which was pushed here as a fast-forward: \`${integration.verified}\` stays an ancestor.`,
+      `The base was merged into this branch and ${integration.paths.length ? 'the conflicts resolved' : 'the result checked again'}. A separate fresh verifier session accepted exactly \`${task.verified_sha}\`, which was ${local ? 'recorded here; nothing was pushed, and' : 'pushed here as a fast-forward:'} \`${integration.verified}\` stays an ancestor.`,
       '',
       ...this.verificationLines(task),
       '',
@@ -2635,13 +2722,13 @@ export class Controller {
     ];
   }
 
-  prBody(decl, spec, task, { verificationElsewhere = false } = {}) {
+  prBody(decl, spec, task, { verificationElsewhere = false, local = false } = {}) {
     return [
       `## ${spec.id}: ${spec.title}`,
       '',
       `Refs #${spec.issue}. Campaign \`${decl.campaignId}\` (parent plan #${decl.target.trackingIssue}), run by the AIWorks supervisor (AIWorks).`,
       '',
-      `**Verified commit:** \`${task.verified_sha}\`. A separate fresh verifier session accepted exactly this SHA; the branch was pushed at that SHA.`,
+      `**Verified commit:** \`${task.verified_sha}\`. A separate fresh verifier session accepted exactly this SHA; ${local ? `it is on the local branch \`${gitA.branchName(decl.campaignId, task.task_id)}\` and nothing was pushed` : 'the branch was pushed at that SHA'}.`,
       '',
       '### Implementer report',
       '',
@@ -2656,7 +2743,7 @@ export class Controller {
       ...this.gateLines(task),
       ...(task.signature ? ['', ...formatSignatureLines(task.signature)] : []),
       '',
-      `Opened by the supervisor after independent verification. Not merged and not deployed: merge and release follow ${decl.target.repository}'s release gate.`,
+      `${local ? 'Recorded in the AIWorks work list' : 'Opened'} by the supervisor after independent verification. Not merged and not deployed: merge and release follow ${decl.target.repository}'s release gate.`,
       '',
       'Generated by the AIWorks delivery supervisor.',
     ].join('\n');
@@ -2818,7 +2905,7 @@ export class Controller {
     const parents = this.store.all('SELECT campaign_id, task_id FROM blocker_parents WHERE fingerprint = ? AND released_at IS NULL ORDER BY campaign_id, task_id', record.fingerprint);
     const key = `${record.fingerprint}:${record.episode}:${kind}`;
     const message = ownerMessage({ record, kind, parents, repository: decl.target.repository, trackingIssue: decl.target.trackingIssue,
-      tried: RECOVERY_TRIED[record.dependency] });
+      tried: RECOVERY_TRIED[record.dependency], workList: this.selfHosted(decl.target.repository) });
     const info = this.store.run(`INSERT OR IGNORE INTO owner_notifications (key, fingerprint, campaign_id, kind, class, message, state, attempts, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`, key, record.fingerprint, ctx.id, kind, record.class, message, now, now);
     if (!info.changes) return;
@@ -2968,12 +3055,23 @@ export class Controller {
         key, campaignId, `local:${decl.target.projectId}`, body, now);
       return;
     }
+    // AIWorks's own repository with local main trusted (LOCAL_OPERATION.md section 5.2): the note becomes a comment on
+    // the campaign's tracking item in the local work list, which drainOutbox records under the same key; never GitHub.
+    if (this.selfHosted(decl.target.repository)) {
+      this.store.run("INSERT OR IGNORE INTO outbox (key, campaign_id, target, body, state, attempts, updated_at) VALUES (?, ?, ?, ?, 'pending', 0, ?)",
+        key, campaignId, workLink(decl.target.trackingIssue), body, now);
+      return;
+    }
     if (this.config.github?.comments === false) return;
     this.store.run("INSERT OR IGNORE INTO outbox (key, campaign_id, target, body, state, attempts, updated_at) VALUES (?, ?, ?, ?, 'pending', 0, ?)",
       key, campaignId, `${decl.target.repository}#${decl.target.trackingIssue}`, body, now);
   }
 
-  /** At-least-once GitHub notes, reconciled by an embedded marker before any repost. */
+  /**
+   * At-least-once GitHub notes, reconciled by an embedded marker before any repost. A work-list target (enqueue) is
+   * recorded as a comment on its item with the outbox key as its idempotency key, in the same transaction that marks the
+   * row posted: exactly once, and with no call to GitHub.
+   */
   async drainOutbox() {
     const now = this.now();
     const items = [...this.held.keys()].flatMap((id) => this.store.all(
@@ -2987,6 +3085,13 @@ export class Controller {
           // Replies queued by an older runtime stay local too; never publish them after an upgrade.
           if (item.campaign_id === COORDINATOR_LANE) {
             this.store.run("UPDATE outbox SET state = 'local', updated_at = ? WHERE key = ?", now, item.key);
+            return;
+          }
+          const workItem = WORK_TARGET.exec(item.target);
+          if (workItem) {
+            const { comment } = addComment(this.store, { number: Number(workItem[1]), idempotencyKey: item.key, body: item.body,
+              authorKind: 'supervisor', now });
+            this.store.run("UPDATE outbox SET state = 'posted', posted = ?, updated_at = ? WHERE key = ?", `${item.target}#${comment.seq}`, now, item.key);
             return;
           }
           if (github.findMarkedComment({ gh: this.cmd.gh, repository, issue, key: item.key })) {
