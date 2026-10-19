@@ -150,6 +150,9 @@ const STATES = {
   // §7.8 Finished. "Merged" only with a current merge check; unknown is said, never counted as nothing.
   'finished-open': { section: '7.8', needsYou: true, copy: (d) => ['All steps are finished.',
     `${plural(d.awaiting, 'pull request')} ${d.awaiting === 1 ? 'waits' : 'wait'} for your review${d.merged ? ` · ${d.merged} merged` : ''}.`, seeResults(d.project)] },
+  // OWNER_UI_V2 WP4: never "complete" while a result's evidence is unresolved; each step's Review shows what is.
+  'finished-unresolved': { section: '7.8', needsYou: false, copy: (d) => ['All steps are finished, but not complete.',
+    `${plural(d.count, 'result')} ${d.count === 1 ? 'has' : 'have'} criteria not checked, failed or open findings. Review ${d.count === 1 ? 'its' : 'their'} evidence before you accept.`, seeResults(d.project)] },
   // Merging delegated by the owner (#97): the pull requests still open are merged for them, so nothing waits for them.
   'finished-delegated': { section: '7.8', needsYou: false, copy: (d) => ['All steps are finished.',
     `${plural(d.delegated, 'pull request')} passed the check and ${d.delegated === 1 ? 'is' : 'are'} to be merged for you${d.merged ? ` · ${d.merged} merged` : ''}.`, seeResults(d.project)] },
@@ -372,6 +375,8 @@ function finishedState(c, d) {
   if (!counts) return ['finished-unknown', { count: c.tasks.length }];
   const unknown = counts.total - counts.delivered + counts.checking + counts.unknown;
   if (unknown) return ['finished-unknown', { count: unknown }];
+  // A result with a criterion failed or not checked, a blocking finding or requested changes keeps the goal open (WP4).
+  if (counts.unresolved) return ['finished-unresolved', { count: counts.unresolved }];
   if (counts.awaiting) return ['finished-open', { awaiting: counts.awaiting, merged: counts.merged }];
   // Reports are the owner's to read, so they are said before pull requests merged for the owner.
   if (counts.reports) return ['finished-reports', { reports: counts.reports, merged: counts.merged }];
@@ -523,6 +528,8 @@ export const DELEGATED = {
 /** Needs me items about AIWorks itself and about stopped work, in the owner's words. */
 export const NEEDS = {
   stepIssue: 'Open the step issue',
+  // A decision the owner snoozed (WP2): still listed, because its step stays stopped until it is answered.
+  snoozed: (until) => `Snoozed until ${new Date(until).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).replace(',', '')}; the step waits for your answer.`,
   // A connected project where work can't start until the owner confirms its rules (review 5 G7): not an item, since no
   // work is blocked, but the calm headline names it and a row links to its Now, where the rules are confirmed.
   held: {
@@ -632,8 +639,38 @@ export const COMMANDS = {
   notFound: 'This work is not recorded on this computer any more. Refresh the page to see what is.',
   closed: 'This work is finished or cancelled, so it takes no more commands. Refresh the page to see where it stands.',
   notPaused: 'Only paused work can resume. Refresh the page to see where it stands.',
+  // Pause and resume for all, a project or a goal (OWNER_UI_V2 WP1).
+  nothingToPause: 'Nothing here is running, so there is nothing to pause. Refresh the page to see where it stands.',
+  nothingToResume: 'Nothing here was paused by this control, so there is nothing to resume. Work you paused another way keeps its own Resume.',
+  scoped: { pause: (n) => `Paused ${n === 1 ? '1 goal' : `${n} goals`}. No new step starts; steps already running finish and are recorded.`,
+    resume: (n) => `Resumed ${n === 1 ? '1 goal' : `${n} goals`} with the goals and limits you approved.` },
   stepChanged: 'This step changed or is already finished. Refresh the page and try again.',
   noNextRun: 'No AI worker runs this step again, so it cannot get guidance. Refresh the page to see where it stands.',
+  // Structured decisions (OWNER_UI_V2 WP2): an answer, a snooze and "this did not need me" are bound to one decision.
+  decision: {
+    answer: 'Answer received. AIWorks clears this decision once and the step continues with your answer; its limits and the independent check still apply.',
+    snooze: (until) => `Snoozed until ${new Date(until).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).replace(',', '')}. The step stays stopped until you answer.`,
+    'not-needed': 'Thank you. AIWorks recorded that this did not need you; the step still waits for an answer.',
+    stale: 'This decision changed or is no longer open. Nothing was recorded. Refresh the page to see the current one.',
+    answered: 'This decision was already answered. Nothing was recorded twice.',
+    notOption: 'Choose one of the options shown, or write your own answer.',
+    noted: 'You already said this decision did not need you.',
+  },
+  // Review of a result (OWNER_UI_V2 WP4): accept and request changes are bound to one verified head and its report.
+  result: {
+    accept: (gate) => gate === 'on' ? 'Accepted. AIWorks recorded your acceptance of this checked version; the merge gate merges it when its own conditions hold.'
+      : 'Accepted. AIWorks recorded your acceptance of this checked version. Nothing was merged: merging follows this project’s own gate.',
+    'request-changes': 'Changes requested. AIWorks reopens this step as a repair round within the approved plan; nothing of it is published or merged until a fresh independent check passes.',
+    changed: 'This result changed since you opened it, or it is not the version that passed the check. Nothing was recorded. Refresh the page and review it again.',
+    closed: 'This work is paused, cancelled or not finished, so its result takes no review now. Refresh the page to see where it stands.',
+    requested: 'Changes to this version were already requested. Nothing was recorded twice.',
+    merged: 'This version is already merged. To change it, ask for a new plan.',
+    reportOnly: 'Requesting changes is available for code results. For a report, ask for a new plan.',
+    noRounds: 'This step has used all its repair rounds, so no further repair starts. Ask for a new plan to change it.',
+    applyLocal: 'A result in a project without GitHub is accepted with Apply.',
+    alreadyAccepted: 'You already accepted this version.',
+    unresolved: 'A criterion failed or a blocking finding is open, so this version cannot be accepted. Request changes instead.',
+  },
 };
 
 /**

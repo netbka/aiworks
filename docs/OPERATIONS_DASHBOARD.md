@@ -110,6 +110,7 @@ The dashboard makes no GitHub API call: no `gh`, GraphQL or REST (AIWorks design
   - Fetches happen only while a dashboard page is open: each state request starts a check, and the answer never waits for it.
   - Otherwise the step reads *Published, merge not seen yet*, never merged. That includes a repository with no configured checkout, a step with no recorded verified commit, and a squash or rebase merge, which rewrites the commit so it is never reachable.
   - A failed fetch keeps the last result and shows its time. A check older than 15 minutes never shows a step as merged.
+- **AIWorks's own repository with local main trusted** (`selfHosting.trustedMain` `"local"`, UI19): never fetched. Its merge check reads the local `<baseBranch>` (`refs/heads/main`) at every check, and a verified local review (`aiworks-work:<n>`) counts as published. Every other repository keeps the fetch above.
 - **Who merges:** the `merges` setting in the supervisor's `config.json`, read on every page refresh. See [Merging delegated by the owner](#merging-delegated-by-the-owner).
 - **What Auto Release waits for:** `autoReleaseDecision` in the supervisor's `config.json`, read on every page refresh. It is optional: one GitHub issue link, for example `"autoReleaseDecision": "https://github.com/example-org/aiworks/issues/33"`. Settings › Release mode shows it as the release decision that Auto Release waits for. Without it, or with anything that is not a GitHub issue link, Auto Release keeps the same text and shows no link. The review fixture sets none, so a reviewer's page names no real issue.
 
@@ -174,7 +175,9 @@ Controls apply to existing **supervisor-managed campaigns**. Other chat/IDE agen
 | Command | Effect |
 | --- | --- |
 | Pause | Stops new dispatch; an existing worker can finish. |
-| Resume | Resumes the private stored declaration with its existing authorization and limits. Current version, scope and authorization are checked atomically. No declaration commit is required; the controller separately checks merged runtime code (AW-005). |
+| Pause all work, Pause project, Pause goal | Home, Overview (owner UI v2 WP1). The same pause for every running goal the scope covers, in one transaction. The request lists exactly those goals, each bound to its row version, authorization version and scope digest; a missing, extra or changed goal refuses the whole request with nothing written. A paused goal reads *stopping* while a run it started is still open and *stopped* once none is. |
+| Resume all work, Resume project, Resume goal | Resumes only the goals that this very scope paused (for a goal: that goal). A goal paused another way keeps its own Resume and is never resumed by a wider one. |
+| Resume | Resumes the private stored declaration with its existing authorization and limits. Current version, scope and authorization are checked atomically. No declaration commit is required. Every Resume, the scoped ones included, first checks that the running dashboard code is part of the trusted main (AW-005): `origin/main`, or with `selfHosting.trustedMain` `"local"` the trusted tip of the main ledger. It never fetches; a refused Resume changes nothing. |
 | Recheck | Queues the existing recovery event, for a campaign or a selected unfinished task. It does not force acceptance or bypass owner-reserved conditions. |
 | Cancel | Requires a confirmation explaining that the controller terminates its owned workers and that cancelled campaigns cannot resume. Completed results remain available. |
 | Send instructions | Select an unfinished task and implementer/verifier role. Up to 2,000 characters are queued for that role's next run on the task; an already running worker is not interrupted. |
@@ -185,13 +188,100 @@ Free-text guidance is supplemental to the immutable task packet and never change
 
 Commands use the existing supervisor APIs within one transaction. The request is bound to campaign row version, authorization version, scope digest and, for task recheck, task version. Changed state returns a conflict. A durable request ID is bound to the exact payload; repeating it acknowledges the original command without applying it twice. Commands and receipts use the existing events/journal tables.
 
+## Home, Overview and Connections (owner UI v2, WP1)
+
+Read-only views beside `/api/state` (`src/dashboard/views.mjs`), each built server-side from the same readers and returning allowlisted fields only: codes, counts, times, identifiers and sentences the supervisor or dashboard wrote. No worker text, recorded reason or local path. `/api/state` carries `home`, `overviews` and `connections`, so the page still polls one route.
+
+| Route | Answers |
+| --- | --- |
+| `GET /api/v2/home` | What changed after the last-seen marker, the first Needs me item, each project in one sentence, and the pause of all work. |
+| `GET /api/v2/projects/<project>` | Each goal with Built, Checked and Available to users counted apart (available stays *Not published: release is off* until a release is recorded, *Not known* while one is unknown), its budget, next action and pause. |
+| `GET /api/v2/settings` | Settings › Connections: AIWorks itself, each AI worker account, where each repository's merges are seen from, and the trusted main with its backup (state codes only, read locally). |
+| `GET /api/v2/events?since&cursor&project&type` | Typed events from the journal, newest first: type, time, work, step and project, never the entry's detail. |
+| `POST /api/v2/events/seen` `{ seq }` | Moves the last-seen marker forward (`dashboard-last-seen.json` in the data directory, beside `config.json`); never past the newest entry, never back. |
+| `POST /api/v2/pause`, `POST /api/v2/resume` | The scoped pause and resume above. |
+
+The POST routes keep the command rules: exact Origin, the CSRF token, JSON of at most 16 KiB, and only their own fields. Pause and resume alone accept up to 64 KiB, so their largest valid request, 200 goal bindings, is read and checked whole instead of refused for its size; a larger body is refused before it is read, and nothing changes. Plan, Review, Releases, Knowledge, notifications and previews are not built (WP3 onwards) and are not shown.
+
+## Decisions (owner UI v2, WP2)
+
+A step stopped for the owner (a B3 stop, or a checker that still rejects after its repair rounds) is a decision. Needs me lists it with an **Answer** link to its step, where the owner chooses an option, writes an answer, asks to be reminded later, or says it did not need them. When the worker's validated result carried a `decision` field (`src/supervisor/adapters/claude.mjs` `DECISION_SCHEMA`), the step shows its question, each option with its consequence, AIWorks' suggestion and why, what continues meanwhile and what happens without an answer, each through the credential filter. Without one, the stop stays a free-text decision answered in the owner's own words. Raw worker text is never shown.
+
+| Route | Effect |
+| --- | --- |
+| `POST /api/v2/decisions/answer` `{ option?, text? }` | Records one answer per decision. The controller then clears exactly that stop, resolves its blocker record and gives the step's next builder run the answer as guidance under the unchanged packet. |
+| `POST /api/v2/decisions/snooze` `{ snooze: 1h, 4h or 1d }` | Feedback only: the item says until when and moves to the end of Needs me; it stays counted, because the step stays stopped. |
+| `POST /api/v2/decisions/not-needed` `{ text? }` | "This did not need me", once per decision. Feedback only. |
+
+Each request carries a request id and binds the goal's version, authorization version and scope digest, the step's version and the decision's id (`src/supervisor/decisions.mjs`), so a stale, wrong-step or replayed request changes nothing. The controller checks the decision again when it applies an answer: if the step stopped again meanwhile, the answer clears nothing and gives no guidance. An answer never touches the goal's own blocker, another step, a limit or the plan; a wider change needs a new plan approval. The owner's words stay in the decision's event and never reach the journal.
+
+## Review of a result (owner UI v2, WP4)
+
+A finished step shows its review on the step screen; a project without GitHub shows it under each result on Results. It is built from the verifier's accepted verification of exactly the step's verified head and report (`src/supervisor/result-review.mjs`). A verifier may return `verdictSummary`, `criteria` (one entry per acceptance criterion: pass, fail or not-checked, what it checked and the evidence) and `eyesOn` (where the owner's own judgement matters); they are optional, schema-validated (`src/supervisor/adapters/claude.mjs` `CRITERIA_SCHEMA`) and served bounded and through the credential filter, never as a raw log. A criterion the verifier did not report is **Not checked**, never a pass, and a verdict of `accepted` with a failed criterion is an invalid result.
+
+| Route | Effect |
+| --- | --- |
+| `POST /api/v2/results/accept` | GitHub results only. Records the owner's acceptance of that verified head, once. It never merges, pushes or reads GitHub: the head merges only through the supervisor's merge gate, in a repository the owner opted in, or under the project's own gate. Refused while a criterion failed or a blocking finding is open. A local result is accepted with Apply, under its existing rules. |
+| `POST /api/v2/results/request-changes` `{ text, criterion? }` | Code results only. Records the owner's request once per verified head. The supervisor reopens the finished step as a repair round on its own branch, counted against `maxRepairRounds` (past it the step stops), holds that head from the merge gate meanwhile and publishes only a freshly verified new head. |
+
+Both bind the goal's version, authorization version and scope digest, the step's version, the verified head and the digest of the report it was checked with, so a changed, unverified, merged, stale or replayed request is refused and records nothing. Earlier runs, checks and acceptances stay in the record. A finished goal is never shown as complete while one of its results has a criterion failed or not checked, a blocking finding, or changes requested: it reads *All steps are finished, but not complete*, and its merged work is not called ready for release. The owner's words stay in the request's own event: the repair packet carries them to the builder and its verifier, and the comment on the pull request or review item says only that changes were requested.
+
+## Project settings (owner UI v2, WP5)
+
+**Project settings** (`#/p/<project>/settings`, linked from the project's Overview) holds the standing rules of every goal in one project: protected areas (folders or files AIWorks must never change), notes for the AI and an optional all-time and monthly budget in dollars (`src/supervisor/project-settings.mjs`). Each save is a new version in the append-only `project_settings` table; the screen says which version is applied and, for each period, what is counted, what is left and how many runs had no reported cost. Empty budgets mean no limit.
+
+| Route | Effect |
+| --- | --- |
+| `GET /api/v2/projects/<project>/settings` | The applied version, its settings and the project's spend. A project without GitHub has settings once its rules are confirmed. |
+| `POST /api/v2/projects/settings` `{ requestId, project, version, protectedAreas, notes, budget }` | Runs the caller check first, then saves the next version only if `version` is still the newest (`SETTINGS_CHANGED` otherwise, and the page keeps every entry). A repeated request id answers with the version it saved. |
+
+Settings only add protection and limits. They have no field for files to change, providers, release or authority, and saving them never changes a registered goal's declaration, authorization version or scope digest. A plan, or a new authorization version, whose declared writes lie inside a protected area is refused (`PROTECTED_AREA`); a commit that changes one is a boundary violation held for the owner, checked when it is built and again when it is checked. A goal keeps the areas in force when it was registered, so removing one later never loosens running work. A budget needs the price a run with no reported cost is counted at; that price is also reserved for every running step, so unknown cost is never zero. No step starts while the budget left, all time or this calendar month (UTC), is less than one run at that price: the goal waits for the owner with a budget decision and continues by itself once the budget allows. Planning a goal is not counted yet.
+
+## Alerts (owner UI v2, WP6)
+
+**Settings › Alerts** (`#/settings/alerts`) holds the owner's alert rules (`src/supervisor/alerts.mjs`): which notices alert them (Action required B2, Decision required B3, External wait B4, Incident B5), whether reminders do, and optional quiet hours in a named time zone, with a choice to let incidents through. Nothing saved means B2, B3 and B5 with reminders and no quiet hours. Each save is a new version in the append-only `alert_rules` table. The screen also says, from the operator's `config.json`, whether an alert transport is set up, counts the notification outbox by state, shows a fictional example alert with what the current rules would do with it, and lists the last alerts the rehearsal transport recorded.
+
+| Route | Effect |
+| --- | --- |
+| `GET /api/v2/settings/alerts` | The applied version and rules, whether quiet hours apply now, the transport's state (`unconfigured`, `rehearsal`, `unavailable` or `invalid`), outbox counts and recorded rehearsals. Never a secret store reference or a credential. |
+| `POST /api/v2/settings/alerts` `{ requestId, version, rules }` | Runs the caller check first, so no program AIWorks started can mute the owner's alerts, then saves the next version only if `version` is still the newest (`ALERTS_CHANGED` otherwise, and the page keeps every entry). A repeated request id answers with the version it saved. |
+
+Delivery reads **unavailable** until a transport is set up, and no adapter that leaves this computer is built: the only transport is the synthetic rehearsal one, which records alerts on this computer and never reports a delivery ([SUPERVISOR.md §10](SUPERVISOR.md#10-owner-intervention-core)). An alert carries no authority. Its buttons are dashboard addresses on this computer (*Decide in AIWorks* or *Open in AIWorks* open Needs me); an answer is given only on the dashboard, through the decision routes above with their CSRF token, request id and goal, step, authorization and scope binding. The dashboard stays on loopback and accepts no reply from a transport.
+
+## Preview of a checked version (owner UI v2, WP7)
+
+A finished step's review offers **Try this version**: the static web pages of exactly the commit that passed the independent check, in a frame at desktop or phone (390 px) width, with that commit named beside it. **Open preview** sends the same binding as Accept result (goal version, authorization version, scope digest, step version, verified head and report digest) and nothing else, so a changed, unverified, reopened or report-only result is refused with its reason; the page says why a preview is not available instead of offering it.
+
+| Route | Effect |
+| --- | --- |
+| `POST /api/v2/results/preview` | Opens a preview of that verified head. Answers its address under `/preview/<token>/`, the commit and when the preview ends; never a folder. |
+| `GET /preview/<token>/<file>` | One file of that preview, or 404, or 410 once it has ended. |
+
+The pages are read from the commit's Git objects in AIWorks's own checkout (`src/supervisor/preview.mjs`): nothing is built, installed, started or written, and nothing a request names is run. A preview serves only the folder of the first of `index.html`, `public/index.html`, `site/index.html`, `docs/index.html` or `www/index.html` in that commit, by exact path; dot segments, encoded separators, links, submodules, hidden files, secret-like names, credential-looking text and unknown file types are never served. Every response is a sandboxed document with an opaque origin (`sandbox allow-scripts`, `connect-src 'none'`, `form-action 'none'`, framed only by the dashboard), so its script cannot read the dashboard, its token or its commands, send requests, submit forms or open windows. A preview lives in the dashboard's memory only, for 30 minutes, at most four at a time, and ends when the dashboard stops. Screenshots are not captured by AIWorks; the frame is what the owner sees.
+
+## Knowledge, sample project and usage (owner UI v2, WP8)
+
+A project's **Knowledge** screen (`#/p/<project>/knowledge`, linked from its Overview) lists product facts in three kinds that never change by themselves: **Confirmed by you**, **Found in material** (a sentence quoted from the first paragraph of the project's README, named with the file and the commit it was read at) and **Suggested by AI** (what a plan the AI wrote says its goal delivers, named with that plan and its version). Suggestions are derived when the page reads them and say "Not confirmed"; the owner confirms one, edits it into their own words, or sets it aside so it is not suggested again, and can add a fact of their own. Each act is a new version in the append-only `project_facts` table; a confirmed or edited suggestion keeps where it came from in every later version, and the history lists every version. Only a project's own README (AIWorks's copy at its recorded baseline for a project without GitHub, the configured checkout's `HEAD` for a GitHub project, read from Git objects only) and its own plans are read, and an act names a suggestion only while that project makes it. Facts are not given to workers and carry no field for files, providers, budgets or release, so they never change a plan or its authority.
+
+| Route | Effect |
+| --- | --- |
+| `GET /api/v2/projects/<project>/knowledge` | The owner's facts with their history, and the open suggestions with their origin. |
+| `POST /api/v2/projects/knowledge` | `{ requestId, project, action: add, confirm, edit or retire, fact or suggestion, version, text }`. The caller check runs first; it binds the version shown and the request id; a credential-looking fact is refused. |
+| `POST /api/projects/sample` | `{ path, requestId }` (Add project switched on only). Writes the fictional **Sample notes (practice)** app into a new or empty folder after the same folder check as Add project, then connects it like any folder. |
+| `GET /api/v2/settings/usage` | Settings › Usage. |
+
+Add project (First run) states first what planning a goal has cost: the range and typical dollars of the last 20 finished planning runs that reported a cost, with the others counted apart, or "unavailable" while none did. It also offers **Practise on a sample project**: a folder holding anything else is left alone, a refused folder is removed again if AIWorks created it, and the same folder again opens the same project. The sample starts nothing: its rules, a plan and its approval wait for the owner as for any project.
+
+**Settings › Usage** shows AI worker runs (reported dollars, tokens per provider, runs with no reported cost) and the AI coordinator (planning and messages) by unit, each apart and never added together; a run that reported no cost reads "unknown, not $0". Hosting and subscriptions are not tracked by AIWorks and say so, with no amount.
+
 ## Plan and do, Review and Approve and start (built, off by default)
 
 **In short.** For a connected GitHub project, the owner asks AIWorks for a plan, reads it on **Review** and presses *Approve and start*. That registers exactly the plan on the screen, with the same checks as the command-line start. No command line is needed. (Design: [OWNER_WORKSPACE S10](design/OWNER_WORKSPACE.md#s10-review-and-approve-github-projects) and WORK_ENVELOPE slice E8 ([§12](design/WORK_ENVELOPE.md#12-implementation-slices)); build slice UI14 of [the plan](PROJECT_WORKSPACE_PLAN.md). The owner answered #32 on 2026-10-16: approving in the dashboard registers that exact plan.)
 
 - **Off by default.** Plan and do appears on Start work only while the data directory's `config.json` switches drafting on (`"coordinator": { "intake": true }`), and only for a connected GitHub project that is ready to start work. Without it, Start work offers Plan only, as before. The dashboard reads the setting on every request. Like any runtime change, it goes through the upgrade procedure ([SUPERVISOR.md §6](SUPERVISOR.md#6-installation-and-maintenance)).
 - **Asking.** *Plan and do* stores one work request (`src/supervisor/intake.mjs`). It registers nothing. The receipt says AIWorks is drafting; once the draft is stored, it links to Review. Start work also lists the project's plans.
-- **Review.** It shows the goal, how it is checked, the main steps, overlaps with other work, what the plan may change, the AI workers and limits, and *Release: Review only*. Details holds the plan text, its fingerprint and its version.
+- **Review.** It shows the result, the goal as asked with Now, Next or Later and its priority, the done-when criteria each with how it is checked (or *how it is checked is not stated*), what is included and what waits for later, the estimate (*No estimate* when nobody made one; never zero), the main steps, overlaps with other work, what the plan may change, the AI workers and limits, and *Release: Review only*. Details holds the plan text, its fingerprint and its version. The coordinator may propose the check methods, included and later items and an estimate (`outline` in `src/supervisor/coordinator.mjs` `INTAKE_SCHEMA`); Now, Next or Later and the priority are the owner's, and a draft starts in Now at normal priority.
+- **Edit plan (owner UI v2, WP3).** On a ready plan nobody approved yet, *Edit plan* opens a form for the result, Now, Next or Later, priority, the criteria and their checks, included, later and the estimate. Saving (`src/supervisor/intake.mjs` `reviseDraft`) makes the next draft version; nothing is approved or started. What the work may change, protected paths, AI workers, limits, release, the target and the pinned project version are copied from the edited version unchanged, and a request to change one is refused (`SCOPE_NOT_EDITABLE`): a wider scope, more budget or another release needs a new plan. The save names the version and digest it was made on, so an edit of a plan that changed meanwhile, went stale or was already approved is refused with nothing written; a repeat with the same request ID is saved once. The unsent edit is kept per address through the refresh, a reload and Back; when the plan changes meanwhile the form says so, keeps the edit and offers to apply it to the new version. Approve and start is not offered while an edit is open. Review then shows *Changes from version N*, with any scope change set apart. Approving an earlier version than the one shown is refused (*This plan changed since you opened it*), and the start transaction checks again that the approved version is still the newest.
 - **Approve and start.** The page sends the plan's version and authority digest as shown. The server (`src/dashboard/work.mjs`) refuses, and keeps or registers nothing, when:
   - another version was drafted, the digest differs, or the stored plan no longer hashes to that digest. The owner reads *This plan changed since you opened it. Review it again.*, stays on Review, and the new version loads;
   - the plan is out of date: the supervisor marked it stale, or the project's base branch moved since drafting. The dashboard fetches the base branch again with `git`; if it cannot be read, nothing starts (unknown is never fresh). It never runs `gh`, so an edited issue or a moved pull request is caught only by the supervisor's own freshness check;
@@ -203,9 +293,10 @@ Commands use the existing supervisor APIs within one transaction. The request is
 | Route | Effect |
 | --- | --- |
 | `POST /api/work/requests` | Plan and do: stores one work request (`requestId`, `project`, `goal`, `from`, and `number` or `reportTo`); 409 while drafting is off |
+| `POST /api/work/edit` | Edit plan (`requestId`, `plan`, `version`, `authorityDigest`, `edits`): saves the next draft version, or refuses; 409 while drafting is off |
 | `POST /api/work/approve` | Approve and start (`requestId`, `plan`, `version`, `authorityDigest`): registers exactly that plan, or refuses |
 
-Both keep the command rules: exact Origin, the CSRF token, JSON of at most 16 KiB, and only their own fields. `/api/state` carries the plans under `work`, allowlisted fields only, never a path. `tests/dashboard/approve.test.mjs` checks each refusal against the CLI, with disposable repositories and a synthetic `gh`.
+They keep the command rules: exact Origin, the CSRF token, JSON of at most 16 KiB (64 KiB for an edit, which can hold 48 texts), and only their own fields. `/api/state` carries the plans under `work`, allowlisted fields only, never a path. `tests/dashboard/approve.test.mjs` checks each refusal against the CLI, with disposable repositories and a synthetic `gh`.
 
 ## A project without GitHub: plan, approve, review and apply (built, off by default)
 
@@ -263,6 +354,27 @@ The POST routes keep the command rules: exact Origin, the CSRF token, JSON of at
 | `POST /api/projects/restore` | Shows `repository` on Projects again |
 
 Both keep the command rules and take only `repository` and an optional `requestId`.
+
+## The local work list (UI20)
+
+AIWorks's own work list ([LOCAL_OPERATION section 5](design/LOCAL_OPERATION.md#5-the-local-work-list)) has its own screens once `selfHosting.repository` is set in `config.json` or the store holds items (`src/dashboard/work-list.mjs`). They sit under Needs me and are reached from it; the global bar is unchanged.
+
+- **Work list** (`#/worklist`): open items, closed ones behind a disclosure, and Add an item (task, note, finding or decision). Each row says its kind, state, who wrote it (you, AIWorks or the GitHub import) and when it changed.
+- **Work item** (`#/worklist/<n>`): the title, text and comments, set as text and never as markup, the step it belongs to, the GitHub issue it was imported from, Close item or Reopen item, and Add a comment. The item is read again at every refresh (`GET /api/v2/worklist/<n>`); a comment draft started before the item changed says so. A `review` item says *Local review: passed the independent check on this computer. Not merged and not accepted*, or that it was merged into local main, which is still not accepted.
+- **Needs me** lists each open `decision` item AIWorks marked as needing you, counted with the other items and linked to its work item.
+- **Results** of AIWorks's own repository shows each checked local review under *Checked on this computer · not merged yet*, or under *Merged* once the local merge gate recorded that commit on main, with its work list link. A step whose result is a local review is no longer listed as a missing link.
+- **Imported issues** (`#/worklist/import`): a read-only preview of the issues imported from GitHub that this flow has not closed, each checked by default. *Close N issues on GitHub…* opens a dialog that names exactly those issues and asks for the repository's name; Escape or *Keep them open* sends nothing. The import itself stays `supervisor work-list import`; this screen reads the store only.
+
+| Route | Does |
+| --- | --- |
+| `POST /api/work-list/items` `{ requestId, kind, title, body }` | Adds an item written by you. |
+| `POST /api/work-list/comment` `{ requestId, number, version, body }` | Adds your comment to the item as it was shown. |
+| `POST /api/work-list/state` `{ requestId, number, version, state }` | Closes or reopens the item as it was shown. |
+| `POST /api/work-list/close-imported` `{ requestId, typed, selection: [{ number, version }] }` | Closes on GitHub exactly the confirmed issues (at most 100 at a time), through SELF11's `closeConfirmedIssues`. |
+
+Each keeps the command rules (exact Origin, the CSRF token, JSON of at most 16 KiB, only its own fields) and runs the caller check first, so a request from a worker or any other program AIWorks started is refused with nothing written or sent. A change binds the version of the item it was sent for: a changed item answers *This item changed since you opened it* and saves nothing; one changed or foreign entry refuses the whole close list before anything reaches GitHub. Each request carries a request id; a retry or a second press with it answers the first result (`duplicate: true`) and does nothing again, and an issue this flow already closed is never commented on or closed again. Text is limited to 4,000 characters and refused when it looks like a credential.
+
+Closing on GitHub is built but switched off (`CLOSE_IMPORTED_ON` in `src/supervisor/work-list-import.mjs`) until the amended AW-001 (SELF12) lands: the preview then says *Preview only* and the route answers that closing is not switched on, with nothing sent.
 
 ## Local access boundary
 

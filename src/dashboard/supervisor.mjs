@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
@@ -6,11 +7,17 @@ import { campaignStatus, campaignPause, campaignCancel, campaignRecheck, campaig
 import { DEFAULTS } from '../supervisor/controller.mjs';
 import { safeText } from './roadmap.mjs';
 import { pendingInstructions } from '../supervisor/instructions.mjs';
+import { decisionId, isDecision, structuredDecision } from '../supervisor/decisions.mjs';
+import { criterionEvidence, MAX_FEEDBACK, mergedHead, OWNER_CHANGES, pendingChanges, unresolvedOf, verifiedReview } from '../supervisor/result-review.mjs';
+import { mergeSettings } from '../supervisor/merge.mjs';
+import { previewManifest, previewSupport, PreviewError } from '../supervisor/preview.mjs';
+import { resolveCheckout, resolveLocalProject } from '../supervisor/project-connect.mjs';
+import { configuredGitCommand } from './merges.mjs';
 import { roleUnavailableReason, runNotCounted } from '../supervisor/adapters/executors.mjs';
 import { campaignLimits } from '../supervisor/campaign.mjs';
 import { parseReference } from '../supervisor/reading.mjs';
 import { coordinatorView, LANE as COORDINATOR_LANE, postOwnerMessage } from '../supervisor/coordinator.mjs';
-import { CODE_ROOT, revisionNotMerged } from '../supervisor/provenance.mjs';
+import { CODE_ROOT, revisionNotMerged, runtimeTrust } from '../supervisor/provenance.mjs';
 import { COMMANDS, stateCopy, stopReasonWords } from './copy.mjs';
 import { configuredRepositories, connectedProjects, projectConnectionEnabled } from './projects.mjs';
 import { openOnProfile, setRoleModelPreference, shallowHomesRoot, configuredAccounts } from '../supervisor/accounts.mjs';
@@ -18,6 +25,7 @@ export { shallowHomesRoot };
 import { removeShallowProfile } from '../supervisor/adapters/caam.mjs';
 import { FORWARD_STEPS, RELEASE_STOP } from '../supervisor/release/state.mjs';
 import { isLocalTarget } from '../supervisor/local-candidates.mjs';
+import { pauseSummary, projectOf, sameProject } from './views.mjs';
 
 const readConfig = (dataDir) => {
   try { return JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { return {}; }
@@ -28,6 +36,8 @@ export const INSTRUCTION_LOOKS_SENSITIVE = 'This text looks like it may contain 
 // `detail` is the machine's own reason, for the page's Details disclosure; `message` is what the owner reads.
 const fail = (status, message, detail = null) => Object.assign(new Error(message), { status, ...(detail ? { detail } : {}) });
 const identifier = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// A project as a pause scope names it: a GitHub repository or the lp- id of a project without GitHub, never a path.
+const PROJECT = /^(?:[\w.-]+\/[\w.-]+|lp-[a-z0-9][a-z0-9-]{0,38})$/;
 const githubLink = (value) => /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(?:issues|pull)\/\d+(?:#issuecomment-\d+)?$/.test(value ?? '') ? value : null;
 const code = (value) => /^[a-z][a-z0-9-]{0,60}$/i.test(value ?? '') ? value : null;
 function publicTaskWait(task, spec) {
@@ -554,6 +564,22 @@ function recentEvents(store, since, now) {
   return { since, published, failures };
 }
 
+/**
+ * Every goal's control (OWNER_UI_V2 WP1: pause for all, a project or a goal), projects without GitHub included: the
+ * versions a pause or resume binds, and for a paused goal who paused it (`pauseScope`: all, project or goal), when, and
+ * how many runs it started are still open, so the page says "stopping" until the last one ends and "stopped" after.
+ */
+function goalControls(store) {
+  return store.all("SELECT id FROM campaigns WHERE control IN ('registered', 'paused') ORDER BY created_at").map(({ id }) => {
+    const c = store.campaign(id), paused = c.control === 'paused'
+      ? store.get("SELECT at, detail FROM journal WHERE campaign_id = ? AND kind = 'paused' ORDER BY seq DESC LIMIT 1", id) : null;
+    const scope = paused?.detail?.scope;
+    return { id, project: projectOf(c.declaration), control: c.control, version: c.version, authorizationVersion: c.authorization_version,
+      scopeDigest: c.scope_digest, openRuns: store.openOperations(id).length, pausedAt: paused?.at ?? null,
+      pauseScope: !paused ? null : scope?.kind === 'all' ? { kind: 'all' } : scope?.kind === 'project' && PROJECT.test(scope.project ?? '') ? { kind: 'project', project: scope.project } : { kind: 'goal' } };
+  });
+}
+
 // The states of a release (release/state.mjs, AUTO_RELEASE.md 7.1). Anything else reads as unknown, never as done.
 const RELEASE_STATES = new Set(['eligible', 'locked', 'merging', 'merged', 'deploying', 'deployed', 'applying', 'applied', 'checking', 'accepted',
   'rolling-back', 'rolled-back', 'rollback-failed', 'unknown', 'refused']);
@@ -605,6 +631,77 @@ export function stopAllReleases(dataDir, input, now = Date.now()) {
   return { accepted: true, duplicate: false, action: 'release-stop' };
 }
 
+const DECISION_EVENTS = ['decision-answer', 'decision-snooze', 'decision-not-needed'];
+const decisionFeedback = (store, campaignId) =>
+  store.all(`SELECT kind, payload, received_at FROM events WHERE campaign_id = ? AND kind IN (${DECISION_EVENTS.map(() => '?').join(', ')}) ORDER BY seq`,
+    campaignId, ...DECISION_EVENTS);
+
+/**
+ * A step's open decision (OWNER_UI_V2 WP2), or null. Its question, options, suggestion, what continues and what happens
+ * unanswered are served only when they came from a validated worker result field, and each passes the credential filter;
+ * a stop without them is a free-text decision (`structured: false`) answered in the owner's own words. `id` binds every
+ * answer, snooze and "did not need me" to this one stop. The owner's own words are never served back.
+ */
+function decisionView(campaignId, task, feedback, now) {
+  if (!isDecision(task)) return null;
+  const id = decisionId(campaignId, task.task_id, task.blocked);
+  const mine = feedback.filter((event) => event.payload?.taskId === task.task_id && event.payload?.decision === id);
+  const d = structuredDecision({ decision: task.blocked.decision });
+  const answer = mine.find((event) => event.kind === 'decision-answer');
+  const until = Math.max(0, ...mine.filter((event) => event.kind === 'decision-snooze').map((event) => event.payload.until));
+  return { id, structured: Boolean(d), question: d ? safeText(d.question, 500) : null,
+    options: d ? d.options.map((o) => ({ id: o.id, label: safeText(o.label, 120), consequence: safeText(o.consequence, 500) })) : [],
+    suggestion: d?.suggestion ? { option: d.suggestion.option, reason: safeText(d.suggestion.reason, 500) } : null,
+    continues: d?.continues ? safeText(d.continues, 500) : null, unanswered: d?.unanswered ? safeText(d.unanswered, 500) : null,
+    answered: answer ? { at: answer.received_at, option: answer.payload.option ?? null } : null,
+    snoozedUntil: until > now ? until : null, notNeeded: mine.some((event) => event.kind === 'decision-not-needed') };
+}
+
+/**
+ * Review of one step's result (OWNER_UI_V2 WP4), or null before any head was verified. Each acceptance criterion of the
+ * step with what the independent verifier checked and saw, from the validated fields of its accepted verification of
+ * exactly the verified head and report (result-review.mjs); a criterion it did not report is "not checked". The verdict
+ * summary, findings and where the owner's eyes matter are bounded and pass the credential filter; never a raw log.
+ * `canAccept` and `canRequestChanges` are the server's: applyResultReview checks every binding again. A local result is
+ * accepted by Apply under its own rules, so it offers only Request changes here.
+ */
+export function resultReview(store, c, task, spec, config = {}) {
+  const review = reviewOf(store, c, task, spec, config);
+  // Whether Review offers a preview of this checked version (WP7), and why not when it does not.
+  return review && { ...review, preview: previewSupport(task, spec, review) };
+}
+
+function reviewOf(store, c, task, spec, config) {
+  if (!task?.verified_sha) return null;
+  const local = isLocalTarget(c.declaration), commit = spec?.deliverable === 'commit';
+  const limits = campaignLimits(c.declaration);
+  const roundsLeft = limits.maxRepairRounds === null ? null : Math.max(0, limits.maxRepairRounds - task.repair_rounds);
+  const base = { verifiedSha: task.verified_sha, local, commit, repairRounds: task.repair_rounds, roundsLeft, criteria: [], findings: [], eyesOn: [],
+    unresolved: null, summary: null, reportDigest: null, acceptedAt: null, requestedAt: null, mergeGate: null, canAccept: false, canRequestChanges: false };
+  if (task.state !== 'done') {
+    // Reopened at the owner's request: the earlier result and its check stay in the record, and the new head is checked again.
+    const reopened = (task.findings ?? []).find((finding) => finding?.id === OWNER_CHANGES);
+    return reopened ? { ...base, state: 'changes-requested', from: reopened.verified, criterion: reopened.criterion ?? null, stalled: Boolean(task.blocked) } : null;
+  }
+  const v = verifiedReview(task);
+  if (!v) return { ...base, state: 'no-evidence' };
+  const requested = pendingChanges(store, c.id, task.task_id, task.verified_sha);
+  const merged = !local && mergedHead(store, c.id, task.task_id, task.verified_sha);
+  const accepted = store.get('SELECT received_at FROM events WHERE dedup_key = ?', `result-accepted:${c.id}:${task.task_id}:${task.verified_sha}`);
+  const criteria = criterionEvidence(spec?.acceptance, v).map((item) => ({ criterion: item.criterion, text: safeText(item.text, 300), result: item.result,
+    check: item.check === null ? null : safeText(item.check, 300), evidence: item.evidence === null ? null : safeText(item.evidence, 500) }));
+  const unresolved = unresolvedOf(criteria, v), open = ['registered', 'finished'].includes(c.control), gate = mergeSettings(config);
+  return { ...base, state: requested ? 'changes-requested' : merged ? 'merged' : accepted ? 'accepted' : 'ready', from: requested ? task.verified_sha : null,
+    criterion: requested?.payload?.criterion ?? null, requestedAt: requested?.received_at ?? null, reportDigest: v.reportDigest,
+    summary: safeText(v.verdictSummary ?? v.summary, 500), criteria, unresolved,
+    findings: v.findings.slice(0, 30).map((f) => ({ id: safeText(f.id, 40), severity: f.severity === 'blocking' ? 'blocking' : 'non-blocking', description: safeText(f.description, 500) })),
+    eyesOn: (Array.isArray(v.eyesOn) ? v.eyesOn : []).slice(0, 8).map((item) => safeText(item, 500)),
+    acceptedAt: accepted?.received_at ?? null,
+    mergeGate: local ? null : gate.enabled && gate.repositories.has(String(c.declaration.target.repository).toLowerCase()) ? 'on' : 'off',
+    canAccept: open && !local && !requested && !merged && !accepted && !unresolved.failed && !unresolved.blocking,
+    canRequestChanges: open && commit && !requested && !merged && roundsLeft !== 0 };
+}
+
 export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
   const path = join(dataDir, 'supervisor.db');
   if (!existsSync(path)) return { available: false, message: 'No supervisor store at the configured location.', campaigns: [], costs: [], activity: [] };
@@ -620,6 +717,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
       .filter(({ id }) => !isLocalTarget(store.campaign(id).declaration)).map(({ id }) => {
       const c = store.campaign(id), status = campaignStatus(store, id, now, { config });
       const taskRows = store.tasks(id);
+      const feedback = decisionFeedback(store, id);
       const specs = new Map(c.declaration.tasks.map((task) => [task.id, task]));
       const operations = store.openOperations(id);
       const order = status.executorOrder;
@@ -704,6 +802,8 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
             })() };
         }),
         tasks: taskRows.map((task) => ({ id: task.task_id, title: safeText(specs.get(task.task_id)?.title),
+          decision: decisionView(id, task, feedback, now),
+          review: resultReview(store, c, task, specs.get(task.task_id), config),
           outcome: specs.get(task.task_id)?.outcome ? safeText(specs.get(task.task_id).outcome) : null,
           deliverable: code(specs.get(task.task_id)?.deliverable), verifierRejections: rejections.get(task.task_id) ?? 0,
           version: task.version, issueUrl: `https://github.com/${c.declaration.target.repository}/issues/${specs.get(task.task_id)?.issue}`,
@@ -743,6 +843,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
       publicEvent(item, typeof item.detail?.op === 'string' ? store.get('SELECT * FROM operations WHERE id = ?', item.detail.op) : null));
     const recent = recentEvents(store, since, now);
     const releases = recordedReleases(store);
+    const goals = goalControls(store);
     // aiworks#18: a stopped supervisor, with its last lease renewal, for the owner view to lead with.
     const controller = supervisorLiveness(store, { now, leaseMs: readConfig(dataDir).leaseMs ?? DEFAULTS.leaseMs, stopRequested: existsSync(join(dataDir, 'STOP')) });
     store.db.exec('COMMIT');
@@ -762,7 +863,8 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
     const settings = computerSettings(campaigns, readConfig(dataDir), { now, repositories: configuredRepositories(dataDir),
       connected: projectConnectionEnabled(dataDir) ? connectedProjects(dataDir) : [],
       accounts: dashboardAccounts(store, readConfig(dataDir), { now, dataDir }), releaseStop: releaseStopState(dataDir) });
-    return { available: true, observedAt: new Date(now).toISOString(), controller, campaigns, costs: projectCosts(campaigns), activity, coordinator, recent, settings, releases };
+    return { available: true, observedAt: new Date(now).toISOString(), controller, campaigns, costs: projectCosts(campaigns), activity, coordinator, recent, settings, releases, goals,
+      newestEvent: store.get('SELECT MAX(seq) AS seq FROM journal')?.seq ?? 0 };
   } catch { return { available: false, message: "AIWorks can't read its work records right now. What you see may be out of date. Buttons are off until it can read them again.", campaigns: [], costs: [], activity: [] }; }
   finally { store?.close(); }
 }
@@ -837,6 +939,16 @@ export function postMessage(dataDir, input, now = Date.now()) {
   } finally { store.close(); }
 }
 
+/**
+ * AW-005 for a Resume (UI19, LOCAL_OPERATION.md section 4.3): the code this dashboard runs must be an ancestor of the
+ * trusted main, origin/main or, with config.json `selfHosting.trustedMain` "local", the trusted tip of the main ledger.
+ * Read-only: it never fetches. Throws the owner's refusal, with the machine's reason as its detail.
+ */
+function resumeAllowed(dataDir, store, provenanceRoot) {
+  const notMerged = revisionNotMerged({ root: provenanceRoot, trust: runtimeTrust(readConfig(dataDir), store) });
+  if (notMerged) throw fail(409, COMMANDS.resumeRefused, `Resume refused: ${notMerged}`);
+}
+
 // provenanceRoot: the checkout whose origin/main a Resume is checked against (AW-005). The dashboard's own entry point never
 // passes it, so it is always this dashboard's own checkout; only the tests point a server or a call at another repository.
 export function applyCommand(dataDir, input, now = Date.now(), { provenanceRoot = CODE_ROOT } = {}) {
@@ -862,10 +974,7 @@ export function applyCommand(dataDir, input, now = Date.now(), { provenanceRoot 
   try {
     // Private Resume uses the registered declaration; executable code must still be merged.
     const before = input.action === 'resume' ? store.campaign(input.campaignId) : null;
-    if (before?.control === 'paused') {
-      const notMerged = revisionNotMerged({ root: provenanceRoot });
-      if (notMerged) throw fail(409, COMMANDS.resumeRefused, `Resume refused: ${notMerged}`);
-    }
+    if (before?.control === 'paused') resumeAllowed(dataDir, store, provenanceRoot);
     return store.tx(() => {
       const id = input.campaignId;
       const c = store.campaign(id);
@@ -904,4 +1013,273 @@ export function applyCommand(dataDir, input, now = Date.now(), { provenanceRoot 
       return { accepted: true, duplicate: false, action: input.action };
     });
   } finally { store.close(); }
+}
+
+const PAUSE_SCOPES = ['all', 'project', 'goal'];
+const SCOPE_REASON = { all: 'Owner paused all work from the local dashboard', project: 'Owner paused this project from the local dashboard',
+  goal: 'Owner paused this goal from the local dashboard' };
+
+/**
+ * Pause or resume all work, one project's or one goal (OWNER_UI_V2 WP1), through the same version-bound control as a
+ * single goal's Pause and Resume. `input` is { requestId, action: 'pause' | 'resume', scope: 'all' | 'project' | 'goal',
+ * project?, campaignId?, goals: [{ campaignId, version, authorizationVersion, scopeDigest }] }. `goals` must be exactly
+ * the goals the scope covers now, each at the version the page showed: a pause binds every running goal of the scope; a
+ * resume only the goals that this very scope paused (for a goal: that goal), so it never resumes work paused for
+ * another reason. Anything else changed refuses the whole request with nothing written. Resume first passes the AW-005
+ * check against the trusted main. Runs already started finish and are recorded; nothing new is dispatched.
+ */
+export function applyScopedControl(dataDir, input, now = Date.now(), { provenanceRoot = CODE_ROOT } = {}) {
+  const goalKeys = ['campaignId', 'version', 'authorizationVersion', 'scopeDigest'];
+  const validGoal = (goal) => goal && typeof goal === 'object' && !Array.isArray(goal) && Object.keys(goal).every((key) => goalKeys.includes(key)) &&
+    identifier.test(goal.campaignId ?? '') && Number.isSafeInteger(goal.version) && goal.version >= 1 && Number.isSafeInteger(goal.authorizationVersion) &&
+    /^[a-f0-9]{64}$/.test(goal.scopeDigest ?? '');
+  if (!input || typeof input !== 'object' || Array.isArray(input) ||
+      Object.keys(input).some((key) => !['requestId', 'action', 'scope', 'project', 'campaignId', 'goals'].includes(key)) ||
+      !/^[0-9a-f-]{36}$/i.test(input.requestId ?? '') || !['pause', 'resume'].includes(input.action) || !PAUSE_SCOPES.includes(input.scope) ||
+      (input.scope === 'project') !== PROJECT.test(input.project ?? '') ||
+      (input.scope === 'goal') !== identifier.test(input.campaignId ?? '') ||
+      !Array.isArray(input.goals) || input.goals.length > 200 || !input.goals.every(validGoal) ||
+      new Set(input.goals.map((goal) => goal.campaignId)).size !== input.goals.length) {
+    throw fail(400, 'Invalid dashboard command.');
+  }
+  if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'AIWorks can’t read its work records on this computer right now.');
+  const scope = input.scope === 'all' ? { kind: 'all' } : input.scope === 'project' ? { kind: 'project', project: input.project } : { kind: 'goal' };
+  const store = new Store(join(dataDir, 'supervisor.db'));
+  try {
+    const payload = { action: input.action, scope, campaignId: input.campaignId ?? null,
+      goals: [...input.goals].sort((a, b) => a.campaignId.localeCompare(b.campaignId)).map((goal) => goalKeys.map((key) => goal[key])) };
+    const dedup = `dashboard:${input.requestId}`;
+    const replay = () => {
+      const previous = store.get('SELECT payload FROM events WHERE dedup_key = ?', dedup);
+      if (!previous) return null;
+      if (JSON.stringify(previous.payload) !== JSON.stringify(payload)) throw fail(409, 'That command identifier was already used for a different request.');
+      return { accepted: true, duplicate: true, action: input.action, scope: input.scope, goals: input.goals.length };
+    };
+    const earlier = replay();
+    if (earlier) return earlier;
+    // AW-005 before anything is written: a resume from code the trusted main does not contain changes nothing.
+    if (input.action === 'resume') resumeAllowed(dataDir, store, provenanceRoot);
+    return store.tx(() => {
+      const again = replay();
+      if (again) return again;
+      const goals = goalControls(store).filter((goal) => input.scope === 'goal' ? goal.id === input.campaignId
+        : input.scope === 'all' || sameProject(goal.project, input.project));
+      const summary = pauseSummary(goals, scope);
+      const expected = input.action === 'pause' ? summary.pause : summary.resume;
+      const bound = new Map(input.goals.map((goal) => [goal.campaignId, goal]));
+      if (!expected.length) throw fail(409, input.action === 'pause' ? COMMANDS.nothingToPause : COMMANDS.nothingToResume);
+      if (expected.length !== bound.size || expected.some((goal) => goalKeys.some((key) => bound.get(goal.campaignId)?.[key] !== goal[key]))) {
+        throw fail(409, 'Work changed since this view was loaded. Refresh and try again.');
+      }
+      for (const goal of expected) {
+        if (input.action === 'pause') campaignPause(store, goal.campaignId, SCOPE_REASON[scope.kind], now, { scope });
+        else campaignStart(store, store.campaign(goal.campaignId).declaration, now);
+      }
+      // One receipt for the request, kept with the first goal it covers, and an audit line on each goal.
+      store.addEvent(expected[0].campaignId, 'dashboard-command', payload, dedup, now);
+      for (const goal of expected) store.journal(goal.campaignId, 'dashboard-command', { action: input.action, scope: scope.kind, requestId: input.requestId }, now);
+      return { accepted: true, duplicate: false, action: input.action, scope: input.scope, goals: expected.length };
+    });
+  } finally { store.close(); }
+}
+
+const SNOOZE = { '1h': 3_600_000, '4h': 4 * 3_600_000, '1d': 86_400_000 };
+const DECISION_KEYS = ['requestId', 'campaignId', 'taskId', 'taskVersion', 'version', 'authorizationVersion', 'scopeDigest', 'decision', 'option', 'text', 'snooze'];
+
+/**
+ * Answer, snooze or "this did not need me" on one decision (OWNER_UI_V2 WP2; `action` comes from the address). The
+ * request binds the goal's version, authorization and scope, the step's version and the decision's id, so a stale,
+ * wrong-step or replayed request changes nothing. An answer is recorded once per decision: the controller then clears
+ * exactly that stop and gives the step's next worker the answer as guidance under the same packet, so it can never widen
+ * the work, clear another blocker or start a second run. A wider change goes through a new plan approval. Snooze and
+ * "did not need me" are feedback only: the step stays stopped until it is answered.
+ */
+export function applyDecision(dataDir, action, input, now = Date.now()) {
+  if (!['answer', 'snooze', 'not-needed'].includes(action) || !input || typeof input !== 'object' || Array.isArray(input) ||
+      Object.keys(input).some((key) => !DECISION_KEYS.includes(key)) || !/^[0-9a-f-]{36}$/i.test(input.requestId ?? '') ||
+      !identifier.test(input.campaignId ?? '') || !identifier.test(input.taskId ?? '') || !Number.isSafeInteger(input.taskVersion) ||
+      !Number.isSafeInteger(input.version) || input.version < 1 || !Number.isSafeInteger(input.authorizationVersion) ||
+      !/^[a-f0-9]{64}$/.test(input.scopeDigest ?? '') || !/^[a-f0-9]{32}$/.test(input.decision ?? '') ||
+      input.option !== undefined && (action !== 'answer' || !/^[a-z][a-z0-9-]{0,31}$/.test(input.option)) ||
+      input.text !== undefined && (action === 'snooze' || typeof input.text !== 'string' || !input.text.trim() || input.text.length > 2000 ||
+        /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(input.text)) ||
+      (input.snooze !== undefined) !== (action === 'snooze') || action === 'snooze' && !Object.hasOwn(SNOOZE, input.snooze) ||
+      action === 'answer' && input.option === undefined && input.text === undefined) {
+    throw fail(400, 'Invalid dashboard command.');
+  }
+  if (input.text !== undefined && safeText(input.text, 2000) !== input.text) {
+    throw Object.assign(fail(400, INSTRUCTION_LOOKS_SENSITIVE), { code: 'INSTRUCTION_LOOKS_SENSITIVE' });
+  }
+  if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'AIWorks can’t read its work records on this computer right now.');
+  const store = new Store(join(dataDir, 'supervisor.db'));
+  try {
+    return store.tx(() => {
+      const id = input.campaignId;
+      const payload = { taskId: input.taskId, decision: input.decision, action, taskVersion: input.taskVersion, version: input.version,
+        authorizationVersion: input.authorizationVersion, scopeDigest: input.scopeDigest, option: input.option ?? null,
+        // The receipt binds the owner's words by digest: they are kept once, in the decision's own event.
+        text: input.text === undefined ? null : createHash('sha256').update(input.text, 'utf8').digest('hex'), snooze: input.snooze ?? null };
+      const dedup = `dashboard:${input.requestId}`;
+      const previous = store.get('SELECT campaign_id, payload FROM events WHERE dedup_key = ?', dedup);
+      if (previous) {
+        if (previous.campaign_id !== id || JSON.stringify(previous.payload) !== JSON.stringify(payload)) throw fail(409, 'That command identifier was already used for a different request.');
+        return { accepted: true, duplicate: true, action };
+      }
+      const c = store.campaign(id);
+      if (!c) throw fail(404, COMMANDS.notFound);
+      if (c.version !== input.version || c.authorization_version !== input.authorizationVersion || c.scope_digest !== input.scopeDigest) {
+        throw fail(409, 'Work changed since this view was loaded. Refresh and try again.');
+      }
+      if (!['registered', 'paused'].includes(c.control)) throw fail(409, COMMANDS.closed);
+      const task = store.task(id, input.taskId);
+      if (!task || task.version !== input.taskVersion || !isDecision(task) || decisionId(id, task.task_id, task.blocked) !== input.decision) {
+        throw fail(409, COMMANDS.decision.stale);
+      }
+      const answered = `decision-answer:${id}:${input.decision}`;
+      if (store.get('SELECT 1 FROM events WHERE dedup_key = ?', answered)) throw fail(409, COMMANDS.decision.answered);
+      const event = { taskId: input.taskId, decision: input.decision, requestId: input.requestId };
+      if (action === 'answer') {
+        const d = structuredDecision({ decision: task.blocked.decision });
+        if (input.option !== undefined && !d?.options.some((o) => o.id === input.option)) throw fail(400, COMMANDS.decision.notOption);
+        store.addEvent(id, 'decision-answer', { ...event, option: input.option ?? null, text: input.text ?? null,
+          authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest }, answered, now);
+      } else if (action === 'snooze') {
+        store.addEvent(id, 'decision-snooze', { ...event, until: now + SNOOZE[input.snooze] }, null, now);
+      } else {
+        if (!store.addEvent(id, 'decision-not-needed', { ...event, text: input.text ?? null }, `decision-not-needed:${id}:${input.decision}`, now)) {
+          throw fail(409, COMMANDS.decision.noted);
+        }
+      }
+      store.addEvent(id, 'dashboard-command', payload, dedup, now);
+      store.journal(id, 'dashboard-command', { action: `decision-${action}`, task: input.taskId, requestId: input.requestId }, now);
+      return { accepted: true, duplicate: false, action, ...(action === 'snooze' ? { until: now + SNOOZE[input.snooze] } : {}) };
+    });
+  } finally { store.close(); }
+}
+
+const RESULT_KEYS = ['requestId', 'campaignId', 'taskId', 'taskVersion', 'version', 'authorizationVersion', 'scopeDigest', 'verifiedSha', 'reportDigest', 'text', 'criterion'];
+
+/**
+ * Accept a result or request changes to it (OWNER_UI_V2 WP4; `action` comes from the address). The request binds the
+ * goal's version, authorization and scope, the step's version, its verified head and the digest of the report that head
+ * was checked with, so a changed, unverified, stale or replayed request changes nothing.
+ *
+ * Accept records the owner's acceptance of exactly that head: it never merges, pushes or reads GitHub. A GitHub result
+ * merges only through the supervisor's merge gate, in a repository the owner opted in, or under the project's own gate;
+ * a result with a failed criterion or a blocking finding is not accepted. A local result is accepted by Apply.
+ *
+ * Request changes records the owner's words once per verified head. The controller then reopens the finished step as a
+ * bounded repair round on its own branch (Controller.requestedChanges): earlier runs and checks stay, the merge gate
+ * holds that head meanwhile, and only a fresh independent verification of the new head is published.
+ */
+export function applyResultReview(dataDir, action, input, now = Date.now(), { config = readConfig(dataDir) } = {}) {
+  const changes = action === 'request-changes';
+  if (!['accept', 'request-changes'].includes(action) || !input || typeof input !== 'object' || Array.isArray(input) ||
+      Object.keys(input).some((key) => !RESULT_KEYS.includes(key)) || !/^[0-9a-f-]{36}$/i.test(input.requestId ?? '') ||
+      !identifier.test(input.campaignId ?? '') || !identifier.test(input.taskId ?? '') || !Number.isSafeInteger(input.taskVersion) ||
+      !Number.isSafeInteger(input.version) || input.version < 1 || !Number.isSafeInteger(input.authorizationVersion) ||
+      !/^[a-f0-9]{64}$/.test(input.scopeDigest ?? '') || !/^[0-9a-f]{40}$/.test(input.verifiedSha ?? '') || !/^[0-9a-f]{64}$/.test(input.reportDigest ?? '') ||
+      (input.text !== undefined) !== changes || changes && (typeof input.text !== 'string' || !input.text.trim() || input.text.length > MAX_FEEDBACK ||
+        /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(input.text)) ||
+      input.criterion !== undefined && (!changes || !Number.isSafeInteger(input.criterion) || input.criterion < 1 || input.criterion > 16)) {
+    throw fail(400, 'Invalid dashboard command.');
+  }
+  if (changes && safeText(input.text, MAX_FEEDBACK) !== input.text) {
+    throw Object.assign(fail(400, INSTRUCTION_LOOKS_SENSITIVE), { code: 'INSTRUCTION_LOOKS_SENSITIVE' });
+  }
+  if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'AIWorks can’t read its work records on this computer right now.');
+  const store = new Store(join(dataDir, 'supervisor.db'));
+  try {
+    return store.tx(() => {
+      const id = input.campaignId, sha = input.verifiedSha;
+      const payload = { taskId: input.taskId, action, taskVersion: input.taskVersion, version: input.version, authorizationVersion: input.authorizationVersion,
+        scopeDigest: input.scopeDigest, verifiedSha: sha, reportDigest: input.reportDigest, criterion: input.criterion ?? null,
+        // The receipt binds the owner's words by digest: they are kept once, in the request's own event.
+        text: input.text === undefined ? null : createHash('sha256').update(input.text, 'utf8').digest('hex') };
+      const dedup = `dashboard:${input.requestId}`;
+      const previous = store.get('SELECT campaign_id, payload FROM events WHERE dedup_key = ?', dedup);
+      if (previous) {
+        if (previous.campaign_id !== id || JSON.stringify(previous.payload) !== JSON.stringify(payload)) throw fail(409, 'That command identifier was already used for a different request.');
+        return { accepted: true, duplicate: true, action };
+      }
+      const c = store.campaign(id);
+      if (!c) throw fail(404, COMMANDS.notFound);
+      if (c.version !== input.version || c.authorization_version !== input.authorizationVersion || c.scope_digest !== input.scopeDigest) {
+        throw fail(409, 'Work changed since this view was loaded. Refresh and try again.');
+      }
+      if (!['registered', 'finished'].includes(c.control)) throw fail(409, COMMANDS.result.closed);
+      const task = store.task(id, input.taskId);
+      const spec = c.declaration.tasks.find((item) => item.id === input.taskId);
+      if (!task || task.version !== input.taskVersion) throw fail(409, COMMANDS.result.changed);
+      const review = resultReview(store, c, task, spec, config);
+      // Exactly the head that passed the independent check, with the report it was checked with: never a newer or older one.
+      if (!review || review.verifiedSha !== sha || review.reportDigest !== input.reportDigest || !['ready', 'accepted', 'changes-requested', 'merged'].includes(review.state)) {
+        throw fail(409, COMMANDS.result.changed);
+      }
+      if (review.state === 'changes-requested') throw fail(409, COMMANDS.result.requested);
+      if (review.state === 'merged') throw fail(409, COMMANDS.result.merged);
+      if (changes) {
+        if (!review.commit) throw fail(409, COMMANDS.result.reportOnly);
+        if (review.roundsLeft === 0) throw fail(409, COMMANDS.result.noRounds);
+        if (!store.addEvent(id, 'result-changes', { taskId: task.task_id, verifiedSha: sha, reportDigest: input.reportDigest, criterion: input.criterion ?? null,
+          text: input.text, authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest, requestId: input.requestId },
+        `result-changes:${id}:${task.task_id}:${sha}`, now)) throw fail(409, COMMANDS.result.requested);
+      } else {
+        if (review.local) throw fail(409, COMMANDS.result.applyLocal);
+        if (review.state === 'accepted') throw fail(409, COMMANDS.result.alreadyAccepted);
+        if (review.unresolved.failed || review.unresolved.blocking) throw fail(409, COMMANDS.result.unresolved);
+        // A record only, handled here: the controller has nothing to do for it, and the merge gate keeps its own conditions.
+        store.addEvent(id, 'result-accepted', { taskId: task.task_id, verifiedSha: sha, reportDigest: input.reportDigest, requestId: input.requestId },
+          `result-accepted:${id}:${task.task_id}:${sha}`, now);
+        store.run('UPDATE events SET processed_at = ? WHERE dedup_key = ?', now, `result-accepted:${id}:${task.task_id}:${sha}`);
+        store.journal(id, 'result-accepted', { task: task.task_id, sha, reportDigest: input.reportDigest }, now);
+      }
+      store.addEvent(id, 'dashboard-command', payload, dedup, now);
+      store.journal(id, 'dashboard-command', { action: `result-${action}`, task: input.taskId, requestId: input.requestId }, now);
+      return { accepted: true, duplicate: false, action, mergeGate: review.mergeGate };
+    });
+  } finally { store.close(); }
+}
+
+const PREVIEW_KEYS = ['campaignId', 'taskId', 'taskVersion', 'version', 'authorizationVersion', 'scopeDigest', 'verifiedSha', 'reportDigest'];
+
+/**
+ * Open a preview of a checked version (OWNER_UI_V2 WP7). The request binds the same goal, step, verified head and report
+ * as Review's accept, and nothing else: no command, path or address. The review is read again here, so only the exact
+ * head of a finished step that passed the independent check with that report is previewed; a changed, unverified,
+ * reopened or report-only result is refused. The pages are read from that commit's Git objects in AIWorks's own
+ * checkout (preview.mjs); nothing is built or started, and nothing is written. The answer names the preview's address and the commit,
+ * never a folder.
+ */
+export function openResultPreview(dataDir, input, sessions, { config = readConfig(dataDir) } = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !PREVIEW_KEYS.includes(key)) ||
+      !identifier.test(input.campaignId ?? '') || !identifier.test(input.taskId ?? '') || !Number.isSafeInteger(input.taskVersion) ||
+      !Number.isSafeInteger(input.version) || input.version < 1 || !Number.isSafeInteger(input.authorizationVersion) ||
+      !/^[a-f0-9]{64}$/.test(input.scopeDigest ?? '') || !/^[0-9a-f]{40}$/.test(input.verifiedSha ?? '') || !/^[0-9a-f]{64}$/.test(input.reportDigest ?? '')) {
+    throw fail(400, 'Invalid dashboard command.');
+  }
+  if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'AIWorks can’t read its work records on this computer right now.');
+  const store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true });
+  let repoPath = null;
+  try {
+    const c = store.campaign(input.campaignId);
+    if (!c) throw fail(404, COMMANDS.notFound);
+    if (c.version !== input.version || c.authorization_version !== input.authorizationVersion || c.scope_digest !== input.scopeDigest) {
+      throw fail(409, 'Work changed since this view was loaded. Refresh and try again.');
+    }
+    const task = store.task(c.id, input.taskId), spec = c.declaration.tasks.find((item) => item.id === input.taskId);
+    if (!task || task.version !== input.taskVersion) throw fail(409, COMMANDS.result.changed);
+    const review = resultReview(store, c, task, spec, config);
+    // Exactly the head that passed the independent check, with the report it was checked with: never a newer or older one.
+    if (!review || review.verifiedSha !== input.verifiedSha || review.reportDigest !== input.reportDigest) throw fail(409, COMMANDS.result.changed);
+    if (!review.preview.available) throw fail(409, review.preview.reason);
+    try { repoPath = isLocalTarget(c.declaration) ? resolveLocalProject(store, c.declaration).checkout.path : resolveCheckout(store, config, c.declaration.target.repository)?.path ?? null; }
+    catch { repoPath = null; }
+  } finally { store.close(); }
+  const git = configuredGitCommand(dataDir);
+  let manifest;
+  try { manifest = previewManifest({ git, repoPath, sha: input.verifiedSha }); }
+  catch (error) { if (error instanceof PreviewError) throw fail(409, error.message); throw error; }
+  const { token, expiresAt } = sessions.add({ git, repoPath, sha: input.verifiedSha, manifest, binding: { campaignId: input.campaignId, taskId: input.taskId } });
+  return { url: `/preview/${token}/${manifest.entry.split('/').map(encodeURIComponent).join('/')}`, verifiedSha: input.verifiedSha, expiresAt };
 }

@@ -275,8 +275,8 @@ test('HTTP controls require exact loopback Host, Origin, CSRF and bounded JSON',
   assert.equal(store.get("SELECT payload FROM events WHERE kind = 'agent-instruction' ORDER BY seq DESC LIMIT 1").payload.text, splitInstruction.text);
   assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'none'/);
   assert.equal(page.headers.get('access-control-allow-origin'), null);
-  // The page opens on Projects; the heading takes focus on a route change (OWNER_WORKSPACE §6.2).
-  assert.match(await page.text(), /<h1 id="view-title" tabindex="-1">Projects<\/h1>/);
+  // The page opens on Home (OWNER_UI_V2 section 2); the heading takes focus on a route change (OWNER_WORKSPACE §6.2).
+  assert.match(await page.text(), /<h1 id="view-title" tabindex="-1">Home<\/h1>/);
   assert.equal((await fetch(`${base}/api/session`, { method: 'PUT' })).status, 405);
   assert.equal((await fetch(`${base}/api/refresh`, { method: 'POST', headers: goodHeaders, body: '{}' })).status, 404, 'there is no GitHub refresh route');
   // Every response isolates its window from cross-origin openers, alongside the existing headers.

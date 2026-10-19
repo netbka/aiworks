@@ -13,7 +13,8 @@ import * as gitA from './adapters/git.mjs';
 import * as github from './adapters/github.mjs';
 import { authorityDigest, campaignLimits, canonicalJson, executorOrder, overlayGovernance, projectGovernance } from './campaign.mjs';
 import { resolveCheckout, resolveLocalProject } from './project-connect.mjs';
-import { campaignBudget } from './api.mjs';
+import { admissionBudget } from './api.mjs';
+import { currentSettings, projectOf, protectedAreasFor, protectedPaths } from './project-settings.mjs';
 import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountOf, accountWait, buildTaskSignature, clearAccountWait, formatSignatureLines, formatTokensUsage, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
 import { BEYOND_RULE, beyondConstraint, domainOf, outsideWrites, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
@@ -22,6 +23,8 @@ import { ANCHOR, MAX_DOCUMENT_BYTES, parseReference, resolveSection } from './re
 import { MAX_CITES } from './adapters/claude.mjs';
 import { stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions } from './instructions.mjs';
+import { answerGuidance, decisionId, isDecision, structuredDecision } from './decisions.mjs';
+import { mergedHead, OWNER_CHANGES, ownerChangesFinding } from './result-review.mjs';
 import { POLICY as ROUTING_POLICY, autoReceipt, indicators, policyInputs, priorAttempt, receiptInputs, staticReceipt } from './router.mjs';
 import { roleCatalog } from './governance.mjs';
 import { ACCEPT_TASK, PLAN_TASK, admitAmendment, settleAmendment, specOf as storedSpecOf, specsOf as storedSpecsOf, verifyChain } from './plan.mjs';
@@ -35,6 +38,7 @@ import { isLocalTarget, recordCandidate } from './local-candidates.mjs';
 import { checkLocalDispatch, LOCAL_ADMISSION_ON } from './local-admission.mjs';
 import { addComment, createItem, reviewItem, WorkListError, workAuthorization, workLink } from './work-list.mjs';
 import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
+import { alertDecision, currentAlertRules, renderAlert, syntheticTransport, transportSetup } from './alerts.mjs';
 import { PUBLICATION_REFUSED, privateTerms, publicationFindings } from '../shared/public-text.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -104,11 +108,14 @@ export const DEFAULTS = {
   // A GitHub rate-limit refusal waits for its reported reset plus this margin, instead of publishRetryMs (aiworks#21).
   rateLimitMarginMs: 5_000,
 };
-// Findings that reopen a published task as a repair round on its own branch and PR (aiworks#27, aiworks#42).
-const REPAIR_FINDINGS = new Set(['integration-conflict', 'ci-failure']);
+// Findings that reopen a published task as a repair round on its own branch and PR (aiworks#27, aiworks#42), and the
+// owner's request for changes to a finished result (OWNER_UI_V2 WP4).
+const REPAIR_FINDINGS = new Set(['integration-conflict', 'ci-failure', OWNER_CHANGES]);
 // aiworks#8: a verified task whose publication text fails the privacy check gets at most this many correction rounds
 // (within maxRepairRounds) before it stalls; nothing of the refused text is sent.
 const PUBLICATION_REPAIRS = 2;
+// A repair round's name in the words of a stop or a refusal.
+const REPAIR_WORDS = Object.freeze({ ci: 'CI', integration: 'integration', 'owner-changes': 'requested-changes' });
 
 // ---- Scoped reading (docs/design/SCOPED_READING.md sections 4 to 6, slice READ2). ----
 // A reference may name one section of a Markdown document as `path#anchor`. Dispatch resolves it at the pinned revision
@@ -179,7 +186,7 @@ export function packetReferences({ declared, kind, findings, maxReferences }) {
 /** The packet constraint of one blocking finding; a verifier finding names the rule of each cite (SCOPED_READING 6.4). */
 export function findingConstraint(finding, resolutions = []) {
   const label = finding.id === 'integration-conflict' ? 'integration' : finding.id === 'ci-failure' ? 'CI'
-    : finding.id === 'publication-text' ? 'publication' : 'verifier';
+    : finding.id === 'publication-text' ? 'publication' : finding.id === OWNER_CHANGES ? 'owner' : 'verifier';
   const rules = (Array.isArray(finding.cites) && !REPAIR_FINDINGS.has(finding.id) ? finding.cites : []).map((cite) => {
     const item = resolutions.find((record) => record.reference === cite && record.resolved);
     const heading = item ? promptText(item.heading, 120) : null;
@@ -411,6 +418,9 @@ export class Controller {
     this.governanceRoot = governanceRoot ?? this.config.governanceRoot;
     // aiworks#1 owner-intervention core: off unless the data-directory config enables it.
     this.oi = this.config.ownerIntervention?.enabled === true;
+    // OWNER_UI_V2 WP6: config.json `alerts.transport` may choose the synthetic rehearsal transport; every other kind has
+    // no adapter in this version and sends nothing. An injected notifier (tests) takes precedence.
+    if (notifier === noopTransport && transportSetup(this.config).state === 'rehearsal') this.notifier = syntheticTransport(store, () => this.now());
     // aiworks#27 integration repair: off unless the data-directory config enables it. The check times are kept in memory
     // only: after a restart every published task is checked once more, which is harmless.
     this.ir = this.config.integrationRepair?.enabled === true;
@@ -484,6 +494,11 @@ export class Controller {
       for (const { id } of this.store.all("SELECT id FROM campaigns WHERE control = 'finished'")) {
         if (!ids.includes(id) && (this.ciNextAt.get(id) ?? -Infinity) <= this.now()) ids.push(id);
       }
+    }
+    // And a finished campaign whose owner asked for changes to one of its results (OWNER_UI_V2 WP4).
+    for (const { campaign_id: id } of this.store.all(`SELECT DISTINCT events.campaign_id FROM events JOIN campaigns ON campaigns.id = events.campaign_id
+      WHERE events.kind = 'result-changes' AND events.processed_at IS NULL AND campaigns.control = 'finished'`)) {
+      if (!ids.includes(id)) ids.push(id);
     }
     this.candidates = [];
     for (const id of ids) {
@@ -561,6 +576,8 @@ export class Controller {
     if (this.ir && this.store.campaign(id).control === 'finished') this.checkPublishedIntegration(ctx);
     // A published head whose CI fails reopens its task the same way (aiworks#42).
     if (this.ci && this.store.campaign(id).control === 'finished') this.checkPublishedCi(ctx);
+    // The owner's request for changes reopens its finished step the same way (OWNER_UI_V2 WP4).
+    this.requestedChanges(ctx);
     if (['finished', 'cancelled'].includes(this.store.campaign(id).control)) return;
 
     this.processEvents(ctx);
@@ -759,6 +776,7 @@ export class Controller {
   processEvents(ctx) {
     for (const event of this.store.all('SELECT * FROM events WHERE campaign_id = ? AND processed_at IS NULL ORDER BY seq', ctx.id)) {
       if (event.kind === 'agent-instruction') continue; // Dispatch owns the durable delivery receipt.
+      if (event.kind === 'result-changes') continue; // requestedChanges handles it, in finished campaigns too.
       this.fenced(ctx, () => {
         const now = this.now();
         if (event.kind === 'recheck') {
@@ -794,10 +812,38 @@ export class Controller {
           else if (record) { /* a recheck is already running, or ownerInterventionTick releases a resolved record */ }
           else if (c.blocker && c.blocker.kind !== 'budget') this.store.patch('campaigns', { id: ctx.id }, c.version, { blocker: null }, now);
         }
-        this.store.journal(ctx.id, `event-${event.kind}`, event.payload, now);
+        if (event.kind === 'decision-answer') this.answerDecision(ctx, event.payload, now);
+        // An owner's decision feedback keeps its words in its event; the journal names the decision only.
+        this.store.journal(ctx.id, `event-${event.kind}`, event.kind.startsWith('decision-')
+          ? { task: event.payload?.taskId ?? null, decision: event.payload?.decision ?? null } : event.payload, now);
         this.store.run('UPDATE events SET processed_at = ? WHERE seq = ?', now, event.seq);
       });
     }
+  }
+
+  /**
+   * The owner's answer to one decision (OWNER_UI_V2 WP2), inside processEvents' fence. It clears only the stop it was
+   * given for: when the task has stopped again since, or is no longer a decision, nothing changes. Then the step's next
+   * worker gets the answer as guidance under the same authority and scope, exactly once, and the step resumes in its
+   * phase. It never touches the campaign's own blocker, another task or a limit.
+   */
+  answerDecision(ctx, payload, now) {
+    const c = this.store.campaign(ctx.id);
+    const task = this.store.task(ctx.id, payload?.taskId);
+    if (!task || !isDecision(task) || decisionId(ctx.id, task.task_id, task.blocked) !== payload.decision ||
+        c.authorization_version !== payload.authorizationVersion || c.scope_digest !== payload.scopeDigest) {
+      this.store.journal(ctx.id, 'decision-answer-stale', { task: payload?.taskId ?? null, decision: payload?.decision ?? null }, now);
+      return;
+    }
+    this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version, { blocked: null, failures: {}, retry_at: null, last_error: null }, now);
+    const record = this.oi && task.blocked.fingerprint ? this.store.blocker(task.blocked.fingerprint) : null;
+    if (record && record.status !== 'resolved') {
+      this.resolveBlocker(ctx, record, { trigger: 'owner-decision', probe: 'decision', pass: true, detail: `owner answer to decision ${payload.decision.slice(0, 12)}`, at: now }, now);
+    }
+    this.store.addEvent(ctx.id, 'agent-instruction', { taskId: task.task_id, role: 'implement',
+      text: answerGuidance(task.blocked.decision, payload), authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest },
+    `instruction:decision:${ctx.id}:${payload.decision}`, now);
+    this.store.journal(ctx.id, 'decision-answered', { task: task.task_id, decision: payload.decision, option: payload.option ?? null }, now);
   }
 
   async reconcile(ctx, op) {
@@ -907,6 +953,22 @@ export class Controller {
           verdict = { ...verdict, class: 'error', violation: true,
             detail: `writes secret-like or forbidden files: ${forbidden.slice(0, 10).join(', ')}${forbidden.length > 10 ? ', ...' : ''}` };
         }
+      }
+    }
+    // The project's standing protected areas (WP5) bind every commit, whatever its declared domain, when it is built and
+    // again when it is checked, so an area added meanwhile holds it too: a change inside one is a boundary violation
+    // held for the owner, like a write outside the domain. An integration repair is measured from the base it merged.
+    const protectedHead = verdict.class !== 'result' || this.deliverable(ctx, op.task_id) !== 'commit' ? null
+      : op.kind === 'implement' && verdict.value.result === 'resolved' ? verdict.value.headSha : op.kind === 'verify' ? op.target_sha : null;
+    const areas = protectedHead ? protectedAreasFor(this.store, this.store.campaign(ctx.id)) : [];
+    if (areas.length) {
+      const integration = this.integrationFinding(before);
+      const changed = gitA.changedPaths({ git: this.cmd.git, path: op.workspace, from: integration ? integration.base : before.base_sha, to: protectedHead });
+      const inside = changed === null ? null : protectedPaths(areas, changed);
+      if (inside === null) verdict = { ...verdict, class: 'invalid-result', detail: 'cannot list the paths the commit changed' };
+      else if (inside.length) {
+        verdict = { ...verdict, class: 'error', violation: true,
+          detail: `changes inside the project's protected areas (${areas.join(', ')}): ${inside.slice(0, 10).join(', ')}${inside.length > 10 ? ', ...' : ''}` };
       }
     }
     if (verdict.class === 'result' && op.kind === 'verify' && before.head_sha !== op.target_sha) {
@@ -1216,7 +1278,8 @@ export class Controller {
         return { state: 'implemented', head_sha: head, result: value, signature, retry_at: null, last_error: null, failures: {} };
       }
       if (value.result === 'blocked-owner-reserved') {
-        return { state: 'pending', result: value, blocked: { class: 'B3', reason: `owner-reserved: ${value.ownerTrigger}`, at: now } };
+        const decision = structuredDecision(value);
+        return { state: 'pending', result: value, blocked: { class: 'B3', reason: `owner-reserved: ${value.ownerTrigger}`, at: now, ...(decision ? { decision } : {}) } };
       }
       return retry('evidence-unavailable', value.tried || value.summary, 'pending');
     }
@@ -1241,8 +1304,9 @@ export class Controller {
       const repair = this.publishedRepair(task);
       const findings = repair ? [...blocking, repair] : blocking;
       if (limits.maxRepairRounds !== null && task.repair_rounds >= limits.maxRepairRounds) {
+        const decision = structuredDecision(value);
         return { state: 'pending', verification: value, findings,
-          blocked: { class: 'stalled', reason: `verifier still rejects after ${task.repair_rounds} repair rounds`, at: now } };
+          blocked: { class: 'stalled', reason: `verifier still rejects after ${task.repair_rounds} repair rounds`, at: now, ...(decision ? { decision } : {}) } };
       }
       return { state: 'pending', verification: value, findings, repair_rounds: task.repair_rounds + 1, retry_at: null, last_error: null };
     }
@@ -1471,6 +1535,39 @@ export class Controller {
     return stalled;
   }
 
+  /**
+   * The owner's requests for changes to a finished result (OWNER_UI_V2 WP4), each handled once inside the fence. A
+   * request reopens its step only while the step is still done at exactly the verified head it was made on, unmerged,
+   * under the same authorization and scope: then it becomes a repair round on the same branch, bounded by
+   * maxRepairRounds (past it the step stalls), and its new head is published only after a fresh independent verification.
+   * Earlier runs, checks and the owner's earlier acceptance stay in the record. A paused campaign keeps the request until
+   * it resumes; a cancelled one, a changed step or a merged head records it as stale and changes nothing.
+   */
+  requestedChanges(ctx) {
+    const events = this.store.all("SELECT * FROM events WHERE campaign_id = ? AND kind = 'result-changes' AND processed_at IS NULL ORDER BY seq", ctx.id);
+    for (const event of events) {
+      this.fenced(ctx, () => {
+        const c = this.store.campaign(ctx.id), p = event.payload ?? {}, now = this.now();
+        if (['paused', 'cancel-requested'].includes(c.control)) return;
+        const task = this.store.task(ctx.id, p.taskId);
+        const current = this.takesRepair(ctx.id) && task?.state === 'done' && !task.blocked && task.verified_sha === p.verifiedSha &&
+          c.authorization_version === p.authorizationVersion && c.scope_digest === p.scopeDigest &&
+          specOf(this.store, ctx.id, task.task_id, c.declaration)?.deliverable === 'commit' && !mergedHead(this.store, ctx.id, task.task_id, p.verifiedSha) &&
+          // A head already in its last fetched base was merged by someone else: there is nothing left to repair on its pull request.
+          (isLocalTarget(c.declaration) || !this.inBase(c.declaration, p.verifiedSha));
+        if (!current) this.store.journal(ctx.id, 'result-changes-stale', { task: p.taskId ?? null, sha: p.verifiedSha ?? null }, now);
+        else {
+          const stalled = this.reopenPublished(ctx, task, ownerChangesFinding({ verifiedSha: p.verifiedSha, text: p.text, criterion: p.criterion ?? null }),
+            { limits: campaignLimits(c.declaration), now, lastError: `owner-changes: requested on ${p.verifiedSha}`,
+              stalledReason: `owner requested changes on ${p.verifiedSha} after ${task.repair_rounds} repair rounds` });
+          // The owner's words stay in the request's own event; the journal names the step and the head only.
+          this.store.journal(ctx.id, 'result-changes-reopened', { task: task.task_id, sha: p.verifiedSha, criterion: p.criterion ?? null, stalled }, now);
+        }
+        this.store.run('UPDATE events SET processed_at = ? WHERE seq = ?', now, event.seq);
+      });
+    }
+  }
+
   /** Whether a campaign may reopen a published task as a repair round now: registered or finished, never paused or cancelled. */
   takesRepair(campaignId) {
     return ['registered', 'finished'].includes(this.store.campaign(campaignId).control);
@@ -1638,11 +1735,12 @@ export class Controller {
     const now = this.now();
     let campaign = this.store.campaign(ctx.id);
     const decl = campaign.declaration;
-    if (campaign.blocker?.kind === 'budget' && !campaignBudget(this.store, campaign).exhausted) {
+    if (campaign.blocker?.kind === 'budget' && !admissionBudget(this.store, campaign, now).exhausted) {
       this.fenced(ctx, () => {
         const c = this.store.campaign(ctx.id);
         this.store.patch('campaigns', { id: ctx.id }, c.version, { blocker: null }, this.now());
-        this.store.journal(ctx.id, 'blocker-cleared', { kind: 'budget', ...campaignBudget(this.store, c) }, this.now());
+        const { project, ...budget } = admissionBudget(this.store, c, this.now());
+        this.store.journal(ctx.id, 'blocker-cleared', { kind: 'budget', ...budget, projectBudgetVersion: project.version }, this.now());
         const record = this.oi && c.blocker.fingerprint ? this.store.blocker(c.blocker.fingerprint) : null;
         if (record && record.status !== 'resolved') this.resolveBlocker(ctx, record, { trigger: 'state-change', probe: 'deterministic', pass: true,
           detail: `budget available under authorization v${c.authorization_version}`, at: this.now() }, this.now());
@@ -1667,7 +1765,7 @@ export class Controller {
     const ready = runnable[0];
     if (!ready) return;
     if (campaign.blocker) return;
-    const budget = campaignBudget(this.store, campaign);
+    const budget = admissionBudget(this.store, campaign, now);
     // Open runs are reserved against a cost ceiling while they last: with work still running, an exhausted budget is a
     // wait for those results, not yet the owner's budget decision (the one-slot path never gets here with a run open).
     if (this.sched && budget.exhausted && this.store.openOperations(ctx.id).length) return;
@@ -1684,8 +1782,11 @@ export class Controller {
       this.fenced(ctx, () => this.raiseBlocker(ctx, decl, {
         kind: 'budget', class: 'B3',
         reason: `${budget.exhausted} under authorization v${campaign.authorization_version}`,
-        requestedAction: 'Decide whether to raise limits.maxWorkerRuns or limits.maxCostUsd; if yes, start the campaign again with authorization.version + 1 and the new limits',
-      }, this.now(), { identity: `v${campaign.authorization_version}:${budget.exhausted.split(' (')[0]}` }));
+        requestedAction: budget.project.exhausted && budget.exhausted === budget.project.exhausted
+          ? `Decide whether to raise or remove the ${budget.exhausted.startsWith('monthly') ? 'monthly ' : ''}budget in this project's settings${budget.exhausted.startsWith('monthly') ? ', or wait for the next month' : ''}; work resumes by itself when it fits`
+          : 'Decide whether to raise limits.maxWorkerRuns or limits.maxCostUsd; if yes, start the campaign again with authorization.version + 1 and the new limits',
+      }, this.now(), { identity: budget.exhausted === budget.project.exhausted
+        ? `project:v${budget.project.version}:${budget.exhausted.split(' (')[0]}` : `v${campaign.authorization_version}:${budget.exhausted.split(' (')[0]}` }));
       return;
     }
     await this.dispatch(ctx, campaign, ready, opKind(ready));
@@ -2120,7 +2221,7 @@ export class Controller {
       // records the operation: two instances admitting at once serialise here (ADAPTIVE_SCHEDULER 4.1).
       const busy = admission ? Boolean(admission()) : this.store.openOperations(ctx.id).length > 0;
       if (current.control !== 'registered' || current.blocker || current.version !== campaign.version ||
-          busy || campaignBudget(this.store, current).exhausted) return null;
+          busy || admissionBudget(this.store, current, this.now()).exhausted) return null;
       const decl = campaign.declaration;
       // The task's packet binding, checked again from the rows before anything is recorded (WORK_ENVELOPE 6.5, slice E4).
       const binding = this.planBinding(current, task.task_id);
@@ -2229,6 +2330,7 @@ export class Controller {
       const repair = spec.deliverable === 'commit' ? this.publishedRepair(task) : null;
       const integration = repair?.id === 'integration-conflict' ? repair : null;
       const ci = repair?.id === 'ci-failure' ? repair : null;
+      const owner = repair?.id === OWNER_CHANGES ? repair : null;
       // aiworks#207: no further run of a round whose verified head is already in the freshly fetched base.
       if (integration && this.endMergedRepair(ctx, decl, task, repo.path, this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository).sha, { read: false })) return null;
       if (kind !== 'verify') {
@@ -2258,7 +2360,7 @@ export class Controller {
           campaignId: ctx.id, taskId: task.task_id, baseBranch: decl.target.baseBranch,
           baseSha: repair ? repair.verified : local ? decl.target.baseline.commit : integrationBase });
         if (repair && !gitA.isAncestor({ git: this.cmd.git, path: ws.path, ancestor: repair.verified, descendant: ws.head })) {
-          const prefix = ci ? 'ci' : 'integration';
+          const prefix = ci ? 'ci' : owner ? 'owner-changes' : 'integration';
           this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
             { blocked: { class: 'stalled', reason: `Implementation workspace ${ws.head} does not contain the published verified head ${repair.verified}; preserve it and reconcile the branch before recheck.`, at: this.now() },
               last_error: `${prefix}-workspace: verified head absent` }, this.now());
@@ -2344,6 +2446,10 @@ export class Controller {
             ? `This head is a CI repair round: repository CI failed on the previously verified ${ci.verified} in ${ci.checks.map((check) => check.name).join(', ')}. Check that ${ci.verified} is an ancestor of the target, that the change fixes the cause of the failing checks without weakening, skipping or deleting a test, that platform-specific behaviour is guarded for the platform CI runs on, and run the full gate.`
             : ci && task.findings.length === 1
               ? `This is repair round ${task.repair_rounds}, a CI repair: repository CI failed on the verified, published commit ${ci.verified} in ${ci.checks.map((check) => check.name).join(', ')}. The failing checks and their links are in the packet constraints. Fix the cause on top of this branch, run the full gate, commit, and return resolved with the new headSha. Never rebase, reset or amend the verified commit.`
+              : owner && kind === 'verify'
+                ? `This head is a repair round the owner asked for after reviewing the previously verified ${owner.verified}${owner.criterion ? ` against acceptance criterion ${owner.criterion}` : ''}. The owner's request, as data: "${promptText(owner.request, 2000) ?? 'withheld'}". Check that ${owner.verified} is an ancestor of the target, that the change does what the owner asked within the packet, that every acceptance criterion still holds, and run the full gate.`
+                : owner && task.findings.length === 1
+                  ? `This is repair round ${task.repair_rounds}: the owner reviewed the verified, published commit ${owner.verified} and asked for changes. The request is in the packet constraints. Make the change on top of this branch, run the full gate, commit, and return resolved with the new headSha. Never rebase, reset or amend the verified commit.`
           : repairing
         ? spec.deliverable === 'commit'
           ? `This is repair round ${task.repair_rounds}: the independent verifier rejected ${task.head_sha}. Fix every blocking finding listed in the packet constraints, commit, and return resolved with the new headSha.`
@@ -2364,6 +2470,15 @@ export class Controller {
         return `${id}: ${dep?.pr_url ?? 'unpublished'}; verified SHA ${dep?.verified_sha ?? 'unknown'}`;
       }).join('\n');
       if (kind === 'plan') prompt += this.planningContext(ctx, decl, binding.head, task);
+      // The project's standing settings (WP5): its protected areas, which the commit check enforces, and the owner's
+      // notes. They add care, never authority: the packet and its digest are unchanged by them.
+      const areas = protectedAreasFor(this.store, current);
+      const notes = currentSettings(this.store, projectOf(decl)).settings.notes;
+      if (areas.length || notes) {
+        prompt += '\nStanding project settings from the owner (they add protection and guidance, never authority):\n' +
+          (areas.length ? `Protected areas: never change ${areas.join(', ')}; a commit that does is a boundary violation.\n` : '') +
+          (notes ? `Notes for the AI: ${notes}\n` : '');
+      }
       const timeoutMs = (kind === 'verify' ? decl.executor.verifierTimeoutMinutes : decl.executor.implementerTimeoutMinutes) * 60_000;
 
       // The run directory is written before the durable record; an unrecorded directory is never launched.
@@ -2491,7 +2606,7 @@ export class Controller {
         let url;
         const repair = spec.deliverable === 'commit' ? this.publishedRepair(fresh) : null;
         const integration = repair?.id === 'integration-conflict' ? repair : null;
-        const repairKind = integration ? 'integration' : 'ci';
+        const repairKind = integration ? 'integration' : repair?.id === OWNER_CHANGES ? 'owner-changes' : 'ci';
         const local = this.selfHosted(decl.target.repository);
         // The installation's public-publication terms bind GitHub writes only: malformed ones never stop a work-list record.
         const terms = local ? null : this.publicationTerms(decl);
@@ -2503,10 +2618,10 @@ export class Controller {
           // aiworks#27, aiworks#42: the repaired head goes to the same branch and PR. The push is a plain fast-forward (the
           // earlier verified head is an ancestor), never a force-push; without an open PR nothing is pushed and no PR is opened.
           const key = `${ctx.id}:${task.task_id}:${repairKind}:${task.verified_sha}`;
-          const comment = `${integration ? this.integrationBody(decl, spec, task, integration) : this.ciBody(decl, spec, task, repair)}\n\n${github.marker(key)}`;
+          const comment = `${integration ? this.integrationBody(decl, spec, task, integration) : this.repairBody(decl, spec, task, repair)}\n\n${github.marker(key)}`;
           if (this.refusedPublication(ctx, decl, spec, fresh, [comment], terms)) return;
           if (comment.length > BODY_LIMIT) {
-            this.raiseBlocker(ctx, decl, { kind: 'publication-size', class: 'B2', reason: `The ${repairKind === 'ci' ? 'CI' : 'integration'} repair verification exceeds the GitHub comment limit; nothing was truncated or pushed.`,
+            this.raiseBlocker(ctx, decl, { kind: 'publication-size', class: 'B2', reason: `The ${REPAIR_WORDS[repairKind]} repair verification exceeds the GitHub comment limit; nothing was truncated or pushed.`,
               requestedAction: 'Provide an authorized publication format that preserves the verification, then recheck.' }, this.now(),
             { identity: task.task_id });
             return;
@@ -2515,7 +2630,7 @@ export class Controller {
           if (!existing) {
             const now = this.now();
             this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, fresh.version, { retry_at: null,
-              blocked: { class: 'stalled', reason: `${repairKind === 'ci' ? 'CI' : 'integration'} repair ${task.verified_sha} verified, but ${branch} has no open PR; nothing was pushed or opened`, at: now } }, now);
+              blocked: { class: 'stalled', reason: `${REPAIR_WORDS[repairKind]} repair ${task.verified_sha} verified, but ${branch} has no open PR; nothing was pushed or opened`, at: now } }, now);
             this.store.journal(ctx.id, `${repairKind}-repair-unpublished`, { task: task.task_id, sha: task.verified_sha }, now);
             return;
           }
@@ -2583,6 +2698,7 @@ export class Controller {
           { state: 'done', pr_url: url, retry_at: null, last_error: null, ...(repair || this.publicationFinding(fresh) ? { findings: null } : {}) }, now);
         this.store.journal(ctx.id, 'published', { task: task.task_id, sha: task.verified_sha, url }, now);
         if (integration) this.store.journal(ctx.id, 'integration-repaired', { task: task.task_id, from: integration.verified, base: integration.base, sha: task.verified_sha, url }, now);
+        else if (repair?.id === OWNER_CHANGES) this.store.journal(ctx.id, 'owner-changes-repaired', { task: task.task_id, from: repair.verified, sha: task.verified_sha, url }, now);
         else if (repair) this.store.journal(ctx.id, 'ci-repaired', { task: task.task_id, from: repair.verified, checks: repair.checks.map((check) => check.name), sha: task.verified_sha, url }, now);
         if (this.oi) this.probeSucceeded(ctx, task.task_id, { detail: `publication of ${task.verified_sha} succeeded` }, now);
         // With CI repair on, a published head is never announced as if its CI had passed (aiworks#42).
@@ -2592,7 +2708,7 @@ export class Controller {
           : integration
           ? `**${task.task_id}** (#${spec.issue}) ${integration.moved ? 'did not contain the current' : 'conflicted with'} ${decl.target.baseBranch} after a sibling merge. The supervisor merged the base, a fresh independent verification accepted \`${task.verified_sha}\`, and it is pushed to the same PR: ${url}. Not merged; merge follows ${decl.target.repository}'s release gate.`
           : repair
-          ? `**${task.task_id}** (#${spec.issue}) failed CI at \`${repair.verified}\`. A repair round fixed it, a fresh independent verification accepted \`${task.verified_sha}\`, and it is pushed to the same PR: ${url}. Not merged; merge follows ${decl.target.repository}'s release gate.`
+          ? `**${task.task_id}** (#${spec.issue}) ${repair.id === OWNER_CHANGES ? 'had changes requested by the owner at' : 'failed CI at'} \`${repair.verified}\`. A repair round ${repair.id === OWNER_CHANGES ? 'made them' : 'fixed it'}, a fresh independent verification accepted \`${task.verified_sha}\`, and it is pushed to the same PR: ${url}. Not merged; merge follows ${decl.target.repository}'s release gate.`
           : spec.deliverable === 'commit'
           ? `**${task.task_id}** (#${spec.issue}) passed independent verification and is published for review: ${url} at \`${task.verified_sha}\`. Not merged; merge follows ${decl.target.repository}'s release gate.`
           : `**${task.task_id}** (#${spec.issue}) passed independent verification; the verified report is posted: ${url} (revision \`${task.verified_sha}\`).`) + ciNote, now);
@@ -2709,12 +2825,12 @@ export class Controller {
       const review = reviewItem(this.store, { campaignId: ctx.id, taskId: task.task_id });
       if (!review) {
         this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version, { retry_at: null,
-          blocked: { class: 'stalled', reason: `${repairKind === 'ci' ? 'CI' : 'integration'} repair ${task.verified_sha} verified, but ${branch} has no review item in the work list; nothing was recorded`, at: now } }, now);
+          blocked: { class: 'stalled', reason: `${REPAIR_WORDS[repairKind]} repair ${task.verified_sha} verified, but ${branch} has no review item in the work list; nothing was recorded`, at: now } }, now);
         this.store.journal(ctx.id, `${repairKind}-repair-unpublished`, { task: task.task_id, sha: task.verified_sha }, now);
         return null;
       }
       addComment(this.store, { number: review.number, idempotencyKey: `${ctx.id}:${task.task_id}:${repairKind}:${task.verified_sha}`,
-        body: integration ? this.integrationBody(decl, spec, task, integration, { local: true }) : this.ciBody(decl, spec, task, repair),
+        body: integration ? this.integrationBody(decl, spec, task, integration, { local: true }) : this.repairBody(decl, spec, task, repair, { local: true }),
         authorKind: 'supervisor', now });
       return workLink(review.number);
     }
@@ -2732,7 +2848,7 @@ export class Controller {
   /** The tracking item's note for a result recorded in the work list (recordLocalReview). */
   localPublishedNote(decl, spec, task, { repair, integration, url }) {
     if (integration) return `**${task.task_id}** (#${spec.issue}) ${integration.moved ? 'did not contain the current' : 'conflicted with'} ${decl.target.baseBranch} after a sibling merge. The supervisor merged the base, a fresh independent verification accepted \`${task.verified_sha}\`, and it is recorded on the same review item: ${url}. Nothing was pushed; not merged; merge follows ${decl.target.repository}'s release gate.`;
-    if (repair) return `**${task.task_id}** (#${spec.issue}) failed CI at \`${repair.verified}\`. A repair round fixed it, a fresh independent verification accepted \`${task.verified_sha}\`, and it is recorded on the same review item: ${url}. Nothing was pushed; not merged; merge follows ${decl.target.repository}'s release gate.`;
+    if (repair) return `**${task.task_id}** (#${spec.issue}) ${repair.id === OWNER_CHANGES ? 'had changes requested by the owner at' : 'failed CI at'} \`${repair.verified}\`. A repair round ${repair.id === OWNER_CHANGES ? 'made them' : 'fixed it'}, a fresh independent verification accepted \`${task.verified_sha}\`, and it is recorded on the same review item: ${url}. Nothing was pushed; not merged; merge follows ${decl.target.repository}'s release gate.`;
     return spec.deliverable === 'commit'
       ? `**${task.task_id}** (#${spec.issue}) passed independent verification and is recorded for review in the work list: ${url} at \`${task.verified_sha}\` on the local branch \`${gitA.branchName(decl.campaignId, task.task_id)}\`. Nothing was pushed; not merged; merge follows ${decl.target.repository}'s release gate.`
       : `**${task.task_id}** (#${spec.issue}) passed independent verification; the verified report is recorded in the work list: ${url} (revision \`${task.verified_sha}\`).`;
@@ -2785,6 +2901,29 @@ export class Controller {
         : `The verified commit \`${integration.verified}\` stopped merging into \`${decl.target.baseBranch}\` at \`${integration.base}\` after a sibling merge. Conflicting paths: ${integration.paths.map((path) => `\`${path}\``).join(', ')}.`,
       '',
       `The base was merged into this branch and ${integration.paths.length ? 'the conflicts resolved' : 'the result checked again'}. A separate fresh verifier session accepted exactly \`${task.verified_sha}\`, which was ${local ? 'recorded here; nothing was pushed, and' : 'pushed here as a fast-forward:'} \`${integration.verified}\` stays an ancestor.`,
+      '',
+      ...this.verificationLines(task),
+      '',
+      `Not merged and not deployed: merge and release follow ${decl.target.repository}'s release gate. Generated by the AIWorks delivery supervisor.`,
+    ].join('\n');
+  }
+
+  /** The comment of a repaired head on its open PR or review item: a CI repair, or changes the owner requested. */
+  repairBody(decl, spec, task, repair, { local = false } = {}) {
+    return repair.id === OWNER_CHANGES ? this.ownerChangesBody(decl, spec, task, repair, { local }) : this.ciBody(decl, spec, task, repair);
+  }
+
+  /**
+   * PR comment for changes the owner requested on a verified result (OWNER_UI_V2 WP4). The owner's words stay on this
+   * computer: the comment says that changes were requested, never what they were.
+   */
+  ownerChangesBody(decl, spec, task, repair, { local = false } = {}) {
+    return [
+      `## ${spec.id}: requested changes, independently verified`,
+      '',
+      `The owner reviewed the verified commit \`${repair.verified}\` and requested changes.`,
+      '',
+      `A repair round made them on this branch. A separate fresh verifier session accepted exactly \`${task.verified_sha}\`, which was ${local ? 'recorded here; nothing was pushed, and' : 'pushed here as a fast-forward:'} \`${repair.verified}\` stays an ancestor.`,
       '',
       ...this.verificationLines(task),
       '',
@@ -2948,7 +3087,7 @@ export class Controller {
           record: { fingerprint: record.fingerprint, dependency: record.dependency, class: record.class, subject: record.subject } });
       }
       if (record.dependency === 'budget') {
-        const budget = campaignBudget(this.store, this.store.campaign(ctx.id));
+        const budget = admissionBudget(this.store, this.store.campaign(ctx.id), this.now());
         return { pass: !budget.exhausted, evidence: budget.exhausted ?? `budget available (${budget.runsUsed} runs used)` };
       }
       if (record.dependency === 'runtime-not-merged') {
@@ -3118,19 +3257,35 @@ export class Controller {
   }
 
   /**
-   * Hand pending owner notifications to the transport, only when `ownerIntervention.deliver` is set and a live
-   * transport was injected. The attempt is counted before the effect, so a crash retries with the same key
-   * (at-least-once); the transport deduplicates by key. Failures back off and stop after MAX_NOTIFY_ATTEMPTS.
+   * Hand pending owner notifications to the transport: a live one only when `ownerIntervention.deliver` is set and it
+   * was injected, or the synthetic rehearsal transport config.json `alerts.transport` chose. The owner's alert rules
+   * decide first (alerts.mjs alertDecision): a muted entry is closed as `muted`, and one held by quiet hours stays
+   * pending with no attempt counted. The attempt is counted before the effect, so a crash retries with the same key
+   * (at-least-once); the transport deduplicates by key. Failures back off and stop after MAX_NOTIFY_ATTEMPTS. A
+   * rehearsal is recorded as `rehearsed`, never as delivered.
    */
   async drainOwnerNotifications() {
-    if (!this.oi || this.config.ownerIntervention?.deliver !== true || this.notifier?.live !== true) return;
+    const live = this.config.ownerIntervention?.deliver === true && this.notifier?.live === true;
+    if (!this.oi || !live && this.notifier?.rehearsal !== true) return;
     const now = this.now();
+    const rules = currentAlertRules(this.store).rules;
     const items = [...this.held.keys()].flatMap((id) => this.store.all(
-      "SELECT * FROM owner_notifications WHERE campaign_id = ? AND state = 'pending' ORDER BY created_at LIMIT 5", id))
-      .filter((item) => item.attempts === 0 || now - item.updated_at >= this.config.outboxRetryMs * item.attempts);
+      "SELECT * FROM owner_notifications WHERE campaign_id = ? AND state = 'pending' ORDER BY created_at LIMIT 50", id)
+      .map((item) => ({ ...item, decision: alertDecision(item, rules, now) }))
+      .filter((item) => item.decision === 'mute' || item.decision === 'send' &&
+        (item.attempts === 0 || now - item.updated_at >= this.config.outboxRetryMs * item.attempts))
+      .slice(0, 5));
     for (const item of items) {
       const ctx = { id: item.campaign_id, generation: this.held.get(item.campaign_id) };
       try {
+        if (item.decision === 'mute') {
+          this.fenced(ctx, () => {
+            const at = this.now();
+            if (!this.store.run("UPDATE owner_notifications SET state = 'muted', updated_at = ? WHERE key = ? AND state = 'pending'", at, item.key).changes) return;
+            this.store.journal(item.campaign_id, 'owner-notification-muted', { key: item.key, class: item.class, kind: item.kind }, at);
+          });
+          continue;
+        }
         const claimed = this.fenced(ctx, () => {
           if (this.store.get('SELECT state FROM owner_notifications WHERE key = ?', item.key)?.state !== 'pending') return false;
           this.store.run('UPDATE owner_notifications SET attempts = attempts + 1, updated_at = ? WHERE key = ?', this.now(), item.key);
@@ -3139,10 +3294,15 @@ export class Controller {
         if (!claimed) continue;
         let receipt = null;
         let failure = null;
-        try { receipt = await this.notifier.send({ key: item.key, message: item.message }); } catch (error) { failure = error; }
+        try { receipt = await this.notifier.send({ key: item.key, message: item.message, alert: renderAlert(item.message) }); } catch (error) { failure = error; }
         this.fenced(ctx, () => {
           const at = this.now();
-          if (!failure && receipt?.delivered === true) {
+          if (!failure && !live && receipt?.rehearsed === true) {
+            this.store.run("UPDATE owner_notifications SET state = 'rehearsed', last_error = NULL, updated_at = ? WHERE key = ?", at, item.key);
+            this.store.journal(item.campaign_id, 'owner-notification-rehearsed', { key: item.key, transport: this.notifier.name }, at);
+            return;
+          }
+          if (!failure && live && receipt?.delivered === true) {
             this.store.run("UPDATE owner_notifications SET state = 'delivered', delivered_at = ?, last_error = NULL, updated_at = ? WHERE key = ?", at, at, item.key);
             this.store.journal(item.campaign_id, 'owner-notification-delivered', { key: item.key, transport: this.notifier.name }, at);
             return;
