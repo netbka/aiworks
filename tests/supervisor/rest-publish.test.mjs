@@ -157,6 +157,11 @@ test('the GitHub adapter refuses unsafe text before any gh call and never echoes
   const sibling = ['netbka', 'sibling-project'].join('/');
   assert.deepEqual(publicationFindings(`see ${sibling} and src/a.mjs`, { repository: 'example-org/sampleapp' }), []);
   assert.deepEqual(publicationFindings(`see ${sibling}`, { repository: 'netbka/aiworks' }), ['another upstream-owner project']);
+  for (const root of ['/opt', '/tmp', '/srv', '/var/lib', '/etc', '/usr/local', '/Volumes']) {
+    assert.deepEqual(publicationFindings(`log at ${root}/sample-install/run.log`, { repository: 'example-org/sampleapp' }), ['absolute local path'], root);
+  }
+  assert.deepEqual(publicationFindings('see src/opt/a.mjs, ./tmp/b.log, `GET /repos/o/r/issues/8/comments` and https://example.com/a/b',
+    { repository: 'example-org/sampleapp' }), []);
 });
 
 test('an unsafe implementer report is never pushed or published; a publication repair publishes the corrected report at the same head', { skip: skipWithoutSqlite }, async (t) => {
