@@ -126,3 +126,86 @@ test('a failure that is not a rate limit keeps the fixed publish retry', { skip:
   assert.equal(store.all("SELECT * FROM journal WHERE campaign_id = ? AND kind = 'publish-rate-limited'", id).length, 0);
   assert.equal(env.prs().length, 0);
 });
+
+// aiworks#8: publication text passes the shared privacy check before any outbound write. Synthetic values are assembled at run
+// time so this file passes the public-scope check.
+const LEAK_PATH = ['C:', 'Users', 'synthetic-owner', 'sampleapp', 'src', 'work.mjs'].join('\\');
+const outbound = (env) => JSON.stringify([env.ghCalls(), env.prs(), env.comments()]);
+
+async function leakSetup(t, scenario) {
+  const result = await setup(t);
+  result.env.setScenario(scenario);
+  return result;
+}
+
+test('the GitHub adapter refuses unsafe text before any gh call and never echoes it; the owner-project rule binds only AIWorks', async (t) => {
+  const env = environment(); t.after(() => env.cleanup());
+  const { publicationFindings } = await import('../../src/shared/public-text.mjs');
+  const { postComment } = await import('../../src/supervisor/adapters/github.mjs');
+  const gh = [process.execPath, FAKE_GH];
+  const bodyFile = join(env.tmp, 'body.md');
+  const token = ['ghp', 'A'.repeat(36)].join('_');
+  for (const [send, value] of [
+    [(body) => postComment({ gh, repository: 'example-org/sampleapp', issue: 1, body, bodyFile }), LEAK_PATH],
+    [(body) => postComment({ gh, repository: 'example-org/sampleapp', issue: 1, body, bodyFile }), token],
+    [(body) => openPullRequest({ gh, repository: 'example-org/sampleapp', baseBranch: 'main', branch: 'campaign/c/T1', title: 'T1', body, bodyFile }), LEAK_PATH],
+    [(body) => postComment({ gh, repository: 'example-org/sampleapp', issue: 1, body, bodyFile, terms: ['fictional-private-host'] }), 'fictional-private-host'],
+  ]) {
+    assert.throws(() => send(`evidence: ${value}`), (error) => error.code === 'PUBLICATION_TEXT_REFUSED' && !error.message.includes(value));
+  }
+  assert.deepEqual(env.ghCalls(), [], 'nothing reached gh');
+  const sibling = ['netbka', 'sibling-project'].join('/');
+  assert.deepEqual(publicationFindings(`see ${sibling} and src/a.mjs`, { repository: 'example-org/sampleapp' }), []);
+  assert.deepEqual(publicationFindings(`see ${sibling}`, { repository: 'netbka/aiworks' }), ['another upstream-owner project']);
+});
+
+test('an unsafe implementer report is never pushed or published; a publication repair publishes the corrected report at the same head', { skip: skipWithoutSqlite }, async (t) => {
+  const { env, store, controller, id } = await leakSetup(t, { implement: ['commit-leak', 'commit-same'], verify: ['accept', 'accept'] });
+  await runUntil(controller, store, id, (c) => c.control === 'finished');
+  const [refused, ...more] = store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'publication-refused'", id);
+  assert.equal(more.length, 0);
+  assert.equal(refused.detail.repair, true);
+  assert.ok(refused.detail.sources.includes('report'));
+  assert.doesNotMatch(JSON.stringify(refused.detail), /synthetic-owner/);
+  assert.doesNotMatch(outbound(env), /synthetic-owner/, 'no gh call, PR or comment carries the refused text');
+  const task = store.task(id, 'T1');
+  const [pr] = env.prs();
+  assert.equal(env.prs().length, 1);
+  assert.equal(task.verified_sha, refused.detail.sha, 'the same verified head');
+  assert.equal(env.remoteHead(`campaign/${id}/T1`), task.verified_sha);
+  assert.ok(pr.body.includes(task.verified_sha) && pr.body.includes('# tests 1'), 'exact head and actual tallies are published');
+  const original = store.all("SELECT outcome FROM operations WHERE campaign_id = ? AND id LIKE '%.implement.%' ORDER BY created_at", id)[0];
+  assert.ok(JSON.stringify(original.outcome).includes('synthetic-owner'), 'the refused report stays in private run evidence');
+  assert.equal(env.calls().filter((call) => call.role === 'implement').length, 2);
+});
+
+test('an unsafe verification alone goes to a fresh verifier of the same head', { skip: skipWithoutSqlite }, async (t) => {
+  const { env, store, controller, id } = await leakSetup(t, { implement: ['commit'], verify: ['accept-leak', 'accept'] });
+  await runUntil(controller, store, id, (c) => c.control === 'finished');
+  assert.deepEqual(store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'publication-refused'", id).map((row) => row.detail.sources), [['verification']]);
+  assert.equal(env.calls().filter((call) => call.role === 'implement').length, 1, 'the implementer is not run again');
+  assert.equal(env.calls().filter((call) => call.role === 'verify').length, 2);
+  assert.equal(env.prs().length, 1);
+  assert.doesNotMatch(outbound(env), /synthetic-owner/);
+});
+
+test('repeatedly unsafe reports stall within the bound and nothing is published', { skip: skipWithoutSqlite }, async (t) => {
+  const { env, store, controller, id } = await leakSetup(t, { implement: ['commit-leak', 'commit-leak', 'commit-leak', 'commit-leak'], verify: ['accept', 'accept', 'accept', 'accept'] });
+  await runUntil(controller, store, id, () => store.task(id, 'T1').blocked?.class === 'stalled');
+  for (let i = 0; i < 10; i += 1) await controller.tick();
+  assert.ok(env.calls().filter((call) => call.role === 'implement').length <= 3, 'bounded correction rounds');
+  assert.equal(env.prs().length, 0);
+  assert.equal(env.remoteHead(`campaign/${id}/T1`), null, 'nothing was pushed');
+  assert.doesNotMatch(outbound(env), /synthetic-owner/);
+});
+
+test('an unsafe outbox note is refused once, never retried, and a note without its text is posted instead', { skip: skipWithoutSqlite }, async (t) => {
+  const { env, store, controller, id } = await setup(t);
+  controller.enqueue(id, `${id}:synthetic-note`, store.campaign(id).declaration, `blocked: see ${LEAK_PATH}`, Date.now());
+  await runUntil(controller, store, id, (c) => c.control === 'finished');
+  for (let i = 0; i < 5; i += 1) await controller.tick();
+  const row = store.get('SELECT state, attempts FROM outbox WHERE key = ?', `${id}:synthetic-note`);
+  assert.deepEqual({ ...row }, { state: 'refused', attempts: 0 });
+  assert.doesNotMatch(outbound(env), /synthetic-owner/);
+  assert.equal(env.comments().filter((comment) => comment.body.includes('was withheld')).length, 1);
+});

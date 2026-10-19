@@ -33,6 +33,7 @@ import { GATE_FILES, gateFailure, readGateRun } from './gate.mjs';
 import { isLocalTarget, recordCandidate } from './local-candidates.mjs';
 import { checkLocalDispatch } from './local-admission.mjs';
 import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
+import { PUBLICATION_REFUSED, privateTerms, publicationFindings } from '../shared/public-text.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const POLICY = JSON.parse(readFileSync(resolve(here, '../../registry/worker-context-policy.json'), 'utf8'));
@@ -101,6 +102,9 @@ export const DEFAULTS = {
 };
 // Findings that reopen a published task as a repair round on its own branch and PR (aiworks#27, aiworks#42).
 const REPAIR_FINDINGS = new Set(['integration-conflict', 'ci-failure']);
+// aiworks#8: a verified task whose publication text fails the privacy check gets at most this many correction rounds
+// (within maxRepairRounds) before it stalls; nothing of the refused text is sent.
+const PUBLICATION_REPAIRS = 2;
 
 // ---- Scoped reading (docs/design/SCOPED_READING.md sections 4 to 6, slice READ2). ----
 // A reference may name one section of a Markdown document as `path#anchor`. Dispatch resolves it at the pinned revision
@@ -170,7 +174,8 @@ export function packetReferences({ declared, kind, findings, maxReferences }) {
 
 /** The packet constraint of one blocking finding; a verifier finding names the rule of each cite (SCOPED_READING 6.4). */
 export function findingConstraint(finding, resolutions = []) {
-  const label = finding.id === 'integration-conflict' ? 'integration' : finding.id === 'ci-failure' ? 'CI' : 'verifier';
+  const label = finding.id === 'integration-conflict' ? 'integration' : finding.id === 'ci-failure' ? 'CI'
+    : finding.id === 'publication-text' ? 'publication' : 'verifier';
   const rules = (Array.isArray(finding.cites) && !REPAIR_FINDINGS.has(finding.id) ? finding.cites : []).map((cite) => {
     const item = resolutions.find((record) => record.reference === cite && record.resolved);
     const heading = item ? promptText(item.heading, 120) : null;
@@ -2278,7 +2283,7 @@ export class Controller {
         added: reading.added, overflow: reading.overflow, extended });
       const digest = packetDigest(packet, POLICY);
       const instructions = pendingInstructions(this.store, current, task.task_id, kind);
-      const note = integration && kind === 'verify'
+      const baseNote = integration && kind === 'verify'
         ? `This head is an integration repair round: it must merge ${integration.base} (the current ${decl.target.baseBranch}) into the previously verified ${integration.verified} ${integration.moved ? 'because the base moved before the merge gate could merge it (aiworks#138)' : `to resolve conflicts in ${integration.paths.join(', ')}`}. Check that both are ancestors of the target, review the resolution with git show --remerge-diff ${targetSha}, and run the full gate.`
         : integration && task.findings.length === 1
           ? `This is repair round ${task.repair_rounds}, an integration repair: the verified, published commit ${integration.verified} ${integration.moved ? 'does not contain' : 'conflicts with'} ${decl.target.baseBranch} at ${integration.base} after a sibling merge. Merge that base into this branch, resolve ${integration.moved ? 'any conflicts' : 'the conflicts listed in the packet constraints'}, run the full gate, commit, and return resolved with the new headSha. Never rebase, reset or amend the verified commit.`
@@ -2292,6 +2297,12 @@ export class Controller {
           : `This is repair round ${task.repair_rounds}: the independent verifier rejected the previous report (sha256 ${reportDigest}), reproduced below. Produce a corrected COMPLETE report that resolves every blocking finding listed in the packet constraints and return resolved with that report. Do not commit or change repository files; this task is report-only and read-only.`
         : refusal ? refusal
         : task.last_error ? `A previous attempt ended without an accepted result (${String(task.last_error).slice(0, 400)}). ${spec.deliverable === 'commit' ? 'Inspect git status and git log here and keep useful committed work.' : executor.researchOnly ? 'Start the report again from the packet; nothing from that attempt is retained. Inspect brokered local Git evidence; use the supplied read-only repository reader for missing issue/comment details.' : 'Start the report again from the packet; nothing from that attempt is retained.'}` : null;
+      // aiworks#8: a publication repair asks for corrected text only; the verifier of its head is told why it runs again.
+      const publication = this.publicationFinding(task);
+      const publicationNote = !publication ? null : kind === 'verify'
+        ? `The previous verification of this task was not published: its text failed the publication privacy check (${publication.findings.join(', ')}). Write the summary, checks and findings with repository-relative paths and synthetic examples only.`
+        : `This is repair round ${task.repair_rounds}, a publication repair: verified ${publication.verified} was not published because its report failed the publication privacy check (${publication.findings.join(', ')}). Nothing was pushed or published. Return a corrected COMPLETE report with repository-relative paths and synthetic examples only, keeping its headings, the exact revision and the actual test tallies.${spec.deliverable === 'commit' ? ' Change code only if a finding requires it; otherwise return resolved with the same headSha.' : ' Do not commit or change repository files; this task is report-only and read-only.'}`;
+      const note = publicationNote && kind !== 'verify' ? publicationNote : [baseNote, publicationNote].filter(Boolean).join(' ') || null;
       let prompt = executors.buildPrompt({ executorKind: executor.kind, web: spec.web ?? null, role, deliverable: spec.deliverable, packet, packetDigest: digest, repository: local ? decl.target.projectId : decl.target.repository,
         issue: spec.issue, branch: gitA.branchName(ctx.id, task.task_id), baseSha: kind === 'verify' ? baseSha : revision, targetSha,
         report, reportDigest, note, instructions: instructions.map((item) => ({ id: item.seq, text: item.payload.text })), stage: this.stageOf(decl, task.task_id, kind), guide });
@@ -2425,6 +2436,7 @@ export class Controller {
         const fresh = this.store.task(ctx.id, task.task_id);
         if (current.control !== 'registered' || fresh.state !== 'verified' || fresh.version !== task.version) return;
         let url;
+        const terms = this.publicationTerms(decl);
         const repair = spec.deliverable === 'commit' ? this.publishedRepair(fresh) : null;
         const integration = repair?.id === 'integration-conflict' ? repair : null;
         const repairKind = integration ? 'integration' : 'ci';
@@ -2433,6 +2445,7 @@ export class Controller {
           // earlier verified head is an ancestor), never a force-push; without an open PR nothing is pushed and no PR is opened.
           const key = `${ctx.id}:${task.task_id}:${repairKind}:${task.verified_sha}`;
           const comment = `${integration ? this.integrationBody(decl, spec, task, integration) : this.ciBody(decl, spec, task, repair)}\n\n${github.marker(key)}`;
+          if (this.refusedPublication(ctx, decl, spec, fresh, [comment], terms)) return;
           if (comment.length > BODY_LIMIT) {
             this.raiseBlocker(ctx, decl, { kind: 'publication-size', class: 'B2', reason: `The ${repairKind === 'ci' ? 'CI' : 'integration'} repair verification exceeds the GitHub comment limit; nothing was truncated or pushed.`,
               requestedAction: 'Provide an authorized publication format that preserves the verification, then recheck.' }, this.now(),
@@ -2454,13 +2467,16 @@ export class Controller {
           const number = String(url).startsWith(prefix) ? /^(\d+)/.exec(String(url).slice(prefix.length))?.[1] : null;
           if (!number) throw new Error(`cannot post the ${repairKind} repair comment: no PR number in ${url}`);
           const target = { gh: this.cmd.gh, repository: decl.target.repository, issue: Number(number), key };
-          if (!github.findMarkedComment(target)) github.postComment({ ...target, body: comment, bodyFile });
+          if (!github.findMarkedComment(target)) github.postComment({ ...target, body: comment, bodyFile, terms });
         } else if (spec.deliverable === 'commit') {
           // Over GitHub's body limit, the verification moves to its own marked PR comment: nothing is truncated.
           const split = this.prBody(decl, spec, task).length > BODY_LIMIT;
           const body = this.prBody(decl, spec, task, { verificationElsewhere: split });
           const verification = split ? this.verificationBody(decl, spec, task) : null;
           const vKey = `${ctx.id}:${task.task_id}:verification:${task.verified_sha}`;
+          const title = `${spec.id}: ${spec.title}`;
+          // Checked before the push: a refused text leaves nothing on GitHub, not even the branch.
+          if (this.refusedPublication(ctx, decl, spec, fresh, [`${branch}\n${title}\n${body}`, verification ?? ''], terms)) return;
           if (body.length > BODY_LIMIT || (verification && `${verification}\n\n${github.marker(vKey)}`.length > BODY_LIMIT)) {
             this.raiseBlocker(ctx, decl, { kind: 'publication-size', class: 'B2', reason: 'Even split into a PR body and a verification comment, the verified report exceeds the GitHub limit; nothing was truncated or published.',
               requestedAction: 'Provide an authorized publication format that preserves the verified report, then recheck.' }, this.now(),
@@ -2470,13 +2486,13 @@ export class Controller {
           gitA.pushVerified({ git: this.cmd.git, repoPath: repo.path, branch, sha: task.verified_sha });
           this.injectFault('after-push');
           url = github.openPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, baseBranch: decl.target.baseBranch, branch,
-            title: `${spec.id}: ${spec.title}`, body, bodyFile });
+            title, body, bodyFile, terms });
           if (verification) {
             const prefix = `https://github.com/${decl.target.repository}/pull/`;
             const number = String(url).startsWith(prefix) ? /^(\d+)/.exec(String(url).slice(prefix.length))?.[1] : null;
             if (!number) throw new Error(`cannot post the verification comment: no PR number in ${url}`);
             const target = { gh: this.cmd.gh, repository: decl.target.repository, issue: Number(number), key: vKey };
-            if (!github.findMarkedComment(target)) github.postComment({ ...target, body: `${verification}\n\n${github.marker(vKey)}`, bodyFile });
+            if (!github.findMarkedComment(target)) github.postComment({ ...target, body: `${verification}\n\n${github.marker(vKey)}`, bodyFile, terms });
           }
         } else {
           // Reconcile before posting: a crash after an accepted post must not post twice.
@@ -2488,6 +2504,7 @@ export class Controller {
           const body = `${this.reportBody(decl, spec, task, digest, { verificationElsewhere: split })}\n\n${github.marker(key)}`;
           const vTarget = { ...target, key: `${key}:verification` };
           const verification = split ? `${this.verificationBody(decl, spec, task)}\n\n${github.marker(vTarget.key)}` : null;
+          if (this.refusedPublication(ctx, decl, spec, fresh, [body, verification ?? ''], terms)) return;
           if (body.length > BODY_LIMIT || (verification && verification.length > BODY_LIMIT)) {
             this.raiseBlocker(ctx, decl, { kind: 'publication-size', class: 'B2', reason: 'Even split into a report comment and a verification comment, the verified report exceeds the GitHub limit; nothing was truncated or posted.',
               requestedAction: 'Provide an authorized publication format that preserves the verified report, then recheck.' }, this.now(),
@@ -2496,15 +2513,15 @@ export class Controller {
           }
           url = github.findMarkedComment(target);
           if (!url) {
-            url = github.postComment({ ...target, body, bodyFile });
+            url = github.postComment({ ...target, body, bodyFile, terms });
             this.injectFault('after-report-post');
           }
           if (!url) url = github.findMarkedComment(target);
-          if (verification && !github.findMarkedComment(vTarget)) github.postComment({ ...vTarget, body: verification, bodyFile });
+          if (verification && !github.findMarkedComment(vTarget)) github.postComment({ ...vTarget, body: verification, bodyFile, terms });
         }
         const now = this.now();
         this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, fresh.version,
-          { state: 'done', pr_url: url, retry_at: null, last_error: null, ...(repair ? { findings: null } : {}) }, now);
+          { state: 'done', pr_url: url, retry_at: null, last_error: null, ...(repair || this.publicationFinding(fresh) ? { findings: null } : {}) }, now);
         this.store.journal(ctx.id, 'published', { task: task.task_id, sha: task.verified_sha, url }, now);
         if (integration) this.store.journal(ctx.id, 'integration-repaired', { task: task.task_id, from: integration.verified, base: integration.base, sha: task.verified_sha, url }, now);
         else if (repair) this.store.journal(ctx.id, 'ci-repaired', { task: task.task_id, from: repair.verified, checks: repair.checks.map((check) => check.name), sha: task.verified_sha, url }, now);
@@ -2523,6 +2540,16 @@ export class Controller {
     } catch (error) {
       if (error instanceof FencedError) throw error;
       this.log(`publish ${task.task_id} failed: ${error.message}`);
+      // The adapter's own check refused a text the preflight passed: the same bounded correction, never a timed retry.
+      if (error.code === PUBLICATION_REFUSED) {
+        this.fenced(ctx, () => {
+          const fresh = this.store.task(ctx.id, task.task_id);
+          if (fresh.state === 'verified' && fresh.version === task.version) {
+            this.publicationRefused(ctx, decl, spec, fresh, { findings: error.findings, sources: ['report', 'verification'] });
+          }
+        });
+        return;
+      }
       this.fenced(ctx, () => {
         const t = this.store.task(ctx.id, task.task_id), now = this.now();
         // A rate-limit refusal with a reset time waits until that reset; any other failure retries after publishRetryMs.
@@ -2535,6 +2562,67 @@ export class Controller {
         if (reset) this.store.journal(ctx.id, 'publish-rate-limited', { task: task.task_id, retryAt: reset }, now);
       });
     }
+  }
+
+  /** The installation's private terms for publication: the runtime checkout's and the target checkout's `.local/publication.json`. */
+  publicationTerms(decl) {
+    const roots = [resolve(here, '../..')];
+    try { roots.push(this.repo(decl).path); } catch { /* no checkout: the generic rules and the runtime's terms still apply */ }
+    return [...new Set(roots.flatMap((root) => privateTerms(root)))];
+  }
+
+  publicationFinding(task) {
+    return (task.findings ?? []).find((finding) => finding.id === 'publication-text') ?? null;
+  }
+
+  /**
+   * aiworks#8: every text of one publication is checked before its first outbound write (push, PR, comment). True when it
+   * was refused; publicationRefused has then settled the task and nothing was sent.
+   */
+  refusedPublication(ctx, decl, spec, task, texts, terms) {
+    const options = { repository: decl.target.repository, terms };
+    const findings = [...new Set(texts.flatMap((text) => publicationFindings(text, options)))];
+    if (!findings.length) return false;
+    const sources = [
+      ...(publicationFindings(String(task.result?.report ?? ''), options).length ? ['report'] : []),
+      ...(publicationFindings([...this.verificationLines(task), ...this.gateLines(task)].join('\n'), options).length ? ['verification'] : []),
+    ];
+    this.publicationRefused(ctx, decl, spec, task, { findings, sources });
+    return true;
+  }
+
+  /**
+   * A refused publication of a verified task. The verified report, its digest and the verification stay in the task row and
+   * the run evidence; the journal records categories only. Generated text gets a correction round under the existing
+   * authority: a refused report goes back to its implementer, a refused verification alone to a fresh verifier of the same
+   * head. Past PUBLICATION_REPAIRS or maxRepairRounds, or when the supervisor's own text is refused, the task stalls.
+   */
+  publicationRefused(ctx, decl, spec, task, { findings, sources }) {
+    const now = this.now(), limits = campaignLimits(decl);
+    const reportDigest = createHash('sha256').update(String(task.result?.report ?? ''), 'utf8').digest('hex');
+    const earlier = this.store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'publication-refused'", ctx.id)
+      .filter((row) => row.detail?.task === task.task_id && row.detail.repair).length;
+    const repairable = sources.length > 0 && earlier < PUBLICATION_REPAIRS &&
+      !(limits.maxRepairRounds !== null && task.repair_rounds >= limits.maxRepairRounds);
+    const what = sources.length ? sources.join(' and ') : 'supervisor';
+    const reason = `publication refused: the ${what} text of verified ${task.verified_sha} contains ${findings.join(', ')}; nothing was pushed or published`;
+    const rewrite = sources.includes('report')
+      ? `Write the report again with repository-relative paths and synthetic examples only, keeping its headings, the exact verified revision and the actual test tallies.${spec.deliverable === 'commit' ? ' If the code needs no change, return resolved with the same headSha.' : ''}`
+      : 'A fresh verifier checks the same head again and writes its verification with repository-relative paths and synthetic examples only.';
+    const finding = { id: 'publication-text', severity: 'blocking', verified: task.verified_sha, reportDigest, findings, sources,
+      description: `The ${what} text of verified ${task.verified_sha} was refused before publication: it contains ${findings.join(', ')}. Nothing was pushed or published, and the refused text stays in private evidence. ${rewrite}` };
+    const repair = spec.deliverable === 'commit' ? this.publishedRepair(task) : null;
+    const correction = sources.length
+      ? { state: sources.includes('report') ? 'pending' : 'implemented', findings: repair ? [finding, repair] : [finding] } : {};
+    this.store.journal(ctx.id, 'publication-refused', { task: task.task_id, sha: task.verified_sha, reportDigest, findings, sources, repair: repairable }, now);
+    this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version, repairable
+      ? { ...correction, repair_rounds: task.repair_rounds + 1, failures: {}, retry_at: null, last_error: `publish: ${reason}` }
+      : { ...correction, retry_at: null, last_error: `publish: ${reason}`, blocked: { class: 'stalled', reason, at: now } }, now);
+    if (!repairable) {
+      this.enqueue(ctx.id, `${ctx.id}:${task.task_id}:publication-refused:${task.verified_sha}`, decl,
+        `**${task.task_id}** (#${spec.issue}) is stalled: ${reason}. The verified evidence stays private on this computer. After a correction, run \`supervisor recheck ${ctx.id} --task ${task.task_id}\`.`, now);
+    }
+    this.log(`publication of ${task.task_id} refused: ${findings.join(', ')}`);
   }
 
   /**
@@ -2993,8 +3081,24 @@ export class Controller {
             this.store.run("UPDATE outbox SET state = 'posted', posted = 'reconciled', updated_at = ? WHERE key = ?", now, item.key);
             return;
           }
+          const body = `${item.body}\n\n${github.marker(item.key)}`;
+          const decl = this.store.campaign(item.campaign_id)?.declaration;
+          const terms = decl ? this.publicationTerms(decl) : [];
+          // aiworks#8: a note whose text fails the publication check is never sent or retried. It stays in the store as
+          // `refused`, and a note without its text tells the tracking issue that one was withheld.
+          const findings = publicationFindings(body, { repository, terms });
+          if (findings.length) {
+            this.store.run("UPDATE outbox SET state = 'refused', updated_at = ? WHERE key = ?", now, item.key);
+            this.store.journal(item.campaign_id, 'publication-refused', { outbox: item.key, findings }, now);
+            if (!item.key.endsWith(':withheld')) {
+              this.store.run("INSERT OR IGNORE INTO outbox (key, campaign_id, target, body, state, attempts, updated_at) VALUES (?, ?, ?, ?, 'pending', 0, ?)",
+                `${item.key}:withheld`, item.campaign_id, item.target,
+                `A supervisor note for campaign \`${item.campaign_id}\` was withheld: its text contains ${findings.join(', ')}. It stays in the local status and journal; nothing of it was published.`, now);
+            }
+            return;
+          }
           this.store.run('UPDATE outbox SET attempts = attempts + 1, updated_at = ? WHERE key = ?', now, item.key);
-          const url = github.postComment({ gh: this.cmd.gh, repository, issue, body: `${item.body}\n\n${github.marker(item.key)}`,
+          const url = github.postComment({ gh: this.cmd.gh, repository, issue, body, terms,
             bodyFile: join(this.dataDir, 'runs', 'outbox.md') });
           this.store.run("UPDATE outbox SET state = 'posted', posted = ?, updated_at = ? WHERE key = ?", url ?? 'posted', this.now(), item.key);
         });
