@@ -16,7 +16,7 @@ import { resolveCheckout, resolveLocalProject } from './project-connect.mjs';
 import { admissionBudget } from './api.mjs';
 import { currentSettings, projectOf, protectedAreasFor, protectedPaths } from './project-settings.mjs';
 import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountOf, accountWait, buildTaskSignature, clearAccountWait, formatSignatureLines, formatTokensUsage, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
-import { domainOf, pathsOutside, writeDomainConstraint } from './work-ownership.mjs';
+import { BEYOND_RULE, beyondConstraint, domainOf, outsideWrites, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
 import { containsSecret, coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
 import { ANCHOR, MAX_DOCUMENT_BYTES, parseReference, resolveSection } from './reading.mjs';
@@ -368,7 +368,7 @@ function specsOf(store, campaignId, decl = store.campaign(campaignId)?.declarati
 /** The constraint every child and generated packet carries (WORK_ENVELOPE 6.5): the approved outcome and files. */
 function envelopeConstraint(envelope) {
   const deny = envelope.denyWrites ?? [];
-  return `Approved outcome: ${envelope.outcome}${/[.!?]$/.test(envelope.outcome) ? '' : '.'} Change only: ${envelope.writes.length ? envelope.writes.join(', ') : 'no repository path'}${deny.length ? ` (never ${deny.join(', ')})` : ''}; anything else is a boundary violation.`.slice(0, 2000);
+  return `Approved outcome: ${envelope.outcome}${/[.!?]$/.test(envelope.outcome) ? '' : '.'} Planned files: ${envelope.writes.length ? envelope.writes.join(', ') : 'no repository path'}${deny.length ? `; never change ${deny.join(', ')}` : ''}. ${BEYOND_RULE}`.slice(0, 2000);
 }
 /** Where a task's work belongs in owner-facing text: `owner/name#issue`, or the project id of a project without GitHub. */
 const whereOf = (decl, issue) => (isLocalTarget(decl) ? decl.target.projectId : `${decl.target.repository}#${issue}`);
@@ -938,19 +938,20 @@ export class Controller {
       if (!problem && integration && !gitA.isAncestor({ git: this.cmd.git, path: op.workspace, ancestor: integration.base, descendant: verdict.value.headSha })) {
         verdict = { ...verdict, class: 'invalid-result', detail: `integration repair head ${verdict.value.headSha} does not contain the base ${integration.base}` };
       }
-      // A declared write domain is checked, not trusted (ADAPTIVE_SCHEDULER 4.3): a path outside it is a boundary
-      // violation, held for the owner and never retried on another provider. An integration repair is measured from the
-      // base it merged, so the sibling changes it brought in are not counted as its own.
+      // The planned files are a plan, not a wall (AW-013): a file outside them goes on to the verifier, who judges it. Only a
+      // secret-like path or one the envelope forbids is a boundary violation, held for the owner and never retried on
+      // another provider. An integration repair is measured from the base it merged, so the sibling changes it brought in
+      // are not counted as its own.
       const decl = this.store.campaign(ctx.id).declaration;
       const spec = specOf(this.store, ctx.id, op.task_id, decl);
       const domain = verdict.class === 'result' ? domainOf(decl, spec) : null;
-      if (domain && !domain.whole) {
+      if (domain) {
         const changed = gitA.changedPaths({ git: this.cmd.git, path: op.workspace, from: integration ? integration.base : before.base_sha, to: verdict.value.headSha });
-        const outside = changed === null ? null : pathsOutside(domain, changed);
-        if (outside === null) verdict = { ...verdict, class: 'invalid-result', detail: 'cannot list the paths the commit changed' };
-        else if (outside.length) {
+        const { forbidden } = changed === null ? {} : outsideWrites(decl, domain, changed);
+        if (!forbidden) verdict = { ...verdict, class: 'invalid-result', detail: 'cannot list the paths the commit changed' };
+        else if (forbidden.length) {
           verdict = { ...verdict, class: 'error', violation: true,
-            detail: `writes outside the declared domain (${spec.writes.join(', ')}): ${outside.slice(0, 10).join(', ')}${outside.length > 10 ? ', ...' : ''}` };
+            detail: `writes secret-like or forbidden files: ${forbidden.slice(0, 10).join(', ')}${forbidden.length > 10 ? ', ...' : ''}` };
         }
       }
     }
@@ -2395,16 +2396,25 @@ export class Controller {
         references: [...new Set([...reading.references, ...reading.overflow.map((item) => item.reference)])] });
       const findings = kind === 'implement' ? (task.findings ?? []).slice(0, 8).map((finding) => findingConstraint(finding, resolutions)) : [];
       const refusal = refusalNote(kind, targetSha, task.failures?.refusal);
+      // The verifier is told which changed files lie outside the plan, so it judges each one (AW-013).
+      let beyond = null;
+      const domain = kind === 'verify' ? domainOf(decl, spec) : null;
+      if (domain && !domain.whole) {
+        const from = this.integrationFinding(task)?.base ?? task.base_sha;
+        const changed = from ? gitA.changedPaths({ git: this.cmd.git, path: repo.path, from, to: targetSha }) : null;
+        const paths = changed ? outsideWrites(decl, domain, changed).beyond : [];
+        if (paths.length) beyond = beyondConstraint(paths, from, targetSha);
+      }
       const buildPacket = (references) => validatePacket({
         version: 1, tenantId: decl.target.tenantId, projectId: decl.target.projectId, environment: decl.target.environment,
         taskId: task.task_id, stageId: kind, runId: opId, role, revision,
         authorityDigest: binding.authority,
         access: readOnly ? 'read-only' : 'write',
         goal: `${spec.title} (${whereOf(decl, spec.issue)}). ${spec.goal}`.slice(0, 2000),
-        // A declared write domain is enforced on the commit, so the worker and its verifier are told it first.
+        // The worker and its verifier are told the planned files and what to do beyond them (AW-013).
         // A child also carries the approved outcome and files (WORK_ENVELOPE 6.5); a declared task's packet is unchanged.
         constraints: [...decl.constraints, ...(binding.envelope ? [binding.envelope] : []), ...(spec.constraints ?? []),
-          ...(spec.writes ? [writeDomainConstraint(spec.writes)] : []), ...findings,
+          ...(spec.writes ? [writeDomainConstraint(spec.writes)] : []), ...(beyond ? [beyond] : []), ...findings,
           // A retried verification of the same head carries the controller's recorded refusal (aiworks#59).
           ...(refusal ? [refusal] : []),
           // A planning step proposes against the plan head it was given; any other basis is refused as STALE_PLAN (slice E5).
