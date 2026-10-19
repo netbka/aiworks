@@ -80,3 +80,30 @@ test('the push check rejects a private blob removed by a later commit and a priv
   git('commit', '--allow-empty', '-qm', ['netbka', 'private-project'].join('/'));
   assert.throws(() => checkPublicHistory(root, ['HEAD^..HEAD']), /commit message contains private/);
 });
+
+test('a real merge header names a branch without exempting private messages, branch terms or credentials', t => {
+  const root = mkdtempSync(join(tmpdir(), 'aiworks-merge-message-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const git = (...args) => {
+    const out = spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', ...args], { cwd: root, encoding: 'utf8', windowsHide: true });
+    assert.equal(out.status, 0, out.stderr);
+    return out.stdout.trim();
+  };
+  git('init', '-q');
+  writeFileSync(join(root, 'README.md'), 'Public source');
+  git('add', '.'); git('commit', '-qm', 'Public baseline');
+  const base = git('rev-parse', 'HEAD');
+  git('checkout', '-qb', 'docs/example');
+  git('commit', '--allow-empty', '-qm', 'Public documentation');
+  const child = git('rev-parse', 'HEAD');
+  const header = ['Merge pull request #7 from netbka', 'docs/example'].join('/');
+  const commit = (message, parents = [base, child]) => git('commit-tree', 'HEAD^{tree}', ...parents.flatMap(p => ['-p', p]), '-m', message);
+  const check = sha => checkPublicHistory(root, [`${base}..${sha}`]);
+  assert.doesNotThrow(() => check(commit(header)));
+  assert.throws(() => check(commit(header, [base])), /commit message contains private/);
+  assert.throws(() => check(commit(`${header}\n\n${['netbka', 'private-project'].join('/')}`)), /commit message contains private/);
+  assert.throws(() => check(commit(`${header}\n\n${['ghp', 'D'.repeat(36)].join('_')}`)), /commit message contains private/);
+  mkdirSync(join(root, '.local'));
+  writeFileSync(join(root, '.local/publication.json'), JSON.stringify({ privateTerms: [header] }));
+  assert.throws(() => check(commit(header)), /commit message contains private/);
+});
