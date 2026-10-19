@@ -248,6 +248,17 @@ Settings only add protection and limits. They have no field for files to change,
 
 Delivery reads **unavailable** until a transport is set up, and no adapter that leaves this computer is built: the only transport is the synthetic rehearsal one, which records alerts on this computer and never reports a delivery ([SUPERVISOR.md §10](SUPERVISOR.md#10-owner-intervention-core)). An alert carries no authority. Its buttons are dashboard addresses on this computer (*Decide in AIWorks* or *Open in AIWorks* open Needs me); an answer is given only on the dashboard, through the decision routes above with their CSRF token, request id and goal, step, authorization and scope binding. The dashboard stays on loopback and accepts no reply from a transport.
 
+## Preview of a checked version (owner UI v2, WP7)
+
+A finished step's review offers **Try this version**: the static web pages of exactly the commit that passed the independent check, in a frame at desktop or phone (390 px) width, with that commit named beside it. **Open preview** sends the same binding as Accept result (goal version, authorization version, scope digest, step version, verified head and report digest) and nothing else, so a changed, unverified, reopened or report-only result is refused with its reason; the page says why a preview is not available instead of offering it.
+
+| Route | Effect |
+| --- | --- |
+| `POST /api/v2/results/preview` | Opens a preview of that verified head. Answers its address under `/preview/<token>/`, the commit and when the preview ends; never a folder. |
+| `GET /preview/<token>/<file>` | One file of that preview, or 404, or 410 once it has ended. |
+
+The pages are read from the commit's Git objects in AIWorks's own checkout (`src/supervisor/preview.mjs`): nothing is built, installed, started or written, and nothing a request names is run. A preview serves only the folder of the first of `index.html`, `public/index.html`, `site/index.html`, `docs/index.html` or `www/index.html` in that commit, by exact path; dot segments, encoded separators, links, submodules, hidden files, secret-like names, credential-looking text and unknown file types are never served. Every response is a sandboxed document with an opaque origin (`sandbox allow-scripts`, `connect-src 'none'`, `form-action 'none'`, framed only by the dashboard), so its script cannot read the dashboard, its token or its commands, send requests, submit forms or open windows. A preview lives in the dashboard's memory only, for 30 minutes, at most four at a time, and ends when the dashboard stops. Screenshots are not captured by AIWorks; the frame is what the owner sees.
+
 ## Plan and do, Review and Approve and start (built, off by default)
 
 **In short.** For a connected GitHub project, the owner asks AIWorks for a plan, reads it on **Review** and presses *Approve and start*. That registers exactly the plan on the screen, with the same checks as the command-line start. No command line is needed. (Design: [OWNER_WORKSPACE S10](design/OWNER_WORKSPACE.md#s10-review-and-approve-github-projects) and WORK_ENVELOPE slice E8 ([§12](design/WORK_ENVELOPE.md#12-implementation-slices)); build slice UI14 of [the plan](PROJECT_WORKSPACE_PLAN.md). The owner answered #32 on 2026-10-16: approving in the dashboard registers that exact plan.)
