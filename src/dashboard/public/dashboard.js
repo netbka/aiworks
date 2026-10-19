@@ -142,6 +142,7 @@ const screenText = { home: ['Home', 'What changed, and what needs me?'], project
   messages: ['Messages', 'What did I ask AIWorks, and what did it answer?'],
   diagnostics: ['Diagnostics', 'What exactly did the machine record?'], now: ['Overview', 'Where is the current goal?'],
   connections: ['Connections', 'What does AIWorks use on this computer, and can it reach it?'],
+  alerts: ['Alerts', 'When does AIWorks tell me that something needs me?'],
   work: ['Work', 'What is running or waiting, and why?'], results: ['Results', 'What has been delivered, and what remains?'],
   cost: ['Cost', 'What did this cost?'], step: ['Step', 'What is happening on this step?'], start: ['Plan work', 'Describe the result. AIWorks proposes the steps.'],
   review: ['Review', 'Is this the right goal and limits?'], 'add-project': ['Add project', 'Which folder should AIWorks work on?'],
@@ -2204,6 +2205,7 @@ const settingsEmpty = ({ title, text, primary }) => el('div', { class: 'empty-st
 function settingsLinks() {
   return panel('More', null, el('ul', { class: 'settings-links' },
     el('li', {}, routeLink('Connections', '#/settings/connections'), el('div', { class: 'subtext' }, 'AIWorks itself, each AI worker account, where merges are seen from, and the trusted main with its backup.')),
+    el('li', {}, routeLink('Alerts', '#/settings/alerts'), el('div', { class: 'subtext' }, 'Which notices alert you, quiet hours, and whether an alert transport is set up.')),
     el('li', {}, routeLink('Worker accounts', '#/settings/accounts'), el('div', { class: 'subtext' }, 'Each AI worker login on this computer, and whether it can take work now.')),
     el('li', {}, routeLink('Worker accounts', '#/settings/accounts'), el('div', { class: 'subtext' }, 'Connect and manage isolated worker logins, view live quota usage, and export encrypted bundles.')),
     el('li', {}, routeLink('Model instructions', '#/settings/instructions'), el('div', { class: 'subtext' }, 'Which AI models should handle what kind of work, by role, domain and reasoning effort.')),
@@ -2827,6 +2829,139 @@ async function saveSettings(project, body) {
   try { await attempt(); } finally { settingsBusy = false; await poll(); }
 }
 
+/**
+ * Settings -> Alerts (OWNER_UI_V2 WP6): the owner's alert rules and quiet hours, the transport's state as the operator set
+ * it, and what the rehearsal transport recorded. Read on their own (GET /api/v2/settings/alerts) when opened and at every
+ * refresh while shown; the form is kept as typed and binds the version it was started from. An alert never answers a
+ * decision: its buttons open this dashboard, where Needs me asks with the same checks as always.
+ */
+const alertsEntry = { view: null, error: null, loading: false, readAt: null };
+let alertsBusy = false;
+const alertsOff = () => alertsBusy || offline;
+const ALERTS_ADDRESS = '#/settings/alerts';
+const ALERT_CLASS_WORDS = { B2: ['Action required', 'Something only you can do, such as signing in again.'], B3: ['Decision required', 'A step waits for your choice.'],
+  B4: ['External wait', 'A provider or service is unavailable; AIWorks rechecks by itself.'], B5: ['Incident', 'Something went wrong that AIWorks will not retry on its own.'] };
+const TRANSPORT_WORDS = {
+  unconfigured: 'Delivery unavailable: no alert transport is set up on this computer. Alerts wait in Needs me; nothing is sent.',
+  rehearsal: 'Rehearsal only: alerts are recorded on this computer as they would be sent. Nothing leaves this computer, and nothing is reported as delivered.',
+  unavailable: 'Delivery unavailable: this version of AIWorks has no adapter for the transport in the configuration file, so nothing is sent.',
+  invalid: 'Delivery unavailable: the transport setting in the configuration file is not valid (it must name secret store references, never a credential). Nothing is sent.' };
+const DECISION_WORDS = { send: 'would be sent now', hold: 'would wait until quiet hours end', mute: 'would not be sent: its kind is off' };
+async function loadAlerts() {
+  if (alertsEntry.loading) return;
+  alertsEntry.loading = true;
+  try {
+    const response = await fetch('/api/v2/settings/alerts', { signal: AbortSignal.timeout(6000) });
+    const value = await response.json();
+    if (response.ok) Object.assign(alertsEntry, { view: value, error: null, readAt: Date.now() });
+    else alertsEntry.error = { status: response.status, message: value.error };
+  } catch { alertsEntry.error = { status: 0, message: 'The alert settings could not be read just now. The page tries again.' }; }
+  finally {
+    alertsEntry.loading = false;
+    if (current.route.screen === 'settings' && current.route.section === 'alerts' && state && !document.querySelector('dialog[open]')) render();
+  }
+}
+/** The form as the owner left it, or the saved rules with the version they came from. */
+function alertsDraft(v) {
+  const saved = drafts.get(ALERTS_ADDRESS, 'alerts');
+  if (saved) return saved;
+  const q = v.rules.quietHours;
+  return { base: v.version, classes: { ...v.rules.classes }, reminders: v.rules.reminders, quiet: Boolean(q), start: q?.start ?? '22:00', end: q?.end ?? '07:00',
+    timeZone: q?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? 'UTC', incidents: q?.incidents ?? false };
+}
+
+/** The changing part: transport state, applied version, outbox counts, what was rehearsed, and a version saved meanwhile. */
+function alertsParts() {
+  const v = alertsEntry.view;
+  if (!v) return [];
+  const draft = alertsDraft(v), out = v.outbox, d = v.delivery, sample = v.sample.alert;
+  return [
+    el('p', { class: d.transport === 'rehearsal' ? 'notice' : 'notice warning', role: 'status' }, TRANSPORT_WORDS[d.transport] ?? TRANSPORT_WORDS.unconfigured),
+    d.recording ? null : el('p', { class: 'subtext' }, 'Owner alerts are not recorded on this computer yet: the owner-intervention setting is off. What needs you still shows in Needs me.'),
+    el('p', { class: 'subtext', role: 'status' }, v.version ? `Applied: version ${v.version}, saved ${clock(v.savedAt)}.${v.quietNow ? ' Quiet hours now.' : ''}` : 'Nothing saved yet: the default rules apply.'),
+    alertsEntry.error || offline ? el('p', { class: 'needs-stale', role: 'status' }, `Shown as read at ${clock(alertsEntry.readAt)}. ${offline
+      ? 'The page is disconnected; it reads these settings again when it reconnects.' : alertsEntry.error.message}`) : null,
+    el('p', {}, `Waiting: ${out.pending} · Rehearsed: ${out.rehearsed} · Not sent (gave up): ${out.failed} · Off by your rules: ${out.muted}`),
+    disclosure('alerts/sample', 'What an alert says (fictional example)', el('div', { class: 'panel-body' },
+      el('strong', {}, sample.title), ...sample.lines.map((text) => el('p', { class: 'subtext' }, text)),
+      el('p', { class: 'subtext' }, `Buttons: ${sample.buttons.map((b) => b.label).join(', ')}. They open this dashboard on this computer; an answer is given only here.`),
+      el('p', { class: 'subtext' }, `With the rules applied now, this alert ${DECISION_WORDS[v.sample.now]}.`))),
+    v.rehearsals.length ? disclosure('alerts/rehearsals', `Last ${plural(v.rehearsals.length, 'rehearsed alert')}`, el('ul', { class: 'settings-links' },
+      ...v.rehearsals.map((r) => el('li', {}, el('strong', {}, r.alert.title), el('div', { class: 'subtext' }, `${clock(r.at)} · recorded on this computer, not sent`))))) : null,
+    draft.base !== v.version ? el('div', { class: 'notice warning', 'data-focus-scope': 'alerts/stale' },
+      el('p', {}, `Version ${v.version} was saved after you started editing version ${draft.base}. Saving now is refused, so nothing is overwritten by accident.`),
+      button('Keep my entries', () => { drafts.set(ALERTS_ADDRESS, 'alerts', { ...draft, base: v.version }); rebuildSettings(); }, 'secondary small', alertsOff()),
+      ' ', button('Show the newest version', () => { drafts.delete(ALERTS_ADDRESS, 'alerts'); rebuildSettings(); }, 'secondary small', alertsOff())) : null,
+  ].filter(Boolean);
+}
+
+function alertsScreen() {
+  if (!alertsEntry.view && !alertsEntry.loading) void loadAlerts();
+  const v = alertsEntry.view;
+  if (!v) return [alertsEntry.error ? empty('Not known right now', ` ${alertsEntry.error.message}`) : empty('Reading the alert settings…', '')];
+  const draft = alertsDraft(v);
+  const check = (id, checked) => el('input', { id, type: 'checkbox', checked, onchange: () => save() });
+  const classes = Object.fromEntries(v.classes.map((cls) => [cls, check(`alerts-${cls}`, draft.classes[cls] === true)]));
+  const reminders = check('alerts-reminders', draft.reminders), quiet = check('alerts-quiet', draft.quiet), incidents = check('alerts-incidents', draft.incidents);
+  const text = (id, value, type = 'text') => { const input = el('input', { id, type, autocomplete: 'off', oninput: () => save() }); input.value = value; return input; };
+  const start = text('alerts-start', draft.start, 'time'), end = text('alerts-end', draft.end, 'time'), zone = text('alerts-zone', draft.timeZone);
+  const fields = () => ({ classes: Object.fromEntries(v.classes.map((cls) => [cls, classes[cls].checked])), reminders: reminders.checked, quiet: quiet.checked,
+    start: start.value, end: end.value, timeZone: zone.value.trim(), incidents: incidents.checked });
+  function save() { drafts.set(ALERTS_ADDRESS, 'alerts', { ...alertsDraft(alertsEntry.view ?? v), ...fields() }); }
+  const form = el('form', { novalidate: true, class: 'panel-body start-form', 'data-alerts-form': true, 'data-focus-scope': 'alerts/form',
+    onsubmit: (event) => {
+      event.preventDefault(); save();
+      for (const input of [start, end, zone]) input.required = quiet.checked;
+      if (alertsOff() || !validateForm(form)) return;
+      const f = fields();
+      void saveAlertRules({ version: alertsDraft(v).base, rules: { classes: f.classes, reminders: f.reminders,
+        quietHours: f.quiet ? { start: f.start, end: f.end, timeZone: f.timeZone, incidents: f.incidents } : null } });
+    } },
+    el('fieldset', {}, el('legend', {}, 'Alert me about'),
+      ...v.classes.map((cls) => [el('label', { class: 'choice' }, classes[cls], ALERT_CLASS_WORDS[cls][0]), el('p', { class: 'subtext' }, ALERT_CLASS_WORDS[cls][1])]),
+      el('label', { class: 'choice' }, reminders, 'Reminders'), el('p', { class: 'subtext' }, 'One after an hour, then at most one a day, while it still waits for you.')),
+    el('fieldset', {}, el('legend', {}, 'Quiet hours'),
+      el('label', { class: 'choice' }, quiet, 'Hold alerts during quiet hours'),
+      el('label', { class: 'field' }, el('strong', {}, 'From'), start),
+      el('label', { class: 'field' }, el('strong', {}, 'Until'), end),
+      el('label', { class: 'field' }, el('strong', {}, 'Time zone'), zone, el('span', { class: 'subtext' }, 'Such as Europe/Berlin or UTC.')),
+      el('label', { class: 'choice' }, incidents, 'Incidents may still alert me during quiet hours')),
+    el('p', { class: 'subtext' }, 'An alert held by quiet hours is sent when they end. An alert whose kind is off is not sent later. Needs me always shows everything.'),
+    el('button', { class: 'button', type: 'submit', disabled: alertsOff() }, 'Save alert rules'));
+  return [el('section', { class: 'panel', 'aria-labelledby': 'alerts-title' },
+    el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'alerts-title' }, 'Alerts'), el('p', {}, 'When AIWorks tells you that something needs you.'))),
+    el('div', { class: 'panel-body', id: 'alerts-dynamic' }, ...alertsParts()), form)];
+}
+
+/** The 5-second refresh reads the settings again and keeps the form as typed: only the state lines and the button change. */
+function refreshAlerts(content) {
+  const form = content.querySelector('form[data-alerts-form]');
+  if (!form || !alertsEntry.view) return false;
+  void loadAlerts();
+  patch(content.querySelector('#alerts-dynamic'), alertsParts());
+  form.querySelector('button[type="submit"]').disabled = alertsOff();
+  return true;
+}
+
+/** Save the rules. A retry reuses its request id, so the server saves them once; a refusal keeps every entry. */
+async function saveAlertRules(body) {
+  alertsBusy = true; render();
+  const requestId = crypto.randomUUID();
+  const attempt = async () => {
+    try {
+      const result = await post('/api/v2/settings/alerts', { requestId, ...body });
+      Object.assign(alertsEntry, { view: result.view, error: null, readAt: Date.now() });
+      drafts.delete(ALERTS_ADDRESS, 'alerts');
+      notice(result.message, null, null, ALERTS_ADDRESS);
+      if (current.address === ALERTS_ADDRESS) rebuildSettings();
+    } catch (error) {
+      notice(error.known ? error.message : 'Saving could not be confirmed. Retry: the same request is never saved twice.', error.known ? null : attempt, error.known ? error.detail : null, ALERTS_ADDRESS);
+      if (error.code === 'ALERTS_CHANGED') void loadAlerts();
+    }
+  };
+  try { await attempt(); } finally { alertsBusy = false; await poll(); }
+}
+
 /** One project's screens. Campaign cards, step tables and costs are today's, limited to this project. */
 function projectScreen(route) {
   const project = route.project, all = projectCampaigns(project);
@@ -3177,6 +3312,8 @@ function render() {
   if (route.screen === 'home') patch(content, homeScreen());
   else if (route.screen === 'needs') patch(content, [needsYou() ?? unavailable()]);
   else if (route.screen === 'settings' && route.section === 'connections') patch(content, connectionsScreen());
+  else if (route.screen === 'settings' && route.section === 'alerts' && refreshAlerts(content)) { /* the form stays as the owner typed it */ }
+  else if (route.screen === 'settings' && route.section === 'alerts') patch(content, alertsScreen());
   else if (route.screen === 'settings' && route.section === 'messages') patch(content, [messagesPanel(20)]);
   else if (route.screen === 'settings' && route.section === 'accounts') patch(content, accountsScreen());
   else if (route.screen === 'settings' && route.section === 'version') patch(content, versionScreen());

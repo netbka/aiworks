@@ -626,9 +626,17 @@ Recheck schedule (deterministic probes only): B2 15 min, 60 min, 4 h, then owner
 
 Crash and restart: every record, parent, probe and notification change commits in the same fenced transaction as the campaign/task change it belongs to. A probe run is an ordinary recorded operation, so a restart between checkpoint and launch launches the same operation once (`tests/supervisor/owner-intervention.test.mjs`); held tasks stay held until the probe's result is applied. A `rechecking` record whose probe task is waiting (backoff or usage limit) keeps holding the others.
 
-Notification delivery: a transport is `{ name, live, send({ key, message }) }`. Only the no-op transport ships (`live: false`), so entries stay `pending` and nothing leaves the host. With `"deliver": true` and an injected live transport (tests use an in-memory fake), the attempt is counted before `send`, delivery is at-least-once with the stable key for deduplication, failures back off by `outboxRetryMs` × attempts and stop as `failed` after 5 attempts. There is no network, Telegram or credential code path.
+Notification delivery: a transport is `{ name, live, send({ key, message, alert }) }`, where `alert` is the rendered, redacted title, lines and dashboard-address buttons (`alerts.mjs renderAlert`). Without a transport the no-op one stays (`live: false`), entries stay `pending` and nothing leaves the host. With `"deliver": true` and an injected live transport (tests use an in-memory fake), the attempt is counted before `send`, delivery is at-least-once with the stable key for deduplication, failures back off by `outboxRetryMs` × attempts and stop as `failed` after 5 attempts. There is no network, Telegram or credential code path.
 
-Owner-gated before enabling on workstation: choose the bot/transport and its secret reference (Infisical/runtime, never this repository) and the owner chat reference; implement and review that adapter; decide snooze policy and the B5 incident path; confirm the schedule defaults; then turn on `enabled` and later `deliver` for one campaign as a canary.
+Alert rules and the rehearsal transport (OWNER_UI_V2 WP6, `src/supervisor/alerts.mjs`): before each send the owner's newest `alert_rules` decide. An entry whose class or reminders are off is closed as `muted` and never sent later; one inside quiet hours stays `pending` with no attempt counted and goes out when they end (an incident only breaks quiet hours when the owner allowed it). The operator chooses the transport in `config.json`:
+
+```json
+"alerts": { "transport": { "kind": "synthetic" } }
+```
+
+`synthetic` records each rendered alert once per notification key in `alert_rehearsals` and marks the entry `rehearsed`, never `delivered`; a retry after a crash between send and record finds the key and records nothing new. Any other kind (`{ "kind": "<name>", "secretRef": "<store>:<path>", "recipientRef": "<store>:<path>" }`) has no adapter in this version and reads `unavailable`: nothing is sent and the references are never resolved, served, logged or journaled. A setting holding anything but such references, such as a credential value, reads `invalid` and sends nothing. Settings › Alerts shows these states and never claims a delivery. Answers stay on the dashboard; no transport reply is accepted.
+
+Owner-gated before enabling on workstation: choose the bot/transport and its secret reference (Infisical/runtime, never this repository) and the owner chat reference; implement and review that adapter (remote access and replies are WP10's owner decision); decide snooze policy and the B5 incident path; confirm the schedule defaults; then turn on `enabled` and later `deliver` for one campaign as a canary.
 
 ## 11. Web acceptance by the AGY browser worker
 

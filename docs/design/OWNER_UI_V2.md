@@ -94,7 +94,7 @@ Two separate lines, never merged: work (Plan ready → Working / Checking → Wa
 | Releases | Release states with honest unknown (`RELEASE_STATES`) | Destination, post-release check and rollback built, switched off | Publish action; user-facing change text; restore scope |
 | Knowledge | — | Journal and the last 80 activity entries; coordinator messages not bound to a project | Facts with provenance |
 | Project settings | Folder, worktrees, relocate; standing protected areas, notes for the AI, project and monthly budget (WP5, `project_settings`) | Release modes narrow only; `denyWrites` per plan; instructions per step | — |
-| Settings | Accounts with limit state (`/api/accounts`); supervisor and worker health | AI cost only, no period over HTTP | Hosting and subscription cost categories; notification channels and rules (`owner_notifications` has a no-op transport) |
+| Settings | Accounts with limit state (`/api/accounts`); supervisor and worker health | AI cost only, no period over HTTP | Hosting and subscription cost categories; a notification channel that leaves this computer (WP6 built alert rules, quiet hours and a synthetic rehearsal transport in `alerts.mjs`; delivery reads unavailable) |
 | States | Limit waits, repair limits, pause and cancel, unknown after restart | Computer offline is visible only locally; outside changes are spread over several mechanisms | — |
 | Phone | — | — | Remote access with sign-in; push with answer buttons |
 
