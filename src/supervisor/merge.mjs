@@ -5,7 +5,7 @@
 // releases or changes provider resources. AIWorks's own repository with local main trusted (config.json `selfHosting`,
 // docs/design/LOCAL_OPERATION.md section 4.4, slice SELF8) merges its verified local reviews locally instead: a merge
 // commit of the trusted tip and the verified head with the verified tree, main moved only from the trusted tip, and a
-// main ledger row (release/local-merge.mjs). It reads no remote and runs no gh.
+// main ledger row (release/local-merge.mjs). It reads no remote and makes no GitHub call.
 import * as gitA from './adapters/git.mjs';
 import * as github from './adapters/github.mjs';
 import { mergeWithMergeCommit } from './release/github-merge.mjs';
