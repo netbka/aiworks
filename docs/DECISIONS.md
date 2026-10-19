@@ -103,3 +103,15 @@ A campaign whose target is a connected local project (Local Git or plain folder)
 7. **Revocation.** Revoking or expiring the project's rules, or revoking the approval, stops new dispatches at the next check. Running operations finish and are recorded, as with a pause.
 
 This changes where an owner approval may come from, for local projects only. It does not let unmerged code run, and it does not change the GitHub path. The design is [WORK_ENVELOPE.md section 8](design/WORK_ENVELOPE.md#8-decision-d4-local-admission-without-github).
+
+## AW-013 - Planned files are a plan, not a stop
+
+Owner decision 2026-10-19: "Agents should work to the plan, but if they need something else they do not stop; they do it, record it and explain why. Whoever accepts the work judges correctness, fitness and whether it works, and gives feedback: accept or send back for rework."
+
+A task's `writes` (and an envelope's `writes`) are the planned files. They still decide which tasks may run side by side, as the scheduler reads them. A commit that also changes other files is no longer a boundary violation:
+
+- The implementer changes the extra file the outcome needs and lists each one in its report with the reason. It does not stop to ask.
+- The controller lists the changed files outside the plan in the verifier's packet. The verifier accepts each one only when the outcome needs it, the change is correct and minimal, and the report explains it; otherwise it rejects with a finding, which starts the usual repair round.
+- Still a boundary violation, held for the owner: any secret-like path, and any path inside an envelope's `denyWrites`, wherever it lies.
+
+Campaign scope otherwise stays binding: the outcome, the acceptance, the target repository and branch, the authorization version and independent verification (AW-001, AW-005).
