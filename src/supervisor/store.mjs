@@ -318,7 +318,7 @@ export class Store {
   // and JSON fields live in projects.mjs (docs/design/PROJECT_CONNECTION.md section 3).
 
   journal(campaignId, kind, detail, now) {
-    this.run('INSERT INTO journal (campaign_id, at, kind, detail) VALUES (?, ?, ?, ?)', campaignId, now, kind, detail ?? null);
+    return Number(this.run('INSERT INTO journal (campaign_id, at, kind, detail) VALUES (?, ?, ?, ?)', campaignId, now, kind, detail ?? null).lastInsertRowid);
   }
 
   /** Durable event receipt; a repeated dedup key is acknowledged without a second event. */
