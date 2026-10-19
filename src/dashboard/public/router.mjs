@@ -29,6 +29,13 @@ function parse(hash) {
   if (first === 'home') return rest.length ? null : HOME;
   if (first === 'projects') return !rest.length ? PROJECTS : rest.length === 1 && rest[0] === 'add' ? { screen: 'add-project' } : null;
   if (first === 'needs') return rest.length ? null : { screen: 'needs' };
+  // The local work list (UI20): the list, one item by its number, and the imported issues' preview.
+  if (first === 'worklist') {
+    if (!rest.length) return { screen: 'worklist' };
+    if (rest.length !== 1) return null;
+    if (rest[0] === 'import') return { screen: 'worklist-import' };
+    return /^[1-9]\d{0,8}$/.test(rest[0]) ? { screen: 'worklist-item', number: Number(rest[0]) } : null;
+  }
   if (first === 'settings') {
     if (!rest.length) return { screen: 'settings' };
     return rest.length === 1 && ['messages', 'diagnostics', 'accounts', 'version', 'instructions', 'connections'].includes(rest[0]) ? { screen: 'settings', section: rest[0] } : null;
@@ -50,6 +57,9 @@ export function formatRoute(route) {
   switch (route?.screen) {
     case 'home': return '#/home';
     case 'needs': return '#/needs';
+    case 'worklist': return '#/worklist';
+    case 'worklist-import': return '#/worklist/import';
+    case 'worklist-item': return `#/worklist/${route.number}`;
     case 'add-project': return '#/projects/add';
     case 'settings': return route.section ? `#/settings/${route.section}` : '#/settings';
     case 'project': return `#/p/${p(route.project)}${route.tab && route.tab !== 'now' ? `/${route.tab}` : ''}`;
@@ -75,7 +85,7 @@ export function resolveRoute(hash) {
   return { route, address, replace: `#${raw}` !== address, legacy: null };
 }
 
-/** The route's global destination, for aria-current in the global bar. Project screens belong to Projects. */
-export const globalOf = (route) => ['home', 'needs', 'settings'].includes(route.screen) ? route.screen : 'projects';
+/** The route's global destination, for aria-current in the global bar. Project screens belong to Projects; the work list to Needs me. */
+export const globalOf = (route) => ['home', 'needs', 'settings'].includes(route.screen) ? route.screen : route.screen.startsWith('worklist') ? 'needs' : 'projects';
 /** The project tab a route belongs to, or null. Step belongs to Work; Start work and Review to Now. */
 export const tabOf = (route) => route.screen === 'project' ? route.tab : route.screen === 'step' ? 'work' : ['start', 'review'].includes(route.screen) ? 'now' : null;
