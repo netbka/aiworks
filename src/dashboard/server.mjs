@@ -13,7 +13,7 @@ import { checkConnectedProject, configuredRepositories, confirmProjectRules, con
   revokeProjectRules } from './projects.mjs';
 import { checkCaller } from '../supervisor/local-admission.mjs';
 import { safeText } from './roadmap.mjs';
-import { applyResult, approvePlan, requestPlanAndDo, undoApply, workView } from './work.mjs';
+import { applyResult, approvePlan, editPlan, requestPlanAndDo, undoApply, workView } from './work.mjs';
 import { closeImportedIssues, commentWorkItem, createWorkItem, setWorkItemState, workItemView, workListView } from './work-list.mjs';
 import { connectionsView, EVENT_TYPES, homeView, markSeen, overviewView, readLastSeen, trustedMainView, typedEvents, withReadOnlyStore } from './views.mjs';
 
@@ -177,8 +177,9 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       }
       if (req.headers['content-type'] !== 'application/json') return send(415, { error: 'Commands require JSON.' });
       // 16 KiB for every command, except pause and resume: they bind each goal of their scope, up to 200 goals of at
-      // most about 240 bytes each, so their limit fits the largest valid selection instead of refusing it unread.
-      const limit = path === '/api/v2/pause' || path === '/api/v2/resume' ? SCOPED_CONTROL_BYTES : 16_384;
+      // most about 240 bytes each, so their limit fits the largest valid selection instead of refusing it unread. An
+      // edited plan (WP3) holds up to 48 texts of 300 characters, up to 4 bytes each, so it gets the same limit.
+      const limit = ['/api/v2/pause', '/api/v2/resume', '/api/work/edit'].includes(path) ? SCOPED_CONTROL_BYTES : 16_384;
       if (Number(req.headers['content-length']) > limit) return send(413, { error: 'Command is too large.' });
       const chunks = []; let size = 0;
       for await (const chunk of req) {
@@ -211,6 +212,8 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       // connection before anything is written, so a program AIWorks started cannot approve or apply (WORK_ENVELOPE 8.2).
       const callerOptions = { ...callerCheck, connection: req.socket };
       if (path === '/api/work/requests') return send(202, requestPlanAndDo(dataDir, value));
+      // Edit plan (OWNER_UI_V2 WP3): the edited plan becomes the next draft version; nothing is approved or started.
+      if (path === '/api/work/edit') return send(200, editPlan(dataDir, value));
       if (path === '/api/work/approve') return send(200, await approvePlan(dataDir, value, Date.now(), { provenanceRoot, ...work, caller: callerOptions }));
       if (path === '/api/work/apply') return send(200, await applyResult(dataDir, value, { ...work, caller: callerOptions }));
       if (path === '/api/work/undo') return send(200, await undoApply(dataDir, value, { ...work, caller: callerOptions }));

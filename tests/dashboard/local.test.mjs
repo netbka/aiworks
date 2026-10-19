@@ -198,3 +198,46 @@ test('OW S12: Apply is refused on a changed folder with nothing written, refused
   assert.equal(undone.body.outcome, 'rolled-back');
   assert.deepEqual(snapshot(r.folder), before);
 });
+
+test('WP3: an edited plan is a new version; only that exact version starts, once, with its scope, protected paths and unknown estimate kept', async (t) => {
+  const r = await rig(t);
+  const { plan, campaignId, approval } = await planned(r);
+  const v1 = r.store.get('SELECT * FROM work_drafts WHERE request_id = ? AND version = 1', plan.id);
+  assert.equal(plan.estimate, null, 'no estimate stays unknown');
+  const edits = { outcome: 'People can search and filter their notes.', horizon: 'next', priority: 'high', estimate: null,
+    criteria: [{ text: 'Searching a word finds the note', check: 'An automated test' }, { text: 'Filtering by a tag shows only its notes', check: null }],
+    included: ['A search box'], later: ['Search history'] };
+  const edit = (requestId, version, more = {}) => r.owner.post('/api/work/edit', { requestId, plan: plan.id, version, authorityDigest: plan.authorityDigest, edits: { ...edits, ...more } });
+
+  const widened = await edit(randomUUID(), 1, { writes: ['src/', 'secrets/'] });
+  assert.equal(widened.status, 400);
+  assert.equal(widened.body.code, 'SCOPE_NOT_EDITABLE');
+  const editId = randomUUID();
+  const saved = await edit(editId, 1);
+  assert.equal(saved.status, 200, saved.body.error);
+  assert.equal(saved.body.version, 2);
+  const again = await edit(editId, 1);
+  assert.equal(again.body.duplicate, true, 'a repeated save is saved once');
+  assert.equal((await edit(randomUUID(), 1)).body.code, 'PLAN_CHANGED', 'an edit of an older version is refused');
+  assert.equal(r.store.get('SELECT COUNT(*) AS n FROM work_drafts WHERE request_id = ?', plan.id).n, 2);
+
+  const v2 = r.store.get('SELECT * FROM work_drafts WHERE request_id = ? AND version = 2', plan.id);
+  const power = (d) => ({ ...d.declaration, authorization: { ...d.declaration.authorization, text: null }, envelope: { ...d.declaration.envelope, outcome: null, acceptance: null } });
+  assert.deepEqual(power(v2), power(v1), 'scope, protected paths, providers, limits, release and target are kept');
+  assert.deepEqual(v2.pinned, v1.pinned);
+  const shown = (await r.owner.state()).work.plans.find((item) => item.id === plan.id);
+  assert.equal(shown.version, 2);
+  assert.equal(shown.estimate, null);
+  assert.ok(shown.changes.length && shown.changes.every((change) => !change.scope));
+
+  // Approving the version reviewed before the edit starts nothing; the shown version starts once.
+  const old = await r.owner.post('/api/work/approve', approval());
+  assert.equal(old.body.code, 'PLAN_CHANGED');
+  assert.equal(r.store.campaign(campaignId), null);
+  const approved = await r.owner.post('/api/work/approve', { requestId: randomUUID(), plan: plan.id, version: 2, authorityDigest: saved.body.authorityDigest });
+  assert.equal(approved.status, 200, approved.body.error);
+  assert.deepEqual(r.store.campaign(campaignId).declaration, v2.declaration);
+  assert.equal((await r.owner.post('/api/work/approve', { requestId: randomUUID(), plan: plan.id, version: 2, authorityDigest: saved.body.authorityDigest })).body.code, 'ALREADY_STARTED');
+  const late = await r.owner.post('/api/work/edit', { requestId: randomUUID(), plan: plan.id, version: 2, authorityDigest: saved.body.authorityDigest, edits });
+  assert.equal(late.body.code, 'ALREADY_APPROVED', 'registered work is never edited in place');
+});
