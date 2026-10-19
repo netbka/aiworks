@@ -154,6 +154,30 @@ test('the registry schema refuses a secret-like path in every pointer field, and
   }
 });
 
+test('the shared secret-path rule refuses every credential path in any case, keeps earlier refusals, and every schema copy agrees', () => {
+  const pattern = workerContext.SECRET_LIKE_PATH_PATTERN;
+  const read = (path) => JSON.parse(readFileSync(join(ROOT, path), 'utf8'));
+  assert.deepEqual([
+    read('schemas/worker-task-packet.schema.json').properties.governance.properties.authorities.items.properties.path.not.pattern,
+    readGov('schemas/project-contract.schema.json').$defs.projectPath.not.pattern,
+    read('resources/governance/schemas/project-contract.schema.json').properties.governance.properties.authorities.items.properties.path.not.pattern,
+  ], [pattern, pattern, pattern]);
+  const secretLike = new RegExp(pattern, 'u');
+  const governance = (path) => ({ project: 'sampleapp', policies: [], authorities: [{ role: 'agent-contract', path }], exceptions: [], gaps: [] });
+  for (const path of ['.npmrc', 'web/.netrc', '.git-credentials', 'deploy/prod.env', 'terraform.tfstate', 'infra/terraform.tfstate.backup',
+    'infra/state.tfstate.json', 'infra/prod.tfvars', 'infra/prod.auto.tfvars.json', '.ssh/id_ecdsa', 'keys/id_ecdsa.pub', 'keys/server.ppk',
+    '.kube/config', 'home/.kube/config#current',
+    '.env', 'deploy/.env.production', '.git/config', '.ssh/id_rsa', 'keys/id_ed25519', 'credentials.json', 'secrets/prod.pem', 'certs/server.key']) {
+    for (const variant of [path, path.toUpperCase()]) {
+      assert.ok(secretLike.test(variant), variant);
+      assert.equal(workerContext.validGovernance(governance(variant)), false, variant);
+    }
+  }
+  for (const path of ['AGENTS.md', 'docs/environment.md', 'src/env.mjs', 'infra/main.tf', 'docs/kube/config.md', 'docs/DECISIONS.md#aw-001']) {
+    assert.equal(secretLike.test(path), false, path);
+  }
+});
+
 /** Register a one-task campaign and let one tick record its first operation without launching a model. */
 async function dispatchOnce(t, decl, options = {}) {
   const env = environment();

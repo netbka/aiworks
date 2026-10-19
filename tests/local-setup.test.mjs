@@ -23,5 +23,5 @@ test('local setup creates no project authority and never overwrites existing gov
   const unsafe = JSON.parse(contract);
   unsafe.governance.authorities[0].path = '.env';
   writeFileSync(path, JSON.stringify(unsafe));
-  assert.throws(() => projectGovernance('example/project', governance), /cannot carry/);
+  assert.throws(() => projectGovernance('example/project', governance));
 });

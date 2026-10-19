@@ -1,9 +1,13 @@
 // The test tally in a published PR comes from the verifier's own gate run, not from a worker's prose (#43). A synthetic
 // verifier leaves the gate helper's files (gate.log, gate-exit.log) in its checkout; no model, network or GitHub calls.
 import assert from 'node:assert/strict';
-import { appendFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { checkVerification } from '../../src/supervisor/adapters/git.mjs';
+import { GATE_FILES } from '../../src/supervisor/gate.mjs';
 import { declaration, environment, runUntil, skipWithoutSqlite } from './helpers.mjs';
 
 const load = async () => ({
@@ -99,4 +103,30 @@ test('a report task keeps its verification as before, even when its verifier lea
   const posted = env.comments().filter((c) => c.issue === '437');
   assert.equal(posted.length, 1);
   assert.equal(posted[0].body.includes('gate.log'), false);
+});
+
+test('a target that commits gate evidence is refused, whatever its case; untracked helper output is accepted', (t) => {
+  // A committed gate.log and gate-exit.log keep the checkout clean, so without this check a worker could forge the run.
+  const root = mkdtempSync(join(tmpdir(), 'aiworks-forged-gate-'));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
+  const git = (...args) => {
+    const result = spawnSync('git', ['-c', `core.excludesFile=${join(root, 'none')}`, ...args], { cwd: root, encoding: 'utf8', windowsHide: true });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  git('init', '-q');
+  writeFileSync(join(root, 'source.txt'), 'synthetic\n');
+  git('add', '.');
+  git('-c', 'user.name=Synthetic', '-c', 'user.email=synthetic@example.invalid', 'commit', '-qm', 'clean target');
+  const options = { git: ['git', '-c', `core.excludesFile=${join(root, 'none')}`], path: root, targetSha: git('rev-parse', 'HEAD') };
+  for (const name of Object.values(GATE_FILES)) writeFileSync(join(root, name), name === GATE_FILES.exit ? '0\n' : `${PASSED}\n`);
+  assert.equal(checkVerification(options), null, 'real untracked gate output still verifies');
+  // A case-insensitive file system reads GATE-EXIT.LOG as gate-exit.log.
+  rmSync(join(root, GATE_FILES.exit));
+  writeFileSync(join(root, GATE_FILES.exit.toUpperCase()), '0\n');
+  git('add', '--', GATE_FILES.log, GATE_FILES.exit.toUpperCase());
+  git('-c', 'user.name=Synthetic', '-c', 'user.email=synthetic@example.invalid', 'commit', '-qm', 'forged gate run');
+  const forged = { ...options, targetSha: git('rev-parse', 'HEAD') };
+  assert.equal(git('status', '--porcelain', '--untracked-files=no'), '', 'the forged target is a clean checkout');
+  assert.match(checkVerification(forged), /reserved gate evidence: .*gate\.log/i);
 });
