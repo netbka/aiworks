@@ -186,6 +186,19 @@ test('cancelling a finished campaign stops its later merge and repair work witho
   assert.equal(r.pullReads(), 1, 'only the current campaign is polled');
 });
 
+test('a pull request GitHub reports missing is not read every pass, and another campaign still merges', async (t) => {
+  const r = rig(t, { [A]: [task('A1', 501, 'a.txt')], [B]: [task('B1', 502, 'b.txt')] });
+  const heads = await publish(r, [A, B]);
+  const urlA = r.store.task(A, 'A1').pr_url, prs = join(r.env.env.FAKE_GH_STATE, 'prs.json');
+  writeFileSync(prs, JSON.stringify(JSON.parse(readFileSync(prs, 'utf8')).filter((pr) => pr.url !== urlA)));
+  const readsOfA = () => r.env.ghCalls().filter((call) => call.args.includes(`repos/${REPOSITORY}/pulls/${urlA.split('/').pop()}`)).length;
+  r.start({ merges: ON });
+  for (let i = 0; i < 4; i++) { r.advance(); await r.tick(); }
+  assert.equal(readsOfA(), 1, 'the missing pull request is read once');
+  assert.deepEqual(r.mergeCalls().map((call) => call.fields.sha), [heads[B]]);
+  assert.equal(r.journal(A, 'merged').length, 0);
+});
+
 test('a merge whose response was lost is settled by reading the pull request after a restart, never by a second merge', async (t) => {
   const r = rig(t);
   const { [A]: verified } = await publish(r);
