@@ -4,8 +4,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
-import { supervisorSnapshot, applyCommand, applyDecision, applyResultReview, applyScopedControl, postMessage, dashboardAccounts, removeDashboardAccount, configuredModelPreferences, saveDashboardModelPreferences } from './supervisor.mjs';
+import { supervisorSnapshot, applyCommand, applyDecision, applyResultReview, openResultPreview, applyScopedControl, postMessage, dashboardAccounts, removeDashboardAccount, configuredModelPreferences, saveDashboardModelPreferences } from './supervisor.mjs';
 import { Store } from '../supervisor/store.mjs';
+import { PREVIEW_POLICY, PreviewSessions } from '../supervisor/preview.mjs';
 import { ownerView } from './owner.mjs';
 import { configuredMergeDelegation } from './merges.mjs';
 import { checkConnectedProject, configuredRepositories, confirmProjectRules, connectedProjects, connectProject, disconnectConnectedProject, listConnectedProjects,
@@ -55,6 +56,8 @@ const pageNavigation = (req, path) => req.method === 'GET' && path === '/' && !r
 export function createDashboardServer({ dataDir, roadmap, merges = null, host = {}, releases = {}, projectConnection = {}, provenanceRoot = undefined, work = {},
   callerCheck = {}, workList = {} }) {
   const csrf = randomBytes(32).toString('hex');
+  // Previews of checked versions (WP7): in this process's memory only, each bound to one verified commit.
+  const previews = new PreviewSessions();
   // Which machine and dashboard version this is, so a screenshot identifies its supervisor.
   const machine = { name: safeText(host.name ?? hostname(), 64) || null, revision: /^[0-9a-f]{7,40}$/.test(host.revision ?? '') ? host.revision : null,
     ...(host.version !== undefined ? { version: safeText(host.version, 32) } : {}),
@@ -94,13 +97,24 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
     const send = (status, body, type = 'application/json; charset=utf-8') => {
       const value = typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body);
       res.writeHead(status, { 'Content-Type': type, 'Content-Length': Buffer.byteLength(value), 'Cache-Control': 'no-store',
-        'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+        'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
         // A page opened from another site gets its own browsing context group: neither window can reach the other.
         'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Resource-Policy': 'same-origin', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
       res.end(value);
     };
     let path = null;
     try { path = new URL(req.url, origin).pathname; } catch { /* rejected below */ }
+    // A preview of a checked version (WP7): a sandboxed document with an opaque origin, so its own requests arrive as
+    // cross-site with Origin "null" or none. It answers only GET, only on this host, and only with that preview's files.
+    const preview = path === null ? null : /^\/preview\/([^/]*)\/(.*)$/s.exec(path);
+    if (preview) {
+      if (req.headers.host !== new URL(origin).host || req.headers.origin && !['null', origin].includes(req.headers.origin)) return send(403, { error: 'Only the local dashboard origin is allowed.' });
+      if (req.method !== 'GET') return send(405, { error: 'Method not allowed.' });
+      const answer = previews.serve(preview[1], preview[2]);
+      res.writeHead(answer.status, { 'Content-Type': answer.type, 'Content-Length': Buffer.byteLength(answer.body), 'Cache-Control': 'no-store',
+        'Content-Security-Policy': PREVIEW_POLICY, 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
+      return res.end(answer.body);
+    }
     if (path === null || req.headers.host !== new URL(origin).host || req.headers.origin && req.headers.origin !== origin ||
         req.headers['sec-fetch-site'] === 'cross-site' && !pageNavigation(req, path)) return send(403, { error: 'Only the local dashboard origin is allowed.' });
     try {
@@ -216,6 +230,8 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       if (/^\/api\/v2\/results\/(?:accept|request-changes)$/.test(path)) {
         return send(202, applyResultReview(dataDir, path.slice('/api/v2/results/'.length), value, Date.now()));
       }
+      // Preview of a checked version (WP7): bound to the same verified head and report as accept; it builds and starts nothing.
+      if (path === '/api/v2/results/preview') return send(200, openResultPreview(dataDir, value, previews));
       // Mark the events up to a journal sequence as seen (the server-side last-seen marker, WP1).
       if (path === '/api/v2/events/seen') {
         const newest = withReadOnlyStore(dataDir, (store) => store.get('SELECT MAX(seq) AS seq FROM journal')?.seq ?? 0, null);
