@@ -166,6 +166,15 @@ Verification runs on this computer (Windows), but a target repository's CI may r
 - **Status.** `status` carries `ci` per task (`state`, `sha`, `checkedAt`, `checks`) for every published commit task, and a campaign-level `ci`. It reads only the journal, never GitHub. The state is `unknown` (never read), `pending`, `success`, `failure`, `inconclusive` or `none`. The campaign-level `ci` is `success` only when every published head passed, and `failure` when any failed. A published step is never shown as passed while its CI is red or unknown. With CI repair on, the publication note on the tracking issue says CI is not known yet.
 - **Known limits.** The repair packet names the failing checks, not the failing tests inside them; the worker reads the check output. A head with more than 100 check runs is `inconclusive`. Showing `ci` on the dashboard belongs to lane UI.
 
+### Changes the owner requested on a finished result
+
+On a finished step's review the owner may request changes ([OPERATIONS_DASHBOARD.md](OPERATIONS_DASHBOARD.md#review-of-a-result-owner-ui-v2-wp4), owner UI v2 WP4). It needs no setting and adds no authority: the request is recorded once per verified head as a `result-changes` event, bound to the goal's authorization version and scope digest, the step's version, the verified head and its report digest.
+
+- **Reopening.** The next pass handles the request inside the campaign's fence, in a finished campaign too. Only while the step is still done at exactly that head, unmerged, a commit step, and the authorization and scope are unchanged, it reopens the step as a repair round on its own branch and PR, exactly like a CI repair: an `owner-changes` blocking finding carries the owner's words to the builder, the verified head is the round's base, a finished campaign becomes active again, and it counts against `maxRepairRounds` (past the bound the step stalls instead). The journal records `result-changes-reopened`; a request that no longer applies records `result-changes-stale` and changes nothing. A paused campaign keeps the request until it resumes.
+- **Merge gate.** While a request for a head waits, that head is not a merge candidate, and a merge already selected checks again inside its fence before the call.
+- **Checks and publication** are those of the CI repair: the new head must contain the earlier verified head, a fresh verifier checks the exact new head and is told the owner's request as data, and only then is it pushed to the same PR as a fast-forward with a marked comment. The comment says that changes were requested, never what they were. The journal records `owner-changes-repaired`.
+- **Accept** records the owner's acceptance of a verified head (`result-accepted`) and nothing else: merging stays with the merge gate below, or with the project's own gate.
+
 ### Merge gate
 
 Merging used to be delegated to a monitoring session (`merges.delegatedTo: "monitor"`). When none ran, verified PRs waited for hours ([#138](https://github.com/example-org/aiworks/issues/138)). With the merge gate on, the supervisor merges a verified PR itself, and only when merging it puts exactly the independently verified tree on the base branch. It still never deploys, releases or changes provider resources ([AW-001](DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception)). The gate is `src/supervisor/merge.mjs`; its one merge call is `src/supervisor/release/github-merge.mjs`, since merge calls live only under `release/` (REL5).
@@ -188,7 +197,8 @@ Merging used to be delegated to a monitoring session (`merges.delegatedTo: "moni
   3. the verified SHA contains the current `origin/<base>`, so the merge result is the verified tree;
   4. with `ciRepair` on, CI at the verified head passed, or the repository runs no CI on it. A head whose CI is unread, pending, inconclusive or failed waits; a failed one is reopened by CI repair first. With `ciRepair` off the gate does not read CI, so turn it on with the merge gate;
   5. GitHub reports it mergeable;
-  6. the campaign is neither paused nor cancelled, and this supervisor code passes the AW-005 merged-code check.
+  6. the campaign is neither paused nor cancelled, and this supervisor code passes the AW-005 merged-code check;
+  7. the owner has not requested changes to that head (section 3, "Changes the owner requested on a finished result").
 
   A PR that fails a condition waits. The journal records `merge-waiting` with the reason each time the reason changes.
 - **When the base has moved** (condition 3 fails), the supervisor does not merge. It reopens the task as an integration repair round on the same branch and PR (section 3, "Integration repair of a published PR"), even with `integrationRepair` off. The journal records `merge-base-moved`. The round merges the base in, a fresh independent verifier checks the exact new head, and the repaired head is pushed to the same PR. Only then can the PR merge. This also catches a semantic conflict that merges cleanly as text. It counts against `maxRepairRounds`.

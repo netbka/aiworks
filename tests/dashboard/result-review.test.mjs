@@ -1,0 +1,97 @@
+// Review of a result (docs/design/OWNER_UI_V2.md WP4): accept binds the exact verified head, and a goal with unresolved
+// evidence is never shown as complete. Synthetic store and campaigns only; nothing here reads or writes GitHub.
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { join } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import { Store } from '../../src/supervisor/store.mjs';
+import { campaignStart } from '../../src/supervisor/api.mjs';
+import { validResult } from '../../src/supervisor/adapters/claude.mjs';
+import { applyResultReview, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
+import { ownerView } from '../../src/dashboard/owner.mjs';
+import { declaration, environment } from '../supervisor/helpers.mjs';
+
+const SHA = 'a'.repeat(40), OTHER = 'b'.repeat(40), REPORT = '# Synthetic report';
+const DIGEST = createHash('sha256').update(REPORT, 'utf8').digest('hex');
+const task = (id, issue) => ({ id, issue, title: `${id} change`, deliverable: 'commit', goal: `Make the ${id} change.`, dependsOn: [],
+  acceptance: ['The list shows every item', 'The list loads within one second'], references: ['AGENTS.md'] });
+const verification = (criteria) => ({ verdict: 'accepted', targetSha: SHA, reportDigest: DIGEST, summary: 'Checked.', verdictSummary: 'It does what was promised.',
+  findings: [], checks: [{ command: 'npm run check', result: 'pass' }], criteria, eyesOn: ['The wording of the empty list'] });
+
+function rig(t) {
+  const env = environment();
+  const store = new Store(join(env.dataDir, 'supervisor.db'));
+  t.after(() => { store.close(); env.cleanup(); });
+  const d = declaration({ campaignId: 'review-goal', tasks: [task('T1', 501), task('T2', 502)] });
+  campaignStart(store, d);
+  const finish = (taskId, criteria) => {
+    const row = store.task(d.campaignId, taskId);
+    store.patch('tasks', { campaign_id: d.campaignId, task_id: taskId }, row.version, { state: 'done', head_sha: SHA, verified_sha: SHA, result: { result: 'resolved', report: REPORT },
+      verification: verification(criteria), pr_url: `https://github.com/example-org/sampleapp/pull/${row.task_id === 'T1' ? 7 : 8}` }, Date.now());
+  };
+  const view = () => supervisorSnapshot(env.dataDir).campaigns[0];
+  const bind = (taskId, extra = {}) => {
+    const c = view(), row = c.tasks.find((item) => item.id === taskId);
+    return { requestId: randomUUID(), campaignId: c.id, taskId, taskVersion: row.version, version: c.version, authorizationVersion: c.authorizationVersion,
+      scopeDigest: c.scopeDigest, verifiedSha: SHA, reportDigest: DIGEST, ...extra };
+  };
+  return { env, store, d, finish, view, bind };
+}
+
+test('accept records only the exact verified head and report; a changed, failing or merged head is refused and nothing merges', (t) => {
+  const { env, store, d, finish, view, bind } = rig(t);
+  finish('T1', [{ criterion: 1, result: 'pass', check: 'Opened the list', evidence: 'All 12 synthetic items shown.' },
+    { criterion: 2, result: 'not-checked', check: 'No timing harness', evidence: 'Not measured.' }]);
+  finish('T2', [{ criterion: 1, result: 'fail', check: 'Opened the list', evidence: 'Two items missing.' }]);
+  const review = view().tasks.find((item) => item.id === 'T1').review;
+  assert.deepEqual(review.criteria.map((item) => item.result), ['pass', 'not-checked']);
+  assert.deepEqual([review.state, review.canAccept, review.unresolved.notChecked], ['ready', true, 1]);
+  assert.deepEqual(view().tasks.find((item) => item.id === 'T2').review.criteria.map((item) => item.result), ['fail', 'not-checked'],
+    'a criterion the checker did not report is not checked, never a pass');
+
+  // A checker can never return a failed criterion as accepted.
+  assert.equal(validResult('verification', verification([{ criterion: 1, result: 'fail', check: 'x', evidence: 'y' }]), { targetSha: SHA, reportDigest: DIGEST }),
+    'accepted with a failed criterion');
+
+  // Another head, another report, a stale step version, a failed criterion: refused, with nothing recorded.
+  const refused = (input, status = 409) => assert.throws(() => applyResultReview(env.dataDir, 'accept', input), (error) => error.status === status);
+  refused(bind('T1', { verifiedSha: OTHER }));
+  refused(bind('T1', { reportDigest: 'c'.repeat(64) }));
+  refused(bind('T1', { taskVersion: 99 }));
+  refused(bind('T2'));
+  refused(bind('T1', { text: 'not for accept' }), 400);
+  assert.equal(store.all("SELECT 1 FROM events WHERE kind IN ('result-accepted', 'dashboard-command')").length, 0);
+
+  const accept = bind('T1');
+  assert.equal(applyResultReview(env.dataDir, 'accept', accept).duplicate, false);
+  assert.equal(applyResultReview(env.dataDir, 'accept', accept).duplicate, true, 'an exact retry is acknowledged, never recorded twice');
+  refused(bind('T1'));
+  assert.equal(view().tasks.find((item) => item.id === 'T1').review.state, 'accepted');
+  assert.equal(store.all("SELECT 1 FROM journal WHERE kind = 'result-accepted'").length, 1);
+  // Acceptance is a record: no merge, publication or worker run follows from it.
+  assert.equal(store.all("SELECT 1 FROM journal WHERE kind IN ('merged', 'merge-requested')").length, 0);
+  assert.equal(store.all('SELECT 1 FROM outbox').length, 0);
+  assert.equal(store.all('SELECT 1 FROM operations').length, 0);
+
+  // A merged head takes no change request: changing it needs a new plan.
+  store.journal(d.campaignId, 'merged', { task: 'T1', sha: SHA, url: 'https://github.com/example-org/sampleapp/pull/7' }, Date.now());
+  assert.throws(() => applyResultReview(env.dataDir, 'request-changes', bind('T1', { text: 'Sort the list.' })), (error) => error.status === 409);
+  assert.equal(store.all("SELECT 1 FROM events WHERE kind = 'result-changes'").length, 0);
+});
+
+test('a finished goal whose results have a criterion failed or not checked is never shown as complete', (t) => {
+  const { env, store, d, finish } = rig(t);
+  const all = [{ criterion: 1, result: 'pass', check: 'Opened the list', evidence: 'Shown.' }, { criterion: 2, result: 'pass', check: 'Timed it', evidence: '0.3 s.' }];
+  finish('T1', all);
+  finish('T2', [all[0]]);
+  const c = store.campaign(d.campaignId);
+  store.patch('campaigns', { id: d.campaignId }, c.version, { control: 'finished', status: 'finished' }, Date.now());
+  const owner = () => ownerView(supervisorSnapshot(env.dataDir)).campaigns[d.campaignId];
+  assert.equal(owner().counts.unresolved, 1);
+  assert.equal(owner().releaseReady, false);
+  assert.match(owner().finished, /not checked/);
+  const t2 = store.task(d.campaignId, 'T2');
+  store.patch('tasks', { campaign_id: d.campaignId, task_id: 'T2' }, t2.version, { verification: verification(all) }, Date.now());
+  assert.equal(owner().counts.unresolved, 0);
+  assert.doesNotMatch(owner().finished, /not checked/);
+});

@@ -273,16 +273,25 @@ const releaseRule = (releases, repository, whose = `${short(repository)}'s`) =>
  * checks still running, published steps whose merge is not seen yet and reports to read are each said plainly.
  * `releaseReady` is the same claim as "the merged work is ready", and `line` is the sentence without its "All steps are finished".
  */
+/**
+ * Whether a step's result still has something unresolved (OWNER_UI_V2 WP4): a criterion that failed or was not checked,
+ * a blocking finding, no accepted verification of its head, or changes the owner requested. Its goal is never complete.
+ */
+export const unresolvedResult = (task) => Boolean(task.review) && (['no-evidence', 'changes-requested'].includes(task.review.state) ||
+  Boolean(task.review.unresolved && task.review.unresolved.failed + task.review.unresolved.notChecked + task.review.unresolved.blocking));
+
 function finishedSummary(c, steps, releases) {
   const count = (test) => steps.filter(test).length;
   const state = (name) => count((step) => step.delivery?.state === name);
   const has = (n) => n === 1 ? 'has' : 'have';
   const missing = count((step) => !step.delivery), noLink = state('unknown'),
     checking = count((step) => step.delivery?.pending), published = state('published') - checking,
-    reports = state('report-posted'), merged = state('merged'), delegated = state('delegated');
-  // Merged work is ready for release only when every other step is a report: none unknown, being checked or unmerged.
-  const releaseReady = merged > 0 && !(missing + noLink + checking + published + delegated);
+    reports = state('report-posted'), merged = state('merged'), delegated = state('delegated'), unresolved = count((step) => unresolvedResult(step.task));
+  // Merged work is ready for release only when every other step is a report: none unknown, being checked or unmerged,
+  // and no result has a criterion failed or not checked, a blocking finding or requested changes (WP4).
+  const releaseReady = merged > 0 && !(missing + noLink + checking + published + delegated + unresolved);
   const parts = [
+    unresolved ? `${plural(unresolved, 'step')} ${has(unresolved)} criteria not checked, failed or open findings; see ${unresolved === 1 ? 'its' : 'their'} evidence` : null,
     missing ? `${plural(missing, 'step')} ${has(missing)} no recorded result` : null,
     checking ? `the merge of ${plural(checking, 'step')} is being checked; check again shortly` : null,
     noLink ? `${plural(noLink, 'step')} ${has(noLink)} no recorded result link; check ${noLink === 1 ? 'its issue' : 'their issues'}` : null,
@@ -399,7 +408,9 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       outcome: finished?.line ?? (c.control === 'cancelled' ? `Cancelled · ${delivered} of ${plural(c.tasks.length, 'step')} delivered` : null),
       // `delegated` only when the owner delegated merging: without it the counts are as before.
       counts: { total: c.tasks.length, delivered, merged: by('merged').length,
-        awaiting: awaiting.length, ...(delegation ? { delegated: by('delegated').length } : {}), checking: checking.length, unknown: unknown.length, reports: by('report-posted').length } };
+        awaiting: awaiting.length, ...(delegation ? { delegated: by('delegated').length } : {}), checking: checking.length, unknown: unknown.length, reports: by('report-posted').length,
+        // Results with evidence still unresolved (WP4): a finished goal with any is not shown as complete.
+        unresolved: c.tasks.filter(unresolvedResult).length } };
     const base = { campaignId: c.id, repository: c.repository };
     // One item per step, led by what the step delivers. The evidence is one compact line; the full sentence is one click away.
     for (const { task, delivery: d } of awaiting) {

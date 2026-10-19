@@ -526,6 +526,7 @@ An advice sentence names only a control on its own screen, or carries it (aiwork
 | Pull requests wait for review | **All steps are finished.** <2> pull requests wait for your review · <3> merged. | See results |
 | Everything merged, all states known (observed rule: `src/dashboard/owner.mjs:124`, `src/dashboard/owner.mjs:135`) | **All steps are finished and merged.** Release follows <sampleapp's> <release policy \| standing deploy authorization>. | See results |
 | Some states unknown | **All steps are finished.** The GitHub state of <2> results is not known yet, so this is not settled. | See results |
+| A result's evidence unresolved (OWNER_UI_V2 WP4): a criterion failed or not checked, a blocking finding, or changes requested | **All steps are finished, but not complete.** <1> result has criteria not checked, failed or open findings. Review its evidence before you accept. | See results |
 | Reports only | **All steps are finished.** <2> reports posted for you to read. | See results |
 | Some closed without merging | **All steps are finished.** <1> pull request was closed without merging, so that work is not in <sampleapp>. | See results |
 | Local project (UI17) | **All steps are finished.** The checked result is ready to apply. Nothing in your folder has changed yet. | See results |
