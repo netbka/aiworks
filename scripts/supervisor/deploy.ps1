@@ -1,10 +1,15 @@
 param(
   [string] $Sha = '',
+  [ValidateSet('origin', 'local')] [string] $Main = 'origin',
   [string] $Root = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path,
   [string] $Node = (Get-Command node -ErrorAction Stop).Source
 )
-# Upgrade the pinned AIWorks runtime to a reviewed commit (default: origin/main), refresh the governance
-# checkout, and restart the supervisor and dashboard tasks. Follows docs/SUPERVISOR.md section 6.
+# Upgrade the pinned AIWorks runtime to a reviewed commit of the trusted main, refresh the governance checkout, and
+# restart the supervisor and dashboard tasks. Follows docs/SUPERVISOR.md section 6.
+# -Main origin (default): the commit is origin/main after a fetch, as before. -Main local (AW-005, with config.json
+# "selfHosting": { "trustedMain": "local" }): the commit is the trusted tip of the main ledger, read through the pinned
+# runtime's `cli.mjs trusted-main`; no fetch, a -Sha must be that tip or an ancestor of it, and a failed governance pull
+# keeps the current governance checkout with a warning.
 # Campaigns are not touched: pause them before and resume them after (see AGENTS.md).
 # Both tasks repeat every 5 minutes (aiworks#18), so they are disabled for the whole deploy: no trigger can start the
 # keeper or the dashboard from a half-updated runtime. A failed deploy leaves them disabled and STOP in place, so the
@@ -15,11 +20,27 @@ $runtime = "$Root/.local/runtime"
 $governance = "$Root/.local/governance"
 function Note([string]$m) { Write-Output "$([DateTime]::UtcNow.ToString('o')) $m" }
 
-if (-not $Sha) {
+# Choose the commit before anything is stopped, so a refusal leaves the running system as it was.
+$trustedTip = ''
+if ($Main -eq 'local') {
+  # Never raw `git rev-parse main`: a commit on main that the main ledger does not record is not trusted (AW-005).
+  $cli = "$runtime/src/supervisor/cli.mjs"
+  if (-not (Test-Path $cli)) { throw "deploy stopped: -Main local reads the trusted tip through $cli, which is missing; nothing was changed" }
+  $out = @(& $Node $cli trusted-main --data $data)
+  if ($LASTEXITCODE -ne 0) { throw "deploy stopped: trusted-main refused (exit $LASTEXITCODE); nothing was changed" }
+  $trustedTip = "$($out[0])".Trim()
+  if ($trustedTip -notmatch '^[0-9a-f]{40}$') { throw "deploy stopped: trusted-main printed no commit; nothing was changed" }
+  Note "trusted tip of local main $trustedTip ($("$($out[1])".Trim()))"
+  if (-not $Sha) { $Sha = $trustedTip }
+} elseif (-not $Sha) {
   & git -C $Root fetch -q origin
   $Sha = (& git -C $Root rev-parse origin/main).Trim()
 }
 if ($Sha -notmatch '^[0-9a-f]{40}$') { throw "not a full commit SHA: $Sha" }
+if ($trustedTip) {
+  & git -C $Root merge-base --is-ancestor $Sha $trustedTip
+  if ($LASTEXITCODE -ne 0) { throw "deploy stopped: $Sha is not the trusted tip of local main or an ancestor of it; nothing was changed" }
+}
 Note "deploying $Sha"
 
 # 0. Disable both tasks so their triggers cannot start anything until step 5. A running instance keeps running.
@@ -78,8 +99,16 @@ if (Test-Path "$governance/.git") {
   $gdirty = & git -C $governance status --porcelain
   if ($gdirty) { throw "governance checkout has local changes: $gdirty" }
   & git -C $governance pull -q --ff-only
-  if ($LASTEXITCODE -ne 0) { throw "governance pull failed (exit $LASTEXITCODE); the supervisor stays stopped" }
-  Note "governance checkout at $((& git -C $governance rev-parse HEAD).Trim())"
+  $pullExit = $LASTEXITCODE
+  $gHead = (& git -C $governance rev-parse HEAD).Trim()
+  if ($pullExit -ne 0) {
+    # With local trust the network is not on the deploy's critical path: governance changes take effect only once pulled,
+    # so the checkout stays at its current commit. With origin trust a failed pull stops the deploy, as before.
+    if ($Main -ne 'local') { throw "governance pull failed (exit $pullExit); the supervisor stays stopped" }
+    $gAfter = & git -C $governance status --porcelain
+    if ($gAfter) { throw "governance pull failed (exit $pullExit) and left local changes: $gAfter; the supervisor stays stopped" }
+    Note "WARNING: governance pull failed (exit $pullExit); the governance checkout stays at $gHead"
+  } else { Note "governance checkout at $gHead" }
 } else { Note "WARNING: no governance checkout at $governance" }
 
 # 5. Remove STOP, enable the tasks and start them again.
