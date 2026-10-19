@@ -13,7 +13,8 @@ import * as gitA from './adapters/git.mjs';
 import * as github from './adapters/github.mjs';
 import { authorityDigest, campaignLimits, canonicalJson, executorOrder, overlayGovernance, projectGovernance } from './campaign.mjs';
 import { resolveCheckout, resolveLocalProject } from './project-connect.mjs';
-import { campaignBudget } from './api.mjs';
+import { admissionBudget } from './api.mjs';
+import { currentSettings, projectOf, protectedAreasFor, protectedPaths } from './project-settings.mjs';
 import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountOf, accountWait, buildTaskSignature, clearAccountWait, formatSignatureLines, formatTokensUsage, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
 import { domainOf, pathsOutside, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
@@ -949,6 +950,22 @@ export class Controller {
         }
       }
     }
+    // The project's standing protected areas (WP5) bind every commit, whatever its declared domain, when it is built and
+    // again when it is checked, so an area added meanwhile holds it too: a change inside one is a boundary violation
+    // held for the owner, like a write outside the domain. An integration repair is measured from the base it merged.
+    const protectedHead = verdict.class !== 'result' || this.deliverable(ctx, op.task_id) !== 'commit' ? null
+      : op.kind === 'implement' && verdict.value.result === 'resolved' ? verdict.value.headSha : op.kind === 'verify' ? op.target_sha : null;
+    const areas = protectedHead ? protectedAreasFor(this.store, this.store.campaign(ctx.id)) : [];
+    if (areas.length) {
+      const integration = this.integrationFinding(before);
+      const changed = gitA.changedPaths({ git: this.cmd.git, path: op.workspace, from: integration ? integration.base : before.base_sha, to: protectedHead });
+      const inside = changed === null ? null : protectedPaths(areas, changed);
+      if (inside === null) verdict = { ...verdict, class: 'invalid-result', detail: 'cannot list the paths the commit changed' };
+      else if (inside.length) {
+        verdict = { ...verdict, class: 'error', violation: true,
+          detail: `changes inside the project's protected areas (${areas.join(', ')}): ${inside.slice(0, 10).join(', ')}${inside.length > 10 ? ', ...' : ''}` };
+      }
+    }
     if (verdict.class === 'result' && op.kind === 'verify' && before.head_sha !== op.target_sha) {
       verdict = { ...verdict, class: 'invalid-result', detail: `stale verification: task head is ${before.head_sha}, verifier saw ${op.target_sha}` };
     }
@@ -1713,11 +1730,12 @@ export class Controller {
     const now = this.now();
     let campaign = this.store.campaign(ctx.id);
     const decl = campaign.declaration;
-    if (campaign.blocker?.kind === 'budget' && !campaignBudget(this.store, campaign).exhausted) {
+    if (campaign.blocker?.kind === 'budget' && !admissionBudget(this.store, campaign, now).exhausted) {
       this.fenced(ctx, () => {
         const c = this.store.campaign(ctx.id);
         this.store.patch('campaigns', { id: ctx.id }, c.version, { blocker: null }, this.now());
-        this.store.journal(ctx.id, 'blocker-cleared', { kind: 'budget', ...campaignBudget(this.store, c) }, this.now());
+        const { project, ...budget } = admissionBudget(this.store, c, this.now());
+        this.store.journal(ctx.id, 'blocker-cleared', { kind: 'budget', ...budget, projectBudgetVersion: project.version }, this.now());
         const record = this.oi && c.blocker.fingerprint ? this.store.blocker(c.blocker.fingerprint) : null;
         if (record && record.status !== 'resolved') this.resolveBlocker(ctx, record, { trigger: 'state-change', probe: 'deterministic', pass: true,
           detail: `budget available under authorization v${c.authorization_version}`, at: this.now() }, this.now());
@@ -1742,7 +1760,7 @@ export class Controller {
     const ready = runnable[0];
     if (!ready) return;
     if (campaign.blocker) return;
-    const budget = campaignBudget(this.store, campaign);
+    const budget = admissionBudget(this.store, campaign, now);
     // Open runs are reserved against a cost ceiling while they last: with work still running, an exhausted budget is a
     // wait for those results, not yet the owner's budget decision (the one-slot path never gets here with a run open).
     if (this.sched && budget.exhausted && this.store.openOperations(ctx.id).length) return;
@@ -1759,8 +1777,11 @@ export class Controller {
       this.fenced(ctx, () => this.raiseBlocker(ctx, decl, {
         kind: 'budget', class: 'B3',
         reason: `${budget.exhausted} under authorization v${campaign.authorization_version}`,
-        requestedAction: 'Decide whether to raise limits.maxWorkerRuns or limits.maxCostUsd; if yes, start the campaign again with authorization.version + 1 and the new limits',
-      }, this.now(), { identity: `v${campaign.authorization_version}:${budget.exhausted.split(' (')[0]}` }));
+        requestedAction: budget.project.exhausted && budget.exhausted === budget.project.exhausted
+          ? `Decide whether to raise or remove the ${budget.exhausted.startsWith('monthly') ? 'monthly ' : ''}budget in this project's settings${budget.exhausted.startsWith('monthly') ? ', or wait for the next month' : ''}; work resumes by itself when it fits`
+          : 'Decide whether to raise limits.maxWorkerRuns or limits.maxCostUsd; if yes, start the campaign again with authorization.version + 1 and the new limits',
+      }, this.now(), { identity: budget.exhausted === budget.project.exhausted
+        ? `project:v${budget.project.version}:${budget.exhausted.split(' (')[0]}` : `v${campaign.authorization_version}:${budget.exhausted.split(' (')[0]}` }));
       return;
     }
     await this.dispatch(ctx, campaign, ready, opKind(ready));
@@ -2195,7 +2216,7 @@ export class Controller {
       // records the operation: two instances admitting at once serialise here (ADAPTIVE_SCHEDULER 4.1).
       const busy = admission ? Boolean(admission()) : this.store.openOperations(ctx.id).length > 0;
       if (current.control !== 'registered' || current.blocker || current.version !== campaign.version ||
-          busy || campaignBudget(this.store, current).exhausted) return null;
+          busy || admissionBudget(this.store, current, this.now()).exhausted) return null;
       const decl = campaign.declaration;
       // The task's packet binding, checked again from the rows before anything is recorded (WORK_ENVELOPE 6.5, slice E4).
       const binding = this.planBinding(current, task.task_id);
@@ -2436,6 +2457,15 @@ export class Controller {
         return `${id}: ${dep?.pr_url ?? 'unpublished'}; verified SHA ${dep?.verified_sha ?? 'unknown'}`;
       }).join('\n');
       if (kind === 'plan') prompt += this.planningContext(ctx, decl, binding.head, task);
+      // The project's standing settings (WP5): its protected areas, which the commit check enforces, and the owner's
+      // notes. They add care, never authority: the packet and its digest are unchanged by them.
+      const areas = protectedAreasFor(this.store, current);
+      const notes = currentSettings(this.store, projectOf(decl)).settings.notes;
+      if (areas.length || notes) {
+        prompt += '\nStanding project settings from the owner (they add protection and guidance, never authority):\n' +
+          (areas.length ? `Protected areas: never change ${areas.join(', ')}; a commit that does is a boundary violation.\n` : '') +
+          (notes ? `Notes for the AI: ${notes}\n` : '');
+      }
       const timeoutMs = (kind === 'verify' ? decl.executor.verifierTimeoutMinutes : decl.executor.implementerTimeoutMinutes) * 60_000;
 
       // The run directory is written before the durable record; an unrecorded directory is never launched.
@@ -3044,7 +3074,7 @@ export class Controller {
           record: { fingerprint: record.fingerprint, dependency: record.dependency, class: record.class, subject: record.subject } });
       }
       if (record.dependency === 'budget') {
-        const budget = campaignBudget(this.store, this.store.campaign(ctx.id));
+        const budget = admissionBudget(this.store, this.store.campaign(ctx.id), this.now());
         return { pass: !budget.exhausted, evidence: budget.exhausted ?? `budget available (${budget.runsUsed} runs used)` };
       }
       if (record.dependency === 'runtime-not-merged') {

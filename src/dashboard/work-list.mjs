@@ -120,7 +120,7 @@ const version = (value) => typeof value === 'string' && VERSION.test(value);
 const words = (max, emptyOk = false) => (value) => typeof value === 'string' && value.length <= max && (emptyOk || value.trim().length > 0);
 
 /** The caller check, read as the project rules read it: a program AIWorks started, or no answer, saves nothing. */
-async function ownerOnly(store, caller) {
+export async function ownerOnly(store, caller) {
   const unchecked = (detail) => fail(403, 'AIWorks could not check that this request came from you, so nothing was saved.', 'APPROVAL_UNCHECKED', detail);
   let result = null;
   try { result = typeof caller === 'function' ? await caller(store) : null; } catch (error) {

@@ -13,6 +13,7 @@ import { candidateStatus } from './local-candidates.mjs';
 import { selfHostingSettings, trustedTip, trustsLocalMain } from './self-hosting.mjs';
 import { resolveCheckout } from './project-connect.mjs';
 import { backupStatus } from './github-backup.mjs';
+import { projectBudget, projectOf, protectedWriteConflicts } from './project-settings.mjs';
 
 export class CampaignError extends Error {
   constructor(code, message) { super(message); this.name = 'CampaignError'; this.code = code; }
@@ -23,6 +24,13 @@ export function campaignStart(store, declaration, now = Date.now()) {
   const scope = scopeDigest(decl);
   store.tx(() => {
     const existing = store.campaign(decl.campaignId);
+    // The project's standing protected areas (WP5): neither a new campaign nor a new authorization version may declare
+    // writes inside one, so no approval, new or stale, reaches a protected area. A resume with the same declaration is
+    // not a new authorization: the commit check keeps the areas untouched for work already registered.
+    if (!existing || decl.authorization.version > existing.authorization_version) {
+      const inside = protectedWriteConflicts(store, decl);
+      if (inside.length) throw new CampaignError('PROTECTED_AREA', `the plan changes ${inside.slice(0, 5).join(', ')}, inside the project's protected areas; remove the area in project settings or change the plan`);
+    }
     if (!existing) {
       // Registration and admission share BEGIN IMMEDIATE: another connection cannot register
       // the same repair between this ownership check and the campaign insert (aiworks#5 A).
@@ -135,6 +143,17 @@ export function campaignBudget(store, c) {
       : null;
   return { runsUsed: c.runs_used, maxWorkerRuns: limits.maxWorkerRuns, measuredCostUsd: measured, unknownCostRuns: unknownRuns,
     reservedRuns, unknownRunCostUsd, chargedCostUsd: charged, maxCostUsd, exhausted };
+}
+
+/**
+ * What admission checks before a paid worker run starts (WP5): the campaign's own budget, then its project's standing
+ * budget (project-settings.mjs projectBudget). `exhausted` is the first reason either gives, or null; `project` is the
+ * project's spend with what remains and what is unknown.
+ */
+export function admissionBudget(store, c, now = Date.now()) {
+  const own = campaignBudget(store, c);
+  const project = projectBudget(store, projectOf(c.declaration), now);
+  return { ...own, project, exhausted: own.exhausted ?? project.exhausted };
 }
 
 const hasTable = (store, name) => Boolean(store.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", name));
@@ -396,7 +415,7 @@ export function waitReason(task, { store, campaign: c, tasks, open, held = new M
     return providerReset ? reason('provider-cooldown', `AI provider usage limit; resets at ${iso(providerReset)}`, `Tries again at ${iso(providerReset)}`, providerReset)
       : reason('provider-cooldown', 'The AI provider is unavailable', 'Tries again after a recheck succeeds');
   }
-  const budget = campaignBudget(store, c);
+  const budget = admissionBudget(store, c, now);
   if (budget.exhausted && !open.length) return reason('owner', BLOCKER_TEXT.budget, OWNER_NEXT);
   if (!schedulerEnabled(config) || !hasTable(store, 'capacity')) {
     // Scheduler off: one worker at a time per campaign, the first runnable task in declaration order first.

@@ -8,19 +8,13 @@ import { join } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
 import { selfHostingSettings, trustedTip } from '../supervisor/self-hosting.mjs';
 import { backupStatus } from '../supervisor/github-backup.mjs';
+import { projectOf } from '../supervisor/project-settings.mjs';
 
 const identifier = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const id = (value) => identifier.test(value ?? '') ? value : null;
 const SHA = /^[0-9a-f]{40}$/;
-const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
-const LOCAL_PROJECT = /^lp-[a-z0-9][a-z0-9-]{0,38}$/;
-
-/** The project a declaration belongs to: its GitHub repository, or the lp- id of a project without GitHub. */
-export function projectOf(declaration) {
-  const target = declaration?.target ?? {};
-  if (REPOSITORY.test(target.repository ?? '')) return target.repository;
-  return LOCAL_PROJECT.test(target.projectId ?? '') ? target.projectId : null;
-}
+// The project a declaration belongs to: its GitHub repository, or the lp- id of a project without GitHub.
+export { projectOf };
 export const sameProject = (a, b) => typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase();
 
 // ---------------------------------------------------------------------------------------------------------------------
