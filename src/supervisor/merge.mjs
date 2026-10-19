@@ -19,6 +19,7 @@ import { specsOf } from './plan.mjs';
 import { resolveCheckout } from './project-connect.mjs';
 import { refreshSettings, refreshStep } from './merge-refresh.mjs';
 import { ConflictError, FencedError } from './store.mjs';
+import { pendingChanges } from './result-review.mjs';
 
 const SHA = /^[0-9a-f]{40}$/;
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
@@ -79,6 +80,8 @@ function candidates(controller, repositories) {
     for (const task of store.tasks(id)) {
       if (task.state !== 'done' || task.blocked || !SHA.test(task.verified_sha ?? '') || specs.get(task.task_id)?.deliverable !== 'commit') continue;
       if (merged.has(`${task.task_id}:${task.verified_sha}`)) continue;
+      // The owner asked for changes to this head (OWNER_UI_V2 WP4): it is never merged while the request waits.
+      if (pendingChanges(store, id, task.task_id, task.verified_sha)) continue;
       if (local) {
         const number = Number(WORK_REFERENCE.exec(String(task.pr_url ?? ''))?.[1]);
         if (number) out.push({ campaignId: id, decl, task, number, local: true });
@@ -257,6 +260,7 @@ function mergeOne(controller, item, settings, repoPath, baseSha) {
   const still = () => {
     const c = store.campaign(campaignId), t = store.task(campaignId, task.task_id);
     return ['registered', 'finished'].includes(c.control) && t.state === 'done' && !t.blocked && t.verified_sha === sha && t.pr_url === url
+      && !pendingChanges(store, campaignId, task.task_id, sha)
       && (!controller.ci || ciMergeable(store, campaignId, task.task_id, sha));
   };
   if (!controller.fenced(ctx, () => {
@@ -346,7 +350,8 @@ function mergeLocal(controller, item, settings, repoPath) {
   const tip = trustedTip(store, { git, repoPath, repository });
   if (tip.state !== 'TRUSTED') return wait(controller, item, `local main is not trusted (${tip.state}): ${tip.reason}`);
   const stillDone = (t) => t.state === 'done' && !t.blocked && t.verified_sha === sha && t.pr_url === url;
-  const still = () => ['registered', 'finished'].includes(store.campaign(campaignId).control) && stillDone(store.task(campaignId, task.task_id));
+  const still = () => ['registered', 'finished'].includes(store.campaign(campaignId).control) && stillDone(store.task(campaignId, task.task_id))
+    && !pendingChanges(store, campaignId, task.task_id, sha);
 
   // After a crash, main is read before any retry: the planned merge commit on main is recorded once and never made again.
   const requested = lastRequest(store, campaignId, task.task_id, sha);

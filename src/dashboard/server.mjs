@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
-import { supervisorSnapshot, applyCommand, applyDecision, applyScopedControl, postMessage, dashboardAccounts, removeDashboardAccount, configuredModelPreferences, saveDashboardModelPreferences } from './supervisor.mjs';
+import { supervisorSnapshot, applyCommand, applyDecision, applyResultReview, applyScopedControl, postMessage, dashboardAccounts, removeDashboardAccount, configuredModelPreferences, saveDashboardModelPreferences } from './supervisor.mjs';
 import { Store } from '../supervisor/store.mjs';
 import { ownerView } from './owner.mjs';
 import { configuredMergeDelegation } from './merges.mjs';
@@ -199,6 +199,10 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       // A structured decision (WP2): answer, snooze or "this did not need me", bound to one decision; the action is the address.
       if (/^\/api\/v2\/decisions\/(?:answer|snooze|not-needed)$/.test(path)) {
         return send(202, applyDecision(dataDir, path.slice('/api/v2/decisions/'.length), value, Date.now()));
+      }
+      // Review of a result (WP4): accept, or request changes, bound to one verified head and its report; the action is the address.
+      if (/^\/api\/v2\/results\/(?:accept|request-changes)$/.test(path)) {
+        return send(202, applyResultReview(dataDir, path.slice('/api/v2/results/'.length), value, Date.now()));
       }
       // Mark the events up to a journal sequence as seen (the server-side last-seen marker, WP1).
       if (path === '/api/v2/events/seen') {
