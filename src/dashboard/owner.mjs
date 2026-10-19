@@ -126,6 +126,7 @@ export function resultEvidence(task, pullRequest = true) {
  */
 export const RESULT_GROUPS = [
   { key: 'review', title: 'Waiting for your review' },
+  { key: 'local-review', title: 'Checked on this computer · not merged yet' },
   { key: 'delegated', title: 'Being merged for you' },
   { key: 'closed', title: 'Closed without merging' },
   { key: 'reports', title: 'Reports to read' },
@@ -158,6 +159,34 @@ function resultRow(c, task, d, releases, recorded = null) {
   if (d.pending) return { ...base, ...proof, group: 'unknown', word: 'Not known yet', note: d.note, link };
   return { ...base, ...proof, group: 'review', word: `Pull request #${number} · waiting for your review`,
     note: d.reason ? d.note : 'The merge is not seen on the base branch yet', link };
+}
+
+/** The newest checked local review of each campaign step, by `<campaignId>/<taskId>` (work-list.mjs reviewRows, newest first). */
+function localReviews(workList) {
+  const reviews = new Map();
+  for (const review of workList?.reviews ?? []) {
+    const key = `${review.campaignId}/${review.taskId}`;
+    if (review.campaignId && review.taskId && !reviews.has(key)) reviews.set(key, review);
+  }
+  return reviews;
+}
+
+/**
+ * A checked local review as a Results row (LOCAL_OPERATION section 5.2, UI20): passed the independent check at its
+ * commit and recorded on this computer. Merged only when the local merge gate recorded that commit on main; never
+ * "accepted", which is kept for recorded acceptance.
+ */
+function localReviewRow(review, text) {
+  const sha7 = review.verifiedSha ? review.verifiedSha.slice(0, 7) : null;
+  const evidence = sha7 ? { short: `Passed the check at commit ${sha7}`, text: `Passed the independent check at commit ${sha7}. Nothing was pushed to GitHub.` }
+    : { short: 'Independent check not recorded here', text: 'The independent check is not recorded here.' };
+  const base = { campaignId: review.campaignId, taskId: review.taskId, repository: null, text, release: null, asOf: null, signature: null, ladder: null, number: review.number,
+    link: null, route: { label: `Work list #${review.number}`, address: `#/worklist/${review.number}` }, evidence: evidence.short, detail: evidence.text };
+  return review.mergedAt
+    ? { ...base, group: 'merged', word: 'Merged into local main', mergedAt: review.mergedAt, note: null,
+      release: 'Into local main on this computer; nothing was pushed. Merged is not accepted: acceptance is recorded only when you accept it.' }
+    : { ...base, group: 'local-review', word: 'Checked on this computer · not merged, not accepted', mergedAt: null,
+      note: 'A local review: it passed the independent check and is recorded in the work list, not on GitHub.' };
 }
 
 /** The words of one release step's answer (AUTO_RELEASE.md section 1). */
@@ -204,16 +233,22 @@ export function releaseLadder(task, d, recorded = null, { github = true } = {}) 
  * primary action, "Review pull request #N" for the oldest waiting review (the lowest pull request number). Rows keep
  * the campaigns' order, except that reviews are oldest first.
  */
-function resultsByProject(supervisor, campaigns, releases) {
-  const projects = new Map();
+function resultsByProject(supervisor, campaigns, releases, reviews = new Map(), selfRepository = null) {
+  const projects = new Map(), shown = new Set();
   const recorded = new Map((supervisor.releases ?? []).map((r) => [`${r.campaignId}/${r.taskId}`, r]));
+  const add = (project, row) => {
+    const key = project.toLowerCase();
+    if (!projects.has(key)) projects.set(key, { project, rows: [] });
+    projects.get(key).rows.push(row);
+  };
   for (const c of supervisor.campaigns) for (const task of c.tasks) {
-    const d = campaigns[c.id].deliveries[task.id];
+    const d = campaigns[c.id].deliveries[task.id], review = reviews.get(`${c.id}/${task.id}`);
+    if (review && d?.state === 'unknown') { shown.add(review.number); add(c.repository, localReviewRow(review, label(task))); continue; }
     if (!d) continue;
-    const key = c.repository.toLowerCase();
-    if (!projects.has(key)) projects.set(key, { project: c.repository, rows: [] });
-    projects.get(key).rows.push(resultRow(c, task, d, releases, recorded.get(`${c.id}/${task.id}`) ?? null));
+    add(c.repository, resultRow(c, task, d, releases, recorded.get(`${c.id}/${task.id}`) ?? null));
   }
+  // Reviews of work no longer on this computer still belong to AIWorks's own repository.
+  if (selfRepository) for (const review of reviews.values()) if (!shown.has(review.number)) add(selfRepository, localReviewRow(review, review.title));
   return Object.fromEntries([...projects].map(([key, { project, rows }]) => {
     const groups = RESULT_GROUPS.map((group) => {
       const mine = rows.filter((row) => row.group === group.key);
@@ -314,13 +349,15 @@ const agentWorking = (agent, now) => agent.heartbeatState === 'recent' || (agent
  * `connected` are the connected project records when Add project is on (connectedProjects): a project held up by the
  * owner's decisions is in `held`, and the calm headline names it (aiworks#11 review 5 G7).
  */
-export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = Date.now(), releases = {}, delegation = null, connected = [] } = {}) {
+export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = Date.now(), releases = {}, delegation = null, connected = [], workList = null } = {}) {
   // Results with nothing finished in a project show the §7.1 empty copy, written once in copy.mjs.
   const { title, text } = stateCopy('results-empty'), noResults = { title, text };
   if (!supervisor?.available) return { available: false, headline: null, count: 0, items: [], groups: [], held: [], unknownResults: 0, also: null, layout: { cards: [], finished: [] }, reply: null, campaigns: {}, results: {}, noResults, recent: null };
   // `host` names this computer in the page header; the items say "this computer" (aiworks#11 review F22).
   const items = [], campaigns = {}, halted = [];
   let unknownResults = 0;
+  // A step of AIWorks's own repository recorded in the local work list (UI20) is a checked local review, not a missing link.
+  const reviews = localReviews(workList);
   // Whether AIWorks itself runs on this computer: the computer-wide state the supervisor reports from all its leases
   // (src/supervisor/api.mjs supervisorLiveness), never one piece of work's lease (aiworks#11 review 4 F2). A snapshot
   // without it (a synthetic one in a test) is read by the same rule: AIWorks runs while any lease is live.
@@ -392,7 +429,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       items.push({ ...base, kind: 'merge-stalled', action: DELEGATED.stalledAction, text: label(task), link: { label: `Open PR #${d.number}`, url: d.url },
         mergeCheck: d.asOf, points: [{ link: null, text: DELEGATED.stalled(d.stalled) }] });
     }
-    for (const { task } of unknown) {
+    for (const { task } of unknown.filter((step) => !reviews.has(`${c.id}/${step.task.id}`))) {
       items.push({ ...base, kind: 'check', action: 'Check on GitHub', text: label(task), link: { label: NEEDS.stepIssue, url: task.issueUrl }, mergeCheck: null,
         points: [{ link: null, text: 'This step finished, but no result link was recorded, so the dashboard cannot tell where it stands.' }] });
     }
@@ -446,6 +483,12 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
         text: `Release of ${where}: the rollback failed`, at: r.updatedAt,
         points: [{ link: null, text: 'The destination may not be working. AIWorks will not release there again until you check it.' }] });
   }
+  // The open decisions of the local work list (UI20), each opened on its own work list screen.
+  for (const decision of workList?.decisions ?? []) {
+    items.push({ campaignId: supervisor.campaigns.some((c) => c.id === decision.campaignId) ? decision.campaignId : null, repository: workList.repository ?? null,
+      kind: 'decision', action: 'Decision needed', text: `#${decision.number} ${decision.title}`, route: { label: 'Open in the work list', address: `#/worklist/${decision.number}` },
+      points: [] });
+  }
   // AIWorks stopped on this computer is one fact, listed once under AIWorks itself with the work it holds up, not once
   // per piece of work (aiworks#11 review F9). Restarting it is the owner's action, so it counts toward Needs you.
   if (halted.length) items.push(stoppedItem(halted, entries, supervisor.controller?.stopRequested === true));
@@ -472,7 +515,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
   const layout = { cards: [...supervisor.campaigns.filter((c) => listed.has(c.id)), ...supervisor.campaigns.filter((c) => !listed.has(c.id) && !terminal(c))].map((c) => c.id),
     finished: supervisor.campaigns.filter((c) => !listed.has(c.id) && terminal(c)).sort((a, b) => recency(b) - recency(a)).map((c) => c.id) };
   return { available: true, headline, count, items, groups: needsGroups(items), held, unknownResults, also: alsoForYou(supervisor, campaigns, releases), layout, campaigns,
-    results: resultsByProject(supervisor, campaigns, releases), noResults, recent: recentSummary(supervisor, campaigns), reply: answered ? { messageId: answered.id, answeredAt: answered.answeredAt, url: answered.replyBody ? null : answered.replyUrl } : null };
+    results: resultsByProject(supervisor, campaigns, releases, reviews, workList?.repository ?? null), noResults, recent: recentSummary(supervisor, campaigns), reply: answered ? { messageId: answered.id, answeredAt: answered.answeredAt, url: answered.replyBody ? null : answered.replyUrl } : null };
 }
 
 /**
