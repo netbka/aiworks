@@ -1,7 +1,7 @@
 // Publication goes through the GitHub REST API (gh api), never GraphQL, and a rate-limit refusal waits for its reset (aiworks#21).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { declaration, environment, runUntil, skipWithoutSqlite } from './helpers.mjs';
@@ -125,6 +125,18 @@ test('a failure that is not a rate limit keeps the fixed publish retry', { skip:
   assert.ok(task.retry_at - task.updated_at >= 59_000 && task.retry_at - task.updated_at <= 60_000, 'retries after publishRetryMs');
   assert.equal(store.all("SELECT * FROM journal WHERE campaign_id = ? AND kind = 'publish-rate-limited'", id).length, 0);
   assert.equal(env.prs().length, 0);
+});
+
+test('malformed private publication settings refuse a GitHub publication: nothing is pushed or opened', { skip: skipWithoutSqlite }, async (t) => {
+  const { env, store, controller, id } = await setup(t, { config: { publishRetryMs: 60_000 } });
+  writeFileSync(join(env.repo, '.git', 'info', 'exclude'), '.local/\n');
+  mkdirSync(join(env.repo, '.local'), { recursive: true });
+  writeFileSync(join(env.repo, '.local', 'publication.json'), '{ not json');
+  await runUntil(controller, store, id, () => String(store.task(id, 'T1').last_error ?? '').startsWith('publish:'));
+  assert.equal(store.task(id, 'T1').state, 'verified');
+  assert.match(store.task(id, 'T1').last_error, /Invalid private publication settings/);
+  assert.equal(env.prs().length, 0);
+  assert.equal(spawnSync('git', ['ls-remote', env.origin, `refs/heads/campaign/${id}/T1`], { encoding: 'utf8', windowsHide: true }).stdout.trim(), '', 'nothing was pushed');
 });
 
 // aiworks#8: publication text passes the shared privacy check before any outbound write. Synthetic values are assembled at run
