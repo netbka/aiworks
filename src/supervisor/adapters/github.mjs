@@ -110,7 +110,7 @@ export function commitChecks({ gh, repository, sha }) {
  */
 export const declarationBranch = (branch) => /^declare\//i.test(String(branch ?? ''));
 
-// Every PR and comment text passes the shared publication check (aiworks#8) before any gh call or body file write.
+// Every PR and comment text passes the shared publication check (aiworks#8) before any GitHub call or body file write.
 // `terms` are the installation's private terms; the refusal names categories only.
 export function openPullRequest({ gh, repository, baseBranch, branch, title, body, bodyFile, terms = [] }) {
   if (declarationBranch(branch)) {
