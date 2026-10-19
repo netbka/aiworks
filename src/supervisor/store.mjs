@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS task_specs (
 -- Owner work requests and the draft plans drafted from them (docs/design/WORK_ENVELOPE.md section 3; rules in intake.mjs).
 -- Additive like every table above. Nothing that schedules reads them: a draft is never a campaign, task or operation.
 -- A request is received, drafting, drafted or failed; each draft version is a new row and is never edited except to
--- mark it stale.
+-- mark it stale. An owner's edit is a new version too (outline, edit_request_id and edited_from are added columns).
 CREATE TABLE IF NOT EXISTS work_requests (
   id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, route TEXT NOT NULL,
   text TEXT, reference TEXT, tracking_issue INTEGER, plan_only INTEGER NOT NULL, state TEXT NOT NULL,
@@ -147,6 +147,37 @@ CREATE TABLE IF NOT EXISTS project_baselines (
 CREATE TABLE IF NOT EXISTS project_overlays (
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL UNIQUE, entry TEXT NOT NULL, digest TEXT NOT NULL,
   approved_at INTEGER NOT NULL, revoked_at INTEGER);
+-- Standing project settings (OWNER_UI_V2 WP5; rules in project-settings.mjs): protected areas, notes for the AI and
+-- optional budgets, one row per saved version of one project. Additive like every table above. Append-only: a change is
+-- a new version, so the settings any campaign was registered under stay readable.
+CREATE TABLE IF NOT EXISTS project_settings (
+  project TEXT NOT NULL, version INTEGER NOT NULL, settings TEXT NOT NULL, digest TEXT NOT NULL,
+  request_id TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, PRIMARY KEY (project, version));
+CREATE TRIGGER IF NOT EXISTS project_settings_no_update BEFORE UPDATE ON project_settings
+  BEGIN SELECT RAISE(ABORT, 'project_settings is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS project_settings_no_delete BEFORE DELETE ON project_settings
+  BEGIN SELECT RAISE(ABORT, 'project_settings is append-only'); END;
+-- Owner alert rules (OWNER_UI_V2 WP6; rules in alerts.mjs): which notification classes are sent, reminders and quiet
+-- hours, one row per saved version. Additive and append-only like project_settings.
+CREATE TABLE IF NOT EXISTS alert_rules (
+  version INTEGER PRIMARY KEY, rules TEXT NOT NULL, digest TEXT NOT NULL, request_id TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL);
+CREATE TRIGGER IF NOT EXISTS alert_rules_no_update BEFORE UPDATE ON alert_rules
+  BEGIN SELECT RAISE(ABORT, 'alert_rules is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS alert_rules_no_delete BEFORE DELETE ON alert_rules
+  BEGIN SELECT RAISE(ABORT, 'alert_rules is append-only'); END;
+-- Product facts the owner keeps about a project (OWNER_UI_V2 WP8; rules in knowledge.mjs), one row per version of one
+-- fact. Every row is the owner's own act: a fact written, a suggestion confirmed, edited or set aside. Its basis keeps what
+-- a confirmed suggestion came from (found in material or suggested by AI) through every later version. Additive and
+-- append-only like project_settings.
+CREATE TABLE IF NOT EXISTS project_facts (
+  project TEXT NOT NULL, fact_id TEXT NOT NULL, version INTEGER NOT NULL, text TEXT NOT NULL, state TEXT NOT NULL, basis TEXT,
+  digest TEXT NOT NULL, request_id TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, PRIMARY KEY (project, fact_id, version));
+CREATE TRIGGER IF NOT EXISTS project_facts_no_update BEFORE UPDATE ON project_facts
+  BEGIN SELECT RAISE(ABORT, 'project_facts is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS project_facts_no_delete BEFORE DELETE ON project_facts
+  BEGIN SELECT RAISE(ABORT, 'project_facts is append-only'); END;
+-- What the synthetic (rehearsal) alert transport recorded, once per notification key; nothing in it left this computer.
+CREATE TABLE IF NOT EXISTS alert_rehearsals (key TEXT PRIMARY KEY, alert TEXT NOT NULL, recorded_at INTEGER NOT NULL);
 -- The main ledger (docs/design/LOCAL_OPERATION.md section 4.2; rules in self-hosting.mjs): every commit AIWorks trusts on
 -- local main of its own repository. Additive like every table above. Append-only: the triggers refuse an update or a
 -- delete. Nothing writes it until the switch-on step (SELF13) records the anchor.
@@ -184,7 +215,7 @@ CREATE TRIGGER IF NOT EXISTS work_item_comments_no_delete BEFORE DELETE ON work_
 
 const JSON_COLUMNS = new Set(['declaration', 'blocker', 'failures', 'findings', 'result', 'verification',
   'blocked', 'packet', 'outcome', 'payload', 'detail', 'message_ids', 'probe', 'last_evidence', 'resolution', 'message',
-  'eligibility', 'steps', 'history', 'routing', 'ops', 'spec', 'pinned', 'questions', 'conflicts', 'notes', 'stale_what', 'signature']);
+  'eligibility', 'steps', 'history', 'routing', 'ops', 'spec', 'pinned', 'questions', 'conflicts', 'notes', 'stale_what', 'signature', 'outline', 'settings', 'rules', 'alert', 'basis']);
 
 function decode(row) {
   if (!row) return null;
@@ -237,6 +268,12 @@ export class Store {
         if (!columns.includes('account_identity')) this.db.exec('ALTER TABLE operations ADD COLUMN account_identity TEXT');
         const taskColumns = this.db.prepare('PRAGMA table_info(tasks)').all().map((column) => column.name);
         if (!taskColumns.includes('signature')) this.db.exec('ALTER TABLE tasks ADD COLUMN signature TEXT');
+        // A draft's plan outline and the owner's edit that made it (intake.mjs reviseDraft, OWNER_UI_V2 WP3) are additive:
+        // a draft recorded before them reads null, and the store version does not change.
+        const draftColumns = this.db.prepare('PRAGMA table_info(work_drafts)').all().map((column) => column.name);
+        if (!draftColumns.includes('outline')) this.db.exec('ALTER TABLE work_drafts ADD COLUMN outline TEXT');
+        if (!draftColumns.includes('edit_request_id')) this.db.exec('ALTER TABLE work_drafts ADD COLUMN edit_request_id TEXT');
+        if (!draftColumns.includes('edited_from')) this.db.exec('ALTER TABLE work_drafts ADD COLUMN edited_from INTEGER');
       });
     } catch (error) {
       this.db.close();

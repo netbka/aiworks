@@ -18,7 +18,8 @@ import { APPROVAL_SCHEMA } from '../supervisor/approvals.mjs';
 import { approvedDeclarations, persistApproved, registerApproved } from '../supervisor/approved-declarations.mjs';
 import { assertRegisteredTarget, authorityDigest, scopeDigest } from '../supervisor/campaign.mjs';
 import { configuredGovernanceRoot } from '../supervisor/governance.mjs';
-import { INTAKE_COPY, intakeState, IntakeError, latestDraft, pinRequest, submitWorkRequest, workRequest } from '../supervisor/intake.mjs';
+import { draftChanges, draftCriteria, draftOutline, INTAKE_COPY, intakeState, IntakeError, latestDraft, pinRequest, reviseDraft, submitWorkRequest,
+  workRequest } from '../supervisor/intake.mjs';
 import { candidates, isLocalTarget } from '../supervisor/local-candidates.mjs';
 import { checkCaller, localApprovals, recordLocalApproval, registerLocalPlan } from '../supervisor/local-admission.mjs';
 import { localStartWork, resolveLocalProject } from '../supervisor/project-connect.mjs';
@@ -27,6 +28,7 @@ import { ownerApplies, ownerApply, undoOwnerApply } from '../supervisor/release/
 import { CODE_ROOT, revisionNotMerged } from '../supervisor/provenance.mjs';
 import { configuredGitCommand } from './merges.mjs';
 import { safeText } from './roadmap.mjs';
+import { resultReview } from './supervisor.mjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DIGEST = /^[0-9a-f]{64}$/;
@@ -51,6 +53,8 @@ export const WORK_COPY = Object.freeze({
   APPROVED: 'Approved at {time} · waiting for AIWorks to pick it up',
   PLAN_AND_DO_OFF: 'Plan and do is not available for this project. Its plans are drafted only when the AIWorks configuration file on this computer switches planning on, for a connected GitHub project.',
   RELEASE: 'Release: Review only. AIWorks stops when a result passes the check and is published. You merge and release.',
+  ALREADY_APPROVED: 'This plan was already approved, so it is not edited. Ask for a new plan to change it.',
+  SCOPE_NOT_EDITABLE: 'What the work may change, protected areas, limits and release are not edited here. Ask for a new plan to change them.',
 });
 
 /** Why the CLI start refuses, in the owner's words; the machine's reason stays in Details. */
@@ -105,7 +109,8 @@ function planView(store, record, request, draft) {
     : approvedDeclarations(store, campaignId).find((row) => row.authorityDigest === draft.authority_digest)?.persistedAt ?? null;
   const started = campaignId ? store.campaign(campaignId) : null;
   const state = approvedAt && started ? { code: 'APPROVED' } : intakeState(request, draft);
-  const view = { ...base, code: state.code, startable: ['DRAFT_READY', 'PLAN_ONLY_READY', 'CONFLICT'].includes(state.code), approvedAt,
+  const startable = ['DRAFT_READY', 'PLAN_ONLY_READY', 'CONFLICT'].includes(state.code);
+  const view = { ...base, code: state.code, startable, approvedAt,
     failure: state.code === 'DRAFT_FAILED' ? safeText(state.reason, 80) : null, staleWhat: state.code === 'DRAFT_STALE' ? list(state.what, 120, 8) : [] };
   if (!draft) return view;
   const d = draft.declaration, envelope = d.envelope ?? {};
@@ -122,7 +127,29 @@ function planView(store, record, request, draft) {
     questions: list(draft.questions, 1000, 16),
     conflicts: (Array.isArray(draft.conflicts) ? draft.conflicts : []).slice(0, 16).map((item) => ({ code: safeText(item.code, 40), campaignId: safeText(item.campaignId, 64),
       taskId: safeText(item.taskId, 64), ownerTaskId: safeText(item.ownerTaskId, 64) })),
-    notes: list(draft.notes, 300, 16) };
+    notes: list(draft.notes, 300, 16),
+    // Edit plan is offered on a ready draft only while no approval of it is recorded (intake.mjs reviseDraft refuses it then).
+    ...planOutline(store, request, draft, startable && !approvedDeclarations(store, campaignId).length && !localApprovals(store, campaignId).length) };
+}
+
+const ESTIMATE = (value) => value ? { amount: value.amount, unit: value.unit } : null;
+const changeValue = (field, value) => value === null || value === undefined ? null : field === 'estimate' ? ESTIMATE(value) : safeText(value, 300);
+
+/**
+ * The plan in the owner's terms (OWNER_UI_V2 WP3): the goal as asked, Now, Next or Later, priority, done-when criteria
+ * with how each is checked, included and later, the estimate (null: "No estimate"), and what changed from the version
+ * before. `editable` is the server's: a ready draft nobody approved yet.
+ */
+function planOutline(store, request, draft, editable) {
+  const outline = draftOutline(draft);
+  const previous = draft.version > 1 ? store.get('SELECT * FROM work_drafts WHERE request_id = ? AND version = ?', request.request_id, draft.version - 1) : null;
+  return { goal: safeText(request.text ?? '', 2000), horizon: outline.horizon, priority: outline.priority, estimate: ESTIMATE(outline.estimate),
+    criteria: draftCriteria(draft).slice(0, 16).map((item) => ({ text: safeText(item.text, 300), check: item.check === null ? null : safeText(item.check, 300) })),
+    included: list(outline.included, 300, 16), later: list(outline.later, 300, 16), editable, editedFrom: draft.edited_from ?? null,
+    previousVersion: previous ? previous.version : null,
+    changes: previous ? draftChanges(previous, draft).slice(0, 48).map((item) => ({ field: item.field, change: item.change, scope: item.scope,
+      ...(item.criterion !== undefined ? { criterion: safeText(item.criterion, 300) } : {}), ...(item.check !== undefined ? { check: changeValue('check', item.check) } : {}),
+      before: changeValue(item.field, item.before), after: changeValue(item.field, item.after) })) : [] };
 }
 
 /** A step of local work in the owner's words (OWNER_WORKSPACE §2.3): never a pull request or merge state. */
@@ -157,10 +184,14 @@ function localWork(store, record) {
       const titles = new Map(c.declaration.tasks.map((task) => [task.id, safeText(task.outcome ?? task.title ?? task.id, 300)]));
       const attempts = ownerApplies(store, c.id), found = candidates(store, c.id);
       const results = [...new Set(found.map((row) => row.taskId))].map((taskId) => {
-        const latest = found.filter((row) => row.taskId === taskId).at(-1);
-        return localResult(latest, attempts.filter((row) => row.taskId === taskId && row.seq === latest.seq).at(-1), titles.get(taskId) ?? safeText(taskId, 64));
+        const latest = found.filter((row) => row.taskId === taskId).at(-1), task = store.task(c.id, taskId);
+        // Its criteria with their evidence and Request changes (OWNER_UI_V2 WP4), about this candidate's head only; Apply is its acceptance.
+        const review = task ? resultReview(store, c, task, c.declaration.tasks.find((item) => item.id === taskId)) : null;
+        return { ...localResult(latest, attempts.filter((row) => row.taskId === taskId && row.seq === latest.seq).at(-1), titles.get(taskId) ?? safeText(taskId, 64)),
+          taskVersion: task?.version ?? null, review: review && (review.verifiedSha === latest.sha || review.state === 'changes-requested') ? review : null };
       });
       return { id: c.id, outcome: safeText(c.declaration.envelope?.outcome ?? c.id, 300), control: c.control,
+        version: c.version, authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest,
         steps: store.tasks(c.id).map((task) => ({ id: safeText(task.task_id, 64), title: titles.get(task.task_id) ?? safeText(task.task_id, 64),
           state: task.blocked ? 'Stopped: needs your decision' : STEP_WORDS[task.state] ?? 'Not known yet' })),
         results };
@@ -239,6 +270,40 @@ export function requestPlanAndDo(dataDir, input, now = Date.now()) {
   });
 }
 
+const EDIT_STATUS = Object.freeze({ INVALID_REQUEST: 400, INVALID_EDIT: 400, SCOPE_NOT_EDITABLE: 400, DRAFT_INVALID: 400, DRAFT_WITHHELD: 400,
+  NOT_FOUND: 404, PROJECT_NOT_FOUND: 404 });
+const EDIT_WORDS = Object.freeze({ PLAN_CHANGED: WORK_COPY.PLAN_CHANGED, ALREADY_APPROVED: WORK_COPY.ALREADY_APPROVED, SCOPE_NOT_EDITABLE: WORK_COPY.SCOPE_NOT_EDITABLE,
+  NOT_FOUND: WORK_COPY.NOT_FOUND, PROJECT_NOT_FOUND: WORK_COPY.NOT_FOUND, NOT_READY: WORK_COPY.NOT_READY });
+
+/**
+ * Edit plan (OWNER_UI_V2 WP3): save the owner's edit as the plan's next draft version (intake.mjs reviseDraft). Only the
+ * goal, done-when criteria and their checks, included and later, Now, Next or Later, priority and estimate change; the
+ * scope, protected paths, providers, limits and release stay the reviewed plan's. Plan and do must be on, as for asking.
+ * Nothing is approved or started: the new version waits for Approve and start of exactly that version.
+ * input: { requestId, plan, version, authorityDigest, edits }; a repeat with the same request id is saved once.
+ */
+export function editPlan(dataDir, input, now = Date.now()) {
+  const keys = ['requestId', 'plan', 'version', 'authorityDigest', 'edits'];
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !keys.includes(key)) || !UUID.test(input.requestId ?? '') ||
+      !UUID.test(input.plan ?? '') || !Number.isSafeInteger(input.version) || input.version < 1 || !DIGEST.test(input.authorityDigest ?? '')) {
+    throw fail(400, 'Invalid plan edit.');
+  }
+  if (!planAndDoEnabled(dataDir)) throw fail(409, WORK_COPY.PLAN_AND_DO_OFF);
+  return withStore(dataDir, (store) => {
+    const request = workRequest(store, input.plan), record = request ? readProject(store, request.project_id) : null;
+    if (!record || record.disconnected_at != null) throw fail(404, WORK_COPY.NOT_FOUND);
+    try {
+      const { draft, duplicate } = reviseDraft(store, { requestId: input.plan, version: input.version, authorityDigest: input.authorityDigest, editId: input.requestId,
+        edits: input.edits }, now);
+      return { accepted: true, duplicate, plan: input.plan, project: routeOf(record), version: draft.version, authorityDigest: draft.authority_digest };
+    } catch (error) {
+      if (!(error instanceof IntakeError)) throw error;
+      if (error.code === 'DRAFT_STALE') throw stale(record, latestDraft(store, input.plan)?.stale_what);
+      throw fail(EDIT_STATUS[error.code] ?? 409, EDIT_WORDS[error.code] ?? sentence(error.message), { code: error.code });
+    }
+  });
+}
+
 /**
  * Approve and start (OWNER_WORKSPACE 5.5, WORK_ENVELOPE E8). input: { requestId, plan, version, authorityDigest }: the
  * command's own request id, the work request the plan answers, and the draft version and authority digest the owner
@@ -289,6 +354,7 @@ export async function approvePlan(dataDir, input, now = Date.now(), options = {}
       // Persist and register share one transaction: a refused start keeps no approval and registers nothing.
       return store.tx(() => {
         if (store.campaign(campaignId)) throw fail(409, WORK_COPY.ALREADY_STARTED, { code: 'ALREADY_STARTED' });
+        assertStillLatest(store, input);
         persistApproved(store, declaration, approval, { now });
         const started = registerApproved(store, campaignId, { now });
         if (!started.registered) throw fail(409, WORK_COPY.ALREADY_STARTED, { code: 'ALREADY_STARTED' });
@@ -318,6 +384,12 @@ function assertReviewed(store, input, record, draft) {
   if (store.campaign(declaration?.campaignId)) throw fail(409, WORK_COPY.ALREADY_STARTED, { code: 'ALREADY_STARTED' });
   if (draft.state === 'stale') throw stale(record, draft.stale_what);
   if (draft.state !== 'draft') throw fail(409, WORK_COPY.NOT_READY);
+}
+
+/** In the transaction that starts it: the approved version is still the newest, so an edit saved meanwhile is never skipped. */
+function assertStillLatest(store, input) {
+  const newest = latestDraft(store, input.plan);
+  if (newest?.version !== input.version || newest.authority_digest !== input.authorityDigest) throw fail(409, WORK_COPY.PLAN_CHANGED, { code: 'PLAN_CHANGED' });
 }
 
 /** A supervisor refusal's own clause as one sentence for the page: first letter capital, full stop. */
@@ -376,6 +448,7 @@ async function approveLocal(store, { input, request, draft, record, now, provena
         requestId: input.requestId, caller, now }));
     }
     store.tx(() => {
+      assertStillLatest(store, input);
       registerLocalPlan(store, { declaration, governanceRoot, codeRevision, now });
       if (!store.campaign(campaignId)) throw fail(409, WORK_COPY.ALREADY_STARTED, { code: 'ALREADY_STARTED' });
       store.journal(campaignId, 'dashboard-command', { action: 'approve-start', requestId: input.requestId, plan: input.plan, version: draft.version,
