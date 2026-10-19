@@ -297,6 +297,6 @@ test('both coordinator drafting prompts and PLAN_RULE ask for section marks; the
   assert.ok(drafts.intake.indexOf(MARK_SECTIONS_RULE) > drafts.intake.indexOf('- Each task: id, title, goal, acceptance, references'), 'after the task fields');
   const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
   assert.equal(digest(coordinator.COORDINATOR_SCHEMA), '234ab376d8b7f4dc166bf0bb69e018675647449d20e507631ccd4a58e82ff640');
-  assert.equal(digest(coordinator.INTAKE_SCHEMA), 'b6536e56b89ed2694486737594216e547c89c40a5dc42cfe93746f350f5a3435');
+  assert.equal(digest(coordinator.INTAKE_SCHEMA), '6df1a3aa3ea4bcb1b8e71486df7b105e96f8206edbe1dfe177cd04bf8330a157');
   assert.equal(digest(stageSchema('implementer', 'plan')), '0cd3cdecd8aa7b1202f0c4d0b152f650cfa2f2c7b2c5832df1737cef3fba8db4');
 });
