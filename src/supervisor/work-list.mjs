@@ -1,6 +1,6 @@
 // AIWorks local work list (docs/design/LOCAL_OPERATION.md section 5.1, slice SELF5): items and append-only comments in
 // the store, for AIWorks's own repository once local main is trusted. Publication (SELF7) writes reviews, reports and
-// notes of the self-hosted repository here; the import (SELF10) is still to come and the CLI `work-list` only reads. Only
+// notes of the self-hosted repository here; the import (SELF10, work-list-import.mjs) writes imported issues. Only
 // the owner route and the supervisor write; a worker never does. Every text is bounded and refused when it looks like a
 // credential.
 import { containsSecret } from './coordinator.mjs';

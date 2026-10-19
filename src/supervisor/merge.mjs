@@ -2,10 +2,18 @@
 // repository the owner opted in through config.json, and only when merging it puts exactly the independently verified
 // tree on the base branch. Off by default. It merges with a merge commit through REST (PUT .../merge, merge_method=merge,
 // sha=<verified>); never a squash, a rebase, a force-push, an admin bypass or a branch deletion. It never deploys,
-// releases or changes provider resources.
+// releases or changes provider resources. AIWorks's own repository with local main trusted (config.json `selfHosting`,
+// docs/design/LOCAL_OPERATION.md section 4.4, slice SELF8) merges its verified local reviews locally instead: a merge
+// commit of the trusted tip and the verified head with the verified tree, main moved only from the trusted tip, and a
+// main ledger row (release/local-merge.mjs). It reads no remote and makes no GitHub call; the owner's optional backup of
+// trusted main (github-backup.mjs, slice SELF9) runs after those merges and never holds one.
 import * as gitA from './adapters/git.mjs';
 import * as github from './adapters/github.mjs';
 import { mergeWithMergeCommit } from './release/github-merge.mjs';
+import { isPlannedMerge, moveMain, writeMergeCommit } from './release/local-merge.mjs';
+import { mainLedger, recordMainCommit, trustedTip } from './self-hosting.mjs';
+import { backupStep } from './github-backup.mjs';
+import { reviewItem, WORK_REFERENCE, workLink } from './work-list.mjs';
 import { campaignLimits } from './campaign.mjs';
 import { specsOf } from './plan.mjs';
 import { resolveCheckout } from './project-connect.mjs';
@@ -58,17 +66,25 @@ const ciMergeable = (store, campaignId, taskId, sha) => ['ci-passed', 'ci-none']
 
 /**
  * Published commit tasks not yet recorded as merged, in campaigns that are neither paused nor cancelled, whose target
- * repository the owner listed. Oldest campaign first, then plan order.
+ * repository the owner listed. Oldest campaign first, then plan order. In the self-hosted repository with local main
+ * trusted, a candidate is a local review (`aiworks-work:<n>`, `local: true`); elsewhere a GitHub pull request.
  */
-function candidates(store, repositories) {
-  const out = [];
+function candidates(controller, repositories) {
+  const { store } = controller, out = [];
   for (const { id } of store.all("SELECT id FROM campaigns WHERE control IN ('registered', 'finished') ORDER BY created_at")) {
     const campaign = store.campaign(id), decl = campaign.declaration, repository = decl.target.repository;
     if (!repositories.has(String(repository).toLowerCase())) continue;
+    const local = controller.selfHosted(repository);
     const specs = specsOf(store, id, decl), merged = journaled(store, id, 'merged');
     for (const task of store.tasks(id)) {
       if (task.state !== 'done' || task.blocked || !SHA.test(task.verified_sha ?? '') || specs.get(task.task_id)?.deliverable !== 'commit') continue;
-      if (!String(task.pr_url ?? '').startsWith(`https://github.com/${repository}/pull/`) || merged.has(`${task.task_id}:${task.verified_sha}`)) continue;
+      if (merged.has(`${task.task_id}:${task.verified_sha}`)) continue;
+      if (local) {
+        const number = Number(WORK_REFERENCE.exec(String(task.pr_url ?? ''))?.[1]);
+        if (number) out.push({ campaignId: id, decl, task, number, local: true });
+        continue;
+      }
+      if (!String(task.pr_url ?? '').startsWith(`https://github.com/${repository}/pull/`)) continue;
       out.push({ campaignId: id, decl, task, number: Number(/\/pull\/(\d+)$/.exec(task.pr_url)?.[1]) });
     }
   }
@@ -91,7 +107,7 @@ export async function mergePass(controller) {
   if (!due.size) return;
   for (const key of due) controller.mergeCheckedAt.set(key, now);
   const byRepository = new Map();
-  for (const item of candidates(controller.store, due)) {
+  for (const item of candidates(controller, due)) {
     const key = item.decl.target.repository.toLowerCase();
     byRepository.set(key, [...(byRepository.get(key) ?? []), item]);
   }
@@ -100,6 +116,18 @@ export async function mergePass(controller) {
     if (resolveCheckout(controller.store, controller.config, decl.target.repository)?.conflict) { controller.log(`merge pass for ${decl.target.repository} skipped: CONFIG_CONFLICT`); continue; }
     let repoPath;
     try { repoPath = controller.repo(decl).path; } catch (error) { controller.log(`merge pass for ${decl.target.repository} skipped: ${error.message}`); continue; }
+    if (items[0].local) {
+      for (const item of items) {
+        try {
+          if (mergeLocal(controller, item, settings, repoPath)) break;
+        } catch (error) {
+          if (error instanceof FencedError || error instanceof ConflictError) { controller.log(`merge of ${item.campaignId}/${item.task.task_id} retried later: ${error.message}`); break; }
+          controller.log(`merge of ${item.campaignId}/${item.task.task_id} failed: ${error.stack || error}`);
+          break;
+        }
+      }
+      continue;
+    }
     const bases = new Map();
     for (const item of items) {
       const branch = item.decl.target.baseBranch;
@@ -113,6 +141,32 @@ export async function mergePass(controller) {
         break;
       }
     }
+  }
+  // After the local merges, also in a pass with nothing to merge, so a backup the interval deferred still follows.
+  for (const key of due) if (controller.selfHosted(key)) backup(controller, key);
+}
+
+/**
+ * The optional backup of trusted local main (github-backup.mjs) in the checkout of the campaign that made the newest
+ * recorded local merge. Nothing waits on it: a refused, unreachable or failing push is journaled and logged, and the
+ * next merge is judged as if it never ran.
+ */
+function backup(controller, key) {
+  if (!controller.selfHosting.backup.enabled) return;
+  try {
+    const merge = mainLedger(controller.store, key).reverse().find((row) => row.kind === 'gate-merge');
+    const campaign = merge && controller.store.campaign(merge.campaign_id);
+    // Its journal takes the entries, under its lease, as for a merge: only while it is registered or finished.
+    if (!campaign || !['registered', 'finished'].includes(campaign.control)) return;
+    const decl = campaign.declaration;
+    backupStep({ store: controller.store, settings: controller.selfHosting, git: controller.cmd.git, repoPath: controller.repo(decl).path,
+      repository: decl.target.repository, now: controller.now(), log: (line) => controller.log(line),
+      write: (campaignId, fn) => {
+        const ctx = lease(controller, campaignId);
+        return ctx ? (controller.fenced(ctx, fn), true) : false;
+      } });
+  } catch (error) {
+    controller.log(`backup of ${key} skipped: ${error.message}`);
   }
 }
 
@@ -226,9 +280,9 @@ function mergeOne(controller, item, settings, repoPath, baseSha) {
 }
 
 /** Journal the merge and tell the tracking issue. Inside fenced(). */
-function record(controller, ctx, { campaignId, decl, task }, mergeCommit, { reconciled, requested }) {
+function record(controller, ctx, { campaignId, decl, task }, mergeCommit, { reconciled, requested, ...extra }) {
   const now = controller.now(), base = decl.target.baseBranch;
-  controller.store.journal(campaignId, 'merged', { task: task.task_id, sha: task.verified_sha, url: task.pr_url, mergeCommit, reconciled, requested }, now);
+  controller.store.journal(campaignId, 'merged', { task: task.task_id, sha: task.verified_sha, url: task.pr_url, mergeCommit, reconciled, requested, ...extra }, now);
   controller.mergeWaits.delete(`${campaignId}:${task.task_id}:${task.verified_sha}`);
   controller.log(`merged ${campaignId}/${task.task_id}: ${task.pr_url} as ${mergeCommit}`);
   if (requested) {
@@ -236,6 +290,118 @@ function record(controller, ctx, { campaignId, decl, task }, mergeCommit, { reco
       `**${task.task_id}** is merged into ${base} under the merge gate: ${task.pr_url}, verified \`${task.verified_sha}\`, merge commit \`${mergeCommit}\`. ` +
       'Merged is not deployed: nothing was released or deployed.', now);
   }
+}
+
+const commitAt = (git, repoPath, ref) => {
+  const out = gitA.exec(git, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: repoPath, timeoutMs: 30_000 });
+  return out.ok && SHA.test(out.stdout) ? out.stdout : null;
+};
+
+/** The detail of the newest `merge-requested` entry for one task head, or null. */
+const lastRequest = (store, campaignId, taskId, sha) => store.get(`SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'merge-requested'
+  AND json_extract(detail, '$.task') = ? AND json_extract(detail, '$.sha') = ? ORDER BY seq DESC LIMIT 1`, campaignId, taskId, sha)?.detail ?? null;
+
+/**
+ * The worktree that has main checked out, if any: { path, dirty }, or { unreadable: true }. Tracked changes and untracked
+ * files make it dirty, so the owner's unsaved work is never overwritten or carried into a merge.
+ */
+function mainCheckout(git, repoPath) {
+  const list = gitA.worktreeList({ git, repoPath });
+  if (!list) return { unreadable: true };
+  const entry = list.find((worktree) => worktree.branch === 'main');
+  if (!entry) return null;
+  const status = gitA.exec(git, ['status', '--porcelain=v1', '-z', '--untracked-files=all'], { cwd: entry.path, timeoutMs: 60_000 });
+  if (!status.ok) return { unreadable: true };
+  return { path: entry.path, dirty: status.stdout.length > 0 };
+}
+
+/**
+ * Record a local merge: the `gate-merge` main ledger row and the `merged` journal entry in the caller's fenced
+ * transaction, so both commit or neither does. A ledger refusal throws and rolls the transaction back.
+ */
+function recordLocal(controller, ctx, item, { trusted, mergeCommit, reconciled, requested }) {
+  const { campaignId, decl, task } = item;
+  const row = recordMainCommit(controller.store, { repository: decl.target.repository, kind: 'gate-merge', oldTip: trusted, newTip: mergeCommit,
+    campaignId, taskId: task.task_id, verifiedSha: task.verified_sha, now: controller.now() });
+  if (!row.recorded) throw new Error(`the main ledger refused the merge: ${row.reason}`);
+  record(controller, ctx, item, mergeCommit, { reconciled, requested, local: true, trusted, ledger: row.seq });
+}
+
+/**
+ * The local merge gate (LOCAL_OPERATION.md section 4.4) for one verified local review of the self-hosted repository.
+ * Returns true when it acted on the repository (a merge, a recorded merge, a refusal or an integration repair). Main
+ * moves only when the trusted tip is an ancestor of the verified head, main is exactly the trusted tip, the checkout that
+ * has main checked out is clean, the task's branch and review item are bound to the verified head, the campaign is
+ * neither paused nor cancelled and this instance holds the campaign's lease.
+ */
+function mergeLocal(controller, item, settings, repoPath) {
+  const { store } = controller, { campaignId, decl, task } = item;
+  const git = controller.cmd.git, sha = task.verified_sha, url = task.pr_url, repository = decl.target.repository;
+  if (decl.target.baseBranch !== 'main') return wait(controller, item, `the local merge gate merges into main only, not ${decl.target.baseBranch}`);
+  if (settings.held.has(url.toLowerCase())) return wait(controller, item, 'held by the owner (merges.held)');
+  const review = reviewItem(store, { campaignId, taskId: task.task_id });
+  if (!review || workLink(review.number) !== url) return wait(controller, item, `${url} is not the review item recorded for this task`);
+  const branch = gitA.branchName(campaignId, task.task_id), head = commitAt(git, repoPath, `refs/heads/${branch}`);
+  if (head !== sha) return wait(controller, item, `the local branch ${branch} is at ${head ?? 'no commit'}, not the verified ${sha}`);
+  const tip = trustedTip(store, { git, repoPath, repository });
+  if (tip.state !== 'TRUSTED') return wait(controller, item, `local main is not trusted (${tip.state}): ${tip.reason}`);
+  const stillDone = (t) => t.state === 'done' && !t.blocked && t.verified_sha === sha && t.pr_url === url;
+  const still = () => ['registered', 'finished'].includes(store.campaign(campaignId).control) && stillDone(store.task(campaignId, task.task_id));
+
+  // After a crash, main is read before any retry: the planned merge commit on main is recorded once and never made again.
+  const requested = lastRequest(store, campaignId, task.task_id, sha);
+  if (requested && tip.main !== tip.tip && requested.base === tip.tip && isPlannedMerge({ git, repoPath, sha: tip.main, trusted: tip.tip, verified: sha })) {
+    const ctx = lease(controller, campaignId);
+    if (!ctx) return false;
+    controller.fenced(ctx, () => {
+      if (still()) recordLocal(controller, ctx, item, { trusted: tip.tip, mergeCommit: tip.main, reconciled: true, requested: true });
+    });
+    return true;
+  }
+
+  // The verified head must contain the trusted tip, or the merge result is a tree no verifier ran: integration repair.
+  if (!gitA.isAncestor({ git, path: repoPath, ancestor: tip.tip, descendant: sha })) {
+    const ctx = lease(controller, campaignId);
+    if (!ctx) return false;
+    return controller.fenced(ctx, () => repair(controller, ctx, item, repoPath, tip.tip, null));
+  }
+  if (tip.unrecordedCount) return wait(controller, item, `main has ${tip.unrecordedCount} commits AIWorks did not put there`);
+  const checkout = mainCheckout(git, repoPath);
+  if (checkout?.unreadable) return wait(controller, item, 'the checkout that has main checked out cannot be read');
+  if (checkout?.dirty) return wait(controller, item, 'your checkout has unsaved changes');
+
+  const ctx = lease(controller, campaignId);
+  if (!ctx) return false;
+  // The request names the trusted tip before any object is written, so a restart recognizes the planned commit.
+  if (!controller.fenced(ctx, () => {
+    if (!still()) return false;
+    store.journal(campaignId, 'merge-requested', { task: task.task_id, sha, url, base: tip.tip, local: true }, controller.now());
+    return true;
+  })) return false;
+  controller.injectFault('before-merge');
+  const refuse = (detail) => {
+    controller.fenced(ctx, () => store.journal(campaignId, 'merge-refused', { task: task.task_id, sha, url, local: true, detail: String(detail).slice(0, 500) }, controller.now()));
+    controller.log(`merge of ${campaignId}/${task.task_id} refused: ${detail}`);
+    return true;
+  };
+  const planned = writeMergeCommit({ git, repoPath, trusted: tip.tip, verified: sha,
+    message: `Merge ${task.task_id} of campaign ${campaignId} (${url})\n\nVerified ${sha} on ${branch}, merged under the local merge gate.` });
+  if (!planned.ok) return refuse(planned.reason);
+  controller.injectFault('after-commit-tree');
+  try {
+    controller.fenced(ctx, () => {
+      // Checked again under the write lock: a pause or cancellation committed since the request moves nothing.
+      if (!still()) return;
+      const moved = moveMain({ git, repoPath, trusted: tip.tip, commit: planned.commit, checkout: checkout?.path ?? null });
+      if (!moved.ok) throw new Error(moved.reason);
+      controller.injectFault('after-merge');
+      recordLocal(controller, ctx, item, { trusted: tip.tip, mergeCommit: planned.commit, reconciled: false, requested: true });
+    });
+  } catch (error) {
+    if (error instanceof FencedError) throw error;
+    return refuse(error.message);
+  }
+  return true;
 }
 
 /**
@@ -247,7 +413,8 @@ function record(controller, ctx, { campaignId, decl, task }, mergeCommit, { reco
 function repair(controller, ctx, item, repoPath, baseSha, refreshed) {
   const { store } = controller, git = controller.cmd.git, { campaignId, decl, task } = item;
   const fresh = store.task(campaignId, task.task_id);
-  if (fresh.version !== task.version || fresh.state !== 'done') return false;
+  // A cancellation or pause committed after this task was selected keeps the completed task as it is (aiworks#5).
+  if (fresh.version !== task.version || fresh.state !== 'done' || !controller.takesRepair(campaignId)) return false;
   const sha = task.verified_sha, base = decl.target.baseBranch, now = controller.now();
   const check = gitA.mergeCheck({ git, repoPath, baseSha, sha });
   const paths = check.paths.slice(0, 20);
