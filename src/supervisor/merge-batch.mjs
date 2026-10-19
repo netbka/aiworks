@@ -19,18 +19,23 @@ import { inspect, mergeBlocker, mergeNow, wait } from './merge.mjs';
 const KINDS = ['merge-batch-started', 'merge-batch-passed', 'merge-batch-failed', 'merge-batch-stopped', 'merge-batch-done'];
 const ENDED = new Set(['merge-batch-failed', 'merge-batch-stopped', 'merge-batch-done']);
 
-/** The groups of one repository, oldest first: { id, started, last }. */
-function groups(store, repository) {
-  const rows = store.all(`SELECT kind, at, detail FROM journal WHERE campaign_id IS NULL AND kind IN (${KINDS.map(() => '?').join(', ')})
+/** How long the group waits for GitHub to compute a member's mergeability after the gate passed. */
+const MERGEABLE_WAIT_MS = 15 * 60_000;
+
+/** The groups of one repository and base branch, oldest first: { id, started, passed, last }. */
+function groups(store, repository, branch) {
+  const rows = store.all(`SELECT seq, kind, at, detail FROM journal WHERE campaign_id IS NULL AND kind IN (${KINDS.map(() => '?').join(', ')})
     AND json_extract(detail, '$.repository') = ? ORDER BY seq`, ...KINDS, repository);
   const byId = new Map();
   for (const row of rows) byId.set(row.detail.id, [...(byId.get(row.detail.id) ?? []), row]);
-  return [...byId.entries()].map(([id, list]) => ({ id, started: list.find((row) => row.kind === 'merge-batch-started'), last: list.at(-1) }));
+  return [...byId.entries()].map(([id, list]) => ({
+    id, started: list.find((row) => row.kind === 'merge-batch-started'), passed: list.find((row) => row.kind === 'merge-batch-passed'), last: list.at(-1),
+  })).filter((group) => group.started?.detail.branch === branch);
 }
 
-/** The latest journal row of `kind` for one member's verified head, or null. */
-const memberRow = (store, { campaignId, task, sha }, kind) => store.get(`SELECT detail FROM journal WHERE campaign_id = ? AND kind = ?
-  AND json_extract(detail, '$.task') = ? AND json_extract(detail, '$.sha') = ? ORDER BY seq DESC LIMIT 1`, campaignId, kind, task, sha)?.detail ?? null;
+/** The latest journal row of `kind` for one member's verified head written after journal row `since`, or null. */
+const memberRow = (store, { campaignId, task, sha }, kind, since = 0) => store.get(`SELECT detail FROM journal WHERE campaign_id = ? AND kind = ?
+  AND json_extract(detail, '$.task') = ? AND json_extract(detail, '$.sha') = ? AND seq > ? ORDER BY seq DESC LIMIT 1`, campaignId, kind, task, sha, since)?.detail ?? null;
 
 /** A refresh of this verified head against this base that started and has not ended (merge-refresh.mjs). */
 const refreshRunning = (store, { campaignId, task }, base) => store.all(`SELECT kind FROM journal WHERE campaign_id = ?
@@ -49,7 +54,7 @@ export function batchStep(controller, items, settings, repoPath, baseSha) {
   if (!items.length) return false;
   const repository = items[0].decl.target.repository.toLowerCase();
   const note = (kind, detail) => controller.store.tx(() => controller.store.journal(null, kind, { repository, ...detail }, controller.now()));
-  const all = groups(controller.store, repository);
+  const all = groups(controller.store, repository, items[0].decl.target.baseBranch);
   const open = all.find((group) => group.started && !ENDED.has(group.last.kind));
   return open ? continueGroup(controller, open, items, settings, repoPath, baseSha, note)
     : startGroup(controller, all, items, settings, repoPath, baseSha, note);
@@ -67,6 +72,9 @@ function startGroup(controller, all, items, settings, repoPath, baseSha, note) {
   }
   // A pull request whose own refresh already runs on this base finishes that first.
   if (ready.length < 2 || ready.some((item) => refreshRunning(controller.store, item, baseSha))) return false;
+  // The same candidates on the same base are combined once: after a failure they go one at a time.
+  const candidates = ready.map((item) => `${item.campaignId}:${item.task.task_id}:${item.task.verified_sha}`).join(' ');
+  if (all.some((group) => group.started.detail.base === baseSha && group.started.detail.candidates === candidates)) return false;
   const members = [];
   let head = baseSha;
   for (const item of ready) {
@@ -82,12 +90,12 @@ function startGroup(controller, all, items, settings, repoPath, baseSha, note) {
   if (members.length < 2) return false;
   // The same group on the same base is gated once: after a failure its pull requests go one at a time.
   const signature = members.map((m) => `${m.campaignId}:${m.task}:${m.sha}`).join(' ');
-  if (all.some((group) => group.started?.detail.base === baseSha && group.started.detail.signature === signature)) return false;
+  if (all.some((group) => group.started.detail.base === baseSha && group.started.detail.signature === signature)) return false;
   const branch = items[0].decl.target.baseBranch;
   const path = join(controller.repo(items[0].decl).worktreeRoot, `merge-batch-${baseSha.slice(0, 12)}-${head.slice(0, 12)}`);
   try { checkout(git, repoPath, path, head); } catch (error) { controller.log(`group merge onto ${baseSha} could not start: ${error.message}`); return false; }
   // Recorded before the gate starts: after a crash here the next pass finds the worktree and starts the gate.
-  note('merge-batch-started', { id: head, base: baseSha, branch, members, signature, path, command: settings.refresh.command });
+  note('merge-batch-started', { id: head, base: baseSha, branch, members, signature, candidates, path, command: settings.refresh.command });
   try { startGate(path, settings.refresh.command); } catch (error) {
     note('merge-batch-failed', { id: head, reason: `the gate could not start: ${error.message}` });
     return false;
@@ -127,31 +135,68 @@ function continueGroup(controller, open, items, settings, repoPath, baseSha, not
     note('merge-batch-passed', { id: open.id, summary: run.summary });
   }
 
+  // Only this group's requests and merges count: an older refused attempt of the same head does not stop it.
+  const since = open.started.seq, passedAt = open.passed?.at ?? controller.now();
+  const itemOf = (member) => items.find((entry) => entry.campaignId === member.campaignId && entry.task.task_id === member.task && entry.task.verified_sha === member.sha);
+  /** Whether a member may merge onto `base` now: {} yes, { acted } or { waiting } keep the group, { stop } ends it. */
+  const check = (member, item, base) => {
+    const { pr, acted } = inspect(controller, item, settings, repoPath, base);
+    if (acted) return { acted: true };
+    if (!pr) return { stop: `${member.campaignId}/${member.task} cannot merge now` };
+    const blocker = mergeBlocker(controller, item, pr);
+    if (!blocker) return {};
+    // Right after the previous merge GitHub may still be computing mergeability: wait for it, keep the group, for a while.
+    if (pr.mergeable === null && blocker === mergeBlocker({ ci: false }, item, pr)) {
+      if (controller.now() - passedAt > MERGEABLE_WAIT_MS) return { stop: `GitHub did not report whether ${member.url} can merge within ${MERGEABLE_WAIT_MS / 60_000} minutes` };
+      wait(controller, item, blocker);
+      return { waiting: true };
+    }
+    return { stop: `${member.campaignId}/${member.task}: ${blocker}` };
+  };
+
+  // Before the first merge every member must still be able to merge, so the group never stops halfway on a known cause.
+  if (!detail.members.some((member) => memberRow(store, member, 'merged', since) || memberRow(store, member, 'merge-requested', since))) {
+    if (baseSha !== detail.base) { end('merge-batch-stopped', `the base moved to ${baseSha} before the first merge`); return false; }
+    let waiting = false;
+    for (const member of detail.members) {
+      const item = itemOf(member);
+      if (!item) { end('merge-batch-stopped', `${member.campaignId}/${member.task} no longer waits to merge at ${member.sha}`); return false; }
+      const result = check(member, item, baseSha);
+      if (result.acted) return true;
+      if (result.stop) { end('merge-batch-stopped', result.stop); return false; }
+      waiting ||= Boolean(result.waiting);
+    }
+    if (waiting) return true;
+  }
+
   // Merge in chain order. Each merge puts exactly the next checked step on the base, or the group stops.
   let base = baseSha, parent = detail.base;
   for (const member of detail.members) {
-    const merged = memberRow(store, member, 'merged');
-    if (merged) { parent = merged.mergeCommit; continue; }
-    const item = items.find((entry) => entry.campaignId === member.campaignId && entry.task.task_id === member.task && entry.task.verified_sha === member.sha);
+    const merged = memberRow(store, member, 'merged', since);
+    if (merged) {
+      if (treeOf(git, repoPath, merged.mergeCommit) !== member.tree) {
+        end('merge-batch-stopped', `the merge of ${member.url} carries a tree other than the checked ${member.tree}`);
+        return false;
+      }
+      parent = merged.mergeCommit;
+      continue;
+    }
+    const item = itemOf(member);
     if (!item) { end('merge-batch-stopped', `${member.campaignId}/${member.task} no longer waits to merge at ${member.sha}`); return false; }
-    controller.mergePassReads = new Map();
     // A merge requested before a crash is settled by reading the pull request first, never by a second call. One GitHub
     // refused ends the group: the pull request goes on alone, through mergeOne.
-    if (memberRow(store, member, 'merge-requested')) {
+    if (memberRow(store, member, 'merge-requested', since)) {
       if (inspect(controller, item, settings, repoPath, base).acted) return true;
-      end('merge-batch-stopped', `${member.campaignId}/${member.task} was not merged: ${memberRow(store, member, 'merge-refused')?.detail ?? 'unknown'}`);
+      end('merge-batch-stopped', `${member.campaignId}/${member.task} was not merged: ${memberRow(store, member, 'merge-refused', since)?.detail ?? 'unknown'}`);
       return false;
     }
     if (base !== parent) { end('merge-batch-stopped', `the base is ${base}, not the checked step ${parent}`); return false; }
-    const { pr, acted } = inspect(controller, item, settings, repoPath, base);
-    if (acted) return true;
-    if (!pr) { end('merge-batch-stopped', `${member.campaignId}/${member.task} cannot merge now`); return false; }
-    const blocker = mergeBlocker(controller, item, pr);
-    // Right after the previous merge GitHub may still be computing mergeability: wait for it, keep the group.
-    if (blocker && pr.mergeable === null && blocker === mergeBlocker({ ci: false }, item, pr)) { wait(controller, item, blocker); return true; }
-    if (blocker) { end('merge-batch-stopped', `${member.campaignId}/${member.task}: ${blocker}`); return false; }
+    const result = check(member, item, base);
+    if (result.acted || result.waiting) return true;
+    if (result.stop) { end('merge-batch-stopped', result.stop); return false; }
     if (!mergeNow(controller, item, base)) return true;
-    const done = memberRow(store, member, 'merged');
+    controller.mergePassReads = new Map();
+    const done = memberRow(store, member, 'merged', since);
     if (!done) return true;
     base = controller.fetchBase(repoPath, detail.branch).sha;
     if (base !== done.mergeCommit || treeOf(git, repoPath, done.mergeCommit) !== member.tree) {
