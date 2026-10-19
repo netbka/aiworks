@@ -19,6 +19,7 @@ import { approvalFromFile, CODE_ROOT, declarationFromFile, revisionNotMerged, ru
 import { selfHostingSettings, trustedTip } from './self-hosting.mjs';
 import { Store } from './store.mjs';
 import { comments as workItemComments, item as workItem, items as workItems } from './work-list.mjs';
+import { importIssues } from './work-list-import.mjs';
 import { approveProgram, programFromFile, programStatus, stopPrograms } from './program.mjs';
 import { RELEASE_STOP, REVIEW_ONLY, releaseNarrowings, setReviewOnly } from './release/state.mjs';
 import { modelPreferences, setRoleModelPreference, clearRoleModelPreferences, configuredAccounts, addDashboardAccount, removeDashboardAccount, exportDashboardAccounts, importDashboardAccounts } from './accounts.mjs';
@@ -64,6 +65,10 @@ const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--go
                                         never fetches). Refused while origin/main is the trusted main (TRUSTED_MAIN_NOT_LOCAL)
   work-list [open|closed]               list the items of the local work list (read-only)
   work-list <number>                    print one work item and its comments (read-only; WORK_ITEM_NOT_FOUND)
+  work-list import [--apply]            import the open issues of config.json selfHosting.repository and all their comments,
+                                        read-only towards GitHub (REST GET only). A dry run by default: prints the counts and
+                                        writes nothing. --apply records them; a re-run adds only new comments and reports
+                                        changed issues without overwriting. Secret-like text is withheld and listed
   account list                          list configured accounts and profile cooldown / usage metrics
   account add <provider> <name> [--token <tok>] [--api-key <key>]
                                         add a local login profile under the shallow homes root
@@ -99,6 +104,7 @@ const apiKeyFlag = take('--api-key');
 const passphraseFlag = take('--passphrase');
 const kindFlag = take('--kind');
 const effortFlag = take('--effort');
+const applyImport = args.includes('--apply') ? Boolean(args.splice(args.indexOf('--apply'), 1)) : false;
 const jsonOnly = args.includes('--json') ? Boolean(args.splice(args.indexOf('--json'), 1)) : false;
 const [command, ...rest] = args;
 if (!command || !selectedData) {
@@ -142,11 +148,13 @@ try {
   if (command === 'status' && explicitData && environmentData && canonical(explicitData) !== canonical(environmentData)) {
     throw new CampaignError('DATA_DIR_MISMATCH', '--data differs from AIWORKS_DATA; confirm the installed task path and unset or correct the stale value');
   }
-  const readOnlyCommand = ['status', 'messages', 'baseline', 'program-status', 'trusted-main', 'work-list'].includes(command) ||
+  // Only `work-list import --apply` writes the work list; every other work-list command reads it.
+  const importWrites = command === 'work-list' && rest[0] === 'import' && applyImport;
+  const readOnlyCommand = (['status', 'messages', 'baseline', 'program-status', 'trusted-main', 'work-list'].includes(command) && !importWrites) ||
     ((command === 'account' || command === 'accounts') && existsSync(join(dataDir, 'supervisor.db')) && (!rest[0] || ['list', 'preferences', 'prefs'].includes(rest[0])));
   // program-status, trusted-main and work-list never create a store: without one there is no approved program, no main
   // ledger and no work item.
-  if (!['program-status', 'trusted-main', 'work-list'].includes(command) || existsSync(join(dataDir, 'supervisor.db'))) store = new Store(join(dataDir, 'supervisor.db'), { readOnly: readOnlyCommand });
+  if (!['program-status', 'trusted-main', 'work-list'].includes(command) || importWrites || existsSync(join(dataDir, 'supervisor.db'))) store = new Store(join(dataDir, 'supervisor.db'), { readOnly: readOnlyCommand });
   if (command === 'serve') await serve();
   else if (command === 'start' && approvedFlag !== null) {
     // The owner's private approved declaration (WORK_ENVELOPE.md section 5, slice E9), registered by merged code only.
@@ -185,7 +193,7 @@ try {
       try { config = JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { /* the default lease length */ }
       const now = Date.now();
       const supervisor = supervisorLiveness(store, { now, leaseMs: config.leaseMs ?? DEFAULTS.leaseMs, stopRequested: existsSync(STOP) });
-      print({ supervisor, ...campaignStatus(store, rest[0], now, { releaseStop: existsSync(join(dataDir, RELEASE_STOP)) }), dataSource: explicitData ? '--data' : 'AIWORKS_DATA' });
+      print({ supervisor, ...campaignStatus(store, rest[0], now, { releaseStop: existsSync(join(dataDir, RELEASE_STOP)), selfHostingConfig: config }), dataSource: explicitData ? '--data' : 'AIWORKS_DATA' });
     }
     finally { store.db.exec('ROLLBACK'); }
   }
@@ -219,8 +227,14 @@ try {
     console.log(`${tip.unrecordedCount} unrecorded commit${tip.unrecordedCount === 1 ? '' : 's'} on local main ${tip.main.slice(0, 12)} after it`);
   }
   else if (command === 'work-list') {
-    // LOCAL_OPERATION.md section 5.1: read-only. Items are written by the owner route and the supervisor, never here.
-    if (/^\d+$/.test(rest[0] ?? '')) {
+    // LOCAL_OPERATION.md section 5.1: read-only. Items are written by the owner route and the supervisor; here only by the
+    // import (section 5.4), which writes nothing without --apply and only reads from GitHub.
+    if (rest[0] === 'import' && rest.length === 1) {
+      const { repository } = selfHostingSettings(dataConfig());
+      if (!repository) throw new CampaignError('WORK_IMPORT_NO_REPOSITORY', 'config.json selfHosting.repository must name the repository whose issues are imported');
+      print(importIssues({ store: store ?? null, gh: dataConfig().commands?.gh ?? ['gh'], repository, dryRun: !applyImport, now: Date.now() }));
+    }
+    else if (/^\d+$/.test(rest[0] ?? '')) {
       const found = store ? workItem(store, Number(rest[0])) : null;
       if (!found) throw new CampaignError('WORK_ITEM_NOT_FOUND', `no work item #${rest[0]}`);
       print({ ...found, comments: workItemComments(store, found.number) });

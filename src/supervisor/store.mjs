@@ -160,7 +160,7 @@ CREATE TRIGGER IF NOT EXISTS main_ledger_no_delete BEFORE DELETE ON main_ledger
   BEGIN SELECT RAISE(ABORT, 'main_ledger is append-only'); END;
 -- The local work list (docs/design/LOCAL_OPERATION.md section 5.1; rules in work-list.mjs). Additive like every table
 -- above. An item is closed, never deleted; a comment is append-only, and its idempotency key makes a repeat a no-op.
--- Publication of the self-hosted repository (SELF7) writes them; the import (SELF10) will too.
+-- Publication of the self-hosted repository (SELF7) and the import (SELF10) write them.
 CREATE TABLE IF NOT EXISTS work_items (
   number INTEGER PRIMARY KEY CHECK (number > 0),
   kind TEXT NOT NULL CHECK (kind IN ('finding', 'decision', 'review', 'task', 'note')),
@@ -318,7 +318,7 @@ export class Store {
   // and JSON fields live in projects.mjs (docs/design/PROJECT_CONNECTION.md section 3).
 
   journal(campaignId, kind, detail, now) {
-    this.run('INSERT INTO journal (campaign_id, at, kind, detail) VALUES (?, ?, ?, ?)', campaignId, now, kind, detail ?? null);
+    return Number(this.run('INSERT INTO journal (campaign_id, at, kind, detail) VALUES (?, ?, ?, ?)', campaignId, now, kind, detail ?? null).lastInsertRowid);
   }
 
   /** Durable event receipt; a repeated dedup key is acknowledged without a second event. */

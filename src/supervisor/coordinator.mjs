@@ -161,6 +161,8 @@ const runtimeIntact = (ctl, cfg) => !ctl.codeRevision || intact(ctl, cfg.runtime
 
 /** The coordinator's own detached checkout of the deployed revision, reused across runs; never the live runtime. */
 const worktreeBase = (ctl, cfg) => cfg.worktreeRoot ?? join(dirname(resolve(ctl.dataDir)), 'worktrees', 'aiworks');
+/** The registered folder of the coordinator and planning checkouts (cleanup.mjs removes only inside it). */
+export const coordinatorWorktreeRoot = (ctl) => worktreeBase(ctl, ctl.config.coordinator ?? {});
 
 function prepareWorkspace(ctl, cfg) {
   const source = cfg.sourceRepo ?? AIWORKS_ROOT;
