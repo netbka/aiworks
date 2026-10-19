@@ -144,8 +144,7 @@ export async function mergePass(controller) {
         if (SHA.test(bases.get(branch) ?? '') && batchStep(controller, items.filter((item) => item.decl.target.baseBranch === branch), settings, repoPath, bases.get(branch))) continue;
       } catch (error) {
         if (error instanceof FencedError || error instanceof ConflictError) { controller.log(`group merge for ${decl.target.repository} retried later: ${error.message}`); continue; }
-        controller.log(`group merge for ${decl.target.repository} failed: ${error.stack || error}`);
-        continue;
+        controller.log(`group merge for ${decl.target.repository} failed, merging one at a time: ${error.stack || error}`);
       }
       bases.set(branch, controller.fetchBase(repoPath, branch).sha);
     }
