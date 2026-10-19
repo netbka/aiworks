@@ -444,6 +444,8 @@ export class Controller {
     if (this.merges.problem) this.log(this.merges.problem);
     this.mergeCheckedAt = new Map();
     this.mergeWaits = new Map();
+    // When a pull request GitHub reported missing may be read again, by `<campaign>:<task>:<sha>` (memory only).
+    this.mergeMissingUntil = new Map();
     // aiworks#207: when each campaign's open integration repair rounds were last checked for an out-of-band merge (memory only).
     this.repairCheckedAt = new Map();
     const commands = config.commands ?? {};
