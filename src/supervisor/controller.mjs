@@ -2397,12 +2397,13 @@ export class Controller {
       const findings = kind === 'implement' ? (task.findings ?? []).slice(0, 8).map((finding) => findingConstraint(finding, resolutions)) : [];
       const refusal = refusalNote(kind, targetSha, task.failures?.refusal);
       // The verifier is told which changed files lie outside the plan, so it judges each one (AW-013).
-      let beyond = [];
+      let beyond = null;
       const domain = kind === 'verify' ? domainOf(decl, spec) : null;
       if (domain && !domain.whole) {
         const from = this.integrationFinding(task)?.base ?? task.base_sha;
         const changed = from ? gitA.changedPaths({ git: this.cmd.git, path: repo.path, from, to: targetSha }) : null;
-        beyond = changed ? outsideWrites(decl, domain, changed).beyond : [];
+        const paths = changed ? outsideWrites(decl, domain, changed).beyond : [];
+        if (paths.length) beyond = beyondConstraint(paths, from, targetSha);
       }
       const buildPacket = (references) => validatePacket({
         version: 1, tenantId: decl.target.tenantId, projectId: decl.target.projectId, environment: decl.target.environment,
@@ -2413,7 +2414,7 @@ export class Controller {
         // The worker and its verifier are told the planned files and what to do beyond them (AW-013).
         // A child also carries the approved outcome and files (WORK_ENVELOPE 6.5); a declared task's packet is unchanged.
         constraints: [...decl.constraints, ...(binding.envelope ? [binding.envelope] : []), ...(spec.constraints ?? []),
-          ...(spec.writes ? [writeDomainConstraint(spec.writes)] : []), ...(beyond.length ? [beyondConstraint(beyond)] : []), ...findings,
+          ...(spec.writes ? [writeDomainConstraint(spec.writes)] : []), ...(beyond ? [beyond] : []), ...findings,
           // A retried verification of the same head carries the controller's recorded refusal (aiworks#59).
           ...(refusal ? [refusal] : []),
           // A planning step proposes against the plan head it was given; any other basis is refused as STALE_PLAN (slice E5).

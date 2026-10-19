@@ -180,7 +180,7 @@ function rig(t, task) {
   return { controller, store, campaignId: decl.campaignId, implement, tick: () => controller.tick() };
 }
 
-test('a commit that changes files outside its plan goes on to the verifier, who is told exactly those files (AW-013)', async (t) => {
+test('extra-file changes reach verification with their paths or an exact diff when the list is long (AW-013)', async (t) => {
   const r = rig(t, commitTask('T1', 920, { writes: ['src/a/', 'docs/naïve/'] }));
   await r.tick();
   const task = r.implement(['src/a/ok.txt', 'docs/naïve/inside name.txt', 'src/b/outside.txt', 'src/ab.txt']);
@@ -193,6 +193,14 @@ test('a commit that changes files outside its plan goes on to the verifier, who 
   assert.ok(line, 'the verifier judges the files outside the plan');
   assert.match(line, /^This head changes files outside the plan: (src\/ab\.txt, src\/b\/outside\.txt|src\/b\/outside\.txt, src\/ab\.txt)\./,
     'only the files outside the plan; a sibling sharing leading letters is outside; git must not quote the non-ASCII path');
+  const large = rig(t, commitTask('T1', 925, { writes: ['src/a/'] }));
+  await large.tick();
+  const many = large.implement(Array.from({ length: 20 }, (_, i) => `src/b/${'x'.repeat(90)}-${i}.txt`));
+  await large.tick();
+  const verification = large.store.openOperations(large.campaignId)[0];
+  assert.equal(verification?.kind, 'verify', 'a long list cannot prevent verification from starting');
+  assert.ok(verification.packet.constraints.some(entry => entry.includes(many.base_sha) && entry.includes(many.head_sha)),
+    'the verifier can enumerate the full diff at the exact revisions');
 });
 
 test('a commit that changes a secret-like file or a file the plan forbids is still a boundary violation held for the owner', async (t) => {
