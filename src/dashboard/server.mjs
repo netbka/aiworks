@@ -14,6 +14,7 @@ import { checkConnectedProject, configuredRepositories, confirmProjectRules, con
 import { checkCaller } from '../supervisor/local-admission.mjs';
 import { safeText } from './roadmap.mjs';
 import { applyResult, approvePlan, editPlan, requestPlanAndDo, undoApply, workView } from './work.mjs';
+import { projectSettingsView, saveProjectSettings } from './project-settings.mjs';
 import { closeImportedIssues, commentWorkItem, createWorkItem, setWorkItemState, workItemView, workListView } from './work-list.mjs';
 import { connectionsView, EVENT_TYPES, homeView, markSeen, overviewView, readLastSeen, trustedMainView, typedEvents, withReadOnlyStore } from './views.mjs';
 
@@ -128,6 +129,13 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
           const { supervisor, merged } = readState(Date.now());
           return send(200, connections(supervisor, merged));
         }
+        // Project settings (WP5): the project id is one encoded segment, so `owner%2Fname/settings` is never an Overview.
+        const settings = /^\/api\/v2\/projects\/([^/]+)\/settings$/.exec(path);
+        if (settings) {
+          let project = null;
+          try { project = decodeURIComponent(settings[1]); } catch { /* refused below */ }
+          return send(200, projectSettingsView(dataDir, project));
+        }
         if (path.startsWith('/api/v2/projects/')) {
           let project = null;
           try { project = decodeURIComponent(path.slice('/api/v2/projects/'.length)); } catch { /* refused below */ }
@@ -178,8 +186,9 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       if (req.headers['content-type'] !== 'application/json') return send(415, { error: 'Commands require JSON.' });
       // 16 KiB for every command, except pause and resume: they bind each goal of their scope, up to 200 goals of at
       // most about 240 bytes each, so their limit fits the largest valid selection instead of refusing it unread. An
-      // edited plan (WP3) holds up to 48 texts of 300 characters, up to 4 bytes each, so it gets the same limit.
-      const limit = ['/api/v2/pause', '/api/v2/resume', '/api/work/edit'].includes(path) ? SCOPED_CONTROL_BYTES : 16_384;
+      // edited plan (WP3) holds up to 48 texts of 300 characters, up to 4 bytes each, so it gets the same limit, and so do
+      // project settings (WP5): 32 protected areas of 200 characters and 2,000 characters of notes.
+      const limit = ['/api/v2/pause', '/api/v2/resume', '/api/work/edit', '/api/v2/projects/settings'].includes(path) ? SCOPED_CONTROL_BYTES : 16_384;
       if (Number(req.headers['content-length']) > limit) return send(413, { error: 'Command is too large.' });
       const chunks = []; let size = 0;
       for await (const chunk of req) {
@@ -246,6 +255,8 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       const caller = (store) => checkCaller(store, callerOptions);
       if (path === '/api/projects/rules/confirm') return send(200, await confirmProjectRules(dataDir, value, { caller }));
       if (path === '/api/projects/rules/revoke') return send(200, await revokeProjectRules(dataDir, value, { caller }));
+      // Project settings (WP5): the caller check runs first; the save binds the version the page showed and a request id.
+      if (path === '/api/v2/projects/settings') return send(200, await saveProjectSettings(dataDir, value, { caller }));
       // The local work list (UI20): every change runs the caller check first and binds the version and request id it was sent with.
       if (path === '/api/work-list/items') return send(200, await createWorkItem(dataDir, value, { caller }));
       if (path === '/api/work-list/comment') return send(200, await commentWorkItem(dataDir, value, { caller }));

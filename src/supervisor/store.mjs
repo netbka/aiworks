@@ -147,6 +147,16 @@ CREATE TABLE IF NOT EXISTS project_baselines (
 CREATE TABLE IF NOT EXISTS project_overlays (
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL UNIQUE, entry TEXT NOT NULL, digest TEXT NOT NULL,
   approved_at INTEGER NOT NULL, revoked_at INTEGER);
+-- Standing project settings (OWNER_UI_V2 WP5; rules in project-settings.mjs): protected areas, notes for the AI and
+-- optional budgets, one row per saved version of one project. Additive like every table above. Append-only: a change is
+-- a new version, so the settings any campaign was registered under stay readable.
+CREATE TABLE IF NOT EXISTS project_settings (
+  project TEXT NOT NULL, version INTEGER NOT NULL, settings TEXT NOT NULL, digest TEXT NOT NULL,
+  request_id TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, PRIMARY KEY (project, version));
+CREATE TRIGGER IF NOT EXISTS project_settings_no_update BEFORE UPDATE ON project_settings
+  BEGIN SELECT RAISE(ABORT, 'project_settings is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS project_settings_no_delete BEFORE DELETE ON project_settings
+  BEGIN SELECT RAISE(ABORT, 'project_settings is append-only'); END;
 -- The main ledger (docs/design/LOCAL_OPERATION.md section 4.2; rules in self-hosting.mjs): every commit AIWorks trusts on
 -- local main of its own repository. Additive like every table above. Append-only: the triggers refuse an update or a
 -- delete. Nothing writes it until the switch-on step (SELF13) records the anchor.
@@ -184,7 +194,7 @@ CREATE TRIGGER IF NOT EXISTS work_item_comments_no_delete BEFORE DELETE ON work_
 
 const JSON_COLUMNS = new Set(['declaration', 'blocker', 'failures', 'findings', 'result', 'verification',
   'blocked', 'packet', 'outcome', 'payload', 'detail', 'message_ids', 'probe', 'last_evidence', 'resolution', 'message',
-  'eligibility', 'steps', 'history', 'routing', 'ops', 'spec', 'pinned', 'questions', 'conflicts', 'notes', 'stale_what', 'signature', 'outline']);
+  'eligibility', 'steps', 'history', 'routing', 'ops', 'spec', 'pinned', 'questions', 'conflicts', 'notes', 'stale_what', 'signature', 'outline', 'settings']);
 
 function decode(row) {
   if (!row) return null;
