@@ -15,7 +15,7 @@
 // local-overlay.mjs (through campaign.mjs overlayGovernance) before it is saved, and only these owner routes write the
 // `project_overlays` table, each after the dashboard's caller check (local-admission.mjs checkCaller, given by server.mjs).
 import { existsSync, readFileSync } from 'node:fs';
-import { basename, dirname, join, parse, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, parse, resolve } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
 import { canonicalJson, overlayGovernance, registryEntriesFor } from '../supervisor/campaign.mjs';
 import { configuredGovernanceRoot } from '../supervisor/governance.mjs';
@@ -26,6 +26,7 @@ import { checkFolderProject, checkGithubProject, checkLocalGitProject, connectCo
 import { preflight } from '../supervisor/project-preflight.mjs';
 import { disconnectProject, PROJECT_ID, projects as projectRecords, SOURCE_KINDS } from '../supervisor/projects.mjs';
 import { writeAtomic } from '../supervisor/proc.mjs';
+import { prepareSampleFolder, SAMPLE_PROJECT, SampleError, writeSampleFiles } from '../supervisor/sample-project.mjs';
 import { alsoSummary, nowView } from './copy.mjs';
 
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
@@ -412,7 +413,7 @@ const notFound = () => fail(404, 'Not found.');
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const INPUTS = Object.freeze({
   preflight: ['path', 'kind'], connect: ['path', 'kind', 'name', 'id', 'asNewProject', 'requestId'], check: ['projectId', 'requestId'],
-  relocate: ['projectId', 'path', 'confirm', 'requestId'], disconnect: ['projectId', 'version', 'requestId'],
+  relocate: ['projectId', 'path', 'confirm', 'requestId'], sample: ['path', 'requestId'], disconnect: ['projectId', 'version', 'requestId'],
 });
 
 /** The request's own fields only, each of its kind; anything else is refused before the store is opened. */
@@ -551,6 +552,43 @@ export function connectProject(dataDir, input, inject = {}) {
     }
     return { ...outcome(result.code, result.status, result.detail ?? result.preflight?.detail ?? {}, after, ADD_FALLBACK), notices: [], project: null };
   });
+}
+
+const SAMPLE_WORDS = Object.freeze({
+  SAMPLE_FOLDER_NOT_EMPTY: 'This folder is not empty, so AIWorks wrote nothing into it. Choose a new folder, or an empty one.',
+  SAMPLE_FOLDER_UNWRITABLE: 'AIWorks could not create this folder. Check that the folder it goes in exists, then try again.',
+});
+
+/**
+ * POST /api/projects/sample (OWNER_UI_V2 WP8): the sample project of First run. The owner names a new or empty folder;
+ * AIWorks checks it like any folder on Add project before writing anything, writes the sample's fictional files into it
+ * (sample-project.mjs) and connects it through connectProject, exactly as Connect project does. The sample then needs
+ * its rules confirmed and a plan approved like any project: nothing starts and nothing is paid for here. A folder that
+ * already holds the sample opens the same project, so a repeat is safe. Returns what connectProject returns.
+ */
+export function createSampleProject(dataDir, input, inject = {}) {
+  if (!projectConnectionEnabled(dataDir)) throw notFound();
+  const { path } = readInput('sample', input);
+  const platform = inject.platform ?? process.platform;
+  // Only a full local path: a relative one would be created where the dashboard runs, a network one is never touched.
+  if (/^[\\/]{2}/.test(path) || !(platform === 'win32' ? /^[A-Za-z]:[\\/]/.test(path) : isAbsolute(path))) {
+    return { ...outcome('PATH_NOT_ABSOLUTE', 'not-saved', {}, [], ADD_FALLBACK), notices: [], project: null };
+  }
+  const options = connectOptions(dataDir, inject);
+  const said = (code) => ({ ok: false, code, status: 'not-saved', message: SAMPLE_WORDS[code], action: null, notices: [], project: null });
+  const refused = withStore(dataDir, (store) => {
+    const records = projectRecords(store);
+    let prepared;
+    try { prepared = prepareSampleFolder(path); } catch (error) { if (error instanceof SampleError) return said(error.code); throw error; }
+    const found = preflight(path, { ...options, projects: records, kind: 'folder', mirrorParent: dirname(resolve(dataDir)),
+      io: inject.statfs ? { statfs: inject.statfs } : undefined });
+    if (found.ok || found.code === 'ALREADY_CONNECTED') return null;
+    prepared.undo();
+    return { ...outcome(found.code, found.status, found.detail, records, ADD_FALLBACK), notices: [], project: null };
+  }, { readOnly: true });
+  if (refused) return refused;
+  try { writeSampleFiles(path); } catch (error) { return said(error instanceof SampleError ? error.code : 'SAMPLE_FOLDER_UNWRITABLE'); }
+  return connectProject(dataDir, { path, kind: 'folder', name: SAMPLE_PROJECT.name, id: SAMPLE_PROJECT.id }, inject);
 }
 
 /** The supervisor's Check again for this project's kind. */

@@ -9,7 +9,7 @@ import { Store } from '../supervisor/store.mjs';
 import { PREVIEW_POLICY, PreviewSessions } from '../supervisor/preview.mjs';
 import { ownerView } from './owner.mjs';
 import { configuredMergeDelegation } from './merges.mjs';
-import { checkConnectedProject, configuredRepositories, confirmProjectRules, connectedProjects, connectProject, disconnectConnectedProject, listConnectedProjects,
+import { checkConnectedProject, configuredRepositories, confirmProjectRules, connectedProjects, connectProject, createSampleProject, disconnectConnectedProject, listConnectedProjects,
   previewProject, projectConnectionEnabled, projectRulesView, projectsView, relocateConnectedProject, removedProjects, removeProject, restoreProject,
   revokeProjectRules } from './projects.mjs';
 import { checkCaller } from '../supervisor/local-admission.mjs';
@@ -17,6 +17,7 @@ import { safeText } from './roadmap.mjs';
 import { applyResult, approvePlan, editPlan, requestPlanAndDo, undoApply, workView } from './work.mjs';
 import { projectSettingsView, saveProjectSettings } from './project-settings.mjs';
 import { alertsView, saveAlerts } from './alerts.mjs';
+import { knowledgeView, planningCost, saveKnowledge, usageView } from './knowledge.mjs';
 import { closeImportedIssues, commentWorkItem, createWorkItem, setWorkItemState, workItemView, workListView } from './work-list.mjs';
 import { connectionsView, EVENT_TYPES, homeView, markSeen, overviewView, readLastSeen, trustedMainView, typedEvents, withReadOnlyStore } from './views.mjs';
 
@@ -133,6 +134,8 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
           return send(200, { observedAt: new Date(now).toISOString(), host: machine, supervisor, roadmap: roadmap.snapshot(),
             merges: { refreshing: merged.refreshing, repositories: merged.repositories }, owner, projects, work, worklist,
             home: home(supervisor, owner, projects), connections: connections(supervisor, merged),
+            // First run states what planning costs before anything is planned (WP8): from history, or unavailable.
+            ...(projects.addProject ? { planning: planningCost(dataDir) } : {}),
             overviews: Object.fromEntries((projects.projects ?? []).map((row) => [row.id, overviewView(row.id, { supervisor, projects })])) });
         }
         // The view layer of the owner UI v2 (OWNER_UI_V2 section 8, WP1): one allowlisted view per screen, read-only.
@@ -146,6 +149,15 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
         }
         // Settings -> Alerts (WP6): the owner's alert rules and the transport's state, never a secret store reference.
         if (path === '/api/v2/settings/alerts') return send(200, alertsView(dataDir));
+        // Settings -> Usage (WP8): usage by source, each unit apart, with unknown kept unknown and untracked costs said.
+        if (path === '/api/v2/settings/usage') return send(200, usageView(dataDir, readState(Date.now()).supervisor));
+        // Knowledge (WP8): the owner's facts and this project's own suggestions, each with where it came from.
+        const knowledge = /^\/api\/v2\/projects\/([^/]+)\/knowledge$/.exec(path);
+        if (knowledge) {
+          let project = null;
+          try { project = decodeURIComponent(knowledge[1]); } catch { /* refused below */ }
+          return send(200, knowledgeView(dataDir, project));
+        }
         // Project settings (WP5): the project id is one encoded segment, so `owner%2Fname/settings` is never an Overview.
         const settings = /^\/api\/v2\/projects\/([^/]+)\/settings$/.exec(path);
         if (settings) {
@@ -255,6 +267,8 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       // Add project (UI13): each answers 404 while it is off, as before it existed.
       if (path === '/api/projects/preflight') return send(200, previewProject(dataDir, value, projectConnection));
       if (path === '/api/projects/connect') return send(200, connectProject(dataDir, value, projectConnection));
+      // The sample project of First run (WP8): written into the owner's new or empty folder, then connected like any folder.
+      if (path === '/api/projects/sample') return send(200, createSampleProject(dataDir, value, projectConnection));
       if (path === '/api/projects/check') return send(200, checkConnectedProject(dataDir, value, projectConnection));
       if (path === '/api/projects/relocate') return send(200, relocateConnectedProject(dataDir, value, projectConnection));
       if (path === '/api/projects/disconnect') return send(200, disconnectConnectedProject(dataDir, value));
@@ -278,6 +292,8 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       if (path === '/api/v2/projects/settings') return send(200, await saveProjectSettings(dataDir, value, { caller }));
       // Alert rules (WP6): the caller check runs first, so no program AIWorks started can mute the owner's alerts.
       if (path === '/api/v2/settings/alerts') return send(200, await saveAlerts(dataDir, value, { caller }));
+      // Knowledge (WP8): the caller check runs first, so only the owner confirms, edits or sets aside a fact.
+      if (path === '/api/v2/projects/knowledge') return send(200, await saveKnowledge(dataDir, value, { caller }));
       // The local work list (UI20): every change runs the caller check first and binds the version and request id it was sent with.
       if (path === '/api/work-list/items') return send(200, await createWorkItem(dataDir, value, { caller }));
       if (path === '/api/work-list/comment') return send(200, await commentWorkItem(dataDir, value, { caller }));
