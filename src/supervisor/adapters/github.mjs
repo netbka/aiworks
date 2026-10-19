@@ -156,3 +156,14 @@ export function postComment({ gh, repository, issue, body, bodyFile, terms = [] 
   if (!created?.html_url) throw new Error('POST comment returned no html_url');
   return created.html_url;
 }
+
+/**
+ * Close an issue as not planned (SELF11): one REST PATCH of its state and state reason, never its labels or anything
+ * else. Returns the issue GitHub answers with; throws when GitHub does not report it closed.
+ */
+export function closeIssue({ gh, repository, issue }) {
+  const closed = rest(gh, 'PATCH issue', ['--method', 'PATCH', `repos/${repository}/issues/${issue}`,
+    '-f', 'state=closed', '-f', 'state_reason=not_planned']);
+  if (closed?.state !== 'closed') throw new Error('PATCH issue did not report the issue closed');
+  return closed;
+}

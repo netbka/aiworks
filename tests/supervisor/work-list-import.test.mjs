@@ -9,7 +9,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from '../../src/supervisor/store.mjs';
 import { comments, item, items, nextNumber } from '../../src/supervisor/work-list.mjs';
-import { importIssues } from '../../src/supervisor/work-list-import.mjs';
+import { closeCandidates, closeConfirmedIssues, importIssues } from '../../src/supervisor/work-list-import.mjs';
+import { checkCaller } from '../../src/supervisor/local-admission.mjs';
 
 const NOW = 1_760_000_000_000;
 const REPOSITORY = 'example-org/aiworks-sample';
@@ -114,4 +115,90 @@ test('a repeated import keeps identities and owner edits, adds each comment once
   // The credential is in neither the store nor any report.
   const everything = JSON.stringify([first, second, items(reopened).map(({ number }) => [item(reopened, number), comments(reopened, number)])]);
   assert.ok(!everything.includes(TOKEN));
+});
+
+// LO L11 (slice SELF11): closing imported issues after the owner confirms the list, against the same synthetic gh.
+const ownerCaller = (store) => checkCaller(store, { platform: 'win32', lookup: async () => ({ pid: 7001, ancestors: [7000], jobs: [] }) });
+// A worker started by AIWorks: the process above it is AIWorks itself.
+const workerCaller = (store) => checkCaller(store, { platform: 'win32', lookup: async () => ({ pid: 7002, ancestors: [process.pid], jobs: [] }) });
+const writes = (calls) => calls().filter((args) => args[args.indexOf('--method') + 1] !== 'GET');
+
+function imported(t, count) {
+  const { open, serve, calls } = rig(t);
+  const base = fixture(count);
+  const data = { ...base, open: base.open.map((issue) => ({ ...issue, state: 'open' })), writable: true, clock: '2026-10-19T09:00:00Z' };
+  serve(data);
+  const store = open();
+  importIssues({ store, gh: GH, repository: REPOSITORY, dryRun: false, now: NOW });
+  const remote = () => JSON.parse(readFileSync(join(process.env.FAKE_GH_STATE, 'issues.json'), 'utf8'));
+  return { store, serve, calls, data, remote };
+}
+
+test('only the confirmed, unchanged imported issues are closed, and only for the owner', async (t) => {
+  const { store, serve, calls, data, remote } = imported(t, 9);
+  const close = (selection, options = {}) => closeConfirmedIssues({ store, gh: GH, repository: REPOSITORY, selection,
+    caller: ownerCaller, now: NOW, available: true, ...options });
+  const all = closeCandidates(store, REPOSITORY);
+  assert.deepEqual(all.map((entry) => entry.number), [1, 2, 4, 5, 6, 7, 8, 9]);
+  const selection = all.filter((entry) => [2, 4, 5].includes(entry.number));
+  const before = calls().length;
+
+  // Switched off by default; a worker, an unchecked caller and stale or foreign entries are refused before any gh call.
+  await assert.rejects(closeConfirmedIssues({ store, gh: GH, repository: REPOSITORY, selection, caller: ownerCaller, now: NOW }), { code: 'WORK_CLOSE_OFF' });
+  await assert.rejects(close(selection, { caller: workerCaller }), { code: 'WORK_CLOSE_FROM_AIWORKS' });
+  await assert.rejects(close(selection, { caller: null }), { code: 'WORK_CLOSE_UNCHECKED' });
+  await assert.rejects(close([...selection, { ...all[0], updatedAt: '2026-10-01T00:00:00Z' }]), { code: 'WORK_CLOSE_STALE' });
+  await assert.rejects(close([{ ...selection[0], repository: 'example-org/other' }]), { code: 'WORK_CLOSE_STALE' });
+  await assert.rejects(close([{ repository: REPOSITORY, number: 3, updatedAt: '2026-10-18T00:00:00Z', version: 'x' }]), { code: 'WORK_CLOSE_STALE' });
+  store.run('UPDATE work_items SET body = ? WHERE number = ?', 'Owner notes', 4);
+  await assert.rejects(close(selection), { code: 'WORK_CLOSE_STALE' });
+  assert.equal(calls().length, before);
+
+  // Confirmed again; #5 then changes on GitHub and is skipped.
+  const fresh = closeCandidates(store, REPOSITORY).filter((entry) => [2, 4, 5].includes(entry.number));
+  data.open.find((issue) => issue.number === 5).updated_at = '2026-10-19T08:00:00Z';
+  serve(data);
+  const report = await close(fresh);
+  assert.deepEqual(report.closed, [2, 4]);
+  assert.deepEqual(report.skipped.map((entry) => entry.number), [5]);
+
+  const after = remote();
+  for (const number of [2, 4]) {
+    const issue = after.closed.find((entry) => entry.number === number);
+    assert.deepEqual([issue.state, issue.state_reason, issue.labels], ['closed', 'not_planned', [{ name: 'synthetic' }]]);
+    assert.equal(after.comments[number].filter((comment) => comment.body.includes(`aiworks:work-list-moved:${number}`)).length, 1);
+  }
+  assert.deepEqual(after.open.map((issue) => issue.number), [1, 3, 5, 6, 7, 8, 9]);
+  // Every write named a confirmed issue: one comment and one state change each, nothing else.
+  assert.deepEqual(writes(calls).map((args) => `${args[args.indexOf('--method') + 1]} ${args.find((arg) => arg.startsWith('repos/'))}`), [
+    `POST repos/${REPOSITORY}/issues/2/comments`, `PATCH repos/${REPOSITORY}/issues/2`,
+    `POST repos/${REPOSITORY}/issues/4/comments`, `PATCH repos/${REPOSITORY}/issues/4`]);
+});
+
+test('a crash after the pointer or after the close neither comments twice nor writes again', async (t) => {
+  const { store, serve, calls, data, remote } = imported(t, 4);
+  const close = (selection) => closeConfirmedIssues({ store, gh: GH, repository: REPOSITORY, selection, caller: ownerCaller,
+    now: NOW, available: true });
+  const selection = closeCandidates(store, REPOSITORY).filter((entry) => [1, 2].includes(entry.number));
+
+  serve({ ...data, crashAfter: 'comment' });
+  await assert.rejects(close(selection));
+  const report = await close(selection);
+  assert.deepEqual([report.closed, report.skipped], [[1, 2], []]);
+  const after = remote();
+  for (const number of [1, 2]) {
+    assert.equal(after.comments[number].filter((comment) => comment.body.includes(`aiworks:work-list-moved:${number}`)).length, 1);
+    assert.equal(after.closed.find((entry) => entry.number === number).state_reason, 'not_planned');
+  }
+
+  // The close of #4 lands but its answer is lost: the retry records it and writes nothing.
+  const four = closeCandidates(store, REPOSITORY).filter((entry) => entry.number === 4);
+  serve({ ...after, crashAfter: 'close' });
+  await assert.rejects(close(four));
+  const count = writes(calls).length;
+  assert.deepEqual((await close(four)).alreadyClosed, [4]);
+  assert.deepEqual((await close(four)).alreadyClosed, [4]);
+  assert.equal(writes(calls).length, count);
+  assert.equal(remote().comments[4].filter((comment) => comment.body.includes('aiworks:work-list-moved:4')).length, 1);
+  assert.deepEqual(remote().open.map((issue) => issue.number), [3]);
 });
