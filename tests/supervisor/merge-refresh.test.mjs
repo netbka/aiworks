@@ -271,7 +271,8 @@ test('a group whose gate fails merges none of it together; each pull request the
   assert.equal(groupRows(r, 'merge-batch-started').length, 1, 'the failed group is not gated again');
 });
 
-test('a group merge whose response was lost is settled after a restart by reading the pull request, never by a second merge', async (t) => {
+test('a recovered group merge is never repeated and its actual tree is checked before the next merge', async (t) => {
+  for (const movedBase of [false, true]) await t.test(movedBase ? 'unexpected recovered tree stops the group' : 'checked recovered tree continues', async (t) => {
   const { r, heads } = await published(t, { [A]: 'a.txt', [B]: 'b.txt' });
   r.start(BATCH());
   await r.controller.tick();
@@ -281,13 +282,36 @@ test('a group merge whose response was lost is settled after a restart by readin
   await r.pass();
   assert.equal(r.mergeCalls().length, 1);
   assert.equal(r.journal(A, 'merged').length, 0, 'the outcome is unknown');
+  if (movedBase) {
+    // Model the base advancing immediately before GitHub merged A, with its response lost.
+    git(r.env.repo, 'fetch', 'origin', 'main');
+    git(r.env.repo, 'checkout', '--detach', started.base);
+    writeFileSync(join(r.env.repo, 'concurrent.txt'), 'concurrent base change\n');
+    git(r.env.repo, 'add', 'concurrent.txt');
+    git(r.env.repo, 'commit', '-qm', 'Concurrent base update');
+    const parent = git(r.env.repo, 'rev-parse', 'HEAD');
+    const tree = git(r.env.repo, 'merge-tree', '--write-tree', parent, heads[A]).split('\n')[0];
+    const actual = git(r.env.repo, 'commit-tree', tree, '-p', parent, '-p', heads[A], '-m', 'Merge A after concurrent base update');
+    git(r.env.repo, 'push', 'origin', `${actual}:refs/heads/concurrent-result`);
+    git(r.env.origin, 'update-ref', 'refs/heads/main', actual, r.main());
+    const file = join(r.env.env.FAKE_GH_STATE, 'prs.json');
+    const prs = JSON.parse(readFileSync(file, 'utf8'));
+    writeFileSync(file, JSON.stringify(prs.map((pr) => pr.merged ? { ...pr, mergeCommit: actual } : pr)));
+    assert.notEqual(tree, started.members[0].tree);
+  }
   r.start(BATCH()); // a restart
   await r.pass();
   await r.pass();
+  if (movedBase) {
+    assert.equal(r.mergeCalls().length, 1, 'B is not merged onto the unexpected recovered result');
+    assert.match(groupRows(r, 'merge-batch-stopped')[0].reason, /recovered merge.*checked tree and parents/);
+    return;
+  }
   assert.deepEqual(r.mergeCalls().map((call) => call.fields.sha), [heads[A], heads[B]], 'A was never merged twice');
   assert.equal(r.journal(A, 'merged')[0].reconciled, true);
   assert.equal(r.tree(r.main()), r.runs()[0].tree);
   assert.equal(groupRows(r, 'merge-batch-done').length, 1);
+  });
 });
 
 test('a gate that runs past its time bound fails the refresh and the integration repair runs', async (t) => {
