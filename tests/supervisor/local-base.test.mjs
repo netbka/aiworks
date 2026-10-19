@@ -78,7 +78,7 @@ test('LO L4: implement, verify, repair and dependency integration of the self-ho
   d.tasks[1].requiresMergedDependencies = true;
   campaignStart(store, d);
   const controller = new Controller({ store, config, dataDir: env.dataDir, fault: null });
-  // Publication of the self-hosted repository to the work list is slice SELF7; until then this test records it by hand.
+  // Publication to the work list is local-review.test.mjs's; this test records the merged state by hand.
   controller.publish = async () => {};
 
   // Implement, a rejected verification, the repair round and the accepted verification of the exact head.
