@@ -108,8 +108,8 @@ function trackedGateFiles(git, path) {
 export function checkVerification({ git, path, targetSha }) {
   if (currentHead({ git, path }) !== targetSha) return 'verifier checkout no longer matches the target SHA';
   const tracked = trackedGateFiles(git, path);
-  if (tracked === null) return 'cannot read the files the verifier checkout tracks';
-  if (tracked.length) return `target tracks reserved gate evidence: ${tracked.slice(0, 5).join(', ')}`;
+  if (tracked === null) return 'verifier checkout is not clean: cannot read the files it tracks';
+  if (tracked.length) return `verifier checkout is not clean: the target tracks reserved gate evidence: ${tracked.slice(0, 5).join(', ')}`;
   if (!verificationCheckoutClean(git, path)) return 'verifier checkout is not clean';
   return null;
 }
