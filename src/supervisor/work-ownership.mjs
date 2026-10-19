@@ -162,5 +162,16 @@ export const writeDomainConstraint = (writes) => {
 export const BEYOND_RULE = 'If the outcome needs another file, change it: do not stop to ask. In your report, list each file outside the plan and why it was needed. Secret-like files and files the plan forbids are never changed. The verifier judges every change outside the plan.';
 
 /** The verifier's line for a head that changed files outside its plan (AW-013). */
-export const beyondConstraint = (paths) => `This head changes files outside the plan: ${paths.slice(0, 20).join(', ')}${paths.length > 20 ? ', ...' : ''}. ` +
-  'Judge each one: accept it only when the outcome needs it, the change is correct and minimal, and the report explains it; otherwise reject with a finding.';
+export function beyondConstraint(paths, base, target) {
+  const prefix = 'This head changes files outside the plan: ';
+  const rule = 'Judge each one: accept it only when the outcome needs it, the change is correct and minimal, and the report explains it; otherwise reject with a finding. ' +
+    `Use git diff --name-only ${base} ${target} for the complete changed-path list, including omitted paths.`;
+  let list = '', count = 0;
+  for (const path of paths.slice(0, 20)) {
+    const next = list ? `${list}, ${path}` : path;
+    // Packet constraints allow 2,000 characters; omit whole names, never the review rule or exact diff revisions.
+    if (`${prefix}${next}, .... ${rule}`.length > 2000) break;
+    list = next; count++;
+  }
+  return `${prefix}${list || '(list omitted)'}${count < paths.length ? ', ...' : ''}. ${rule}`;
+}
