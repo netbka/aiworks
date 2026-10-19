@@ -127,7 +127,7 @@ export function passedGate(dir) {
  */
 export function runtimeCheckout({ declarations = {}, unmerged = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'aiworks-runtime-'));
-  for (const dir of ['src/supervisor', 'scripts/lib', 'registry', 'schemas']) {
+  for (const dir of ['src/supervisor', 'src/shared', 'scripts/lib', 'registry', 'schemas']) {
     cpSync(join(ROOT, dir), join(root, dir), { recursive: true });
   }
   cpSync(join(ROOT, 'package.json'), join(root, 'package.json'));
