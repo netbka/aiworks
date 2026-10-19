@@ -160,7 +160,7 @@ CREATE TRIGGER IF NOT EXISTS main_ledger_no_delete BEFORE DELETE ON main_ledger
   BEGIN SELECT RAISE(ABORT, 'main_ledger is append-only'); END;
 -- The local work list (docs/design/LOCAL_OPERATION.md section 5.1; rules in work-list.mjs). Additive like every table
 -- above. An item is closed, never deleted; a comment is append-only, and its idempotency key makes a repeat a no-op.
--- Nothing writes them until publication (SELF7) and the import (SELF10).
+-- Publication of the self-hosted repository (SELF7) writes them; the import (SELF10) will too.
 CREATE TABLE IF NOT EXISTS work_items (
   number INTEGER PRIMARY KEY CHECK (number > 0),
   kind TEXT NOT NULL CHECK (kind IN ('finding', 'decision', 'review', 'task', 'note')),

@@ -46,7 +46,8 @@ export function rest(gh, what, args, { timeoutMs } = {}) {
     const message = `${what} failed: ${out.stderr || out.error || response.body}`.slice(0, 500);
     const resetAt = rateLimitReset(response, out.stderr);
     if (resetAt !== undefined) throw new RateLimitError(message, resetAt);
-    throw new Error(message);
+    const status = response.status ?? Number(/\(HTTP (\d{3})\)/.exec(out.stderr ?? '')?.[1] ?? NaN);
+    throw Object.assign(new Error(message), { status: Number.isInteger(status) ? status : null });
   }
   return JSON.parse(response.body || 'null');
 }

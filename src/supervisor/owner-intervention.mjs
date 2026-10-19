@@ -77,7 +77,7 @@ export function reminderDue(record, now) {
 }
 
 /** §8 message content. Every free-text field is redacted; no secret, token or private content is carried. */
-export function ownerMessage({ record, kind, parents, repository, trackingIssue, tried }) {
+export function ownerMessage({ record, kind, parents, repository, trackingIssue, tried, workList = false }) {
   const cls = record.class;
   return {
     kind,
@@ -91,7 +91,8 @@ export function ownerMessage({ record, kind, parents, repository, trackingIssue,
     tried: redact(tried ?? 'bounded retry and authorized fallback before raising this blocker'),
     nextAction: cls === 'B4' ? null : redact(record.requested_action ?? ''),
     safeState: 'Nothing was merged or deployed; held work keeps its phase in the supervisor store.',
-    link: repository && trackingIssue ? `https://github.com/${repository}/issues/${trackingIssue}` : null,
+    // AIWorks's own repository with local main trusted links its tracking item in the local work list instead.
+    link: !(repository && trackingIssue) ? null : workList ? `aiworks-work:${trackingIssue}` : `https://github.com/${repository}/issues/${trackingIssue}`,
     afterAction: redact(record.recheck_procedure),
     fingerprint: record.fingerprint,
     actions: ACTIONS[cls],
