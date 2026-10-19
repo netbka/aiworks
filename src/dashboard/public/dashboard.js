@@ -148,7 +148,8 @@ const screenText = { home: ['Home', 'What changed, and what needs me?'], project
   review: ['Review', 'Is this the right goal and limits?'], 'add-project': ['Add project', 'Which folder should AIWorks work on?'],
   worklist: ['Work list', 'What is on AIWorks’s own work list?'], 'worklist-item': ['Work item', 'What does this item say, and what happened to it?'],
   'worklist-import': ['Imported issues', 'Which imported GitHub issues should be closed there?'],
-  'project-settings': ['Project settings', 'What must AIWorks never change here, and what may it spend?'] };
+  'project-settings': ['Project settings', 'What must AIWorks never change here, and what may it spend?'],
+  knowledge: ['Knowledge', 'What does AIWorks know about this product?'], usage: ['Usage', 'What has AIWorks used, and what is not known?'] };
 const screenKey = (route) => route.screen === 'settings' ? route.section ?? 'settings' : route.screen === 'project' ? route.tab : route.screen;
 const tabLabels = { now: 'Overview', work: 'Work', results: 'Results', cost: 'Cost' };
 
@@ -1443,21 +1444,64 @@ function addProjectScreen() {
     area,
     ready ? el('button', { class: 'button', type: 'button', 'data-connect': 'connect', disabled: busy, onclick: () => void connectFolder() }, 'Connect project') : null,
     draft.outcome?.code === 'PROJECT_MOVED' ? button('Connect as a new project', () => void connectFolder({ asNewProject: true }), 'secondary', busy) : null);
-  return [el('section', { class: 'panel' }, form)];
+  // First run states what planning costs before anything is planned (OWNER_UI_V2 WP8).
+  return [el('section', { class: 'panel' }, el('div', { class: 'panel-body' }, el('p', { class: 'subtext' }, planningText(state.planning)))),
+    el('section', { class: 'panel' }, form), el('section', { class: 'panel' }, samplePanel())];
 }
+
+/*
+ * The sample project (OWNER_UI_V2 WP8): a small fictional app written into a new or empty folder the owner names, then
+ * checked and connected like any folder on this screen. It starts nothing: its rules and a plan wait for the owner.
+ */
+const sampleDraft = () => drafts.get(ADD_ADDRESS, 'sample') ?? { path: '', outcome: null };
+function samplePanel() {
+  const draft = sampleDraft(), busy = Boolean(addBusy) || offline;
+  const path = el('input', { id: 'sample-path', type: 'text', autocomplete: 'off', spellcheck: 'false', maxlength: 1024, required: true, 'aria-describedby': 'sample-path-hint',
+    oninput: () => drafts.set(ADD_ADDRESS, 'sample', { path: path.value, outcome: null }) });
+  path.value = draft.path;
+  const area = el('div', { id: 'sample-result', role: 'status', 'aria-live': 'polite', tabindex: '-1' },
+    addBusy === 'sample' ? el('p', {}, 'Writing the sample and connecting it…') : draft.outcome ? el('p', {}, draft.outcome) : null);
+  const form = el('form', { novalidate: true, class: 'panel-body start-form', 'data-add-form': 'sample', 'data-focus-scope': 'add-project/sample',
+    onsubmit: (event) => { event.preventDefault(); if (Boolean(addBusy) || offline || !validateForm(form)) return; void createSample(); } },
+    el('p', {}, 'AIWorks writes a small fictional notes app (four files, made-up data) into a new or empty folder you choose, then checks and connects it like any folder. Nothing runs and nothing is paid for until you confirm its rules and approve a plan, as for any project.'),
+    el('label', { class: 'field' }, el('strong', {}, 'New or empty folder'), path,
+      el('span', { class: 'subtext', id: 'sample-path-hint' }, 'For example D:\\Practice\\sample-notes. A folder that holds anything else is left alone.')),
+    el('button', { class: 'button secondary', type: 'submit', disabled: busy }, 'Create sample project'), area);
+  return disclosure('add/sample', 'Practise on a sample project', form);
+}
+
+async function createSample() {
+  const draft = sampleDraft();
+  addBusy = 'sample'; rebuildAdd();
+  try {
+    const result = await post('/api/projects/sample', { path: draft.path, requestId: crypto.randomUUID() });
+    if (result.project) {
+      drafts.delete(ADD_ADDRESS, 'sample');
+      addBusy = null;
+      await poll();
+      go(formatRoute({ screen: 'project', project: result.project.route }));
+      notice(result.ok ? `Created and connected "${result.project.name}". Nothing runs until you confirm its rules and approve a plan.` : result.message, null, null, current.address);
+      return;
+    }
+    drafts.set(ADD_ADDRESS, 'sample', { ...draft, outcome: result.message });
+  } catch (error) {
+    drafts.set(ADD_ADDRESS, 'sample', { ...draft, outcome: error.known ? error.message : 'Creating the sample could not be confirmed. Check Projects before trying again: the same folder is never connected twice.' });
+  } finally { if (addBusy) { addBusy = null; rebuildAdd({ focus: '#sample-result' }); } }
+}
+
 
 /** The 5-second refresh keeps the Add project form as typed: only its buttons follow the connection. False when it must be built. */
 function refreshAdd(content) {
-  const form = content.querySelector('form[data-add-form]');
-  if (!form || !state.projects?.addProject || !state.supervisor.available) return false;
-  for (const node of form.querySelectorAll('button')) node.disabled = Boolean(addBusy) || offline;
+  const forms = content.querySelectorAll('form[data-add-form]');
+  if (!forms.length || !state.projects?.addProject || !state.supervisor.available) return false;
+  for (const form of forms) for (const node of form.querySelectorAll('button')) node.disabled = Boolean(addBusy) || offline;
   return true;
 }
 /** Build the Add project form again from its draft, and keep the owner where the answer is. */
 function rebuildAdd({ focus = false } = {}) {
-  document.querySelector('form[data-add-form]')?.remove();
+  $('#content').replaceChildren();
   render();
-  if (focus) $('#add-result')?.focus({ preventScroll: true });
+  if (focus) $(focus === true ? '#add-result' : focus)?.focus({ preventScroll: true });
 }
 
 async function checkFolder() {
@@ -2205,6 +2249,7 @@ const settingsEmpty = ({ title, text, primary }) => el('div', { class: 'empty-st
 function settingsLinks() {
   return panel('More', null, el('ul', { class: 'settings-links' },
     el('li', {}, routeLink('Connections', '#/settings/connections'), el('div', { class: 'subtext' }, 'AIWorks itself, each AI worker account, where merges are seen from, and the trusted main with its backup.')),
+    el('li', {}, routeLink('Usage', '#/settings/usage'), el('div', { class: 'subtext' }, 'What AI workers and planning used, by source and unit, with unknown cost kept unknown.')),
     el('li', {}, routeLink('Alerts', '#/settings/alerts'), el('div', { class: 'subtext' }, 'Which notices alert you, quiet hours, and whether an alert transport is set up.')),
     el('li', {}, routeLink('Worker accounts', '#/settings/accounts'), el('div', { class: 'subtext' }, 'Each AI worker login on this computer, and whether it can take work now.')),
     el('li', {}, routeLink('Worker accounts', '#/settings/accounts'), el('div', { class: 'subtext' }, 'Connect and manage isolated worker logins, view live quota usage, and export encrypted bundles.')),
@@ -3009,14 +3054,211 @@ async function saveAlertRules(body) {
   try { await attempt(); } finally { alertsBusy = false; await poll(); }
 }
 
+/*
+ * Knowledge (OWNER_UI_V2 WP8): the product facts the owner confirmed, and what AIWorks suggests from this project's own
+ * README and plans, each with where it came from. Read on their own (GET /api/v2/projects/<id>/knowledge) when opened
+ * and at every refresh while shown, except while the owner types. A suggestion is never shown as true: it says "Not
+ * confirmed" until the owner confirms it, edits it into their own words or sets it aside. What is typed is kept per
+ * address as a draft, so a refresh, a reload or a refused save keeps it.
+ */
+const knowledgeViews = new Map();
+let knowledgeBusy = false;
+const knowledgeOff = () => knowledgeBusy || offline;
+const knowledgeAddress = (project) => formatRoute({ screen: 'knowledge', project });
+async function loadKnowledge(project) {
+  const entry = knowledgeViews.get(project) ?? {};
+  knowledgeViews.set(project, entry);
+  if (entry.loading) return;
+  entry.loading = true;
+  try {
+    const response = await fetch(`/api/v2/projects/${encodeURIComponent(project)}/knowledge`, { signal: AbortSignal.timeout(6000) });
+    const value = await response.json();
+    if (response.ok) { entry.view = value; entry.error = null; entry.readAt = Date.now(); }
+    else { entry.error = { status: response.status, message: value.error }; if (response.status === 404) entry.view = null; }
+  } catch { entry.error = { status: 0, message: 'What AIWorks knows about this project could not be read just now. The page tries again.' }; }
+  finally {
+    entry.loading = false;
+    if (current.route.screen === 'knowledge' && current.route.project === project && state && !document.querySelector('dialog[open]')) render();
+  }
+}
+const knowledgeEntry = (project) => { if (!knowledgeViews.has(project)) void loadKnowledge(project); return knowledgeViews.get(project) ?? {}; };
+const SOURCE_WORDS = { owner: ['done', 'Confirmed by you'], material: ['review', 'Found in material'], ai: ['planned', 'Suggested by AI'] };
+/** Where a suggestion, or the fact made from one, came from. */
+function originText(source, origin) {
+  if (source === 'material') return `${origin.path} at version ${String(origin.commit).slice(0, 12)}`;
+  return `${origin.goal ? `the plan for “${origin.goal}”` : 'a plan'}, version ${origin.version}`;
+}
+const KNOWLEDGE_ACTS = { written: 'Written by you', confirmed: 'Confirmed by you', edited: 'Edited by you', 'set-aside': 'Set aside by you', restored: 'Brought back by you' };
+// Which fact or suggestion is open for editing on this page, by its id or key.
+let knowledgeEditing = null;
+
+/** An edit form for one fact or suggestion: its words, kept as a draft until saved. */
+function factEditor(project, id, text, onSave) {
+  const address = knowledgeAddress(project), key = `fact:${id}`;
+  const area = el('textarea', { id: `fact-${id}`, rows: 2, maxlength: 400, required: true, oninput: () => drafts.set(address, key, area.value) });
+  area.value = drafts.get(address, key) ?? text;
+  const form = el('form', { novalidate: true, class: 'start-form', 'data-focus-scope': `knowledge/${id}/edit`,
+    onsubmit: (event) => { event.preventDefault(); if (knowledgeOff() || !validateForm(form)) return; void onSave(area.value, () => drafts.delete(address, key)); } },
+    el('label', { class: 'field' }, el('strong', {}, 'In your words'), area, el('span', { class: 'subtext' }, 'One line, up to 400 characters. No secrets.')),
+    el('button', { class: 'button small', type: 'submit', disabled: knowledgeOff() }, 'Save as confirmed'), ' ',
+    button('Cancel', () => { knowledgeEditing = null; drafts.delete(address, key); rebuildKnowledge(); }, 'secondary small'));
+  return form;
+}
+
+function factItem(project, fact) {
+  const [tone, words] = SOURCE_WORDS.owner, retired = fact.state === 'retired';
+  const came = fact.basis ? `First ${fact.basis.source === 'material' ? 'found in' : 'suggested by AI from'} ${originText(fact.basis.source, fact.basis.origin)}.${fact.edited ? ' Edited in your words since.' : ''}` : 'Written by you.';
+  const act = (action, text) => saveFact(project, { action, fact: fact.id, version: fact.version, ...(text !== undefined ? { text } : {}) });
+  return el('li', { 'data-focus-scope': `knowledge/${fact.id}` },
+    el('p', {}, el('strong', {}, fact.text), ' ', retired ? badge('planned', 'Set aside') : badge(tone, words)),
+    el('div', { class: 'subtext' }, `${came} Version ${fact.version}, ${clock(fact.updatedAt)}.`),
+    knowledgeEditing === fact.id ? factEditor(project, fact.id, fact.text, (text, done) => act('edit', text).then((ok) => ok && done()))
+      : el('div', {}, retired ? button('Bring back', () => void act('edit', fact.text), 'secondary small', knowledgeOff())
+        : [button('Edit', () => { knowledgeEditing = fact.id; rebuildKnowledge(); }, 'secondary small', knowledgeOff()), ' ',
+          button('Set aside', () => void act('retire'), 'secondary small', knowledgeOff())]),
+    disclosure(`knowledge/${project}/${fact.id}`, `History (${plural(fact.history.length, 'version')})`, el('ol', { class: 'settings-links' },
+      ...fact.history.map((entry) => el('li', {}, el('strong', {}, `${KNOWLEDGE_ACTS[entry.act] ?? 'Changed'}, ${dateTime(entry.at)}`),
+        el('div', { class: 'subtext' }, entry.text))))));
+}
+
+function suggestionItem(project, item) {
+  const [tone, words] = SOURCE_WORDS[item.source] ?? ['unknown', 'Not known'];
+  const act = (action, text) => saveFact(project, { action, suggestion: item.key, version: 0, ...(text !== undefined ? { text } : {}) });
+  return el('li', { 'data-focus-scope': `knowledge/${item.key}` },
+    el('p', {}, el('span', {}, item.text), ' ', badge(tone, words)),
+    el('div', { class: 'subtext' }, `From ${originText(item.source, item.origin)}. Not confirmed: AIWorks does not treat it as true.`),
+    knowledgeEditing === item.key ? factEditor(project, item.key, item.text, (text, done) => act('edit', text).then((ok) => ok && done()))
+      : el('div', {}, button('Confirm', () => void act('confirm'), 'secondary small', knowledgeOff()), ' ',
+        button('Edit and confirm', () => { knowledgeEditing = item.key; rebuildKnowledge(); }, 'secondary small', knowledgeOff()), ' ',
+        button('Not right', () => void act('retire'), 'secondary small', knowledgeOff())));
+}
+
+function knowledgeScreen(project) {
+  const entry = knowledgeEntry(project), v = entry.view;
+  if (!v) {
+    if (!entry.error) return [empty('Reading what AIWorks knows about this project…', '')];
+    return [empty(entry.error.status === 404 ? 'This project is not on this computer' : 'Not known right now', ` ${entry.error.message}`),
+      routeLink('Back to the overview', { screen: 'project', project, tab: 'now' }, 'button secondary')];
+  }
+  const address = knowledgeAddress(project), active = v.facts.filter((fact) => fact.state !== 'retired'), retired = v.facts.filter((fact) => fact.state === 'retired');
+  const text = el('textarea', { id: 'fact-new', rows: 2, maxlength: v.limits.text, required: true, 'aria-describedby': 'fact-new-help', oninput: () => drafts.set(address, 'add', text.value) });
+  text.value = drafts.get(address, 'add') ?? '';
+  const form = el('form', { novalidate: true, class: 'panel-body start-form', 'data-focus-scope': `knowledge/${project}/add`,
+    onsubmit: (event) => {
+      event.preventDefault();
+      if (knowledgeOff() || !validateForm(form)) return;
+      void saveFact(project, { action: 'add', version: 0, text: text.value }).then((ok) => { if (ok) { drafts.delete(address, 'add'); rebuildKnowledge(); } });
+    } },
+    el('label', { class: 'field' }, el('strong', {}, 'Add a fact'), text,
+      el('span', { id: 'fact-new-help', class: 'subtext' }, `Something true about this product, such as who it is for. One line, up to ${v.limits.text} characters. No secrets.`)),
+    el('button', { class: 'button', type: 'submit', disabled: knowledgeOff() }, 'Save fact'));
+  const stale = entry.error || offline ? el('p', { class: 'needs-stale', role: 'status' }, `Shown as read at ${clock(entry.readAt)}. ${offline
+    ? 'The page is disconnected; it reads this again when it reconnects.' : entry.error.message}`) : null;
+  return [el('section', { class: 'panel', 'data-knowledge': project, 'aria-labelledby': 'knowledge-title' },
+    el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'knowledge-title' }, 'What AIWorks knows about this product'),
+      el('p', {}, 'Each fact says whether you confirmed it, it was found in the project’s material, or AI suggested it. Facts are for you: they never give AIWorks permission to change anything.'))),
+    el('div', { class: 'panel-body' }, stale,
+      el('h3', {}, `Confirmed by you (${active.length})`),
+      active.length ? el('ul', { class: 'settings-links' }, ...active.map((fact) => factItem(project, fact))) : el('p', { class: 'subtext' }, 'Nothing confirmed yet. Confirm a suggestion below, or add a fact.'),
+      el('h3', {}, `Suggestions (${v.suggestions.length})`),
+      v.suggestions.length ? el('ul', { class: 'settings-links' }, ...v.suggestions.map((item) => suggestionItem(project, item)))
+        : el('p', { class: 'subtext' }, v.materials.readme ? 'No suggestions now. AIWorks reads the first paragraph of the README and what each plan delivers.'
+          : 'No suggestions now. AIWorks found no README in this project’s latest version to read, and no plan suggests one.'),
+      retired.length ? disclosure(`knowledge/${project}/retired`, `Set aside (${retired.length})`, el('ul', { class: 'settings-links' }, ...retired.map((fact) => factItem(project, fact)))) : null),
+    form)];
+}
+const rebuildKnowledge = () => { $('#content').replaceChildren(); render(); };
+/** The 5-second refresh leaves the screen as it is while the owner types in it; only its submit buttons follow the connection. */
+function refreshKnowledge(content, project) {
+  const screen = content.querySelector('[data-knowledge]');
+  if (!screen || screen.dataset.knowledge !== project || !screen.contains(document.activeElement) || !document.activeElement.matches('textarea, input')) return false;
+  for (const node of screen.querySelectorAll('button[type="submit"]')) node.disabled = knowledgeOff();
+  return true;
+}
+const knowledgeLink = (project) => el('p', { class: 'subtext' }, routeLink('Knowledge', { screen: 'knowledge', project }),
+  ': what AIWorks knows about this product, and where each fact came from.');
+
+/** One act on a fact. A retry reuses its request id, so the server saves it once; a refusal keeps what was typed. True when saved. */
+async function saveFact(project, body) {
+  knowledgeBusy = true; render();
+  const requestId = crypto.randomUUID(), address = knowledgeAddress(project);
+  let saved = false;
+  const attempt = async () => {
+    try {
+      const result = await post('/api/v2/projects/knowledge', { requestId, project, ...body });
+      const entry = knowledgeViews.get(project) ?? {};
+      Object.assign(entry, { view: result.view, error: null, readAt: Date.now() });
+      knowledgeViews.set(project, entry);
+      knowledgeEditing = null; saved = true;
+      notice(result.message, null, null, address);
+    } catch (error) {
+      notice(error.known ? error.message : 'Saving could not be confirmed. Retry: the same request is never saved twice.', error.known ? null : attempt, error.known ? error.detail : null, address);
+      if (['FACT_CHANGED', 'FACT_SUGGESTION_GONE'].includes(error.code)) void loadKnowledge(project);
+    }
+  };
+  try { await attempt(); } finally { knowledgeBusy = false; if (current.address === address) rebuildKnowledge(); await poll(); }
+  return saved;
+}
+
+/*
+ * Settings -> Usage (OWNER_UI_V2 WP8): what AIWorks used, by source and unit, read on its own when opened and at every
+ * refresh while shown. Each unit stands apart (dollars as reported, tokens per provider); a run that reported no cost is
+ * counted, never priced at $0; hosting and subscriptions are not tracked and say so, with no amount.
+ */
+const usageEntry = { view: null, error: null, loading: false, readAt: null };
+async function loadUsage() {
+  if (usageEntry.loading) return;
+  usageEntry.loading = true;
+  try {
+    const response = await fetch('/api/v2/settings/usage', { signal: AbortSignal.timeout(6000) });
+    const value = await response.json();
+    if (response.ok) Object.assign(usageEntry, { view: value, error: null, readAt: Date.now() });
+    else usageEntry.error = { status: response.status, message: value.error };
+  } catch { usageEntry.error = { status: 0, message: 'Usage could not be read just now. The page tries again.' }; }
+  finally {
+    usageEntry.loading = false;
+    if (current.route.screen === 'settings' && current.route.section === 'usage' && state && !document.querySelector('dialog[open]')) render();
+  }
+}
+/** What planning a goal costs: from this computer's earlier plans, or unavailable. Never $0 and never a price. */
+function planningText(p) {
+  if (!p) return 'Planning cost: not known right now.';
+  if (!p.available) return `Planning cost: unavailable. ${p.runs ? `${plural(p.runs, 'earlier plan')} on this computer reported no cost` : 'No goal has been planned on this computer yet'}, so AIWorks cannot estimate it. Planning a goal is one AI run; it starts only when you send a goal.`;
+  const range = p.lowUsd === p.highUsd ? `about ${usd(p.lowUsd)}` : `${usd(p.lowUsd)} to ${usd(p.highUsd)} (typically ${usd(p.medianUsd)})`;
+  return `Planning a goal has cost ${range} on this computer, from ${plural(p.reportedRuns, 'earlier plan')} that reported a cost${p.unknownRuns ? `; ${plural(p.unknownRuns, 'other')} reported none` : ''}. An estimate from history, not a price.`;
+}
+function usageScreen() {
+  if (!usageEntry.view && !usageEntry.loading && !usageEntry.error) void loadUsage();
+  const v = usageEntry.view;
+  if (!v) return [usageEntry.error ? empty('Not known right now', ` ${usageEntry.error.message}`) : empty('Reading usage…', '')];
+  if (!v.available) return [unavailable()];
+  const w = v.workers, c = v.coordinator;
+  const dollars = (amount, runs) => amount === null ? 'No run reported a dollar cost.' : `${usd(amount)} reported by ${plural(runs, 'run')}.`;
+  const unknown = (runs) => runs ? el('p', {}, `${plural(runs, 'run')} reported no cost: unknown, not $0.`) : null;
+  const stale = usageEntry.error || offline ? el('p', { class: 'needs-stale', role: 'status' }, `Shown as read at ${clock(usageEntry.readAt)}.`) : null;
+  return [
+    panel('AI worker runs', 'Every finished step’s runs, in all work on this computer. Running steps are counted when they finish.', el('div', { class: 'panel-body' }, stale,
+      el('p', {}, dollars(w.usd, w.usdRuns)), unknown(w.unknownRuns),
+      w.tokens.length ? el('ul', { class: 'settings-links' }, ...w.tokens.map((t) => el('li', {}, el('strong', {}, provider(t.executor)),
+        el('div', { class: 'subtext' }, `${plural(t.runs, 'run')} · ${tokenCount(t.input)} input and ${tokenCount(t.output)} output tokens`)))) : null)),
+    panel('AI coordinator', 'Planning goals and answering your messages.', el('div', { class: 'panel-body' },
+      el('p', {}, dollars(c.usd, c.reportedRuns)), unknown(c.unknownRuns), c.openRuns ? el('p', { class: 'subtext' }, `${plural(c.openRuns, 'run')} still running.`) : null,
+      el('p', {}, planningText(v.planning)))),
+    panel('Hosting and subscriptions', null, el('div', { class: 'panel-body' },
+      el('p', {}, 'Not tracked. AIWorks does not know what hosting or AI subscriptions cost you, so it shows no amount for them.'))),
+    el('p', { class: 'subtext' }, 'Dollars are as each AI worker reported them. Tokens and dollars are counted apart and never added together.')];
+}
+
 /** One project's screens. Campaign cards, step tables and costs are today's, limited to this project. */
 function projectScreen(route) {
   const project = route.project, all = projectCampaigns(project);
   // Now from the state copy module, for a project this computer knows (or while its state cannot be read).
   if (route.screen === 'project' && route.tab === 'now' && (offline || !state.supervisor.available || all.length ||
-    projectList().some((item) => sameProject(item.id, project)))) return [...nowScreen(project), settingsLink(project)];
+    projectList().some((item) => sameProject(item.id, project)))) return [...nowScreen(project), settingsLink(project), knowledgeLink(project)];
   // Project settings are read on their own, so they show whatever the supervisor's snapshot says (WP5).
   if (route.screen === 'project-settings') return projectSettingsScreen(project);
+  // Knowledge is read on its own too (WP8).
+  if (route.screen === 'knowledge') return knowledgeScreen(project);
   if (!state.supervisor.available) return [unavailable()];
   if (route.screen === 'start' && (all.length || projectList().some((item) => sameProject(item.id, project)))) {
     const plans = planRows(project);
@@ -3361,6 +3603,7 @@ function render() {
   else if (route.screen === 'settings' && route.section === 'connections') patch(content, connectionsScreen());
   else if (route.screen === 'settings' && route.section === 'alerts' && refreshAlerts(content)) { /* the form stays as the owner typed it */ }
   else if (route.screen === 'settings' && route.section === 'alerts') patch(content, alertsScreen());
+  else if (route.screen === 'settings' && route.section === 'usage') patch(content, usageScreen());
   else if (route.screen === 'settings' && route.section === 'messages') patch(content, [messagesPanel(20)]);
   else if (route.screen === 'settings' && route.section === 'accounts') patch(content, accountsScreen());
   else if (route.screen === 'settings' && route.section === 'version') patch(content, versionScreen());
@@ -3379,6 +3622,7 @@ function render() {
   else if (route.screen === 'worklist-import' && refreshImport(content)) { /* the choices stay as the owner left them */ }
   else if (route.screen === 'worklist-import') patch(content, importScreen());
   else if (route.screen === 'project-settings' && refreshProjectSettings(content, route.project)) { /* the form stays as the owner typed it */ }
+  else if (route.screen === 'knowledge' && refreshKnowledge(content, route.project)) { /* the words stay as the owner typed them */ }
   else if (route.project) patch(content, projectScreen(route));
   else patch(content, projectsScreen());
   // Focus stays where it was; only when its element was replaced does it move to the one that took its place.
@@ -3454,6 +3698,8 @@ async function poll() {
     if (current.route.screen === 'worklist-item') void loadItem(current.route.number);
     if (current.route.screen === 'project-settings') void loadProjectSettings(current.route.project);
     if (current.route.screen === 'settings' && current.route.section === 'alerts') void loadAlerts();
+    if (current.route.screen === 'knowledge') void loadKnowledge(current.route.project);
+    if (current.route.screen === 'settings' && current.route.section === 'usage') void loadUsage();
     checkCloseStale();
     if (!document.querySelector('dialog[open]')) render();
     $('#confirm-cancel').disabled = $('#send-instruction').disabled = $('#send-message').disabled = sending;
