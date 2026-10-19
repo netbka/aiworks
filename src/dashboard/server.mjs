@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
-import { supervisorSnapshot, applyCommand, postMessage, dashboardAccounts, removeDashboardAccount, configuredModelPreferences, saveDashboardModelPreferences } from './supervisor.mjs';
+import { supervisorSnapshot, applyCommand, applyScopedControl, postMessage, dashboardAccounts, removeDashboardAccount, configuredModelPreferences, saveDashboardModelPreferences } from './supervisor.mjs';
 import { Store } from '../supervisor/store.mjs';
 import { ownerView } from './owner.mjs';
 import { configuredMergeDelegation } from './merges.mjs';
@@ -14,6 +14,7 @@ import { checkConnectedProject, configuredRepositories, confirmProjectRules, con
 import { checkCaller } from '../supervisor/local-admission.mjs';
 import { safeText } from './roadmap.mjs';
 import { applyResult, approvePlan, requestPlanAndDo, undoApply, workView } from './work.mjs';
+import { connectionsView, EVENT_TYPES, homeView, markSeen, overviewView, readLastSeen, trustedMainView, typedEvents, withReadOnlyStore } from './views.mjs';
 
 const staticFiles = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
@@ -51,6 +52,34 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
   const machine = { name: safeText(host.name ?? hostname(), 64) || null, revision: /^[0-9a-f]{7,40}$/.test(host.revision ?? '') ? host.revision : null,
     ...(host.version !== undefined ? { version: safeText(host.version, 32) } : {}),
     ...(host.versionName !== undefined ? { versionName: safeText(host.versionName, 64) } : {}) };
+  // What /api/state and the /api/v2 views read: the supervisor snapshot, the merge check, Needs me, the work of
+  // projects without GitHub and Projects. Merge checks run while someone looks at the page; the answer never waits for them.
+  const readState = (now, since) => {
+    const supervisor = supervisorSnapshot(dataDir, now, { since });
+    if (merges) void merges.refresh();
+    const merged = merges?.snapshot() ?? { refreshing: false, repositories: [], steps: {} };
+    // The owner's merge delegation is read on every request, so a change to config.json shows without a restart.
+    // Add project is read on every request too; off, the Projects screen is exactly as before. Its records also let
+    // Needs me name a project held up by the owner's decisions (aiworks#11 review 5 G7).
+    const addProject = projectConnectionEnabled(dataDir), records = addProject ? connectedProjects(dataDir) : [];
+    const owner = ownerView(supervisor, merged, { host: machine.name, now, releases, delegation: configuredMergeDelegation(dataDir), connected: records });
+    // Plan and do and Review (UI14, UI17): requests and draft plans of connected projects, and the local work and
+    // checked results of projects without GitHub, allowlisted fields only.
+    const work = workView(dataDir);
+    // Projects: campaign repositories, the repositories config.json lists and connected projects, by name only (never a path).
+    const projects = projectsView(supervisor, owner, { repositories: configuredRepositories(dataDir), removed: removedProjects(dataDir),
+      ...(addProject ? { records, addProject, localWork: work.local } : {}) });
+    return { supervisor, merged, owner, work, projects };
+  };
+  // Home: what changed after the owner's last-seen marker, read from the journal; never worker text.
+  const home = (supervisor, owner, projects) => {
+    const lastSeen = readLastSeen(dataDir);
+    const events = withReadOnlyStore(dataDir, (store) => typedEvents(store, { after: lastSeen.seq, limit: 100 }), { events: [], next: null });
+    return homeView({ supervisor, owner, projects, events, lastSeen, newest: supervisor.newestEvent ?? 0 });
+  };
+  // Settings -> Connections, with the trusted main and its backup read locally (never fetched).
+  const connections = (supervisor, merged) => connectionsView({ supervisor, merges: merged,
+    trustedMain: withReadOnlyStore(dataDir, (store, config) => trustedMainView(store, config), null) });
   const server = createServer(async (req, res) => {
     const origin = `http://127.0.0.1:${server.address().port}`;
     const send = (status, body, type = 'application/json; charset=utf-8') => {
@@ -76,24 +105,40 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
           // `since`: the viewer's last visit (ms), for "since you last looked"; bounded to the last 30 days.
           const now = Date.now(), raw = Number(new URL(req.url, origin).searchParams.get('since'));
           const since = Number.isSafeInteger(raw) && raw > 0 ? Math.min(now, Math.max(raw, now - 30 * 86_400_000)) : undefined;
-          const supervisor = supervisorSnapshot(dataDir, now, { since });
-          // Merge checks run while someone looks at the page; the answer never waits for them.
-          if (merges) void merges.refresh();
-          const merged = merges?.snapshot() ?? { refreshing: false, repositories: [], steps: {} };
-          // The owner's merge delegation is read on every request, so a change to config.json shows without a restart.
-          // Add project is read on every request too; off, the Projects screen is exactly as before. Its records also let
-          // Needs me name a project held up by the owner's decisions (aiworks#11 review 5 G7).
-          const addProject = projectConnectionEnabled(dataDir), records = addProject ? connectedProjects(dataDir) : [];
-          const owner = ownerView(supervisor, merged, { host: machine.name, now, releases, delegation: configuredMergeDelegation(dataDir), connected: records });
-          // Plan and do and Review (UI14, UI17): requests and draft plans of connected projects, and the local work and
-          // checked results of projects without GitHub, allowlisted fields only.
-          const work = workView(dataDir);
+          const { supervisor, merged, owner, work, projects } = readState(now, since);
+          // Home, Settings -> Connections (OWNER_UI_V2 WP1): the same allowlisted views /api/v2 serves, in the one poll.
           return send(200, { observedAt: new Date(now).toISOString(), host: machine, supervisor, roadmap: roadmap.snapshot(),
-            merges: { refreshing: merged.refreshing, repositories: merged.repositories }, owner,
-            // Projects: campaign repositories, the repositories config.json lists and connected projects, by name only (never a path).
-            projects: projectsView(supervisor, owner, { repositories: configuredRepositories(dataDir), removed: removedProjects(dataDir),
-              ...(addProject ? { records, addProject, localWork: work.local } : {}) }),
-            work });
+            merges: { refreshing: merged.refreshing, repositories: merged.repositories }, owner, projects, work,
+            home: home(supervisor, owner, projects), connections: connections(supervisor, merged),
+            overviews: Object.fromEntries((projects.projects ?? []).map((row) => [row.id, overviewView(row.id, { supervisor, projects })])) });
+        }
+        // The view layer of the owner UI v2 (OWNER_UI_V2 section 8, WP1): one allowlisted view per screen, read-only.
+        if (path === '/api/v2/home') {
+          const { supervisor, owner, projects } = readState(Date.now());
+          return send(200, home(supervisor, owner, projects));
+        }
+        if (path === '/api/v2/settings') {
+          const { supervisor, merged } = readState(Date.now());
+          return send(200, connections(supervisor, merged));
+        }
+        if (path.startsWith('/api/v2/projects/')) {
+          let project = null;
+          try { project = decodeURIComponent(path.slice('/api/v2/projects/'.length)); } catch { /* refused below */ }
+          if (!/^(?:[\w.-]+\/[\w.-]+|[\w-]{1,64})$/.test(project ?? '')) return send(404, { error: 'Not found.' });
+          const { supervisor, projects } = readState(Date.now());
+          const view = overviewView(project, { supervisor, projects });
+          return view ? send(200, view) : send(404, { error: 'Not found.' });
+        }
+        if (path === '/api/v2/events') {
+          const query = new URL(req.url, origin).searchParams;
+          const number = (key) => query.has(key) ? Number(query.get(key)) : null;
+          const after = number('since') ?? 0, cursor = number('cursor'), project = query.get('project'), type = query.get('type');
+          if (!Number.isSafeInteger(after) || after < 0 || cursor !== null && (!Number.isSafeInteger(cursor) || cursor < 1) ||
+              project !== null && !/^(?:[\w.-]+\/[\w.-]+|[\w-]{1,64})$/.test(project) || type !== null && !EVENT_TYPES.includes(type)) {
+            return send(400, { error: 'Invalid event query.' });
+          }
+          const events = withReadOnlyStore(dataDir, (store) => typedEvents(store, { after, cursor, project, type }), null);
+          return events ? send(200, { ...events, lastSeen: readLastSeen(dataDir) }) : send(503, { error: 'The supervisor is busy or unavailable. Refresh before trying again.' });
         }
         // The connected projects with each one's own folder, the one path a response may carry (404 while Add project is off).
         if (path === '/api/projects') return send(200, listConnectedProjects(dataDir));
@@ -129,6 +174,17 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       try { value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))); }
       catch { return send(400, { error: 'Invalid JSON.' }); }
       if (path === '/api/commands') return send(202, applyCommand(dataDir, value, Date.now(), { provenanceRoot }));
+      // Pause and resume for all, a project or a goal (WP1): `action` comes from the address, never from the body.
+      if (path === '/api/v2/pause' || path === '/api/v2/resume') {
+        if (value && typeof value === 'object' && !Array.isArray(value) && Object.hasOwn(value, 'action')) return send(400, { error: 'Invalid dashboard command.' });
+        return send(202, applyScopedControl(dataDir, { ...value, action: path.slice('/api/v2/'.length) }, Date.now(), { provenanceRoot }));
+      }
+      // Mark the events up to a journal sequence as seen (the server-side last-seen marker, WP1).
+      if (path === '/api/v2/events/seen') {
+        const newest = withReadOnlyStore(dataDir, (store) => store.get('SELECT MAX(seq) AS seq FROM journal')?.seq ?? 0, null);
+        if (newest === null) return send(503, { error: 'AIWorks can’t read its work records on this computer right now.' });
+        return send(200, markSeen(dataDir, value, newest));
+      }
       if (path === '/api/messages') return send(202, postMessage(dataDir, value));
       // Plan and do (UI14, UI17): store a work request; Approve and start: register exactly the reviewed plan (work.mjs).
       // For a project without GitHub, Approve and start, Apply and Undo apply run the caller check on this request's

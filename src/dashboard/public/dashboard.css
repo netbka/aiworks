@@ -298,11 +298,11 @@ td,th{padding-left:18px;padding-right:18px}
 .filters>label:not(.search-label){flex:1}
 h1{font-size:25px}
 .campaign-banner{flex-direction:column;align-items:flex-start}
-/* Navigation becomes a labelled bottom bar: Projects, Needs me and Settings. Focus scrolls clear of it: the bar is 61px
+/* Navigation becomes a labelled bottom bar: Home, Projects, Needs me and Settings. Focus scrolls clear of it: the bar is 61px
    (a 52px destination, 4px padding above and below, a 1px border), plus room for the focus ring (aiworks#11 review F4). */
 html{scroll-padding-bottom:76px;scroll-padding-top:145px}
 .sidebar{inset:auto 0 0 0;width:auto;height:auto;flex-direction:row;padding:4px 4px calc(4px + env(safe-area-inset-bottom, 0px));border-right:0;border-top:1px solid var(--line)}
-nav{margin-top:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px;width:100%}
+nav{margin-top:0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:2px;width:100%}
 .nav-item{font-size:12px;flex-direction:column;justify-content:center;gap:3px;padding:6px 2px;min-height:52px;text-align:center;line-height:1.2;position:relative}
 .nav-item>span:first-child{font-size:18px;width:auto}
 /* Only the bar's own counts sit on their destination's corner. The Messages count stays inside the Messages link: placed
@@ -461,3 +461,14 @@ html{scrollbar-gutter:stable;scroll-padding-top:88px}
 .release-ladder .ladder-yes{color:var(--green)}
 .release-ladder .ladder-unknown{color:var(--warning)}
 .release-stop{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+/* Home and Overview (OWNER_UI_V2 WP1): typed events, the Built / Checked / Available to users strip and the pause controls. */
+.event-list,.since ul.event-list{list-style:none;margin:8px 0 0;padding:0;display:block;gap:0}
+.event-list>li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px;padding:8px 0;border-top:1px solid var(--line)}
+.event-list>li>.subtext{grid-column:1;overflow-wrap:anywhere}
+.event-list>li>time{grid-row:1;grid-column:2}
+.overview-strip{display:flex;flex-wrap:wrap;gap:8px 24px;margin:8px 0}
+.overview-strip>div{min-width:0}
+.overview-strip dt{font-size:12px;color:var(--muted)}
+.overview-strip dd{margin:0;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.pause-controls{margin-top:12px}
+.home-projects .task-name{font-weight:600}

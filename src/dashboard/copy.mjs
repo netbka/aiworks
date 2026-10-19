@@ -632,6 +632,11 @@ export const COMMANDS = {
   notFound: 'This work is not recorded on this computer any more. Refresh the page to see what is.',
   closed: 'This work is finished or cancelled, so it takes no more commands. Refresh the page to see where it stands.',
   notPaused: 'Only paused work can resume. Refresh the page to see where it stands.',
+  // Pause and resume for all, a project or a goal (OWNER_UI_V2 WP1).
+  nothingToPause: 'Nothing here is running, so there is nothing to pause. Refresh the page to see where it stands.',
+  nothingToResume: 'Nothing here was paused by this control, so there is nothing to resume. Work you paused another way keeps its own Resume.',
+  scoped: { pause: (n) => `Paused ${n === 1 ? '1 goal' : `${n} goals`}. No new step starts; steps already running finish and are recorded.`,
+    resume: (n) => `Resumed ${n === 1 ? '1 goal' : `${n} goals`} with the goals and limits you approved.` },
   stepChanged: 'This step changed or is already finished. Refresh the page and try again.',
   noNextRun: 'No AI worker runs this step again, so it cannot get guidance. Refresh the page to see where it stands.',
 };

@@ -10,7 +10,7 @@ import { roleUnavailableReason, runNotCounted } from '../supervisor/adapters/exe
 import { campaignLimits } from '../supervisor/campaign.mjs';
 import { parseReference } from '../supervisor/reading.mjs';
 import { coordinatorView, LANE as COORDINATOR_LANE, postOwnerMessage } from '../supervisor/coordinator.mjs';
-import { CODE_ROOT, revisionNotMerged } from '../supervisor/provenance.mjs';
+import { CODE_ROOT, revisionNotMerged, runtimeTrust } from '../supervisor/provenance.mjs';
 import { COMMANDS, stateCopy, stopReasonWords } from './copy.mjs';
 import { configuredRepositories, connectedProjects, projectConnectionEnabled } from './projects.mjs';
 import { openOnProfile, setRoleModelPreference, shallowHomesRoot, configuredAccounts } from '../supervisor/accounts.mjs';
@@ -18,6 +18,7 @@ export { shallowHomesRoot };
 import { removeShallowProfile } from '../supervisor/adapters/caam.mjs';
 import { FORWARD_STEPS, RELEASE_STOP } from '../supervisor/release/state.mjs';
 import { isLocalTarget } from '../supervisor/local-candidates.mjs';
+import { pauseSummary, projectOf, sameProject } from './views.mjs';
 
 const readConfig = (dataDir) => {
   try { return JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { return {}; }
@@ -28,6 +29,8 @@ export const INSTRUCTION_LOOKS_SENSITIVE = 'This text looks like it may contain 
 // `detail` is the machine's own reason, for the page's Details disclosure; `message` is what the owner reads.
 const fail = (status, message, detail = null) => Object.assign(new Error(message), { status, ...(detail ? { detail } : {}) });
 const identifier = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// A project as a pause scope names it: a GitHub repository or the lp- id of a project without GitHub, never a path.
+const PROJECT = /^(?:[\w.-]+\/[\w.-]+|lp-[a-z0-9][a-z0-9-]{0,38})$/;
 const githubLink = (value) => /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(?:issues|pull)\/\d+(?:#issuecomment-\d+)?$/.test(value ?? '') ? value : null;
 const code = (value) => /^[a-z][a-z0-9-]{0,60}$/i.test(value ?? '') ? value : null;
 function publicTaskWait(task, spec) {
@@ -554,6 +557,22 @@ function recentEvents(store, since, now) {
   return { since, published, failures };
 }
 
+/**
+ * Every goal's control (OWNER_UI_V2 WP1: pause for all, a project or a goal), projects without GitHub included: the
+ * versions a pause or resume binds, and for a paused goal who paused it (`pauseScope`: all, project or goal), when, and
+ * how many runs it started are still open, so the page says "stopping" until the last one ends and "stopped" after.
+ */
+function goalControls(store) {
+  return store.all("SELECT id FROM campaigns WHERE control IN ('registered', 'paused') ORDER BY created_at").map(({ id }) => {
+    const c = store.campaign(id), paused = c.control === 'paused'
+      ? store.get("SELECT at, detail FROM journal WHERE campaign_id = ? AND kind = 'paused' ORDER BY seq DESC LIMIT 1", id) : null;
+    const scope = paused?.detail?.scope;
+    return { id, project: projectOf(c.declaration), control: c.control, version: c.version, authorizationVersion: c.authorization_version,
+      scopeDigest: c.scope_digest, openRuns: store.openOperations(id).length, pausedAt: paused?.at ?? null,
+      pauseScope: !paused ? null : scope?.kind === 'all' ? { kind: 'all' } : scope?.kind === 'project' && PROJECT.test(scope.project ?? '') ? { kind: 'project', project: scope.project } : { kind: 'goal' } };
+  });
+}
+
 // The states of a release (release/state.mjs, AUTO_RELEASE.md 7.1). Anything else reads as unknown, never as done.
 const RELEASE_STATES = new Set(['eligible', 'locked', 'merging', 'merged', 'deploying', 'deployed', 'applying', 'applied', 'checking', 'accepted',
   'rolling-back', 'rolled-back', 'rollback-failed', 'unknown', 'refused']);
@@ -743,6 +762,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
       publicEvent(item, typeof item.detail?.op === 'string' ? store.get('SELECT * FROM operations WHERE id = ?', item.detail.op) : null));
     const recent = recentEvents(store, since, now);
     const releases = recordedReleases(store);
+    const goals = goalControls(store);
     // aiworks#18: a stopped supervisor, with its last lease renewal, for the owner view to lead with.
     const controller = supervisorLiveness(store, { now, leaseMs: readConfig(dataDir).leaseMs ?? DEFAULTS.leaseMs, stopRequested: existsSync(join(dataDir, 'STOP')) });
     store.db.exec('COMMIT');
@@ -762,7 +782,8 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
     const settings = computerSettings(campaigns, readConfig(dataDir), { now, repositories: configuredRepositories(dataDir),
       connected: projectConnectionEnabled(dataDir) ? connectedProjects(dataDir) : [],
       accounts: dashboardAccounts(store, readConfig(dataDir), { now, dataDir }), releaseStop: releaseStopState(dataDir) });
-    return { available: true, observedAt: new Date(now).toISOString(), controller, campaigns, costs: projectCosts(campaigns), activity, coordinator, recent, settings, releases };
+    return { available: true, observedAt: new Date(now).toISOString(), controller, campaigns, costs: projectCosts(campaigns), activity, coordinator, recent, settings, releases, goals,
+      newestEvent: store.get('SELECT MAX(seq) AS seq FROM journal')?.seq ?? 0 };
   } catch { return { available: false, message: "AIWorks can't read its work records right now. What you see may be out of date. Buttons are off until it can read them again.", campaigns: [], costs: [], activity: [] }; }
   finally { store?.close(); }
 }
@@ -837,6 +858,16 @@ export function postMessage(dataDir, input, now = Date.now()) {
   } finally { store.close(); }
 }
 
+/**
+ * AW-005 for a Resume (UI19, LOCAL_OPERATION.md section 4.3): the code this dashboard runs must be an ancestor of the
+ * trusted main, origin/main or, with config.json `selfHosting.trustedMain` "local", the trusted tip of the main ledger.
+ * Read-only: it never fetches. Throws the owner's refusal, with the machine's reason as its detail.
+ */
+function resumeAllowed(dataDir, store, provenanceRoot) {
+  const notMerged = revisionNotMerged({ root: provenanceRoot, trust: runtimeTrust(readConfig(dataDir), store) });
+  if (notMerged) throw fail(409, COMMANDS.resumeRefused, `Resume refused: ${notMerged}`);
+}
+
 // provenanceRoot: the checkout whose origin/main a Resume is checked against (AW-005). The dashboard's own entry point never
 // passes it, so it is always this dashboard's own checkout; only the tests point a server or a call at another repository.
 export function applyCommand(dataDir, input, now = Date.now(), { provenanceRoot = CODE_ROOT } = {}) {
@@ -862,10 +893,7 @@ export function applyCommand(dataDir, input, now = Date.now(), { provenanceRoot 
   try {
     // Private Resume uses the registered declaration; executable code must still be merged.
     const before = input.action === 'resume' ? store.campaign(input.campaignId) : null;
-    if (before?.control === 'paused') {
-      const notMerged = revisionNotMerged({ root: provenanceRoot });
-      if (notMerged) throw fail(409, COMMANDS.resumeRefused, `Resume refused: ${notMerged}`);
-    }
+    if (before?.control === 'paused') resumeAllowed(dataDir, store, provenanceRoot);
     return store.tx(() => {
       const id = input.campaignId;
       const c = store.campaign(id);
@@ -902,6 +930,74 @@ export function applyCommand(dataDir, input, now = Date.now(), { provenanceRoot 
       store.addEvent(id, 'dashboard-command', payload, dedup, now);
       store.journal(id, 'dashboard-command', { action: input.action, task: input.taskId ?? null, requestId: input.requestId }, now);
       return { accepted: true, duplicate: false, action: input.action };
+    });
+  } finally { store.close(); }
+}
+
+const PAUSE_SCOPES = ['all', 'project', 'goal'];
+const SCOPE_REASON = { all: 'Owner paused all work from the local dashboard', project: 'Owner paused this project from the local dashboard',
+  goal: 'Owner paused this goal from the local dashboard' };
+
+/**
+ * Pause or resume all work, one project's or one goal (OWNER_UI_V2 WP1), through the same version-bound control as a
+ * single goal's Pause and Resume. `input` is { requestId, action: 'pause' | 'resume', scope: 'all' | 'project' | 'goal',
+ * project?, campaignId?, goals: [{ campaignId, version, authorizationVersion, scopeDigest }] }. `goals` must be exactly
+ * the goals the scope covers now, each at the version the page showed: a pause binds every running goal of the scope; a
+ * resume only the goals that this very scope paused (for a goal: that goal), so it never resumes work paused for
+ * another reason. Anything else changed refuses the whole request with nothing written. Resume first passes the AW-005
+ * check against the trusted main. Runs already started finish and are recorded; nothing new is dispatched.
+ */
+export function applyScopedControl(dataDir, input, now = Date.now(), { provenanceRoot = CODE_ROOT } = {}) {
+  const goalKeys = ['campaignId', 'version', 'authorizationVersion', 'scopeDigest'];
+  const validGoal = (goal) => goal && typeof goal === 'object' && !Array.isArray(goal) && Object.keys(goal).every((key) => goalKeys.includes(key)) &&
+    identifier.test(goal.campaignId ?? '') && Number.isSafeInteger(goal.version) && goal.version >= 1 && Number.isSafeInteger(goal.authorizationVersion) &&
+    /^[a-f0-9]{64}$/.test(goal.scopeDigest ?? '');
+  if (!input || typeof input !== 'object' || Array.isArray(input) ||
+      Object.keys(input).some((key) => !['requestId', 'action', 'scope', 'project', 'campaignId', 'goals'].includes(key)) ||
+      !/^[0-9a-f-]{36}$/i.test(input.requestId ?? '') || !['pause', 'resume'].includes(input.action) || !PAUSE_SCOPES.includes(input.scope) ||
+      (input.scope === 'project') !== PROJECT.test(input.project ?? '') ||
+      (input.scope === 'goal') !== identifier.test(input.campaignId ?? '') ||
+      !Array.isArray(input.goals) || input.goals.length > 200 || !input.goals.every(validGoal) ||
+      new Set(input.goals.map((goal) => goal.campaignId)).size !== input.goals.length) {
+    throw fail(400, 'Invalid dashboard command.');
+  }
+  if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'AIWorks can’t read its work records on this computer right now.');
+  const scope = input.scope === 'all' ? { kind: 'all' } : input.scope === 'project' ? { kind: 'project', project: input.project } : { kind: 'goal' };
+  const store = new Store(join(dataDir, 'supervisor.db'));
+  try {
+    const payload = { action: input.action, scope, campaignId: input.campaignId ?? null,
+      goals: [...input.goals].sort((a, b) => a.campaignId.localeCompare(b.campaignId)).map((goal) => goalKeys.map((key) => goal[key])) };
+    const dedup = `dashboard:${input.requestId}`;
+    const replay = () => {
+      const previous = store.get('SELECT payload FROM events WHERE dedup_key = ?', dedup);
+      if (!previous) return null;
+      if (JSON.stringify(previous.payload) !== JSON.stringify(payload)) throw fail(409, 'That command identifier was already used for a different request.');
+      return { accepted: true, duplicate: true, action: input.action, scope: input.scope, goals: input.goals.length };
+    };
+    const earlier = replay();
+    if (earlier) return earlier;
+    // AW-005 before anything is written: a resume from code the trusted main does not contain changes nothing.
+    if (input.action === 'resume') resumeAllowed(dataDir, store, provenanceRoot);
+    return store.tx(() => {
+      const again = replay();
+      if (again) return again;
+      const goals = goalControls(store).filter((goal) => input.scope === 'goal' ? goal.id === input.campaignId
+        : input.scope === 'all' || sameProject(goal.project, input.project));
+      const summary = pauseSummary(goals, scope);
+      const expected = input.action === 'pause' ? summary.pause : summary.resume;
+      const bound = new Map(input.goals.map((goal) => [goal.campaignId, goal]));
+      if (!expected.length) throw fail(409, input.action === 'pause' ? COMMANDS.nothingToPause : COMMANDS.nothingToResume);
+      if (expected.length !== bound.size || expected.some((goal) => goalKeys.some((key) => bound.get(goal.campaignId)?.[key] !== goal[key]))) {
+        throw fail(409, 'Work changed since this view was loaded. Refresh and try again.');
+      }
+      for (const goal of expected) {
+        if (input.action === 'pause') campaignPause(store, goal.campaignId, SCOPE_REASON[scope.kind], now, { scope });
+        else campaignStart(store, store.campaign(goal.campaignId).declaration, now);
+      }
+      // One receipt for the request, kept with the first goal it covers, and an audit line on each goal.
+      store.addEvent(expected[0].campaignId, 'dashboard-command', payload, dedup, now);
+      for (const goal of expected) store.journal(goal.campaignId, 'dashboard-command', { action: input.action, scope: scope.kind, requestId: input.requestId }, now);
+      return { accepted: true, duplicate: false, action: input.action, scope: input.scope, goals: expected.length };
     });
   } finally { store.close(); }
 }
