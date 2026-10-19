@@ -163,6 +163,29 @@ test('an eligible pull request is merged once with a merge commit of the verifie
   assert.equal(r.journal(A, 'merged').length, 1);
 });
 
+test('cancelling a finished campaign stops its later merge and repair work without losing evidence or stopping another campaign', async (t) => {
+  const r = rig(t, { [A]: [task('A1', 501, 'a.txt')], [B]: [task('B1', 502, 'b.txt')] });
+  const heads = await publish(r, [A, B]);
+  await r.tick();
+  assert.equal(r.store.campaign(A).control, 'finished');
+  const declaration = r.store.campaign(A).declaration;
+  const outcome = r.store.task(A, 'A1');
+  const operations = r.store.all('SELECT * FROM operations WHERE campaign_id = ?', A);
+  campaignCancel(r.store, A, 'Repository moved; retain this campaign as historical evidence');
+  await r.tick();
+  assert.equal(r.store.campaign(A).control, 'cancelled');
+  r.start({ merges: ON, integrationRepair: { enabled: true } });
+  for (let i = 0; i < 2; i++) { r.advance(); await r.tick(); }
+  assert.deepEqual(r.store.campaign(A).declaration, declaration);
+  assert.deepEqual(r.store.task(A, 'A1'), outcome);
+  assert.deepEqual(r.store.all('SELECT * FROM operations WHERE campaign_id = ?', A), operations);
+  assert.equal(r.journal(A, 'merged').length, 0);
+  assert.equal(r.journal(A, 'integration-conflict').length, 0);
+  assert.equal(r.journal(A, 'merge-base-moved').length, 0);
+  assert.deepEqual(r.mergeCalls().map((call) => call.fields.sha), [heads[B]]);
+  assert.equal(r.pullReads(), 1, 'only the current campaign is polled');
+});
+
 test('a merge whose response was lost is settled by reading the pull request after a restart, never by a second merge', async (t) => {
   const r = rig(t);
   const { [A]: verified } = await publish(r);

@@ -649,9 +649,9 @@ function setControl(store, id, allowed, control, kind, detail, now) {
 export const campaignPause = (store, id, reason = null, now = Date.now()) =>
   setControl(store, id, ['registered'], 'paused', 'paused', { reason }, now);
 
-/** Stop new dispatch and terminate owned in-flight runs; the controller records the effects. */
+/** Stop dispatch and post-completion automation; retain finished outcomes and evidence. */
 export const campaignCancel = (store, id, reason = null, now = Date.now()) =>
-  setControl(store, id, ['registered', 'paused'], 'cancel-requested', 'cancel-requested', { reason }, now);
+  setControl(store, id, ['registered', 'paused', 'finished'], 'cancel-requested', 'cancel-requested', { reason }, now);
 
 /** Durable owner/recovery event: the controller re-evaluates blockers on its next tick. */
 export function campaignRecheck(store, id, { task = null, note = null } = {}, now = Date.now()) {
