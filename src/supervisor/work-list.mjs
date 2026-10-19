@@ -1,8 +1,10 @@
 // AIWorks local work list (docs/design/LOCAL_OPERATION.md section 5.1, slice SELF5): items and append-only comments in
-// the store, for AIWorks's own repository once local main is trusted. Built switched off: nothing calls the writers until
-// publication (SELF7) and the import (SELF10); the CLI `work-list` only reads. Only the owner route and the supervisor
-// write; a worker never does. Every text is bounded and refused when it looks like a credential.
+// the store, for AIWorks's own repository once local main is trusted. Publication (SELF7) writes reviews, reports and
+// notes of the self-hosted repository here; the import (SELF10) is still to come and the CLI `work-list` only reads. Only
+// the owner route and the supervisor write; a worker never does. Every text is bounded and refused when it looks like a
+// credential.
 import { containsSecret } from './coordinator.mjs';
+import { trustsLocalMain } from './self-hosting.mjs';
 
 export const KINDS = Object.freeze(['finding', 'decision', 'review', 'task', 'note']);
 export const STATES = Object.freeze(['open', 'closed']);
@@ -12,9 +14,13 @@ export const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_TITLE = 256;
 const MAX_LABELS = 50;
 const MAX_LABEL = 50;
-const MAX_KEY = 200;
+const MAX_KEY = 300;
 const MAX_AUTHOR = 100;
 const SHA = /^[0-9a-f]{40}$/;
+// A declaration of the self-hosted repository may name its owner authorization as a work item (section 5.2).
+export const WORK_REFERENCE = /^aiworks-work:([1-9]\d{0,8})$/;
+/** How publication names a work item in a task's result link and in the outbox target. */
+export const workLink = (number) => `aiworks-work:${number}`;
 // New items are numbered after the highest GitHub issue or pull request number seen at import.
 const FLOOR_KEY = 'work_list_number_floor';
 
@@ -134,4 +140,37 @@ export function items(store, { state = null } = {}) {
 /** The comments of one item, in the order they were recorded. */
 export function comments(store, number) {
   return present(store) ? store.all('SELECT * FROM work_item_comments WHERE item_number = ? ORDER BY seq', number) : [];
+}
+
+/**
+ * The newest `review` item the supervisor recorded for a campaign's task, optionally at exactly `verifiedSha`, or null.
+ * It is the stable identity of a published commit: a retry finds it instead of recording a second one.
+ */
+export function reviewItem(store, { campaignId, taskId, verifiedSha = null }) {
+  if (!present(store)) return null;
+  return decode(store.get(`SELECT * FROM work_items WHERE kind = 'review' AND author_kind = 'supervisor' AND campaign_id = ? AND task_id = ?
+    ${verifiedSha ? 'AND verified_sha = ?' : ''} ORDER BY number DESC LIMIT 1`, campaignId, taskId, ...(verifiedSha ? [verifiedSha] : [])));
+}
+
+/**
+ * The work item a declaration names as its owner authorization (`aiworks-work:<n>`), checked: null when the reference
+ * is another form. It admits only AIWorks's own repository with local main trusted, and only an open item the owner wrote
+ * (never the supervisor or the import) that is linked to this very campaign, so it cannot admit unrelated work.
+ * Refusals are WorkListError with a WORK_AUTHORIZATION_* or WORK_ITEM_NOT_FOUND code.
+ */
+export function workAuthorization(store, declaration, { selfHosting }) {
+  const number = Number(WORK_REFERENCE.exec(String(declaration?.authorization?.reference ?? ''))?.[1] ?? 0);
+  if (!number) return null;
+  const repository = declaration.target?.repository;
+  if (!trustsLocalMain(selfHosting, repository)) {
+    refuse('WORK_AUTHORIZATION_UNTRUSTED', `aiworks-work:${number} authorizes only AIWorks's own repository with local main trusted, not ${repository}`);
+  }
+  const found = item(store, number);
+  if (!found) refuse('WORK_ITEM_NOT_FOUND', `no work item #${number}`);
+  if (found.author_kind !== 'owner') refuse('WORK_AUTHORIZATION_NOT_OWNER', `work item #${number} was not written by the owner`);
+  if (found.state !== 'open') refuse('WORK_AUTHORIZATION_CLOSED', `work item #${number} is closed`);
+  if (found.campaign_id !== declaration.campaignId) {
+    refuse('WORK_AUTHORIZATION_UNRELATED', `work item #${number} authorizes ${found.campaign_id ? `campaign ${found.campaign_id}` : 'no campaign'}, not ${declaration.campaignId}`);
+  }
+  return found;
 }

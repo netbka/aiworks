@@ -62,7 +62,7 @@ const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--go
   trusted-main                          with config.json "selfHosting": { "trustedMain": "local" } (off by default), print the
                                         trusted tip of local main, then the number of unrecorded commits after it (read-only;
                                         never fetches). Refused while origin/main is the trusted main (TRUSTED_MAIN_NOT_LOCAL)
-  work-list [open|closed]               list the items of the local work list (read-only; nothing writes it yet)
+  work-list [open|closed]               list the items of the local work list (read-only)
   work-list <number>                    print one work item and its comments (read-only; WORK_ITEM_NOT_FOUND)
   account list                          list configured accounts and profile cooldown / usage metrics
   account add <provider> <name> [--token <tok>] [--api-key <key>]
