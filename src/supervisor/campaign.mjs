@@ -28,6 +28,10 @@ const contractSchemaErrors = (contract, root) => {
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+// AIWorks's own repository may name an owner-written work item as its authorization (LOCAL_OPERATION.md section
+// 5.2). This checks the form only: before every dispatch the controller admits it through work-list.mjs
+// workAuthorization (local main trusted, the owner's open item linked to this campaign).
+const WORK_REFERENCE = /^aiworks-work:[1-9]\d{0,8}$/;
 // A local plan names the owner's dashboard approval that admits it (WORK_ENVELOPE 8.4, decision D4).
 const LOCAL_REFERENCE = /^aiworks-local:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PERMISSION_MODES = ['auto', 'dontAsk', 'acceptEdits', 'plan']; // never bypassPermissions
@@ -121,7 +125,9 @@ export function validateDeclaration(declaration) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(a.grantedAt ?? '')) bad('authorization.grantedAt must be YYYY-MM-DD');
   if (local) {
     if (!LOCAL_REFERENCE.test(a.reference ?? '')) bad('authorization.reference of a local plan must be aiworks-local:<approval id>');
-  } else if (!/^https:\/\/github\.com\//.test(a.reference ?? '')) bad('authorization.reference must be a GitHub URL');
+  } else if (!/^https:\/\/github\.com\//.test(a.reference ?? '') && !WORK_REFERENCE.test(a.reference ?? '')) {
+    bad('authorization.reference must be a GitHub URL, or aiworks-work:<item number> for AIWorks itself');
+  }
   if (!text(a.text, 2000)) bad('authorization.text required (max 2000)');
   if (a.readSources !== undefined && (!Array.isArray(a.readSources) || a.readSources.length > 4 ||
       !a.readSources.every((s) => s && REPO.test(s.repository ?? '') && Array.isArray(s.paths) &&
