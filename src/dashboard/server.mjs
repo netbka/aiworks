@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
-import { supervisorSnapshot, applyCommand, applyScopedControl, postMessage, dashboardAccounts, removeDashboardAccount, configuredModelPreferences, saveDashboardModelPreferences } from './supervisor.mjs';
+import { supervisorSnapshot, applyCommand, applyDecision, applyScopedControl, postMessage, dashboardAccounts, removeDashboardAccount, configuredModelPreferences, saveDashboardModelPreferences } from './supervisor.mjs';
 import { Store } from '../supervisor/store.mjs';
 import { ownerView } from './owner.mjs';
 import { configuredMergeDelegation } from './merges.mjs';
@@ -16,6 +16,9 @@ import { safeText } from './roadmap.mjs';
 import { applyResult, approvePlan, requestPlanAndDo, undoApply, workView } from './work.mjs';
 import { closeImportedIssues, commentWorkItem, createWorkItem, setWorkItemState, workItemView, workListView } from './work-list.mjs';
 import { connectionsView, EVENT_TYPES, homeView, markSeen, overviewView, readLastSeen, trustedMainView, typedEvents, withReadOnlyStore } from './views.mjs';
+
+/** The request body limit of pause and resume (WP1): the largest valid scoped request, 200 goal bindings, fits. */
+export const SCOPED_CONTROL_BYTES = 65_536;
 
 const staticFiles = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
@@ -173,10 +176,14 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
         return send(403, { error: 'Refresh the dashboard before sending a command.' });
       }
       if (req.headers['content-type'] !== 'application/json') return send(415, { error: 'Commands require JSON.' });
+      // 16 KiB for every command, except pause and resume: they bind each goal of their scope, up to 200 goals of at
+      // most about 240 bytes each, so their limit fits the largest valid selection instead of refusing it unread.
+      const limit = path === '/api/v2/pause' || path === '/api/v2/resume' ? SCOPED_CONTROL_BYTES : 16_384;
+      if (Number(req.headers['content-length']) > limit) return send(413, { error: 'Command is too large.' });
       const chunks = []; let size = 0;
       for await (const chunk of req) {
         size += chunk.length;
-        if (size > 16_384) return send(413, { error: 'Command is too large.' });
+        if (size > limit) return send(413, { error: 'Command is too large.' });
         chunks.push(chunk);
       }
       let value;
@@ -187,6 +194,10 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       if (path === '/api/v2/pause' || path === '/api/v2/resume') {
         if (value && typeof value === 'object' && !Array.isArray(value) && Object.hasOwn(value, 'action')) return send(400, { error: 'Invalid dashboard command.' });
         return send(202, applyScopedControl(dataDir, { ...value, action: path.slice('/api/v2/'.length) }, Date.now(), { provenanceRoot }));
+      }
+      // A structured decision (WP2): answer, snooze or "this did not need me", bound to one decision; the action is the address.
+      if (/^\/api\/v2\/decisions\/(?:answer|snooze|not-needed)$/.test(path)) {
+        return send(202, applyDecision(dataDir, path.slice('/api/v2/decisions/'.length), value, Date.now()));
       }
       // Mark the events up to a journal sequence as seen (the server-side last-seen marker, WP1).
       if (path === '/api/v2/events/seen') {

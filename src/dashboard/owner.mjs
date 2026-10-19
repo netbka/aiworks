@@ -446,9 +446,14 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
         points: [{ link: { label: 'Tracking issue', url: c.trackingUrl }, text: `${words.reason}. What to do: ${words.action}.` }] });
     }
     for (const task of cancelled ? [] : c.tasks.filter((item) => item.blocked && item.state !== 'done')) {
-      items.push({ ...base, kind: task.blocked === 'B3' ? 'decision' : 'stopped', action: task.blocked === 'B3' ? 'Decision needed' : 'Stopped; will not retry by itself',
+      // A decision (WP2) opens its step, where it is answered, snoozed or marked as not needing the owner.
+      const decision = task.decision, project = (supervisor.goals ?? []).find((goal) => goal.id === c.id)?.project ?? c.repository;
+      items.push({ ...base, kind: task.blocked === 'B3' || decision ? 'decision' : 'stopped', action: task.blocked === 'B3' || decision ? 'Decision needed' : 'Stopped; will not retry by itself',
         text: label(task), link: { label: NEEDS.stepIssue, url: task.issueUrl },
-        points: [{ link: null, text: `${task.blockedReason.charAt(0).toUpperCase()}${task.blockedReason.slice(1)}.` }] });
+        ...(decision && project ? { route: { label: 'Answer', address: { screen: 'step', project, work: c.id, step: task.id } } } : {}),
+        ...(decision?.snoozedUntil ? { snoozedUntil: decision.snoozedUntil } : {}),
+        points: [{ link: null, text: `${task.blockedReason.charAt(0).toUpperCase()}${task.blockedReason.slice(1)}.` },
+          ...(decision?.snoozedUntil ? [{ link: null, text: NEEDS.snoozed(decision.snoozedUntil) }] : [])] });
     }
     // A pause by itself is not for the owner: the campaign card shows it in a neutral state, with the reason given (the
     // store does not record who paused, so nothing is inferred from the reason text). A paused campaign still needs a
@@ -503,6 +508,8 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
   const answered = (coordinator?.messages ?? []).filter((m) => m.state === 'answered' && (m.replyBody || m.replyUrl)).sort((a, b) => b.answeredAt - a.answeredAt)[0];
   // Calm only about what blocks on the owner; reports and releases are said apart, never as "nothing". Items that say
   // they are not owner actions (a supervisor fault, an unreadable inbox) are listed but not counted (review F17).
+  // A snoozed decision still holds its step, so it stays listed and counted, after everything else.
+  items.sort((a, b) => Boolean(a.snoozedUntil) - Boolean(b.snoozedUntil));
   const count = items.filter((item) => !item.system).length;
   // No work is blocked, but a project waiting for the owner's decisions is named, never hidden behind an all-clear.
   const held = heldProjects(connected);
