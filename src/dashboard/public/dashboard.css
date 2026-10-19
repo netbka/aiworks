@@ -472,3 +472,7 @@ html{scrollbar-gutter:stable;scroll-padding-top:88px}
 .overview-strip dd{margin:0;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .pause-controls{margin-top:12px}
 .home-projects .task-name{font-weight:600}
+/* The local work list (UI20): user text keeps its lines and wraps at 320px; checkboxes and controls stay 44px tall. */
+.work-text{white-space:pre-wrap;overflow-wrap:anywhere}.work-comments{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:12px}
+.work-comment{border-top:1px solid var(--line);padding-top:10px}.worklist-row .needs-text a{overflow-wrap:anywhere}
+.local-review{margin:0 0 12px}#close-imported-dialog input[type=text]{min-height:44px}.start-form .choice .work-text{min-width:0}

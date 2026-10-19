@@ -146,6 +146,8 @@ const SITES = [
   ['G2', 'src/supervisor/work-list-import.mjs', 212, "pointer = pages(gh, `issue #${number} comments`,"],
   ['G2', 'src/supervisor/work-list-import.mjs', 235, "const url = postComment({ gh, repository: repo, "],
   ['G2', 'src/supervisor/work-list-import.mjs', 239, "closeIssue({ gh, repository: repo, issue: number"],
+  ['G2', 'src/dashboard/work-list.mjs', 220, "export async function closeImportedIssues(dataDi"],
+  ['G2', 'src/dashboard/work-list.mjs', 239, "report = await closeConfirmedIssues({ store, gh:"],
   ['G32', 'scripts/supervisor/deploy.ps1', 19, "& git -C $Root fetch -q origin"],
 ];
 
@@ -192,12 +194,14 @@ const NOT_CALLS = [
  * cli.mjs:235 and work-list-import.mjs (added by SELF10) are the one-time issue import, REST GET only through G2's rest().
  * github.mjs closeIssue and work-list-import.mjs closeConfirmedIssues (added by SELF11, switched off) close the imported
  * issues the owner confirmed: one marked comment and one state PATCH each, through G2's rest().
+ * dashboard work-list.mjs closeImportedIssues (added by UI20, switched off with SELF11) is the owner route that calls it.
  */
 const NOT_IN_DESIGN = ['src/supervisor/project-connect.mjs:171', 'src/supervisor/controller.mjs:2353',
   'scripts/supervisor/worker-reading-cost.mjs:31', 'scripts/supervisor/worker-reading-cost.mjs:37',
   'src/dashboard/server.mjs:39', 'src/dashboard/work.mjs:198', 'src/supervisor/cli.mjs:235',
   ...[24, 28, 45, 49, 51, 86, 190, 206, 212, 235, 239].map((line) => `src/supervisor/work-list-import.mjs:${line}`),
-  'src/supervisor/adapters/github.mjs:164', 'src/supervisor/adapters/github.mjs:165'];
+  'src/supervisor/adapters/github.mjs:164', 'src/supervisor/adapters/github.mjs:165',
+  'src/dashboard/work-list.mjs:220', 'src/dashboard/work-list.mjs:239'];
 
 /** The rules one line matches. */
 const rulesOf = (text) => RULES.filter(([, pattern]) => pattern.test(text)).map(([rule]) => rule);
