@@ -132,17 +132,18 @@ const routeLink = (text, route, cls = '') => el('a', { href: typeof route === 's
 // A connected project without GitHub is addressed by its project id and named by its own name.
 const projectName = (project) => state?.projects?.projects?.find((item) => !item.repository && item.id === project)?.name ?? (shortRepo(project) || project);
 // Each screen's heading and the one question it answers (OWNER_WORKSPACE §3.1).
-const screenText = { projects: ['Projects', 'Which project should I open?'], needs: ['Needs me', 'What is waiting for me, across projects?'],
+const screenText = { home: ['Home', 'What changed, and what needs me?'], projects: ['Projects', 'Which project should I open?'], needs: ['Needs me', 'What is waiting for me, across projects?'],
   settings: ['Settings', 'What can AIWorks use on this computer?'], accounts: ['Worker accounts', 'Which AI worker logins and accounts are on this computer?'],
   version: ['Version and roadmap', 'Which capabilities are turned on in this version?'],
   instructions: ['Model instructions', 'Which AI models should handle what kind of work?'],
   messages: ['Messages', 'What did I ask AIWorks, and what did it answer?'],
-  diagnostics: ['Diagnostics', 'What exactly did the machine record?'], now: ['Now', 'Where are we now?'],
+  diagnostics: ['Diagnostics', 'What exactly did the machine record?'], now: ['Overview', 'Where is the current goal?'],
+  connections: ['Connections', 'What does AIWorks use on this computer, and can it reach it?'],
   work: ['Work', 'What is running or waiting, and why?'], results: ['Results', 'What has been delivered, and what remains?'],
   cost: ['Cost', 'What did this cost?'], step: ['Step', 'What is happening on this step?'], start: ['Plan work', 'Describe the result. AIWorks proposes the steps.'],
   review: ['Review', 'Is this the right goal and limits?'], 'add-project': ['Add project', 'Which folder should AIWorks work on?'] };
 const screenKey = (route) => route.screen === 'settings' ? route.section ?? 'settings' : route.screen === 'project' ? route.tab : route.screen;
-const tabLabels = { now: 'Now', work: 'Work', results: 'Results', cost: 'Cost' };
+const tabLabels = { now: 'Overview', work: 'Work', results: 'Results', cost: 'Cost' };
 
 /** The frame for the current address: heading, page title, aria-current in the global bar and the project tabs. */
 function showRoute() {
@@ -880,7 +881,7 @@ function localNowScreen(row) {
     el('p', { role: 'status', 'aria-live': 'polite' }, ...line),
     waiting ? routeLink('See results', { screen: 'project', project: row.id, tab: 'results' }, 'button')
       : routeLink('Open Work', { screen: 'project', project: row.id, tab: 'work' }, 'button secondary'), plan)) : null;
-  return [head, connectionPanel(row), line ? null : plan].filter(Boolean);
+  return [head, overviewPanel(row.id), connectionPanel(row), line ? null : plan].filter(Boolean);
 }
 
 /** Apply or Undo apply, pressed by the owner. A retry reuses the request id, so the folder is never written twice. */
@@ -1806,6 +1807,165 @@ function modelInstructionsScreen() {
  * Settings (OWNER_WORKSPACE §4.3, slice S8): this computer, its AI workers once, each project's kind and connection, and
  * release mode as text. No primary action: Settings only shows what the machine has. Messages and Diagnostics are linked.
  */
+// ---------------------------------------------------------------------------------------------------------------------
+// Home, a project's Overview and Settings -> Connections (OWNER_UI_V2 WP1, UI19): built from the allowlisted views the
+// server sends (views.mjs). Typed events carry no text of their own, so every word here is the page's.
+
+const EVENT_WORDS = { 'goal-started': 'Work started', paused: 'Paused', resumed: 'Resumed', cancelled: 'Cancel requested',
+  'result-ready': 'Result ready for your review', merged: 'Merged', built: 'Builder finished a run', checked: 'Passed the independent check',
+  'check-rejected': 'The independent checker asked for changes', 'run-failed': 'An AI worker run did not finish; AIWorks retries by itself',
+  'limit-wait': 'Waiting for an AI worker limit', 'wait-ended': 'An AI worker can take work again', 'needs-you': 'Needs me',
+  'decision-cleared': 'A question for you was cleared', 'aiworks-problem': 'AIWorks had a problem of its own' };
+// The order of the one-line summary: what the owner acts on first.
+const EVENT_ORDER = ['needs-you', 'result-ready', 'merged', 'checked', 'check-rejected', 'paused', 'resumed', 'goal-started', 'cancelled',
+  'limit-wait', 'wait-ended', 'run-failed', 'aiworks-problem', 'built', 'decision-cleared'];
+const SUMMARY_WORDS = { 'needs-you': 'new for you', 'result-ready': 'ready for review', merged: 'merged', checked: 'passed the check',
+  'check-rejected': 'sent back by the checker', paused: 'paused', resumed: 'resumed', 'goal-started': 'started', cancelled: 'cancelled',
+  'limit-wait': 'limit waits', 'wait-ended': 'waits ended', 'run-failed': 'runs retried', 'aiworks-problem': 'AIWorks problems', built: 'builder runs',
+  'decision-cleared': 'questions cleared' };
+
+let scopedBusy = null, seenBusy = false;
+const goalName = (id) => { const c = campaignById(id); return c ? campaignTitle(c, { inProject: true }) : id; };
+
+/** Pause or resume all, a project or a goal: exactly the goals the view showed, at their versions (views.mjs pauseSummary). */
+async function scopedControl(action, scope, goals, extra = {}) {
+  const from = current.address, key = `${action}:${scope}:${extra.project ?? extra.campaignId ?? ''}`;
+  scopedBusy = key; sending = true; render();
+  try {
+    const result = await post(`/api/v2/${action}`, { requestId: crypto.randomUUID(), scope, ...extra, goals });
+    notice(result.duplicate ? COMMANDS.duplicate : COMMANDS.scoped[action](result.goals), null, null, from);
+  } catch (error) {
+    notice(error.known ? error.message : COMMANDS.unconfirmed, error.known ? null : () => scopedControl(action, scope, goals, extra), error.known ? error.detail : null, from);
+  } finally { scopedBusy = null; sending = false; await poll(); }
+}
+
+/** Pause and Resume of one scope, with how many goals run, are stopping (a run still finishing) or are stopped. */
+function pauseControls(summary, scope, extra = {}, { label }) {
+  if (!summary) return null;
+  const busy = scopedBusy === `pause:${scope}:${extra.project ?? extra.campaignId ?? ''}` || scopedBusy === `resume:${scope}:${extra.project ?? extra.campaignId ?? ''}`;
+  const facts = [summary.running ? `${plural(summary.running, 'goal')} running` : null,
+    summary.stopping ? `${summary.stopping} stopping: a step already running finishes and is recorded` : null,
+    summary.stopped ? `${plural(summary.stopped, 'goal')} paused and stopped` : null].filter(Boolean);
+  return el('div', { class: 'pause-controls', 'data-focus-scope': `pause/${scope}/${extra.project ?? extra.campaignId ?? ''}` },
+    el('p', { class: 'subtext' }, facts.length ? `${facts.join(' · ')}.` : 'Nothing is running or paused here.',
+      summary.otherPaused ? ` Of the paused, ${summary.otherPaused} ${summary.otherPaused === 1 ? 'was' : 'were'} paused another way and ${summary.otherPaused === 1 ? 'keeps its' : 'keep their'} own Resume.` : ''),
+    el('div', { class: 'campaign-controls' },
+      summary.pause.length ? button(busy ? 'Pausing…' : `Pause ${label}`, () => scopedControl('pause', scope, summary.pause, extra), 'secondary small', commandsOff()) : null,
+      summary.resume.length ? button(busy ? 'Resuming…' : `Resume ${label}`, () => scopedControl('resume', scope, summary.resume, extra), 'small', commandsOff()) : null));
+}
+
+const eventProject = (event) => event.project ? projectName(event.project) : null;
+function eventList(events) {
+  return el('ul', { class: 'event-list' }, ...events.map((event) => el('li', { 'data-type': event.type },
+    el('span', {}, EVENT_WORDS[event.type] ?? 'Recorded'),
+    el('span', { class: 'subtext' }, [eventProject(event), event.campaignId ? goalName(event.campaignId) : null, event.taskId ? `step ${event.taskId}` : null].filter(Boolean).join(' · ')),
+    el('time', { class: 'timeline-time', datetime: new Date(event.at).toISOString(), title: dateTime(event.at) }, timeAgo(event.at)))));
+}
+
+async function markSeen() {
+  const newest = state.home?.newest;
+  if (!Number.isSafeInteger(newest)) return;
+  seenBusy = true; render();
+  try { await post('/api/v2/events/seen', { seq: newest, requestId: crypto.randomUUID() }); }
+  catch (error) { notice(error.known ? error.message : 'Marking as seen could not be confirmed. Try again.', error.known ? null : markSeen); }
+  finally { seenBusy = false; await poll(); }
+}
+
+/** Home: one line since the last visit (the server-side marker), the decision first, each project in one sentence, all work's pause. */
+function homeScreen() {
+  const home = state.home;
+  if (!state.supervisor.available || !home?.available) return [unavailable()];
+  const { since, lastSeen } = home;
+  const counts = EVENT_ORDER.filter((type) => since.counts[type]).map((type) => `${since.counts[type]} ${SUMMARY_WORDS[type]}`);
+  const when = lastSeen.at ? `Since your last visit (${dateTime(lastSeen.at)})` : 'Everything AIWorks recorded so far';
+  const changed = el('section', { class: 'since', 'aria-labelledby': 'home-since-title', 'data-focus-scope': 'home/since' },
+    el('h2', { id: 'home-since-title' }, when),
+    el('p', { role: 'status', 'aria-live': 'polite' }, counts.length ? `${counts.join(' · ')}${since.more ? ', and more' : ''}.` : 'Nothing changed.'),
+    since.events.length ? disclosure('home/events', `What changed (${since.more ? `latest ${since.events.length}` : since.events.length})`, eventList(since.events)) : null,
+    since.count ? button(seenBusy ? 'Marking…' : 'Mark as seen', markSeen, 'secondary small', seenBusy || offline) : null);
+  const first = state.owner?.items?.[0];
+  const decision = panel('Needs me', home.needsYou.count ? 'The first decision; the rest are in Needs me.' : null, el('div', { class: 'panel-body', 'data-focus-scope': 'home/needs' },
+    home.needsYou.count && first ? el('ul', { class: 'needs-list' }, needsItem(first)) : el('p', {}, 'Nothing needs you right now.'),
+    home.needsYou.count > 1 ? routeLink(`All ${home.needsYou.count} in Needs me`, '#/needs', 'button secondary small') : null));
+  const projects = home.projects.length
+    ? el('ul', { class: 'settings-links home-projects' }, ...home.projects.map((project) => el('li', { 'data-focus-scope': `home/project/${project.id}`, 'data-state': project.state.key },
+      routeLink(project.name, { screen: 'project', project: project.id, tab: 'now' }, 'task-name'), el('div', { class: 'subtext' }, project.state.text ?? 'Not known right now.'))))
+    : empty('No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository.');
+  return [changed, decision,
+    panel('Projects', 'Each project in one sentence.', el('div', { class: 'panel-body' }, projects)),
+    panel('All work', 'Pause stops new steps everywhere; steps already running finish and are recorded. Resume all resumes only what Pause all paused.',
+      el('div', { class: 'panel-body' }, pauseControls(home.pause, 'all', {}, { label: 'all work' })))];
+}
+
+const AVAILABLE_WORDS = { 'not-published': 'Not published: release is off', unknown: 'Not known', recorded: 'Recorded' };
+/** One goal on Overview: its state with stopping or stopped, Built, Checked and Available to users apart, its budget and pause. */
+function overviewGoal(goal) {
+  const { pause, strip, budget } = goal;
+  const where = pause ? pause.state === 'stopping' ? `Paused, stopping: ${plural(pause.openRuns, 'run')} still finishing` : 'Paused and stopped' : 'Running';
+  const busy = scopedBusy?.endsWith(`:goal:${goal.id}`);
+  return el('li', { 'data-focus-scope': `overview/${goal.id}`, 'data-state': pause?.state ?? 'running' },
+    el('strong', {}, goal.purpose ?? goalName(goal.id)), el('div', { class: 'subtext' }, where),
+    strip ? el('dl', { class: 'overview-strip' },
+      el('div', {}, el('dt', {}, 'Built'), el('dd', {}, `${strip.built} of ${strip.steps}`)),
+      el('div', {}, el('dt', {}, 'Checked'), el('dd', {}, `${strip.checked} of ${strip.steps}`)),
+      el('div', {}, el('dt', {}, 'Available to users'), el('dd', {}, strip.available.state === 'recorded' ? `${strip.available.live} live` : AVAILABLE_WORDS[strip.available.state] ?? 'Not known'))) : null,
+    budget ? el('div', { class: 'subtext' }, [budget.maxWorkerRuns ? `${budget.runsUsed ?? 0} of ${budget.maxWorkerRuns} AI worker runs used` : null,
+      budget.reportedUsd !== null ? `${usd(budget.reportedUsd)} reported` : 'cost not reported', budget.unreportedRuns ? `${plural(budget.unreportedRuns, 'run')} without a reported cost` : null].filter(Boolean).join(' · ')) : null,
+    goal.next ? el('div', { class: 'subtext' }, `Next: ${clockTimes(goal.next)}`) : null,
+    el('div', { class: 'campaign-controls' }, goal.control === 'registered'
+      ? button(busy ? 'Pausing…' : 'Pause goal', () => scopedControl('pause', 'goal', [goal.binding], { campaignId: goal.id }), 'secondary small', commandsOff())
+      : button(busy ? 'Resuming…' : 'Resume goal', () => scopedControl('resume', 'goal', [goal.binding], { campaignId: goal.id }), 'small', commandsOff())));
+}
+
+/** Overview: each goal of the project with its strip and pause, and the project's own Pause and Resume. */
+function overviewPanel(project) {
+  const view = state.overviews?.[project] ?? Object.values(state.overviews ?? {}).find((item) => sameProject(item?.project?.id, project));
+  if (!view?.available || !view.goals.length) return null;
+  return panel('Goals', 'Built, checked and available to users, each counted apart.', el('div', { class: 'panel-body', 'data-focus-scope': `overview/${project}` },
+    el('ul', { class: 'settings-links overview-goals' }, ...view.goals.map(overviewGoal)),
+    pauseControls(view.pause, 'project', { project: view.project.id }, { label: 'project' })));
+}
+
+const SUPERVISOR_WORDS = { running: 'Running', stopped: 'Stopped', restarting: 'Restarting', 'not-started': 'Not started', idle: 'Idle: nothing needs it right now' };
+const ACCOUNT_WORDS = { ready: 'Ready', 'in-use': 'Working', unavailable: 'Not available' };
+const TRUST_WORDS = { TRUSTED: 'Trusted', MAIN_REWRITTEN: 'Local main was rewound or rewritten: no new work starts until it is fixed',
+  NO_ANCHOR: 'Not known: local trust has no starting point recorded yet', UNREADABLE: 'Not known: local main cannot be read on this computer' };
+const BACKUP_WORDS = { off: 'Off', none: 'On, not tried yet', pushing: 'Sending now', pushed: 'Sent', refused: 'Refused by the backup', failed: 'Could not reach the backup' };
+
+function trustedMainLines(trusted) {
+  if (!trusted) return [el('p', {}, 'Not known right now: AIWorks could not read its records.')];
+  if (trusted.mode === 'origin') return [el('p', {}, 'Trusted main: GitHub’s main of each project. AIWorks’s own code runs only when GitHub’s main contains it.'),
+    trusted.problem ? el('p', { class: 'subtext' }, 'The self-hosting setting is not valid, so GitHub’s main stays trusted.') : null];
+  const backup = trusted.backup;
+  return [el('p', {}, `Trusted main of ${trusted.repository}: local main on this computer. ${TRUST_WORDS[trusted.state] ?? 'Not known'}${trusted.tip ? ` at ${trusted.tip.slice(0, 7)}` : ''}.`),
+    Number.isSafeInteger(trusted.unrecordedCount) && trusted.unrecordedCount > 0
+      ? el('p', { class: 'subtext' }, `Main has ${plural(trusted.unrecordedCount, 'commit')} AIWorks did not put there; ${trusted.unrecordedCount === 1 ? 'it is' : 'they are'} not trusted.`) : null,
+    el('p', { class: 'subtext' }, `Backup to ${backup.remote} ${backup.branch}: ${BACKUP_WORDS[backup.state] ?? 'Not known'}${backup.at ? ` (${clock(backup.at)})` : ''}${
+      backup.enabled && backup.state === 'pushed' ? backup.current ? '; it has the trusted tip' : '; it is behind the trusted tip' : ''}${
+      backup.nextAttemptAfter && ['refused', 'failed', 'pushing'].includes(backup.state) ? `; next try after ${clock(backup.nextAttemptAfter)}` : ''}. Nothing waits for the backup.`)];
+}
+
+/** Settings -> Connections: AIWorks itself, each AI worker account, each project's merge check and the trusted main. */
+function connectionsScreen() {
+  const view = state.connections;
+  if (!state.supervisor.available || !view?.available) return [unavailable()];
+  const merges = view.merges.length ? el('ul', { class: 'settings-links' }, ...view.merges.map((repo) => el('li', { 'data-focus-scope': `connections/merge/${repo.repository}` },
+    el('strong', {}, repo.repository), el('div', { class: 'subtext' }, !repo.configured ? 'No checkout on this computer: merges are not seen here.'
+      : repo.local ? `Read from local main on this computer${repo.checkedAt ? ` at ${clock(repo.checkedAt)}` : ''}; never fetched.`
+        : `${repo.checkedAt ? `Merge check from GitHub’s main at ${clock(repo.checkedAt)}` : 'Not checked yet'}${repo.error ? '; the last check failed and is retried' : ''}.`))))
+    : el('p', { class: 'subtext' }, 'No published result to check yet.');
+  return [
+    panel('AIWorks on this computer', null, el('div', { class: 'panel-body' },
+      el('p', {}, `${SUPERVISOR_WORDS[view.supervisor.state] ?? 'Not known'}${view.supervisor.stopRequested ? '; a stop was requested (an upgrade or an operator stop)' : ''}.`))),
+    panel('AI worker accounts', 'Whether each can take work now. Limits are what the AI worker reported, not a measured balance.', el('div', { class: 'panel-body' },
+      view.accounts.length ? el('ul', { class: 'settings-links' }, ...view.accounts.map((account) => el('li', { 'data-focus-scope': `connections/account/${account.kind}/${account.name}` },
+        el('strong', {}, `${provider(account.kind)} · ${account.name}`),
+        el('div', { class: 'subtext' }, `${ACCOUNT_WORDS[account.state] ?? 'Waiting for a limit'}${account.retryAt ? ` until ${clock(account.retryAt)}` : ''}${account.limit ? ` · ${account.open} of ${account.limit} runs at once` : ''}`))))
+        : el('p', {}, 'No AI worker account is set up on this computer.'))),
+    panel('Merge checks', 'Where each project’s merges are seen from. The dashboard never calls GitHub’s API.', el('div', { class: 'panel-body' }, merges)),
+    panel('Trusted main and backup', 'The version AIWorks’s own code must be part of before it starts or resumes work.', el('div', { class: 'panel-body' }, ...trustedMainLines(view.trustedMain).filter(Boolean)))];
+}
+
 function settingsScreen() {
   const host = state.host ?? {};
   const ver = host.version ?? DASHBOARD_VERSION;
@@ -1855,6 +2015,7 @@ const settingsEmpty = ({ title, text, primary }) => el('div', { class: 'empty-st
 
 function settingsLinks() {
   return panel('More', null, el('ul', { class: 'settings-links' },
+    el('li', {}, routeLink('Connections', '#/settings/connections'), el('div', { class: 'subtext' }, 'AIWorks itself, each AI worker account, where merges are seen from, and the trusted main with its backup.')),
     el('li', {}, routeLink('Worker accounts', '#/settings/accounts'), el('div', { class: 'subtext' }, 'Each AI worker login on this computer, and whether it can take work now.')),
     el('li', {}, routeLink('Worker accounts', '#/settings/accounts'), el('div', { class: 'subtext' }, 'Connect and manage isolated worker logins, view live quota usage, and export encrypted bundles.')),
     el('li', {}, routeLink('Model instructions', '#/settings/instructions'), el('div', { class: 'subtext' }, 'Which AI models should handle what kind of work, by role, domain and reasoning effort.')),
@@ -1915,7 +2076,7 @@ function nowScreen(project) {
     details.workId || others.length ? disclosure(`now/${project}/details`, 'Details', el('div', { class: 'subtext' }, [
       details.workId ? `Known to AIWorks as ${details.workId}` : null, details.trackingUrl ? link(`tracking issue #${details.trackingIssue} ↗`, details.trackingUrl) : null,
       others.length ? `Other work in this project: ${others.join(', ')}` : null].filter(Boolean).flatMap((part, index) => index ? [' · ', part] : [part]))) : null)),
-  row?.connection ? connectionPanel(row) : null, since].filter(Boolean);
+  overviewPanel(project), row?.connection ? connectionPanel(row) : null, since].filter(Boolean);
 }
 
 /** A piece of work's steps in the order they can run: each after the steps it depends on, otherwise as declared. */
@@ -2239,7 +2400,9 @@ function render() {
   const diagnostics = route.screen === 'settings' && route.section === 'diagnostics';
   renderMetrics(route.project ? projectCampaigns(route.project) : state.supervisor.campaigns, diagnostics ? ['Platform roadmap items']
     : route.screen === 'project' && route.tab === 'work' ? ['AI workers working'] : []);
-  if (route.screen === 'needs') patch(content, [needsYou() ?? unavailable()]);
+  if (route.screen === 'home') patch(content, homeScreen());
+  else if (route.screen === 'needs') patch(content, [needsYou() ?? unavailable()]);
+  else if (route.screen === 'settings' && route.section === 'connections') patch(content, connectionsScreen());
   else if (route.screen === 'settings' && route.section === 'messages') patch(content, [messagesPanel(20)]);
   else if (route.screen === 'settings' && route.section === 'accounts') patch(content, accountsScreen());
   else if (route.screen === 'settings' && route.section === 'version') patch(content, versionScreen());

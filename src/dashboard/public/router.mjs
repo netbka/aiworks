@@ -1,8 +1,8 @@
 // Hash addresses of the owner workspace (docs/design/OWNER_WORKSPACE.md §3.2). Pure functions with no DOM access, so
 // the page and Node tests import the same module. The address is the state: reload, Back, Forward and bookmarks work.
 
-/** The three global destinations, in navigation order. */
-export const GLOBAL = ['projects', 'needs', 'settings'];
+/** The global destinations, in navigation order. Home leads (OWNER_UI_V2 section 2, WP1). */
+export const GLOBAL = ['home', 'projects', 'needs', 'settings'];
 /** The four project tabs, in order; they fit at 320px. */
 export const TABS = ['now', 'work', 'results', 'cost'];
 
@@ -11,6 +11,7 @@ export const LEGACY = Object.freeze({ overview: '#/projects', roadmap: '#/settin
   agents: '#/projects', messages: '#/settings/messages', activity: '#/settings/diagnostics' });
 
 const PROJECTS = Object.freeze({ screen: 'projects' });
+const HOME = Object.freeze({ screen: 'home' });
 const decode = (part) => { try { return decodeURIComponent(part); } catch { return null; } };
 // A project is a GitHub `owner/repo`, or the opaque ID a project connection assigns (#7). Never a filesystem path.
 const projectId = (value) => typeof value === 'string' && /^(?:[\w.-]+\/[\w.-]+|[\w-]{1,64})$/.test(value) && !/(?:^|\/)\.{1,2}(?:\/|$)/.test(value) ? value : null;
@@ -25,11 +26,12 @@ function parse(hash) {
   const parts = raw.slice(1).split('/').map(decode);
   if (parts.some((part) => part === null || part === '')) return null;
   const [first, ...rest] = parts;
+  if (first === 'home') return rest.length ? null : HOME;
   if (first === 'projects') return !rest.length ? PROJECTS : rest.length === 1 && rest[0] === 'add' ? { screen: 'add-project' } : null;
   if (first === 'needs') return rest.length ? null : { screen: 'needs' };
   if (first === 'settings') {
     if (!rest.length) return { screen: 'settings' };
-    return rest.length === 1 && ['messages', 'diagnostics', 'accounts', 'version', 'instructions'].includes(rest[0]) ? { screen: 'settings', section: rest[0] } : null;
+    return rest.length === 1 && ['messages', 'diagnostics', 'accounts', 'version', 'instructions', 'connections'].includes(rest[0]) ? { screen: 'settings', section: rest[0] } : null;
   }
   if (first !== 'p' || !rest.length) return null;
   const project = projectId(rest[0]), tail = rest.slice(1);
@@ -46,6 +48,7 @@ function parse(hash) {
 export function formatRoute(route) {
   const p = (value) => encodeURIComponent(value);
   switch (route?.screen) {
+    case 'home': return '#/home';
     case 'needs': return '#/needs';
     case 'add-project': return '#/projects/add';
     case 'settings': return route.section ? `#/settings/${route.section}` : '#/settings';
@@ -59,8 +62,8 @@ export function formatRoute(route) {
 
 /**
  * What the page shows for an address. `replace` is true when the address in the bar should be rewritten once, with
- * history.replaceState: an empty hash, a legacy view name, or an unknown address (all of which open Projects or the
- * legacy view's new home), or a valid address written in a non-canonical form.
+ * history.replaceState: an empty hash or an unknown address (both open Home), a legacy view name (its view's new home),
+ * or a valid address written in a non-canonical form.
  */
 export function resolveRoute(hash) {
   const raw = typeof hash === 'string' ? hash.replace(/^#/, '') : '';
@@ -68,11 +71,11 @@ export function resolveRoute(hash) {
     const address = LEGACY[raw];
     return { route: parse(address), address, replace: true, legacy: raw };
   }
-  const route = parse(raw ? `#${raw}` : '') ?? PROJECTS, address = formatRoute(route);
+  const route = parse(raw ? `#${raw}` : '') ?? HOME, address = formatRoute(route);
   return { route, address, replace: `#${raw}` !== address, legacy: null };
 }
 
 /** The route's global destination, for aria-current in the global bar. Project screens belong to Projects. */
-export const globalOf = (route) => route.screen === 'needs' ? 'needs' : route.screen === 'settings' ? 'settings' : 'projects';
+export const globalOf = (route) => ['home', 'needs', 'settings'].includes(route.screen) ? route.screen : 'projects';
 /** The project tab a route belongs to, or null. Step belongs to Work; Start work and Review to Now. */
 export const tabOf = (route) => route.screen === 'project' ? route.tab : route.screen === 'step' ? 'work' : ['start', 'review'].includes(route.screen) ? 'now' : null;
