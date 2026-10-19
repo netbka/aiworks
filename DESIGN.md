@@ -57,7 +57,8 @@ Below 960px navigation moves to the bottom, with focus and scroll clearance. Bel
 | Capability | Owner | Contract |
 | --- | --- | --- |
 | Tokens, responsive shell, focus and scrollbars | `dashboard.css` | One palette and geometry across every screen; visible focus and reduced-motion handling |
-| Routes, tabs, back links | `router.mjs`, `showRoute`, `routeLink` | Real hash links, browser Back, project context preserved |
+| Routes, tabs, back links | `router.mjs`, `showRoute`, `routeLink` | Real hash links, browser Back, project context preserved; Home is the first destination and opens for an empty address; a project's first tab is Overview |
+| Home, Overview, Connections | `homeScreen`, `overviewPanel`, `connectionsScreen` over the server views (`views.mjs`) | Typed events in page words only; Built, Checked and Available to users stay apart and unknown stays unknown; pause controls name stopping and stopped |
 | Buttons, panels, badges | `dashboard.js` helpers + shared CSS | One emphasis hierarchy; words accompany status color |
 | Needs me | `needsItem`, `needsGroups`, `attentionSummary` | Derive counts from server evidence; preserve unknown merge checks; open real issue/PR links |
 | Project list | `projectsScreen` | Identity, state and next action remain separate; details remain available |
@@ -82,4 +83,4 @@ No new animation is introduced. Existing refresh effects respect reduced-motion 
 
 ## Verification
 
-Use the synthetic `tests/dashboard/fixtures/review-store.mjs` dashboard for screenshots and browser checks, never a live installation. Check desktop and narrow Projects, Needs me, Work, Plan work and Settings; check keyboard focus, form errors, route/draft retention and query clearing. Run the repository checks. Synthetic previews and passing source tests are not evidence of a production deployment.
+Use the synthetic `tests/dashboard/fixtures/review-store.mjs` dashboard for screenshots and browser checks, never a live installation. Check desktop and narrow Home, Projects, Needs me, Overview, Work, Plan work, Settings and Connections; check keyboard focus, form errors, route/draft retention and query clearing. Run the repository checks. Synthetic previews and passing source tests are not evidence of a production deployment.

@@ -2,7 +2,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readReleaseAuthorizations, RoadmapSource } from './roadmap.mjs';
 import { configuredGovernanceRoot } from '../supervisor/governance.mjs';
-import { configuredCheckouts, configuredGitCommand, MergeWatcher, publishedSteps } from './merges.mjs';
+import { configuredCheckouts, configuredGitCommand, configuredLocalMain, MergeWatcher, publishedSteps } from './merges.mjs';
 import { execFileSync } from 'node:child_process';
 import { hostname } from 'node:os';
 import { createDashboardServer } from './server.mjs';
@@ -25,7 +25,9 @@ const dataDir = resolve(options['--data']);
 const configuredGovernance = options['--governance'] ? resolve(options['--governance']) : configuredGovernanceRoot(dataDir);
 const roadmap = new RoadmapSource({ root: configuredGovernance });
 // Merged state comes from the configured local checkouts (git protocol only); the dashboard makes no GitHub API call.
-const merges = new MergeWatcher({ steps: () => publishedSteps(dataDir), checkouts: configuredCheckouts(dataDir), git: configuredGitCommand(dataDir) });
+// AIWorks's own repository with local main trusted is read from local main, never fetched (UI19).
+const merges = new MergeWatcher({ steps: () => publishedSteps(dataDir), checkouts: configuredCheckouts(dataDir), localMain: configuredLocalMain(dataDir),
+  git: configuredGitCommand(dataDir) });
 let revision = null;
 try { revision = execFileSync('git', ['rev-parse', '--short=12', 'HEAD'], { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 5000 }).trim(); }
 catch { /* A checkout without git still serves; the revision is shown as unknown. */ }
