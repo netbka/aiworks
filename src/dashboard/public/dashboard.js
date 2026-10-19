@@ -794,9 +794,21 @@ function reviewScreen(project, id) {
   const approve = el('button', { class: 'button', type: 'button', disabled: !plan.startable || Boolean(approving) || sending || offline || !state.supervisor.available,
     'aria-busy': busy ? 'true' : null, onclick: () => void approvePlan(project, plan) }, busy ? 'Starting…' : 'Approve and start');
   const limits = plan.limits && Object.keys(plan.limits).length ? `Limits: ${Object.entries(plan.limits).map(([key, value]) => `${key} ${value}`).join(', ')}.` : 'No limits. You can pause or cancel it at any time.';
+  const address = formatRoute({ screen: 'review', project, plan: plan.id }), editing = drafts.get(address, 'edit');
+  // While the owner edits, the form stays as typed (refreshReview) and nothing can be approved: Approve starts only a shown, saved version.
+  if (editing) return [el('section', { class: 'panel review', 'data-focus-scope': `review/${plan.id}` }, el('div', { class: 'panel-body' },
+    el('h2', {}, `Edit plan · version ${editing.baseVersion}`), editForm(project, plan, address)))];
+  const criteria = plan.criteria?.length ? plan.criteria : (plan.acceptance ?? []).map((text) => ({ text, check: null }));
+  const edit = plan.editable && state.work?.planAndDo ? button('Edit plan', () => startEdit(project, plan), 'secondary', Boolean(approving) || sending || offline || !state.supervisor.available) : null;
   return [el('section', { class: 'panel review', 'data-focus-scope': `review/${plan.id}` }, el('div', { class: 'panel-body' },
     el('h2', {}, plan.outcome || 'Review the plan'), status,
-    part('How it is checked', items(plan.acceptance)),
+    plan.changes?.length ? planChanges(plan) : null,
+    part('Goal', el('p', {}, plan.goal || 'Not stated.'), el('p', { class: 'subtext' }, `${HORIZON_WORDS[plan.horizon] ?? 'Now'} · ${PRIORITY_WORDS[plan.priority] ?? 'Normal'} priority`)),
+    part('Done when', el('ul', {}, ...criteria.map((item) => el('li', {}, item.text,
+      el('span', { class: 'subtext' }, item.check ? ` · checked by: ${item.check}` : ' · how it is checked is not stated'))))),
+    part('Included', plan.included?.length ? items(plan.included) : el('p', {}, 'Not listed.')),
+    part('Later', plan.later?.length ? items(plan.later) : el('p', {}, 'Nothing is left for later.')),
+    part('Estimate', el('p', {}, estimateText(plan.estimate))),
     part('Main steps', plan.steps.length ? el('ol', {}, ...plan.steps.map((step) => el('li', {}, step.title, step.check ? el('span', { class: 'subtext' }, ` · checked by: ${step.check}`) : null)))
       : items(plan.tasks.map((task) => task.title))),
     part('Overlaps with other work', plan.conflicts.length ? items(plan.conflicts.map((item) => item.code === 'DUPLICATE_WORK'
@@ -810,7 +822,170 @@ function reviewScreen(project, id) {
     plan.questions.length ? part('Open questions', items(plan.questions)) : null,
     el('details', {}, el('summary', {}, 'Plan details'), el('p', { class: 'subtext' }, plan.summary), el('pre', { class: 'plan-text' }, plan.plan),
       el('p', { class: 'subtext' }, `Plan fingerprint ${plan.fingerprint} · version ${plan.version}`)),
-    plan.code === 'APPROVED' ? null : approve))];
+    plan.code === 'APPROVED' ? null : el('div', { class: 'review-actions' }, approve, edit)))];
+}
+
+/*
+ * Edit plan (OWNER_UI_V2 WP3). The owner edits the goal, done-when criteria and how each is checked, included and later,
+ * Now, Next or Later, priority and the estimate; what the work may change, protected paths, AI workers, limits and
+ * release are not edited here. Saving makes the next version, which is shown with its changes before it can be approved.
+ * The unsent edit is a draft of this address: it survives the refresh, a reload and Back, and is cleared only by an
+ * accepted save or Discard. A plan that changed meanwhile keeps the edit and says so; the save names the version it
+ * was made on, so the server refuses it rather than overwrite another version.
+ */
+const HORIZON_WORDS = { now: 'Now', next: 'Next', later: 'Later' };
+const PRIORITY_WORDS = { high: 'High', normal: 'Normal', low: 'Low' };
+const UNIT_WORDS = { hours: ['hour', 'hours'], days: ['day', 'days'] };
+const estimateText = (estimate) => estimate ? `About ${estimate.amount} ${UNIT_WORDS[estimate.unit]?.[estimate.amount === 1 ? 0 : 1] ?? estimate.unit} of AI work.` : 'No estimate.';
+const SCOPE_WORDS = { writes: 'What it may change', denyWrites: 'Protected paths', deliverables: 'What it delivers', release: 'Release', providers: 'AI workers',
+  limits: 'Limits', steps: 'Steps', source: 'The project version it starts from' };
+const quoted = (text) => `“${text}”`;
+let savingEdit = null;
+
+/** One change from the version before, in a sentence. */
+function changeText(item) {
+  const check = (value) => value ?? 'not stated';
+  const estimate = (value) => estimateText(value).replace(/\.$/, '');
+  switch (`${item.field} ${item.change}`) {
+    case 'outcome changed': return `Goal: ${quoted(item.before)} → ${quoted(item.after)}`;
+    case 'criteria added': return `Done when, added: ${quoted(item.after)}${item.check ? ` · checked by: ${item.check}` : ''}`;
+    case 'criteria removed': return `Done when, removed: ${quoted(item.before)}`;
+    case 'check changed': return `How ${quoted(item.criterion)} is checked: ${check(item.before)} → ${check(item.after)}`;
+    case 'included added': return `Included, added: ${quoted(item.after)}`;
+    case 'included removed': return `Included, removed: ${quoted(item.before)}`;
+    case 'later added': return `Later, added: ${quoted(item.after)}`;
+    case 'later removed': return `Later, removed: ${quoted(item.before)}`;
+    case 'horizon changed': return `Moved from ${HORIZON_WORDS[item.before] ?? item.before} to ${HORIZON_WORDS[item.after] ?? item.after}`;
+    case 'priority changed': return `Priority: ${PRIORITY_WORDS[item.before] ?? item.before} → ${PRIORITY_WORDS[item.after] ?? item.after}`;
+    case 'estimate changed': return `Estimate: ${estimate(item.before)} → ${estimate(item.after)}`;
+    default: return `${SCOPE_WORDS[item.field] ?? item.field} changed.`;
+  }
+}
+
+/** What changed from the version before, scope changes apart: they need the owner's eye before Approve and start. */
+function planChanges(plan) {
+  const scope = plan.changes.filter((item) => item.scope), own = plan.changes.filter((item) => !item.scope);
+  return el('div', { class: 'review-part plan-changes' }, el('h3', {}, `Changes from version ${plan.previousVersion}`),
+    own.length ? el('ul', {}, ...own.map((item) => el('li', {}, changeText(item)))) : null,
+    scope.length ? el('div', { class: 'notice warning' }, el('strong', {}, 'The scope changed. '), 'Check these before you approve:',
+      el('ul', {}, ...scope.map((item) => el('li', {}, changeText(item))))) : null);
+}
+
+/** The edit begins from the plan as shown: its version and fingerprint, and its current parts. */
+function startEdit(project, plan) {
+  const address = formatRoute({ screen: 'review', project, plan: plan.id });
+  const criteria = plan.criteria?.length ? plan.criteria : (plan.acceptance ?? []).map((text) => ({ text, check: null }));
+  drafts.set(address, 'edit', { baseVersion: plan.version, baseDigest: plan.authorityDigest, outcome: plan.outcome ?? '', horizon: plan.horizon ?? 'now',
+    priority: plan.priority ?? 'normal', criteria: criteria.map((item) => ({ text: item.text, check: item.check ?? '' })), included: (plan.included ?? []).join('\n'),
+    later: (plan.later ?? []).join('\n'), estimated: Boolean(plan.estimate), amount: plan.estimate ? String(plan.estimate.amount) : '', unit: plan.estimate?.unit ?? 'days' });
+  render();
+  document.querySelector('#edit-outcome')?.focus();
+}
+
+/** The note above the edit form: the plan changed, or can no longer be edited, since the edit began. Null when neither. */
+function editStale(plan, edit) {
+  if (!plan.editable) return el('p', { class: 'notice warning' }, 'This plan can no longer be edited: it was approved or is out of date. Your edits stay here until you discard them.');
+  if (plan.version === edit.baseVersion && plan.authorityDigest === edit.baseDigest) return null;
+  return el('p', { class: 'notice warning' }, `This plan changed since you started editing: it is now version ${plan.version}. Your edits are kept. `,
+    button(`Use my edits on version ${plan.version}`, () => { drafts.set(current.address, 'edit', { ...edit, baseVersion: plan.version, baseDigest: plan.authorityDigest }); rebuildEdit(); }, 'secondary small'));
+}
+
+/** Build the edit form again from the saved draft (after Add, Remove or a rebase); focus goes to `focus` when given. */
+function rebuildEdit(focus) {
+  const form = document.querySelector('form[data-edit-form]');
+  const plan = form && projectPlans(current.route.project).find((item) => item.id === form.dataset.editForm);
+  if (!plan) return render();
+  form.replaceWith(editForm(current.route.project, plan, current.address));
+  document.querySelector(focus ?? '#edit-outcome')?.focus();
+}
+
+function editForm(project, plan, address) {
+  const edit = drafts.get(address, 'edit');
+  const save = () => {
+    const criteria = [...form.querySelectorAll('[data-criterion]')].map((row) => ({ text: row.querySelector('.criterion-text').value, check: row.querySelector('.criterion-check').value }));
+    drafts.set(address, 'edit', { ...drafts.get(address, 'edit'), outcome: outcome.value, horizon: form.elements['edit-horizon'].value, priority: priority.value, criteria,
+      included: included.value, later: later.value, estimated: form.elements['edit-estimate'].value === 'yes', amount: amount.value, unit: unit.value });
+  };
+  const outcome = el('input', { id: 'edit-outcome', type: 'text', maxlength: 300, required: true, oninput: save });
+  outcome.value = edit.outcome;
+  const horizon = (value) => el('label', { class: 'choice' }, el('input', { type: 'radio', name: 'edit-horizon', value, checked: edit.horizon === value, onchange: save }), ` ${HORIZON_WORDS[value]}`);
+  const priority = el('select', { id: 'edit-priority', onchange: save }, ...Object.entries(PRIORITY_WORDS).map(([value, label]) => el('option', { value, selected: edit.priority === value }, label)));
+  const change = (update, focus) => { save(); const next = drafts.get(address, 'edit'); update(next.criteria); drafts.set(address, 'edit', next); rebuildEdit(focus(next.criteria)); };
+  const criterion = (item, index) => {
+    const text = el('input', { id: `edit-criterion-${index}`, class: 'criterion-text', type: 'text', maxlength: 300, required: true, oninput: save });
+    text.value = item.text;
+    const check = el('input', { id: `edit-check-${index}`, class: 'criterion-check', type: 'text', maxlength: 300, oninput: save });
+    check.value = item.check ?? '';
+    const remove = el('button', { class: 'button secondary small', type: 'button', disabled: edit.criteria.length < 2, 'aria-label': `Remove criterion ${index + 1}`,
+      onclick: () => change((list) => list.splice(index, 1), () => '#edit-add-criterion') }, 'Remove');
+    return el('div', { class: 'edit-criterion', 'data-criterion': String(index) },
+      el('label', { class: 'field' }, `Criterion ${index + 1}`, text), el('label', { class: 'field' }, 'How it is checked (optional)', check), remove);
+  };
+  const add = el('button', { id: 'edit-add-criterion', class: 'button secondary small', type: 'button', disabled: edit.criteria.length >= 16,
+    onclick: () => change((list) => list.push({ text: '', check: '' }), (list) => `#edit-criterion-${list.length - 1}`) }, 'Add a criterion');
+  const included = el('textarea', { id: 'edit-included', rows: 3, oninput: save });
+  included.value = edit.included;
+  const later = el('textarea', { id: 'edit-later', rows: 3, oninput: save });
+  later.value = edit.later;
+  const amount = el('input', { id: 'edit-amount', type: 'number', min: 1, step: 1, inputmode: 'numeric', required: edit.estimated, oninput: save });
+  amount.value = edit.amount;
+  const unit = el('select', { id: 'edit-unit', onchange: save }, ...Object.entries(UNIT_WORDS).map(([value, words]) => el('option', { value, selected: edit.unit === value }, words[1])));
+  const amountFields = el('div', { class: 'edit-estimate', hidden: !edit.estimated }, el('label', { class: 'field' }, 'Amount', amount), el('label', { class: 'field' }, 'Unit', unit));
+  const estimate = (value, label) => el('label', { class: 'choice' }, el('input', { type: 'radio', name: 'edit-estimate', value, checked: edit.estimated === (value === 'yes'),
+    onchange: () => { amountFields.hidden = value !== 'yes'; amount.required = value === 'yes'; save(); } }), ` ${label}`);
+  const busy = savingEdit === plan.id;
+  const form = el('form', { novalidate: true, class: 'start-form edit-form', 'data-edit-form': plan.id, 'data-focus-scope': `edit/${plan.id}`,
+    onsubmit: (event) => { event.preventDefault(); save(); if (!savingEdit && validateForm(form)) void saveEdit(plan.id, address); } },
+    el('div', { id: 'edit-stale', role: 'status', 'aria-live': 'polite' }, editStale(plan, edit)),
+    el('label', { class: 'field' }, el('strong', {}, 'What should be true when this is finished?'), outcome),
+    el('fieldset', {}, el('legend', {}, 'When'), ...['now', 'next', 'later'].map(horizon)),
+    el('label', { class: 'field' }, 'Priority', priority),
+    el('fieldset', {}, el('legend', {}, 'Done when'), ...edit.criteria.map(criterion), add),
+    el('label', { class: 'field' }, 'Included, one per line', included),
+    el('label', { class: 'field' }, 'Left for later, one per line', later),
+    el('fieldset', {}, el('legend', {}, 'Estimate'), estimate('no', 'No estimate'), estimate('yes', 'Estimate'), amountFields),
+    el('p', { class: 'subtext' }, 'What the work may change, protected paths, AI workers, limits and release stay as reviewed. To change them, ask for a new plan.'),
+    el('div', { class: 'review-actions' },
+      el('button', { class: 'button', type: 'submit', disabled: !plan.editable || offline || !state.supervisor.available || Boolean(savingEdit), 'aria-busy': busy ? 'true' : null },
+        busy ? 'Saving…' : `Save as version ${plan.version + 1}`),
+      el('button', { class: 'button secondary', type: 'button', onclick: () => { drafts.delete(address, 'edit'); render(); document.querySelector('.review-actions .button:not([disabled])')?.focus(); } }, 'Discard edits')));
+  return form;
+}
+
+/** The 5-second refresh keeps the edit form as typed: only its note about a changed plan and its Save change. */
+function refreshReview(content, project, id) {
+  const form = content.querySelector('form[data-edit-form]'), plan = projectPlans(project).find((item) => item.id === id);
+  const edit = drafts.get(current.address, 'edit');
+  if (!form || !plan || !edit || form.dataset.editForm !== id) return false;
+  patch(form.querySelector('#edit-stale'), [editStale(plan, edit)].filter(Boolean));
+  const submit = form.querySelector('button[type="submit"]');
+  submit.disabled = !plan.editable || offline || !state.supervisor.available || Boolean(savingEdit);
+  if (savingEdit !== id) submit.textContent = `Save as version ${plan.version + 1}`;
+  return true;
+}
+
+/** Save the edit as the next version. A retry reuses the edit's request id, kept with the draft, so it is saved once. */
+async function saveEdit(id, address) {
+  const edit = drafts.get(address, 'edit');
+  const lines = (text) => text.split('\n').map((line) => line.trim()).filter(Boolean);
+  const requestId = edit.requestId ?? crypto.randomUUID();
+  drafts.set(address, 'edit', { ...edit, requestId });
+  const body = { requestId, plan: id, version: edit.baseVersion, authorityDigest: edit.baseDigest, edits: { outcome: edit.outcome.trim(), horizon: edit.horizon,
+    priority: edit.priority, criteria: edit.criteria.map((item) => ({ text: item.text.trim(), check: item.check.trim() || null })), included: lines(edit.included),
+    later: lines(edit.later), estimate: edit.estimated ? { amount: Number(edit.amount), unit: edit.unit } : null } };
+  savingEdit = id; rebuildEdit('form[data-edit-form] button[type="submit"]');
+  const attempt = async () => {
+    try {
+      const result = await post('/api/work/edit', body);
+      drafts.delete(address, 'edit');
+      notice(`${result.duplicate ? 'Already saved' : 'Saved'} as version ${result.version}. Check the changes, then approve this version.`, null, null, address);
+    } catch (error) {
+      // Refused: nothing was saved, so the next save is a new request and the edit stays as typed.
+      if (error.known) { const kept = drafts.get(address, 'edit'); if (kept) drafts.set(address, 'edit', { ...kept, requestId: undefined }); }
+      notice(error.known ? error.message : 'Saving could not be confirmed. Retry: the same edit is never saved twice.', error.known ? null : attempt, error.known ? error.detail : null, address);
+    }
+  };
+  try { await attempt(); } finally { savingEdit = null; await poll(); render(); }
 }
 
 async function approvePlan(project, plan) {
@@ -2769,6 +2944,7 @@ function render() {
   else if (route.screen === 'add-project' && refreshAdd(content)) { /* the form stays as the owner typed it */ }
   else if (route.screen === 'add-project') patch(content, addProjectScreen());
   else if (route.screen === 'start' && refreshStart(content, route.project)) { /* the form stays as the owner typed it */ }
+  else if (route.screen === 'review' && refreshReview(content, route.project, route.plan)) { /* the edit stays as the owner typed it */ }
   else if (route.screen === 'worklist' && refreshWorklist(content)) { /* the form stays as the owner typed it */ }
   else if (route.screen === 'worklist') patch(content, workListScreen());
   else if (route.screen === 'worklist-item' && refreshItem(content, route.number)) { /* the comment stays as the owner typed it */ }

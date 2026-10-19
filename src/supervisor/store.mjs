@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS task_specs (
 -- Owner work requests and the draft plans drafted from them (docs/design/WORK_ENVELOPE.md section 3; rules in intake.mjs).
 -- Additive like every table above. Nothing that schedules reads them: a draft is never a campaign, task or operation.
 -- A request is received, drafting, drafted or failed; each draft version is a new row and is never edited except to
--- mark it stale.
+-- mark it stale. An owner's edit is a new version too (outline, edit_request_id and edited_from are added columns).
 CREATE TABLE IF NOT EXISTS work_requests (
   id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, route TEXT NOT NULL,
   text TEXT, reference TEXT, tracking_issue INTEGER, plan_only INTEGER NOT NULL, state TEXT NOT NULL,
@@ -184,7 +184,7 @@ CREATE TRIGGER IF NOT EXISTS work_item_comments_no_delete BEFORE DELETE ON work_
 
 const JSON_COLUMNS = new Set(['declaration', 'blocker', 'failures', 'findings', 'result', 'verification',
   'blocked', 'packet', 'outcome', 'payload', 'detail', 'message_ids', 'probe', 'last_evidence', 'resolution', 'message',
-  'eligibility', 'steps', 'history', 'routing', 'ops', 'spec', 'pinned', 'questions', 'conflicts', 'notes', 'stale_what', 'signature']);
+  'eligibility', 'steps', 'history', 'routing', 'ops', 'spec', 'pinned', 'questions', 'conflicts', 'notes', 'stale_what', 'signature', 'outline']);
 
 function decode(row) {
   if (!row) return null;
@@ -237,6 +237,12 @@ export class Store {
         if (!columns.includes('account_identity')) this.db.exec('ALTER TABLE operations ADD COLUMN account_identity TEXT');
         const taskColumns = this.db.prepare('PRAGMA table_info(tasks)').all().map((column) => column.name);
         if (!taskColumns.includes('signature')) this.db.exec('ALTER TABLE tasks ADD COLUMN signature TEXT');
+        // A draft's plan outline and the owner's edit that made it (intake.mjs reviseDraft, OWNER_UI_V2 WP3) are additive:
+        // a draft recorded before them reads null, and the store version does not change.
+        const draftColumns = this.db.prepare('PRAGMA table_info(work_drafts)').all().map((column) => column.name);
+        if (!draftColumns.includes('outline')) this.db.exec('ALTER TABLE work_drafts ADD COLUMN outline TEXT');
+        if (!draftColumns.includes('edit_request_id')) this.db.exec('ALTER TABLE work_drafts ADD COLUMN edit_request_id TEXT');
+        if (!draftColumns.includes('edited_from')) this.db.exec('ALTER TABLE work_drafts ADD COLUMN edited_from INTEGER');
       });
     } catch (error) {
       this.db.close();

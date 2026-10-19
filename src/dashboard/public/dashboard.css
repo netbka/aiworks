@@ -420,6 +420,15 @@ html{scrollbar-gutter:stable;scroll-padding-top:88px}
 .review-part ul,.review-part ol,.plan-list{margin:0;padding-left:20px;font-size:13px;line-height:1.5;overflow-wrap:anywhere}
 .review .plan-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;max-width:100%}
 .review>.panel-body>.button{margin-top:20px}
+/* Edit plan (WP3): actions wrap at 320px; each criterion and its check stack, and Remove keeps its 44px target. */
+.review-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:20px}
+.edit-criterion{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:0 12px;align-items:end;padding-bottom:12px;border-bottom:1px solid var(--line)}
+.edit-criterion>.button,#edit-add-criterion{margin-top:12px;min-height:44px}
+.edit-estimate{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 12px}
+.edit-estimate[hidden]{display:none}
+.start-form.edit-form textarea{min-height:88px;resize:vertical}
+.plan-changes .notice{margin-top:8px}
+@media(max-width:599px){.edit-criterion,.edit-estimate{grid-template-columns:minmax(0,1fr)}.edit-criterion>.button{justify-self:start}}
 .search-clear{display:grid;place-items:center;flex:none;width:32px;height:32px;border:0;border-radius:5px;background:transparent;color:var(--muted);font-size:20px}
 .search-clear:hover{background:var(--blue-soft)}
 .search-clear[hidden]{display:none}
