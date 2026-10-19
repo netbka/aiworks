@@ -29,6 +29,7 @@ import { ConflictError, FencedError } from './store.mjs';
 import { mergePass, mergeSettings } from './merge.mjs';
 import { mainLedger, selfHostingSettings, trustedTip, trustsLocalMain } from './self-hosting.mjs';
 import { programPass } from './program.mjs';
+import { cleanupPass } from './cleanup.mjs';
 import { GATE_FILES, gateFailure, readGateRun } from './gate.mjs';
 import { isLocalTarget, recordCandidate } from './local-candidates.mjs';
 import { checkLocalDispatch, LOCAL_ADMISSION_ON } from './local-admission.mjs';
@@ -507,6 +508,10 @@ export class Controller {
     // next wave of each approved program, at most once an hour. The new campaign is stepped from the next tick.
     try { programPass(this); }
     catch (error) { this.log(`program pass failed: ${error.stack || error}`); }
+    // Cleanup after finished work (PROJECT_WORKSPACE_PLAN 6.8c, CLN1): off unless config.json `cleanup.enabled` is true;
+    // removes only finished, owned, clean worktrees and the local task branches the trusted main contains.
+    try { cleanupPass(this); }
+    catch (error) { this.log(`cleanup pass failed: ${error.stack || error}`); }
     // Admission: at most one launch per tick across every campaign this instance holds (ADAPTIVE_SCHEDULER 4.1).
     if (this.sched) {
       try { await this.admit(); }

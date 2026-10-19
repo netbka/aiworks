@@ -1,6 +1,6 @@
 // AIWorks workspace and publication adapter. Every function is idempotent: it inspects
 // existing state before creating anything, so a controller restarted at any point can call
-// it again. Worktrees are never removed here (cleanup stays a separate owner/maintenance step).
+// it again. Removal is only the non-forced worktree remove and branch -d below; which ones may go is cleanup.mjs's rule.
 import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
@@ -162,4 +162,39 @@ export function mergeCheck({ git, repoPath, baseSha, sha }) {
 export function siblingCommits({ git, repoPath, baseSha, sha, paths, limit = 10 }) {
   const out = exec(git, ['log', `--max-count=${limit}`, '--format=%H %s', baseSha, `^${sha}`, '--', ...paths], { cwd: repoPath });
   return out.ok ? out.stdout.split('\n').filter(Boolean).map((line) => ({ sha: line.slice(0, 40), subject: line.slice(41, 200) })) : [];
+}
+
+/** The repository's registered worktrees ({ path, head, branch, locked }), the main checkout first; null when unreadable. */
+export function worktreeList({ git, repoPath }) {
+  const out = exec(git, ['worktree', 'list', '--porcelain', '-z'], { cwd: repoPath, timeoutMs: 30_000 });
+  if (!out.ok) return null;
+  const list = [];
+  for (const field of out.stdout.split('\0')) {
+    const [key, ...rest] = field.split(' '), value = rest.join(' ');
+    if (key === 'worktree') list.push({ path: value, head: null, branch: null, locked: false });
+    else if (!list.length) continue;
+    else if (key === 'HEAD') list.at(-1).head = value;
+    else if (key === 'branch') list.at(-1).branch = value.replace(/^refs\/heads\//, '');
+    else if (key === 'locked') list.at(-1).locked = true;
+  }
+  return list;
+}
+
+/**
+ * Uncommitted, untracked (`?? `) and ignored (`!! `) entries of a checkout; null when git cannot read it. A non-forced
+ * `git worktree remove` deletes ignored files, so they are listed too: an ignored directory as one `!! dir/` entry.
+ */
+export function worktreeChanges({ git, path }) {
+  const out = exec(git, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=matching'], { cwd: path, timeoutMs: 60_000 });
+  return out.ok ? out.stdout.split('\0').filter(Boolean) : null;
+}
+
+/** `git worktree remove` without --force: git itself refuses a checkout with changes, untracked files or a lock. */
+export function removeWorktree({ git, repoPath, path }) {
+  return exec(git, ['worktree', 'remove', path], { cwd: repoPath, timeoutMs: 120_000 });
+}
+
+/** `git branch -d`, never -D: git itself refuses a branch that is checked out or not merged. */
+export function deleteMergedBranch({ git, repoPath, branch }) {
+  return exec(git, ['branch', '-d', branch], { cwd: repoPath, timeoutMs: 30_000 });
 }
