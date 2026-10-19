@@ -24,7 +24,9 @@ export function contentFindings(text, terms = []) {
   const findings = [];
   if (containsKnownSecretValue(text) || /(?:https?|postgres(?:ql)?|mongodb(?:\+srv)?|mysql|redis):\/\/[^\s/@:]+:[^\s/@]+@/i.test(text) ||
       /\b(?:api[_-]?key|client[_-]?secret|password|access[_-]?token)\b["']?\s*[:=]\s*["'][A-Za-z0-9_+\/=-]{16,}["']/i.test(text)) findings.push('credential material');
-  if (/\bnetbka\/(?!aiworks(?:\.git)?(?![\w.-]))[\w.-]+/i.test(text)) findings.push('another upstream-owner project');
+  // A sentence-ending period belongs to the prose, not the repository name.
+  const repositories = text.match(/\bnetbka\/[\w.-]+/gi) ?? [];
+  if (repositories.some(reference => !/^netbka\/aiworks(?:\.git)?$/i.test(reference.replace(/\.+$/, '')))) findings.push('another upstream-owner project');
   if (/[A-Z]:[\\/]+(?:Users|Git)[\\/]+[\w.-]+/i.test(text) || /\/home\/(?!example\b|user\b)[\w.-]+/i.test(text)) findings.push('personal installation path');
   if (terms.some(term => text.toLowerCase().includes(term.toLowerCase()))) findings.push('private installation reference');
   return findings;
