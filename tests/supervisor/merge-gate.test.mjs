@@ -315,6 +315,30 @@ test('a moved base starts the integration repair, and the pull request merges on
   assert.deepEqual(r.journal(B, 'merged').map((entry) => entry.sha), [repaired]);
 });
 
+test('a cancellation committed after a moved-base task is selected leaves its completed task and operations unchanged', async (t) => {
+  const r = rig(t, { [A]: [task('A1', 501, 'a.txt')], [B]: [task('B1', 502, 'b.txt')] });
+  const heads = await publish(r, [A, B]);
+  r.start({ merges: ON });
+  await r.tick(); // A merges; B is judged on the next pass against the moved base
+  const outcome = r.store.task(B, 'B1'), operations = r.store.all('SELECT * FROM operations WHERE campaign_id = ?', B);
+  // The base is fetched after the merge pass selected B1 and before its fenced repair: the owner cancels in that window.
+  const fetchBase = r.controller.fetchBase.bind(r.controller);
+  let cancelled = false;
+  r.controller.fetchBase = (...args) => {
+    if (!cancelled) { cancelled = true; campaignCancel(r.store, B, 'owner'); }
+    return fetchBase(...args);
+  };
+  r.advance();
+  await r.tick();
+  assert.ok(cancelled, 'the cancellation landed inside the merge pass');
+  await r.tick();
+  assert.equal(r.store.campaign(B).control, 'cancelled');
+  assert.deepEqual(r.store.task(B, 'B1'), outcome);
+  assert.deepEqual(r.store.all('SELECT * FROM operations WHERE campaign_id = ?', B), operations);
+  assert.equal(r.journal(B, 'merge-base-moved').length, 0);
+  assert.deepEqual(r.mergeCalls().map((call) => call.fields.sha), [heads[A]]);
+});
+
 test('with CI repair on, a head merges only after its CI passed: never while CI is unread, pending or failed', async (t) => {
   const r = rig(t);
   const { [A]: verified } = await publish(r);
