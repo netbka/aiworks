@@ -523,6 +523,8 @@ export const DELEGATED = {
 /** Needs me items about AIWorks itself and about stopped work, in the owner's words. */
 export const NEEDS = {
   stepIssue: 'Open the step issue',
+  // A decision the owner snoozed (WP2): still listed, because its step stays stopped until it is answered.
+  snoozed: (until) => `Snoozed until ${new Date(until).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).replace(',', '')}; the step waits for your answer.`,
   // A connected project where work can't start until the owner confirms its rules (review 5 G7): not an item, since no
   // work is blocked, but the calm headline names it and a row links to its Now, where the rules are confirmed.
   held: {
@@ -639,6 +641,16 @@ export const COMMANDS = {
     resume: (n) => `Resumed ${n === 1 ? '1 goal' : `${n} goals`} with the goals and limits you approved.` },
   stepChanged: 'This step changed or is already finished. Refresh the page and try again.',
   noNextRun: 'No AI worker runs this step again, so it cannot get guidance. Refresh the page to see where it stands.',
+  // Structured decisions (OWNER_UI_V2 WP2): an answer, a snooze and "this did not need me" are bound to one decision.
+  decision: {
+    answer: 'Answer received. AIWorks clears this decision once and the step continues with your answer; its limits and the independent check still apply.',
+    snooze: (until) => `Snoozed until ${new Date(until).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).replace(',', '')}. The step stays stopped until you answer.`,
+    'not-needed': 'Thank you. AIWorks recorded that this did not need you; the step still waits for an answer.',
+    stale: 'This decision changed or is no longer open. Nothing was recorded. Refresh the page to see the current one.',
+    answered: 'This decision was already answered. Nothing was recorded twice.',
+    notOption: 'Choose one of the options shown, or write your own answer.',
+    noted: 'You already said this decision did not need you.',
+  },
 };
 
 /**

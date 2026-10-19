@@ -2034,10 +2034,10 @@ function settingsLinks() {
  * The one primary action of a state (OWNER_WORKSPACE §4.4), or nothing: a screen link, a GitHub link, Resume, or the
  * Check again of work a recorded blocker stopped, each only while the work allows it.
  */
-function primaryAction(primary) {
+function primaryAction(primary, cls = 'button') {
   if (!primary) return null;
-  if (primary.route) return routeLink(primary.label, primary.route, 'button');
-  if (primary.url) return link(`${primary.label} ↗`, primary.url, 'button');
+  if (primary.route) return routeLink(primary.label, primary.route, cls);
+  if (primary.url) return link(`${primary.label} ↗`, primary.url, cls);
   const c = campaignById(primary.campaignId);
   const allowed = primary.command === 'resume' ? c?.controls?.primary === 'resume' : primary.command === 'recheck' && (c?.controls?.more ?? []).includes('recheck');
   if (!allowed) return null;
@@ -2161,6 +2161,87 @@ const attemptText = (a) => `${a.outcome ? outcomeText(a) : `${roleName(a.role)} 
   a.endedAt ? ` · ended ${dateTime(a.endedAt)}` : ''}${a.refunded ? ' · not counted as a run' : ''}`;
 
 /**
+ * A step's decision (OWNER_UI_V2 WP2): the question with each option and its consequence, AIWorks' suggestion and why,
+ * what continues meanwhile and what happens without an answer, all from the validated decision record; a stop without
+ * one asks for the owner's own words. Send answer, Remind me later and "This did not need me" are each bound to this one
+ * decision. The choice and the words are a draft of this address until the server accepts them; a retry reuses its
+ * request id, so it is never applied twice.
+ */
+let decisionBusy = false;
+async function sendDecision(action, c, task, body, { address = current.address, done = null } = {}) {
+  c = campaignById(c.id) ?? c; task = c.tasks.find((item) => item.id === task.id) ?? task;
+  const payload = { requestId: crypto.randomUUID(), campaignId: c.id, taskId: task.id, taskVersion: task.version, version: c.version,
+    authorizationVersion: c.authorizationVersion, scopeDigest: c.scopeDigest, decision: task.decision.id, ...body };
+  decisionBusy = true; render();
+  const attempt = async () => {
+    try {
+      const result = await post(`/api/v2/decisions/${action}`, payload);
+      done?.();
+      notice(result.duplicate ? COMMANDS.duplicate : action === 'snooze' ? COMMANDS.decision.snooze(result.until) : COMMANDS.decision[action], null, null, address);
+    } catch (error) {
+      if (error.code === 'INSTRUCTION_LOOKS_SENSITIVE') return notice(error.message, null, null, address);
+      notice(error.known ? error.message : COMMANDS.unconfirmed, error.known ? null : attempt, error.known ? error.detail : null, address);
+    }
+  };
+  try { await attempt(); } finally { decisionBusy = false; await poll(); }
+}
+
+function decisionPanel(c, task) {
+  const d = task.decision;
+  if (!d) return null;
+  const address = current.address, key = `decision:${d.id}`, off = decisionBusy || commandsOff();
+  if (d.answered) {
+    const chosen = d.options.find((o) => o.id === d.answered.option);
+    return el('div', { class: 'instruction-list', 'data-decision': d.id, 'data-focus-scope': `decision/${d.id}` },
+      el('h3', { class: 'section-title' }, 'Your answer'),
+      el('p', { role: 'status' }, `Answered at ${clock(d.answered.at)}${chosen ? `: ${chosen.label}` : ''}. AIWorks continues the step with your answer.`));
+  }
+  const draft = drafts.get(address, key) ?? { option: null, text: '', feedback: '' };
+  const save = () => drafts.set(address, key, { option: form.querySelector('input[name="decision-option"]:checked')?.value ?? null, text: words.value, feedback: feedback.value });
+  const words = el('textarea', { id: 'decision-text', rows: 3, maxlength: 2000, required: !d.structured, oninput: save });
+  words.value = draft.text ?? '';
+  const feedback = el('textarea', { id: 'decision-feedback', rows: 2, maxlength: 2000, oninput: save });
+  feedback.value = draft.feedback ?? '';
+  const choice = el('span', { id: 'decision-choice-error', class: 'validation-error', role: 'alert', hidden: true }, COMMANDS.decision.notOption);
+  const options = d.structured ? el('fieldset', {}, el('legend', {}, d.question),
+    ...d.options.map((o) => {
+      const input = el('input', { type: 'radio', name: 'decision-option', value: o.id, 'aria-describedby': `decision-option-${o.id}`, onchange: save });
+      input.checked = draft.option === o.id;
+      return [el('label', { class: 'choice' }, input, el('span', {}, o.label, d.suggestion?.option === o.id ? ' (suggested)' : '')),
+        el('p', { id: `decision-option-${o.id}`, class: 'subtext' }, o.consequence)];
+    }), choice) : null;
+  const snooze = el('select', { id: 'decision-snooze' },
+    el('option', { value: '1h' }, '1 hour'), el('option', { value: '4h' }, '4 hours'), el('option', { value: '1d' }, '1 day'));
+  const form = el('form', { novalidate: true, class: 'start-form', 'data-decision': d.id, 'data-focus-scope': `decision/${d.id}`,
+    onsubmit: (event) => {
+      event.preventDefault();
+      if (off || !validateForm(form)) return;
+      const option = form.querySelector('input[name="decision-option"]:checked')?.value;
+      choice.hidden = Boolean(option || words.value.trim());
+      if (!choice.hidden) { form.querySelector('input[name="decision-option"]')?.focus(); return; }
+      void sendDecision('answer', c, task, { ...(option ? { option } : {}), ...(words.value.trim() ? { text: words.value } : {}) },
+        { address, done: () => drafts.delete(address, key) });
+    } },
+    el('h3', { class: 'section-title' }, d.structured ? 'Your decision' : 'Your answer'),
+    d.structured ? null : el('p', {}, 'The AI worker described no options for this stop. Answer in your own words; the step issue says what it needs.'),
+    options,
+    d.suggestion ? el('p', { class: 'subtext' }, `AIWorks suggests ${d.options.find((o) => o.id === d.suggestion.option)?.label ?? d.suggestion.option}: ${d.suggestion.reason}`) : null,
+    d.continues ? el('p', { class: 'subtext' }, `Meanwhile: ${d.continues}`) : null,
+    d.unanswered ? el('p', { class: 'subtext' }, `If you do not answer: ${d.unanswered}`) : null,
+    el('label', { class: 'field' }, el('strong', {}, d.structured ? 'Your own words (optional with a choice)' : 'Your answer'), words),
+    el('p', { class: 'subtext' }, 'Your answer reaches the next AI worker on this step as guidance. It cannot widen the approved plan: a wider change needs a new plan. No secrets; up to 2,000 characters.'),
+    el('div', { class: 'campaign-controls' }, el('button', { class: 'button', type: 'submit', disabled: off }, 'Send answer')),
+    el('label', { class: 'field' }, el('strong', {}, d.snoozedUntil ? `Snoozed until ${clock(d.snoozedUntil)}. Remind me again in` : 'Remind me in'), snooze),
+    el('div', { class: 'campaign-controls' }, button('Remind me later', () => sendDecision('snooze', c, task, { snooze: snooze.value }, { address }), 'secondary', off)),
+    d.notNeeded ? el('p', { class: 'subtext' }, 'You said this did not need you. The step still waits for an answer.')
+      : disclosure(`decision/${d.id}/not-needed`, 'This did not need me', el('div', {},
+        el('label', { class: 'field' }, el('strong', {}, 'What should AIWorks have done instead? (optional)'), feedback),
+        el('div', { class: 'campaign-controls' }, button('Send feedback', () => sendDecision('not-needed', c, task, feedback.value.trim() ? { text: feedback.value } : {},
+          { address, done: () => drafts.set(address, key, { ...(drafts.get(address, key) ?? {}), feedback: '' }) }), 'secondary', off)))));
+  return form;
+}
+
+/**
  * Step (OWNER_WORKSPACE §4.8, slice S5): the outcome with its work's goal and project; one state and who is on it;
  * progress from the worker's own record; the last result; guidance sent, with receipts; one primary action by state;
  * and, in Details, every attempt with its end and the step's own events.
@@ -2169,7 +2250,8 @@ function stepScreen(project, c, task) {
   const agent = c.agents.find((item) => item.taskId === task.id), p = agent?.progress;
   const number = deliveryOf(c, task)?.number ?? /\/pull\/(\d+)$/.exec(task.resultUrl ?? '')?.[1];
   const unfinished = !['done', 'verified'].includes(task.state);
-  const primary = task.stopped ? primaryAction(task.stopped.primary)
+  // With a decision to answer on this screen, Send answer is the one primary action; the step issue is secondary.
+  const primary = task.stopped ? primaryAction(task.stopped.primary, task.decision && !task.decision.answered ? 'button secondary' : 'button')
     : task.resultUrl ? link(number ? `Open pull request #${number} ↗` : 'Open the result ↗', task.resultUrl, 'button')
       : unfinished && c.controls?.more.length ? button('Send guidance', () => openInstructions(c, task), '', commandsOff()) : null;
   const last = task.verifiedSha ? `Passed the check at commit ${task.verifiedSha.slice(0, 7)}` : outcomeText(task.lastOutcome);
@@ -2183,6 +2265,7 @@ function stepScreen(project, c, task) {
     el('div', { class: 'panel-body' },
       el('p', { role: 'status', 'aria-live': 'polite' }, stepBadge(c, task), ' ', task.stopped ? el('strong', {}, task.stopped.title) : whoIsOn(c, task) ?? waitLine(task.wait) ?? ''),
       task.stopped ? el('p', {}, task.stopped.text) : null,
+      decisionPanel(c, task),
       p ? el('p', { class: 'subtext' }, `From the worker’s own record: ${plural(p.turns, 'turn')} · ${plural(p.toolCalls, 'action')} · last activity ${timeAgo(p.lastActivityAt)}`) : null,
       last ? el('p', { class: 'subtext' }, `Last result: ${last}`) : null,
       task.signature ? el('div', { class: 'instruction-list', 'data-task-signature': '' },

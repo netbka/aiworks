@@ -201,7 +201,19 @@ Read-only views beside `/api/state` (`src/dashboard/views.mjs`), each built serv
 | `POST /api/v2/events/seen` `{ seq }` | Moves the last-seen marker forward (`dashboard-last-seen.json` in the data directory, beside `config.json`); never past the newest entry, never back. |
 | `POST /api/v2/pause`, `POST /api/v2/resume` | The scoped pause and resume above. |
 
-The POST routes keep the command rules: exact Origin, the CSRF token, JSON of at most 16 KiB, and only their own fields. Plan, Decision, Review, Releases, Knowledge, notifications and previews are not built (WP2 onwards) and are not shown.
+The POST routes keep the command rules: exact Origin, the CSRF token, JSON of at most 16 KiB, and only their own fields. Pause and resume alone accept up to 64 KiB, so their largest valid request, 200 goal bindings, is read and checked whole instead of refused for its size; a larger body is refused before it is read, and nothing changes. Plan, Review, Releases, Knowledge, notifications and previews are not built (WP3 onwards) and are not shown.
+
+## Decisions (owner UI v2, WP2)
+
+A step stopped for the owner (a B3 stop, or a checker that still rejects after its repair rounds) is a decision. Needs me lists it with an **Answer** link to its step, where the owner chooses an option, writes an answer, asks to be reminded later, or says it did not need them. When the worker's validated result carried a `decision` field (`src/supervisor/adapters/claude.mjs` `DECISION_SCHEMA`), the step shows its question, each option with its consequence, AIWorks' suggestion and why, what continues meanwhile and what happens without an answer, each through the credential filter. Without one, the stop stays a free-text decision answered in the owner's own words. Raw worker text is never shown.
+
+| Route | Effect |
+| --- | --- |
+| `POST /api/v2/decisions/answer` `{ option?, text? }` | Records one answer per decision. The controller then clears exactly that stop, resolves its blocker record and gives the step's next builder run the answer as guidance under the unchanged packet. |
+| `POST /api/v2/decisions/snooze` `{ snooze: 1h, 4h or 1d }` | Feedback only: the item says until when and moves to the end of Needs me; it stays counted, because the step stays stopped. |
+| `POST /api/v2/decisions/not-needed` `{ text? }` | "This did not need me", once per decision. Feedback only. |
+
+Each request carries a request id and binds the goal's version, authorization version and scope digest, the step's version and the decision's id (`src/supervisor/decisions.mjs`), so a stale, wrong-step or replayed request changes nothing. The controller checks the decision again when it applies an answer: if the step stopped again meanwhile, the answer clears nothing and gives no guidance. An answer never touches the goal's own blocker, another step, a limit or the plan; a wider change needs a new plan approval. The owner's words stay in the decision's event and never reach the journal.
 
 ## Plan and do, Review and Approve and start (built, off by default)
 
