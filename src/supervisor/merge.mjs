@@ -14,6 +14,7 @@ import { ConflictError, FencedError } from './store.mjs';
 
 const SHA = /^[0-9a-f]{40}$/;
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
+const MISSING_RECHECK_MS = 60 * 60_000;
 const OFF = Object.freeze({ enabled: false, repositories: new Set(), held: new Set(), refresh: null, problem: null });
 
 /**
@@ -149,10 +150,17 @@ function mergeOne(controller, item, settings, repoPath, baseSha) {
   // Already in the base and never requested here: merged by someone else; nothing to do or read.
   if (inBase && !requested) return false;
 
+  // A pull request GitHub reports missing cannot merge; reading it every pass spends the account's shared REST quota.
+  const key = `${campaignId}:${task.task_id}:${sha}`;
+  if ((controller.mergeMissingUntil.get(key) ?? -Infinity) > controller.now()) return false;
   // Every attempt starts by reading the pull request, so an unknown outcome is settled before any retry.
   let pr;
   try { pr = github.pullRequest({ gh, repository, number }); }
   catch (error) {
+    if (error.status === 404) {
+      controller.mergeMissingUntil.set(key, controller.now() + MISSING_RECHECK_MS);
+      return wait(controller, item, 'GitHub reports the pull request does not exist; it is read again hourly');
+    }
     controller.log(`merge of ${campaignId}/${task.task_id}: GET pull failed: ${error.message}`);
     return wait(controller, item, 'the pull request could not be read');
   }
