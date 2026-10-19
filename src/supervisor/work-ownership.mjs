@@ -3,6 +3,9 @@
 // connections cannot both pass the check before either inserts its campaign.
 import { createHash } from 'node:crypto';
 import { specsOf } from './plan.mjs';
+import { SECRET_LIKE_PATH_PATTERN } from '../../scripts/lib/worker-context.mjs';
+
+const SECRET_LIKE = new RegExp(SECRET_LIKE_PATH_PATTERN, 'u');
 
 /** Exact intended work, independent of campaign/task IDs, display text and reference order.
  * This is deliberately not fuzzy matching. Differently worded repairs need the same explicit workKey.
@@ -101,6 +104,18 @@ export function pathsOutside(domain, paths) {
   return paths.filter((path) => !domain.paths.some((entry) => covers(entry, normalise(path))));
 }
 
+/**
+ * Changed paths split by what they mean (AW-013). `forbidden`: any secret-like path, or one inside the envelope's
+ * `denyWrites`, wherever it lies; the commit is a boundary violation. `beyond`: any other path outside the declared
+ * domain; the work goes on, the implementer explains it in the report and the verifier judges it.
+ */
+export function outsideWrites(declaration, domain, paths) {
+  const deny = (declaration?.envelope?.denyWrites ?? []).map((entry) => normalise(entry).replace(/\/+$/, ''));
+  const banned = (path) => SECRET_LIKE.test(normalise(path)) || deny.some((entry) => normalise(path) === entry || normalise(path).startsWith(`${entry}/`));
+  const forbidden = paths.filter(banned);
+  return { forbidden, beyond: pathsOutside(domain, paths).filter((path) => !banned(path)) };
+}
+
 const ACTIVE = new Set(['implementing', 'implemented', 'verifying', 'verified']);
 
 /**
@@ -136,9 +151,16 @@ export function domainHolders(store, { campaignId, taskId, domain }, { integrate
   return holders;
 }
 
-/** The packet constraint that tells a worker and its verifier the task's declared write domain before it is enforced. */
+/** The packet constraint that tells a worker and its verifier the task's planned files (AW-013). */
 export const writeDomainConstraint = (writes) => {
   const paths = writes.filter((entry) => !entry.startsWith('resource:'));
   const resources = writes.filter((entry) => entry.startsWith('resource:'));
-  return `Write domain: change only files under ${paths.length ? paths.join(', ') : 'no repository path'}${resources.length ? ` (resources held: ${resources.join(', ')})` : ''}. A commit that changes any other file is rejected as a boundary violation; if the outcome needs another file, report that instead of changing it.`;
+  return `Planned files: ${paths.length ? paths.join(', ') : 'no repository path'}${resources.length ? ` (resources held: ${resources.join(', ')})` : ''}. ${BEYOND_RULE}`;
 };
+
+/** What a worker does when the outcome needs a file outside its plan (AW-013): change it and explain it, never stop. */
+export const BEYOND_RULE = 'If the outcome needs another file, change it: do not stop to ask. In your report, list each file outside the plan and why it was needed. Secret-like files and files the plan forbids are never changed. The verifier judges every change outside the plan.';
+
+/** The verifier's line for a head that changed files outside its plan (AW-013). */
+export const beyondConstraint = (paths) => `This head changes files outside the plan: ${paths.slice(0, 20).join(', ')}${paths.length > 20 ? ', ...' : ''}. ` +
+  'Judge each one: accept it only when the outcome needs it, the change is correct and minimal, and the report explains it; otherwise reject with a finding.';

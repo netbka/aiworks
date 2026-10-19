@@ -1,6 +1,7 @@
 // RUN4 (ADAPTIVE_SCHEDULER slice S3, aiworks#5 scope B): commit tasks may declare `writes`; a task without it owns the whole
 // repository; who holds a domain is derived from rows across campaigns until the change is integrated; a commit that
-// changes paths outside its declared domain is a boundary violation; `limits.slots` accepts 1..8 and "auto". Admission by
+// changes paths outside its plan goes to the verifier, and only a secret-like or forbidden path is a boundary violation
+// (AW-013); `limits.slots` accepts 1..8 and "auto". Admission by
 // domain is the scheduler's (RUN5): nothing here changes what the one-slot controller dispatches. Workers are played
 // through applyOutcome; no model, network or GitHub call.
 import assert from 'node:assert/strict';
@@ -12,7 +13,7 @@ import { Store } from '../../src/supervisor/store.mjs';
 import { campaignPause, campaignStart } from '../../src/supervisor/api.mjs';
 import { scopeDigest, validateDeclaration } from '../../src/supervisor/campaign.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
-import { domainHolders, domainOf, domainsOverlap, pathsOutside } from '../../src/supervisor/work-ownership.mjs';
+import { domainHolders, domainOf, domainsOverlap, outsideWrites, pathsOutside } from '../../src/supervisor/work-ownership.mjs';
 import { ROOT, declaration, environment } from './helpers.mjs';
 
 const git = (cwd, ...args) => {
@@ -179,29 +180,38 @@ function rig(t, task) {
   return { controller, store, campaignId: decl.campaignId, implement, tick: () => controller.tick() };
 }
 
-test('a commit that writes outside its declared domain is a boundary violation held for the owner', async (t) => {
-  const r = rig(t, commitTask('T1', 920, { writes: ['src/a/'] }));
+test('a commit that changes files outside its plan goes on to the verifier, who is told exactly those files (AW-013)', async (t) => {
+  const r = rig(t, commitTask('T1', 920, { writes: ['src/a/', 'docs/naïve/'] }));
   await r.tick();
-  const held = r.implement(['src/a/ok.txt', 'src/b/outside.txt']);
+  const task = r.implement(['src/a/ok.txt', 'docs/naïve/inside name.txt', 'src/b/outside.txt', 'src/ab.txt']);
+  assert.equal(task.state, 'implemented', 'not held for the owner');
+  assert.equal(task.blocked, null);
+  await r.tick();
+  const op = r.store.openOperations(r.campaignId)[0];
+  assert.equal(op.kind, 'verify');
+  const line = op.packet.constraints.find((entry) => entry.startsWith('This head changes files outside the plan:'));
+  assert.ok(line, 'the verifier judges the files outside the plan');
+  assert.match(line, /^This head changes files outside the plan: (src\/ab\.txt, src\/b\/outside\.txt|src\/b\/outside\.txt, src\/ab\.txt)\./,
+    'only the files outside the plan; a sibling sharing leading letters is outside; git must not quote the non-ASCII path');
+});
+
+test('a commit that changes a secret-like file or a file the plan forbids is still a boundary violation held for the owner', async (t) => {
+  const r = rig(t, commitTask('T1', 926, { writes: ['src/a/'] }));
+  await r.tick();
+  const held = r.implement(['src/a/ok.txt', 'config/.env.local']);
   assert.equal(held.state, 'pending');
   assert.equal(held.blocked?.class, 'B3');
-  assert.match(held.blocked.reason, /boundary violation .*writes outside the declared domain .*src\/b\/outside\.txt/);
-  assert.doesNotMatch(held.blocked.reason, /src\/a\/ok\.txt/);
+  assert.match(held.blocked.reason, /boundary violation .*secret-like or forbidden files: config\/\.env\.local/);
   assert.equal(held.retry_at, null, 'no timed retry');
   // Never retried: later ticks open no new operation, on this provider or any other, until the owner rechecks.
   await r.tick();
   await r.tick();
   assert.equal(r.store.openOperations(r.campaignId).length, 0);
   assert.equal(r.store.all("SELECT id FROM operations WHERE campaign_id = ? AND kind = 'implement'", r.campaignId).length, 1);
-});
-
-test('a sibling path that only shares leading letters is outside; a non-ASCII path inside is not', async (t) => {
-  const r = rig(t, commitTask('T1', 925, { writes: ['docs/SUPERVISOR.md', 'docs/naïve/'] }));
-  await r.tick();
-  const held = r.implement(['docs/naïve/inside name.txt', 'docs/SUPERVISOR.md.bak']);
-  assert.equal(held.blocked?.class, 'B3');
-  assert.match(held.blocked.reason, /declared domain \(docs\/SUPERVISOR\.md, docs\/naïve\/\): docs\/SUPERVISOR\.md\.bak$/,
-    'only the sibling is outside; git must not quote the non-ASCII path');
+  const decl = { envelope: { denyWrites: ['src/a/locked'] } };
+  const domain = domainOf(declaration({ tasks: [commitTask('T2', 927, { writes: ['src/'] })] }), commitTask('T2', 927, { writes: ['src/'] }));
+  assert.deepEqual(outsideWrites(decl, domain, ['SRC/A/Locked/x.js', 'docs/x.md']), { forbidden: ['SRC/A/Locked/x.js'], beyond: ['docs/x.md'] },
+    'a denied path is forbidden even where a broad plan would cover it');
 });
 
 test('a commit inside its declared domain, or a task without writes, is accepted as before', async (t) => {
@@ -218,9 +228,9 @@ test('the worker and its verifier are told the declared write domain before it i
   await r.tick();
   const op = r.store.openOperations(r.campaignId)[0];
   const prompt = readFileSync(join(op.run_dir, 'prompt.txt'), 'utf8');
-  assert.ok(prompt.includes('Write domain: change only files under src/a/ (resources held: resource:dev-db).'), 'the domain is in the packet constraints');
+  assert.ok(prompt.includes('Planned files: src/a/ (resources held: resource:dev-db).'), 'the plan is in the packet constraints');
   const whole = rig(t, commitTask('T1', 924));
   await whole.tick();
   const unrestricted = readFileSync(join(whole.store.openOperations(whole.campaignId)[0].run_dir, 'prompt.txt'), 'utf8');
-  assert.doesNotMatch(unrestricted, /Write domain:/, 'a task without writes is unchanged');
+  assert.doesNotMatch(unrestricted, /Planned files:/, 'a task without writes is unchanged');
 });
