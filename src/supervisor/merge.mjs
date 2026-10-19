@@ -5,12 +5,14 @@
 // releases or changes provider resources. AIWorks's own repository with local main trusted (config.json `selfHosting`,
 // docs/design/LOCAL_OPERATION.md section 4.4, slice SELF8) merges its verified local reviews locally instead: a merge
 // commit of the trusted tip and the verified head with the verified tree, main moved only from the trusted tip, and a
-// main ledger row (release/local-merge.mjs). It reads no remote and makes no GitHub call.
+// main ledger row (release/local-merge.mjs). It reads no remote and makes no GitHub call; the owner's optional backup of
+// trusted main (github-backup.mjs, slice SELF9) runs after those merges and never holds one.
 import * as gitA from './adapters/git.mjs';
 import * as github from './adapters/github.mjs';
 import { mergeWithMergeCommit } from './release/github-merge.mjs';
 import { isPlannedMerge, moveMain, writeMergeCommit } from './release/local-merge.mjs';
-import { recordMainCommit, trustedTip } from './self-hosting.mjs';
+import { mainLedger, recordMainCommit, trustedTip } from './self-hosting.mjs';
+import { backupStep } from './github-backup.mjs';
 import { reviewItem, WORK_REFERENCE, workLink } from './work-list.mjs';
 import { campaignLimits } from './campaign.mjs';
 import { specsOf } from './plan.mjs';
@@ -139,6 +141,32 @@ export async function mergePass(controller) {
         break;
       }
     }
+  }
+  // After the local merges, also in a pass with nothing to merge, so a backup the interval deferred still follows.
+  for (const key of due) if (controller.selfHosted(key)) backup(controller, key);
+}
+
+/**
+ * The optional backup of trusted local main (github-backup.mjs) in the checkout of the campaign that made the newest
+ * recorded local merge. Nothing waits on it: a refused, unreachable or failing push is journaled and logged, and the
+ * next merge is judged as if it never ran.
+ */
+function backup(controller, key) {
+  if (!controller.selfHosting.backup.enabled) return;
+  try {
+    const merge = mainLedger(controller.store, key).reverse().find((row) => row.kind === 'gate-merge');
+    const campaign = merge && controller.store.campaign(merge.campaign_id);
+    // Its journal takes the entries, under its lease, as for a merge: only while it is registered or finished.
+    if (!campaign || !['registered', 'finished'].includes(campaign.control)) return;
+    const decl = campaign.declaration;
+    backupStep({ store: controller.store, settings: controller.selfHosting, git: controller.cmd.git, repoPath: controller.repo(decl).path,
+      repository: decl.target.repository, now: controller.now(), log: (line) => controller.log(line),
+      write: (campaignId, fn) => {
+        const ctx = lease(controller, campaignId);
+        return ctx ? (controller.fenced(ctx, fn), true) : false;
+      } });
+  } catch (error) {
+    controller.log(`backup of ${key} skipped: ${error.message}`);
   }
 }
 
