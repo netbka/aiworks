@@ -185,7 +185,7 @@ try {
       try { config = JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { /* the default lease length */ }
       const now = Date.now();
       const supervisor = supervisorLiveness(store, { now, leaseMs: config.leaseMs ?? DEFAULTS.leaseMs, stopRequested: existsSync(STOP) });
-      print({ supervisor, ...campaignStatus(store, rest[0], now, { releaseStop: existsSync(join(dataDir, RELEASE_STOP)) }), dataSource: explicitData ? '--data' : 'AIWORKS_DATA' });
+      print({ supervisor, ...campaignStatus(store, rest[0], now, { releaseStop: existsSync(join(dataDir, RELEASE_STOP)), selfHostingConfig: config }), dataSource: explicitData ? '--data' : 'AIWORKS_DATA' });
     }
     finally { store.db.exec('ROLLBACK'); }
   }
