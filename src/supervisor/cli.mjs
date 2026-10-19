@@ -16,7 +16,7 @@ import { Controller, DEFAULTS } from './controller.mjs';
 import { configuredGovernanceRoot, requireGovernanceRoot } from './governance.mjs';
 import { clearCoordinatorViolation, coordinatorView, postOwnerMessage } from './coordinator.mjs';
 import { approvalFromFile, CODE_ROOT, declarationFromFile, revisionNotMerged, runtimeTrust } from './provenance.mjs';
-import { selfHostingSettings, trustedTip } from './self-hosting.mjs';
+import { recordAnchor, selfHostingSettings, trustedTip } from './self-hosting.mjs';
 import { Store } from './store.mjs';
 import { comments as workItemComments, item as workItem, items as workItems } from './work-list.mjs';
 import { importIssues } from './work-list-import.mjs';
@@ -29,7 +29,7 @@ const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--go
   keep                                  OS-supervision helper: run serve and restart it after any exit until STOP
   stop                                  create <data>/STOP so serve and keep exit cleanly
   start <declaration.json>              register, amend (authorization.version + 1) or resume a private local campaign.
-                                        Runtime code must be merged into origin/main (RUNTIME_NOT_MERGED). A new registration
+                                        Runtime code must be merged into the trusted main (RUNTIME_NOT_MERGED). A new registration
                                         needs the governance checkout (GOVERNANCE_ROOT_REQUIRED / GOVERNANCE_ROOT_INVALID)
     --approval <approval.json>          start only under this private approval: its authorityDigest must equal the declaration's
                                         (DECLARATION_DIFFERS_FROM_APPROVAL). A campaign started under an approval needs one on
@@ -63,6 +63,8 @@ const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--go
   trusted-main                          with config.json "selfHosting": { "trustedMain": "local" } (off by default), print the
                                         trusted tip of local main, then the number of unrecorded commits after it (read-only;
                                         never fetches). Refused while origin/main is the trusted main (TRUSTED_MAIN_NOT_LOCAL)
+  trusted-main anchor                   the switch-on step: record local main as the anchor of the main ledger, once, only
+                                        when it equals origin/main as last fetched (never fetches; ANCHOR_REFUSED otherwise)
   work-list [open|closed]               list the items of the local work list (read-only)
   work-list <number>                    print one work item and its comments (read-only; WORK_ITEM_NOT_FOUND)
   work-list import [--apply]            import the open issues of config.json selfHosting.repository and all their comments,
@@ -148,8 +150,9 @@ try {
   if (command === 'status' && explicitData && environmentData && canonical(explicitData) !== canonical(environmentData)) {
     throw new CampaignError('DATA_DIR_MISMATCH', '--data differs from AIWORKS_DATA; confirm the installed task path and unset or correct the stale value');
   }
-  // Only `work-list import --apply` writes the work list; every other work-list command reads it.
-  const importWrites = command === 'work-list' && rest[0] === 'import' && applyImport;
+  // Only `work-list import --apply` writes the work list and only `trusted-main anchor` the main ledger; the other
+  // work-list and trusted-main commands read.
+  const importWrites = (command === 'work-list' && rest[0] === 'import' && applyImport) || (command === 'trusted-main' && rest[0] === 'anchor');
   const readOnlyCommand = (['status', 'messages', 'baseline', 'program-status', 'trusted-main', 'work-list'].includes(command) && !importWrites) ||
     ((command === 'account' || command === 'accounts') && existsSync(join(dataDir, 'supervisor.db')) && (!rest[0] || ['list', 'preferences', 'prefs'].includes(rest[0])));
   // program-status, trusted-main and work-list never create a store: without one there is no approved program, no main
@@ -220,11 +223,19 @@ try {
     // LOCAL_OPERATION.md section 4.3: what an upgrade deploys with local trust. Line 1 is the commit, never typed by hand.
     const settings = selfHostingSettings(dataConfig());
     if (!settings.local) throw new CampaignError('TRUSTED_MAIN_NOT_LOCAL', `the trusted main is origin/main${settings.problem ? ` (${settings.problem})` : ''}`);
-    const tip = store ? trustedTip(store, { repoPath: CODE_ROOT, repository: settings.repository })
-      : { state: 'NO_ANCHOR', reason: 'the main ledger of this repository has no anchor' };
-    if (tip.state !== 'TRUSTED') throw new CampaignError(tip.state, tip.reason);
-    console.log(tip.tip);
-    console.log(`${tip.unrecordedCount} unrecorded commit${tip.unrecordedCount === 1 ? '' : 's'} on local main ${tip.main.slice(0, 12)} after it`);
+    if (rest[0] === 'anchor') {
+      // Section 4.2: trust passes from origin/main as the operator last fetched it; recordAnchor refuses any other commit.
+      const main = spawnSync('git', ['rev-parse', '--verify', '--quiet', 'refs/heads/main^{commit}'], { cwd: CODE_ROOT, encoding: 'utf8', windowsHide: true });
+      const result = recordAnchor(store, { repoPath: CODE_ROOT, repository: settings.repository, sha: String(main.stdout ?? '').trim(), now: Date.now() });
+      if (!result.recorded) throw new CampaignError('ANCHOR_REFUSED', result.reason);
+      console.log(`anchor recorded: ${String(main.stdout).trim()}`);
+    } else {
+      const tip = store ? trustedTip(store, { repoPath: CODE_ROOT, repository: settings.repository })
+        : { state: 'NO_ANCHOR', reason: 'the main ledger of this repository has no anchor' };
+      if (tip.state !== 'TRUSTED') throw new CampaignError(tip.state, tip.reason);
+      console.log(tip.tip);
+      console.log(`${tip.unrecordedCount} unrecorded commit${tip.unrecordedCount === 1 ? '' : 's'} on local main ${tip.main.slice(0, 12)} after it`);
+    }
   }
   else if (command === 'work-list') {
     // LOCAL_OPERATION.md section 5.1: read-only. Items are written by the owner route and the supervisor; here only by the
