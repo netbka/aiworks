@@ -43,8 +43,6 @@ const refreshRunning = (store, { campaignId, task }, base) => store.all(`SELECT 
   AND json_extract(detail, '$.sha') = ? AND json_extract(detail, '$.base') = ?`, campaignId, task.task_id, task.verified_sha, base)
   .map((row) => row.kind).join(' ') === 'merge-refresh-started';
 
-const treeOf = (git, repoPath, commit) => gitA.exec(git, ['rev-parse', `${commit}^{tree}`], { cwd: repoPath }).stdout;
-
 /**
  * One group-merge step for the waiting pull requests of one repository and base branch (`items`, oldest campaign first,
  * then plan order). Returns true when the group handled the repository this pass (it acted or waits), false when the pull
@@ -109,6 +107,10 @@ function startGroup(controller, all, items, settings, repoPath, baseSha, note) {
 
 function continueGroup(controller, open, items, settings, repoPath, baseSha, note) {
   const { store } = controller, git = controller.cmd.git, { detail } = open.started;
+  const matchesStep = (commit, member, parent) => {
+    const actual = gitA.exec(git, ['show', '-s', '--format=%T %P', commit], { cwd: repoPath });
+    return actual.ok && actual.stdout === `${member.tree} ${parent} ${member.sha}`;
+  };
   const end = (kind, reason, extra = {}) => {
     note(kind, { id: open.id, reason, ...extra });
     controller.log(`group merge ${open.id.slice(0, 12)}: ${reason}`);
@@ -174,12 +176,11 @@ function continueGroup(controller, open, items, settings, repoPath, baseSha, not
   for (const member of detail.members) {
     const merged = memberRow(store, member, 'merged', since);
     if (merged) {
-      if (treeOf(git, repoPath, merged.mergeCommit) !== member.tree) {
-        end('merge-batch-stopped', `the merge of ${member.url} carries a tree other than the checked ${member.tree}`);
-        return false;
+      if (!matchesStep(merged.mergeCommit, member, parent)) {
+        end('merge-batch-stopped', `the recovered merge of ${member.url} does not match its checked tree and parents`);
+        return true;
       }
-      parent = merged.mergeCommit;
-      continue;
+      parent = merged.mergeCommit; continue;
     }
     const item = itemOf(member);
     if (!item) { end('merge-batch-stopped', `${member.campaignId}/${member.task} no longer waits to merge at ${member.sha}`); return false; }
@@ -199,7 +200,7 @@ function continueGroup(controller, open, items, settings, repoPath, baseSha, not
     const done = memberRow(store, member, 'merged', since);
     if (!done) return true;
     base = controller.fetchBase(repoPath, detail.branch).sha;
-    if (base !== done.mergeCommit || treeOf(git, repoPath, done.mergeCommit) !== member.tree) {
+    if (base !== done.mergeCommit || !matchesStep(done.mergeCommit, member, parent)) {
       end('merge-batch-stopped', `the merge of ${member.url} left the base at ${base}, not at the checked tree ${member.tree}`);
       return true;
     }
