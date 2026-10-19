@@ -5,6 +5,7 @@
 // dashboard and other tools, and a spent quota must not stall publication (AIWorks).
 import { writeFileSync } from 'node:fs';
 import { exec } from './git.mjs';
+import { assertPublishable } from '../../shared/public-text.mjs';
 
 /** GitHub refused a call for a rate limit. `resetAt` (epoch ms) is when it allows calls again, or null if it did not say. */
 export class RateLimitError extends Error {
@@ -110,10 +111,15 @@ export function commitChecks({ gh, repository, sha }) {
  */
 export const declarationBranch = (branch) => /^declare\//i.test(String(branch ?? ''));
 
-export function openPullRequest({ gh, repository, baseBranch, branch, title, body, bodyFile }) {
+// Every PR and comment text passes the shared publication check (aiworks#8) before any GitHub call or body file write.
+// `terms` are the installation's private terms; the refusal names categories only.
+export function openPullRequest({ gh, repository, baseBranch, branch, title, body, bodyFile, terms = [] }) {
   if (declarationBranch(branch)) {
     throw Object.assign(new Error(`DECLARATION_PUBLISH_REFUSED: ${branch} is a declaration branch; approved declarations stay private and are never opened as a pull request`), { code: 'DECLARATION_PUBLISH_REFUSED' });
   }
+  assertPublishable('pull request', `${branch}
+${title}
+${body}`, { repository, terms });
   const existing = findOpenPullRequest({ gh, repository, branch });
   if (existing) return existing.url;
   writeFileSync(bodyFile, body, 'utf8');
@@ -143,9 +149,21 @@ export function findMarkedComment({ gh, repository, issue, key }) {
   return out.stdout.split('\n').filter(Boolean)[0] ?? null;
 }
 
-export function postComment({ gh, repository, issue, body, bodyFile }) {
+export function postComment({ gh, repository, issue, body, bodyFile, terms = [] }) {
+  assertPublishable('comment', body, { repository, terms });
   writeFileSync(bodyFile, body, 'utf8');
   const created = rest(gh, 'POST comment', ['--method', 'POST', `repos/${repository}/issues/${issue}/comments`, '-F', `body=@${bodyFile}`]);
   if (!created?.html_url) throw new Error('POST comment returned no html_url');
   return created.html_url;
+}
+
+/**
+ * Close an issue as not planned (SELF11): one REST PATCH of its state and state reason, never its labels or anything
+ * else. Returns the issue GitHub answers with; throws when GitHub does not report it closed.
+ */
+export function closeIssue({ gh, repository, issue }) {
+  const closed = rest(gh, 'PATCH issue', ['--method', 'PATCH', `repos/${repository}/issues/${issue}`,
+    '-f', 'state=closed', '-f', 'state_reason=not_planned']);
+  if (closed?.state !== 'closed') throw new Error('PATCH issue did not report the issue closed');
+  return closed;
 }

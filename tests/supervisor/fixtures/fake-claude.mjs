@@ -45,6 +45,9 @@ if (gate) {
 `);
 }
 
+// Assembled at run time so the fixture source itself passes the public-scope check.
+const LEAK_PATH = ['C:', 'Users', 'synthetic-owner', 'sampleapp', 'src', 'work.mjs'].join('\\');
+
 const sleep = /^sleep:(\d+):(.+)$/.exec(mode);
 if (sleep) {
   await new Promise((done) => setTimeout(done, Number(sleep[1])));
@@ -82,6 +85,21 @@ switch (mode) {
     ok({ result: 'resolved', summary: 'implemented', headSha: git('rev-parse', 'HEAD'), report: `# Report\n\nsession ${sessionId}` });
     break;
   }
+  case 'commit-leak': { // a commit whose report cites a synthetic absolute installation path (aiworks#8)
+    writeFileSync(join(process.cwd(), `work-${sessionId}.txt`), `work by ${sessionId}
+`);
+    git('add', '-A');
+    git('commit', '-q', '-m', `work ${sessionId}`);
+    ok({ result: 'resolved', summary: 'implemented', headSha: git('rev-parse', 'HEAD'), report: `# Report
+
+Ran ${LEAK_PATH}` });
+    break;
+  }
+  case 'commit-same': // a publication repair: the same commit, a corrected report
+    ok({ result: 'resolved', summary: 'report corrected', headSha: git('rev-parse', 'HEAD'), report: `# Report
+
+Ran src/work.mjs (session ${sessionId})` });
+    break;
   case 'report':
     ok({ result: 'resolved', summary: 'researched', report: `# Findings\n\nsession ${sessionId}` });
     break;
@@ -116,6 +134,9 @@ switch (mode) {
   case 'accept-big': // an acceptance whose checks and notes push report + verification past 65,536 characters
     ok({ verdict: 'accepted', targetSha: target, reportDigest, summary: `VERIFIED-SUMMARY ${'s'.repeat(3800)}`, checks: Array.from({ length: 12 }, (_, i) => ({ command: `check-${i}`, result: 'pass', detail: 'd'.repeat(1000) })),
       findings: Array.from({ length: 3 }, (_, i) => ({ id: `N${i}`, severity: 'non-blocking', description: 'n'.repeat(1500) })) });
+    break;
+  case 'accept-leak': // an acceptance whose check detail cites a synthetic absolute installation path (aiworks#8)
+    ok({ verdict: 'accepted', targetSha: target, reportDigest, summary: 'all acceptance criteria hold', findings: [], checks: [{ command: 'npm test', result: 'pass', detail: `ran in ${LEAK_PATH}` }] });
     break;
   case 'accept':
     ok({ verdict: 'accepted', targetSha: target, reportDigest, summary: 'all acceptance criteria hold', findings: [], checks: [{ command: 'npm test', result: 'pass' }] });

@@ -6,13 +6,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from '../../src/supervisor/store.mjs';
 import { campaignCancel, campaignPause, campaignStart } from '../../src/supervisor/api.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
-import { mergeSettings } from '../../src/supervisor/merge.mjs';
+import { mergePass, mergeSettings } from '../../src/supervisor/merge.mjs';
+import { applyResultReview } from '../../src/dashboard/supervisor.mjs';
 import { branchName } from '../../src/supervisor/adapters/git.mjs';
 import { declaration, environment, passedGate } from './helpers.mjs';
 
@@ -315,6 +317,30 @@ test('a moved base starts the integration repair, and the pull request merges on
   assert.deepEqual(r.journal(B, 'merged').map((entry) => entry.sha), [repaired]);
 });
 
+test('a cancellation committed after a moved-base task is selected leaves its completed task and operations unchanged', async (t) => {
+  const r = rig(t, { [A]: [task('A1', 501, 'a.txt')], [B]: [task('B1', 502, 'b.txt')] });
+  const heads = await publish(r, [A, B]);
+  r.start({ merges: ON });
+  await r.tick(); // A merges; B is judged on the next pass against the moved base
+  const outcome = r.store.task(B, 'B1'), operations = r.store.all('SELECT * FROM operations WHERE campaign_id = ?', B);
+  // The base is fetched after the merge pass selected B1 and before its fenced repair: the owner cancels in that window.
+  const fetchBase = r.controller.fetchBase.bind(r.controller);
+  let cancelled = false;
+  r.controller.fetchBase = (...args) => {
+    if (!cancelled) { cancelled = true; campaignCancel(r.store, B, 'owner'); }
+    return fetchBase(...args);
+  };
+  r.advance();
+  await r.tick();
+  assert.ok(cancelled, 'the cancellation landed inside the merge pass');
+  await r.tick();
+  assert.equal(r.store.campaign(B).control, 'cancelled');
+  assert.deepEqual(r.store.task(B, 'B1'), outcome);
+  assert.deepEqual(r.store.all('SELECT * FROM operations WHERE campaign_id = ?', B), operations);
+  assert.equal(r.journal(B, 'merge-base-moved').length, 0);
+  assert.deepEqual(r.mergeCalls().map((call) => call.fields.sha), [heads[A]]);
+});
+
 test('with CI repair on, a head merges only after its CI passed: never while CI is unread, pending or failed', async (t) => {
   const r = rig(t);
   const { [A]: verified } = await publish(r);
@@ -336,4 +362,55 @@ test('with CI repair on, a head merges only after its CI passed: never while CI 
   r.advance(); await r.tick();
   assert.equal(r.mergeCalls().length, 1, 'merged once CI passed');
   assert.equal(r.journal(A, 'merged').length, 1);
+});
+
+test('requested changes hold the verified head, reopen one bounded repair round, and only a freshly verified head is published and merged', async (t) => {
+  const r = rig(t);
+  const words = 'Synthetic owner request: rename the heading to Items.';
+  const checked = (id) => {
+    const op = r.open(id, 'verify'), report = String(r.store.task(id, 'A1').result.report);
+    passedGate(op.workspace);
+    r.controller.applyOutcome({ id, generation: r.controller.held.get(id) }, op, { class: 'result', receipt: { sessionId: op.session_id },
+      value: { verdict: 'accepted', summary: 'checked', targetSha: op.target_sha, reportDigest: createHash('sha256').update(report, 'utf8').digest('hex'),
+        findings: [], checks: [{ command: 'npm run check', result: 'pass' }], criteria: [{ criterion: 1, result: 'pass', check: 'Read a.txt', evidence: 'Changed.' }] } });
+  };
+  await r.tick();
+  const verified = r.implement(A, (dir) => writeFileSync(join(dir, 'a.txt'), `${A}\n`));
+  await r.tick();
+  checked(A);
+  await r.tick();
+  const url = r.store.task(A, 'A1').pr_url;
+  assert.ok(url, 'published');
+  const c = r.store.campaign(A), row = r.store.task(A, 'A1');
+  applyResultReview(r.env.dataDir, 'request-changes', { requestId: randomUUID(), campaignId: A, taskId: 'A1', taskVersion: row.version, version: c.version,
+    authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest, verifiedSha: verified, reportDigest: row.verification.reportDigest, text: words, criterion: 1 });
+
+  // The merge gate is turned on: the head the owner asked to change waits while the request does.
+  r.start({ merges: ON });
+  await mergePass(r.controller);
+  assert.equal(r.mergeCalls().length, 0, 'a head with changes requested never merges');
+  const before = r.store.all("SELECT id FROM operations WHERE campaign_id = ? AND state = 'finished' ORDER BY id", A).map((op) => op.id);
+  await r.tick();
+  await r.tick();
+  const reopened = r.store.task(A, 'A1');
+  assert.deepEqual([reopened.findings[0].id, reopened.findings[0].verified, reopened.repair_rounds, reopened.base_sha], ['owner-changes', verified, 1, verified]);
+  assert.equal(r.journal(A, 'result-changes-reopened').length, 1, 'one request reopens the step once');
+  assert.deepEqual(r.store.all("SELECT id FROM operations WHERE campaign_id = ? AND state = 'finished' ORDER BY id", A).map((op) => op.id), before,
+    'earlier runs and checks stay in the record');
+  assert.equal(r.mergeCalls().length, 0);
+
+  // The repair builds on the verified head; a fresh check of exactly the new head precedes its publication and merge.
+  const repaired = r.implement(A, (dir) => writeFileSync(join(dir, 'a.txt'), 'Items\n'));
+  await r.tick();
+  assert.equal(r.mergeCalls().length, 0, 'an unverified repair never merges');
+  checked(A);
+  await r.tick();
+  const done = r.store.task(A, 'A1');
+  assert.deepEqual([done.state, done.verified_sha, done.pr_url], ['done', repaired, url], 'the verified repair goes to the same pull request');
+  assert.equal(r.env.remoteHead(branchName(A, 'A1')), repaired);
+  git(r.env.origin, 'merge-base', '--is-ancestor', verified, repaired); // a fast-forward: the verified head stays an ancestor
+  assert.ok(r.env.comments().some((comment) => comment.body.includes('requested changes, independently verified')));
+  assert.ok(!JSON.stringify([r.env.comments(), r.env.ghCalls()]).includes(words), 'the owner\'s words never reach GitHub');
+  r.advance(); await r.tick();
+  assert.deepEqual(r.mergeCalls().map((call) => call.fields.sha), [repaired], 'only the freshly verified head merges');
 });

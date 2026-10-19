@@ -4,12 +4,14 @@
 // steps and file scope (coordinator.mjs, intake mode). A draft is never registered or scheduled: nothing that
 // schedules reads work_requests or work_drafts, and turning a draft into work is the owner's approval (slices E7, E8).
 import { SECRET_LIKE_PATH_PATTERN } from '../../scripts/lib/worker-context.mjs';
+import { approvedDeclarations } from './approved-declarations.mjs';
 import { authorityDigest, scopeDigest, validateDeclaration } from './campaign.mjs';
 import { exec as gitExec } from './adapters/git.mjs';
 import { trustedTip, trustsLocalMain } from './self-hosting.mjs';
 import { item as workItem } from './work-list.mjs';
 import { MIRROR_REPO, SNAPSHOT_DIR } from './adapters/mirror.mjs';
 import { containsSecret } from './coordinator.mjs';
+import { localApprovals } from './local-admission.mjs';
 import { project as readProject } from './projects.mjs';
 import { domainHolders, domainOf, findWorkConflict } from './work-ownership.mjs';
 import { join } from 'node:path';
@@ -370,7 +372,8 @@ export function recordDraft(store, { request, proposal, pinned, runId = null, ex
   const { declaration, notes } = draftDeclaration({ request, project: found, pinned, proposal: proposal.declaration, executor, environment, now });
   let startCode;
   try { ({ startCode } = checkDraft(declaration)); } catch (error) { refuse('DRAFT_INVALID', error.message); }
-  if (containsSecret(JSON.stringify([declaration, proposal.summary, proposal.plan, proposal.steps, proposal.questions]))) {
+  const outline = proposedOutline(proposal.outline, declaration.envelope.acceptance.length, notes);
+  if (containsSecret(JSON.stringify([declaration, proposal.summary, proposal.plan, proposal.steps, proposal.questions, outline]))) {
     refuse('DRAFT_WITHHELD', 'the draft contained something that looks like a credential, so it was not kept');
   }
   return store.tx(() => {
@@ -379,12 +382,195 @@ export function recordDraft(store, { request, proposal, pinned, runId = null, ex
     store.insert('work_drafts', { request_id: request.request_id, version, project_id: request.project_id, plan_only: request.plan_only,
       state: 'draft', declaration, scope_digest: scopeDigest(declaration), authority_digest: authorityDigest(declaration), pinned,
       summary: proposal.summary, plan: proposal.plan, steps: proposal.steps, questions: proposal.questions, conflicts, notes,
-      start_code: startCode, stale_what: null, run_id: runId, created_at: now, updated_at: now });
+      start_code: startCode, stale_what: null, run_id: runId, outline, created_at: now, updated_at: now });
     store.run("UPDATE work_requests SET state = 'drafted', failure = NULL, not_before = NULL, updated_at = ? WHERE request_id = ?", now, request.request_id);
     store.journal(null, 'work-draft-recorded', { requestId: request.request_id, version, planOnly: Boolean(request.plan_only),
       conflicts: conflicts.length, startCode }, now);
     return latestDraft(store, request.request_id);
   });
+}
+
+// The plan in the owner's terms (OWNER_UI_V2 sections 3 and 8, WP3). The outcome and the done-when criteria are the
+// declaration's envelope.outcome and envelope.acceptance, so the authority digest covers them. The outline beside them
+// holds what decides no power: Now, Next or Later, the priority, how each criterion is checked, what is included and
+// what waits for later, and an estimate. An estimate nobody made stays null and reads "No estimate"; it is never zero.
+export const HORIZONS = Object.freeze(['now', 'next', 'later']);
+export const PRIORITIES = Object.freeze(['high', 'normal', 'low']);
+export const ESTIMATE_UNITS = Object.freeze(['hours', 'days']);
+const LIST_ITEMS = 16, ITEM_MAX = 300, CHECK_MAX = 300;
+const textList = (value) => Array.isArray(value) && value.length <= LIST_ITEMS && value.every((item) => text(item, ITEM_MAX));
+const estimateValue = (value) => value === null || plainObject(value) && Object.keys(value).sort().join(',') === 'amount,unit' &&
+  typeof value.amount === 'number' && Number.isFinite(value.amount) && value.amount > 0 && value.amount <= 1000 && ESTIMATE_UNITS.includes(value.unit);
+const checkValue = (value) => value === null || text(value, CHECK_MAX);
+
+/** The outline a draft from before WP3 reads as: Now, normal priority, no check methods, nothing listed, no estimate. */
+export const blankOutline = (criteria) => ({ horizon: 'now', priority: 'normal', checks: Array(criteria).fill(null), included: [], later: [], estimate: null });
+
+/**
+ * The outline of a new draft: the coordinator may propose how each criterion is checked, what is included and later,
+ * and an estimate (coordinator.mjs INTAKE_SCHEMA `outline`). Now, Next or Later and the priority are the owner's, so a
+ * draft starts in Now at normal priority. A part that does not fit is left out and named in the notes.
+ */
+function proposedOutline(proposal, criteria, notes) {
+  const outline = blankOutline(criteria);
+  if (proposal === undefined) return outline;
+  if (!plainObject(proposal)) { notes.push('outline: ignored, it is not an object'); return outline; }
+  if (proposal.checks !== undefined) {
+    if (Array.isArray(proposal.checks) && proposal.checks.length === criteria && proposal.checks.every(checkValue)) outline.checks = [...proposal.checks];
+    else notes.push('outline.checks: ignored, it needs one check method or null per criterion');
+  }
+  for (const key of ['included', 'later']) {
+    if (proposal[key] === undefined) continue;
+    if (textList(proposal[key])) outline[key] = [...proposal[key]];
+    else notes.push(`outline.${key}: ignored, it needs up to ${LIST_ITEMS} short items`);
+  }
+  if (proposal.estimate !== undefined) {
+    if (estimateValue(proposal.estimate)) outline.estimate = proposal.estimate && { amount: proposal.estimate.amount, unit: proposal.estimate.unit };
+    else notes.push('outline.estimate: ignored, so this plan has no estimate');
+  }
+  const ignored = Object.keys(proposal).filter((key) => !['checks', 'included', 'later', 'estimate'].includes(key));
+  if (ignored.length) notes.push(`outline: ignored ${ignored.sort().join(', ')}`);
+  return outline;
+}
+
+/** A draft's outline; a draft recorded before outlines existed reads as blankOutline. */
+export const draftOutline = (draft) => plainObject(draft?.outline) ? draft.outline : blankOutline(draft?.declaration?.envelope?.acceptance?.length ?? 0);
+
+/** A draft's done-when criteria, each with how it is checked (null: not stated). */
+export const draftCriteria = (draft) => {
+  const checks = draftOutline(draft).checks ?? [];
+  return (draft?.declaration?.envelope?.acceptance ?? []).map((criterion, index) => ({ text: criterion, check: checks[index] ?? null }));
+};
+
+const EDIT_KEYS = ['outcome', 'criteria', 'included', 'later', 'horizon', 'priority', 'estimate'];
+
+/**
+ * The owner's edit of a plan, validated whole: { outcome, criteria: [{ text, check }], included, later, horizon,
+ * priority, estimate }. Only these parts are edited here. What the work may change, the protected paths, the providers,
+ * limits, release mode and the target are the reviewed plan's, kept byte for byte: asking to change one is refused
+ * (SCOPE_NOT_EDITABLE), never applied. A wider scope, more budget or another release needs a new plan.
+ */
+export function planEdit(edits) {
+  if (!plainObject(edits)) refuse('INVALID_EDIT', 'An edit is an object.');
+  const other = Object.keys(edits).filter((key) => !EDIT_KEYS.includes(key));
+  if (other.length) refuse('SCOPE_NOT_EDITABLE', 'Only the goal, done-when criteria, included and later, Now, Next or Later, priority and estimate are edited here. What the work may change, protected areas, limits and release need a new plan.');
+  const missing = EDIT_KEYS.filter((key) => edits[key] === undefined);
+  if (missing.length) refuse('INVALID_EDIT', `The edit is missing ${missing.join(', ')}.`);
+  const outcome = typeof edits.outcome === 'string' ? edits.outcome.trim() : null;
+  if (!text(outcome, 300)) refuse('INVALID_EDIT', 'Describe the result in 1 to 300 characters.');
+  const criteria = edits.criteria;
+  if (!Array.isArray(criteria) || criteria.length < 1 || criteria.length > LIST_ITEMS) refuse('INVALID_EDIT', `A plan has 1 to ${LIST_ITEMS} done-when criteria.`);
+  const cleaned = criteria.map((item) => {
+    if (!plainObject(item) || Object.keys(item).some((key) => !['text', 'check'].includes(key))) refuse('INVALID_EDIT', 'Each criterion is { text, check }.');
+    const criterion = typeof item.text === 'string' ? item.text.trim() : null, check = typeof item.check === 'string' ? item.check.trim() || null : item.check ?? null;
+    if (!text(criterion, ITEM_MAX)) refuse('INVALID_EDIT', `Each criterion needs 1 to ${ITEM_MAX} characters.`);
+    if (!checkValue(check)) refuse('INVALID_EDIT', `A check method has up to ${CHECK_MAX} characters.`);
+    return { text: criterion, check };
+  });
+  if (new Set(cleaned.map((item) => item.text)).size !== cleaned.length) refuse('INVALID_EDIT', 'Two criteria say the same thing.');
+  const lists = Object.fromEntries(['included', 'later'].map((key) => {
+    const items = Array.isArray(edits[key]) ? edits[key].map((item) => (typeof item === 'string' ? item.trim() : item)) : null;
+    if (!textList(items)) refuse('INVALID_EDIT', `${key === 'included' ? 'Included' : 'Later'} has up to ${LIST_ITEMS} items of 1 to ${ITEM_MAX} characters.`);
+    return [key, items];
+  }));
+  if (!HORIZONS.includes(edits.horizon)) refuse('INVALID_EDIT', 'Choose Now, Next or Later.');
+  if (!PRIORITIES.includes(edits.priority)) refuse('INVALID_EDIT', 'Choose high, normal or low priority.');
+  if (!estimateValue(edits.estimate)) refuse('INVALID_EDIT', 'An estimate is a number of hours or days up to 1,000, or no estimate.');
+  return { outcome, criteria: cleaned, outline: { horizon: edits.horizon, priority: edits.priority, checks: cleaned.map((item) => item.check),
+    included: lists.included, later: lists.later, estimate: edits.estimate && { amount: edits.estimate.amount, unit: edits.estimate.unit } } };
+}
+
+/** Whether any approval of this plan was recorded: a GitHub plan's in the private store, a local plan's in its ledger. */
+const approvalRecorded = (store, campaignId) => approvedDeclarations(store, campaignId).length > 0 || localApprovals(store, campaignId).length > 0;
+
+/**
+ * Owner action: save an edited plan as the request's next draft version (OWNER_UI_V2 WP3). Bound to the version and
+ * authority digest the owner edited: a plan that changed meanwhile (PLAN_CHANGED), is out of date (DRAFT_STALE), or
+ * was already approved or started (ALREADY_APPROVED) is refused with nothing written. The new version keeps the
+ * reviewed plan's pins, scope, protected paths, providers, limits and release; it is a draft like any other, so only
+ * Approve and start of exactly that version starts it, and an approval of an earlier version never does. `editId` makes
+ * a repeat safe: the same edit sent twice is saved once and answered with the version it made.
+ * input: { requestId, version, authorityDigest, editId, edits }. Returns { draft, duplicate }.
+ */
+export function reviseDraft(store, input, now = Date.now()) {
+  const { requestId, version, authorityDigest: reviewed, editId } = input ?? {};
+  if (!UUID.test(requestId ?? '') || !UUID.test(editId ?? '') || !Number.isSafeInteger(version) || version < 1 || !/^[0-9a-f]{64}$/.test(reviewed ?? '')) {
+    refuse('INVALID_REQUEST', 'An edit names the plan, its version and fingerprint, and its own edit id.');
+  }
+  const edit = planEdit(input.edits);
+  return store.tx(() => {
+    const earlier = store.get('SELECT * FROM work_drafts WHERE edit_request_id = ?', editId);
+    if (earlier) {
+      const same = earlier.request_id === requestId && earlier.edited_from === version && earlier.declaration.envelope.outcome === edit.outcome &&
+        JSON.stringify(earlier.declaration.envelope.acceptance) === JSON.stringify(edit.criteria.map((item) => item.text)) &&
+        JSON.stringify(earlier.outline) === JSON.stringify(edit.outline);
+      if (!same) refuse('CONFLICT', 'That edit id was already used for a different edit.');
+      return { draft: earlier, duplicate: true };
+    }
+    const draft = latestDraft(store, requestId);
+    if (!draft) refuse('NOT_FOUND', 'There is no such plan.');
+    const found = readProject(store, draft.project_id);
+    if (!found || found.disconnected_at != null) refuse('PROJECT_NOT_FOUND', 'That project is not connected.');
+    if (draft.version !== version || draft.authority_digest !== reviewed || authorityDigest(draft.declaration) !== reviewed) {
+      refuse('PLAN_CHANGED', 'This plan changed since you started editing it.');
+    }
+    const campaignId = draft.declaration?.campaignId;
+    if (store.campaign(campaignId) || approvalRecorded(store, campaignId)) refuse('ALREADY_APPROVED', 'This plan was already approved, so it is not edited. Ask for a new plan to change it.');
+    if (draft.state === 'stale') refuse('DRAFT_STALE', 'This plan is out of date. Draft it again before editing it.');
+    if (draft.state !== 'draft') refuse('NOT_READY', 'This plan is not ready to edit.');
+    const declaration = structuredClone(draft.declaration);
+    declaration.envelope.outcome = edit.outcome;
+    declaration.envelope.acceptance = edit.criteria.map((item) => item.text);
+    declaration.authorization.text = `Approved in the AIWorks dashboard: ${edit.outcome}`.slice(0, 2000);
+    try { checkDraft(declaration); } catch (error) { refuse('DRAFT_INVALID', error.message); }
+    if (containsSecret(JSON.stringify([declaration.envelope.outcome, declaration.envelope.acceptance, edit.outline]))) {
+      refuse('DRAFT_WITHHELD', 'The edit contains something that looks like a credential, so it was not kept.');
+    }
+    const next = draft.version + 1;
+    store.insert('work_drafts', { request_id: requestId, version: next, project_id: draft.project_id, plan_only: draft.plan_only, state: 'draft',
+      declaration, scope_digest: scopeDigest(declaration), authority_digest: authorityDigest(declaration), pinned: draft.pinned,
+      summary: draft.summary, plan: draft.plan, steps: draft.steps, questions: draft.questions, conflicts: draftConflicts(store, declaration),
+      notes: draft.notes, start_code: draft.start_code, stale_what: null, run_id: draft.run_id, outline: edit.outline, edit_request_id: editId,
+      edited_from: draft.version, created_at: now, updated_at: now });
+    store.journal(null, 'work-draft-edited', { requestId, version: next, from: draft.version }, now);
+    return { draft: latestDraft(store, requestId), duplicate: false };
+  });
+}
+
+const sameJson = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+
+/**
+ * What changed from one draft version to another, for Review (OWNER_UI_V2 WP3): the goal, each criterion and how it is
+ * checked, included and later items, Now, Next or Later, priority and estimate; and, flagged `scope`, anything that
+ * decides power or destination (what may change, protected paths, providers, limits, release, steps and the pinned
+ * version), which only a new plan from AIWorks can change. [] when nothing differs.
+ */
+export function draftChanges(before, after) {
+  const changes = [];
+  const add = (field, change, values = {}, scope = false) => changes.push({ field, change, ...values, scope });
+  const a = before?.declaration?.envelope ?? {}, b = after?.declaration?.envelope ?? {};
+  const oa = draftOutline(before), ob = draftOutline(after);
+  if (a.outcome !== b.outcome) add('outcome', 'changed', { before: a.outcome ?? null, after: b.outcome ?? null });
+  const ca = draftCriteria(before), cb = draftCriteria(after);
+  for (const item of cb) {
+    const was = ca.find((old) => old.text === item.text);
+    if (!was) add('criteria', 'added', { after: item.text, check: item.check });
+    else if (was.check !== item.check) add('check', 'changed', { criterion: item.text, before: was.check, after: item.check });
+  }
+  for (const item of ca) if (!cb.some((now) => now.text === item.text)) add('criteria', 'removed', { before: item.text });
+  for (const key of ['included', 'later']) {
+    for (const item of ob[key] ?? []) if (!(oa[key] ?? []).includes(item)) add(key, 'added', { after: item });
+    for (const item of oa[key] ?? []) if (!(ob[key] ?? []).includes(item)) add(key, 'removed', { before: item });
+  }
+  for (const key of ['horizon', 'priority', 'estimate']) if (!sameJson(oa[key], ob[key])) add(key, 'changed', { before: oa[key] ?? null, after: ob[key] ?? null });
+  const da = before?.declaration ?? {}, db = after?.declaration ?? {};
+  const scoped = [['writes', a.writes], ['denyWrites', a.denyWrites], ['deliverables', a.deliverables], ['release', a.release]];
+  for (const [key, value] of scoped) if (!sameJson(value, b[key])) add(key, 'changed', {}, true);
+  if (!sameJson(da.executor, db.executor)) add('providers', 'changed', {}, true);
+  if (!sameJson(da.limits, db.limits)) add('limits', 'changed', {}, true);
+  if (!sameJson(da.tasks, db.tasks)) add('steps', 'changed', {}, true);
+  if (!sameJson(before?.pinned, after?.pinned)) add('source', 'changed', {}, true);
+  return changes;
 }
 
 /** A request that could not be drafted: retried later, or failed with its code. */

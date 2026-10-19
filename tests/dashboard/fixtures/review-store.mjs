@@ -28,6 +28,7 @@
 // work, whose lease lasts 30 days, but recipes-share, past its 5-minute grace, worded as if AIWorks had stopped. The serving
 // process keeps the heartbeat of the two working agents current, so "working normally" holds for the whole review.
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -148,9 +149,10 @@ function buildRepository(root, name, branches, { origin = true } = {}) {
   git(path, 'commit', '-q', '-m', 'initial');
   git(path, 'remote', 'add', 'origin', bare);
   const shas = {};
-  for (const { branch, merged = false, pushed = false } of branches) {
+  for (const { branch, merged = false, pushed = false, files = {} } of branches) {
     git(path, 'checkout', '-q', '-b', branch, 'main');
     writeFileSync(join(path, `${branch}.md`), `${branch}\n`);
+    for (const [file, text] of Object.entries(files)) { mkdirSync(join(path, file, '..'), { recursive: true }); writeFileSync(join(path, file), text); }
     git(path, 'add', '-A');
     git(path, 'commit', '-q', '-m', branch);
     shas[branch] = git(path, 'rev-parse', 'HEAD');
@@ -163,6 +165,13 @@ function buildRepository(root, name, branches, { origin = true } = {}) {
   return { path, origin: bare, shas };
 }
 
+/** The checked search page's static files, so Review can preview that version (OWNER_UI_V2 WP7). Made up. */
+const SEARCH_PAGE = {
+  'public/index.html': '<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">' +
+    '<title>Shop search</title><link rel="stylesheet" href="style.css"></head>\n<body><main><h1>Find a product</h1>' +
+    '<label>Search <input type="search" value="kettle"></label><ul><li>Kettle, 1.7 l</li><li>Kettle descaler</li><li>Travel kettle</li></ul></main></body></html>\n',
+  'public/style.css': 'body{margin:0;font-family:system-ui,sans-serif}main{max-width:640px;margin:0 auto;padding:24px}input{width:100%;padding:8px;margin-top:4px}\n',
+};
 const task = (id, issue, title, outcome, extra = {}) => ({ id, issue, title, outcome, deliverable: 'commit',
   goal: `${outcome}.`, dependsOn: [], acceptance: ['Synthetic review fixture step.'], references: ['README.md'], ...extra });
 const CLAUDE = { kind: 'claude-cli', model: 'opus', permissionMode: 'auto' };
@@ -180,7 +189,7 @@ function declaration(campaignId, repository, purpose, trackingIssue, tasks, exec
 function fill(store, dataDir, root, now) {
   const repos = {
     'example/shop-app': repository(root, 'shop-app', [
-      { branch: 'search-page', merged: true }, { branch: 'search-filters', pushed: true }, { branch: 'sale-banner' },
+      { branch: 'search-page', merged: true, files: SEARCH_PAGE },{ branch: 'search-filters', pushed: true }, { branch: 'sale-banner' },
       { branch: 'contracts-import', pushed: true }]),
     'example/recipes': repository(root, 'recipes', [{ branch: 'print-card', merged: true },
       { branch: 'unit-converter', merged: true }, { branch: 'metric-units', merged: true }]),
@@ -253,13 +262,26 @@ function fill(store, dataDir, root, now) {
   streamed(run, now - 25 * M);
   setTask(id, 'T1', { state: 'verifying', attempts: 1, head_sha: 'd'.repeat(40) });
 
-  id = start(declaration('shop-search', shop, 'Help customers find products', 40, [task('T1', 41, 'search page', 'Search page'),
-    task('T2', 42, 'search filters', 'Search filters'), task('T3', 43, 'sale banner', 'Sale banner')]), now - 30 * H);
+  // Review (OWNER_UI_V2 WP4): each step's done-when criteria with the checker's evidence; the filters step has one
+  // criterion not checked, a non-blocking finding and an item for the owner's own eyes, so it can be accepted or sent back.
+  const searchCriteria = ['Searching a product name lists it first', 'Filters narrow the list by price', 'The page works at 320 pixels wide'];
+  id = start(declaration('shop-search', shop, 'Help customers find products', 40, [task('T1', 41, 'search page', 'Search page', { acceptance: searchCriteria }),
+    task('T2', 42, 'search filters', 'Search filters', { acceptance: searchCriteria }), task('T3', 43, 'sale banner', 'Sale banner')]), now - 30 * H);
+  const searchReview = { T1: { criteria: [1, 2, 3].map((criterion) => ({ criterion, result: 'pass', check: 'Opened the synthetic shop page', evidence: 'Behaves as stated with the fixture catalogue.' })) },
+    T2: { criteria: [{ criterion: 1, result: 'pass', check: 'Searched the fixture catalogue for “kettle”', evidence: 'The kettle is listed first of 4 results.' },
+      { criterion: 2, result: 'pass', check: 'Set the price filter to 10–20', evidence: 'Only the 3 products in that range remain.' },
+      { criterion: 3, result: 'not-checked', check: 'No narrow viewport was available to the checker', evidence: 'Not measured.' }],
+    findings: [{ id: 'N1', severity: 'non-blocking', description: 'The filter labels are not translated yet.' }], eyesOn: ['Whether “Price” or “Cost” reads better on the filter'] } };
   for (const [taskId, branch, n, implementCost, verifyCost] of [['T1', 'search-page', 101, 1.9, 0.8], ['T2', 'search-filters', 102, 1.5, null], ['T3', 'sale-banner', 103, null, null]]) {
     // Runs that reported a cost and runs that did not: unknown cost is never shown as zero.
     operation(id, taskId, 'implement', { state: 'finished', at: now - 28 * H, outcome: finished({ result: 'implemented' }, implementCost) });
     operation(id, taskId, 'verify', { state: 'finished', at: now - 27 * H, outcome: finished({ verdict: 'accepted', findings: [] }, verifyCost) });
-    setTask(id, taskId, { state: 'done', attempts: 1, head_sha: sha(shop, branch), verified_sha: sha(shop, branch), pr_url: pull(shop, n) });
+    const report = `# ${taskId} report\n\nSynthetic review fixture report.`, head = sha(shop, branch), review = searchReview[taskId];
+    setTask(id, taskId, { state: 'done', attempts: 1, head_sha: head, verified_sha: head, pr_url: pull(shop, n),
+      ...(review ? { result: { result: 'resolved', summary: 'implemented', headSha: head, report },
+        verification: { verdict: 'accepted', targetSha: head, reportDigest: createHash('sha256').update(report, 'utf8').digest('hex'), summary: 'Checked against the fixture catalogue.',
+          verdictSummary: `${taskId === 'T1' ? 'The search page' : 'The filters'} do what the plan promised on the fixture catalogue.`, findings: review.findings ?? [],
+          checks: [{ command: 'npm run check', result: 'pass' }], criteria: review.criteria, eyesOn: review.eyesOn ?? [] } } : {}) });
     store.journal(id, 'published', { task: taskId, url: pull(shop, n) }, now - 26 * H);
   }
   setCampaign(id, { control: 'finished', status: 'ready',
@@ -313,7 +335,15 @@ function fill(store, dataDir, root, now) {
   id = start(declaration('notes-theme', notes, 'Give the site a dark theme', 110, [task('T1', 111, 'dark theme', 'Dark theme'),
     task('T2', 112, 'theme switch', 'Theme switch')]), now - 7 * H);
   live(id);
-  setTask(id, 'T1', { attempts: 1, blocked: { class: 'B3', reason: 'owner-reserved: the colour palette is a brand decision' } });
+  // A structured decision (OWNER_UI_V2 WP2): options with consequences, a suggestion, what continues and what happens unanswered.
+  setTask(id, 'T1', { attempts: 1, blocked: { class: 'B3', reason: 'owner-reserved: the colour palette is a brand decision', at: now - 6 * H, decision: {
+    question: 'Which palette should the dark theme use?',
+    options: [{ id: 'brand', label: 'Brand colours', consequence: 'Matches the logo; two contrast fixes are needed.' },
+      { id: 'neutral', label: 'Neutral greys', consequence: 'Passes contrast as is; looks plainer.' }],
+    suggestion: { option: 'neutral', reason: 'It passes the contrast check without extra work.' },
+    continues: 'Other work on the site keeps going.', unanswered: 'Dark theme stays stopped; nothing is published.' } } });
+  // A free-text decision: the worker described no options, so the owner answers in their own words.
+  setTask(id, 'T2', { attempts: 1, blocked: { class: 'B3', reason: 'owner-reserved: where the switch goes is a design decision', at: now - 5 * H } });
 
   id = start(declaration('notes-search', notes, 'Search notes', 120, [task('T1', 121, 'notes search', 'Notes search')]), now - 8 * H);
   live(id);
