@@ -2480,11 +2480,12 @@ export class Controller {
         const fresh = this.store.task(ctx.id, task.task_id);
         if (current.control !== 'registered' || fresh.state !== 'verified' || fresh.version !== task.version) return;
         let url;
-        const terms = this.publicationTerms(decl);
         const repair = spec.deliverable === 'commit' ? this.publishedRepair(fresh) : null;
         const integration = repair?.id === 'integration-conflict' ? repair : null;
         const repairKind = integration ? 'integration' : 'ci';
         const local = this.selfHosted(decl.target.repository);
+        // The installation's public-publication terms bind GitHub writes only: malformed ones never stop a work-list record.
+        const terms = local ? null : this.publicationTerms(decl);
         if (local) {
           url = this.recordLocalReview(ctx, decl, spec, fresh, { repair, integration, repairKind });
           if (!url) return;
