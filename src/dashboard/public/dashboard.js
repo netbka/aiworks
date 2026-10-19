@@ -112,7 +112,10 @@ function validateForm(form) {
     const min = field.getAttribute('min');
     const message = required && !value ? 'Fill in this field before continuing.'
       : value && field.getAttribute('type') === 'number' && (!Number.isSafeInteger(Number(value)) || min !== null && Number(value) < Number(min))
-        ? 'Enter a whole number of 1 or more.' : null;
+        ? 'Enter a whole number of 1 or more.'
+        // A dollar amount (data-amount): up to two decimals, inside the field's data-min and data-max.
+        : value && field.dataset.amount !== undefined && !(/^\d+(?:\.\d{1,2})?$/.test(value) && Number(value) >= Number(field.dataset.min) && Number(value) <= Number(field.dataset.max))
+          ? `Enter an amount from $${field.dataset.min} to $${Number(field.dataset.max).toLocaleString('en-US')}, such as 25 or 12.50.` : null;
     const id = `${field.id}-validation`;
     let error = form.querySelector(`#${id}`);
     if (message) {
@@ -143,7 +146,8 @@ const screenText = { home: ['Home', 'What changed, and what needs me?'], project
   cost: ['Cost', 'What did this cost?'], step: ['Step', 'What is happening on this step?'], start: ['Plan work', 'Describe the result. AIWorks proposes the steps.'],
   review: ['Review', 'Is this the right goal and limits?'], 'add-project': ['Add project', 'Which folder should AIWorks work on?'],
   worklist: ['Work list', 'What is on AIWorks’s own work list?'], 'worklist-item': ['Work item', 'What does this item say, and what happened to it?'],
-  'worklist-import': ['Imported issues', 'Which imported GitHub issues should be closed there?'] };
+  'worklist-import': ['Imported issues', 'Which imported GitHub issues should be closed there?'],
+  'project-settings': ['Project settings', 'What must AIWorks never change here, and what may it spend?'] };
 const screenKey = (route) => route.screen === 'settings' ? route.section ?? 'settings' : route.screen === 'project' ? route.tab : route.screen;
 const tabLabels = { now: 'Overview', work: 'Work', results: 'Results', cost: 'Cost' };
 
@@ -2671,12 +2675,166 @@ function costScreen(project, all) {
     disclosure(`cost/${project}`, 'See the breakdown', el('div', {}, ...all.map(work)))];
 }
 
+/*
+ * Project settings (OWNER_UI_V2 WP5): protected areas, notes for the AI and optional project and monthly budgets, read
+ * on their own (GET /api/v2/projects/<id>/settings) when opened and again at every refresh while shown. The form is kept
+ * as typed across the refresh and a failed save, per address, and binds the version it was started from: a version saved
+ * meanwhile is said, and the owner keeps their entries or takes the newest. A save shows the version it applied.
+ */
+const settingsViews = new Map();
+let settingsBusy = false;
+const settingsOff = () => settingsBusy || offline;
+const settingsAddress = (project) => formatRoute({ screen: 'project-settings', project });
+async function loadProjectSettings(project) {
+  const entry = settingsViews.get(project) ?? {};
+  settingsViews.set(project, entry);
+  if (entry.loading) return;
+  entry.loading = true;
+  try {
+    const response = await fetch(`/api/v2/projects/${encodeURIComponent(project)}/settings`, { signal: AbortSignal.timeout(6000) });
+    const value = await response.json();
+    if (response.ok) { entry.view = value; entry.error = null; entry.readAt = Date.now(); }
+    else { entry.error = { status: response.status, message: value.error }; if ([404, 409].includes(response.status)) entry.view = null; }
+  } catch { entry.error = { status: 0, message: 'These settings could not be read just now. The page tries again.' }; }
+  finally {
+    entry.loading = false;
+    if (current.route.screen === 'project-settings' && current.route.project === project && state && !document.querySelector('dialog[open]')) render();
+  }
+}
+const settingsEntry = (project) => { if (!settingsViews.has(project)) void loadProjectSettings(project); return settingsViews.get(project) ?? {}; };
+const amountText = (value) => (value === null || value === undefined ? '' : String(value));
+/** The form as the owner left it, or the saved settings with the version they came from. */
+function settingsDraft(project, view) {
+  const saved = drafts.get(settingsAddress(project), 'settings');
+  if (saved) return saved;
+  const { settings } = view;
+  return { base: view.version, areas: settings.protectedAreas.join('\n'), notes: settings.notes, totalUsd: amountText(settings.budget.totalUsd),
+    monthlyUsd: amountText(settings.budget.monthlyUsd), unknownRunCostUsd: amountText(settings.budget.unknownRunCostUsd) };
+}
+
+/** One budget period in words: charged against the cap and what is left, or the reported spend without a cap. Unknown is never $0. */
+function spendLine(label, period, price) {
+  if (!period) return el('p', {}, `${label}: not known right now.`);
+  const unpriced = period.unknownCostRuns + period.openRuns;
+  if (period.capUsd === null) {
+    return el('p', {}, `${label}: no limit. Reported ${usd(period.reportedUsd)}${period.unknownCostRuns ? `, plus ${plural(period.unknownCostRuns, 'run')} whose cost was not reported (not known)` : ''}.`);
+  }
+  return el('p', { 'data-state': period.exhausted ? 'exhausted' : 'available' }, `${label}: ${usd(period.chargedUsd)} counted of ${usd(period.capUsd)}; ${usd(Math.max(0, period.remainingUsd))} left.`,
+    unpriced ? el('span', { class: 'subtext' }, ` Includes ${[period.unknownCostRuns ? `${plural(period.unknownCostRuns, 'run')} with no reported cost` : null,
+      period.openRuns ? `${plural(period.openRuns, 'running step')}` : null].filter(Boolean).join(' and ')}, each counted at ${usd(price)}.`) : null);
+}
+
+/** The changing part: the applied version, what the budget has left, and a version saved since this form was started. */
+function settingsParts(project) {
+  const entry = settingsEntry(project), v = entry.view;
+  if (!v) return [];
+  const draft = settingsDraft(project, v), spend = v.spend;
+  return [
+    el('p', { class: 'subtext', role: 'status' }, v.version ? `Applied: version ${v.version}, saved ${clock(v.savedAt)}.` : 'Nothing saved yet: no protected areas, no notes and no budget.'),
+    entry.error || offline ? el('p', { class: 'needs-stale', role: 'status' }, `Shown as read at ${clock(entry.readAt)}. ${offline
+      ? 'The page is disconnected; it reads these settings again when it reconnects.' : entry.error.message}`) : null,
+    spend.exhausted ? el('p', { class: 'notice warning' }, `The ${spend.exhausted === 'month' ? 'monthly budget' : 'project budget'} cannot cover another step, so no new step starts here${spend.exhausted === 'month' ? ' until next month' : ''}. Running steps finish. Raise or remove the budget to continue.`) : null,
+    spendLine('All time', spend.total, spend.unknownRunCostUsd),
+    spendLine(`This month (since ${new Date(spend.monthStart).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' })}, UTC)`, spend.month, spend.unknownRunCostUsd),
+    el('p', { class: 'subtext' }, 'Counts the AI worker runs of this project’s work. Planning a goal is not counted here.'),
+    draft.base !== v.version ? el('div', { class: 'notice warning', 'data-focus-scope': `settings/${project}/stale` },
+      el('p', {}, `Version ${v.version} was saved after you started editing version ${draft.base}. Saving now is refused, so nothing is overwritten by accident.`),
+      button('Keep my entries', () => { drafts.set(settingsAddress(project), 'settings', { ...draft, base: v.version }); rebuildSettings(); }, 'secondary small', settingsOff()),
+      ' ', button('Show the newest version', () => { drafts.delete(settingsAddress(project), 'settings'); rebuildSettings(); }, 'secondary small', settingsOff())) : null,
+  ].filter(Boolean);
+}
+const rebuildSettings = () => { $('#content').replaceChildren(); render(); };
+const settingsLink = (project) => el('p', { class: 'subtext' }, routeLink('Project settings', { screen: 'project-settings', project }),
+  ': protected areas, notes for the AI and budget.');
+
+function projectSettingsScreen(project) {
+  const entry = settingsEntry(project), v = entry.view;
+  if (!v) {
+    if (!entry.error) return [empty('Reading this project’s settings…', '')];
+    return [empty(entry.error.status === 404 ? 'This project is not on this computer' : entry.error.status === 409 ? 'No settings yet' : 'Not known right now', ` ${entry.error.message}`),
+      routeLink('Back to the overview', { screen: 'project', project, tab: 'now' }, 'button secondary')];
+  }
+  const address = settingsAddress(project), draft = settingsDraft(project, v), limits = v.limits;
+  const areas = el('textarea', { id: 'settings-areas', rows: 4, 'aria-describedby': 'settings-areas-help', oninput: () => save() });
+  areas.value = draft.areas;
+  const notes = el('textarea', { id: 'settings-notes', rows: 4, maxlength: limits.notes, 'aria-describedby': 'settings-notes-help', oninput: () => save() });
+  notes.value = draft.notes;
+  const amount = (id, value, { min, max }) => {
+    const input = el('input', { id, type: 'text', inputmode: 'decimal', autocomplete: 'off', 'data-amount': true, 'data-min': min, 'data-max': max, oninput: () => save() });
+    input.value = value;
+    return input;
+  };
+  const total = amount('settings-total', draft.totalUsd, limits.budget), monthly = amount('settings-monthly', draft.monthlyUsd, limits.budget);
+  const price = amount('settings-price', draft.unknownRunCostUsd, limits.unknownRun);
+  const fields = () => ({ areas: areas.value, notes: notes.value, totalUsd: total.value, monthlyUsd: monthly.value, unknownRunCostUsd: price.value });
+  function save() { drafts.set(address, 'settings', { ...settingsDraft(project, settingsEntry(project).view ?? v), ...fields() }); }
+  const money = (text) => (text.trim() ? Number(text.trim()) : null);
+  const form = el('form', { novalidate: true, class: 'panel-body start-form', 'data-settings-form': project, 'data-focus-scope': `settings/${project}/form`,
+    onsubmit: (event) => {
+      event.preventDefault(); save();
+      // The price of a run with no reported cost is required with either budget: unknown cost is never counted as zero.
+      price.required = Boolean(total.value.trim() || monthly.value.trim());
+      if (settingsOff() || !validateForm(form)) return;
+      const lines = areas.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      void saveSettings(project, { version: settingsDraft(project, v).base, protectedAreas: lines, notes: notes.value,
+        budget: { totalUsd: money(total.value), monthlyUsd: money(monthly.value), unknownRunCostUsd: money(price.value) } });
+    } },
+    el('label', { class: 'field' }, el('strong', {}, 'Protected areas'), areas,
+      el('span', { id: 'settings-areas-help', class: 'subtext' }, `Folders or files AIWorks must never change, one per line, such as docs/legal or config/production.json. Up to ${limits.protected}. A plan that changes one is refused; a step that changes one stops for you.`)),
+    el('label', { class: 'field' }, el('strong', {}, 'Notes for the AI'), notes,
+      el('span', { id: 'settings-notes-help', class: 'subtext' }, `Given to every step as guidance; they never add permission. No secrets; up to ${limits.notes.toLocaleString('en-US')} characters.`)),
+    el('fieldset', {}, el('legend', {}, 'Budget (optional)'),
+      el('p', { class: 'subtext' }, 'Empty means no limit. A step starts only when the budget left covers it.'),
+      el('label', { class: 'field' }, el('strong', {}, 'Project budget, all time ($)'), total),
+      el('label', { class: 'field' }, el('strong', {}, 'Monthly budget ($)'), monthly),
+      el('label', { class: 'field' }, el('strong', {}, 'Count a run with no reported cost as ($)'), price,
+        el('span', { class: 'subtext' }, 'Needed with a budget: some AI workers do not report what a run cost, and that is never counted as $0.'))),
+    el('p', { class: 'subtext' }, 'Saving applies to the next step AIWorks starts here. Work already approved keeps its own limits, and these settings never widen what it may change.'),
+    el('button', { class: 'button', type: 'submit', disabled: settingsOff() }, 'Save settings'));
+  return [el('section', { class: 'panel', 'aria-labelledby': 'settings-title' },
+    el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'settings-title' }, 'Standing rules and budget'),
+      el('p', {}, 'They apply to every goal in this project.'))),
+    el('div', { class: 'panel-body', id: 'settings-dynamic' }, ...settingsParts(project)), form)];
+}
+
+/** The 5-second refresh keeps the form as typed: only the applied version, the spend and the button change. */
+function refreshProjectSettings(content, project) {
+  const form = content.querySelector('form[data-settings-form]');
+  if (!form || form.dataset.settingsForm !== project || !settingsViews.get(project)?.view) return false;
+  patch(content.querySelector('#settings-dynamic'), settingsParts(project));
+  form.querySelector('button[type="submit"]').disabled = settingsOff();
+  return true;
+}
+
+/** Save the settings. A retry reuses its request id, so the server saves them once; a refusal keeps every entry. */
+async function saveSettings(project, body) {
+  settingsBusy = true; render();
+  const requestId = crypto.randomUUID(), address = settingsAddress(project);
+  const attempt = async () => {
+    try {
+      const result = await post('/api/v2/projects/settings', { requestId, project, ...body });
+      const entry = settingsViews.get(project) ?? {};
+      Object.assign(entry, { view: result.view, error: null, readAt: Date.now() });
+      settingsViews.set(project, entry);
+      drafts.delete(address, 'settings');
+      notice(result.message, null, null, address);
+      if (current.address === address) rebuildSettings();
+    } catch (error) {
+      notice(error.known ? error.message : 'Saving could not be confirmed. Retry: the same request is never saved twice.', error.known ? null : attempt, error.known ? error.detail : null, address);
+      if (error.code === 'SETTINGS_CHANGED') void loadProjectSettings(project);
+    }
+  };
+  try { await attempt(); } finally { settingsBusy = false; await poll(); }
+}
+
 /** One project's screens. Campaign cards, step tables and costs are today's, limited to this project. */
 function projectScreen(route) {
   const project = route.project, all = projectCampaigns(project);
   // Now from the state copy module, for a project this computer knows (or while its state cannot be read).
   if (route.screen === 'project' && route.tab === 'now' && (offline || !state.supervisor.available || all.length ||
-    projectList().some((item) => sameProject(item.id, project)))) return nowScreen(project);
+    projectList().some((item) => sameProject(item.id, project)))) return [...nowScreen(project), settingsLink(project)];
+  // Project settings are read on their own, so they show whatever the supervisor's snapshot says (WP5).
+  if (route.screen === 'project-settings') return projectSettingsScreen(project);
   if (!state.supervisor.available) return [unavailable()];
   if (route.screen === 'start' && (all.length || projectList().some((item) => sameProject(item.id, project)))) {
     const plans = planRows(project);
@@ -3036,6 +3194,7 @@ function render() {
   else if (route.screen === 'worklist-item') patch(content, workItemScreen(route.number));
   else if (route.screen === 'worklist-import' && refreshImport(content)) { /* the choices stay as the owner left them */ }
   else if (route.screen === 'worklist-import') patch(content, importScreen());
+  else if (route.screen === 'project-settings' && refreshProjectSettings(content, route.project)) { /* the form stays as the owner typed it */ }
   else if (route.project) patch(content, projectScreen(route));
   else patch(content, projectsScreen());
   // Focus stays where it was; only when its element was replaced does it move to the one that took its place.
@@ -3109,6 +3268,7 @@ async function poll() {
     trackReceipts();
     // An open work list item is read again with every refresh, so a change shows and a stale draft says so.
     if (current.route.screen === 'worklist-item') void loadItem(current.route.number);
+    if (current.route.screen === 'project-settings') void loadProjectSettings(current.route.project);
     checkCloseStale();
     if (!document.querySelector('dialog[open]')) render();
     $('#confirm-cancel').disabled = $('#send-instruction').disabled = $('#send-message').disabled = sending;

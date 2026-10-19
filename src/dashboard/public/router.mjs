@@ -46,6 +46,7 @@ function parse(hash) {
   if (!tail.length) return { screen: 'project', project, tab: 'now' };
   if (tail.length === 1 && ['work', 'results', 'cost'].includes(tail[0])) return { screen: 'project', project, tab: tail[0] };
   if (tail.length === 1 && tail[0] === 'start') return { screen: 'start', project };
+  if (tail.length === 1 && tail[0] === 'settings') return { screen: 'project-settings', project };
   if (tail.length === 2 && tail[0] === 'review' && name(tail[1])) return { screen: 'review', project, plan: tail[1] };
   if (tail.length === 3 && tail[0] === 'step' && name(tail[1]) && name(tail[2])) return { screen: 'step', project, work: tail[1], step: tail[2] };
   return null;
@@ -64,6 +65,7 @@ export function formatRoute(route) {
     case 'settings': return route.section ? `#/settings/${route.section}` : '#/settings';
     case 'project': return `#/p/${p(route.project)}${route.tab && route.tab !== 'now' ? `/${route.tab}` : ''}`;
     case 'start': return `#/p/${p(route.project)}/start`;
+    case 'project-settings': return `#/p/${p(route.project)}/settings`;
     case 'review': return `#/p/${p(route.project)}/review/${p(route.plan)}`;
     case 'step': return `#/p/${p(route.project)}/step/${p(route.work)}/${p(route.step)}`;
     default: return '#/projects';
@@ -87,5 +89,5 @@ export function resolveRoute(hash) {
 
 /** The route's global destination, for aria-current in the global bar. Project screens belong to Projects; the work list to Needs me. */
 export const globalOf = (route) => ['home', 'needs', 'settings'].includes(route.screen) ? route.screen : route.screen.startsWith('worklist') ? 'needs' : 'projects';
-/** The project tab a route belongs to, or null. Step belongs to Work; Start work and Review to Now. */
-export const tabOf = (route) => route.screen === 'project' ? route.tab : route.screen === 'step' ? 'work' : ['start', 'review'].includes(route.screen) ? 'now' : null;
+/** The project tab a route belongs to, or null. Step belongs to Work; Start work, Review and Project settings to Now. */
+export const tabOf = (route) => route.screen === 'project' ? route.tab : route.screen === 'step' ? 'work' : ['start', 'review', 'project-settings'].includes(route.screen) ? 'now' : null;
