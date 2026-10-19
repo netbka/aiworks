@@ -149,9 +149,10 @@ function buildRepository(root, name, branches, { origin = true } = {}) {
   git(path, 'commit', '-q', '-m', 'initial');
   git(path, 'remote', 'add', 'origin', bare);
   const shas = {};
-  for (const { branch, merged = false, pushed = false } of branches) {
+  for (const { branch, merged = false, pushed = false, files = {} } of branches) {
     git(path, 'checkout', '-q', '-b', branch, 'main');
     writeFileSync(join(path, `${branch}.md`), `${branch}\n`);
+    for (const [file, text] of Object.entries(files)) { mkdirSync(join(path, file, '..'), { recursive: true }); writeFileSync(join(path, file), text); }
     git(path, 'add', '-A');
     git(path, 'commit', '-q', '-m', branch);
     shas[branch] = git(path, 'rev-parse', 'HEAD');
@@ -164,6 +165,13 @@ function buildRepository(root, name, branches, { origin = true } = {}) {
   return { path, origin: bare, shas };
 }
 
+/** The checked search page's static files, so Review can preview that version (OWNER_UI_V2 WP7). Made up. */
+const SEARCH_PAGE = {
+  'public/index.html': '<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">' +
+    '<title>Shop search</title><link rel="stylesheet" href="style.css"></head>\n<body><main><h1>Find a product</h1>' +
+    '<label>Search <input type="search" value="kettle"></label><ul><li>Kettle, 1.7 l</li><li>Kettle descaler</li><li>Travel kettle</li></ul></main></body></html>\n',
+  'public/style.css': 'body{margin:0;font-family:system-ui,sans-serif}main{max-width:640px;margin:0 auto;padding:24px}input{width:100%;padding:8px;margin-top:4px}\n',
+};
 const task = (id, issue, title, outcome, extra = {}) => ({ id, issue, title, outcome, deliverable: 'commit',
   goal: `${outcome}.`, dependsOn: [], acceptance: ['Synthetic review fixture step.'], references: ['README.md'], ...extra });
 const CLAUDE = { kind: 'claude-cli', model: 'opus', permissionMode: 'auto' };
@@ -181,7 +189,7 @@ function declaration(campaignId, repository, purpose, trackingIssue, tasks, exec
 function fill(store, dataDir, root, now) {
   const repos = {
     'example/shop-app': repository(root, 'shop-app', [
-      { branch: 'search-page', merged: true }, { branch: 'search-filters', pushed: true }, { branch: 'sale-banner' },
+      { branch: 'search-page', merged: true, files: SEARCH_PAGE },{ branch: 'search-filters', pushed: true }, { branch: 'sale-banner' },
       { branch: 'contracts-import', pushed: true }]),
     'example/recipes': repository(root, 'recipes', [{ branch: 'print-card', merged: true },
       { branch: 'unit-converter', merged: true }, { branch: 'metric-units', merged: true }]),
