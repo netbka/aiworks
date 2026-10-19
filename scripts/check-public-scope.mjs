@@ -71,7 +71,17 @@ export function checkPublicHistory(root, revisions) {
   const terms = privateTerms(root);
   const commits = git(root, ['rev-list', ...revisions]).toString().trim().split('\n').filter(Boolean);
   for (const commit of commits) {
-    if (contentFindings(git(root, ['show', '-s', '--format=%B', commit]).toString(), terms).length) throw new Error('A proposed commit message contains private information.');
+    const message = git(root, ['show', '-s', '--format=%B', commit]).toString();
+    let findings = contentFindings(message, terms);
+    // GitHub's merge header names a branch, not another repository; every other privacy check still sees the original.
+    if (/^Merge pull request #[1-9]\d* from netbka\/[^\s]+\r?\n/.test(message) &&
+        git(root, ['show', '-s', '--format=%P', commit]).toString().trim().split(' ').length === 2) {
+      const withoutOwner = message.replace(/^(Merge pull request #[1-9]\d* from )netbka\//, '$1');
+      if (!contentFindings(withoutOwner).includes('another upstream-owner project')) {
+        findings = findings.filter(finding => finding !== 'another upstream-owner project');
+      }
+    }
+    if (findings.length) throw new Error('A proposed commit message contains private information.');
     const entries = git(root, ['ls-tree', '-r', '-z', commit]).toString().split('\0').filter(Boolean).map(line => {
       const tab = line.indexOf('\t'), path = line.slice(tab + 1);
       const [mode, , oid] = line.slice(0, tab).split(' ');
