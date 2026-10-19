@@ -10,6 +10,9 @@ import { pendingInstructions } from '../supervisor/instructions.mjs';
 import { decisionId, isDecision, structuredDecision } from '../supervisor/decisions.mjs';
 import { criterionEvidence, MAX_FEEDBACK, mergedHead, OWNER_CHANGES, pendingChanges, unresolvedOf, verifiedReview } from '../supervisor/result-review.mjs';
 import { mergeSettings } from '../supervisor/merge.mjs';
+import { previewManifest, previewSupport, PreviewError } from '../supervisor/preview.mjs';
+import { resolveCheckout, resolveLocalProject } from '../supervisor/project-connect.mjs';
+import { configuredGitCommand } from './merges.mjs';
 import { roleUnavailableReason, runNotCounted } from '../supervisor/adapters/executors.mjs';
 import { campaignLimits } from '../supervisor/campaign.mjs';
 import { parseReference } from '../supervisor/reading.mjs';
@@ -663,6 +666,12 @@ function decisionView(campaignId, task, feedback, now) {
  * accepted by Apply under its own rules, so it offers only Request changes here.
  */
 export function resultReview(store, c, task, spec, config = {}) {
+  const review = reviewOf(store, c, task, spec, config);
+  // Whether Review offers a preview of this checked version (WP7), and why not when it does not.
+  return review && { ...review, preview: previewSupport(task, spec, review) };
+}
+
+function reviewOf(store, c, task, spec, config) {
   if (!task?.verified_sha) return null;
   const local = isLocalTarget(c.declaration), commit = spec?.deliverable === 'commit';
   const limits = campaignLimits(c.declaration);
@@ -1230,4 +1239,47 @@ export function applyResultReview(dataDir, action, input, now = Date.now(), { co
       return { accepted: true, duplicate: false, action, mergeGate: review.mergeGate };
     });
   } finally { store.close(); }
+}
+
+const PREVIEW_KEYS = ['campaignId', 'taskId', 'taskVersion', 'version', 'authorizationVersion', 'scopeDigest', 'verifiedSha', 'reportDigest'];
+
+/**
+ * Open a preview of a checked version (OWNER_UI_V2 WP7). The request binds the same goal, step, verified head and report
+ * as Review's accept, and nothing else: no command, path or address. The review is read again here, so only the exact
+ * head of a finished step that passed the independent check with that report is previewed; a changed, unverified,
+ * reopened or report-only result is refused. The pages are read from that commit's Git objects in AIWorks's own
+ * checkout (preview.mjs); nothing is built or started, and nothing is written. The answer names the preview's address and the commit,
+ * never a folder.
+ */
+export function openResultPreview(dataDir, input, sessions, { config = readConfig(dataDir) } = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !PREVIEW_KEYS.includes(key)) ||
+      !identifier.test(input.campaignId ?? '') || !identifier.test(input.taskId ?? '') || !Number.isSafeInteger(input.taskVersion) ||
+      !Number.isSafeInteger(input.version) || input.version < 1 || !Number.isSafeInteger(input.authorizationVersion) ||
+      !/^[a-f0-9]{64}$/.test(input.scopeDigest ?? '') || !/^[0-9a-f]{40}$/.test(input.verifiedSha ?? '') || !/^[0-9a-f]{64}$/.test(input.reportDigest ?? '')) {
+    throw fail(400, 'Invalid dashboard command.');
+  }
+  if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'AIWorks can’t read its work records on this computer right now.');
+  const store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true });
+  let repoPath = null;
+  try {
+    const c = store.campaign(input.campaignId);
+    if (!c) throw fail(404, COMMANDS.notFound);
+    if (c.version !== input.version || c.authorization_version !== input.authorizationVersion || c.scope_digest !== input.scopeDigest) {
+      throw fail(409, 'Work changed since this view was loaded. Refresh and try again.');
+    }
+    const task = store.task(c.id, input.taskId), spec = c.declaration.tasks.find((item) => item.id === input.taskId);
+    if (!task || task.version !== input.taskVersion) throw fail(409, COMMANDS.result.changed);
+    const review = resultReview(store, c, task, spec, config);
+    // Exactly the head that passed the independent check, with the report it was checked with: never a newer or older one.
+    if (!review || review.verifiedSha !== input.verifiedSha || review.reportDigest !== input.reportDigest) throw fail(409, COMMANDS.result.changed);
+    if (!review.preview.available) throw fail(409, review.preview.reason);
+    try { repoPath = isLocalTarget(c.declaration) ? resolveLocalProject(store, c.declaration).checkout.path : resolveCheckout(store, config, c.declaration.target.repository)?.path ?? null; }
+    catch { repoPath = null; }
+  } finally { store.close(); }
+  const git = configuredGitCommand(dataDir);
+  let manifest;
+  try { manifest = previewManifest({ git, repoPath, sha: input.verifiedSha }); }
+  catch (error) { if (error instanceof PreviewError) throw fail(409, error.message); throw error; }
+  const { token, expiresAt } = sessions.add({ git, repoPath, sha: input.verifiedSha, manifest, binding: { campaignId: input.campaignId, taskId: input.taskId } });
+  return { url: `/preview/${token}/${manifest.entry.split('/').map(encodeURIComponent).join('/')}`, verifiedSha: input.verifiedSha, expiresAt };
 }

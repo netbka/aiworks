@@ -2450,6 +2450,52 @@ async function sendReview(action, binding, review, body, { address = current.add
   try { await attempt(); } finally { reviewBusy = false; await poll(); }
 }
 
+/**
+ * Try this version (OWNER_UI_V2 WP7): the static pages of exactly the commit that passed the check, in a sandboxed frame
+ * at desktop or phone width. Opening is bound to the same version and report as Accept result; the frame cannot reach the
+ * dashboard or the network, and the preview ends by itself after 30 minutes. Each preview is kept per version, so the
+ * 5-second refresh keeps the frame as it is. A result without one says why.
+ */
+const previews = new Map();
+// The button pressed is replaced by the next state's controls, so focus moves to that preview's first control.
+const showPreview = (key, value) => {
+  if (value) previews.set(key, value); else previews.delete(key);
+  render();
+  [...document.querySelectorAll('.preview-panel')].find((node) => node.dataset.focusScope === `preview/${key}`)?.querySelector('button')?.focus({ preventScroll: true });
+};
+async function openPreview(key, binding, review) {
+  showPreview(key, { state: 'opening', size: previews.get(key)?.size ?? 'desktop' });
+  try {
+    const opened = await post('/api/v2/results/preview', { ...binding, verifiedSha: review.verifiedSha, reportDigest: review.reportDigest });
+    showPreview(key, { state: 'open', size: previews.get(key)?.size ?? 'desktop', url: opened.url, sha: opened.verifiedSha, expiresAt: opened.expiresAt });
+  } catch (error) {
+    showPreview(key, { state: 'failed', size: previews.get(key)?.size ?? 'desktop', error: error.known ? error.message : COMMANDS.unconfirmed });
+  }
+}
+
+function previewSection(review, binding) {
+  if (!review.preview) return null;
+  const key = `${binding.campaignId}/${binding.taskId}/${review.verifiedSha}`, shown = previews.get(key), sha7 = review.verifiedSha.slice(0, 7);
+  const section = (...children) => el('div', { class: 'preview-panel', 'data-focus-scope': `preview/${key}` }, el('strong', {}, 'Try this version'), ...children);
+  if (!review.preview.available) return section(el('p', { class: 'subtext' }, `Preview not available: ${review.preview.reason}`));
+  const identity = el('p', { class: 'subtext' }, 'The version checked at ', el('code', { title: review.verifiedSha }, sha7),
+    ', exactly as it passed the check. Its pages run in a sealed frame: they cannot reach this dashboard or the internet, and nothing of the project is built or started on this computer.');
+  // Each control names its preview: the refresh keeps a button that shows exactly the same, with its own action, so two
+  // results' identical buttons must never be mistaken for each other.
+  const control = (label, action, cls = 'secondary', extra = {}) => el('button', { class: `button ${cls}`, type: 'button', 'data-preview': key, onclick: action, ...extra }, label);
+  const open = (label) => control(label, () => void openPreview(key, binding, review), shown ? 'secondary' : '', { disabled: shown?.state === 'opening' || offline });
+  if (!shown) return section(identity, el('div', { class: 'campaign-controls' }, open('Open preview')));
+  if (shown.state === 'opening') return section(identity, el('p', { role: 'status', 'aria-live': 'polite' }, 'Opening the checked version…'));
+  if (shown.state === 'failed') return section(identity, el('p', { class: 'notice warning', role: 'alert' }, `The preview did not open. ${shown.error}`), el('div', { class: 'campaign-controls' }, open('Try again')));
+  const size = (name, label) => control(label, () => { previews.set(key, { ...shown, size: name }); render(); }, 'secondary', { 'aria-pressed': String(shown.size === name) });
+  return section(identity,
+    el('div', { class: 'campaign-controls preview-controls', role: 'group', 'aria-label': 'Preview width' }, size('desktop', 'Desktop'), size('phone', 'Phone'),
+      control('Close preview', () => showPreview(key, null))),
+    el('p', { class: 'subtext' }, `Showing ${shown.size === 'phone' ? 'a phone-width (390 px)' : 'a desktop-width'} view of ${sha7}. The preview ends at ${clock(shown.expiresAt)}; open it again after that.`),
+    el('div', { class: `preview-frame ${shown.size}` }, el('iframe', { src: shown.url, title: `Preview of the version checked at ${sha7} (${shown.size === 'phone' ? 'phone' : 'desktop'} width)`,
+      sandbox: 'allow-scripts', referrerpolicy: 'no-referrer', loading: 'lazy' })));
+}
+
 function reviewPanel(review, binding, { merged = false } = {}) {
   if (!review) return null;
   // Merged outside the merge gate (seen in local git): nothing is left to accept or send back.
@@ -2460,10 +2506,11 @@ function reviewPanel(review, binding, { merged = false } = {}) {
     return box(el('h3', { class: 'section-title' }, 'Changes requested'),
       el('p', { role: 'status' }, review.stalled
         ? `You asked for changes to the version checked at ${sha7}, but this step has used all its repair rounds, so it stopped. Nothing of it was published or merged.`
-        : `You asked for changes to the version checked at ${sha7}${review.requestedAt ? ` at ${clock(review.requestedAt)}` : ''}. AIWorks repairs this step within the approved plan; a fresh independent check comes before anything is published or merged. The earlier check stays on record.`));
+        : `You asked for changes to the version checked at ${sha7}${review.requestedAt ? ` at ${clock(review.requestedAt)}` : ''}. AIWorks repairs this step within the approved plan; a fresh independent check comes before anything is published or merged. The earlier check stays on record.`),
+      previewSection(review, binding));
   }
   if (review.state === 'no-evidence') {
-    return box(el('h3', { class: 'section-title' }, 'Review'), el('p', {}, 'No independent check of this version is on record, so it cannot be accepted here.'));
+    return box(el('h3', { class: 'section-title' }, 'Review'), el('p', {}, 'No independent check of this version is on record, so it cannot be accepted here.'), previewSection(review, binding));
   }
   const off = reviewBusy || commandsOff(), address = current.address, key = `review:${binding.campaignId}/${binding.taskId}/${review.verifiedSha}`;
   const u = review.unresolved, open = u.failed + u.notChecked + u.blocking;
@@ -2490,6 +2537,7 @@ function reviewPanel(review, binding, { merged = false } = {}) {
   return box(
     el('h3', { class: 'section-title' }, `Review of the version checked at ${sha7}`),
     review.summary ? el('p', {}, `The independent checker: ${review.summary}`) : null,
+    previewSection(review, binding),
     el('p', { role: 'status' }, open ? `Not complete: ${[u.failed ? `${plural(u.failed, 'criterion', 'criteria')} failed` : null, u.notChecked ? `${plural(u.notChecked, 'criterion', 'criteria')} not checked` : null,
       u.blocking ? `${plural(u.blocking, 'blocking finding')} open` : null].filter(Boolean).join(' · ')}.` : 'Every criterion passed the independent check.'),
     el('ol', { class: 'review-criteria', 'aria-label': 'Done-when criteria and their evidence' }, ...review.criteria.map((item) => el('li', {},
