@@ -1442,6 +1442,7 @@ export class Controller {
         const stalled = this.reopenPublished(ctx, task, finding, { limits, now,
           lastError: `integration-conflict: ${paths.join(', ')} conflict with ${base} at ${baseSha}`,
           stalledReason: `integration conflict with ${base} after ${task.repair_rounds} repair rounds` });
+        if (stalled === null) return;
         this.store.journal(ctx.id, 'integration-conflict', { task: task.task_id, sha, base: baseSha, paths, commits: commits.map((item) => item.sha), stalled }, now);
       }
       if (!open && this.store.campaign(ctx.id).control === 'finished') this.integrationCheckedAt.set(ctx.id, Infinity);
@@ -1451,9 +1452,12 @@ export class Controller {
   /**
    * Reopen a published task as a repair round on its own branch and PR, carrying `finding` (aiworks#27, aiworks#138): its
    * verified head is the new round's base. Past maxRepairRounds the task stalls instead. A finished campaign becomes
-   * active again. Call inside fenced(). Returns whether the task stalled.
+   * active again. Call inside fenced(). Returns whether the task stalled, or null when the campaign no longer takes repair
+   * work (aiworks#5): a pause or cancellation may commit between a pass selecting the task and this fenced update, and a
+   * cancelled campaign keeps its completed task as it is.
    */
   reopenPublished(ctx, task, finding, { limits, now, lastError, stalledReason }) {
+    if (!this.takesRepair(ctx.id)) return null;
     const stalled = limits.maxRepairRounds !== null && task.repair_rounds >= limits.maxRepairRounds;
     this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version, {
       state: 'pending', base_sha: task.verified_sha, findings: [finding], failures: {}, retry_at: null, last_error: lastError.slice(0, 1000),
@@ -1464,6 +1468,11 @@ export class Controller {
       this.store.patch('campaigns', { id: ctx.id }, fresh.version, { control: 'registered', status: 'active', next_action: null }, now);
     }
     return stalled;
+  }
+
+  /** Whether a campaign may reopen a published task as a repair round now: registered or finished, never paused or cancelled. */
+  takesRepair(campaignId) {
+    return ['registered', 'finished'].includes(this.store.campaign(campaignId).control);
   }
 
   /**
@@ -1574,7 +1583,7 @@ export class Controller {
   recordCi(ctx, task, { state, checks, pr = null }) {
     return this.fenced(ctx, () => {
       const fresh = this.store.task(ctx.id, task.task_id), now = this.now();
-      if (fresh.version !== task.version) return false;
+      if (fresh.version !== task.version || !this.takesRepair(ctx.id)) return false;
       const decl = this.store.campaign(ctx.id).declaration, spec = specOf(this.store, ctx.id, task.task_id, decl);
       const sha = task.verified_sha, names = (list) => list.map((check) => check.name);
       if (state === 'pending') {
