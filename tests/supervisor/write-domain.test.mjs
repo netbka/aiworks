@@ -196,18 +196,20 @@ test('a commit that changes files outside its plan goes on to the verifier, who 
 });
 
 test('a commit that changes a secret-like file or a file the plan forbids is still a boundary violation held for the owner', async (t) => {
-  const r = rig(t, commitTask('T1', 926, { writes: ['src/a/'] }));
-  await r.tick();
-  const held = r.implement(['src/a/ok.txt', 'config/.env.local']);
-  assert.equal(held.state, 'pending');
-  assert.equal(held.blocked?.class, 'B3');
-  assert.match(held.blocked.reason, /boundary violation .*secret-like or forbidden files: config\/\.env\.local/);
-  assert.equal(held.retry_at, null, 'no timed retry');
-  // Never retried: later ticks open no new operation, on this provider or any other, until the owner rechecks.
-  await r.tick();
-  await r.tick();
-  assert.equal(r.store.openOperations(r.campaignId).length, 0);
-  assert.equal(r.store.all("SELECT id FROM operations WHERE campaign_id = ? AND kind = 'implement'", r.campaignId).length, 1);
+  for (const writes of [['src/a/'], undefined]) await t.test(writes ? 'planned files' : 'whole repository', async (t) => {
+    const r = rig(t, commitTask('T1', 926, { writes }));
+    await r.tick();
+    const held = r.implement(['src/a/ok.txt', 'config/.env.local']);
+    assert.equal(held.state, 'pending');
+    assert.equal(held.blocked?.class, 'B3');
+    assert.match(held.blocked.reason, /boundary violation .*secret-like or forbidden files: config\/\.env\.local/);
+    assert.equal(held.retry_at, null, 'no timed retry');
+    // Never retried: later ticks open no new operation, on this provider or any other, until the owner rechecks.
+    await r.tick();
+    await r.tick();
+    assert.equal(r.store.openOperations(r.campaignId).length, 0);
+    assert.equal(r.store.all("SELECT id FROM operations WHERE campaign_id = ? AND kind = 'implement'", r.campaignId).length, 1);
+  });
   const decl = { envelope: { denyWrites: ['src/a/locked'] } };
   const domain = domainOf(declaration({ tasks: [commitTask('T2', 927, { writes: ['src/'] })] }), commitTask('T2', 927, { writes: ['src/'] }));
   assert.deepEqual(outsideWrites(decl, domain, ['SRC/A/Locked/x.js', 'docs/x.md']), { forbidden: ['SRC/A/Locked/x.js'], beyond: ['docs/x.md'] },
