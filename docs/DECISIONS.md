@@ -115,3 +115,15 @@ A task's `writes` (and an envelope's `writes`) are the planned files. They still
 - Still a boundary violation, held for the owner: any secret-like path, and any path inside an envelope's `denyWrites`, wherever it lies.
 
 Campaign scope otherwise stays binding: the outcome, the acceptance, the target repository and branch, the authorization version and independent verification (AW-001, AW-005).
+
+## AW-014 - Waiting pull requests merge as one group after one gate run
+
+Owner decision 2026-10-19: "When a merge queue builds up, merge them all. The checks were already run before publishing; check the combined result once after the cycle instead of turning every merge into a blocker."
+
+Each pull request was verified on its own, on the base it started from. What lands on the base is the combination, so the combination is checked, once:
+
+- With `merges.batch: true` (and `merges.refresh`, which names the gate command), two or more verified pull requests waiting for one base form a group. The supervisor builds their combined result locally, runs the gate once on that exact tree, then merges them on GitHub in the same order.
+- Each merge happens only while the base is exactly the previous step of the checked chain, and its merge commit must carry the tree that step predicted. Otherwise the group stops.
+- A pull request that conflicts stays out of the group. A failed gate ends the group, and its pull requests go one at a time as before (a moved base is gated alone, or repaired). The same group on the same base is never gated twice.
+
+The merge gate's other rules stay: only listed repositories, only the exact verified heads, merge commits only, never a squash, rebase, force-push or branch deletion (AW-001).
