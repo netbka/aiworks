@@ -1016,7 +1016,7 @@ const LOCAL_CONTROL = { registered: 'Approved. AIWorks works on its own copy of 
   paused: 'Paused. Nothing new starts until it is resumed.', finished: 'All steps are finished. The checked results are under Results.', cancelled: 'Cancelled.' };
 let applying = null;
 
-function localResultRow(row) {
+function localResultRow(row, c = null) {
   const busy = applying !== null || sending || offline || !state.supervisor.available, key = `${row.campaignId}/${row.taskId}`;
   const press = row.action === 'apply' ? button(applying === key ? 'Applying…' : 'Apply', () => void pressApply(row, 'apply'), '', busy)
     : row.action === 'undo' ? button(applying === key ? 'Undoing…' : 'Undo apply', () => void pressApply(row, 'undo'), 'secondary', busy) : null;
@@ -1025,16 +1025,19 @@ function localResultRow(row) {
     el('div', { class: 'result-state' }, row.state),
     el('p', { class: 'subtext local-text' }, row.text),
     row.files.length ? el('ul', { class: 'subtext local-text', 'aria-label': 'Files' }, ...row.files.map((file) => el('li', {}, file))) : null,
-    press ? el('div', { class: 'needs-actions' }, press) : null);
+    press ? el('div', { class: 'needs-actions' }, press) : null,
+    // Criteria with their evidence and Request changes (OWNER_UI_V2 WP4); Apply stays this result's acceptance.
+    c ? reviewPanel(row.review, { campaignId: row.campaignId, taskId: row.taskId, taskVersion: row.taskVersion, version: c.version,
+      authorizationVersion: c.authorizationVersion, scopeDigest: c.scopeDigest }) : null);
 }
 
 /** Results of a project without GitHub: each step's checked result, with Apply or Undo apply. */
 function localResultsScreen(project) {
-  const rows = localWork(project).flatMap((c) => c.results);
+  const rows = localWork(project).flatMap((c) => c.results.map((row) => [row, c]));
   if (!rows.length) return [el('section', { class: 'panel' }, empty('No results yet.', 'Checked results appear here. Nothing in your folder changes until you press Apply on one.'))];
   return [el('section', { class: 'panel', 'aria-labelledby': 'results-title', 'data-focus-scope': `results/${project}` },
     el('div', { class: 'panel-header' }, el('h2', { id: 'results-title' }, plural(rows.length, 'result'))),
-    el('ul', { class: 'needs-list' }, ...rows.map(localResultRow)))];
+    el('ul', { class: 'needs-list' }, ...rows.map(([row, c]) => localResultRow(row, c))))];
 }
 
 /** Work of a project without GitHub: each approved plan with its steps, in the owner's words. */
@@ -2417,6 +2420,86 @@ function decisionPanel(c, task) {
 }
 
 /**
+ * Review of a result (OWNER_UI_V2 WP4): the checker's verdict in a sentence, each done-when criterion with how it was
+ * checked and what was seen ("Not checked" when the checker said nothing about it), open findings, where the owner's own
+ * eyes matter, then Accept result and Request changes. Both are bound to the version that passed the check and its
+ * report; a retry reuses its request id, so nothing is recorded twice. The request's words are a draft of this address
+ * until the server accepts them. A local result is accepted with Apply, so it offers Request changes only.
+ */
+const CRITERION_WORDS = { pass: ['done', 'Passed'], fail: ['attention', 'Failed'], 'not-checked': ['unknown', 'Not checked'] };
+let reviewBusy = false;
+async function sendReview(action, binding, review, body, { address = current.address, done = null } = {}) {
+  const payload = { requestId: crypto.randomUUID(), ...binding, verifiedSha: review.verifiedSha, reportDigest: review.reportDigest, ...body };
+  reviewBusy = true; render();
+  const attempt = async () => {
+    try {
+      const result = await post(`/api/v2/results/${action}`, payload);
+      done?.();
+      notice(result.duplicate ? COMMANDS.duplicate : action === 'accept' ? COMMANDS.result.accept(result.mergeGate) : COMMANDS.result[action], null, null, address);
+    } catch (error) {
+      if (error.code === 'INSTRUCTION_LOOKS_SENSITIVE') return notice(error.message, null, null, address);
+      notice(error.known ? error.message : COMMANDS.unconfirmed, error.known ? null : attempt, error.known ? error.detail : null, address);
+    }
+  };
+  try { await attempt(); } finally { reviewBusy = false; await poll(); }
+}
+
+function reviewPanel(review, binding, { merged = false } = {}) {
+  if (!review) return null;
+  // Merged outside the merge gate (seen in local git): nothing is left to accept or send back.
+  if (merged && ['ready', 'accepted'].includes(review.state)) review = { ...review, state: 'merged', canAccept: false, canRequestChanges: false };
+  const scope = `review/${binding.campaignId}/${binding.taskId}`, sha7 = (review.from ?? review.verifiedSha).slice(0, 7);
+  const box = (...children) => el('div', { class: 'instruction-list review-panel', 'data-review': review.state, 'data-focus-scope': scope }, ...children);
+  if (review.state === 'changes-requested') {
+    return box(el('h3', { class: 'section-title' }, 'Changes requested'),
+      el('p', { role: 'status' }, review.stalled
+        ? `You asked for changes to the version checked at ${sha7}, but this step has used all its repair rounds, so it stopped. Nothing of it was published or merged.`
+        : `You asked for changes to the version checked at ${sha7}${review.requestedAt ? ` at ${clock(review.requestedAt)}` : ''}. AIWorks repairs this step within the approved plan; a fresh independent check comes before anything is published or merged. The earlier check stays on record.`));
+  }
+  if (review.state === 'no-evidence') {
+    return box(el('h3', { class: 'section-title' }, 'Review'), el('p', {}, 'No independent check of this version is on record, so it cannot be accepted here.'));
+  }
+  const off = reviewBusy || commandsOff(), address = current.address, key = `review:${binding.campaignId}/${binding.taskId}/${review.verifiedSha}`;
+  const u = review.unresolved, open = u.failed + u.notChecked + u.blocking;
+  const draft = drafts.get(address, key) ?? { text: '', criterion: '' };
+  const words = el('textarea', { id: `review-text-${binding.taskId}`, rows: 3, maxlength: 2000, required: true,
+    oninput: () => drafts.set(address, key, { text: words.value, criterion: which.value }) });
+  words.value = draft.text ?? '';
+  const which = el('select', { id: `review-criterion-${binding.taskId}`, onchange: () => drafts.set(address, key, { text: words.value, criterion: which.value }) },
+    el('option', { value: '' }, 'The result as a whole'), ...review.criteria.map((item) => el('option', { value: String(item.criterion) }, `${item.criterion}. ${item.text}`)));
+  which.value = draft.criterion ?? '';
+  const form = review.canRequestChanges ? el('form', { novalidate: true, class: 'start-form', 'data-focus-scope': `${scope}/changes`,
+    onsubmit: (event) => {
+      event.preventDefault();
+      if (off || !validateForm(form)) return;
+      void sendReview('request-changes', binding, review, { text: words.value, ...(which.value ? { criterion: Number(which.value) } : {}) },
+        { address, done: () => drafts.delete(address, key) });
+    } },
+    el('label', { class: 'field' }, el('strong', {}, 'About'), which),
+    el('label', { class: 'field' }, el('strong', {}, 'What should change'), words),
+    el('p', { class: 'subtext' }, `AIWorks reopens this step as a repair round within the approved plan${review.roundsLeft === null ? '' : ` (${plural(review.roundsLeft, 'round')} left)`}. A wider change needs a new plan. No secrets; up to 2,000 characters.`),
+    el('div', { class: 'campaign-controls' }, el('button', { class: 'button secondary', type: 'submit', disabled: off }, 'Request changes'))) : null;
+  const accepted = review.state === 'accepted' ? `You accepted this version at ${clock(review.acceptedAt)}. ${review.mergeGate === 'on' ? 'The merge gate merges it when its own conditions hold.' : 'Merging follows this project’s own gate.'}`
+    : review.state === 'merged' ? 'This version is merged.' : null;
+  return box(
+    el('h3', { class: 'section-title' }, `Review of the version checked at ${sha7}`),
+    review.summary ? el('p', {}, `The independent checker: ${review.summary}`) : null,
+    el('p', { role: 'status' }, open ? `Not complete: ${[u.failed ? `${plural(u.failed, 'criterion', 'criteria')} failed` : null, u.notChecked ? `${plural(u.notChecked, 'criterion', 'criteria')} not checked` : null,
+      u.blocking ? `${plural(u.blocking, 'blocking finding')} open` : null].filter(Boolean).join(' · ')}.` : 'Every criterion passed the independent check.'),
+    el('ol', { class: 'review-criteria', 'aria-label': 'Done-when criteria and their evidence' }, ...review.criteria.map((item) => el('li', {},
+      el('span', {}, item.text), ' ', el('span', { class: `badge ${CRITERION_WORDS[item.result][0]}` }, CRITERION_WORDS[item.result][1]),
+      el('div', { class: 'subtext' }, item.check ? `Checked: ${item.check}` : 'The checker reported no check for this criterion.'),
+      item.evidence ? el('div', { class: 'subtext' }, `Evidence: ${item.evidence}`) : null))),
+    review.findings.length ? el('div', {}, el('strong', {}, 'Findings'), el('ul', {}, ...review.findings.map((f) => el('li', {}, `${f.severity === 'blocking' ? 'Blocking' : 'Not blocking'}: ${f.description}`)))) : null,
+    review.eyesOn.length ? el('div', {}, el('strong', {}, 'Where your eyes matter'), el('ul', {}, ...review.eyesOn.map((item) => el('li', {}, item)))) : null,
+    accepted ? el('p', { role: 'status' }, accepted) : null,
+    !review.local && review.state === 'ready' && !review.canAccept && (u.failed || u.blocking) ? el('p', { class: 'subtext' }, COMMANDS.result.unresolved) : null,
+    review.canAccept ? el('div', { class: 'campaign-controls' }, button('Accept result', () => sendReview('accept', binding, review, {}, { address }), '', off),
+      el('span', { class: 'subtext' }, review.mergeGate === 'on' ? 'Records your acceptance; the merge gate merges it when its own conditions hold.' : 'Records your acceptance. Nothing is merged from here.')) : null,
+    form);
+}
+
+/**
  * Step (OWNER_WORKSPACE §4.8, slice S5): the outcome with its work's goal and project; one state and who is on it;
  * progress from the worker's own record; the last result; guidance sent, with receipts; one primary action by state;
  * and, in Details, every attempt with its end and the step's own events.
@@ -2441,6 +2524,8 @@ function stepScreen(project, c, task) {
       el('p', { role: 'status', 'aria-live': 'polite' }, stepBadge(c, task), ' ', task.stopped ? el('strong', {}, task.stopped.title) : whoIsOn(c, task) ?? waitLine(task.wait) ?? ''),
       task.stopped ? el('p', {}, task.stopped.text) : null,
       decisionPanel(c, task),
+      reviewPanel(task.review, { campaignId: c.id, taskId: task.id, taskVersion: task.version, version: c.version,
+        authorizationVersion: c.authorizationVersion, scopeDigest: c.scopeDigest }, { merged: deliveryOf(c, task)?.state === 'merged' }),
       p ? el('p', { class: 'subtext' }, `From the worker’s own record: ${plural(p.turns, 'turn')} · ${plural(p.toolCalls, 'action')} · last activity ${timeAgo(p.lastActivityAt)}`) : null,
       last ? el('p', { class: 'subtext' }, `Last result: ${last}`) : null,
       task.signature ? el('div', { class: 'instruction-list', 'data-task-signature': '' },

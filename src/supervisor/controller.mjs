@@ -23,6 +23,7 @@ import { MAX_CITES } from './adapters/claude.mjs';
 import { stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions } from './instructions.mjs';
 import { answerGuidance, decisionId, isDecision, structuredDecision } from './decisions.mjs';
+import { mergedHead, OWNER_CHANGES, ownerChangesFinding } from './result-review.mjs';
 import { POLICY as ROUTING_POLICY, autoReceipt, indicators, policyInputs, priorAttempt, receiptInputs, staticReceipt } from './router.mjs';
 import { roleCatalog } from './governance.mjs';
 import { ACCEPT_TASK, PLAN_TASK, admitAmendment, settleAmendment, specOf as storedSpecOf, specsOf as storedSpecsOf, verifyChain } from './plan.mjs';
@@ -105,11 +106,14 @@ export const DEFAULTS = {
   // A GitHub rate-limit refusal waits for its reported reset plus this margin, instead of publishRetryMs (aiworks#21).
   rateLimitMarginMs: 5_000,
 };
-// Findings that reopen a published task as a repair round on its own branch and PR (aiworks#27, aiworks#42).
-const REPAIR_FINDINGS = new Set(['integration-conflict', 'ci-failure']);
+// Findings that reopen a published task as a repair round on its own branch and PR (aiworks#27, aiworks#42), and the
+// owner's request for changes to a finished result (OWNER_UI_V2 WP4).
+const REPAIR_FINDINGS = new Set(['integration-conflict', 'ci-failure', OWNER_CHANGES]);
 // aiworks#8: a verified task whose publication text fails the privacy check gets at most this many correction rounds
 // (within maxRepairRounds) before it stalls; nothing of the refused text is sent.
 const PUBLICATION_REPAIRS = 2;
+// A repair round's name in the words of a stop or a refusal.
+const REPAIR_WORDS = Object.freeze({ ci: 'CI', integration: 'integration', 'owner-changes': 'requested-changes' });
 
 // ---- Scoped reading (docs/design/SCOPED_READING.md sections 4 to 6, slice READ2). ----
 // A reference may name one section of a Markdown document as `path#anchor`. Dispatch resolves it at the pinned revision
@@ -180,7 +184,7 @@ export function packetReferences({ declared, kind, findings, maxReferences }) {
 /** The packet constraint of one blocking finding; a verifier finding names the rule of each cite (SCOPED_READING 6.4). */
 export function findingConstraint(finding, resolutions = []) {
   const label = finding.id === 'integration-conflict' ? 'integration' : finding.id === 'ci-failure' ? 'CI'
-    : finding.id === 'publication-text' ? 'publication' : 'verifier';
+    : finding.id === 'publication-text' ? 'publication' : finding.id === OWNER_CHANGES ? 'owner' : 'verifier';
   const rules = (Array.isArray(finding.cites) && !REPAIR_FINDINGS.has(finding.id) ? finding.cites : []).map((cite) => {
     const item = resolutions.find((record) => record.reference === cite && record.resolved);
     const heading = item ? promptText(item.heading, 120) : null;
@@ -486,6 +490,11 @@ export class Controller {
         if (!ids.includes(id) && (this.ciNextAt.get(id) ?? -Infinity) <= this.now()) ids.push(id);
       }
     }
+    // And a finished campaign whose owner asked for changes to one of its results (OWNER_UI_V2 WP4).
+    for (const { campaign_id: id } of this.store.all(`SELECT DISTINCT events.campaign_id FROM events JOIN campaigns ON campaigns.id = events.campaign_id
+      WHERE events.kind = 'result-changes' AND events.processed_at IS NULL AND campaigns.control = 'finished'`)) {
+      if (!ids.includes(id)) ids.push(id);
+    }
     this.candidates = [];
     for (const id of ids) {
       try {
@@ -562,6 +571,8 @@ export class Controller {
     if (this.ir && this.store.campaign(id).control === 'finished') this.checkPublishedIntegration(ctx);
     // A published head whose CI fails reopens its task the same way (aiworks#42).
     if (this.ci && this.store.campaign(id).control === 'finished') this.checkPublishedCi(ctx);
+    // The owner's request for changes reopens its finished step the same way (OWNER_UI_V2 WP4).
+    this.requestedChanges(ctx);
     if (['finished', 'cancelled'].includes(this.store.campaign(id).control)) return;
 
     this.processEvents(ctx);
@@ -760,6 +771,7 @@ export class Controller {
   processEvents(ctx) {
     for (const event of this.store.all('SELECT * FROM events WHERE campaign_id = ? AND processed_at IS NULL ORDER BY seq', ctx.id)) {
       if (event.kind === 'agent-instruction') continue; // Dispatch owns the durable delivery receipt.
+      if (event.kind === 'result-changes') continue; // requestedChanges handles it, in finished campaigns too.
       this.fenced(ctx, () => {
         const now = this.now();
         if (event.kind === 'recheck') {
@@ -1499,6 +1511,39 @@ export class Controller {
       this.store.patch('campaigns', { id: ctx.id }, fresh.version, { control: 'registered', status: 'active', next_action: null }, now);
     }
     return stalled;
+  }
+
+  /**
+   * The owner's requests for changes to a finished result (OWNER_UI_V2 WP4), each handled once inside the fence. A
+   * request reopens its step only while the step is still done at exactly the verified head it was made on, unmerged,
+   * under the same authorization and scope: then it becomes a repair round on the same branch, bounded by
+   * maxRepairRounds (past it the step stalls), and its new head is published only after a fresh independent verification.
+   * Earlier runs, checks and the owner's earlier acceptance stay in the record. A paused campaign keeps the request until
+   * it resumes; a cancelled one, a changed step or a merged head records it as stale and changes nothing.
+   */
+  requestedChanges(ctx) {
+    const events = this.store.all("SELECT * FROM events WHERE campaign_id = ? AND kind = 'result-changes' AND processed_at IS NULL ORDER BY seq", ctx.id);
+    for (const event of events) {
+      this.fenced(ctx, () => {
+        const c = this.store.campaign(ctx.id), p = event.payload ?? {}, now = this.now();
+        if (['paused', 'cancel-requested'].includes(c.control)) return;
+        const task = this.store.task(ctx.id, p.taskId);
+        const current = this.takesRepair(ctx.id) && task?.state === 'done' && !task.blocked && task.verified_sha === p.verifiedSha &&
+          c.authorization_version === p.authorizationVersion && c.scope_digest === p.scopeDigest &&
+          specOf(this.store, ctx.id, task.task_id, c.declaration)?.deliverable === 'commit' && !mergedHead(this.store, ctx.id, task.task_id, p.verifiedSha) &&
+          // A head already in its last fetched base was merged by someone else: there is nothing left to repair on its pull request.
+          (isLocalTarget(c.declaration) || !this.inBase(c.declaration, p.verifiedSha));
+        if (!current) this.store.journal(ctx.id, 'result-changes-stale', { task: p.taskId ?? null, sha: p.verifiedSha ?? null }, now);
+        else {
+          const stalled = this.reopenPublished(ctx, task, ownerChangesFinding({ verifiedSha: p.verifiedSha, text: p.text, criterion: p.criterion ?? null }),
+            { limits: campaignLimits(c.declaration), now, lastError: `owner-changes: requested on ${p.verifiedSha}`,
+              stalledReason: `owner requested changes on ${p.verifiedSha} after ${task.repair_rounds} repair rounds` });
+          // The owner's words stay in the request's own event; the journal names the step and the head only.
+          this.store.journal(ctx.id, 'result-changes-reopened', { task: task.task_id, sha: p.verifiedSha, criterion: p.criterion ?? null, stalled }, now);
+        }
+        this.store.run('UPDATE events SET processed_at = ? WHERE seq = ?', now, event.seq);
+      });
+    }
   }
 
   /** Whether a campaign may reopen a published task as a repair round now: registered or finished, never paused or cancelled. */
@@ -2259,6 +2304,7 @@ export class Controller {
       const repair = spec.deliverable === 'commit' ? this.publishedRepair(task) : null;
       const integration = repair?.id === 'integration-conflict' ? repair : null;
       const ci = repair?.id === 'ci-failure' ? repair : null;
+      const owner = repair?.id === OWNER_CHANGES ? repair : null;
       // aiworks#207: no further run of a round whose verified head is already in the freshly fetched base.
       if (integration && this.endMergedRepair(ctx, decl, task, repo.path, this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository).sha, { read: false })) return null;
       if (kind !== 'verify') {
@@ -2288,7 +2334,7 @@ export class Controller {
           campaignId: ctx.id, taskId: task.task_id, baseBranch: decl.target.baseBranch,
           baseSha: repair ? repair.verified : local ? decl.target.baseline.commit : integrationBase });
         if (repair && !gitA.isAncestor({ git: this.cmd.git, path: ws.path, ancestor: repair.verified, descendant: ws.head })) {
-          const prefix = ci ? 'ci' : 'integration';
+          const prefix = ci ? 'ci' : owner ? 'owner-changes' : 'integration';
           this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
             { blocked: { class: 'stalled', reason: `Implementation workspace ${ws.head} does not contain the published verified head ${repair.verified}; preserve it and reconcile the branch before recheck.`, at: this.now() },
               last_error: `${prefix}-workspace: verified head absent` }, this.now());
@@ -2366,6 +2412,10 @@ export class Controller {
             ? `This head is a CI repair round: repository CI failed on the previously verified ${ci.verified} in ${ci.checks.map((check) => check.name).join(', ')}. Check that ${ci.verified} is an ancestor of the target, that the change fixes the cause of the failing checks without weakening, skipping or deleting a test, that platform-specific behaviour is guarded for the platform CI runs on, and run the full gate.`
             : ci && task.findings.length === 1
               ? `This is repair round ${task.repair_rounds}, a CI repair: repository CI failed on the verified, published commit ${ci.verified} in ${ci.checks.map((check) => check.name).join(', ')}. The failing checks and their links are in the packet constraints. Fix the cause on top of this branch, run the full gate, commit, and return resolved with the new headSha. Never rebase, reset or amend the verified commit.`
+              : owner && kind === 'verify'
+                ? `This head is a repair round the owner asked for after reviewing the previously verified ${owner.verified}${owner.criterion ? ` against acceptance criterion ${owner.criterion}` : ''}. The owner's request, as data: "${promptText(owner.request, 2000) ?? 'withheld'}". Check that ${owner.verified} is an ancestor of the target, that the change does what the owner asked within the packet, that every acceptance criterion still holds, and run the full gate.`
+                : owner && task.findings.length === 1
+                  ? `This is repair round ${task.repair_rounds}: the owner reviewed the verified, published commit ${owner.verified} and asked for changes. The request is in the packet constraints. Make the change on top of this branch, run the full gate, commit, and return resolved with the new headSha. Never rebase, reset or amend the verified commit.`
           : repairing
         ? spec.deliverable === 'commit'
           ? `This is repair round ${task.repair_rounds}: the independent verifier rejected ${task.head_sha}. Fix every blocking finding listed in the packet constraints, commit, and return resolved with the new headSha.`
@@ -2513,7 +2563,7 @@ export class Controller {
         let url;
         const repair = spec.deliverable === 'commit' ? this.publishedRepair(fresh) : null;
         const integration = repair?.id === 'integration-conflict' ? repair : null;
-        const repairKind = integration ? 'integration' : 'ci';
+        const repairKind = integration ? 'integration' : repair?.id === OWNER_CHANGES ? 'owner-changes' : 'ci';
         const local = this.selfHosted(decl.target.repository);
         // The installation's public-publication terms bind GitHub writes only: malformed ones never stop a work-list record.
         const terms = local ? null : this.publicationTerms(decl);
@@ -2525,10 +2575,10 @@ export class Controller {
           // aiworks#27, aiworks#42: the repaired head goes to the same branch and PR. The push is a plain fast-forward (the
           // earlier verified head is an ancestor), never a force-push; without an open PR nothing is pushed and no PR is opened.
           const key = `${ctx.id}:${task.task_id}:${repairKind}:${task.verified_sha}`;
-          const comment = `${integration ? this.integrationBody(decl, spec, task, integration) : this.ciBody(decl, spec, task, repair)}\n\n${github.marker(key)}`;
+          const comment = `${integration ? this.integrationBody(decl, spec, task, integration) : this.repairBody(decl, spec, task, repair)}\n\n${github.marker(key)}`;
           if (this.refusedPublication(ctx, decl, spec, fresh, [comment], terms)) return;
           if (comment.length > BODY_LIMIT) {
-            this.raiseBlocker(ctx, decl, { kind: 'publication-size', class: 'B2', reason: `The ${repairKind === 'ci' ? 'CI' : 'integration'} repair verification exceeds the GitHub comment limit; nothing was truncated or pushed.`,
+            this.raiseBlocker(ctx, decl, { kind: 'publication-size', class: 'B2', reason: `The ${REPAIR_WORDS[repairKind]} repair verification exceeds the GitHub comment limit; nothing was truncated or pushed.`,
               requestedAction: 'Provide an authorized publication format that preserves the verification, then recheck.' }, this.now(),
             { identity: task.task_id });
             return;
@@ -2537,7 +2587,7 @@ export class Controller {
           if (!existing) {
             const now = this.now();
             this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, fresh.version, { retry_at: null,
-              blocked: { class: 'stalled', reason: `${repairKind === 'ci' ? 'CI' : 'integration'} repair ${task.verified_sha} verified, but ${branch} has no open PR; nothing was pushed or opened`, at: now } }, now);
+              blocked: { class: 'stalled', reason: `${REPAIR_WORDS[repairKind]} repair ${task.verified_sha} verified, but ${branch} has no open PR; nothing was pushed or opened`, at: now } }, now);
             this.store.journal(ctx.id, `${repairKind}-repair-unpublished`, { task: task.task_id, sha: task.verified_sha }, now);
             return;
           }
@@ -2605,6 +2655,7 @@ export class Controller {
           { state: 'done', pr_url: url, retry_at: null, last_error: null, ...(repair || this.publicationFinding(fresh) ? { findings: null } : {}) }, now);
         this.store.journal(ctx.id, 'published', { task: task.task_id, sha: task.verified_sha, url }, now);
         if (integration) this.store.journal(ctx.id, 'integration-repaired', { task: task.task_id, from: integration.verified, base: integration.base, sha: task.verified_sha, url }, now);
+        else if (repair?.id === OWNER_CHANGES) this.store.journal(ctx.id, 'owner-changes-repaired', { task: task.task_id, from: repair.verified, sha: task.verified_sha, url }, now);
         else if (repair) this.store.journal(ctx.id, 'ci-repaired', { task: task.task_id, from: repair.verified, checks: repair.checks.map((check) => check.name), sha: task.verified_sha, url }, now);
         if (this.oi) this.probeSucceeded(ctx, task.task_id, { detail: `publication of ${task.verified_sha} succeeded` }, now);
         // With CI repair on, a published head is never announced as if its CI had passed (aiworks#42).
@@ -2614,7 +2665,7 @@ export class Controller {
           : integration
           ? `**${task.task_id}** (#${spec.issue}) ${integration.moved ? 'did not contain the current' : 'conflicted with'} ${decl.target.baseBranch} after a sibling merge. The supervisor merged the base, a fresh independent verification accepted \`${task.verified_sha}\`, and it is pushed to the same PR: ${url}. Not merged; merge follows ${decl.target.repository}'s release gate.`
           : repair
-          ? `**${task.task_id}** (#${spec.issue}) failed CI at \`${repair.verified}\`. A repair round fixed it, a fresh independent verification accepted \`${task.verified_sha}\`, and it is pushed to the same PR: ${url}. Not merged; merge follows ${decl.target.repository}'s release gate.`
+          ? `**${task.task_id}** (#${spec.issue}) ${repair.id === OWNER_CHANGES ? 'had changes requested by the owner at' : 'failed CI at'} \`${repair.verified}\`. A repair round ${repair.id === OWNER_CHANGES ? 'made them' : 'fixed it'}, a fresh independent verification accepted \`${task.verified_sha}\`, and it is pushed to the same PR: ${url}. Not merged; merge follows ${decl.target.repository}'s release gate.`
           : spec.deliverable === 'commit'
           ? `**${task.task_id}** (#${spec.issue}) passed independent verification and is published for review: ${url} at \`${task.verified_sha}\`. Not merged; merge follows ${decl.target.repository}'s release gate.`
           : `**${task.task_id}** (#${spec.issue}) passed independent verification; the verified report is posted: ${url} (revision \`${task.verified_sha}\`).`) + ciNote, now);
@@ -2731,12 +2782,12 @@ export class Controller {
       const review = reviewItem(this.store, { campaignId: ctx.id, taskId: task.task_id });
       if (!review) {
         this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version, { retry_at: null,
-          blocked: { class: 'stalled', reason: `${repairKind === 'ci' ? 'CI' : 'integration'} repair ${task.verified_sha} verified, but ${branch} has no review item in the work list; nothing was recorded`, at: now } }, now);
+          blocked: { class: 'stalled', reason: `${REPAIR_WORDS[repairKind]} repair ${task.verified_sha} verified, but ${branch} has no review item in the work list; nothing was recorded`, at: now } }, now);
         this.store.journal(ctx.id, `${repairKind}-repair-unpublished`, { task: task.task_id, sha: task.verified_sha }, now);
         return null;
       }
       addComment(this.store, { number: review.number, idempotencyKey: `${ctx.id}:${task.task_id}:${repairKind}:${task.verified_sha}`,
-        body: integration ? this.integrationBody(decl, spec, task, integration, { local: true }) : this.ciBody(decl, spec, task, repair),
+        body: integration ? this.integrationBody(decl, spec, task, integration, { local: true }) : this.repairBody(decl, spec, task, repair, { local: true }),
         authorKind: 'supervisor', now });
       return workLink(review.number);
     }
@@ -2754,7 +2805,7 @@ export class Controller {
   /** The tracking item's note for a result recorded in the work list (recordLocalReview). */
   localPublishedNote(decl, spec, task, { repair, integration, url }) {
     if (integration) return `**${task.task_id}** (#${spec.issue}) ${integration.moved ? 'did not contain the current' : 'conflicted with'} ${decl.target.baseBranch} after a sibling merge. The supervisor merged the base, a fresh independent verification accepted \`${task.verified_sha}\`, and it is recorded on the same review item: ${url}. Nothing was pushed; not merged; merge follows ${decl.target.repository}'s release gate.`;
-    if (repair) return `**${task.task_id}** (#${spec.issue}) failed CI at \`${repair.verified}\`. A repair round fixed it, a fresh independent verification accepted \`${task.verified_sha}\`, and it is recorded on the same review item: ${url}. Nothing was pushed; not merged; merge follows ${decl.target.repository}'s release gate.`;
+    if (repair) return `**${task.task_id}** (#${spec.issue}) ${repair.id === OWNER_CHANGES ? 'had changes requested by the owner at' : 'failed CI at'} \`${repair.verified}\`. A repair round ${repair.id === OWNER_CHANGES ? 'made them' : 'fixed it'}, a fresh independent verification accepted \`${task.verified_sha}\`, and it is recorded on the same review item: ${url}. Nothing was pushed; not merged; merge follows ${decl.target.repository}'s release gate.`;
     return spec.deliverable === 'commit'
       ? `**${task.task_id}** (#${spec.issue}) passed independent verification and is recorded for review in the work list: ${url} at \`${task.verified_sha}\` on the local branch \`${gitA.branchName(decl.campaignId, task.task_id)}\`. Nothing was pushed; not merged; merge follows ${decl.target.repository}'s release gate.`
       : `**${task.task_id}** (#${spec.issue}) passed independent verification; the verified report is recorded in the work list: ${url} (revision \`${task.verified_sha}\`).`;
@@ -2807,6 +2858,29 @@ export class Controller {
         : `The verified commit \`${integration.verified}\` stopped merging into \`${decl.target.baseBranch}\` at \`${integration.base}\` after a sibling merge. Conflicting paths: ${integration.paths.map((path) => `\`${path}\``).join(', ')}.`,
       '',
       `The base was merged into this branch and ${integration.paths.length ? 'the conflicts resolved' : 'the result checked again'}. A separate fresh verifier session accepted exactly \`${task.verified_sha}\`, which was ${local ? 'recorded here; nothing was pushed, and' : 'pushed here as a fast-forward:'} \`${integration.verified}\` stays an ancestor.`,
+      '',
+      ...this.verificationLines(task),
+      '',
+      `Not merged and not deployed: merge and release follow ${decl.target.repository}'s release gate. Generated by the AIWorks delivery supervisor.`,
+    ].join('\n');
+  }
+
+  /** The comment of a repaired head on its open PR or review item: a CI repair, or changes the owner requested. */
+  repairBody(decl, spec, task, repair, { local = false } = {}) {
+    return repair.id === OWNER_CHANGES ? this.ownerChangesBody(decl, spec, task, repair, { local }) : this.ciBody(decl, spec, task, repair);
+  }
+
+  /**
+   * PR comment for changes the owner requested on a verified result (OWNER_UI_V2 WP4). The owner's words stay on this
+   * computer: the comment says that changes were requested, never what they were.
+   */
+  ownerChangesBody(decl, spec, task, repair, { local = false } = {}) {
+    return [
+      `## ${spec.id}: requested changes, independently verified`,
+      '',
+      `The owner reviewed the verified commit \`${repair.verified}\` and requested changes.`,
+      '',
+      `A repair round made them on this branch. A separate fresh verifier session accepted exactly \`${task.verified_sha}\`, which was ${local ? 'recorded here; nothing was pushed, and' : 'pushed here as a fast-forward:'} \`${repair.verified}\` stays an ancestor.`,
       '',
       ...this.verificationLines(task),
       '',

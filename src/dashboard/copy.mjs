@@ -150,6 +150,9 @@ const STATES = {
   // §7.8 Finished. "Merged" only with a current merge check; unknown is said, never counted as nothing.
   'finished-open': { section: '7.8', needsYou: true, copy: (d) => ['All steps are finished.',
     `${plural(d.awaiting, 'pull request')} ${d.awaiting === 1 ? 'waits' : 'wait'} for your review${d.merged ? ` · ${d.merged} merged` : ''}.`, seeResults(d.project)] },
+  // OWNER_UI_V2 WP4: never "complete" while a result's evidence is unresolved; each step's Review shows what is.
+  'finished-unresolved': { section: '7.8', needsYou: false, copy: (d) => ['All steps are finished, but not complete.',
+    `${plural(d.count, 'result')} ${d.count === 1 ? 'has' : 'have'} criteria not checked, failed or open findings. Review ${d.count === 1 ? 'its' : 'their'} evidence before you accept.`, seeResults(d.project)] },
   // Merging delegated by the owner (#97): the pull requests still open are merged for them, so nothing waits for them.
   'finished-delegated': { section: '7.8', needsYou: false, copy: (d) => ['All steps are finished.',
     `${plural(d.delegated, 'pull request')} passed the check and ${d.delegated === 1 ? 'is' : 'are'} to be merged for you${d.merged ? ` · ${d.merged} merged` : ''}.`, seeResults(d.project)] },
@@ -372,6 +375,8 @@ function finishedState(c, d) {
   if (!counts) return ['finished-unknown', { count: c.tasks.length }];
   const unknown = counts.total - counts.delivered + counts.checking + counts.unknown;
   if (unknown) return ['finished-unknown', { count: unknown }];
+  // A result with a criterion failed or not checked, a blocking finding or requested changes keeps the goal open (WP4).
+  if (counts.unresolved) return ['finished-unresolved', { count: counts.unresolved }];
   if (counts.awaiting) return ['finished-open', { awaiting: counts.awaiting, merged: counts.merged }];
   // Reports are the owner's to read, so they are said before pull requests merged for the owner.
   if (counts.reports) return ['finished-reports', { reports: counts.reports, merged: counts.merged }];
@@ -650,6 +655,21 @@ export const COMMANDS = {
     answered: 'This decision was already answered. Nothing was recorded twice.',
     notOption: 'Choose one of the options shown, or write your own answer.',
     noted: 'You already said this decision did not need you.',
+  },
+  // Review of a result (OWNER_UI_V2 WP4): accept and request changes are bound to one verified head and its report.
+  result: {
+    accept: (gate) => gate === 'on' ? 'Accepted. AIWorks recorded your acceptance of this checked version; the merge gate merges it when its own conditions hold.'
+      : 'Accepted. AIWorks recorded your acceptance of this checked version. Nothing was merged: merging follows this project’s own gate.',
+    'request-changes': 'Changes requested. AIWorks reopens this step as a repair round within the approved plan; nothing of it is published or merged until a fresh independent check passes.',
+    changed: 'This result changed since you opened it, or it is not the version that passed the check. Nothing was recorded. Refresh the page and review it again.',
+    closed: 'This work is paused, cancelled or not finished, so its result takes no review now. Refresh the page to see where it stands.',
+    requested: 'Changes to this version were already requested. Nothing was recorded twice.',
+    merged: 'This version is already merged. To change it, ask for a new plan.',
+    reportOnly: 'Requesting changes is available for code results. For a report, ask for a new plan.',
+    noRounds: 'This step has used all its repair rounds, so no further repair starts. Ask for a new plan to change it.',
+    applyLocal: 'A result in a project without GitHub is accepted with Apply.',
+    alreadyAccepted: 'You already accepted this version.',
+    unresolved: 'A criterion failed or a blocking finding is open, so this version cannot be accepted. Request changes instead.',
   },
 };
 

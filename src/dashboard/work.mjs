@@ -28,6 +28,7 @@ import { ownerApplies, ownerApply, undoOwnerApply } from '../supervisor/release/
 import { CODE_ROOT, revisionNotMerged } from '../supervisor/provenance.mjs';
 import { configuredGitCommand } from './merges.mjs';
 import { safeText } from './roadmap.mjs';
+import { resultReview } from './supervisor.mjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DIGEST = /^[0-9a-f]{64}$/;
@@ -183,10 +184,14 @@ function localWork(store, record) {
       const titles = new Map(c.declaration.tasks.map((task) => [task.id, safeText(task.outcome ?? task.title ?? task.id, 300)]));
       const attempts = ownerApplies(store, c.id), found = candidates(store, c.id);
       const results = [...new Set(found.map((row) => row.taskId))].map((taskId) => {
-        const latest = found.filter((row) => row.taskId === taskId).at(-1);
-        return localResult(latest, attempts.filter((row) => row.taskId === taskId && row.seq === latest.seq).at(-1), titles.get(taskId) ?? safeText(taskId, 64));
+        const latest = found.filter((row) => row.taskId === taskId).at(-1), task = store.task(c.id, taskId);
+        // Its criteria with their evidence and Request changes (OWNER_UI_V2 WP4), about this candidate's head only; Apply is its acceptance.
+        const review = task ? resultReview(store, c, task, c.declaration.tasks.find((item) => item.id === taskId)) : null;
+        return { ...localResult(latest, attempts.filter((row) => row.taskId === taskId && row.seq === latest.seq).at(-1), titles.get(taskId) ?? safeText(taskId, 64)),
+          taskVersion: task?.version ?? null, review: review && (review.verifiedSha === latest.sha || review.state === 'changes-requested') ? review : null };
       });
       return { id: c.id, outcome: safeText(c.declaration.envelope?.outcome ?? c.id, 300), control: c.control,
+        version: c.version, authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest,
         steps: store.tasks(c.id).map((task) => ({ id: safeText(task.task_id, 64), title: titles.get(task.task_id) ?? safeText(task.task_id, 64),
           state: task.blocked ? 'Stopped: needs your decision' : STEP_WORDS[task.state] ?? 'Not known yet' })),
         results };
