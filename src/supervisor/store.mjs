@@ -157,6 +157,16 @@ CREATE TRIGGER IF NOT EXISTS project_settings_no_update BEFORE UPDATE ON project
   BEGIN SELECT RAISE(ABORT, 'project_settings is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS project_settings_no_delete BEFORE DELETE ON project_settings
   BEGIN SELECT RAISE(ABORT, 'project_settings is append-only'); END;
+-- Owner alert rules (OWNER_UI_V2 WP6; rules in alerts.mjs): which notification classes are sent, reminders and quiet
+-- hours, one row per saved version. Additive and append-only like project_settings.
+CREATE TABLE IF NOT EXISTS alert_rules (
+  version INTEGER PRIMARY KEY, rules TEXT NOT NULL, digest TEXT NOT NULL, request_id TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL);
+CREATE TRIGGER IF NOT EXISTS alert_rules_no_update BEFORE UPDATE ON alert_rules
+  BEGIN SELECT RAISE(ABORT, 'alert_rules is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS alert_rules_no_delete BEFORE DELETE ON alert_rules
+  BEGIN SELECT RAISE(ABORT, 'alert_rules is append-only'); END;
+-- What the synthetic (rehearsal) alert transport recorded, once per notification key; nothing in it left this computer.
+CREATE TABLE IF NOT EXISTS alert_rehearsals (key TEXT PRIMARY KEY, alert TEXT NOT NULL, recorded_at INTEGER NOT NULL);
 -- The main ledger (docs/design/LOCAL_OPERATION.md section 4.2; rules in self-hosting.mjs): every commit AIWorks trusts on
 -- local main of its own repository. Additive like every table above. Append-only: the triggers refuse an update or a
 -- delete. Nothing writes it until the switch-on step (SELF13) records the anchor.
@@ -194,7 +204,7 @@ CREATE TRIGGER IF NOT EXISTS work_item_comments_no_delete BEFORE DELETE ON work_
 
 const JSON_COLUMNS = new Set(['declaration', 'blocker', 'failures', 'findings', 'result', 'verification',
   'blocked', 'packet', 'outcome', 'payload', 'detail', 'message_ids', 'probe', 'last_evidence', 'resolution', 'message',
-  'eligibility', 'steps', 'history', 'routing', 'ops', 'spec', 'pinned', 'questions', 'conflicts', 'notes', 'stale_what', 'signature', 'outline', 'settings']);
+  'eligibility', 'steps', 'history', 'routing', 'ops', 'spec', 'pinned', 'questions', 'conflicts', 'notes', 'stale_what', 'signature', 'outline', 'settings', 'rules', 'alert']);
 
 function decode(row) {
   if (!row) return null;
