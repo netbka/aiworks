@@ -141,7 +141,9 @@ const screenText = { home: ['Home', 'What changed, and what needs me?'], project
   connections: ['Connections', 'What does AIWorks use on this computer, and can it reach it?'],
   work: ['Work', 'What is running or waiting, and why?'], results: ['Results', 'What has been delivered, and what remains?'],
   cost: ['Cost', 'What did this cost?'], step: ['Step', 'What is happening on this step?'], start: ['Plan work', 'Describe the result. AIWorks proposes the steps.'],
-  review: ['Review', 'Is this the right goal and limits?'], 'add-project': ['Add project', 'Which folder should AIWorks work on?'] };
+  review: ['Review', 'Is this the right goal and limits?'], 'add-project': ['Add project', 'Which folder should AIWorks work on?'],
+  worklist: ['Work list', 'What is on AIWorks’s own work list?'], 'worklist-item': ['Work item', 'What does this item say, and what happened to it?'],
+  'worklist-import': ['Imported issues', 'Which imported GitHub issues should be closed there?'] };
 const screenKey = (route) => route.screen === 'settings' ? route.section ?? 'settings' : route.screen === 'project' ? route.tab : route.screen;
 const tabLabels = { now: 'Overview', work: 'Work', results: 'Results', cost: 'Cost' };
 
@@ -150,7 +152,7 @@ function showRoute() {
   const route = current.route, [title, question] = screenText[screenKey(route)];
   const project = route.project ?? null;
   $('#view-eyebrow').textContent = project ? `PROJECT · ${projectName(project).toUpperCase()}` : route.screen === 'settings' && route.section ? 'SETTINGS' : 'AIWORKS';
-  $('#view-title').textContent = project && route.screen === 'project' && route.tab === 'now' ? projectName(project) : title;
+  $('#view-title').textContent = project && route.screen === 'project' && route.tab === 'now' ? projectName(project) : route.screen === 'worklist-item' ? `${title} #${route.number}` : title;
   $('#view-description').textContent = question;
   $('#project-back').hidden = !project;
   document.title = [title, project ? projectName(project) : null, 'AIWorks'].filter(Boolean).join(' · ');
@@ -1027,6 +1029,7 @@ const needsItem = (item) => el('li', { class: `needs-item ${item.kind}` },
     el('div', { class: 'needs-text' }, el('span', {}, `${item.text}${item.at ? ` at about ${timeOnly(item.at)}` : ''}${item.since ? ` since ${timeOnly(item.since)}` : ''}`)),
     item.mergeCheck ? el('div', { class: 'needs-stale' }, mergeAsOf(item.mergeCheck)) : null,
     item.link ? el('div', { class: 'needs-actions' }, link(`${item.link.label} ↗`, item.link.url, 'button secondary needs-link')) : null,
+    item.route ? el('div', { class: 'needs-actions' }, routeLink(item.route.label, item.route.address, 'button secondary needs-link')) : null,
     item.evidence ? disclosure(`needs/${item.link?.url ?? item.text}`, el('span', { class: 'evidence' }, item.evidence),
       el('p', { class: 'needs-detail' }, item.detail)) : null),
   // The Check again a stopped work's sentence names is on its card, after that sentence: a card has no More menu (aiworks#11 review 5 G8).
@@ -1062,7 +1065,10 @@ function needsYou() {
     held.length ? el('ul', { class: 'needs-list', 'data-focus-scope': 'needs/held' }, ...held.map((project) => el('li', {},
       el('strong', {}, project.name), ` · ${project.text} `, routeLink(`Open ${project.name}`, { screen: 'project', project: project.id })))) : null,
     reply ? el('div', { class: 'needs-reply' }, `AIWorks answered your message (${dateTime(reply.answeredAt)}). `,
-      reply.url ? link('Read its “What needs you” ↗', reply.url) : routeLink('Read the plan', MESSAGES_ADDRESS)) : null);
+      reply.url ? link('Read its “What needs you” ↗', reply.url) : routeLink('Read the plan', MESSAGES_ADDRESS)) : null,
+    // The local work list (UI20): its open decisions are counted above; the list itself is one link away.
+    worklist()?.available ? el('p', { class: 'needs-reply' }, `AIWorks’s own work list: ${plural(worklist().items.filter((entry) => entry.state === 'open').length, 'open item')}. `,
+      routeLink('Open the work list', WORKLIST_ADDRESS)) : null);
 }
 
 /**
@@ -2200,7 +2206,8 @@ function stepScreen(project, c, task) {
 
 /** One Results row: what the step delivers, its state word, what follows, the link to the result and the check in details. */
 const resultRow = (row) => el('li', { class: `result-row ${row.group}`, 'data-focus-scope': `${row.campaignId}/${row.taskId}` },
-  el('div', { class: 'needs-text' }, el('span', {}, row.text), row.link ? link(`${row.link.label} ↗`, row.link.url, 'needs-link') : null),
+  el('div', { class: 'needs-text' }, el('span', {}, row.text), row.link ? link(`${row.link.label} ↗`, row.link.url, 'needs-link') : null,
+    row.route ? routeLink(row.route.label, row.route.address, 'needs-link') : null),
   // A merged row says when, then the project's release rule: never released or live.
   el('div', { class: 'result-state' }, row.group === 'merged' ? [`Merged${row.mergedAt ? ` ${dateTime(row.mergedAt)}` : ''}.`, row.release].join(' ') : row.word),
   row.note ? el('div', { class: 'subtext' }, row.note) : null,
@@ -2365,6 +2372,272 @@ function projectScreen(route) {
   return cards.length ? [...cards.map((c) => campaignCard(c, false))] : [empty('No work is running in this project', 'Finished work and its results are under Results.')];
 }
 
+/*
+ * The local work list (LOCAL_OPERATION section 5, slice UI20): the list, one item with its comments, and the imported
+ * issues' read-only preview with the typed confirmation of the exact list to close on GitHub. Every text is set as text,
+ * never as markup. Each change carries a request id, kept across a retry, and the version of what this page showed: the
+ * server refuses a stale one and saves nothing. Forms are kept as typed across the 5-second refresh, like Start work.
+ */
+const WORKLIST_ADDRESS = '#/worklist', IMPORT_ADDRESS = '#/worklist/import';
+const worklist = () => state?.worklist ?? null;
+const WORK_KINDS = [['task', 'Task'], ['note', 'Note'], ['finding', 'Finding'], ['decision', 'Decision']];
+const WORK_TEXT_MAX = 4000;
+let worklistBusy = false, pendingClose = null;
+const worklistOff = () => worklistBusy || offline;
+const capital = (text) => `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
+
+/** One work list change. A retry reuses its request id, so the server answers it once and never applies it twice. */
+async function sendWorklist(path, body, { address = current.address, done = null, number = null } = {}) {
+  worklistBusy = true; render();
+  const requestId = crypto.randomUUID();
+  const attempt = async () => {
+    try {
+      const result = await post(path, { requestId, ...body });
+      done?.(result);
+      notice(result.duplicate ? `${result.message} It was already received, so nothing was done twice.` : result.message, null, null, address);
+    } catch (error) {
+      notice(error.known ? error.message : 'Delivery could not be confirmed. Retry: the same request is never applied twice.', error.known ? null : attempt, error.known ? error.detail : null, address);
+    } finally { if (number) void loadItem(number); }
+  };
+  try { await attempt(); } finally { worklistBusy = false; await poll(); }
+}
+
+/** Why the work list cannot be shown, or null. Unknown is never shown as empty. */
+function worklistBlocked() {
+  const wl = worklist();
+  if (!wl || !wl.readable) return empty('Not known right now', ' AIWorks can’t read its work list on this computer right now. This is not the same as an empty list.');
+  if (!wl.available) return empty('No work list on this computer', ' The work list is used for AIWorks’s own repository once the AIWorks configuration file on this computer names it.');
+  return null;
+}
+
+const worklistMeta = (entry) => [entry.kindWord, entry.state === 'open' ? 'Open' : 'Closed', entry.needsOwner && entry.state === 'open' ? 'Needs you' : null,
+  `from ${entry.author}`, entry.updatedAt ? `updated ${clock(entry.updatedAt)}` : null].filter(Boolean).join(' · ');
+const worklistRow = (entry) => el('li', { class: 'result-row worklist-row', 'data-focus-scope': `worklist/${entry.number}` },
+  el('div', { class: 'needs-text' }, routeLink(`#${entry.number} ${entry.title}`, { screen: 'worklist-item', number: entry.number })),
+  el('div', { class: 'result-state' }, worklistMeta(entry)));
+
+/** The list's changing part: imported issues to review, open items, and closed ones behind a disclosure. */
+function worklistParts() {
+  const wl = worklist(), open = wl.items.filter((entry) => entry.state === 'open'), closed = wl.items.filter((entry) => entry.state === 'closed');
+  const waiting = wl.imported.candidates.length;
+  return [
+    waiting ? el('p', { class: 'notice' }, `${plural(waiting, 'imported issue')} still open on GitHub. `, routeLink('Review the imported issues', IMPORT_ADDRESS)) : null,
+    el('section', { class: 'panel', 'aria-labelledby': 'worklist-open-title', 'data-focus-scope': 'worklist/open' },
+      el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'worklist-open-title' }, `Open (${open.length})`),
+        el('p', {}, 'On this computer only. Checked results and decisions AIWorks records appear here too.'))),
+      open.length ? el('ul', { class: 'needs-list' }, ...open.map(worklistRow)) : empty('Nothing open.', ' Add an item below.')),
+    closed.length ? el('section', { class: 'panel', 'data-focus-scope': 'worklist/closed' },
+      disclosure('worklist/closed', `Closed (${closed.length})`, el('ul', { class: 'needs-list' }, ...closed.map(worklistRow)))) : null,
+    wl.total > wl.items.length ? el('p', { class: 'subtext' }, `Showing the newest ${wl.items.length} of ${wl.total} items.`) : null,
+  ].filter(Boolean);
+}
+
+/** Add an item: the draft is kept per address until the server confirms it. */
+function worklistAddPanel() {
+  const draft = { kind: 'task', title: '', body: '', ...(drafts.get(WORKLIST_ADDRESS, 'add') ?? {}) };
+  const save = () => drafts.set(WORKLIST_ADDRESS, 'add', { kind: kind.value, title: title.value, body: body.value });
+  const kind = el('select', { id: 'worklist-kind', onchange: save }, ...WORK_KINDS.map(([value, label]) => el('option', { value, selected: draft.kind === value }, label)));
+  const title = el('input', { id: 'worklist-title', type: 'text', maxlength: 256, required: true, autocomplete: 'off', oninput: save });
+  title.value = draft.title;
+  const body = el('textarea', { id: 'worklist-body', rows: 4, maxlength: WORK_TEXT_MAX, oninput: save });
+  body.value = draft.body;
+  const form = el('form', { novalidate: true, class: 'panel-body start-form', 'data-worklist-form': 'add', 'data-focus-scope': 'worklist/add',
+    onsubmit: (event) => {
+      event.preventDefault(); save();
+      if (worklistOff() || !validateForm(form)) return;
+      void sendWorklist('/api/work-list/items', { kind: kind.value, title: title.value, body: body.value }, { address: WORKLIST_ADDRESS,
+        done: () => { drafts.delete(WORKLIST_ADDRESS, 'add'); title.value = ''; body.value = ''; } });
+    } },
+    el('label', { class: 'field' }, el('strong', {}, 'Kind'), kind),
+    el('label', { class: 'field' }, el('strong', {}, 'Title'), title),
+    el('label', { class: 'field' }, el('strong', {}, 'Details (optional)'), body),
+    el('p', { class: 'subtext' }, 'Saved on this computer only; nothing is posted to GitHub. No secrets; up to 4,000 characters.'),
+    el('button', { class: 'button', type: 'submit', disabled: worklistOff() }, 'Add to the work list'));
+  return el('section', { class: 'panel', 'aria-labelledby': 'worklist-add-title' },
+    el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'worklist-add-title' }, 'Add an item'))), form);
+}
+
+function workListScreen() {
+  const blocked = worklistBlocked();
+  return blocked ? [blocked] : [el('div', { id: 'worklist-dynamic' }, ...worklistParts()), worklistAddPanel()];
+}
+
+/** The 5-second refresh keeps the add form as typed: only the list and the button change. False when it must be built. */
+function refreshWorklist(content) {
+  const form = content.querySelector('form[data-worklist-form="add"]');
+  if (!form || worklistBlocked()) return false;
+  patch(content.querySelector('#worklist-dynamic'), worklistParts());
+  form.querySelector('button[type="submit"]').disabled = worklistOff();
+  return true;
+}
+
+// One item, read on its own (GET /api/v2/worklist/<n>) when opened and again at every refresh while it is shown.
+const itemViews = new Map();
+async function loadItem(number) {
+  const entry = itemViews.get(number) ?? {};
+  itemViews.set(number, entry);
+  if (entry.loading) return;
+  entry.loading = true;
+  try {
+    const response = await fetch(`/api/v2/worklist/${number}`, { signal: AbortSignal.timeout(6000) });
+    const value = await response.json();
+    if (response.ok) { entry.view = value; entry.error = null; entry.readAt = Date.now(); }
+    else { entry.error = { status: response.status, message: value.error }; if (response.status === 404) entry.view = null; }
+  } catch { entry.error = { status: 0, message: 'This item could not be read just now. The page tries again.' }; }
+  finally {
+    entry.loading = false;
+    if (current.route.screen === 'worklist-item' && current.route.number === number && state && !document.querySelector('dialog[open]')) render();
+  }
+}
+const itemEntry = (number) => { if (!itemViews.has(number)) void loadItem(number); return itemViews.get(number) ?? {}; };
+const commentDraft = (address) => ({ text: '', base: null, ...(drafts.get(address, 'comment') ?? {}) });
+
+/** The item's changing part: what it is, its text, its links, its comments and Close or Reopen. */
+function itemParts(number) {
+  const entry = itemEntry(number), v = entry.view;
+  if (!v) {
+    if (!entry.error) return [empty('Reading this item…', '')];
+    return entry.error.status === 404 ? [empty('This item is not in the work list on this computer', ' The address may be mistyped.'), routeLink('All work list items', WORKLIST_ADDRESS, 'button secondary')]
+      : [empty('Not known right now', ` ${entry.error.message}`)];
+  }
+  const review = v.kind === 'review' ? (worklist()?.reviews ?? []).find((row) => row.number === v.number) : null;
+  const c = v.campaignId ? campaignById(v.campaignId) : null, task = c?.tasks.find((t) => t.id === v.taskId);
+  const other = v.state === 'open' ? 'closed' : 'open', sha7 = v.verifiedSha ? ` at commit ${v.verifiedSha.slice(0, 7)}` : '';
+  return [el('section', { class: 'panel', 'aria-labelledby': 'worklist-item-title', 'data-focus-scope': `worklist/item/${number}` },
+    el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'worklist-item-title', class: 'work-text' }, v.title), el('p', {}, worklistMeta(v))),
+      button(v.state === 'open' ? 'Close item' : 'Reopen item', () => void sendWorklist('/api/work-list/state', { number, version: v.version, state: other }, { number }), 'secondary', worklistOff())),
+    el('div', { class: 'panel-body' },
+      entry.error || offline ? el('p', { class: 'needs-stale', role: 'status' }, `Shown as read at ${clock(entry.readAt)}. ${offline
+        ? 'The page is disconnected; it reads this item again when it reconnects.' : entry.error.message}`) : null,
+      // A local review is checked, never merged or accepted by itself (OWNER_WORKSPACE §2.3).
+      v.kind === 'review' ? el('p', { class: 'notice warning local-review' }, review?.mergedAt
+        ? `Local review: passed the independent check${sha7} and merged into local main ${clock(review.mergedAt)}. Merged is not accepted.`
+        : `Local review: passed the independent check${sha7} on this computer. Not merged and not accepted.`) : null,
+      v.source ? el('p', { class: 'subtext' }, 'Imported from ', link(`GitHub issue #${v.number} ↗`, v.source.url), ` as it was at ${dateTime(v.source.updatedAt)}.`) : null,
+      task ? el('p', { class: 'subtext' }, 'Step: ', routeLink(task.outcome ?? task.title ?? task.id, { screen: 'step', project: c.repository, work: c.id, step: task.id }), ` · ${campaignTitle(c)}`) : null,
+      el('div', { class: 'work-text' }, v.body || 'No details.'),
+      v.shortened ? el('p', { class: 'subtext' }, 'Shortened here: the full text is kept on this computer.') : null,
+      el('h3', { class: 'section-title' }, `Comments (${v.commentCount})`),
+      v.commentCount > v.comments.length ? el('p', { class: 'subtext' }, `Showing the newest ${v.comments.length}.`) : null,
+      v.comments.length ? el('ol', { class: 'work-comments' }, ...v.comments.map((comment) => el('li', { class: 'work-comment' },
+        el('div', { class: 'subtext' }, `${capital(comment.author)} · ${clock(comment.createdAt)}`), el('div', { class: 'work-text' }, comment.body)))) : el('p', { class: 'subtext' }, 'No comments yet.')))];
+}
+
+/** Whether the item changed after the owner started writing: the comment is sent against what is shown now. */
+function commentStale(number, address) {
+  const draft = commentDraft(address), now = itemViews.get(number)?.view?.version;
+  return Boolean(draft.base && now && draft.base !== now && draft.text.trim());
+}
+
+function commentPanel(number) {
+  const address = formatRoute({ screen: 'worklist-item', number }), draft = commentDraft(address);
+  const text = el('textarea', { id: 'worklist-comment', rows: 4, maxlength: WORK_TEXT_MAX, required: true,
+    oninput: () => { drafts.set(address, 'comment', { text: text.value, base: commentDraft(address).base ?? itemViews.get(number)?.view?.version ?? null }); } });
+  text.value = draft.text;
+  const form = el('form', { novalidate: true, class: 'panel-body start-form', 'data-worklist-form': `comment-${number}`, 'data-focus-scope': `worklist/comment/${number}`,
+    onsubmit: (event) => {
+      event.preventDefault();
+      const v = itemViews.get(number)?.view;
+      if (!v || worklistOff() || !validateForm(form)) return;
+      void sendWorklist('/api/work-list/comment', { number, version: v.version, body: text.value }, { address, number,
+        done: () => { drafts.delete(address, 'comment'); text.value = ''; } });
+    } },
+    el('label', { class: 'field' }, el('strong', {}, 'Add a comment'), text),
+    el('p', { id: 'worklist-comment-stale', class: 'needs-stale', role: 'status', hidden: !commentStale(number, address) },
+      'This item changed since you started writing. Read it again above; your comment is sent against what is shown now.'),
+    el('p', { class: 'subtext' }, 'Saved on this computer only; nothing is posted to GitHub. No secrets; up to 4,000 characters.'),
+    el('button', { class: 'button', type: 'submit', disabled: worklistOff() || !itemViews.get(number)?.view }, 'Add comment'));
+  return el('section', { class: 'panel' }, form);
+}
+
+function workItemScreen(number) {
+  return [routeLink('← Work list', WORKLIST_ADDRESS, 'project-back'), el('div', { id: 'worklist-item' }, ...itemParts(number)), commentPanel(number)];
+}
+
+/** The 5-second refresh keeps the comment as typed: only the item and the button change. */
+function refreshItem(content, number) {
+  const form = content.querySelector(`form[data-worklist-form="comment-${number}"]`);
+  if (!form) return false;
+  patch(content.querySelector('#worklist-item'), itemParts(number));
+  form.querySelector('button[type="submit"]').disabled = worklistOff() || !itemViews.get(number)?.view;
+  form.querySelector('#worklist-comment-stale').hidden = !commentStale(number, formatRoute({ screen: 'worklist-item', number }));
+  return true;
+}
+
+/** The issues the owner keeps checked, as the preview shows them now. */
+const importChoice = (form) => {
+  const numbers = new Set([...form.querySelectorAll('input[data-import-number]:checked')].map((box) => Number(box.value)));
+  return worklist().imported.candidates.filter((entry) => numbers.has(entry.number));
+};
+const importSignature = (candidates) => candidates.map((entry) => `${entry.number}:${entry.version}`).join(',');
+const importLabel = (n) => n ? `Close ${plural(n, 'issue')} on GitHub…` : 'Choose at least one issue';
+
+/**
+ * The read-only preview of the imported issues still open on GitHub, with a choice of which to close. Nothing is sent
+ * from here: the confirmation dialog names the exact list and asks for the repository's name.
+ */
+function importScreen() {
+  const blocked = worklistBlocked();
+  if (blocked) return [blocked];
+  const wl = worklist(), { candidates, closeOn, max } = wl.imported;
+  if (!wl.repository) return [empty('No repository is set for the work list', ' The AIWorks configuration file on this computer names the repository whose issues were imported.')];
+  if (!candidates.length) {
+    return [empty('No imported issue is open on GitHub', ' As far as AIWorks recorded, every imported issue is closed on GitHub, or none was imported. The import itself runs from the command line on this computer.'),
+      routeLink('Work list', WORKLIST_ADDRESS, 'button secondary')];
+  }
+  const unchecked = new Set(drafts.get(IMPORT_ADDRESS, 'unchecked') ?? []);
+  const update = () => {
+    const chosen = importChoice(form).length, submit = form.querySelector('button[type="submit"]');
+    submit.textContent = chosen > max ? `Choose at most ${max} at a time` : importLabel(chosen);
+    submit.disabled = !closeOn || worklistOff() || !chosen || chosen > max;
+  };
+  const form = el('form', { novalidate: true, class: 'panel-body start-form', 'data-worklist-form': 'import', 'data-signature': importSignature(candidates), 'data-focus-scope': 'worklist/import',
+    onchange: () => { drafts.set(IMPORT_ADDRESS, 'unchecked', [...form.querySelectorAll('input[data-import-number]')].filter((box) => !box.checked).map((box) => Number(box.value))); update(); },
+    onsubmit: (event) => { event.preventDefault(); openCloseImported(form); } },
+    el('p', {}, `${plural(candidates.length, 'issue')} imported from ${wl.repository} into the work list ${candidates.length === 1 ? 'is' : 'are'} still open on GitHub, as far as AIWorks recorded. Nothing changes until you confirm.`),
+    el('fieldset', {}, el('legend', {}, 'Close on GitHub'), ...candidates.map((entry) => el('label', { class: 'choice' },
+      el('input', { type: 'checkbox', value: String(entry.number), 'data-import-number': String(entry.number), checked: !unchecked.has(entry.number) }),
+      el('span', { class: 'work-text' }, `#${entry.number} ${entry.title} `, el('span', { class: 'subtext' }, `· imported as of ${dateTime(entry.updatedAt)}`))))),
+    el('p', { class: 'subtext' }, 'For each issue you confirm, AIWorks posts one comment on GitHub, “Moved to the AIWorks local work list as #N on <date>. Continue there.”, and closes the issue as not planned. An issue changed on GitHub since the import is skipped. Labels and every other issue are left as they are.'),
+    closeOn ? null : el('p', { class: 'notice warning' }, 'Preview only: closing on GitHub is not switched on in this version of AIWorks, so nothing can be sent from here.'),
+    el('button', { class: 'button danger', type: 'submit' }, importLabel(0)));
+  update();
+  return [routeLink('← Work list', WORKLIST_ADDRESS, 'project-back'), el('section', { class: 'panel' }, form)];
+}
+
+/** The refresh keeps the choices while the list is the same; a changed list is shown again with the choices kept. */
+function refreshImport(content) {
+  const form = content.querySelector('form[data-worklist-form="import"]');
+  if (!form || worklistBlocked() || form.dataset.signature !== importSignature(worklist().imported.candidates)) return false;
+  form.dispatchEvent(new Event('change'));
+  return true;
+}
+
+/** Opens the confirmation for exactly the issues chosen and shown now; the dialog's list is what is sent. */
+function openCloseImported(form) {
+  const wl = worklist(), chosen = importChoice(form);
+  if (!wl.imported.closeOn || !chosen.length || chosen.length > wl.imported.max || worklistOff()) return;
+  pendingClose = { selection: chosen.map(({ number, version }) => ({ number, version })), repository: wl.repository };
+  const named = chosen.slice(0, 20).map((entry) => `#${entry.number}`).join(', ') + (chosen.length > 20 ? ` and ${chosen.length - 20} more` : '');
+  $('#close-imported-title').textContent = `Close ${plural(chosen.length, 'issue')} on GitHub?`;
+  $('#close-imported-description').textContent = `${named} in ${wl.repository}: each gets one pointer comment and is closed as not planned. AIWorks cannot reopen them for you.`;
+  $('#close-imported-label').textContent = `Type ${wl.repository} to confirm`;
+  $('#close-imported-typed').value = '';
+  $('#confirm-close-imported').textContent = `Close ${plural(chosen.length, 'issue')}`;
+  $('#close-imported-dialog').showModal();
+  checkCloseStale();
+}
+
+/** While the dialog is open, a change to any issue it names makes it stale: it can only be cancelled and reviewed again. */
+function checkCloseStale() {
+  if (!pendingClose || !$('#close-imported-dialog').open) return;
+  const now = new Map((worklist()?.imported.candidates ?? []).map((entry) => [entry.number, entry.version]));
+  const stale = offline || pendingClose.selection.some((entry) => now.get(entry.number) !== entry.version);
+  $('#close-imported-stale').hidden = !stale;
+  $('#close-imported-stale').textContent = offline ? 'The page is disconnected. Cancel, and confirm again when it reconnects.' : 'The list changed since you opened this. Cancel and review it again; nothing was sent.';
+  $('#confirm-close-imported').disabled = stale || worklistOff();
+}
+
 /** What a node shows: its tag, attributes and text, all the way down. */
 const shows = (node) => node.nodeType !== 1 ? `#${node.data ?? ''}`
   : `<${node.tagName}${node.getAttributeNames().sort().map((name) => ` ${name}="${node.getAttribute(name)}"`).join('')}>${[...node.childNodes].map(shows).join('')}</>`;
@@ -2413,6 +2686,12 @@ function render() {
   else if (route.screen === 'add-project' && refreshAdd(content)) { /* the form stays as the owner typed it */ }
   else if (route.screen === 'add-project') patch(content, addProjectScreen());
   else if (route.screen === 'start' && refreshStart(content, route.project)) { /* the form stays as the owner typed it */ }
+  else if (route.screen === 'worklist' && refreshWorklist(content)) { /* the form stays as the owner typed it */ }
+  else if (route.screen === 'worklist') patch(content, workListScreen());
+  else if (route.screen === 'worklist-item' && refreshItem(content, route.number)) { /* the comment stays as the owner typed it */ }
+  else if (route.screen === 'worklist-item') patch(content, workItemScreen(route.number));
+  else if (route.screen === 'worklist-import' && refreshImport(content)) { /* the choices stay as the owner left them */ }
+  else if (route.screen === 'worklist-import') patch(content, importScreen());
   else if (route.project) patch(content, projectScreen(route));
   else patch(content, projectsScreen());
   // Focus stays where it was; only when its element was replaced does it move to the one that took its place.
@@ -2484,11 +2763,15 @@ async function poll() {
     $('#connection').textContent = 'Page connected';
     $('#connection').className = 'connection online';
     trackReceipts();
+    // An open work list item is read again with every refresh, so a change shows and a stale draft says so.
+    if (current.route.screen === 'worklist-item') void loadItem(current.route.number);
+    checkCloseStale();
     if (!document.querySelector('dialog[open]')) render();
     $('#confirm-cancel').disabled = $('#send-instruction').disabled = $('#send-message').disabled = sending;
   } catch {
     offline = true; $('#connection').textContent = 'Disconnected · controls disabled'; $('#connection').className = 'connection offline';
     $('#confirm-cancel').disabled = $('#send-instruction').disabled = $('#send-message').disabled = true;
+    checkCloseStale();
     if (state && !document.querySelector('dialog[open]')) render();
     else if (!state) $('#content').replaceChildren(empty('Dashboard connection unavailable', 'The page will retry automatically.'));
   }
@@ -2570,6 +2853,26 @@ $('#message-form').addEventListener('submit', (event) => {
   void sendMessage(text);
 });
 
+// The typed confirmation of the imported issues to close (UI20): Escape or Keep them open sends nothing.
+$('#keep-imported').addEventListener('click', () => { pendingClose = null; $('#close-imported-dialog').close(); });
+$('#close-imported-dialog').addEventListener('cancel', () => { pendingClose = null; });
+$('#close-imported-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  checkCloseStale();
+  const typed = $('#close-imported-typed');
+  if (!pendingClose || $('#confirm-close-imported').disabled || !validateForm($('#close-imported-form'))) return;
+  if (typed.value.trim().toLowerCase() !== pendingClose.repository) {
+    $('#close-imported-stale').hidden = false;
+    $('#close-imported-stale').textContent = `Type ${pendingClose.repository} exactly to confirm. Nothing was sent.`;
+    typed.focus();
+    return;
+  }
+  const { selection } = pendingClose;
+  pendingClose = null;
+  $('#close-imported-dialog').close();
+  void sendWorklist('/api/work-list/close-imported', { typed: typed.value, selection }, { address: IMPORT_ADDRESS,
+    done: () => drafts.delete(IMPORT_ADDRESS, 'unchecked') });
+});
 $('#close-remove-account').addEventListener('click', () => { pendingRemoveAccount = null; $('#remove-account-dialog').close(); });
 $('#confirm-remove-account').addEventListener('click', async () => {
   const target = pendingRemoveAccount;

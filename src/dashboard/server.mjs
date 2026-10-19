@@ -14,6 +14,7 @@ import { checkConnectedProject, configuredRepositories, confirmProjectRules, con
 import { checkCaller } from '../supervisor/local-admission.mjs';
 import { safeText } from './roadmap.mjs';
 import { applyResult, approvePlan, requestPlanAndDo, undoApply, workView } from './work.mjs';
+import { closeImportedIssues, commentWorkItem, createWorkItem, setWorkItemState, workItemView, workListView } from './work-list.mjs';
 import { connectionsView, EVENT_TYPES, homeView, markSeen, overviewView, readLastSeen, trustedMainView, typedEvents, withReadOnlyStore } from './views.mjs';
 
 const staticFiles = new Map([
@@ -44,9 +45,10 @@ const pageNavigation = (req, path) => req.method === 'GET' && path === '/' && !r
 // state. `work` is for tests only (governanceRoot, synthetic git and gh for the plan's freshness check); main.mjs gives none.
 // `callerCheck` is for tests only: the caller check's process lookup and platform (local-admission.mjs checkCaller). main.mjs
 // gives none, so the project rules routes and a local project's Approve and start, Apply and Undo apply refuse every
-// write with APPROVAL_UNCHECKED until a process lookup is wired in.
+// write with APPROVAL_UNCHECKED until a process lookup is wired in. `workList` is for tests only: the work list's close
+// switched on and a synthetic GitHub command (work-list.mjs closeImportedIssues).
 export function createDashboardServer({ dataDir, roadmap, merges = null, host = {}, releases = {}, projectConnection = {}, provenanceRoot = undefined, work = {},
-  callerCheck = {} }) {
+  callerCheck = {}, workList = {} }) {
   const csrf = randomBytes(32).toString('hex');
   // Which machine and dashboard version this is, so a screenshot identifies its supervisor.
   const machine = { name: safeText(host.name ?? hostname(), 64) || null, revision: /^[0-9a-f]{7,40}$/.test(host.revision ?? '') ? host.revision : null,
@@ -62,14 +64,16 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
     // Add project is read on every request too; off, the Projects screen is exactly as before. Its records also let
     // Needs me name a project held up by the owner's decisions (aiworks#11 review 5 G7).
     const addProject = projectConnectionEnabled(dataDir), records = addProject ? connectedProjects(dataDir) : [];
-    const owner = ownerView(supervisor, merged, { host: machine.name, now, releases, delegation: configuredMergeDelegation(dataDir), connected: records });
+    // The local work list (UI20): its open decisions join Needs me and its checked reviews join Results.
+    const worklist = workListView(dataDir, { closeOn: workList.available });
+    const owner = ownerView(supervisor, merged, { host: machine.name, now, releases, delegation: configuredMergeDelegation(dataDir), connected: records, workList: worklist });
     // Plan and do and Review (UI14, UI17): requests and draft plans of connected projects, and the local work and
     // checked results of projects without GitHub, allowlisted fields only.
     const work = workView(dataDir);
     // Projects: campaign repositories, the repositories config.json lists and connected projects, by name only (never a path).
     const projects = projectsView(supervisor, owner, { repositories: configuredRepositories(dataDir), removed: removedProjects(dataDir),
       ...(addProject ? { records, addProject, localWork: work.local } : {}) });
-    return { supervisor, merged, owner, work, projects };
+    return { supervisor, merged, owner, work, projects, worklist };
   };
   // Home: what changed after the owner's last-seen marker, read from the journal; never worker text.
   const home = (supervisor, owner, projects) => {
@@ -105,10 +109,10 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
           // `since`: the viewer's last visit (ms), for "since you last looked"; bounded to the last 30 days.
           const now = Date.now(), raw = Number(new URL(req.url, origin).searchParams.get('since'));
           const since = Number.isSafeInteger(raw) && raw > 0 ? Math.min(now, Math.max(raw, now - 30 * 86_400_000)) : undefined;
-          const { supervisor, merged, owner, work, projects } = readState(now, since);
+          const { supervisor, merged, owner, work, projects, worklist } = readState(now, since);
           // Home, Settings -> Connections (OWNER_UI_V2 WP1): the same allowlisted views /api/v2 serves, in the one poll.
           return send(200, { observedAt: new Date(now).toISOString(), host: machine, supervisor, roadmap: roadmap.snapshot(),
-            merges: { refreshing: merged.refreshing, repositories: merged.repositories }, owner, projects, work,
+            merges: { refreshing: merged.refreshing, repositories: merged.repositories }, owner, projects, work, worklist,
             home: home(supervisor, owner, projects), connections: connections(supervisor, merged),
             overviews: Object.fromEntries((projects.projects ?? []).map((row) => [row.id, overviewView(row.id, { supervisor, projects })])) });
         }
@@ -128,6 +132,11 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
           const { supervisor, projects } = readState(Date.now());
           const view = overviewView(project, { supervisor, projects });
           return view ? send(200, view) : send(404, { error: 'Not found.' });
+        }
+        // One work list item with its comments (UI20), read-only.
+        if (path.startsWith('/api/v2/worklist/')) {
+          const number = path.slice('/api/v2/worklist/'.length);
+          return /^[1-9]\d{0,8}$/.test(number) ? send(200, workItemView(dataDir, Number(number))) : send(404, { error: 'Not found.' });
         }
         if (path === '/api/v2/events') {
           const query = new URL(req.url, origin).searchParams;
@@ -208,7 +217,8 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
         const now = Date.now(), supervisor = supervisorSnapshot(dataDir, now);
         const merged = merges?.snapshot() ?? { refreshing: false, repositories: [], steps: {} };
         const records = projectConnectionEnabled(dataDir) ? connectedProjects(dataDir) : [];
-        const owner = ownerView(supervisor, merged, { host: machine.name, now, releases, delegation: configuredMergeDelegation(dataDir), connected: records });
+        const owner = ownerView(supervisor, merged, { host: machine.name, now, releases, delegation: configuredMergeDelegation(dataDir), connected: records,
+          workList: workListView(dataDir, { closeOn: workList.available }) });
         return send(200, removeProject(dataDir, value, projectsView(supervisor, owner, { repositories: configuredRepositories(dataDir), records, now }), now));
       }
       if (path === '/api/projects/restore') return send(200, restoreProject(dataDir, value));
@@ -218,6 +228,11 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       const caller = (store) => checkCaller(store, callerOptions);
       if (path === '/api/projects/rules/confirm') return send(200, await confirmProjectRules(dataDir, value, { caller }));
       if (path === '/api/projects/rules/revoke') return send(200, await revokeProjectRules(dataDir, value, { caller }));
+      // The local work list (UI20): every change runs the caller check first and binds the version and request id it was sent with.
+      if (path === '/api/work-list/items') return send(200, await createWorkItem(dataDir, value, { caller }));
+      if (path === '/api/work-list/comment') return send(200, await commentWorkItem(dataDir, value, { caller }));
+      if (path === '/api/work-list/state') return send(200, await setWorkItemState(dataDir, value, { caller }));
+      if (path === '/api/work-list/close-imported') return send(200, await closeImportedIssues(dataDir, value, { ...workList, caller }));
       return send(404, { error: 'Not found.' });
     } catch (error) {
       const status = error.status ?? (error.code === 'INVALID_STATE' || error.name === 'ConflictError' ? 409 : 503);

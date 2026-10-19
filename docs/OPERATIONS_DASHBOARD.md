@@ -282,6 +282,27 @@ The POST routes keep the command rules: exact Origin, the CSRF token, JSON of at
 
 Both keep the command rules and take only `repository` and an optional `requestId`.
 
+## The local work list (UI20)
+
+AIWorks's own work list ([LOCAL_OPERATION section 5](design/LOCAL_OPERATION.md#5-the-local-work-list)) has its own screens once `selfHosting.repository` is set in `config.json` or the store holds items (`src/dashboard/work-list.mjs`). They sit under Needs me and are reached from it; the global bar is unchanged.
+
+- **Work list** (`#/worklist`): open items, closed ones behind a disclosure, and Add an item (task, note, finding or decision). Each row says its kind, state, who wrote it (you, AIWorks or the GitHub import) and when it changed.
+- **Work item** (`#/worklist/<n>`): the title, text and comments, set as text and never as markup, the step it belongs to, the GitHub issue it was imported from, Close item or Reopen item, and Add a comment. The item is read again at every refresh (`GET /api/v2/worklist/<n>`); a comment draft started before the item changed says so. A `review` item says *Local review: passed the independent check on this computer. Not merged and not accepted*, or that it was merged into local main, which is still not accepted.
+- **Needs me** lists each open `decision` item AIWorks marked as needing you, counted with the other items and linked to its work item.
+- **Results** of AIWorks's own repository shows each checked local review under *Checked on this computer · not merged yet*, or under *Merged* once the local merge gate recorded that commit on main, with its work list link. A step whose result is a local review is no longer listed as a missing link.
+- **Imported issues** (`#/worklist/import`): a read-only preview of the issues imported from GitHub that this flow has not closed, each checked by default. *Close N issues on GitHub…* opens a dialog that names exactly those issues and asks for the repository's name; Escape or *Keep them open* sends nothing. The import itself stays `supervisor work-list import`; this screen reads the store only.
+
+| Route | Does |
+| --- | --- |
+| `POST /api/work-list/items` `{ requestId, kind, title, body }` | Adds an item written by you. |
+| `POST /api/work-list/comment` `{ requestId, number, version, body }` | Adds your comment to the item as it was shown. |
+| `POST /api/work-list/state` `{ requestId, number, version, state }` | Closes or reopens the item as it was shown. |
+| `POST /api/work-list/close-imported` `{ requestId, typed, selection: [{ number, version }] }` | Closes on GitHub exactly the confirmed issues (at most 100 at a time), through SELF11's `closeConfirmedIssues`. |
+
+Each keeps the command rules (exact Origin, the CSRF token, JSON of at most 16 KiB, only its own fields) and runs the caller check first, so a request from a worker or any other program AIWorks started is refused with nothing written or sent. A change binds the version of the item it was sent for: a changed item answers *This item changed since you opened it* and saves nothing; one changed or foreign entry refuses the whole close list before anything reaches GitHub. Each request carries a request id; a retry or a second press with it answers the first result (`duplicate: true`) and does nothing again, and an issue this flow already closed is never commented on or closed again. Text is limited to 4,000 characters and refused when it looks like a credential.
+
+Closing on GitHub is built but switched off (`CLOSE_IMPORTED_ON` in `src/supervisor/work-list-import.mjs`) until the amended AW-001 (SELF12) lands: the preview then says *Preview only* and the route answers that closing is not switched on, with nothing sent.
+
 ## Local access boundary
 
 The server binds only to `127.0.0.1`; the local host is the trust boundary. This is not a remote or multi-user authentication service. Do not expose it through a proxy, tunnel or public interface without a separately reviewed authentication layer.
