@@ -220,9 +220,10 @@ const tally = (rows) => {
     unknownCostRuns: counted.filter((row) => !(row.costUsd > 0)).length, openRuns: rows.filter((row) => row.open).length };
 };
 
-// A cancelled run is charged once, at the unknown price, unless cancellation proved it never launched (controller.mjs
-// reconcile: detail not-running); a run refused at admission or before any work costs nothing.
-const operationCharged = (op) => !runNotCounted(op.outcome) && !(op.state === 'abandoned' && op.outcome?.class === 'cancelled' && op.outcome.detail === 'not-running');
+// A cancelled run is charged once, at the unknown price, whatever its stop status: not-running also follows a worker
+// that launched and exited or crashed (windows-process.ps1 Stop). Only a run refused at admission or before any work
+// (runNotCounted) costs nothing.
+const operationCharged = (op) => !runNotCounted(op.outcome);
 
 /**
  * The project's spend against its budget, from durable operation rows of every campaign of the project and its planning

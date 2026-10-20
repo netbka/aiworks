@@ -8,8 +8,10 @@ import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { Store } from '../../src/supervisor/store.mjs';
-import { admissionBudget, campaignStart } from '../../src/supervisor/api.mjs';
+import { admissionBudget, campaignCancel, campaignStart } from '../../src/supervisor/api.mjs';
+import { runNotCounted } from '../../src/supervisor/adapters/executors.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
 import { coordinatorTick, postOwnerMessage } from '../../src/supervisor/coordinator.mjs';
 import { intakeState } from '../../src/supervisor/intake.mjs';
@@ -182,7 +184,7 @@ test('planning and implementation share a capped project budget: no uncovered re
   restarted.release();
 });
 
-test('a failure after a paid worker may have started, or a cancelled paid run, leaves no room for an uncovered retry', async (t) => {
+test('a failure after a paid worker may have started, or a cancelled run whose worker launched and left no result, leaves no room for an uncovered retry', async (t) => {
   const { env, store, controller } = rig(t);
   const now = Date.now();
   campaignStart(store, declaration({ campaignId: 'one', limits: { maxWorkerRuns: null }, tasks: [task('T1', 960)] }));
@@ -202,9 +204,23 @@ test('a failure after a paid worker may have started, or a cancelled paid run, l
   writeFileSync(join(runDir, 'stdout.json'), JSON.stringify({ is_error: true, total_cost_usd: 4 }));
   writeFileSync(join(runDir, 'result.json'), JSON.stringify({ spawnError: 'containment-helper-failed', containment: 'windows-job-v1', containmentStopped: true, attached: true }));
   store.insert('coordinator_runs', { id: 'intake.1', state: 'dispatched', session_id: 's', run_dir: runDir, workspace, message_ids: [], outcome: null, cost_usd: null, created_at: now, updated_at: now });
-  // A paid implementation run stopped by cancellation, exactly as the controller records it: its cost is unknown.
+  // A paid implementation worker that launched and then exited or crashed without a result, cancelled through the real
+  // controller and Windows Stop helper: the runner process is gone, so the stop status is not-running. Its cost is unknown.
+  const lease = store.acquireLease('one', controller.instanceId, now, 60_000);
+  const ctx = { id: 'one', generation: lease.generation };
+  controller.held.set('one', lease.generation);
   run(store, 'one', 1, { open: true });
-  store.run("UPDATE operations SET state = 'abandoned', outcome = ? WHERE id = 'one-1'", JSON.stringify({ class: 'cancelled', detail: 'stopped' }));
+  store.run("UPDATE operations SET run_dir = ? WHERE id = 'one-1'", join(env.tmp, 'one-1'));
+  const op = store.openOperations('one')[0];
+  mkdirSync(op.run_dir, { recursive: true });
+  const exited = spawnSync(process.execPath, ['-e', ''], { windowsHide: true }).pid;
+  writeFileSync(join(op.run_dir, 'runner.json'), JSON.stringify({ containment: 'windows-job-v1', pid: exited, creationTime: '1',
+    jobName: `Local\\aiworks-supervisor-${randomUUID()}` }));
+  campaignCancel(store, 'one');
+  await controller.reconcile(ctx, op);
+  const cancelled = store.get('SELECT state, outcome FROM operations WHERE id = ?', op.id);
+  assert.deepEqual([cancelled.state, cancelled.outcome], ['abandoned', { class: 'cancelled', detail: 'not-running' }]);
+  assert.equal(runNotCounted(cancelled.outcome), false, 'no caller of runNotCounted refunds it by its class');
 
   controller.config.coordinator = { repositories: [PROJECT], intake: true, worktreeRoot: join(env.tmp, 'planning') };
   await coordinatorTick(controller);
@@ -218,12 +234,12 @@ test('a failure after a paid worker may have started, or a cancelled paid run, l
   assert.equal(store.get('SELECT COUNT(*) AS n FROM coordinator_runs').n, runs, 'the planning retry does not start uncovered');
   assert.match(store.get("SELECT failure FROM work_requests WHERE request_id = 'req-a'").failure, /^project-budget/);
 
-  // Only durable proof that nothing started refunds: a runner that never attached, a cancelled run that never launched.
+  // Only durable proof that nothing started refunds: a planning runner that never attached. The cancelled run stays charged once.
   store.run("UPDATE coordinator_runs SET outcome = ?, cost_usd = NULL WHERE id = 'intake.1'", JSON.stringify({ class: 'spawn-failed', requestId: 'req-a' }));
   assert.equal(projectBudget(store, PROJECT, now).total.chargedUsd, 6, 'a failure without that proof is charged at the unknown price');
   store.run("UPDATE coordinator_runs SET outcome = ? WHERE id = 'intake.1'", JSON.stringify({ class: 'spawn-failed', requestId: 'req-a', notStarted: true }));
-  store.run("UPDATE operations SET outcome = ? WHERE id = 'one-1'", JSON.stringify({ class: 'cancelled', detail: 'not-running' }));
-  assert.equal(projectBudget(store, PROJECT, now).total.chargedUsd, 0);
+  await controller.reconcile(ctx, op);
+  assert.deepEqual([projectBudget(store, PROJECT, now).total.chargedUsd, store.get('SELECT COUNT(*) AS n FROM operations').n], [3, 1]);
   controller.release();
 });
 
