@@ -409,7 +409,7 @@ Completed/cancelled campaigns do not appear as controller failures when their hi
 `tests/dashboard/dashboard.test.mjs` exercises the roadmap definitions (no GitHub work state, no cache), read-only snapshots, safe metadata, real API transitions, stale/ABA protection, authority preservation, duplicate delivery and HTTP request protections and response headers using disposable data.
 
 `tests/dashboard/owner.test.mjs` exercises:
-- the owner view: merged from an exact-head receipt or a current local git check, review items, the steps they unblock, churn notes, merges not seen, decisions and an unreadable coordinator inbox;
+- the owner view: current local git merge checks, review items, the steps they unblock, churn notes, merges not seen, decisions and an unreadable coordinator inbox;
 - the page order: campaigns with something for the owner and active ones first, finished ones collapsed to one line each, newest first;
 - `purpose`/`outcome` validation and the unchanged scope digest;
 - the host label;
