@@ -111,7 +111,7 @@ function planView(store, record, request, draft) {
   const state = approvedAt && started ? { code: 'APPROVED' } : intakeState(request, draft);
   const startable = ['DRAFT_READY', 'PLAN_ONLY_READY', 'CONFLICT'].includes(state.code);
   const view = { ...base, code: state.code, startable, approvedAt,
-    failure: state.code === 'DRAFT_FAILED' ? safeText(state.reason, 80) : null, staleWhat: state.code === 'DRAFT_STALE' ? list(state.what, 120, 8) : [] };
+    failure: state.code === 'DRAFT_FAILED' ? safeText(state.reason, 80) : null, budgetWait: state.budgetWait ? safeText(state.budgetWait, 300) : null, staleWhat: state.code === 'DRAFT_STALE' ? list(state.what, 120, 8) : [] };
   if (!draft) return view;
   const d = draft.declaration, envelope = d.envelope ?? {};
   const providers = (d.executor?.kind === 'cli-chain' ? d.executor.providers : [d.executor]).filter(Boolean)
