@@ -145,7 +145,7 @@ const screenText = { home: ['Home', 'What changed, and what needs me?'], project
   alerts: ['Alerts', 'When does AIWorks tell me that something needs me?'],
   work: ['Work', 'What is running or waiting, and why?'], results: ['Results', 'What has been delivered, and what remains?'],
   cost: ['Cost', 'What did this cost?'], step: ['Step', 'What is happening on this step?'], start: ['Plan work', 'Describe the result. AIWorks proposes the steps.'],
-  review: ['Review', 'Is this the right goal and limits?'], 'add-project': ['Add project', 'Which folder should AIWorks work on?'],
+  review: ['Review', 'Is this the right goal and limits?'], plan: ['Plan', 'What will be true when this is done?'], 'add-project': ['Add project', 'Which folder should AIWorks work on?'],
   worklist: ['Work list', 'What is on AIWorks’s own work list?'], 'worklist-item': ['Work item', 'What does this item say, and what happened to it?'],
   'worklist-import': ['Imported issues', 'Which imported GitHub issues should be closed there?'],
   'project-settings': ['Project settings', 'What must AIWorks never change here, and what may it spend?'],
@@ -380,7 +380,8 @@ function taskRow(c, task) {
         ? el('div', { class: 'subtext' }, `Waiting for ${task.dependsOn.filter((dep) => c.tasks.find((item) => item.id === dep)?.state !== 'done').join(', ')}`) : null,
       last ? el('div', { class: 'subtext' }, `Last: ${last}`) : null),
     td('c-tries', el('span', { class: 'number tries' }, plural(task.attempts, 'try', 'tries')), watchChip(task)),
-    el('td', { class: 'table-actions c-action' }, task.resultUrl ? link(delivery?.number ? `Open PR #${delivery.number} ↗` : 'View result ↗', delivery?.url ?? task.resultUrl)
+    el('td', { class: 'table-actions c-action' }, delivery?.route ? routeLink(delivery.route.label, delivery.route.address)
+      : task.resultUrl ? link(delivery?.number ? `Open PR #${delivery.number} ↗` : 'View result ↗', delivery?.url ?? task.resultUrl)
       : button('Check again', () => command(c, 'recheck', task), 'secondary small', !canRecheck)));
 }
 const stepsTable = (c) => el('div', { class: 'steps' }, table(['Step', 'What it delivers', 'Where it stands', 'Tries', ''], c.tasks.map((task) => taskRow(c, task))));
@@ -784,10 +785,71 @@ function planRows(project) {
     el('span', { class: 'subtext' }, ` · ${PLAN_WORDS[plan.code] ?? 'State unknown'}`))))];
 }
 
+/*
+ * Plan (OWNER_UI_V2 screen 4, WP3): this project's plans grouped Now, Next and Later, each with its state, priority and
+ * version, a link to Review where it is approved, and its version history from the stored drafts. It reads the same
+ * plans as Review (work.mjs workView); nothing here plans, approves or starts. Edit plan opens Review with the edit
+ * begun from the version shown, kept as a draft of Review's address, so an edit in progress is never lost or doubled.
+ */
+const HORIZON_ORDER = ['now', 'next', 'later'];
+const planAddress = (project, plan) => formatRoute({ screen: 'review', project, plan: plan.id });
+function editFromPlan(project, plan) {
+  const address = planAddress(project, plan);
+  if (!drafts.get(address, 'edit')) startEdit(project, plan, { open: false });
+  go(address);
+  document.querySelector('#edit-outcome')?.focus();
+}
+function versionHistory(plan) {
+  const versions = plan.versions ?? [];
+  if (!versions.length) return null;
+  return disclosure(`plan/${plan.id}/versions`, `Versions (${versions.length})`, el('ol', { class: 'plan-versions', reversed: true },
+    ...versions.map((v) => el('li', { 'data-version': String(v.version) },
+      el('strong', {}, `Version ${v.version}${v.version === plan.version ? ' (shown on Review)' : ''}`),
+      el('div', { class: 'subtext' }, [v.by === 'owner' ? `Your edit of version ${v.editedFrom}` : 'Drafted by AIWorks', clock(v.at),
+        HORIZON_WORDS[v.horizon] ?? 'Now', v.changes === null ? null : v.changes ? `${plural(v.changes, 'change')} from version ${v.version - 1}` : 'No change from the version before',
+        v.scopeChanged ? 'the scope changed' : null].filter(Boolean).join(' · ')),
+      v.outcome ? el('div', { class: 'subtext' }, v.outcome) : null))));
+}
+function planItem(project, plan) {
+  const address = planAddress(project, plan), editing = Boolean(drafts.get(address, 'edit'));
+  const off = Boolean(approving) || sending || offline || !state.supervisor.available;
+  const edit = plan.editable && state.work?.planAndDo
+    ? el('button', { class: 'button secondary small', type: 'button', disabled: off, onclick: () => editFromPlan(project, plan) }, editing ? 'Continue editing' : 'Edit plan') : null;
+  const word = plan.budgetWait ? 'Waiting for budget' : PLAN_WORDS[plan.code] ?? 'State unknown';
+  return el('li', { class: 'result-row plan-row', 'data-focus-scope': `plan/${plan.id}`, 'data-state': plan.code },
+    el('div', { class: 'needs-text' }, routeLink(plan.outcome || 'A plan being drafted', { screen: 'review', project, plan: plan.id }, 'task-name')),
+    el('div', { class: 'result-state' }, [word, plan.version ? `${PRIORITY_WORDS[plan.priority] ?? 'Normal'} priority` : null, plan.version ? `version ${plan.version}` : null,
+      plan.version ? estimateText(plan.estimate).replace(/\.$/, '') : null].filter(Boolean).join(' · ')),
+    plan.code === 'DRAFT_STALE' ? el('p', { class: 'notice warning' }, `${projectName(project)} changed since this plan was drafted. Draft it again before approving.`) : null,
+    editing ? el('p', { class: 'subtext' }, 'You have unsaved edits to this plan on Review.') : null,
+    plan.approvedAt ? el('div', { class: 'subtext' }, approvedText(plan.approvedAt)) : null,
+    edit ? el('div', { class: 'campaign-controls' }, edit) : null,
+    versionHistory(plan));
+}
+function planScreen(project) {
+  if (!state.supervisor.available) return [unavailable()];
+  const plans = projectPlans(project);
+  const start = state.work?.projects?.some((item) => sameProject(item, project)) && !offline ? routeLink('Plan work', { screen: 'start', project }, 'button secondary') : null;
+  if (!plans.length) {
+    return [el('section', { class: 'panel', 'data-focus-scope': `plan/${project}` }, empty('No plans yet', state.work?.planAndDo
+      ? 'Describe a result under Plan work; AIWorks drafts a plan here for you to review. Nothing starts until you approve it.'
+      : 'Plan and do is off on this computer, so AIWorks drafts no plans here.'), start)];
+  }
+  const group = (key, title, list) => list.length ? el('section', { class: 'needs-group', 'aria-labelledby': `plan-group-${key}`, 'data-focus-scope': `plan-group/${key}` },
+    el('h3', { id: `plan-group-${key}`, class: 'section-title' }, `${title} (${list.length})`),
+    el('ul', { class: 'needs-list' }, ...list.map((plan) => planItem(project, plan)))) : null;
+  const drafting = plans.filter((plan) => !plan.version);
+  return [el('section', { class: 'panel', 'aria-labelledby': 'plan-title', 'data-focus-scope': `plan/${project}` },
+    el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'plan-title' }, `${plural(plans.length, 'plan')}, by when`),
+      el('p', {}, 'Now, Next and Later are yours to set with Edit plan. Approve and start is on Review, for exactly the version it shows.')), start),
+    ...HORIZON_ORDER.map((key) => group(key, HORIZON_WORDS[key], plans.filter((plan) => plan.version && (plan.horizon ?? 'now') === key))),
+    group('drafting', 'Not drafted yet', drafting))];
+}
+
 function reviewScreen(project, id) {
   const plan = projectPlans(project).find((item) => item.id === id);
   const back = routeLink('Start work', { screen: 'start', project }, 'button secondary');
-  if (!plan) return [empty('This plan is not on this computer', 'It may belong to another project, or the address is mistyped.'), back];
+  if (!plan) return [empty('This plan is not on this computer', 'It may belong to another project, or the address is mistyped.'), back, routeLink('All plans', { screen: 'plan', project }, 'button secondary')];
   if (!plan.version) {
     return [plan.code === 'DRAFT_FAILED' ? empty('AIWorks couldn’t draft a plan', 'Ask again from Start work, or change the goal.')
       : plan.budgetWait ? empty('Waiting for budget', BUDGET_WAIT_WORDS)
@@ -882,12 +944,13 @@ function planChanges(plan) {
 }
 
 /** The edit begins from the plan as shown: its version and fingerprint, and its current parts. */
-function startEdit(project, plan) {
+function startEdit(project, plan, { open = true } = {}) {
   const address = formatRoute({ screen: 'review', project, plan: plan.id });
   const criteria = plan.criteria?.length ? plan.criteria : (plan.acceptance ?? []).map((text) => ({ text, check: null }));
   drafts.set(address, 'edit', { baseVersion: plan.version, baseDigest: plan.authorityDigest, outcome: plan.outcome ?? '', horizon: plan.horizon ?? 'now',
     priority: plan.priority ?? 'normal', criteria: criteria.map((item) => ({ text: item.text, check: item.check ?? '' })), included: (plan.included ?? []).join('\n'),
     later: (plan.later ?? []).join('\n'), estimated: Boolean(plan.estimate), amount: plan.estimate ? String(plan.estimate.amount) : '', unit: plan.estimate?.unit ?? 'days' });
+  if (!open) return;
   render();
   document.querySelector('#edit-outcome')?.focus();
 }
@@ -1277,7 +1340,8 @@ function workView(work = filtered(campaignWork(), 'steps')) {
     cell(link(number ? `Issue #${number}` : task.id, task.issueUrl, 'package-id')),
     cell(el('span', { class: 'task-name' }, task.outcome ?? task.title), el('div', { class: 'subtext' }, `${task.id} · ${campaignTitle(c)}`)),
     cell(stepBadge(c, task), delivery?.note ? el('div', { class: 'subtext' }, delivery.note) : null),
-    cell(task.resultUrl ? link(delivery?.number ? `PR #${delivery.number} ↗` : 'Report ↗', delivery?.url ?? task.resultUrl) : el('span', { class: 'muted' }, 'Not published yet'))));
+    cell(delivery?.route ? routeLink(`Work list #${delivery.number}`, delivery.route.address)
+      : task.resultUrl ? link(delivery?.number ? `PR #${delivery.number} ↗` : 'Report ↗', delivery?.url ?? task.resultUrl) : el('span', { class: 'muted' }, 'Not published yet'))));
   const body = el('div', {}, rows.length ? table(['Step issue', 'What it delivers', 'Where it stands', 'Pull request or report'], rows)
     : empty('No matching work', current.route.screen === 'settings' ? 'Try clearing the filters.' : 'No step of this project is recorded yet.'));
   if (work.length > workLimit) body.append(el('div', { class: 'load-more' }, button(`Show more (${work.length - workLimit} remaining)`, () => { workLimit += 80; render(); }, 'secondary')));
@@ -1450,7 +1514,44 @@ function addProjectScreen() {
     draft.outcome?.code === 'PROJECT_MOVED' ? button('Connect as a new project', () => void connectFolder({ asNewProject: true }), 'secondary', busy) : null);
   // First run states what planning costs before anything is planned (OWNER_UI_V2 WP8).
   return [el('section', { class: 'panel' }, el('div', { class: 'panel-body' }, el('p', { class: 'subtext' }, planningText(state.planning)))),
-    el('section', { class: 'panel' }, form), el('section', { class: 'panel' }, samplePanel())];
+    ideaPanel(), el('section', { class: 'panel' }, form), el('section', { class: 'panel' }, samplePanel())];
+}
+
+/*
+ * Start from an idea (OWNER_UI_V2 screen 1, First run): the owner writes what they would like to build before any
+ * project exists. The idea is only a draft of this page. It goes nowhere by itself: the owner chooses and connects a
+ * folder below, confirms the project's rules on its Overview, then asks for a plan under Plan work, which starts with
+ * the idea as its goal; nothing runs until Approve and start of exactly the plan shown on Review. AIWorks creates no
+ * folder, repository or other project for an idea, and sends nothing until the owner asks for a plan.
+ */
+const ideaDraft = () => drafts.get(ADD_ADDRESS, 'idea') ?? { text: '' };
+function ideaPanel() {
+  const draft = ideaDraft();
+  const text = el('textarea', { id: 'idea-text', rows: 3, maxlength: 2000, 'aria-describedby': 'idea-hint', oninput: () => {
+    drafts.set(ADD_ADDRESS, 'idea', { text: text.value });
+    const kept = document.querySelector('#idea-kept');
+    if (kept) kept.textContent = text.value.trim() ? 'Kept on this page until you connect a folder.' : '';
+  } });
+  text.value = draft.text;
+  const step = (label, detail) => el('li', {}, el('strong', {}, label), el('div', { class: 'subtext' }, detail));
+  return el('section', { class: 'panel', 'aria-labelledby': 'idea-title', 'data-focus-scope': 'add-project/idea' }, el('div', { class: 'panel-body start-form' },
+    el('h2', { id: 'idea-title' }, 'What would you like to build?'),
+    el('label', { class: 'field' }, el('strong', {}, 'Your idea (optional)'), text,
+      el('span', { class: 'subtext', id: 'idea-hint' }, 'In your own words. No secrets; up to 2,000 characters.')),
+    el('p', { id: 'idea-kept', class: 'subtext', role: 'status', 'aria-live': 'polite' }, draft.text.trim() ? 'Kept on this page until you connect a folder.' : ''),
+    el('ol', { class: 'idea-steps' },
+      step('Choose a folder and connect it', 'Below. A new or empty folder is fine. Connecting only reads it; AIWorks creates no repository or other project.'),
+      step('Confirm the project’s rules', 'On the project’s Overview: what AIWorks may do there.'),
+      step('Ask for a plan, then approve exactly that plan', 'Plan work starts with your idea as its goal. Nothing runs until you press Approve and start on Review.'))));
+}
+/** After a folder is connected, the idea becomes that project's unsent Plan work goal, unless one is already typed there. */
+function carryIdea(project) {
+  const idea = ideaDraft().text.trim();
+  if (!idea) return false;
+  const address = formatRoute({ screen: 'start', project });
+  if (!startDraft(address).goal.trim()) drafts.set(address, 'start', { ...startDraft(address), goal: idea, from: 'description' });
+  drafts.delete(ADD_ADDRESS, 'idea');
+  return true;
 }
 
 /*
@@ -1529,11 +1630,13 @@ async function connectFolder(extra = {}) {
     if (result.project) {
       // Saved: the project opens. A project saved with a problem says it there, with its Check again.
       clearAdd();
+      const idea = carryIdea(result.project.route);
       addBusy = null;
       await poll();
       go(formatRoute({ screen: 'project', project: result.project.route }));
       // The project's Now leads with what it can do, so the notice does not say that a second time (review 5 G2).
-      notice(result.ok ? [`Connected "${result.project.name}".`, ...(result.notices ?? []).filter((item) => item.code !== 'LOCAL_START_OFF').map((item) => item.message)].join(' ')
+      notice(result.ok ? [`Connected "${result.project.name}".`, ...(result.notices ?? []).filter((item) => item.code !== 'LOCAL_START_OFF').map((item) => item.message),
+        idea ? 'Your idea waits in Plan work as its goal: confirm the rules here first, then ask for a plan.' : null].filter(Boolean).join(' ')
         : result.message, null, null, current.address);
       return;
     }
@@ -2049,14 +2152,14 @@ function modelInstructionsScreen() {
 // server sends (views.mjs). Typed events carry no text of their own, so every word here is the page's.
 
 const EVENT_WORDS = { 'goal-started': 'Work started', paused: 'Paused', resumed: 'Resumed', cancelled: 'Cancel requested',
-  'result-ready': 'Result ready for your review', merged: 'Merged', built: 'Builder finished a run', checked: 'Passed the independent check',
+  'result-ready': 'Result ready for your review', accepted: 'You accepted a checked result', merged: 'Merged', built: 'Builder finished a run', checked: 'Passed the independent check',
   'check-rejected': 'The independent checker asked for changes', 'run-failed': 'An AI worker run did not finish; AIWorks retries by itself',
   'limit-wait': 'Waiting for an AI worker limit', 'wait-ended': 'An AI worker can take work again', 'needs-you': 'Needs me',
   'decision-cleared': 'A question for you was cleared', 'aiworks-problem': 'AIWorks had a problem of its own' };
 // The order of the one-line summary: what the owner acts on first.
-const EVENT_ORDER = ['needs-you', 'result-ready', 'merged', 'checked', 'check-rejected', 'paused', 'resumed', 'goal-started', 'cancelled',
+const EVENT_ORDER = ['needs-you', 'result-ready', 'accepted', 'merged', 'checked', 'check-rejected', 'paused', 'resumed', 'goal-started', 'cancelled',
   'limit-wait', 'wait-ended', 'run-failed', 'aiworks-problem', 'built', 'decision-cleared'];
-const SUMMARY_WORDS = { 'needs-you': 'new for you', 'result-ready': 'ready for review', merged: 'merged', checked: 'passed the check',
+const SUMMARY_WORDS = { 'needs-you': 'new for you', 'result-ready': 'ready for review', accepted: 'accepted by you', merged: 'merged', checked: 'passed the check',
   'check-rejected': 'sent back by the checker', paused: 'paused', resumed: 'resumed', 'goal-started': 'started', cancelled: 'cancelled',
   'limit-wait': 'limit waits', 'wait-ended': 'waits ended', 'run-failed': 'runs retried', 'aiworks-problem': 'AIWorks problems', built: 'builder runs',
   'decision-cleared': 'questions cleared' };
@@ -2108,6 +2211,28 @@ async function markSeen() {
   finally { seenBusy = false; await poll(); }
 }
 
+/**
+ * Results waiting for the owner's review (OWNER_UI_V2 WP4), read from the same Results rows as each project's Results
+ * tab, so the result, its project and its Review are the same everywhere. `project` narrows to one project.
+ */
+const resultsToReview = (project = null) => Object.values(state.owner?.results ?? {}).filter((entry) => !project || sameProject(entry.project, project))
+  .flatMap((entry) => entry.groups.flatMap((group) => group.rows.map((row) => ({ ...row, project: entry.project })))).filter((row) => row.review?.state === 'ready');
+function reviewList(rows, { scope, withProject = false }) {
+  if (!rows.length) return null;
+  return panel('Results to review', 'Each passed the independent check. Review shows its criteria and evidence, then Accept result or Request changes.',
+    el('div', { class: 'panel-body', 'data-focus-scope': scope }, el('ul', { class: 'needs-list' }, ...rows.slice(0, 5).map((row) => el('li', { class: 'result-row', 'data-focus-scope': `${scope}/${row.campaignId}/${row.taskId}` },
+      el('div', { class: 'needs-text' }, routeLink(row.review.label, row.review.address, 'needs-link'), el('span', {}, ` ${row.text}`)),
+      el('div', { class: 'subtext' }, [withProject ? `Project ${projectName(row.project)}` : null, row.evidence].filter(Boolean).join(' · '))))),
+    rows.length > 5 ? el('p', { class: 'subtext' }, `And ${rows.length - 5} more under each project’s Results.`) : null));
+}
+
+/** The structured decision of a Needs me item that opens a step (WP2), with its step, or null when it has none to answer. */
+function itemDecision(item) {
+  const address = item?.kind === 'decision' ? item.route?.address : null;
+  const c = address?.screen === 'step' ? campaignById(address.work) : null, task = c?.tasks.find((t) => t.id === address.step);
+  return task?.decision && !task.decision.answered ? { c, task } : null;
+}
+
 /** Home: one line since the last visit (the server-side marker), the decision first, each project in one sentence, all work's pause. */
 function homeScreen() {
   const home = state.home;
@@ -2120,15 +2245,19 @@ function homeScreen() {
     el('p', { role: 'status', 'aria-live': 'polite' }, counts.length ? `${counts.join(' · ')}${since.more ? ', and more' : ''}.` : 'Nothing changed.'),
     since.events.length ? disclosure('home/events', `What changed (${since.more ? `latest ${since.events.length}` : since.events.length})`, eventList(since.events)) : null,
     since.count ? button(seenBusy ? 'Marking…' : 'Mark as seen', markSeen, 'secondary small', seenBusy || offline) : null);
-  const first = state.owner?.items?.[0];
+  const first = state.owner?.items?.[0], card = home.needsYou.count ? itemDecision(first) : null;
+  // The first item's decision is answered here with the same card as on its step: options, suggestion, snooze, "did not need me".
   const decision = panel('Needs me', home.needsYou.count ? 'The first decision; the rest are in Needs me.' : null, el('div', { class: 'panel-body', 'data-focus-scope': 'home/needs' },
     home.needsYou.count && first ? el('ul', { class: 'needs-list' }, needsItem(first)) : el('p', {}, 'Nothing needs you right now.'),
+    card ? decisionPanel(card.c, card.task) : null,
     home.needsYou.count > 1 ? routeLink(`All ${home.needsYou.count} in Needs me`, '#/needs', 'button secondary small') : null));
   const projects = home.projects.length
     ? el('ul', { class: 'settings-links home-projects' }, ...home.projects.map((project) => el('li', { 'data-focus-scope': `home/project/${project.id}`, 'data-state': project.state.key },
       routeLink(project.name, { screen: 'project', project: project.id, tab: 'now' }, 'task-name'), el('div', { class: 'subtext' }, project.state.text ?? 'Not known right now.'))))
-    : empty('No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository.');
-  return [changed, decision,
+    : state.projects?.addProject ? el('div', { class: 'empty-state' }, el('strong', {}, 'No projects yet.'), ' Start from an idea or a folder on this computer. ',
+      routeLink('Add project', { screen: 'add-project' }))
+      : empty('No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository.');
+  return [changed, decision, reviewList(resultsToReview(), { scope: 'home/reviews', withProject: true }),
     panel('Projects', 'Each project in one sentence.', el('div', { class: 'panel-body' }, projects)),
     panel('All work', 'Pause stops new steps everywhere; steps already running finish and are recorded. Resume all resumes only what Pause all paused.',
       el('div', { class: 'panel-body' }, pauseControls(home.pause, 'all', {}, { label: 'all work' })))];
@@ -2315,7 +2444,7 @@ function nowScreen(project) {
     details.workId || others.length ? disclosure(`now/${project}/details`, 'Details', el('div', { class: 'subtext' }, [
       details.workId ? `Known to AIWorks as ${details.workId}` : null, details.trackingUrl ? link(`tracking issue #${details.trackingIssue} ↗`, details.trackingUrl) : null,
       others.length ? `Other work in this project: ${others.join(', ')}` : null].filter(Boolean).flatMap((part, index) => index ? [' · ', part] : [part]))) : null)),
-  overviewPanel(project), row?.connection ? connectionPanel(row) : null, since].filter(Boolean);
+  overviewPanel(project), reviewList(resultsToReview(project), { scope: `overview/${project}/reviews` }), row?.connection ? connectionPanel(row) : null, since].filter(Boolean);
 }
 
 /** A piece of work's steps in the order they can run: each after the steps it depends on, otherwise as declared. */
@@ -2613,6 +2742,7 @@ function stepScreen(project, c, task) {
   const unfinished = !['done', 'verified'].includes(task.state);
   // With a decision to answer on this screen, Send answer is the one primary action; the step issue is secondary.
   const primary = task.stopped ? primaryAction(task.stopped.primary, task.decision && !task.decision.answered ? 'button secondary' : 'button')
+    : delivery?.route ? routeLink(delivery.route.label, delivery.route.address, 'button')
     : task.resultUrl ? link(number ? `Open pull request #${number} ↗` : 'Open the result ↗', delivery?.url ?? task.resultUrl, 'button')
       : unfinished && c.controls?.more.length ? button('Send guidance', () => openInstructions(c, task), '', commandsOff()) : null;
   const last = task.verifiedSha ? `Passed the check at commit ${task.verifiedSha.slice(0, 7)}` : outcomeText(task.lastOutcome);
@@ -2653,10 +2783,12 @@ function stepScreen(project, c, task) {
 /** One Results row: what the step delivers, its state word, what follows, the link to the result and the check in details. */
 const resultRow = (row) => el('li', { class: `result-row ${row.group}`, 'data-focus-scope': `${row.campaignId}/${row.taskId}` },
   el('div', { class: 'needs-text' }, el('span', {}, row.text), row.link ? link(`${row.link.label} ↗`, row.link.url, 'needs-link') : null,
-    row.route ? routeLink(row.route.label, row.route.address, 'needs-link') : null),
+    row.route ? routeLink(row.route.label, row.route.address, 'needs-link') : null,
+    row.review ? routeLink(row.review.label, row.review.address, 'needs-link') : null),
   // A merged row says when, then the project's release rule: never released or live.
   el('div', { class: 'result-state' }, row.group === 'merged' ? [`Merged${row.mergedAt ? ` ${dateTime(row.mergedAt)}` : ''}.`, row.release].join(' ') : row.word),
   row.note ? el('div', { class: 'subtext' }, row.note) : null,
+  row.review?.acceptedAt ? el('div', { class: 'subtext' }, `Accepted by you at ${clock(row.review.acceptedAt)}. Merging follows the merge gate.`) : null,
   row.ladder ? releaseLadder(row.ladder) : null,
   row.asOf ? el('div', { class: 'needs-stale' }, mergeAsOf(row.asOf)) : null,
   row.evidence ? disclosure(`results/${row.campaignId}/${row.taskId}`, el('span', { class: 'evidence' }, row.evidence),
@@ -2680,7 +2812,8 @@ function resultsScreen(project) {
   if (!results?.groups.length) return el('section', { class: 'panel' }, empty(state.owner.noResults.title, state.owner.noResults.text));
   return el('section', { class: 'panel', 'aria-labelledby': 'results-title', 'data-focus-scope': `results/${project}` },
     el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'results-title' }, `${plural(results.total, 'result')}, grouped by state`)),
-      results.primary ? link(`${results.primary.label} ↗`, results.primary.url, 'button') : null),
+      results.primary?.route ? routeLink(results.primary.label, results.primary.route, 'button')
+        : results.primary ? link(`${results.primary.label} ↗`, results.primary.url, 'button') : null),
     ...results.groups.map((group) => el('section', { class: 'needs-group', 'aria-labelledby': `results-group-${group.key}` },
       el('h3', { id: `results-group-${group.key}`, class: 'section-title' }, `${group.title} (${group.count})`),
       el('ul', { class: 'needs-list' }, ...group.rows.map(resultRow)))),
@@ -3179,6 +3312,8 @@ function refreshKnowledge(content, project) {
   for (const node of screen.querySelectorAll('button[type="submit"]')) node.disabled = knowledgeOff();
   return true;
 }
+const planLink = (project) => el('p', { class: 'subtext' }, routeLink('Plan', { screen: 'plan', project }),
+  `: ${plural(projectPlans(project).length, 'plan')}, grouped Now, Next and Later, with each plan’s versions.`);
 const knowledgeLink = (project) => el('p', { class: 'subtext' }, routeLink('Knowledge', { screen: 'knowledge', project }),
   ': what AIWorks knows about this product, and where each fact came from.');
 
@@ -3258,7 +3393,7 @@ function projectScreen(route) {
   const project = route.project, all = projectCampaigns(project);
   // Now from the state copy module, for a project this computer knows (or while its state cannot be read).
   if (route.screen === 'project' && route.tab === 'now' && (offline || !state.supervisor.available || all.length ||
-    projectList().some((item) => sameProject(item.id, project)))) return [...nowScreen(project), settingsLink(project), knowledgeLink(project)];
+    projectList().some((item) => sameProject(item.id, project)))) return [...nowScreen(project), planLink(project), settingsLink(project), knowledgeLink(project)];
   // Project settings are read on their own, so they show whatever the supervisor's snapshot says (WP5).
   if (route.screen === 'project-settings') return projectSettingsScreen(project);
   // Knowledge is read on its own too (WP8).
@@ -3268,7 +3403,8 @@ function projectScreen(route) {
     const plans = planRows(project);
     return plans.length ? [...startScreen(project), el('section', { class: 'panel' }, el('div', { class: 'panel-body', id: 'start-plans' }, ...plans))] : startScreen(project);
   }
-  if (route.screen === 'review') return reviewScreen(project, route.plan);
+  if (route.screen === 'review') return [...reviewScreen(project, route.plan), el('p', { class: 'subtext' }, routeLink('All plans for this project', { screen: 'plan', project }))];
+  if (route.screen === 'plan') return planScreen(project);
   // A project without GitHub: its Work and Results come from the work view; never a pull request (UI17). Earlier work and
   // results stay reachable after its rules are revoked, so an applied result can still be undone.
   const local = localProject(project);

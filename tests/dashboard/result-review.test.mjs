@@ -4,11 +4,13 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { Store } from '../../src/supervisor/store.mjs';
 import { campaignStart } from '../../src/supervisor/api.mjs';
 import { validResult } from '../../src/supervisor/adapters/claude.mjs';
 import { applyResultReview, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { ownerView } from '../../src/dashboard/owner.mjs';
+import { createDashboardServer } from '../../src/dashboard/server.mjs';
 import { declaration, environment } from '../supervisor/helpers.mjs';
 
 const SHA = 'a'.repeat(40), OTHER = 'b'.repeat(40), REPORT = '# Synthetic report';
@@ -94,4 +96,37 @@ test('a finished goal whose results have a criterion failed or not checked is ne
   store.patch('tasks', { campaign_id: d.campaignId, task_id: 'T2' }, t2.version, { verification: verification(all) }, Date.now());
   assert.equal(owner().counts.unresolved, 0);
   assert.doesNotMatch(owner().finished, /not checked/);
+});
+
+test('Accept result and Request changes run the caller check first: a program AIWorks started records nothing', async (t) => {
+  const { env, store, finish, bind } = rig(t);
+  finish('T1', [{ criterion: 1, result: 'pass', check: 'Opened the list', evidence: 'All 12 synthetic items shown.' }]);
+  const roadmap = { snapshot: () => ({ entries: [] }) };
+  const serve = async (callerCheck) => {
+    const server = createDashboardServer({ dataDir: env.dataDir, roadmap, callerCheck });
+    server.listen(0, '127.0.0.1'); await once(server, 'listening');
+    t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const csrf = (await (await fetch(`${base}/api/session`)).json()).csrf;
+    return async (path, body) => {
+      const response = await fetch(`${base}${path}`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json', 'X-Dashboard-CSRF': csrf }, body: JSON.stringify(body) });
+      return { status: response.status, body: await response.json() };
+    };
+  };
+  const lookup = (ancestors) => ({ platform: 'win32', lookup: async () => ({ pid: 999_991, ancestors, jobs: [] }) });
+  const fromAIWorks = await serve(lookup([process.pid])), unchecked = await serve({}), owner = await serve(lookup([999_990]));
+  const recorded = () => store.all("SELECT 1 FROM events WHERE kind IN ('result-accepted', 'result-changes', 'dashboard-command')").length;
+
+  for (const post of [fromAIWorks, unchecked]) {
+    const accept = await post('/api/v2/results/accept', bind('T1'));
+    const changes = await post('/api/v2/results/request-changes', bind('T1', { text: 'Sort the list.' }));
+    assert.deepEqual([accept.status, changes.status], [403, 403]);
+  }
+  assert.equal((await fromAIWorks('/api/v2/results/accept', bind('T1'))).body.code, 'APPROVAL_FROM_AIWORKS');
+  assert.equal((await unchecked('/api/v2/results/accept', bind('T1'))).body.code, 'APPROVAL_UNCHECKED');
+  assert.equal(recorded(), 0, 'nothing was accepted or sent back');
+
+  const accepted = await owner('/api/v2/results/accept', bind('T1'));
+  assert.equal(accepted.status, 202, accepted.body.error);
+  assert.equal(store.all("SELECT 1 FROM journal WHERE kind = 'result-accepted'").length, 1);
 });

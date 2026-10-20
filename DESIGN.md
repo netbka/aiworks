@@ -59,6 +59,10 @@ Below 960px navigation moves to the bottom, with focus and scroll clearance. Bel
 | Tokens, responsive shell, focus and scrollbars | `dashboard.css` | One palette and geometry across every screen; visible focus and reduced-motion handling |
 | Routes, tabs, back links | `router.mjs`, `showRoute`, `routeLink` | Real hash links, browser Back, project context preserved; Home is the first destination and opens for an empty address; a project's first tab is Overview |
 | Home, Overview, Connections | `homeScreen`, `overviewPanel`, `connectionsScreen` over the server views (`views.mjs`) | Typed events in page words only; Built, Checked and Available to users stay apart and unknown stays unknown; pause controls name stopping and stopped |
+| Plan | `planScreen` over `work.plans` (`work.mjs`) | Now, Next and Later from the plan's own outline; version history from stored drafts only; Edit plan continues on Review as Review's draft; approval only on Review, for the version shown |
+| Decision card | `decisionPanel` | One card on the step and on Home's first decision; options with consequences, suggestion, snooze and "did not need me" |
+| Result Review | `reviewPanel` on the step; `reviewEntry` rows (`owner.mjs`) on Results, Home and Overview | One project, goal and step identity everywhere; accept and request changes bind the verified head and report; "Accepted" only from recorded acceptance |
+| Idea-first start | `ideaPanel` on Add project | The idea stays a draft until the owner connects a folder; then it is the project's unsent Plan work goal; nothing is provisioned or dispatched before approval |
 | Buttons, panels, badges | `dashboard.js` helpers + shared CSS | One emphasis hierarchy; words accompany status color |
 | Needs me | `needsItem`, `needsGroups`, `attentionSummary` | Derive counts from server evidence; preserve unknown merge checks; open real issue/PR links |
 | Project list | `projectsScreen` | Identity, state and next action remain separate; details remain available |
@@ -85,4 +89,4 @@ No new animation is introduced. Existing refresh effects respect reduced-motion 
 
 ## Verification
 
-Use the synthetic `tests/dashboard/fixtures/review-store.mjs` dashboard for screenshots and browser checks, never a live installation. Check desktop and narrow Home, Projects, Needs me, Overview, Work, Plan work, Settings and Connections; check keyboard focus, form errors, route/draft retention and query clearing. Run the repository checks. Synthetic previews and passing source tests are not evidence of a production deployment.
+Use the synthetic `tests/dashboard/fixtures/review-store.mjs` dashboard for screenshots and browser checks, never a live installation. Its full store has Plan and do and Add project on, plans with several versions in Now, Next and Later, an out-of-date plan, results waiting for review and a report recorded in the local work list. Check desktop and narrow (320–390px) Home, Projects, Needs me, Overview, Plan, Review, Results, Work, Plan work, Add project, Settings and Connections; check keyboard focus, form errors, route/draft retention and query clearing. Run the repository checks. Synthetic previews and passing source tests are not evidence of a production deployment.
