@@ -3,7 +3,7 @@
 // pushes the trusted tip of the main ledger, and only that commit, to `<remote>` as `refs/heads/<branch>`: never a force,
 // a `+` refspec, a mirror, tags or unrecorded commits; bounded to 60 seconds and to one attempt every 10 minutes. Nothing
 // waits on it: a refused or unreachable remote is journaled and shown in status, and the next local merge goes ahead.
-import { exec } from './adapters/git.mjs';
+import { assertPushActionsDisabled, exec } from './adapters/git.mjs';
 import { assertActionsDisabled } from './adapters/github.mjs';
 import { redact } from './owner-intervention.mjs';
 import { mainLedger, trustedTip, trustsLocalMain } from './self-hosting.mjs';
@@ -25,7 +25,10 @@ export function pushTrustedTip({ git = ['git'], gh = ['gh'], repository, repoPat
   if (!SHA.test(tip ?? '') || !REF_NAME.test(remote ?? '') || !REF_NAME.test(branch ?? '')) {
     return { kind: 'backup-failed', reason: 'a backup needs a full commit SHA and plain remote and branch names' };
   }
-  try { assertActionsDisabled({ gh, repository }); }
+  try {
+    assertActionsDisabled({ gh, repository });
+    assertPushActionsDisabled({ git, gh, repoPath, remote });
+  }
   catch (error) { return { kind: 'backup-refused', reason: redact(error.message, 300) }; }
   const out = exec(git, ['-c', `remote.${remote}.mirror=false`, 'push', '--porcelain', '--no-follow-tags', remote, `${tip}:refs/heads/${branch}`],
     { cwd: repoPath, timeoutMs: BACKUP_TIMEOUT_MS });
