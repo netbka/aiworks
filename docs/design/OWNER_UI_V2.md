@@ -109,7 +109,7 @@ Two separate lines, never merged: work (Plan ready → Working / Checking → Wa
 | Programs and waves | Next and Later starting by themselves | PROG5 |
 | Plan amendments | New plan version on a scope change | table exists, writer in E3 |
 
-Local Approve and Apply fail closed until the caller check gets a process lookup (`APPROVAL_UNCHECKED`), and Resume and Approve refuse while the running code is not merged (`RUNTIME_NOT_MERGED`, AW-005).
+Local Approve and Apply fail closed when the caller check cannot place the caller (`APPROVAL_UNCHECKED`), and Resume and Approve refuse while the running code is not merged (`RUNTIME_NOT_MERGED`, AW-005).
 
 ### First version on today's backend
 
