@@ -75,7 +75,7 @@ Primary blue buttons represent the next useful action. Secondary buttons are whi
 
 Needs me uses neutral cards with a small amber action label, a readable subject, real evidence and a clear link. Supporting impact is separated by a subtle divider. Do not wrap a full page of requests in warning-colored panels. The Projects summary uses the same server count as Needs me; unknown evidence stays visibly qualified. Work's single active-worker metric is compact rather than an isolated quarter-width KPI card.
 
-Plan work is planning only. The callout explains this before submission; the unavailable execution mode is described in a disclosure, not a disabled pseudo-choice. Existing `/start` routes and request protocol stay compatible. Merge and release are separate permissions; settings must not claim that AIWorks can never merge.
+Plan work always explains what submission permits. Plan only proposes steps without changing the project. When planning is enabled for a connected project, Plan and do drafts a plan for Review; nothing starts until the owner chooses Approve and start. Projects without GitHub first need confirmed rules. An unavailable execution mode is explained in a disclosure. Existing `/start` routes stay compatible. Merge and release remain separate permissions.
 
 Forms use persistent labels and inline validation, with no browser validation bubbles for the changed plan, instruction and message forms. Textareas keep stable geometry and scroll internally. Native dialogs retain their existing focus and Escape behavior. Navigation icons are small inline stroke SVGs with visible text labels; decorative icons are hidden from assistive technology.
 
