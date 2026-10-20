@@ -137,7 +137,25 @@ const namesFieldCredential = (name) => {
   const last = words.at(-1);
   return (last === "key" || last === "keys") && !NON_SECRET_KEY_KINDS.has(words.at(-2));
 };
-export const isSecretFieldName = (name) => refusesMetadataKey(name) || namesFieldCredential(name);
+// Every [scheme:]//rest run in text, as /(?:[a-z][a-z0-9+.-]*:)?\/\/[^\s"'<>]+/gi finds them, in linear time. That
+// regex retries its optional scheme from every position of a long unbroken word, so long report text stalled the
+// owner loop. Start from each literal // instead and walk back over the scheme that may precede it.
+const schemeCharacter = /[a-z0-9+.-]/i;
+const urlCandidates = (text) => {
+  const candidates = [];
+  for (const match of text.matchAll(/\/\/[^\s"'<>]+/g)) {
+    let start = match.index;
+    if (text[start - 1] === ":") {
+      let first = start - 1;
+      while (first > 0 && schemeCharacter.test(text[first - 1])) first--;
+      while (first < start - 1 && !/[a-z]/i.test(text[first])) first++;
+      if (first < start - 1) start = first;
+    }
+    candidates.push(text.slice(start, match.index + match[0].length));
+  }
+  return candidates;
+};
+export const isSecretFieldName =(name) => refusesMetadataKey(name) || namesFieldCredential(name);
 export const containsCredentialMaterial = (value) => {
   // Iterative traversal covers nested JSON, redirects and encoding layers without
   // a recursion-depth bypass. Parse URL structure before decoding its values.
@@ -167,7 +185,7 @@ export const containsCredentialMaterial = (value) => {
     } catch { /* Non-JSON retains the text and URL checks below. */ }
     // Form-style spaces can surface after any number of encoding/JSON layers.
     if (credentialText(current) || credentialText(current.replaceAll("+", " "))) return true;
-    const candidates = [...current.matchAll(/(?:[a-z][a-z0-9+.-]*:)?\/\/[^\s"'<>]+/gi)].map((match) => match[0]);
+    const candidates = urlCandidates(current);
     // WHATWG URL parsing also recognizes https:host and backslashes.
     if (/^[a-z][a-z0-9+.-]*:/i.test(current.trim())) candidates.push(current.trim());
     let remainder = current;
