@@ -61,9 +61,23 @@ const decodeMetadata = (text, literalPercent = false) => {
     return null;
   }
 };
+// Percent-only layers reveal no new syntax. Stop before another byte is decoded,
+// preserving intermediate UTF-8 errors and URL/form boundaries.
+const peelPercentLayers = (text, literalPercent = false) => {
+  let depth = Infinity;
+  for (let at = text.indexOf("%"); at !== -1; at = text.indexOf("%", at + 1)) {
+    let end = at + 1;
+    while (text.startsWith("25", end)) end += 2;
+    if (end === at + 1 && literalPercent && /[0-9]/.test(text[at - 1] ?? "") &&
+        /^(?:$|[\s.,;!?])/.test(text.slice(at + 1))) continue;
+    depth = Math.min(depth, (end - at - 1) / 2);
+    if (!depth) return text;
+  }
+  return depth === Infinity ? text : text.replace(/%(?:25)+/g, (part) => part.slice(0, part.length - depth * 2));
+};
 const credentialParameter = (name) => {
   while (name.includes("%")) {
-    name = decodeMetadata(name);
+    name = decodeMetadata(peelPercentLayers(name));
     if (name === null) return true;
   }
   return isSecretLikeConfigKey(name);
@@ -138,6 +152,22 @@ const namesFieldCredential = (name) => {
   return (last === "key" || last === "keys") && !NON_SECRET_KEY_KINDS.has(words.at(-2));
 };
 export const isSecretFieldName = (name) => refusesMetadataKey(name) || namesFieldCredential(name);
+// Start at literal URL delimiters instead of retrying an optional scheme at every character.
+const schemeCharacter = /[a-z0-9+.-]/i;
+const urlCandidates = (text) => {
+  const candidates = [];
+  for (const match of text.matchAll(/\/\/[^\s"'<>]+/g)) {
+    let start = match.index;
+    if (text[start - 1] === ":") {
+      let first = start - 1;
+      while (first > 0 && schemeCharacter.test(text[first - 1])) first--;
+      while (first < start - 1 && !/[a-z]/i.test(text[first])) first++;
+      if (first < start - 1) start = first;
+    }
+    candidates.push(text.slice(start, match.index + match[0].length));
+  }
+  return candidates;
+};
 export const containsCredentialMaterial = (value) => {
   // Iterative traversal covers nested JSON, redirects and encoding layers without
   // a recursion-depth bypass. Parse URL structure before decoding its values.
@@ -167,7 +197,7 @@ export const containsCredentialMaterial = (value) => {
     } catch { /* Non-JSON retains the text and URL checks below. */ }
     // Form-style spaces can surface after any number of encoding/JSON layers.
     if (credentialText(current) || credentialText(current.replaceAll("+", " "))) return true;
-    const candidates = [...current.matchAll(/(?:[a-z][a-z0-9+.-]*:)?\/\/[^\s"'<>]+/gi)].map((match) => match[0]);
+    const candidates = urlCandidates(current);
     // WHATWG URL parsing also recognizes https:host and backslashes.
     if (/^[a-z][a-z0-9+.-]*:/i.test(current.trim())) candidates.push(current.trim());
     let remainder = current;
@@ -191,7 +221,7 @@ export const containsCredentialMaterial = (value) => {
     // A decoded fragment/redirect may itself reveal another parameter string.
     if (!candidates.length && remainder.includes("=") && inspectParameters(new URLSearchParams(remainder.slice(remainder.indexOf("?") + 1)))) return true;
     // Each changed value re-enters the same JSON/text/URL inspector.
-    const decoded = decodeMetadata(remainder, true);
+    const decoded = decodeMetadata(peelPercentLayers(remainder, true), true);
     if (decoded === null) return true;
     if (decoded !== remainder) pending.push(decoded);
   }
