@@ -60,12 +60,16 @@ export async function processCreationTime(pid) {
   return /^\d+$/.test(value ?? '') ? value : null;
 }
 
-export function windowsHelperArgs(mode, jobName, { runDir, pid, creationTime } = {}) {
+/** PowerShell arguments that run the helper script at `script` with `params` (undefined ones left out), each quoted. */
+export function helperArgs(script, params) {
   const quote = (value) => "'" + String(value).replaceAll("'", "''") + "'";
-  const params = { Mode: mode, JobName: jobName, RunDir: runDir, RunnerPid: pid, CreationTime: creationTime };
-  const command = `& ([scriptblock]::Create([IO.File]::ReadAllText(${quote(WINDOWS_PROCESS_HELPER)})))` +
+  const command = `& ([scriptblock]::Create([IO.File]::ReadAllText(${quote(script)})))` +
     Object.entries(params).filter(([, value]) => value !== undefined).map(([key, value]) => ` -${key} ${quote(value)}`).join('');
   return ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')];
+}
+
+export function windowsHelperArgs(mode, jobName, { runDir, pid, creationTime } = {}) {
+  return helperArgs(WINDOWS_PROCESS_HELPER, { Mode: mode, JobName: jobName, RunDir: runDir, RunnerPid: pid, CreationTime: creationTime });
 }
 
 function jobCommand(mode, jobName, identity) {
