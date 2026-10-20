@@ -18,8 +18,19 @@ import { applyResult, approvePlan, editPlan, requestPlanAndDo, undoApply, workVi
 import { projectSettingsView, saveProjectSettings } from './project-settings.mjs';
 import { alertsView, saveAlerts } from './alerts.mjs';
 import { knowledgeView, planningCost, saveKnowledge, usageView } from './knowledge.mjs';
-import { closeImportedIssues, commentWorkItem, createWorkItem, setWorkItemState, workItemView, workListView } from './work-list.mjs';
+import { closeImportedIssues, commentWorkItem, createWorkItem, ownerOnly, setWorkItemState, workItemView, workListView } from './work-list.mjs';
 import { connectionsView, EVENT_TYPES, homeView, markSeen, overviewView, readLastSeen, trustedMainView, typedEvents, withReadOnlyStore } from './views.mjs';
+
+/**
+ * The caller check of a protected owner action that writes through a synchronous store transaction (Review of a result):
+ * run on its own read-only store before anything is written, and refused as the other owner routes refuse it.
+ */
+async function ownerCaller(dataDir, caller) {
+  let store;
+  try { store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true }); }
+  catch { throw Object.assign(new Error('AIWorks can’t read its work records on this computer right now.'), { status: 503 }); }
+  try { await ownerOnly(store, caller); } finally { store.close(); }
+}
 
 /** The request body limit of pause and resume (WP1): the largest valid scoped request, 200 goal bindings, fits. */
 export const SCOPED_CONTROL_BYTES = 65_536;
@@ -53,8 +64,8 @@ const pageNavigation = (req, path) => req.method === 'GET' && path === '/' && !r
 // `callerCheck`: the caller check's process lookup and platform (local-admission.mjs checkCaller). main.mjs gives the native
 // Windows lookup (caller-lookup.mjs); tests give a synthetic one. Without a lookup every protected owner action (project
 // rules, a local project's Approve and start, Apply and Undo apply, settings, alerts, Knowledge, the work list) refuses
-// with APPROVAL_UNCHECKED. `workList` is for tests only: the work list's close
-// switched on and a synthetic GitHub command (work-list.mjs closeImportedIssues).
+// with APPROVAL_UNCHECKED; so do Accept result, Request changes and answering, snoozing or dismissing a decision.
+// `workList` is for tests only: the work list's close switched on and a synthetic GitHub command (work-list.mjs closeImportedIssues).
 export function createDashboardServer({ dataDir, roadmap, merges = null, host = {}, releases = {}, projectConnection = {}, provenanceRoot = undefined, work = {},
   callerCheck = {}, workList = {} }) {
   const csrf = randomBytes(32).toString('hex');
@@ -235,12 +246,19 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
         if (value && typeof value === 'object' && !Array.isArray(value) && Object.hasOwn(value, 'action')) return send(400, { error: 'Invalid dashboard command.' });
         return send(202, applyScopedControl(dataDir, { ...value, action: path.slice('/api/v2/'.length) }, Date.now(), { provenanceRoot }));
       }
+      // The caller check's lookup on this request's connection: protected owner actions refuse without it (APPROVAL_UNCHECKED).
+      const callerOptions = { ...callerCheck, connection: req.socket };
+      const caller = (store) => checkCaller(store, callerOptions);
       // A structured decision (WP2): answer, snooze or "this did not need me", bound to one decision; the action is the address.
+      // The caller check runs first, so a program AIWorks started cannot answer, snooze or dismiss an owner decision.
       if (/^\/api\/v2\/decisions\/(?:answer|snooze|not-needed)$/.test(path)) {
+        await ownerCaller(dataDir, caller);
         return send(202, applyDecision(dataDir, path.slice('/api/v2/decisions/'.length), value, Date.now()));
       }
       // Review of a result (WP4): accept, or request changes, bound to one verified head and its report; the action is the address.
+      // The caller check runs first, so a program AIWorks started can neither accept a result nor send it back for changes.
       if (/^\/api\/v2\/results\/(?:accept|request-changes)$/.test(path)) {
+        await ownerCaller(dataDir, caller);
         return send(202, applyResultReview(dataDir, path.slice('/api/v2/results/'.length), value, Date.now()));
       }
       // Preview of a checked version (WP7): bound to the same verified head and report as accept; it builds and starts nothing.
@@ -255,7 +273,6 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       // Plan and do (UI14, UI17): store a work request; Approve and start: register exactly the reviewed plan (work.mjs).
       // For a project without GitHub, Approve and start, Apply and Undo apply run the caller check on this request's
       // connection before anything is written, so a program AIWorks started cannot approve or apply (WORK_ENVELOPE 8.2).
-      const callerOptions = { ...callerCheck, connection: req.socket };
       if (path === '/api/work/requests') return send(202, requestPlanAndDo(dataDir, value));
       // Edit plan (OWNER_UI_V2 WP3): the edited plan becomes the next draft version; nothing is approved or started.
       if (path === '/api/work/edit') return send(200, editPlan(dataDir, value));
@@ -286,7 +303,6 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       // Project rules (UI16): the review only reads; confirm, renew and revoke run the caller check on this request's
       // connection first, so a program AIWorks started cannot write them (PROJECT_CONNECTION §7.4).
       if (path === '/api/projects/rules') return send(200, projectRulesView(dataDir, value));
-      const caller = (store) => checkCaller(store, callerOptions);
       if (path === '/api/projects/rules/confirm') return send(200, await confirmProjectRules(dataDir, value, { caller }));
       if (path === '/api/projects/rules/revoke') return send(200, await revokeProjectRules(dataDir, value, { caller }));
       // Project settings (WP5): the caller check runs first; the save binds the version the page showed and a request id.
