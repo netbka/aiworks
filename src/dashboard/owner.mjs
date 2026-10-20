@@ -1,6 +1,6 @@
 // Owner view: what needs the owner, and where each finished campaign step stands. It joins the supervisor snapshot
-// with the merge state the dashboard reads from local git (merges.mjs); it never calls GitHub. Unknown or stale merge
-// state never reads as merged; every sentence is built from supervisor or local git fields, never from worker output.
+// with recorded merge receipts and local git (merges.mjs); it never calls GitHub. Without a matching receipt, unknown
+// or stale merge state never reads as merged; fields come from the supervisor or local git, never worker output.
 
 import { DELEGATED, NEEDS, RESTART_ADVICE, blockerCheck, blockerWords, stateCopy } from './copy.mjs';
 import { rulesSummary } from './projects.mjs';
@@ -20,7 +20,7 @@ export const RESTART_ACTION = RESTART_ADVICE;
 export const RESTART_GRACE_MS = 5 * 60_000;
 /**
  * The merge check is current for this long after a successful fetch of the base branch (fetched at most every 5
- * minutes). Older data, or no successful fetch yet, never shows a step as merged: it reads "published, merge not seen
+ * minutes). Without a recorded merge, older data or no successful fetch reads "published, merge not seen
  * yet", and "Needs you" items built from it say when the check is from. A failed fetch keeps the last result and its time.
  */
 export const MERGE_FRESH_MS = 15 * 60_000;
@@ -66,7 +66,7 @@ const NOTES = { published: 'Your review and merge', 'report-posted': 'For you to
 
 /**
  * Owner-facing state of a finished step: merged, published (merge not seen yet), report posted, or unknown when no
- * result link was recorded. Merged only when a current check found the verified commit on the base branch. A published
+ * result link was recorded. Merged requires an exact-head receipt or a current check of the base branch. A published
  * step carries why its merge is not seen: `pending` when a check that can still come shortly is running or due.
  * `asOf` is the time of a merge check that is not current, or that is current but whose last fetch failed.
  * With merging delegated by the owner (`delegation`, config.json `merges`, #17), a verified pull request whose merge is
@@ -79,6 +79,11 @@ export function delivery(task, merges = NO_MERGES, now = Date.now(), campaignId 
   if (COMMENT_URL.test(url)) return { state: 'report-posted', url, note: NOTES['report-posted'] };
   const pr = PR_URL.exec(url);
   if (!pr) return { state: 'unknown', reason: 'no-link', note: NOTES['no-link'] };
+  const receipt = task.mergeReceipt, recordedPr = PR_URL.exec(receipt?.url ?? '');
+  if (recordedPr && receipt.sha === task.verifiedSha && receipt.originalUrl === url) {
+    return { state: 'merged', repository: recordedPr[1], number: Number(recordedPr[2]), url: receipt.url,
+      asOf: null, note: null, mergedAt: receipt.mergedAt ?? null };
+  }
   const repository = pr[1], number = Number(pr[2]);
   const check = mergeCheck(merges, repository, now);
   const step = merges?.steps?.[`${campaignId}/${task.id}`];

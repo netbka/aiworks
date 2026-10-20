@@ -380,7 +380,7 @@ function taskRow(c, task) {
         ? el('div', { class: 'subtext' }, `Waiting for ${task.dependsOn.filter((dep) => c.tasks.find((item) => item.id === dep)?.state !== 'done').join(', ')}`) : null,
       last ? el('div', { class: 'subtext' }, `Last: ${last}`) : null),
     td('c-tries', el('span', { class: 'number tries' }, plural(task.attempts, 'try', 'tries')), watchChip(task)),
-    el('td', { class: 'table-actions c-action' }, task.resultUrl ? link(delivery?.number ? `Open PR #${delivery.number} ↗` : 'View result ↗', task.resultUrl)
+    el('td', { class: 'table-actions c-action' }, task.resultUrl ? link(delivery?.number ? `Open PR #${delivery.number} ↗` : 'View result ↗', delivery?.url ?? task.resultUrl)
       : button('Check again', () => command(c, 'recheck', task), 'secondary small', !canRecheck)));
 }
 const stepsTable = (c) => el('div', { class: 'steps' }, table(['Step', 'What it delivers', 'Where it stands', 'Tries', ''], c.tasks.map((task) => taskRow(c, task))));
@@ -1273,7 +1273,7 @@ function workView(work = filtered(campaignWork(), 'steps')) {
     cell(link(number ? `Issue #${number}` : task.id, task.issueUrl, 'package-id')),
     cell(el('span', { class: 'task-name' }, task.outcome ?? task.title), el('div', { class: 'subtext' }, `${task.id} · ${campaignTitle(c)}`)),
     cell(stepBadge(c, task), delivery?.note ? el('div', { class: 'subtext' }, delivery.note) : null),
-    cell(task.resultUrl ? link(delivery?.number ? `PR #${delivery.number} ↗` : 'Report ↗', task.resultUrl) : el('span', { class: 'muted' }, 'Not published yet'))));
+    cell(task.resultUrl ? link(delivery?.number ? `PR #${delivery.number} ↗` : 'Report ↗', delivery?.url ?? task.resultUrl) : el('span', { class: 'muted' }, 'Not published yet'))));
   const body = el('div', {}, rows.length ? table(['Step issue', 'What it delivers', 'Where it stands', 'Pull request or report'], rows)
     : empty('No matching work', current.route.screen === 'settings' ? 'Try clearing the filters.' : 'No step of this project is recorded yet.'));
   if (work.length > workLimit) body.append(el('div', { class: 'load-more' }, button(`Show more (${work.length - workLimit} remaining)`, () => { workLimit += 80; render(); }, 'secondary')));
@@ -2605,11 +2605,11 @@ function reviewPanel(review, binding, { merged = false } = {}) {
  */
 function stepScreen(project, c, task) {
   const agent = c.agents.find((item) => item.taskId === task.id), p = agent?.progress;
-  const number = deliveryOf(c, task)?.number ?? /\/pull\/(\d+)$/.exec(task.resultUrl ?? '')?.[1];
+  const delivery = deliveryOf(c, task), number = delivery?.number ?? /\/pull\/(\d+)$/.exec(task.resultUrl ?? '')?.[1];
   const unfinished = !['done', 'verified'].includes(task.state);
   // With a decision to answer on this screen, Send answer is the one primary action; the step issue is secondary.
   const primary = task.stopped ? primaryAction(task.stopped.primary, task.decision && !task.decision.answered ? 'button secondary' : 'button')
-    : task.resultUrl ? link(number ? `Open pull request #${number} ↗` : 'Open the result ↗', task.resultUrl, 'button')
+    : task.resultUrl ? link(number ? `Open pull request #${number} ↗` : 'Open the result ↗', delivery?.url ?? task.resultUrl, 'button')
       : unfinished && c.controls?.more.length ? button('Send guidance', () => openInstructions(c, task), '', commandsOff()) : null;
   const last = task.verifiedSha ? `Passed the check at commit ${task.verifiedSha.slice(0, 7)}` : outcomeText(task.lastOutcome);
   const meaning = task.verifiedSha ? null : resultMeaning(task.lastOutcome, { stopped: Boolean(task.stopped), check: canCheckAgain(c, task) });
