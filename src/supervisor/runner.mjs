@@ -38,8 +38,9 @@ async function finish(failure) {
   // A failed drain leaves no consumable result. Exiting closes our handle as a final kill safeguard.
   if (attached && await drainJob(jobName) !== 'stopped') process.exit(4);
   clearInterval(heartbeat);
+  // `attached: false` is the durable proof that no worker started: the helper creates it only after reporting ready.
   writeAtomic(file('result.json'), JSON.stringify({ ...(failure ?? outcome ?? { spawnError: 'containment-helper-failed' }),
-    containment: 'windows-job-v1', containmentStopped: true, startedAt, endedAt: Date.now() }));
+    containment: 'windows-job-v1', containmentStopped: true, attached, startedAt, endedAt: Date.now() }));
   process.exit(0);
 }
 
