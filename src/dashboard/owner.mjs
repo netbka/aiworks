@@ -77,6 +77,12 @@ export function delivery(task, merges = NO_MERGES, now = Date.now(), campaignId 
   if (task.state !== 'done') return null;
   const url = task.resultUrl ?? '';
   if (COMMENT_URL.test(url)) return { state: 'report-posted', url, note: NOTES['report-posted'] };
+  // A report recorded in the local work list (supervisor.mjs localReport): read there, never a merge or an acceptance.
+  const local = task.localReport;
+  if (Number.isSafeInteger(local?.number) && local.number > 0) {
+    return { state: 'report-posted', local: true, url: null, number: local.number, route: { label: `Read the report in work list #${local.number}`, address: `#/worklist/${local.number}` },
+      note: NOTES['report-posted'] };
+  }
   const pr = PR_URL.exec(url);
   if (!pr) return { state: 'unknown', reason: 'no-link', note: NOTES['no-link'] };
   const receipt = task.mergeReceipt, recordedPr = PR_URL.exec(receipt?.url ?? '');
@@ -139,14 +145,30 @@ export const RESULT_GROUPS = [
   { key: 'unknown', title: 'Not known yet' },
 ];
 
+/**
+ * Review of a result (OWNER_UI_V2 WP4) from Results, Home and Overview: the step screen that holds its criteria, evidence,
+ * Accept result and Request changes, bound to the verified head. `acceptedAt` only from recorded acceptance; null otherwise.
+ */
+export function reviewEntry(c, task, d = null) {
+  const review = task.review;
+  if (!review || !['ready', 'accepted', 'changes-requested', 'no-evidence', 'merged'].includes(review.state)) return null;
+  // Merged outside the merge gate (seen in local git), as the step's Review says: nothing is left to accept.
+  const state = d?.state === 'merged' && ['ready', 'accepted'].includes(review.state) ? 'merged' : review.state;
+  return { label: state === 'ready' && review.canAccept ? 'Review and accept' : 'Review result', state,
+    acceptedAt: review.state === 'accepted' ? review.acceptedAt ?? null : null,
+    address: { screen: 'step', project: c.repository, work: c.id, step: task.id } };
+}
+
 /** One finished step as a Results row: its group, its state word, what it means, and the link to the result. */
 function resultRow(c, task, d, releases, recorded = null) {
   const base = { campaignId: c.id, taskId: task.id, repository: c.repository, text: label(task), mergedAt: null, release: null, asOf: d.asOf ?? null, signature: task.signature ?? null,
+    review: reviewEntry(c, task, d),
     // A report is read, never released, so it has no release steps.
     ladder: d.state === 'report-posted' ? null : releaseLadder(task, d, recorded) };
   if (d.state === 'report-posted') {
     const evidence = task.verifiedSha ? resultEvidence(task, false) : null;
-    return { ...base, group: 'reports', word: 'Report posted · for you to read', note: null, link: { label: 'Read the report', url: d.url },
+    return { ...base, group: 'reports', word: d.local ? 'Report recorded in the work list · for you to read' : 'Report posted · for you to read', note: null,
+      link: d.local ? null : { label: 'Read the report', url: d.url }, route: d.local ? d.route : null,
       evidence: evidence?.short ?? null, detail: evidence?.text ?? null };
   }
   if (d.state === 'unknown') {
@@ -248,7 +270,7 @@ function resultsByProject(supervisor, campaigns, releases, reviews = new Map(), 
   };
   for (const c of supervisor.campaigns) for (const task of c.tasks) {
     const d = campaigns[c.id].deliveries[task.id], review = reviews.get(`${c.id}/${task.id}`);
-    if (review && d?.state === 'unknown') { shown.add(review.number); add(c.repository, localReviewRow(review, label(task))); continue; }
+    if (review && d?.state === 'unknown') { shown.add(review.number); add(c.repository, { ...localReviewRow(review, label(task)), review: reviewEntry(c, task, d) }); continue; }
     if (!d) continue;
     add(c.repository, resultRow(c, task, d, releases, recorded.get(`${c.id}/${task.id}`) ?? null));
   }
@@ -260,9 +282,11 @@ function resultsByProject(supervisor, campaigns, releases, reviews = new Map(), 
       if (group.key === 'review') mine.sort((a, b) => a.number - b.number);
       return { ...group, count: mine.length, rows: mine };
     }).filter((group) => group.count);
+    // The oldest result waiting for review opens Review in the dashboard when its check is recorded; otherwise its pull request.
     const oldest = groups.find((group) => group.key === 'review')?.rows[0];
     return [key, { project, total: rows.length, groups,
-      primary: oldest ? { label: `Review pull request #${oldest.number}`, url: oldest.link.url } : null }];
+      primary: !oldest ? null : oldest.review ? { label: `Review result: ${oldest.text}`, route: oldest.review.address }
+        : { label: `Review pull request #${oldest.number}`, url: oldest.link.url } }];
   }));
 }
 

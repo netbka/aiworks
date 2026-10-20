@@ -16,7 +16,7 @@ import { declaration, environment } from '../supervisor/helpers.mjs';
 const DECISION = { question: 'Which palette?', options: [{ id: 'brand', label: 'Brand', consequence: 'Two contrast fixes.' },
   { id: 'neutral', label: 'Neutral', consequence: 'Plainer.' }], suggestion: { option: 'neutral', reason: 'Passes contrast.' } };
 
-test('an answer clears only its own decision, once; stale, wrong-step and replayed answers change nothing', (t) => {
+test('only the owner answers a decision, once; a program AIWorks started, stale, wrong-step and replayed answers change nothing', async (t) => {
   const env = environment();
   const store = new Store(join(env.dataDir, 'supervisor.db'));
   t.after(() => { store.close(); env.cleanup(); });
@@ -45,9 +45,35 @@ test('an answer clears only its own decision, once; stale, wrong-step and replay
   assert.throws(() => applyDecision(env.dataDir, 'answer', bind('T1', { option: 'brand', maxWorkerRuns: 99 })), (error) => error.status === 400);
   assert.equal(events(), 0);
 
+  // Through the dashboard's own routes the caller check runs first: a program AIWorks started, or a request whose caller
+  // could not be looked up, can neither answer, snooze nor dismiss a decision, and nothing is written.
+  const serve = async (callerCheck) => {
+    const server = createDashboardServer({ dataDir: env.dataDir, roadmap: { snapshot: () => ({ entries: [] }) }, callerCheck });
+    server.listen(0, '127.0.0.1'); await once(server, 'listening');
+    t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const csrf = (await (await fetch(`${base}/api/session`)).json()).csrf;
+    return async (action, body) => {
+      const response = await fetch(`${base}/api/v2/decisions/${action}`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json', 'X-Dashboard-CSRF': csrf }, body: JSON.stringify(body) });
+      return { status: response.status, body: await response.json() };
+    };
+  };
+  const lookup = (ancestors) => ({ platform: 'win32', lookup: async () => ({ pid: 999_991, ancestors, jobs: [] }) });
+  const fromAIWorks = await serve(lookup([process.pid])), unchecked = await serve({}), owner = await serve(lookup([999_990]));
+  for (const [post, code] of [[fromAIWorks, 'APPROVAL_FROM_AIWORKS'], [unchecked, 'APPROVAL_UNCHECKED']]) {
+    for (const [action, extra] of [['answer', { option: 'brand' }], ['snooze', { snooze: '4h' }], ['not-needed', {}]]) {
+      const refused = await post(action, bind('T1', extra));
+      assert.deepEqual([refused.status, refused.body.code], [403, code], action);
+    }
+  }
+  assert.equal(events(), 0, 'nothing was answered, snoozed or dismissed');
+  assert.ok(store.task(d.campaignId, 'T1').blocked.decision, 'the decision is still open');
+
   const answer = bind('T1', { option: 'brand', text: 'Keep the logo blue.' });
-  assert.equal(applyDecision(env.dataDir, 'answer', answer).duplicate, false);
-  assert.equal(applyDecision(env.dataDir, 'answer', answer).duplicate, true, 'an exact retry is acknowledged, never recorded twice');
+  const answered = await owner('answer', answer);
+  assert.equal(answered.status, 202, answered.body.error);
+  assert.equal(answered.body.duplicate, false);
+  assert.equal((await owner('answer', answer)).body.duplicate, true, 'an exact retry is acknowledged, never recorded twice');
   assert.throws(() => applyDecision(env.dataDir, 'answer', { ...answer, option: 'neutral' }), (error) => error.status === 409, 'one request id, one request');
   assert.throws(() => applyDecision(env.dataDir, 'answer', bind('T1', { option: 'neutral' })), (error) => error.status === 409, 'a decision is answered once');
 

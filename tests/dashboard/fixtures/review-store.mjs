@@ -38,6 +38,9 @@ import { campaignStart, campaignPause } from '../../../src/supervisor/api.mjs';
 import { runNotCounted } from '../../../src/supervisor/adapters/executors.mjs';
 import { postOwnerMessage, LANE } from '../../../src/supervisor/coordinator.mjs';
 import { planRequestText } from '../../../src/dashboard/supervisor.mjs';
+import { createProject } from '../../../src/supervisor/projects.mjs';
+import { recordDraft, reviseDraft, submitWorkRequest, workRequest } from '../../../src/supervisor/intake.mjs';
+import { addComment, createItem } from '../../../src/supervisor/work-list.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('../../..', import.meta.url)));
 export const GOVERNANCE = join(ROOT, 'tests', 'fixtures', 'governance');
@@ -388,6 +391,49 @@ function fill(store, dataDir, root, now) {
   setCampaign(id, { control: 'finished', status: 'ready' });
   lease(id, now - 14 * H);
 
+  // A report the supervisor recorded in the local work list (controller.mjs recordLocalReview), as for AIWorks's own
+  // repository with local main trusted: the step links the work item, and the item holds the supervisor's comment for
+  // exactly this step and report. Results shows it under Reports to read with the work item's own address.
+  id = start(declaration('notes-research', notes, 'Compare static site hosts', 200, [task('T1', 201, 'hosting comparison', 'Hosting comparison', { deliverable: 'report' })]), now - 10 * H);
+  const researchReport = '# Hosting comparison\n\nSynthetic review fixture report: three made-up hosts compared by price and build time.';
+  const researchItem = createItem(store, { kind: 'task', title: 'Compare static site hosts', body: 'Synthetic review fixture item.', authorKind: 'owner', now: now - 10 * H });
+  addComment(store, { number: researchItem.number, authorKind: 'supervisor', now: now - 8 * H, body: `${researchReport}\n\nVerified by an independent checker.`,
+    idempotencyKey: `${id}:T1:report:${createHash('sha256').update(researchReport, 'utf8').digest('hex')}` });
+  setTask(id, 'T1', { state: 'done', attempts: 1, pr_url: `aiworks-work:${researchItem.number}`, result: { result: 'resolved', summary: 'reported', report: researchReport } });
+  store.journal(id, 'published', { task: 'T1', url: `aiworks-work:${researchItem.number}` }, now - 8 * H);
+  setCampaign(id, { control: 'finished', status: 'ready' });
+  lease(id, now - 7 * H);
+
+  // Plan (OWNER_UI_V2 WP3): example/recipes connected, with plans in Now, Next and Later, each with versions the owner
+  // edited, one out of date and one still being drafted. Written as intake.mjs writes them; nothing approves or starts.
+  createProject(store, { id: 'recipes', tenant_id: 'example', name: 'Recipes', source_kind: 'github', root_path: repos[recipes].path,
+    github_repository: recipes, base_branch: 'main' }, now - 40 * H);
+  let planSeq = 0;
+  const planId = () => `00000000-0000-4000-b000-${String(++planSeq).padStart(12, '0')}`;
+  const plan = (goal, outcome, acceptance, edits, { at, stale = false } = {}) => {
+    const requestId = planId();
+    submitWorkRequest(store, { projectId: 'recipes', route: 'goal', text: goal, trackingIssue: 1, requestId }, at);
+    const writes = [`src/${requestId.slice(-2)}/`];
+    const proposal = { summary: `Synthetic plan: ${outcome}`, plan: 'One step, checked by the independent checker.', steps: [{ title: outcome, check: acceptance[0] }], questions: [],
+      outline: { checks: acceptance.map(() => 'Opened the synthetic recipe page'), included: [outcome], later: [], estimate: { amount: 1, unit: 'days' } },
+      declaration: { outcome, acceptance, writes, deliverables: ['commit'], constraints: ['Synthetic review fixture: no network, no production.'],
+        tasks: [{ id: 'T1', title: outcome.toLowerCase(), deliverable: 'commit', goal: `${outcome}.`, dependsOn: [], acceptance, references: ['README.md'], writes }] } };
+    let draft = recordDraft(store, { request: workRequest(store, requestId), proposal, pinned: { base: sha(recipes, 'metric-units') }, now: at + 10 * M });
+    for (const [index, edit] of edits.entries()) {
+      draft = reviseDraft(store, { requestId, version: draft.version, authorityDigest: draft.authority_digest, editId: planId(),
+        edits: { outcome: draft.declaration.envelope.outcome, criteria: acceptance.map((text) => ({ text, check: 'Opened the synthetic recipe page' })), included: [outcome], later: [],
+          horizon: 'now', priority: 'normal', estimate: { amount: 1, unit: 'days' }, ...edit } }, at + (index + 2) * H).draft;
+    }
+    if (stale) store.run("UPDATE work_drafts SET state = 'stale', stale_what = ? WHERE request_id = ? AND version = ?", ['a new version of the project'], requestId, draft.version);
+  };
+  plan('Users can print a shopping list from a recipe.', 'Shopping list from a recipe', ['The list holds every ingredient', 'It prints on one page'],
+    [{ priority: 'high', estimate: { amount: 2, unit: 'days' } }], { at: now - 30 * H });
+  plan('Users can rate recipes.', 'Recipe ratings', ['A rating of 1 to 5 stars is saved'], [{ horizon: 'next' }], { at: now - 28 * H });
+  plan('Users can plan meals for a week.', 'Weekly meal planner', ['Seven days show one recipe each'],
+    [{ horizon: 'later' }, { horizon: 'later', later: ['Share the plan with family'] }], { at: now - 26 * H });
+  plan('Recipes show their cooking time.', 'Cooking time on each recipe', ['Every recipe shows minutes'], [], { at: now - 24 * H, stale: true });
+  submitWorkRequest(store, { projectId: 'recipes', route: 'goal', text: 'Users can import recipes from a photo.', trackingIssue: 1, requestId: planId() }, now - 20 * M);
+
   // The campaign counters follow the runs, as the supervisor keeps them: every recorded run counts unless it was refunded,
   // and every cost a run reported adds to the total. So a project's total is the sum of what its runs reported.
   for (const { id: campaignId } of store.all('SELECT id FROM campaigns')) {
@@ -483,8 +529,9 @@ export function buildReviewFixture(root, { now = Date.now(), store: kind = 'full
     finally { store.close(); }
   }
   const { declarations, ...paths } = built;
-  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ repositories: paths.repositories,
-    ...(['full', 'stopped'].includes(kind) ? { coordinator: COORDINATOR } : {}), supervisorIssue: REVIEW_SUPERVISOR_ISSUE }, null, 2));
+  // The full store has Plan and do and Add project on, so Plan, Review's Edit plan and the idea-first Add project show.
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ repositories: paths.repositories, governanceRoot: join(root, 'governance'),
+    ...(['full', 'stopped'].includes(kind) ? { coordinator: { ...COORDINATOR, intake: true }, projectConnection: { enabled: true } } : {}), supervisorIssue: REVIEW_SUPERVISOR_ISSUE }, null, 2));
   const governance = join(root, 'governance');
   cpSync(GOVERNANCE, governance, { recursive: true });
   rmSync(join(governance, 'registry', 'projects'), { recursive: true });

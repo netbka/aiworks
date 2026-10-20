@@ -21,9 +21,9 @@ export const sameProject = (a, b) => typeof a === 'string' && typeof b === 'stri
 // Typed events (OWNER_UI_V2 section 8, GET /api/v2/events): one type per journal entry the owner can act on or should
 // know about. Only the type, time, work, step and project leave; never the entry's detail.
 
-const JOURNAL_KINDS = ['registered', 'paused', 'resumed', 'cancel-requested', 'published', 'merged', 'operation-finished', 'blocker-raised',
+const JOURNAL_KINDS = ['registered', 'paused', 'resumed', 'cancel-requested', 'published', 'result-accepted', 'merged', 'operation-finished', 'blocker-raised',
   'blocker-opened', 'blocker-cleared', 'blocker-resolved', 'executor-unavailable', 'provider-wait-cleared', 'step-error', 'liveness-defect'];
-export const EVENT_TYPES = Object.freeze(['goal-started', 'paused', 'resumed', 'cancelled', 'result-ready', 'merged', 'built', 'checked',
+export const EVENT_TYPES = Object.freeze(['goal-started', 'paused', 'resumed', 'cancelled', 'result-ready', 'accepted', 'merged', 'built', 'checked',
   'check-rejected', 'run-failed', 'limit-wait', 'wait-ended', 'needs-you', 'decision-cleared', 'aiworks-problem']);
 
 function eventType(kind, detail) {
@@ -32,6 +32,8 @@ function eventType(kind, detail) {
     case 'paused': case 'resumed': case 'merged': return kind;
     case 'cancel-requested': return 'cancelled';
     case 'published': return 'result-ready';
+    // The owner's recorded acceptance of exactly a checked version (supervisor.mjs applyResultReview); never a merge.
+    case 'result-accepted': return 'accepted';
     case 'blocker-raised': case 'blocker-opened': return 'needs-you';
     case 'blocker-cleared': case 'blocker-resolved': return 'decision-cleared';
     case 'executor-unavailable': return 'limit-wait';

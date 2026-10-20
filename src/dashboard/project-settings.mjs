@@ -10,7 +10,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
 import { BUDGET_RANGE, currentSettings, MAX_NOTES, MAX_PROTECTED, projectBudget, projectKey, projectOf, ProjectSettingsError, saveSettings,
-  UNKNOWN_RUN_RANGE } from '../supervisor/project-settings.mjs';
+  unallocatedPlanning, UNKNOWN_RUN_RANGE } from '../supervisor/project-settings.mjs';
 import { configuredRepositories } from './projects.mjs';
 import { ownerOnly } from './work-list.mjs';
 
@@ -45,8 +45,10 @@ function resolveProject(store, dataDir, project) {
   return { id: project, key: projectKey(rules.id), local: true };
 }
 
+// Reported dollars, runs with no reported cost and open runs, each in its own unit.
+const units = (value) => (value ? { reportedUsd: value.reportedUsd, unknownCostRuns: value.unknownCostRuns, openRuns: value.openRuns } : null);
 const period = (value) => (value ? { capUsd: value.capUsd, reportedUsd: value.reportedUsd, unknownCostRuns: value.unknownCostRuns, openRuns: value.openRuns,
-  chargedUsd: value.chargedUsd, remainingUsd: value.remainingUsd, exhausted: value.exhausted } : null);
+  chargedUsd: value.chargedUsd, remainingUsd: value.remainingUsd, exhausted: value.exhausted, planning: units(value.planning) } : null);
 
 /** What the page shows: the saved version and its settings, and the spend against the budget. Allowlisted fields only. */
 function settingsView(store, resolved, now) {
@@ -54,7 +56,9 @@ function settingsView(store, resolved, now) {
   const spend = projectBudget(store, resolved.key, now, { detail: true });
   return { available: true, project: resolved.id, version: current.version, savedAt: current.createdAt, settings: current.settings,
     spend: { monthStart: spend.monthStart, unknownRunCostUsd: spend.unknownRunCostUsd, total: period(spend.total), month: period(spend.month),
-      exhausted: spend.exhausted ? (spend.month?.exhausted && !spend.total?.exhausted ? 'month' : 'total') : null },
+      exhausted: spend.exhausted ? (spend.month?.exhausted && !spend.total?.exhausted ? 'month' : 'total') : null,
+      // Planning that names no single project: charged to no project's budget, so shown apart and never in this one's sum.
+      unallocated: units(unallocatedPlanning(store, now).total) },
     limits: { protected: MAX_PROTECTED, notes: MAX_NOTES, budget: BUDGET_RANGE, unknownRun: UNKNOWN_RUN_RANGE } };
 }
 
