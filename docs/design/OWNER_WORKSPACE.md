@@ -616,7 +616,7 @@ A project without GitHub is listed too, with one line and no modes: "Release doe
 | Power | State in this design | Waits for |
 | --- | --- | --- |
 | Starting work from the dashboard | designed (S10), built switched off | #8 supervisor admission API, owner question Q1 |
-| Local admission without GitHub | built: STA16, switched on by STA17, dashboard routes UI17 | Decided 2026-10-16 (D2 #24, D4 #32). On a running dashboard every local approval and Apply is refused (fails closed) until a process lookup for the caller check is wired in |
+| Local admission without GitHub | built: STA16, switched on by STA17, dashboard routes UI17 | Decided 2026-10-16 (D2 #24, D4 #32). The production dashboard's caller check uses the native Windows process lookup (`src/supervisor/caller-lookup.mjs`); it fails closed when it cannot place the caller. Merged is not deployed |
 | Auto Release | text only, no control | D5-gate (owner), #13 |
 | Telegram delivery of Needs me | not designed here; Needs me stays the one source | #1, owner question Q3 |
 
