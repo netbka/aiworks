@@ -64,8 +64,8 @@ const pageNavigation = (req, path) => req.method === 'GET' && path === '/' && !r
 // `callerCheck`: the caller check's process lookup and platform (local-admission.mjs checkCaller). main.mjs gives the native
 // Windows lookup (caller-lookup.mjs); tests give a synthetic one. Without a lookup every protected owner action (project
 // rules, a local project's Approve and start, Apply and Undo apply, settings, alerts, Knowledge, the work list) refuses
-// with APPROVAL_UNCHECKED; so do Accept result and Request changes. `workList` is for tests only: the work list's close
-// switched on and a synthetic GitHub command (work-list.mjs closeImportedIssues).
+// with APPROVAL_UNCHECKED; so do Accept result, Request changes and answering, snoozing or dismissing a decision.
+// `workList` is for tests only: the work list's close switched on and a synthetic GitHub command (work-list.mjs closeImportedIssues).
 export function createDashboardServer({ dataDir, roadmap, merges = null, host = {}, releases = {}, projectConnection = {}, provenanceRoot = undefined, work = {},
   callerCheck = {}, workList = {} }) {
   const csrf = randomBytes(32).toString('hex');
@@ -246,13 +246,15 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
         if (value && typeof value === 'object' && !Array.isArray(value) && Object.hasOwn(value, 'action')) return send(400, { error: 'Invalid dashboard command.' });
         return send(202, applyScopedControl(dataDir, { ...value, action: path.slice('/api/v2/'.length) }, Date.now(), { provenanceRoot }));
       }
-      // A structured decision (WP2): answer, snooze or "this did not need me", bound to one decision; the action is the address.
-      if (/^\/api\/v2\/decisions\/(?:answer|snooze|not-needed)$/.test(path)) {
-        return send(202, applyDecision(dataDir, path.slice('/api/v2/decisions/'.length), value, Date.now()));
-      }
       // The caller check's lookup on this request's connection: protected owner actions refuse without it (APPROVAL_UNCHECKED).
       const callerOptions = { ...callerCheck, connection: req.socket };
       const caller = (store) => checkCaller(store, callerOptions);
+      // A structured decision (WP2): answer, snooze or "this did not need me", bound to one decision; the action is the address.
+      // The caller check runs first, so a program AIWorks started cannot answer, snooze or dismiss an owner decision.
+      if (/^\/api\/v2\/decisions\/(?:answer|snooze|not-needed)$/.test(path)) {
+        await ownerCaller(dataDir, caller);
+        return send(202, applyDecision(dataDir, path.slice('/api/v2/decisions/'.length), value, Date.now()));
+      }
       // Review of a result (WP4): accept, or request changes, bound to one verified head and its report; the action is the address.
       // The caller check runs first, so a program AIWorks started can neither accept a result nor send it back for changes.
       if (/^\/api\/v2\/results\/(?:accept|request-changes)$/.test(path)) {
