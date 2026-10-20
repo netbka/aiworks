@@ -71,6 +71,8 @@ The owner set the goal and approved the plan once. An AI assistant session wrote
 
 ### What it costs
 
+Builds and tests run locally for every managed project. AIWorks must not use GitHub Actions or paid GitHub features such as Codespaces, paid runners or billable package/LFS storage. AI usage is allowed through subscriptions or metered APIs, subject to the existing campaign budgets and authority. See the [development policy and enforcement limits](docs/SUPERVISOR.md#1-boundary).
+
 The AI tools report their own usage: a building run typically costs about **$5** and a checking run **$2–3**. In an earlier measurement the average came to about **$10 per delivered step**, retries and checks included. On a subscription plan this is usage counted against your plan, not an extra bill. The dashboard shows the cost of every project and step, and never shows an unknown cost as zero.
 
 ### Where the savings come from
@@ -162,7 +164,7 @@ Everything ends up in GitHub, next to the rest of your project:
 | --- | --- |
 | Merging checked pull requests | AIWorks merges a checked pull request itself, only in projects you list, and only when what lands on main is exactly what was checked. You can hold any pull request back. One setting turns it on. Merging is not deploying. |
 | Conflict repair | When another merge leaves a pull request in conflict, AIWorks fixes it and checks it again. One setting turns it on. |
-| Fixing a pull request whose online tests fail | AIWorks reads the project's GitHub test results and sends a failure back for repair. One setting turns it on, for projects that run tests on GitHub. |
+| Repairing an existing failed check | Optional read-only monitoring of existing GitHub check results can send a failure back for local repair. It never starts hosted checks; Actions stays disabled in every managed repository. |
 | Several steps at once inside one piece of work | Built and tested. You turn it on and choose how much of the PC it may use. |
 | Website checks in a real browser | Built. Needs AGY or Chrome set up on the computer, and has not been proven on a real project yet. |
 | Alerts when something is blocked | The code that records and groups blockers is built and switched off. No message leaves the computer yet; sending alerts to your phone is on the roadmap. Until then, stopped work shows up in **Needs me**. |

@@ -178,7 +178,7 @@ function backup(controller, key) {
     // Its journal takes the entries, under its lease, as for a merge: only while it is registered or finished.
     if (!campaign || !['registered', 'finished'].includes(campaign.control)) return;
     const decl = campaign.declaration;
-    backupStep({ store: controller.store, settings: controller.selfHosting, git: controller.cmd.git, repoPath: controller.repo(decl).path,
+    backupStep({ store: controller.store, settings: controller.selfHosting, git: controller.cmd.git, gh: controller.cmd.gh, repoPath: controller.repo(decl).path,
       repository: decl.target.repository, now: controller.now(), log: (line) => controller.log(line),
       write: (campaignId, fn) => {
         const ctx = lease(controller, campaignId);

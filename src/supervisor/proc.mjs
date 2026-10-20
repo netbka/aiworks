@@ -2,6 +2,7 @@
 import { execFile, spawnSync } from 'node:child_process';
 import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { DEVELOPMENT_ENV } from './development-policy.mjs';
 
 export const WINDOWS_PROCESS_HELPER = fileURLToPath(new URL('./windows-process.ps1', import.meta.url));
 export const POWERSHELL = process.platform === 'win32'
@@ -33,6 +34,7 @@ export function writeAtomic(path, text, { retries = 50 } = {}) {
 export const workerEnv = (inherited, specEnv) => ({
   ...Object.fromEntries(Object.entries(inherited).filter(([key]) => !/^(CLAUDE_CODE_|CLAUDECODE$)/i.test(key))),
   ...(specEnv ?? {}),
+  ...DEVELOPMENT_ENV,
 });
 
 export function readJsonIfExists(path) {
