@@ -702,6 +702,24 @@ function reviewOf(store, c, task, spec, config) {
     canRequestChanges: open && commit && !requested && !merged && roundsLeft !== 0 };
 }
 
+/**
+ * A report the supervisor recorded in the local work list (controller.mjs recordLocalReview, AIWorks's own repository
+ * with local main trusted): the step's published link names a work item, and that item holds the supervisor's comment
+ * for exactly this campaign, step and report digest. Null otherwise: an `aiworks-work:` link alone is never taken as a
+ * report, and a report is never a merge or an acceptance. { number, at } names the item and when the report was recorded.
+ */
+function localReport(store, campaignId, task, spec) {
+  const number = /^aiworks-work:([1-9]\d{0,8})$/.exec(task.pr_url ?? '')?.[1];
+  if (!number || task.state !== 'done' || spec?.deliverable !== 'report') return null;
+  const digest = createHash('sha256').update(String(task.result?.report ?? ''), 'utf8').digest('hex');
+  let row = null;
+  try {
+    row = store.get("SELECT created_at FROM work_item_comments WHERE item_number = ? AND idempotency_key = ? AND author_kind = 'supervisor'",
+      Number(number), `${campaignId}:${task.task_id}:report:${digest}`);
+  } catch { row = null; }
+  return row ? { number: Number(number), at: row.created_at } : null;
+}
+
 function mergeReceipt(task, rows) {
   const row = rows.find(({ detail }) => detail?.task === task.task_id && detail.sha === task.verified_sha &&
     (detail.originalUrl ?? detail.url) === task.pr_url && /^[a-f0-9]{40}$/.test(detail.sha ?? '') &&
@@ -818,6 +836,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
           decision: decisionView(id, task, feedback, now),
           review: resultReview(store, c, task, specs.get(task.task_id), config),
            mergeReceipt: mergeReceipt(task, merged),
+          localReport: localReport(store, id, task, specs.get(task.task_id)),
           outcome: specs.get(task.task_id)?.outcome ? safeText(specs.get(task.task_id).outcome) : null,
           deliverable: code(specs.get(task.task_id)?.deliverable), verifierRejections: rejections.get(task.task_id) ?? 0,
           version: task.version, issueUrl: `https://github.com/${c.declaration.target.repository}/issues/${specs.get(task.task_id)?.issue}`,

@@ -111,7 +111,7 @@ function planView(store, record, request, draft) {
   const state = approvedAt && started ? { code: 'APPROVED' } : intakeState(request, draft);
   const startable = ['DRAFT_READY', 'PLAN_ONLY_READY', 'CONFLICT'].includes(state.code);
   const view = { ...base, code: state.code, startable, approvedAt,
-    failure: state.code === 'DRAFT_FAILED' ? safeText(state.reason, 80) : null, staleWhat: state.code === 'DRAFT_STALE' ? list(state.what, 120, 8) : [] };
+    failure: state.code === 'DRAFT_FAILED' ? safeText(state.reason, 80) : null, budgetWait: state.budgetWait ? safeText(state.budgetWait, 300) : null, staleWhat: state.code === 'DRAFT_STALE' ? list(state.what, 120, 8) : [] };
   if (!draft) return view;
   const d = draft.declaration, envelope = d.envelope ?? {};
   const providers = (d.executor?.kind === 'cli-chain' ? d.executor.providers : [d.executor]).filter(Boolean)
@@ -146,10 +146,25 @@ function planOutline(store, request, draft, editable) {
   return { goal: safeText(request.text ?? '', 2000), horizon: outline.horizon, priority: outline.priority, estimate: ESTIMATE(outline.estimate),
     criteria: draftCriteria(draft).slice(0, 16).map((item) => ({ text: safeText(item.text, 300), check: item.check === null ? null : safeText(item.check, 300) })),
     included: list(outline.included, 300, 16), later: list(outline.later, 300, 16), editable, editedFrom: draft.edited_from ?? null,
-    previousVersion: previous ? previous.version : null,
+    previousVersion: previous ? previous.version : null, versions: planVersions(store, request),
     changes: previous ? draftChanges(previous, draft).slice(0, 48).map((item) => ({ field: item.field, change: item.change, scope: item.scope,
       ...(item.criterion !== undefined ? { criterion: safeText(item.criterion, 300) } : {}), ...(item.check !== undefined ? { check: changeValue('check', item.check) } : {}),
       before: changeValue(item.field, item.before), after: changeValue(item.field, item.after) })) : [] };
+}
+
+/**
+ * The plan's version history (OWNER_UI_V2 WP3, Plan): every stored draft version of the request, newest first, read from
+ * work_drafts and nothing else. Each names who made it (AIWorks drafted it, or the owner's edit of an earlier version),
+ * when, its goal and Now, Next or Later, and how many parts changed from the version before.
+ */
+function planVersions(store, request) {
+  const rows = store.all('SELECT * FROM work_drafts WHERE request_id = ? ORDER BY version DESC LIMIT 20', request.request_id);
+  return rows.map((row, index) => {
+    const before = rows[index + 1]?.version === row.version - 1 ? rows[index + 1] : null, changes = before ? draftChanges(before, row) : null;
+    return { version: row.version, at: row.created_at, by: row.edited_from ? 'owner' : 'aiworks', editedFrom: row.edited_from ?? null,
+      outcome: safeText(row.declaration?.envelope?.outcome ?? '', 300), horizon: draftOutline(row).horizon,
+      changes: changes ? changes.length : null, scopeChanged: Boolean(changes?.some((item) => item.scope)) };
+  });
 }
 
 /** A step of local work in the owner's words (OWNER_WORKSPACE §2.3): never a pull request or merge state. */

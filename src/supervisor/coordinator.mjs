@@ -4,7 +4,7 @@
 // retries, safe reply storage and the receipts shown to the owner.
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Ajv from 'ajv';
@@ -13,7 +13,9 @@ import { MARK_SECTIONS_RULE } from './adapters/executors.mjs';
 import { DEVELOPMENT_RESOURCE_RULE } from './development-policy.mjs';
 import { exec as gitExec } from './adapters/git.mjs';
 import { readJsonIfExists, readTextIfExists, stopOwnedRun, writeAtomic } from './proc.mjs';
-import { failRequest, IntakeError, nextWorkRequest, pinRequest, recordDraft } from './intake.mjs';
+import { failRequest, IntakeError, pinRequest, recordDraft } from './intake.mjs';
+// messageRepository recovers the fixed header of dashboard requests queued before structured repository storage.
+import { messageRepository, projectBudget, projectKey, requestProjectKey } from './project-settings.mjs';
 import { project as readProject } from './projects.mjs';
 import { readerServer, SERVER as WORK_LIST_SERVER, TOOL as WORK_LIST_TOOL, workListRun } from './work-list-reader.mjs';
 
@@ -253,10 +255,6 @@ export function postOwnerMessage(store, { text, requestId, source, repository = 
 
 const receipt = (row) => ({ id: row.id, state: row.state, receivedAt: row.received_at, readAt: row.read_at, answeredAt: row.answered_at });
 
-// Recover the fixed header of dashboard requests already queued before structured repository storage.
-const messageRepository = (m) => m.repository ?? (m.source === 'owner (Start work: Plan only)'
-  ? /^Start work: Plan only, sent from the dashboard\.\r?\nProject: ([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\r?\n/.exec(m.text)?.[1] ?? null : null);
-
 // Untrusted text is clipped and can never close the tag that holds it.
 const untrusted = (value, max) => {
   const raw = String(value ?? '');
@@ -335,11 +333,13 @@ export function buildPrompt({ messages, repositories, revision, listed = null })
 }
 
 function classify({ run, stdoutText, stderrText, sessionId, check = validate }) {
-  if (run.spawnError) return { class: 'spawn-failed' };
-  if (run.timedOut) return { class: 'timeout' };
   let out = null;
   try { out = stdoutText.trim() ? JSON.parse(stdoutText) : null; } catch { out = null; }
   const costUsd = Number.isFinite(out?.total_cost_usd) ? out.total_cost_usd : null;
+  // Only a runner that never attached its job proves no paid worker started; after that a containment failure keeps
+  // whatever cost the worker reported, and an unreported one is charged as unknown (project-settings.mjs planningRuns).
+  if (run.spawnError) return run.attached === false ? { class: 'spawn-failed', notStarted: true } : { class: 'spawn-failed', costUsd };
+  if (run.timedOut) return { class: 'timeout', costUsd };
   const errorText = `${out?.is_error ? String(out.result ?? '') : ''}\n${stderrText.slice(-4000)}`;
   if (!out || out.is_error || run.exitCode !== 0) {
     const cls = out?.api_error_status === 401 || AUTH.test(errorText) ? 'auth'
@@ -396,10 +396,12 @@ export async function coordinatorTick(ctl) {
     return;
   }
   const now = ctl.now();
-  // One request per run: unrelated projects must not share an answer or planning context.
-  const waiting = ctl.store.all("SELECT * FROM owner_messages WHERE state = 'received' AND (not_before IS NULL OR not_before <= ?) ORDER BY id LIMIT 1", now);
+  // One request per run: unrelated projects must not share an answer or planning context. A message or request whose
+  // project budget cannot cover the run waits without holding up the others.
+  const message = fundedNext(ctl, ctx, 'owner_messages', now);
+  const waiting = message ? [message] : [];
   // Owner messages first; then, only with intake on, the oldest work request waiting for a draft.
-  const request = !waiting.length && cfg.intake === true ? nextWorkRequest(ctl.store, now) : null;
+  const request = !waiting.length && cfg.intake === true ? fundedNext(ctl, ctx, 'work_requests', now) : null;
   // Idle with a valid configuration and no recorded violation: nothing blocks reading, so a stale reason must not linger.
   if (!waiting.length && !request) { setBlocked(ctl, null); return; }
   const today = ctl.store.get('SELECT COUNT(*) AS n FROM coordinator_runs WHERE created_at > ?', now - DAY).n;
@@ -414,6 +416,42 @@ export async function coordinatorTick(ctl) {
   setBlocked(ctl, null);
   await dispatch(ctl, ctx, cfg, waiting, workspace);
 }
+
+/**
+ * The project a planning read is charged to (project-settings.mjs planningRuns): a work request's project, or the one
+ * project a message names. Null: unallocated, so no project budget applies.
+ */
+const planningProject = (store, table, row) => (table === 'owner_messages' ? projectKey(messageRepository(row)) : requestProjectKey(store, row.project_id));
+
+/**
+ * Hold a message or work request whose project budget cannot cover one more planning run (the reason is the budget's own
+ * words), or clear that hold once it fits. It stays received: the coordinator reads it by itself once the owner raises or
+ * removes the budget, or the month that ran out ends.
+ */
+function budgetHold(ctl, ctx, table, row, reason, now) {
+  const failure = reason === null ? null : table === 'owner_messages' ? BUDGET_WAIT : `${BUDGET_WAIT}: ${reason}`.slice(0, 1000);
+  const held = String(row.failure ?? '').startsWith(BUDGET_WAIT);
+  if (failure === null ? !held : row.failure === failure) return;
+  ctl.fenced(ctx, () => {
+    ctl.store.run(`UPDATE ${table} SET failure = ?, updated_at = ? WHERE id = ? AND state = 'received'`, failure, now, row.id);
+    ctl.store.journal(LANE, failure ? 'planning-budget-wait' : 'planning-budget-cleared',
+      table === 'owner_messages' ? { message: row.id, reason } : { requestId: row.request_id, reason }, now);
+  });
+}
+const BUDGET_WAIT = 'project-budget';
+
+/** The oldest received message or work request ready to read whose project budget covers one more planning run. */
+function fundedNext(ctl, ctx, table, now) {
+  for (const row of ctl.store.all(`SELECT * FROM ${table} WHERE state = 'received' AND (not_before IS NULL OR not_before <= ?) ORDER BY id`, now)) {
+    const refused = planningRefusal(ctl.store, planningProject(ctl.store, table, row), now);
+    budgetHold(ctl, ctx, table, row, refused, now);
+    if (!refused) return row;
+  }
+  return null;
+}
+
+// What stops a planning run charged to this project from starting, or null. An unallocated run has no project budget.
+const planningRefusal = (store, key, now) => (key ? projectBudget(store, key, now).exhausted : null);
 
 async function dispatch(ctl, ctx, cfg, messages, { path: workspace, revision }) {
   const now = ctl.now();
@@ -433,11 +471,16 @@ async function dispatch(ctl, ctx, cfg, messages, { path: workspace, revision }) 
       '--allowedTools', ...COORDINATOR_ALLOWED, ...(reader.length ? [WORK_LIST_TOOL] : []), '--disallowedTools', ...COORDINATOR_DENIED],
     env: ISOLATION_ENV, cwd: workspace, revision, timeoutMs: (cfg.timeoutMinutes ?? 60) * 60_000, heartbeatMs: ctl.config.heartbeatMs,
   }));
-  ctl.fenced(ctx, () => {
+  const recorded = ctl.fenced(ctx, () => {
+    // The budget check and the recorded run (its reservation) share one transaction: no second run slips in between.
+    const refused = messages.map((m) => [m, planningRefusal(ctl.store, planningProject(ctl.store, 'owner_messages', m), now)]).find(([, reason]) => reason);
+    if (refused) { budgetHold(ctl, ctx, 'owner_messages', refused[0], refused[1], now); return false; }
     ctl.store.insert('coordinator_runs', { id: runId, state: 'recorded', session_id: sessionId, run_dir: runDir, workspace,
       message_ids: messages.map((m) => m.id), outcome: null, cost_usd: null, created_at: now, updated_at: now });
     ctl.store.journal(LANE, 'coordinator-recorded', { run: runId, messages: messages.map((m) => m.id) }, now);
+    return true;
   });
+  if (!recorded) { rmSync(runDir, { recursive: true, force: true }); return; }
   await launch(ctl, ctx, ctl.store.get('SELECT * FROM coordinator_runs WHERE id = ?', runId));
 }
 
@@ -469,13 +512,18 @@ async function dispatchIntake(ctl, ctx, cfg, request) {
       '--allowedTools', ...INTAKE_ALLOWED, '--disallowedTools', ...COORDINATOR_DENIED],
     env: ISOLATION_ENV, cwd: checkout.path, revision: checkout.revision, timeoutMs: (cfg.timeoutMinutes ?? 60) * 60_000, heartbeatMs: ctl.config.heartbeatMs,
   }));
-  ctl.fenced(ctx, () => {
+  const recorded = ctl.fenced(ctx, () => {
+    // The budget check and the recorded run (its reservation) share one transaction: no second run slips in between.
+    const refused = planningRefusal(ctl.store, planningProject(ctl.store, 'work_requests', request), now);
+    if (refused) { budgetHold(ctl, ctx, 'work_requests', request, refused, now); return false; }
     ctl.store.insert('coordinator_runs', { id: runId, state: 'recorded', session_id: sessionId, run_dir: runDir, workspace: checkout.path,
       message_ids: [], outcome: null, cost_usd: null, created_at: now, updated_at: now });
     ctl.store.run("UPDATE work_requests SET state = 'drafting', run_id = ?, pinned = ?, attempts = attempts + 1, not_before = NULL, updated_at = ? WHERE request_id = ?",
       runId, pin.pinned, now, request.request_id);
     ctl.store.journal(LANE, 'coordinator-recorded', { run: runId, requestId: request.request_id }, now);
+    return true;
   });
+  if (!recorded) { rmSync(runDir, { recursive: true, force: true }); return; }
   await launch(ctl, ctx, ctl.store.get('SELECT * FROM coordinator_runs WHERE id = ?', runId));
 }
 
@@ -488,7 +536,7 @@ async function launch(ctl, ctx, run) {
   if (!child) return;
   child.on('error', (error) => {
     ctl.log(`coordinator runner spawn for ${run.id} failed: ${error.message}`);
-    if (!child.pid) writeAtomic(join(run.run_dir, 'result.json'), JSON.stringify({ spawnError: String(error.code || error.message), containment: 'windows-job-v1', containmentStopped: true }));
+    if (!child.pid) writeAtomic(join(run.run_dir, 'result.json'), JSON.stringify({ spawnError: String(error.code || error.message), containment: 'windows-job-v1', containmentStopped: true, attached: false }));
   });
   child.unref();
   const deadline = Date.now() + ctl.config.dispatchWaitMs;
@@ -577,7 +625,7 @@ function finishIntake(ctl, ctx, run, outcome) {
       }
     }
     ctl.store.run('UPDATE coordinator_runs SET state = ?, outcome = ?, cost_usd = ?, updated_at = ? WHERE id = ?',
-      cls === 'result' ? 'answered' : 'failed', { class: cls, requestId: request?.request_id ?? null }, outcome.costUsd ?? null, now, run.id);
+      cls === 'result' ? 'answered' : 'failed', { class: cls, requestId: request?.request_id ?? null, ...(outcome.notStarted ? { notStarted: true } : {}) }, outcome.costUsd ?? null, now, run.id);
     if (cls === 'result' || !request) return;
     if (cls === 'boundary-violation') ctl.store.journal(LANE, 'coordinator-boundary-violation', { run: run.id, workspace: run.workspace }, now);
     const retry = !['boundary-violation', 'reply-withheld'].includes(cls) && (request.attempts < MAX_ATTEMPTS || ['quota', 'auth'].includes(cls));
@@ -595,7 +643,7 @@ function finish(ctl, ctx, cfg, run, outcome) {
     const now = ctl.now();
     const messages = fresh.message_ids.map((id) => ctl.store.get('SELECT * FROM owner_messages WHERE id = ?', id)).filter(Boolean);
     ctl.store.run('UPDATE coordinator_runs SET state = ?, outcome = ?, cost_usd = ?, updated_at = ? WHERE id = ?',
-      outcome.class === 'result' ? 'answered' : 'failed', { class: outcome.class, newWork: outcome.value?.newWork?.length ?? null }, outcome.costUsd ?? null, now, run.id);
+      outcome.class === 'result' ? 'answered' : 'failed', { class: outcome.class, newWork: outcome.value?.newWork?.length ?? null, ...(outcome.notStarted ? { notStarted: true } : {}) }, outcome.costUsd ?? null, now, run.id);
     if (outcome.class === 'result' && containsSecret(replyBody({ runId: run.id, messages, value: outcome.value }))) {
       // Never post what looks like a credential, whatever induced it. The owner sees the receipt and the journal.
       ctl.store.run("UPDATE coordinator_runs SET state = 'failed', outcome = ? WHERE id = ?", { class: 'reply-withheld' }, run.id);
