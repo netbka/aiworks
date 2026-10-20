@@ -95,7 +95,8 @@ public static class CallerLookup {
       if (again.pid != row.pid || again.created != row.created) throw new InvalidOperationException("connection changed");
 
       // The parent chain, each process held open. A parent created after its child is a reused pid: the real parent has
-      // exited and the chain ends there (an AIWorks run's descendants are still named by its job).
+      // exited and the chain ends there; so does a parent that has exited, whose recorded parent may be a protected
+      // system process this caller cannot open (an AIWorks run's descendants are still named by its job).
       List<int> ancestors = new List<int>();
       IntPtr current = caller; long currentCreated = callerCreated;
       for (int depth = 0; ; depth++) {
@@ -108,6 +109,7 @@ public static class CallerLookup {
         long parentCreated = Created(parent);
         if (parentCreated > currentCreated) break;
         ancestors.Add(parentPid);
+        if (!Running(parent)) break;
         current = parent; currentCreated = parentCreated;
       }
 
