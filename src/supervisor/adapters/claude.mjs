@@ -5,6 +5,7 @@
 // total_cost_usd, usage, permission_denials, result }.
 
 import Ajv from 'ajv';
+import { DEVELOPMENT_DENIED } from '../development-policy.mjs';
 
 const SHA = '^[0-9a-f]{40}$';
 // A verifier citation names where a rule is written: a reference in the task reference grammar (SCOPED_READING sections 3
@@ -120,7 +121,7 @@ const validateVerifier = ajv.compile(LENIENT_VERIFIER_SCHEMA);
 
 // Defence in depth behind the permission mode: publication, merge, deploy and worktree
 // removal belong to the supervisor or the owner, never to a worker.
-export const ALWAYS_DENIED = ['Bash(git push:*)', 'Bash(gh pr merge:*)', 'Bash(gh pr create:*)', 'Bash(gh release:*)',
+export const ALWAYS_DENIED = [...DEVELOPMENT_DENIED, 'Bash(git push:*)', 'Bash(gh pr merge:*)', 'Bash(gh pr create:*)', 'Bash(gh release:*)',
   'Bash(gh issue comment:*)', 'Bash(gh issue close:*)', 'Bash(npm run update:*)', 'Bash(npm run deploy:*)',
   'Bash(git worktree remove:*)',
   // Remote hosts are production for the target projects (sampleapp's own settings allow `ssh example-host:*`).

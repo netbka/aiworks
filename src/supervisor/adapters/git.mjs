@@ -5,12 +5,15 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { GATE_FILES } from '../gate.mjs';
+import { assertActionsDisabled } from './github.mjs';
+import { DEVELOPMENT_ENV } from '../development-policy.mjs';
 
 const SHA = /^[0-9a-f]{40}$/;
 
 export function exec(command, args, { cwd, input, timeoutMs = 180_000 } = {}) {
   const result = spawnSync(command[0], [...command.slice(1), ...args], {
     cwd, input, encoding: 'utf8', windowsHide: true, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024,
+    env: { ...process.env, ...DEVELOPMENT_ENV },
   });
   return { ok: !result.error && result.status === 0, status: result.status, stdout: (result.stdout || '').trim(), stderr: (result.stderr || '').trim(), error: result.error?.code };
 }
@@ -115,7 +118,8 @@ export function checkVerification({ git, path, targetSha }) {
 }
 
 /** Push exactly the verified SHA (not a moving HEAD) to the campaign branch. */
-export function pushVerified({ git, repoPath, branch, sha }) {
+export function pushVerified({ git, gh, repository, repoPath, branch, sha }) {
+  assertActionsDisabled({ gh, repository });
   must(exec(git, ['push', 'origin', `${sha}:refs/heads/${branch}`], { cwd: repoPath }), 'push verified commit');
   const remote = must(exec(git, ['ls-remote', 'origin', `refs/heads/${branch}`], { cwd: repoPath }), 'read remote branch');
   if (!remote.startsWith(sha)) throw new Error(`remote ${branch} is not at verified ${sha}`);

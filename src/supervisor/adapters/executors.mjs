@@ -9,6 +9,7 @@ import { POWERSHELL } from '../proc.mjs';
 import * as agy from './agy.mjs';
 import { caamProfileEnv, caamProvider } from './caam.mjs';
 import * as claude from './claude.mjs';
+import { DEVELOPMENT_RESOURCE_RULE } from '../development-policy.mjs';
 import { readerServer as workListServer, SERVER as WORK_LIST_SERVER, TOOL as WORK_LIST_TOOL } from '../work-list-reader.mjs';
 
 export const AGY_LOG_LIMIT = agy.LOG_LIMIT;
@@ -119,8 +120,8 @@ function withStageRule(prompt, role, stage) {
 }
 
 // A browser worker reviews pages, not a checkout, so a web task gets the browser prompt whichever worker runs it.
-export const buildPrompt = (args) => args.web ? agy.buildPrompt(args)
-  : withStageRule(withReadingRule(withGateRules(claude.buildPrompt(args), args.role, args.deliverable), args.role), args.role, args.stage ?? null);
+export const buildPrompt = (args) => DEVELOPMENT_RESOURCE_RULE + '\n\n' + (args.web ? agy.buildPrompt(args)
+  : withStageRule(withReadingRule(withGateRules(claude.buildPrompt(args), args.role, args.deliverable), args.role), args.role, args.stage ?? null));
 const nativeKind = (kind) => kind ?? 'claude-cli';
 // Codex/Cursor do not report measured dollar cost or Claude turn counts: unknown is not a free refusal.
 export const refusedBeforeWork = (verdict) => nativeKind(verdict?.executorKind) === 'claude-cli' && claude.refusedBeforeWork(verdict);

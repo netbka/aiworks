@@ -2635,7 +2635,7 @@ export class Controller {
             this.store.journal(ctx.id, `${repairKind}-repair-unpublished`, { task: task.task_id, sha: task.verified_sha }, now);
             return;
           }
-          gitA.pushVerified({ git: this.cmd.git, repoPath: repo.path, branch, sha: task.verified_sha });
+          gitA.pushVerified({ git: this.cmd.git, gh: this.cmd.gh, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha });
           this.injectFault('after-push');
           url = existing.url;
           const prefix = `https://github.com/${decl.target.repository}/pull/`;
@@ -2658,7 +2658,7 @@ export class Controller {
             { identity: task.task_id });
             return;
           }
-          gitA.pushVerified({ git: this.cmd.git, repoPath: repo.path, branch, sha: task.verified_sha });
+          gitA.pushVerified({ git: this.cmd.git, gh: this.cmd.gh, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha });
           this.injectFault('after-push');
           url = github.openPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, baseBranch: decl.target.baseBranch, branch,
             title, body, bodyFile, terms });

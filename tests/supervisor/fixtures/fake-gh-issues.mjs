@@ -67,5 +67,6 @@ else if (one) body = find(one[2]);
 else if (issues && fields.state === 'open') body = page(data.open);
 else if (issues && fields.state === 'all') body = page([...data.open, ...data.closed].sort((a, b) => b.number - a.number));
 else if (comments) body = page(data.comments[comments[2]] ?? []);
+else if (/^repos\/[^/]+\/[^/]+\/actions\/permissions$/.test(path)) body = { enabled: false };
 else refuse(`GET ${path} is not served`);
 process.stdout.write(`HTTP/2.0 200 OK\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(body)}`);

@@ -65,7 +65,10 @@ if (limit && limit.times > 0 && (limit.route === route || limit.route === '*')) 
 const receipt = (pr) => ({ html_url: pr.url, number: Number(/\/pull\/(\d+)$/.exec(pr.url)[1]), state: pr.merged ? 'closed' : 'open',
   merged: Boolean(pr.merged), merge_commit_sha: pr.mergeCommit ?? null, head: { ref: pr.head, sha: pr.headSha ?? null }, base: { ref: pr.base } });
 
-if (pulls && method === 'GET') {
+if (/^repos\/[^/]+\/[^/]+\/actions\/permissions$/.test(path) && method === 'GET') {
+  const policyFile = join(state, 'actions-policy.json');
+  respond(200, existsSync(policyFile) ? JSON.parse(readFileSync(policyFile, 'utf8')) : { enabled: false });
+} else if (pulls && method === 'GET') {
   const owner = pulls[1].split('/')[0];
   respond(200, prs.filter((pr) => `${owner}:${pr.head}` === fields.head && fields.state === 'open' && !pr.merged).map(receipt));
 } else if (pulls && method === 'POST') {
