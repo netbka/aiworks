@@ -2837,7 +2837,7 @@ export class Controller {
     }
     if (spec.deliverable === 'commit') {
       const review = reviewItem(this.store, links) ?? createItem(this.store, { kind: 'review', title: `${spec.id}: ${spec.title}`,
-        body: this.prBody(decl, spec, task, { local: true }), labels: [`branch:${branch}`], links, authorKind: 'supervisor', now });
+        body: this.prBody(decl, spec, task, { local: true }), links, authorKind: 'supervisor', now });
       return workLink(review.number);
     }
     const digest = createHash('sha256').update(String(task.result?.report ?? ''), 'utf8').digest('hex');

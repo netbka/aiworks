@@ -19,6 +19,7 @@ import { campaignStart } from './api.mjs';
 import { authorityDigest, canonicalJson, validateDeclaration } from './campaign.mjs';
 import { isLocalTarget } from './local-candidates.mjs';
 import { OverlayError, overlayDigest, validateOverlayEntry } from './local-overlay.mjs';
+import { runnerIdentified } from './proc.mjs';
 import { resolveLocalProject } from './project-connect.mjs';
 
 /** Local admission is on since slice STA17 (owner decision D4, #32, answered 2026-10-16). */
@@ -80,8 +81,10 @@ export function validateLocalApproval(record) {
 
 /**
  * The open runs of AIWorks's own processes: every worker or verifier operation and every coordinator run still recorded
- * or dispatched, with the runner's pid and Windows job name from its runner.json. `known` is false for a launched run
- * whose runner has not reported yet: its processes exist but cannot be named, so the caller check cannot tell.
+ * or dispatched (coordinator and planning runs alike), with the runner's pid, creation time and Windows job from its
+ * runner.json. `known` is false for a launched run until runner.json names its complete custody identity
+ * (proc.mjs runnerIdentified): its first `{ pid, startedAt }`, or any missing or malformed field, leaves processes that
+ * cannot be named, so the caller check cannot tell. A run that was never launched has no processes.
  */
 export function aiworksRuns(store) {
   const rows = [
@@ -89,12 +92,12 @@ export function aiworksRuns(store) {
     ...store.all("SELECT 'coordinator' AS kind, id, run_dir FROM coordinator_runs WHERE state IN ('recorded', 'dispatched')"),
   ];
   return rows.map(({ kind, id, run_dir: runDir }) => {
+    const metadata = join(runDir, 'runner.json');
     let runner = null;
-    try { runner = JSON.parse(readFileSync(join(runDir, 'runner.json'), 'utf8')); } catch { runner = null; }
-    const launched = existsSync(join(runDir, 'launch.json')) || existsSync(join(runDir, 'run.lock'));
-    const pid = Number.isSafeInteger(runner?.pid) && runner.pid > 0 ? runner.pid : null;
-    return { kind, id, pid, jobName: typeof runner?.jobName === 'string' ? runner.jobName : null,
-      creationTime: typeof runner?.creationTime === 'string' ? runner.creationTime : null, known: pid !== null || !launched };
+    try { runner = JSON.parse(readFileSync(metadata, 'utf8')); } catch { runner = null; }
+    const launched = existsSync(metadata) || existsSync(join(runDir, 'launch.json')) || existsSync(join(runDir, 'run.lock'));
+    if (!runnerIdentified(runner)) return { kind, id, pid: null, jobName: null, creationTime: null, known: !launched };
+    return { kind, id, pid: runner.pid, jobName: runner.jobName, creationTime: runner.creationTime, known: true };
   });
 }
 
@@ -107,7 +110,7 @@ export function aiworksRuns(store) {
  *   APPROVAL_FROM_AIWORKS  the caller, or a process above it, is an open run's runner, is in an open run's job, or is one
  *                          of `aiworksPids` (by default this process: the dashboard itself);
  *   APPROVAL_UNCHECKED     no lookup, another platform than Windows, a lookup that fails or answers malformed, or an open
- *                          run whose runner has not reported its pid yet. It fails closed.
+ *                          launched run whose runner has not reported its complete identity yet. It fails closed.
  * Returns OWNER_CALLER, the result the request receipt records.
  */
 export async function checkCaller(store, { lookup, connection = null, aiworksPids = [process.pid], platform = process.platform } = {}) {
@@ -115,7 +118,7 @@ export async function checkCaller(store, { lookup, connection = null, aiworksPid
   if (platform !== 'win32') unchecked('the caller check runs on Windows only');
   if (typeof lookup !== 'function') unchecked('no process lookup is available');
   const runs = aiworksRuns(store);
-  if (runs.some((run) => !run.known)) unchecked('an AIWorks run is starting');
+  if (runs.some((run) => !run.known)) unchecked('an AIWorks run is starting or cannot be identified');
   const jobNames = runs.map((run) => run.jobName).filter(Boolean);
   let found;
   const runners = runs.filter((run) => run.jobName).map(({ jobName, pid, creationTime }) => ({ jobName, pid, creationTime }));

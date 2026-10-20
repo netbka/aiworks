@@ -4,10 +4,9 @@
 // information it cannot read, or a job it cannot see while the run's runner is alive. checkCaller then fails closed.
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { helperArgs, POWERSHELL } from './proc.mjs';
+import { helperArgs, JOB_NAME, POWERSHELL } from './proc.mjs';
 
 export const WINDOWS_CALLER_HELPER = fileURLToPath(new URL('./windows-caller.ps1', import.meta.url));
-const JOB_NAME = /^Local\\aiworks-supervisor-[0-9a-f-]{36}$/;
 const LOOPBACK = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
 const port = (value) => Number.isSafeInteger(value) && value > 0 && value <= 65535;
 
