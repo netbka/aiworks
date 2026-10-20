@@ -72,8 +72,21 @@ export function windowsHelperArgs(mode, jobName, { runDir, pid, creationTime } =
   return helperArgs(WINDOWS_PROCESS_HELPER, { Mode: mode, JobName: jobName, RunDir: runDir, RunnerPid: pid, CreationTime: creationTime });
 }
 
+/** The name runner.mjs gives its Windows job: `Local\aiworks-supervisor-<uuid>`. */
+export const JOB_NAME = /^Local\\aiworks-supervisor-[0-9a-f-]{36}$/;
+
+/**
+ * Whether a run's runner.json names its complete custody identity: the runner's pid, its Windows creation time and its
+ * job, which runner.mjs writes only once the worker is inside that job. Its first runner.json, `{ pid, startedAt }`, is not.
+ */
+export function runnerIdentified(runner) {
+  return runner?.containment === 'windows-job-v1' && Number.isSafeInteger(runner.pid) && runner.pid > 0
+    && typeof runner.jobName === 'string' && JOB_NAME.test(runner.jobName)
+    && typeof runner.creationTime === 'string' && /^[1-9]\d*$/.test(runner.creationTime);
+}
+
 function jobCommand(mode, jobName, identity) {
-  if (!POWERSHELL || !/^Local\\aiworks-supervisor-[0-9a-f-]{36}$/.test(jobName ?? '')) return 'ownership-unavailable';
+  if (!POWERSHELL || !JOB_NAME.test(jobName ?? '')) return 'ownership-unavailable';
   const out = spawnSync(POWERSHELL, windowsHelperArgs(mode, jobName, identity),
   { encoding: 'utf8', windowsHide: true, timeout: 30_000 });
   return out.status === 0 ? out.stdout.trim() : 'stop-failed';
@@ -81,7 +94,7 @@ function jobCommand(mode, jobName, identity) {
 
 /** Wait for the entire job to stop before publishing output or replacing its workspace. */
 export async function drainJob(jobName) {
-  if (!POWERSHELL || !/^Local\\aiworks-supervisor-[0-9a-f-]{36}$/.test(jobName ?? '')) return 'ownership-unavailable';
+  if (!POWERSHELL || !JOB_NAME.test(jobName ?? '')) return 'ownership-unavailable';
   return await runPowerShell(windowsHelperArgs('Drain', jobName), 30_000) ?? 'stop-failed';
 }
 
