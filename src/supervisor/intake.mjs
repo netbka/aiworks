@@ -124,10 +124,6 @@ export function submitWorkRequest(store, input, now = Date.now()) {
 const requestReceipt = (row) => ({ requestId: row.request_id, projectId: row.project_id, route: row.route,
   planOnly: Boolean(row.plan_only), state: row.state, receivedAt: row.received_at });
 
-/** The oldest request ready to be drafted, or null. */
-export const nextWorkRequest = (store, now) =>
-  store.get("SELECT * FROM work_requests WHERE state = 'received' AND (not_before IS NULL OR not_before <= ?) ORDER BY id LIMIT 1", now);
-
 /** One request by id, or null. */
 export const workRequest = (store, requestId) => store.get('SELECT * FROM work_requests WHERE request_id = ?', requestId);
 
@@ -596,7 +592,12 @@ export function projectIntake(store, projectId) {
 
 /** The owner-facing state code of WORK_ENVELOPE 7.1 for a request and its newest draft. */
 export function intakeState(request, draft) {
-  if (!draft) return request.state === 'failed' ? { code: 'DRAFT_FAILED', reason: request.failure } : { code: 'DRAFTING' };
+  if (!draft) {
+    if (request.state === 'failed') return { code: 'DRAFT_FAILED', reason: request.failure };
+    // Waiting for its project budget (coordinator.mjs budgetHold): still to be drafted, with the budget's reason.
+    const wait = request.state === 'received' && /^project-budget: /.test(request.failure ?? '') ? request.failure.slice('project-budget: '.length) : null;
+    return wait ? { code: 'DRAFTING', budgetWait: wait } : { code: 'DRAFTING' };
+  }
   if (draft.state === 'stale') return { code: 'DRAFT_STALE', what: draft.stale_what };
   if (draft.conflicts?.length) return { code: 'CONFLICT', conflicts: draft.conflicts, startCode: draft.start_code };
   return { code: draft.plan_only ? 'PLAN_ONLY_READY' : 'DRAFT_READY', startCode: draft.start_code };
