@@ -333,11 +333,13 @@ export function buildPrompt({ messages, repositories, revision, listed = null })
 }
 
 function classify({ run, stdoutText, stderrText, sessionId, check = validate }) {
-  if (run.spawnError) return { class: 'spawn-failed' };
-  if (run.timedOut) return { class: 'timeout' };
   let out = null;
   try { out = stdoutText.trim() ? JSON.parse(stdoutText) : null; } catch { out = null; }
   const costUsd = Number.isFinite(out?.total_cost_usd) ? out.total_cost_usd : null;
+  // Only a runner that never attached its job proves no paid worker started; after that a containment failure keeps
+  // whatever cost the worker reported, and an unreported one is charged as unknown (project-settings.mjs planningRuns).
+  if (run.spawnError) return run.attached === false ? { class: 'spawn-failed', notStarted: true } : { class: 'spawn-failed', costUsd };
+  if (run.timedOut) return { class: 'timeout', costUsd };
   const errorText = `${out?.is_error ? String(out.result ?? '') : ''}\n${stderrText.slice(-4000)}`;
   if (!out || out.is_error || run.exitCode !== 0) {
     const cls = out?.api_error_status === 401 || AUTH.test(errorText) ? 'auth'
@@ -534,7 +536,7 @@ async function launch(ctl, ctx, run) {
   if (!child) return;
   child.on('error', (error) => {
     ctl.log(`coordinator runner spawn for ${run.id} failed: ${error.message}`);
-    if (!child.pid) writeAtomic(join(run.run_dir, 'result.json'), JSON.stringify({ spawnError: String(error.code || error.message), containment: 'windows-job-v1', containmentStopped: true }));
+    if (!child.pid) writeAtomic(join(run.run_dir, 'result.json'), JSON.stringify({ spawnError: String(error.code || error.message), containment: 'windows-job-v1', containmentStopped: true, attached: false }));
   });
   child.unref();
   const deadline = Date.now() + ctl.config.dispatchWaitMs;
@@ -623,7 +625,7 @@ function finishIntake(ctl, ctx, run, outcome) {
       }
     }
     ctl.store.run('UPDATE coordinator_runs SET state = ?, outcome = ?, cost_usd = ?, updated_at = ? WHERE id = ?',
-      cls === 'result' ? 'answered' : 'failed', { class: cls, requestId: request?.request_id ?? null }, outcome.costUsd ?? null, now, run.id);
+      cls === 'result' ? 'answered' : 'failed', { class: cls, requestId: request?.request_id ?? null, ...(outcome.notStarted ? { notStarted: true } : {}) }, outcome.costUsd ?? null, now, run.id);
     if (cls === 'result' || !request) return;
     if (cls === 'boundary-violation') ctl.store.journal(LANE, 'coordinator-boundary-violation', { run: run.id, workspace: run.workspace }, now);
     const retry = !['boundary-violation', 'reply-withheld'].includes(cls) && (request.attempts < MAX_ATTEMPTS || ['quota', 'auth'].includes(cls));
@@ -641,7 +643,7 @@ function finish(ctl, ctx, cfg, run, outcome) {
     const now = ctl.now();
     const messages = fresh.message_ids.map((id) => ctl.store.get('SELECT * FROM owner_messages WHERE id = ?', id)).filter(Boolean);
     ctl.store.run('UPDATE coordinator_runs SET state = ?, outcome = ?, cost_usd = ?, updated_at = ? WHERE id = ?',
-      outcome.class === 'result' ? 'answered' : 'failed', { class: outcome.class, newWork: outcome.value?.newWork?.length ?? null }, outcome.costUsd ?? null, now, run.id);
+      outcome.class === 'result' ? 'answered' : 'failed', { class: outcome.class, newWork: outcome.value?.newWork?.length ?? null, ...(outcome.notStarted ? { notStarted: true } : {}) }, outcome.costUsd ?? null, now, run.id);
     if (outcome.class === 'result' && containsSecret(replyBody({ runId: run.id, messages, value: outcome.value }))) {
       // Never post what looks like a credential, whatever induced it. The owner sees the receipt and the journal.
       ctl.store.run("UPDATE coordinator_runs SET state = 'failed', outcome = ? WHERE id = ?", { class: 'reply-withheld' }, run.id);

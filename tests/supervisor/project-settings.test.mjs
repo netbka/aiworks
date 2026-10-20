@@ -124,15 +124,15 @@ test('planning and implementation share a capped project budget: no uncovered re
   createProject(store, { id: 'other', tenant_id: 'example', name: 'Other app', source_kind: 'folder', root_path: join(env.tmp, 'other') }, now);
   const ask = (requestId, projectId, state = 'received') => store.run(`INSERT INTO work_requests (request_id, project_id, route, text, plan_only, state, received_at, updated_at)
     VALUES (?, ?, 'note', 'Plan a page.', 0, ?, ?, ?)`, requestId, projectId, state, now, now);
-  const planned = (id, { requestId = null, messageIds = [], state = 'failed', cls = 'error', costUsd = null, at = now } = {}) => store.insert('coordinator_runs', { id, state,
-    session_id: 's', run_dir: 'r', workspace: 'w', message_ids: messageIds, outcome: ['failed', 'answered'].includes(state) ? { class: cls, requestId } : null, cost_usd: costUsd, created_at: at, updated_at: at });
+  const planned = (id, { requestId = null, messageIds = [], state = 'failed', cls = 'error', notStarted, costUsd = null, at = now } = {}) => store.insert('coordinator_runs', { id, state,
+    session_id: 's', run_dir: 'r', workspace: 'w', message_ids: messageIds, outcome: ['failed', 'answered'].includes(state) ? { class: cls, requestId, notStarted } : null, cost_usd: costUsd, created_at: at, updated_at: at });
   const request = (id) => store.get('SELECT * FROM work_requests WHERE request_id = ?', id);
   const runs = () => store.get('SELECT COUNT(*) AS n FROM coordinator_runs').n;
 
   settings(store, 0, { budget: { totalUsd: 10, unknownRunCostUsd: 3 } });
   run(store, 'one', 1, { costUsd: 2 });
   ask('req-a', 'sample');
-  planned('intake.0', { requestId: 'req-a', cls: 'spawn-failed' }); // never started: costs nothing
+  planned('intake.0', { requestId: 'req-a', cls: 'spawn-failed', notStarted: true }); // proven never started: costs nothing
   planned('intake.1', { requestId: 'req-a' }); // first draft, cost not reported
   planned('intake.2', { state: 'dispatched' }); // its retry, still open
   store.run("UPDATE work_requests SET state = 'drafting', run_id = 'intake.2' WHERE request_id = 'req-a'");
@@ -180,6 +180,51 @@ test('planning and implementation share a capped project budget: no uncovered re
   assert.doesNotMatch(request('req-a').failure ?? '', /^project-budget/);
   assert.equal(store.all('SELECT kind FROM journal WHERE kind = ?', 'planning-budget-cleared').length, 1);
   restarted.release();
+});
+
+test('a failure after a paid worker may have started, or a cancelled paid run, leaves no room for an uncovered retry', async (t) => {
+  const { env, store, controller } = rig(t);
+  const now = Date.now();
+  campaignStart(store, declaration({ campaignId: 'one', limits: { maxWorkerRuns: null }, tasks: [task('T1', 960)] }));
+  createProject(store, { id: 'sample', tenant_id: 'example', name: 'Sample app', source_kind: 'github', root_path: join(env.tmp, 'sample'), github_repository: PROJECT, base_branch: 'main' }, now);
+  store.run(`INSERT INTO work_requests (request_id, project_id, route, text, plan_only, state, run_id, received_at, updated_at)
+    VALUES ('req-a', 'sample', 'note', 'Plan a page.', 0, 'drafting', 'intake.1', ?, ?)`, now, now);
+  settings(store, 0, { budget: { totalUsd: 9, unknownRunCostUsd: 3 } });
+  // A dispatched planning read whose containment helper failed after the worker had attached: the worker's reported cost stays.
+  const workspace = join(env.tmp, 'planning-checkout'), runDir = join(env.tmp, 'intake.1');
+  mkdirSync(workspace, { recursive: true });
+  mkdirSync(runDir, { recursive: true });
+  git(workspace, 'init', '-q');
+  writeFileSync(join(workspace, 'README.md'), 'Sample.\n');
+  git(workspace, 'add', '.');
+  git(workspace, '-c', 'user.name=Example', '-c', 'user.email=example@example.invalid', 'commit', '-qm', 'base');
+  writeFileSync(join(runDir, 'spec.json'), JSON.stringify({ revision: git(workspace, 'rev-parse', 'HEAD') }));
+  writeFileSync(join(runDir, 'stdout.json'), JSON.stringify({ is_error: true, total_cost_usd: 4 }));
+  writeFileSync(join(runDir, 'result.json'), JSON.stringify({ spawnError: 'containment-helper-failed', containment: 'windows-job-v1', containmentStopped: true, attached: true }));
+  store.insert('coordinator_runs', { id: 'intake.1', state: 'dispatched', session_id: 's', run_dir: runDir, workspace, message_ids: [], outcome: null, cost_usd: null, created_at: now, updated_at: now });
+  // A paid implementation run stopped by cancellation, exactly as the controller records it: its cost is unknown.
+  run(store, 'one', 1, { open: true });
+  store.run("UPDATE operations SET state = 'abandoned', outcome = ? WHERE id = 'one-1'", JSON.stringify({ class: 'cancelled', detail: 'stopped' }));
+
+  controller.config.coordinator = { repositories: [PROJECT], intake: true, worktreeRoot: join(env.tmp, 'planning') };
+  await coordinatorTick(controller);
+  assert.deepEqual([store.get("SELECT cost_usd FROM coordinator_runs WHERE id = 'intake.1'").cost_usd, store.get("SELECT outcome FROM coordinator_runs WHERE id = 'intake.1'").outcome.class], [4, 'spawn-failed']);
+  const spend = admissionBudget(store, store.campaign('one'), now);
+  assert.equal(spend.project.total.chargedUsd, 7, 'the failed read keeps its $4 and the cancelled run is charged once at $3');
+  assert.match(spend.exhausted, /^project budget reached/, 'no paid implementation run fits');
+  store.run("UPDATE work_requests SET not_before = NULL WHERE request_id = 'req-a'");
+  const runs = store.get('SELECT COUNT(*) AS n FROM coordinator_runs').n;
+  await coordinatorTick(controller);
+  assert.equal(store.get('SELECT COUNT(*) AS n FROM coordinator_runs').n, runs, 'the planning retry does not start uncovered');
+  assert.match(store.get("SELECT failure FROM work_requests WHERE request_id = 'req-a'").failure, /^project-budget/);
+
+  // Only durable proof that nothing started refunds: a runner that never attached, a cancelled run that never launched.
+  store.run("UPDATE coordinator_runs SET outcome = ?, cost_usd = NULL WHERE id = 'intake.1'", JSON.stringify({ class: 'spawn-failed', requestId: 'req-a' }));
+  assert.equal(projectBudget(store, PROJECT, now).total.chargedUsd, 6, 'a failure without that proof is charged at the unknown price');
+  store.run("UPDATE coordinator_runs SET outcome = ? WHERE id = 'intake.1'", JSON.stringify({ class: 'spawn-failed', requestId: 'req-a', notStarted: true }));
+  store.run("UPDATE operations SET outcome = ? WHERE id = 'one-1'", JSON.stringify({ class: 'cancelled', detail: 'not-running' }));
+  assert.equal(projectBudget(store, PROJECT, now).total.chargedUsd, 0);
+  controller.release();
 });
 
 test('settings carry no authority, and a stale, repeated or edited save changes nothing', (t) => {
