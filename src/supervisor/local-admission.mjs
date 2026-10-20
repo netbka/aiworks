@@ -93,15 +93,17 @@ export function aiworksRuns(store) {
     try { runner = JSON.parse(readFileSync(join(runDir, 'runner.json'), 'utf8')); } catch { runner = null; }
     const launched = existsSync(join(runDir, 'launch.json')) || existsSync(join(runDir, 'run.lock'));
     const pid = Number.isSafeInteger(runner?.pid) && runner.pid > 0 ? runner.pid : null;
-    return { kind, id, pid, jobName: typeof runner?.jobName === 'string' ? runner.jobName : null, known: pid !== null || !launched };
+    return { kind, id, pid, jobName: typeof runner?.jobName === 'string' ? runner.jobName : null,
+      creationTime: typeof runner?.creationTime === 'string' ? runner.creationTime : null, known: pid !== null || !launched };
   });
 }
 
 /**
- * The caller check (section 8.2). `lookup(connection, { jobNames })` finds the process at the other end of the dashboard's
- * loopback connection and returns `{ pid, ancestors, jobs }`: its pid, its parent chain, and which of `jobNames` (the job
- * objects of AIWorks's open runs) it belongs to. On Windows every worker and coordinator run is inside a job its
- * descendants cannot leave, so `jobs` names it even after its parent exits. Refuses with:
+ * The caller check (section 8.2). `lookup(connection, { jobNames, runners })` finds the process at the other end of the
+ * dashboard's loopback connection and returns `{ pid, ancestors, jobs }`: its pid, its parent chain, and which of
+ * `jobNames` (the job objects of AIWorks's open runs; `runners` gives each run's runner pid and creation time) it belongs
+ * to. On Windows every worker and coordinator run is inside a job its descendants cannot leave, so `jobs` names it even
+ * after its parent exits. The dashboard's production lookup is caller-lookup.mjs windowsCallerLookup. Refuses with:
  *   APPROVAL_FROM_AIWORKS  the caller, or a process above it, is an open run's runner, is in an open run's job, or is one
  *                          of `aiworksPids` (by default this process: the dashboard itself);
  *   APPROVAL_UNCHECKED     no lookup, another platform than Windows, a lookup that fails or answers malformed, or an open
@@ -116,7 +118,8 @@ export async function checkCaller(store, { lookup, connection = null, aiworksPid
   if (runs.some((run) => !run.known)) unchecked('an AIWorks run is starting');
   const jobNames = runs.map((run) => run.jobName).filter(Boolean);
   let found;
-  try { found = await lookup(connection, { jobNames }); } catch (error) { unchecked(`the process lookup failed: ${error?.code ?? error?.name ?? 'error'}`); }
+  const runners = runs.filter((run) => run.jobName).map(({ jobName, pid, creationTime }) => ({ jobName, pid, creationTime }));
+  try { found = await lookup(connection, { jobNames, runners }); } catch (error) { unchecked(`the process lookup failed: ${error?.code ?? error?.name ?? 'error'}`); }
   const pidOk = (value) => Number.isSafeInteger(value) && value > 0;
   if (!found || !pidOk(found.pid) || !Array.isArray(found.ancestors) || !found.ancestors.every(pidOk)
       || !Array.isArray(found.jobs) || !found.jobs.every((name) => typeof name === 'string')) {
