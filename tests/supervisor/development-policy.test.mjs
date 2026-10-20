@@ -28,12 +28,16 @@ test('GitHub mutations and pushes require a fresh disabled Actions policy and ne
   writeFileSync(fake, `import { appendFileSync, readFileSync } from 'node:fs';
 const [kind, policy, calls, ...args] = process.argv.slice(2);
 appendFileSync(calls, JSON.stringify({ kind, args }) + '\\n');
+const p = JSON.parse(readFileSync(policy, 'utf8'));
 if (kind === 'gh') {
-  const p = JSON.parse(readFileSync(policy, 'utf8'));
   if (args.some(a => a.endsWith('/actions/permissions'))) {
     if (p.error) { process.stderr.write('synthetic policy read failure'); process.exit(1); }
-    process.stdout.write(JSON.stringify(p));
+    const route = args.find(a => a.endsWith('/actions/permissions'));
+    process.stdout.write(JSON.stringify(p.destinations?.[route] ?? p));
   } else process.stdout.write('{}');
+} else if (args.includes('get-url')) {
+  if (p.remoteError) process.exit(1);
+  process.stdout.write(p.urls ?? 'https://github.com/example-org/sampleapp.git');
 } else if (args.includes('ls-remote')) process.stdout.write('${'a'.repeat(40)}\\trefs/heads/campaign/example/T1\\n');
 `);
   const gh = [process.execPath, fake, 'gh', policy, calls];
@@ -61,7 +65,7 @@ if (kind === 'gh') {
   writeFileSync(calls, '');
   rest(gh, 'write', mutations[0]);
   pushVerified(push);
-  assert.equal(seen().filter(({ args }) => args.some(a => a.endsWith('/actions/permissions'))).length, 2);
+  assert.equal(seen().filter(({ args }) => args.some(a => a.endsWith('/actions/permissions'))).length, 3);
   assert.equal(seen().filter(({ kind, args }) => kind === 'git' && args.includes('push')).length, 1);
   // A later policy change invalidates the next write immediately; success was not cached.
   writeFileSync(policy, JSON.stringify({ enabled: true }));
@@ -82,4 +86,26 @@ if (kind === 'gh') {
     ['--method', 'POST', `repos/${repository}/pulls`, '--hostname', 'example.invalid'],
   ]) assert.throws(() => rest(gh, 'ambiguous request', args), { code: 'LOCAL_DEVELOPMENT_ONLY' });
   assert.equal(seen().length, before, 'workflow and resource writes never reach the CLI, even with Actions disabled');
+  const backup = { ...push, remote: 'backup', tip: push.sha }, other = 'https://github.com/example-org/archive.git';
+  for (const urls of [other, `https://github.com/${repository}.git\n${other}`]) {
+    writeFileSync(policy, JSON.stringify({ enabled: false, urls,
+      destinations: { 'repos/example-org/archive/actions/permissions': { enabled: true } } }));
+    writeFileSync(calls, '');
+    assert.throws(() => pushVerified(push), { code: 'LOCAL_DEVELOPMENT_ONLY' });
+    assert.equal(pushTrustedTip(backup).kind, 'backup-refused');
+    assert.ok(seen().some(({ args }) => args.includes('repos/example-org/archive/actions/permissions')));
+    assert.ok(!seen().some(({ kind, args }) => kind === 'git' && args.includes('push')), 'no push to an unchecked destination');
+  }
+  writeFileSync(policy, JSON.stringify({ enabled: false, urls: other }));
+  assert.equal(pushTrustedTip(backup).kind, 'backup-pushed', 'a configured backup checks its own destination');
+  for (const value of [{ urls: '' }, { urls: 'ext::untrusted helper' }, { urls: 'https://example.invalid/repo' },
+    { urls: '//server/share/repo' }, { remoteError: true }]) {
+    writeFileSync(policy, JSON.stringify({ enabled: false, ...value }));writeFileSync(calls, '');
+    assert.throws(() => pushVerified(push), { code: 'LOCAL_DEVELOPMENT_ONLY' });
+    assert.equal(pushTrustedTip(backup).kind, 'backup-refused');
+    assert.ok(!seen().some(({ kind, args }) => kind === 'git' && args.includes('push')));
+  }
+  writeFileSync(policy, JSON.stringify({ enabled: false, urls: dir }));
+  pushVerified(push);
+  assert.equal(pushTrustedTip(backup).kind, 'backup-pushed', 'offline local directory transports remain available');
 });
