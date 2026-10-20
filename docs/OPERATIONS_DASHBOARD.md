@@ -50,7 +50,8 @@ The active local service uses a detached checkout of a merged, independently rev
     - The registry is read once at dashboard start from the governance checkout.
   - **Finished campaigns** with nothing listed for the owner collapse into *Finished campaigns (N)*, most recent first. Each has one line saying where its results stand and a *See all steps* disclosure. A finished or cancelled campaign card shows no controls. The Agents page uses the same order.
   - **Old or failing merge checks in Needs you.** A review item says *Merge check from 12:31; the last fetch failed, retrying within 5 minutes* when the last fetch of the base branch failed. The result of the last successful fetch is kept and its time is shown.
-    - A merge check is current for 15 minutes after a successful fetch. Older data never shows a step as merged. While a new check is due, the step counts as being checked; once a fetch has failed, it is listed for review with the time of the last good check.
+    - A merge check is current for 15 minutes after a successful fetch. Without a recorded merge receipt, older data never shows a step as merged. While a new check is due, the step counts as being checked; once a fetch has failed, it is listed for review with the time of the last good check.
+    - A supervisor merge receipt bound to the task, verified commit and published PR remains evidence of that historical merge. Needs me, Projects and Results read new receipts on refresh, including a reconciled canonical PR link. Cancelled work without merge evidence still needs review; a merge receipt does not prove deployment.
   - **Campaign heading:** declared wording first.
     - It is the campaign's `purpose` or, for a campaign of one step, that step's `outcome`, else its title.
     - Otherwise it is the campaign id. Issue titles are not read from GitHub.
@@ -137,14 +138,14 @@ With the setting:
 - the project's Work shows it as *Passed the check*, with *Will be merged for you. Nothing for you to do.* or its held reason;
 - Results lists it under *Being merged for you*, as *Pull request #N · passed the check · will be merged for you*, or with its held reason;
 - with `"delegatedTo": "supervisor"` ([#138](https://github.com/example-org/aiworks/issues/138)), Work says *AIWorks merges it after it passes the check against the latest main. Nothing for you to do.* and Results *Pull request #N · passed the check · AIWorks merges it after it passes the check against the latest main*. There is no CI step, so no text waits for CI;
-- it reads *merged* only once the merge check sees it on the base branch, as before. A step with no recorded verified commit stays a Needs me item.
+- it reads *merged* once a matching supervisor receipt records the verified commit's merge or a current merge check sees it on the base branch. A step with no recorded verified commit stays a Needs me item.
 
 A delegated merge that waits too long comes back to the owner. When a verified, unmerged pull request that is not held has waited longer than `stallHours` since it passed the check, nothing has merged it:
 
 - it is a counted Needs me item, *Check why it is not merged*, with *Checked and waiting to be merged for N hours. Nothing has merged it.* Its one action opens the pull request;
 - Work shows the same sentence, and Results *Pull request #N · checked and waiting to be merged for N hours*;
 - N is whole hours, rounded down. The time it passed the check is the latest finished check that accepted its verified commit, from the supervisor store. Without a recorded check run, it is when the step last changed, which is never earlier;
-- before the threshold, and while it is held, it reads as above. It is never called merged until the merge check sees it on the base branch.
+- before the threshold, and while it is held, it reads as above. It is never called merged without a matching receipt or a current base-branch check.
 
 This uses the supervisor store and local git only, never the GitHub API.
 
@@ -408,7 +409,7 @@ Completed/cancelled campaigns do not appear as controller failures when their hi
 `tests/dashboard/dashboard.test.mjs` exercises the roadmap definitions (no GitHub work state, no cache), read-only snapshots, safe metadata, real API transitions, stale/ABA protection, authority preservation, duplicate delivery and HTTP request protections and response headers using disposable data.
 
 `tests/dashboard/owner.test.mjs` exercises:
-- the owner view: merged only from a current local git check, review items, the steps they unblock, churn notes, merges not seen, decisions and an unreadable coordinator inbox;
+- the owner view: merged from an exact-head receipt or a current local git check, review items, the steps they unblock, churn notes, merges not seen, decisions and an unreadable coordinator inbox;
 - the page order: campaigns with something for the owner and active ones first, finished ones collapsed to one line each, newest first;
 - `purpose`/`outcome` validation and the unchanged scope digest;
 - the host label;

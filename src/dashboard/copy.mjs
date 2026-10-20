@@ -107,9 +107,9 @@ const STATES = {
     `${d.next ? `“${d.next}”` : 'The next step'} starts when it is ready.`, openWork(d.project)] },
   // §7.4 became the local merge-check copy (C1). A note on the screen that uses the data; no primary action.
   'merge-old': { section: '7.4', needsYou: false, copy: (d, f) => [`Merge check from ${f.time(d.at)}; checking again.`,
-    'Pull request states may be out of date, so no step is shown as merged until the check is current.', null] },
+    'Pull request states may be out of date. Recorded merges remain visible; other results wait for a current check.', null] },
   'merge-failed': { section: '7.4', needsYou: false, copy: (d, f) => [d.at ? `Merge check from ${f.time(d.at)}; the last check failed, retrying.` : 'The merge check failed; retrying.',
-    'Pull request states may be out of date, so no step is shown as merged until the check is current.', null] },
+    'Pull request states may be out of date. Recorded merges remain visible; other results wait for a current check.', null] },
   'merge-never': { section: '7.4', needsYou: false, copy: (d) => ['Checking for merges…', `The state of ${plural(d.count, 'result')} is not known yet.`, null] },
   // §7.5 Paused: neutral, never a Needs me item by itself.
   'paused': { section: '7.5', needsYou: false, copy: (d, f) => [d.pausedAt ? `Paused since ${f.dateTime(d.pausedAt)}.` : 'Paused.',

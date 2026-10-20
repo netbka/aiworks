@@ -702,6 +702,17 @@ function reviewOf(store, c, task, spec, config) {
     canRequestChanges: open && commit && !requested && !merged && roundsLeft !== 0 };
 }
 
+function mergeReceipt(task, rows) {
+  const row = rows.find(({ detail }) => detail?.task === task.task_id && detail.sha === task.verified_sha &&
+    (detail.originalUrl ?? detail.url) === task.pr_url && /^[a-f0-9]{40}$/.test(detail.sha ?? '') &&
+    /^[a-f0-9]{40}$/.test(detail.mergeCommit ?? '') &&
+    /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(detail.url ?? ''));
+  if (!row) return null;
+  const d = row.detail;
+  return { sha: d.sha, originalUrl: d.originalUrl ?? d.url, url: d.url, mergeCommit: d.mergeCommit,
+    mergedAt: Number.isSafeInteger(d.mergedAt) ? d.mergedAt : row.at };
+}
+
 export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
   const path = join(dataDir, 'supervisor.db');
   if (!existsSync(path)) return { available: false, message: 'No supervisor store at the configured location.', campaigns: [], costs: [], activity: [] };
@@ -718,6 +729,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
       // Connections reads trusted main once; this per-campaign view does not use that field.
       const c = store.campaign(id), status = campaignStatus(store, id, now, { config, selfHostingConfig: null });
       const taskRows = store.tasks(id);
+      const merged = store.all("SELECT at, detail FROM journal WHERE campaign_id = ? AND kind = 'merged' ORDER BY seq DESC", id);
       const feedback = decisionFeedback(store, id);
       const specs = new Map(c.declaration.tasks.map((task) => [task.id, task]));
       const operations = store.openOperations(id);
@@ -805,6 +817,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
         tasks: taskRows.map((task) => ({ id: task.task_id, title: safeText(specs.get(task.task_id)?.title),
           decision: decisionView(id, task, feedback, now),
           review: resultReview(store, c, task, specs.get(task.task_id), config),
+           mergeReceipt: mergeReceipt(task, merged),
           outcome: specs.get(task.task_id)?.outcome ? safeText(specs.get(task.task_id).outcome) : null,
           deliverable: code(specs.get(task.task_id)?.deliverable), verifierRejections: rejections.get(task.task_id) ?? 0,
           version: task.version, issueUrl: `https://github.com/${c.declaration.target.repository}/issues/${specs.get(task.task_id)?.issue}`,
