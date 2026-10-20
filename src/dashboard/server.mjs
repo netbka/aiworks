@@ -50,9 +50,10 @@ const pageNavigation = (req, path) => req.method === 'GET' && path === '/' && !r
 // provenanceRoot: the checkout whose origin/main a Resume or an Approve and start is checked against (AW-005); by default
 // the code this server runs from. Tests pass a disposable checkout so the check never reads this repository's own git
 // state. `work` is for tests only (governanceRoot, synthetic git and gh for the plan's freshness check); main.mjs gives none.
-// `callerCheck` is for tests only: the caller check's process lookup and platform (local-admission.mjs checkCaller). main.mjs
-// gives none, so the project rules routes and a local project's Approve and start, Apply and Undo apply refuse every
-// write with APPROVAL_UNCHECKED until a process lookup is wired in. `workList` is for tests only: the work list's close
+// `callerCheck`: the caller check's process lookup and platform (local-admission.mjs checkCaller). main.mjs gives the native
+// Windows lookup (caller-lookup.mjs); tests give a synthetic one. Without a lookup every protected owner action (project
+// rules, a local project's Approve and start, Apply and Undo apply, settings, alerts, Knowledge, the work list) refuses
+// with APPROVAL_UNCHECKED. `workList` is for tests only: the work list's close
 // switched on and a synthetic GitHub command (work-list.mjs closeImportedIssues).
 export function createDashboardServer({ dataDir, roadmap, merges = null, host = {}, releases = {}, projectConnection = {}, provenanceRoot = undefined, work = {},
   callerCheck = {}, workList = {} }) {

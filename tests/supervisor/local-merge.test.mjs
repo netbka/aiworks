@@ -11,7 +11,7 @@ import { campaignStart } from '../../src/supervisor/api.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
 import { mergePass, mergeSettings } from '../../src/supervisor/merge.mjs';
 import { mainLedger, recordAnchor, recordMainCommit } from '../../src/supervisor/self-hosting.mjs';
-import { createItem, items } from '../../src/supervisor/work-list.mjs';
+import { createItem, item, items, reviewItem } from '../../src/supervisor/work-list.mjs';
 import { declaration, environment, runUntil, skipWithoutSqlite } from './helpers.mjs';
 
 const REPOSITORY = 'example-org/sampleapp';
@@ -52,7 +52,7 @@ process.exit(out.status ?? 1);
  * The self-hosted repository with its ledger anchored and no remote, one commit task verified and recorded as a local
  * review, and the merge gate opted in for it. `pass()` runs one merge pass now.
  */
-async function delivered(t, { config: extra = {} } = {}) {
+async function delivered(t, { config: extra = {}, campaignId, taskId = 'T1' } = {}) {
   const env = environment();
   const forbidden = guards(env.tmp);
   const config = { ...env.config, commands: { ...env.config.commands, gh: forbidden.gh, git: forbidden.git },
@@ -64,17 +64,17 @@ async function delivered(t, { config: extra = {} } = {}) {
   assert.equal(recordAnchor(store, { repoPath: env.repo, repository: REPOSITORY, sha: anchor, now: 1 }).recorded, true);
   git(env.repo, 'remote', 'remove', 'origin');
   for (const number of [437, 443]) createItem(store, { number, kind: 'task', title: `synthetic item ${number}`, authorKind: 'import', now: 1 });
-  const d = declaration({ tasks: [declaration().tasks[0]] });
+  const d = declaration({ campaignId, tasks: [{ ...declaration().tasks[0], id: taskId }] });
   campaignStart(store, d);
   const controller = new Controller({ store, config, dataDir: env.dataDir, fault: null });
   await runUntil(controller, store, d.campaignId, (c) => c.control === 'finished');
-  const task = store.task(d.campaignId, 'T1');
+  const task = store.task(d.campaignId, taskId);
   assert.match(task.pr_url, /^aiworks-work:\d+$/);
   controller.merges = mergeSettings({ merges: { delegatedTo: 'supervisor', repositories: [REPOSITORY] } });
   const pass = async () => { controller.mergeCheckedAt.clear(); controller.mergeWaits.clear(); await mergePass(controller); };
   const journal = (kind) => store.all('SELECT detail FROM journal WHERE campaign_id = ? AND kind = ? ORDER BY seq', d.campaignId, kind).map((row) => row.detail);
   const gateRows = () => mainLedger(store, REPOSITORY).filter((row) => row.kind === 'gate-merge');
-  return { env, forbidden, store, controller, id: d.campaignId, sha: task.verified_sha, anchor, pass, journal, gateRows };
+  return { env, forbidden, store, controller, id: d.campaignId, task, sha: task.verified_sha, anchor, pass, journal, gateRows };
 }
 
 test('LO L8: wrong head, wrong tree, unrecorded main, dirty checkout, stale lease and cancellation never move main; a valid review merges once', { skip: skipWithoutSqlite }, async (t) => {
@@ -183,6 +183,22 @@ test('LO L8: a crash after main moved records the same merge once; a moved trust
   assert.equal(task.state, 'pending');
   assert.equal(task.findings[0].id, 'integration-conflict');
   assert.equal(fresh.journal('merge-base-moved').length, 1);
+});
+
+test('a legal long campaign and task id records its whole verified review and merges that exact head', { skip: skipWithoutSqlite }, async (t) => {
+  // Its branch, campaign/<campaign>/<task>, is longer than a work-list label may be.
+  const campaignId = 'example-long-campaign-for-review-labels', taskId = 'T-long-task-identifier';
+  const { env, forbidden, store, id, task, sha, anchor, pass, gateRows } = await delivered(t, { campaignId, taskId });
+  assert.equal(task.state, 'done', JSON.stringify(task.blocked));
+  const review = item(store, Number(task.pr_url.split(':')[1]));
+  assert.equal(reviewItem(store, { campaignId: id, taskId, verifiedSha: sha })?.number, review.number, 'found by campaign, task and verified SHA');
+  assert.ok(review.body.includes(String(task.result.report)), 'the complete verified report');
+  assert.ok(review.body.includes(`campaign/${id}/${taskId}`) && review.body.includes(sha));
+  await pass();
+  const merge = git(env.repo, 'rev-parse', 'main');
+  assert.deepEqual(git(env.repo, 'rev-list', '--parents', '-n', '1', merge).split(' ').slice(1), [anchor, sha]);
+  assert.deepEqual(gateRows().map((row) => [row.task_id, row.verified_sha]), [[taskId, sha]]);
+  assert.deepEqual(lines(forbidden.log), []);
 });
 
 test('malformed public-only publication settings never block a local review', { skip: skipWithoutSqlite }, async (t) => {
