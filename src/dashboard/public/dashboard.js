@@ -2260,7 +2260,7 @@ function homeScreen() {
   return [changed, decision, reviewList(resultsToReview(), { scope: 'home/reviews', withProject: true }),
     panel('Projects', 'Each project in one sentence.', el('div', { class: 'panel-body' }, projects)),
     panel('All work', 'Pause stops new steps everywhere; steps already running finish and are recorded. Resume all resumes only what Pause all paused.',
-      el('div', { class: 'panel-body' }, pauseControls(home.pause, 'all', {}, { label: 'all work' })))];
+      el('div', { class: 'panel-body' }, pauseControls(home.pause, 'all', {}, { label: 'all work' })))].filter(Boolean);
 }
 
 const AVAILABLE_WORDS = { 'not-published': 'Not published: release is off', unknown: 'Not known', recorded: 'Recorded' };
