@@ -6,6 +6,7 @@ import { configuredCheckouts, configuredGitCommand, configuredLocalMain, MergeWa
 import { execFileSync } from 'node:child_process';
 import { hostname } from 'node:os';
 import { createDashboardServer } from './server.mjs';
+import { windowsCallerLookup } from '../supervisor/caller-lookup.mjs';
 import { DASHBOARD_VERSION, DASHBOARD_VERSION_NAME } from './copy.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -31,8 +32,10 @@ const merges = new MergeWatcher({ steps: () => publishedSteps(dataDir), checkout
 let revision = null;
 try { revision = execFileSync('git', ['rev-parse', '--short=12', 'HEAD'], { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 5000 }).trim(); }
 catch { /* A checkout without git still serves; the revision is shown as unknown. */ }
-// Release wording follows each project's registry entry in the governance checkout.
-const server = createDashboardServer({ dataDir, roadmap, merges, host: { name: hostname(), revision, version: DASHBOARD_VERSION, versionName: DASHBOARD_VERSION_NAME }, releases: readReleaseAuthorizations(configuredGovernance) });
+// Release wording follows each project's registry entry in the governance checkout. Protected owner actions run the
+// caller check with the native Windows process lookup on each request's connection; elsewhere the check refuses them.
+const server = createDashboardServer({ dataDir, roadmap, merges, host: { name: hostname(), revision, version: DASHBOARD_VERSION, versionName: DASHBOARD_VERSION_NAME }, releases: readReleaseAuthorizations(configuredGovernance),
+  callerCheck: { lookup: windowsCallerLookup } });
 server.on('error', (error) => { console.error(`Dashboard could not listen (${error.code ?? 'unknown'}).`); process.exitCode = 1; });
 server.listen(port, '127.0.0.1', () => {
   console.log(`AIWorks dashboard: http://127.0.0.1:${port}`);

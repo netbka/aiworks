@@ -28,6 +28,7 @@ const MODULE = fileURLToPath(new URL('../../src/supervisor/release/owner-apply.m
 const STORE_MODULE = fileURLToPath(new URL('../../src/supervisor/store.mjs', import.meta.url));
 const ADMISSION_MODULE = fileURLToPath(new URL('../../src/supervisor/local-admission.mjs', import.meta.url));
 const CAMPAIGN = 'owner-apply';
+const JOB = 'Local\\aiworks-supervisor-00000000-0000-4000-8000-000000000001';
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const NO_PR = /[Pp]ull|[Mm]erge|^pr(?:[A-Z_]|$)/;
 
@@ -201,8 +202,8 @@ test('Apply runs only on the owner route: a request from AIWorks, or one the che
   // A worker's own process tree: the lookup names an open run's job.
   r.store.insert('operations', { id: 'op-1', campaign_id: CAMPAIGN, task_id: 'T1', kind: 'implement', seq: 1, idempotency_key: 'op-1', lease_generation: 1,
     state: 'dispatched', session_id: 's-1', run_dir: r.tmp, workspace: r.tmp, packet: '{}', packet_digest: 'd', created_at: Date.now(), updated_at: Date.now() });
-  writeFileSync(join(r.tmp, 'runner.json'), JSON.stringify({ pid: 999_993, jobName: 'aiworks-run-op-1' }));
-  await assert.rejects(r.apply({ caller: checked({ platform: 'win32', lookup: async () => ({ pid: 999_994, ancestors: [], jobs: ['aiworks-run-op-1'] }) }) }),
+  writeFileSync(join(r.tmp, 'runner.json'), JSON.stringify({ pid: 999_993, startedAt: 1, creationTime: '133000000000000000', jobName: JOB, containment: 'windows-job-v1' }));
+  await assert.rejects(r.apply({ caller: checked({ platform: 'win32', lookup: async () => ({ pid: 999_994, ancestors: [], jobs: [JOB] }) }) }),
     (error) => error.code === 'APPLY_FROM_AIWORKS');
   assert.deepEqual(snapshot(r.root), before);
   r.store.run("UPDATE operations SET state = 'finished' WHERE id = 'op-1'");
