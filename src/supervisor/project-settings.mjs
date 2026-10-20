@@ -16,7 +16,8 @@
 //   Planning counts too (planningRuns): a coordinator run that drafts a work request is charged to the request's project,
 //   and a message run to the one project all its messages name. The coordinator checks the same budget in the fenced
 //   transaction that records a planning run, so the recorded run is its reservation. A run that names no single project
-//   is unallocated: shown on its own and charged to no project's budget.
+//   is unallocated: shown on its own and charged to no project's budget. A failed or cancelled run is refunded only on
+//   durable proof that no worker started; otherwise it keeps its reported cost or the unknown price.
 import { createHash } from 'node:crypto';
 import { runNotCounted } from './adapters/executors.mjs';
 import { canonicalJson } from './campaign.mjs';
@@ -187,7 +188,8 @@ export function requestProjectKey(store, projectId) {
  * Every planning run (coordinator_runs) with the project it is charged to. An intake run belongs to the project of its
  * work request (the request id its outcome records, or the request that points at it while it is open); a message run to
  * the one project every message it read names. Anything else, such as a message naming no project or several, has
- * project null: unallocated, never charged to an arbitrary project. A run that could not start costs nothing.
+ * project null: unallocated, never charged to an arbitrary project. Only a run with durable proof that no worker started
+ * (coordinator.mjs classify: notStarted) costs nothing; any other failure keeps its reported cost or the unknown price.
  */
 export function planningRuns(store) {
   if (!tableExists(store, 'coordinator_runs')) return [];
@@ -206,7 +208,8 @@ export function planningRuns(store) {
       const named = (run.message_ids ?? []).map((id) => messages.get(id)).map((m) => (m ? projectKey(messageRepository(m)) : null));
       project = named.length && named.every((key) => key && key === named[0]) ? named[0] : null;
     }
-    return { project, open: ['recorded', 'dispatched'].includes(run.state), counted: run.outcome?.class !== 'spawn-failed', costUsd: run.cost_usd, createdAt: run.created_at };
+    return { project, open: ['recorded', 'dispatched'].includes(run.state), counted: !(run.outcome?.class === 'spawn-failed' && run.outcome.notStarted === true),
+      costUsd: run.cost_usd, createdAt: run.created_at };
   });
 }
 
@@ -216,6 +219,10 @@ const tally = (rows) => {
   return { reportedUsd: cents(counted.reduce((sum, row) => sum + (row.costUsd > 0 ? row.costUsd : 0), 0)),
     unknownCostRuns: counted.filter((row) => !(row.costUsd > 0)).length, openRuns: rows.filter((row) => row.open).length };
 };
+
+// A cancelled run is charged once, at the unknown price, unless cancellation proved it never launched (controller.mjs
+// reconcile: detail not-running); a run refused at admission or before any work costs nothing.
+const operationCharged = (op) => !runNotCounted(op.outcome) && !(op.state === 'abandoned' && op.outcome?.class === 'cancelled' && op.outcome.detail === 'not-running');
 
 /**
  * The project's spend against its budget, from durable operation rows of every campaign of the project and its planning
@@ -231,8 +238,8 @@ export function projectBudget(store, project, now = Date.now(), { detail = false
   const key = current.project;
   if (!detail && totalUsd === null && monthlyUsd === null) return { project: key, version: current.version, unknownRunCostUsd, monthStart: monthStart(now), total: null, month: null, exhausted: null };
   const campaigns = key ? store.all('SELECT id, declaration FROM campaigns').filter((c) => projectKey(projectOf(c.declaration)) === key).map((c) => c.id) : [];
-  const ops = campaigns.flatMap((id) => store.all("SELECT state, outcome, created_at FROM operations WHERE campaign_id = ? AND state IN ('finished', 'recorded', 'dispatched')", id))
-    .map((op) => ({ open: op.state !== 'finished', counted: !runNotCounted(op.outcome), costUsd: op.outcome?.receipt?.costUsd, createdAt: op.created_at, planning: false }));
+  const ops = campaigns.flatMap((id) => store.all("SELECT state, outcome, created_at FROM operations WHERE campaign_id = ? AND state IN ('finished', 'recorded', 'dispatched', 'abandoned')", id))
+    .map((op) => ({ open: op.state === 'recorded' || op.state === 'dispatched', counted: operationCharged(op), costUsd: op.outcome?.receipt?.costUsd, createdAt: op.created_at, planning: false }));
   const planning = key ? planningRuns(store).filter((run) => run.project === key).map((run) => ({ ...run, planning: true })) : [];
   const since = monthStart(now);
   const period = (rows, cap) => {
