@@ -22,7 +22,10 @@ const SHA = /^[0-9a-f]{40}$/;
 const OPEN = ['recorded', 'dispatched'];
 const GATE_NAMES = new Set(Object.values(GATE_FILES));
 
-export const cleanupEnabled = (config) => config?.cleanup?.enabled === true;
+export const cleanupEnabled = (config) => config?.cleanup?.enabled === true && (config.cleanup.repositories === undefined ||
+  Array.isArray(config.cleanup.repositories) && config.cleanup.repositories.every((repo) => typeof repo === 'string' && repo.trim()));
+const allowed = (ctl, repository) => ctl.config.cleanup.repositories === undefined ||
+  ctl.config.cleanup.repositories.some((repo) => repo.toLowerCase() === repository?.toLowerCase());
 
 // Per controller: when the last pass ran, whether interrupted removals were settled, and what was already reported kept.
 const memory = new WeakMap();
@@ -61,7 +64,8 @@ export function cleanupPass(ctl) {
   };
   const coordinator = coordinatorOwners(ctl);
   for (const repo of repositories(ctl)) cleanRepository(ctl, repo, coordinator, report, keep);
-  cleanCoordinator(ctl, coordinator, report, keep);
+  // Shared planning checkouts have no repository scope; a scoped cleanup leaves them alone.
+  if (ctl.config.cleanup.repositories === undefined) cleanCoordinator(ctl, coordinator, report, keep);
   if (report.removed.length || report.deleted.length) ctl.log(`cleanup removed ${report.removed.length} worktrees and ${report.deleted.length} branches`);
   return report;
 }
@@ -76,6 +80,7 @@ function foreignLease(ctl, id) {
 function repositories(ctl) {
   const byPath = new Map();
   for (const c of ctl.store.all('SELECT id, control, declaration FROM campaigns')) {
+    if (!allowed(ctl, c.declaration.target.repository)) continue;
     const repo = ctl.checkout(c.declaration);
     if (!repo?.path || !repo.worktreeRoot) continue;
     const entry = byPath.get(key(repo.path)) ?? { path: repo.path, root: repo.worktreeRoot, repository: c.declaration.target.repository, local: true, campaigns: [] };
@@ -208,6 +213,7 @@ function reconcile(ctl) {
   const open = ctl.store.all(`SELECT s.seq, s.campaign_id, s.detail FROM journal s WHERE s.kind = 'cleanup-started' AND NOT EXISTS
     (SELECT 1 FROM journal f WHERE f.kind = 'cleanup-finished' AND json_extract(f.detail, '$.started') = s.seq) ORDER BY s.seq`);
   for (const { seq, campaign_id: campaignId, detail } of open) {
+    if (!allowed(ctl, ctl.store.campaign(campaignId)?.declaration?.target?.repository)) continue;
     let done;
     if (detail.action === 'remove-worktree') {
       const list = gitA.worktreeList({ git, repoPath: detail.repoPath });
