@@ -14,6 +14,7 @@ import { checkConnectedProject, configuredRepositories, confirmProjectRules, con
   revokeProjectRules } from './projects.mjs';
 import { checkCaller } from '../supervisor/local-admission.mjs';
 import { safeText } from './roadmap.mjs';
+import { DisplayTextChecks } from './display-text.mjs';
 import { applyResult, approvePlan, editPlan, requestPlanAndDo, undoApply, workView } from './work.mjs';
 import { projectSettingsView, saveProjectSettings } from './project-settings.mjs';
 import { alertsView, saveAlerts } from './alerts.mjs';
@@ -71,6 +72,7 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
   const csrf = randomBytes(32).toString('hex');
   // Previews of checked versions (WP7): in this process's memory only, each bound to one verified commit.
   const previews = new PreviewSessions();
+  const textChecks = new DisplayTextChecks();
   // Which machine and dashboard version this is, so a screenshot identifies its supervisor.
   const machine = { name: safeText(host.name ?? hostname(), 64) || null, revision: /^[0-9a-f]{7,40}$/.test(host.revision ?? '') ? host.revision : null,
     ...(host.version !== undefined ? { version: safeText(host.version, 32) } : {}),
@@ -78,7 +80,7 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
   // What /api/state and the /api/v2 views read: the supervisor snapshot, the merge check, Needs me, the work of
   // projects without GitHub and Projects. Merge checks run while someone looks at the page; the answer never waits for them.
   const readState = (now, since) => {
-    const supervisor = supervisorSnapshot(dataDir, now, { since });
+    const supervisor = supervisorSnapshot(dataDir, now, { since, textChecks });
     if (merges) void merges.refresh();
     const merged = merges?.snapshot() ?? { refreshing: false, repositories: [], steps: {} };
     // The owner's merge delegation is read on every request, so a change to config.json shows without a restart.
@@ -90,7 +92,7 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
     const owner = ownerView(supervisor, merged, { host: machine.name, now, releases, delegation: configuredMergeDelegation(dataDir), connected: records, workList: worklist });
     // Plan and do and Review (UI14, UI17): requests and draft plans of connected projects, and the local work and
     // checked results of projects without GitHub, allowlisted fields only.
-    const work = workView(dataDir);
+    const work = workView(dataDir, { textChecks });
     // Projects: campaign repositories, the repositories config.json lists and connected projects, by name only (never a path).
     const projects = projectsView(supervisor, owner, { repositories: configuredRepositories(dataDir), removed: removedProjects(dataDir),
       ...(addProject ? { records, addProject, localWork: work.local } : {}) });
@@ -188,7 +190,7 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
         // One work list item with its comments (UI20), read-only.
         if (path.startsWith('/api/v2/worklist/')) {
           const number = path.slice('/api/v2/worklist/'.length);
-          return /^[1-9]\d{0,8}$/.test(number) ? send(200, workItemView(dataDir, Number(number))) : send(404, { error: 'Not found.' });
+          return /^[1-9]\d{0,8}$/.test(number) ? send(200, workItemView(dataDir, Number(number), { textChecks })) : send(404, { error: 'Not found.' });
         }
         if (path === '/api/v2/events') {
           const query = new URL(req.url, origin).searchParams;
@@ -292,7 +294,7 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       if (path === '/api/projects/disconnect') return send(200, disconnectConnectedProject(dataDir, value));
       // Remove from Projects decides from the Projects screen as it reads now, with no removal applied.
       if (path === '/api/projects/remove') {
-        const now = Date.now(), supervisor = supervisorSnapshot(dataDir, now);
+        const now = Date.now(), supervisor = supervisorSnapshot(dataDir, now, { textChecks });
         const merged = merges?.snapshot() ?? { refreshing: false, repositories: [], steps: {} };
         const records = projectConnectionEnabled(dataDir) ? connectedProjects(dataDir) : [];
         const owner = ownerView(supervisor, merged, { host: machine.name, now, releases, delegation: configuredMergeDelegation(dataDir), connected: records,
@@ -327,5 +329,6 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
   });
   server.requestTimeout = 10_000;
   server.headersTimeout = 10_000;
+  server.once('close', () => { void textChecks.close(); });
   return server;
 }

@@ -87,6 +87,8 @@ Forms use persistent labels and inline validation, with no browser validation bu
 
 No new animation is introduced. Existing refresh effects respect reduced-motion preferences. Keep server errors, retries, partial results and historical evidence visible; polish must not erase uncertainty or authorization boundaries.
 
+Long report and plan text can be checking, available or unavailable independently of the work's delivery state. Unchecked text stays hidden; an unfinished check is never labeled a secret. Review explains when its details are still being checked and keeps approval and editing unavailable until that check completes. These display states never change the stored plan or its authority.
+
 ## Verification
 
 Use the synthetic `tests/dashboard/fixtures/review-store.mjs` dashboard for screenshots and browser checks, never a live installation. Its full store has Plan and do and Add project on, plans with several versions in Now, Next and Later, an out-of-date plan, results waiting for review and a report recorded in the local work list. Check desktop and narrow (320–390px) Home, Projects, Needs me, Overview, Plan, Review, Results, Work, Plan work, Add project, Settings and Connections; check keyboard focus, form errors, route/draft retention and query clearing. Run the repository checks. Synthetic previews and passing source tests are not evidence of a production deployment.
