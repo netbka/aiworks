@@ -715,7 +715,8 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
     // work.mjs (workView `local`), never as a GitHub campaign here (OWNER_WORKSPACE S12).
     const campaigns = store.all("SELECT id FROM campaigns ORDER BY CASE WHEN control IN ('finished', 'cancelled') THEN 1 ELSE 0 END, created_at")
       .filter(({ id }) => !isLocalTarget(store.campaign(id).declaration)).map(({ id }) => {
-      const c = store.campaign(id), status = campaignStatus(store, id, now, { config });
+      // Connections reads trusted main once; this per-campaign view does not use that field.
+      const c = store.campaign(id), status = campaignStatus(store, id, now, { config, selfHostingConfig: null });
       const taskRows = store.tasks(id);
       const feedback = decisionFeedback(store, id);
       const specs = new Map(c.declaration.tasks.map((task) => [task.id, task]));
