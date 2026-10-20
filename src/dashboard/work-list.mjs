@@ -89,18 +89,18 @@ export function workListView(dataDir, { closeOn = CLOSE_IMPORTED_ON } = {}) {
 }
 
 /** One item for its own screen: the body (shortened past 200,000 characters), its newest comments and its version. */
-export function workItemView(dataDir, number) {
+export function workItemView(dataDir, number, { textChecks } = {}) {
   if (!Number.isSafeInteger(number) || number < 1) throw fail(404, 'This item is not in the work list on this computer.');
   const view = readOnly(dataDir, (store) => {
     const found = present(store) ? item(store, number) : null;
     if (!found) return null;
     const all = comments(store, number);
-    return { ...row(found), version: itemVersion(found), body: safeText(found.body, MAX_SHOWN_BODY), shortened: found.body.length > MAX_SHOWN_BODY,
+    return { ...row(found), version: itemVersion(found), body: textChecks?.read(found.body, MAX_SHOWN_BODY).text ?? safeText(found.body, MAX_SHOWN_BODY), shortened: found.body.length > MAX_SHOWN_BODY,
       verifiedSha: found.verified_sha ?? null, source: found.source_url && /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+$/.test(found.source_url)
         ? { url: found.source_url, updatedAt: safeText(found.source_updated_at, 64) } : null,
       createdAt: isoTime(found.created_at), commentCount: all.length,
       comments: all.slice(-MAX_COMMENTS).map((comment) => ({ seq: comment.seq, author: comment.author_kind === 'import' && comment.author ? safeText(comment.author, 100)
-        : AUTHOR_WORDS[comment.author_kind] ?? 'Unknown', body: safeText(comment.body, MAX_SHOWN_BODY), createdAt: isoTime(comment.created_at) })) };
+        : AUTHOR_WORDS[comment.author_kind] ?? 'Unknown', body: textChecks?.read(comment.body, MAX_SHOWN_BODY).text ?? safeText(comment.body, MAX_SHOWN_BODY), createdAt: isoTime(comment.created_at) })) };
   }, undefined);
   if (view === undefined) throw fail(503, 'AIWorks can’t read its work records on this computer right now.');
   if (!view) throw fail(404, 'This item is not in the work list on this computer.');

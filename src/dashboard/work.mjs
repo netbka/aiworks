@@ -100,7 +100,7 @@ const localStartable = (store, record, governanceRoot) => isLocal(record) && rec
 const routeOf = (record) => (isLocal(record) ? record.id : record.github_repository);
 
 /** One draft as Review shows it: only allowlisted fields, every text through safeText. Never a path or raw output. */
-function planView(store, record, request, draft) {
+function planView(store, record, request, draft, textChecks) {
   const local = isLocal(record);
   const base = { id: request.request_id, project: routeOf(record), local, receivedAt: request.received_at };
   const campaignId = draft?.declaration?.campaignId;
@@ -109,7 +109,12 @@ function planView(store, record, request, draft) {
     : approvedDeclarations(store, campaignId).find((row) => row.authorityDigest === draft.authority_digest)?.persistedAt ?? null;
   const started = campaignId ? store.campaign(campaignId) : null;
   const state = approvedAt && started ? { code: 'APPROVED' } : intakeState(request, draft);
-  const startable = ['DRAFT_READY', 'PLAN_ONLY_READY', 'CONFLICT'].includes(state.code);
+  const checkText = (value, max) => textChecks?.read(value, max) ?? { state: 'ready', text: safeText(value, max) };
+  const planText = draft ? checkText(draft.plan, 8000) : null;
+  const summary = draft ? checkText(draft.summary, 2000) : null, goal = draft ? checkText(request.text, 2000) : null;
+  const states = [planText, summary, goal].filter(Boolean).map(item => item.state);
+  const textCheck = states.includes('unavailable') ? 'unavailable' : states.includes('checking') ? 'checking' : 'ready';
+  const startable = ['DRAFT_READY', 'PLAN_ONLY_READY', 'CONFLICT'].includes(state.code) && textCheck === 'ready';
   const view = { ...base, code: state.code, startable, approvedAt,
     failure: state.code === 'DRAFT_FAILED' ? safeText(state.reason, 80) : null, budgetWait: state.budgetWait ? safeText(state.budgetWait, 300) : null, staleWhat: state.code === 'DRAFT_STALE' ? list(state.what, 120, 8) : [] };
   if (!draft) return view;
@@ -117,7 +122,7 @@ function planView(store, record, request, draft) {
   const providers = (d.executor?.kind === 'cli-chain' ? d.executor.providers : [d.executor]).filter(Boolean)
     .map((provider) => safeText([provider.kind, provider.model].filter(Boolean).join(' '), 80));
   return { ...view, version: draft.version, planOnly: Boolean(draft.plan_only), authorityDigest: draft.authority_digest, fingerprint: draft.authority_digest.slice(0, 12),
-    campaignId: safeText(campaignId, 64), summary: safeText(draft.summary, 2000), plan: safeText(draft.plan, 8000), outcome: safeText(envelope.outcome, 300),
+    campaignId: safeText(campaignId, 64), summary: summary.text, plan: planText.text, textCheck, outcome: safeText(envelope.outcome, 300),
     acceptance: list(envelope.acceptance), writes: list(envelope.writes, 200, 64), denyWrites: list(envelope.denyWrites, 200, 64),
     deliverables: list(envelope.deliverables, 20, 4), providers, limits: d.limits ? Object.fromEntries(Object.entries(d.limits).filter(([, value]) => Number.isFinite(value))) : null,
     release: 'review-only', steps: (Array.isArray(draft.steps) ? draft.steps : []).slice(0, 32).map((step) => typeof step === 'string' ? { title: safeText(step), check: null }
@@ -129,7 +134,7 @@ function planView(store, record, request, draft) {
       taskId: safeText(item.taskId, 64), ownerTaskId: safeText(item.ownerTaskId, 64) })),
     notes: list(draft.notes, 300, 16),
     // Edit plan is offered on a ready draft only while no approval of it is recorded (intake.mjs reviseDraft refuses it then).
-    ...planOutline(store, request, draft, startable && !approvedDeclarations(store, campaignId).length && !localApprovals(store, campaignId).length) };
+    ...planOutline(store, request, draft, startable && !approvedDeclarations(store, campaignId).length && !localApprovals(store, campaignId).length, goal.text) };
 }
 
 const ESTIMATE = (value) => value ? { amount: value.amount, unit: value.unit } : null;
@@ -140,10 +145,10 @@ const changeValue = (field, value) => value === null || value === undefined ? nu
  * with how each is checked, included and later, the estimate (null: "No estimate"), and what changed from the version
  * before. `editable` is the server's: a ready draft nobody approved yet.
  */
-function planOutline(store, request, draft, editable) {
+function planOutline(store, request, draft, editable, goal) {
   const outline = draftOutline(draft);
   const previous = draft.version > 1 ? store.get('SELECT * FROM work_drafts WHERE request_id = ? AND version = ?', request.request_id, draft.version - 1) : null;
-  return { goal: safeText(request.text ?? '', 2000), horizon: outline.horizon, priority: outline.priority, estimate: ESTIMATE(outline.estimate),
+  return { goal, horizon: outline.horizon, priority: outline.priority, estimate: ESTIMATE(outline.estimate),
     criteria: draftCriteria(draft).slice(0, 16).map((item) => ({ text: safeText(item.text, 300), check: item.check === null ? null : safeText(item.check, 300) })),
     included: list(outline.included, 300, 16), later: list(outline.later, 300, 16), editable, editedFrom: draft.edited_from ?? null,
     previousVersion: previous ? previous.version : null, versions: planVersions(store, request),
@@ -172,12 +177,12 @@ const STEP_WORDS = Object.freeze({ pending: 'Not finished yet', implemented: 'Be
   done: 'Passed the check' });
 
 /** One local result as the page shows it, with the owner's next action on it: Apply, Undo apply or none. */
-function localResult(candidate, attempt, title) {
+function localResult(candidate, attempt, title, textChecks) {
   const sha7 = candidate.sha.slice(0, 7), outcome = attempt?.outcome ?? null;
   const files = (attempt?.files ?? []).slice(0, 32).map((file) => safeText(typeof file === 'string' ? file : file?.path ?? '', 300));
   const row = { campaignId: candidate.campaignId, taskId: candidate.taskId, seq: candidate.seq, title, deliverable: candidate.deliverable, sha7,
     recordedAt: candidate.recordedAt, applyId: attempt?.applyId ?? null, outcome, files, action: null };
-  if (candidate.deliverable !== 'commit') return { ...row, state: 'Report to read', text: safeText(candidate.report ?? '', 4000) };
+  if (candidate.deliverable !== 'commit') return { ...row, state: 'Report to read', text: textChecks?.read(candidate.report, 4000).text ?? safeText(candidate.report, 4000) };
   if (outcome === 'applied') return { ...row, state: 'Applied to your folder', text: `Your folder now holds the result checked at ${sha7}. Undo apply puts back what was there before.`, action: 'undo' };
   if (outcome === 'stopped') return { ...row, state: 'Stopped midway', text: 'Files changed while AIWorks wrote your folder, so it stopped and kept its backup. Check the files below before you press anything.' };
   if (outcome === 'unknown') return { ...row, state: 'Not known yet', text: 'AIWorks has not settled what happened to your folder yet. It reads the folder again before anything else is written.' };
@@ -190,7 +195,7 @@ function localResult(candidate, attempt, title) {
  * The local work of a project without GitHub: each registered plan, newest first, with its steps and checked results.
  * Read from the store only; a store that never ran local work has none. Never a pull request, issue or merge field.
  */
-function localWork(store, record) {
+function localWork(store, record, textChecks) {
   let rulesId = null;
   try { rulesId = store.get('SELECT id FROM project_overlays WHERE project_id = ?', record.id)?.id ?? null; } catch { rulesId = null; }
   if (!rulesId) return [];
@@ -202,7 +207,7 @@ function localWork(store, record) {
         const latest = found.filter((row) => row.taskId === taskId).at(-1), task = store.task(c.id, taskId);
         // Its criteria with their evidence and Request changes (OWNER_UI_V2 WP4), about this candidate's head only; Apply is its acceptance.
         const review = task ? resultReview(store, c, task, c.declaration.tasks.find((item) => item.id === taskId)) : null;
-        return { ...localResult(latest, attempts.filter((row) => row.taskId === taskId && row.seq === latest.seq).at(-1), titles.get(taskId) ?? safeText(taskId, 64)),
+        return { ...localResult(latest, attempts.filter((row) => row.taskId === taskId && row.seq === latest.seq).at(-1), titles.get(taskId) ?? safeText(taskId, 64), textChecks),
           taskVersion: task?.version ?? null, review: review && (review.verifiedSha === latest.sha || review.state === 'changes-requested') ? review : null };
       });
       return { id: c.id, outcome: safeText(c.declaration.envelope?.outcome ?? c.id, 300), control: c.control,
@@ -218,7 +223,7 @@ function localWork(store, record) {
  * project without GitHub by its id once its rules are confirmed), each of their requests with its newest draft, newest
  * first, and the local work of each project without GitHub. A store without intake tables, or none at all, shows none.
  */
-export function workView(dataDir) {
+export function workView(dataDir, { textChecks } = {}) {
   const enabled = planAndDoEnabled(dataDir), empty = { planAndDo: enabled, projects: [], plans: [], local: {} };
   const path = join(dataDir, 'supervisor.db');
   if (!existsSync(path)) return empty;
@@ -228,9 +233,9 @@ export function workView(dataDir) {
     const governanceRoot = configuredGovernanceRoot(dataDir);
     const records = readProjects(store).filter((record) => !isLocal(record) || record.disconnected_at == null);
     const plans = records.flatMap((record) => store.all('SELECT * FROM work_requests WHERE project_id = ? ORDER BY id DESC LIMIT 20', record.id)
-      .map((request) => planView(store, record, request, latestDraft(store, request.request_id))));
+      .map((request) => planView(store, record, request, latestDraft(store, request.request_id), textChecks)));
     const ready = enabled ? records.filter((record) => startable(record) || localStartable(store, record, governanceRoot)).map(routeOf) : [];
-    const local = Object.fromEntries(records.filter(isLocal).map((record) => [record.id, localWork(store, record)]));
+    const local = Object.fromEntries(records.filter(isLocal).map((record) => [record.id, localWork(store, record, textChecks)]));
     return { planAndDo: enabled, projects: ready, plans, local };
   } catch { return empty; } finally { store?.close(); }
 }
