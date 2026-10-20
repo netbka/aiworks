@@ -103,7 +103,7 @@ test('a rules request from a process AIWorks started, or one the caller check ca
   const refused = await fromAiworks('/api/projects/rules/confirm', body);
   assert.equal(refused.status, 403);
   assert.equal((await refused.json()).code, 'APPROVAL_FROM_AIWORKS');
-  // Without a process lookup (as main.mjs starts it today) the check cannot tell, so it fails closed.
+  // Without a process lookup the check cannot tell, so it fails closed.
   const unchecked = await (await serve({}))('/api/projects/rules/confirm', body);
   assert.equal(unchecked.status, 403);
   assert.equal((await unchecked.json()).code, 'APPROVAL_UNCHECKED');
