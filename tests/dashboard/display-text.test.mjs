@@ -28,6 +28,11 @@ if (process.argv.includes('--probe')) {
     for (let i = 0; i < 200; i++) addComment(store, {
       number: 1, idempotencyKey: `synthetic-${i}`, body: medium, authorKind: 'owner', now: 1,
     });
+    createItem(store, { kind: 'note', title: 'Synthetic repeated short reports', body: '', authorKind: 'owner', now: 1 });
+    const shorter = 'a:?a=a:#'.repeat(128);
+    for (let i = 0; i < 200; i++) addComment(store, {
+      number: 2, idempotencyKey: `synthetic-${i}`, body: shorter, authorKind: 'owner', now: 1,
+    });
     store.close();
     server = createDashboardServer({ dataDir: dir, roadmap: { snapshot: () => ({ entries: [] }) } });
     server.listen(0, '127.0.0.1'); await once(server, 'listening');
@@ -37,6 +42,9 @@ if (process.argv.includes('--probe')) {
     assert.notEqual(shown.body, blocked);
     assert.equal(shown.comments.length, 200);
     assert(shown.comments.every(comment => comment.body !== medium));
+    const shortShown = await (await fetch(`${base}/api/v2/worklist/2`)).json();
+    assert.equal(shortShown.comments.length, 200);
+    assert(shortShown.comments.every(comment => comment.body !== shorter));
     assert.equal((await fetch(`${base}/api/session`)).status, 200);
     assert.ok(performance.now() - start < 2000, 'large untrusted text blocked owner requests');
     await new Promise(resolve => server.close(resolve));

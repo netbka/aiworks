@@ -15,7 +15,7 @@ export class DisplayTextChecks {
 
   read(value, max) {
     const text = String(value ?? '').slice(0, max);
-    if (text.length <= 1024) return { state: 'ready', text: safeText(text, max) };
+    if (text.length <= 256) return { state: 'ready', text: safeText(text, max) };
     if (this.#closed || text.length > 200000) return { state: 'unavailable', text: UNAVAILABLE };
     const key = createHash('sha256').update(text, 'utf16le').digest('hex');
     let entry = this.#entries.get(key);
