@@ -61,17 +61,19 @@ const decodeMetadata = (text, literalPercent = false) => {
     return null;
   }
 };
-const credentialParameter = (name) => {
+const credentialParameter = (name, spend) => {
+  if (!spend(WORK_PER_NAME + name.length)) return true;
   while (name.includes("%")) {
+    if (!spend(name.length)) return true;
     name = decodeMetadata(name);
     if (name === null) return true;
   }
   return isSecretLikeConfigKey(name);
 };
-const credentialText = (text) =>
+const credentialText = (text, spend) =>
   /(?:^|[\s:"'=])(?:Bearer|Basic)\s+\S+/i.test(text) ||
   [...text.matchAll(/(?:^|[;?&#\s,{])["']?([A-Za-z0-9_.%+-]+)["']?\s*[:=]/g)]
-    .some((match) => credentialParameter(match[1]));
+    .some((match) => credentialParameter(match[1], spend));
 // The connection store's judgement of one metadata key. Provider config declarations share it, so a declared
 // field can never be a name the store refuses as a key (historical regression).
 export const refusesMetadataKey = (key) => isSecretLikeConfigKey(key) || containsCredentialMaterial(key) ||
@@ -156,21 +158,89 @@ const urlCandidates = (text) => {
   return candidates;
 };
 export const isSecretFieldName =(name) => refusesMetadataKey(name) || namesFieldCredential(name);
+// The generic pass below removes one wrapper per pass and re-reads the whole rest each time, so a long chain of
+// wrappers (name:name:…, name=name=…, //host//host…) cost the square of its length and stalled the owner loop.
+// peelWrappers walks such a chain once. It skips a wrapper only where the generic pass would find nothing in it but
+// the scheme or form-key name or host checked here and would go on with exactly the raw rest: printable text with no
+// query or fragment for schemes, no URL, plus or encoded byte for form keys, plain //host/ paths without dot segments.
+// Anything else ends the walk, and the rest takes the generic pass. Returns where that pass resumes, or -1 to refuse.
+const SPECIAL_SCHEME = /^(?:https?|wss?|ftp|file)$/i;
+const peelWrappers = (text, spend) => {
+  const opaque = !/[^\x20-\x7e]|[?#]| $/.test(text);
+  const form = !/\/\/[^\s"'<>]|\+|%[0-9a-f]{2}/i.test(text);
+  const authority = /^[A-Za-z0-9.:/=@_~!$*()-]*$/.test(text) && !/(?:^|\/)\.\.?(?:\/|$)/.test(text);
+  const lastAmpersand = text.lastIndexOf("&");
+  const scheme = /( *)([A-Za-z][A-Za-z0-9.-]*):(?!\/)/y;
+  const schemeLike = /\s*[a-z][a-z0-9+.-]*:/iy;
+  const jsonStart = /[ \t\n\r]*[-{["0-9tfn]/y;
+  // A malformed escape in the rest refuses the first skipped wrapper; later wrappers share that rest.
+  let escapesChecked = !text.includes("%"), percentsChecked = escapesChecked;
+  let at = 0, question = text.indexOf("?");
+  for (;;) {
+    scheme.lastIndex = at;
+    const layer = opaque && scheme.exec(text);
+    if (layer && !SPECIAL_SCHEME.test(layer[2])) {
+      if (!escapesChecked && decodeMetadata(text.slice(at)) === null) return -1;
+      escapesChecked = true;
+      if (credentialParameter(layer[2], spend)) return -1;
+      at = scheme.lastIndex;
+      continue;
+    }
+    if (authority && text.startsWith("//", at)) {
+      const slash = text.indexOf("/", at + 2);
+      if (slash <= at + 2) return at;
+      if (!spend(WORK_PER_NAME + slash - at)) return -1;
+      try {
+        const host = new URL(`https://${text.slice(at + 2, slash)}/`);
+        if (host.username || host.password) return -1;
+      } catch {
+        return -1;
+      }
+      at = slash;
+      continue;
+    }
+    schemeLike.lastIndex = at;
+    if (!form || schemeLike.test(text)) return at;
+    if (question !== -1 && question < at) question = text.indexOf("?", at);
+    // URLSearchParams drops one leading "?" of its input.
+    const start = question === -1 ? at : question + (text[question + 1] === "?" ? 2 : 1);
+    const equals = text.indexOf("=", start);
+    if (equals === -1 || start <= lastAmpersand) return at;
+    jsonStart.lastIndex = at;
+    if (jsonStart.test(text)) try { JSON.parse(text.slice(at)); return at; } catch { /* not JSON, so the form pass applies */ }
+    if (!percentsChecked && decodeMetadata(text.slice(at), true) === null) return -1;
+    percentsChecked = true;
+    if (credentialText(text.slice(at, equals + 1), spend) || credentialParameter(text.slice(start, equals), spend)) return -1;
+    at = equals + 1;
+  }
+};
+// Chains the walk above stops at (a:#a:#…, a:?a=…, %2525…) still cost one pass per wrapper, so total work is bounded
+// in proportion to the input: text that needs more is refused, never passed unread.
+const WORK_PER_CHARACTER = 64;
+const WORK_BASE = 65536;
+const WORK_PER_NAME = 16;
 export const containsCredentialMaterial = (value) => {
   // Iterative traversal covers nested JSON, redirects and encoding layers without
   // a recursion-depth bypass. Parse URL structure before decoding its values.
   const pending = [value];
   const seen = new Set();
+  let budget = WORK_PER_CHARACTER * String(value).length + WORK_BASE;
+  const spend = (work) => (budget -= work) >= 0;
   const inspectParameters = (parameters) => {
     for (const [name, parameter] of parameters) {
-      if (credentialParameter(name)) return true;
+      if (credentialParameter(name, spend)) return true;
       pending.push(parameter);
     }
     return false;
   };
   while (pending.length) {
-    const current = pending.pop();
-    if (seen.has(current)) continue;
+    const popped = pending.pop();
+    if (seen.has(popped)) continue;
+    seen.add(popped);
+    if (!spend(popped.length)) return true;
+    const at = peelWrappers(popped, spend);
+    if (at < 0) return true;
+    const current = popped.slice(at);
     seen.add(current);
     try {
       JSON.parse(current);
@@ -178,14 +248,15 @@ export const containsCredentialMaterial = (value) => {
       // shadowed by duplicate properties (which JSON.parse alone would discard).
       for (const token of current.matchAll(/"(?:[^"\\]|\\.)*"/g)) {
         const decoded = JSON.parse(token[0]);
-        if (/^\s*:/.test(current.slice(token.index + token[0].length)) && credentialParameter(decoded)) return true;
+        if (/^\s*:/.test(current.slice(token.index + token[0].length)) && credentialParameter(decoded, spend)) return true;
         pending.push(decoded);
       }
       continue;
     } catch { /* Non-JSON retains the text and URL checks below. */ }
     // Form-style spaces can surface after any number of encoding/JSON layers.
-    if (credentialText(current) || credentialText(current.replaceAll("+", " "))) return true;
-    const candidates = urlCandidates(current);
+    if (credentialText(current, spend) || credentialText(current.replaceAll("+", " "), spend)) return true;
+    const found = urlCandidates(current);
+    const candidates = [...found];
     // WHATWG URL parsing also recognizes https:host and backslashes.
     if (/^[a-z][a-z0-9+.-]*:/i.test(current.trim())) candidates.push(current.trim());
     let remainder = current;
@@ -212,6 +283,8 @@ export const containsCredentialMaterial = (value) => {
     const decoded = decodeMetadata(remainder, true);
     if (decoded === null) return true;
     if (decoded !== remainder) pending.push(decoded);
+    // Every skipped scheme wrapper would have queued itself before this decoded remainder of its URLs.
+    if (decoded !== remainder && at && found.length) pending.push(popped.slice(0, at) + decoded);
   }
   return false;
 };
