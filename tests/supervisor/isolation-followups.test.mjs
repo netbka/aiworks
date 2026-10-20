@@ -35,7 +35,8 @@ test('the reply gate catches common credential formats but not placeholders or p
 test('workers never inherit the supervisor\'s own Claude Code session variables', () => {
   const env = workerEnv({ PATH: 'p', CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDECODE: '1', CLAUDE_CODE_SHELL: 'x', HOME: 'h' },
     { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', CLAUDE_CODE_SUBAGENT_MODEL: 'haiku' });
-  assert.deepEqual(env, { PATH: 'p', HOME: 'h', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', CLAUDE_CODE_SUBAGENT_MODEL: 'haiku' });
+  assert.deepEqual(env, { PATH: 'p', HOME: 'h', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', CLAUDE_CODE_SUBAGENT_MODEL: 'haiku',
+    GIT_LFS_SKIP_SMUDGE: '1', GIT_LFS_SKIP_PUSH: '1' });
 });
 
 test('an inherited session variable does not reach a real contained worker process', { skip: skipWithoutSqlite }, async (t) => {

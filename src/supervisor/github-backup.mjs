@@ -4,6 +4,7 @@
 // a `+` refspec, a mirror, tags or unrecorded commits; bounded to 60 seconds and to one attempt every 10 minutes. Nothing
 // waits on it: a refused or unreachable remote is journaled and shown in status, and the next local merge goes ahead.
 import { exec } from './adapters/git.mjs';
+import { assertActionsDisabled } from './adapters/github.mjs';
 import { redact } from './owner-intervention.mjs';
 import { mainLedger, trustedTip, trustsLocalMain } from './self-hosting.mjs';
 
@@ -20,10 +21,12 @@ const KINDS = ['backup-requested', 'backup-pushed', 'backup-refused', 'backup-fa
  * remote rejected the update (it is not a fast-forward there, or the remote's rules decline it), or
  * { kind: 'backup-failed', reason } when the remote could not be reached in time or the push could not run.
  */
-export function pushTrustedTip({ git = ['git'], repoPath, remote, branch, tip }) {
+export function pushTrustedTip({ git = ['git'], gh = ['gh'], repository, repoPath, remote, branch, tip }) {
   if (!SHA.test(tip ?? '') || !REF_NAME.test(remote ?? '') || !REF_NAME.test(branch ?? '')) {
     return { kind: 'backup-failed', reason: 'a backup needs a full commit SHA and plain remote and branch names' };
   }
+  try { assertActionsDisabled({ gh, repository }); }
+  catch (error) { return { kind: 'backup-refused', reason: redact(error.message, 300) }; }
   const out = exec(git, ['-c', `remote.${remote}.mirror=false`, 'push', '--porcelain', '--no-follow-tags', remote, `${tip}:refs/heads/${branch}`],
     { cwd: repoPath, timeoutMs: BACKUP_TIMEOUT_MS });
   if (out.ok) return { kind: 'backup-pushed' };
@@ -64,7 +67,7 @@ function due(history, tip, now) {
  * campaign's lease. Entries go to the campaign of the newest `gate-merge` ledger row. Returns the result kind, or null
  * when nothing was due. Never throws for a remote's answer; its result never decides a merge.
  */
-export function backupStep({ store, settings, git = ['git'], repoPath, repository, now, write, log = () => {} }) {
+export function backupStep({ store, settings, git = ['git'], gh = ['gh'], repoPath, repository, now, write, log = () => {} }) {
   if (!settings?.backup?.enabled || !trustsLocalMain(settings, repository)) return null;
   const merge = mainLedger(store, repository).reverse().find((row) => row.kind === 'gate-merge');
   if (!merge) return null;
@@ -75,7 +78,7 @@ export function backupStep({ store, settings, git = ['git'], repoPath, repositor
   const detail = { repository: String(repository).toLowerCase(), tip: tip.tip, remote, branch };
   // The request is committed before the push, so a crash or a restart still waits the full interval.
   if (!write(merge.campaign_id, () => store.journal(merge.campaign_id, 'backup-requested', detail, now))) return null;
-  const result = pushTrustedTip({ git, repoPath, remote, branch, tip: tip.tip });
+  const result = pushTrustedTip({ git, gh, repository, repoPath, remote, branch, tip: tip.tip });
   write(merge.campaign_id, () => store.journal(merge.campaign_id, result.kind, { ...detail, ...(result.reason ? { reason: result.reason } : {}) }, now));
   log(result.kind === 'backup-pushed' ? `backed up ${tip.tip} to ${remote} ${branch}` : `backup of ${tip.tip} to ${remote} ${branch}: ${result.kind}: ${result.reason}`);
   return result.kind;

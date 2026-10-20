@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import Ajv from 'ajv';
 import { ALWAYS_DENIED, AUTH, CREDIT_LIMIT, ISOLATION_ARGS, ISOLATION_ENV, QUOTA, VERIFIER_DENIED } from './adapters/claude.mjs';
 import { MARK_SECTIONS_RULE } from './adapters/executors.mjs';
+import { DEVELOPMENT_RESOURCE_RULE } from './development-policy.mjs';
 import { exec as gitExec } from './adapters/git.mjs';
 import { readJsonIfExists, readTextIfExists, stopOwnedRun, writeAtomic } from './proc.mjs';
 import { failRequest, IntakeError, nextWorkRequest, pinRequest, recordDraft } from './intake.mjs';
@@ -270,6 +271,7 @@ export function buildIntakePrompt({ request, project: found, pinned, evidence })
     : request.route === 'pr' ? [`<pull-request number="${request.reference}" head="${pinned.headSha}" title="${attr(evidence.title)}">`, untrusted(evidence.body, 20000), '</pull-request>']
       : request.route === 'plan-file' ? [`<plan-file path="${pinned.path}" blob="${pinned.blob}">`, untrusted(evidence.file, 40000), '</plan-file>'] : [];
   return [
+    DEVELOPMENT_RESOURCE_RULE,
     'You are the AIWORKS COORDINATOR dispatched by the AIWorks delivery supervisor (AIWorks), in intake mode.',
     `You are one fresh headless session. Your working directory is a read-only checkout of the project "${attr(found.name)}" (${where}) at ${pinned.base}.`,
     '',
@@ -306,6 +308,7 @@ export function buildPrompt({ messages, repositories, revision, listed = null })
   const scope = promptScope(messages, repositories);
   const others = scope.filter((repository) => repository !== listed);
   return [
+    DEVELOPMENT_RESOURCE_RULE,
     'You are the AIWORKS COORDINATOR dispatched by the AIWorks delivery supervisor (AIWorks).',
     `You are one fresh headless session. Your working directory is a read-only checkout of AIWorks${revision ? ` at ${revision}` : ''}.`,
     '',

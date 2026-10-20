@@ -40,6 +40,21 @@ export function rateLimitReset({ status, headers, body }, stderr = '', now = Dat
 
 /** One REST call; returns the parsed JSON body or throws (RateLimitError for a rate-limit refusal). */
 export function rest(gh, what, args, { timeoutMs } = {}) {
+  const { method, route } = requestScope(args);
+  if (!['GET', 'HEAD'].includes(method)) {
+    const repository = /^repos\/([^/]+\/[^/]+)\//.exec(route ?? '')?.[1];
+    // Only existing delivery operations may write. No Actions, Codespaces,
+    // packages, billing, plan changes, repository settings or resource provisioning.
+    const deliveryWrite = method === 'POST' && /^repos\/[^/]+\/[^/]+\/(?:pulls|issues\/[1-9]\d*\/comments)$/.test(route ?? '') ||
+      method === 'PATCH' && /^repos\/[^/]+\/[^/]+\/issues\/[1-9]\d*$/.test(route ?? '') ||
+      method === 'PUT' && /^repos\/[^/]+\/[^/]+\/pulls\/[1-9]\d*\/merge$/.test(route ?? '');
+    if (!repository || !deliveryWrite) {
+      throw developmentRefusal('only pull requests, issue comments, issue updates and authorized merges may write to GitHub');
+    }
+    // Comments, issue updates and merges can trigger workflows too. Check every write,
+    // without a cache; a read failure must not become permission to publish.
+    assertActionsDisabled({ gh, repository });
+  }
   const out = exec(gh, ['api', '--include', ...args], { timeoutMs });
   const response = parseResponse(out.stdout);
   if (!out.ok) {
@@ -50,6 +65,42 @@ export function rest(gh, what, args, { timeoutMs } = {}) {
     throw Object.assign(new Error(message), { status: Number.isInteger(status) ? status : null });
   }
   return JSON.parse(response.body || 'null');
+}
+
+const developmentRefusal = (message) => Object.assign(new Error(`LOCAL_DEVELOPMENT_ONLY: ${message}`), { code: 'LOCAL_DEVELOPMENT_ONLY' });
+
+// Accept only the CLI syntax used by our delivery adapter. Unknown flags,
+// alternate hosts, duplicate methods/endpoints and inline flag spellings must
+// not let gh interpret a request differently from the policy check.
+function requestScope(args) {
+  let method, route, fields = false;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (['--method', '-X', '-f', '-F', '--field', '--raw-field'].includes(arg)) {
+      const value = args[++index];
+      if (typeof value !== 'string' || !value) throw developmentRefusal('invalid GitHub request argument');
+      if (arg === '--method' || arg === '-X') {
+        if (method || !/^(GET|HEAD|POST|PATCH|PUT|DELETE)$/i.test(value)) throw developmentRefusal('invalid GitHub request method');
+        method = value.toUpperCase();
+      } else fields = true;
+    } else {
+      if (route || typeof arg !== 'string' || !/^repos\/[\w.-]+\/[\w.-]+\/[^\s#]+$/.test(arg)) {
+        throw developmentRefusal('only explicit repository REST requests are supported');
+      }
+      route = arg;
+    }
+  }
+  if (!route) throw developmentRefusal('a GitHub request needs one repository endpoint');
+  return { method: method ?? (fields ? 'POST' : 'GET'), route };
+}
+
+/** No write or push may trigger repository automation. This only reads policy, never changes it. */
+export function assertActionsDisabled({ gh, repository }) {
+  if (!Array.isArray(gh) || !gh.length || !/^[\w.-]+\/[\w.-]+$/.test(repository ?? '')) {
+    throw developmentRefusal('a GitHub destination and CLI are required to check Actions policy');
+  }
+  const policy = rest(gh, 'GET Actions permissions', ['--method', 'GET', `repos/${repository}/actions/permissions`], { timeoutMs: 30_000 });
+  if (policy?.enabled !== false) throw developmentRefusal('GitHub Actions must be disabled for the destination repository before publication');
 }
 
 export function findOpenPullRequest({ gh, repository, branch }) {
