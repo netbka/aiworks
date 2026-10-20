@@ -418,6 +418,8 @@ html{scrollbar-gutter:stable;scroll-padding-top:88px}
 .review-part{margin-top:18px}
 .review-part h3{font-size:13px;margin:0 0 6px;color:#24324a}
 .review-part ul,.review-part ol,.plan-list{margin:0;padding-left:20px;font-size:13px;line-height:1.5;overflow-wrap:anywhere}
+.plan-versions,.idea-steps{margin:8px 0 0;padding-left:20px;font-size:13px;line-height:1.5;overflow-wrap:anywhere}
+.plan-versions li,.idea-steps li{margin-top:6px}
 .review .plan-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;max-width:100%}
 .review>.panel-body>.button{margin-top:20px}
 /* Edit plan (WP3): actions wrap at 320px; each criterion and its check stack, and Remove keeps its 44px target. */

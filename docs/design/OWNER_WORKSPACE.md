@@ -63,10 +63,10 @@ The same word always means the same thing:
 | Pull request open · waiting for your review | GitHub reports the step's pull request open | "done", "delivered" |
 | Merged | GitHub reports it merged | "released", "deployed", "live" |
 | Closed without merging | GitHub reports it closed and not merged | |
-| Report posted · for you to read | the result is an issue comment | "nothing to do" |
+| Report posted · for you to read | the result is an issue comment, or a report the supervisor recorded in the local work list | "nothing to do" |
 | Not known yet | GitHub state not loaded, unreadable or not found | "nothing", "0" |
 | Released | only with recorded release evidence (#13); not built | |
-| Accepted | only with recorded acceptance evidence (#4 remaining item); not built | |
+| Accepted | only with recorded acceptance evidence: the owner's Accept result of exactly the checked version, or Apply of a local result (owner UI v2 WP4) | "merged" |
 
 Today's code already keeps merged, waiting for review, closed, report posted and unknown apart (observed: `src/dashboard/owner.mjs:59-75`, `src/dashboard/owner.mjs:50-52`). Today's checker sentence says "Checker accepted the head" (observed: `src/dashboard/owner.mjs:95`). The design renames it to "Passed the check" so "accepted" is free for the acceptance state.
 
