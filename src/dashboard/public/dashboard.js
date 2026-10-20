@@ -499,7 +499,8 @@ function messageReceipt(m, coordinator, aiworks) {
   const from = { 'owner (Start work: Plan only)': 'Your plan request from Start work', 'owner (dashboard)': 'Your message from this dashboard' }[m.source] ?? `From ${m.source}`;
   const steps = [receiptStep(true, 'Sent', `AIWorks received your request at ${clock(m.receivedAt)}`)];
   if (m.state === 'received') {
-    steps.push(m.failure ? receiptStep(false, 'Retrying', `the last read ended without an answer (${outcomeLabels[m.failure] ?? m.failure}); next attempt ${dateTime(m.retryAt)}`, 'failed')
+    steps.push(m.failure === 'project-budget' ? receiptStep(false, 'Waiting for budget', 'the project budget cannot cover reading it. Raise or remove the budget in the project’s settings, or wait for next month if the monthly budget ran out; AIWorks reads it by itself when it fits', 'failed')
+      : m.failure ? receiptStep(false, 'Retrying', `the last read ended without an answer (${outcomeLabels[m.failure] ?? m.failure}); next attempt ${dateTime(m.retryAt)}`, 'failed')
       : !coordinator.configured ? receiptStep(false, 'Not read', NOT_READ.receipt, 'failed')
         : coordinator.blocked ? receiptStep(false, 'Not read yet', 'AIWorks cannot read requests right now; why is under Needs me', 'failed')
         : coordinator.maxRunsPerDay !== null && coordinator.runsToday >= coordinator.maxRunsPerDay ? receiptStep(false, 'Waiting', `AIWorks has read today's ${coordinator.maxRunsPerDay} requests; it reads this one when the 24 hours free up`)
@@ -632,6 +633,7 @@ function startReceipt(address) {
   const asked = startDraft(address).sentPlan;
   if (asked) {
     const plan = state.work?.plans?.find((item) => item.id === asked);
+    if (plan?.budgetWait) return el('p', { class: 'notice warning' }, `Sent · Waiting for budget. ${BUDGET_WAIT_WORDS}`);
     if (!plan || plan.code === 'DRAFTING') return el('p', { class: 'subtext' }, 'Sent · AIWorks is drafting a plan. Nothing changes yet. The plan appears here when it is ready.');
     if (plan.code === 'DRAFT_FAILED') return el('p', { class: 'subtext' }, 'AIWorks couldn’t draft a plan for this request. Ask again, or change the goal.');
     return el('p', { class: 'subtext' }, 'Your plan is ready. ', routeLink('Review the plan', { screen: 'review', project: plan.project, plan: plan.id }), '.');
@@ -766,6 +768,7 @@ async function askForWork(project, address) {
  * the checks, the steps, overlaps, what may change, the AI workers, limits and "Release: Review only". Approve and start
  * sends the version and digest that were shown; the server registers exactly that plan, or refuses and starts nothing.
  */
+const BUDGET_WAIT_WORDS = 'The project budget cannot cover planning it, so AIWorks has not started. Raise or remove the budget in this project’s settings, or wait for next month if the monthly budget ran out; planning starts by itself when it fits.';
 const PLAN_WORDS = { DRAFTING: 'Drafting a plan', DRAFT_READY: 'Plan ready', PLAN_ONLY_READY: 'Plan ready (plan only)', CONFLICT: 'Overlaps other work',
   DRAFT_STALE: 'Plan out of date', DRAFT_FAILED: 'Couldn’t draft a plan', APPROVED: 'Approved' };
 const projectPlans = (project) => (state.work?.plans ?? []).filter((plan) => sameProject(plan.project, project));
@@ -787,6 +790,7 @@ function reviewScreen(project, id) {
   if (!plan) return [empty('This plan is not on this computer', 'It may belong to another project, or the address is mistyped.'), back];
   if (!plan.version) {
     return [plan.code === 'DRAFT_FAILED' ? empty('AIWorks couldn’t draft a plan', 'Ask again from Start work, or change the goal.')
+      : plan.budgetWait ? empty('Waiting for budget', BUDGET_WAIT_WORDS)
       : empty('AIWorks is drafting a plan', 'Nothing changes yet. This page shows the plan when it is ready.'), back];
   }
   const items = (values) => el('ul', {}, ...values.map((value) => el('li', {}, value)));
@@ -2831,7 +2835,7 @@ function settingsParts(project) {
     spend.exhausted ? el('p', { class: 'notice warning' }, `The ${spend.exhausted === 'month' ? 'monthly budget' : 'project budget'} cannot cover another step, so no new step starts here${spend.exhausted === 'month' ? ' until next month' : ''}. Running steps finish. Raise or remove the budget to continue.`) : null,
     spendLine('All time', spend.total, spend.unknownRunCostUsd),
     spendLine(`This month (since ${new Date(spend.monthStart).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' })}, UTC)`, spend.month, spend.unknownRunCostUsd),
-    el('p', { class: 'subtext' }, 'Counts the AI worker runs of this project’s work. Planning a goal is not counted here.'),
+    el('p', { class: 'subtext' }, `Counts the AI worker runs of this project’s work, and planning its goals${spend.total?.planning ? ` (planning so far: ${usd(spend.total.planning.reportedUsd)} reported, ${plural(spend.total.planning.unknownCostRuns, 'run')} with no reported cost, ${plural(spend.total.planning.openRuns, 'running read')})` : ''}. Planning that names no single project is not counted against any project${spend.unallocated && (spend.unallocated.unknownCostRuns || spend.unallocated.openRuns || spend.unallocated.reportedUsd) ? `: so far ${usd(spend.unallocated.reportedUsd)} reported, ${plural(spend.unallocated.unknownCostRuns, 'run')} with no reported cost and ${plural(spend.unallocated.openRuns, 'running read')}` : ''}.`),
     draft.base !== v.version ? el('div', { class: 'notice warning', 'data-focus-scope': `settings/${project}/stale` },
       el('p', {}, `Version ${v.version} was saved after you started editing version ${draft.base}. Saving now is refused, so nothing is overwritten by accident.`),
       button('Keep my entries', () => { drafts.set(settingsAddress(project), 'settings', { ...draft, base: v.version }); rebuildSettings(); }, 'secondary small', settingsOff()),
