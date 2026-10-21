@@ -476,6 +476,8 @@ Each slice is one reviewable PR in `example-org/aiworks` unless marked. Tests ar
 
 **R12. Disposable rehearsal, then a canary** (runbook, no new code)
 
+- Built (first half): the disposable rehearsal is `scripts/supervisor/release-rehearsal.mjs` over `src/supervisor/release/rehearsal.mjs`, run in the suite by `tests/supervisor/release-rehearsal.test.mjs`, on a synthetic repository and site folder rather than on workstation ([runbook section 12](../SUPERVISOR.md#12-auto-release-built-not-enabled)). The canary still waits for the owner's grant.
+
 - Outcome: on workstation, a full release cycle on a disposable destination, then one granted canary.
 - Files: `docs/SUPERVISOR.md` (enablement and rollback: delete the grant or write `RELEASE-STOP`), `docs/STATUS.md`.
 - Tests: the full suite at the deployed SHA; then, on a disposable repository and a disposable local folder: release, forced check failure with rollback, controller killed mid-merge and mid-deploy with reconciliation. Status before and after per [AGENTS.md](../../AGENTS.md#review-and-runtime-maintenance).

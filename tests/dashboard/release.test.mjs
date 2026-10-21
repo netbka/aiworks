@@ -98,3 +98,51 @@ test('Stop all releases writes RELEASE-STOP through the CSRF-checked command pat
   assert.equal(existsSync(join(dataDir, 'STOP')), false);
   assert.equal(supervisorSnapshot(dataDir).settings.releaseStop.set, true);
 });
+
+test('Check the site now runs nothing for a program AIWorks started or while release is off, and unknown health is never healthy', async (t) => {
+  const { dataDir, store, d } = fixture(t);
+  const destination = { id: 'production', environment: 'production', kind: 'deploy', rollback: 'automatic', checkWindowMinutes: 5, changeClasses: ['docs'],
+    commands: ['deploy', 'observe', 'check', 'rollback'] };
+  const eligibility = JSON.stringify({ eligible: true, failed: [], inputs: { destination, grantSource: { ref: 'origin/main', path: 'release/aiworks-release.json' },
+    classification: { files: [{ path: 'docs/a.md', class: 'docs' }], classes: ['docs'] } } });
+  store.insert('releases', releaseRow(d, 'T1', { state: 'accepted', steps: JSON.stringify(['deploy', 'check']), eligibility, previous_digest: 'sha256:old', deployed_digest: 'sha256:new',
+    history: JSON.stringify([{ key: 'k1', step: 'deploy', outcome: 'done', endedAt: 3 }, { key: 'k2', step: 'check', outcome: 'done', endedAt: 4 }]) }));
+  store.insert('releases', releaseRow(d, 'T2', { state: 'unknown', steps: JSON.stringify(['deploy', 'check']), eligibility, step: 'deploy',
+    history: JSON.stringify([{ key: 'k1', step: 'deploy', outcome: null }]) }));
+  const lookupAs = (ancestors) => async () => ({ pid: 999_991, ancestors, jobs: [] });
+  const roadmap = { snapshot: () => ({ governance: { configured: true, code: null, reason: null }, entries: [] }) };
+  const servers = [];
+  t.after(async () => { for (const server of servers) await new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }); });
+  const serve = async (lookup) => {
+    const server = createDashboardServer({ dataDir, roadmap, callerCheck: { platform: 'win32', lookup } });
+    servers.push(server);
+    server.listen(0, '127.0.0.1'); await once(server, 'listening');
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const csrf = (await (await fetch(`${base}/api/session`)).json()).csrf;
+    return { base, check: (releaseId) => fetch(`${base}/api/v2/releases/check`, { method: 'POST',
+      headers: { Origin: base, 'Content-Type': 'application/json', 'X-Dashboard-CSRF': csrf }, body: JSON.stringify({ requestId: randomUUID(), releaseId }) }) };
+  };
+  const owner = await serve(lookupAs([999_990])), worker = await serve(lookupAs([process.pid]));
+  const id = releaseRow(d, 'T1', {}).id, row = () => store.get('SELECT state, health_check FROM releases WHERE id = ?', id);
+  const before = row();
+
+  const fromWorker = await worker.check(id);
+  assert.equal(fromWorker.status, 403);
+  assert.equal((await fromWorker.json()).code, 'APPROVAL_FROM_AIWORKS');
+  const off = await owner.check(id);
+  assert.equal(off.status, 409);
+  assert.match((await off.json()).error, /switched off/);
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ release: { enabled: true } }));
+  assert.equal((await owner.check(releaseRow(d, 'T2', {}).id)).status, 409, 'an unknown release is never checked from here');
+  // Nothing ran and nothing changed: no runner packet was written and the release rows are as they were.
+  assert.deepEqual(row(), before);
+  assert.equal(existsSync(join(dataDir, 'releases')), false);
+
+  const view = await (await fetch(`${owner.base}/api/v2/projects/${encodeURIComponent(d.target.repository)}/releases`)).json();
+  const byTask = Object.fromEntries(view.releases.map((r) => [r.taskId, r]));
+  assert.deepEqual([byTask.T1.line, byTask.T1.health.outcome, byTask.T1.restore.scope], ['live', 'passed', 'previous-version']);
+  assert.equal(byTask.T2.line, 'unknown');
+  assert.ok(!['passed', 'checking'].includes(byTask.T2.health.outcome), 'an unknown release never reads as healthy');
+  assert.equal(byTask.T2.checkNow.available, false);
+  assert.equal(view.publish.available, false);
+});

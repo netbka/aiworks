@@ -215,7 +215,7 @@ CREATE TRIGGER IF NOT EXISTS work_item_comments_no_delete BEFORE DELETE ON work_
 
 const JSON_COLUMNS = new Set(['declaration', 'blocker', 'failures', 'findings', 'result', 'verification',
   'blocked', 'packet', 'outcome', 'payload', 'detail', 'message_ids', 'probe', 'last_evidence', 'resolution', 'message',
-  'eligibility', 'steps', 'history', 'routing', 'ops', 'spec', 'pinned', 'questions', 'conflicts', 'notes', 'stale_what', 'signature', 'outline', 'settings', 'rules', 'alert', 'basis']);
+  'eligibility', 'steps', 'history', 'routing', 'ops', 'spec', 'pinned', 'questions', 'conflicts', 'notes', 'stale_what', 'signature', 'outline', 'settings', 'rules', 'alert', 'basis', 'health_check']);
 
 function decode(row) {
   if (!row) return null;
@@ -274,6 +274,10 @@ export class Store {
         if (!draftColumns.includes('outline')) this.db.exec('ALTER TABLE work_drafts ADD COLUMN outline TEXT');
         if (!draftColumns.includes('edit_request_id')) this.db.exec('ALTER TABLE work_drafts ADD COLUMN edit_request_id TEXT');
         if (!draftColumns.includes('edited_from')) this.db.exec('ALTER TABLE work_drafts ADD COLUMN edited_from INTEGER');
+        // The owner's latest Check the site now of a settled release (release/health.mjs) is additive: an older release
+        // reads health_check as null, "not checked by the owner", and the store version does not change.
+        const releaseColumns = this.db.prepare('PRAGMA table_info(releases)').all().map((column) => column.name);
+        if (!releaseColumns.includes('health_check')) this.db.exec('ALTER TABLE releases ADD COLUMN health_check TEXT');
       });
     } catch (error) {
       this.db.close();

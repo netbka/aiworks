@@ -149,7 +149,7 @@ const screenText = { home: ['Home', 'What changed, and what needs me?'], project
   worklist: ['Work list', 'What is on AIWorks’s own work list?'], 'worklist-item': ['Work item', 'What does this item say, and what happened to it?'],
   'worklist-import': ['Imported issues', 'Which imported GitHub issues should be closed there?'],
   'project-settings': ['Project settings', 'What must AIWorks never change here, and what may it spend?'],
-  knowledge: ['Knowledge', 'What does AIWorks know about this product?'], usage: ['Usage', 'What has AIWorks used, and what is not known?'] };
+  knowledge: ['Knowledge', 'What does AIWorks know about this product?'], releases: ['Releases', 'What reached users, and what can be undone?'], usage: ['Usage', 'What has AIWorks used, and what is not known?'] };
 const screenKey = (route) => route.screen === 'settings' ? route.section ?? 'settings' : route.screen === 'project' ? route.tab : route.screen;
 const tabLabels = { now: 'Overview', work: 'Work', results: 'Results', cost: 'Cost' };
 
@@ -2957,7 +2957,7 @@ function resultsScreen(project) {
   const results = state.owner?.results?.[String(project).toLowerCase()];
   if (!state.owner?.available) return unavailable();
   // The §7.1 empty copy, from the copy module through the owner view.
-  if (!results?.groups.length) return el('section', { class: 'panel' }, empty(state.owner.noResults.title, state.owner.noResults.text));
+  if (!results?.groups.length) return el('section', { class: 'panel' }, empty(state.owner.noResults.title, state.owner.noResults.text), el('div', { class: 'panel-body' }, releasesLink(project)));
   return el('section', { class: 'panel', 'aria-labelledby': 'results-title', 'data-focus-scope': `results/${project}` },
     el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'results-title' }, `${plural(results.total, 'result')}, grouped by state`)),
       results.primary?.route ? routeLink(results.primary.label, results.primary.route, 'button')
@@ -2966,7 +2966,7 @@ function resultsScreen(project) {
       el('h3', { id: `results-group-${group.key}`, class: 'section-title' }, `${group.title} (${group.count})`),
       el('ul', { class: 'needs-list' }, ...group.rows.map(resultRow)))),
     // Stop all releases is reachable from every project's Results (AUTO_RELEASE.md section 9).
-    releaseStopLine(state.supervisor.settings?.releaseStop));
+    releaseStopLine(state.supervisor.settings?.releaseStop), releasesLink(project));
 }
 
 /**
@@ -3566,6 +3566,122 @@ function refreshKnowledge(content, project) {
   for (const node of screen.querySelectorAll('button[type="submit"]')) node.disabled = knowledgeOff();
   return true;
 }
+
+/*
+ * Releases (OWNER_UI_V2 WP9): what reached users and what can be undone, read on their own (GET /api/v2/projects/<id>/
+ * releases) when opened and at every refresh while shown. Checked, merged, live and accepted are answered apart; unknown
+ * health is said, never shown as healthy. Manual Publish is not built: the screen says what it is missing. Check the site
+ * now runs one read-only check through the release role, only where the server says it may.
+ */
+const releaseViews = new Map();
+let releaseBusy = false;
+async function loadReleases(project) {
+  const entry = releaseViews.get(project) ?? {};
+  releaseViews.set(project, entry);
+  if (entry.loading) return;
+  entry.loading = true;
+  try {
+    const response = await fetch(`/api/v2/projects/${encodeURIComponent(project)}/releases`, { signal: AbortSignal.timeout(6000) });
+    const value = await response.json();
+    if (response.ok) { entry.view = value; entry.error = null; entry.readAt = Date.now(); }
+    else { entry.error = { status: response.status, message: value.error }; if (response.status === 404) entry.view = null; }
+  } catch { entry.error = { status: 0, message: 'The releases of this project could not be read just now. The page tries again.' }; }
+  finally {
+    entry.loading = false;
+    if (current.route.screen === 'releases' && current.route.project === project && state && !document.querySelector('dialog[open]')) render();
+  }
+}
+const releaseEntry = (project) => { if (!releaseViews.has(project)) void loadReleases(project); return releaseViews.get(project) ?? {}; };
+const RELEASE_LINE_WORDS = { live: ['done', 'Live'], publishing: ['verifying', 'Publishing'], 'rolled-back': ['pending', 'Rolled back'], failed: ['blocked', 'Failed'],
+  unknown: ['unknown', 'Status unknown'], 'not-released': ['pending', 'Not released'] };
+const HEALTH_WORDS = { passed: ['done', 'Healthy at the last check'], failed: ['blocked', 'The last check failed'], unknown: ['unknown', 'Health unknown: the last check gave no clear answer'],
+  checking: ['verifying', 'Checking now'], 'not-checked': ['pending', 'Not checked yet'] };
+const HEALTH_BY = { release: 'the check after release', rollback: 'the check after the rollback, of the restored version', owner: 'your Check the site now' };
+const KIND_WORDS = { deploy: 'deployed after the merge', 'merge-then-deploy': 'merged, then deployed', merge: 'merged only', 'local-git-apply': 'applied to a local branch', 'local-folder-apply': 'applied to a local folder' };
+const shortDigest = (digest) => String(digest).replace(/^sha256:/, '').slice(0, 12);
+function restoreWords(restore) {
+  const previous = restore.previous ? shortDigest(restore.previous) : null;
+  return {
+    'previous-version': `Can be restored: the project’s rollback command puts back the previous version (${previous}), then AIWorks checks it again.`,
+    'previous-unknown': 'The previous version is not recorded yet, so whether it can be restored is not known.',
+    'report-only': 'Not restored automatically: this destination’s grant asks for report-only rollback, so you restore it yourself.',
+    'no-rollback-command': 'Cannot be restored by AIWorks: this destination names no rollback command.',
+    'revert-pull-request': 'A merge is undone by a revert pull request, which is checked like any other change before it is merged.',
+    'backup-branch': 'The branch is moved back to the backup made before applying, only while nobody has changed it since.',
+    'backup-files': 'Files are put back from the backup made before applying, only where nobody has changed them since.',
+    'nothing-changed': 'Nothing was changed, so there is nothing to restore.',
+    'unknown-destination': 'Restore scope unknown: this release was recorded before AIWorks kept its destination details.',
+  }[restore.scope] ?? 'Restore scope unknown.';
+}
+const PUBLISH_MISSING = { 'no-grant': 'No valid release grant is recorded for this project.', 'switched-off': 'Auto Release is switched off on this computer.',
+  'release-stop': 'Stop all releases is on.', 'release-stop-unknown': 'Whether Stop all releases is on cannot be read.',
+  'no-github': 'Release does not apply to a project without GitHub: you apply a checked result yourself.',
+  'publish-not-built': 'A manual Publish button is not built: which destinations it may reach is your decision, and it could only use a destination an existing valid grant names.' };
+const STEP_KEYS = [['checked', 'Checked'], ['merged', 'Merged'], ['deployed', 'Live'], ['release-checked', 'Release checked']];
+
+function releaseItem(project, r) {
+  const [lineBadge, lineWord] = RELEASE_LINE_WORDS[r.line] ?? RELEASE_LINE_WORDS.unknown, [healthBadge, healthWord] = HEALTH_WORDS[r.health.outcome] ?? HEALTH_WORDS.unknown;
+  const where = r.destination.kind ? `${r.destination.id}${r.destination.environment ? ` (${r.destination.environment})` : ''}, ${KIND_WORDS[r.destination.kind]}` : `${r.destination.id}, details not recorded`;
+  const change = r.change ? `${plural(r.change.files, 'file')} changed, ${r.change.classes.length ? r.change.classes.join(', ') : 'no class recorded'}` : 'Which kinds of file changed is not recorded.';
+  const v = r.version;
+  return el('li', { 'data-focus-scope': `releases/${r.id}` },
+    el('p', {}, el('strong', {}, r.text ?? `Step ${r.taskId}`), ' ', badge(lineBadge, lineWord)),
+    el('dl', { class: 'release-facts' },
+      el('dt', {}, 'Destination'), el('dd', {}, where),
+      el('dt', {}, 'What changes for users'), el('dd', {}, `${r.text ?? 'Not described'}. ${change}`),
+      el('dt', {}, 'Version'), el('dd', {}, `Checked commit ${v.verifiedSha ? v.verifiedSha.slice(0, 12) : 'not known'}`,
+        v.mergeCommit ? `, merge commit ${v.mergeCommit.slice(0, 12)}` : '', v.deployedDigest ? `, live version ${shortDigest(v.deployedDigest)}` : '',
+        v.grantVersion ? `, under grant version ${v.grantVersion}` : ''),
+      el('dt', {}, 'Restore'), el('dd', {}, restoreWords(r.restore), ' Only the released version is restored: data the site stored, and anything its deploy does not manage, are not.'),
+      el('dt', {}, 'Health'), el('dd', {}, badge(healthBadge, healthWord), r.health.at ? ` · ${whenAt(r.health.at)}, by ${HEALTH_BY[r.health.by] ?? 'a check'}` : '')),
+    r.checkNow.available ? button('Check the site now', () => void checkSite(project, r.id), 'secondary small', releaseBusy || offline)
+      : r.checkNow.reason ? el('p', { class: 'subtext' }, `Check the site now is not available: ${r.checkNow.reason}`) : null);
+}
+
+function releasesScreen(project) {
+  const entry = releaseEntry(project), v = entry.view;
+  if (!v) {
+    if (!entry.error) return [empty('Reading the releases of this project…', '')];
+    return [empty(entry.error.status === 404 ? 'This project is not on this computer' : 'Not known right now', ` ${entry.error.message}`),
+      routeLink('Back to results', { screen: 'project', project, tab: 'results' }, 'button secondary')];
+  }
+  if (!v.available) return [unavailable()];
+  const stale = entry.error || offline ? el('p', { class: 'needs-stale', role: 'status' }, `Shown as read at ${clock(entry.readAt)}. ${offline
+    ? 'The page is disconnected; it reads this again when it reconnects.' : entry.error.message}`) : null;
+  return [el('section', { class: 'panel', 'data-releases': project, 'aria-labelledby': 'releases-title' },
+    el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'releases-title' }, 'What reaches users, and what can be undone'),
+      el('p', {}, 'Checked, merged, live and accepted are separate answers. Live means the check after release passed; unknown is never shown as healthy.'))),
+    el('div', { class: 'panel-body' }, stale,
+      el('h3', {}, 'Publish a checked version'),
+      el('p', {}, badge('pending', 'Not available'), ' Nothing is released from this page.'),
+      el('ul', {}, ...v.publish.missing.map((code) => el('li', {}, PUBLISH_MISSING[code] ?? 'A condition is missing.'))),
+      el('h3', {}, `Releases (${v.releases.length})`),
+      v.releases.length ? el('ul', { class: 'settings-links' }, ...v.releases.map((r) => releaseItem(project, r)))
+        : el('p', { class: 'subtext' }, 'No release is recorded for this project. In Review only, AIWorks deploys nothing; whether a merged result is live is not known here.'),
+      el('h3', {}, `Checked results (${v.results.length})`),
+      v.results.length ? el('ul', { class: 'settings-links' }, ...v.results.map((item) => el('li', {}, el('strong', {}, item.text),
+        el('div', { class: 'subtext' }, [...STEP_KEYS.map(([key, word]) => [word, item.steps.find((step) => step.key === key)?.answer]).filter(([, answer]) => answer)
+          .map(([word, answer]) => `${word}: ${LADDER_WORDS[answer] ?? 'Unknown'}`), `Accepted by you: ${LADDER_WORDS[item.accepted] ?? 'Unknown'}`].join(' · ')),
+        item.note ? el('div', { class: 'subtext' }, item.note) : null)))
+        : el('p', { class: 'subtext' }, 'No checked result yet.')),
+    el('div', { class: 'panel-body' }, releaseStopLine(state.supervisor.settings?.releaseStop)))];
+}
+const LADDER_WORDS = { yes: 'Yes', no: 'No', 'in-progress': 'In progress', unknown: 'Unknown' };
+
+/** Check the site now: one read-only check through the release role. The answer is said as it came; unknown is unknown. */
+async function checkSite(project, releaseId) {
+  const from = current.address;
+  releaseBusy = true; render();
+  try {
+    const result = await post('/api/v2/releases/check', { requestId: crypto.randomUUID(), releaseId });
+    notice({ passed: 'The site passed its check just now.', failed: 'The site failed its check just now. Nothing was rolled back: decide what to do, or restore it with the project’s own rollback.',
+      unknown: 'The check gave no clear answer, so the site’s health is unknown.' }[result.outcome] ?? 'The check gave no clear answer.', null, null, from);
+  } catch (error) {
+    notice(error.known ? error.message : 'The check was not confirmed. Its answer shows here once AIWorks records it.', null, error.known ? error.detail : null, from);
+  } finally { releaseBusy = false; await loadReleases(project); }
+}
+const releasesLink = (project) => el('p', { class: 'subtext' }, routeLink('Releases', { screen: 'releases', project }),
+  ': what reached users, its health, and what can be restored.');
 const planLink = (project) => el('p', { class: 'subtext' }, routeLink('Plan', { screen: 'plan', project }),
   `: ${plural(projectPlans(project).length, 'plan')}, grouped Now, Next and Later, with each plan’s versions.`);
 const knowledgeLink = (project) => el('p', { class: 'subtext' }, routeLink('Knowledge', { screen: 'knowledge', project }),
@@ -3652,6 +3768,8 @@ function projectScreen(route) {
   if (route.screen === 'project-settings') return projectSettingsScreen(project);
   // Knowledge is read on its own too (WP8).
   if (route.screen === 'knowledge') return knowledgeScreen(project);
+  // Releases are read on their own too (WP9).
+  if (route.screen === 'releases') return releasesScreen(project);
   if (!state.supervisor.available) return [unavailable()];
   if (route.screen === 'start' && (all.length || projectList().some((item) => sameProject(item.id, project)))) {
     const plans = planRows(project);
@@ -4094,6 +4212,7 @@ async function poll() {
     if (current.route.screen === 'project-settings') void loadProjectSettings(current.route.project);
     if (current.route.screen === 'settings' && current.route.section === 'alerts') void loadAlerts();
     if (current.route.screen === 'knowledge') void loadKnowledge(current.route.project);
+    if (current.route.screen === 'releases') void loadReleases(current.route.project);
     if (current.route.screen === 'settings' && current.route.section === 'usage') void loadUsage();
     checkCloseStale();
     if (!document.querySelector('dialog[open]')) render();
