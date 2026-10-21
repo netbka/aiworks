@@ -82,6 +82,8 @@ Against the [PROJECT_WORKSPACE_PLAN acceptance definition](../PROJECT_WORKSPACE_
 
 ## Still open
 
+The duplicate "Worker accounts" link in Settings, listed here at first, is removed since. [STATUS.md](../STATUS.md#still-open) keeps the current open list.
+
 | What | Cause | Next action |
 | --- | --- | --- |
 | A human study of the novice flow | None has taken place | Run the plan's blind UX test with a person; this record is not one |
@@ -91,4 +93,3 @@ Against the [PROJECT_WORKSPACE_PLAN acceptance definition](../PROJECT_WORKSPACE_
 | Alert text for a local project names its `lp-` id and GitHub-era steps ("task issue", `supervisor recheck`) | Built for GitHub campaigns (`src/supervisor/controller.mjs`) | Owner words for local projects; supervisor change with its own review |
 | The local trusted-main route (Settings › Connections) | Needs AIWorks's own repository with `selfHosting.trustedMain` set to local, which is not in this synthetic runtime | A self-hosting rehearsal |
 | Real notification delivery, release destinations, remote access | Owner-reserved configuration and authority | Stay off until the owner configures them |
-| Settings lists "Worker accounts" twice | Two pages share a title | Rename one in a later UI change |

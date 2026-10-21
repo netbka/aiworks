@@ -2,7 +2,7 @@
 
 **Privacy boundary:** this is a design proposal, not a live installation record. Campaign declarations and approval records stay private under [AW-009](../DECISIONS.md#aw-009---public-commits-contain-no-installation-data). Any proposal to publish declarations through source branches or pull requests is superseded. Merged executable code, explicit owner authorization, scope binding and independent verification remain required.
 
-**Status:** design only, for AIWorks design work. Nothing here is built, enabled or deployed. It implements section 3.1 of [PROJECT_WORKSPACE_PLAN.md](../PROJECT_WORKSPACE_PLAN.md) under the owner's decision D1 (section 8 there). Section 7 designs decision D2 as the owner decided it on 2026-10-16 (#24): it is planned, not built.
+**Status:** built in source since this design, switched off by default (`projectConnection.enabled`; [OPERATIONS_DASHBOARD.md](../OPERATIONS_DASHBOARD.md#add-project-built-off-by-default)), including the owner-confirmed rules of decision D2; not deployed by this repository. The rest of this document is the design as written: its "today", "observed" and "planned" statements describe the code at its basis revision, and [STATUS.md](../STATUS.md) holds what the source does now. It implements section 3.1 of [PROJECT_WORKSPACE_PLAN.md](../PROJECT_WORKSPACE_PLAN.md) under the owner's decision D1 (section 8 there). Section 7 designs decision D2 as the owner decided it on 2026-10-16 (#24): it is planned, not built.
 
 **Basis:** design notes; implementation status must be checked against the selected runtime revision.
 
