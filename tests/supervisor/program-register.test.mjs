@@ -140,7 +140,7 @@ test('on: a fitting wave is registered once, also after a crash between registra
   assert.equal(journal(store, 'program-registered').length, 2);
 });
 
-test('a misfit registers nothing and becomes one Needs me item with the reason and the proposed declaration', { skip: !SQLITE }, (t) => {
+test('a misfit registers nothing and becomes one Needs you item with the reason and the proposed declaration', { skip: !SQLITE }, (t) => {
   // A governance checkout in which the target repository is not a registered project: cli.mjs start would refuse it too.
   const governance = mkdtempSync(join(tmpdir(), 'aiworks-governance-'));
   t.after(() => rmSync(governance, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
@@ -156,7 +156,7 @@ test('a misfit registers nothing and becomes one Needs me item with the reason a
   assert.deepEqual(waveIds(store), []);
   assert.equal(wavesTable(store), false);
   const items = store.all("SELECT * FROM blockers WHERE status = 'open'");
-  assert.equal(items.length, 1, 'one Needs me item, however often the pass sees the misfit');
+  assert.equal(items.length, 1, 'one Needs you item, however often the pass sees the misfit');
   assert.equal(items[0].class, 'B3');
   assert.equal(items[0].occurrences, 2);
   assert.match(items[0].summary, /not a registered project/);
@@ -165,7 +165,7 @@ test('a misfit registers nothing and becomes one Needs me item with the reason a
   assert.deepEqual(misfits[0].detail.declaration.tasks.map((task) => task.id), ['WAV1']);
 });
 
-test('no Needs me item while a verified wave task is not yet on main; one once only an excluded dependency holds', { skip: !SQLITE }, (t) => {
+test('no Needs you item while a verified wave task is not yet on main; one once only an excluded dependency holds', { skip: !SQLITE }, (t) => {
   // WAV2 depends on WAV1 and on WAV3, which the record excludes: no wave ever builds WAV3 (#228).
   const plan = PLAN.replace('| WAV1 | The second test passes | No |', `| WAV1, WAV3 | The second test passes | No |
 | **WAV3** | A deferred module. | \`sup/three.mjs\` (new) | none | The third test passes | No |`);

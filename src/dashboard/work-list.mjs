@@ -1,5 +1,5 @@
 // The local work list in the dashboard (docs/design/LOCAL_OPERATION.md section 5, LO L13, slice UI20): the list and one
-// item with its comments, the owner's decisions for Needs me, the checked local reviews for Results, the read-only preview
+// item with its comments, the owner's decisions for Needs you, the checked local reviews for Results, the read-only preview
 // of the imported issues, and the owner's typed confirmation of the exact list to close on GitHub.
 //
 // Every write is an owner route (server.mjs: same origin, CSRF token, 16 KiB, JSON) and runs the caller check first, so a

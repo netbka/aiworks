@@ -1,7 +1,7 @@
 // Projects from today's data (docs/design/OWNER_WORKSPACE.md slice S2, build slice UI3): one row per GitHub repository
 // that has work on this computer or is listed in the supervisor's config.json, each with one state and one next action.
 // The list joins the campaigns' target repositories with the configured ones, grouped case-insensitively. The state is
-// built from the owner view, so a project never reads calmer than its Needs me items; no campaign id is used at the
+// built from the owner view, so a project never reads calmer than its Needs you items; no campaign id is used at the
 // primary level.
 // Add project (PROJECT_CONNECTION slice S6 with OWNER_WORKSPACE slice S11, build slice UI13): the owner connects a GitHub
 // checkout, a local Git repository or a plain folder through the supervisor's project connection API
@@ -57,13 +57,13 @@ const checkingText = (n) => `Checking GitHub… The state of ${n} result${n === 
 
 const lastActivity = (campaigns) => Math.max(0, ...campaigns.map((c) => Date.parse(c.lastProgressAt ?? '') || c.registeredAt || 0)) || null;
 
-/** The one next action for a project whose Needs me items are `items`: the item's own link when there is one item. */
+/** The one next action for a project whose Needs you items are `items`: the item's own link when there is one item. */
 function needsAction(items) {
   const [item] = items, url = items.length === 1 ? item.link?.url ?? '' : '';
   const pr = PR_URL.exec(url);
   if (pr) return { label: `Review pull request #${pr[1]}`, url };
   if (ISSUE_URL.test(url)) return { label: 'Open the step issue', url };
-  return { label: items.length === 1 ? 'See what needs you' : `See all ${items.length} in Needs me`, route: { screen: 'needs' } };
+  return { label: items.length === 1 ? 'See what needs you' : `See all ${items.length} in Needs you`, route: { screen: 'needs' } };
 }
 
 /**
@@ -82,7 +82,7 @@ function activeState(repository, active, supervisor, owner, now) {
 }
 
 /**
- * Now's other lines, in short, for a project whose Needs me items lead its row: running, possibly stuck and paused work
+ * Now's other lines, in short, for a project whose Needs you items lead its row: running, possibly stuck and paused work
  * stay in view beside them (aiworks#11 review 5 G5, review 4 F14).
  */
 const alsoOf = (repository, supervisor, owner, now) =>
@@ -130,24 +130,24 @@ export function projectsView(supervisor, owner, { repositories = [], records = [
     } else if (connection && connection.status !== 'ready') {
       // The connection needs the owner, or is away for now: its one sentence, and the project where Check again is.
       state = { key: connection.status, text: connection.message };
-      action = { label: 'Open project', route: route('now') };
+      action = { label: 'Open project', route: route('overview') };
     } else if (active.length) {
       state = activeState(repository, active, supervisor, owner, now);
       // "Running" is never said while a result that may need the owner is unknown; a state that says more keeps its word.
       if (checking) state = { key: state.key === 'running' ? 'checking' : state.key, text: `${state.text} · ${checkingText(checking)}` };
-      action = { label: 'Open current work', route: route('work') };
+      action = { label: 'Open current work', route: route('overview') };
     } else if (checking) {
       state = { key: 'checking', text: checkingText(checking) };
-      action = { label: 'See results', route: route('results') };
+      action = { label: 'See results', route: route('review') };
     } else if (campaigns.length) {
       // The most recent finished or cancelled piece of work, in the owner view's own words.
       const latest = [...campaigns].sort((a, b) => lastActivity([b]) - lastActivity([a]))[0], view = owner?.campaigns?.[latest.id];
       const text = latest.control === 'cancelled' ? view?.outcome ?? 'Cancelled' : view?.finished ?? 'All steps are finished';
       state = { key: latest.control === 'cancelled' ? 'cancelled' : 'finished', text: /[.!?]$/.test(text) ? text : `${text}.` };
-      action = { label: 'See results', route: route('results') };
+      action = { label: 'See results', route: route('review') };
     } else {
       state = { key: 'no-work', text: 'No work yet.' };
-      action = { label: 'Open project', route: route('now') };
+      action = { label: 'Open project', route: route('overview') };
     }
     const removable = REMOVABLE.includes(state.key) && !connection, gone = removed[repository.toLowerCase()];
     if (removable && gone && campaigns.every((c) => (c.registeredAt ?? 0) <= gone.removedAt)) {
@@ -172,7 +172,7 @@ export function projectsView(supervisor, owner, { repositories = [], records = [
         : waiting ? { key: 'needs-you', text: waiting === 1 ? 'A checked result waits for your review.' : `${waiting} checked results wait for your review.` }
           : active ? { key: 'running', text: `Working on: ${active.outcome}.` }
             : connection.startWork.allowed ? { key: 'no-work', text: 'No work yet.' } : { key: 'cannot-start', text: connection.startWork.text },
-      action: { label: 'Open project', route: { screen: 'project', project: record.id, tab: 'now' } }, lastActivityAt: record.updated_at ?? null,
+      action: { label: 'Open project', route: { screen: 'project', project: record.id, tab: 'overview' } }, lastActivityAt: record.updated_at ?? null,
       details: { owner: null, work: 0, configured: false, needsYou: 0 }, connection });
   }
   projects.sort((a, b) => (RANK[a.state.key] ?? 2) - (RANK[b.state.key] ?? 2) || (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0) || a.name.localeCompare(b.name));

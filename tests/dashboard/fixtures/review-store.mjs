@@ -332,6 +332,14 @@ function fill(store, dataDir, root, now) {
   setCampaign(id, { control: 'finished', status: 'ready',
     next_action: 'Release gate: review campaign deliveries under example/recipes\'s own merge and release policy.' });
   lease(id, now - 27 * H);
+  // One recorded release, so example/recipes is the project with a configured release and shows the Releases tab
+  // (OWNER_UI_V2 section 2); the other projects have none. Its destination and digests are made up.
+  const shipped = sha(recipes, 'unit-converter');
+  store.insert('releases', { id: `recipes.preview.${shipped}.T1`, idempotency_key: `recipes.preview.${shipped}.T1`, project: 'recipes',
+    destination: 'preview', campaign_id: id, task_id: 'T1', verified_sha: shipped, attempt: 1, steps: JSON.stringify(['deploy', 'check']),
+    state: 'accepted', step: 'check', instance_id: 'review-fixture', generation: 1,
+    history: JSON.stringify([{ step: 'deploy', outcome: 'done', endedAt: now - 26 * H }, { step: 'check', outcome: 'done', endedAt: now - 26 * H }]),
+    deployed_digest: 'sha256:recipes-preview-2', previous_digest: 'sha256:recipes-preview-1', created_at: now - 26 * H, updated_at: now - 26 * H });
 
   // example/notes-site: stopped work, owner decisions, failures, a supervisor fault, and results whose state is unknown.
   const notes = 'example/notes-site';
