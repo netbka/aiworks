@@ -286,7 +286,8 @@ It reads these existing fields:
 | `operations.outcome.receipt.costUsd`, `.usage.{input,output,cacheRead,cacheCreation,inputIncludesCacheRead}`, `.numTurns`, `.measured` | Native cost; unknown counts |
 | `operations.target_sha` | Links a verify run to the implement attempt that produced the head |
 | `tasks.state`, `attempts`, `repair_rounds`, `failures`, `verified_sha` | Accepted outcomes, repair rounds, retry churn by class |
-| `campaigns.declaration` (executor, tasks), `cost_usd`, `runs_used` | Task class indicators (section 3), current models |
+| `operations.routing` (`decision.chosen`, `decision.indicators`) | The recorded model and, for routing-policy/1, the recorded class |
+| `campaigns.declaration` (executor, tasks, `routing.sensitivePaths`), `task_specs`, `cost_usd`, `runs_used` | Task class indicators (section 3) where no receipt records them, current models |
 | `journal` `executor-amended` (`from`, `to`) | Which model was declared when an older operation ran (`api.mjs:44-46`) |
 | `journal` `operation-finished`, `executor-fallback`, `executor-unavailable`, `run-refunded` | Verdicts, blocking counts, fallbacks, provider waits |
 | `coordinator_runs.cost_usd` | Planning overhead, per host, not per task |
@@ -308,7 +309,7 @@ For each task class (stage x risk x complexity) and each provider and model:
 - **Dollars for Codex, Cursor and AGY.** They report none (section 2.3). Their cost stays unknown, and so does any total that includes them.
 - **Cursor usage of any kind.** It reports nothing.
 - **What the owner actually pays.** Whether Claude's reported dollars are billed, or are a subscription equivalent, is unknown. The report says "reported", never "spent".
-- **The model of an operation with certainty.** It is not stored today (section 2.3). It is inferred from the declaration and executor amendments; Codex without a declared model is "CLI default" (unknown). Slice R2 records it from then on.
+- **The model and class of an older operation with certainty.** An operation with a routing receipt (slice R2) is attributed to the model its receipt chose, when that provider ran, and a routing-policy/1 receipt also gives its class; each class row counts these runs (`modelRecordedRuns`, `classRecordedRuns`). An operation recorded before receipts is inferred from the declaration, executor amendments and the task spec by the rules of section 3; a provider without a declared model is "CLI default" (unknown), and a step whose spec is gone has an unknown class.
 - **Defects found after acceptance.** Reverts, follow-up fixes and owner review comments after a PR is published are in GitHub, not in the store.
 - **Missed defects by a verifier.** The store shows only usable reviews.
 - **Exact provider wait duration.** The journal records when a wait starts. The end is approximated by the next dispatch of that task and labelled approximate.
