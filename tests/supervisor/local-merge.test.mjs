@@ -185,9 +185,10 @@ test('LO L8: a crash after main moved records the same merge once; a moved trust
   assert.equal(fresh.journal('merge-base-moved').length, 1);
 });
 
-test('a legal long campaign and task id records its whole verified review and merges that exact head', { skip: skipWithoutSqlite }, async (t) => {
-  // Its branch, campaign/<campaign>/<task>, is longer than a work-list label may be.
-  const campaignId = 'example-long-campaign-for-review-labels', taskId = 'T-long-task-identifier';
+test('a maximal legal campaign and task id records its whole verified review and merges that exact head', { skip: skipWithoutSqlite }, async (t) => {
+  // Both IDs at their 64-character limit: the branch is longer than a work-list label may be, and worktree folders named
+  // after the whole pair would leave Git too little of a Windows path.
+  const campaignId = `c${'x'.repeat(63)}`, taskId = `T${'y'.repeat(63)}`;
   const { env, forbidden, store, id, task, sha, anchor, pass, gateRows } = await delivered(t, { campaignId, taskId });
   assert.equal(task.state, 'done', JSON.stringify(task.blocked));
   const review = item(store, Number(task.pr_url.split(':')[1]));
