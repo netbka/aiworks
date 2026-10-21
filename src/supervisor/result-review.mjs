@@ -4,8 +4,10 @@
 // accept the exact verified head, or request changes: that reopens the step as a bounded repair round on its own branch
 // (Controller.reopenPublished), keeps every earlier run and check, and needs a fresh independent verification of the new
 // head before anything is published again. Acceptance never merges or applies anything itself: a GitHub result merges
-// only through the supervisor's merge gate, and a local result is applied only by the owner's Apply.
+// only through the supervisor's merge gate, and a local result is applied only by the owner's Apply. In a project whose
+// acceptance mode is "owner" (AW-015) the merge gate also waits for that acceptance (awaitingAcceptance).
 import { createHash } from 'node:crypto';
+import { acceptanceMode, projectOf } from './project-settings.mjs';
 
 /** The finding that reopens a finished step at the owner's request. */
 export const OWNER_CHANGES = 'owner-changes';
@@ -57,6 +59,25 @@ export const mergedHead = (store, campaignId, taskId, sha) => store.all("SELECT 
 export const pendingChanges = (store, campaignId, taskId, sha) => store.all(
   "SELECT seq, payload, received_at FROM events WHERE campaign_id = ? AND kind = 'result-changes' AND processed_at IS NULL ORDER BY seq", campaignId)
   .find((event) => event.payload?.taskId === taskId && event.payload?.verifiedSha === sha) ?? null;
+
+/**
+ * The owner's recorded acceptance of exactly this verified head and the report it was checked with, or null. An
+ * acceptance of another head, or of the same head with another report, is not this one.
+ */
+export const acceptedHead = (store, campaignId, taskId, sha, reportDigest) => store.all(
+  "SELECT seq, payload, received_at FROM events WHERE campaign_id = ? AND kind = 'result-accepted' ORDER BY seq", campaignId)
+  .find((event) => event.payload?.taskId === taskId && event.payload?.verifiedSha === sha && event.payload?.reportDigest === reportDigest) ?? null;
+
+/**
+ * Why the merge gate holds a verified head for the owner (AW-015), or null. With the project's acceptance mode "owner"
+ * the head merges only once the owner accepted exactly it with the report the task holds now; the mode is read from the
+ * newest settings at every call, so it holds after a restart and follows a switch either way. "automatic" holds nothing.
+ */
+export function awaitingAcceptance(store, campaign, task) {
+  if (acceptanceMode(store, projectOf(campaign?.declaration)) !== 'owner') return null;
+  if (SHA.test(task?.verified_sha ?? '') && acceptedHead(store, campaign.id, task.task_id, task.verified_sha, reportDigestOf(task))) return null;
+  return 'waits for your acceptance of this checked version (you accept results yourself in this project)';
+}
 
 /**
  * The blocking finding of an owner-requested repair round. The owner's words are data for the next worker: the request

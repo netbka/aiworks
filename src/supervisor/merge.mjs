@@ -6,7 +6,10 @@
 // docs/design/LOCAL_OPERATION.md section 4.4, slice SELF8) merges its verified local reviews locally instead: a merge
 // commit of the trusted tip and the verified head with the verified tree, main moved only from the trusted tip, and a
 // main ledger row (release/local-merge.mjs). It reads no remote and makes no GitHub call; the owner's optional backup of
-// trusted main (github-backup.mjs, slice SELF9) runs after those merges and never holds one.
+// trusted main (github-backup.mjs, slice SELF9) runs after those merges and never holds one. In a project whose
+// acceptance mode is "owner" (AW-015, project-settings.mjs) every one of these merges also needs the owner's acceptance
+// of exactly the verified head and report (result-review.mjs awaitingAcceptance), checked when candidates are chosen and
+// again inside the fenced write that requests the merge.
 import * as gitA from './adapters/git.mjs';
 import * as github from './adapters/github.mjs';
 import { mergeWithMergeCommit } from './release/github-merge.mjs';
@@ -20,7 +23,7 @@ import { resolveCheckout } from './project-connect.mjs';
 import { refreshSettings, refreshStep } from './merge-refresh.mjs';
 import { batchStep } from './merge-batch.mjs';
 import { ConflictError, FencedError } from './store.mjs';
-import { pendingChanges } from './result-review.mjs';
+import { awaitingAcceptance, pendingChanges } from './result-review.mjs';
 
 const SHA = /^[0-9a-f]{40}$/;
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
@@ -85,6 +88,9 @@ function candidates(controller, repositories) {
       if (merged.has(`${task.task_id}:${task.verified_sha}`)) continue;
       // The owner asked for changes to this head (OWNER_UI_V2 WP4): it is never merged while the request waits.
       if (pendingChanges(store, id, task.task_id, task.verified_sha)) continue;
+      // The owner accepts results in this project (AW-015): a head they have not accepted waits, said once per reason.
+      const held = awaitingAcceptance(store, campaign, task);
+      if (held) { wait(controller, { campaignId: id, task }, held); continue; }
       if (local) {
         const number = Number(WORK_REFERENCE.exec(String(task.pr_url ?? ''))?.[1]);
         if (number) out.push({ campaignId: id, decl, task, number, local: true });
@@ -309,7 +315,7 @@ export function mergeNow(controller, item, baseSha) {
   const still = () => {
     const c = store.campaign(campaignId), t = store.task(campaignId, task.task_id);
     return ['registered', 'finished'].includes(c.control) && t.state === 'done' && !t.blocked && t.verified_sha === sha && t.pr_url === url
-      && !pendingChanges(store, campaignId, task.task_id, sha)
+      && !pendingChanges(store, campaignId, task.task_id, sha) && !awaitingAcceptance(store, c, t)
       && (!controller.ci || ciMergeable(store, campaignId, task.task_id, sha));
   };
   if (!controller.fenced(ctx, () => {
@@ -401,6 +407,8 @@ function mergeLocal(controller, item, settings, repoPath) {
   const stillDone = (t) => t.state === 'done' && !t.blocked && t.verified_sha === sha && t.pr_url === url;
   const still = () => ['registered', 'finished'].includes(store.campaign(campaignId).control) && stillDone(store.task(campaignId, task.task_id))
     && !pendingChanges(store, campaignId, task.task_id, sha);
+  // A new merge also needs the owner's acceptance where they accept results (AW-015); a merge already made is recorded.
+  const accepted = () => !awaitingAcceptance(store, store.campaign(campaignId), store.task(campaignId, task.task_id));
 
   // After a crash, main is read before any retry: the planned merge commit on main is recorded once and never made again.
   const requested = lastRequest(store, campaignId, task.task_id, sha);
@@ -428,7 +436,7 @@ function mergeLocal(controller, item, settings, repoPath) {
   if (!ctx) return false;
   // The request names the trusted tip before any object is written, so a restart recognizes the planned commit.
   if (!controller.fenced(ctx, () => {
-    if (!still()) return false;
+    if (!still() || !accepted()) return false;
     store.journal(campaignId, 'merge-requested', { task: task.task_id, sha, url, base: tip.tip, local: true }, controller.now());
     return true;
   })) return false;
@@ -444,8 +452,8 @@ function mergeLocal(controller, item, settings, repoPath) {
   controller.injectFault('after-commit-tree');
   try {
     controller.fenced(ctx, () => {
-      // Checked again under the write lock: a pause or cancellation committed since the request moves nothing.
-      if (!still()) return;
+      // Checked again under the write lock: a pause, cancellation or switch to owner acceptance since the request moves nothing.
+      if (!still() || !accepted()) return;
       const moved = moveMain({ git, repoPath, trusted: tip.tip, commit: planned.commit, checkout: checkout?.path ?? null });
       if (!moved.ok) throw new Error(moved.reason);
       controller.injectFault('after-merge');

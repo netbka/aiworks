@@ -181,3 +181,11 @@ Tests follow [AGENTS.md](../../AGENTS.md#validation): only product-critical beha
 - **Words.** This proposal says "Needs you" and "Accept result"; OWNER_WORKSPACE.md says "Needs me" and reserves "Accepted" for recorded acceptance. Keep, rename, or adopt?
 
 WP1 to WP8 can start without these answers.
+
+**Answered by the owner on 2026-10-21** ([#45](https://github.com/example-org/aiworks/issues/45)):
+
+- **Acceptance and merging.** Each project has an acceptance mode: *automatic* (today's behaviour, the default) or *I accept results myself*. In the second mode the merge gate merges a verified head only after the owner accepted exactly that checked version; acceptance of an earlier head never counts. Recorded as [AW-015](../DECISIONS.md#aw-015---acceptance-controls-merging-when-the-owner-chooses-it); the mode is in Project settings and waiting versions are in Needs you.
+- **Remote access (WP10).** No channel that leaves the computer for now: no notification transport, no remote dashboard access and no phone push. WP10 stays deferred; alert rules and the rehearsal transport remain as built.
+- **Release (WP9).** As AW-010 is written: a disposable rehearsal first, then one standing grant for one owner project's production destination. The grant is private installation data; this document grants nothing.
+- **Navigation.** As section 2 designs it: project tabs Overview, Plan, Review and Knowledge, Releases only where a release is configured, with the Now, Next and Later board on Plan. Old addresses keep working.
+- **Words.** "Needs you" replaces "Needs me". The other OWNER_WORKSPACE state words stay, and "Accepted" stays reserved for recorded acceptance.
