@@ -92,10 +92,11 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
     const addProject = projectConnectionEnabled(dataDir), records = addProject ? connectedProjects(dataDir) : [];
     // The local work list (UI20): its open decisions join Needs you and its checked reviews join Results.
     const worklist = workListView(dataDir, { closeOn: workList.available });
-    const owner = ownerView(supervisor, merged, { host: machine.name, now, releases, delegation: configuredMergeDelegation(dataDir), connected: records, workList: worklist });
     // Plan and do and Review (UI14, UI17): requests and draft plans of connected projects, and the local work and
-    // checked results of projects without GitHub, allowlisted fields only.
+    // checked results of projects without GitHub, allowlisted fields only. Its open decisions join Needs you.
     const work = workView(dataDir, { textChecks });
+    const owner = ownerView(supervisor, merged, { host: machine.name, now, releases, delegation: configuredMergeDelegation(dataDir), connected: records, workList: worklist,
+      localWork: work.local });
     // Projects: campaign repositories, the repositories config.json lists and connected projects, by name only (never a path).
     const projects = projectsView(supervisor, owner, { repositories: configuredRepositories(dataDir), removed: removedProjects(dataDir),
       ...(addProject ? { records, addProject, localWork: work.local } : {}) });

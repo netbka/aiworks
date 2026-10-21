@@ -779,7 +779,7 @@ export async function checkRelease(dataDir, input, now = Date.now) {
 }
 
 const DECISION_EVENTS = ['decision-answer', 'decision-snooze', 'decision-not-needed'];
-const decisionFeedback = (store, campaignId) =>
+export const decisionFeedback = (store, campaignId) =>
   store.all(`SELECT kind, payload, received_at FROM events WHERE campaign_id = ? AND kind IN (${DECISION_EVENTS.map(() => '?').join(', ')}) ORDER BY seq`,
     campaignId, ...DECISION_EVENTS);
 
@@ -789,14 +789,17 @@ const decisionFeedback = (store, campaignId) =>
  * a stop without them is a free-text decision (`structured: false`) answered in the owner's own words. `id` binds every
  * answer, snooze and "did not need me" to this one stop. The owner's own words are never served back.
  */
-function decisionView(campaignId, task, feedback, now) {
+export function decisionView(campaignId, task, feedback, now) {
   if (!isDecision(task)) return null;
   const id = decisionId(campaignId, task.task_id, task.blocked);
   const mine = feedback.filter((event) => event.payload?.taskId === task.task_id && event.payload?.decision === id);
   const d = structuredDecision({ decision: task.blocked.decision });
   const answer = mine.find((event) => event.kind === 'decision-answer');
   const until = Math.max(0, ...mine.filter((event) => event.kind === 'decision-snooze').map((event) => event.payload.until));
-  return { id, structured: Boolean(d), question: d ? safeText(d.question, 500) : null,
+  // A stop without options still names what the worker asked (its validated ownerTrigger, filtered like the question):
+  // a project without GitHub has no step issue to read it in.
+  const asked = !d && /^owner-reserved: /.test(String(task.blocked.reason ?? '')) ? safeText(String(task.blocked.reason).slice('owner-reserved: '.length), 500) || null : null;
+  return { id, structured: Boolean(d), question: d ? safeText(d.question, 500) : null, asked,
     options: d ? d.options.map((o) => ({ id: o.id, label: safeText(o.label, 120), consequence: safeText(o.consequence, 500) })) : [],
     suggestion: d?.suggestion ? { option: d.suggestion.option, reason: safeText(d.suggestion.reason, 500) } : null,
     continues: d?.continues ? safeText(d.continues, 500) : null, unanswered: d?.unanswered ? safeText(d.unanswered, 500) : null,

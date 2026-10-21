@@ -167,13 +167,16 @@ export function projectsView(supervisor, owner, { repositories = [], records = [
     const connection = connectionView(record, { path: false });
     const work = localWork[record.id] ?? [], waiting = work.flatMap((c) => c.results).filter((row) => row.action === 'apply').length;
     const active = work.find((c) => !['finished', 'cancelled'].includes(c.control));
+    // Open decisions of its work first: they hold a step until the owner answers (work.mjs localWork).
+    const decisions = work.filter((c) => !['finished', 'cancelled'].includes(c.control)).flatMap((c) => c.steps).filter((step) => step.decision && !step.decision.answered).length;
     projects.push({ id: record.id, name: record.name, repository: null, kind: connection.kind,
       state: connection.status !== 'ready' ? { key: connection.status, text: connection.message }
+        : decisions ? { key: 'needs-you', text: decisions === 1 ? 'A step waits for your decision.' : `${decisions} steps wait for your decision.` }
         : waiting ? { key: 'needs-you', text: waiting === 1 ? 'A checked result waits for your review.' : `${waiting} checked results wait for your review.` }
-          : active ? { key: 'running', text: `Working on: ${active.outcome}.` }
+          : active ? { key: 'running', text: `Working on: ${/[.!?…]$/.test(active.outcome) ? active.outcome : `${active.outcome}.`}` }
             : connection.startWork.allowed ? { key: 'no-work', text: 'No work yet.' } : { key: 'cannot-start', text: connection.startWork.text },
       action: { label: 'Open project', route: { screen: 'project', project: record.id, tab: 'overview' } }, lastActivityAt: record.updated_at ?? null,
-      details: { owner: null, work: 0, configured: false, needsYou: 0 }, connection });
+      details: { owner: null, work: 0, configured: false, needsYou: decisions }, connection });
   }
   projects.sort((a, b) => (RANK[a.state.key] ?? 2) - (RANK[b.state.key] ?? 2) || (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0) || a.name.localeCompare(b.name));
   return { available: true, ...(addProject ? { addProject } : {}), projects, removed: hidden.sort((a, b) => a.name.localeCompare(b.name)) };
