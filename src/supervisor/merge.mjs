@@ -469,8 +469,8 @@ function mergeLocal(controller, item, settings, repoPath) {
 /**
  * The base moved past the verified head: reopen the task as an integration repair round on its own branch and PR (the
  * existing aiworks#27 repair). The round merges the base in and needs a fresh independent verification; the pull request
- * is merged only once that new head is verified and published. `refreshed` says why a refresh did not merge it. Inside
- * fenced(). Returns true.
+ * is merged only once that new head is verified and published. A moved base is B1: its round never counts toward
+ * maxRepairRounds and never stalls the task. `refreshed` says why a refresh did not merge it. Inside fenced(). Returns true.
  */
 function repair(controller, ctx, item, repoPath, baseSha, refreshed) {
   const { store } = controller, git = controller.cmd.git, { campaignId, decl, task } = item;
@@ -491,7 +491,7 @@ function repair(controller, ctx, item, repoPath, baseSha, refreshed) {
   };
   const stalled = controller.reopenPublished(ctx, fresh, finding, { limits: campaignLimits(decl), now,
     lastError: `merge-base-moved: ${sha} does not contain ${base} at ${baseSha}`,
-    stalledReason: `the base moved before merging, after ${fresh.repair_rounds} repair rounds` });
+    stalledReason: `the base moved before merging, after ${fresh.repair_rounds} repair rounds`, bounded: false });
   store.journal(campaignId, 'merge-base-moved', { task: task.task_id, sha, base: baseSha, paths, commits: commits.map((entry) => entry.sha), stalled }, now);
   controller.log(`merge of ${campaignId}/${task.task_id} waits for an integration repair: ${base} moved to ${baseSha}`);
   return true;

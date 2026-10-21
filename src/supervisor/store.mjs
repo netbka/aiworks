@@ -256,6 +256,8 @@ export class Store {
       if (!readOnly) this.tx(() => {
         const messageColumns = this.db.prepare('PRAGMA table_info(owner_messages)').all().map((column) => column.name);
         if (!messageColumns.includes('repository')) this.db.exec('ALTER TABLE owner_messages ADD COLUMN repository TEXT');
+        // A chat is its first message's id; a message stored before chats reads thread_id as null and starts its own.
+        if (!messageColumns.includes('thread_id')) this.db.exec('ALTER TABLE owner_messages ADD COLUMN thread_id INTEGER');
         const columns = this.db.prepare('PRAGMA table_info(operations)').all().map((column) => column.name);
         if (!columns.includes('executor_kind')) {
           this.db.exec("ALTER TABLE operations ADD COLUMN executor_kind TEXT NOT NULL DEFAULT 'claude-cli'");

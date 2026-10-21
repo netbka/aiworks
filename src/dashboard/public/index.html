@@ -13,7 +13,7 @@
     <header class="topbar">
       <a class="brand" href="#/home"><span class="brand-mark" aria-hidden="true">aw<span>↗</span></span><span>AI<strong>Works</strong></span></a>
       <div class="host"><span class="local-dot" aria-hidden="true"></span><div><strong id="host-name" aria-busy="true">…</strong><small id="host-detail">&nbsp;</small></div></div>
-      <div class="topbar-actions"><span id="connection" role="status" class="connection">Connecting…</span><a id="messages-link" class="messages-link" href="#/settings/messages">✉ Messages <span id="message-count" class="nav-count"></span></a></div>
+      <div class="topbar-actions"><span id="connection" role="status" class="connection">Connecting…</span><a id="messages-link" class="messages-link" href="#/chats">✉ Chats <span id="message-count" class="nav-count"></span></a></div>
     </header>
   <aside class="sidebar">
     <nav class="global-nav" aria-label="Main navigation">
@@ -51,10 +51,10 @@
     <div class="dialog-actions"><button id="close-instruction" class="button secondary" type="button">Keep draft</button><button id="send-instruction" class="button" type="submit">Queue instruction</button></div>
   </form></dialog>
   <dialog id="message-dialog" aria-labelledby="message-title"><form id="message-form" novalidate>
-    <h2 id="message-title">Message the coordinator</h2>
+    <h2 id="message-title">New chat with AIWorks</h2>
     <p id="message-target"></p>
     <label>Message<textarea class="resize-none" id="message-text" rows="6" maxlength="4000" required aria-describedby="message-help" placeholder="For example: review new PRs and issues and plan their execution."></textarea></label>
-    <p id="message-help">You get a receipt at each step: <strong>Received</strong> when the supervisor stores it, <strong>Read</strong> when the coordinator agent starts with it, and <strong>Answered</strong> with a link to its reply. This page shows a notice and a desktop notification for each step while it is open. The coordinator is read-only: it reviews and plans, and never starts work by itself. No secrets; up to 4,000 characters.</p>
+    <p id="message-help">You get a receipt at each step: <strong>Received</strong> when the supervisor stores it, <strong>Read</strong> when the coordinator agent starts with it, and <strong>Answered</strong> with its reply in the chat. You can then reply in the same chat; AIWorks sees its earlier messages. This page shows a notice and a desktop notification for each step while it is open. The coordinator is read-only: it reviews and plans, and never starts work by itself. No secrets; up to 4,000 characters.</p>
     <div class="dialog-actions"><button id="close-message" class="button secondary" type="button">Keep draft</button><button id="send-message" class="button" type="submit">Send message</button></div>
   </form></dialog>
 

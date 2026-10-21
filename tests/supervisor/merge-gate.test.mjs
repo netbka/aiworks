@@ -318,6 +318,25 @@ test('a moved base starts the integration repair, and the pull request merges on
   assert.deepEqual(r.journal(B, 'merged').map((entry) => entry.sha), [repaired]);
 });
 
+test('a moved base is B1: past maxRepairRounds it still starts the integration repair and does not count as a round', async (t) => {
+  const r = rig(t, { [A]: [task('A1', 501, 'a.txt')], [B]: [task('B1', 502, 'b.txt')] });
+  await publish(r, [A, B]);
+  const done = r.store.task(B, 'B1');
+  r.store.patch('tasks', { campaign_id: B, task_id: 'B1' }, done.version, { repair_rounds: 2 }, Date.now()); // the declaration's maxRepairRounds
+  r.start({ merges: ON });
+  await r.tick(); // A merges
+  r.advance();
+  await r.tick();
+  const [moved] = r.journal(B, 'merge-base-moved');
+  assert.equal(moved.stalled, false);
+  const reopened = r.store.task(B, 'B1');
+  assert.equal(reopened.state, 'pending', 'B1 reopens as a repair round');
+  assert.equal(reopened.blocked, null, 'a moved base never stalls the task for the owner');
+  assert.equal(reopened.repair_rounds, 2, 'a moved base does not use a repair round');
+  await r.tick();
+  r.open(B, 'implement');
+});
+
 test('a cancellation committed after a moved-base task is selected leaves its completed task and operations unchanged', async (t) => {
   const r = rig(t, { [A]: [task('A1', 501, 'a.txt')], [B]: [task('B1', 502, 'b.txt')] });
   const heads = await publish(r, [A, B]);

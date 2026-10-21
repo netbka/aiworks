@@ -13,7 +13,7 @@ export const LEGACY_TABS = Object.freeze({ now: 'overview', work: 'overview', co
 
 /** Today's single-word addresses, redirected once to where their content lives now (§9). */
 export const LEGACY = Object.freeze({ overview: '#/projects', roadmap: '#/settings/diagnostics', work: '#/settings/diagnostics',
-  agents: '#/projects', messages: '#/settings/messages', activity: '#/settings/diagnostics' });
+  agents: '#/projects', messages: '#/chats', activity: '#/settings/diagnostics' });
 
 const PROJECTS = Object.freeze({ screen: 'projects' });
 const HOME = Object.freeze({ screen: 'home' });
@@ -34,6 +34,8 @@ function parse(hash) {
   if (first === 'home') return rest.length ? null : HOME;
   if (first === 'projects') return !rest.length ? PROJECTS : rest.length === 1 && rest[0] === 'add' ? { screen: 'add-project' } : null;
   if (first === 'needs') return rest.length ? null : { screen: 'needs' };
+  // Chats with AIWorks: the list, and one chat by the id of its first message.
+  if (first === 'chats') return !rest.length ? { screen: 'chats' } : rest.length === 1 && /^[1-9]\d{0,8}$/.test(rest[0]) ? { screen: 'chats', chat: Number(rest[0]) } : null;
   // The local work list (UI20): the list, one item by its number, and the imported issues' preview.
   if (first === 'worklist') {
     if (!rest.length) return { screen: 'worklist' };
@@ -43,7 +45,9 @@ function parse(hash) {
   }
   if (first === 'settings') {
     if (!rest.length) return { screen: 'settings' };
-    return rest.length === 1 && ['messages', 'diagnostics', 'accounts', 'version', 'instructions', 'connections', 'alerts', 'usage'].includes(rest[0]) ? { screen: 'settings', section: rest[0] } : null;
+    // Messages moved to Chats; the old address still opens them.
+    if (rest.length === 1 && rest[0] === 'messages') return { screen: 'chats' };
+    return rest.length === 1 && ['diagnostics', 'accounts', 'version', 'instructions', 'connections', 'alerts', 'usage'].includes(rest[0]) ? { screen: 'settings', section: rest[0] } : null;
   }
   if (first !== 'p' || !rest.length) return null;
   const project = projectId(rest[0]), tail = rest.slice(1);
@@ -67,6 +71,7 @@ export function formatRoute(route) {
   switch (route?.screen) {
     case 'home': return '#/home';
     case 'needs': return '#/needs';
+    case 'chats': return route.chat ? `#/chats/${route.chat}` : '#/chats';
     case 'worklist': return '#/worklist';
     case 'worklist-import': return '#/worklist/import';
     case 'worklist-item': return `#/worklist/${route.number}`;
@@ -99,8 +104,8 @@ export function resolveRoute(hash) {
   return { route, address, replace: `#${raw}` !== address, legacy: null };
 }
 
-/** The route's global destination, for aria-current in the global bar. Project screens belong to Projects; the work list to Needs you. */
-export const globalOf = (route) => ['home', 'needs', 'settings'].includes(route.screen) ? route.screen : route.screen.startsWith('worklist') ? 'needs' : 'projects';
+/** The route's global destination, for aria-current in the global bar. Project screens belong to Projects; the work list to Needs you; Chats has its own link. */
+export const globalOf = (route) => ['home', 'needs', 'settings', 'chats'].includes(route.screen) ? route.screen : route.screen.startsWith('worklist') ? 'needs' : 'projects';
 /**
  * The project tab a route belongs to, or null. Start work and a plan's review belong to Plan; a step and Project settings
  * to Overview, whose details hold running work (the page moves a step with a result to review to Review).
