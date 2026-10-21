@@ -241,3 +241,32 @@ test('WP3: an edited plan is a new version; only that exact version starts, once
   const late = await r.owner.post('/api/work/edit', { requestId: randomUUID(), plan: plan.id, version: 2, authorityDigest: saved.body.authorityDigest, edits });
   assert.equal(late.body.code, 'ALREADY_APPROVED', 'registered work is never edited in place');
 });
+
+test('WP2: a local step stopped for the owner is listed in Needs you under its project and answered once, never from a program AIWorks started', async (t) => {
+  const r = await rig(t);
+  const { campaignId, approval } = await planned(r);
+  assert.equal((await r.owner.post('/api/work/approve', approval())).status, 200);
+  // The builder's owner-reserved stop, as the controller records it.
+  const task = r.store.task(campaignId, 'T1');
+  r.store.patch('tasks', { campaign_id: campaignId, task_id: 'T1' }, task.version, { blocked: { class: 'B3', reason: 'owner-reserved: synthetic paid spend question', at: 1000 } }, Date.now());
+
+  const state = await r.owner.state();
+  const item = state.owner.items.find((entry) => entry.kind === 'decision');
+  assert.deepEqual(item?.local, { project: 'notes', campaignId, taskId: 'T1' }, 'listed for its project, not as AIWorks itself');
+  assert.equal(state.owner.count, 1);
+  assert.equal(state.owner.groups.find((group) => group.items.some((entry) => entry.local))?.project, 'notes');
+  const c = state.work.local.notes.find((plan) => plan.id === campaignId), step = c.steps.find((entry) => entry.id === 'T1');
+  assert.equal(step.decision.asked, 'synthetic paid spend question');
+  const answer = () => ({ requestId: randomUUID(), campaignId, taskId: 'T1', taskVersion: step.version, version: c.version,
+    authorizationVersion: c.authorizationVersion, scopeDigest: c.scopeDigest, decision: step.decision.id, text: 'Stay on the free plan.' });
+  const answers = () => r.store.all("SELECT kind FROM events WHERE campaign_id = ? AND kind = 'decision-answer'", campaignId);
+
+  const refused = await r.aiworks.post('/api/v2/decisions/answer', answer());
+  assert.equal(refused.status, 403);
+  assert.deepEqual(answers(), [], 'nothing recorded');
+  const answered = await r.owner.post('/api/v2/decisions/answer', answer());
+  assert.equal(answered.status, 202, answered.body.error);
+  assert.equal(answers().length, 1);
+  assert.equal((await r.owner.post('/api/v2/decisions/answer', answer())).status, 409, 'answered once');
+  assert.equal((await r.owner.state()).owner.count, 0);
+});

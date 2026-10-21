@@ -813,7 +813,8 @@ const receivedText = (plan) => plan.retryAt
 const PLAN_WORDS = { RECEIVED: 'Received, not drafted yet', DRAFTING: 'Drafting a plan', DRAFT_READY: 'Plan ready', PLAN_ONLY_READY: 'Plan ready (plan only)', CONFLICT: 'Overlaps other work',
   DRAFT_STALE: 'Plan out of date', DRAFT_FAILED: 'Couldn’t draft a plan', APPROVED: 'Approved' };
 const projectPlans = (project) => (state.work?.plans ?? []).filter((plan) => sameProject(plan.project, project));
-const approvedText = (at) => `Approved at ${clock(at)} · waiting for AIWorks to pick it up`;
+// Only the approval: where the work stands now is on Overview, so this never goes stale.
+const approvedText = (at) => `Approved at ${clock(at)}`;
 let approving = null;
 
 /** This project's plans, newest first, each with its state and a link to Review. */
@@ -1134,6 +1135,19 @@ const localWork = (project) => state.work?.local?.[project] ?? [];
 const LOCAL_CONTROL = { registered: 'Approved. AIWorks works on its own copy of your folder; nothing in your folder changes until you press Apply.',
   paused: 'Paused. Nothing new starts until it is resumed.', finished: 'All steps are finished. The checked results are under Review.', cancelled: 'Cancelled.' };
 let applying = null;
+const sentenceOf = (text) => /[.!?…]$/.test(text) ? text : `${text}.`;
+
+/**
+ * The first open decision of a step of this project's running work (OWNER_UI_V2 WP2), as decisionPanel takes it: the goal's
+ * versions and the step with its decision, answered through the same bound /api/v2/decisions route as a GitHub step's.
+ */
+function localDecision(project, match = () => true) {
+  for (const c of localWork(project).filter((item) => ['registered', 'paused'].includes(item.control))) {
+    const step = c.steps.find((item) => item.decision && !item.decision.answered && match(c, item));
+    if (step) return { c: { id: c.id, version: c.version, authorizationVersion: c.authorizationVersion, scopeDigest: c.scopeDigest, outcome: c.outcome, tasks: c.steps }, task: step };
+  }
+  return null;
+}
 
 function localResultRow(row, c = null) {
   const busy = applying !== null || sending || offline || !state.supervisor.available, key = `${row.campaignId}/${row.taskId}`;
@@ -1156,7 +1170,7 @@ function localResultsScreen(project) {
   if (!rows.length) return [el('section', { class: 'panel' }, empty('No results yet.', 'Checked results appear here. Nothing in your folder changes until you press Apply on one.'))];
   return [el('section', { class: 'panel', 'aria-labelledby': 'results-title', 'data-focus-scope': `results/${project}` },
     el('div', { class: 'panel-header' }, el('h2', { id: 'results-title' }, plural(rows.length, 'result'))),
-    el('ul', { class: 'needs-list' }, ...rows.map(([row, c]) => localResultRow(row, c))))];
+    el('div', { class: 'panel-body' }, el('ul', { class: 'needs-list' }, ...rows.map(([row, c]) => localResultRow(row, c)))))];
 }
 
 /** Work of a project without GitHub: each approved plan with its steps, in the owner's words. */
@@ -1171,14 +1185,19 @@ function localWorkScreen(project) {
 /** Now of a project without GitHub: checked results that wait for the owner first, then work in progress, then its connection. */
 function localNowScreen(row) {
   const work = localWork(row.id), waiting = work.flatMap((c) => c.results).filter((item) => item.action === 'apply').length;
-  const active = work.find((c) => !['finished', 'cancelled'].includes(c.control));
+  const active = work.find((c) => !['finished', 'cancelled'].includes(c.control)), decision = localDecision(row.id);
   const doable = Boolean(state.work?.planAndDo && state.work.projects?.some((name) => sameProject(name, row.id)));
   const plan = doable && !offline && state.supervisor.available ? routeLink('Plan work', { screen: 'start', project: row.id }, waiting ? 'button secondary' : 'button') : null;
-  const line = waiting ? [el('strong', {}, 'All steps are finished.'), ` ${waiting === 1 ? 'A checked result is' : `${waiting} checked results are`} ready to apply. Nothing in your folder has changed yet.`]
-    : active ? [el('strong', {}, `Working on: ${active.outcome}.`), ` ${LOCAL_CONTROL[active.control] ?? ''}`] : null;
+  const ready = !waiting ? '' : decision || active ? ` ${waiting === 1 ? 'A checked result waits' : `${waiting} checked results wait`} under Review.`
+    : ` ${waiting === 1 ? 'A checked result is' : `${waiting} checked results are`} ready to apply. Nothing in your folder has changed yet.`;
+  // A decision first, then running work, then results: "All steps are finished" only when no work is still running.
+  const line = decision ? [el('strong', {}, `Needs your decision: ${decision.task.title}.`), ` ${sentenceOf(decision.c.outcome)} The step waits for your answer below; nothing in your folder changes.${ready}`]
+    : active ? [el('strong', {}, `Working on: ${sentenceOf(active.outcome)}`), ` ${LOCAL_CONTROL[active.control] ?? ''}${ready}`]
+      : waiting ? [el('strong', {}, 'All steps are finished.'), ready] : null;
   const head = line ? el('section', { class: 'panel', 'data-focus-scope': `now/${row.id}` }, el('div', { class: 'panel-body' },
     el('p', { role: 'status', 'aria-live': 'polite' }, ...line),
-    waiting ? routeLink('See results', { screen: 'project', project: row.id, tab: 'review' }, 'button') : null, plan)) : null;
+    decision ? decisionPanel(decision.c, decision.task) : null,
+    waiting ? routeLink('See results', { screen: 'project', project: row.id, tab: 'review' }, decision ? 'button secondary' : 'button') : null, plan)) : null;
   return [head, overviewPanel(row.id), connectionPanel(row), line ? null : plan].filter(Boolean);
 }
 
@@ -2273,6 +2292,7 @@ function reviewList(rows, { scope, withProject = false }) {
 
 /** The structured decision of a Needs you item that opens a step (WP2), with its step, or null when it has none to answer. */
 function itemDecision(item) {
+  if (item?.kind === 'decision' && item.local) return localDecision(item.local.project, (c, step) => c.id === item.local.campaignId && step.id === item.local.taskId);
   const address = item?.kind === 'decision' ? item.route?.address : null;
   const c = address?.screen === 'step' ? campaignById(address.work) : null, task = c?.tasks.find((t) => t.id === address.step);
   return task?.decision && !task.decision.answered ? { c, task } : null;
@@ -2697,7 +2717,9 @@ function decisionPanel(c, task) {
     } },
     el('h3', { class: 'section-title' }, d.structured ? 'Your decision' : 'Your answer'),
     deferred ? el('p', { class: 'notice warning', role: 'status' }, 'This step is high risk, so this decision is answered on a computer, not on a phone. Open this page on your computer to answer; the step waits meanwhile.') : null,
-    d.structured || deferred ? null : el('p', {}, 'The AI worker described no options for this stop. Answer in your own words; the step issue says what it needs.'),
+    d.structured || deferred ? null : el('p', {}, d.asked ? `The AI worker asked: “${d.asked}” It described no options; answer in your own words.`
+      : task.issueUrl ? 'The AI worker described no options for this stop. Answer in your own words; the step issue says what it needs.'
+        : 'The AI worker described no options for this stop. Answer in your own words.'),
     options,
     d.suggestion ? el('p', { class: 'subtext' }, `AIWorks suggests ${d.options.find((o) => o.id === d.suggestion.option)?.label ?? d.suggestion.option}: ${d.suggestion.reason}`) : null,
     d.continues ? el('p', { class: 'subtext' }, `Meanwhile: ${d.continues}`) : null,
@@ -3085,7 +3107,7 @@ function costSummary(all, delivered) {
  * unreported runs, retries and checker rejections. No primary action.
  */
 function spending(project) {
-  if (localProject(project)) return [el('p', { class: 'subtext' }, 'The cost of work in a project without GitHub is not added up on this page yet.')];
+  if (localProject(project)) return [el('p', { class: 'subtext' }, 'This project’s work counts toward its project budget; a breakdown per goal and step is not shown for a project without GitHub yet.')];
   const total = state.supervisor.available ? state.supervisor.costs?.find((item) => sameProject(item.repository, project)) : null, all = projectCampaigns(project);
   if (!total) return [];
   // Nothing has run: the §7.1 copy, which the server takes from the state copy module.
@@ -3230,7 +3252,9 @@ function workDetails(project) {
   const agents = projectCampaigns(project).reduce((n, c) => n + c.agents.length, 0);
   return el('section', { class: 'panel', 'aria-labelledby': `work-title-${project}` },
     el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: `work-title-${project}` }, 'Running work'),
-      el('p', {}, agents ? `${plural(agents, 'AI worker')} working now. Each step, its runs and its checks are under Details.` : 'Steps, their runs and their checks are under Details.'))),
+      // Local work lists its steps and their state only; its runs and checks are not shown per step yet.
+      el('p', {}, localProject(project) ? 'Each approved goal and the state of its steps are under Details.'
+        : agents ? `${plural(agents, 'AI worker')} working now. Each step, its runs and its checks are under Details.` : 'Steps, their runs and their checks are under Details.'))),
     el('div', { class: 'panel-body' }, disclosure(`overview/${project}/work`, 'Details', el('div', {}, ...body))));
 }
 const settingsLink = (project) => el('p', { class: 'subtext' }, routeLink('Project settings', { screen: 'project-settings', project }),
@@ -3322,7 +3346,8 @@ function howWorkRuns(project) {
     el('div', { class: 'panel-body' },
       el('p', {}, 'After you approve a plan, AIWorks splits it into steps and gives each to an AI worker in its own copy of the project. A different AI worker then checks exactly that version on its own. AIWorks repairs what the check finds, within the goal’s repair rounds, and continues after crashes, restarts and usage limits.'),
       el('p', {}, 'When a step needs you, it stops and asks with a decision on that step. Your answer guides the next try under the same plan. Anything wider is a new plan version, shown with its differences, that you approve before it runs.'),
-      el('p', {}, 'Release: review only. A checked result is published for your review; merging follows the merge gate you set.'),
+      el('p', {}, localProject(project) ? 'Release: review only. A checked result changes your folder only when you press Apply on it, and Undo apply puts it back; nothing is published or merged.'
+        : 'Release: review only. A checked result is published for your review; merging follows the merge gate you set.'),
       el('h3', {}, 'Limits of the goals here'),
       goals.length ? el('ul', { class: 'settings-links' }, ...goals.map((c) => el('li', {}, el('strong', {}, campaignTitle(c, { inProject: true })),
         el('div', { class: 'subtext' }, `${limitsText(c.limits) || 'No limits were set for this goal'}. Approved version ${c.authorizationVersion}.`))))
@@ -3727,6 +3752,8 @@ function releaseItem(project, r) {
 
 function releasesScreen(project) {
   const entry = releaseEntry(project), v = entry.view;
+  // A project without GitHub releases nothing: its checked results are the local work's, applied from Review.
+  const applied = localProject(project) ? localWork(project).flatMap((c) => c.results).length : null;
   if (!v) {
     if (!entry.error) return [empty('Reading the releases of this project…', '')];
     return [empty(entry.error.status === 404 ? 'This project is not on this computer' : 'Not known right now', ` ${entry.error.message}`),
@@ -3745,8 +3772,10 @@ function releasesScreen(project) {
       el('h3', {}, `Releases (${v.releases.length})`),
       v.releases.length ? el('ul', { class: 'settings-links' }, ...v.releases.map((r) => releaseItem(project, r)))
         : el('p', { class: 'subtext' }, 'No release is recorded for this project. In Review only, AIWorks deploys nothing; whether a merged result is live is not known here.'),
-      el('h3', {}, `Checked results (${v.results.length})`),
-      v.results.length ? el('ul', { class: 'settings-links' }, ...v.results.map((item) => el('li', {}, el('strong', {}, item.text),
+      el('h3', {}, `Checked results (${applied ?? v.results.length})`),
+      applied ? el('p', { class: 'subtext' }, 'They are never released: you apply each one to your folder, and undo it, on ',
+        routeLink('Review', { screen: 'project', project, tab: 'review' }), '.')
+      : v.results.length ? el('ul', { class: 'settings-links' }, ...v.results.map((item) => el('li', {}, el('strong', {}, item.text),
         el('div', { class: 'subtext' }, [...STEP_KEYS.map(([key, word]) => [word, item.steps.find((step) => step.key === key)?.answer]).filter(([, answer]) => answer)
           .map(([word, answer]) => `${word}: ${LADDER_WORDS[answer] ?? 'Unknown'}`), `Accepted by you: ${LADDER_WORDS[item.accepted] ?? 'Unknown'}`].join(' · ')),
         item.note ? el('div', { class: 'subtext' }, item.note) : null)))
@@ -4276,6 +4305,8 @@ async function poll() {
   try {
     const response = await fetch(`/api/state?since=${since}`, { signal: AbortSignal.timeout(6000) });
     if (!response.ok) throw new Error('state unavailable');
+    // A dashboard that restarted while this page was offline has a new command session: take it before any command.
+    if (offline) await refreshSession();
     state = await response.json(); offline = false;
     // The header keeps only "Page connected" or the disconnected text (OWNER_WORKSPACE §3.4, §7.4; aiworks#11 review F8):
     // it is about this page, never read as "AIWorks is running" (review 4 F6).
@@ -4442,6 +4473,7 @@ window.addEventListener('pagehide', writeLastSeen);
 // An empty, legacy or unknown address is rewritten once, without a new history entry.
 if (current.replace) { drafts.carry(location.hash, current.address); history.replaceState(null, '', current.address); }
 showRoute();
-try { csrf = (await (await fetch('/api/session')).json()).csrf; } catch { notice('Command session unavailable. Reload when the dashboard reconnects.', null, null, null); }
+async function refreshSession() { csrf = (await (await fetch('/api/session')).json()).csrf; }
+try { await refreshSession(); } catch { notice('Command session unavailable. Reload when the dashboard reconnects.', null, null, null); }
 await poll();
 setInterval(() => { if (!sending) void poll(); }, 5000);

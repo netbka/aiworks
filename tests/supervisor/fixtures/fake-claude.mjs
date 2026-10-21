@@ -4,6 +4,7 @@
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 const args = process.argv.slice(2);
 const valueOf = (list, flag) => { const index = list.indexOf(flag); return index >= 0 ? list[index + 1] : null; };
@@ -22,6 +23,8 @@ const previous = earlier.length;
 const own = scenario.byModel?.[model]?.[role];
 let mode = (own ? own[earlier.filter((call) => valueOf(call.args, '--model') === model).length] : scenario[role]?.[previous]) ??
   (role === 'implement' ? 'commit' : role === 'coordinate' ? 'coordinate' : 'accept');
+// scenario.intake: every intake-mode coordinator call drafts the synthetic plan below (the owner-journey harness).
+if (role === 'coordinate' && scenario.intake && prompt.includes('in intake mode')) mode = 'intake';
 appendFileSync(callsFile, `${JSON.stringify({ role, sessionId, cwd: process.cwd(), mode, args,
   autoMemoryDisabled: process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY === '1', subagentModel: process.env.CLAUDE_CODE_SUBAGENT_MODEL ?? null,
   gitBashPath: process.env.CLAUDE_CODE_GIT_BASH_PATH ?? null, inheritedProbe: process.env.CLAUDE_CODE_PROBE_INHERITED ?? null, at: Date.now() })}\n`);
@@ -73,6 +76,44 @@ switch (mode) {
   case 'report-big':
     ok({ result: 'resolved', summary: 'researched', report: `# Findings\n\n${'r'.repeat(50000)}` });
     break;
+  case 'intake': // a draft plan for one owner request: the shape coordinator.mjs INTAKE_SCHEMA asks for
+    ok({ summary: 'Add a greeting to the home page.', plan: `# Plan
+
+Change the home page heading and note the change.`,
+      steps: [{ title: 'Change the heading', check: 'The page shows the new heading' }], questions: [],
+      declaration: { outcome: 'The home page greets the visitor.', acceptance: ['The home page shows the new heading'],
+        writes: ['index.html', 'src'], deliverables: ['commit'], constraints: ['Change only the home page and its note'],
+        tasks: [{ id: 'GREETING', title: 'Greeting', goal: 'Change the home page heading', acceptance: ['The home page shows the new heading'],
+          references: ['AGENTS.md'], deliverable: 'commit', writes: ['index.html', 'src'], dependsOn: [] }] },
+      outline: { checks: ['Open the page'], included: ['A new heading'], later: ['Styling'], estimate: { amount: 1, unit: 'hours' } } });
+    break;
+  case 'probe-commit-page': { // a worker that tries the owner's Apply on the dashboard at scenario.probe, then does its work
+    const base = scenario.probe, headers = { Origin: base.replace(/\/$/, ''), 'Content-Type': 'application/json' }, out = { at: Date.now() };
+    try {
+      const { csrf } = await (await fetch(`${base}api/session`, { headers })).json();
+      const local = (await (await fetch(`${base}api/state`, { headers })).json()).work?.local ?? {};
+      const row = Object.values(local).flat().flatMap((c) => c.results).find((result) => result.action === 'apply');
+      const response = await fetch(`${base}api/work/apply`, { method: 'POST', headers: { ...headers, 'X-Dashboard-CSRF': csrf },
+        body: JSON.stringify({ requestId: randomUUID(), campaignId: row?.campaignId, taskId: row?.taskId, seq: row?.seq }) });
+      Object.assign(out, { target: row ? `${row.campaignId}/${row.taskId}/${row.seq}` : null, status: response.status, body: await response.json() });
+    } catch (error) { out.error = String(error.message); }
+    appendFileSync(join(stateDir, 'probe.jsonl'), `${JSON.stringify(out)}
+`);
+  }
+  // falls through to the page change
+  case 'commit-page': { // a page change a preview can show: the home page heading and a note
+    writeFileSync(join(process.cwd(), 'index.html'), `<!doctype html><title>Notes</title><h1>Hello from ${sessionId.slice(0, 8)}</h1>
+`);
+    mkdirSync(join(process.cwd(), 'src'), { recursive: true });
+    writeFileSync(join(process.cwd(), 'src', 'greeting.txt'), `greeting by ${sessionId}
+`);
+    git('add', '-A');
+    git('commit', '-q', '-m', `greeting ${sessionId}`);
+    ok({ result: 'resolved', summary: 'implemented', headSha: git('rev-parse', 'HEAD'), report: `# Report
+
+Changed the heading (session ${sessionId}).` });
+    break;
+  }
   case 'commit':
   case 'dirty': {
     // scenario.commitDir keeps the work inside a declared write domain (a task with `writes`).
