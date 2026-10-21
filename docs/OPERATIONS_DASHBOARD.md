@@ -459,6 +459,17 @@ The page then loads its data with same-origin requests.
 
 Commands are JSON POSTs with exact same Origin and a per-process CSRF token; foreign/null/missing command origins are rejected. Responses prohibit framing and cross-origin reads. They also set `Cross-Origin-Opener-Policy: same-origin`, so a dashboard page opened from another site shares no window reference with that site. All remote labels/titles render as text and links are constrained to GitHub. Snapshot fields are allowlisted: raw worker output, prompt packets, session identities, local workspace paths, secrets and raw error text are not served. The one exception is a connected project's own folder path, in the [Add project](#add-project-built-off-by-default) routes only. Heartbeat reads are confined to the configured runs directory.
 
+### Speed
+
+A state request reads the whole store in one pass, synchronously, so while it runs the dashboard answers nothing else, not even a static file. It has to stay short as the installation grows (aiworks#49):
+
+- The store indexes each campaign's operations, journal and events (`store.mjs`), so reading one campaign's records does not scan every campaign's. The supervisor adds the indexes when it opens the store; the dashboard only reads, so an older store is faster once the supervisor has run on this code.
+- A campaign's operations, merges, acceptances, change requests and reading checks are read once for all its steps, and each project's acceptance mode once per request, never again per step.
+- The credential check of a displayed text keeps its verdict for that exact text (by digest) for later requests.
+- The page asks for the next timed refresh only after the last one answered, so slow answers never queue up behind each other.
+
+`node scripts/dashboard-speed.mjs [--rounds 3] [--scale 1]` measures this on a disposable synthetic store of a busy installation's size (about 70 campaigns, 200 steps, 650 operations, 5,500 journal rows), with the dashboard of the checkout started as its own process on a free loopback port and stopped afterwards. `--scale` multiplies every size, to see whether the time grows only in proportion. It never reads an installation's data.
+
 ## Verification
 
 Completed/cancelled campaigns do not appear as controller failures when their historical leases expire. Their task rows distinguish verified PR/report publication from repository or product completion. They expose provider, dependency-integration and blocker waits with retry times. Execution snapshots are read live every five seconds. The connection label says when a merge check is running or has failed, rather than treating a successful local connection as a fresh remote observation.
