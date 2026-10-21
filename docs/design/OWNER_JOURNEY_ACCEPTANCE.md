@@ -15,7 +15,8 @@ Windows with Chrome installed. `<new-folder>` must be new or empty and lie outsi
 - copies this checkout's `src`, `scripts/lib`, `registry`, `schemas` and the test fixtures into `<new-folder>/runtime` as one commit that its own `origin/main` contains, so merged-code admission (AW-005) holds;
 - starts the real `src/supervisor/cli.mjs serve` and `src/dashboard/main.mjs` from that copy, each hidden and through a launcher that exits at once, as a scheduled task would start them. The dashboard keeps its production Windows caller lookup;
 - starts headless Chrome the same way, as a browser the owner opens: no AIWorks job, and no live parent in this session;
-- drives Chrome over the DevTools protocol through 32 steps, writing each outcome to `<new-folder>/evidence/journey.json` with the source commit and whether it had uncommitted changes. Screenshots go beside it, with the computer's name replaced by a fictional one. The [static showcase](../../site/README.md) is built from a reviewed selection of them;
+- drives Chrome over the DevTools protocol through 38 steps, writing each outcome to `<new-folder>/evidence/journey.json` with the source commit and whether it had uncommitted changes. Screenshots go beside it, with the computer's name replaced by a fictional one. The [static showcase](../../site/README.md) is built from a reviewed selection of them;
+- near the end switches local trust on as an installation's operator would: it stops everything, makes the runtime AIWorks's own repository (`example-org/aiworks`) with `selfHosting.trustedMain` set to local, records the runtime's main as the ledger's anchor with `cli.mjs trusted-main anchor` and starts again. Commits put on the runtime's main by the script play the owner's hand commits; the running code stays at the anchor;
 - stops every process it started.
 
 The AI worker is `tests/supervisor/fixtures/fake-claude.mjs`. It makes no model or network call and plays planner (`scenario.intake`), builder (`commit-page`, `owner`, and `probe-commit-page`, which tries the owner's Apply from inside its job) and independent checker. Everything else is the product's own code: intake, admission, Windows job containment, verification of the exact head, local candidates, preview capture, Apply and Undo apply, the alert outbox with the synthetic rehearsal transport, and every dashboard route.
@@ -44,7 +45,12 @@ Without the exiting launcher, a process this session started would have this ses
 | Usage, Releases | Usage counts local work's runs; Releases says a local result is applied from Review, never released |
 | Cost of local work | Each project's goals only, with each step's runs, models and cost; a project's total is its own goals' runs; Usage equals the goals' sum, so nothing is counted twice; Overview shows the breakdown (desktop and 320 px seen) |
 | Dashboard restart under an open page | The page reconnects and the next owner action works without a reload |
-| 320 px window and 390 px phone | No screen scrolls sideways (13 routes each) |
+| Local trust switched on (Settings › Connections) | The trusted tip is the anchor and nothing is offered while main equals it |
+| A hand commit on local main | Trust local main is offered from the ledger's current tip to that commit, both shown in full |
+| A second hand commit, then a request with the tips shown before it | Refused with `TRUSTED_MAIN_MOVED`; the ledger keeps its one row |
+| Trust local main, once the page shows the new tip | One `owner` row from exactly the old tip to exactly the new one; asking again changes nothing |
+| A hand commit that changes `src/supervisor/` | Refused as needing an independent review; nothing recorded; the trusted tip stays |
+| 320 px window and 390 px phone | No screen scrolls sideways (14 routes each, Connections with the full tips included) |
 | Every goal finished | No alert waits or is being sent; none was delivered |
 
 Checked by hand on the same runtime as well: keyboard-only answering, using Tab to Send answer with a visible focus ring; the offline state, which turns controls off and says *Disconnected · retrying*; Request changes on a local result, which ran a repair round that was checked again; the sample project; desktop and narrow screenshots of every tab.
@@ -62,6 +68,7 @@ Checked by hand on the same runtime as well: keyboard-only answering, using Tab 
   - "runs and checks under Details", which local work does not show;
   - "the step issue says what it needs" where there is no issue;
   - "Working on: ….." with a doubled period.
+- **Trust local main recorded the tips the page first showed** (found by the closeout journey, after the first acceptance). The 5-second refresh keeps an element that acts while it shows the same, so the button kept its first action while the tips beside it changed: after any further commit on main the owner's press was refused as changed, until the page was opened again. It never recorded a wrong tip. The button now shows the tips it records as an attribute, so a refresh with new tips replaces it (`src/dashboard/public/dashboard.js`).
 - **Layout:** lists placed straight in a panel (Plan, Results, a local project's Review) touched the panel edge at every width. They now keep the panel body's inset (shared CSS, recorded in DESIGN.md).
 
 ## Owner UI v2 screens and plan outcomes
@@ -85,10 +92,9 @@ Against the [PROJECT_WORKSPACE_PLAN acceptance definition](../PROJECT_WORKSPACE_
 
 ## Still open
 
-The duplicate "Worker accounts" link in Settings, listed here at first, is removed since. So are four later findings: local work's per-step models and cost, local work under Settings › AI workers, a finished goal's alert left *Waiting*, and a local project's alert naming its `lp-` id, a task issue and a CLI command; the journey now checks each. [STATUS.md](../STATUS.md#still-open) keeps the current open list.
+The duplicate "Worker accounts" link in Settings, listed here at first, is removed since. So are four later findings: local work's per-step models and cost, local work under Settings › AI workers, a finished goal's alert left *Waiting*, and a local project's alert naming its `lp-` id, a task issue and a CLI command; the journey now checks each. The local trusted-main route, open at first for want of a self-hosting runtime, is now part of the journey. [STATUS.md](../STATUS.md#still-open) keeps the current open list.
 
 | What | Cause | Next action |
 | --- | --- | --- |
 | A human study of the novice flow | None has taken place | Run the plan's blind UX test with a person; this record is not one |
-| The local trusted-main route (Settings › Connections) | Needs AIWorks's own repository with `selfHosting.trustedMain` set to local, which is not in this synthetic runtime | A self-hosting rehearsal |
 | Real notification delivery, release destinations, remote access | Owner-reserved configuration and authority | Stay off until the owner configures them |
