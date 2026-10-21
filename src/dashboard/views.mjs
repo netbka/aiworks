@@ -197,6 +197,78 @@ export function overviewView(project, { supervisor, projects }) {
 
 const short = (sha) => SHA.test(sha ?? '') ? sha.slice(0, 12) : null;
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Releases (OWNER_UI_V2 WP9, GET /api/v2/projects/:id/releases): what reaches users and what can be undone, from the
+// release rows (supervisor.mjs recordedReleases), Settings' release mode and the Results ladder. Checked, merged, live
+// and accepted are answered apart and never merged into one word. Unknown health is never healthy. There is no Publish:
+// which destinations a manual release may reach is the owner's (OWNER_UI_V2 section 10), so it is listed as missing.
+
+/** The release line of OWNER_UI_V2 section 5: live only with a passed post-release check, unknown never success. */
+const RELEASE_LINE = { accepted: 'live', 'rolled-back': 'rolled-back', 'rollback-failed': 'failed', unknown: 'unknown', refused: 'not-released' };
+const releaseLine = (state) => RELEASE_LINE[state] ?? 'publishing';
+
+/** What a restore would put back, from the destination the release recorded: { scope, previous }. */
+function restoreScope(r) {
+  const d = r.destinationDetails;
+  if (!d) return { scope: 'unknown-destination', previous: null };
+  if (r.state === 'refused') return { scope: 'nothing-changed', previous: null };
+  if (d.kind === 'merge') return { scope: 'revert-pull-request', previous: null };
+  if (d.kind === 'local-git-apply') return { scope: 'backup-branch', previous: null };
+  if (d.kind === 'local-folder-apply') return { scope: 'backup-files', previous: null };
+  if (d.rollback !== 'automatic') return { scope: 'report-only', previous: r.previousDigest };
+  if (!d.commands.includes('rollback')) return { scope: 'no-rollback-command', previous: r.previousDigest };
+  return r.previousDigest ? { scope: 'previous-version', previous: r.previousDigest } : { scope: 'previous-unknown', previous: null };
+}
+
+/**
+ * How the destination did at its latest check: { outcome, at, by }. `outcome` is passed, failed, unknown, checking or
+ * not-checked; `by` is release (the post-release check), rollback (the check after a rollback, of the restored version)
+ * or owner (Check the site now). The latest one counts.
+ */
+function releaseHealth(r) {
+  if (r.healthCheck?.state === 'checking') return { outcome: 'checking', at: r.healthCheck.startedAt, by: 'owner' };
+  const seen = [];
+  if (r.healthCheck?.state === 'done') seen.push({ outcome: r.healthCheck.outcome ?? 'unknown', at: r.healthCheck.checkedAt, by: 'owner' });
+  const last = (r.history ?? []).filter((entry) => entry.step === 'check' || entry.step === 'rollback').at(-1);
+  if (last) {
+    const outcome = last.outcome === 'done' ? 'passed' : last.outcome === 'failed' ? 'failed' : last.outcome === null && r.state !== 'unknown' ? 'checking' : 'unknown';
+    seen.push({ outcome, at: last.endedAt, by: last.step === 'rollback' ? 'rollback' : 'release' });
+  }
+  return seen.sort((a, b) => (b.at ?? 0) - (a.at ?? 0))[0] ?? { outcome: 'not-checked', at: null, by: null };
+}
+
+const acceptance = (review) => review?.state === 'accepted' ? 'yes' : !review || review.state === 'merged' ? 'unknown' : 'no';
+
+/** Releases of one project (GET /api/v2/projects/:id/releases); null when the project is not known here. */
+export function releasesView(project, { supervisor, owner, projects }) {
+  if (!supervisor?.available) return { available: false, project: null, publish: null, releases: [], results: [] };
+  const row = (projects?.projects ?? []).find((item) => sameProject(item.id, project));
+  const goals = (supervisor.goals ?? []).filter((goal) => sameProject(goal.project, project));
+  if (!row && !goals.length) return null;
+  const mine = new Set(goals.map((goal) => goal.id));
+  const campaigns = new Map((supervisor.campaigns ?? []).map((c) => [c.id, c]));
+  const text = (campaignId, taskId) => {
+    const task = campaigns.get(campaignId)?.tasks?.find((item) => item.id === taskId);
+    return task ? task.outcome ?? task.title ?? task.id : null;
+  };
+  const mode = (supervisor.settings?.releases ?? []).find((item) => sameProject(item.repository ?? item.project, project));
+  const missing = mode?.modes?.find((item) => item.key === 'auto-release')?.missing ?? [];
+  const results = Object.values(owner?.results ?? {}).filter((item) => sameProject(item.project, project))
+    .flatMap((item) => item.groups.flatMap((group) => group.rows)).filter((item) => item.ladder);
+  return { available: true, project: row ? projectRow(row) : { id: project, name: project, kind: null, repository: null, state: { key: 'unknown', text: null }, needsYou: 0, lastActivityAt: null },
+    // Manual release: not built, and never more than an already granted destination could take (AW-010).
+    publish: { available: false, missing: [...missing.map((item) => item.code), ...(mode && !mode.repository ? ['no-github'] : []), 'publish-not-built'] },
+    stop: supervisor.settings?.releaseStop?.set ?? null,
+    releases: (supervisor.releases ?? []).filter((r) => mine.has(r.campaignId)).map((r) => ({
+      id: r.id, campaignId: r.campaignId, taskId: r.taskId, text: text(r.campaignId, r.taskId), line: releaseLine(r.state), state: r.state,
+      destination: { id: r.destination, environment: r.destinationDetails?.environment ?? null, kind: r.destinationDetails?.kind ?? null },
+      change: r.change, version: { verifiedSha: r.verifiedSha, mergeCommit: r.mergeCommit, deployedDigest: r.deployedDigest, previousDigest: r.previousDigest, grantVersion: r.grantVersion },
+      restore: restoreScope(r), health: releaseHealth(r), checkNow: r.checkNow ?? { available: false, reason: null }, updatedAt: r.updatedAt })),
+    // Each checked result with checked, merged, live and accepted apart (the Results ladder and recorded acceptance).
+    results: results.map((item) => ({ campaignId: item.campaignId, taskId: item.taskId, text: item.text, sha: item.ladder.sha,
+      steps: item.ladder.steps.map((step) => ({ key: step.key, answer: step.answer })), accepted: acceptance(item.review), note: item.ladder.note })) };
+}
+
 /**
  * The trusted main and its backup (UI19, LOCAL_OPERATION.md sections 4.2 and 4.6), read-only and never fetching. With
  * origin trust (today's default) it says so and reads nothing. Reasons Git printed are never served: only state codes.
