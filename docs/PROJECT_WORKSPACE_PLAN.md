@@ -2,7 +2,9 @@
 
 **Privacy boundary:** this is a design proposal, not a live installation record. Campaign declarations and approval records stay private under [AW-009](DECISIONS.md#aw-009---public-commits-contain-no-installation-data). Any proposal to publish declarations through source branches or pull requests is superseded. Merged executable code, explicit owner authorization, scope binding and independent verification remain required.
 
-**Status:** PLANNING ONLY. Owner approved four product-direction decisions on 2026-10-12 (recorded in section 8). These are design requirements, **not** authorization to change the running supervisor, merge/deploy, add credentials or override AW-001..AW-007. Execution/release permissions remain governed by the applicable, separately reviewed authorization gates.
+**Status now:** this plan is kept as the historical roadmap of the redesign. Most of its slices have since been built in source, many of them switched off; [STATUS.md](STATUS.md) holds what the source does now and what is still open. Statements below that say "today", "current", "observed" or "planned" describe the revision each section names, not the current source.
+
+**Status when written:** PLANNING ONLY. Owner approved four product-direction decisions on 2026-10-12 (recorded in section 8). These are design requirements, **not** authorization to change the running supervisor, merge/deploy, add credentials or override AW-001..AW-007. Execution/release permissions remain governed by the applicable, separately reviewed authorization gates.
 
 **Prepared:** 2026-10-12. Repository basis: `example-org/aiworks` main at `<revision>`, and the linked `example-org/governance` main. Every "current" statement below describes inspected repository code/docs as of this revision; it is not a new live-host check.
 
@@ -472,7 +474,7 @@ Two cases need the order spelled out:
 
 ### 6.10 What waits for an owner decision
 
-**#24 and #32 were answered on 2026-10-16** (section 8). Nothing for projects without GitHub waits for the owner any more: STA15 to STA18, UI16, UI17 and REL8 wait only for the slices they depend on. Until STA17 is built and deployed, local projects connect and plan but cannot start (`LOCAL_START_OFF`, observed in `src/supervisor/campaign.mjs:355-358`).
+**#24 and #32 were answered on 2026-10-16** (section 8). Nothing for projects without GitHub waits for the owner any more: STA15 to STA18, UI16, UI17 and REL8 wait only for the slices they depend on. At that revision, until STA17 was built, local projects could connect and plan but not start (`LOCAL_START_OFF`). STA17 is built since ([AW-012](DECISIONS.md#aw-012---local-projects-start-from-an-owner-approval-in-the-dashboard)).
 
 | Decision | Built switched off meanwhile | Stays off or unbuilt until answered |
 | --- | --- | --- |
@@ -481,7 +483,7 @@ Two cases need the order spelled out:
 
 Lane SELF waits for no owner decision: the owner answered (e) and (f) on 2026-10-16. Its powers are built switched off and SELF13 switches them on through the upgrade procedure once the owner sets `selfHosting` in `config.json`. Its local authorization form (`aiworks-work:<n>`) stays off until STA17 turns local admission on, and imported issues are closed on GitHub only after the owner confirms the list in the dashboard (SELF11, UI20).
 
-Telegram delivery (#1) has no slice in this order and stays off. Needs you stays the one source it would later send.
+Telegram delivery (#1) had no slice in this order. OWNER_UI_V2 WP6 later built it in source, switched off, and the owner chose on 2026-10-21 that no channel leaves the computer for now. Needs you stays the one source it would send.
 
 ### 6.11 Design slice → build-order slice
 
@@ -534,7 +536,7 @@ Reasons for the merges and splits:
 - **G6.** Answered 2026-10-17: the envelope's `release.mode` stays and accepts only `review-only`. A release mode belongs to a destination and comes only from a grant (AR §3), so the field is shown, never acted on (C10).
 - **G7.** The one governance-side change left is the release schema for REL10, proposed as text in AR §10.2 and made by the governance contract's own process, never from here. D2 needs none: its overlay schema ships with AIWorks (PC §7.3, #24 answered 2026-10-16).
 - **G8.** workstation state is unknown here. Whether R1-REST-PUBLISH, LD1-LOCAL-DATA or F1-AW005 is deployed has not been checked.
-- **G9.** Designed 2026-10-16: the owner's decisions (e) AIWorks's own code trusts **local main**, with GitHub as an optional backup, and (f) AIWorks's own issues move to a **local work list**, with the open GitHub issues imported once, are [LOCAL_OPERATION](design/LOCAL_OPERATION.md) and lane SELF (6.8b). AW-005 and the provenance check name `origin/main` today; the amended text lands with SELF12. Nothing is built (planned).
+- **G9.** Designed 2026-10-16: the owner's decisions (e) AIWorks's own code trusts **local main**, with GitHub as an optional backup, and (f) AIWorks's own issues move to a **local work list**, with the open GitHub issues imported once, are [LOCAL_OPERATION](design/LOCAL_OPERATION.md) and lane SELF (6.8b). At that time AW-005 and the provenance check named `origin/main`. Lane SELF is built in source since, with the amended text of SELF12; SELF13, the switch on a computer, is runbook only.
 
 ### 6.14 Implementation boundaries (kept)
 
@@ -589,7 +591,7 @@ Acceptance must use source-appropriate evidence: L0 plan, L1 interactive UI revi
 - **(m) AIWorks's own live runtime:** upgrades stay manual, through the upgrade procedure (AR §12).
 - **(n) AIWorks starts the next wave by itself (#153 option B).** The owner said: "stop asking me questions. just do it." The owner approves one private, digest-bound program record once. It names this plan, the slices allowed and the slices excluded, the executor chain and the constraints. AIWorks then builds each next wave's declaration from section 6 by fixed rules, not by a model, and registers it only when every slice fits the record exactly. Anything that does not fit becomes one Needs you item. Runbook-only slices, which change the live install, are never proposed. Lane PROG (section 6.8d) builds it switched off; PROG4 records the decision; PROG5 switches it on.
 
-These are recorded design decisions. None of them is built or deployed by this plan (planned).
+These are recorded design decisions. This plan built none of them; later slices built them in source, most switched off (see [STATUS.md](STATUS.md)). None is deployed by this repository.
 
 | ID | Detailed design/authority question | Resolution (decided, or proposed pending review) | Dependency |
 | --- | --- | --- | --- |
