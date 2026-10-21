@@ -44,7 +44,7 @@ const list = (value, max = 300, items = 32) => (Array.isArray(value) ? value : [
 export const WORK_COPY = Object.freeze({
   PLAN_CHANGED: 'This plan changed since you opened it. Review it again.',
   DRAFT_STALE: INTAKE_COPY.DRAFT_STALE,
-  ALREADY_STARTED: 'This plan has already started. Its work is under Work.',
+  ALREADY_STARTED: 'This plan has already started. Its work is on Overview.',
   NOT_FOUND: 'This plan is not on this computer. It may belong to another project, or the address is mistyped.',
   NOT_READY: 'This plan is not ready to approve yet.',
   RULES_FIRST: 'Confirm this project’s rules on its Overview first. Then AIWorks can plan and start work here.',

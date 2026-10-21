@@ -662,7 +662,7 @@ const RELEASE_HISTORY_STEPS = [...FORWARD_STEPS, 'rollback'];
 
 /**
  * The releases recorded in the store (slice REL3), the latest attempt per step, for the five-step ladder on Results and
- * the unknown and failure lines in Needs me (AUTO_RELEASE.md section 9, slice UI15). Built switched off (#33): nothing
+ * the unknown and failure lines in Needs you (AUTO_RELEASE.md section 9, slice UI15). Built switched off (#33): nothing
  * writes them yet, so this is empty today. Only names, states, step names and outcomes leave here, each checked: an
  * unrecognised state or outcome is `unknown`, and an outcome not recorded is null (started, not finished).
  */
