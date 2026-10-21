@@ -5,6 +5,19 @@ import { safeText } from './roadmap.mjs';
 const CHECKING = '[Checking this text before displaying it…]';
 const UNAVAILABLE = '[Text check could not finish. The original remains in the work records.]';
 const SENSITIVE = '[sensitive content omitted]';
+const PART = '[Part omitted: it looked like it could contain a credential. The full text stays in the work records on this computer.]';
+
+/**
+ * The text with each flagged paragraph replaced, or null when it must be withheld whole: a single paragraph, or a
+ * result the same check still flags (material spanning paragraphs). Clean text is returned unchanged.
+ */
+export function partlySafe(text) {
+  if (safeText(text, text.length) === text) return text;
+  const parts = text.split(/(\n[ \t]*\n)/);
+  let hidden = 0;
+  const shown = parts.map((part, i) => i % 2 || safeText(part, part.length) === part ? part : (hidden++, PART)).join('');
+  return hidden && hidden < Math.ceil(parts.length / 2) && safeText(shown, shown.length) === shown ? shown : null;
+}
 
 // One owned thread, at most 20 queued bodies (8 MiB of UTF-16 text), and 512 small
 // exact-content receipts keep repeated polls and a page of 200 comments bounded.
@@ -25,11 +38,11 @@ export class DisplayTextChecks {
         const oldest = [...this.#entries].find(([, e]) => e.state !== 'checking');
         if (oldest) this.#entries.delete(oldest[0]);
       }
-      entry = { state: 'checking', body: text, sensitive: null };
+      entry = { state: 'checking', body: text, shown: undefined };
       this.#entries.set(key, entry);
       this.#next();
     }
-    return { state: entry.state, text: entry.state === 'ready' ? (entry.sensitive ? SENSITIVE : text)
+    return { state: entry.state, text: entry.state === 'ready' ? (entry.shown === true ? text : entry.shown ?? SENSITIVE)
       : entry.state === 'checking' ? CHECKING : UNAVAILABLE };
   }
 
@@ -49,16 +62,17 @@ export class DisplayTextChecks {
       return;
     }
     this.#active = worker;
-    let sensitive = null, failed = false;
+    // The worker answers true (clean), null (withhold) or the text with flagged paragraphs replaced.
+    let shown, failed = false;
     const timeout = setTimeout(() => { failed = true; void worker.terminate(); }, 5000);
     timeout.unref();
     worker.stdout.resume(); worker.stderr.resume();
-    worker.on('message', value => { if (!failed && typeof value === 'boolean') sensitive = value; });
+    worker.on('message', value => { if (!failed && (value === true || value === null || typeof value === 'string')) shown = value; });
     worker.on('error', () => { failed = true; });
     worker.on('exit', code => {
       clearTimeout(timeout);
-      entry.state = !failed && code === 0 && sensitive !== null ? 'ready' : 'unavailable';
-      entry.sensitive = sensitive; delete entry.body;
+      entry.state = !failed && code === 0 && shown !== undefined ? 'ready' : 'unavailable';
+      entry.shown = entry.state === 'ready' ? shown : undefined; delete entry.body;
       this.#active = null;
       this.#next();
     });
@@ -73,5 +87,6 @@ export class DisplayTextChecks {
 }
 
 if (!isMainThread) {
-  parentPort.postMessage(safeText(workerData, workerData.length) !== workerData);
+  const shown = partlySafe(workerData);
+  parentPort.postMessage(shown === workerData ? true : shown);
 }
