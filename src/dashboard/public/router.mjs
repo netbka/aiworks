@@ -48,6 +48,7 @@ function parse(hash) {
   if (tail.length === 1 && tail[0] === 'start') return { screen: 'start', project };
   if (tail.length === 1 && tail[0] === 'settings') return { screen: 'project-settings', project };
   if (tail.length === 1 && tail[0] === 'knowledge') return { screen: 'knowledge', project };
+  if (tail.length === 1 && tail[0] === 'releases') return { screen: 'releases', project };
   if (tail.length === 1 && tail[0] === 'plan') return { screen: 'plan', project };
   if (tail.length === 2 && tail[0] === 'review' && name(tail[1])) return { screen: 'review', project, plan: tail[1] };
   if (tail.length === 3 && tail[0] === 'step' && name(tail[1]) && name(tail[2])) return { screen: 'step', project, work: tail[1], step: tail[2] };
@@ -69,6 +70,7 @@ export function formatRoute(route) {
     case 'start': return `#/p/${p(route.project)}/start`;
     case 'project-settings': return `#/p/${p(route.project)}/settings`;
     case 'knowledge': return `#/p/${p(route.project)}/knowledge`;
+    case 'releases': return `#/p/${p(route.project)}/releases`;
     case 'plan': return `#/p/${p(route.project)}/plan`;
     case 'review': return `#/p/${p(route.project)}/review/${p(route.plan)}`;
     case 'step': return `#/p/${p(route.project)}/step/${p(route.work)}/${p(route.step)}`;
@@ -93,5 +95,5 @@ export function resolveRoute(hash) {
 
 /** The route's global destination, for aria-current in the global bar. Project screens belong to Projects; the work list to Needs me. */
 export const globalOf = (route) => ['home', 'needs', 'settings'].includes(route.screen) ? route.screen : route.screen.startsWith('worklist') ? 'needs' : 'projects';
-/** The project tab a route belongs to, or null. Step belongs to Work; Start work, Plan, Review, Project settings and Knowledge to Now. */
-export const tabOf = (route) => route.screen === 'project' ? route.tab : route.screen === 'step' ? 'work' : ['start', 'plan', 'review', 'project-settings', 'knowledge'].includes(route.screen) ? 'now' : null;
+/** The project tab a route belongs to, or null. Step belongs to Work; Releases to Results; Start work, Plan, Review, Project settings and Knowledge to Now. */
+export const tabOf = (route) => route.screen === 'project' ? route.tab : route.screen === 'step' ? 'work' : route.screen === 'releases' ? 'results' : ['start', 'plan', 'review', 'project-settings', 'knowledge'].includes(route.screen) ? 'now' : null;
