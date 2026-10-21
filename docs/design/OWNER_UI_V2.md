@@ -86,7 +86,7 @@ Two separate lines, never merged: work (Plan ready → Working / Checking → Wa
 
 ## 7. Backend coverage in source (observed)
 
-Observed in the source of this revision; none of it was checked on a running installation. The table first recorded the gaps at `b43faa2`; rows below now name what WP1 to WP8 and the connected owner journey built.
+Observed in the source of this revision; none of it was checked on a running installation. The table first recorded the gaps at `b43faa2`; rows below now name what WP1 to WP9 and the connected owner journey built.
 
 | Screen | Served today | Partly | Missing |
 | --- | --- | --- | --- |
@@ -96,7 +96,7 @@ Observed in the source of this revision; none of it was checked on a running ins
 | Plan | Plan screen: Now, Next and Later, priority, done-when criteria with check method, included and later, estimate or "No estimate", Edit plan as a new draft version, each plan's version history with what changed (`work_drafts`); approval of exactly the shown version (`/api/work/approve`) | Plan and do and project connection stay switched off by default | Next and Later starting by themselves (PROG5, off) |
 | Decision | Structured decisions with options, consequences, suggestion, what continues and if unanswered; answer, snooze, "did not need me" (`/api/v2/decisions/*`), on the step and on Home | A stop without a structured decision is answered in the owner's own words | — |
 | Review | Criteria with check and evidence, verdict summary, findings, where your eyes matter (`resultReview`); Accept result for GitHub results through the merge gate and Request changes on a finished step, both caller-checked (`/api/v2/results/*`); try the checked version and capture its desktop and phone screenshots (WP7); entries from Results, Home and Overview; local Apply (`/api/work/apply`) | Static pages only: a version that needs its own server is not previewed | Preview of a version that runs its own server |
-| Releases | Release states with honest unknown (`RELEASE_STATES`) | Destination, post-release check and rollback built, switched off | Publish action; user-facing change text; restore scope |
+| Releases | Release states with honest unknown (`RELEASE_STATES`); each recorded release's destination, user-facing change, version, restore scope and latest health; why Publish is not available; Check the site now under a valid grant (`/api/v2/projects/:id/releases`, `/api/v2/releases/check`, WP9) | Release execution, post-release check and rollback built, switched off; the tab shows only where a release is configured | Publish action (its destinations are owner-reserved, section 10) |
 | Knowledge | Facts confirmed by the owner, found in the README at a named commit or suggested by AI, with history (`/api/v2/projects/:id/knowledge`); approved plans' done-when criteria and the owner's decision answers with their origin; documents the approved steps name, by path only; the project's typed events | Coordinator messages not bound to a project | The project assistant (not built) |
 | Project settings | Folder, worktrees, relocate; standing protected areas, notes for the AI, project and monthly budget (WP5, `project_settings`); how work runs, each goal's approved limits and what AIWorks never does, read-only | Release modes narrow only; `denyWrites` per plan; instructions per step | — |
 | Settings | Accounts with limit state (`/api/accounts`); supervisor and worker health | AI cost only, no period over HTTP | Hosting and subscription cost categories; answer buttons on a phone (WP6 built alert rules, quiet hours, a synthetic rehearsal transport in `alerts.mjs` and a Telegram transport in `alert-telegram.mjs`, off until the operator names secret store references and switches sending on; checked against a synthetic network only) |
@@ -177,10 +177,10 @@ Tests follow [AGENTS.md](../../AGENTS.md#validation): only product-critical beha
 
 ## 10. Owner-reserved questions
 
-- **Remote access (WP10).** The dashboard binds loopback only and its token is readable by any local process (AW-003). A phone needs a separately reviewed sign-in, a paired relay or a trusted device. Which one?
-- **Release (WP9).** Which destinations may a manual Publish reach, per project (AW-010)?
+- **Remote access (WP10).** The dashboard binds loopback only and its token is readable by any local process (AW-003). A phone needs a separately reviewed sign-in, a paired relay or a trusted device. Which one? (Answered on 2026-10-21, below.)
+- **Release (WP9).** Which destinations may a manual Publish reach, per project (AW-010)? (Answered on 2026-10-21, below.)
 - **GitHub reads (WP4).** Settled for WP4: accept and request changes for GitHub results go through the supervisor and its merge gate; the dashboard still makes no GitHub API call and reads no review state.
-- **Words.** This proposal says "Needs you" and "Accept result"; OWNER_WORKSPACE.md says "Needs me" and reserves "Accepted" for recorded acceptance. Keep, rename, or adopt?
+- **Words.** This proposal says "Needs you" and "Accept result"; OWNER_WORKSPACE.md says "Needs me" and reserves "Accepted" for recorded acceptance. Keep, rename, or adopt? (Answered on 2026-10-21, below.)
 
 WP1 to WP8 can start without these answers.
 
