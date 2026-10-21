@@ -53,6 +53,7 @@ export const INTAKE_COPY = Object.freeze({
   PLAN_FILE_NOT_FOUND: "There's no file {path} in {project} at {sha7}.",
   GITHUB_UNKNOWN: "GitHub can't be reached, so AIWorks can't read {what} yet. It will try again.",
   BASE_UNKNOWN: "AIWorks couldn't read the latest version of {project}. It will try again.",
+  RECEIVED: 'AIWorks has received this request and has not started drafting a plan yet. Nothing changes yet.',
   DRAFTING: 'AIWorks is reading {project} and drafting a plan. Nothing changes yet.',
   DRAFT_READY: "Here's what AIWorks would do, what it may change and how it will be checked.",
   PLAN_ONLY_READY: 'This plan changes nothing. You can start it while {project} stays at {sha7}.',
@@ -596,7 +597,11 @@ export function intakeState(request, draft) {
     if (request.state === 'failed') return { code: 'DRAFT_FAILED', reason: request.failure };
     // Waiting for its project budget (coordinator.mjs budgetHold): still to be drafted, with the budget's reason.
     const wait = request.state === 'received' && /^project-budget: /.test(request.failure ?? '') ? request.failure.slice('project-budget: '.length) : null;
-    return wait ? { code: 'DRAFTING', budgetWait: wait } : { code: 'DRAFTING' };
+    if (wait) return { code: 'RECEIVED', budgetWait: wait };
+    // Received, no planning run recorded yet: queued, or waiting to try again after a read that could not draft it
+    // (failRequest), by the code of that read and never its reason. Only a recorded coordinator run (state 'drafting') is drafting.
+    if (request.state === 'received') return request.not_before ? { code: 'RECEIVED', retryAt: request.not_before, retryCode: String(request.failure ?? '').split(':')[0] || null } : { code: 'RECEIVED' };
+    return { code: 'DRAFTING' };
   }
   if (draft.state === 'stale') return { code: 'DRAFT_STALE', what: draft.stale_what };
   if (draft.conflicts?.length) return { code: 'CONFLICT', conflicts: draft.conflicts, startCode: draft.start_code };

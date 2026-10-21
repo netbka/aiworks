@@ -635,6 +635,7 @@ function startReceipt(address) {
   if (asked) {
     const plan = state.work?.plans?.find((item) => item.id === asked);
     if (plan?.budgetWait) return el('p', { class: 'notice warning' }, `Sent · Waiting for budget. ${BUDGET_WAIT_WORDS}`);
+    if (plan?.code === 'RECEIVED') return el('p', { class: 'subtext' }, `Sent · ${receivedText(plan)} The plan appears here when it is ready.`);
     if (!plan || plan.code === 'DRAFTING') return el('p', { class: 'subtext' }, 'Sent · AIWorks is drafting a plan. Nothing changes yet. The plan appears here when it is ready.');
     if (plan.code === 'DRAFT_FAILED') return el('p', { class: 'subtext' }, 'AIWorks couldn’t draft a plan for this request. Ask again, or change the goal.');
     return el('p', { class: 'subtext' }, 'Your plan is ready. ', routeLink('Review the plan', { screen: 'review', project: plan.project, plan: plan.id }), '.');
@@ -653,8 +654,8 @@ function startScreen(project) {
   // A project without GitHub plans through Plan and do only, from a description: it has no issues or pull requests.
   const local = Boolean(localProject(project));
   if (local && !doable) {
-    return [empty('Confirm this project’s rules first.', state.work?.planAndDo ? 'You confirm them on its Now screen. Then you can ask for a plan here and approve it.'
-      : 'Planning here is switched off in the AIWorks configuration file on this computer.'), routeLink('Open Now', { screen: 'project', project, tab: 'now' }, 'button secondary')];
+    return [empty('Confirm this project’s rules first.', state.work?.planAndDo ? 'You confirm them on its Overview. Then you can ask for a plan here and approve it.'
+      : 'Planning here is switched off in the AIWorks configuration file on this computer.'), routeLink('Open Overview', { screen: 'project', project, tab: 'now' }, 'button secondary')];
   }
   if (!local && !projectCampaigns(project).length && projectList().find((item) => sameProject(item.id, project))?.kind !== 'GitHub') {
     return [empty('Plan only is not available for this project yet.', 'Planning for projects without a GitHub repository is not available yet.')];
@@ -770,7 +771,14 @@ async function askForWork(project, address) {
  * sends the version and digest that were shown; the server registers exactly that plan, or refuses and starts nothing.
  */
 const BUDGET_WAIT_WORDS = 'The project budget cannot cover planning it, so AIWorks has not started. Raise or remove the budget in this project’s settings, or wait for next month if the monthly budget ran out; planning starts by itself when it fits.';
-const PLAN_WORDS = { DRAFTING: 'Drafting a plan', DRAFT_READY: 'Plan ready', PLAN_ONLY_READY: 'Plan ready (plan only)', CONFLICT: 'Overlaps other work',
+// A request with no planning run recorded yet is received, not drafting: queued, or waiting to read its project again.
+const RETRY_WORDS = { GITHUB_UNKNOWN: 'GitHub could not be reached', BASE_UNKNOWN: 'the latest version of the project could not be read',
+  CHECKOUT_UNAVAILABLE: 'AIWorks’s copy of the project could not be prepared', quota: 'the planning AI worker reached a usage limit',
+  auth: 'the planning AI worker is not signed in', unavailable: 'the planning AI worker was not available' };
+const receivedText = (plan) => plan.retryAt
+  ? `Received. AIWorks has not drafted a plan yet: ${RETRY_WORDS[plan.retryCode] ?? 'its last try did not finish'}. It tries again after ${clock(plan.retryAt)}. Nothing changes yet.`
+  : 'Received. AIWorks has not started drafting a plan yet; it starts when its planner is free. Nothing changes yet.';
+const PLAN_WORDS = { RECEIVED: 'Received, not drafted yet', DRAFTING: 'Drafting a plan', DRAFT_READY: 'Plan ready', PLAN_ONLY_READY: 'Plan ready (plan only)', CONFLICT: 'Overlaps other work',
   DRAFT_STALE: 'Plan out of date', DRAFT_FAILED: 'Couldn’t draft a plan', APPROVED: 'Approved' };
 const projectPlans = (project) => (state.work?.plans ?? []).filter((plan) => sameProject(plan.project, project));
 const approvedText = (at) => `Approved at ${clock(at)} · waiting for AIWorks to pick it up`;
@@ -824,7 +832,9 @@ function planItem(project, plan) {
     editing ? el('p', { class: 'subtext' }, 'You have unsaved edits to this plan on Review.') : null,
     plan.approvedAt ? el('div', { class: 'subtext' }, approvedText(plan.approvedAt)) : null,
     edit ? el('div', { class: 'campaign-controls' }, edit) : null,
-    versionHistory(plan));
+    versionHistory(plan),
+    // Once approved and started: its approved versions and admitted amendments, from the goal's own record.
+    plan.code === 'APPROVED' && plan.campaignId ? goalVersionList(campaignById(plan.campaignId)) : null);
 }
 function planScreen(project) {
   if (!state.supervisor.available) return [unavailable()];
@@ -853,6 +863,7 @@ function reviewScreen(project, id) {
   if (!plan.version) {
     return [plan.code === 'DRAFT_FAILED' ? empty('AIWorks couldn’t draft a plan', 'Ask again from Start work, or change the goal.')
       : plan.budgetWait ? empty('Waiting for budget', BUDGET_WAIT_WORDS)
+      : plan.code === 'RECEIVED' ? empty('Not drafted yet', ` ${receivedText(plan)} This page shows the plan when it is ready.`)
       : empty('AIWorks is drafting a plan', 'Nothing changes yet. This page shows the plan when it is ready.'), back];
   }
   const items = (values) => el('ul', {}, ...values.map((value) => el('li', {}, value)));
@@ -2281,9 +2292,41 @@ function overviewGoal(goal) {
     budget ? el('div', { class: 'subtext' }, [budget.maxWorkerRuns ? `${budget.runsUsed ?? 0} of ${budget.maxWorkerRuns} AI worker runs used` : null,
       budget.reportedUsd !== null ? `${usd(budget.reportedUsd)} reported` : 'cost not reported', budget.unreportedRuns ? `${plural(budget.unreportedRuns, 'run')} without a reported cost` : null].filter(Boolean).join(' · ')) : null,
     goal.next ? el('div', { class: 'subtext' }, `Next: ${clockTimes(goal.next)}`) : null,
+    goalVersionList(campaignById(goal.id)),
     el('div', { class: 'campaign-controls' }, goal.control === 'registered'
       ? button(busy ? 'Pausing…' : 'Pause goal', () => scopedControl('pause', 'goal', [goal.binding], { campaignId: goal.id }), 'secondary small', commandsOff())
       : button(busy ? 'Resuming…' : 'Resume goal', () => scopedControl('resume', 'goal', [goal.binding], { campaignId: goal.id }), 'small', commandsOff())));
+}
+
+/*
+ * A goal's approved versions and the plan amendments admitted into it (supervisor.mjs goalVersions), newest first, each
+ * with what changed from the version before as recorded. Scope cannot change in an amendment, so only limits, AI
+ * workers and routing can differ; limits a version did not record are said to be unknown, never guessed.
+ */
+const LIMIT_NAMES = { slots: 'steps at a time', maxWorkerRuns: 'AI worker runs', maxRepairRounds: 'repair rounds per step', maxRetriesPerTask: 'retries per step',
+  maxCostUsd: 'reported dollars', unknownRunCostUsd: 'price of a run with no reported cost' };
+const limitValue = (key, value) => value === null ? 'none' : ['maxCostUsd', 'unknownRunCostUsd'].includes(key) ? usd(value) : String(value);
+function versionChanges(v) {
+  if (v.kind === 'registered') return 'Approved and started.';
+  const parts = [v.limitChanges === null ? 'what its limits were before is not recorded' : v.limitChanges.length
+    ? v.limitChanges.map((item) => `${LIMIT_NAMES[item.key]} ${limitValue(item.key, item.from)} → ${limitValue(item.key, item.to)}`).join(', ') : 'limits unchanged',
+  v.changed.includes('workers') ? 'AI workers changed' : null, v.changed.includes('routing') ? 'model routing changed' : null].filter(Boolean);
+  return `New approval${v.from ? ` after version ${v.from}` : ''}: ${parts.join('; ')}. The scope stayed the same.`;
+}
+function goalVersionList(c) {
+  const versions = c?.versions?.versions ?? [], amendments = c?.versions?.amendments ?? [];
+  if (versions.length < 2 && !amendments.length) return null;
+  const steps = (label, ids) => ids.length ? `${label} ${ids.join(', ')}` : null;
+  return disclosure(`overview/${c.id}/versions`, `Approved versions (${versions.length})${amendments.length ? ` · ${plural(amendments.length, 'plan amendment')}` : ''}`,
+    el('ol', { class: 'plan-versions', reversed: true },
+      ...[...versions].reverse().map((v) => el('li', { 'data-version': String(v.version ?? '') },
+        el('strong', {}, `Version ${v.version ?? 'not recorded'}${v.version === c.authorizationVersion ? ' (in force)' : ''}`),
+        el('div', { class: 'subtext' }, `${dateTime(v.at)} · ${versionChanges(v)}`),
+        v.limits ? el('div', { class: 'subtext' }, `Limits: ${limitsText(v.limits) || 'none set'}.`) : null)),
+      ...[...amendments].reverse().map((a) => el('li', { 'data-amendment': String(a.seq) },
+        el('strong', {}, `Plan amendment ${a.seq}`),
+        el('div', { class: 'subtext' }, [dateTime(a.at), a.authorizationVersion ? `admitted under version ${a.authorizationVersion}` : null,
+          steps('added', a.added), steps('revised', a.revised), steps('cancelled', a.cancelled)].filter(Boolean).join(' · '))))));
 }
 
 /** Overview: each goal of the project with its strip and pause, and the project's own Pause and Resume. */
@@ -2551,9 +2594,25 @@ async function sendDecision(action, c, task, body, { address = current.address, 
   try { await attempt(); } finally { decisionBusy = false; await poll(); }
 }
 
+/*
+ * A step's risk (OWNER_UI_V2 section 4): a label from recorded evidence only (supervisor.mjs stepRisks), never a guess,
+ * so a step with none says "not known". It decides what Review asks the owner to look at and keeps high-risk decisions
+ * off the phone: on a touch screen at phone width such a decision is shown in full but answered on a computer. A
+ * desktop at 320 px (zoomed) keeps every control, and Remind me later works everywhere.
+ */
+const RISK_WORDS = { low: ['planned', 'Low risk'], medium: ['attention', 'Medium risk'], high: ['blocked', 'High risk'] };
+const riskLine = (risk) => risk ? el('p', { class: 'subtext', 'data-risk': risk.level }, badge(...RISK_WORDS[risk.level]), ' ',
+  risk.source === 'declared' ? 'Marked high risk in the approved plan.' : 'From how AIWorks routed this step’s runs.')
+  : el('p', { class: 'subtext', 'data-risk': 'unknown' }, 'Risk not known yet: no run of this step has recorded it.');
+const PHONE = '(pointer: coarse) and (max-width: 640px)';
+const onPhone = () => { try { return window.matchMedia(PHONE).matches; } catch { return false; } };
+try { window.matchMedia(PHONE).addEventListener('change', () => { if (state && !document.querySelector('dialog[open]')) render(); }); } catch { /* no media queries */ }
+
 function decisionPanel(c, task) {
   const d = task.decision;
   if (!d) return null;
+  // A high-risk decision on a phone: read here, answered on a computer (the server's rules are the same either way).
+  const deferred = task.risk?.level === 'high' && onPhone();
   const address = current.address, key = `decision:${d.id}`, off = decisionBusy || commandsOff();
   if (d.answered) {
     const chosen = d.options.find((o) => o.id === d.answered.option);
@@ -2568,7 +2627,9 @@ function decisionPanel(c, task) {
   const feedback = el('textarea', { id: 'decision-feedback', rows: 2, maxlength: 2000, oninput: save });
   feedback.value = draft.feedback ?? '';
   const choice = el('span', { id: 'decision-choice-error', class: 'validation-error', role: 'alert', hidden: true }, COMMANDS.decision.notOption);
-  const options = d.structured ? el('fieldset', {}, el('legend', {}, d.question),
+  const options = d.structured && deferred ? el('div', {}, el('p', {}, el('strong', {}, d.question)),
+    el('ul', {}, ...d.options.map((o) => el('li', {}, `${o.label}${d.suggestion?.option === o.id ? ' (suggested)' : ''}`, el('div', { class: 'subtext' }, o.consequence)))))
+    : d.structured ? el('fieldset', {}, el('legend', {}, d.question),
     ...d.options.map((o) => {
       const input = el('input', { type: 'radio', name: 'decision-option', value: o.id, 'aria-describedby': `decision-option-${o.id}`, onchange: save });
       input.checked = draft.option === o.id;
@@ -2588,18 +2649,19 @@ function decisionPanel(c, task) {
         { address, done: () => drafts.delete(address, key) });
     } },
     el('h3', { class: 'section-title' }, d.structured ? 'Your decision' : 'Your answer'),
-    d.structured ? null : el('p', {}, 'The AI worker described no options for this stop. Answer in your own words; the step issue says what it needs.'),
+    deferred ? el('p', { class: 'notice warning', role: 'status' }, 'This step is high risk, so this decision is answered on a computer, not on a phone. Open this page on your computer to answer; the step waits meanwhile.') : null,
+    d.structured || deferred ? null : el('p', {}, 'The AI worker described no options for this stop. Answer in your own words; the step issue says what it needs.'),
     options,
     d.suggestion ? el('p', { class: 'subtext' }, `AIWorks suggests ${d.options.find((o) => o.id === d.suggestion.option)?.label ?? d.suggestion.option}: ${d.suggestion.reason}`) : null,
     d.continues ? el('p', { class: 'subtext' }, `Meanwhile: ${d.continues}`) : null,
     d.unanswered ? el('p', { class: 'subtext' }, `If you do not answer: ${d.unanswered}`) : null,
-    el('label', { class: 'field' }, el('strong', {}, d.structured ? 'Your own words (optional with a choice)' : 'Your answer'), words),
-    el('p', { class: 'subtext' }, 'Your answer reaches the next AI worker on this step as guidance. It cannot widen the approved plan: a wider change needs a new plan. No secrets; up to 2,000 characters.'),
-    el('div', { class: 'campaign-controls' }, el('button', { class: 'button', type: 'submit', disabled: off }, 'Send answer')),
+    deferred ? null : el('label', { class: 'field' }, el('strong', {}, d.structured ? 'Your own words (optional with a choice)' : 'Your answer'), words),
+    deferred ? null : el('p', { class: 'subtext' }, 'Your answer reaches the next AI worker on this step as guidance. It cannot widen the approved plan: a wider change needs a new plan. No secrets; up to 2,000 characters.'),
+    deferred ? null : el('div', { class: 'campaign-controls' }, el('button', { class: 'button', type: 'submit', disabled: off }, 'Send answer')),
     el('label', { class: 'field' }, el('strong', {}, d.snoozedUntil ? `Snoozed until ${clock(d.snoozedUntil)}. Remind me again in` : 'Remind me in'), snooze),
     el('div', { class: 'campaign-controls' }, button('Remind me later', () => sendDecision('snooze', c, task, { snooze: snooze.value }, { address }), 'secondary', off)),
     d.notNeeded ? el('p', { class: 'subtext' }, 'You said this did not need you. The step still waits for an answer.')
-      : disclosure(`decision/${d.id}/not-needed`, 'This did not need me', el('div', {},
+      : deferred ? null : disclosure(`decision/${d.id}/not-needed`, 'This did not need me', el('div', {},
         el('label', { class: 'field' }, el('strong', {}, 'What should AIWorks have done instead? (optional)'), feedback),
         el('div', { class: 'campaign-controls' }, button('Send feedback', () => sendDecision('not-needed', c, task, feedback.value.trim() ? { text: feedback.value } : {},
           { address, done: () => drafts.set(address, key, { ...(drafts.get(address, key) ?? {}), feedback: '' }) }), 'secondary', off)))));
@@ -2759,6 +2821,8 @@ function stepScreen(project, c, task) {
     el('div', { class: 'panel-body' },
       el('p', { role: 'status', 'aria-live': 'polite' }, stepBadge(c, task), ' ', task.stopped ? el('strong', {}, task.stopped.title) : whoIsOn(c, task) ?? waitLine(task.wait) ?? ''),
       task.stopped ? el('p', {}, task.stopped.text) : null,
+      riskLine(task.risk),
+      stopChoices(project, c, task),
       decisionPanel(c, task),
       reviewPanel(task.review, { campaignId: c.id, taskId: task.id, taskVersion: task.version, version: c.version,
         authorizationVersion: c.authorizationVersion, scopeDigest: c.scopeDigest }, { merged: deliveryOf(c, task)?.state === 'merged' }),
@@ -2774,13 +2838,41 @@ function stepScreen(project, c, task) {
       // The rule a returned change broke and what the next attempt was given (SCOPED_READING, slice UI18): paths, sections and headings only.
       reading ? el('div', { class: 'instruction-list' }, el('h3', { class: 'section-title' }, reading.title), ...reading.lines.map((line) => el('p', {}, line))) : null,
       // The recovery the stop sentence names is shown beside its primary action, never only under More (aiworks#11 review F12).
-      task.stopped && canCheckAgain(c, task) ? el('div', { class: 'campaign-controls' }, primary, button('Check again', () => command(c, 'recheck', task), 'secondary', commandsOff())) : primary,
+      // A high-risk step's retry is decided on a computer, like its decision.
+      task.stopped && canCheckAgain(c, task) && !(task.risk?.level === 'high' && onPhone())
+        ? el('div', { class: 'campaign-controls' }, primary, button('Check again', () => command(c, 'recheck', task), 'secondary', commandsOff())) : primary,
       guidance.length ? el('div', { class: 'instruction-list' }, el('h3', { class: 'section-title' }, 'Guidance you sent'), ...guidance.map((item) => instructionReceipt(item, c))) : null,
       disclosure(`step/${c.id}/${task.id}/details`, `Details · ${plural(attempts.length, 'attempt')}`, el('div', {},
         attempts.length ? el('ol', { class: 'receipt-steps' }, ...attempts.map((a) => el('li', {}, attemptText(a), a.id ? el('div', { class: 'subtext' }, `Run ${a.id}`) : null)))
           : el('p', { class: 'subtext' }, 'No attempt has run yet.'),
         activityList(30, events),
         el('p', { class: 'subtext' }, `Step ${task.id} · campaign ${c.id} · `, link('step issue ↗', task.issueUrl))))))];
+}
+
+/*
+ * What the owner can do about a stop, by its kind (supervisor.mjs stopKind), naming only what the existing authority
+ * supports: an answer or Check again retries the step under the same plan and limits; a smaller step, another protected
+ * scope or a wider limit is a new plan the owner compares and approves on Review. There is no "allow once": a result
+ * that changed a protected area or left its plan stays held, and nothing on this page publishes it.
+ */
+const STOP_CHOICES = {
+  'repair-limit': ['The independent checker still rejects this step, and its repair rounds are used up. The rejected version is not accepted or published.',
+    'Answer the decision, or send guidance and press Check again: the step gets one more try within the same limit.',
+    'A smaller step or more repair rounds changes the approved plan: plan it again under Plan work, compare it and approve it on Review. This goal keeps the limits it was approved with.'],
+  'protected-area': ['The step changed a protected area of this project. Its result is held: it is not published, merged or offered for review.',
+    'Answer the decision, or press Check again, to have the step redone without touching that area. The area stays protected for the new try.',
+    'Work that must change a protected area needs a new plan that you approve after changing the area in Project settings; this goal keeps the areas it was approved with. There is no way to allow it once.'],
+  boundary: ['The step changed something outside what its plan allows. Its result is held: it is not published, merged or offered for review.',
+    'Answer the decision, or press Check again, to have the step redone within the plan.',
+    'Work that needs more files or another scope is a new plan for you to compare and approve.'],
+};
+function stopChoices(project, c, task) {
+  const lines = task.stopped ? STOP_CHOICES[task.stopped.kind] : null;
+  if (!lines) return null;
+  return el('div', { class: 'instruction-list', 'data-stop': task.stopped.kind, 'data-focus-scope': `step/${c.id}/${task.id}/choices` },
+    el('h3', { class: 'section-title' }, 'What you can do'), el('p', {}, lines[0]), el('ul', {}, el('li', {}, lines[1]), el('li', {}, lines[2])),
+    el('p', { class: 'subtext' }, routeLink('Plans of this project', { screen: 'plan', project }),
+      task.stopped.kind === 'protected-area' ? [' · ', routeLink('Project settings', { screen: 'project-settings', project })] : null));
 }
 
 /** One Results row: what the step delivers, its state word, what follows, the link to the result and the check in details. */
@@ -2933,10 +3025,17 @@ async function loadProjectSettings(project) {
   } catch { entry.error = { status: 0, message: 'These settings could not be read just now. The page tries again.' }; }
   finally {
     entry.loading = false;
-    if (current.route.screen === 'project-settings' && current.route.project === project && state && !document.querySelector('dialog[open]')) render();
+    // Project settings and the project's Overview, whose budget panel reads the same view.
+    const shown = current.route.screen === 'project-settings' || current.route.screen === 'project' && current.route.tab === 'now';
+    if (shown && current.route.project === project && state && !document.querySelector('dialog[open]')) render();
   }
 }
-const settingsEntry = (project) => { if (!settingsViews.has(project)) void loadProjectSettings(project); return settingsViews.get(project) ?? {}; };
+/** The settings view of a project, read once, or again when `maxAge` ms passed since it was read (Overview's budget). */
+const settingsEntry = (project, { maxAge = null } = {}) => {
+  const entry = settingsViews.get(project);
+  if (!entry || maxAge !== null && !entry.loading && Date.now() - (entry.readAt ?? 0) > maxAge) void loadProjectSettings(project);
+  return settingsViews.get(project) ?? {};
+};
 const amountText = (value) => (value === null || value === undefined ? '' : String(value));
 /** The form as the owner left it, or the saved settings with the version they came from. */
 function settingsDraft(project, view) {
@@ -2979,8 +3078,32 @@ function settingsParts(project) {
   ].filter(Boolean);
 }
 const rebuildSettings = () => { $('#content').replaceChildren(); render(); };
+
+/**
+ * Overview's budget (OWNER_UI_V2 screen 3, WP5): the project's all-time and monthly budget with what is counted and left,
+ * from the same view Project settings reads, read again every 30 seconds. Unknown cost is never $0, and no budget set
+ * says so. It is changed only in Project settings.
+ */
+function budgetPanel(project) {
+  const entry = settingsEntry(project, { maxAge: 30_000 }), v = entry.view;
+  const where = routeLink('Project settings', { screen: 'project-settings', project });
+  let body;
+  if (!v) {
+    body = [entry.error?.status === 409 ? el('p', {}, 'No project budget yet: confirm this project’s rules first, then set one in ', where, '.')
+      : entry.error ? el('p', { class: 'needs-stale', role: 'status' }, `Not known right now. ${entry.error.message}`)
+        : el('p', { class: 'subtext' }, 'Reading this project’s budget…')];
+  } else {
+    const spend = v.spend, set = spend.total?.capUsd != null || spend.month?.capUsd != null;
+    body = [entry.error || offline ? el('p', { class: 'needs-stale', role: 'status' }, `Shown as read at ${clock(entry.readAt)}.`) : null,
+      spend.exhausted ? el('p', { class: 'notice warning' }, `The ${spend.exhausted === 'month' ? 'monthly budget' : 'project budget'} cannot cover another step, so no new step or planning read starts here${spend.exhausted === 'month' ? ' until next month' : ''}. Running steps finish.`) : null,
+      spendLine('Project budget, all time', spend.total, spend.unknownRunCostUsd),
+      spendLine('This month (UTC)', spend.month, spend.unknownRunCostUsd),
+      el('p', { class: 'subtext' }, set ? 'Counts this project’s AI worker runs and the planning of its goals. Change it in ' : 'No budget is set, so no dollar limit stops a step here; each goal still keeps its own limits. Set one in ', where, '.')];
+  }
+  return panel('Budget', 'What this project has counted and what is left.', el('div', { class: 'panel-body', 'data-focus-scope': `overview/${project}/budget` }, ...body.filter(Boolean)));
+}
 const settingsLink = (project) => el('p', { class: 'subtext' }, routeLink('Project settings', { screen: 'project-settings', project }),
-  ': protected areas, notes for the AI and budget.');
+  ': how work runs, what AIWorks never does, protected areas, notes for the AI and budget.');
 
 function projectSettingsScreen(project) {
   const entry = settingsEntry(project), v = entry.view;
@@ -3026,10 +3149,47 @@ function projectSettingsScreen(project) {
         el('span', { class: 'subtext' }, 'Needed with a budget: some AI workers do not report what a run cost, and that is never counted as $0.'))),
     el('p', { class: 'subtext' }, 'Saving applies to the next step AIWorks starts here. Work already approved keeps its own limits, and these settings never widen what it may change.'),
     el('button', { class: 'button', type: 'submit', disabled: settingsOff() }, 'Save settings'));
-  return [el('section', { class: 'panel', 'aria-labelledby': 'settings-title' },
+  return [howWorkRuns(project), el('section', { class: 'panel', 'aria-labelledby': 'settings-title' },
     el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'settings-title' }, 'Standing rules and budget'),
       el('p', {}, 'They apply to every goal in this project.'))),
     el('div', { class: 'panel-body', id: 'settings-dynamic' }, ...settingsParts(project)), form)];
+}
+
+/*
+ * How work runs (OWNER_UI_V2 screen 9 and section 4): what AIWorks does after Approve and start, the limits each goal of
+ * this project was approved with, and what AIWorks never does. Read-only: it explains the existing authority and offers
+ * no control of its own. Limits come from the goals' approved declarations (supervisor.mjs `limits`), never a default.
+ */
+const LIMIT_WORDS = { slots: (n) => `${plural(n, 'step')} at a time`, maxWorkerRuns: (n) => `at most ${plural(n, 'AI worker run')}`,
+  maxRepairRounds: (n) => `at most ${plural(n, 'repair round')} per step`, maxRetriesPerTask: (n) => `at most ${plural(n, 'retry', 'retries')} per step`,
+  maxCostUsd: (n) => `at most ${usd(n)} reported`, unknownRunCostUsd: (n) => `a run with no reported cost counts as ${usd(n)}` };
+const limitsText = (limits) => Object.entries(limits ?? {}).filter(([key, value]) => value !== null && LIMIT_WORDS[key]).map(([key, value]) => LIMIT_WORDS[key](value)).join(' · ');
+const NEVER = [
+  'Changes a protected area, or anything outside what the approved plan allows. Such a result is held and never published, and there is no “allow once”.',
+  'Widens a goal’s files, protected areas, limits or budget by itself or from your answer to a decision. That is a new plan version for you to compare and approve.',
+  'Merges a result that was not independently checked at its exact version, or outside the merge gate you set.',
+  'Releases or deploys anything from this page: release is not built here, and needs its own grant for this project.',
+  'Reads your secret files or shows secret values. Notes and facts that look like a password or key are refused.',
+  'Uses another AI provider to get around a permission an AI worker was refused, or buys or adds an AI account.',
+  'Uses GitHub Actions or paid GitHub features: builds and tests run on this computer.',
+  'Opens this dashboard to other computers: it answers only on this computer.',
+];
+function howWorkRuns(project) {
+  const goals = projectCampaigns(project).filter((c) => !['finished', 'cancelled'].includes(c.control));
+  return el('section', { class: 'panel', 'aria-labelledby': 'how-title', 'data-focus-scope': `settings/${project}/how` },
+    el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'how-title' }, 'How work runs'),
+      el('p', {}, 'The same for every goal in this project.'))),
+    el('div', { class: 'panel-body' },
+      el('p', {}, 'After you approve a plan, AIWorks splits it into steps and gives each to an AI worker in its own copy of the project. A different AI worker then checks exactly that version on its own. AIWorks repairs what the check finds, within the goal’s repair rounds, and continues after crashes, restarts and usage limits.'),
+      el('p', {}, 'When a step needs you, it stops and asks with a decision on that step. Your answer guides the next try under the same plan. Anything wider is a new plan version, shown with its differences, that you approve before it runs.'),
+      el('p', {}, 'Release: review only. A checked result is published for your review; merging follows the merge gate you set.'),
+      el('h3', {}, 'Limits of the goals here'),
+      goals.length ? el('ul', { class: 'settings-links' }, ...goals.map((c) => el('li', {}, el('strong', {}, campaignTitle(c, { inProject: true })),
+        el('div', { class: 'subtext' }, `${limitsText(c.limits) || 'No limits were set for this goal'}. Approved version ${c.authorizationVersion}.`))))
+        : el('p', { class: 'subtext' }, localProject(project) && localWork(project).length ? 'Each goal here keeps the limits its plan showed on Review when you approved it.'
+          : 'No goal is running here, so no goal limits apply yet. Each plan states its limits on Review before you approve it.'),
+      el('h3', {}, 'AIWorks never'),
+      el('ul', {}, ...NEVER.map((line) => el('li', {}, line)))));
 }
 
 /** The 5-second refresh keeps the form as typed: only the applied version, the spend and the button change. */
@@ -3304,8 +3464,42 @@ function knowledgeScreen(project) {
       v.suggestions.length ? el('ul', { class: 'settings-links' }, ...v.suggestions.map((item) => suggestionItem(project, item)))
         : el('p', { class: 'subtext' }, v.materials.readme ? 'No suggestions now. AIWorks reads the first paragraph of the README and what each plan delivers.'
           : 'No suggestions now. AIWorks found no README in this project’s latest version to read, and no plan suggests one.'),
-      retired.length ? disclosure(`knowledge/${project}/retired`, `Set aside (${retired.length})`, el('ul', { class: 'settings-links' }, ...retired.map((fact) => factItem(project, fact)))) : null),
+      retired.length ? disclosure(`knowledge/${project}/retired`, `Set aside (${retired.length})`, el('ul', { class: 'settings-links' }, ...retired.map((fact) => factItem(project, fact)))) : null,
+      ...knowledgeEvidence(project, v)),
     form)];
+}
+
+/*
+ * What the project's approved goals already record (knowledge.mjs projectEvidence) and its event history, each with
+ * where it came from. None is a fact: an approved plan's criteria say "In an approved plan", never "Confirmed by you",
+ * and become facts only through Confirm or Add a fact above. Materials are named, never opened or read for this page.
+ */
+const EVIDENCE_STATE = { registered: 'running', paused: 'paused', finished: 'finished', cancelled: 'cancelled', 'cancel-requested': 'cancelling' };
+function knowledgeEvidence(project, v) {
+  const evidence = v.evidence ?? { requirements: [], decisions: [], references: [], withheldReferences: 0 };
+  const goalWords = (item) => `${item.goal ? `“${item.goal}”` : `goal ${item.campaignId}`}, approved version ${item.authorizationVersion}`;
+  const answer = (item) => item.option ? `you chose “${item.option}”` : item.ownWords ? 'you answered in your own words' : 'you answered';
+  return [
+    el('h3', {}, 'Requirements and decisions'),
+    evidence.requirements.length ? el('ul', { class: 'settings-links' }, ...evidence.requirements.map((item) => el('li', { 'data-focus-scope': `knowledge/${project}/goal/${item.campaignId}` },
+      el('p', {}, el('strong', {}, 'Done when'), ' ', badge('planned', 'In an approved plan')),
+      el('ul', {}, ...item.criteria.map((text) => el('li', {}, text))),
+      el('div', { class: 'subtext' }, `From ${goalWords(item)}, ${dateTime(item.approvedAt)} · ${EVIDENCE_STATE[item.control] ?? 'state not known'}. Not a fact you confirmed here: add it above if it stays true.`))))
+      : el('p', { class: 'subtext' }, 'No approved goal of this project states done-when criteria yet.'),
+    evidence.decisions.length ? el('ul', { class: 'settings-links' }, ...evidence.decisions.map((item) => el('li', {},
+      el('p', {}, `${capital(answer(item))} on ${item.step ? `“${item.step}”` : `step ${item.taskId}`}`, ' ', badge('done', 'Your answer')),
+      el('div', { class: 'subtext' }, `${dateTime(item.at)} · ${item.goal ? `“${item.goal}”` : `goal ${item.campaignId}`}. It guided that step only; it is not a standing rule.`))))
+      : el('p', { class: 'subtext' }, 'You have not answered a decision in this project yet.'),
+    el('h3', {}, 'Materials'),
+    el('ul', { class: 'settings-links' },
+      el('li', {}, v.materials.readme ? `README at version ${v.materials.readme}: its first paragraph is read for the suggestions above.` : 'README: none found in this project’s latest version.'),
+      ...evidence.references.map((item) => el('li', {}, el('code', {}, item.reference),
+        el('div', { class: 'subtext' }, `Named by ${plural(item.goals.length, 'approved goal')}; given to its AI workers. Not opened for this page.`)))),
+    evidence.withheldReferences ? el('p', { class: 'subtext' }, `${plural(evidence.withheldReferences, 'other named document')} not listed: not a plain project path, or the name looks like a secret.`) : null,
+    el('h3', {}, 'History'),
+    v.history?.events?.length ? eventList(v.history.events) : el('p', { class: 'subtext' }, 'Nothing recorded for this project yet.'),
+    v.history?.next ? el('p', { class: 'subtext' }, 'Older events are in Settings › Diagnostics.') : null,
+  ];
 }
 const rebuildKnowledge = () => { $('#content').replaceChildren(); render(); };
 /** The 5-second refresh leaves the screen as it is while the owner types in it; only its submit buttons follow the connection. */
@@ -3396,7 +3590,7 @@ function projectScreen(route) {
   const project = route.project, all = projectCampaigns(project);
   // Now from the state copy module, for a project this computer knows (or while its state cannot be read).
   if (route.screen === 'project' && route.tab === 'now' && (offline || !state.supervisor.available || all.length ||
-    projectList().some((item) => sameProject(item.id, project)))) return [...nowScreen(project), planLink(project), settingsLink(project), knowledgeLink(project)];
+    projectList().some((item) => sameProject(item.id, project)))) return [...nowScreen(project), budgetPanel(project), planLink(project), settingsLink(project), knowledgeLink(project)];
   // Project settings are read on their own, so they show whatever the supervisor's snapshot says (WP5).
   if (route.screen === 'project-settings') return projectSettingsScreen(project);
   // Knowledge is read on its own too (WP8).
@@ -3847,7 +4041,7 @@ async function poll() {
     if (!document.querySelector('dialog[open]')) render();
     $('#confirm-cancel').disabled = $('#send-instruction').disabled = $('#send-message').disabled = sending;
   } catch {
-    offline = true; $('#connection').textContent = 'Disconnected · controls disabled'; $('#connection').className = 'connection offline';
+    offline = true; $('#connection').textContent = 'Disconnected · retrying · controls off'; $('#connection').className = 'connection offline';
     $('#confirm-cancel').disabled = $('#send-instruction').disabled = $('#send-message').disabled = true;
     checkCloseStale();
     if (state && !document.querySelector('dialog[open]')) render();

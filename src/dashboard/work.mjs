@@ -47,7 +47,7 @@ export const WORK_COPY = Object.freeze({
   ALREADY_STARTED: 'This plan has already started. Its work is under Work.',
   NOT_FOUND: 'This plan is not on this computer. It may belong to another project, or the address is mistyped.',
   NOT_READY: 'This plan is not ready to approve yet.',
-  RULES_FIRST: 'Confirm this project’s rules on its Now screen first. Then AIWorks can plan and start work here.',
+  RULES_FIRST: 'Confirm this project’s rules on its Overview first. Then AIWorks can plan and start work here.',
   BASE_UNKNOWN: "AIWorks couldn't read the latest version of {project}, so nothing started. Try again in a minute.",
   START_REFUSED: "AIWorks didn't start this work: {reason}.",
   APPROVED: 'Approved at {time} · waiting for AIWorks to pick it up',
@@ -74,7 +74,7 @@ const REFUSAL_WORDS = Object.freeze({
   INVALID_DECLARATION: 'the plan does not meet the rules every started plan must meet',
   RULES_NONE: 'you haven’t confirmed this project’s rules',
   RULES_REVOKED: 'you revoked this project’s rules',
-  RULES_EXPIRED: 'this project’s rules expired; renew them on its Now screen',
+  RULES_EXPIRED: 'this project’s rules expired; renew them on its Overview',
   BASELINE_UNKNOWN: 'AIWorks no longer has the copy of the project this plan starts from',
   PROJECT_NOT_FOUND: 'the project is not connected',
   OVERLAY_DIFFERS_FROM_APPROVAL: 'the project’s rules changed after you approved this plan',
@@ -116,7 +116,8 @@ function planView(store, record, request, draft, textChecks) {
   const textCheck = states.includes('unavailable') ? 'unavailable' : states.includes('checking') ? 'checking' : 'ready';
   const startable = ['DRAFT_READY', 'PLAN_ONLY_READY', 'CONFLICT'].includes(state.code) && textCheck === 'ready';
   const view = { ...base, code: state.code, startable, approvedAt,
-    failure: state.code === 'DRAFT_FAILED' ? safeText(state.reason, 80) : null, budgetWait: state.budgetWait ? safeText(state.budgetWait, 300) : null, staleWhat: state.code === 'DRAFT_STALE' ? list(state.what, 120, 8) : [] };
+    failure: state.code === 'DRAFT_FAILED' ? safeText(state.reason, 80) : null, budgetWait: state.budgetWait ? safeText(state.budgetWait, 300) : null, retryAt: Number.isSafeInteger(state.retryAt) ? state.retryAt : null,
+    retryCode: /^[A-Za-z][A-Za-z0-9_-]{0,39}$/.test(state.retryCode ?? '') ? state.retryCode : null, staleWhat: state.code === 'DRAFT_STALE' ? list(state.what, 120, 8) : [] };
   if (!draft) return view;
   const d = draft.declaration, envelope = d.envelope ?? {};
   const providers = (d.executor?.kind === 'cli-chain' ? d.executor.providers : [d.executor]).filter(Boolean)
