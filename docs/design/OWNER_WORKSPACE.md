@@ -195,7 +195,7 @@ The items are today's "Needs you" items, unchanged in meaning (observed: built i
 - **Question.** What did I ask AIWorks, and what did it answer?
 - **First visible.** The chats, newest activity first, each with its project, message count and state. An open chat shows each message with its reply, or its receipts (Received, Read, Answered) while it waits.
 - **Primary action.** "Send" in an open chat continues it: the coordinator reads the chat's earlier turns (up to six) as context, under the same read-only limits. "New chat" starts one. A reply in a chat keeps that chat's project and project budget.
-- **In details.** The read agent's turn and tool counts. A paragraph of a reply that the credential check flags is replaced in place; the whole reply is withheld only when the result would still be flagged. The full reply stays in the work records.
+- **In details.** The read agent's turn and tool counts. A reply's text and its proposed campaign are the coordinator's separate results, so each passes the credential checks on its own and is withheld on its own. The full reply stays in the work records.
 
 #### Settings › Diagnostics
 

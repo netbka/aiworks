@@ -404,6 +404,19 @@ export function replyBody({ runId, messages, value }) {
   return body.length > 60000 ? `${body.slice(0, 60000)}\n\n_(truncated at the reply size limit)_` : body;
 }
 
+const WITHHELD = '[sensitive content omitted]';
+const CAMPAIGN_OPEN = '\n\n### Proposed campaign (draft, not registered)\n\n```json\n';
+const CAMPAIGN_CLOSE = '\n```\n\nRead-only planning by the AIWorks coordinator.';
+/**
+ * A stored reply split back into the separate results replyBody joined: the text, and the proposed campaign, or null
+ * when it has none. Each part is checked for display on its own, like separate messages.
+ */
+export function replyParts(body) {
+  const start = body.lastIndexOf(CAMPAIGN_OPEN), end = start < 0 ? -1 : body.indexOf(CAMPAIGN_CLOSE, start);
+  if (end < 0) return { text: body, campaign: null };
+  return { text: `${body.slice(0, start)}${body.slice(end + '\n```'.length)}`, campaign: body.slice(start + CAMPAIGN_OPEN.length, end) };
+}
+
 /** One coordinator tick: renew the lane lease, reconcile the open run, or dispatch the waiting messages. */
 export async function coordinatorTick(ctl) {
   const cfg = ctl.config.coordinator;
@@ -722,7 +735,9 @@ export function coordinatorView(store, config, now = Date.now()) {
       const reply = posted(m.response_key);
       const body = m.state === 'answered' ? (hasReplies ? store.get('SELECT body FROM coordinator_replies WHERE run_id = ?', m.run_id)?.body : null)
         ?? (['pending', 'local'].includes(reply?.state) ? reply.body : null) : null;
-      return { id: m.id, threadId: m.thread_id ?? m.id, text: m.text, source: m.source, repository: messageRepository(m), replyBody: body && !containsSecret(body) ? body : null, state: m.state, receivedAt: m.received_at, readAt: m.read_at,
+      const parts = body ? replyParts(body) : null, safe = (text) => (text && !containsSecret(text) ? text : null);
+      return { id: m.id, threadId: m.thread_id ?? m.id, text: m.text, source: m.source, repository: messageRepository(m),
+        replyBody: safe(parts?.text), replyCampaign: parts?.campaign ? safe(parts.campaign) ?? WITHHELD : null, state: m.state, receivedAt: m.received_at, readAt: m.read_at,
         answeredAt: m.answered_at, failure: m.failure, retryAt: m.state === 'received' ? m.not_before : null, attempts: m.attempts,
         runId: m.run_id, replyState: reply?.state ?? null, replyUrl: reply?.state === 'posted' ? reply.posted : null };
     }),

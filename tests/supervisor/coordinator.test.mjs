@@ -84,11 +84,12 @@ test('the coordinator reads the message read-only and stores its answer locally 
   const view = coordinator.coordinatorView(store, env.config);
   assert.equal(view.messages[0].state, 'answered');
   assert.equal(view.messages[0].replyUrl, null);
-  assert.equal(view.messages[0].replyBody, reply.body);
+  assert.deepEqual([view.messages[0].replyBody, view.messages[0].replyCampaign], Object.values(coordinator.replyParts(reply.body)));
+  assert.equal(view.messages[0].replyCampaign, '{"campaignId":"sampleapp-next"}');
   assert.equal(env.comments().length, 0);
   assert.equal(store.all('SELECT * FROM outbox').length, 0);
   const reopened = new Store(join(env.dataDir, 'supervisor.db'), { readOnly: true });
-  try { assert.equal(coordinator.coordinatorView(reopened, env.config).messages[0].replyBody, reply.body); }
+  try { assert.equal(coordinator.coordinatorView(reopened, env.config).messages[0].replyBody, coordinator.replyParts(reply.body).text); }
   finally { reopened.close(); }
   assert.equal(store.all('SELECT * FROM campaigns').length, 0, 'the coordinator never registers a campaign');
 });
