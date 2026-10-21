@@ -1,5 +1,6 @@
 // Project settings in the dashboard (docs/design/OWNER_UI_V2.md section 9, work package WP5): a project's standing
-// protected areas, notes for the AI and optional project and monthly budgets, with what the budget has left. The rules
+// protected areas, notes for the AI, optional project and monthly budgets, with what the budget has left, and who accepts
+// its results (AW-015). The rules
 // live in src/supervisor/project-settings.mjs; this module only reads them for the page and saves the owner's change.
 //
 // Saving is an owner route (server.mjs: same origin, CSRF token, 16 KiB, JSON) that runs the caller check first, so a
@@ -54,7 +55,7 @@ const period = (value) => (value ? { capUsd: value.capUsd, reportedUsd: value.re
 function settingsView(store, resolved, now) {
   const current = currentSettings(store, resolved.key);
   const spend = projectBudget(store, resolved.key, now, { detail: true });
-  return { available: true, project: resolved.id, version: current.version, savedAt: current.createdAt, settings: current.settings,
+  return { available: true, project: resolved.id, local: resolved.local, version: current.version, savedAt: current.createdAt, settings: current.settings,
     spend: { monthStart: spend.monthStart, unknownRunCostUsd: spend.unknownRunCostUsd, total: period(spend.total), month: period(spend.month),
       exhausted: spend.exhausted ? (spend.month?.exhausted && !spend.total?.exhausted ? 'month' : 'total') : null,
       // Planning that names no single project: charged to no project's budget, so shown apart and never in this one's sum.
@@ -78,10 +79,11 @@ const REFUSAL_WORDS = {
 
 /**
  * POST /api/v2/projects/settings: the owner saves a project's settings as the next version. input: { requestId, project,
- * version, protectedAreas, notes, budget: { totalUsd, monthlyUsd, unknownRunCostUsd } }. The caller check runs first.
+ * version, protectedAreas, notes, budget: { totalUsd, monthlyUsd, unknownRunCostUsd }, acceptance }. The caller check runs
+ * first. A request without `acceptance` keeps the saved mode, so an older page never turns owner acceptance off.
  */
 export async function saveProjectSettings(dataDir, input, { caller, now = Date.now() } = {}) {
-  const keys = ['requestId', 'project', 'version', 'protectedAreas', 'notes', 'budget'];
+  const keys = ['requestId', 'project', 'version', 'protectedAreas', 'notes', 'budget', 'acceptance'];
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !keys.includes(key)) ||
       !UUID.test(input.requestId ?? '') || typeof input.project !== 'string' || !Number.isSafeInteger(input.version) || input.version < 0) {
     throw fail(400, 'Invalid request.');
@@ -93,9 +95,10 @@ export async function saveProjectSettings(dataDir, input, { caller, now = Date.n
     return store.tx(() => {
       const resolved = resolveProject(store, dataDir, input.project);
       const saved = saveSettings(store, { project: resolved.key, expectedVersion: input.version, requestId: input.requestId,
-        settings: { protectedAreas: input.protectedAreas, notes: input.notes, budget: input.budget } }, now);
+        settings: { protectedAreas: input.protectedAreas, notes: input.notes, budget: input.budget,
+          acceptance: input.acceptance === undefined ? currentSettings(store, resolved.key).settings.acceptance : input.acceptance } }, now);
       return { ok: true, duplicate: saved.duplicate, version: saved.version,
-        message: saved.duplicate ? `Version ${saved.version} was already saved; nothing was saved twice.` : `Saved as version ${saved.version}. It applies to the next step AIWorks starts in this project.`,
+        message: saved.duplicate ? `Version ${saved.version} was already saved; nothing was saved twice.` : `Saved as version ${saved.version}. It applies to the next step AIWorks starts in this project, and who accepts results to the next merge.`,
         view: settingsView(store, resolved, now) };
     });
   } catch (error) {
