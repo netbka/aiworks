@@ -1,6 +1,6 @@
 # Owner journey acceptance (synthetic, disposable runtime)
 
-**Privacy boundary:** synthetic only. Two fictional projects, a synthetic AI worker and the synthetic governance fixture; no installation, account, recipient or private project. Screenshots and `journey.json` stay in the disposable folder, outside this repository.
+**Privacy boundary:** synthetic only. Two fictional projects, a synthetic AI worker and the synthetic governance fixture; no installation, account, recipient or private project. Screenshots and `journey.json` stay in the disposable folder, outside this repository; only the reviewed selection of the [static showcase](../../site/README.md) is committed.
 
 **What this is.** The local owner journey of [issue #39](https://github.com/netbka/aiworks/issues/39), run on the production entry points of the source revision under test, with findings repaired in the same change. It is a scripted behaviour and layout check by an AI implementer, **not a human usability study**, and it says nothing about any installed version: merged source is not deployed.
 
@@ -15,7 +15,7 @@ Windows with Chrome installed. `<new-folder>` must be new or empty and lie outsi
 - copies this checkout's `src`, `scripts/lib`, `registry`, `schemas` and the test fixtures into `<new-folder>/runtime` as one commit that its own `origin/main` contains, so merged-code admission (AW-005) holds;
 - starts the real `src/supervisor/cli.mjs serve` and `src/dashboard/main.mjs` from that copy, each hidden and through a launcher that exits at once, as a scheduled task would start them. The dashboard keeps its production Windows caller lookup;
 - starts headless Chrome the same way, as a browser the owner opens: no AIWorks job, and no live parent in this session;
-- drives Chrome over the DevTools protocol through 29 steps, writing each outcome to `<new-folder>/evidence/journey.json` with the source commit and whether it had uncommitted changes. Screenshots go beside it;
+- drives Chrome over the DevTools protocol through 29 steps, writing each outcome to `<new-folder>/evidence/journey.json` with the source commit and whether it had uncommitted changes. Screenshots go beside it, with the computer's name replaced by a fictional one. The [static showcase](../../site/README.md) is built from a reviewed selection of them;
 - stops every process it started.
 
 The AI worker is `tests/supervisor/fixtures/fake-claude.mjs`. It makes no model or network call and plays planner (`scenario.intake`), builder (`commit-page`, `owner`, and `probe-commit-page`, which tries the owner's Apply from inside its job) and independent checker. Everything else is the product's own code: intake, admission, Windows job containment, verification of the exact head, local candidates, preview capture, Apply and Undo apply, the alert outbox with the synthetic rehearsal transport, and every dashboard route.
