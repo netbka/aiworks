@@ -4444,4 +4444,11 @@ if (current.replace) { drafts.carry(location.hash, current.address); history.rep
 showRoute();
 try { csrf = (await (await fetch('/api/session')).json()).csrf; } catch { notice('Command session unavailable. Reload when the dashboard reconnects.', null, null, null); }
 await poll();
-setInterval(() => { if (!sending) void poll(); }, 5000);
+// One timed refresh at a time: while an answer is still on its way the next one is not asked for, so slow answers never
+// queue up on the dashboard behind each other (aiworks#49). After a command the page still reads the state at once.
+let refreshing = false;
+setInterval(() => {
+  if (sending || refreshing) return;
+  refreshing = true;
+  void poll().finally(() => { refreshing = false; });
+}, 5000);

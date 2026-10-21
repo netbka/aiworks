@@ -8,7 +8,7 @@ import { DEFAULTS } from '../supervisor/controller.mjs';
 import { safeText } from './roadmap.mjs';
 import { pendingInstructions } from '../supervisor/instructions.mjs';
 import { decisionId, isDecision, structuredDecision } from '../supervisor/decisions.mjs';
-import { acceptedHead, criterionEvidence, MAX_FEEDBACK, mergedHead, OWNER_CHANGES, pendingChanges, unresolvedOf, verifiedReview } from '../supervisor/result-review.mjs';
+import { criterionEvidence, MAX_FEEDBACK, OWNER_CHANGES, reviewRecords, unresolvedOf, verifiedReview } from '../supervisor/result-review.mjs';
 import { acceptanceMode } from '../supervisor/project-settings.mjs';
 import { mergeSettings } from '../supervisor/merge.mjs';
 import { previewManifest, previewSupport, PreviewError, PreviewSessions } from '../supervisor/preview.mjs';
@@ -97,9 +97,9 @@ function stopKind(blocked) {
 // raises it. With neither, the risk is not known: null, never "low".
 const RISK_LEVELS = { R0: 'low', R1: 'medium', R2: 'high' };
 const RISK_ORDER = ['low', 'medium', 'high'];
-function stepRisks(store, campaignId, declaration) {
+function stepRisks(operations, declaration) {
   const routed = new Map();
-  for (const op of store.all("SELECT task_id, routing FROM operations WHERE campaign_id = ? AND kind IN ('implement', 'verify')", campaignId)) {
+  for (const op of operations.filter((item) => ['implement', 'verify'].includes(item.kind))) {
     const level = RISK_LEVELS[op.routing?.decision?.indicators?.risk];
     if (level && RISK_ORDER.indexOf(level) > RISK_ORDER.indexOf(routed.get(op.task_id) ?? null)) routed.set(op.task_id, level);
   }
@@ -172,13 +172,13 @@ const HISTORY_LIMIT = 30;
  * its journal events. A read-only query of one campaign's records; an entry belongs to a step only when the supervisor
  * recorded it for that step, so one step never shows another's. Worker text never leaves: codes, counts, times, run IDs.
  */
-function stepHistories(store, campaignId) {
+function stepHistories(store, campaignId, rows) {
   const histories = new Map(), of = (taskId) => {
     if (!histories.has(taskId)) histories.set(taskId, { attempts: [], events: [] });
     return histories.get(taskId);
   };
   const operations = new Map();
-  for (const op of store.all('SELECT id, task_id, kind, executor_kind, state, outcome, created_at, updated_at FROM operations WHERE campaign_id = ? ORDER BY created_at DESC, seq DESC', campaignId)) {
+  for (const op of rows) {
     operations.set(op.id, op);
     const { attempts } = of(op.task_id);
     if (attempts.length >= HISTORY_LIMIT) continue;
@@ -205,12 +205,12 @@ const reportedCost = (outcome) => Number.isFinite(outcome?.receipt?.costUsd) && 
  * run without a positive cost). Runs still in progress have no cost yet and are counted apart. A refunded run (the
  * provider or executor refused before any work) is not a run of the step. Unknown stays unknown: it is never added as $0.
  */
-function stepCosts(store, campaignId) {
+function stepCosts(operations) {
   const costs = new Map(), of = (taskId) => {
     if (!costs.has(taskId)) costs.set(taskId, { runs: 0, reportedUsd: 0, unreportedRuns: 0, runningRuns: 0, retries: 0 });
     return costs.get(taskId);
   };
-  for (const op of store.all("SELECT task_id, state, outcome FROM operations WHERE campaign_id = ? AND state IN ('finished', 'recorded', 'dispatched')", campaignId)) {
+  for (const op of operations.filter((item) => ['finished', 'recorded', 'dispatched'].includes(item.state))) {
     const step = of(op.task_id);
     if (op.state !== 'finished') { step.runningRuns++; continue; }
     // A reported cost counts even on a refunded run: the campaign total adds it too.
@@ -300,9 +300,9 @@ function headingOf(value) {
   return text && safeText(text, 120) === text ? text : null;
 }
 /** The newest dispatch's sections added from this work's other steps (journal `reading-guide-extended`), distinct. */
-function extendedSections(store, campaignId, taskId) {
+function extendedSections(rows, taskId) {
   const out = [];
-  for (const { detail } of store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'reading-guide-extended' ORDER BY seq DESC LIMIT 200", campaignId)) {
+  for (const { detail } of rows) {
     const section = detail?.task === taskId ? sectionOf(detail.path, detail.anchor) : null;
     if (!section?.anchor || out.some((item) => item.path === section.path && item.anchor === section.anchor)) continue;
     out.push(section);
@@ -311,18 +311,31 @@ function extendedSections(store, campaignId, taskId) {
   return out;
 }
 /**
+ * The records a campaign's step readings use, each read once: the latest finished check of a step and the journal's
+ * `reading-guide-extended` entries. `operations`, when given, are the campaign's operations newest first (created_at,
+ * then seq), so the latest check comes from them instead of one query per step.
+ */
+function readingRecords(store, campaignId, operations = null) {
+  let extended = null;
+  return {
+    check: (taskId) => (operations ? operations.find((op) => op.task_id === taskId && op.kind === 'verify' && op.state === 'finished') ?? null
+      : store.get("SELECT created_at, outcome FROM operations WHERE campaign_id = ? AND task_id = ? AND kind = 'verify' AND state = 'finished' ORDER BY created_at DESC, seq DESC LIMIT 1",
+        campaignId, taskId)),
+    extended: () => (extended ??= store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'reading-guide-extended' ORDER BY seq DESC LIMIT 200", campaignId)),
+  };
+}
+/**
  * A step's reading, from its status `reading`: the counts and fallbacks as status has them; `broke`, the sections the
  * blocking findings of the step's latest check cite when that check returned the change; `next`, whether an attempt
  * started after that check, and which of those sections it was given. Null when status has none.
  */
-export function stepReading(store, campaignId, taskId, reading) {
+export function stepReading(store, campaignId, taskId, reading, records = readingRecords(store, campaignId)) {
   if (!reading) return null;
   const fallbacks = (reading.fallbacks ?? []).flatMap((item) => {
     const section = sectionOf(item?.path, item?.anchor);
     return section?.anchor ? [{ ...section, reason: FALLBACK_REASONS.includes(item.reason) ? item.reason : null }] : [];
   }).slice(0, READING_LIST_LIMIT);
-  const check = store.get("SELECT created_at, outcome FROM operations WHERE campaign_id = ? AND task_id = ? AND kind = 'verify' AND state = 'finished' ORDER BY created_at DESC, seq DESC LIMIT 1",
-    campaignId, taskId);
+  const check = records.check(taskId);
   const value = check?.outcome?.class === 'result' ? check.outcome.value : null;
   const blocking = new Set((Array.isArray(value?.findings) ? value.findings : []).filter((f) => f?.severity === 'blocking').map((f) => f.id));
   const broke = [];
@@ -337,7 +350,7 @@ export function stepReading(store, campaignId, taskId, reading) {
     campaignId, taskId, check.created_at) : null;
   const given = new Set((Array.isArray(after?.packet?.references) ? after.packet.references : []).map((item) => item?.path));
   return { anchored: count(reading.anchored), fallbacks, misses: { section: count(reading.misses?.section), unreferenced: count(reading.misses?.unreferenced) },
-    extended: count(reading.extended), extendedSections: count(reading.extended) ? extendedSections(store, campaignId, taskId) : [],
+    extended: count(reading.extended), extendedSections: count(reading.extended) ? extendedSections(records.extended(), taskId) : [],
     broke: broke.map((item) => ({ ...item, given: after ? given.has(item.anchor ? `${item.path}#${item.anchor}` : item.path) : null })),
     nextStarted: broke.length ? Boolean(after) : null };
 }
@@ -799,22 +812,23 @@ function decisionView(campaignId, task, feedback, now) {
  * `canAccept` and `canRequestChanges` are the server's: applyResultReview checks every binding again. A local result is
  * accepted by Apply under its own rules, so it offers only Request changes here. `acceptance` is the project's mode
  * (AW-015) and `awaitsAcceptance` says the merge gate holds this checked version until the owner accepts it or asks for
- * changes: a Needs you item.
+ * changes: a Needs you item. `records` and `acceptance` let a view of many steps read each campaign's review records
+ * (result-review.mjs reviewRecords) and each project's acceptance mode once; by default they are read for this step.
  */
-export function resultReview(store, c, task, spec, config = {}) {
-  const review = reviewOf(store, c, task, spec, config);
+export function resultReview(store, c, task, spec, config = {}, { records = reviewRecords(store, c.id), acceptance = (project) => acceptanceMode(store, project) } = {}) {
+  const review = reviewOf(store, c, task, spec, config, records, acceptance);
   // Whether Review offers a preview of this checked version (WP7), and why not when it does not.
   return review && { ...review, preview: previewSupport(task, spec, review) };
 }
 
-function reviewOf(store, c, task, spec, config) {
+function reviewOf(store, c, task, spec, config, records, acceptanceOf) {
   if (!task?.verified_sha) return null;
   const local = isLocalTarget(c.declaration), commit = spec?.deliverable === 'commit';
   const limits = campaignLimits(c.declaration);
   const roundsLeft = limits.maxRepairRounds === null ? null : Math.max(0, limits.maxRepairRounds - task.repair_rounds);
   const base = { verifiedSha: task.verified_sha, local, commit, repairRounds: task.repair_rounds, roundsLeft, criteria: [], findings: [], eyesOn: [],
     unresolved: null, summary: null, reportDigest: null, acceptedAt: null, requestedAt: null, mergeGate: null, canAccept: false, canRequestChanges: false,
-    acceptance: local ? null : acceptanceMode(store, c.declaration.target.repository), awaitsAcceptance: false };
+    acceptance: local ? null : acceptanceOf(c.declaration.target.repository), awaitsAcceptance: false };
   if (task.state !== 'done') {
     // Reopened at the owner's request: the earlier result and its check stay in the record, and the new head is checked again.
     const reopened = (task.findings ?? []).find((finding) => finding?.id === OWNER_CHANGES);
@@ -822,10 +836,10 @@ function reviewOf(store, c, task, spec, config) {
   }
   const v = verifiedReview(task);
   if (!v) return { ...base, state: 'no-evidence' };
-  const requested = pendingChanges(store, c.id, task.task_id, task.verified_sha);
-  const merged = !local && mergedHead(store, c.id, task.task_id, task.verified_sha);
+  const requested = records.pendingChanges(task.task_id, task.verified_sha);
+  const merged = !local && records.mergedHead(task.task_id, task.verified_sha);
   // Accepted only with the report this head was checked with, as the merge gate counts it (result-review.mjs).
-  const accepted = acceptedHead(store, c.id, task.task_id, task.verified_sha, v.reportDigest);
+  const accepted = records.acceptedHead(task.task_id, task.verified_sha, v.reportDigest);
   const criteria = criterionEvidence(spec?.acceptance, v).map((item) => ({ criterion: item.criterion, text: safeText(item.text, 300), result: item.result,
     check: item.check === null ? null : safeText(item.check, 300), evidence: item.evidence === null ? null : safeText(item.evidence, 500) }));
   const unresolved = unresolvedOf(criteria, v), open = ['registered', 'finished'].includes(c.control), gate = mergeSettings(config);
@@ -879,14 +893,24 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
     store.db.exec('BEGIN');
     // The supervisor's config, so each step's wait names the same admission check the controller applies (scheduler on or off).
     const config = readConfig(dataDir);
+    // Each project's acceptance mode, read once for every step of every campaign in it (AW-015).
+    const modes = new Map(), acceptance = (project) => {
+      if (!modes.has(project)) modes.set(project, acceptanceMode(store, project));
+      return modes.get(project);
+    };
     // Work in a project without GitHub has no repository, issue or pull request: its project screens show it from
     // work.mjs (workView `local`), never as a GitHub campaign here (OWNER_WORKSPACE S12).
     const campaigns = store.all("SELECT id FROM campaigns ORDER BY CASE WHEN control IN ('finished', 'cancelled') THEN 1 ELSE 0 END, created_at")
       .filter(({ id }) => !isLocalTarget(store.campaign(id).declaration)).map(({ id }) => {
       // Connections reads trusted main once; this per-campaign view does not use that field.
       const c = store.campaign(id), status = campaignStatus(store, id, now, { config, selfHostingConfig: null });
+      const statusOf = new Map(status.tasks.map((item) => [item.id, item]));
       const taskRows = store.tasks(id);
-      const merged = store.all("SELECT at, detail FROM journal WHERE campaign_id = ? AND kind = 'merged' ORDER BY seq DESC", id);
+      // The campaign's records, each read once for all its steps: its review records (merges, the owner's change
+      // requests and acceptances) and every operation, newest first. Nothing below reads them again per step.
+      const records = reviewRecords(store, id), merged = records.merged();
+      const ops = store.all('SELECT id, task_id, kind, executor_kind, state, target_sha, outcome, routing, created_at, updated_at FROM operations WHERE campaign_id = ? ORDER BY created_at DESC, seq DESC', id);
+      const opsById = new Map(ops.map((op) => [op.id, op])), reads = readingRecords(store, id, ops);
       const feedback = decisionFeedback(store, id);
       const specs = new Map(c.declaration.tasks.map((task) => [task.id, task]));
       const operations = store.openOperations(id);
@@ -894,19 +918,19 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
       // Verifier rejections per task: a churn signal for the owner, not a limit. And when each commit passed the check:
       // the latest finished check that accepted it, by task and commit (a delegated merge that waits too long, #139).
       const rejections = new Map(), acceptedAt = new Map();
-      for (const op of store.all("SELECT task_id, target_sha, outcome, updated_at FROM operations WHERE campaign_id = ? AND kind = 'verify' AND state = 'finished'", id)) {
+      for (const op of ops.filter((item) => item.kind === 'verify' && item.state === 'finished')) {
         const verdict = op.outcome?.class === 'result' ? op.outcome.value?.verdict ?? op.outcome.value?.result : null;
         if (verdict === 'rejected') rejections.set(op.task_id, (rejections.get(op.task_id) ?? 0) + 1);
         const key = `${op.task_id}/${op.target_sha}`;
         if (verdict === 'accepted' && Number.isSafeInteger(op.updated_at)) acceptedAt.set(key, Math.max(acceptedAt.get(key) ?? 0, op.updated_at));
       }
-      const histories = stepHistories(store, id);
-      const riskOf = stepRisks(store, id, c.declaration);
-      const costs = stepCosts(store, id);
+      const histories = stepHistories(store, id, ops);
+      const riskOf = stepRisks(ops, c.declaration);
+      const costs = stepCosts(ops);
       const paused = c.control === 'paused' ? store.get("SELECT at, detail FROM journal WHERE campaign_id = ? AND kind = 'paused' ORDER BY seq DESC LIMIT 1", id) : null;
       // Latest finished attempt per task: the worker's own verdict, not the protocol class alone.
       const lastOutcome = (taskId) => {
-        const op = store.get("SELECT kind, executor_kind, outcome, updated_at FROM operations WHERE campaign_id = ? AND task_id = ? AND state = 'finished' ORDER BY created_at DESC LIMIT 1", id, taskId);
+        const op = ops.find((item) => item.task_id === taskId && item.state === 'finished');
         if (!op?.outcome) return null;
         const terminal = op.outcome.class === 'result' ? op.outcome.value?.result ?? op.outcome.value?.verdict ?? null : null;
         return { role: op.kind === 'verify' ? 'Verifier' : 'Implementer', executor: code(op.executor_kind), at: op.updated_at,
@@ -969,7 +993,8 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
             operationId: p.delivery?.operationId ?? null, attachedAt: p.delivery?.at ?? null,
             // Who read it: the worker whose prompt carried it, and how that worker's run ended.
             ...(() => {
-              const op = p.delivery?.operationId ? store.get('SELECT executor_kind, state, outcome FROM operations WHERE id = ?', p.delivery.operationId) : null;
+              const op = p.delivery?.operationId ? opsById.get(p.delivery.operationId)
+                ?? store.get('SELECT executor_kind, state, outcome FROM operations WHERE id = ?', p.delivery.operationId) : null;
               return { executor: code(op?.executor_kind), runState: code(op?.state),
                 runOutcome: code(op?.outcome?.class === 'result' ? op.outcome.value?.result ?? op.outcome.value?.verdict : op?.outcome?.class) };
             })() };
@@ -977,7 +1002,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
         tasks: taskRows.map((task) => ({ id: task.task_id, title: safeText(specs.get(task.task_id)?.title),
           risk: riskOf(specs.get(task.task_id)),
           decision: decisionView(id, task, feedback, now),
-          review: resultReview(store, c, task, specs.get(task.task_id), config),
+          review: resultReview(store, c, task, specs.get(task.task_id), config, { records, acceptance }),
            mergeReceipt: mergeReceipt(task, merged),
           localReport: localReport(store, id, task, specs.get(task.task_id)),
           outcome: specs.get(task.task_id)?.outcome ? safeText(specs.get(task.task_id).outcome) : null,
@@ -994,7 +1019,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
           // never earlier, so a wait is never overstated.
           verifiedAt: task.verified_sha ? acceptedAt.get(`${task.task_id}/${task.verified_sha}`) ?? task.updated_at : null,
           // Why it waits, from status (UI11); a stop in §7.7 words and its own attempts and events (OWNER_WORKSPACE S5).
-          wait: stepWait(task, status.tasks.find((item) => item.id === task.task_id)?.wait, c.control),
+          wait: stepWait(task, statusOf.get(task.task_id)?.wait, c.control),
           stopped: stepStopped(task, safeText(specs.get(task.task_id)?.outcome ?? specs.get(task.task_id)?.title ?? task.task_id),
             `https://github.com/${c.declaration.target.repository}/issues/${specs.get(task.task_id)?.issue}`),
           history: histories.get(task.task_id) ?? { attempts: [], events: [] },
@@ -1002,10 +1027,10 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
           cost: (({ reportedUsd, ...rest }) => ({ ...rest, reportedUsd: reportedUsd > 0 ? reportedUsd : null, checkerRejections: rejections.get(task.task_id) ?? 0 }))(
             costs.get(task.task_id) ?? { runs: 0, reportedUsd: 0, unreportedRuns: 0, runningRuns: 0, retries: 0 }),
           // MODEL_ROUTING R6 (UI12): its models and tiers, why it moved up, and its cost in each unit apart, from status.
-          routing: stepRouting(status.tasks.find((item) => item.id === task.task_id)),
-          costByUnit: costByUnit(status.tasks.find((item) => item.id === task.task_id)?.costByUnit),
+          routing: stepRouting(statusOf.get(task.task_id)),
+          costByUnit: costByUnit(statusOf.get(task.task_id)?.costByUnit),
           // SCOPED_READING (UI18): the rule a returned change broke and what the next attempt was given; null before READ3.
-          reading: stepReading(store, id, task.task_id, status.tasks.find((item) => item.id === task.task_id)?.reading) })),
+          reading: stepReading(store, id, task.task_id, statusOf.get(task.task_id)?.reading, reads) })),
         agents: operations.map((op) => {
           const beat = heartbeat(dataDir, op.run_dir);
           return { id: op.id, taskId: op.task_id, role: op.kind === 'verify' ? 'Verifier' : 'Implementer',
