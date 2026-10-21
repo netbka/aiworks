@@ -731,7 +731,7 @@ function mergeReceipt(task, rows) {
     mergedAt: Number.isSafeInteger(d.mergedAt) ? d.mergedAt : row.at };
 }
 
-export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
+export function supervisorSnapshot(dataDir, now = Date.now(), { since, textChecks } = {}) {
   const path = join(dataDir, 'supervisor.db');
   if (!existsSync(path)) return { available: false, message: 'No supervisor store at the configured location.', campaigns: [], costs: [], activity: [] };
   let store;
@@ -821,7 +821,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
         }),
         instructions: store.all("SELECT * FROM events WHERE campaign_id = ? AND kind = 'agent-instruction' ORDER BY seq DESC LIMIT 30", id).map((event) => {
           const p = event.payload, task = taskRows.find((item) => item.task_id === p.taskId);
-          return { id: event.seq, taskId: p.taskId, role: p.role, text: safeText(p.text, 2000), at: event.received_at,
+          return { id: event.seq, taskId: p.taskId, role: p.role, text: textChecks?.read(p.text, 2000).text ?? safeText(p.text, 2000), at: event.received_at,
             status: p.delivery ? 'attached' : p.authorizationVersion !== c.authorization_version || p.scopeDigest !== c.scope_digest ? 'outdated'
               : ['done', 'verified'].includes(task?.state) || ['cancelled', 'cancel-requested', 'finished'].includes(c.control) ? 'undelivered' : 'queued',
             operationId: p.delivery?.operationId ?? null, attachedAt: p.delivery?.at ?? null,
@@ -885,9 +885,9 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since } = {}) {
     const reading = Boolean(store.get('SELECT 1 AS live FROM leases WHERE campaign_id = ? AND expires_at > ?', COORDINATOR_LANE, now));
     const coordinator = { configured: view.configured, configError: view.configError ? safeText(view.configError, 300) : null, reading,
       blocked: view.blocked ? safeText(view.blocked, 300) : null, reportTo: view.reportTo ?? null, runsToday: view.runsToday ?? 0, maxRunsPerDay: view.maxRunsPerDay ?? null,
-      messages: view.messages.map((m) => ({ id: m.id, text: safeText(m.text, 4000), source: safeText(m.source, 80), state: code(m.state),
+      messages: view.messages.map((m) => ({ id: m.id, text: textChecks?.read(m.text, 4000).text ?? safeText(m.text, 4000), source: safeText(m.source, 80), state: code(m.state),
         receivedAt: m.receivedAt, readAt: m.readAt, answeredAt: m.answeredAt, failure: code(m.failure), retryAt: m.retryAt, attempts: m.attempts,
-        repository: m.repository, replyBody: m.replyBody ? safeText(m.replyBody, 61000) : null,
+        repository: m.repository, replyBody: m.replyBody ? (textChecks?.read(m.replyBody, 61000).text ?? safeText(m.replyBody, 61000)) : null,
         replyState: code(m.replyState), replyUrl: githubLink(m.replyUrl),
         progress: m.state === 'read' ? (() => {
           const run = view.runs.find((item) => item.id === m.runId);

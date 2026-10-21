@@ -2,6 +2,10 @@
 
 Coordinator plans and replies stay in the local dashboard, under their message receipt and the requesting project's Start work receipt. "Read the plan" shows the checked final answer as text. Planning creates no GitHub issue, PR or comment. Each plan request retains its selected repository and runs separately; only registered campaign work publishes to its declared target repository ([AW-004](DECISIONS.md#aw-004---the-coordinator-is-read-only)).
 
+Long displayed bodies are checked outside the dashboard request loop (`src/dashboard/display-text.mjs`). Coordinator messages and replies, instructions, plan goals/summaries/details, local reports and work-item bodies/comments over 256 characters show a checking notice until the existing credential classifier finishes. A timeout or worker failure shows unavailable text, not a claim that the body contains a secret; the original work record is unchanged. Plan approval and editing remain unavailable while its text is being checked. Owner-input validation keeps its synchronous classification contract.
+
+Each dashboard owns one checking thread, with a five-second deadline, bounded JavaScript heap, at most 20 queued bodies of 200,000 characters each and 512 exact-content receipts. Only a completed check can reveal the corresponding text. Failed checks stay cached so polling cannot restart the same expensive work. Shutdown terminates the thread. These bounds protect the dashboard loop; they do not claim that every nested input can be fully classified within the deadline.
+
 Owner request, 2026-10-09: see the entire roadmap, completed and ongoing work, and send basic commands to agents. First delivered in governance provider (#60); the owner view is tracked in AIWorks design work. This is the local operations surface for the AIWorks delivery supervisor. It is not governance provider's project portal.
 
 ## Run
@@ -13,7 +17,7 @@ npm install
 npm run dashboard -- --data C:/example/aiworks/.local/supervisor --governance C:/example/aiworks/.local/governance
 ```
 
-Open **http://127.0.0.1:4318**. Optional arguments are `--port` and `--governance`. `--cache` is still accepted so existing launch commands keep working, but nothing is cached: an old `.local/dashboard-cache/roadmap-cache.json` is no longer read and can be deleted. `--governance` names the governance checkout and defaults to `governanceRoot` in the data directory's `config.json` ([SUPERVISOR.md §6](SUPERVISOR.md#governance-checkout)). Without one, the roadmap panel says "governance checkout not configured". Launch background instances with a hidden process, as required by the Windows command-window rule. On workstation it runs as the per-user task `AIWorks Dashboard`. Starting the dashboard does not start, pause, resume, upgrade or restart the supervisor.
+Open **http://127.0.0.1:4318**. Optional arguments are `--port` and `--governance`. `--cache` is still accepted so existing launch commands keep working, but the old roadmap cache is unused: `.local/dashboard-cache/roadmap-cache.json` is no longer read and can be deleted. `--governance` names the governance checkout and defaults to `governanceRoot` in the data directory's `config.json` ([SUPERVISOR.md §6](SUPERVISOR.md#governance-checkout)). Without one, the roadmap panel says "governance checkout not configured". Launch background instances with a hidden process, as required by the Windows command-window rule. On workstation it runs as the per-user task `AIWorks Dashboard`. Starting the dashboard does not start, pause, resume, upgrade or restart the supervisor.
 
 ## Ownership and updates
 

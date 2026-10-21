@@ -530,7 +530,7 @@ export function buildReviewFixture(root, { now = Date.now(), store: kind = 'full
   }
   const { declarations, ...paths } = built;
   // The full store has Plan and do and Add project on, so Plan, Review's Edit plan and the idea-first Add project show.
-  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ repositories: paths.repositories,
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ repositories: paths.repositories, governanceRoot: join(root, 'governance'),
     ...(['full', 'stopped'].includes(kind) ? { coordinator: { ...COORDINATOR, intake: true }, projectConnection: { enabled: true } } : {}), supervisorIssue: REVIEW_SUPERVISOR_ISSUE }, null, 2));
   const governance = join(root, 'governance');
   cpSync(GOVERNANCE, governance, { recursive: true });
