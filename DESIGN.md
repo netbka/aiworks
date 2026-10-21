@@ -40,7 +40,7 @@ An owner's control desk: project identity on the left, current state in the midd
 
 This is an English product interface for owners supervising local software delivery. There is no evidence of a separate regional market or localization requirement. It supports desktop monitoring and mobile triage. Familiar links, native controls and explicit status words take priority over decorative motion.
 
-The behavioral contract remains [OWNER_WORKSPACE](docs/design/OWNER_WORKSPACE.md), constrained by the [product constitution](docs/PRODUCT_CONSTITUTION.md). Runtime tokens are owned by `src/dashboard/public/dashboard.css` (`:root`); this document mirrors them, not a second generated theme. Presentation tests guard the responsive shell; token changes must update both sources in one change.
+The behavioral contract remains [OWNER_WORKSPACE](docs/design/OWNER_WORKSPACE.md), constrained by the [product constitution](docs/PRODUCT_CONSTITUTION.md). Runtime tokens are owned by `src/dashboard/public/dashboard.css` (`:root`); this document mirrors them, not a second generated theme, and so does the static showcase (`site/showcase.css`). Presentation tests guard the responsive shell; token changes must update every copy in one change.
 
 ## Palette, typography and geometry
 
