@@ -183,7 +183,7 @@ Everything ends up in GitHub, next to the rest of your project:
 - **Model and cost for each step on the dashboard**, and automatic model choice by cost and quality.
 - **An AI-assisted setup guide** for newcomers (in review).
 - **Instant reaction to GitHub events**, instead of checking every minute.
-- **A public demo page**, once the dashboard passes its own usability review.
+- **A public demo page**, once the dashboard passes its own usability review. Its static source is in [`site/`](site/README.md): a walk through the synthetic owner journey, not yet published anywhere.
 
 ## Honest limits
 
@@ -312,7 +312,7 @@ npm install
 node tests/dashboard/fixtures/review-store.mjs --port 4319
 ```
 
-This opens the dashboard at `http://127.0.0.1:4319` with three example projects covering every state. It refuses the live port 4318 and deletes its temporary data when you press Ctrl+C. The screenshots above come from it.
+This opens the dashboard at `http://127.0.0.1:4319` with three example projects covering every state. It refuses the live port 4318 and deletes its temporary data when you press Ctrl+C. The screenshots above come from it. The [static showcase](site/index.html) shows the [owner journey](docs/design/OWNER_JOURNEY_ACCEPTANCE.md) instead, captured from its synthetic runtime; open it straight from the checkout.
 
 ### Repository layout
 
