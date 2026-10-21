@@ -48,7 +48,7 @@ White panels sit on a cool gray page. Blue means an action or selected destinati
 
 Use the installed Inter font when present, then Segoe UI and Arial; no remote font request. Small operational labels are at least 12px, ordinary content 13–15px, page titles 24px. Numeric readings use tabular numerals. Keep prose left aligned and wrap long project names and evidence.
 
-Desktop uses a full-width 68px header and 176px sidebar. Content is capped at 1400px with 28px vertical and 32px horizontal padding. Panels have 12px corners; controls 7px. Borders carry hierarchy, with shadows reserved for overlays. No ornamental gradients or repeated elevated tiles.
+Desktop uses a full-width 68px header and 176px sidebar. Content is capped at 1400px with 28px vertical and 32px horizontal padding. Panels have 12px corners; controls 7px. Groups placed straight in a panel keep the panel body's inset. Borders carry hierarchy, with shadows reserved for overlays. No ornamental gradients or repeated elevated tiles.
 
 Below 960px navigation moves to the bottom, with focus and scroll clearance. Below 600px rows stack and existing wide tables become labeled cards. Existing large-monitor zoom remains. Preserve browser zoom, keyboard access and text wrapping; never hide an action solely to make a layout fit.
 
@@ -60,7 +60,7 @@ Below 960px navigation moves to the bottom, with focus and scroll clearance. Bel
 | Routes, tabs, back links | `router.mjs`, `showRoute`, `routeLink` | Real hash links, browser Back, project context preserved; Home is the first destination and opens for an empty address; a project's tabs are Overview, Plan, Review, Knowledge and, only where a release is configured, Releases (OWNER_UI_V2 section 2), fitting at 320px; old tab addresses redirect once with their drafts |
 | Home, Overview, Connections | `homeScreen`, `overviewPanel`, `connectionsScreen` over the server views (`views.mjs`) | Typed events in page words only; Built, Checked and Available to users stay apart and unknown stays unknown; pause controls name stopping and stopped |
 | Plan | `planScreen` over `work.plans` (`work.mjs`) | Now, Next and Later from the plan's own outline; version history from stored drafts only; Edit plan continues on Review as Review's draft; approval only on Review, for the version shown |
-| Decision card | `decisionPanel` | One card on the step and on Home's first decision; options with consequences, suggestion, snooze and "did not need me" |
+| Decision card | `decisionPanel` | One card on the step, on Home's first decision and on the Overview of a project without GitHub; options with consequences, suggestion, snooze and "did not need me" |
 | Result Review | `reviewPanel` on the step; `reviewEntry` rows (`owner.mjs`) on the Review tab, Home and Overview | One project, goal and step identity everywhere; accept and request changes bind the verified head and report; "Accepted" only from recorded acceptance |
 | Idea-first start | `ideaPanel` on Add project | The idea stays a draft until the owner connects a folder; then it is the project's unsent Plan work goal; nothing is provisioned or dispatched before approval |
 | Buttons, panels, badges | `dashboard.js` helpers + shared CSS | One emphasis hierarchy; words accompany status color |
