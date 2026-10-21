@@ -40,7 +40,7 @@ You end up as a full-time project manager for your AI helpers instead of working
 | 🔁 **Keeps work moving** | Starts the next step as soon as the last one is done. Restarts itself after a crash or a reboot and carries on where it stopped. When an AI service hits its usage limit, AIWorks waits for the reset and continues, without bothering you. |
 | 🔍 **Gets a second opinion on every change** | A fresh AI session that did not write the code checks each result. It runs the tests again on that exact version and looks for problems. Work that fails goes back for another round, with the findings attached. |
 | 📬 **Delivers to GitHub, where you already work** | Each finished step arrives as a pull request with the builder's report and the checker's verdict inside. Reports and research arrive as comments on the step's issue. |
-| 🙋 **Asks you only for real decisions** | One list, **Needs me**, shows the few things only you can do: make a decision, review a pull request, look at a step that stopped for good. AIWorks handles the rest. |
+| 🙋 **Asks you only for real decisions** | One list, **Needs you**, shows the few things only you can do: make a decision, review a pull request, look at a step that stopped for good. AIWorks handles the rest. |
 | 🛡️ **Stays inside the lines you draw** | Runs only plans you approved. Merges a checked pull request only if you switch that on for the project. Never deploys or changes your accounts by itself. Runs on your PC, and its settings hold no passwords or keys. |
 
 ```mermaid
@@ -96,9 +96,9 @@ Day to day, you don't type commands. You work in the AIWorks dashboard on your c
 
 ### 2. Handle only what needs you
 
-**Needs me** collects the things only you can do, grouped by project: a decision an AI worker asked for, a pull request to review, a step that stopped and will not retry by itself. Each item says what to do next. Usage limits, pauses and routine waiting never end up here.
+**Needs you** collects the things only you can do, grouped by project: a decision an AI worker asked for, a pull request to review, a step that stopped and will not retry by itself. Each item says what to do next. Usage limits, pauses and routine waiting never end up here.
 
-<p align="center"><img src="docs/assets/readme/needs-me.png" alt="The Needs me screen: decisions and reviews grouped by project, each with what to do" width="100%"></p>
+<p align="center"><img src="docs/assets/readme/needs-me.png" alt="The Needs you screen: decisions and reviews grouped by project, each with what to do" width="100%"></p>
 
 ### 3. Follow the work, if you want to
 
@@ -153,7 +153,7 @@ Everything ends up in GitHub, next to the rest of your project:
 | Self-restart | After a crash, a sign-out or a reboot, AIWorks comes back by itself within minutes and picks up where it stopped. |
 | Only work you registered | AIWorks works only on plans you registered yourself, and a plan's scope cannot change without a new, higher authorization. It refuses a second plan for a fix that is already being worked on, and runs only its own reviewed (merged) code. |
 | Staying in its lane | A step that changes files outside its agreed area stops and waits for your decision. |
-| Dashboard | Projects, Needs me, Now, Work, Results, Cost, Step, Settings, Messages and Diagnostics screens. |
+| Dashboard | Projects, Needs you, Now, Work, Results, Cost, Step, Settings, Messages and Diagnostics screens. |
 | Controls | Pause, Resume, Check again, Cancel and Send guidance. |
 | Planning assistant | Answers your messages and proposes plans, right in the dashboard. It can read your projects but never changes them, and it posts nothing to GitHub. |
 | Cost tracking | Cost per project and per step, taken from each run's own record. |
@@ -167,7 +167,7 @@ Everything ends up in GitHub, next to the rest of your project:
 | Repairing an existing failed check | Optional read-only monitoring of existing GitHub check results can send a failure back for local repair. It never starts hosted checks; Actions stays disabled in every managed repository. |
 | Several steps at once inside one piece of work | Built and tested. You turn it on and choose how much of the PC it may use. |
 | Website checks in a real browser | Built. Needs AGY or Chrome set up on the computer, and has not been proven on a real project yet. |
-| Alerts when something is blocked | Recording and grouping blockers is built and switched off, with your alert rules and quiet hours. A Telegram sender is built too: it sends only when you name your bot and chat as references into your own secret store and switch sending on, never answers or approves anything, and never sends again an alert that may already have arrived. It has been tested only against a made-up network, not a real bot. Stopped work always shows up in **Needs me**. |
+| Alerts when something is blocked | Recording and grouping blockers is built and switched off, with your alert rules and quiet hours. A Telegram sender is built too: it sends only when you name your bot and chat as references into your own secret store and switch sending on, never answers or approves anything, and never sends again an alert that may already have arrived. It has been tested only against a made-up network, not a real bot. Stopped work always shows up in **Needs you**. |
 | Projects without GitHub (a local folder or a local Git repository) | Connecting them is built. Starting work on them is not enabled yet. |
 | Smarter choice of AI model per step | The rules are written, and every run already records why its AI worker was chosen. Not yet used to decide. |
 | Several AI accounts with automatic switching | Finding and choosing an account is built. Starting a run on the chosen account comes next. |

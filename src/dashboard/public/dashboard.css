@@ -298,7 +298,7 @@ td,th{padding-left:18px;padding-right:18px}
 .filters>label:not(.search-label){flex:1}
 h1{font-size:25px}
 .campaign-banner{flex-direction:column;align-items:flex-start}
-/* Navigation becomes a labelled bottom bar: Home, Projects, Needs me and Settings. Focus scrolls clear of it: the bar is 61px
+/* Navigation becomes a labelled bottom bar: Home, Projects, Needs you and Settings. Focus scrolls clear of it: the bar is 61px
    (a 52px destination, 4px padding above and below, a 1px border), plus room for the focus ring (aiworks#11 review F4). */
 html{scroll-padding-bottom:76px;scroll-padding-top:145px}
 .sidebar{inset:auto 0 0 0;width:auto;height:auto;flex-direction:row;padding:4px 4px calc(4px + env(safe-area-inset-bottom, 0px));border-right:0;border-top:1px solid var(--line)}
@@ -323,7 +323,7 @@ main{padding:25px 15px}
 .topbar-actions{width:100%;justify-content:space-between;gap:8px 12px;margin-left:0}
 .connection{font-size:12px;min-width:0;overflow-wrap:anywhere}
 .project-tabs{gap:0}
-.tab{flex:1 1 0;padding:0 4px;font-size:13px}
+.tab{flex:1 1 auto;padding:0 4px;font-size:13px}
 .project-row,.settings-links li{padding:12px 16px}
 .needs{padding:0}
 .needs-item{padding:0}
@@ -361,6 +361,8 @@ main{padding:25px 15px}
 .timeline{padding:0 18px}
 .campaign-progress .bar{width:80px}
 }
+/* Five project tabs (Releases where a release is configured) still fit at 320px without scrolling. */
+@media(max-width:359px){.tab{padding:0 2px;font-size:12px;letter-spacing:-.01em}}
 @media(prefers-reduced-motion:reduce){
 *{transition:none!important;scroll-behavior:auto!important}
 }

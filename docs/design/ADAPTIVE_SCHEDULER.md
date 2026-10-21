@@ -277,10 +277,10 @@ One deterministic function, `waitReason(task, snapshot)`, returns the **first** 
 | `provider-cooldown` | Claude usage limit; resets at 14:05 | Tries again at 14:05 |
 | `provider-concurrency` | Claude asked to slow down | Starts when a Claude run finishes |
 | `retry-backoff` | Retrying after a failed attempt at 14:10 | Tries again at 14:10 |
-| `owner` | Needs your decision: ... | None; listed in Needs me |
+| `owner` | Needs your decision: ... | None; listed in Needs you |
 | `paused` | Paused by you | None until resumed |
 
-`campaignStatus` returns `wait: { code, text, until, holder }` per task. The text is built only from supervisor-known fields, never from worker output, matching how the dashboard already avoids stored worker text (`src/dashboard/supervisor.mjs:181-183`). Only `owner` produces a Needs me item. A published PR that blocks other ready work appears as "merge or close PR #41 to unblock 2 steps"; that is the owner's own release gate, not a new interruption. Provider waits never reach Needs me (plan §4). The UI wording follows [D9](../PROJECT_WORKSPACE_PLAN.md#4-owner-information-architecture---one-primary-question-per-screen) (English, no "slots", "lease" or "fencing" at the primary level).
+`campaignStatus` returns `wait: { code, text, until, holder }` per task. The text is built only from supervisor-known fields, never from worker output, matching how the dashboard already avoids stored worker text (`src/dashboard/supervisor.mjs:181-183`). Only `owner` produces a Needs you item. A published PR that blocks other ready work appears as "merge or close PR #41 to unblock 2 steps"; that is the owner's own release gate, not a new interruption. Provider waits never reach Needs you (plan §4). The UI wording follows [D9](../PROJECT_WORKSPACE_PLAN.md#4-owner-information-architecture---one-primary-question-per-screen) (English, no "slots", "lease" or "fencing" at the primary level).
 
 ## 7. AW-002 and host safety stay separate
 

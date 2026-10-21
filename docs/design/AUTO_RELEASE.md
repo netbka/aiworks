@@ -307,7 +307,7 @@ Detailed screens belong to the #11 workspace design; this section only fixes wha
 
 - **Project → Release mode:** one row per destination: mode, what the grant allows in one sentence (classes and destination), expiry date, credential owner, and one action ("Switch to Review only" or "How to grant Auto Release"). Auto Release is shown unavailable with its exact reason while any of section 3's conditions is missing.
 - **Results:** the five steps of section 1 per result, each Yes / No / In progress / Unknown, with the exact SHA and links to the PR (GitHub) or the local revision (local).
-- **Needs me:** only rollback failures, unknown outcomes past their window, and results that are not eligible because of an owner-reserved class. A result that is simply in Review only is a result, not a decision.
+- **Needs you:** only rollback failures, unknown outcomes past their window, and results that are not eligible because of an owner-reserved class. A result that is simply in Review only is a result, not a decision.
 - **Stop all releases** is reachable from every project page and from the CLI (`supervisor release-stop`), and writes `RELEASE-STOP`.
 
 Language follows D9 (English) and the plan's wording rules: "release", "merged", "live", "checked", "rolled back"; never "lease", "fencing" or "pipeline" on the primary screen.
@@ -449,7 +449,7 @@ Each slice is one reviewable PR in `example-org/aiworks` unless marked. Tests ar
 
 **R9. Owner view of release state**
 
-- Outcome: the release-mode row, the five-step ladder per result, unknown and failure lines in Needs me, and **Stop all releases**.
+- Outcome: the release-mode row, the five-step ladder per result, unknown and failure lines in Needs you, and **Stop all releases**.
 - Files: `src/dashboard/supervisor.mjs`, `src/dashboard/owner.mjs` (replace the display-only `releaseRule` wording when a record exists), `src/dashboard/public/` files owned by the #11 design at that time, `tests/dashboard/`.
 - Tests: `unknown is never shown as success`; `a local project shows no PR or merge step`; `Auto Release shows its exact missing condition`; `Stop all releases writes RELEASE-STOP through the existing CSRF-checked command path`.
 - Acceptance: blind owner review per UX-002.
