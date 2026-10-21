@@ -167,7 +167,7 @@ Everything ends up in GitHub, next to the rest of your project:
 | Repairing an existing failed check | Optional read-only monitoring of existing GitHub check results can send a failure back for local repair. It never starts hosted checks; Actions stays disabled in every managed repository. |
 | Several steps at once inside one piece of work | Built and tested. You turn it on and choose how much of the PC it may use. |
 | Website checks in a real browser | Built. Needs AGY or Chrome set up on the computer, and has not been proven on a real project yet. |
-| Alerts when something is blocked | The code that records and groups blockers is built and switched off. No message leaves the computer yet; sending alerts to your phone is on the roadmap. Until then, stopped work shows up in **Needs me**. |
+| Alerts when something is blocked | Recording and grouping blockers is built and switched off, with your alert rules and quiet hours. A Telegram sender is built too: it sends only when you name your bot and chat as references into your own secret store and switch sending on, never answers or approves anything, and never sends again an alert that may already have arrived. It has been tested only against a made-up network, not a real bot. Stopped work always shows up in **Needs me**. |
 | Projects without GitHub (a local folder or a local Git repository) | Connecting them is built. Starting work on them is not enabled yet. |
 | Smarter choice of AI model per step | The rules are written, and every run already records why its AI worker was chosen. Not yet used to decide. |
 | Several AI accounts with automatic switching | Finding and choosing an account is built. Starting a run on the chosen account comes next. |
@@ -178,7 +178,7 @@ Everything ends up in GitHub, next to the rest of your project:
 
 - **Start approved work from the dashboard** (Plan and do), and **add a project** from the dashboard.
 - **Approve an outcome once**, and let AIWorks split it into steps and add steps as it learns.
-- **Phone notifications** when something truly needs you.
+- **Phone notifications** you can act on: Telegram alerts are built (above); answering from the phone needs remote access, which is not designed yet.
 - **Automatic release per project**, behind independent checks and a first trial run.
 - **Model and cost for each step on the dashboard**, and automatic model choice by cost and quality.
 - **An AI-assisted setup guide** for newcomers (in review).
