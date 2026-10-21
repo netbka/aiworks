@@ -1,14 +1,28 @@
 // governance provider's roadmap definitions, read from the governance checkout. The dashboard does not read its work
 // state from GitHub: progress of these items is tracked on GitHub, and each item links its source.
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { containsCredentialMaterial } from '../shared/credential-metadata.mjs';
 import { requireGovernanceRoot } from '../supervisor/governance.mjs';
 
+// Every refresh checks the same titles, criteria and paths again, and the verdict depends on the text alone: it is kept,
+// by the text's digest (never the text itself), for texts up to CHECKED_LENGTH, and the whole cache is cleared when full.
+const checked = new Map();
+const CHECKED_LIMIT = 8192, CHECKED_LENGTH = 4096;
 export const safeText = (value, max = 300) => {
   const text = String(value ?? '').slice(0, max);
-  return containsCredentialMaterial(text) || /(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,})/.test(text) ? '[sensitive content omitted]' : text;
+  const key = text.length <= CHECKED_LENGTH ? createHash('sha256').update(text, 'utf8').digest('base64') : null;
+  let sensitive = key === null ? undefined : checked.get(key);
+  if (sensitive === undefined) {
+    sensitive = containsCredentialMaterial(text) || /(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,})/.test(text);
+    if (key !== null) {
+      if (checked.size >= CHECKED_LIMIT) checked.clear();
+      checked.set(key, sensitive);
+    }
+  }
+  return sensitive ? '[sensitive content omitted]' : text;
 };
 /**
  * Standing deploy authorizations recorded in governance provider's project registry (`governance.releaseAuthorization`,
