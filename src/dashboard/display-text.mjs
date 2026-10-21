@@ -8,15 +8,17 @@ const SENSITIVE = '[sensitive content omitted]';
 const PART = '[Part omitted: it looked like it could contain a credential. The full text stays in the work records on this computer.]';
 
 /**
- * The text with each flagged paragraph replaced, or null when it must be withheld whole: a single paragraph, or a
- * result the same check still flags (material spanning paragraphs). Clean text is returned unchanged.
+ * The text with each flagged paragraph and the paragraph after it replaced, or null when it must be withheld whole:
+ * nothing left to show, or a result the same check still flags. The check mostly flags a label ("API key:", "Bearer"),
+ * so the value it names, which can follow after a blank line, is hidden with it. Clean text is returned unchanged.
  */
 export function partlySafe(text) {
   if (safeText(text, text.length) === text) return text;
-  const parts = text.split(/(\n[ \t]*\n)/);
-  let hidden = 0;
-  const shown = parts.map((part, i) => i % 2 || safeText(part, part.length) === part ? part : (hidden++, PART)).join('');
-  return hidden && hidden < Math.ceil(parts.length / 2) && safeText(shown, shown.length) === shown ? shown : null;
+  const parts = text.split(/(\n(?:[ \t]*\n)+)/);
+  const hide = new Set();
+  for (let i = 0; i < parts.length; i += 2) if (safeText(parts[i], parts[i].length) !== parts[i]) hide.add(i).add(Math.min(i + 2, parts.length - 1));
+  const shown = parts.map((part, i) => hide.has(i) ? PART : part).join('');
+  return hide.size < Math.ceil(parts.length / 2) && safeText(shown, shown.length) === shown ? shown : null;
 }
 
 // One owned thread, at most 20 queued bodies (8 MiB of UTF-16 text), and 512 small
