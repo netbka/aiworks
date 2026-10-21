@@ -530,8 +530,12 @@ export function buildReviewFixture(root, { now = Date.now(), store: kind = 'full
   }
   const { declarations, ...paths } = built;
   // The full store has Plan and do and Add project on, so Plan, Review's Edit plan and the idea-first Add project show.
+  // Where Chrome is installed, Review's Try this version can also capture screenshots of the checked search page (WP7).
+  const chrome = [process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.LOCALAPPDATA].filter(Boolean)
+    .map((dir) => join(dir, 'Google', 'Chrome', 'Application', 'chrome.exe')).find((path) => existsSync(path));
   writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ repositories: paths.repositories, governanceRoot: join(root, 'governance'),
-    ...(['full', 'stopped'].includes(kind) ? { coordinator: { ...COORDINATOR, intake: true }, projectConnection: { enabled: true } } : {}), supervisorIssue: REVIEW_SUPERVISOR_ISSUE }, null, 2));
+    ...(['full', 'stopped'].includes(kind) ? { coordinator: { ...COORDINATOR, intake: true }, projectConnection: { enabled: true } } : {}),
+    ...(chrome && process.platform === 'win32' ? { commands: { chrome: [chrome] } } : {}), supervisorIssue: REVIEW_SUPERVISOR_ISSUE }, null, 2));
   const governance = join(root, 'governance');
   cpSync(GOVERNANCE, governance, { recursive: true });
   rmSync(join(governance, 'registry', 'projects'), { recursive: true });

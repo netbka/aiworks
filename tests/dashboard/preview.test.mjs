@@ -100,3 +100,20 @@ test('a preview serves only its folder of the checked commit, sandboxed, and nev
   assert.equal((await get(`/preview/${'0'.repeat(32)}/index.html`)).status, 410);
   assert.equal((await get(opened.url, { Origin: 'http://example.invalid' })).status, 403);
 });
+
+test('an open preview ends as soon as its version is reopened and no longer the checked one', async (t) => {
+  const { env, store, bind } = rig(t);
+  const server = createDashboardServer({ dataDir: env.dataDir, roadmap: { snapshot: () => ({ entries: [] }) } });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const csrf = (await (await fetch(`${base}/api/session`)).json()).csrf;
+  const opened = await (await fetch(`${base}/api/v2/results/preview`, { method: 'POST', body: JSON.stringify(bind('T1')),
+    headers: { Origin: base, 'Content-Type': 'application/json', 'X-Dashboard-CSRF': csrf } })).json();
+  assert.equal((await fetch(`${base}${opened.url}`)).status, 200);
+  const row = store.task('preview-goal', 'T1');
+  store.patch('tasks', { campaign_id: 'preview-goal', task_id: 'T1' }, row.version, { state: 'running' }, Date.now());
+  // An open preview checks its version again at most once a second.
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.equal((await fetch(`${base}${opened.url}`)).status, 410);
+});
