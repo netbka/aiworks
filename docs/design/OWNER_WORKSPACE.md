@@ -377,7 +377,7 @@ Built in slice UI17 (plan §6.7), on the owner's decisions of 2026-10-16 (#24, #
 ### 5.7 A blocked step
 
 1. **Projects** and **Needs me** both list "Decision needed · <step outcome>".
-2. → **Step**: "Stopped: needs your decision" and the reason in supervisor words, for example "the independent checker still rejects it after 3 repair rounds; decide whether to accept the gap, narrow the step or allow more rounds, then check it again" (observed: `src/dashboard/supervisor.mjs:115`).
+2. → **Step**: "Stopped: needs your decision" and the reason in supervisor words, for example "the independent checker still rejects it after 3 repair rounds; answer with guidance for one more try within the same limit, or plan a smaller step or more rounds as a new plan for your approval" (observed: `src/dashboard/copy.mjs` `stopReasonWords`).
 3. Primary action: "Open the step issue". After deciding, the owner presses "Check again" in the More menu.
 4. The row leaves Needs me when the supervisor clears the block. Nothing is hidden because the owner looked at it.
 

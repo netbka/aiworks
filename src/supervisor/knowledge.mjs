@@ -13,6 +13,7 @@
 import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { canonicalJson } from './campaign.mjs';
+import { SECRET_LIKE_PATH_PATTERN } from '../../scripts/lib/worker-context.mjs';
 import { containsSecret } from './coordinator.mjs';
 import { draftOutline } from './intake.mjs';
 import { containsKnownSecretValue } from '../shared/credential-metadata.mjs';
@@ -101,6 +102,56 @@ export function planSuggestions(store, projectId) {
     }
   }
   return out.slice(0, PLAN_ITEMS);
+}
+
+const EVIDENCE_GOALS = 20, EVIDENCE_ITEMS = 12, EVIDENCE_REFERENCES = 40, EVIDENCE_DECISIONS = 20;
+const STEP_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const OPTION = /^[a-z][a-z0-9-]{0,31}$/;
+const SAFE_REFERENCE = /^[\w.-]+(?:\/[\w.-]+)*(?:#[a-z0-9_-]{1,160})?$/;
+const secretPath = new RegExp(SECRET_LIKE_PATH_PATTERN, 'u');
+const plainText = (value, max) => (typeof value === 'string' && value.trim() && value.length <= max && !unsafe(value) && !/[\u0000-\u001f\u007f]/.test(value) ? value.trim() : null);
+
+/**
+ * What the project's approved goals already record, for Knowledge (OWNER_UI_V2 screen 8), never a fact by itself:
+ * - requirements: each goal's done-when criteria as its approved declaration states them, with that goal and its
+ *   authorization version as their origin; an approved plan's words, not a fact the owner confirmed here;
+ * - decisions: the owner's recorded answers to step decisions (events `decision-answer`): which step, when, and the
+ *   option chosen or that it was answered in their own words; the words themselves stay in the decision's event;
+ * - references: the repository-relative documents the approved steps name, by path and section only. Nothing here reads
+ *   a file: a name that is not a plain relative path, or looks like a secret, is left out and counted.
+ * `campaignIds` are the project's own goals (the caller matches them to the project). Allowlisted fields only.
+ */
+export function projectEvidence(store, campaignIds) {
+  const requirements = [], decisions = [], references = new Map();
+  let withheld = 0;
+  for (const id of campaignIds.slice(0, EVIDENCE_GOALS)) {
+    const c = store.campaign(id);
+    if (!c) continue;
+    const d = c.declaration, registered = store.get("SELECT at FROM journal WHERE campaign_id = ? AND kind = 'registered' ORDER BY seq LIMIT 1", id);
+    const origin = { campaignId: id, goal: plainText(d.purpose, 300) ?? plainText(d.envelope?.outcome, 300), authorizationVersion: c.authorization_version,
+      approvedAt: registered?.at ?? c.created_at, control: c.control };
+    const criteria = Array.isArray(d.envelope?.acceptance) ? d.envelope.acceptance : d.tasks.flatMap((task) => task.acceptance ?? []);
+    const texts = [...new Set(criteria.map((item) => plainText(item, MAX_FACT)).filter(Boolean))].slice(0, EVIDENCE_ITEMS);
+    if (texts.length) requirements.push({ ...origin, criteria: texts });
+    for (const task of d.tasks) {
+      for (const reference of Array.isArray(task.references) ? task.references : []) {
+        const name = typeof reference === 'string' ? reference : null;
+        if (!name || !SAFE_REFERENCE.test(name) || name.split(/[/#]/).some((part) => part === '..' || part === '.') || secretPath.test(name.split('#')[0])) { withheld += 1; continue; }
+        const entry = references.get(name) ?? { reference: name, goals: [] };
+        if (!entry.goals.includes(id)) entry.goals.push(id);
+        references.set(name, entry);
+      }
+    }
+    const steps = new Map(d.tasks.map((task) => [task.id, plainText(task.outcome ?? task.title, 300)]));
+    for (const event of store.all("SELECT payload, received_at FROM events WHERE campaign_id = ? AND kind = 'decision-answer' ORDER BY seq DESC LIMIT ?", id, EVIDENCE_DECISIONS)) {
+      const taskId = STEP_ID.test(event.payload?.taskId ?? '') ? event.payload.taskId : null;
+      if (!taskId) continue;
+      decisions.push({ campaignId: id, goal: origin.goal, taskId, step: steps.get(taskId) ?? null, at: event.received_at,
+        option: OPTION.test(event.payload?.option ?? '') ? event.payload.option : null, ownWords: typeof event.payload?.text === 'string' });
+    }
+  }
+  return { requirements, decisions: decisions.sort((a, b) => b.at - a.at).slice(0, EVIDENCE_DECISIONS),
+    references: [...references.values()].slice(0, EVIDENCE_REFERENCES), withheldReferences: withheld + Math.max(0, references.size - EVIDENCE_REFERENCES) };
 }
 
 /** A suggestion's stable key: its project, kind, origin and words. The same suggestion keeps its key on every read. */
