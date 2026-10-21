@@ -3,6 +3,8 @@
 // pushes the trusted tip of the main ledger, and only that commit, to `<remote>` as `refs/heads/<branch>`: never a force,
 // a `+` refspec, a mirror, tags or unrecorded commits; bounded to 60 seconds and to one attempt every 10 minutes. Nothing
 // waits on it: a refused or unreachable remote is journaled and shown in status, and the next local merge goes ahead.
+import { existsSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
 import { assertPushActionsDisabled, exec } from './adapters/git.mjs';
 import { assertActionsDisabled } from './adapters/github.mjs';
 import { redact } from './owner-intervention.mjs';
@@ -19,7 +21,8 @@ const KINDS = ['backup-requested', 'backup-pushed', 'backup-refused', 'backup-fa
  * Push `tip` to `<remote>` as `refs/heads/<branch>`. The arguments are fixed: no force, no `+`, no mirror (even when the
  * remote is configured as one), no tags. Returns { kind: 'backup-pushed' }, { kind: 'backup-refused', reason } when the
  * remote rejected the update (it is not a fast-forward there, or the remote's rules decline it), or
- * { kind: 'backup-failed', reason } when the remote could not be reached in time or the push could not run.
+ * { kind: 'backup-failed', reason } when the remote could not be reached in time or the push could not run, as when its
+ * local folder does not exist (yet): that is tried again after the interval, while a refusal waits for the next merge.
  */
 export function pushTrustedTip({ git = ['git'], gh = ['gh'], repository, repoPath, remote, branch, tip }) {
   if (!SHA.test(tip ?? '') || !REF_NAME.test(remote ?? '') || !REF_NAME.test(branch ?? '')) {
@@ -29,7 +32,10 @@ export function pushTrustedTip({ git = ['git'], gh = ['gh'], repository, repoPat
     assertActionsDisabled({ gh, repository });
     assertPushActionsDisabled({ git, gh, repoPath, remote });
   }
-  catch (error) { return { kind: 'backup-refused', reason: redact(error.message, 300) }; }
+  catch (error) {
+    if (/push destination could not be verified/.test(error.message) && missingLocalDestination(git, repoPath, remote)) return { kind: 'backup-failed', reason: 'the backup folder does not exist on this computer' };
+    return { kind: 'backup-refused', reason: redact(error.message, 300) };
+  }
   const out = exec(git, ['-c', `remote.${remote}.mirror=false`, 'push', '--porcelain', '--no-follow-tags', remote, `${tip}:refs/heads/${branch}`],
     { cwd: repoPath, timeoutMs: BACKUP_TIMEOUT_MS });
   if (out.ok) return { kind: 'backup-pushed' };
@@ -38,6 +44,13 @@ export function pushTrustedTip({ git = ['git'], gh = ['gh'], repository, repoPat
   if (rejected) return { kind: 'backup-refused', reason: redact(rejected.split('\t').slice(2).join(' ') || out.stderr || 'rejected', 300) };
   const reason = out.error === 'ETIMEDOUT' ? `the push did not finish within ${BACKUP_TIMEOUT_MS / 1000} seconds` : out.stderr || out.error || `exit ${out.status}`;
   return { kind: 'backup-failed', reason: redact(reason, 300) };
+}
+
+/** Whether every push URL of `remote` is an absolute local path that does not exist: unreachable, not a refusal. */
+function missingLocalDestination(git, repoPath, remote) {
+  const out = exec(git, ['remote', 'get-url', '--push', '--all', remote], { cwd: repoPath });
+  const urls = out.ok ? out.stdout.split(/\r?\n/).filter(Boolean) : [];
+  return urls.length > 0 && urls.every((url) => isAbsolute(url) && !/^[\\/]{2}/.test(url) && !url.includes('://') && !existsSync(url));
 }
 
 /**
@@ -102,6 +115,8 @@ export function backupStatus(store, settings, repository, tip) {
     state: !enabled ? 'off' : !latest ? 'none' : latest.kind === 'backup-requested' ? 'pushing' : latest.kind.slice('backup-'.length),
     tip: latest?.tip ?? null, reason: latest?.reason ?? null, at: iso(latest?.at),
     pushedTip: history.pushedTip, current: Boolean(tip) && history.pushedTip === tip,
-    nextAttemptAfter: history.requested ? iso(history.requested.at + BACKUP_INTERVAL_MS) : null,
+    // A refused tip is tried again only after the next merge (due), so no time is promised for it.
+    nextAttemptAfter: history.requested && !(history.outcome?.kind === 'backup-refused' && history.outcome.tip === tip)
+      ? iso(history.requested.at + BACKUP_INTERVAL_MS) : null,
   };
 }

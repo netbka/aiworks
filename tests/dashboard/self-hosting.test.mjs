@@ -7,12 +7,12 @@ import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../../src/supervisor/store.mjs';
 import { campaignStart } from '../../src/supervisor/api.mjs';
-import { recordAnchor } from '../../src/supervisor/self-hosting.mjs';
+import { mainLedger, recordAnchor } from '../../src/supervisor/self-hosting.mjs';
 import { applyCommand, applyScopedControl, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { MergeWatcher } from '../../src/dashboard/merges.mjs';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
@@ -126,6 +126,64 @@ test('with local main trusted, Resume refuses a runtime the main ledger does not
   git(repo, 'checkout', '-q', '--detach', anchor);
   assert.equal(resume(paused).accepted, true);
   assert.equal(view().find((goal) => goal.id === 'goal-a').control, 'registered');
+});
+
+test('the owner route trusts exactly the hand commits it showed, once; a worker, another origin, a moved main or supervisor code record nothing', async (t) => {
+  const { dataDir, store } = goals(t);
+  const repo = mkdtempSync(join(tmpdir(), 'aiworks-dashboard-owner-main-'));
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  git(repo, 'init', '-q', '-b', 'main');
+  const commit = (file, text) => { writeFileSync(join(repo, file), text); git(repo, 'add', '-A'); git(repo, 'commit', '-q', '-m', file); return git(repo, 'rev-parse', 'HEAD'); };
+  const anchor = commit('file.txt', '1\n');
+  git(repo, 'update-ref', 'refs/remotes/origin/main', anchor);
+  assert.equal(recordAnchor(store, { repoPath: repo, repository: SELF, sha: anchor, now: 1 }).recorded, true);
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ selfHosting: { repository: SELF, trustedMain: 'local' }, repositories: { [SELF]: { path: repo } } }));
+  const lookupAs = (ancestors) => async () => ({ pid: 999_991, ancestors, jobs: [] });
+  const roadmap = { snapshot: () => ({ governance: { configured: true, code: null, reason: null }, entries: [] }) };
+  const serve = async (callerCheck) => {
+    const server = createDashboardServer({ dataDir, roadmap, callerCheck });
+    server.listen(0, '127.0.0.1'); await once(server, 'listening');
+    t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const csrf = (await (await fetch(`${base}/api/session`)).json()).csrf;
+    return { shown: async () => (await (await fetch(`${base}/api/v2/settings`)).json()).trustedMain.record,
+      send: async (body, headers = {}) => { const response = await fetch(`${base}/api/v2/settings/trusted-main`, { method: 'POST',
+        headers: { Origin: base, 'Content-Type': 'application/json', 'X-Dashboard-CSRF': csrf, ...headers }, body: JSON.stringify(body) });
+      return { status: response.status, ...(await response.json()) }; } };
+  };
+  const owner = await serve({ platform: 'win32', lookup: lookupAs([999_990]) });
+  const worker = await serve({ platform: 'win32', lookup: lookupAs([process.pid]) });
+  const ledger = () => mainLedger(store, SELF).map((row) => [row.kind, row.old_tip, row.new_tip]);
+
+  const hand = commit('notes.md', 'by hand\n');
+  const shown = await owner.shown();
+  assert.deepEqual(shown, { oldTip: anchor, newTip: hand });
+  const request = { requestId: randomUUID(), ...shown };
+  assert.equal((await worker.send(request)).code, 'APPROVAL_FROM_AIWORKS');
+  assert.equal((await owner.send(request, { Origin: 'http://127.0.0.1:1' })).status, 403);
+  assert.equal((await owner.send(request, { 'X-Dashboard-CSRF': 'not-the-token' })).status, 403);
+  assert.equal((await owner.send({ ...request, requestId: randomUUID(), oldTip: hand })).code, 'TRUSTED_MAIN_MOVED', 'a trusted tip the ledger does not hold');
+  // Main moved after the page read it: the tips it showed are no longer the current ones.
+  const moved = commit('later.md', 'later\n');
+  assert.equal((await owner.send(request)).code, 'TRUSTED_MAIN_MOVED');
+  git(repo, 'update-ref', 'refs/heads/main', hand, moved);
+  assert.deepEqual(ledger(), [['anchor', null, anchor]]);
+
+  // The owner's request appends one owner row from the shown tip to the shown main; a retry or a second press adds none.
+  const first = await owner.send(request);
+  assert.deepEqual([first.status, first.recorded], [200, true]);
+  assert.equal((await owner.send(request)).duplicate, true);
+  assert.equal((await owner.send({ ...request, requestId: randomUUID() })).recorded, false);
+  assert.deepEqual(ledger(), [['anchor', null, anchor], ['owner', anchor, hand]]);
+  assert.equal(await owner.shown(), null);
+
+  // A hand commit to supervisor code still needs its independent review: the owner route records nothing for it.
+  mkdirSync(join(repo, 'Src', 'supervisor'), { recursive: true });
+  const code = commit('Src/supervisor/extra.mjs', 'export {};\n');
+  const refused = await owner.send({ requestId: randomUUID(), oldTip: hand, newTip: code });
+  assert.deepEqual([refused.status, refused.code], [409, 'TRUSTED_MAIN_NEEDS_REVIEW']);
+  assert.deepEqual(ledger(), [['anchor', null, anchor], ['owner', anchor, hand]]);
+  assert.equal(git(repo, 'rev-parse', 'main'), code, 'the route never moves main');
 });
 
 test('the merge check reads local main of the self-hosted repository with no git fetch; another repository still fetches', async (t) => {

@@ -1,19 +1,36 @@
 // Cost and outcome baseline (docs/design/MODEL_ROUTING.md section 8, slice R1). Read-only: it only runs SELECTs on a
 // store the caller opened read-only, and makes no model, network or GitHub call. Costs stay in the unit each provider
 // reports: dollars, tokens, or unknown. Unknown is counted as unknown, never as zero, and units are never added together.
+import { indicators } from './router.mjs';
+import { specOf } from './plan.mjs';
 
-// The design's risk table also has R2 (catalog role, sensitive paths, routing.risk) and narrows commit tasks with `writes`.
-// None of those declaration fields exist yet (slices R3 and S3), so today every commit task and every web task is R1.
-export function taskClass(task) {
-  const risk = task?.deliverable === 'commit' || task?.web ? 'R1' : 'R0';
-  const references = task?.references?.length ?? 0;
-  const points = (task?.deliverable === 'commit' ? 1 : 0) + (references > 5 ? 1 : 0) + (references > 12 ? 1 : 0)
-    + ((task?.acceptance?.length ?? 0) > 4 ? 1 : 0) + ((task?.dependsOn?.length ?? 0) >= 2 ? 1 : 0) + (task?.requiresMergedDependencies ? 1 : 0);
-  return { risk, complexity: points >= 4 ? 'C3' : points >= 2 ? 'C2' : 'C1' };
+/**
+ * A task's risk and complexity by the rules of MODEL_ROUTING section 3 (router.mjs indicators), from its spec: declared,
+ * or an admitted child's. A step whose spec is no longer readable has an unknown class, never a guessed one.
+ */
+export function taskClass(task, { sensitivePaths = [] } = {}) {
+  if (!task) return { risk: 'unknown', complexity: 'unknown' };
+  const { risk, complexity } = indicators({ sensitivePaths, task: { deliverable: task.deliverable, web: Boolean(task.web), role: task.role ?? null,
+    references: task.references?.length ?? 0, acceptance: task.acceptance?.length ?? 0, dependsOn: task.dependsOn?.length ?? 0,
+    requiresMergedDependencies: task.requiresMergedDependencies === true, writes: task.writes ?? null,
+    declared: { risk: task.routing?.risk ?? null, complexity: task.routing?.complexity ?? null } } });
+  return { risk, complexity };
 }
 
-/** The model an operation ran with, from the executor declared when it was recorded. The model is not stored on the
- * operation (slice R2 adds that), so it is inferred; a provider without a declared model ran its CLI default (unknown). */
+/**
+ * What an operation recorded about its own routing (operations.routing, slice R2): the model of the provider its receipt
+ * chose, when that is the provider that ran, and the class a routing-policy/1 receipt decided with. An operation recorded
+ * before receipts, or whose receipt chose another provider, has neither.
+ */
+function recordedRouting(op, kind) {
+  const decision = op.routing?.decision;
+  const chosen = decision?.chosen?.kind === kind ? decision.chosen : null;
+  const cls = decision?.indicators;
+  return { model: chosen ? { value: chosen.model ?? null } : null, cls: cls?.risk && cls?.complexity ? { risk: cls.risk, complexity: cls.complexity } : null };
+}
+
+/** The model an older operation ran with, from the executor declared when it was recorded: inferred, as it recorded none.
+ * A provider without a declared model ran its CLI default (unknown). */
 function modelOf(executor, kind) {
   const providers = executor?.kind === 'cli-chain' ? executor.providers ?? [] : [executor];
   const provider = providers.find((item) => item?.kind === kind);
@@ -51,7 +68,7 @@ export const CANNOT_MEASURE = [
   'Dollars for codex-cli, cursor-cli and agy-cli: they report none, so their cost and any total that includes them is unknown.',
   'Any cursor-cli usage: it reports nothing.',
   'What the owner actually pays: dollars are as reported by the CLI, never "spent".',
-  'The model of an operation with certainty: it is inferred from the declaration and executor-amended entries.',
+  'The model and class of an operation recorded before routing receipts: they are inferred from the declaration, executor-amended entries and the task spec.',
   'Defects found after acceptance and defects a verifier missed: they are in GitHub, not in the store.',
   'Exact provider wait duration: the journal records only when a wait starts.',
 ];
@@ -71,17 +88,20 @@ export function baselineReport(store, { since = null, now = Date.now() } = {}) {
   // The executor in force when an operation was recorded: the `from` of the first later amendment, else today's.
   const executorAt = (campaignId, at) => amendments.get(campaignId)?.find((entry) => entry.at > at)?.detail?.from
     ?? campaigns.get(campaignId)?.executor;
-  const taskDecl = (campaignId, taskId) => campaigns.get(campaignId)?.tasks?.find((task) => task.id === taskId);
+  const taskDecl = (campaignId, taskId) => specOf(store, campaignId, taskId, campaigns.get(campaignId));
 
   const operations = store.all('SELECT * FROM operations WHERE created_at >= ? ORDER BY created_at, seq', from).map((op) => {
     const kind = op.executor_kind ?? 'claude-cli';
-    const model = modelOf(executorAt(op.campaign_id, op.created_at), kind);
+    const recorded = recordedRouting(op, kind);
+    const model = recorded.model ? recorded.model.value : modelOf(executorAt(op.campaign_id, op.created_at), kind);
     const task = taskDecl(op.campaign_id, op.task_id);
+    const cls = recorded.cls ?? taskClass(task, { sensitivePaths: campaigns.get(op.campaign_id)?.routing?.sensitivePaths ?? [] });
     const outcome = op.outcome ?? null;
     const value = outcome?.class === 'result' ? outcome.value ?? null : null;
     // The head an implement run produced; a report deliverable is bound to its base, as the controller does.
     const produced = op.kind === 'implement' && value?.result === 'resolved' ? task?.deliverable === 'commit' ? value.headSha ?? null : op.base_sha : null;
-    return { op, kind, model: model ?? MODEL_UNKNOWN, modelKnown: model !== null, task, ...taskClass(task), outcome, value, produced };
+    return { op, kind, model: model ?? MODEL_UNKNOWN, modelKnown: model !== null, modelRecorded: Boolean(recorded.model), classRecorded: Boolean(recorded.cls),
+      task, ...cls, outcome, value, produced };
   });
   const counted = operations.filter((item) => item.op.state === 'finished' && !item.outcome?.refunded);
   const refunded = operations.filter((item) => item.outcome?.refunded);
@@ -103,10 +123,12 @@ export function baselineReport(store, { since = null, now = Date.now() } = {}) {
   for (const item of counted) {
     const key = [item.op.kind, item.risk, item.complexity, item.kind, item.model].join('\0');
     const group = groups.get(key) ?? { stage: item.op.kind, risk: item.risk, complexity: item.complexity, executor: item.kind,
-      model: item.model, modelKnown: item.modelKnown, runs: 0, accepted: 0, rejected: 0, unusable: 0, unreviewed: 0,
+      model: item.model, modelKnown: item.modelKnown, modelRecordedRuns: 0, classRecordedRuns: 0, runs: 0, accepted: 0, rejected: 0, unusable: 0, unreviewed: 0,
       failuresByClass: {}, runMs: [], ...emptyCost() };
     groups.set(key, group);
     group.runs += 1;
+    group.modelRecordedRuns += item.modelRecorded ? 1 : 0;
+    group.classRecordedRuns += item.classRecorded ? 1 : 0;
     group[quality(item)] += 1;
     const failure = item.outcome?.class !== 'result' ? item.outcome?.class ?? 'unknown'
       : item.op.kind === 'implement' && item.value?.result !== 'resolved' ? item.value?.result ?? 'unknown' : null;

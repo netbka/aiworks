@@ -426,24 +426,34 @@ const planningProject = (store, table, row) => (table === 'owner_messages' ? pro
 /**
  * Hold a message or work request whose project budget cannot cover one more planning run (the reason is the budget's own
  * words), or clear that hold once it fits. It stays received: the coordinator reads it by itself once the owner raises or
- * removes the budget, or the month that ran out ends.
+ * removes the budget, or the month that ran out ends. The wait only covers the failure of an earlier read: that failure is
+ * kept in the journal entry of the wait and comes back when it clears, and not_before, its retry time, is never touched.
  */
 function budgetHold(ctl, ctx, table, row, reason, now) {
   const failure = reason === null ? null : table === 'owner_messages' ? BUDGET_WAIT : `${BUDGET_WAIT}: ${reason}`.slice(0, 1000);
   const held = String(row.failure ?? '').startsWith(BUDGET_WAIT);
   if (failure === null ? !held : row.failure === failure) return;
+  const subject = table === 'owner_messages' ? { message: row.id } : { requestId: row.request_id };
+  const [field, value] = Object.entries(subject)[0];
+  const previous = !held ? row.failure ?? null
+    : ctl.store.get(`SELECT json_extract(detail, '$.previous') AS failure FROM journal WHERE campaign_id = ? AND kind = 'planning-budget-wait'
+      AND json_extract(detail, '$.${field}') = ? ORDER BY seq DESC LIMIT 1`, LANE, value)?.failure ?? null;
   ctl.fenced(ctx, () => {
-    ctl.store.run(`UPDATE ${table} SET failure = ?, updated_at = ? WHERE id = ? AND state = 'received'`, failure, now, row.id);
-    ctl.store.journal(LANE, failure ? 'planning-budget-wait' : 'planning-budget-cleared',
-      table === 'owner_messages' ? { message: row.id, reason } : { requestId: row.request_id, reason }, now);
+    ctl.store.run(`UPDATE ${table} SET failure = ?, updated_at = ? WHERE id = ? AND state = 'received'`, failure ?? previous, now, row.id);
+    ctl.store.journal(LANE, failure ? 'planning-budget-wait' : 'planning-budget-cleared', { ...subject, reason, ...(failure ? { previous } : {}) }, now);
   });
 }
 const BUDGET_WAIT = 'project-budget';
 
 /** The oldest received message or work request ready to read whose project budget covers one more planning run. */
 function fundedNext(ctl, ctx, table, now) {
+  // One reading of each project's budget for the whole pass: it walks the project's history. The run is still checked
+  // again, with its reservation, in the transaction that records it.
+  const refusals = new Map();
   for (const row of ctl.store.all(`SELECT * FROM ${table} WHERE state = 'received' AND (not_before IS NULL OR not_before <= ?) ORDER BY id`, now)) {
-    const refused = planningRefusal(ctl.store, planningProject(ctl.store, table, row), now);
+    const key = planningProject(ctl.store, table, row);
+    if (!refusals.has(key)) refusals.set(key, planningRefusal(ctl.store, key, now));
+    const refused = refusals.get(key);
     budgetHold(ctl, ctx, table, row, refused, now);
     if (!refused) return row;
   }
