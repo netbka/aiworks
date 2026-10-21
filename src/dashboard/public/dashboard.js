@@ -874,6 +874,9 @@ function reviewScreen(project, id) {
   const edit = plan.editable && state.work?.planAndDo ? button('Edit plan', () => startEdit(project, plan), 'secondary', Boolean(approving) || sending || offline || !state.supervisor.available) : null;
   return [el('section', { class: 'panel review', 'data-focus-scope': `review/${plan.id}` }, el('div', { class: 'panel-body' },
     el('h2', {}, plan.outcome || 'Review the plan'), status,
+    plan.textCheck && plan.textCheck !== 'ready' ? el('p', { class: 'notice', role: 'status' }, plan.textCheck === 'checking'
+      ? 'Checking the plan details before displaying them. Approval becomes available when the check finishes.'
+      : 'The plan details could not be checked. The original is kept; approval stays unavailable while those details cannot be shown.') : null,
     plan.changes?.length ? planChanges(plan) : null,
     part('Goal', el('p', {}, plan.goal || 'Not stated.'), el('p', { class: 'subtext' }, `${HORIZON_WORDS[plan.horizon] ?? 'Now'} · ${PRIORITY_WORDS[plan.priority] ?? 'Normal'} priority`)),
     part('Done when', el('ul', {}, ...criteria.map((item) => el('li', {}, item.text,
@@ -2260,7 +2263,7 @@ function homeScreen() {
   return [changed, decision, reviewList(resultsToReview(), { scope: 'home/reviews', withProject: true }),
     panel('Projects', 'Each project in one sentence.', el('div', { class: 'panel-body' }, projects)),
     panel('All work', 'Pause stops new steps everywhere; steps already running finish and are recorded. Resume all resumes only what Pause all paused.',
-      el('div', { class: 'panel-body' }, pauseControls(home.pause, 'all', {}, { label: 'all work' })))];
+      el('div', { class: 'panel-body' }, pauseControls(home.pause, 'all', {}, { label: 'all work' })))].filter(Boolean);
 }
 
 const AVAILABLE_WORDS = { 'not-published': 'Not published: release is off', unknown: 'Not known', recorded: 'Recorded' };
