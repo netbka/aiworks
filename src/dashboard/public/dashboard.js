@@ -465,7 +465,7 @@ function costNotes(c) {
     c.maxWorkerRuns === null ? `${plural(c.runsUsed, 'run')}; this work has no run limit. ` : `${c.runsUsed} of ${plural(c.maxWorkerRuns, 'run')} allowed. `,
     `Cost: ${cost}. `,
     budget?.maxCostUsd ? `${usd(budget.chargedCostUsd)} of the ${usd(budget.maxCostUsd)} ceiling is used, counting each unreported run at ${usd(budget.unknownRunCostUsd)}. `
-      : 'There is no cost ceiling: work pauses only when an AI worker reports its own subscription or usage limit, and resumes after the reset. ',
+      : 'This work has no cost ceiling of its own; its project’s budget, when one is set, still counts it. It also pauses when an AI worker reports its own subscription or usage limit, and resumes after the reset. ',
     'Pause stops new work from starting. Check again asks AIWorks to look again; it never skips the independent check.') };
 }
 
@@ -2462,7 +2462,8 @@ function settingsScreen() {
         ...currentVer.features.map((feat) => el('li', {}, `✓ ${feat}`))))));
   const settings = state.supervisor.settings;
   if (!state.supervisor.available || !settings) return [computer, unavailable(), settingsLinks()];
-  const active = state.supervisor.campaigns.filter((c) => !['finished', 'cancelled'].includes(c.control));
+  // Work in projects without GitHub counts too, named by its project and goal.
+  const active = [...state.supervisor.campaigns, ...(state.supervisor.local ?? [])].filter((c) => !['finished', 'cancelled'].includes(c.control));
   const workers = panel('AI workers', `Once for ${host.name ?? 'this computer'}, whatever the work.`, el('div', {},
     accountsSection(settings.accounts ?? []),
     el('ul', { class: 'settings-links' }, ...settings.workers.map((w) => {
@@ -2470,7 +2471,7 @@ function settingsScreen() {
       return el('li', { 'data-focus-scope': `worker/${w.kind}` }, el('strong', {}, text), ...notes.map((note) => el('div', { class: 'subtext' }, note)));
     })),
     // Details: provider order per piece of work and the supervisor version running it.
-    active.length ? disclosure('settings/workers', 'Details', el('ul', { class: 'settings-links' }, ...active.map((c) => el('li', {}, el('strong', {}, campaignTitle(c)),
+    active.length ? disclosure('settings/workers', 'Details', el('ul', { class: 'settings-links' }, ...active.map((c) => el('li', {}, el('strong', {}, c.projectName !== undefined ? `${c.projectName ?? 'Project without GitHub'}: ${c.title}` : campaignTitle(c)),
       el('div', { class: 'subtext' }, `Tried in this order: ${c.executors.map(provider).join(' → ')}`),
       el('div', { class: 'subtext' }, `Supervisor version ${c.controllerRevision ? String(c.controllerRevision).slice(0, 7) : 'not known (not running)'}`))))) : null,
     el('p', { class: 'subtext' }, `Commands set in the AIWorks configuration file on this computer: ${settings.commands.length ? settings.commands.join(', ') : 'none'}.`)));
@@ -3106,19 +3107,25 @@ function costSummary(all, delivered) {
  * unreported runs, retries and checker rejections. No primary action.
  */
 function spending(project) {
-  if (localProject(project)) return [el('p', { class: 'subtext' }, 'This project’s work counts toward its project budget; a breakdown per goal and step is not shown for a project without GitHub yet.')];
-  const total = state.supervisor.available ? state.supervisor.costs?.find((item) => sameProject(item.repository, project)) : null, all = projectCampaigns(project);
+  // A project without GitHub: its goals' runs come apart from the campaigns (state.supervisor.local), built the same way;
+  // a step has a result once it is done, and it has no step screen of its own.
+  const local = Boolean(localProject(project));
+  const total = !state.supervisor.available ? null : local ? state.supervisor.localCosts?.find((item) => item.project === project)
+    : state.supervisor.costs?.find((item) => sameProject(item.repository, project));
+  const all = local ? (state.supervisor.local ?? []).filter((c) => c.project === project) : projectCampaigns(project);
   if (!total) return [];
   // Nothing has run: the §7.1 copy, which the server takes from the state copy module.
   if (total.empty) return [el('p', {}, el('strong', {}, total.empty.title), ` ${total.empty.text}`)];
-  const { headline, lines } = costSummary(all, (c) => ownerCampaign(c)?.counts.delivered ?? 0);
+  const { headline, lines } = costSummary(all, local ? (c) => c.tasks.filter((task) => task.state === 'done').length : (c) => ownerCampaign(c)?.counts.delivered ?? 0);
   if (costRunsLine(total)) lines.push(costRunsLine(total));
+  const stepName = (c, task) => local ? el('span', { class: 'task-name' }, task.outcome ?? task.title)
+    : routeLink(task.outcome ?? task.title, { screen: 'step', project, work: c.id, step: task.id }, 'task-name');
   const work = (c) => el('section', { class: 'panel', 'data-focus-scope': `cost/${c.id}` },
-    el('div', { class: 'panel-header' }, el('div', {}, el('h4', {}, campaignTitle(c)),
+    el('div', { class: 'panel-header' }, el('div', {}, el('h4', {}, local ? c.title : campaignTitle(c)),
       el('p', {}, `${plural(c.runsUsed, 'run')} · ${costText({ runs: c.runsUsed, ...c.cost })}`),
       unitCostText(c.costByUnit) ? el('p', { class: 'subtext' }, `Tokens and dollars, each counted on its own: ${unitCostText(c.costByUnit)}`) : null)),
     el('div', { class: 'steps' }, table(['Step', 'Runs', 'Cost', 'Retries', 'Checker rejections'], runOrder(c).map((task) => el('tr', { 'data-focus-scope': `cost/${c.id}/${task.id}` },
-      el('td', { class: 'c-work' }, routeLink(task.outcome ?? task.title, { screen: 'step', project, work: c.id, step: task.id }, 'task-name'),
+      el('td', { class: 'c-work' }, stepName(c, task),
         ...[modelsText(task.routing), movedUpText(task.routing)].filter(Boolean).map((text) => el('div', { class: 'subtext' }, text))),
       cell(String(stepRuns(task.cost))), cell(costText(task.cost), unitCostText(task.costByUnit) ? el('div', { class: 'subtext' }, unitCostText(task.costByUnit)) : null),
       cell(String(task.cost.retries)), cell(String(task.cost.checkerRejections)))))),
@@ -3442,7 +3449,7 @@ function alertsParts() {
     el('p', { class: 'subtext', role: 'status' }, v.version ? `Applied: version ${v.version}, saved ${clock(v.savedAt)}.${v.quietNow ? ' Quiet hours now.' : ''}` : 'Nothing saved yet: the default rules apply.'),
     alertsEntry.error || offline ? el('p', { class: 'needs-stale', role: 'status' }, `Shown as read at ${clock(alertsEntry.readAt)}. ${offline
       ? 'The page is disconnected; it reads these settings again when it reconnects.' : alertsEntry.error.message}`) : null,
-    el('p', {}, `Waiting: ${out.pending + (out.sending ?? 0)} · Rehearsed: ${out.rehearsed} · Delivered: ${out.delivered ?? 0} · Arrival unknown: ${out.unknown ?? 0} · Not sent (gave up): ${out.failed} · Off by your rules: ${out.muted}`),
+    el('p', {}, `Waiting: ${out.pending + (out.sending ?? 0)} · Rehearsed: ${out.rehearsed} · Delivered: ${out.delivered ?? 0} · Arrival unknown: ${out.unknown ?? 0} · Not sent (gave up): ${out.failed} · Off by your rules: ${out.muted} · No longer needed: ${out.obsolete ?? 0}`),
     disclosure('alerts/sample', 'What an alert says (fictional example)', el('div', { class: 'panel-body' },
       el('strong', {}, sample.title), ...sample.lines.map((text) => el('p', { class: 'subtext' }, text)),
       el('p', { class: 'subtext' }, `Buttons: ${sample.buttons.map((b) => b.label).join(', ')}. They open this dashboard on this computer; an answer is given only here.`),
