@@ -127,6 +127,8 @@ p{color:var(--muted);line-height:1.7;margin:7px 0 0}
 .panel-header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid #edf0f5;gap:12px}
 .panel-header p{font-size:12px;margin:4px 0 0}
 .panel-body{padding:20px}
+/* Groups placed straight in a panel (Plan, Results) keep the panel body's inset. */
+.panel>.needs-group{padding:0 20px 20px}
 .track-row{padding:18px 0;border-bottom:1px solid #f0f3f7}
 .track-row:first-child{padding-top:0}
 .track-row:last-child{border:0;padding-bottom:0}
@@ -353,6 +355,7 @@ main{padding:25px 15px}
 .metric-title{font-size:12px}
 .metric-icon{display:none}
 .panel-header,.panel-body,.campaign-heading{padding:18px}
+.panel>.needs-group{padding:0 18px 18px}
 .agent-card{padding:18px}
 .legend{gap:12px;padding:12px 18px}
 .local-label{display:none}
