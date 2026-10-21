@@ -120,7 +120,7 @@ The supervisor keeps an append-only **main ledger** in its store (`main_ledger`:
 | --- | --- | --- |
 | `anchor` | The switch-on step (SELF13) | Once. The anchor must equal `refs/remotes/origin/main` after a fetch, and local `main` must equal it: trust passes from GitHub's main as it is at that moment, with no new root of trust. |
 | `gate-merge` | The local merge gate (4.4) | For each merge commit it makes, in the same fenced transaction that records the merge. |
-| `owner` | The owner, through a dashboard owner route with origin, CSRF and the caller check of [WORK_ENVELOPE §8](WORK_ENVELOPE.md#8-decision-d4-local-admission-without-github) | When the owner wants a commit they put on `main` by hand to be trusted. Optional: nothing waits on it (4.3). |
+| `owner` | The owner, through a dashboard owner route with origin, CSRF and the caller check of [WORK_ENVELOPE §8](WORK_ENVELOPE.md#8-decision-d4-local-admission-without-github) | When the owner wants a commit they put on `main` by hand to be trusted. Optional: nothing waits on it (4.3). It binds the trusted tip and the local `main` the page showed, rechecks both in the transaction that appends the row, moves no ref, and refuses commits that change `src/supervisor/`, which still need an independent review. |
 
 **The trusted tip** is the newest ledger commit that is still an ancestor of, or equal to, local `main`. Commits on `main` after it are **unrecorded**. If no ledger commit is still on `main` (main was rewound or rewritten), the state is `MAIN_REWRITTEN`.
 
@@ -139,7 +139,7 @@ The gate keeps every condition of [SUPERVISOR.md "Merge gate"](../SUPERVISOR.md#
 1. The repository is listed and the result is not held (`merges.held` takes a local review id as well as a URL).
 2. The candidate is a commit task this campaign verified and recorded as a local review (section 5.2), its local branch `campaign/<campaign>/<task>` points at the verified SHA, and the campaign is neither paused nor cancelled.
 3. **Verified tree.** The verified SHA contains the trusted tip (`git merge-base --is-ancestor <trusted> <verified>`). Otherwise the task goes back as an integration repair round, exactly as today (`src/supervisor/merge.mjs:171-176`).
-4. **No unrecorded commits.** Local `main` equals the trusted tip. Otherwise the gate waits with the reason "main has N commits AIWorks did not put there", and Needs me offers the owner route of 4.2. Running work is not held (4.3).
+4. **No unrecorded commits.** Local `main` equals the trusted tip. Otherwise the gate waits with the reason "main has N commits AIWorks did not put there", and Settings › Connections offers the owner route of 4.2. Running work is not held (4.3).
 5. The operator's checkout that has `main` checked out, if any, has no local changes. Otherwise the gate waits: "your checkout has unsaved changes".
 6. This runtime passes the AW-005 check of 4.3.
 
