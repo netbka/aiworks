@@ -596,7 +596,10 @@ function chatView(chat, coordinator) {
   return panel(chatTitle(chat.turns[0]), chat.turns[0].repository ? `Project ${chat.turns[0].repository}` : null,
     el('div', { class: 'chat', 'data-focus-scope': `chats/${chat.id}` }, ...chat.turns.map((m) => el('div', { class: 'chat-turn' },
       el('div', { class: 'chat-bubble owner' }, el('div', { class: 'subtext' }, `You · ${dateTime(m.receivedAt)}`), el('p', {}, m.text)),
-      m.replyBody ? el('div', { class: 'chat-bubble aiworks' }, el('div', { class: 'subtext' }, `AIWorks · ${dateTime(m.answeredAt)}`), el('pre', { class: 'coordinator-reply' }, m.replyBody))
+      m.replyBody ? el('div', { class: 'chat-bubble aiworks' }, el('div', { class: 'subtext' }, `AIWorks · ${dateTime(m.answeredAt)}`), el('pre', { class: 'coordinator-reply' }, m.replyBody),
+        m.replyCampaign ? disclosure(`message/${m.id}/campaign`, 'Proposed campaign (draft, not registered)', m.replyCampaign === '[sensitive content omitted]'
+          ? el('p', { class: 'subtext' }, 'Not shown here: the credential check flagged it. The full reply stays in the work records on this computer.')
+          : el('pre', { class: 'coordinator-reply' }, m.replyCampaign)) : null)
         : el('ol', { class: 'receipt-steps' }, ...receiptSteps(m, coordinator, state.supervisor.controller)))),
     coordinator.configured ? el('form', { class: 'chat-composer', onsubmit: send }, text, el('button', { type: 'submit', class: 'button', disabled: startBlocked() }, 'Send')) : null));
 }
