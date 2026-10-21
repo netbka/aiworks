@@ -55,7 +55,7 @@ Sending `message` before enabling/configuring the coordinator still stores a rec
 
 ## Optional features and budgets
 
-Do not enable every optional feature to follow the quickstart. Scheduler, model routing, CI repair, integration repair, notification delivery and release controls have separate contracts and rollout state in [the runbook](../SUPERVISOR.md) and [Status](../STATUS.md).
+Do not enable every optional feature to follow the quickstart. Scheduler, model routing, CI repair, integration repair, notification delivery and release controls have separate contracts and rollout state in [the runbook](../SUPERVISOR.md) and [Status](../STATUS.md). Telegram alerts ([runbook section 10](../SUPERVISOR.md#10-owner-intervention-core)) take only references into your own secret store for the bot credential and the chat, never their values, and send nothing until `ownerIntervention.deliver` is also on.
 
 The report example includes an **illustrative, explicit** run/retry budget for someone choosing a bounded first experiment. It is not a new product-wide default or a price quote. The product's default does not impose campaign run/cost ceilings. A dollar ceiling additionally requires the documented handling for unreported cost; a missing receipt is never free usage. Verify eligibility and compatibility before changing limits or providers on an existing campaign.
 

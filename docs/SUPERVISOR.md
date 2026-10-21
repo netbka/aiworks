@@ -541,7 +541,7 @@ The wait reasons are kept by the controller for status; showing them in `status`
 
 Not yet implemented:
 - GitHub webhook intake and conditional-GET reconciliation (slice B);
-- Telegram (or any real) notification transport, snooze, and reminders/incident timing beyond the section 10 defaults ([example-org/aiworks#1](https://github.com/example-org/aiworks/issues/1));
+- a notification transport verified against a real provider (the Telegram adapter is built off and tested only against a synthetic network, section 10), snooze, replies, and reminders/incident timing beyond the section 10 defaults ([example-org/aiworks#1](https://github.com/example-org/aiworks/issues/1));
 - host pressure sampling and per-account concurrency for the scheduler (slices RUN7 and RUN8), and wait reasons in `status` (RUN9);
 - a project release adapter (slice C);
 - a host other than workstation.
@@ -669,17 +669,41 @@ Recheck schedule (deterministic probes only): B2 15 min, 60 min, 4 h, then owner
 
 Crash and restart: every record, parent, probe and notification change commits in the same fenced transaction as the campaign/task change it belongs to. A probe run is an ordinary recorded operation, so a restart between checkpoint and launch launches the same operation once (`tests/supervisor/owner-intervention.test.mjs`); held tasks stay held until the probe's result is applied. A `rechecking` record whose probe task is waiting (backoff or usage limit) keeps holding the others.
 
-Notification delivery: a transport is `{ name, live, send({ key, message, alert }) }`, where `alert` is the rendered, redacted title, lines and dashboard-address buttons (`alerts.mjs renderAlert`). Without a transport the no-op one stays (`live: false`), entries stay `pending` and nothing leaves the host. With `"deliver": true` and an injected live transport (tests use an in-memory fake), the attempt is counted before `send`, delivery is at-least-once with the stable key for deduplication, failures back off by `outboxRetryMs` × attempts and stop as `failed` after 5 attempts. There is no network, Telegram or credential code path.
+Notification delivery: a transport is `{ name, live, dedup, send({ key, message, alert }) }`, where `alert` is the rendered, redacted title, lines and dashboard-address buttons (`alerts.mjs renderAlert`). Without a transport the no-op one stays (`live: false`), entries stay `pending` and nothing leaves the host. A live transport sends only with `"deliver": true` beside `"enabled": true`. The attempt is counted before `send`. A transport that deduplicates by key (`dedup: 'key'`, the rehearsal one) is simply tried again after a crash (at-least-once). One whose provider cannot deduplicate (`dedup: 'none'`, Telegram) marks the entry `sending` before the call, and every answer is classified:
 
-Alert rules and the rehearsal transport (OWNER_UI_V2 WP6, `src/supervisor/alerts.mjs`): before each send the owner's newest `alert_rules` decide. An entry whose class or reminders are off is closed as `muted` and never sent later; one inside quiet hours stays `pending` with no attempt counted and goes out when they end (an incident only breaks quiet hours when the owner allowed it). The operator chooses the transport in `config.json`:
+| Answer | Entry | Sent again? |
+| --- | --- | --- |
+| The provider accepted it | `delivered` | No |
+| Nothing reached the provider: a reference that does not resolve, a secret store that cannot tell, a connection never made, or a rate refusal (HTTP 429) | `pending`, backing off by `outboxRetryMs` × attempts, `failed` after 5 attempts | Yes, bounded |
+| The provider refused it (HTTP 4xx) or a resolved value is malformed | `failed` at once | No |
+| It may have arrived: a time-out, a reset, HTTP 5xx, an unreadable answer, an entry still `sending` after a restart or a lost lease | `unknown` (journal `owner-notification-unknown`) | Never |
+
+So an uncertain alert is never duplicated, and it is never lost either: the blocker it announced stays in Needs me, and its reminders, if on, are new messages under their own keys. A rate refusal waits the outbox backoff, not Telegram's `retry_after`.
+
+Alert rules and transports (OWNER_UI_V2 WP6, `src/supervisor/alerts.mjs`): before each send the owner's newest `alert_rules` decide. An entry whose class or reminders are off is closed as `muted` and never sent later; one inside quiet hours stays `pending` with no attempt counted and goes out when they end (an incident only breaks quiet hours when the owner allowed it). The per-blocker deduplication above is unchanged: one notification per fingerprint and episode, whichever transport is chosen. The operator chooses the transport in `config.json`:
 
 ```json
 "alerts": { "transport": { "kind": "synthetic" } }
 ```
 
-`synthetic` records each rendered alert once per notification key in `alert_rehearsals` and marks the entry `rehearsed`, never `delivered`; a retry after a crash between send and record finds the key and records nothing new. Any other kind (`{ "kind": "<name>", "secretRef": "<store>:<path>", "recipientRef": "<store>:<path>" }`) has no adapter in this version and reads `unavailable`: nothing is sent and the references are never resolved, served, logged or journaled. A setting holding anything but such references, such as a credential value, reads `invalid` and sends nothing. Settings › Alerts shows these states and never claims a delivery. Answers stay on the dashboard; no transport reply is accepted.
+`synthetic` records each rendered alert once per notification key in `alert_rehearsals` and marks the entry `rehearsed`, never `delivered`; a retry after a crash between send and record finds the key and records nothing new.
 
-Owner-gated before enabling on workstation: choose the bot/transport and its secret reference (Infisical/runtime, never this repository) and the owner chat reference; implement and review that adapter (remote access and replies are WP10's owner decision); decide snooze policy and the B5 incident path; confirm the schedule defaults; then turn on `enabled` and later `deliver` for one campaign as a canary.
+**Telegram** (`src/supervisor/alert-telegram.mjs`) is the one adapter that leaves this computer. It is built and off: nothing turns it on but the operator's own setting, and with any part of it missing nothing is sent. It needs all three of:
+
+```json
+"ownerIntervention": { "enabled": true, "deliver": true },
+"alerts": { "transport": { "kind": "telegram", "secretRef": "windows:aiworks-alerts/bot", "recipientRef": "windows:aiworks-alerts/chat" } }
+```
+
+- **References, never values.** `secretRef` names the bot credential and `recipientRef` the chat, each in a secret store the operator owns: `windows:<name>`, a generic credential in the Windows Credential Manager (read with `CredRead` in a hidden PowerShell child), or `helper:<name>`, the operator's credential helper (`commands.credentialHelper`, a native command asked `get <name>`, the contract of `release/credential.mjs`). The names above are examples. They are resolved inside each send only, for that one request, and their values are never stored, logged, journaled, served by the dashboard or put in an error; Telegram's own error description is cleaned of both before it is kept. A credential value in the setting reads `invalid`; one reference missing, the same reference twice, or another store reads `incomplete`. Settings › Alerts shows `ready` (sending switched off) or sending, and never a reference.
+- **What is sent.** One plain-text `sendMessage` to `https://api.telegram.org` per entry, with link previews off, no markup and no buttons; dashboard addresses are written out as places on this computer. Redirects are refused and a request is bounded to 15 seconds.
+- **No authority.** The adapter never calls `getUpdates` or registers a webhook, so no reply reaches AIWorks. An alert cannot approve a plan, answer a decision, accept a result or vouch for its sender; every such act stays a protected local dashboard route with its caller, CSRF and version checks until remote access is separately designed and approved (WP10, AW-003).
+- **Provider deduplication.** Telegram's Bot API has no idempotency key, so it cannot drop a repeated message: AIWorks's own `unknown` state is the only protection against a duplicate, and an `unknown` alert is not resent even when it never arrived.
+- **Evidence.** `tests/supervisor/alerts.test.mjs` drives the production selection path (`configuredTransport`) with a synthetic secret store and a synthetic network: nothing is resolved or sent without the full setting; a delivery is recorded once with no value or reference in the store, journal or log; a time-out, an HTTP 5xx and an interrupted send end `unknown` and are never repeated; a refused connection is tried five times; a refusal stops at once. No check reads a real credential or sends a real message, and none has run against Telegram itself: whether a real bot and chat accept these requests is unknown until the operator's own canary.
+
+Any other kind (`{ "kind": "<name>", "secretRef": "<store>:<path>", "recipientRef": "<store>:<path>" }`) has no adapter and reads `unavailable`: nothing is sent and the references are never resolved, served, logged or journaled. A setting holding anything but such references, such as a credential value, reads `invalid` and sends nothing. Settings › Alerts shows these states and never claims a delivery that did not happen.
+
+Before delivering on an installation, the operator, not this repository: creates the bot and puts its credential and the owner's chat id into the secret store under the chosen names; confirms the schedule defaults, the snooze policy and the B5 incident path; and then sets `deliver` and the transport through the upgrade procedure, watching the first alerts as a canary. Remote access and replies stay WP10's owner decision.
 
 ## 11. Web acceptance by the AGY browser worker
 
