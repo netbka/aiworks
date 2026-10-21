@@ -49,9 +49,9 @@ export function connectCopy(code, detail = {}) {
     UNCOMMITTED_NOTICE: `You have changes that aren't committed. AIWorks works from your last commit (${detail.sha7}) and never touches your files.`,
     MIRROR_SPACE: `There isn't enough free space for AIWorks's copy: ${size(detail.need)} needed, ${size(detail.free)} free on ${detail.drive}.`,
     MIRROR_CHANGED: "AIWorks's copy of this project changed unexpectedly, so AIWorks stopped using it.",
-    RULES_NOT_CONFIRMED: "Before AIWorks starts work here, confirm this project's rules on its Now screen. Then each plan you approve starts.",
+    RULES_NOT_CONFIRMED: "Before AIWorks starts work here, confirm this project's rules on its Overview. Then each plan you approve starts.",
     // Projects connected before local admission was switched on (STA17) keep this reason; it now reads the same.
-    LOCAL_START_OFF: "Before AIWorks starts work here, confirm this project's rules on its Now screen. Then each plan you approve starts.",
+    LOCAL_START_OFF: "Before AIWorks starts work here, confirm this project's rules on its Overview. Then each plan you approve starts.",
     SECRET_TRACKED: detail.count === 1 ? `1 committed file looks like a secret, for example ${detail.examples?.[0]}. Workers will see it.`
       : `${detail.count} committed files look like secrets, for example ${detail.examples?.[0]}. Workers will see them.`,
     // The design names these outcomes (4.2 point 4, 4.6) but gives no copy; these follow its style.
@@ -511,7 +511,7 @@ function overlayRowById(store, overlayId) {
 export function resolveLocalProject(store, declaration) {
   const overlayId = String(declaration?.target?.projectId ?? '');
   const row = overlayRowById(store, overlayId);
-  if (!row) throw localRefusal('RULES_NONE', `You haven't confirmed rules for ${overlayId || 'this project'}, so AIWorks starts no work there. Confirm them on the project's Now screen`);
+  if (!row) throw localRefusal('RULES_NONE', `You haven't confirmed rules for ${overlayId || 'this project'}, so AIWorks starts no work there. Confirm them on the project's Overview`);
   if (row.revoked_at != null) throw localRefusal('RULES_REVOKED', `You revoked the rules of ${overlayId}, so AIWorks starts no new work there until you confirm them again`);
   const record = project(store, row.project_id);
   if (!record || record.disconnected_at != null) throw localRefusal('PROJECT_NOT_FOUND', `The project of ${overlayId} is not connected`, { projectId: row.project_id });

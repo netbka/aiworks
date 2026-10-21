@@ -11,11 +11,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
 import { MIRROR_REPO, SNAPSHOT_DIR } from '../supervisor/adapters/mirror.mjs';
-import { coordinatorUsage, factsKey, KnowledgeError, materialSuggestions, planningEstimate, planSuggestions, projectKnowledge, saveFact } from '../supervisor/knowledge.mjs';
+import { coordinatorUsage, factsKey, KnowledgeError, materialSuggestions, planningEstimate, planSuggestions, projectEvidence, projectKnowledge, saveFact } from '../supervisor/knowledge.mjs';
 import { projectOf } from '../supervisor/project-settings.mjs';
 import { projects as projectRecords } from '../supervisor/projects.mjs';
 import { configuredRepositories } from './projects.mjs';
 import { ownerOnly } from './work-list.mjs';
+import { typedEvents } from './views.mjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
@@ -71,9 +72,20 @@ function suggestionsOf(store, resolved) {
   return { commit, list: [...materialSuggestions({ git: resolved.git, repoPath: resolved.repoPath, commit }), ...planSuggestions(store, resolved.plans)] };
 }
 
+/** The project's own goals: GitHub work by its repository, work in a project without GitHub by its rules' id. */
+function projectCampaigns(store, resolved) {
+  let names = [resolved.id];
+  try { names = [...names, ...store.all('SELECT id FROM project_overlays WHERE project_id = ?', resolved.id).map((row) => row.id)]; } catch { /* no project was connected */ }
+  const rows = store.all('SELECT id, declaration FROM campaigns ORDER BY created_at DESC').filter((row) => names.some((name) => same(projectOf(row.declaration), name)));
+  return { ids: rows.map((row) => row.id), name: rows.length ? projectOf(rows[0].declaration) : resolved.id };
+}
+
 function view(store, resolved, suggestions) {
-  const knowledge = projectKnowledge(store, resolved.key, suggestions.list);
-  return { available: true, project: resolved.id, readAt: Date.now(), materials: { readme: suggestions.commit ? suggestions.commit.slice(0, 12) : null }, ...knowledge };
+  const knowledge = projectKnowledge(store, resolved.key, suggestions.list), goals = projectCampaigns(store, resolved);
+  // What approved goals already record and what happened in the project, each with its origin (projectEvidence,
+  // typedEvents): read from the store only, never from a file, and never a confirmed fact by itself.
+  return { available: true, project: resolved.id, readAt: Date.now(), materials: { readme: suggestions.commit ? suggestions.commit.slice(0, 12) : null }, ...knowledge,
+    evidence: projectEvidence(store, goals.ids), history: typedEvents(store, { project: goals.name, limit: 20 }) };
 }
 
 /** GET /api/v2/projects/:id/knowledge. Read-only; a missing store is unavailable, never an empty list. */

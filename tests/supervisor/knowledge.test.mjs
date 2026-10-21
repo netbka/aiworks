@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../../src/supervisor/store.mjs';
-import { planSuggestions, projectKnowledge, saveFact, suggestionKey } from '../../src/supervisor/knowledge.mjs';
+import { planSuggestions, projectEvidence, projectKnowledge, saveFact, suggestionKey } from '../../src/supervisor/knowledge.mjs';
 
 function plan(store, project, requestId, included) {
   const now = Date.now();
@@ -56,4 +56,24 @@ test('only the owner confirms a fact, its origin survives edits, and no project 
   assert.throws(() => saveFact(store, { project: 'lp-ledger', action: 'retire', fact: key, version: 2, requestId: 'request-b1' }), { code: 'FACT_NOT_FOUND' });
   // A fact that looks like a credential is never kept.
   assert.throws(() => saveFact(store, { project: 'lp-notes', action: 'add', version: 0, text: 'API_KEY=sk-live-0123456789abcdef', requestId: 'request-a5' }), { code: 'FACT_SECRET' });
+});
+
+test('Knowledge names what approved goals record without reading a file, and never names a secret-like or outside path', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'aiworks-evidence-'));
+  const store = new Store(join(dir, 'supervisor.db'));
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const token = `ghp_${'a'.repeat(36)}`, now = Date.now();
+  const declaration = { version: 1, campaignId: 'notes-search', purpose: 'Notes can be searched', target: { repository: 'example-org/notes', trackingIssue: 1 },
+    tasks: [{ id: 'search', outcome: 'Search by title', acceptance: ['A title search finds the note.', `Uses ${token}`],
+      references: ['docs/brief.md#scope', 'docs/brief.md', '.env.local', 'deploy/credentials.json', 'certs/server.pem', '../outside.md', 'C:/elsewhere/notes.md'] }] };
+  store.insert('campaigns', { id: 'notes-search', controller_id: 'aiworks-supervisor/notes-search', scope_digest: 'a'.repeat(64), authorization_version: 1,
+    declaration, control: 'registered', status: 'active', next_action: 'x', next_wakeup_at: null, blocker: null, version: 1, created_at: now, updated_at: now });
+
+  const evidence = projectEvidence(store, ['notes-search']);
+  // The approved plan's criteria, with their origin; a credential-looking one is left out, never shown.
+  assert.deepEqual(evidence.requirements.map((item) => [item.campaignId, item.authorizationVersion, item.criteria]), [['notes-search', 1, ['A title search finds the note.']]]);
+  // Plain project paths by name only; secret-like, parent and absolute names are counted, never listed.
+  assert.deepEqual(evidence.references.map((item) => item.reference), ['docs/brief.md#scope', 'docs/brief.md']);
+  assert.equal(evidence.withheldReferences, 5);
+  assert.ok(!JSON.stringify(evidence).includes(token) && !JSON.stringify(evidence).includes('.env'));
 });

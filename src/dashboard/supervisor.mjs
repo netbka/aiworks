@@ -70,7 +70,78 @@ function stepStopped(task, label, issueUrl) {
   // An owner decision: the worker said so, it made no progress, or the checker still rejects it after the repair rounds.
   const key = task.blocked.class === 'B3' || /^verifier still rejects/.test(reason) ? 'needs-decision' : /^admission blocked/.test(reason) ? 'recorded-blocker' : 'failed-attempts';
   const { title, text, primary } = stateCopy(key, { step: label, reason: stopReason(task), attempts: task.attempts, url: issueUrl });
-  return { key, title, text, primary };
+  return { key, kind: stopKind(task.blocked), title, text, primary };
+}
+
+/**
+ * Which stop this is, from the supervisor's own reason prefixes (controller.mjs), so the step offers only what the
+ * existing authority supports for it: the repair limit, a change inside a protected area or another boundary, no
+ * progress, another owner decision, failed attempts or an admission refusal. Never worker text.
+ */
+function stopKind(blocked) {
+  const reason = String(blocked?.reason ?? '');
+  if (/^verifier still rejects/.test(reason)) return 'repair-limit';
+  if (/^boundary violation on [\w.-]+: changes inside the project's protected areas/.test(reason)) return 'protected-area';
+  if (/^boundary violation/.test(reason)) return 'boundary';
+  if (/^no progress/.test(reason)) return 'no-progress';
+  if (blocked?.class === 'B3') return 'owner-decision';
+  if (/^admission blocked/.test(reason)) return 'admission';
+  return 'failed-attempts';
+}
+
+// A step's risk label (OWNER_UI_V2 section 4), from recorded evidence only: the router's risk indicator on the step's
+// routed runs (R0 low, R1 medium, R2 high) and a high risk declared on the step or its goal; a declared value only
+// raises it. With neither, the risk is not known: null, never "low".
+const RISK_LEVELS = { R0: 'low', R1: 'medium', R2: 'high' };
+const RISK_ORDER = ['low', 'medium', 'high'];
+function stepRisks(store, campaignId, declaration) {
+  const routed = new Map();
+  for (const op of store.all("SELECT task_id, routing FROM operations WHERE campaign_id = ? AND kind IN ('implement', 'verify')", campaignId)) {
+    const level = RISK_LEVELS[op.routing?.decision?.indicators?.risk];
+    if (level && RISK_ORDER.indexOf(level) > RISK_ORDER.indexOf(routed.get(op.task_id) ?? null)) routed.set(op.task_id, level);
+  }
+  return (task) => {
+    const declared = declaration.routing?.risk === 'high' || task?.routing?.risk === 'high';
+    if (declared) return { level: 'high', source: 'declared' };
+    const level = routed.get(task?.id);
+    return level ? { level, source: 'routing' } : null;
+  };
+}
+
+// The limits of a goal as approved, numbers only (campaign.mjs campaignLimits); null where none is set.
+const LIMIT_KEYS = ['slots', 'maxWorkerRuns', 'maxRepairRounds', 'maxRetriesPerTask', 'maxCostUsd', 'unknownRunCostUsd'];
+const limitsOf = (limits) => (limits && typeof limits === 'object' && !Array.isArray(limits)
+  ? Object.fromEntries(LIMIT_KEYS.map((key) => [key, Number.isFinite(limits[key]) ? limits[key] : null])) : null);
+
+/**
+ * The approved versions of one goal and the plan amendments admitted into it, from existing evidence only: the journal's
+ * registration and authorization amendments (with the limits each recorded, and whether its AI workers or model routing
+ * changed) and the plan_amendments rows (slice E3; none until child admission is on). The immutable scope cannot change
+ * in an amendment (api.mjs SCOPE_CONFLICT), so a difference is only in limits, AI workers or routing. Limits a version
+ * did not record stay unknown (null), so a difference is said only between two recorded versions.
+ */
+function goalVersions(store, c) {
+  const int = (value) => (Number.isSafeInteger(value) ? value : null);
+  const versions = [];
+  for (const row of store.all("SELECT at, kind, detail FROM journal WHERE campaign_id = ? AND kind IN ('registered', 'authorization-amended', 'executor-amended', 'routing-amended') ORDER BY seq", c.id)) {
+    if (row.kind === 'registered') versions.push({ version: int(row.detail?.authorizationVersion), at: row.at, kind: 'registered', limits: null, changed: [], from: null });
+    else if (row.kind === 'authorization-amended') {
+      const limits = limitsOf(row.detail?.limits), before = versions.at(-1)?.limits ?? null;
+      versions.push({ version: int(row.detail?.to), at: row.at, kind: 'amended', from: int(row.detail?.from), limits, changed: [],
+        limitChanges: limits && before ? LIMIT_KEYS.filter((key) => limits[key] !== before[key]).map((key) => ({ key, from: before[key], to: limits[key] })) : null });
+    } else if (versions.length) versions.at(-1).changed.push(row.kind === 'executor-amended' ? 'workers' : 'routing');
+  }
+  // The newest version's limits are the declaration's own.
+  if (versions.length && versions.at(-1).version === c.authorization_version) versions.at(-1).limits ??= limitsOf(campaignLimits(c.declaration));
+  let amendments = [];
+  try {
+    amendments = store.all('SELECT seq, authorization_version, ops, created_at FROM plan_amendments WHERE campaign_id = ? ORDER BY seq', c.id).map((row) => {
+      const ops = Array.isArray(row.ops) ? row.ops : [];
+      const steps = (op) => ops.filter((item) => item?.op === op).map((item) => item.task?.id).filter((taskId) => identifier.test(taskId ?? ''));
+      return { seq: row.seq, at: row.created_at, authorizationVersion: int(row.authorization_version), added: steps('add'), revised: steps('revise'), cancelled: steps('cancel') };
+    });
+  } catch { amendments = []; }
+  return { versions: versions.slice(-20), amendments: amendments.slice(-20) };
 }
 
 /** What the owner can do with a piece of work: Resume first when paused; Pause, Check again and Cancel in the More menu. */
@@ -762,6 +833,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
         if (verdict === 'accepted' && Number.isSafeInteger(op.updated_at)) acceptedAt.set(key, Math.max(acceptedAt.get(key) ?? 0, op.updated_at));
       }
       const histories = stepHistories(store, id);
+      const riskOf = stepRisks(store, id, c.declaration);
       const costs = stepCosts(store, id);
       const paused = c.control === 'paused' ? store.get("SELECT at, detail FROM journal WHERE campaign_id = ? AND kind = 'paused' ORDER BY seq DESC LIMIT 1", id) : null;
       // Latest finished attempt per task: the worker's own verdict, not the protocol class alone.
@@ -796,6 +868,8 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
         blockerAction: c.blocker ? ['budget', 'executors'].includes(c.blocker.kind) ? safeText(String(c.blocker.requestedAction ?? ''), 300) : 'Inspect local supervisor status, resolve the recorded blocker, then recheck.' : null,
         controls: workControls(c.control),
         slots: campaignLimits(c.declaration).slots, phase: status.phase,
+        // The goal's own limits as approved, and its approved versions with what each changed (Project settings, Overview).
+        limits: limitsOf(campaignLimits(c.declaration)), versions: goalVersions(store, c),
         runsUsed: status.runsUsed, maxWorkerRuns: status.maxWorkerRuns, recordedCostUsd: status.costUsd,
         // OWNER_WORKSPACE S7: today's totals, with unreported and running runs apart; null, never 0, when nothing reported a cost.
         cost: { reportedUsd: status.costUsd > 0 ? status.costUsd : null, unreportedRuns: status.budget.unknownCostRuns, runningRuns: operations.length },
@@ -833,6 +907,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
             })() };
         }),
         tasks: taskRows.map((task) => ({ id: task.task_id, title: safeText(specs.get(task.task_id)?.title),
+          risk: riskOf(specs.get(task.task_id)),
           decision: decisionView(id, task, feedback, now),
           review: resultReview(store, c, task, specs.get(task.task_id), config),
            mergeReceipt: mergeReceipt(task, merged),

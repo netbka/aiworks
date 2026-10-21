@@ -216,7 +216,7 @@ export function removeProject(dataDir, input, view, now = Date.now()) {
   const row = view.projects.find((project) => project.repository?.toLowerCase() === repository.toLowerCase());
   if (!row) throw fail(404, 'This project is not on Projects. Refresh the page.');
   if (!row.removable) {
-    throw fail(409, row.connection ? `"${row.name}" is connected from a folder. Disconnect it on its Now screen instead.`
+    throw fail(409, row.connection ? `"${row.name}" is connected from a folder. Disconnect it on its Overview instead.`
       : `"${row.name}" has work that is not finished, or something that needs you. Remove it once that is done.`);
   }
   saveRemoved(dataDir, { ...removedProjects(dataDir), [row.repository.toLowerCase()]: { repository: row.repository, removedAt: now } });
@@ -306,12 +306,12 @@ const LOCAL_HOW = 'You ask for a plan and approve it here; AIWorks then works on
 export const LOCAL_START = Object.freeze(["Connected. Confirm this project's rules on this page before AIWorks plans or starts work here.",
   `The rules say which rules AIWorks follows in this folder; you confirm them once, for up to 12 months. ${LOCAL_HOW}`]);
 /** OWNER_WORKSPACE §5.3, step 2: what comes after connecting, said before the owner connects. */
-const LOCAL_AFTER_CONNECT = "After you connect it, confirm its rules on its Now screen. Then you can plan work here and approve it.";
+const LOCAL_AFTER_CONNECT = "After you connect it, confirm its rules on its Overview. Then you can plan work here and approve it.";
 export const LOCAL_READY = Object.freeze(["Ready. Plan work here: nothing in your folder changes until you press Apply.", LOCAL_HOW]);
 /** The state word of a project that is connected but where work cannot start: never a green Ready (review 5 G9). */
 export const CANNOT_START = "Can't start work yet";
 /** Settings › Diagnostics: what a connected project waits for, in machine words (OWNER_WORKSPACE §2.2). */
-export const LOCAL_START_DIAGNOSTIC = 'starting work waits for the project rules (D2, AIWorks issue #24), confirmed on the project’s Now screen; each plan then starts on the owner’s approval in the dashboard (D4, AIWorks issue #32).';
+export const LOCAL_START_DIAGNOSTIC = 'starting work waits for the project rules (D2, AIWorks issue #24), confirmed on the project’s Overview; each plan then starts on the owner’s approval in the dashboard (D4, AIWorks issue #32).';
 /** OWNER_WORKSPACE §5.3, step 2: what AIWorks promises before a project without GitHub is connected. */
 export const OWN_COPY = 'AIWorks will never change this folder directly. It works on its own copy and asks you before applying a checked result.';
 
