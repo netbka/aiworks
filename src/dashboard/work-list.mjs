@@ -12,7 +12,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
 import { OWNER_CALLER } from '../supervisor/local-admission.mjs';
-import { mainLedger, selfHostingSettings } from '../supervisor/self-hosting.mjs';
+import { mainLedger, recordOwnerMain, selfHostingSettings } from '../supervisor/self-hosting.mjs';
 import { addComment, comments, createItem, item, items, setItemState } from '../supervisor/work-list.mjs';
 import { CLOSE_IMPORTED_ON, closeCandidates, closeConfirmedIssues, itemVersion } from '../supervisor/work-list-import.mjs';
 import { safeText } from './roadmap.mjs';
@@ -201,6 +201,35 @@ export function setWorkItemState(dataDir, input, { caller, now = Date.now() } = 
     if (found.state === input.state) throw fail(409, `#${input.number} is already ${input.state}. Nothing changed.`, 'WORK_ITEM_SAME_STATE');
     setItemState(store, { number: input.number, state: input.state, now });
     return { ok: true, number: input.number, message: input.state === 'closed' ? `Closed #${input.number} in the work list.` : `Reopened #${input.number}.` };
+  });
+}
+
+const sha = (value) => typeof value === 'string' && /^[0-9a-f]{40}$/.test(value);
+const TRUST_REFUSALS = Object.freeze({
+  TRUSTED_MAIN_MOVED: 'Local main or its trusted tip changed since you opened this page. Read it again; nothing was recorded.',
+  TRUSTED_MAIN_NEEDS_REVIEW: 'These commits change AIWorks’s supervisor code, which needs an independent review of its exact version first. Nothing was recorded.',
+  TRUSTED_MAIN_UNKNOWN: 'AIWorks can’t compare local main with its records right now, so nothing was recorded.',
+  TRUSTED_MAIN_INVALID: 'Not recorded: the request does not match AIWorks’s own repository on this computer.',
+});
+
+/**
+ * POST /api/v2/settings/trusted-main: the owner trusts the commits they put on local main by hand (LOCAL_OPERATION 4.2,
+ * AW-005). input: { requestId, oldTip, newTip }, the trusted tip and the local main the page showed in full. The caller
+ * check runs first; the ledger read, both tips, their ancestry and the paths that need a review are checked again in the
+ * transaction that appends the `owner` row (self-hosting.mjs recordOwnerMain). It moves no ref and reviews nothing.
+ */
+export function recordTrustedMain(dataDir, input, { caller, now = Date.now() } = {}) {
+  readInput(input, ['requestId', 'oldTip', 'newTip'], { oldTip: sha, newTip: sha });
+  const config = readConfig(dataDir), settings = selfHostingSettings(config);
+  if (!settings.local) throw fail(409, 'AIWorks trusts GitHub’s main on this computer, so there is no local main to record.', 'TRUSTED_MAIN_OFF');
+  const path = Object.entries(config.repositories ?? {}).find(([name]) => name.toLowerCase() === settings.repository)?.[1]?.path;
+  if (typeof path !== 'string' || !path) throw fail(409, TRUST_REFUSALS.TRUSTED_MAIN_UNKNOWN, 'TRUSTED_MAIN_UNKNOWN');
+  return ownerChange(dataDir, caller, 'trusted-main', input, (store) => {
+    const result = recordOwnerMain(store, { git: config.commands?.git ?? ['git'], repoPath: path, repository: settings.repository,
+      oldTip: input.oldTip, newTip: input.newTip, now });
+    if (result.already) return { ok: true, recorded: false, message: `Local main ${input.newTip.slice(0, 7)} is already trusted. Nothing changed.` };
+    if (!result.recorded) throw fail(409, TRUST_REFUSALS[result.code] ?? TRUST_REFUSALS.TRUSTED_MAIN_INVALID, result.code, result.reason);
+    return { ok: true, recorded: true, message: `Local main ${input.newTip.slice(0, 7)} is trusted. AIWorks recorded it as yours.` };
   });
 }
 

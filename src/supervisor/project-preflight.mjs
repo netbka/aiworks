@@ -9,7 +9,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, parse, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SECRET_LIKE_PATH_PATTERN } from '../../scripts/lib/worker-context.mjs';
-import { githubRepository, rootKey } from './projects.mjs';
+import { githubRepository, realKey, rootKey } from './projects.mjs';
 
 /** Every code preflight can stop with, and the status the design gives it (sections 8.1 to 8.4). */
 export const PREFLIGHT_CODES = Object.freeze({
@@ -55,7 +55,7 @@ const sample = () => ({ count: 0, examples: [] });
 const note = (bucket, path) => { bucket.count += 1; if (bucket.examples.length < EXAMPLES) bucket.examples.push(path); };
 
 function canonical(io, path, platform) {
-  try { return rootKey(io.realpath(path), platform); } catch { return rootKey(resolve(path), platform); }
+  return realKey(path, io.realpath, platform);
 }
 
 /** Absolute paths only: no relative, root-relative, empty, over-long or control-character input. */
@@ -184,7 +184,9 @@ function scanFolder(root, io, options, platform) {
   const limits = { ...SCAN_LIMITS, ...options.limits };
   const now = options.now ?? Date.now;
   const deadline = now() + limits.timeoutMs;
-  const exclusions = (options.exclusions ?? []).map((path) => path.replaceAll('\\', '/').replace(/^\/+|\/+$/g, ''));
+  // Windows names are case-insensitive: Build is the excluded build, Node_Modules is node_modules.
+  const fold = (name) => (platform === 'win32' ? name.toLowerCase() : name);
+  const exclusions = (options.exclusions ?? []).map((path) => fold(path.replaceAll('\\', '/').replace(/^\/+|\/+$/g, '')));
   const excluded = { secrets: sample(), links: sample(), repos: sample(), modules: sample(), owner: sample(), other: sample() };
   const tooLarge = sample();
   const unreadable = sample();
@@ -201,14 +203,14 @@ function scanFolder(root, io, options, platform) {
     for (const name of names) {
       if (now() > deadline) return { code: 'SCAN_TIMEOUT' };
       const child = rel === '' ? name : `${rel}/${name}`;
-      if (exclusions.some((excludedPath) => inside(child, excludedPath))) { note(excluded.owner, child); continue; }
+      if (exclusions.some((excludedPath) => inside(fold(child), excludedPath))) { note(excluded.owner, child); continue; }
       if (SECRET_LIKE_PATH.test(child)) { note(excluded.secrets, child); continue; }
       let stat;
       try { stat = io.lstat(join(root, child)); } catch (error) { if (error.code !== 'ENOENT') note(unreadable, child); continue; }
       // On Windows Node reports a junction as a symbolic link, so this covers both.
       if (stat.isSymbolicLink()) { note(excluded.links, child); continue; }
       if (stat.isDirectory()) {
-        if (name === 'node_modules' && !options.includeNodeModules) { note(excluded.modules, child); continue; }
+        if (fold(name) === 'node_modules' && !options.includeNodeModules) { note(excluded.modules, child); continue; }
         let nested = false;
         try { io.lstat(join(root, child, '.git')); nested = true; } catch { /* no nested repository */ }
         if (nested) { note(excluded.repos, child); continue; }

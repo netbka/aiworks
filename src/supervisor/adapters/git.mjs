@@ -2,6 +2,7 @@
 // existing state before creating anything, so a controller restarted at any point can call
 // it again. Removal is only the non-forced worktree remove and branch -d below; which ones may go is cleanup.mjs's rule.
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, lstatSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { GATE_FILES } from '../gate.mjs';
@@ -26,6 +27,23 @@ function must(result, what) {
 
 export const branchName = (campaignId, taskId) => `campaign/${campaignId}/${taskId}`;
 
+// Legal IDs reach 64 characters each, and a worktree folder named after both leaves too little of the 260-character Windows
+// path for Git and a worker's own tools. A longer pair keeps a readable prefix and a digest of the whole pair; '+' is no ID
+// character, so the result is never another pair's full name. Shorter pairs keep their names.
+const NAME_LIMIT = 64;
+export function workspaceName(campaignId, taskId) {
+  const full = `${campaignId}-${taskId}`;
+  if (full.length <= NAME_LIMIT) return full;
+  const digest = createHash('sha256').update(`${campaignId}/${taskId}`).digest('hex').slice(0, 16);
+  return `${full.slice(0, NAME_LIMIT - digest.length - 1)}+${digest}`;
+}
+
+/** The folder for `suffix` of this task: one a supervisor already made under the full name is reused. */
+function workspacePath(worktreeRoot, campaignId, taskId, suffix = '') {
+  const legacy = join(worktreeRoot, `${campaignId}-${taskId}${suffix}`);
+  return existsSync(legacy) ? legacy : join(worktreeRoot, `${workspaceName(campaignId, taskId)}${suffix}`);
+}
+
 // The helper owns these root-level artifacts even when a target does not ignore *.log.
 // Tracked changes, other untracked files, directories and linked files remain dirty.
 function verificationCheckoutClean(git, path) {
@@ -44,7 +62,7 @@ function verificationCheckoutClean(git, path) {
 /** Isolated implementer worktree on the task branch; created from origin/<base> once, then reused. */
 export function prepareImplementWorkspace({ git, repoPath, worktreeRoot, campaignId, taskId, baseBranch, baseSha }) {
   if (baseSha !== undefined && !SHA.test(baseSha)) throw new Error('implementation base must be a full SHA');
-  const path = join(worktreeRoot, `${campaignId}-${taskId}`);
+  const path = workspacePath(worktreeRoot, campaignId, taskId);
   const branch = branchName(campaignId, taskId);
   if (existsSync(path)) {
     const current = must(exec(git, ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: path }), 'inspect worktree branch');
@@ -62,7 +80,7 @@ export function prepareImplementWorkspace({ git, repoPath, worktreeRoot, campaig
 export function prepareVerifyWorkspace({ git, repoPath, worktreeRoot, campaignId, taskId, targetSha, attempt }) {
   if (!SHA.test(targetSha)) throw new Error('verify target must be a full SHA');
   if (!Number.isSafeInteger(attempt) || attempt < 1) throw new Error('verify attempt must be a positive integer');
-  const path = join(worktreeRoot, `${campaignId}-${taskId}-verify-${targetSha.slice(0, 12)}-${attempt}`);
+  const path = workspacePath(worktreeRoot, campaignId, taskId, `-verify-${targetSha.slice(0, 12)}-${attempt}`);
   if (existsSync(path)) {
     const head = must(exec(git, ['rev-parse', 'HEAD'], { cwd: path }), 'read verify head');
     if (head !== targetSha || !verificationCheckoutClean(git, path)) throw new Error(`verify worktree ${path} is not a clean checkout of ${targetSha}`);
