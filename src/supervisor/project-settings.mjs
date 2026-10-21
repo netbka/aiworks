@@ -1,5 +1,5 @@
 // Standing project settings (docs/design/OWNER_UI_V2.md section 9, work package WP5): the owner's protected areas, notes
-// for the AI and optional project and monthly budgets of one project, kept as append-only versions in
+// for the AI, optional project and monthly budgets and the acceptance mode (AW-015) of one project, kept as append-only versions in
 // `project_settings`. Settings can only add protection and limits on top of what was registered: they have no field for
 // files to change, providers, release or authority, so they never widen a declaration or grant a release. Saving them
 // never rewrites a campaign's declaration, authorization version or scope digest.
@@ -18,6 +18,10 @@
 //   transaction that records a planning run, so the recorded run is its reservation. A run that names no single project
 //   is unallocated: shown on its own and charged to no project's budget. A failed or cancelled run is refunded only on
 //   durable proof that no worker started; otherwise it keeps its reported cost or the unknown price.
+// - the merge gate (merge.mjs, result-review.mjs awaitingAcceptance): with acceptance "owner" ("I accept results
+//   myself", AW-015) a verified head merges only after the owner accepted exactly that head and report. The newest
+//   settings decide at every check, so switching to "owner" holds every unmerged head without acceptance, and switching
+//   back lets the gate go on. "automatic", the default and the mode of every project without the field, changes nothing.
 import { createHash } from 'node:crypto';
 import { runNotCounted } from './adapters/executors.mjs';
 import { canonicalJson } from './campaign.mjs';
@@ -33,7 +37,8 @@ export const MAX_PROTECTED = 32;
 export const MAX_NOTES = 2000;
 export const BUDGET_RANGE = Object.freeze({ min: 1, max: 100000 });
 export const UNKNOWN_RUN_RANGE = Object.freeze({ min: 0.5, max: 100 });
-export const EMPTY_SETTINGS = Object.freeze({ protectedAreas: [], notes: '', budget: { totalUsd: null, monthlyUsd: null, unknownRunCostUsd: null } });
+export const ACCEPTANCE_MODES = Object.freeze(['automatic', 'owner']);
+export const EMPTY_SETTINGS = Object.freeze({ protectedAreas: [], notes: '', budget: { totalUsd: null, monthlyUsd: null, unknownRunCostUsd: null }, acceptance: 'automatic' });
 
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
 const LOCAL_PROJECT = /^lp-[a-z0-9][a-z0-9-]{0,38}$/;
@@ -63,12 +68,13 @@ const money = (value, { min, max }) => value === null || (typeof value === 'numb
  *   SETTINGS_SECRET      notes that look like they contain a credential;
  *   SETTINGS_BUDGET      a budget outside 1..100,000 dollars, or an unknown-run price outside 0.5..100 dollars;
  *   SETTINGS_UNKNOWN_COST a budget without the price a run with no reported cost is charged at (never zero), or a price
- *                        without a budget.
+ *                        without a budget;
+ *   SETTINGS_ACCEPTANCE  an acceptance mode other than "automatic" (the default) or "owner".
  */
 export function normalizeSettings(input) {
   if (!plainObject(input)) refuse('SETTINGS_FIELD', 'project settings must be an object');
-  const extra = Object.keys(input).filter((key) => !['protectedAreas', 'notes', 'budget'].includes(key));
-  if (extra.length) refuse('SETTINGS_FIELD', `project settings cannot set ${extra.join(', ')}: they only add protection, notes and limits`);
+  const extra = Object.keys(input).filter((key) => !['protectedAreas', 'notes', 'budget', 'acceptance'].includes(key));
+  if (extra.length) refuse('SETTINGS_FIELD', `project settings cannot set ${extra.join(', ')}: they only add protection, notes, limits and the acceptance mode`);
   const areas = input.protectedAreas ?? [];
   if (!Array.isArray(areas) || areas.length > MAX_PROTECTED || !areas.every(safeArea) || new Set(areas.map(folded)).size !== areas.length) {
     refuse('SETTINGS_PROTECTED', `protected areas must be up to ${MAX_PROTECTED} distinct repository-relative folders or files`);
@@ -86,15 +92,18 @@ export function normalizeSettings(input) {
   const capped = totalUsd !== null || monthlyUsd !== null;
   if (capped && unknownRunCostUsd === null) refuse('SETTINGS_UNKNOWN_COST', 'a project budget needs the price a run with no reported cost is charged at: unknown cost is never zero');
   if (!capped && unknownRunCostUsd !== null) refuse('SETTINGS_UNKNOWN_COST', 'a price for runs with no reported cost needs a project budget');
-  return { protectedAreas: areas.map((entry) => entry.replace(/\\/g, '/').replace(/\/+$/, '')), notes: notes.trim(), budget: { totalUsd, monthlyUsd, unknownRunCostUsd } };
+  const acceptance = input.acceptance ?? 'automatic';
+  if (!ACCEPTANCE_MODES.includes(acceptance)) refuse('SETTINGS_ACCEPTANCE', 'the acceptance mode is "automatic" or "owner"');
+  return { protectedAreas: areas.map((entry) => entry.replace(/\\/g, '/').replace(/\/+$/, '')), notes: notes.trim(), budget: { totalUsd, monthlyUsd, unknownRunCostUsd }, acceptance };
 }
 
 export const settingsDigest = (settings) => `sha256:${createHash('sha256').update(canonicalJson(settings), 'utf8').digest('hex')}`;
 
 const hasTable = (store) => Boolean(store.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'project_settings'"));
-const decoded = (row) => (row ? { project: row.project, version: row.version, settings: row.settings, digest: row.digest, requestId: row.request_id, createdAt: row.created_at } : null);
+// Settings saved before the acceptance mode existed read as "automatic", what they meant then.
+const decoded = (row) => (row ? { project: row.project, version: row.version, settings: { ...row.settings, acceptance: row.settings?.acceptance === 'owner' ? 'owner' : 'automatic' }, digest: row.digest, requestId: row.request_id, createdAt: row.created_at } : null);
 
-/** The newest settings of a project, or none: version 0 with no protection, no notes and no budget. */
+/** The newest settings of a project, or none: version 0 with no protection, no notes, no budget and automatic acceptance. */
 export function currentSettings(store, project) {
   const key = projectKey(project);
   const row = key && hasTable(store) ? store.get('SELECT * FROM project_settings WHERE project = ? ORDER BY version DESC LIMIT 1', key) : null;
@@ -126,9 +135,15 @@ export function saveSettings(store, { project, expectedVersion, requestId, setti
   store.run('INSERT INTO project_settings (project, version, settings, digest, request_id, created_at) VALUES (?, ?, ?, ?, ?, ?)',
     key, version, JSON.stringify(value), digest, requestId.toLowerCase(), now);
   store.journal(null, 'project-settings-saved', { project: key, version, digest, protectedAreas: value.protectedAreas.length,
-    budget: value.budget }, now);
+    budget: value.budget, acceptance: value.acceptance }, now);
   return { ...decoded(store.get('SELECT * FROM project_settings WHERE project = ? AND version = ?', key, version)), duplicate: false };
 }
+
+/**
+ * A project's acceptance mode now (AW-015): "owner" when its newest settings say the owner accepts results, otherwise
+ * "automatic", also for a project without settings or a store without the table.
+ */
+export const acceptanceMode = (store, project) => (currentSettings(store, project).settings.acceptance === 'owner' ? 'owner' : 'automatic');
 
 /**
  * The protected areas that bind a campaign now: those of the newest settings, together with those in force when the
