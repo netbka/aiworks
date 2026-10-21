@@ -533,8 +533,10 @@ How it decides (`src/supervisor/scheduler.mjs`, design [ADAPTIVE_SCHEDULER §4](
   - `already-running`: the step already has an open operation;
   - `campaign-fanout`: the campaign's learned fan-out is full. Fan-out starts at 1, rises by 1 after a useful result while a step of the campaign waited for it, falls by 1 on a failed run and drops to 1 on two failures within one backoff window. It never exceeds `limits.slots` (`"auto"`: the host ceiling). It is kept in the store's `capacity` table and journalled (`fanout-raised`, `fanout-lowered`);
   - `host-capacity`: open operations across all campaigns reached the host ceiling, `scheduler.maxWorkers` (1..32), default a quarter of the cores between 1 and 4. This protects the computer; it is not an AW-002 limit and never notifies the owner;
+  - `host-pressure`: the pass's one host sample (`src/supervisor/host.mjs`) shows low free memory, CPU busy over a full window, low free disk on a worktree volume, or late runner heartbeats (thresholds in `config.json` `scheduler.pressure`). A signal that cannot be read gives none, and a sampler that fails stops the whole pass until a later one. Running work continues; each episode is journalled once (`host-pressure`, `host-pressure-cleared`). Like the ceiling, it is host safety, not an AW-002 limit;
   - `write-domain`: another step holds an overlapping write domain (section 1). A published change keeps its domain until it is in the base branch. While a step waits for one, the base is fetched at most once per `integrationPollMs`, and the holder's PR is read once (REST) to recognise a squash or rebase merge of its exact head;
   - `provider-cooldown`: every authorized provider for the step is waiting (section 4);
+  - `provider-concurrency`: the account of the provider the step would get is at its learned limit. An account has no limit until the provider refuses a run for its usage limit; that sets it to half the runs then open on it (minimum 1), and a useful result while a step waited for it raises it by 1 (`account-concurrency-lowered`, `account-concurrency-raised`). A kind run under CAAM profiles is limited per profile instead;
   - `launch-turn`: admissible, but this tick already started one.
 - With the scheduler on, a cost ceiling that is reached only because open runs are reserved waits for those runs instead of asking the owner (B3 comes when nothing is open).
 
@@ -543,7 +545,6 @@ How it decides (`src/supervisor/scheduler.mjs`, design [ADAPTIVE_SCHEDULER §4](
 Not yet implemented:
 - GitHub webhook intake and conditional-GET reconciliation (slice B);
 - a notification transport verified against a real provider (the Telegram adapter is built off and tested only against a synthetic network, section 10), replies from a notification, and reminders/incident timing beyond the section 10 defaults ([example-org/aiworks#1](https://github.com/example-org/aiworks/issues/1));
-- host pressure and per-account concurrency in the scheduler's admission (slices RUN7 and RUN8): the sampler (`src/supervisor/host.mjs`), the learned per-account limit (`src/supervisor/accounts.mjs`) and their admission predicates are built, and `status` reports them, but the controller's admission pass (`admissionInputs` in `src/supervisor/controller.mjs`) passes no host sample and no account limit, so neither restrains admission yet;
 - a project release to a real destination: the release code runs deploy, check and rollback through a project's own commands, switched off, and only the disposable rehearsal has run it (section 12);
 - a host other than workstation.
 

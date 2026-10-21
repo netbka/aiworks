@@ -15,9 +15,10 @@ import { authorityDigest, campaignLimits, canonicalJson, executorOrder, overlayG
 import { localProjectName, resolveCheckout, resolveLocalProject } from './project-connect.mjs';
 import { admissionBudget } from './api.mjs';
 import { currentSettings, projectOf, protectedAreasFor, protectedPaths } from './project-settings.mjs';
-import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountOf, accountWait, buildTaskSignature, clearAccountWait, formatSignatureLines, formatTokensUsage, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
+import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountFull, accountOf, accountWait, buildTaskSignature, clearAccountWait, formatSignatureLines, formatTokensUsage, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
 import { BEYOND_RULE, beyondConstraint, domainOf, outsideWrites, writeDomainConstraint } from './work-ownership.mjs';
-import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
+import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, hostPressure, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
+import { hostSamplerFor } from './host.mjs';
 import { containsSecret, coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
 import { ANCHOR, MAX_DOCUMENT_BYTES, parseReference, resolveSection } from './reading.mjs';
 import { MAX_CITES } from './adapters/claude.mjs';
@@ -421,7 +422,7 @@ export class Controller {
   constructor({ store, config, dataDir, log = () => {}, now = () => Date.now(), instanceId = randomUUID(),
     codeRevision = null, fault = process.env.AIWORKS_FAULT ?? null, notifier = noopTransport, probes = {},
     governanceRoot = undefined, revisionCheck = null, revisionCheckMs = REVISION_CHECK_MS, profiles = null, profileHomes = null,
-    alertDeps = {} }) {
+    alertDeps = {}, sampler = null }) {
     Object.assign(this, { store, dataDir, log, now, instanceId, codeRevision, fault, notifier, probes, governanceRoot,
       revisionCheck, revisionCheckMs, profiles, profileHomes });
     this.config = { ...DEFAULTS, ...config };
@@ -460,6 +461,11 @@ export class Controller {
     // CAAM profiles that a dispatch found at their learned limit while no profile could run (CAAM5): per-tick memory, as
     // fanoutWaited; the next useful result on one of them raises its limit by one.
     this.profileWaited = new Set();
+    // RUN7 and RUN8 in admission: one host sample per admission pass (host.mjs; it keeps its CPU window between passes, and
+    // an injected sampler replaces the host in tests), and the static accounts a pass found at their learned limit
+    // (per-tick memory, as profileWaited; the next useful result on one of them raises its limit by one).
+    this.sampler = this.sched ? sampler ?? hostSamplerFor(this.config) : null;
+    this.accountWaited = new Set();
     this.waitReasons = new Map();
     this.domainWaits = [];
     this.baseCheckedAt = new Map();
@@ -1049,9 +1055,11 @@ export class Controller {
         this.endAccountWait(op.executor_kind, op.id, now, profile);
       }
       // A usage limit halves that profile's concurrency, and a useful result while work waited for it raises it by one;
-      // sibling profiles keep their own limits. Runs on the static account follow RUN8 (not wired here yet).
+      // sibling profiles keep their own limits. With the scheduler on, runs on the static account follow RUN8 the same way.
       if (profile) accountAfterRun(this.store, this.config, { kind: fresh.executor_kind, account: profile, opId: op.id, quota: verdict.class === 'quota',
         run: classifyRun(op.kind, verdict), waited: this.profileWaited, campaignId: ctx.id, now });
+      else if (this.sched) accountAfterRun(this.store, this.config, { kind: fresh.executor_kind, opId: op.id, quota: verdict.class === 'quota',
+        run: classifyRun(op.kind, verdict), waited: this.accountWaited, campaignId: ctx.id, now });
       const blocked = this.store.campaign(ctx.id);
       // Only the operation whose ownership was unresolved clears its blocker; another operation finishing proves nothing
       // about it. A blocker recorded before the operation id was kept (no `operation`) keeps the old behaviour.
@@ -1815,14 +1823,23 @@ export class Controller {
     await this.dispatch(ctx, campaign, ready, opKind(ready));
   }
 
-  /** Admission inputs, all from store rows or local refs (ADAPTIVE_SCHEDULER 4.1). Host pressure is slice RUN7. */
+  /**
+   * Admission inputs, all from store rows or local refs (ADAPTIVE_SCHEDULER 4.1), plus this pass's one host sample (4.6,
+   * RUN7), which can only refuse: a sampler that throws fails the whole pass, so nothing starts until a later pass samples.
+   * `accountFull` names the static account of the provider the candidate would get when that account throttled earlier
+   * and is at its learned limit (4.5, RUN8); a kind run under CAAM profiles is limited per profile by profileChoice instead.
+   */
   admissionInputs() {
+    const now = this.now();
+    const choice = (candidate) => this.executorChoice(candidate.declaration, this.store.task(candidate.campaignId, candidate.taskId), now).executor;
     return {
       ceiling: hostCeiling(this.config),
-      pressure: null,
-      providerWaiting: (candidate) => {
-        const task = this.store.task(candidate.campaignId, candidate.taskId);
-        return !this.executorChoice(candidate.declaration, task).executor;
+      pressure: hostPressure(this.store, this.sampler, now),
+      providerWaiting: (candidate) => !choice(candidate),
+      accountFull: (candidate) => {
+        const kind = choice(candidate)?.kind;
+        if (!kind || this.profileChoice(kind, now)) return null;
+        return accountFull(this.store, this.config, kind, this.accountWaited);
       },
       // A local candidate is published nowhere and holds no base: the owner's Apply checks the folder again (WORK_ENVELOPE 8.6).
       integrated: (campaignId, row, decl) => isLocalTarget(decl) || this.inBase(decl, row.verified_sha) || this.mergedHeads.has(`${row.pr_url}#${row.verified_sha}`),
