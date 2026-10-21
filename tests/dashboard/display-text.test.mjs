@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { DisplayTextChecks } from '../../src/dashboard/display-text.mjs';
+import { DisplayTextChecks, partlySafe } from '../../src/dashboard/display-text.mjs';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
 import { Store } from '../../src/supervisor/store.mjs';
 import { createItem, addComment } from '../../src/supervisor/work-list.mjs';
@@ -80,6 +80,16 @@ if (process.argv.includes('--probe')) {
     rmSync(dir, { recursive: true, force: true });
   }
 } else {
+  test('a partly shown text never shows a flagged paragraph or anything the check flags', () => {
+    const secret = 'https://example.test/?api_key=synthetic-value';
+    const shown = partlySafe(`Plan summary.\n\nCall ${secret} first.\n\nThen run the checks.`);
+    assert.ok(shown.includes('Plan summary.') && shown.includes('Then run the checks.'));
+    assert.ok(!shown.includes('synthetic-value'));
+    assert.equal(safeText(shown, shown.length), shown);
+    assert.equal(partlySafe(`Call ${secret} first.`), null, 'a single flagged paragraph is withheld whole');
+    assert.equal(partlySafe(`One ${secret}.\n\nTwo ${secret}.`), null, 'nothing but omissions is withheld whole');
+  });
+
   test('large display text cannot block owner requests or bypass content checks', () => {
     const child = spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--probe'], {
       encoding: 'utf8', windowsHide: true, timeout: 20000,

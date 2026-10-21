@@ -105,7 +105,8 @@ Each screen has its own address, so Back, Forward, reload and bookmarks work. Th
 | --- | --- |
 | Projects | `#/projects` (also the address for an empty hash) |
 | Needs me | `#/needs` |
-| Settings | `#/settings`, `#/settings/messages`, `#/settings/diagnostics` |
+| Settings | `#/settings`, `#/settings/diagnostics` |
+| Chats | `#/chats`, `#/chats/<id>` (the header's "Chats" link) |
 | Now | `#/p/<project>` |
 | Work | `#/p/<project>/work` |
 | Step | `#/p/<project>/step/<work>/<step>` |
@@ -188,12 +189,13 @@ The items are today's "Needs you" items, unchanged in meaning (observed: built i
 - **Primary action.** None today. Settings only shows what the machine has.
 - **In details.** Provider order per piece of work, retry times, role limits, the AIWorks version of each running supervisor.
 
-#### Settings › Messages
+#### Chats (formerly Settings › Messages)
 
+- **Address.** `#/chats` lists the chats; `#/chats/<id>` opens one, named by the id of its first message. `#/settings/messages` opens `#/chats`.
 - **Question.** What did I ask AIWorks, and what did it answer?
-- **First visible.** The message box, then past messages with their receipts: Received, Read and Answered (observed: receipts in `src/dashboard/supervisor.mjs:257-266`).
-- **Primary action.** "Send".
-- **In details.** The read agent's turn and tool counts.
+- **First visible.** The chats, newest activity first, each with its project, message count and state. An open chat shows each message with its reply, or its receipts (Received, Read, Answered) while it waits.
+- **Primary action.** "Send" in an open chat continues it: the coordinator reads the chat's earlier turns (up to six) as context, under the same read-only limits. "New chat" starts one. A reply in a chat keeps that chat's project and project budget.
+- **In details.** The read agent's turn and tool counts. A paragraph of a reply that the credential check flags is replaced in place; the whole reply is withheld only when the result would still be flagged. The full reply stays in the work records.
 
 #### Settings › Diagnostics
 

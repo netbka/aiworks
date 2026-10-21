@@ -139,7 +139,7 @@ const screenText = { home: ['Home', 'What changed, and what needs me?'], project
   settings: ['Settings', 'What can AIWorks use on this computer?'], accounts: ['Worker accounts', 'Which AI worker logins and accounts are on this computer?'],
   version: ['Version and roadmap', 'Which capabilities are turned on in this version?'],
   instructions: ['Model instructions', 'Which AI models should handle what kind of work?'],
-  messages: ['Messages', 'What did I ask AIWorks, and what did it answer?'],
+  chats: ['Chats', 'What did I ask AIWorks, and what did it answer?'],
   diagnostics: ['Diagnostics', 'What exactly did the machine record?'], now: ['Overview', 'Where is the current goal?'],
   connections: ['Connections', 'What does AIWorks use on this computer, and can it reach it?'],
   alerts: ['Alerts', 'When does AIWorks tell me that something needs me?'],
@@ -168,7 +168,7 @@ function showRoute() {
     if (node.dataset.global === place) node.setAttribute('aria-current', 'page'); else node.removeAttribute('aria-current');
   }
   const messages = $('#messages-link');
-  if (route.screen === 'settings' && route.section === 'messages') messages.setAttribute('aria-current', 'page'); else messages.removeAttribute('aria-current');
+  if (route.screen === 'chats') messages.setAttribute('aria-current', 'page'); else messages.removeAttribute('aria-current');
   // Project tabs are links, not an ARIA tablist: each has its own address.
   const tabs = $('#project-tabs'), tab = tabOf(route);
   tabs.hidden = !project;
@@ -498,6 +498,11 @@ function receiptStep(done, label, detail, tone) {
  */
 function messageReceipt(m, coordinator, aiworks) {
   const from = { 'owner (Start work: Plan only)': 'Your plan request from Start work', 'owner (dashboard)': 'Your message from this dashboard' }[m.source] ?? `From ${m.source}`;
+  return el('article', { class: 'receipt' }, el('strong', {}, from), el('p', {}, m.text), el('ol', { class: 'receipt-steps' }, ...receiptSteps(m, coordinator, aiworks)),
+    m.replyBody ? disclosure(`message/${m.id}/reply`, 'Read the plan', el('pre', { class: 'coordinator-reply' }, m.replyBody)) : null);
+}
+
+function receiptSteps(m, coordinator, aiworks) {
   const steps = [receiptStep(true, 'Sent', `AIWorks received your request at ${clock(m.receivedAt)}`)];
   if (m.state === 'received') {
     steps.push(m.failure === 'project-budget' ? receiptStep(false, 'Waiting for budget', 'the project budget cannot cover reading it. Raise or remove the budget in the project’s settings, or wait for next month if the monthly budget ran out; AIWorks reads it by itself when it fits', 'failed')
@@ -517,8 +522,7 @@ function messageReceipt(m, coordinator, aiworks) {
   } else if (m.state === 'failed') {
     steps.push(receiptStep(false, 'Not answered', `two reads ended without an answer (${outcomeLabels[m.failure] ?? m.failure}). Send it again, or see what AIWorks recorded in Settings › Diagnostics.`, 'failed'));
   }
-  return el('article', { class: 'receipt' }, el('strong', {}, from), el('p', {}, m.text), el('ol', { class: 'receipt-steps' }, ...steps),
-    m.replyBody ? disclosure(`message/${m.id}/reply`, 'Read the plan', el('pre', { class: 'coordinator-reply' }, m.replyBody)) : null);
+  return steps;
 }
 
 /** What a waiting request is told: a time only when AIWorks is known to be reading requests on this computer right now. */
@@ -542,17 +546,59 @@ function notRead(coordinator) {
     coordinator.configError ? disclosure('not-read/details', COMMANDS.details, el('p', { class: 'subtext' }, coordinator.configError)) : null);
 }
 
-function messagesPanel(limit) {
+/** The chats in the latest messages, newest activity first: each is its first message and the follow-ups sent in it. */
+function chatList() {
+  const chats = new Map();
+  for (const m of [...(state.supervisor.coordinator?.messages ?? [])].sort((a, b) => a.id - b.id)) {
+    const id = m.threadId ?? m.id;
+    if (!chats.has(id)) chats.set(id, []);
+    chats.get(id).push(m);
+  }
+  return [...chats].map(([id, turns]) => ({ id, turns, last: turns.at(-1) })).sort((a, b) => b.last.id - a.last.id);
+}
+// A plan request is named by its goal; any other chat by the first line of its first message.
+function chatTitle(m) {
+  const goal = /\nGoal \(what should be true when this is finished\):\r?\n([^\r\n]+)/.exec(m.text)?.[1];
+  const line = (goal ?? m.text).trim().split(/\r?\n/)[0];
+  return `${goal ? 'Plan: ' : ''}${line.length > 90 ? `${line.slice(0, 89)}…` : line}`;
+}
+const chatStates = { received: 'Waiting', read: 'AIWorks is working', answered: 'Answered', failed: 'Not answered' };
+
+function chatsScreen(chatId) {
   const coordinator = state.supervisor.coordinator;
-  if (!coordinator) return panel('Your messages to AIWorks', 'Not known right now', empty('Messages unavailable', state.supervisor.message ?? ''));
-  const items = coordinator.messages.slice(0, limit);
-  // Sending is offered only while something reads messages; otherwise the panel says so and what to do instead.
-  return panel('Your messages to AIWorks', coordinator.configured
+  if (!coordinator) return [panel('Chats', 'Not known right now', empty('Chats unavailable', state.supervisor.message ?? ''))];
+  const chats = chatList(), open = chatId ? chats.find((chat) => chat.id === chatId) ?? null : null;
+  // Starting a chat is offered only while something reads messages; otherwise the panel says so and what to do instead.
+  const list = panel('All chats', coordinator.configured
     ? `AIWorks reads them and changes nothing · replies stay in this dashboard · ${coordinator.runsToday}${coordinator.maxRunsPerDay === null ? '' : `/${coordinator.maxRunsPerDay}`} read in the last 24h${coordinator.blocked ? ' · not reading now; why is under Needs me' : ''}`
     : null,
-  el('div', {}, notRead(coordinator), items.length ? el('div', { class: 'instruction-list' }, ...items.map((m) => messageReceipt(m, coordinator, state.supervisor.controller)))
-    : empty('No messages yet', coordinator.configured ? 'Use “New message” to ask for a review or a plan.' : '')),
-  coordinator.configured ? button('✉ New message', openMessage, 'link') : null);
+  el('div', {}, notRead(coordinator), chats.length ? el('ul', { class: 'chat-list', 'data-focus-scope': 'chats/list' }, ...chats.map((chat) => el('li', { class: `chat-row${chat.id === open?.id ? ' active' : ''}` },
+    routeLink(chatTitle(chat.turns[0]), { screen: 'chats', chat: chat.id }),
+    el('div', { class: 'subtext' }, [chat.turns[0].repository, plural(chat.turns.length, 'message'), chatStates[chat.last.state] ?? chat.last.state, dateTime(chat.last.answeredAt ?? chat.last.receivedAt)].filter(Boolean).join(' · ')))))
+    : empty('No chats yet', coordinator.configured ? 'Use “New chat” to ask for a review or a plan.' : '')),
+  coordinator.configured ? button('✉ New chat', openMessage, 'link') : null);
+  const shown = open ? chatView(open, coordinator)
+    : chatId ? empty('This chat is not shown', 'Chats show the latest 50 messages on this computer.') : null;
+  return [el('div', { class: `chats${shown ? ' open' : ''}` }, list, shown)];
+}
+
+function chatView(chat, coordinator) {
+  const address = formatRoute({ screen: 'chats', chat: chat.id }), waiting = ['received', 'read'].includes(chat.last.state);
+  const text = el('textarea', { id: 'chat-reply', rows: 3, maxlength: 4000, required: true, 'aria-label': 'Reply in this chat',
+    placeholder: waiting ? 'AIWorks reads your reply after it answers the last message.' : 'Ask a follow-up. AIWorks sees the earlier messages of this chat.',
+    oninput: () => { if (text.value) drafts.set(address, 'reply', text.value); else drafts.delete(address, 'reply'); } });
+  text.value = drafts.get(address, 'reply') ?? '';
+  const send = (event) => {
+    event.preventDefault();
+    if (!text.value.trim() || startBlocked()) return;
+    void sendMessage(text.value, chat.id);
+  };
+  return panel(chatTitle(chat.turns[0]), chat.turns[0].repository ? `Project ${chat.turns[0].repository}` : null,
+    el('div', { class: 'chat', 'data-focus-scope': `chats/${chat.id}` }, ...chat.turns.map((m) => el('div', { class: 'chat-turn' },
+      el('div', { class: 'chat-bubble owner' }, el('div', { class: 'subtext' }, `You · ${dateTime(m.receivedAt)}`), el('p', {}, m.text)),
+      m.replyBody ? el('div', { class: 'chat-bubble aiworks' }, el('div', { class: 'subtext' }, `AIWorks · ${dateTime(m.answeredAt)}`), el('pre', { class: 'coordinator-reply' }, m.replyBody))
+        : el('ol', { class: 'receipt-steps' }, ...receiptSteps(m, coordinator, state.supervisor.controller)))),
+    coordinator.configured ? el('form', { class: 'chat-composer', onsubmit: send }, text, el('button', { type: 'submit', class: 'button', disabled: startBlocked() }, 'Send')) : null));
 }
 
 // Receipt transitions become a notice here and a desktop notification, so the owner learns when work was read.
@@ -584,8 +630,8 @@ function trackReceipts() {
 }
 const askNotifications = () => { try { if ('Notification' in window && Notification.permission === 'default') void Notification.requestPermission(); } catch { /* unsupported */ } };
 
-// The message box lives on Settings › Messages, so its draft is kept under that address.
-const MESSAGES_ADDRESS = formatRoute({ screen: 'settings', section: 'messages' });
+// The new-chat box opens from Chats, so its draft is kept under that address.
+const MESSAGES_ADDRESS = formatRoute({ screen: 'chats' });
 const messageDraft = {
   get text() { return drafts.get(MESSAGES_ADDRESS, 'message') ?? ''; },
   set text(value) { if (value) drafts.set(MESSAGES_ADDRESS, 'message', value); else drafts.delete(MESSAGES_ADDRESS, 'message'); },
@@ -598,15 +644,17 @@ function openMessage() {
   $('#message-text').focus();
 }
 
-async function sendMessage(text) {
+// threadId: the chat a reply continues; without it the message starts a chat.
+async function sendMessage(text, threadId = null) {
   sending = true; render();
   const requestId = crypto.randomUUID(), from = current.address;
   const attempt = async () => {
     try {
-      const result = await post('/api/messages', { requestId, text });
-      messageDraft.text = '';
-      notice(result.duplicate ? 'This message was already received; it was not stored twice.' : `Sent · AIWorks received your request at ${clock(Date.now())}. You will see "Read" when AIWorks starts on it.`, null, null, MESSAGES_ADDRESS);
-      if (current.address !== MESSAGES_ADDRESS) go(MESSAGES_ADDRESS);
+      const result = await post('/api/messages', { requestId, text, ...(threadId ? { threadId } : {}) });
+      const chat = formatRoute({ screen: 'chats', chat: result.threadId ?? result.id });
+      if (threadId) { drafts.delete(chat, 'reply'); if ($('#chat-reply')) $('#chat-reply').value = ''; } else messageDraft.text = '';
+      notice(result.duplicate ? 'This message was already received; it was not stored twice.' : `Sent · AIWorks received your request at ${clock(Date.now())}. You will see "Read" when AIWorks starts on it.`, null, null, chat);
+      if (current.address !== chat) go(chat);
     } catch (error) {
       notice(error.known ? error.message : 'Delivery could not be confirmed. Retry: the same message is never stored twice.', error.known ? null : attempt, null, from);
     }
@@ -642,7 +690,7 @@ function startReceipt(address) {
   const id = startDraft(address).sent, coordinator = state.supervisor.coordinator;
   if (!id || !coordinator) return null;
   const m = coordinator.messages.find((item) => item.id === id);
-  return m ? messageReceipt(m, coordinator, state.supervisor.controller) : el('p', { class: 'subtext' }, 'Sent. Its receipt is under ', routeLink('Messages', MESSAGES_ADDRESS), '.');
+  return m ? messageReceipt(m, coordinator, state.supervisor.controller) : el('p', { class: 'subtext' }, 'Sent. Its receipt is under ', routeLink('Chats', MESSAGES_ADDRESS), '.');
 }
 
 function startScreen(project) {
@@ -1319,7 +1367,7 @@ function needsYou() {
     held.length ? el('ul', { class: 'needs-list', 'data-focus-scope': 'needs/held' }, ...held.map((project) => el('li', {},
       el('strong', {}, project.name), ` · ${project.text} `, routeLink(`Open ${project.name}`, { screen: 'project', project: project.id })))) : null,
     reply ? el('div', { class: 'needs-reply' }, `AIWorks answered your message (${dateTime(reply.answeredAt)}). `,
-      reply.url ? link('Read its “What needs you” ↗', reply.url) : routeLink('Read the plan', MESSAGES_ADDRESS)) : null,
+      reply.url ? link('Read its “What needs you” ↗', reply.url) : routeLink('Open the chat', { screen: 'chats', chat: reply.threadId ?? reply.messageId })) : null,
     // The local work list (UI20): its open decisions are counted above; the list itself is one link away.
     worklist()?.available ? el('p', { class: 'needs-reply' }, `AIWorks’s own work list: ${plural(worklist().items.filter((entry) => entry.state === 'open').length, 'open item')}. `,
       routeLink('Open the work list', WORKLIST_ADDRESS)) : null);
@@ -2391,7 +2439,7 @@ function settingsLinks() {
     el('li', {}, routeLink('Worker accounts', '#/settings/accounts'), el('div', { class: 'subtext' }, 'Connect and manage isolated worker logins, view live quota usage, and export encrypted bundles.')),
     el('li', {}, routeLink('Model instructions', '#/settings/instructions'), el('div', { class: 'subtext' }, 'Which AI models should handle what kind of work, by role, domain and reasoning effort.')),
     el('li', {}, routeLink('Version and roadmap', '#/settings/version'), el('div', { class: 'subtext' }, `Dashboard v${DASHBOARD_VERSION} (${DASHBOARD_VERSION_NAME}), active features and pre-1.0 roadmap.`)),
-    el('li', {}, routeLink('Messages', '#/settings/messages'), el('div', { class: 'subtext' }, 'What you asked AIWorks, and what it answered.')),
+    el('li', {}, routeLink('Chats', MESSAGES_ADDRESS), el('div', { class: 'subtext' }, 'What you asked AIWorks, and what it answered.')),
     el('li', {}, routeLink('Diagnostics', '#/settings/diagnostics'), el('div', { class: 'subtext' }, 'The full activity journal, every step with its issue and pull request, the roadmap of the platform that keeps your project rules, and how fresh each merge check is.'))));
 }
 
@@ -3747,7 +3795,7 @@ function render() {
   else if (route.screen === 'settings' && route.section === 'alerts' && refreshAlerts(content)) { /* the form stays as the owner typed it */ }
   else if (route.screen === 'settings' && route.section === 'alerts') patch(content, alertsScreen());
   else if (route.screen === 'settings' && route.section === 'usage') patch(content, usageScreen());
-  else if (route.screen === 'settings' && route.section === 'messages') patch(content, [messagesPanel(20)]);
+  else if (route.screen === 'chats') patch(content, chatsScreen(route.chat ?? null));
   else if (route.screen === 'settings' && route.section === 'accounts') patch(content, accountsScreen());
   else if (route.screen === 'settings' && route.section === 'version') patch(content, versionScreen());
   else if (route.screen === 'settings' && route.section === 'instructions') patch(content, modelInstructionsScreen());

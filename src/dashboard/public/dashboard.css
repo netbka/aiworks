@@ -365,6 +365,22 @@ main{padding:25px 15px}
 *{transition:none!important;scroll-behavior:auto!important}
 }
 .coordinator-reply { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.chats{display:grid;gap:16px}
+.chats.open{grid-template-columns:minmax(220px,320px) minmax(0,1fr);align-items:start}
+.chats.open>:first-child{position:sticky;top:12px}
+@media(max-width:900px){.chats.open{grid-template-columns:1fr}.chats.open>:first-child{order:2;position:static}}
+.chat-list{list-style:none;margin:0;padding:0;display:grid;gap:4px}
+.chat-row{padding:8px 10px;border-radius:7px;border:1px solid transparent}
+.chat-row.active{background:#edf2ff;border-color:#cfdcff}
+.chat-row a{font-weight:600}
+.chat{display:grid;gap:14px}
+.chat-turn{display:grid;gap:8px}
+.chat-bubble{border:1px solid var(--line);border-radius:10px;padding:10px 14px;max-width:100%}
+.chat-bubble p{margin:4px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.chat-bubble.owner{background:#f3f6fb;justify-self:end;max-width:min(720px,100%)}
+.chat-bubble.aiworks .coordinator-reply{margin:6px 0 0;max-height:70vh;overflow:auto}
+.chat-composer{display:flex;gap:8px;align-items:flex-end;margin-top:16px}
+.chat-composer textarea{flex:1;min-height:64px}
 
 /* Approved owner workspace: the runtime tokens above own all shared visual values. */
 html{scrollbar-gutter:stable;scroll-padding-top:88px}
