@@ -2406,7 +2406,10 @@ function trustedMainLines(trusted) {
     trusted.record ? el('div', { 'data-focus-scope': 'connections/trusted-main' },
       el('p', { class: 'subtext local-text' }, 'If you put them there yourself, you can trust local main from ', el('code', {}, trusted.record.oldTip), ' to ',
         el('code', {}, trusted.record.newTip), '. AIWorks only records this; it moves nothing. Changes to AIWorks’s supervisor code still need an independent review first.'),
-      button('Trust local main', () => trustLocalMain(trusted.record), 'secondary', sending || offline)) : null,
+      // The tips it records are part of what the button shows, so a refresh that shows new tips replaces it (patch keeps
+      // an acting element only while it shows the same) instead of keeping one that would record the old tips.
+      el('button', { class: 'button secondary', onclick: () => trustLocalMain(trusted.record), disabled: sending || offline,
+        'data-tips': `${trusted.record.oldTip}..${trusted.record.newTip}` }, 'Trust local main')) : null,
     el('p', { class: 'subtext' }, `Backup to ${backup.remote} ${backup.branch}: ${BACKUP_WORDS[backup.state] ?? 'Not known'}${backup.at ? ` (${clock(backup.at)})` : ''}${
       backup.enabled && backup.state === 'pushed' ? backup.current ? '; it has the trusted tip' : '; it is behind the trusted tip' : ''}${
       backup.nextAttemptAfter && ['refused', 'failed', 'pushing'].includes(backup.state) ? `; next try after ${clock(backup.nextAttemptAfter)}` : ''}. Nothing waits for the backup.`)];

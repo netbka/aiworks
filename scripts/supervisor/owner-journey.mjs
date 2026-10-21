@@ -17,6 +17,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const CHROME = ['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe']
   .find((path) => existsSync(path));
 const FICTIONAL_HOST = 'Example PC';
+const SELF = 'example-org/aiworks';
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const git = (cwd, ...args) => {
   const out = spawnSync('git', ['-c', 'user.name=Journey Owner', '-c', 'user.email=owner@example.invalid', ...args],
@@ -92,6 +93,22 @@ function detached(command, args, { cwd = undefined, env = process.env } = {}) {
   const pid = Number(readFileSync(pidFile, 'utf8'));
   rmSync(pidFile, { force: true });
   return pid;
+}
+
+/**
+ * Switch local trust on as an installation's operator would (SUPERVISOR.md section 6): stop everything, make this runtime
+ * AIWorks's own repository with local main trusted (AW-005), record its main, which its origin/main contains, as the main
+ * ledger's anchor, and start again. Returns start()'s state.
+ */
+export async function switchOnSelfHosting(root) {
+  await stop(root);
+  const runtime = join(root, 'runtime'), data = join(root, 'data'), file = join(data, 'config.json');
+  const config = JSON.parse(readFileSync(file, 'utf8'));
+  writeFileSync(file, JSON.stringify({ ...config, selfHosting: { repository: SELF, trustedMain: 'local' }, repositories: { [SELF]: { path: runtime } } }, null, 2));
+  const anchor = spawnSync(process.execPath, [join(runtime, 'src', 'supervisor', 'cli.mjs'), 'trusted-main', 'anchor', '--data', data],
+    { cwd: runtime, encoding: 'utf8', windowsHide: true, env: { ...process.env, AIWORKS_DATA: '' } });
+  if (anchor.status !== 0) throw new Error(`trusted-main anchor: ${anchor.stderr}`);
+  return start(root);
 }
 
 /** Start serve, the dashboard and Chrome, each detached and hidden; their pids go to <root>/pids.json for stop(). */
@@ -221,7 +238,7 @@ export async function journey(root) {
   // worker tries the owner's Apply from inside its job, then ordinary runs.
   writeFileSync(join(root, 'fake', 'scenario.json'), JSON.stringify({ intake: true, probe: state.url,
     implement: ['commit-page', 'owner', 'commit-page', 'probe-commit-page', 'commit-page', 'commit-page'] }));
-  const p = await page(state.devtools);
+  let p = await page(state.devtools);
   const ui = (body) => p.evaluate(`(async () => { ${PRELUDE} ${body} })()`);
   const shot = (name, full = false) => p.screenshot(join(evidence, `${name}.png`), { full });
   const waitFor = async (body, ms = 180_000) => {
@@ -394,9 +411,58 @@ export async function journey(root) {
     const reconnect = await ui(`return press('Apply');`);
     record('reconnect-then-owner-action', /^Applied/.test(reconnect), { notice: reconnect });
 
+    // AIWorks's own repository with local main trusted: Settings › Connections compares local main with the current main
+    // ledger, and Trust local main records exactly the two tips the page showed, or nothing. Hand commits on the runtime's
+    // main play the owner's; the running code stays at the anchor.
+    p.close();
+    const switched = await switchOnSelfHosting(root);
+    p = await page(switched.devtools);
+    await p.viewport(1366, 900);
+    await p.navigate(switched.url);
+    const { Store } = await import('../../src/supervisor/store.mjs');
+    const { mainLedger } = await import('../../src/supervisor/self-hosting.mjs');
+    const ledger = () => { const store = new Store(join(root, 'data', 'supervisor.db'), { readOnly: true });
+      try { return mainLedger(store, SELF).map((row) => ({ kind: row.kind, oldTip: row.old_tip, newTip: row.new_tip })); } finally { store.close(); } };
+    const runtime = join(root, 'runtime');
+    const handCommit = (file, text) => { mkdirSync(dirname(join(runtime, file)), { recursive: true }); writeFileSync(join(runtime, file), text);
+      git(runtime, 'add', '--', file); git(runtime, 'commit', '-q', '-m', `owner: ${file}`); return git(runtime, 'rev-parse', 'HEAD'); };
+    // The offer for `newTip`, once the view and the open Connections page both show it.
+    const shown = (newTip) => waitFor(`const t = (await api('/api/v2/settings')).trustedMain;
+      return t?.record?.newTip === ${JSON.stringify(newTip)} && (location.hash !== '#/settings/connections' || main().includes(${JSON.stringify(newTip)})) ? t : null;`, 30_000);
+    // Posted from the browser with the page's own session, as a page that still shows older tips would.
+    const postTrust = (body) => ui(`const { csrf } = await api('/api/session'); const r = await fetch('/api/v2/settings/trusted-main', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Dashboard-CSRF': csrf }, body: JSON.stringify({ requestId: crypto.randomUUID(), ...${JSON.stringify(body)} }) });
+      return { status: r.status, code: (await r.json()).code ?? null };`);
+    const anchored = await ui(`return (await api('/api/v2/settings')).trustedMain;`);
+    record('trusted-main-anchored', anchored?.mode === 'local' && anchored.state === 'TRUSTED' && revision.startsWith(anchored.tip) && anchored.unrecordedCount === 0 &&
+      anchored.record === null && ledger().length === 1, anchored && { state: anchored.state, unrecorded: anchored.unrecordedCount });
+    const handTip = handCommit('docs/owner-note.md', 'An owner note.\n');
+    const offered = await shown(handTip);
+    await ui(`location.hash = '#/settings/connections'; return 1;`);
+    const connections = await waitFor(`return main().includes(${JSON.stringify(handTip)}) ? main() : null;`, 30_000) ?? '';
+    const exact = { old: offered?.record.oldTip === revision, oldShown: connections.includes(revision), newShown: connections.includes(handTip) };
+    record('trusted-main-offers-exact-tips', Boolean(offered) && exact.old && exact.oldShown && exact.newShown, { unrecorded: offered?.unrecordedCount, ...exact });
+    await shot('06-connections-trust');
+    const handTip2 = handCommit('docs/owner-note.md', 'An owner note, edited.\n');
+    const moved = await postTrust({ oldTip: revision, newTip: handTip });
+    record('trusted-main-refuses-moved-tips', moved.status === 409 && moved.code === 'TRUSTED_MAIN_MOVED' && ledger().length === 1, moved);
+    await shown(handTip2);
+    const trusted = await ui(`return press('Trust local main');`);
+    const rows = ledger();
+    record('trusted-main-recorded', /is trusted/.test(trusted) && rows.length === 2 && rows[1].kind === 'owner' && rows[1].oldTip === revision && rows[1].newTip === handTip2,
+      { notice: trusted, rows: rows.map((row) => row.kind) });
+    const again = await postTrust({ oldTip: revision, newTip: handTip2 });
+    record('trusted-main-repeat-changes-nothing', again.status === 200 && ledger().length === 2, again);
+    const supervisorTip = handCommit('src/supervisor/owner-note.md', 'Not reviewed.\n');
+    await shown(supervisorTip);
+    const unreviewed = await ui(`return press('Trust local main');`);
+    const after = await ui(`return (await api('/api/v2/settings')).trustedMain;`);
+    record('trusted-main-refuses-unreviewed', /independent review/.test(unreviewed) && ledger().length === 2 && handTip2.startsWith(after.tip) && after.unrecordedCount === 1,
+      { notice: unreviewed });
+
     // A 320 px window and a phone: no screen scrolls sideways.
     const routes = ['#/', '#/needs', '#/projects', '#/projects/add', '#/p/notes', '#/p/notes/plan', '#/p/notes/review', '#/p/notes/knowledge',
-      '#/p/notes/settings', '#/p/site/releases', '#/settings', '#/settings/alerts', '#/settings/usage'];
+      '#/p/notes/settings', '#/p/site/releases', '#/settings', '#/settings/alerts', '#/settings/usage', '#/settings/connections'];
     const wide = [];
     for (const [width, height, mobile] of [[320, 640, false], [390, 844, true]]) {
       await p.viewport(width, height, mobile);
