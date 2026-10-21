@@ -6,10 +6,11 @@
 // remote name. Workers never get the mirror's path; task worktrees come from it through adapters/git.mjs with a baseSha.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, statfsSync,
-  writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync,
+  statfsSync, writeFileSync } from 'node:fs';
 import { dirname, join, parse, resolve } from 'node:path';
 import { SECRET_LIKE_PATH_PATTERN } from '../../../scripts/lib/worker-context.mjs';
+import { realKey } from '../projects.mjs';
 
 export const MIRROR_REPO = 'repo.git';
 const SHA = /^[0-9a-f]{40}$/;
@@ -23,12 +24,9 @@ export class MirrorError extends Error {
   constructor(code, message, detail = {}) { super(message); this.name = 'MirrorError'; this.code = code; this.detail = detail; }
 }
 
-const key = (path, platform = process.platform) => {
-  let real;
-  try { real = realpathSync.native(path); } catch { real = resolve(path); }
-  const slashed = real.replaceAll('\\', '/');
-  return platform === 'win32' ? slashed.toLowerCase() : slashed;
-};
+const key = (path, platform = process.platform) => realKey(path, (at) => realpathSync.native(at), platform);
+// Windows names are case-insensitive: Build is the excluded build, Node_Modules is node_modules.
+const fold = (name) => (process.platform === 'win32' ? name.toLowerCase() : name);
 const inside = (child, parent) => child === parent || child.startsWith(parent.endsWith('/') ? parent : `${parent}/`);
 
 /** `<dirname(dataDir)>/mirrors/<projectId>`: next to worktrees/, under the already-ignored .local/ (design 5.1). */
@@ -160,35 +158,50 @@ const exists = (path) => { try { lstatSync(path); return true; } catch { return 
  * The files of a plain folder that may be copied, by the rules of design 4.3 and 4.4 (the .gitignore rule is applied in
  * the copy, by syncFolderSnapshot). It uses lstat only, so links and junctions are never followed. Secret-like paths,
  * links, nested repositories, node_modules (unless includeNodeModules) and the owner's exclusions are left out and
- * counted. Preflight has already applied the limits and the case check. Returns { files: [relativePath], excluded }.
+ * counted. Preflight has already applied the limits and the case check. Returns { files: [relativePath], excluded,
+ * identities }: `identities` maps each file to the device and file id it had when listed, so the copy reads that file only.
  */
 export function folderFiles(sourceRoot, { exclusions = [], includeNodeModules = false } = {}) {
-  const owner = exclusions.map((path) => String(path).replaceAll('\\', '/').replace(/^\/+|\/+$/g, '')).filter(Boolean);
+  const owner = exclusions.map((path) => fold(String(path).replaceAll('\\', '/').replace(/^\/+|\/+$/g, ''))).filter(Boolean);
   const excluded = { secrets: sample(), links: sample(), repos: sample(), modules: sample(), owner: sample(), other: sample() };
-  const files = [];
+  const files = [], identities = new Map();
   const pending = [''];
   while (pending.length) {
     const rel = pending.pop();
     for (const name of readdirSync(rel === '' ? sourceRoot : join(sourceRoot, rel))) {
       const child = rel === '' ? name : `${rel}/${name}`;
-      if (owner.some((path) => inside(child, path))) { note(excluded.owner, child); continue; }
+      if (owner.some((path) => inside(fold(child), path))) { note(excluded.owner, child); continue; }
       if (SECRET_LIKE_PATH.test(child)) { note(excluded.secrets, child); continue; }
       let stat;
-      try { stat = lstatSync(join(sourceRoot, child)); } catch (error) {
+      try { stat = lstatSync(join(sourceRoot, child), { bigint: true }); } catch (error) {
         if (error.code === 'ENOENT') continue;
         throw new MirrorError('UNREADABLE_FILES', `AIWorks can't read ${child}`, { count: 1, examples: [child] });
       }
       // On Windows Node reports a junction as a symbolic link, so this covers both.
       if (stat.isSymbolicLink()) { note(excluded.links, child); continue; }
       if (stat.isDirectory()) {
-        if (name === 'node_modules' && !includeNodeModules) { note(excluded.modules, child); continue; }
+        if (fold(name) === 'node_modules' && !includeNodeModules) { note(excluded.modules, child); continue; }
         if (exists(join(sourceRoot, child, '.git'))) { note(excluded.repos, child); continue; }
         pending.push(child);
-      } else if (stat.isFile()) files.push(child);
+      } else if (stat.isFile()) { files.push(child); identities.set(child, `${stat.dev}:${stat.ino}`); }
       else note(excluded.other, child);
     }
   }
-  return { files: files.sort(), excluded };
+  return { files: files.sort(), excluded, identities };
+}
+
+/**
+ * The bytes of a listed file, read through one handle that is checked to be the file listed: null when it is gone or is
+ * another file now, as when a folder on its path was replaced by a link or junction after the listing.
+ */
+function readListed(path, identity) {
+  let fd;
+  try { fd = openSync(path, 'r'); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  try {
+    const stat = fstatSync(fd, { bigint: true });
+    if (!stat.isFile() || `${stat.dev}:${stat.ino}` !== identity) return null;
+    return readFileSync(fd);
+  } finally { closeSync(fd); }
 }
 
 /** The copy's repository, created when missing, with its own attributes and settings rewritten on every import. */
@@ -248,17 +261,19 @@ function ignoredPaths(git, snapshot, paths, gitEnv) {
  * One pass of the copy (design 4.5): hash each source file, copy it, then hash the copy. Returns the manifest rows, or
  * null when a copy differs from the hash taken before it or the file is gone: it changed during the copy.
  */
-function copyPass(sourceRoot, snapshot, files, hooks) {
+function copyPass(sourceRoot, snapshot, files, identities, hooks) {
   const rows = [];
   for (const rel of files) {
     const source = join(sourceRoot, rel);
     const target = join(snapshot, rel);
     let content;
     try {
-      content = readFileSync(source);
+      content = readListed(source, identities.get(rel));
+      if (content === null) return null;
       hooks.afterHash?.(rel);
+      // The bytes already read and hashed, never the path read again: it may lead somewhere else by now.
       mkdirSync(dirname(target), { recursive: true });
-      copyFileSync(source, target);
+      writeFileSync(target, content);
     } catch (error) {
       if (error.code === 'ENOENT') return null;
       throw new MirrorError('UNREADABLE_FILES', `AIWorks can't read ${rel}`, { count: 1, examples: [rel] });
@@ -312,16 +327,18 @@ export function syncFolderSnapshot({ git = ['git'], mirrorRoot, sourceRoot, pare
     const listed = folderFiles(sourceRoot, { exclusions, includeNodeModules });
     const ignoreFiles = listed.files.filter((rel) => rel === '.gitignore' || rel.endsWith('/.gitignore'));
     prune(snapshot, new Set(ignoreFiles));
-    for (const rel of ignoreFiles) {
+    const rules = ignoreFiles.map((rel) => [rel, readListed(join(sourceRoot, rel), listed.identities.get(rel))]);
+    if (rules.some(([, content]) => content === null)) continue;
+    for (const [rel, content] of rules) {
       mkdirSync(dirname(join(snapshot, rel)), { recursive: true });
-      copyFileSync(join(sourceRoot, rel), join(snapshot, rel));
+      writeFileSync(join(snapshot, rel), content);
     }
     const ignored = ignoredPaths(git, snapshot, listed.files, gitEnv);
     excluded = { ...listed.excluded, ignored: sample() };
     for (const rel of ignored) note(excluded.ignored, rel);
     const included = listed.files.filter((rel) => !ignored.has(rel));
     prune(snapshot, new Set(included));
-    rows = copyPass(sourceRoot, snapshot, included, hooks);
+    rows = copyPass(sourceRoot, snapshot, included, listed.identities, hooks);
   }
   if (!rows) throw new MirrorError('CHANGED_DURING_COPY', 'files changed while AIWorks was copying them');
 

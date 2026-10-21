@@ -1,7 +1,8 @@
 // AIWorks project records (aiworks#7, docs/design/PROJECT_CONNECTION.md section 3, slice S1). A project is a row in
 // the supervisor store; it holds no credentials. This module only creates, reads, updates and disconnects records:
 // it never reads the project's folder, runs git or gh, or starts work. Detection and connect flows are later slices.
-import { isAbsolute } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { ConflictError } from './store.mjs';
 
 export const PROJECT_ID = /^[a-z0-9][a-z0-9-]{1,39}$/;
@@ -28,6 +29,22 @@ const text = (value, max) => typeof value === 'string' && value.trim() !== '' &&
 export function rootKey(rootPath, platform = process.platform) {
   const key = rootPath.replaceAll('\\', '/');
   return platform === 'win32' ? key.toLowerCase() : key;
+}
+
+/**
+ * The rootKey of `path` with links, junctions and short names resolved as far as it exists: a part not created yet is
+ * appended to the real path of its nearest existing parent, so a folder named through a junction or an 8.3 name is
+ * recognised before it exists.
+ */
+export function realKey(path, realpath = (at) => realpathSync.native(at), platform = process.platform) {
+  let at = resolve(path), rest = '';
+  for (;;) {
+    try { return rootKey(join(realpath(at), rest), platform); } catch { /* not there yet: try its parent */ }
+    const up = dirname(at);
+    if (up === at) return rootKey(resolve(path), platform);
+    rest = rest ? join(basename(at), rest) : basename(at);
+    at = up;
+  }
 }
 
 /**
