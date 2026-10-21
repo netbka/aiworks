@@ -1519,14 +1519,15 @@ export class Controller {
    * verified head is the new round's base. Past maxRepairRounds the task stalls instead. A finished campaign becomes
    * active again. Call inside fenced(). Returns whether the task stalled, or null when the campaign no longer takes repair
    * work (aiworks#5): a pause or cancellation may commit between a pass selecting the task and this fenced update, and a
-   * cancelled campaign keeps its completed task as it is.
+   * cancelled campaign keeps its completed task as it is. `bounded: false` (a moved base: a B1 stop that is fixed, never
+   * an owner stop) neither counts toward maxRepairRounds nor stalls the task.
    */
-  reopenPublished(ctx, task, finding, { limits, now, lastError, stalledReason }) {
+  reopenPublished(ctx, task, finding, { limits, now, lastError, stalledReason, bounded = true }) {
     if (!this.takesRepair(ctx.id)) return null;
-    const stalled = limits.maxRepairRounds !== null && task.repair_rounds >= limits.maxRepairRounds;
+    const stalled = bounded && limits.maxRepairRounds !== null && task.repair_rounds >= limits.maxRepairRounds;
     this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version, {
       state: 'pending', base_sha: task.verified_sha, findings: [finding], failures: {}, retry_at: null, last_error: lastError.slice(0, 1000),
-      ...(stalled ? { blocked: { class: 'stalled', reason: stalledReason, at: now } } : { repair_rounds: task.repair_rounds + 1 }),
+      ...(stalled ? { blocked: { class: 'stalled', reason: stalledReason, at: now } } : bounded ? { repair_rounds: task.repair_rounds + 1 } : {}),
     }, now);
     const fresh = this.store.campaign(ctx.id);
     if (fresh.control === 'finished') {
