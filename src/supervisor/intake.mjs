@@ -60,7 +60,6 @@ export const INTAKE_COPY = Object.freeze({
   DRAFT_FAILED: "AIWorks couldn't draft a plan: {reason}.",
   DRAFT_STALE: '{project} changed since this plan was drafted ({what}). Draft it again before approving.',
   CONFLICT: '"{campaign}" is already doing {task}. Approve anyway and this step will wait for it, or remove the step.',
-  LOCAL_START_OFF: 'You can plan work here. Starting work on projects without GitHub waits for two approvals (D2 and D4).',
 });
 
 const liveProject = (store, projectId) => {

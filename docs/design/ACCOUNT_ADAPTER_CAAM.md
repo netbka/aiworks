@@ -1,6 +1,6 @@
 # CAAM account-selection and isolated-launch adapter
 
-**Status:** design only. Nothing in this document is built, merged into the runtime or deployed. Refs [#9](https://github.com/example-org/aiworks/issues/9), [#10](https://github.com/example-org/aiworks/issues/10), [#14](https://github.com/example-org/aiworks/issues/14).
+**Status:** built in source since this design, switched off ([SUPERVISOR.md section 13](../SUPERVISOR.md#13-caam-account-profiles-built-not-enabled)); not deployed by this repository, and switching it on waits for the owner's pilot. The rest of this document is the design as written: its "today", "observed" and "planned" statements describe the code at its basis revision, and [STATUS.md](../STATUS.md) holds what the source does now. Refs [#9](https://github.com/example-org/aiworks/issues/9), [#10](https://github.com/example-org/aiworks/issues/10), [#14](https://github.com/example-org/aiworks/issues/14).
 
 **Basis:** `example-org/aiworks` at `7254b42` (main). Every "today" statement below is **observed** in repository code (`src/supervisor/accounts.mjs`, `src/supervisor/store.mjs`, `src/supervisor/controller.mjs`, `src/supervisor/adapters/executors.mjs`, `src/supervisor/runner.mjs`, `src/supervisor/windows-process.ps1`). CAAM analysis is based on **v0.1.23** (`github.com/Dicklesworthstone/coding_agent_account_manager`). Live compatibility on workstation is **unverified**. Proposed behaviour is **planned**.
 

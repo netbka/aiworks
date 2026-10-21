@@ -2,7 +2,7 @@
 
 **Privacy boundary:** this is a design proposal, not a live installation record. Campaign declarations and approval records stay private under [AW-009](../DECISIONS.md#aw-009---public-commits-contain-no-installation-data). Any proposal to publish declarations through source branches or pull requests is superseded. Merged executable code, explicit owner authorization, scope binding and independent verification remain required.
 
-**Status:** design only. Nothing in this document is built, merged into the runtime or deployed. Refs #10, #5, #14.
+**Status:** slices R1 to R6 are built in source since this design: a routing receipt on every run, the `routing` declaration fields, routed dispatch for a declaration with `routing.mode: "auto"`, and each step's models, tiers and cost by unit in the dashboard. Routing is opt-in per private declaration; R7 (the recorded baseline, one live cohort and its comparison) has not happened, so no saving is claimed. The rest of this document is the design as written: its "today", "observed" and "planned" statements describe the code at its basis revision, and [STATUS.md](../STATUS.md) holds what the source does now. Refs #10, #5, #14.
 
 **Basis:** design notes; implementation status must be checked against the selected runtime revision.
 

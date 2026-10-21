@@ -464,6 +464,8 @@ Commands are JSON POSTs with exact same Origin and a per-process CSRF token; for
 
 Completed/cancelled campaigns do not appear as controller failures when their historical leases expire. Their task rows distinguish verified PR/report publication from repository or product completion. They expose provider, dependency-integration and blocker waits with retry times. Execution snapshots are read live every five seconds. The connection label says when a merge check is running or has failed, rather than treating a successful local connection as a fresh remote observation.
 
+Some test files this document names (`merges`, `delegation`, `owner`, `claims`, `presentation`, `connect` and `approve`) describe checks rehearsed before this public history began, or removed under the product-critical test rule of [AGENTS.md](../AGENTS.md#validation); they are not in this repository. The kept dashboard checks are the files in `tests/dashboard/`.
+
 `tests/dashboard/merges.test.mjs` uses disposable git repositories, a synthetic git wrapper and a synthetic `gh`:
 - a step whose verified commit is reachable from `origin/main` after a fetch is merged, with its merge commit time; one that is not reads *Published, merge not seen yet*; old data never shows merged;
 - `git fetch` runs at most once per repository per 5 minutes, never two at once;
