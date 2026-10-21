@@ -300,6 +300,10 @@ export async function journey(root) {
     await ui(`location.hash = '#/p/notes/review/${second}'; await click('Approve and start');`);
     const needs = await waitFor(`const s = await api('/api/state'); return s.owner.count ? s.owner.groups.map((g) => g.name + ':' + g.items.map((i) => i.kind).join(',')).join(' ') : null;`);
     record('decision-in-needs-you', needs === 'notes:decision', { groups: needs });
+    // Settings › AI workers counts the local goal that waits: every unfinished goal that allows the worker, GitHub or not.
+    const workers = await ui(`const s = await api('/api/state'); return { usedBy: s.supervisor.settings.workers.find((w) => w.kind === 'claude-cli')?.usedBy ?? 0,
+      open: s.supervisor.local.filter((c) => !['finished', 'cancelled'].includes(c.control) && c.executors.includes('claude-cli')).length };`);
+    record('ai-workers-count-local', workers.open >= 1 && workers.usedBy === workers.open, workers);
     await ui(`location.hash = '#/'; return 1;`);
     const home = await waitFor(`return document.getElementById('decision-text') && main().includes('A step waits for your decision.') ? { card: true, project: true } : null;`, 30_000);
     record('decision-on-home', Boolean(home), home);
@@ -312,8 +316,12 @@ export async function journey(root) {
     const guided = readdirSync(runs).some((run) => run.includes(second.slice(0, 8).toLowerCase()) && run.includes('.implement.') &&
       existsSync(join(runs, run, 'prompt.txt')) && read(join(runs, run, 'prompt.txt')).includes('Stay on the free plan.'));
     record('decision-guides-next-try', Boolean(resumed) && guided, { resumed: Boolean(resumed), guided });
-    const alerts = await ui(`const a = await api('/api/v2/settings/alerts'); return { transport: a.delivery.transport, rehearsed: a.outbox.rehearsed, delivered: a.outbox.delivered };`);
-    record('alert-rehearsed-not-sent', alerts.transport === 'rehearsal' && alerts.rehearsed >= 1 && alerts.delivered === 0, alerts);
+    const alerts = await ui(`const a = await api('/api/v2/settings/alerts'); return { transport: a.delivery.transport, rehearsed: a.outbox.rehearsed, delivered: a.outbox.delivered,
+      text: JSON.stringify(a.rehearsals.map((r) => r.alert)) };`);
+    // The alert names the project as the owner named it and the dashboard's own actions: no lp- id, task issue or CLI command.
+    const wording = !/\blp-|task issue|supervisor recheck/.test(alerts.text) && alerts.text.includes('notes');
+    record('alert-rehearsed-not-sent', alerts.transport === 'rehearsal' && alerts.rehearsed >= 1 && alerts.delivered === 0 && wording,
+      { transport: alerts.transport, rehearsed: alerts.rehearsed, delivered: alerts.delivered, wording });
 
     // Local Git: connect, plan; its builder tries the owner's Apply from inside its job and is refused (production lookup).
     const siteRules = await connect(site, 'site', 'Greet visitors on the site.');
@@ -361,6 +369,21 @@ export async function journey(root) {
     // What is reported stays true: Usage counts local work's runs; Releases sends a local project's results to Review.
     const usage = await ui(`const u = await api('/api/v2/settings/usage'); return { usd: u.workers.usd, runs: u.workers.usdRuns };`);
     record('usage-counts-local-runs', usage.usd > 0 && usage.runs > 0, usage);
+    // Local work's runs per goal and step, by project: models and cost from the same builders as GitHub work, each run
+    // counted once (Usage equals the goals' sum), a project's total equal to its own goals' and no goal in two projects.
+    const local = await ui(`const s = await api('/api/state'), u = await api('/api/v2/settings/usage'), sv = s.supervisor;
+      const sum = (list) => Math.round(list.reduce((n, c) => n + (c.costByUnit.usd ?? 0), 0) * 10000) / 10000;
+      const of = (project) => sv.local.filter((c) => c.project === project);
+      const total = (project) => sv.localCosts.find((t) => t.project === project);
+      const model = (used) => used ? used.executor + '/' + (used.model ?? 'not recorded') : null;
+      location.hash = '#/p/notes'; await sleep(2000);
+      return { notes: of('notes').map((c) => c.id), site: of('site').map((c) => c.id),
+        runsMatch: ['notes', 'site'].every((p) => total(p)?.runs === of(p).reduce((n, c) => n + c.runsUsed, 0)),
+        models: [...new Set(sv.local.flatMap((c) => c.tasks.map((t) => model(t.routing.implement))).filter(Boolean))],
+        stepRuns: sv.local.reduce((n, c) => n + c.tasks.reduce((m, t) => m + t.cost.runs, 0), 0), runs: sv.local.reduce((n, c) => n + c.runsUsed, 0),
+        usage: u.workers.usd, sum: Math.round((sum(sv.campaigns) + sum(sv.local)) * 10000) / 10000, breakdown: main().includes('See the breakdown') };`);
+    record('local-cost-per-step', local.notes.length >= 2 && local.site.length >= 1 && !local.notes.some((id) => local.site.includes(id)) && local.runsMatch &&
+      local.models.length > 0 && local.stepRuns > 0 && local.usage === local.sum && local.breakdown, local);
     const releases = await ui(`location.hash = '#/p/site/releases'; await sleep(2500); return main();`);
     record('releases-local-truthful', /Release does not apply to a project without GitHub/.test(releases) && /never released/.test(releases), null);
 
@@ -384,6 +407,9 @@ export async function journey(root) {
       }
     }
     record('narrow-layouts', wide.length === 0, { wide });
+    // Every goal has finished: no alert is left waiting; each was rehearsed or retired, never delivered.
+    const settled = await ui(`const a = await api('/api/v2/settings/alerts'); return a.outbox;`);
+    record('alerts-settled', settled.pending === 0 && settled.sending === 0 && settled.delivered === 0, settled);
   } finally {
     p.close();
     await stop(root);

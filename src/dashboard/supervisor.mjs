@@ -227,13 +227,14 @@ function stepCosts(operations) {
 /**
  * Cost per project (OWNER_WORKSPACE §4.10, slice S7): today's per-campaign totals added up by repository, so a project's
  * total is exactly the sum of its campaigns' recorded cost. Runs that reported no cost and runs still in progress are
- * counted apart, never as $0.00. `reportedUsd` is null when nothing reported a cost; `empty` is the §7.1 copy when nothing ran.
+ * counted apart, never as $0.00. `by` is `project` for work in projects without GitHub (localRuns), added up by project. `reportedUsd` is null when nothing reported a cost; `empty` is the §7.1 copy when nothing ran.
  */
-export function projectCosts(campaigns) {
+export function projectCosts(campaigns, by = 'repository') {
   const projects = new Map();
   for (const c of campaigns) {
-    const key = String(c.repository).toLowerCase();
-    const project = projects.get(key) ?? { repository: c.repository, works: 0, worksWithRuns: 0, runs: 0, reportedUsd: 0, unreportedRuns: 0, runningRuns: 0 };
+    if (c[by] == null) continue;
+    const key = String(c[by]).toLowerCase();
+    const project = projects.get(key) ?? { [by]: c[by], works: 0, worksWithRuns: 0, runs: 0, reportedUsd: 0, unreportedRuns: 0, runningRuns: 0 };
     project.works++;
     // Pieces of work with counted runs, so the summary matches the breakdown's run counts (aiworks#11 review F14).
     if (c.runsUsed > 0) project.worksWithRuns++;
@@ -435,9 +436,10 @@ const RELEASE_MISSING = {
 const RELEASE_LOCAL = 'Release does not apply to a project without GitHub: a checked result changes your folder only when you press Apply on it, under Review only.';
 
 /** Settings (slice S8): configured command names, the AI workers once for this computer, accounts, and release mode per project. */
-export function computerSettings(campaigns, config, { platform = process.platform, now = Date.now(), repositories = [], connected = [], accounts = [],
+export function computerSettings(campaigns, config, { platform = process.platform, now = Date.now(), local = [], repositories = [], connected = [], accounts = [],
   releaseStop = { set: false, since: null } } = {}) {
-  return { commands: configuredCommandNames(config), workers: aiWorkers(campaigns, config, { platform, now }),
+  // The AI workers count work in projects without GitHub too (`local`, localRuns); release mode is for repositories only.
+  return { commands: configuredCommandNames(config), workers: aiWorkers([...campaigns, ...local], config, { platform, now }),
     accounts,
     modelPreferences: savedModelOrder(config),
     releases: releaseModes([...repositories, ...campaigns.map((c) => c.repository)], { waitsFor: issueLink(config?.autoReleaseDecision), connected,
@@ -887,9 +889,79 @@ function mergeReceipt(task, rows) {
     mergedAt: Number.isSafeInteger(d.mergedAt) ? d.mergedAt : row.at };
 }
 
+/**
+ * A campaign's finished checks, read once from its operations (newest first): how often each step's check rejected it,
+ * and when each commit last passed, by `task/sha`.
+ */
+function checkerVerdicts(ops) {
+  const rejections = new Map(), acceptedAt = new Map();
+  for (const op of ops.filter((item) => item.kind === 'verify' && item.state === 'finished')) {
+    const verdict = op.outcome?.class === 'result' ? op.outcome.value?.verdict ?? op.outcome.value?.result : null;
+    if (verdict === 'rejected') rejections.set(op.task_id, (rejections.get(op.task_id) ?? 0) + 1);
+    const key = `${op.task_id}/${op.target_sha}`;
+    if (verdict === 'accepted' && Number.isSafeInteger(op.updated_at)) acceptedAt.set(key, Math.max(acceptedAt.get(key) ?? 0, op.updated_at));
+  }
+  return { rejections, acceptedAt };
+}
+
+/** A step's runs and the cost they reported (OWNER_WORKSPACE S7); null, never 0, when none reported one. */
+const stepCost = (costs, rejections, taskId) => (({ reportedUsd, ...rest }) => ({ ...rest, reportedUsd: reportedUsd > 0 ? reportedUsd : null,
+  checkerRejections: rejections.get(taskId) ?? 0 }))(costs.get(taskId) ?? { runs: 0, reportedUsd: 0, unreportedRuns: 0, runningRuns: 0, retries: 0 });
+
+/** Each AI worker a piece of work may use, in its order: whether it runs, waits or is unavailable and why, from status only. */
+function workProviders(status, taskRows, operations, now) {
+  const order = status.executorOrder;
+  return [...order, ...['codex-cli', 'claude-cli', 'cursor-cli'].filter((kind) => !order.includes(kind))].map((kind) => {
+    const wait = status.executorWaits.find((item) => item.executor_kind === kind);
+    const legacyWait = !wait && order.length === 1 ? taskRows.find((task) => task.retry_at > now && String(task.last_error ?? '').startsWith('quota:')) : null;
+    return { kind, priority: order.includes(kind) ? order.indexOf(kind) + 1 : null,
+      state: !order.includes(kind) ? 'not-configured' : operations.some((op) => (op.executor_kind ?? 'claude-cli') === kind) ? 'running'
+        : wait ? wait.retry_at === null ? 'unavailable' : wait.retry_at > now ? 'cooldown' : 'retry-due' : legacyWait ? 'cooldown' : 'idle',
+      reason: code(wait?.reason?.split(':')[0]) ?? (legacyWait ? 'quota' : null),
+      availabilityReason: /extensions|configuration/.test(wait?.reason ?? '') ? 'Local CLI configuration needs adapter review'
+        : /not configured/.test(wait?.reason ?? '') ? 'CLI command is not configured on this PC'
+        : /absolute GitHub CLI/.test(wait?.reason ?? '') ? 'Repository reader requires a configured GitHub CLI'
+        : /^web acceptance/.test(wait?.reason ?? '') ? 'The browser worker needs Chrome and chrome-devtools-mcp configured on this PC'
+          : /sandbox is unavailable/.test(wait?.reason ?? '') ? 'Native sandbox is unavailable on this host'
+            : /sandbox setup failed|sandbox probe|could not start any local process/.test(wait?.reason ?? '') ? 'Codex sandbox could not start a local process (its runtime is locked by another Codex session on this host); retried automatically after the wait' : null,
+      credits: /credits\/billing/.test(wait?.reason ?? ''), retryAt: wait?.retry_at ?? legacyWait?.retry_at ?? null,
+      hostLimit: kind === 'cursor-cli' && process.platform === 'win32' ? 'Cursor native sandbox does not support Windows' : null,
+      roleLimit: roleUnavailableReason({ kind }, 'implementer', 'commit') };
+  });
+}
+
+/**
+ * The runs of a piece of work in a project without GitHub (Overview's cost breakdown, Settings › AI workers and Usage),
+ * built from the same status, operations and per-step builders as a GitHub campaign's, each read once for all its steps.
+ * `project` is the connected project's id (its route), `projectName` the owner's name of it. Only runs, cost, models and
+ * AI workers: its plan, steps and results are work.mjs's (workView `local`), and it has no repository, issue or pull request.
+ */
+function localRuns(store, c, now, config, projectOf) {
+  const id = c.id, status = campaignStatus(store, id, now, { config, selfHostingConfig: null });
+  const statusOf = new Map(status.tasks.map((item) => [item.id, item]));
+  const taskRows = store.tasks(id), operations = store.openOperations(id);
+  const ops = store.all('SELECT id, task_id, kind, executor_kind, state, target_sha, outcome, created_at, updated_at FROM operations WHERE campaign_id = ? ORDER BY created_at DESC, seq DESC', id);
+  const { rejections } = checkerVerdicts(ops), costs = stepCosts(ops);
+  const specs = new Map(c.declaration.tasks.map((task) => [task.id, task]));
+  const owner = projectOf(c.declaration.target.projectId);
+  return { id, project: owner?.id ?? null, projectName: owner?.name ? safeText(owner.name, 120) : null,
+    title: safeText(c.declaration.envelope?.outcome ?? c.declaration.purpose ?? id, 300), control: c.control,
+    controllerRevision: status.controller.codeRevision, budget: status.budget,
+    runsUsed: status.runsUsed, maxWorkerRuns: status.maxWorkerRuns, recordedCostUsd: status.costUsd,
+    cost: { reportedUsd: status.costUsd > 0 ? status.costUsd : null, unreportedRuns: status.budget.unknownCostRuns, runningRuns: operations.length },
+    costByUnit: costByUnit(status.costByUnit),
+    executors: (c.declaration.executor.providers ?? [c.declaration.executor]).map((item) => code(item.kind)),
+    providers: workProviders(status, taskRows, operations, now),
+    agents: operations.map((op) => ({ id: op.id, taskId: op.task_id, executor: code(op.executor_kind), state: op.state })),
+    tasks: taskRows.map((task) => ({ id: task.task_id, title: safeText(specs.get(task.task_id)?.title ?? task.task_id),
+      outcome: specs.get(task.task_id)?.outcome ? safeText(specs.get(task.task_id).outcome) : null, state: task.state,
+      dependsOn: specs.get(task.task_id)?.dependsOn ?? [], cost: stepCost(costs, rejections, task.task_id),
+      routing: stepRouting(statusOf.get(task.task_id)), costByUnit: costByUnit(statusOf.get(task.task_id)?.costByUnit) })) };
+}
+
 export function supervisorSnapshot(dataDir, now = Date.now(), { since, textChecks } = {}) {
   const path = join(dataDir, 'supervisor.db');
-  if (!existsSync(path)) return { available: false, message: 'No supervisor store at the configured location.', campaigns: [], costs: [], activity: [] };
+  if (!existsSync(path)) return { available: false, message: 'No supervisor store at the configured location.', campaigns: [], costs: [], local: [], localCosts: [], activity: [] };
   let store;
   try {
     store = new Store(path, { readOnly: true });
@@ -902,11 +974,25 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
       return modes.get(project);
     };
     // Work in a project without GitHub has no repository, issue or pull request: its project screens show it from
-    // work.mjs (workView `local`), never as a GitHub campaign here (OWNER_WORKSPACE S12).
-    const campaigns = store.all("SELECT id FROM campaigns ORDER BY CASE WHEN control IN ('finished', 'cancelled') THEN 1 ELSE 0 END, created_at")
-      .filter(({ id }) => !isLocalTarget(store.campaign(id).declaration)).map(({ id }) => {
+    // work.mjs (workView `local`), never as a GitHub campaign here (OWNER_WORKSPACE S12). Only its runs, cost, models and
+    // AI workers are served, apart, as `local` (localRuns), so nothing counts them twice.
+    const all = store.all("SELECT id FROM campaigns ORDER BY CASE WHEN control IN ('finished', 'cancelled') THEN 1 ELSE 0 END, created_at")
+      .map(({ id }) => store.campaign(id));
+    let owners = null;
+    const projectOf = (overlayId) => {
+      if (!owners) {
+        try {
+          owners = new Map(store.all('SELECT o.id AS overlay, p.id, p.name FROM project_overlays o JOIN projects p ON p.id = o.project_id')
+            .map((row) => [row.overlay, { id: row.id, name: row.name }]));
+        } catch { owners = new Map(); }
+      }
+      return owners.get(overlayId) ?? null;
+    };
+    const local = all.filter((c) => isLocalTarget(c.declaration)).map((c) => localRuns(store, c, now, config, projectOf));
+    const campaigns = all.filter((c) => !isLocalTarget(c.declaration)).map((c) => {
+      const id = c.id;
       // Connections reads trusted main once; this per-campaign view does not use that field.
-      const c = store.campaign(id), status = campaignStatus(store, id, now, { config, selfHostingConfig: null });
+      const status = campaignStatus(store, id, now, { config, selfHostingConfig: null });
       const statusOf = new Map(status.tasks.map((item) => [item.id, item]));
       const taskRows = store.tasks(id);
       // The campaign's records, each read once for all its steps: its review records (merges, the owner's change
@@ -917,16 +1003,9 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
       const feedback = decisionFeedback(store, id);
       const specs = new Map(c.declaration.tasks.map((task) => [task.id, task]));
       const operations = store.openOperations(id);
-      const order = status.executorOrder;
       // Verifier rejections per task: a churn signal for the owner, not a limit. And when each commit passed the check:
       // the latest finished check that accepted it, by task and commit (a delegated merge that waits too long, #139).
-      const rejections = new Map(), acceptedAt = new Map();
-      for (const op of ops.filter((item) => item.kind === 'verify' && item.state === 'finished')) {
-        const verdict = op.outcome?.class === 'result' ? op.outcome.value?.verdict ?? op.outcome.value?.result : null;
-        if (verdict === 'rejected') rejections.set(op.task_id, (rejections.get(op.task_id) ?? 0) + 1);
-        const key = `${op.task_id}/${op.target_sha}`;
-        if (verdict === 'accepted' && Number.isSafeInteger(op.updated_at)) acceptedAt.set(key, Math.max(acceptedAt.get(key) ?? 0, op.updated_at));
-      }
+      const { rejections, acceptedAt } = checkerVerdicts(ops);
       const histories = stepHistories(store, id, ops);
       const riskOf = stepRisks(ops, c.declaration);
       const costs = stepCosts(ops);
@@ -971,23 +1050,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
         // MODEL_ROUTING R6 (UI12): the same work's cost in each unit apart, from status.
         costByUnit: costByUnit(status.costByUnit),
         executors: (c.declaration.executor.providers ?? [c.declaration.executor]).map((item) => code(item.kind)),
-        providers: [...order, ...['codex-cli', 'claude-cli', 'cursor-cli'].filter((kind) => !order.includes(kind))].map((kind) => {
-          const wait = status.executorWaits.find((item) => item.executor_kind === kind);
-          const legacyWait = !wait && order.length === 1 ? taskRows.find((task) => task.retry_at > now && String(task.last_error ?? '').startsWith('quota:')) : null;
-          return { kind, priority: order.includes(kind) ? order.indexOf(kind) + 1 : null,
-            state: !order.includes(kind) ? 'not-configured' : operations.some((op) => (op.executor_kind ?? 'claude-cli') === kind) ? 'running'
-              : wait ? wait.retry_at === null ? 'unavailable' : wait.retry_at > now ? 'cooldown' : 'retry-due' : legacyWait ? 'cooldown' : 'idle',
-            reason: code(wait?.reason?.split(':')[0]) ?? (legacyWait ? 'quota' : null),
-            availabilityReason: /extensions|configuration/.test(wait?.reason ?? '') ? 'Local CLI configuration needs adapter review'
-              : /not configured/.test(wait?.reason ?? '') ? 'CLI command is not configured on this PC'
-              : /absolute GitHub CLI/.test(wait?.reason ?? '') ? 'Repository reader requires a configured GitHub CLI'
-              : /^web acceptance/.test(wait?.reason ?? '') ? 'The browser worker needs Chrome and chrome-devtools-mcp configured on this PC'
-                : /sandbox is unavailable/.test(wait?.reason ?? '') ? 'Native sandbox is unavailable on this host'
-                  : /sandbox setup failed|sandbox probe|could not start any local process/.test(wait?.reason ?? '') ? 'Codex sandbox could not start a local process (its runtime is locked by another Codex session on this host); retried automatically after the wait' : null,
-            credits: /credits\/billing/.test(wait?.reason ?? ''), retryAt: wait?.retry_at ?? legacyWait?.retry_at ?? null,
-            hostLimit: kind === 'cursor-cli' && process.platform === 'win32' ? 'Cursor native sandbox does not support Windows' : null,
-            roleLimit: roleUnavailableReason({ kind }, 'implementer', 'commit') };
-        }),
+        providers: workProviders(status, taskRows, operations, now),
         instructions: store.all("SELECT * FROM events WHERE campaign_id = ? AND kind = 'agent-instruction' ORDER BY seq DESC LIMIT 30", id).map((event) => {
           const p = event.payload, task = taskRows.find((item) => item.task_id === p.taskId);
           return { id: event.seq, taskId: p.taskId, role: p.role, text: textChecks?.read(p.text, 2000).text ?? safeText(p.text, 2000), at: event.received_at,
@@ -1027,8 +1090,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
             `https://github.com/${c.declaration.target.repository}/issues/${specs.get(task.task_id)?.issue}`),
           history: histories.get(task.task_id) ?? { attempts: [], events: [] },
           // OWNER_WORKSPACE S7: its runs and the cost they reported; null, never 0, when none reported one.
-          cost: (({ reportedUsd, ...rest }) => ({ ...rest, reportedUsd: reportedUsd > 0 ? reportedUsd : null, checkerRejections: rejections.get(task.task_id) ?? 0 }))(
-            costs.get(task.task_id) ?? { runs: 0, reportedUsd: 0, unreportedRuns: 0, runningRuns: 0, retries: 0 }),
+          cost: stepCost(costs, rejections, task.task_id),
           // MODEL_ROUTING R6 (UI12): its models and tiers, why it moved up, and its cost in each unit apart, from status.
           routing: stepRouting(statusOf.get(task.task_id)),
           costByUnit: costByUnit(statusOf.get(task.task_id)?.costByUnit),
@@ -1064,12 +1126,13 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
           const run = view.runs.find((item) => item.id === m.runId);
           return run ? workerProgress(dataDir, { executor_kind: 'claude-cli', workspace: run.workspace, session_id: run.session_id, run_dir: run.run_dir }) : null;
         })() : null })) };
-    const settings = computerSettings(campaigns, readConfig(dataDir), { now, repositories: configuredRepositories(dataDir),
+    const settings = computerSettings(campaigns, readConfig(dataDir), { now, local, repositories: configuredRepositories(dataDir),
       connected: projectConnectionEnabled(dataDir) ? connectedProjects(dataDir) : [],
       accounts: dashboardAccounts(store, readConfig(dataDir), { now, dataDir }), releaseStop: releaseStopState(dataDir) });
-    return { available: true, observedAt: new Date(now).toISOString(), controller, campaigns, costs: projectCosts(campaigns), activity, coordinator, recent, settings, releases, goals,
+    return { available: true, observedAt: new Date(now).toISOString(), controller, campaigns, costs: projectCosts(campaigns), local, localCosts: projectCosts(local, 'project'),
+      activity, coordinator, recent, settings, releases, goals,
       newestEvent: store.get('SELECT MAX(seq) AS seq FROM journal')?.seq ?? 0 };
-  } catch { return { available: false, message: "AIWorks can't read its work records right now. What you see may be out of date. Buttons are off until it can read them again.", campaigns: [], costs: [], activity: [] }; }
+  } catch { return { available: false, message: "AIWorks can't read its work records right now. What you see may be out of date. Buttons are off until it can read them again.", campaigns: [], costs: [], local: [], localCosts: [], activity: [] }; }
   finally { store?.close(); }
 }
 
