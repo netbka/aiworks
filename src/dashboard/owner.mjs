@@ -251,7 +251,7 @@ export function releaseLadder(task, d, recorded = null, { github = true } = {}) 
   const sha = String(recorded?.verifiedSha ?? task.verifiedSha ?? '').toLowerCase().slice(0, 7) || null;
   const note = !recorded ? 'Review only: AIWorks does not deploy this result. Whether it is live is not recorded here.'
     : recorded.state === 'rolled-back' ? 'Rolled back: the checks after release failed.'
-      : recorded.state === 'rollback-failed' ? 'The rollback failed. See Needs me.'
+      : recorded.state === 'rollback-failed' ? 'The rollback failed. See Needs you.'
         : recorded.state === 'unknown' ? 'Outcome unknown: AIWorks is checking the destination and will not release there again until it knows.' : null;
   return { sha, steps, note, destination: recorded?.destination ?? null };
 }
@@ -383,8 +383,8 @@ const agentWorking = (agent, now) => agent.heartbeatState === 'recent' || (agent
  * The owner view. `releases` maps a lowercased repository to the standing deploy authorization its registry entry
  * records (readReleaseAuthorizations); a repository without one is described only by its own release policy.
  * `delegation` is the owner's merge delegation from config.json (configuredMergeDelegation), or null: with it, a
- * verified, unmerged pull request is no Needs me item and is counted as `delegated`, never as awaiting the owner, until
- * it waited longer than `delegation.stallHours` since its check: then it is a counted Needs me item that opens it (#139).
+ * verified, unmerged pull request is no Needs you item and is counted as `delegated`, never as awaiting the owner, until
+ * it waited longer than `delegation.stallHours` since its check: then it is a counted Needs you item that opens it (#139).
  * `connected` are the connected project records when Add project is on (connectedProjects): a project held up by the
  * owner's decisions is in `held`, and the calm headline names it (aiworks#11 review 5 G7).
  */
@@ -487,7 +487,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     const cancelled = c.control === 'cancelled';
     if (c.blocker && !cancelled) {
       // What happened and what to do in owner words; what the supervisor recorded is one click away. The card carries the
-      // Check again its sentence names, while the work takes it: a Needs me card has no More menu (review 5 G8).
+      // Check again its sentence names, while the work takes it: a Needs you card has no More menu (review 5 G8).
       const check = (c.controls?.more ?? []).includes('recheck') ? blockerCheck(c.blocker, c.id) : null;
       const words = blockerWords(c.blocker, { check: Boolean(check) });
       items.push({ ...base, kind: c.blockerClass === 'B3' ? 'decision' : 'stopped', text: NEEDS.workStopped, command: check,
@@ -575,13 +575,13 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
 }
 
 /**
- * The one Needs me item for AIWorks stopped on this computer (OWNER_WORKSPACE §7.2), listed under AIWorks itself: when
+ * The one Needs you item for AIWorks stopped on this computer (OWNER_WORKSPACE §7.2), listed under AIWorks itself: when
  * it last checked in and how to restart it. With one piece of work held up it is worded for that work and names it
  * (`about`, `campaignId`); with several, one line per project names the work it holds up and what a pause or a
  * still-working AI worker means for it.
  */
 function stoppedItem(halted, entries, onPurpose) {
-  // The Needs me banner is not shown with this item, so it says here whether AIWorks was stopped on purpose (one fact, once).
+  // The Needs you banner is not shown with this item, so it says here whether AIWorks was stopped on purpose (one fact, once).
   const why = (point) => onPurpose ? `${NEEDS.onPurpose} ${point}` : point;
   if (halted.length === 1) {
     const [{ c, at, how, paused }] = halted;
@@ -606,7 +606,7 @@ function stoppedItem(halted, entries, onPurpose) {
 
 /**
  * Connected projects held up by the owner's decision (aiworks#11 review 5 G7): a project without GitHub, connected and
- * checked, where work cannot start until the owner confirms its rules on its Now screen (D2; OWNER_WORKSPACE §5.3). No work is blocked there, so they are no Needs me items and no count includes them, but Needs
+ * checked, where work cannot start until the owner confirms its rules on its Now screen (D2; OWNER_WORKSPACE §5.3). No work is blocked there, so they are no Needs you items and no count includes them, but Needs
  * me names each and links to its Now, which says what the decisions are. A setup problem is not here: Projects and the
  * project's Now say it (§4.2).
  */
@@ -619,7 +619,7 @@ function heldProjects(records) {
 export const SYSTEM_GROUP = 'AIWorks itself';
 
 /**
- * Needs me (OWNER_WORKSPACE slice S3): the same items, grouped by project. One group per repository (case-insensitive,
+ * Needs you (OWNER_WORKSPACE slice S3): the same items, grouped by project. One group per repository (case-insensitive,
  * in the order its first item is listed), named by its short name, or `owner/name` when two share one; then "AIWorks
  * itself" last, unless it holds an item that holds up work in several projects (`holdsUp`, AIWorks stopped on this
  * computer): then it comes first, with that item at its top, because no project item it holds up can move until it is

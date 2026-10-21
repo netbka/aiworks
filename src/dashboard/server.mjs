@@ -80,7 +80,7 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
   const machine = { name: safeText(host.name ?? hostname(), 64) || null, revision: /^[0-9a-f]{7,40}$/.test(host.revision ?? '') ? host.revision : null,
     ...(host.version !== undefined ? { version: safeText(host.version, 32) } : {}),
     ...(host.versionName !== undefined ? { versionName: safeText(host.versionName, 64) } : {}) };
-  // What /api/state and the /api/v2 views read: the supervisor snapshot, the merge check, Needs me, the work of
+  // What /api/state and the /api/v2 views read: the supervisor snapshot, the merge check, Needs you, the work of
   // projects without GitHub and Projects. Merge checks run while someone looks at the page; the answer never waits for them.
   const readState = (now, since) => {
     const supervisor = supervisorSnapshot(dataDir, now, { since, textChecks });
@@ -88,9 +88,9 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
     const merged = merges?.snapshot() ?? { refreshing: false, repositories: [], steps: {} };
     // The owner's merge delegation is read on every request, so a change to config.json shows without a restart.
     // Add project is read on every request too; off, the Projects screen is exactly as before. Its records also let
-    // Needs me name a project held up by the owner's decisions (aiworks#11 review 5 G7).
+    // Needs you name a project held up by the owner's decisions (aiworks#11 review 5 G7).
     const addProject = projectConnectionEnabled(dataDir), records = addProject ? connectedProjects(dataDir) : [];
-    // The local work list (UI20): its open decisions join Needs me and its checked reviews join Results.
+    // The local work list (UI20): its open decisions join Needs you and its checked reviews join Results.
     const worklist = workListView(dataDir, { closeOn: workList.available });
     const owner = ownerView(supervisor, merged, { host: machine.name, now, releases, delegation: configuredMergeDelegation(dataDir), connected: records, workList: worklist });
     // Plan and do and Review (UI14, UI17): requests and draft plans of connected projects, and the local work and

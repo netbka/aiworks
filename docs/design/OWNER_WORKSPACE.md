@@ -67,6 +67,7 @@ The same word always means the same thing:
 | Not known yet | GitHub state not loaded, unreadable or not found | "nothing", "0" |
 | Released | only with recorded release evidence (#13); not built | |
 | Accepted | only with recorded acceptance evidence: the owner's Accept result of exactly the checked version, or Apply of a local result (owner UI v2 WP4) | "merged" |
+| Needs you | the owner must act: a decision, a review or stopped work (owner decision 2026-10-21; it replaces "Needs me", and the address stays `#/needs`) | a report to read, work AIWorks is doing |
 
 Today's code already keeps merged, waiting for review, closed, report posted and unknown apart (observed: `src/dashboard/owner.mjs:59-75`, `src/dashboard/owner.mjs:50-52`). Today's checker sentence says "Checker accepted the head" (observed: `src/dashboard/owner.mjs:95`). The design renames it to "Passed the check" so "accepted" is free for the acceptance state.
 
@@ -78,24 +79,25 @@ Today's code already keeps merged, waiting for review, closed, report posted and
 
 ```
 Projects                      (global)  Which project should I open?
-Needs me                      (global)  What is waiting for me, across projects?
+Needs you                      (global)  What is waiting for me, across projects?
 Settings                      (global)  What can AIWorks use on this computer?
   ├─ This computer · AI workers · Projects · Release mode
   ├─ Messages                           What did I ask AIWorks, and what did it answer?
   └─ Diagnostics                        What exactly did the machine record?
 
 Project ▸ <name>
-  ├─ Now            (tab)               Where are we now?
-  ├─ Work           (tab)               What is running or waiting, and why?
+  ├─ Overview       (tab)               Where is the current goal?
   │    └─ Step      (from a row)        What is happening on this step?
-  ├─ Results        (tab)               What has been delivered, and what remains?
-  ├─ Cost           (tab)               What did this cost?
-  ├─ Start work     (from a button)     What should AIWorks do?
-  │    └─ Review    (after Start work)  Is this the right goal and limits?
+  ├─ Plan           (tab)               What will be true when this is done?
+  │    └─ Start work (from a button)    What should AIWorks do?
+  │         └─ Review (after Start work) Is this the right goal and limits?
+  ├─ Review         (tab)               Does the result do what was promised?
+  ├─ Releases       (tab, when configured) What reached users, and what can be undone?
+  ├─ Knowledge      (tab)               What does AIWorks know about this product?
   └─ Add project    (from Projects)     Which folder should AIWorks work on?
 ```
 
-Start work, Review, Step and Add project are reached by an action, not a tab. That keeps the project bar to four tabs, which fit at 320px.
+The project tabs follow [Owner UI v2 section 2](OWNER_UI_V2.md#2-navigation) (owner decision 2026-10-21). They replace Now, Work, Results and Cost; nothing moved out of reach: Now is Overview, Work's running work and steps open under Details on Overview, Cost is Overview's budget line with a link to Settings › Usage, and Results is Review. Releases is a tab only where a release is configured. Start work, a plan's Review, Step and Add project are reached by an action, not a tab. The tabs fit at 320px.
 
 ### 3.2 Addresses
 
@@ -104,26 +106,27 @@ Each screen has its own address, so Back, Forward, reload and bookmarks work. Th
 | Screen | Address |
 | --- | --- |
 | Projects | `#/projects` (also the address for an empty hash) |
-| Needs me | `#/needs` |
+| Needs you | `#/needs` |
 | Settings | `#/settings`, `#/settings/messages`, `#/settings/diagnostics` |
-| Now | `#/p/<project>` |
-| Work | `#/p/<project>/work` |
+| Overview | `#/p/<project>` |
 | Step | `#/p/<project>/step/<work>/<step>` |
-| Results | `#/p/<project>/results` |
-| Cost | `#/p/<project>/cost` |
+| Plan | `#/p/<project>/plan` |
 | Start work | `#/p/<project>/start` |
-| Review | `#/p/<project>/review/<plan>` |
+| Review of a plan | `#/p/<project>/review/<plan>` |
+| Review | `#/p/<project>/review` |
+| Releases | `#/p/<project>/releases` |
+| Knowledge | `#/p/<project>/knowledge` |
 | Add project | `#/projects/add` |
 
 `<project>` is the GitHub `owner/repo`, URL-encoded, for a GitHub project. For a local project it is the opaque ID that project connection (#7) assigns. Never a filesystem path.
 
-Today's addresses `#overview`, `#roadmap`, `#work`, `#agents`, `#messages` and `#activity` (observed: `src/dashboard/public/dashboard.js:71-72`) are redirected once, with `history.replaceState`, as in [§9](#9-what-todays-views-become).
+Today's addresses `#overview`, `#roadmap`, `#work`, `#agents`, `#messages` and `#activity` (observed: `src/dashboard/public/dashboard.js:71-72`) are redirected once, with `history.replaceState`, as in [§9](#9-what-todays-views-become). So are the project tab addresses before Owner UI v2: `#/p/<project>/work`, `/cost` and `/now` open Overview and `/results` opens Review, and an unsent draft kept at the old address moves with it.
 
 ### 3.3 What is kept across moves
 
 - **Route.** The address is the state. Reload opens the same screen.
 - **Selected project.** Projects offers one project first as "Continue with <name>": the one where the owner left unfinished work. A project with an unsent draft (a Start work goal or a step instruction, below) comes first, and the line adds "Your unsent draft is kept there." When the last opened project has a draft too, it stays first; otherwise the project whose draft was kept first. Without a draft it is the last opened project, remembered in `localStorage`. This is the same per-browser convenience as today's "since you last looked" (observed: `src/dashboard/public/dashboard.js:27-28`). The last opened project alone sent the owner away from a half-written plan request (aiworks#11 review 4 F19).
-- **Screen per project.** Opening a project from outside it (from Projects, "Continue with <name>", Needs me or another project) opens the screen that project was left on, for example its Start work half-way through a plan request. The project's Now tab still opens Now. This holds while the page stays open in that tab. It is what [§13.3](#133-tasks) T10 and the [#11](https://github.com/example-org/aiworks/issues/11) acceptance ask for: switching projects "without losing route, draft, scroll".
+- **Screen per project.** Opening a project from outside it (from Projects, "Continue with <name>", Needs you or another project) opens the screen that project was left on, for example its Start work half-way through a plan request. The project's Now tab still opens Now. This holds while the page stays open in that tab. It is what [§13.3](#133-tasks) T10 and the [#11](https://github.com/example-org/aiworks/issues/11) acceptance ask for: switching projects "without losing route, draft, scroll".
 - **Scroll.** Every address returns to where it was left, whether the owner reaches it by a link, Back or Forward. An address not opened yet in this tab opens at its top. The page keeps this per address while it stays open in that tab.
 - **Unsent drafts.** The Start work goal, step guidance and the message to AIWorks are kept in `sessionStorage`, per address. They survive the 5-second refresh, a reload, Back and a move to another project and back. They are cleared only after the server returns an accepted receipt. Today drafts live in memory only and are lost on reload (observed: `src/dashboard/public/dashboard.js:32`, `src/dashboard/public/dashboard.js:435`).
 - **Open details.** An opened "Details" disclosure stays open across refresh. Today's disclosures already do (observed: `src/dashboard/public/dashboard.js:224`).
@@ -132,8 +135,8 @@ Today's addresses `#overview`, `#roadmap`, `#work`, `#agents`, `#messages` and `
 ### 3.4 Global frame
 
 - **Header.** The AIWorks mark (a link to Projects), the computer's name, a connection line and a "Messages" link. The computer's name stays because each computer runs its own AIWorks (AW-006; observed: `src/dashboard/public/dashboard.js:653-658`).
-- **Needs me count.** The "Needs me" item of the navigation carries the count of owner actions. While a merge check runs it is partial, never final: "7 + checking", or "checking" with nothing confirmed yet. It shows the final count once the check ends ([§1](#1-what-changes-for-the-owner) rule 3; aiworks#11 review 4 F3).
-- **Connection line.** It says **Page connected**, or the disconnected text. It is about this page's link to the dashboard, never about AIWorks' work. A bare "Connected" read as "AIWorks is running" while Needs me said AIWorks had stopped (aiworks#11 review 4 F6). Whether AIWorks runs is said on the screens, from [§7.2](#72-disconnected).
+- **Needs you count.** The "Needs you" item of the navigation carries the count of owner actions. While a merge check runs it is partial, never final: "7 + checking", or "checking" with nothing confirmed yet. It shows the final count once the check ends ([§1](#1-what-changes-for-the-owner) rule 3; aiworks#11 review 4 F3).
+- **Connection line.** It says **Page connected**, or the disconnected text. It is about this page's link to the dashboard, never about AIWorks' work. A bare "Connected" read as "AIWorks is running" while Needs you said AIWorks had stopped (aiworks#11 review 4 F6). Whether AIWorks runs is said on the screens, from [§7.2](#72-disconnected).
 - **"Refresh GitHub"** moves from the header to Settings › Diagnostics. GitHub refreshes by itself every minute (observed: `src/dashboard/main.mjs:39`). Stale data is said on the screens that use it ([§7.4](#74-github-stale)).
 - **"Message coordinator"** becomes the "Messages" link. Sending a message is the primary action of Settings › Messages, not a header button on every screen.
 
@@ -149,7 +152,7 @@ Each screen lists: its question, what is visible first, its one primary action, 
 - **First visible.** "Continue with <last project>" when there is one. Then one row per project:
   - its short name (the repository name, or the folder name for a local project);
   - its kind: "GitHub", "Local Git" or "Folder";
-  - **one** state in plain words, from [§7](#7-state-copy). A connected project where work cannot start reads "Can't start work yet", in a neutral tone, beside its sentence; it is never a green "Ready" (aiworks#11 review 5 G9). Settings › Projects shows the same word. With nothing for the owner it is the sentence the project's Now screen leads with ([§4.4](#44-now-inside-a-project)), so the two agree, also right after Pause and Resume. With more than one piece of active work it starts with the purpose of the work it is about: "Let customers save a wishlist · Possibly stuck: Wishlist page has made no progress for 25 minutes." (aiworks#11 review 4 F10, F14). What else Now keeps in view ([§4.4](#44-now-inside-a-project)) follows in short, whatever leads, Needs me items included: "One thing needs you. Also: 1 AI worker possibly stuck · 1 piece of work paused, with Resume on Now · 1 AI worker working." So a possibly stuck worker or a pause never hides behind the count of Needs me items (aiworks#11 review 5 G5);
+  - **one** state in plain words, from [§7](#7-state-copy). A connected project where work cannot start reads "Can't start work yet", in a neutral tone, beside its sentence; it is never a green "Ready" (aiworks#11 review 5 G9). Settings › Projects shows the same word. With nothing for the owner it is the sentence the project's Now screen leads with ([§4.4](#44-now-inside-a-project)), so the two agree, also right after Pause and Resume. With more than one piece of active work it starts with the purpose of the work it is about: "Let customers save a wishlist · Possibly stuck: Wishlist page has made no progress for 25 minutes." (aiworks#11 review 4 F10, F14). What else Now keeps in view ([§4.4](#44-now-inside-a-project)) follows in short, whatever leads, Needs you items included: "One thing needs you. Also: 1 AI worker possibly stuck · 1 piece of work paused, with Resume on Now · 1 AI worker working." So a possibly stuck worker or a pause never hides behind the count of Needs you items (aiworks#11 review 5 G5);
   - **one** next action as a link, for example "Review pull request #465" or "See results".
   
   While a merge check runs, a project's state is partial, never final: "2 things need you so far. Checking GitHub… The state of 3 results is not known yet.", or with nothing listed for the owner the state "Checking" with the same sentence, after the Now sentence when work is active. It never reads "Running" or "Finished" alone then ([§1](#1-what-changes-for-the-owner) rule 3, [§7.4](#74-github-stale); aiworks#11 review 4 F3).
@@ -160,7 +163,7 @@ Each screen lists: its question, what is visible first, its one primary action, 
 
 Today there is no project object. Campaigns carry their target repository (observed: `src/dashboard/supervisor.mjs:172`), and `config.json` lists the repositories this computer may work on (observed: `src/dashboard/roadmap.mjs:24-29`, `README.md:86`). Slice S2 builds the project list from those two. Local Git and plain folders need #7.
 
-### 4.2 Needs me
+### 4.2 Needs you
 
 - **Question.** What is waiting for me, across all projects?
 - **First visible.** A heading with the count, then one group per project, then a group called "AIWorks itself". When "AIWorks itself" holds an item that holds up work in several projects (AIWorks stopped on this computer), that group comes first, with that item at its top: no project item it holds up can move until it is fixed (aiworks#11 review 4 F5). Each row is one decision, worded as today's items: what to do first, then what the step delivers, then one link to act. Examples:
@@ -172,8 +175,8 @@ Today there is no project object. Campaigns carry their target repository (obser
 - **Primary action.** None at screen level. Each row has exactly one action link.
 - **In details.** The full evidence sentence, what merging unlocks, the "took N tries" note, GitHub data age.
 - **Not here.** Waiting for an AI worker's usage limit to reset is not an owner task (AW-002). A pause by itself is not an owner task (observed: `src/dashboard/owner.mjs:268-271`).
-- **Not here: project setup.** A setup problem met in Add project (no project rules, no Git, a configuration file that disagrees) is said on Add project, where it happens, and a connected project that needs setup says so on Projects and its Now screen. Needs me lists work only, so its calm line speaks of work only: "No work is blocked on you right now" ([§7.1](#71-empty)). It never says "nothing is blocked" while setup may be (aiworks#11 review F8).
-- **Named, not counted: a project held up by the owner's decision.** A connected project without GitHub whose rules the owner has not confirmed ([§5.3](#53-adding-a-plain-folder-after-s11)) is no Needs me item: no work is blocked there, so no count includes it. But Needs me is where the owner looks for their decisions, so it is never an all-clear while such a project waits. The calm headline names it: "No work is blocked on you right now, but Recipes waits for you to confirm their rules before work can start" (with several, "but 2 projects wait…"). One row per such project follows: "Recipes · Can't start work until you confirm this project's rules. You confirm them on its Now screen. Open Recipes". The owner read the bare calm line as wrong while their own decision held the only project (aiworks#11 review 5 G7, review 4 F8). Built with slice UI17.
+- **Not here: project setup.** A setup problem met in Add project (no project rules, no Git, a configuration file that disagrees) is said on Add project, where it happens, and a connected project that needs setup says so on Projects and its Now screen. Needs you lists work only, so its calm line speaks of work only: "No work is blocked on you right now" ([§7.1](#71-empty)). It never says "nothing is blocked" while setup may be (aiworks#11 review F8).
+- **Named, not counted: a project held up by the owner's decision.** A connected project without GitHub whose rules the owner has not confirmed ([§5.3](#53-adding-a-plain-folder-after-s11)) is no Needs you item: no work is blocked there, so no count includes it. But Needs you is where the owner looks for their decisions, so it is never an all-clear while such a project waits. The calm headline names it: "No work is blocked on you right now, but Recipes waits for you to confirm their rules before work can start" (with several, "but 2 projects wait…"). One row per such project follows: "Recipes · Can't start work until you confirm this project's rules. You confirm them on its Now screen. Open Recipes". The owner read the bare calm line as wrong while their own decision held the only project (aiworks#11 review 5 G7, review 4 F8). Built with slice UI17.
 
 The items are today's "Needs you" items, unchanged in meaning (observed: built in `src/dashboard/owner.mjs:228-294`, counted in `src/dashboard/owner.mjs:297`). The "AIWorks itself" group holds the supervisor and coordinator items, which today already say they are not owner actions (observed: `src/dashboard/owner.mjs:273-275`, `src/dashboard/owner.mjs:292-293`). They stay listed because nothing else will report them. The group is shown after the project groups, except when it holds up work in several projects: then it leads, as above. At 320 px the root problem was otherwise found only after about 2,300 px of project items it made pointless (aiworks#11 review 4 F5).
 
@@ -204,6 +207,8 @@ The items are today's "Needs you" items, unchanged in meaning (observed: built i
 
 ### 4.4 Now (inside a project)
 
+Now is the project's **Overview** tab since the Owner UI v2 navigation ([§3.1](#31-map)).
+
 - **Question.** Where are we now?
 - **First visible.**
   1. The project's goal: the purpose of its active work, else its latest finished work. Purpose comes from the declaration, then a one-step work's outcome, then the tracking issue title (observed: `src/dashboard/owner.mjs:147-155`).
@@ -217,7 +222,7 @@ The items are today's "Needs you" items, unchanged in meaning (observed: built i
   | --- | --- | --- |
   | No work yet | Start work | Start work |
   | One thing needs you | that item's action, for example "Review pull request #465" | GitHub, or Step |
-  | Several things need you | "See the 3 things that need you" | Needs me, this project's group |
+  | Several things need you | "See the 3 things that need you" | Needs you, this project's group |
   | Running or waiting | Open current work | Work |
   | Paused | Resume | stays here |
   | Blocked | See what's needed | Step |
@@ -254,6 +259,8 @@ The Review screen waits for a supervisor admission API (#8) and for [owner quest
 
 ### 4.7 Work
 
+Since the Owner UI v2 navigation ([§3.1](#31-map)) this is **Running work** under Details on Overview; `#/p/<project>/work` opens Overview.
+
 - **Question.** What is running or waiting, and why?
 - **First visible.** The steps of the active work, in the order they can run. Each row has:
   - the step's outcome (its title is secondary);
@@ -283,6 +290,8 @@ Today the step's attempt history is only in the global journal of the last 80 ev
 
 ### 4.9 Results
 
+Since the Owner UI v2 navigation ([§3.1](#31-map)) this is the **Review** tab; `#/p/<project>/results` opens it.
+
 - **Question.** What has been delivered, and what remains?
 - **First visible.** Results grouped by state, in this order:
   1. Waiting for your review;
@@ -297,6 +306,8 @@ Today the step's attempt history is only in the global journal of the last 80 ev
 - **Local projects (built, UI17).** A checked local revision reads "Ready for your review" with **Apply**: nothing in your folder changes until the owner presses it. Applied, it reads "Applied to your folder" with **Undo apply**. No pull request is ever shown for a project without GitHub (plan §1).
 
 ### 4.10 Cost
+
+Since the Owner UI v2 navigation ([§3.1](#31-map)) this is Overview's **Budget** line, with a link to Settings › Usage; `#/p/<project>/cost` opens Overview.
 
 - **Question.** What did this cost?
 - **First visible.** The finished work's cost, kept apart from work not finished yet, so the first number answers "What did the finished work cost?" (aiworks#11 review 5 G12): "$254.22 reported for finished work · about $10.17 per step with a result", then "6 runs of the finished work did not report a cost, so its real total is higher.", then "Work not finished yet, counted apart: $12.40 reported so far." and "3 runs still running; their cost is not known yet." Cancelled work that ran counts as ended and is named: "finished or cancelled work". With no finished work that ran, the headline says so: "$12.40 reported so far · this project's work is not finished yet", or "No cost reported for this project yet". Unknown is never $0.00 (observed today across all campaigns: `src/dashboard/public/dashboard.js:100-102`, `src/dashboard/public/dashboard.js:112-113`).
@@ -346,7 +357,7 @@ Built in slice UI17 (plan §6.7), on the owner's decisions of 2026-10-16 (#24, #
 
 1. **Projects** → "Add project". The owner pastes `D:\Notes\recipes`.
 2. AIWorks finds "Ordinary folder, no Git" and says: "AIWorks will never change this folder directly. It works on its own copy and asks you before applying a checked result." (plan §3.1) It adds: "After you connect it, confirm its rules on its Now screen. Then you can plan work here and approve it."
-3. "Connect project" → **Now**: "Connected. Confirm this project's rules on this page before AIWorks plans or starts work here." Work says the same sentence, and Start work offers no plan. The details say how work goes here: "The rules say which rules AIWorks follows in this folder; you confirm them once, for up to 12 months. You ask for a plan and approve it here; AIWorks then works on its own copy, and an independent checker checks each result. Nothing in your folder changes until you press Apply on a checked result, and Undo apply puts it back." Needs me names the project until its rules are confirmed. Settings › Diagnostics names the decisions in machine words: D2, the project rules (AIWorks issue #24), and D4, the dashboard approval (AIWorks issue #32). Decision codes and issue numbers stay out of the project's screens (aiworks#11 review 5 G3). The notice after connecting says only "Connected "<name>"." (review 5 G2).
+3. "Connect project" → **Now**: "Connected. Confirm this project's rules on this page before AIWorks plans or starts work here." Work says the same sentence, and Start work offers no plan. The details say how work goes here: "The rules say which rules AIWorks follows in this folder; you confirm them once, for up to 12 months. You ask for a plan and approve it here; AIWorks then works on its own copy, and an independent checker checks each result. Nothing in your folder changes until you press Apply on a checked result, and Undo apply puts it back." Needs you names the project until its rules are confirmed. Settings › Diagnostics names the decisions in machine words: D2, the project rules (AIWorks issue #24), and D4, the dashboard approval (AIWorks issue #32). Decision codes and issue numbers stay out of the project's screens (aiworks#11 review 5 G3). The notice after connecting says only "Connected "<name>"." (review 5 G2).
 4. **Confirm this project's rules.** The owner reviews them on Now and confirms by typing the project's name (UI16). Now then reads "Ready. Plan work here: nothing in your folder changes until you press Apply." with "Plan work".
 5. **Plan work** offers Plan and do from a description only: a project without GitHub has no issues or pull requests. "Ask for a plan" stores the request; the plan appears on **Review**, which says "Release: Review only. AIWorks stops when a result passes the check. Nothing in your folder changes until you press Apply on it, and Undo apply puts it back."
 6. **Approve and start** records the owner's approval of exactly that plan and starts it (D4: no signing key). A press from a program AIWorks started is refused and nothing is recorded. **Work** then lists the steps in plain words.
@@ -376,10 +387,10 @@ Built in slice UI17 (plan §6.7), on the owner's decisions of 2026-10-16 (#24, #
 
 ### 5.7 A blocked step
 
-1. **Projects** and **Needs me** both list "Decision needed · <step outcome>".
+1. **Projects** and **Needs you** both list "Decision needed · <step outcome>".
 2. → **Step**: "Stopped: needs your decision" and the reason in supervisor words, for example "the independent checker still rejects it after 3 repair rounds; answer with guidance for one more try within the same limit, or plan a smaller step or more rounds as a new plan for your approval" (observed: `src/dashboard/copy.mjs` `stopReasonWords`).
 3. Primary action: "Open the step issue". After deciding, the owner presses "Check again" in the More menu.
-4. The row leaves Needs me when the supervisor clears the block. Nothing is hidden because the owner looked at it.
+4. The row leaves Needs you when the supervisor clears the block. Nothing is hidden because the owner looked at it.
 
 ### 5.8 A finished result
 
@@ -398,9 +409,9 @@ Designed at **320 CSS px first**, then widened.
 
 | Width | Layout |
 | --- | --- |
-| 320–599px | One column. A bottom bar with Projects, Needs me and Settings, each with a label. The project's four tabs sit under its name and fit without scrolling ("Now", "Work", "Results", "Cost"). Rows are stacked, never tables. |
+| 320–599px | One column. A bottom bar with Projects, Needs you and Settings, each with a label. The project's tabs sit under its name and fit without scrolling ("Overview", "Plan", "Review", "Knowledge", and "Releases" where a release is configured). Rows are stacked, never tables. |
 | 600–959px | One column with more room. Rows may show the state on the same line. |
-| 960px and up | A side bar holds Projects, Needs me and Settings, and the project list under them. The project tabs are a top bar in the content. |
+| 960px and up | A side bar holds Projects, Needs you and Settings, and the project list under them. The project tabs are a top bar in the content. |
 | 1600px and up | Today's wide-screen rules are kept: wider column and larger scale (observed: `src/dashboard/public/dashboard.css:224-231`). |
 
 Rules:
@@ -442,8 +453,8 @@ None of these texts say merged, deployed, released, live, done or accepted unles
 | Projects, before S11 | **No projects yet.** Projects appear here when this computer's AIWorks settings list a repository. Adding a project from this page is not built yet. | none |
 | Projects, after S11 | **No projects yet.** Add a folder on this computer. It can be a GitHub repository, a local Git repository or an ordinary folder. | Add project |
 | Now, no work | **No work yet.** Tell AIWorks what you want done in <project>. | Start work |
-| Needs me | **No work is blocked on you right now.** Keeps today's rule that calm covers only blocking items, and says "work" because Needs me checks work only: project setup is said on Add project and Projects ([§4.2](#42-needs-me)). Reports and merged work are on Results, never named here. | none |
-| Needs me, a project held up by the owner's decisions | **No work is blocked on you right now, but <Recipes> waits for your decisions before work can start.** Then one row per such project: "<Recipes> · Can't start work until your decisions are made. Its Now says which, and where each is made. Open <Recipes>" ([§4.2](#42-needs-me); aiworks#11 review 5 G7). | none (each row links to the project) |
+| Needs you | **No work is blocked on you right now.** Keeps today's rule that calm covers only blocking items, and says "work" because Needs you checks work only: project setup is said on Add project and Projects ([§4.2](#42-needs-me)). Reports and merged work are on Results, never named here. | none |
+| Needs you, a project held up by the owner's decisions | **No work is blocked on you right now, but <Recipes> waits for your decisions before work can start.** Then one row per such project: "<Recipes> · Can't start work until your decisions are made. Its Now says which, and where each is made. Open <Recipes>" ([§4.2](#42-needs-me); aiworks#11 review 5 G7). | none (each row links to the project) |
 | Results, nothing yet | **No results yet.** Results appear here when a step finishes and passes the independent check. | none |
 | Cost, no runs | **No cost yet.** Nothing has run for this project. | none |
 
@@ -458,7 +469,7 @@ None of these texts say merged, deployed, released, live, done or accepted unles
 | AIWorks runs (another lease is live), but this work's lease ended over 5 minutes ago | **AIWorks is running, but last checked on this work at about <07:17>.** Other work goes on. This work does not move until AIWorks checks on it again. If it stays like this, sign out of this computer and sign in again, or restart the computer: AIWorks starts again by itself when you sign in. If that does not help, whoever set up AIWorks on this computer needs to look at it. | none |
 | AIWorks runs, but has not picked up this approved work 5 minutes after it was approved | **Approved at <09:00>; AIWorks is running, but has not picked it up.** Nothing of it starts until AIWorks picks it up. If it stays like this, sign out of this computer and sign in again, or restart the computer: AIWorks starts again by itself when you sign in. If that does not help, whoever set up AIWorks on this computer needs to look at it. | none |
 
-Liveness is read per piece of work, from its own lease, but "AIWorks has stopped" is one fact about the computer. Only the computer-wide state may say it (aiworks#11 review 4 F2). One piece of work whose lease lapsed while AIWorks runs is that work's own state: one Needs me item under its project, with the one time its lease ended, and the same sentence on Now and Work. When AIWorks itself stopped, it is said once: the one Needs me item under "AIWorks itself", with its time. The Needs me banner appears only when no such item says it.
+Liveness is read per piece of work, from its own lease, but "AIWorks has stopped" is one fact about the computer. Only the computer-wide state may say it (aiworks#11 review 4 F2). One piece of work whose lease lapsed while AIWorks runs is that work's own state: one Needs you item under its project, with the one time its lease ended, and the same sentence on Now and Work. When AIWorks itself stopped, it is said once: the one Needs you item under "AIWorks itself", with its time. The Needs you banner appears only when no such item says it.
 
 ### 7.3 No worker
 
@@ -468,7 +479,7 @@ Liveness is read per piece of work, from its own lease, but "AIWorks has stopped
 | No allowed AI worker can run on this computer (observed reasons: `src/dashboard/supervisor.mjs:201-208`) | **No AI worker can run this work on <workstation>.** <Codex is not set up on this computer. Cursor is not available on Windows.> AIWorks can't fix this by itself. See Settings › AI workers. | none (the fix is on the computer) |
 | Nothing is running right now, and no reason is recorded | **No AI worker is busy on this project right now.** <next step> starts when it is ready. | Open current work |
 
-"Not set up" is listed in Needs me only when the supervisor records a blocker for it (observed: blocker items, `src/dashboard/owner.mjs:259-262`). A usage-limit wait is never listed there (AW-002).
+"Not set up" is listed in Needs you only when the supervisor records a blocker for it (observed: blocker items, `src/dashboard/owner.mjs:259-262`). A usage-limit wait is never listed there (AW-002).
 
 ### 7.4 GitHub stale
 
@@ -491,7 +502,7 @@ Today's header can say "Execution live · syncing GitHub…" for minutes (#4; ob
 | Paused, AIWorks stopped | **Paused since <10 Oct 22:58>, and AIWorks has stopped on this computer at about <02:24>.** Nothing can resume until it runs again. If nobody is updating it right now, sign out of this computer and sign in again, or restart the computer: AIWorks starts again by itself when you sign in. If AIWorks still does not start, whoever set up AIWorks on this computer needs to look at it. | none |
 | Paused, AIWorks running, but not checking on this work ([§7.2](#72-disconnected)) | **Paused since <10 Oct 22:58>; AIWorks is running, but last checked on this work at about <07:17>.** It can't resume until AIWorks checks on it again. If it stays like this, sign out of this computer and sign in again, or restart the computer: AIWorks starts again by itself when you sign in. If that does not help, whoever set up AIWorks on this computer needs to look at it. | none |
 
-A pause is neutral. It is not counted in Needs me (observed: `src/dashboard/owner.mjs:268-271`).
+A pause is neutral. It is not counted in Needs you (observed: `src/dashboard/owner.mjs:268-271`).
 
 ### 7.6 Running
 
@@ -503,7 +514,7 @@ A pause is neutral. It is not counted in Needs me (observed: `src/dashboard/owne
 | Waiting for a merge (observed: `src/dashboard/supervisor.mjs:23`) | **Waiting for you to merge <"Contracts import">.** <"Search page"> starts after it is merged. | Review pull request #<N> |
 | Waiting for AIWorks to pick it up (observed: `src/dashboard/owner.mjs:212-214`) | **Approved at <12:40>; waiting for AIWorks to pick it up.** Nothing for you to do yet. | none |
 
-The possibly-stuck words lead the project's row on Projects too ([§4.1](#41-projects)), so a stuck worker never reads as normal work there (aiworks#11 review 4 F14). Possibly stuck is not a Needs me item, so it must not depend on leading: when Needs me items or a pause lead Now, each possibly stuck and working worker is still a line under "Also in this project" ([§4.4](#44-now-inside-a-project)), and the project's row says "Also: <2> AI workers possibly stuck · …" after its Needs me count (aiworks#11 review 5 G5).
+The possibly-stuck words lead the project's row on Projects too ([§4.1](#41-projects)), so a stuck worker never reads as normal work there (aiworks#11 review 4 F14). Possibly stuck is not a Needs you item, so it must not depend on leading: when Needs you items or a pause lead Now, each possibly stuck and working worker is still a line under "Also in this project" ([§4.4](#44-now-inside-a-project)), and the project's row says "Also: <2> AI workers possibly stuck · …" after its Needs you count (aiworks#11 review 5 G5).
 
 ### 7.7 Blocked
 
@@ -517,7 +528,7 @@ The possibly-stuck words lead the project's row on Projects too ([§4.1](#41-pro
 
 "The plan" was "the plan on this computer" until aiworks#11 review 5 G4: the owner could not tell what or where that was. The copy now says what it is (the plan approved for this work: what each step must deliver and which AI workers may do it), where it is kept (a file on this computer), who changes it (whoever set up AIWorks on this computer) and that this page cannot. A step's wording is fixed once its work is approved ([the runbook](../SUPERVISOR.md)), so the copy offers another AI worker, or a new plan, never an edit in place.
 
-An advice sentence names only a control on its own screen, or carries it (aiworks#11 review 5 G8). A Needs me card has no More menu, so the card for work a recorded blocker stopped carries its own Check again after the sentence, and the project's Now has it as the primary action. Where the work takes no command, neither the button nor the words appear.
+An advice sentence names only a control on its own screen, or carries it (aiworks#11 review 5 G8). A Needs you card has no More menu, so the card for work a recorded blocker stopped carries its own Check again after the sentence, and the project's Now has it as the primary action. Where the work takes no command, neither the button nor the words appear.
 
 ### 7.8 Finished
 
@@ -543,7 +554,7 @@ An advice sentence names only a control on its own screen, or carries it (aiwork
 | Screen | Needs | Today (observed) | Missing, and from where |
 | --- | --- | --- | --- |
 | Projects | project list, kind, one state, one action | target repository per campaign `supervisor.mjs:172`; configured repositories `roadmap.mjs:24-29`; owner items `owner.mjs:228-294`; liveness `owner.mjs:218-219` | grouping and state per project: dashboard (S2). Local Git and folders, connection state: **Supervisor API** #7 |
-| Needs me | items grouped by project | items with `campaignId` and `repository` `owner.mjs:226`; headline `owner.mjs:297`; also-line `owner.mjs:313-322` | grouping only: dashboard (S3) |
+| Needs you | items grouped by project | items with `campaignId` and `repository` `owner.mjs:226`; headline `owner.mjs:297`; also-line `owner.mjs:313-322` | grouping only: dashboard (S3) |
 | Settings | computer, AI workers once, release mode | host `server.mjs:26`; providers per campaign `supervisor.mjs:194-210`; Cursor host limit `supervisor.mjs:208` | per-computer merge of providers: dashboard (S8). Which CLIs are configured: dashboard read of `config.json` command **names only** (`supervisor.mjs:12-14` reads it today). Release mode: fixed "Review only" until #13 |
 | Messages | messages and receipts | `supervisor.mjs:257-266`; send `supervisor.mjs:273-287` | none |
 | Diagnostics | journal, issues and PRs, roadmap | journal `supervisor.mjs:244-254`; roadmap and work `roadmap.mjs:257-258` | none |
@@ -564,7 +575,7 @@ An advice sentence names only a control on its own screen, or carries it (aiwork
 
 | Today (observed: `src/dashboard/public/dashboard.js:73-78`) | Becomes | Old address goes to |
 | --- | --- | --- |
-| **Overview**: since-last-look, Needs you, campaign cards, Live now, platform roadmap, finished list, activity, messages (`dashboard.js:638-644`) | Split. Needs you → **Needs me**. Since-last-look → each project's **Now**. Campaign cards → **Now** and **Work**. Live now → **Work**. Finished list → **Results**. The four metrics (`dashboard.js:104-114`) go: "Platform roadmap items" → Diagnostics; "Needs you" → the Needs me count; "Agents working" → Work; "Cost so far" → **Cost**. | `#/projects` |
+| **Overview**: since-last-look, Needs you, campaign cards, Live now, platform roadmap, finished list, activity, messages (`dashboard.js:638-644`) | Split. Needs you → the **Needs you** screen. Since-last-look → each project's **Now**. Campaign cards → **Now** and **Work**. Live now → **Work**. Finished list → **Results**. The four metrics (`dashboard.js:104-114`) go: "Platform roadmap items" → Diagnostics; "Needs you" → the Needs you count; "Agents working" → Work; "Cost so far" → **Cost**. | `#/projects` |
 | **Plans**: campaign plans, then the governance provider roadmap (`dashboard.js:574-583`, `dashboard.js:533-555`) | Campaign plans → each project's **Work**. The platform roadmap → **Settings › Diagnostics**. It is governance provider's plan, not one of the owner's work items. | `#/settings/diagnostics` |
 | **Issues & PRs** (`dashboard.js:609-618`) | Per project: the issue and pull request picker in **Start work**, and pull request links in **Results**. The full list → **Diagnostics**. | `#/settings/diagnostics` |
 | **Agents** (`dashboard.js:634-637`) | Who is working → **Work** and **Step**. AI workers → **Settings**, once per computer. | `#/projects` |
@@ -618,7 +629,7 @@ A project without GitHub is listed too, with one line and no modes: "Release doe
 | Starting work from the dashboard | designed (S10), built switched off | #8 supervisor admission API, owner question Q1 |
 | Local admission without GitHub | built: STA16, switched on by STA17, dashboard routes UI17 | Decided 2026-10-16 (D2 #24, D4 #32). The production dashboard's caller check uses the native Windows process lookup (`src/supervisor/caller-lookup.mjs`); it fails closed when it cannot place the caller. Merged is not deployed |
 | Auto Release | text only, no control | D5-gate (owner), #13 |
-| Telegram delivery of Needs me | not designed here; Needs me stays the one source | #1, owner question Q3 |
+| Telegram delivery of Needs you | not designed here; Needs you stays the one source | #1, owner question Q3 |
 
 ---
 
@@ -638,7 +649,7 @@ Order: S0 first, then S1. S2–S8 may run in parallel after S1, with one owner p
 
 ### S1. Navigation shell
 
-- **Outcome.** Projects, Needs me and Settings as the global navigation; project tabs; hash addresses; old addresses redirected; route, scroll, focus and drafts kept as in §3.3; the §6 layout at 320px.
+- **Outcome.** Projects, Needs you and Settings as the global navigation; project tabs; hash addresses; old addresses redirected; route, scroll, focus and drafts kept as in §3.3; the §6 layout at 320px.
 - **Files.** `src/dashboard/public/index.html`, `src/dashboard/public/dashboard.css`, `src/dashboard/public/dashboard.js`, new `src/dashboard/public/router.mjs` (pure route parsing, importable by Node), `src/dashboard/server.mjs` (one allowlist entry).
 - **Tests.** `tests/dashboard/router.test.mjs`: parse and format every address, legacy redirects, unknown addresses → Projects. `tests/dashboard/dashboard.test.mjs`: the new file is served with the same headers and refused cross-site. `tests/dashboard/presentation.test.mjs`: links, not buttons, for destinations; `aria-current`; no width-only actions in the CSS.
 - **Acceptance.** Every old view's content is reachable from a new address. Back and Forward restore scroll. A reload keeps the route and the drafts.
@@ -649,10 +660,10 @@ Order: S0 first, then S1. S2–S8 may run in parallel after S1, with one owner p
 - **Outcome.** The Projects screen: one row per GitHub repository with work or configuration, each with one state and one action.
 - **Files.** New `src/dashboard/projects.mjs`; `src/dashboard/server.mjs` (adds `projects` to `/api/state`); `src/dashboard/public/dashboard.js`.
 - **Tests.** `tests/dashboard/projects.test.mjs`: grouping by repository, case-insensitive; order (needs you, running, others); one state per project; a configured repository with no work shows "No work yet".
-- **Acceptance.** Projects never shows a campaign ID at the primary level. A project's state never contradicts its Needs me items.
+- **Acceptance.** Projects never shows a campaign ID at the primary level. A project's state never contradicts its Needs you items.
 - **Depends on.** S1. **Waits for a decision.** No.
 
-### S3. Needs me
+### S3. Needs you
 
 - **Outcome.** Today's Needs you items, grouped by project, with "AIWorks itself" last, or first when it holds up work in several projects ([§4.2](#42-needs-me)).
 - **Files.** `src/dashboard/owner.mjs` (grouping only), `src/dashboard/public/dashboard.js`.
@@ -764,12 +775,12 @@ Only questions that change a permission or a documented boundary are here. D1, D
 | --- | --- | --- | --- |
 | **Q1** | May the local dashboard start (register) work whose plan is merged on AIWorks main, when the owner presses "Approve and start"? Today the documented boundary says no campaign can be registered from the dashboard ([OPERATIONS_DASHBOARD.md, Commands](../OPERATIONS_DASHBOARD.md#commands)). | **Yes,** with the same checks as the CLI `start`: private approved declaration and authorized (AW-005), merged supervisor code, the duplicate check, CSRF and Origin, and a confirmation screen showing goal and limits. It stays loopback-only (AW-003). | S10. With D4, the local half of S12. |
 | **Q2** | D4: may a project without GitHub be approved by a tamper-evident local record instead of a private approved declaration? | **Yes, as the narrow AW-005 amendment in [plan §3.2](../PROJECT_WORKSPACE_PLAN.md#32-work-request---one-authorization-autonomous-execution-inside-its-scope-owner-approved-d3):** reviewed, pinned supervisor code stays required; only the declaration's home changes. It goes through its own reviewed decision record. | S12 approval and child steps for local projects. |
-| **Q3** | Should Needs me also be sent to Telegram (#1)? | **Not in this program.** Keep Needs me the one source, so #1 can send the same items later without a second list. | Nothing here; keeps #1 simple. |
+| **Q3** | Should Needs you also be sent to Telegram (#1)? | **Not in this program.** Keep Needs you the one source, so #1 can send the same items later without a second list. | Nothing here; keeps #1 simple. |
 | **Q4** | D5-gate: which releases may Auto Release make, and where? | **Not now.** Show Auto Release as off and unavailable until a per-project release grant exists ([plan §5.5](../PROJECT_WORKSPACE_PLAN.md#55-separate-auto-release-mode-owner-approved-d5-tracked-13)). | S13. |
 
 **Waits for governance provider (not the owner here).** D2: a local project identity, so a folder without a GitHub remote can be registered without a GitHub pull request per folder. Proposed text for a governance pull request: "Project contract: allow an owner-approved local project identity (stable owner-scoped ID, local authority pointers) recorded in a local overlay validated against inherited policies. The overlay may never waive a governance policy or write the governance checkout." It unblocks starting work in S11 and S12. It is proposed as text only; no governance change is made from here.
 
-Everything else in this document is decided here: the navigation, the copy, the routes, the folder-name-only rule, the draft storage, the "AIWorks itself" group in Needs me, the Diagnostics home for the platform roadmap and the "Passed the check" wording.
+Everything else in this document is decided here: the navigation, the copy, the routes, the folder-name-only rule, the draft storage, the "AIWorks itself" group in Needs you, the Diagnostics home for the platform roadmap and the "Passed the check" wording.
 
 ---
 
@@ -805,7 +816,7 @@ Before each task, the reviewer answers the pass-A questions: Where am I? What br
 | # | Situation given to the reviewer | Hidden success check |
 | --- | --- | --- |
 | T1 | (empty store) "You just installed it. Get started." | Understands that no project exists and how one appears, without a dead end. |
-| T2 | "You have ten minutes. What needs you today?" | Names every Needs me item, by project, in under a minute. |
+| T2 | "You have ten minutes. What needs you today?" | Names every Needs you item, by project, in under a minute. |
 | T3 | "Is the change for 'Search page' in shop-app live for users?" | Says it is merged, or waiting for review, and that AIWorks does not say it is live. |
 | T4 | "Ask the tool to plan a new feature for recipes. Don't let it change anything yet." | Finds Start work, chooses Plan only and sees the receipt. |
 | T5 | "What is the tool doing on shop-app right now?" | Finds the running step and who works on it. |

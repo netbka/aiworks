@@ -146,7 +146,7 @@ const readableReference = (value, config) => {
 
 /**
  * The operator's transport setting (config.json `alerts.transport`), as states only; never a reference or its value.
- *   unconfigured  no transport: notifications stay in the outbox on this computer and are shown in Needs me;
+ *   unconfigured  no transport: notifications stay in the outbox on this computer and are shown in Needs you;
  *   rehearsal     the synthetic transport: alerts are recorded on this computer, nothing is sent;
  *   ready         Telegram with a credential and a recipient reference in a store AIWorks can read; it sends only while
  *                 `ownerIntervention.enabled` and `ownerIntervention.deliver` are both true;
