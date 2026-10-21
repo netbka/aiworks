@@ -2843,6 +2843,8 @@ function reviewPanel(review, binding, { merged = false } = {}) {
     review.findings.length ? el('div', {}, el('strong', {}, 'Findings'), el('ul', {}, ...review.findings.map((f) => el('li', {}, `${f.severity === 'blocking' ? 'Blocking' : 'Not blocking'}: ${f.description}`)))) : null,
     review.eyesOn.length ? el('div', {}, el('strong', {}, 'Where your eyes matter'), el('ul', {}, ...review.eyesOn.map((item) => el('li', {}, item)))) : null,
     accepted ? el('p', { role: 'status' }, accepted) : null,
+    // You accept results yourself here (AW-015): the merge gate holds this version until you accept it or ask for changes.
+    review.awaitsAcceptance ? el('p', { role: 'status' }, 'Waiting for you: you accept results yourself in this project, so this version is not merged until you accept it.') : null,
     !review.local && review.state === 'ready' && !review.canAccept && (u.failed || u.blocking) ? el('p', { class: 'subtext' }, COMMANDS.result.unresolved) : null,
     review.canAccept ? el('div', { class: 'campaign-controls' }, button('Accept result', () => sendReview('accept', binding, review, {}, { address }), '', off),
       el('span', { class: 'subtext' }, review.mergeGate === 'on' ? 'Records your acceptance; the merge gate merges it when its own conditions hold.' : 'Records your acceptance. Nothing is merged from here.')) : null,
@@ -3096,7 +3098,7 @@ function settingsDraft(project, view) {
   if (saved) return saved;
   const { settings } = view;
   return { base: view.version, areas: settings.protectedAreas.join('\n'), notes: settings.notes, totalUsd: amountText(settings.budget.totalUsd),
-    monthlyUsd: amountText(settings.budget.monthlyUsd), unknownRunCostUsd: amountText(settings.budget.unknownRunCostUsd) };
+    monthlyUsd: amountText(settings.budget.monthlyUsd), unknownRunCostUsd: amountText(settings.budget.unknownRunCostUsd), acceptance: settings.acceptance ?? 'automatic' };
 }
 
 /** One budget period in words: charged against the cap and what is left, or the reported spend without a cap. Unknown is never $0. */
@@ -3118,6 +3120,9 @@ function settingsParts(project) {
   const draft = settingsDraft(project, v), spend = v.spend;
   return [
     el('p', { class: 'subtext', role: 'status' }, v.version ? `Applied: version ${v.version}, saved ${clock(v.savedAt)}.` : 'Nothing saved yet: no protected areas, no notes and no budget.'),
+    v.local ? null : el('p', {}, v.settings.acceptance === 'owner'
+      ? 'Accepting results: you accept them yourself. A checked result is merged only after you accept exactly that version.'
+      : 'Accepting results: automatic. A checked result is merged under the merge gate without waiting for you.'),
     entry.error || offline ? el('p', { class: 'needs-stale', role: 'status' }, `Shown as read at ${clock(entry.readAt)}. ${offline
       ? 'The page is disconnected; it reads these settings again when it reconnects.' : entry.error.message}`) : null,
     spend.exhausted ? el('p', { class: 'notice warning' }, `The ${spend.exhausted === 'month' ? 'monthly budget' : 'project budget'} cannot cover another step, so no new step starts here${spend.exhausted === 'month' ? ' until next month' : ''}. Running steps finish. Raise or remove the budget to continue.`) : null,
@@ -3177,7 +3182,12 @@ function projectSettingsScreen(project) {
   };
   const total = amount('settings-total', draft.totalUsd, limits.budget), monthly = amount('settings-monthly', draft.monthlyUsd, limits.budget);
   const price = amount('settings-price', draft.unknownRunCostUsd, limits.unknownRun);
-  const fields = () => ({ areas: areas.value, notes: notes.value, totalUsd: total.value, monthlyUsd: monthly.value, unknownRunCostUsd: price.value });
+  // Who accepts results (AW-015): automatic, or the owner, in which case nothing merges before they accept that version.
+  const modes = [['automatic', 'Automatic', 'A result that passed the independent check is merged under the merge gate without waiting for you.'],
+    ['owner', 'I accept results myself', 'A checked result is merged only after you accept exactly that version. It waits in Needs you with Accept and Request changes.']];
+  const choices = modes.map(([value]) => el('input', { type: 'radio', name: `settings-acceptance-${project}`, value, checked: (draft.acceptance ?? 'automatic') === value, onchange: () => save() }));
+  const acceptance = () => choices.find((input) => input.checked)?.value ?? draft.acceptance ?? 'automatic';
+  const fields = () => ({ areas: areas.value, notes: notes.value, totalUsd: total.value, monthlyUsd: monthly.value, unknownRunCostUsd: price.value, acceptance: acceptance() });
   function save() { drafts.set(address, 'settings', { ...settingsDraft(project, settingsEntry(project).view ?? v), ...fields() }); }
   const money = (text) => (text.trim() ? Number(text.trim()) : null);
   const form = el('form', { novalidate: true, class: 'panel-body start-form', 'data-settings-form': project, 'data-focus-scope': `settings/${project}/form`,
@@ -3188,7 +3198,7 @@ function projectSettingsScreen(project) {
       if (settingsOff() || !validateForm(form)) return;
       const lines = areas.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
       void saveSettings(project, { version: settingsDraft(project, v).base, protectedAreas: lines, notes: notes.value,
-        budget: { totalUsd: money(total.value), monthlyUsd: money(monthly.value), unknownRunCostUsd: money(price.value) } });
+        budget: { totalUsd: money(total.value), monthlyUsd: money(monthly.value), unknownRunCostUsd: money(price.value) }, acceptance: acceptance() });
     } },
     el('label', { class: 'field' }, el('strong', {}, 'Protected areas'), areas,
       el('span', { id: 'settings-areas-help', class: 'subtext' }, `Folders or files AIWorks must never change, one per line, such as docs/legal or config/production.json. Up to ${limits.protected}. A plan that changes one is refused; a step that changes one stops for you.`)),
@@ -3200,6 +3210,10 @@ function projectSettingsScreen(project) {
       el('label', { class: 'field' }, el('strong', {}, 'Monthly budget ($)'), monthly),
       el('label', { class: 'field' }, el('strong', {}, 'Count a run with no reported cost as ($)'), price,
         el('span', { class: 'subtext' }, 'Needed with a budget: some AI workers do not report what a run cost, and that is never counted as $0.'))),
+    // A project without GitHub is accepted by Apply, so it has no merge to wait for.
+    v.local ? null : el('fieldset', {}, el('legend', {}, 'Accepting results'),
+      ...modes.map(([, label, help], i) => el('div', {}, el('label', { class: 'choice' }, choices[i], ` ${label}`), el('p', { class: 'subtext' }, help))),
+      el('p', { class: 'subtext' }, 'Switching to “I accept results myself” holds every checked result that is not merged yet until you accept it. Switching back lets the merge gate go on.')),
     el('p', { class: 'subtext' }, 'Saving applies to the next step AIWorks starts here. Work already approved keeps its own limits, and these settings never widen what it may change.'),
     el('button', { class: 'button', type: 'submit', disabled: settingsOff() }, 'Save settings'));
   return [howWorkRuns(project), el('section', { class: 'panel', 'aria-labelledby': 'settings-title' },

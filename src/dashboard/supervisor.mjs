@@ -8,7 +8,8 @@ import { DEFAULTS } from '../supervisor/controller.mjs';
 import { safeText } from './roadmap.mjs';
 import { pendingInstructions } from '../supervisor/instructions.mjs';
 import { decisionId, isDecision, structuredDecision } from '../supervisor/decisions.mjs';
-import { criterionEvidence, MAX_FEEDBACK, mergedHead, OWNER_CHANGES, pendingChanges, unresolvedOf, verifiedReview } from '../supervisor/result-review.mjs';
+import { acceptedHead, criterionEvidence, MAX_FEEDBACK, mergedHead, OWNER_CHANGES, pendingChanges, unresolvedOf, verifiedReview } from '../supervisor/result-review.mjs';
+import { acceptanceMode } from '../supervisor/project-settings.mjs';
 import { mergeSettings } from '../supervisor/merge.mjs';
 import { previewManifest, previewSupport, PreviewError, PreviewSessions } from '../supervisor/preview.mjs';
 import { captureSupport, CaptureError } from '../supervisor/preview-capture.mjs';
@@ -796,7 +797,9 @@ function decisionView(campaignId, task, feedback, now) {
  * exactly the verified head and report (result-review.mjs); a criterion it did not report is "not checked". The verdict
  * summary, findings and where the owner's eyes matter are bounded and pass the credential filter; never a raw log.
  * `canAccept` and `canRequestChanges` are the server's: applyResultReview checks every binding again. A local result is
- * accepted by Apply under its own rules, so it offers only Request changes here.
+ * accepted by Apply under its own rules, so it offers only Request changes here. `acceptance` is the project's mode
+ * (AW-015) and `awaitsAcceptance` says the merge gate holds this checked version until the owner accepts it or asks for
+ * changes: a Needs you item.
  */
 export function resultReview(store, c, task, spec, config = {}) {
   const review = reviewOf(store, c, task, spec, config);
@@ -810,7 +813,8 @@ function reviewOf(store, c, task, spec, config) {
   const limits = campaignLimits(c.declaration);
   const roundsLeft = limits.maxRepairRounds === null ? null : Math.max(0, limits.maxRepairRounds - task.repair_rounds);
   const base = { verifiedSha: task.verified_sha, local, commit, repairRounds: task.repair_rounds, roundsLeft, criteria: [], findings: [], eyesOn: [],
-    unresolved: null, summary: null, reportDigest: null, acceptedAt: null, requestedAt: null, mergeGate: null, canAccept: false, canRequestChanges: false };
+    unresolved: null, summary: null, reportDigest: null, acceptedAt: null, requestedAt: null, mergeGate: null, canAccept: false, canRequestChanges: false,
+    acceptance: local ? null : acceptanceMode(store, c.declaration.target.repository), awaitsAcceptance: false };
   if (task.state !== 'done') {
     // Reopened at the owner's request: the earlier result and its check stay in the record, and the new head is checked again.
     const reopened = (task.findings ?? []).find((finding) => finding?.id === OWNER_CHANGES);
@@ -820,7 +824,8 @@ function reviewOf(store, c, task, spec, config) {
   if (!v) return { ...base, state: 'no-evidence' };
   const requested = pendingChanges(store, c.id, task.task_id, task.verified_sha);
   const merged = !local && mergedHead(store, c.id, task.task_id, task.verified_sha);
-  const accepted = store.get('SELECT received_at FROM events WHERE dedup_key = ?', `result-accepted:${c.id}:${task.task_id}:${task.verified_sha}`);
+  // Accepted only with the report this head was checked with, as the merge gate counts it (result-review.mjs).
+  const accepted = acceptedHead(store, c.id, task.task_id, task.verified_sha, v.reportDigest);
   const criteria = criterionEvidence(spec?.acceptance, v).map((item) => ({ criterion: item.criterion, text: safeText(item.text, 300), result: item.result,
     check: item.check === null ? null : safeText(item.check, 300), evidence: item.evidence === null ? null : safeText(item.evidence, 500) }));
   const unresolved = unresolvedOf(criteria, v), open = ['registered', 'finished'].includes(c.control), gate = mergeSettings(config);
@@ -832,7 +837,8 @@ function reviewOf(store, c, task, spec, config) {
     acceptedAt: accepted?.received_at ?? null,
     mergeGate: local ? null : gate.enabled && gate.repositories.has(String(c.declaration.target.repository).toLowerCase()) ? 'on' : 'off',
     canAccept: open && !local && !requested && !merged && !accepted && !unresolved.failed && !unresolved.blocking,
-    canRequestChanges: open && commit && !requested && !merged && roundsLeft !== 0 };
+    canRequestChanges: open && commit && !requested && !merged && roundsLeft !== 0,
+    awaitsAcceptance: open && !local && commit && base.acceptance === 'owner' && !requested && !merged && !accepted };
 }
 
 /**
@@ -1398,10 +1404,16 @@ export function applyResultReview(dataDir, action, input, now = Date.now(), { co
         if (review.local) throw fail(409, COMMANDS.result.applyLocal);
         if (review.state === 'accepted') throw fail(409, COMMANDS.result.alreadyAccepted);
         if (review.unresolved.failed || review.unresolved.blocking) throw fail(409, COMMANDS.result.unresolved);
-        // A record only, handled here: the controller has nothing to do for it, and the merge gate keeps its own conditions.
-        store.addEvent(id, 'result-accepted', { taskId: task.task_id, verifiedSha: sha, reportDigest: input.reportDigest, requestId: input.requestId },
-          `result-accepted:${id}:${task.task_id}:${sha}`, now);
-        store.run('UPDATE events SET processed_at = ? WHERE dedup_key = ?', now, `result-accepted:${id}:${task.task_id}:${sha}`);
+        // A record only, handled here: the controller has nothing to do for it, and the merge gate keeps its own conditions
+        // (in owner acceptance mode, AW-015, this record of exactly the head and report). The same head checked again with
+        // another report is accepted under its own key.
+        const record = { taskId: task.task_id, verifiedSha: sha, reportDigest: input.reportDigest, requestId: input.requestId };
+        let key = `result-accepted:${id}:${task.task_id}:${sha}`;
+        if (!store.addEvent(id, 'result-accepted', record, key, now)) {
+          key = `${key}:${input.reportDigest}`;
+          if (!store.addEvent(id, 'result-accepted', record, key, now)) throw fail(409, COMMANDS.result.alreadyAccepted);
+        }
+        store.run('UPDATE events SET processed_at = ? WHERE dedup_key = ?', now, key);
         store.journal(id, 'result-accepted', { task: task.task_id, sha, reportDigest: input.reportDigest }, now);
       }
       store.addEvent(id, 'dashboard-command', payload, dedup, now);

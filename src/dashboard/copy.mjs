@@ -542,6 +542,9 @@ export const NEEDS = {
   },
   workStopped: 'This work is stopped',
   recorded: 'What AIWorks recorded',
+  // A checked version the merge gate holds because the owner accepts results in this project themselves (AW-015).
+  accept: { action: 'Accept or request changes', open: 'Review and accept',
+    point: 'It passed the independent check. You accept results yourself in this project, so it is not merged until you accept exactly this version.' },
   fault: { text: 'AIWorks has a problem of its own with this work', link: 'AIWorks issue #2',
     point: 'Not yours to fix: it is tracked for AIWorks’ maintainers. This work may not move until it is fixed.' },
   // AIWorks stopped on this computer is said once (review F9). The page adds "at about <time>" after the text, so the time
