@@ -5,7 +5,7 @@
 //
 // Every state is { key, section, needsYou, title, text, primary }. `title` is the bold sentence, `text` the rest and
 // `primary` the one primary action ({ label, route }, { label, url } or { label, command, campaignId }), or null.
-// `needsYou` is true for a state that is a Needs me item of this project, false for a calm or neutral state, and null
+// `needsYou` is true for a state that is a Needs you item of this project, false for a calm or neutral state, and null
 // when the state is not known. Words for result states follow §2.3: an open pull request is never called merged, and
 // unknown is never shown as nothing or zero.
 
@@ -44,8 +44,8 @@ const label = (task) => task?.outcome ?? task?.title ?? 'a step';
 const same = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
 const PR = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/(\d+)$/;
 const route = (project, tab) => ({ screen: 'project', project, tab });
-const openWork = (project) => ({ label: 'Open current work', route: route(project, 'work') });
-const seeResults = (project) => ({ label: 'See results', route: route(project, 'results') });
+const openWork = (project) => ({ label: 'Open current work', route: route(project, 'overview') });
+const seeResults = (project) => ({ label: 'See results', route: route(project, 'review') });
 const stepIssue = (url) => url ? { label: 'Open the step issue', url } : null;
 const review = (number, url) => ({ label: `Review pull request #${number}`, url });
 // Locale-neutral English times, whatever the computer's own locale: "12:31" and "10 Oct 22:58".
@@ -78,7 +78,7 @@ const STATES = {
     ? ['No work yet.', `Tell AIWorks what you want done in ${shortName(d.project)}.`, { label: 'Plan work', route: { screen: 'start', project: d.project } }]
     : ['No work yet.', `Work in ${shortName(d.project)} appears here once it is registered on this computer. Starting work from this page is not built yet.`, null] },
   // Calm means nothing at all for the owner: reports and releases are on Results, never named here (owner, 2026-10-13).
-  // It speaks of work only, because work is all Needs me checks: a setup problem met in Add project is said there and on
+  // It speaks of work only, because work is all Needs you checks: a setup problem met in Add project is said there and on
   // Projects, never here (OWNER_WORKSPACE §4.2; aiworks#11 review F8).
   'needs-calm': { section: '7.1', needsYou: false, copy: () => ['No work is blocked on you right now.', '', null] },
   'results-empty': { section: '7.1', needsYou: false, copy: () => ['No results yet.', 'Results appear here when a step finishes and passes the independent check.', null] },
@@ -111,7 +111,7 @@ const STATES = {
   'merge-failed': { section: '7.4', needsYou: false, copy: (d, f) => [d.at ? `Merge check from ${f.time(d.at)}; the last check failed, retrying.` : 'The merge check failed; retrying.',
     'Pull request states may be out of date. Recorded merges remain visible; other results wait for a current check.', null] },
   'merge-never': { section: '7.4', needsYou: false, copy: (d) => ['Checking for merges…', `The state of ${plural(d.count, 'result')} is not known yet.`, null] },
-  // §7.5 Paused: neutral, never a Needs me item by itself.
+  // §7.5 Paused: neutral, never a Needs you item by itself.
   'paused': { section: '7.5', needsYou: false, copy: (d, f) => [d.pausedAt ? `Paused since ${f.dateTime(d.pausedAt)}.` : 'Paused.',
     `No new step starts. A step already running may finish.${d.reason ? ` Reason given: “${d.reason}”.` : ''}`, { label: 'Resume', command: 'resume', campaignId: d.campaignId }] },
   // One time per event, written the same on every screen: the pause with its date, the stop "at about" its time (F23).
@@ -135,8 +135,8 @@ const STATES = {
   'one-thing': { section: '4.4', needsYou: true, copy: (d) => ['One thing needs you.',
     sentence([d.action, d.text].filter(Boolean).join(': ')), d.url ? { label: d.linkLabel ?? 'Open it', url: d.url } : { label: 'See what needs you', route: { screen: 'needs' } }] },
   'several': { section: '4.4', needsYou: true, copy: (d) => [`${capital(plural(d.count, 'thing'))} need you.`,
-    'Each one says what to do in Needs me.', { label: `See the ${d.count} things that need you`, route: { screen: 'needs' } }] },
-  // Not an owner action, so not one of the project's Needs me items (review F17).
+    'Each one says what to do in Needs you.', { label: `See the ${d.count} things that need you`, route: { screen: 'needs' } }] },
+  // Not an owner action, so not one of the project's Needs you items (review F17).
   'supervisor-fault': { section: '7.7', needsYou: false, copy: () => ['AIWorks has a problem of its own with this work.',
     'It is not yours to fix: it is tracked for AIWorks’ maintainers. This work may not move until it is fixed.', null] },
   // §7.7 Blocked
@@ -228,7 +228,7 @@ export function sinceLines(recent, ids, failures = []) {
 /** The step a task row names, by its result or issue link. */
 const taskBy = (c, key, url) => url ? c?.tasks.find((task) => task[key] === url) ?? null : null;
 
-/** The state for one Needs me item of this project. */
+/** The state for one Needs you item of this project. */
 function itemState(item, c, d) {
   if (item.kind === 'review') {
     const task = taskBy(c, 'resultUrl', item.link?.url), number = PR.exec(item.link?.url ?? '')?.[1];
@@ -317,7 +317,7 @@ function projectProgress(campaigns, owner) {
   return all.length > 1 ? `All work in this project: ${text}` : text;
 }
 
-/** Work AIWorks is not checking on: its own Needs me item, or AIWorks stopped, says what it means. */
+/** Work AIWorks is not checking on: its own Needs you item, or AIWorks stopped, says what it means. */
 const UNATTENDED = ['stopped', 'agent-working-supervisor-silent', 'work-lapsed', 'work-not-picked-up'];
 
 /**
@@ -401,7 +401,7 @@ function mergeNote(project, merges, counts, now) {
  * project's progress, a merge note when the merge check is not current, and "since you last looked" for this project
  * only. `data` is the page's
  * /api/state answer ({ supervisor, owner, merges, host, observedAt }) plus `offline` when the page cannot reach the
- * dashboard. The state is about this project alone: it needs the owner when this project has Needs me items, or when
+ * dashboard. The state is about this project alone: it needs the owner when this project has Needs you items, or when
  * AIWorks stopped on this computer holds up its work (that one item is listed under AIWorks itself).
  * `options.startWork` turns on the Start work action (OW S9); it is off until that screen exists.
  */
@@ -426,10 +426,10 @@ export function nowView(project, data = {}, { now = Date.now(), format = {}, sta
   if (offline) return result(make('page-disconnected', { loadedAt: Date.parse(data.observedAt ?? '') || null }));
   if (!supervisor?.available || !owner?.available) return result(make('unreadable'));
   if (!campaigns.length) return result(make('no-work', { startWork }));
-  // This project's Needs me items: the ones the Projects screen counts and Needs me lists under it (review F6).
+  // This project's Needs you items: the ones the Projects screen counts and Needs you lists under it (review F6).
   const items = (owner.items ?? []).filter((item) => same(item.repository, project));
   const byId = (id) => campaigns.find((c) => c.id === id) ?? null;
-  // With several pieces of work, what needs the owner leads (review F16): this project's Needs me items, then a pause the
+  // With several pieces of work, what needs the owner leads (review F16): this project's Needs you items, then a pause the
   // owner can resume, then AIWorks stopped for its work, then a fault of AIWorks itself; then work that goes on by itself.
   // Whatever leads, `also` keeps possibly stuck, paused and running work in view (review 5 G5).
   if (items.length) {
@@ -464,14 +464,14 @@ export function nowView(project, data = {}, { now = Date.now(), format = {}, sta
 }
 
 /*
- * Owner words outside the §7 states (aiworks#11 review F3, F7, F14, F22, F23 and F24): Needs me items, a piece of work's
+ * Owner words outside the §7 states (aiworks#11 review F3, F7, F14, F22, F23 and F24): Needs you items, a piece of work's
  * one-line state on Work, refusals and notices of commands, and the Cost summary. The machine's own words (the stop
  * class, the AI worker's internal name, step and work IDs, the rule a refusal cites) stay in Details or Diagnostics.
  */
 
 /**
  * Why work is stopped by a recorded blocker, by its kind: what happened and what to do. Never the stored text. `check`
- * when the screen that says it carries Check again for this work (the Needs me card and Now do, while the work takes
+ * when the screen that says it carries Check again for this work (the Needs you card and Now do, while the work takes
  * commands): the sentence names a control only where it is (aiworks#11 review 5 G8).
  */
 export function blockerWords(kind, { check = true } = {}) {
@@ -507,11 +507,11 @@ export function stopReasonWords(blocked, rounds = 0) {
 }
 
 /**
- * A verified pull request whose merge the owner delegated (config.json `merges`, #17, #97): not a Needs me item, never
+ * A verified pull request whose merge the owner delegated (config.json `merges`, #17, #97): not a Needs you item, never
  * called merged before it is. `held` is why one is held from merging, by the reason key config.json records. `by` is
  * who merges (`merges.delegatedTo`): AIWorks itself (`supervisor`, #138) merges after its check against the latest
  * main; anyone else is not named. There is no CI to wait for. One that waited too long since its check is `stalled`:
- * a Needs me item again (#139).
+ * a Needs you item again (#139).
  */
 const MERGES_AFTER = 'AIWorks merges it after it passes the check against the latest main';
 export const DELEGATED = {
@@ -529,7 +529,7 @@ export const DELEGATED = {
   },
 };
 
-/** Needs me items about AIWorks itself and about stopped work, in the owner's words. */
+/** Needs you items about AIWorks itself and about stopped work, in the owner's words. */
 export const NEEDS = {
   stepIssue: 'Open the step issue',
   // A decision the owner snoozed (WP2): still listed, because its step stays stopped until it is answered.
@@ -569,7 +569,7 @@ export const NEEDS = {
   halted: (pickup) => pickup
     ? { text: 'AIWorks on this computer has not picked up approved work', point: `None of it starts until AIWorks runs. ${RESTART}` }
     : { text: 'AIWorks stopped on this computer', point: `No new step starts. ${RESTART}` },
-  /** A Needs me group's count: its owner actions, and the items listed there that are not (review F17). */
+  /** A Needs you group's count: its owner actions, and the items listed there that are not (review F17). */
   groupCount: (count, notCounted) => `${count ? ` (${count})` : ''}${notCounted ? ` · ${count ? 'also ' : ''}${plural(notCounted, 'item')} for its maintainers, not counted` : ''}`,
   /** One piece of work a stopped AIWorks holds up, with what that means for it when the item's text does not say it. */
   heldWork: (name, how, paused) => {
@@ -798,8 +798,8 @@ export const DASHBOARD_VERSIONS = [
     name: 'Owner Navigation',
     description: 'Project-first navigation shell with responsive 320px layout.',
     features: [
-      'Navigation shell (Projects, Needs me, Settings)',
-      'Needs me owner-attention inbox',
+      'Navigation shell (Projects, Needs you, Settings)',
+      'Needs you owner-attention inbox',
       'Hash-based routing with deep-link state preservation',
       'Responsive mobile-first layout',
     ],
@@ -881,7 +881,7 @@ export const DASHBOARD_VERSIONS = [
     features: [
       'Task model signatures (model name, type, effort, tokens consumed)',
       'Role-based model preferences (implementer, checker, assistant)',
-      'Model signature badges in Step, Work, and Results views',
+      'Model signature badges in Step, Overview, and Review views',
       'Interactive preference configuration in Settings',
       'CLI model preference management commands',
     ],

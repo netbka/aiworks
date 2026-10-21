@@ -40,7 +40,7 @@ function harness(t, config = {}, notifier = undefined, alertDeps = undefined) {
   const notify = (key, cls, kind = 'initial', blocked = 'A fictional blocker.') => store.run(`INSERT INTO owner_notifications
     (key, fingerprint, campaign_id, kind, class, message, state, attempts, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`,
   key, `fp-${key}`, CAMPAIGN, kind, cls, { kind, class: cls, project: 'example-org/sampleapp', blocked, impact: '1 parent task(s) held',
-    nextAction: 'Open Needs me.', safeState: 'Nothing was merged or deployed.', link: null }, clock.now, clock.now);
+    nextAction: 'Open Needs you.', safeState: 'Nothing was merged or deployed.', link: null }, clock.now, clock.now);
   const row = (key) => store.get('SELECT state, attempts, delivered_at FROM owner_notifications WHERE key = ?', key);
   return { store, clock, logs, restart, notify, row };
 }

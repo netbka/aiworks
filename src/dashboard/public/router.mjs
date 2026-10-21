@@ -3,8 +3,13 @@
 
 /** The global destinations, in navigation order. Home leads (OWNER_UI_V2 section 2, WP1). */
 export const GLOBAL = ['home', 'projects', 'needs', 'settings'];
-/** The four project tabs, in order; they fit at 320px. */
-export const TABS = ['now', 'work', 'results', 'cost'];
+/**
+ * The project tabs, in order (OWNER_UI_V2 section 2); they fit at 320px. Releases is shown only for a project with a
+ * configured release, but its address always opens.
+ */
+export const TABS = ['overview', 'plan', 'review', 'releases', 'knowledge'];
+/** The project tabs before Owner UI v2 navigation, redirected once to the tab their content moved to. */
+export const LEGACY_TABS = Object.freeze({ now: 'overview', work: 'overview', cost: 'overview', results: 'review' });
 
 /** Today's single-word addresses, redirected once to where their content lives now (§9). */
 export const LEGACY = Object.freeze({ overview: '#/projects', roadmap: '#/settings/diagnostics', work: '#/settings/diagnostics',
@@ -43,8 +48,9 @@ function parse(hash) {
   if (first !== 'p' || !rest.length) return null;
   const project = projectId(rest[0]), tail = rest.slice(1);
   if (!project) return null;
-  if (!tail.length) return { screen: 'project', project, tab: 'now' };
-  if (tail.length === 1 && ['work', 'results', 'cost'].includes(tail[0])) return { screen: 'project', project, tab: tail[0] };
+  if (!tail.length) return { screen: 'project', project, tab: 'overview' };
+  if (tail.length === 1 && tail[0] === 'review') return { screen: 'project', project, tab: 'review' };
+  if (tail.length === 1 && Object.hasOwn(LEGACY_TABS, tail[0])) return { screen: 'project', project, tab: LEGACY_TABS[tail[0]] };
   if (tail.length === 1 && tail[0] === 'start') return { screen: 'start', project };
   if (tail.length === 1 && tail[0] === 'settings') return { screen: 'project-settings', project };
   if (tail.length === 1 && tail[0] === 'knowledge') return { screen: 'knowledge', project };
@@ -66,7 +72,7 @@ export function formatRoute(route) {
     case 'worklist-item': return `#/worklist/${route.number}`;
     case 'add-project': return '#/projects/add';
     case 'settings': return route.section ? `#/settings/${route.section}` : '#/settings';
-    case 'project': return `#/p/${p(route.project)}${route.tab && route.tab !== 'now' ? `/${route.tab}` : ''}`;
+    case 'project': return `#/p/${p(route.project)}${(LEGACY_TABS[route.tab] ?? route.tab) === 'review' ? '/review' : ''}`;
     case 'start': return `#/p/${p(route.project)}/start`;
     case 'project-settings': return `#/p/${p(route.project)}/settings`;
     case 'knowledge': return `#/p/${p(route.project)}/knowledge`;
@@ -93,7 +99,14 @@ export function resolveRoute(hash) {
   return { route, address, replace: `#${raw}` !== address, legacy: null };
 }
 
-/** The route's global destination, for aria-current in the global bar. Project screens belong to Projects; the work list to Needs me. */
+/** The route's global destination, for aria-current in the global bar. Project screens belong to Projects; the work list to Needs you. */
 export const globalOf = (route) => ['home', 'needs', 'settings'].includes(route.screen) ? route.screen : route.screen.startsWith('worklist') ? 'needs' : 'projects';
-/** The project tab a route belongs to, or null. Step belongs to Work; Releases to Results; Start work, Plan, Review, Project settings and Knowledge to Now. */
-export const tabOf = (route) => route.screen === 'project' ? route.tab : route.screen === 'step' ? 'work' : route.screen === 'releases' ? 'results' : ['start', 'plan', 'review', 'project-settings', 'knowledge'].includes(route.screen) ? 'now' : null;
+/**
+ * The project tab a route belongs to, or null. Start work and a plan's review belong to Plan; a step and Project settings
+ * to Overview, whose details hold running work (the page moves a step with a result to review to Review).
+ */
+export const tabOf = (route) => route.screen === 'project' ? LEGACY_TABS[route.tab] ?? route.tab
+  : ['plan', 'start', 'review'].includes(route.screen) ? 'plan' : ['knowledge', 'releases'].includes(route.screen) ? route.screen
+    : ['step', 'project-settings'].includes(route.screen) ? 'overview' : null;
+/** The route each project tab opens. */
+export const tabRoute = (project, tab) => ['overview', 'review'].includes(tab) ? { screen: 'project', project, tab } : { screen: tab, project };

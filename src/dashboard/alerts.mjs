@@ -23,7 +23,7 @@ const STATES = ['pending', 'sending', 'rehearsed', 'delivered', 'unknown', 'fail
 
 // A fictional notice, so the owner sees what an alert would carry before any is raised.
 const SAMPLE = { kind: 'initial', class: 'B3', project: 'example-org/sampleapp', blocked: 'A step needs your choice between two designs.',
-  impact: '1 parent task(s) held until recheck evidence passes', nextAction: 'Choose a design in Needs me.',
+  impact: '1 parent task(s) held until recheck evidence passes', nextAction: 'Choose a design in Needs you.',
   safeState: 'Nothing was merged or deployed; held work keeps its phase in the supervisor store.', link: null };
 
 // A recorded rehearsal, allowlisted field by field and redacted again on the way out.

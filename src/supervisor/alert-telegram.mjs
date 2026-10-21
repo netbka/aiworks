@@ -15,7 +15,7 @@
 //                that was never made) or Telegram refused for rate (HTTP 429): sent again later, bounded by the outbox;
 //     rejected   Telegram refused the message (HTTP 4xx) or a resolved value is malformed: given up at once;
 //     unknown    the request may have reached Telegram without a clear answer (time-out, reset, HTTP 5xx, an unreadable
-//                answer): never sent again, so the owner gets no duplicate; the item stays in Needs me.
+//                answer): never sent again, so the owner gets no duplicate; the item stays in Needs you.
 import { redact } from './owner-intervention.mjs';
 
 export const TELEGRAM_API = 'https://api.telegram.org';
