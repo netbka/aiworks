@@ -77,11 +77,12 @@ export function reminderDue(record, now) {
 }
 
 /** §8 message content. Every free-text field is redacted; no secret, token or private content is carried. */
-export function ownerMessage({ record, kind, parents, repository, trackingIssue, tried, workList = false }) {
+export function ownerMessage({ record, kind, parents, repository, trackingIssue, tried, workList = false, projectName = null }) {
   const cls = record.class;
   return {
     kind,
-    project: record.project,
+    // A project without GitHub is named as its owner named it (`projectName`); its record keeps the `lp-` id.
+    project: projectName ? redact(projectName, 120) : record.project,
     environment: record.environment,
     tasks: parents.map((parent) => `${parent.campaign_id}/${parent.task_id}`),
     blocked: redact(record.summary),

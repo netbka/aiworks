@@ -19,7 +19,7 @@ const fail = (status, message, code = null) => Object.assign(new Error(message),
 const storePath = (dataDir) => join(dataDir, 'supervisor.db');
 const UNREADABLE = 'AIWorks can’t read its work records on this computer right now.';
 const readConfig = (dataDir) => { try { return JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { return {}; } };
-const STATES = ['pending', 'sending', 'rehearsed', 'delivered', 'unknown', 'failed', 'muted'];
+const STATES = ['pending', 'sending', 'rehearsed', 'delivered', 'unknown', 'failed', 'muted', 'obsolete'];
 
 // A fictional notice, so the owner sees what an alert would carry before any is raised.
 const SAMPLE = { kind: 'initial', class: 'B3', project: 'example-org/sampleapp', blocked: 'A step needs your choice between two designs.',

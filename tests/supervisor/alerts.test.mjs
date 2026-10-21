@@ -171,3 +171,37 @@ test('a Telegram alert that may have arrived is never sent again; one that reach
   const recorded = JSON.stringify([store.all('SELECT * FROM journal'), store.all('SELECT * FROM owner_notifications')]);
   assert.ok(!recorded.includes(BOT_VALUE) && !recorded.includes(CHAT_VALUE), "the provider's answer is cleaned of both values");
 });
+
+test('an alert of a finished goal is retired unsent unless its blocker still holds running work; one cut off while sending is never sent again', { skip }, async (t) => {
+  const { campaignStart } = await import('../../src/supervisor/api.mjs');
+  const { declaration } = await import('./helpers.mjs');
+  const { store, clock, row } = harness(t, { alerts: { transport: { kind: 'synthetic' } } });
+  campaignStart(store, declaration({ campaignId: 'finished-goal' }), clock.now);
+  store.run("UPDATE campaigns SET control = 'finished' WHERE id = 'finished-goal'");
+  campaignStart(store, declaration({ campaignId: 'paused-goal' }), clock.now);
+  store.run("UPDATE campaigns SET control = 'paused' WHERE id = 'paused-goal'");
+  const blocker = (fingerprint, status, episode = 1) => store.run(`INSERT INTO blockers (fingerprint, project, environment, dependency, class, identity,
+    status, episode, summary, recheck_procedure, first_detected_at, last_seen_at, updated_at) VALUES (?, 'sampleapp', 'research', 'owner-decision', 'B3', ?,
+    ?, ?, 'A fictional decision.', 'Answer it.', ?, ?, ?)`, fingerprint, fingerprint, status, episode, clock.now, clock.now, clock.now);
+  const parent = (fingerprint, campaign) => store.run(`INSERT INTO blocker_parents (fingerprint, campaign_id, task_id, phase, scope, attached_at)
+    VALUES (?, ?, 'T1', 'pending', 'task', ?)`, fingerprint, campaign, clock.now);
+  const notify = (fingerprint, state = 'pending', episode = 1) => store.run(`INSERT INTO owner_notifications (key, fingerprint, campaign_id, kind, class,
+    message, state, attempts, created_at, updated_at) VALUES (?, ?, 'finished-goal', 'initial', 'B3', ?, ?, 0, ?, ?)`, `${fingerprint}:${episode}:initial`,
+  fingerprint, { kind: 'initial', class: 'B3', project: 'example-org/sampleapp', blocked: 'A fictional decision.' }, state, clock.now, clock.now);
+  blocker('only-mine', 'open'); parent('only-mine', 'finished-goal'); notify('only-mine');
+  blocker('resolved', 'resolved'); parent('resolved', 'finished-goal'); notify('resolved');
+  blocker('reopened', 'open', 2); parent('reopened', 'paused-goal'); notify('reopened');
+  blocker('shared', 'open'); parent('shared', 'finished-goal'); parent('shared', 'paused-goal'); notify('shared');
+  blocker('cut-off', 'open'); parent('cut-off', 'paused-goal'); notify('cut-off', 'sending');
+  const sent = [];
+  const transport = { name: 'synthetic', live: false, rehearsal: true, dedup: 'key', async send({ key }) { sent.push(key); return { delivered: false, rehearsed: true }; } };
+  const controller = new Controller({ store, dataDir: join(tmpdir(), 'aiworks-alerts-unused'), now: () => clock.now, log: () => {}, instanceId: 'alerts-instance',
+    config: { ...FAST, ownerIntervention: { enabled: true }, alerts: { transport: { kind: 'synthetic' } } }, notifier: transport });
+  // The supervisor's own tick takes the finished goal's lease for its waiting alerts; a second tick finds nothing to do.
+  await controller.tick();
+  await controller.tick();
+  assert.deepEqual(['only-mine', 'resolved', 'reopened', 'shared', 'cut-off'].map((fp) => row(`${fp}:1:initial`).state),
+    ['obsolete', 'obsolete', 'obsolete', 'rehearsed', 'unknown']);
+  assert.deepEqual(sent, ['shared:1:initial'], 'only the alert whose blocker still holds running work is handed to the transport, once');
+  assert.equal(store.all("SELECT * FROM journal WHERE kind = 'owner-notification-obsolete'").length, 3);
+});

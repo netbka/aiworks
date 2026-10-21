@@ -10,14 +10,11 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
-import { campaignStatus } from '../supervisor/api.mjs';
-import { isLocalTarget } from '../supervisor/local-candidates.mjs';
 import { MIRROR_REPO, SNAPSHOT_DIR } from '../supervisor/adapters/mirror.mjs';
 import { coordinatorUsage, factsKey, KnowledgeError, materialSuggestions, planningEstimate, planSuggestions, projectEvidence, projectKnowledge, saveFact } from '../supervisor/knowledge.mjs';
 import { projectOf } from '../supervisor/project-settings.mjs';
 import { projects as projectRecords } from '../supervisor/projects.mjs';
 import { configuredRepositories } from './projects.mjs';
-import { costByUnit } from './supervisor.mjs';
 import { ownerOnly } from './work-list.mjs';
 import { typedEvents } from './views.mjs';
 
@@ -169,10 +166,8 @@ export function usageView(dataDir, supervisor) {
   if (!supervisor?.available || !existsSync(storePath(dataDir))) return { available: false };
   const store = new Store(storePath(dataDir), { readOnly: true });
   try {
-    // The snapshot leaves out work in projects without GitHub (supervisor.mjs), so its runs are added from the same status.
-    const local = store.all('SELECT id FROM campaigns').filter(({ id }) => isLocalTarget(store.campaign(id).declaration))
-      .map(({ id }) => ({ costByUnit: costByUnit(campaignStatus(store, id).costByUnit) }));
-    return { available: true, workers: workerUsage([...(supervisor.campaigns ?? []), ...local]), coordinator: coordinatorUsage(store), planning: planningEstimate(store),
+    // Work in projects without GitHub is the snapshot's `local` list, apart from its campaigns, so each run counts once.
+    return { available: true, workers: workerUsage([...(supervisor.campaigns ?? []), ...(supervisor.local ?? [])]), coordinator: coordinatorUsage(store), planning: planningEstimate(store),
       untracked: ['hosting', 'subscriptions'] };
   } finally { store.close(); }
 }
