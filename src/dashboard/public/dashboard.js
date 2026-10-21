@@ -2352,9 +2352,25 @@ function trustedMainLines(trusted) {
   return [el('p', {}, `Trusted main of ${trusted.repository}: local main on this computer. ${TRUST_WORDS[trusted.state] ?? 'Not known'}${trusted.tip ? ` at ${trusted.tip.slice(0, 7)}` : ''}.`),
     Number.isSafeInteger(trusted.unrecordedCount) && trusted.unrecordedCount > 0
       ? el('p', { class: 'subtext' }, `Main has ${plural(trusted.unrecordedCount, 'commit')} AIWorks did not put there; ${trusted.unrecordedCount === 1 ? 'it is' : 'they are'} not trusted.`) : null,
+    trusted.record ? el('div', { 'data-focus-scope': 'connections/trusted-main' },
+      el('p', { class: 'subtext local-text' }, 'If you put them there yourself, you can trust local main from ', el('code', {}, trusted.record.oldTip), ' to ',
+        el('code', {}, trusted.record.newTip), '. AIWorks only records this; it moves nothing. Changes to AIWorks’s supervisor code still need an independent review first.'),
+      button('Trust local main', () => trustLocalMain(trusted.record), 'secondary', sending || offline)) : null,
     el('p', { class: 'subtext' }, `Backup to ${backup.remote} ${backup.branch}: ${BACKUP_WORDS[backup.state] ?? 'Not known'}${backup.at ? ` (${clock(backup.at)})` : ''}${
       backup.enabled && backup.state === 'pushed' ? backup.current ? '; it has the trusted tip' : '; it is behind the trusted tip' : ''}${
       backup.nextAttemptAfter && ['refused', 'failed', 'pushing'].includes(backup.state) ? `; next try after ${clock(backup.nextAttemptAfter)}` : ''}. Nothing waits for the backup.`)];
+}
+
+/** The owner route of the trusted main: records exactly the two tips the page showed, or nothing. */
+async function trustLocalMain({ oldTip, newTip }) {
+  const from = current.address;
+  sending = true; render();
+  try {
+    const result = await post('/api/v2/settings/trusted-main', { requestId: crypto.randomUUID(), oldTip, newTip });
+    notice(result.message, null, null, from);
+  } catch (error) {
+    notice(error.known ? error.message : 'Recording could not be confirmed. Read the page again before trying again.', null, error.known ? error.detail : null, from);
+  } finally { sending = false; await poll(); }
 }
 
 /** Settings -> Connections: AIWorks itself, each AI worker account, each project's merge check and the trusted main. */
