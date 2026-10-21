@@ -363,7 +363,7 @@ function alsoLines(campaigns, d, make) {
 export function alsoSummary(also) {
   const n = (kind) => (also ?? []).filter((line) => line.kind === kind).length;
   const parts = [n('possibly-stuck') ? `${plural(n('possibly-stuck'), 'AI worker')} possibly stuck` : null,
-    n('paused') ? `${plural(n('paused'), 'piece')} of work paused, with Resume on Now` : null,
+    n('paused') ? `${plural(n('paused'), 'piece')} of work paused, with Resume on Overview` : null,
     n('working') ? `${plural(n('working'), 'AI worker')} working` : null].filter(Boolean);
   return parts.length ? `Also: ${parts.join(' · ')}` : null;
 }
@@ -493,9 +493,13 @@ export const blockerCheck = (kind, campaignId) => kind === 'budget' ? null : { l
 export function stopReasonWords(blocked, rounds = 0) {
   const reason = String(blocked?.reason ?? '');
   const stuck = /^no progress: (\d+)/.exec(reason);
+  if (/^boundary violation on [\w.-]+: changes inside the project's protected areas/.test(reason)) return 'it changed a protected area, so its result is held and never published; it can be redone without that change';
+  if (/^boundary violation/.test(reason)) return 'it changed something outside what its plan allows, so its result is held and never published; it can be redone within the plan';
   if (blocked?.class === 'B3' && stuck) return `no progress after ${plural(Number(stuck[1]), 'attempt')} that could not go on; see the step issue, then check it again`;
   if (blocked?.class === 'B3') return /^owner-reserved/.test(reason) ? 'the AI worker needs your decision; see the step issue' : 'it needs your decision';
-  if (/^verifier still rejects/.test(reason)) return `the independent checker still rejects it after ${plural(rounds, 'repair round')}; decide whether to accept the gap, narrow the step or allow more rounds, then check it again`;
+  // Only what the existing authority supports: an answer or guidance gives one more try under the same limit; a smaller
+  // step or more rounds is a new plan for the owner to compare and approve. A rejected result is never accepted as it is.
+  if (/^verifier still rejects/.test(reason)) return `the independent checker still rejects it after ${plural(rounds, 'repair round')}; answer with guidance for one more try within the same limit, or plan a smaller step or more rounds as a new plan for your approval`;
   if (/^admission blocked/.test(reason)) return 'the rules for AI workers on this computer did not let it start';
   const failed = /^(\d+) failed attempts; last ([a-z-]+)/.exec(reason);
   if (failed) return `${failed[1]} failed attempts (last: ${failed[2].replaceAll('-', ' ')}); check it again after fixing the cause`;
@@ -534,7 +538,7 @@ export const NEEDS = {
   // work is blocked, but the calm headline names it and a row links to its Now, where the rules are confirmed.
   held: {
     headline: (names) => `No work is blocked on you right now, but ${names.length === 1 ? `${names[0]} waits` : `${names.length} projects wait`} for you to confirm their rules before work can start`,
-    row: 'Can’t start work until you confirm this project’s rules. You confirm them on its Now screen.',
+    row: 'Can’t start work until you confirm this project’s rules. You confirm them on its Overview.',
   },
   workStopped: 'This work is stopped',
   recorded: 'What AIWorks recorded',
