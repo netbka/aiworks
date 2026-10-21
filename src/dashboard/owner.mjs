@@ -99,7 +99,8 @@ export function delivery(task, merges = NO_MERGES, now = Date.now(), campaignId 
   if (result === true && check.fresh) return { state: 'merged', ...base, note: null, mergedAt: step.mergedAt ?? null };
   const reason = !task.verifiedSha ? 'no-verified-sha' : check.reason === 'no-checkout' ? 'no-checkout'
     : check.reason === 'fetch-failed' && !check.fresh ? 'fetch-failed' : !check.fresh || result === null ? 'checking' : null;
-  if (delegation && task.verifiedSha && reason !== 'checking') {
+  // A version the owner accepts themselves (AW-015) is not merged for them until they do: it waits for their review.
+  if (delegation && task.verifiedSha && reason !== 'checking' && !task.review?.awaitsAcceptance) {
     const held = delegation.held?.[url.toLowerCase()] ?? null;
     const waited = !held && Number.isSafeInteger(task.verifiedAt) ? now - task.verifiedAt : null;
     const stalled = waited !== null && waited > (delegation.stallHours ?? MERGE_STALL_HOURS) * HOUR_MS ? Math.floor(waited / HOUR_MS) : null;
@@ -441,8 +442,16 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
         // Results with evidence still unresolved (WP4): a finished goal with any is not shown as complete.
         unresolved: c.tasks.filter(unresolvedResult).length } };
     const base = { campaignId: c.id, repository: c.repository };
+    // A checked version the merge gate holds for the owner's acceptance (AW-015): one item that opens its Review, where
+    // Accept result and Request changes bind exactly that version and report. Merged outside the gate, nothing is left.
+    const accepting = steps.filter((step) => step.task.review?.awaitsAcceptance && step.delivery?.state !== 'merged');
+    for (const { task } of accepting) {
+      const evidence = reviewEvidence(task);
+      items.push({ ...base, kind: 'accept', action: NEEDS.accept.action, text: label(task), route: { label: NEEDS.accept.open, address: reviewEntry(c, task).address },
+        evidence: evidence.short, detail: evidence.text, points: [{ link: null, text: NEEDS.accept.point }] });
+    }
     // One item per step, led by what the step delivers. The evidence is one compact line; the full sentence is one click away.
-    for (const { task, delivery: d } of awaiting) {
+    for (const { task, delivery: d } of awaiting.filter((step) => !accepting.includes(step))) {
       const waitingOn = c.tasks.filter((other) => other.state !== 'done' && other.dependsOn.includes(task.id));
       // A step starts from the base branch as it is at its first run and keeps that base (its worktree is created
       // once), so only steps that have not started yet can build on the merge.

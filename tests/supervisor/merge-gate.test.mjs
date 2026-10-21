@@ -15,6 +15,7 @@ import { campaignCancel, campaignPause, campaignStart } from '../../src/supervis
 import { Controller } from '../../src/supervisor/controller.mjs';
 import { mergePass, mergeSettings } from '../../src/supervisor/merge.mjs';
 import { applyResultReview } from '../../src/dashboard/supervisor.mjs';
+import { saveSettings } from '../../src/supervisor/project-settings.mjs';
 import { branchName } from '../../src/supervisor/adapters/git.mjs';
 import { declaration, environment, passedGate } from './helpers.mjs';
 
@@ -413,4 +414,36 @@ test('requested changes hold the verified head, reopen one bounded repair round,
   assert.ok(!JSON.stringify([r.env.comments(), r.env.ghCalls()]).includes(words), 'the owner\'s words never reach GitHub');
   r.advance(); await r.tick();
   assert.deepEqual(r.mergeCalls().map((call) => call.fields.sha), [repaired], 'only the freshly verified head merges');
+});
+
+test('where the owner accepts results, no head merges without their acceptance of exactly that head and report, also after a restart', async (t) => {
+  const r = rig(t);
+  await r.tick();
+  const verified = r.implement(A, (dir) => writeFileSync(join(dir, 'a.txt'), `${A}\n`));
+  await r.tick();
+  const op = r.open(A, 'verify'), reportDigest = createHash('sha256').update(String(r.store.task(A, 'A1').result.report), 'utf8').digest('hex');
+  passedGate(op.workspace);
+  r.controller.applyOutcome({ id: A, generation: r.controller.held.get(A) }, op, { class: 'result', receipt: { sessionId: op.session_id },
+    value: { verdict: 'accepted', summary: 'checked', targetSha: op.target_sha, reportDigest, findings: [], checks: [{ command: 'npm run check', result: 'pass' }],
+      criteria: [{ criterion: 1, result: 'pass', check: 'Read a.txt', evidence: 'Changed.' }] } });
+  await r.tick();
+  assert.ok(r.store.task(A, 'A1').pr_url, 'published');
+  r.store.tx(() => saveSettings(r.store, { project: REPOSITORY, expectedVersion: 0, requestId: 'accept-myself-1', settings: { acceptance: 'owner' } }, Date.now()));
+  // Acceptances that are not of this head and report: an earlier head, and this head with another report.
+  const earlier = r.main();
+  r.store.addEvent(A, 'result-accepted', { taskId: 'A1', verifiedSha: earlier, reportDigest }, `result-accepted:${A}:A1:${earlier}`, Date.now());
+  r.store.addEvent(A, 'result-accepted', { taskId: 'A1', verifiedSha: verified, reportDigest: 'f'.repeat(64) }, `result-accepted:${A}:A1:${verified}:other`, Date.now());
+
+  r.start({ merges: ON });
+  for (let i = 0; i < 2; i++) { r.advance(); await r.tick(); }
+  r.start({ merges: ON }); // a restart
+  for (let i = 0; i < 2; i++) { r.advance(); await r.tick(); }
+  assert.equal(r.mergeCalls().length, 0, 'never merged before the owner accepted exactly this head');
+  assert.equal(r.journal(A, 'merge-requested').length, 0);
+
+  const c = r.store.campaign(A), row = r.store.task(A, 'A1');
+  applyResultReview(r.env.dataDir, 'accept', { requestId: randomUUID(), campaignId: A, taskId: 'A1', taskVersion: row.version, version: c.version,
+    authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest, verifiedSha: verified, reportDigest });
+  r.advance(); await r.tick();
+  assert.deepEqual(r.mergeCalls().map((call) => call.fields.sha), [verified], 'the accepted head merges once');
 });
