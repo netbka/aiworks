@@ -182,8 +182,8 @@ export const mergedEventReader = (store, campaignId) => (candidate) => store.get
  * once with the candidate: switches, grant, authority, verification, published, current, diff, checks, wayBack,
  * dependencies, destinationState, role, ownerReserved, mergeGate and, for a `deploy` destination, merged (mergedEventReader).
  * `mergeGate` returns { repository, merges }: the project's owner/name repository and config.json `merges`.
- * `grant` returns { bytes, commit }: the record's exact bytes
- * at the freshly fetched base head and that commit. The grant is validated here (release/authorization.mjs), never
+ * `grant` returns { bytes, commit, ref?, path? }: the record's exact bytes
+ * at the freshly fetched base head, that commit and, optionally, the ref and path it was read from (kept in `inputs`). The grant is validated here (release/authorization.mjs), never
  * taken from the reader's word. `now` decides expiry.
  * Returns { eligible, failed: [{ check, title, reason }], inputs }. `inputs` records what was used (grant digest and
  * commit, classification, every other reader's answer), so a later step can refuse to carry an old answer forward.
@@ -206,7 +206,7 @@ export function evaluateEligibility(candidate, read, { now = Date.now() } = {}) 
       const parsed = parseAuthorization(value.bytes, { project: candidate.project, now, ...(gate.value ? { mergeGate: gate.value } : {}) });
       if (!parsed.valid) return (grant = { reason: `the grant is not valid: ${parsed.reasons.slice(0, 3).join('; ')}`, digest: parsed.digest, commit: value.commit });
       const record = JSON.parse(Buffer.isBuffer(value.bytes) ? value.bytes.toString('utf8') : value.bytes);
-      return (grant = { record, digest: parsed.digest, commit: value.commit });
+      return (grant = { record, digest: parsed.digest, commit: value.commit, source: grantSource(value) });
     },
     destination() {
       return ctx.grant().record?.destinations.find((item) => item.id === candidate.destinationId) ?? null;
@@ -234,10 +234,32 @@ export function evaluateEligibility(candidate, read, { now = Date.now() } = {}) 
       evaluatedAt: new Date(now).toISOString(),
       grantDigest: grant?.digest ?? null,
       grantCommit: grant?.commit ?? null,
+      grantVersion: Number.isInteger(grant?.record?.version) ? grant.record.version : null,
+      grantSource: grant?.source ?? null,
+      destination: destinationSnapshot(grant?.record ? ctx.destination() : null),
       classification: classification && !classification.reason ? classification : null,
       evidence,
     },
   };
+}
+
+/** Where the grant was read: { ref, path } when the reader named both as plain names, so a later read-only step can read it again. */
+function grantSource(value) {
+  const plain = (text) => typeof text === 'string' && text.length > 0 && text.length <= 512 && !text.startsWith('-') && !/[\\:\u0000-\u001f]/.test(text);
+  return plain(value.ref) && plain(value.path) ? { ref: value.ref, path: value.path } : null;
+}
+
+/**
+ * What a release row keeps of its destination (AUTO_RELEASE.md section 9, OWNER_UI_V2 WP9): its id, environment, kind,
+ * rollback rule, check window and which project commands it names, never their paths' contents. The owner view states the
+ * restore scope and whether a post-release check exists from this; a row without it says the scope is unknown.
+ */
+function destinationSnapshot(destination) {
+  if (!destination) return null;
+  const commands = destination.commands ?? {};
+  return { id: destination.id, environment: destination.environment, kind: destination.kind, rollback: destination.rollback,
+    checkWindowMinutes: destination.checkWindowMinutes, changeClasses: [...destination.changeClasses],
+    commands: ['deploy', 'observe', 'check', 'rollback'].filter((name) => typeof commands[name] === 'string') };
 }
 
 /** The one-line owner wording for a result: "Would be eligible ..." or "Not eligible, because <first reason>". */

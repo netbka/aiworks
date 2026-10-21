@@ -122,7 +122,8 @@ export function parseAuthorization(bytes, options) {
  * Reads `path` at the commit `ref` resolves to in `repoPath` and validates it. `ref` is a base ref the caller already
  * fetched (for example `origin/main`); this function never fetches, pushes or writes. `git` is the command array, as
  * in adapters/git.mjs. A ref or file that cannot be read makes the record invalid, never assumed present.
- * Returns the parseAuthorization result plus `commit` (the exact SHA read, or null) and `path`.
+ * Returns the parseAuthorization result plus `commit` (the exact SHA read, or null), `path`, `ref` and, when the file
+ * was read, its exact `bytes`: together the `grant` evidence release/eligibility.mjs validates again for itself.
  */
 export function loadAuthorization({ git = ['git'], repoPath, ref, path, ...options }) {
   const run = (args) => spawnSync(git[0], [...git.slice(1), ...args], { cwd: repoPath, windowsHide: true, timeout: 60_000, maxBuffer: 1024 * 1024 });
@@ -136,5 +137,5 @@ export function loadAuthorization({ git = ['git'], repoPath, ref, path, ...optio
   if (!/^[0-9a-f]{40}$/.test(commit)) return invalid(`base ref ${ref} cannot be read`);
   const blob = run(['cat-file', 'blob', `${commit}:${path}`]);
   if (blob.status !== 0 || blob.error) return invalid(`there is no release record at ${path} on ${ref} (${commit})`, commit);
-  return { ...parseAuthorization(blob.stdout, options), commit, path };
+  return { ...parseAuthorization(blob.stdout, options), commit, path, ref, bytes: blob.stdout };
 }

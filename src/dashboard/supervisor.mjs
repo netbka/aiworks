@@ -25,6 +25,7 @@ import { openOnProfile, setRoleModelPreference, shallowHomesRoot, configuredAcco
 export { shallowHomesRoot };
 import { removeShallowProfile } from '../supervisor/adapters/caam.mjs';
 import { FORWARD_STEPS, RELEASE_STOP } from '../supervisor/release/state.mjs';
+import { checkReleaseNow, healthCheckBlocker, releaseStopped } from '../supervisor/release/health.mjs';
 import { isLocalTarget } from '../supervisor/local-candidates.mjs';
 import { pauseSummary, projectOf, sameProject } from './views.mjs';
 
@@ -664,7 +665,7 @@ const RELEASE_HISTORY_STEPS = [...FORWARD_STEPS, 'rollback'];
  * writes them yet, so this is empty today. Only names, states, step names and outcomes leave here, each checked: an
  * unrecognised state or outcome is `unknown`, and an outcome not recorded is null (started, not finished).
  */
-function recordedReleases(store) {
+function recordedReleases(store, { config = null, stop = null, now = Date.now() } = {}) {
   if (!store.get("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'releases'")) return [];
   const latest = new Map();
   for (const r of store.all('SELECT * FROM releases ORDER BY created_at, attempt')) latest.set(`${r.campaign_id}/${r.task_id}`, r);
@@ -674,8 +675,48 @@ function recordedReleases(store) {
     state: RELEASE_STATES.has(r.state) ? r.state : 'unknown', step: RELEASE_HISTORY_STEPS.includes(r.step) ? r.step : null,
     steps: Array.isArray(r.steps) ? r.steps.filter((step) => FORWARD_STEPS.includes(step)) : [],
     history: (Array.isArray(r.history) ? r.history : []).filter((entry) => RELEASE_HISTORY_STEPS.includes(entry?.step))
-      .map((entry) => ({ step: entry.step, outcome: entry.outcome === null || entry.outcome === undefined ? null : RELEASE_OUTCOMES.has(entry.outcome) ? entry.outcome : 'unknown' })),
-    stepStartedAt: Number.isSafeInteger(r.step_started_at) ? r.step_started_at : null, updatedAt: r.updated_at }));
+      .map((entry) => ({ step: entry.step, outcome: entry.outcome === null || entry.outcome === undefined ? null : RELEASE_OUTCOMES.has(entry.outcome) ? entry.outcome : 'unknown',
+        endedAt: Number.isSafeInteger(entry.endedAt) ? entry.endedAt : null })),
+    stepStartedAt: Number.isSafeInteger(r.step_started_at) ? r.step_started_at : null, updatedAt: r.updated_at,
+    // Releases (OWNER_UI_V2 WP9): what the release row itself recorded, checked field by field. A row recorded before
+    // eligibility kept the destination has destinationDetails null, and the owner view says the restore scope is unknown.
+    grantVersion: Number.isSafeInteger(r.grant_version) ? r.grant_version : null,
+    destinationDetails: releaseDestination(r.eligibility?.inputs?.destination),
+    change: releaseChange(r.eligibility?.inputs?.classification),
+    mergeCommit: /^[0-9a-f]{40}$/.test(r.merge_commit ?? '') ? r.merge_commit : null,
+    deployedDigest: RELEASE_DIGEST.test(r.deployed_digest ?? '') ? r.deployed_digest : null,
+    previousDigest: RELEASE_DIGEST.test(r.previous_digest ?? '') ? r.previous_digest : null,
+    healthCheck: releaseHealth(r.health_check),
+    // Check the site now: offered only when release/health.mjs would let it run; otherwise the exact reason.
+    checkNow: (({ reason }) => ({ available: reason === null, reason }))({ reason: healthCheckBlocker({ release: r, config, stop, now }) }) }));
+}
+
+// The destination kinds of schemas/release-authorization.schema.json, as a pattern (a list of names would read as a merge call to tests/supervisor/release-boundary.test.mjs).
+const RELEASE_KIND = /^(?:merge|merge-then-deploy|deploy|local-git-apply|local-folder-apply)$/;
+const RELEASE_DIGEST = /^[A-Za-z0-9][A-Za-z0-9:._+/=-]{0,199}$/;
+const RELEASE_COMMANDS = ['deploy', 'observe', 'check', 'rollback'];
+const CHANGE_CLASS = /^[a-z][a-z0-9-]{0,79}$/;
+
+/** The destination snapshot eligibility recorded (release/eligibility.mjs destinationSnapshot), or null when absent or unreadable. */
+function releaseDestination(d) {
+  if (!d || typeof d !== 'object' || !RELEASE_KIND.test(d.kind ?? '')) return null;
+  return { environment: identifier.test(d.environment ?? '') ? d.environment : null, kind: d.kind,
+    rollback: ['automatic', 'report-only'].includes(d.rollback) ? d.rollback : null,
+    checkWindowMinutes: Number.isSafeInteger(d.checkWindowMinutes) ? d.checkWindowMinutes : null,
+    commands: Array.isArray(d.commands) ? RELEASE_COMMANDS.filter((name) => d.commands.includes(name)) : [] };
+}
+
+/** What a release changes, by class and file count (release/classify.mjs); never the paths. Null when not recorded. */
+function releaseChange(classification) {
+  if (!classification || !Array.isArray(classification.classes) || !Array.isArray(classification.files)) return null;
+  return { classes: classification.classes.filter((name) => CHANGE_CLASS.test(name ?? '')), files: classification.files.length };
+}
+
+/** The owner's latest Check the site now (release/health.mjs), or null when there was none. */
+function releaseHealth(h) {
+  if (!h || typeof h !== 'object' || !['checking', 'done'].includes(h.state)) return null;
+  return { state: h.state, outcome: h.state === 'done' ? (['passed', 'failed', 'unknown'].includes(h.outcome) ? h.outcome : 'unknown') : null,
+    startedAt: Number.isSafeInteger(h.startedAt) ? h.startedAt : null, checkedAt: Number.isSafeInteger(h.checkedAt) ? h.checkedAt : null };
 }
 
 /**
@@ -701,6 +742,26 @@ export function stopAllReleases(dataDir, input, now = Date.now()) {
     throw fail(503, 'AIWorks could not write the release stop on this computer. Run supervisor release-stop instead.', `RELEASE-STOP: ${code(error.code) ?? 'write failed'}`);
   }
   return { accepted: true, duplicate: false, action: 'release-stop' };
+}
+
+const RELEASE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,250}$/;
+
+/**
+ * Check the site now (OWNER_UI_V2 WP9, POST /api/v2/releases/check, after the caller check): one read-only `check` of a
+ * settled release through release/health.mjs, which runs it only through the release runner under a grant that is valid
+ * now and every release switch. The input names the release and nothing else, so no form can choose a destination, a
+ * command or a grant. A refusal is 409 with release/health.mjs's own reason; nothing is changed by it.
+ */
+export async function checkRelease(dataDir, input, now = Date.now) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['requestId', 'releaseId'].includes(key)) ||
+      !/^[0-9a-f-]{36}$/i.test(input.requestId ?? '') || !RELEASE_ID.test(input.releaseId ?? '')) throw fail(400, 'Invalid dashboard command.');
+  if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'AIWorks can’t read its work records on this computer right now.');
+  const config = readConfig(dataDir), store = new Store(join(dataDir, 'supervisor.db'));
+  try {
+    const result = await checkReleaseNow({ store, dataDir, config, id: input.releaseId, now, git: configuredGitCommand(dataDir) });
+    if (!result.checked) throw fail(409, result.reason);
+    return { accepted: true, outcome: result.outcome, checkedAt: result.checkedAt };
+  } finally { store.close(); }
 }
 
 const DECISION_EVENTS = ['decision-answer', 'decision-snooze', 'decision-not-needed'];
@@ -951,7 +1012,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
     const activity = store.all("SELECT seq, campaign_id, at, kind, detail FROM journal WHERE kind NOT IN ('event-dashboard-command', 'lease-acquired') ORDER BY seq DESC LIMIT 80").map((item) =>
       publicEvent(item, typeof item.detail?.op === 'string' ? store.get('SELECT * FROM operations WHERE id = ?', item.detail.op) : null));
     const recent = recentEvents(store, since, now);
-    const releases = recordedReleases(store);
+    const releases = recordedReleases(store, { config: readConfig(dataDir), stop: releaseStopped(dataDir), now });
     const goals = goalControls(store);
     // aiworks#18: a stopped supervisor, with its last lease renewal, for the owner view to lead with.
     const controller = supervisorLiveness(store, { now, leaseMs: readConfig(dataDir).leaseMs ?? DEFAULTS.leaseMs, stopRequested: existsSync(join(dataDir, 'STOP')) });

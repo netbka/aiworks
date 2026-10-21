@@ -314,6 +314,17 @@ Add project (First run) states first what planning a goal has cost: the range an
 
 **Settings › Usage** shows AI worker runs (reported dollars, tokens per provider, runs with no reported cost) and the AI coordinator (planning and messages) by unit, each apart and never added together; a run that reported no cost reads "unknown, not $0". Hosting and subscriptions are not tracked by AIWorks and say so, with no amount.
 
+## Releases (owner UI v2, WP9)
+
+A project's **Releases** screen (`#/p/<project>/releases`, linked from its Results) answers what reached users and what can be undone, from the release rows only (`src/supervisor/release/state.mjs`; Auto Release is built switched off, so on an install today it lists none and says so). Per release: the destination (id, environment and kind), **What changes for users** (the step's outcome with its change classes and file count, never the paths), the version (checked commit, merge commit, live digest, grant version), **Restore** (the previous version through the project's rollback command and a new check, report-only, no rollback command, a revert pull request, a backup, nothing changed, or unknown for a row recorded before AIWorks kept its destination; only the released version is restored, never data the site stored) and **Health** (the latest of the post-release check, the check after a rollback and the owner's own check: healthy, failed, unknown, checking or not checked; unknown is never healthy). Below, each checked result keeps Checked, Merged, Live, Release checked and Accepted by you as separate answers. **Publish a checked version** is shown not available with what is missing; there is no Publish button, and no form chooses a destination, command or grant.
+
+**Check the site now** appears on a settled release only when the release role may run it: `release.enabled` true, no `RELEASE-STOP`, a destination with a `check` command and no check already running; otherwise the screen says why. It runs `src/supervisor/release/health.mjs`, which reads the grant again at the ref and path the release recorded and runs only that destination's `check` command through the release runner, once. The answer (passed, failed or unknown) is kept beside the release and journalled; the release's state and lock never change and nothing is rolled back.
+
+| Route | Effect |
+| --- | --- |
+| `GET /api/v2/projects/<project>/releases` | The project's recorded releases, Publish's missing conditions and its checked results, allowlisted. |
+| `POST /api/v2/releases/check` | `{ requestId, releaseId }`. The caller check runs first; 409 with the exact reason when it may not run; nothing changes then. |
+
 ## Plan and do, Review and Approve and start (built, off by default)
 
 **In short.** For a connected GitHub project, the owner asks AIWorks for a plan, reads it on **Review** and presses *Approve and start*. That registers exactly the plan on the screen, with the same checks as the command-line start. No command line is needed. (Design: [OWNER_WORKSPACE S10](design/OWNER_WORKSPACE.md#s10-review-and-approve-github-projects) and WORK_ENVELOPE slice E8 ([§12](design/WORK_ENVELOPE.md#12-implementation-slices)); build slice UI14 of [the plan](PROJECT_WORKSPACE_PLAN.md). The owner answered #32 on 2026-10-16: approving in the dashboard registers that exact plan.)

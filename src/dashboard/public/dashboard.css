@@ -486,6 +486,11 @@ html{scrollbar-gutter:stable;scroll-padding-top:88px}
 .release-ladder .ladder-yes{color:var(--green)}
 .release-ladder .ladder-unknown{color:var(--warning)}
 .release-stop{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+/* Releases (OWNER_UI_V2 WP9): one release's facts, label above value so it reads at 320px; side by side when there is room. */
+.release-facts{display:grid;grid-template-columns:1fr;gap:2px 12px;margin:6px 0;font-size:13px}
+.release-facts dt{color:var(--muted);font-weight:600}
+.release-facts dd{margin:0 0 6px;overflow-wrap:anywhere}
+@media (min-width:640px){.release-facts{grid-template-columns:max-content 1fr}.release-facts dd{margin:0}}
 /* Home and Overview (OWNER_UI_V2 WP1): typed events, the Built / Checked / Available to users strip and the pause controls. */
 .event-list,.since ul.event-list{list-style:none;margin:8px 0 0;padding:0;display:block;gap:0}
 .event-list>li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px;padding:8px 0;border-top:1px solid var(--line)}

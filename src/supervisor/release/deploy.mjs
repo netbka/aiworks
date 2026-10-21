@@ -1,7 +1,8 @@
 // The deploy adapter: deploy, check and roll back one release through the project's own commands (docs/design/
 // AUTO_RELEASE.md sections 4.4, 7.2 steps 3 and 5 to 7, 7.4 and 8; plan slice REL7). Built switched off: it runs a
 // command only through release/runner.mjs, which starts nothing while `release.enabled` is not true in config.json, and
-// nothing outside the tests builds this adapter until slice REL11 switches Auto Release on. It is the adapter that
+// the supervisor builds this adapter for no release until slice REL11 switches Auto Release on (the disposable rehearsal,
+// release/rehearsal.mjs, and the owner's Check the site now, release/health.mjs, build it under that same switch). It is the adapter that
 // release/state.mjs drives: state.mjs records each step's intent before this acts and its outcome after. The rules:
 // - the revision: for kind `deploy`, the merge commit the merge gate journaled as `merged` for this task at its verified
 //   revision (one merge path per repository, plan section 8 (k)); for `merge-then-deploy`, the merge commit the merge
@@ -73,7 +74,8 @@ function commandLine(file, args) {
 
 /**
  * The deploy adapter of one destination, for runStep and reconcile of release/state.mjs: { run(release, step),
- * observe(release, step) } for the steps `deploy`, `check` and `rollback`.
+ * observe(release, step) } for the steps `deploy`, `check` and `rollback`, and health(release, key) for the owner's
+ * read-only Check the site now (release/health.mjs).
  * - `destination`: the validated grant's destination (kind `deploy` or `merge-then-deploy`, commands, rollback,
  *   checkWindowMinutes);
  * - `repo`: the project's release clone, already holding the merge commit and the verified revision. Read here; never the cwd
@@ -138,7 +140,7 @@ export function deployAdapter({ destination, repo, config, dataDir, store, merge
   }
 
   /** Run one project command in the checkout through the release runner: { exitCode, output } or null when unknown. */
-  async function command(r, record, name, dir, args = []) {
+  async function command(r, record, name, dir, args = [], key = r.step_key) {
     const path = destination.commands[name];
     const file = resolve(dir, ...path.split('/'));
     try {
@@ -148,7 +150,7 @@ export function deployAdapter({ destination, repo, config, dataDir, store, merge
     save(r, record);
     let result;
     try {
-      result = await runCommand({ config, dataDir, stepKey: `${r.step_key}.${record.runs}.${name}`, command: commandLine(file, args), cwd: dir,
+      result = await runCommand({ config, dataDir, stepKey: `${key}.${record.runs}.${name}`, command: commandLine(file, args), cwd: dir,
         timeoutMs, store, release: r, now: clock });
     } catch { return null; }
     return result?.ran === true && Number.isInteger(result.exitCode) ? { exitCode: result.exitCode, output: result.output ?? '' } : null;
@@ -180,7 +182,8 @@ export function deployAdapter({ destination, repo, config, dataDir, store, merge
     if (known) return { record: known, dir: checkout(r, known.revision) };
     const target = revisionOf(r);
     if (target.refused) return target;
-    return { record: save(r, { version: 1, release: r.id, revision: target.revision, previousDigest: null, deployedDigest: null,
+    // `repo` lets a later read-only health check (release/health.mjs) remake the checkout; it stays in the data directory.
+    return { record: save(r, { version: 1, release: r.id, revision: target.revision, repo: resolve(repo), previousDigest: null, deployedDigest: null,
       deploy: 'not-started', rollback: 'not-started', runs: 0 }), dir: checkout(r, target.revision) };
   }
 
@@ -286,5 +289,18 @@ export function deployAdapter({ destination, repo, config, dataDir, store, merge
     if (!act) throw new Error(`the deploy adapter has no step ${step}`);
     try { return await act(r); } catch { return { outcome: 'unknown' }; }
   };
-  return { run: guarded(steps.run), observe: guarded(steps.observe) };
+
+  /**
+   * One read-only `check` of a settled release, at the revision it deployed, outside the step log: 'passed' (exit 0),
+   * 'failed' (exit 1) or 'unknown' (anything else, no check command, no deploy record or a command that did not run).
+   * `key` names its runner directories. It changes no release state, runs no other command and never rolls back.
+   */
+  async function health(r, key) {
+    const known = read(r);
+    if (!known || !destination.commands.check) return 'unknown';
+    const result = await command(r, known, 'check', checkout(r, known.revision), [], key);
+    return result?.exitCode === 0 ? 'passed' : result?.exitCode === 1 ? 'failed' : 'unknown';
+  }
+  return { run: guarded(steps.run), observe: guarded(steps.observe),
+    health: async (r, key) => { try { return await health(r, key); } catch { return 'unknown'; } } };
 }

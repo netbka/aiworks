@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
-import { supervisorSnapshot, applyCommand, applyDecision, applyResultReview, captureResultPreview, openResultPreview, previewStillChecked, applyScopedControl, postMessage, dashboardAccounts, removeDashboardAccount, configuredModelPreferences, saveDashboardModelPreferences } from './supervisor.mjs';
+import { supervisorSnapshot, applyCommand, applyDecision, applyResultReview, captureResultPreview, checkRelease, openResultPreview, previewStillChecked, applyScopedControl, postMessage, dashboardAccounts, removeDashboardAccount, configuredModelPreferences, saveDashboardModelPreferences } from './supervisor.mjs';
 import { Store } from '../supervisor/store.mjs';
 import { PREVIEW_POLICY, PreviewSessions } from '../supervisor/preview.mjs';
 import { PreviewCaptures } from '../supervisor/preview-capture.mjs';
@@ -21,7 +21,7 @@ import { projectSettingsView, saveProjectSettings } from './project-settings.mjs
 import { alertsView, saveAlerts } from './alerts.mjs';
 import { knowledgeView, planningCost, saveKnowledge, usageView } from './knowledge.mjs';
 import { closeImportedIssues, commentWorkItem, createWorkItem, ownerOnly, setWorkItemState, workItemView, workListView } from './work-list.mjs';
-import { connectionsView, EVENT_TYPES, homeView, markSeen, overviewView, readLastSeen, trustedMainView, typedEvents, withReadOnlyStore } from './views.mjs';
+import { connectionsView, EVENT_TYPES, homeView, markSeen, overviewView, readLastSeen, releasesView, trustedMainView, typedEvents, withReadOnlyStore } from './views.mjs';
 
 /**
  * The caller check of a protected owner action that writes through a synchronous store transaction (Review of a result):
@@ -182,6 +182,16 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
           try { project = decodeURIComponent(settings[1]); } catch { /* refused below */ }
           return send(200, projectSettingsView(dataDir, project));
         }
+        // Releases (WP9): what reaches users and what can be undone, from the recorded releases; read-only.
+        const releasesRoute = /^\/api\/v2\/projects\/([^/]+)\/releases$/.exec(path);
+        if (releasesRoute) {
+          let project = null;
+          try { project = decodeURIComponent(releasesRoute[1]); } catch { /* refused below */ }
+          if (!/^(?:[\w.-]+\/[\w.-]+|[\w-]{1,64})$/.test(project ?? '')) return send(404, { error: 'Not found.' });
+          const { supervisor, owner, projects } = readState(Date.now());
+          const view = releasesView(project, { supervisor, owner, projects });
+          return view ? send(200, view) : send(404, { error: 'Not found.' });
+        }
         if (path.startsWith('/api/v2/projects/')) {
           let project = null;
           try { project = decodeURIComponent(path.slice('/api/v2/projects/'.length)); } catch { /* refused below */ }
@@ -268,6 +278,12 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       }
       // Preview of a checked version (WP7): bound to the same verified head and report as accept; it builds and starts nothing.
       if (path === '/api/v2/results/preview') return send(200, openResultPreview(dataDir, value, previews));
+      // Check the site now (WP9): one read-only check of a settled release through the release role (release/health.mjs).
+      // It runs a project command, so the caller check runs first: a program AIWorks started cannot make it run one.
+      if (path === '/api/v2/releases/check') {
+        await ownerCaller(dataDir, caller);
+        return send(200, await checkRelease(dataDir, value));
+      }
       // Desktop and phone screenshots of that checked version, bound the same way. It starts the installation's Chrome, so the
       // caller check runs first: a program AIWorks started cannot make it start a browser.
       if (path === '/api/v2/results/preview/capture') {
