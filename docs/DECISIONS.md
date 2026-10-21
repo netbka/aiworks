@@ -127,3 +127,13 @@ Each pull request was verified on its own, on the base it started from. What lan
 - A pull request that conflicts stays out of the group. A failed gate ends the group, and its pull requests go one at a time as before (a moved base is gated alone, or repaired). The same group on the same base is never gated twice.
 
 The merge gate's other rules stay: only listed repositories, only the exact verified heads, merge commits only, never a squash, rebase, force-push or branch deletion (AW-001).
+
+## AW-015 - Acceptance controls merging when the owner chooses it
+
+Owner decision 2026-10-21 ([#45](https://github.com/example-org/aiworks/issues/45)): each project has an acceptance mode, *automatic* (today's behaviour, the default) or *I accept results myself*. In the second mode the merge gate merges a verified head only after the owner has accepted exactly that checked version. Acceptance of an earlier head never counts.
+
+- The mode is one more owner-set field of the versioned project settings (`acceptance`: `"automatic"` or `"owner"`), saved only by the owner under the existing settings rules: the caller check, the version the owner saw and a request id. A project that never set it is automatic, and merges exactly as before.
+- In the owner's mode every merge path (one at a time, the refresh, the group merge of AW-014 and the local merges of AIWorks's own repository) merges only a head with a recorded acceptance of exactly that verified head and the report it was checked with. The newest settings are read at every check and again in the fenced write before a merge, so the rule holds after a restart. A waiting request for changes still holds the head.
+- Switching to the owner's mode holds every unmerged head without acceptance; switching back lets the existing gate continue. Waiting versions are listed in Needs you with Accept and Request changes.
+
+Acceptance still never merges by itself: the merge gate's other conditions and AW-001 stay. A project without GitHub is accepted by Apply, as before.
