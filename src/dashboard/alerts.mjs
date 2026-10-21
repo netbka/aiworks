@@ -5,7 +5,8 @@
 // Saving is an owner route (server.mjs: same origin, CSRF token, 16 KiB, JSON) that runs the caller check first, so a
 // worker or any other program AIWorks started cannot mute the owner's alerts. It binds the version the page showed and a
 // request id. The transport is the operator's config.json setting and is only described here, by state: no reference to
-// a secret store, and no credential, is ever served. Nothing on this page sends an alert or answers a decision.
+// a secret store, and no credential, is ever served. Nothing on this page sends an alert, resolves a reference or answers
+// a decision.
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
@@ -18,7 +19,7 @@ const fail = (status, message, code = null) => Object.assign(new Error(message),
 const storePath = (dataDir) => join(dataDir, 'supervisor.db');
 const UNREADABLE = 'AIWorks can’t read its work records on this computer right now.';
 const readConfig = (dataDir) => { try { return JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { return {}; } };
-const STATES = ['pending', 'rehearsed', 'delivered', 'failed', 'muted'];
+const STATES = ['pending', 'sending', 'rehearsed', 'delivered', 'unknown', 'failed', 'muted'];
 
 // A fictional notice, so the owner sees what an alert would carry before any is raised.
 const SAMPLE = { kind: 'initial', class: 'B3', project: 'example-org/sampleapp', blocked: 'A step needs your choice between two designs.',
@@ -39,8 +40,9 @@ function view(store, config, now) {
   const outbox = Object.fromEntries(STATES.map((state) => [state, counts.find((row) => row.state === state)?.n ?? 0]));
   return { available: true, version: current.version, savedAt: current.createdAt, rules: current.rules, classes: ALERT_CLASSES,
     quietNow: inQuietHours(current.rules.quietHours, now),
-    delivery: { transport: setup.state, kind: setup.state === 'unavailable' ? setup.kind : null, references: setup.references.length,
-      recording: config.ownerIntervention?.enabled === true },
+    delivery: { transport: setup.state, kind: ['unavailable', 'ready', 'incomplete'].includes(setup.state) ? setup.kind : null,
+      references: setup.references.length, recording: config.ownerIntervention?.enabled === true,
+      sending: setup.state === 'ready' && config.ownerIntervention?.enabled === true && config.ownerIntervention?.deliver === true },
     outbox, rehearsals: rehearsals.map((row) => ({ at: row.recorded_at, alert: recorded(row.alert) })),
     sample: { alert: renderAlert(SAMPLE), now: alertDecision(SAMPLE, current.rules, now) } };
 }

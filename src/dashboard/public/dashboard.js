@@ -3238,6 +3238,9 @@ const TRANSPORT_WORDS = {
   unconfigured: 'Delivery unavailable: no alert transport is set up on this computer. Alerts wait in Needs me; nothing is sent.',
   rehearsal: 'Rehearsal only: alerts are recorded on this computer as they would be sent. Nothing leaves this computer, and nothing is reported as delivered.',
   unavailable: 'Delivery unavailable: this version of AIWorks has no adapter for the transport in the configuration file, so nothing is sent.',
+  incomplete: 'Delivery unavailable: Telegram needs both a credential reference and a recipient reference, each in a secret store AIWorks can read. Nothing is sent.',
+  ready: 'Telegram is set up, but sending is switched off in the configuration file. Nothing is sent.',
+  sending: 'Alerts are sent to Telegram. A reply there does nothing: answer in Needs me on this computer. An alert whose arrival is unknown is not sent again.',
   invalid: 'Delivery unavailable: the transport setting in the configuration file is not valid (it must name secret store references, never a credential). Nothing is sent.' };
 const DECISION_WORDS = { send: 'would be sent now', hold: 'would wait until quiet hours end', mute: 'would not be sent: its kind is off' };
 async function loadAlerts() {
@@ -3269,12 +3272,13 @@ function alertsParts() {
   if (!v) return [];
   const draft = alertsDraft(v), out = v.outbox, d = v.delivery, sample = v.sample.alert;
   return [
-    el('p', { class: d.transport === 'rehearsal' ? 'notice' : 'notice warning', role: 'status' }, TRANSPORT_WORDS[d.transport] ?? TRANSPORT_WORDS.unconfigured),
+    el('p', { class: d.transport === 'rehearsal' || d.sending ? 'notice' : 'notice warning', role: 'status' },
+      TRANSPORT_WORDS[d.sending ? 'sending' : d.transport] ?? TRANSPORT_WORDS.unconfigured),
     d.recording ? null : el('p', { class: 'subtext' }, 'Owner alerts are not recorded on this computer yet: the owner-intervention setting is off. What needs you still shows in Needs me.'),
     el('p', { class: 'subtext', role: 'status' }, v.version ? `Applied: version ${v.version}, saved ${clock(v.savedAt)}.${v.quietNow ? ' Quiet hours now.' : ''}` : 'Nothing saved yet: the default rules apply.'),
     alertsEntry.error || offline ? el('p', { class: 'needs-stale', role: 'status' }, `Shown as read at ${clock(alertsEntry.readAt)}. ${offline
       ? 'The page is disconnected; it reads these settings again when it reconnects.' : alertsEntry.error.message}`) : null,
-    el('p', {}, `Waiting: ${out.pending} · Rehearsed: ${out.rehearsed} · Not sent (gave up): ${out.failed} · Off by your rules: ${out.muted}`),
+    el('p', {}, `Waiting: ${out.pending + (out.sending ?? 0)} · Rehearsed: ${out.rehearsed} · Delivered: ${out.delivered ?? 0} · Arrival unknown: ${out.unknown ?? 0} · Not sent (gave up): ${out.failed} · Off by your rules: ${out.muted}`),
     disclosure('alerts/sample', 'What an alert says (fictional example)', el('div', { class: 'panel-body' },
       el('strong', {}, sample.title), ...sample.lines.map((text) => el('p', { class: 'subtext' }, text)),
       el('p', { class: 'subtext' }, `Buttons: ${sample.buttons.map((b) => b.label).join(', ')}. They open this dashboard on this computer; an answer is given only here.`),

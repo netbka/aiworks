@@ -38,7 +38,7 @@ import { isLocalTarget, recordCandidate } from './local-candidates.mjs';
 import { checkLocalDispatch, LOCAL_ADMISSION_ON } from './local-admission.mjs';
 import { addComment, createItem, reviewItem, WorkListError, workAuthorization, workLink } from './work-list.mjs';
 import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
-import { alertDecision, currentAlertRules, renderAlert, syntheticTransport, transportSetup } from './alerts.mjs';
+import { alertDecision, configuredTransport, currentAlertRules, renderAlert } from './alerts.mjs';
 import { PUBLICATION_REFUSED, privateTerms, publicationFindings } from '../shared/public-text.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -411,16 +411,21 @@ export class Controller {
   // waits like a busy profile. cli.mjs supplies none: without a profile, or without this seam, the launch is unchanged.
   constructor({ store, config, dataDir, log = () => {}, now = () => Date.now(), instanceId = randomUUID(),
     codeRevision = null, fault = process.env.AIWORKS_FAULT ?? null, notifier = noopTransport, probes = {},
-    governanceRoot = undefined, revisionCheck = null, revisionCheckMs = REVISION_CHECK_MS, profiles = null, profileHomes = null }) {
+    governanceRoot = undefined, revisionCheck = null, revisionCheckMs = REVISION_CHECK_MS, profiles = null, profileHomes = null,
+    alertDeps = {} }) {
     Object.assign(this, { store, dataDir, log, now, instanceId, codeRevision, fault, notifier, probes, governanceRoot,
       revisionCheck, revisionCheckMs, profiles, profileHomes });
     this.config = { ...DEFAULTS, ...config };
     this.governanceRoot = governanceRoot ?? this.config.governanceRoot;
     // aiworks#1 owner-intervention core: off unless the data-directory config enables it.
     this.oi = this.config.ownerIntervention?.enabled === true;
-    // OWNER_UI_V2 WP6: config.json `alerts.transport` may choose the synthetic rehearsal transport; every other kind has
-    // no adapter in this version and sends nothing. An injected notifier (tests) takes precedence.
-    if (notifier === noopTransport && transportSetup(this.config).state === 'rehearsal') this.notifier = syntheticTransport(store, () => this.now());
+    // OWNER_UI_V2 WP6: config.json `alerts.transport` may choose the synthetic rehearsal transport or, once it is ready,
+    // Telegram (alerts.mjs configuredTransport); every other kind sends nothing. Telegram sends only while
+    // `ownerIntervention.deliver` is also true (drainOwnerNotifications). An injected notifier takes precedence;
+    // alertDeps ({ resolve, request }) replace the secret store and the network in tests.
+    if (notifier === noopTransport) this.notifier = configuredTransport(this.config, { store, now: () => this.now(), ...alertDeps }) ?? noopTransport;
+    // Keys of owner notifications this instance is sending now: a `sending` entry not in it was left by a stopped run.
+    this.notificationsInFlight = new Set();
     // aiworks#27 integration repair: off unless the data-directory config enables it. The check times are kept in memory
     // only: after a restart every published task is checked once more, which is harmless.
     this.ir = this.config.integrationRepair?.enabled === true;
@@ -3259,15 +3264,36 @@ export class Controller {
 
   /**
    * Hand pending owner notifications to the transport: a live one only when `ownerIntervention.deliver` is set and it
-   * was injected, or the synthetic rehearsal transport config.json `alerts.transport` chose. The owner's alert rules
-   * decide first (alerts.mjs alertDecision): a muted entry is closed as `muted`, and one held by quiet hours stays
-   * pending with no attempt counted. The attempt is counted before the effect, so a crash retries with the same key
-   * (at-least-once); the transport deduplicates by key. Failures back off and stop after MAX_NOTIFY_ATTEMPTS. A
-   * rehearsal is recorded as `rehearsed`, never as delivered.
+   * was injected or config.json `alerts.transport` made it ready (Telegram), or the synthetic rehearsal transport. The
+   * owner's alert rules decide first (alerts.mjs alertDecision): a muted entry is closed as `muted`, and one held by quiet
+   * hours stays pending with no attempt counted. The attempt is counted before the effect. A transport that deduplicates
+   * by key (the rehearsal one) is simply tried again after a crash (at-least-once). One whose provider cannot deduplicate
+   * (`dedup: 'none'`, Telegram) marks the entry `sending` before the effect: an entry still `sending` after a restart, a
+   * lost lease or an answer that may have arrived becomes `unknown` and is never sent again, so the owner gets no
+   * duplicate. An answer that certainly reached nobody backs off and stops after MAX_NOTIFY_ATTEMPTS; one the provider
+   * refused (`rejected`) stops at once. A rehearsal is recorded as `rehearsed`, never as delivered.
    */
   async drainOwnerNotifications() {
     const live = this.config.ownerIntervention?.deliver === true && this.notifier?.live === true;
     if (!this.oi || !live && this.notifier?.rehearsal !== true) return;
+    const noProviderDedup = this.notifier.dedup === 'none';
+    for (const id of this.held.keys()) {
+      const stale = this.store.all("SELECT key FROM owner_notifications WHERE campaign_id = ? AND state = 'sending'", id)
+        .filter((row) => !this.notificationsInFlight.has(row.key));
+      if (!stale.length) continue;
+      try {
+        this.fenced({ id, generation: this.held.get(id) }, () => {
+          const at = this.now();
+          for (const { key } of stale) {
+            if (!this.store.run("UPDATE owner_notifications SET state = 'unknown', last_error = ?, updated_at = ? WHERE key = ? AND state = 'sending'",
+              'the supervisor stopped while sending; it may have arrived, so it is not sent again', at, key).changes) continue;
+            this.store.journal(id, 'owner-notification-unknown', { key, reason: 'interrupted' }, at);
+          }
+        });
+      } catch (error) {
+        if (!(error instanceof FencedError)) throw error;
+      }
+    }
     const now = this.now();
     const rules = currentAlertRules(this.store).rules;
     const items = [...this.held.keys()].flatMap((id) => this.store.all(
@@ -3289,30 +3315,36 @@ export class Controller {
         }
         const claimed = this.fenced(ctx, () => {
           if (this.store.get('SELECT state FROM owner_notifications WHERE key = ?', item.key)?.state !== 'pending') return false;
-          this.store.run('UPDATE owner_notifications SET attempts = attempts + 1, updated_at = ? WHERE key = ?', this.now(), item.key);
+          this.store.run('UPDATE owner_notifications SET state = ?, attempts = attempts + 1, updated_at = ? WHERE key = ?',
+            noProviderDedup ? 'sending' : 'pending', this.now(), item.key);
           return true;
         });
         if (!claimed) continue;
         let receipt = null;
         let failure = null;
-        try { receipt = await this.notifier.send({ key: item.key, message: item.message, alert: renderAlert(item.message) }); } catch (error) { failure = error; }
-        this.fenced(ctx, () => {
-          const at = this.now();
-          if (!failure && !live && receipt?.rehearsed === true) {
-            this.store.run("UPDATE owner_notifications SET state = 'rehearsed', last_error = NULL, updated_at = ? WHERE key = ?", at, item.key);
-            this.store.journal(item.campaign_id, 'owner-notification-rehearsed', { key: item.key, transport: this.notifier.name }, at);
-            return;
-          }
-          if (!failure && live && receipt?.delivered === true) {
-            this.store.run("UPDATE owner_notifications SET state = 'delivered', delivered_at = ?, last_error = NULL, updated_at = ? WHERE key = ?", at, at, item.key);
-            this.store.journal(item.campaign_id, 'owner-notification-delivered', { key: item.key, transport: this.notifier.name }, at);
-            return;
-          }
-          const detail = redact(failure ? failure.message : `not delivered: ${receipt?.receipt ?? 'no receipt'}`, 300);
-          const state = item.attempts + 1 >= MAX_NOTIFY_ATTEMPTS ? 'failed' : 'pending';
-          this.store.run('UPDATE owner_notifications SET state = ?, last_error = ?, updated_at = ? WHERE key = ?', state, detail, at, item.key);
-          if (state === 'failed') this.store.journal(item.campaign_id, 'owner-notification-failed', { key: item.key, detail }, at);
-        });
+        this.notificationsInFlight.add(item.key);
+        try {
+          try { receipt = await this.notifier.send({ key: item.key, message: item.message, alert: renderAlert(item.message) }); } catch (error) { failure = error; }
+          this.fenced(ctx, () => {
+            const at = this.now();
+            if (!failure && !live && receipt?.rehearsed === true) {
+              this.store.run("UPDATE owner_notifications SET state = 'rehearsed', last_error = NULL, updated_at = ? WHERE key = ?", at, item.key);
+              this.store.journal(item.campaign_id, 'owner-notification-rehearsed', { key: item.key, transport: this.notifier.name }, at);
+              return;
+            }
+            if (!failure && live && receipt?.delivered === true) {
+              this.store.run("UPDATE owner_notifications SET state = 'delivered', delivered_at = ?, last_error = NULL, updated_at = ? WHERE key = ?", at, at, item.key);
+              this.store.journal(item.campaign_id, 'owner-notification-delivered', { key: item.key, transport: this.notifier.name }, at);
+              return;
+            }
+            const detail = redact(failure ? failure.message : `not delivered: ${receipt?.receipt ?? 'no receipt'}`, 300);
+            // A transport whose provider cannot deduplicate is never sent the same entry again unless it said nothing arrived.
+            const unknown = !failure && receipt?.outcome === 'unknown' || noProviderDedup && (failure || !['retry', 'rejected'].includes(receipt?.outcome));
+            const state = unknown ? 'unknown' : receipt?.outcome === 'rejected' || item.attempts + 1 >= MAX_NOTIFY_ATTEMPTS ? 'failed' : 'pending';
+            this.store.run('UPDATE owner_notifications SET state = ?, last_error = ?, updated_at = ? WHERE key = ?', state, detail, at, item.key);
+            if (state !== 'pending') this.store.journal(item.campaign_id, `owner-notification-${state}`, { key: item.key, detail }, at);
+          });
+        } finally { this.notificationsInFlight.delete(item.key); }
         if (failure) this.log(`owner notification ${item.key}: ${redact(failure.message, 300)}`);
       } catch (error) {
         if (!(error instanceof FencedError)) throw error;
