@@ -9,13 +9,14 @@
 import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const CHROME = ['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe']
   .find((path) => existsSync(path));
+const FICTIONAL_HOST = 'Example PC';
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const git = (cwd, ...args) => {
   const out = spawnSync('git', ['-c', 'user.name=Journey Owner', '-c', 'user.email=owner@example.invalid', ...args],
@@ -162,10 +163,19 @@ export async function page(devtools) {
   return {
     send, evaluate, events, close: () => socket.close(),
     viewport: (width, height, mobile = false) => send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile }),
+    // The page names this computer, the one real detail it shows: a screenshot names a fictional computer instead, and
+    // is taken again when a refresh put the real name back while it was captured.
     screenshot: async (path, { full = false } = {}) => {
       const size = full ? (await send('Page.getLayoutMetrics')).cssContentSize : null;
       const clip = size ? { x: 0, y: 0, width: size.width, height: Math.min(size.height, 6000), scale: 1 } : undefined;
-      writeFileSync(path, Buffer.from((await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: full, ...(clip ? { clip } : {}) })).data, 'base64'));
+      const name = JSON.stringify(hostname());
+      for (let attempt = 1; ; attempt++) {
+        await evaluate(`(() => { const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+          for (let n; (n = w.nextNode());) if (n.nodeValue.includes(${name})) n.nodeValue = n.nodeValue.replaceAll(${name}, ${JSON.stringify(FICTIONAL_HOST)}); })()`);
+        const { data } = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: full, ...(clip ? { clip } : {}) });
+        if (!(await evaluate(`document.body.innerText.includes(${name})`))) { writeFileSync(path, Buffer.from(data, 'base64')); return; }
+        if (attempt === 5) throw new Error(`screenshot ${path}: the page kept naming this computer`);
+      }
     },
     navigate: async (url) => { await send('Page.navigate', { url }); await sleep(1500); },
   };
