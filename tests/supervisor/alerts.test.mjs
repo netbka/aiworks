@@ -1,7 +1,9 @@
 // OWNER_UI_V2 WP6: owner alerts. Without a transport nothing is sent; the synthetic rehearsal transport records each
 // alert once across a restart with secrets redacted and never claims a delivery; quiet hours hold an alert without
-// spending its retries, a muted kind is never sent, and failures stop after a bounded number of attempts.
-// Synthetic store and fictional data only; no network.
+// spending its retries, a muted kind is never sent, and failures stop after a bounded number of attempts. The Telegram
+// adapter sends only when explicitly configured, resolves its references only inside a send, records neither them nor
+// their values, and never sends again an alert that may have arrived. Synthetic store, a synthetic secret store and a
+// synthetic network only: no real credential is read and no request leaves this computer.
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -20,7 +22,7 @@ const AT_2300_UTC = Date.UTC(2026, 9, 19, 23, 0);
 const AT_0800_UTC = Date.UTC(2026, 9, 20, 8, 0);
 
 /** A store and a controller over it; `restart()` builds a fresh controller on the same store, `drain()` runs one tick's drain. */
-function harness(t, config = {}, notifier = undefined) {
+function harness(t, config = {}, notifier = undefined, alertDeps = undefined) {
   const dataDir = mkdtempSync(join(tmpdir(), 'aiworks-alerts-'));
   const store = new Store(join(dataDir, 'supervisor.db'));
   t.after(() => { store.close(); rmSync(dataDir, { recursive: true, force: true }); });
@@ -28,7 +30,7 @@ function harness(t, config = {}, notifier = undefined) {
   const logs = [];
   const restart = () => {
     const controller = new Controller({ store, dataDir, now: () => clock.now, log: (line) => logs.push(line), instanceId: 'alerts-instance',
-      config: { ...FAST, ownerIntervention: { enabled: true }, ...config }, ...(notifier ? { notifier } : {}) });
+      config: { ...FAST, ownerIntervention: { enabled: true }, ...config }, ...(notifier ? { notifier } : {}), ...(alertDeps ? { alertDeps } : {}) });
     // One supervisor tick's drain, holding the campaign lease as the tick would.
     return { drain: () => {
       controller.held.set(CAMPAIGN, store.acquireLease(CAMPAIGN, 'alerts-instance', clock.now, FAST.leaseMs).generation);
@@ -98,4 +100,74 @@ test('quiet hours hold an alert without spending its retries, a muted kind is ne
   const liveController = live.restart();
   for (let i = 0; i < 12; i += 1) { await liveController.drain(); live.clock.now += 10_000; }
   assert.deepEqual([live.row('n1').state, live.row('n1').attempts, sent.length], ['failed', 5, 5]);
+});
+
+// Fictional Telegram values, built at run time; the synthetic secret store is the only place they exist.
+const BOT_VALUE = ['123456', 'Fictional_bot_value_fictional_value_1'].join(':');
+const CHAT_VALUE = '-100' + '987654321';
+const TELEGRAM = { kind: 'telegram', secretRef: 'windows:aiworks-alerts/bot', recipientRef: 'windows:aiworks-alerts/chat' };
+/** A synthetic secret store and network: every resolve and request is recorded; `answer(text)` decides each reply. */
+function telegramFakes(answer) {
+  const resolved = [], requests = [];
+  const values = { [TELEGRAM.secretRef]: BOT_VALUE, [TELEGRAM.recipientRef]: CHAT_VALUE };
+  return { resolved, requests, deps: {
+    resolve: (ref) => { resolved.push(ref); return values[ref] ?? null; },
+    request: async (url, init) => {
+      const body = JSON.parse(init.body);
+      requests.push({ url, body });
+      return answer(body.text);
+    },
+  } };
+}
+const replied = (status, value) => ({ status, text: async () => JSON.stringify(value) });
+
+test('Telegram sends only when explicitly configured, resolves its references inside the send only, and records neither them nor their values', { skip }, async (t) => {
+  const fakes = telegramFakes(() => replied(200, { ok: true, result: { message_id: 7 } }));
+  for (const config of [{ alerts: { transport: TELEGRAM } },
+    { ownerIntervention: { enabled: true, deliver: true }, alerts: { transport: { kind: 'telegram', secretRef: TELEGRAM.secretRef } } },
+    { ownerIntervention: { enabled: true, deliver: true }, alerts: { transport: { ...TELEGRAM, recipientRef: 'vault:aiworks-alerts/chat' } } }]) {
+    const { restart, notify, row } = harness(t, config, undefined, fakes.deps);
+    notify('n1', 'B3');
+    await restart().drain();
+    assert.deepEqual({ ...row('n1') }, { state: 'pending', attempts: 0, delivered_at: null });
+  }
+  assert.deepEqual([fakes.resolved.length, fakes.requests.length], [0, 0], 'nothing resolved or sent without the full setting and deliver');
+
+  const token = 'ghp_' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8';
+  const { store, clock, logs, restart, notify, row } = harness(t, { ownerIntervention: { enabled: true, deliver: true }, alerts: { transport: TELEGRAM } }, undefined, fakes.deps);
+  notify('n1', 'B3', 'initial', `Sign in again; the old token=${token} expired.`);
+  const controller = restart();
+  assert.equal(fakes.resolved.length, 0, 'nothing is resolved before a send');
+  await controller.drain();
+  clock.now += 3_600_000;
+  await controller.drain();
+  assert.equal(row('n1').state, 'delivered');
+  assert.equal(fakes.requests.length, 1, 'delivered once');
+  const [{ url, body }] = fakes.requests;
+  assert.ok(url.startsWith('https://api.telegram.org/bot') && url.endsWith('/sendMessage'), 'only sendMessage is called');
+  assert.deepEqual(Object.keys(body).sort(), ['chat_id', 'link_preview_options', 'text'], 'no buttons that act, no markup');
+  assert.ok(!body.text.includes(token), 'the alert text is redacted');
+  const recorded = JSON.stringify([logs, store.all('SELECT * FROM journal'), store.all('SELECT * FROM owner_notifications')]);
+  for (const value of [BOT_VALUE, CHAT_VALUE, TELEGRAM.secretRef, TELEGRAM.recipientRef]) assert.ok(!recorded.includes(value), 'nothing secret is recorded');
+});
+
+test('a Telegram alert that may have arrived is never sent again; one that reached nobody is retried a bounded number of times', { skip }, async (t) => {
+  const answers = {
+    timeout: () => { throw Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }); },
+    gateway: () => replied(502, { ok: false }),
+    refused: () => { throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }); },
+    rejected: () => replied(400, { ok: false, description: `Bad Request: chat ${CHAT_VALUE} not found for bot${BOT_VALUE}` }),
+  };
+  const fakes = telegramFakes((text) => answers[Object.keys(answers).find((name) => text.includes(`case ${name}`))]());
+  const { store, clock, restart, notify, row } = harness(t, { ownerIntervention: { enabled: true, deliver: true }, alerts: { transport: TELEGRAM } }, undefined, fakes.deps);
+  for (const name of [...Object.keys(answers), 'interrupted']) notify(name, 'B2', 'initial', `Fictional case ${name}.`);
+  // A previous run claimed this one and stopped before Telegram answered.
+  store.run("UPDATE owner_notifications SET state = 'sending', attempts = 1 WHERE key = 'interrupted'");
+  const controller = restart();
+  for (let i = 0; i < 12; i += 1) { await controller.drain(); clock.now += 3_600_000; }
+  const sent = (name) => fakes.requests.filter((r) => r.body.text.includes(`case ${name}`)).length;
+  assert.deepEqual(['timeout', 'gateway', 'interrupted', 'refused', 'rejected'].map((name) => [name, row(name).state, sent(name)]),
+    [['timeout', 'unknown', 1], ['gateway', 'unknown', 1], ['interrupted', 'unknown', 0], ['refused', 'failed', 5], ['rejected', 'failed', 1]]);
+  const recorded = JSON.stringify([store.all('SELECT * FROM journal'), store.all('SELECT * FROM owner_notifications')]);
+  assert.ok(!recorded.includes(BOT_VALUE) && !recorded.includes(CHAT_VALUE), "the provider's answer is cleaned of both values");
 });

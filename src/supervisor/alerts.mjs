@@ -5,16 +5,20 @@
 // - Alert rules and quiet hours are the owner's, kept as append-only versions in `alert_rules` and saved only from the
 //   dashboard after the caller check. Version 0 (nothing saved) alerts on B2, B3 and B5, with reminders and no quiet hours.
 // - The transport is chosen by the operator in config.json `alerts.transport`. A credential is named only by a reference
-//   into the operator's secret store (`secretRef`, `recipientRef`); this module never resolves one and never returns,
-//   logs or stores a reference's value. No adapter that leaves this computer is built: any kind but `synthetic` reads
-//   as unavailable and nothing is sent. `synthetic` is a rehearsal transport: it records the rendered alert in
-//   `alert_rehearsals` on this computer, once per notification key, and never reports a delivery.
+//   into the operator's secret store (`secretRef`, `recipientRef`); this module never returns, logs or stores a
+//   reference or its value. `synthetic` is a rehearsal transport: it records the rendered alert in `alert_rehearsals` on
+//   this computer, once per notification key, and never reports a delivery. `telegram` (alert-telegram.mjs) is the one
+//   adapter that leaves this computer: it is ready only with both references in a secret store it can read, its
+//   references are resolved inside each send only, and it sends only while `ownerIntervention.deliver` is also true.
+//   Any other kind reads as unavailable and nothing is sent.
 // - An alert carries no authority. Its buttons are dashboard addresses on this computer; an answer is given only on the
 //   dashboard, through the same caller, CSRF, task, version, authorization and scope checks as every decision there.
 import { createHash } from 'node:crypto';
 import { canonicalJson } from './campaign.mjs';
 import { redact } from './owner-intervention.mjs';
 import { containsKnownSecretValue } from '../shared/credential-metadata.mjs';
+import { telegramTransport } from './alert-telegram.mjs';
+import { commandCredentialStore, validCredentialRef, windowsCredentialStore } from './release/credential.mjs';
 
 export class AlertRulesError extends Error {
   constructor(code, message) { super(message); this.name = 'AlertRulesError'; this.code = code; }
@@ -125,11 +129,28 @@ export function alertDecision(item, rules, now) {
 // A secret store reference: `<store>:<path>`, such as `vault:alerts/bot`. It names where the credential is; it is not one.
 const REFERENCE = /^[a-z][a-z0-9-]{1,31}:[A-Za-z0-9_./-]{1,200}$/;
 const safeReference = (value) => typeof value === 'string' && REFERENCE.test(value) && !containsKnownSecretValue(value) && redact(value, 300) === value;
+const splitReference = (value) => { const at = value.indexOf(':'); return [value.slice(0, at), value.slice(at + 1)]; };
+const helperCommand = (config) => {
+  const command = config?.commands?.credentialHelper;
+  return Array.isArray(command) && command.length && command.every((part) => typeof part === 'string' && part) ? command : null;
+};
+/**
+ * Secret stores a Telegram reference may name: `windows:<name>` (a generic credential in the Windows Credential Manager)
+ * or `helper:<name>` (the operator's credential helper command, config.json `commands.credentialHelper`, asked
+ * `get <name>`). The name is a short path-like name. Whether a store can be read is not checked here: that is a send.
+ */
+const readableReference = (value, config) => {
+  const [store, name] = splitReference(value);
+  return validCredentialRef(name) && (store === 'windows' || store === 'helper' && helperCommand(config) !== null);
+};
 
 /**
- * The operator's transport setting (config.json `alerts.transport`), as states only; never a reference's value.
+ * The operator's transport setting (config.json `alerts.transport`), as states only; never a reference or its value.
  *   unconfigured  no transport: notifications stay in the outbox on this computer and are shown in Needs me;
  *   rehearsal     the synthetic transport: alerts are recorded on this computer, nothing is sent;
+ *   ready         Telegram with a credential and a recipient reference in a store AIWorks can read; it sends only while
+ *                 `ownerIntervention.enabled` and `ownerIntervention.deliver` are both true;
+ *   incomplete    Telegram without both references, or naming a store AIWorks cannot read: nothing is sent;
  *   unavailable   a kind with no adapter in this version: nothing is sent;
  *   invalid       a setting that is not a kind with secret store references (for example a credential value): nothing is sent.
  */
@@ -143,7 +164,38 @@ export function transportSetup(config) {
   }
   const references = ['secretRef', 'recipientRef'].filter((key) => value[key] !== undefined);
   if (value.kind === 'synthetic') return { state: references.length ? 'invalid' : 'rehearsal', kind: 'synthetic', references: [] };
+  if (value.kind === 'telegram') {
+    const ready = references.length === 2 && value.secretRef !== value.recipientRef && references.every((key) => readableReference(value[key], config));
+    return { state: ready ? 'ready' : 'incomplete', kind: 'telegram', references };
+  }
   return { state: 'unavailable', kind: value.kind, references };
+}
+
+/**
+ * Resolve one secret store reference to its value, for the one send that needs it. Never called outside a send; the
+ * value goes to the caller only. Absent is null; a store that cannot tell throws.
+ */
+export function referenceResolver(config, { windows = windowsCredentialStore, command = commandCredentialStore } = {}) {
+  return (reference) => {
+    if (!safeReference(reference) || !readableReference(reference, config)) throw new Error('not a readable secret store reference');
+    const [store, name] = splitReference(reference);
+    const value = (store === 'windows' ? windows() : command(helperCommand(config))).get(name);
+    return typeof value === 'string' && value.length ? value : null;
+  };
+}
+
+/**
+ * The transport config.json chooses: the synthetic rehearsal one, Telegram when it is ready, or null (nothing leaves
+ * this computer). `resolve` and `request` replace the operator's secret store and the network; only tests pass them.
+ */
+export function configuredTransport(config, { store, now = () => Date.now(), resolve, request } = {}) {
+  const setup = transportSetup(config);
+  if (setup.state === 'rehearsal') return syntheticTransport(store, now);
+  if (setup.state === 'ready') {
+    const { secretRef, recipientRef } = config.alerts.transport;
+    return telegramTransport({ secretRef, recipientRef }, { resolve: resolve ?? referenceResolver(config), ...(request ? { request } : {}) });
+  }
+  return null;
 }
 
 const LABEL = { B2: 'Action required', B3: 'Decision required', B4: 'External wait', B5: 'Incident' };
@@ -173,7 +225,7 @@ export function renderAlert(message) {
  */
 export function syntheticTransport(store, now = () => Date.now()) {
   return Object.freeze({
-    name: 'synthetic', live: false, rehearsal: true,
+    name: 'synthetic', live: false, rehearsal: true, dedup: 'key',
     async send({ key, alert }) {
       const info = store.run('INSERT OR IGNORE INTO alert_rehearsals (key, alert, recorded_at) VALUES (?, ?, ?)', key, alert, now());
       return { delivered: false, rehearsed: true, duplicate: info.changes === 0 };

@@ -1,6 +1,6 @@
 // aiworks#1 owner-intervention core (governance provider's docs/OWNER_INTERVENTION.md, OPS-001). Pure helpers the controller uses to
 // fingerprint, deduplicate and recheck B2-B5 blockers and to record what an owner notification would say.
-// Nothing here reads credentials or talks to a network: the only transport is the no-op one below.
+// Nothing here reads credentials or talks to a network: the transport here is the no-op one below.
 import { createHash } from 'node:crypto';
 
 // B0 (transient) and B1 (agent-resolvable) are handled by retry, backoff and fallback; they never create a
@@ -100,9 +100,11 @@ export function ownerMessage({ record, kind, parents, repository, trackingIssue,
 }
 
 /**
- * Notification transport interface: `{ name, live, send({ key, message }) -> Promise<{ delivered, receipt? }> }`.
- * `key` is stable across retries so a real transport can deduplicate at-least-once delivery. This repository
- * ships only the no-op transport; with it the outbox records what would be sent and nothing leaves the host.
+ * Notification transport interface: `{ name, live, dedup?, send({ key, message, alert }) -> Promise<{ delivered,
+ * outcome?, receipt? }> }`. `key` is stable across retries so a transport that deduplicates by key (`dedup: 'key'`) can
+ * take at-least-once delivery; one whose provider cannot (`dedup: 'none'`) says `outcome` `retry` only when nothing
+ * arrived, and is never retried otherwise. The default is this no-op transport: the outbox records what would be sent
+ * and nothing leaves the host. The rehearsal and Telegram transports are in alerts.mjs and alert-telegram.mjs.
  */
 export const noopTransport = Object.freeze({
   name: 'none',
