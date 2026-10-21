@@ -1026,11 +1026,13 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
     const view = coordinatorView(store, readConfig(dataDir), now);
     // `reading`: the request reader holds a live lease, so a waiting request is known to be picked up (aiworks#11 review 4 F12).
     const reading = Boolean(store.get('SELECT 1 AS live FROM leases WHERE campaign_id = ? AND expires_at > ?', COORDINATOR_LANE, now));
+    // A reply's text and its proposed campaign are separate results, each checked on its own (coordinatorView).
+    const shown = (text) => (text ? textChecks?.read(text, 61000).text ?? safeText(text, 61000) : null);
     const coordinator = { configured: view.configured, configError: view.configError ? safeText(view.configError, 300) : null, reading,
       blocked: view.blocked ? safeText(view.blocked, 300) : null, reportTo: view.reportTo ?? null, runsToday: view.runsToday ?? 0, maxRunsPerDay: view.maxRunsPerDay ?? null,
-      messages: view.messages.map((m) => ({ id: m.id, text: textChecks?.read(m.text, 4000).text ?? safeText(m.text, 4000), source: safeText(m.source, 80), state: code(m.state),
+      messages: view.messages.map((m) => ({ id: m.id, threadId: m.threadId, text: textChecks?.read(m.text, 4000).text ?? safeText(m.text, 4000), source: safeText(m.source, 80), state: code(m.state),
         receivedAt: m.receivedAt, readAt: m.readAt, answeredAt: m.answeredAt, failure: code(m.failure), retryAt: m.retryAt, attempts: m.attempts,
-        repository: m.repository, replyBody: m.replyBody ? (textChecks?.read(m.replyBody, 61000).text ?? safeText(m.replyBody, 61000)) : null,
+        repository: m.repository, replyBody: shown(m.replyBody), replyCampaign: shown(m.replyCampaign),
         replyState: code(m.replyState), replyUrl: githubLink(m.replyUrl),
         progress: m.state === 'read' ? (() => {
           const run = view.runs.find((item) => item.id === m.runId);
@@ -1092,12 +1094,13 @@ function planRequest(store, dataDir, plan) {
 
 /**
  * Owner message to the coordinator. Returns the durable receipt; exact retries are acknowledged, not duplicated.
- * `input` is { requestId, text } for a free message, or { requestId, plan } for Start work: Plan only (slice S9).
+ * `input` is { requestId, text, threadId? } for a free message, threadId naming the chat it continues, or
+ * { requestId, plan } for Start work: Plan only (slice S9), which always starts a chat.
  */
 export function postMessage(dataDir, input, now = Date.now()) {
   const keys = input && typeof input === 'object' && !Array.isArray(input) ? Object.keys(input) : null;
   const isPlan = keys?.includes('plan') && !keys.includes('text');
-  if (!keys || keys.some((key) => !['requestId', isPlan ? 'plan' : 'text'].includes(key)) ||
+  if (!keys || keys.some((key) => !(isPlan ? ['requestId', 'plan'] : ['requestId', 'text', 'threadId']).includes(key)) ||
       (!isPlan && (typeof input.text !== 'string' || safeText(input.text, 4000) !== input.text))) {
     throw fail(400, 'Invalid message. Up to 4,000 characters, no secrets.');
   }
@@ -1106,7 +1109,7 @@ export function postMessage(dataDir, input, now = Date.now()) {
   try {
     const plan = isPlan ? planRequest(store, dataDir, input.plan) : null;
     const text = plan ? planRequestText(plan) : input.text;
-    return postOwnerMessage(store, { text, repository: plan?.project ?? null, requestId: input.requestId,
+    return postOwnerMessage(store, { text, repository: plan?.project ?? null, requestId: input.requestId, threadId: plan ? null : input.threadId ?? null,
       source: isPlan ? 'owner (Start work: Plan only)' : 'owner (dashboard)' }, now);
   } catch (error) {
     if (error.code === 'INVALID_MESSAGE') throw fail(400, error.message);
