@@ -16,6 +16,7 @@ import { applyCommand, applyCommand as applyMain, supervisorSnapshot } from '../
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
 import { ownerView } from '../../src/dashboard/owner.mjs';
 import { COMMANDS } from '../../src/dashboard/copy.mjs';
+import { postOwnerMessage, replyBody } from '../../src/supervisor/coordinator.mjs';
 
 test('completed campaigns do not appear offline or request controller recovery', (t) => {
   const { dataDir, store, d } = fixture(t);
@@ -59,6 +60,26 @@ function fixture(t) {
   };
   return { dataDir, store, d, payload };
 }
+
+test('a reply is shown without its flagged campaign, and a flagged reply text is still withheld', (t) => {
+  const { dataDir, store } = fixture(t);
+  writeFileSync(join(dataDir, 'config.json'), '{}');
+  const secret = 'https://example.test/?api_key=synthetic-value';
+  const answer = (reply, proposedCampaign) => {
+    const { id } = postOwnerMessage(store, { text: 'Plan the next wave.', requestId: randomUUID() });
+    const runId = `coordinator.${id}`, row = store.get('SELECT * FROM owner_messages WHERE id = ?', id);
+    store.run('INSERT INTO coordinator_replies (run_id, body) VALUES (?, ?)', runId,
+      replyBody({ runId, messages: [row], value: { summary: 'Synthetic summary.', reply, newWork: [], plan: 'Synthetic plan.', proposedCampaign } }));
+    store.run("UPDATE owner_messages SET state = 'answered', run_id = ?, answered_at = 1 WHERE id = ?", runId, id);
+    return id;
+  };
+  const clean = answer('Synthetic reply text.', `{ "authorization": { "grantedBy": "${secret}" } }`);
+  const flagged = answer(`Use ${secret}.`, '{ "version": 1 }');
+  const shown = (id) => supervisorSnapshot(dataDir).coordinator.messages.find((m) => m.id === id);
+  assert.ok(shown(clean).replyBody.includes('Synthetic reply text.'));
+  assert.ok(!JSON.stringify(shown(clean)).includes('synthetic-value'), 'the flagged campaign was shown');
+  assert.ok(!JSON.stringify(shown(flagged)).includes('synthetic-value'), 'a flagged reply text was shown');
+});
 
 test('roadmap includes every product phase, next increment and rollout package', () => {
   const entries = readRoadmap(resolve(import.meta.dirname, '../fixtures/governance'));
