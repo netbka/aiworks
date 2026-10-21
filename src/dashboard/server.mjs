@@ -4,9 +4,10 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
-import { supervisorSnapshot, applyCommand, applyDecision, applyResultReview, openResultPreview, applyScopedControl, postMessage, dashboardAccounts, removeDashboardAccount, configuredModelPreferences, saveDashboardModelPreferences } from './supervisor.mjs';
+import { supervisorSnapshot, applyCommand, applyDecision, applyResultReview, captureResultPreview, openResultPreview, previewStillChecked, applyScopedControl, postMessage, dashboardAccounts, removeDashboardAccount, configuredModelPreferences, saveDashboardModelPreferences } from './supervisor.mjs';
 import { Store } from '../supervisor/store.mjs';
 import { PREVIEW_POLICY, PreviewSessions } from '../supervisor/preview.mjs';
+import { PreviewCaptures } from '../supervisor/preview-capture.mjs';
 import { ownerView } from './owner.mjs';
 import { configuredMergeDelegation } from './merges.mjs';
 import { checkConnectedProject, configuredRepositories, confirmProjectRules, connectedProjects, connectProject, createSampleProject, disconnectConnectedProject, listConnectedProjects,
@@ -70,8 +71,10 @@ const pageNavigation = (req, path) => req.method === 'GET' && path === '/' && !r
 export function createDashboardServer({ dataDir, roadmap, merges = null, host = {}, releases = {}, projectConnection = {}, provenanceRoot = undefined, work = {},
   callerCheck = {}, workList = {} }) {
   const csrf = randomBytes(32).toString('hex');
-  // Previews of checked versions (WP7): in this process's memory only, each bound to one verified commit.
-  const previews = new PreviewSessions();
+  // Previews of checked versions (WP7): in this process's memory only, each bound to one verified commit, ending as soon
+  // as that commit is no longer the step's checked version. Screenshots of one run one at a time and stop with the server.
+  const previews = new PreviewSessions({ stillValid: (binding) => previewStillChecked(dataDir, binding) });
+  const captures = new PreviewCaptures({ root: join(dataDir, 'preview-captures') });
   const textChecks = new DisplayTextChecks();
   // Which machine and dashboard version this is, so a screenshot identifies its supervisor.
   const machine = { name: safeText(host.name ?? hostname(), 64) || null, revision: /^[0-9a-f]{7,40}$/.test(host.revision ?? '') ? host.revision : null,
@@ -265,6 +268,15 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       }
       // Preview of a checked version (WP7): bound to the same verified head and report as accept; it builds and starts nothing.
       if (path === '/api/v2/results/preview') return send(200, openResultPreview(dataDir, value, previews));
+      // Desktop and phone screenshots of that checked version, bound the same way. It starts the installation's Chrome, so the
+      // caller check runs first: a program AIWorks started cannot make it start a browser.
+      if (path === '/api/v2/results/preview/capture') {
+        await ownerCaller(dataDir, caller);
+        // A page that goes away before the answer cancels the capture, which stops its browser.
+        const gone = new AbortController();
+        res.once('close', () => { if (!res.writableEnded) gone.abort(); });
+        return send(200, await captureResultPreview(dataDir, value, captures, { signal: gone.signal }));
+      }
       // Mark the events up to a journal sequence as seen (the server-side last-seen marker, WP1).
       if (path === '/api/v2/events/seen') {
         const newest = withReadOnlyStore(dataDir, (store) => store.get('SELECT MAX(seq) AS seq FROM journal')?.seq ?? 0, null);
@@ -329,6 +341,6 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
   });
   server.requestTimeout = 10_000;
   server.headersTimeout = 10_000;
-  server.once('close', () => { void textChecks.close(); });
+  server.once('close', () => { void textChecks.close(); captures.close(); });
   return server;
 }
