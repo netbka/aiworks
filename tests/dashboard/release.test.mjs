@@ -29,7 +29,7 @@ const releaseRow = (d, taskId, fields) => ({ id: `sampleapp.production.${SHA}.${
   project: 'sampleapp', destination: 'production', campaign_id: d.campaignId, task_id: taskId, verified_sha: SHA, attempt: 1,
   steps: JSON.stringify(['merge', 'deploy', 'check']), instance_id: 'test', generation: 1, created_at: 1, updated_at: 2, ...fields });
 
-test('unknown is never shown as success: an open, unknown or unreadable release step is never Yes, and is a Needs me line', (t) => {
+test('unknown is never shown as success: an open, unknown or unreadable release step is never Yes, and is a Needs you line', (t) => {
   const { dataDir, store, d } = fixture(t);
   // T1: deploy started, then the outcome was lost. T2: a state and an outcome no release code writes.
   store.insert('releases', releaseRow(d, 'T1', { state: 'unknown', step: 'deploy', step_started_at: 5, history: JSON.stringify([
@@ -51,7 +51,7 @@ test('unknown is never shown as success: an open, unknown or unreadable release 
   assert.notEqual(answers(releaseLadder(task, { state: 'merged' }, null))['release-checked'], 'yes');
   // A project without GitHub shows no merge step.
   assert.ok(!releaseLadder(task, null, null, { github: false }).steps.some((step) => step.key === 'merged'));
-  // Both are owner lines in Needs me, counted.
+  // Both are owner lines in Needs you, counted.
   const view = ownerView(snapshot, { repositories: [], steps: {} });
   assert.equal(view.items.filter((item) => item.kind === 'release-unknown').length, 2);
   assert.ok(view.count >= 2);

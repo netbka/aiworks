@@ -78,7 +78,7 @@ When a wave of work ends, AIWorks may register the next wave itself, without a s
 - The owner approved one private program record once. It is digest-bound and kept outside source Git, like every declaration (AW-005, AW-009). It names the repository and base branch, the plan file, the slices allowed and the slices excluded, the executor chain and the constraints every task carries. Its version only goes up; a newer version replaces it.
 - The supervisor builds each wave's declaration from the plan on the trusted main by fixed rules, not by a model. The same plan revision and record always give the same declaration.
 - It registers a wave only when every slice fits the record exactly and the runtime passes the merged-code check of AW-005. A wave never starts while an earlier wave of the program has unfinished tasks.
-- Anything that does not fit is not registered. It becomes one Needs me item with the reason and the proposed declaration.
+- Anything that does not fit is not registered. It becomes one Needs you item with the reason and the proposed declaration.
 - Runbook-only slices, which change the live install, are never proposed.
 - `revoked: true` in the record, or a `PROGRAM-STOP` file in the data directory, stops every new wave at once.
 

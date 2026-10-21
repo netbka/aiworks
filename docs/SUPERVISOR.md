@@ -197,7 +197,7 @@ Merging used to be delegated to a monitoring session (`merges.delegatedTo: "moni
   }
   ```
 
-  Keep `decision`: without it the dashboard does not treat merging as delegated and lists verified PRs in **Needs me**. Like any runtime change, turning it on goes through the upgrade procedure (section 6).
+  Keep `decision`: without it the dashboard does not treat merging as delegated and lists verified PRs in **Needs you**. Like any runtime change, turning it on goes through the upgrade procedure (section 6).
 - **The gate.** Every condition must hold. Each repository is checked at most once per `integrationPollMs` (one minute), after a fresh fetch of its base:
   1. the repository is listed and the PR is not in `merges.held`;
   2. the PR is the one this campaign task opened, on its `campaign/<campaign>/<task>` branch, still open, against the declared base branch, and its head is the task's verified SHA;
@@ -679,7 +679,7 @@ Notification delivery: a transport is `{ name, live, dedup, send({ key, message,
 | The provider refused it (HTTP 4xx) or a resolved value is malformed | `failed` at once | No |
 | It may have arrived: a time-out, a reset, HTTP 5xx, an unreadable answer, an entry still `sending` after a restart or a lost lease | `unknown` (journal `owner-notification-unknown`) | Never |
 
-So an uncertain alert is never duplicated, and it is never lost either: the blocker it announced stays in Needs me, and its reminders, if on, are new messages under their own keys. A rate refusal waits the outbox backoff, not Telegram's `retry_after`.
+So an uncertain alert is never duplicated, and it is never lost either: the blocker it announced stays in Needs you, and its reminders, if on, are new messages under their own keys. A rate refusal waits the outbox backoff, not Telegram's `retry_after`.
 
 Alert rules and transports (OWNER_UI_V2 WP6, `src/supervisor/alerts.mjs`): before each send the owner's newest `alert_rules` decide. An entry whose class or reminders are off is closed as `muted` and never sent later; one inside quiet hours stays `pending` with no attempt counted and goes out when they end (an incident only breaks quiet hours when the owner allowed it). The per-blocker deduplication above is unchanged: one notification per fingerprint and episode, whichever transport is chosen. The operator chooses the transport in `config.json`:
 
@@ -846,7 +846,7 @@ What the controller does on each pass (slice PROG3; observed in code, verified b
 
 **What is not done yet (planned):**
 
-- The dashboard lists owner items per campaign only, so the misfit item is not yet shown under Needs me (unknown which slice adds it); it is in the store and the journal.
+- The dashboard lists owner items per campaign only, so the misfit item is not yet shown under Needs you (unknown which slice adds it); it is in the store and the journal.
 - PROG4 records the decision text. PROG5 approves the owner's first record and switches `program.enabled` on.
 
 ## 15. Cleanup after finished work (built, not enabled)

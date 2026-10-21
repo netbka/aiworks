@@ -201,7 +201,7 @@ function taskFacts(controller, campaigns, repoPath, baseSha) {
 }
 
 /**
- * One Needs me item for a wave that was not registered: a B3 blocker record (owner-intervention.mjs), one per program. A
+ * One Needs you item for a wave that was not registered: a B3 blocker record (owner-intervention.mjs), one per program. A
  * recurrence updates it; a changed reason or proposal is journaled as program-misfit with the proposed declaration.
  */
 function recordMisfit(controller, row, record, { wave, reason, proposal = null }) {
@@ -231,7 +231,7 @@ function recordMisfit(controller, row, record, { wave, reason, proposal = null }
         recordDigest: row.digest, declarationDigest: proposal?.digest ?? null, declaration: proposal?.declaration ?? null }, now);
     }
   });
-  controller.log(`program ${record.programId}: wave ${wave} not registered (Needs me): ${redact(reason, 300)}`);
+  controller.log(`program ${record.programId}: wave ${wave} not registered (Needs you): ${redact(reason, 300)}`);
   return { programId: record.programId, wave, registered: false, reason };
 }
 
@@ -314,7 +314,7 @@ function programWave(controller, row) {
  * (AW-005). Then each approved, unrevoked program is checked at most once an hour: while a wave of it has unfinished
  * tasks nothing happens; otherwise the plan is read from the fetched base branch, the ready slices become one declaration
  * (program-plan.mjs), and the wave is registered through campaignStart only if it fits the record exactly and its target
- * is a registered project. A wave that does not fit registers nothing and becomes one Needs me item. Returns one entry
+ * is a registered project. A wave that does not fit registers nothing and becomes one Needs you item. Returns one entry
  * per program checked (empty when off).
  */
 export function programPass(controller) {

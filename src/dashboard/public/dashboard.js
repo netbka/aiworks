@@ -1,4 +1,4 @@
-import { formatRoute, globalOf, resolveRoute, tabOf } from '/router.mjs';
+import { formatRoute, globalOf, resolveRoute, tabOf, tabRoute, TABS } from '/router.mjs';
 // The state copy of OWNER_WORKSPACE §7 and the Now screen (slice S4); the server serves src/dashboard/copy.mjs here.
 import { COMMANDS, DELEGATED, DIALOGS, NEEDS, NOT_READ, busyOnCommand, costRunsLine, nowView, readingLines, resultMeaning, stateCopy, workLine, DASHBOARD_VERSION, DASHBOARD_VERSION_NAME, DASHBOARD_VERSIONS } from '/copy.mjs';
 
@@ -54,6 +54,18 @@ const drafts = {
   get: (address, key) => readDrafts()[`${address} ${key}`] ?? null,
   set(address, key, value) { const all = readDrafts(); all[`${address} ${key}`] = value; writeDrafts(all); },
   delete(address, key) { const all = readDrafts(); delete all[`${address} ${key}`]; writeDrafts(all); },
+  // An old project tab address (#/p/<id>/work, results, cost or now) redirects to the tab its content moved to; what was
+  // typed there moves with it, and a draft already kept at the new address wins.
+  carry(from, to) {
+    if (from === to || !/^#\/p\/[^/]+\/(?:now|work|results|cost)$/.test(from)) return;
+    const all = readDrafts();
+    for (const key of Object.keys(all).filter((item) => item.startsWith(`${from} `))) {
+      const moved = `${to}${key.slice(from.length)}`;
+      if (!Object.hasOwn(all, moved)) all[moved] = all[key];
+      delete all[key];
+    }
+    writeDrafts(all);
+  },
 };
 
 // Elements that act when used (a click or submit handler): the refresh keeps one only while it shows exactly the same.
@@ -135,30 +147,36 @@ const routeLink = (text, route, cls = '') => el('a', { href: typeof route === 's
 // A connected project without GitHub is addressed by its project id and named by its own name.
 const projectName = (project) => state?.projects?.projects?.find((item) => !item.repository && item.id === project)?.name ?? (shortRepo(project) || project);
 // Each screen's heading and the one question it answers (OWNER_WORKSPACE §3.1).
-const screenText = { home: ['Home', 'What changed, and what needs me?'], projects: ['Projects', 'Which project should I open?'], needs: ['Needs me', 'What is waiting for me, across projects?'],
+const screenText = { home: ['Home', 'What changed, and what needs me?'], projects: ['Projects', 'Which project should I open?'], needs: ['Needs you', 'What is waiting for me, across projects?'],
   settings: ['Settings', 'What can AIWorks use on this computer?'], accounts: ['Worker accounts', 'Which AI worker logins and accounts are on this computer?'],
   version: ['Version and roadmap', 'Which capabilities are turned on in this version?'],
   instructions: ['Model instructions', 'Which AI models should handle what kind of work?'],
   messages: ['Messages', 'What did I ask AIWorks, and what did it answer?'],
-  diagnostics: ['Diagnostics', 'What exactly did the machine record?'], now: ['Overview', 'Where is the current goal?'],
+  diagnostics: ['Diagnostics', 'What exactly did the machine record?'], overview: ['Overview', 'Where is the current goal?'],
   connections: ['Connections', 'What does AIWorks use on this computer, and can it reach it?'],
   alerts: ['Alerts', 'When does AIWorks tell me that something needs me?'],
-  work: ['Work', 'What is running or waiting, and why?'], results: ['Results', 'What has been delivered, and what remains?'],
-  cost: ['Cost', 'What did this cost?'], step: ['Step', 'What is happening on this step?'], start: ['Plan work', 'Describe the result. AIWorks proposes the steps.'],
+  results: ['Review', 'Does the result do what was promised?'], step: ['Step', 'What is happening on this step?'], start: ['Plan work', 'Describe the result. AIWorks proposes the steps.'],
   review: ['Review', 'Is this the right goal and limits?'], plan: ['Plan', 'What will be true when this is done?'], 'add-project': ['Add project', 'Which folder should AIWorks work on?'],
   worklist: ['Work list', 'What is on AIWorks’s own work list?'], 'worklist-item': ['Work item', 'What does this item say, and what happened to it?'],
   'worklist-import': ['Imported issues', 'Which imported GitHub issues should be closed there?'],
   'project-settings': ['Project settings', 'What must AIWorks never change here, and what may it spend?'],
   knowledge: ['Knowledge', 'What does AIWorks know about this product?'], releases: ['Releases', 'What reached users, and what can be undone?'], usage: ['Usage', 'What has AIWorks used, and what is not known?'] };
-const screenKey = (route) => route.screen === 'settings' ? route.section ?? 'settings' : route.screen === 'project' ? route.tab : route.screen;
-const tabLabels = { now: 'Overview', work: 'Work', results: 'Results', cost: 'Cost' };
+// The Review tab is keyed apart from a plan's Review, which asks another question.
+const screenKey = (route) => route.screen === 'settings' ? route.section ?? 'settings' : route.screen === 'project' ? route.tab === 'review' ? 'results' : 'overview' : route.screen;
+const tabLabels = { overview: 'Overview', plan: 'Plan', review: 'Review', releases: 'Releases', knowledge: 'Knowledge' };
+// A project's release is configured once a release is recorded for it (AW-010): only then is Releases a tab.
+const releaseConfigured = (project) => (state?.supervisor?.releases ?? []).some((r) => sameProject(r.project ?? '', project)
+  || projectCampaigns(project).some((c) => c.id === r.campaignId));
+// A step whose result the owner reviews belongs to Review; any other step to Overview, whose details hold running work.
+const pageTab = (route) => route.screen === 'step' && Object.values(state?.owner?.results ?? {}).some((entry) => entry.groups.some((group) =>
+  group.rows.some((row) => row.review && row.campaignId === route.work && row.taskId === route.step))) ? 'review' : tabOf(route);
 
 /** The frame for the current address: heading, page title, aria-current in the global bar and the project tabs. */
 function showRoute() {
   const route = current.route, [title, question] = screenText[screenKey(route)];
   const project = route.project ?? null;
   $('#view-eyebrow').textContent = project ? `PROJECT · ${projectName(project).toUpperCase()}` : route.screen === 'settings' && route.section ? 'SETTINGS' : 'AIWORKS';
-  $('#view-title').textContent = project && route.screen === 'project' && route.tab === 'now' ? projectName(project) : route.screen === 'worklist-item' ? `${title} #${route.number}` : title;
+  $('#view-title').textContent = project && route.screen === 'project' && route.tab === 'overview' ? projectName(project) : route.screen === 'worklist-item' ? `${title} #${route.number}` : title;
   $('#view-description').textContent = question;
   $('#project-back').hidden = !project;
   document.title = [title, project ? projectName(project) : null, 'AIWorks'].filter(Boolean).join(' · ');
@@ -170,10 +188,7 @@ function showRoute() {
   const messages = $('#messages-link');
   if (route.screen === 'settings' && route.section === 'messages') messages.setAttribute('aria-current', 'page'); else messages.removeAttribute('aria-current');
   // Project tabs are links, not an ARIA tablist: each has its own address.
-  const tabs = $('#project-tabs'), tab = tabOf(route);
-  tabs.hidden = !project;
-  tabs.replaceChildren(...(project ? Object.entries(tabLabels).map(([id, label]) => el('a', { href: formatRoute({ screen: 'project', project, tab: id }),
-    class: `tab${id === tab ? ' active' : ''}`, 'aria-current': id === tab && route.screen === 'project' ? 'page' : null }, label)) : []));
+  showTabs();
   if (project && route.screen === 'project') writeLastProject(project);
   // The screen this project was left on, so coming back to the project opens it again (go(); aiworks#11 review F5).
   if (project) projectMemory.set(project.toLowerCase(), current.address);
@@ -182,8 +197,25 @@ function showRoute() {
   if (state) render();
 }
 
+/**
+ * The project tabs (OWNER_UI_V2 section 2). Releases is a tab only where a release is configured, or while it is the open
+ * screen. They depend on the state too, so each refresh checks them; unchanged tabs are kept, with their focus.
+ */
+function showTabs() {
+  const route = current.route, project = route.project ?? null, tabs = $('#project-tabs'), tab = project ? pageTab(route) : null;
+  const shown = project ? TABS.filter((id) => id !== 'releases' || tab === 'releases' || releaseConfigured(project)) : [];
+  const key = JSON.stringify([current.address, tab, shown]);
+  tabs.hidden = !project;
+  if (tabs.dataset.shown === key) return;
+  tabs.dataset.shown = key;
+  tabs.replaceChildren(...shown.map((id) => {
+    const href = formatRoute(tabRoute(project, id));
+    return el('a', { href, class: `tab${id === tab ? ' active' : ''}`, 'aria-current': href === current.address ? 'page' : null }, tabLabels[id]);
+  }));
+}
+
 // Today's summary cards, each on the screen that now answers it (OWNER_WORKSPACE §9): roadmap items on Diagnostics,
-// Needs you on Needs me, agents working on a project's Work. Cost so far is the headline of a project's Cost tab (S7).
+// Needs you on Needs you, agents working on a project's Work. Cost so far is the headline of a project's Cost tab (S7).
 function renderMetrics(campaigns = state.supervisor.campaigns, shown = []) {
   const entries = state.roadmap.entries;
   const agents = campaigns.flatMap((c) => c.agents);
@@ -208,7 +240,7 @@ function renderMetrics(campaigns = state.supervisor.campaigns, shown = []) {
     el('div', { class: 'metric-value number' }, String(value), total ? el('small', {}, total) : null), el('div', { class: 'metric-foot' }, foot))));
   $('#metrics').hidden = !shown.length;
   $('#metrics').classList.toggle('metrics-inline', shown.includes('AI workers working'));
-  // The Needs me count in the global bar: never zero while the supervisor state is unknown, and never final while a merge
+  // The Needs you count in the global bar: never zero while the supervisor state is unknown, and never final while a merge
   // check runs: "7 + checking" until it ends (OWNER_WORKSPACE §1 rule 3, §7.4; aiworks#11 review 4 F3).
   $('#needs-count').textContent = !state.supervisor.available ? '?' : attention ? `${attention}${unknown ? ' + checking' : ''}` : unknown ? 'checking' : '';
 }
@@ -503,7 +535,7 @@ function messageReceipt(m, coordinator, aiworks) {
     steps.push(m.failure === 'project-budget' ? receiptStep(false, 'Waiting for budget', 'the project budget cannot cover reading it. Raise or remove the budget in the project’s settings, or wait for next month if the monthly budget ran out; AIWorks reads it by itself when it fits', 'failed')
       : m.failure ? receiptStep(false, 'Retrying', `the last read ended without an answer (${outcomeLabels[m.failure] ?? m.failure}); next attempt ${dateTime(m.retryAt)}`, 'failed')
       : !coordinator.configured ? receiptStep(false, 'Not read', NOT_READ.receipt, 'failed')
-        : coordinator.blocked ? receiptStep(false, 'Not read yet', 'AIWorks cannot read requests right now; why is under Needs me', 'failed')
+        : coordinator.blocked ? receiptStep(false, 'Not read yet', 'AIWorks cannot read requests right now; why is under Needs you', 'failed')
         : coordinator.maxRunsPerDay !== null && coordinator.runsToday >= coordinator.maxRunsPerDay ? receiptStep(false, 'Waiting', `AIWorks has read today's ${coordinator.maxRunsPerDay} requests; it reads this one when the 24 hours free up`)
           : receiptStep(false, 'Waiting', waitingWords(coordinator, aiworks)));
   } else if (m.readAt) {
@@ -548,7 +580,7 @@ function messagesPanel(limit) {
   const items = coordinator.messages.slice(0, limit);
   // Sending is offered only while something reads messages; otherwise the panel says so and what to do instead.
   return panel('Your messages to AIWorks', coordinator.configured
-    ? `AIWorks reads them and changes nothing · replies stay in this dashboard · ${coordinator.runsToday}${coordinator.maxRunsPerDay === null ? '' : `/${coordinator.maxRunsPerDay}`} read in the last 24h${coordinator.blocked ? ' · not reading now; why is under Needs me' : ''}`
+    ? `AIWorks reads them and changes nothing · replies stay in this dashboard · ${coordinator.runsToday}${coordinator.maxRunsPerDay === null ? '' : `/${coordinator.maxRunsPerDay}`} read in the last 24h${coordinator.blocked ? ' · not reading now; why is under Needs you' : ''}`
     : null,
   el('div', {}, notRead(coordinator), items.length ? el('div', { class: 'instruction-list' }, ...items.map((m) => messageReceipt(m, coordinator, state.supervisor.controller)))
     : empty('No messages yet', coordinator.configured ? 'Use “New message” to ask for a review or a plan.' : '')),
@@ -655,7 +687,7 @@ function startScreen(project) {
   const local = Boolean(localProject(project));
   if (local && !doable) {
     return [empty('Confirm this project’s rules first.', state.work?.planAndDo ? 'You confirm them on its Overview. Then you can ask for a plan here and approve it.'
-      : 'Planning here is switched off in the AIWorks configuration file on this computer.'), routeLink('Open Overview', { screen: 'project', project, tab: 'now' }, 'button secondary')];
+      : 'Planning here is switched off in the AIWorks configuration file on this computer.'), routeLink('Open Overview', { screen: 'project', project, tab: 'overview' }, 'button secondary')];
   }
   if (!local && !projectCampaigns(project).length && projectList().find((item) => sameProject(item.id, project))?.kind !== 'GitHub') {
     return [empty('Plan only is not available for this project yet.', 'Planning for projects without a GitHub repository is not available yet.')];
@@ -868,7 +900,7 @@ function reviewScreen(project, id) {
   }
   const items = (values) => el('ul', {}, ...values.map((value) => el('li', {}, value)));
   const part = (title, ...body) => el('div', { class: 'review-part' }, el('h3', {}, title), ...body);
-  const status = plan.code === 'APPROVED' ? el('p', { class: 'notice' }, approvedText(plan.approvedAt), ' · ', routeLink('Open Work', { screen: 'project', project, tab: 'work' }))
+  const status = plan.code === 'APPROVED' ? el('p', { class: 'notice' }, approvedText(plan.approvedAt), ' · ', routeLink('Open Overview', { screen: 'project', project, tab: 'overview' }))
     : plan.code === 'DRAFT_STALE' ? el('p', { class: 'notice warning' }, `${projectName(project)} changed since this plan was drafted (${plan.staleWhat.join(', ') || 'its source changed'}). Draft it again before approving. `,
       routeLink('Plan again', { screen: 'start', project }))
       : plan.code === 'CONFLICT' ? el('p', { class: 'notice warning' }, 'This plan overlaps other work. Approve anyway and the overlapping step waits for it, or ask for a new plan without that step.')
@@ -1081,7 +1113,7 @@ async function approvePlan(project, plan) {
   const attempt = async () => {
     try {
       const result = await post('/api/work/approve', { requestId, plan: plan.id, version: plan.version, authorityDigest: plan.authorityDigest });
-      const work = formatRoute({ screen: 'project', project, tab: 'work' });
+      const work = formatRoute({ screen: 'project', project, tab: 'overview' });
       if (current.address === from) go(work);
       notice(approvedText(result.approvedAt), null, null, work);
     } catch (error) {
@@ -1100,7 +1132,7 @@ async function approvePlan(project, plan) {
 const localProject = (project) => projectList().find((item) => !item.repository && item.id === project) ?? null;
 const localWork = (project) => state.work?.local?.[project] ?? [];
 const LOCAL_CONTROL = { registered: 'Approved. AIWorks works on its own copy of your folder; nothing in your folder changes until you press Apply.',
-  paused: 'Paused. Nothing new starts until it is resumed.', finished: 'All steps are finished. The checked results are under Results.', cancelled: 'Cancelled.' };
+  paused: 'Paused. Nothing new starts until it is resumed.', finished: 'All steps are finished. The checked results are under Review.', cancelled: 'Cancelled.' };
 let applying = null;
 
 function localResultRow(row, c = null) {
@@ -1146,8 +1178,7 @@ function localNowScreen(row) {
     : active ? [el('strong', {}, `Working on: ${active.outcome}.`), ` ${LOCAL_CONTROL[active.control] ?? ''}`] : null;
   const head = line ? el('section', { class: 'panel', 'data-focus-scope': `now/${row.id}` }, el('div', { class: 'panel-body' },
     el('p', { role: 'status', 'aria-live': 'polite' }, ...line),
-    waiting ? routeLink('See results', { screen: 'project', project: row.id, tab: 'results' }, 'button')
-      : routeLink('Open Work', { screen: 'project', project: row.id, tab: 'work' }, 'button secondary'), plan)) : null;
+    waiting ? routeLink('See results', { screen: 'project', project: row.id, tab: 'review' }, 'button') : null, plan)) : null;
   return [head, overviewPanel(row.id), connectionPanel(row), line ? null : plan].filter(Boolean);
 }
 
@@ -1285,7 +1316,7 @@ function finishedList(list) {
 const mergeAsOf = (check) => `Merge check from ${!check.at ? 'an unknown time' : new Date(check.at).toDateString() === new Date().toDateString() ? timeOnly(check.at) : dateTime(check.at)}; ${
   check.reason === 'fetch-failed' ? 'the last fetch failed, retrying within 5 minutes' : 'checking again'}`;
 
-/** One Needs me row: what to do, then the subject (what the step delivers) with its link, then the evidence in one line. */
+/** One Needs you row: what to do, then the subject (what the step delivers) with its link, then the evidence in one line. */
 const needsItem = (item) => el('li', { class: `needs-item ${item.kind}` },
   el('div', { class: 'needs-body' },
     el('div', { class: 'needs-context' }, [item.about ? `Project ${projectName(item.about)}` : null,
@@ -1303,14 +1334,14 @@ const needsItem = (item) => el('li', { class: `needs-item ${item.kind}` },
     item.command ? el('div', { class: 'needs-actions' }, primaryAction(item.command)) : null) : null);
 
 /**
- * One Needs me group (OWNER_WORKSPACE S3): a project, named and linked to its own screen, or "AIWorks itself" (always
+ * One Needs you group (OWNER_WORKSPACE S3): a project, named and linked to its own screen, or "AIWorks itself" (always
  * last), with its count and its items in today's order.
  */
 const needsGroup = (group) => el('section', { class: 'needs-group', 'aria-labelledby': `needs-group-${group.key}`, 'data-focus-scope': `needs/${group.key}` },
   el('h3', { id: `needs-group-${group.key}`, class: 'section-title' }, group.project ? routeLink(group.name, { screen: 'project', project: group.project }) : group.name, NEEDS.groupCount(group.count, group.notCounted)),
   el('ul', { class: 'needs-list' }, ...group.items.map(needsItem)));
 
-/** Needs me: what is waiting for the owner, grouped by project, in plain words, each with the link to act on. */
+/** Needs you: what is waiting for the owner, grouped by project, in plain words, each with the link to act on. */
 function needsYou() {
   const owner = state.owner;
   if (!owner?.available) return null;
@@ -1395,7 +1426,7 @@ function attentionSummary() {
   const waiting = owner.count > 0, checking = owner.unknownResults > 0;
   return el('section', { class: `attention-summary${waiting ? '' : checking ? ' checking' : ' calm'}`, 'aria-label': 'What needs you' },
     el('div', {}, el('h2', {}, owner.headline), checking ? el('p', {}, `Merge of ${plural(owner.unknownResults, 'published step')} being checked.`) : null),
-    waiting || checking ? routeLink('Open Needs me →', { screen: 'needs' }, waiting ? 'button' : 'button secondary') : null);
+    waiting || checking ? routeLink('Open Needs you →', { screen: 'needs' }, waiting ? 'button' : 'button secondary') : null);
 }
 
 function projectsScreen() {
@@ -2152,7 +2183,7 @@ function modelInstructionsScreen() {
         el('p', { class: 'subtext' }, 'Model selection and priority order can be set in the configuration file under commands and accounts.')),
       el('li', {},
         el('strong', {}, 'Per Step Signatures'),
-        el('p', { class: 'subtext' }, 'Completed steps display model signatures (name, type, effort, and tokens) on the Step and Results screens.')))));
+        el('p', { class: 'subtext' }, 'Completed steps display model signatures (name, type, effort, and tokens) on the Step and Review screens.')))));
 
   return [back, overviewPanel, rolePanel, workTypePanel, effortPanel, configurePanel];
 }
@@ -2168,7 +2199,7 @@ function modelInstructionsScreen() {
 const EVENT_WORDS = { 'goal-started': 'Work started', paused: 'Paused', resumed: 'Resumed', cancelled: 'Cancel requested',
   'result-ready': 'Result ready for your review', accepted: 'You accepted a checked result', merged: 'Merged', built: 'Builder finished a run', checked: 'Passed the independent check',
   'check-rejected': 'The independent checker asked for changes', 'run-failed': 'An AI worker run did not finish; AIWorks retries by itself',
-  'limit-wait': 'Waiting for an AI worker limit', 'wait-ended': 'An AI worker can take work again', 'needs-you': 'Needs me',
+  'limit-wait': 'Waiting for an AI worker limit', 'wait-ended': 'An AI worker can take work again', 'needs-you': 'Needs you',
   'decision-cleared': 'A question for you was cleared', 'aiworks-problem': 'AIWorks had a problem of its own' };
 // The order of the one-line summary: what the owner acts on first.
 const EVENT_ORDER = ['needs-you', 'result-ready', 'accepted', 'merged', 'checked', 'check-rejected', 'paused', 'resumed', 'goal-started', 'cancelled',
@@ -2237,10 +2268,10 @@ function reviewList(rows, { scope, withProject = false }) {
     el('div', { class: 'panel-body', 'data-focus-scope': scope }, el('ul', { class: 'needs-list' }, ...rows.slice(0, 5).map((row) => el('li', { class: 'result-row', 'data-focus-scope': `${scope}/${row.campaignId}/${row.taskId}` },
       el('div', { class: 'needs-text' }, routeLink(row.review.label, row.review.address, 'needs-link'), el('span', {}, ` ${row.text}`)),
       el('div', { class: 'subtext' }, [withProject ? `Project ${projectName(row.project)}` : null, row.evidence].filter(Boolean).join(' · '))))),
-    rows.length > 5 ? el('p', { class: 'subtext' }, `And ${rows.length - 5} more under each project’s Results.`) : null));
+    rows.length > 5 ? el('p', { class: 'subtext' }, `And ${rows.length - 5} more under each project’s Review.`) : null));
 }
 
-/** The structured decision of a Needs me item that opens a step (WP2), with its step, or null when it has none to answer. */
+/** The structured decision of a Needs you item that opens a step (WP2), with its step, or null when it has none to answer. */
 function itemDecision(item) {
   const address = item?.kind === 'decision' ? item.route?.address : null;
   const c = address?.screen === 'step' ? campaignById(address.work) : null, task = c?.tasks.find((t) => t.id === address.step);
@@ -2261,13 +2292,13 @@ function homeScreen() {
     since.count ? button(seenBusy ? 'Marking…' : 'Mark as seen', markSeen, 'secondary small', seenBusy || offline) : null);
   const first = state.owner?.items?.[0], card = home.needsYou.count ? itemDecision(first) : null;
   // The first item's decision is answered here with the same card as on its step: options, suggestion, snooze, "did not need me".
-  const decision = panel('Needs me', home.needsYou.count ? 'The first decision; the rest are in Needs me.' : null, el('div', { class: 'panel-body', 'data-focus-scope': 'home/needs' },
+  const decision = panel('Needs you', home.needsYou.count ? 'The first decision; the rest are in Needs you.' : null, el('div', { class: 'panel-body', 'data-focus-scope': 'home/needs' },
     home.needsYou.count && first ? el('ul', { class: 'needs-list' }, needsItem(first)) : el('p', {}, 'Nothing needs you right now.'),
     card ? decisionPanel(card.c, card.task) : null,
-    home.needsYou.count > 1 ? routeLink(`All ${home.needsYou.count} in Needs me`, '#/needs', 'button secondary small') : null));
+    home.needsYou.count > 1 ? routeLink(`All ${home.needsYou.count} in Needs you`, '#/needs', 'button secondary small') : null));
   const projects = home.projects.length
     ? el('ul', { class: 'settings-links home-projects' }, ...home.projects.map((project) => el('li', { 'data-focus-scope': `home/project/${project.id}`, 'data-state': project.state.key },
-      routeLink(project.name, { screen: 'project', project: project.id, tab: 'now' }, 'task-name'), el('div', { class: 'subtext' }, project.state.text ?? 'Not known right now.'))))
+      routeLink(project.name, { screen: 'project', project: project.id, tab: 'overview' }, 'task-name'), el('div', { class: 'subtext' }, project.state.text ?? 'Not known right now.'))))
     : state.projects?.addProject ? el('div', { class: 'empty-state' }, el('strong', {}, 'No projects yet.'), ' Start from an idea or a folder on this computer. ',
       routeLink('Add project', { screen: 'add-project' }))
       : empty('No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository.');
@@ -2975,7 +3006,7 @@ function resultsScreen(project) {
   const results = state.owner?.results?.[String(project).toLowerCase()];
   if (!state.owner?.available) return unavailable();
   // The §7.1 empty copy, from the copy module through the owner view.
-  if (!results?.groups.length) return el('section', { class: 'panel' }, empty(state.owner.noResults.title, state.owner.noResults.text), el('div', { class: 'panel-body' }, releasesLink(project)));
+  if (!results?.groups.length) return el('section', { class: 'panel' }, empty(state.owner.noResults.title, state.owner.noResults.text));
   return el('section', { class: 'panel', 'aria-labelledby': 'results-title', 'data-focus-scope': `results/${project}` },
     el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'results-title' }, `${plural(results.total, 'result')}, grouped by state`)),
       results.primary?.route ? routeLink(results.primary.label, results.primary.route, 'button')
@@ -2983,8 +3014,8 @@ function resultsScreen(project) {
     ...results.groups.map((group) => el('section', { class: 'needs-group', 'aria-labelledby': `results-group-${group.key}` },
       el('h3', { id: `results-group-${group.key}`, class: 'section-title' }, `${group.title} (${group.count})`),
       el('ul', { class: 'needs-list' }, ...group.rows.map(resultRow)))),
-    // Stop all releases is reachable from every project's Results (AUTO_RELEASE.md section 9).
-    releaseStopLine(state.supervisor.settings?.releaseStop), releasesLink(project));
+    // Stop all releases is reachable from every project's Review (AUTO_RELEASE.md section 9).
+    releaseStopLine(state.supervisor.settings?.releaseStop));
 }
 
 /**
@@ -3048,19 +3079,21 @@ function costSummary(all, delivered) {
 }
 
 /**
- * A project's Cost tab (OWNER_WORKSPACE §4.10, slice S7). First what finished work reported, with work not finished yet
- * counted apart (costSummary) and the runs that reported no cost counted apart; then "See the breakdown": per piece of work and per step,
- * its runs, reported cost, unreported runs, retries and checker rejections. No primary action.
+ * What this project spent, on Overview's budget line (OWNER_UI_V2 screen 3; formerly the Cost tab, OWNER_WORKSPACE
+ * §4.10). First what finished work reported, with work not finished yet counted apart (costSummary) and the runs that
+ * reported no cost counted apart; then "See the breakdown": per piece of work and per step, its runs, reported cost,
+ * unreported runs, retries and checker rejections. No primary action.
  */
-function costScreen(project, all) {
-  const total = state.supervisor.costs?.find((item) => sameProject(item.repository, project));
+function spending(project) {
+  if (localProject(project)) return [el('p', { class: 'subtext' }, 'The cost of work in a project without GitHub is not added up on this page yet.')];
+  const total = state.supervisor.available ? state.supervisor.costs?.find((item) => sameProject(item.repository, project)) : null, all = projectCampaigns(project);
+  if (!total) return [];
   // Nothing has run: the §7.1 copy, which the server takes from the state copy module.
-  if (!total) return [unavailable()];
-  if (total.empty) return [empty(total.empty.title, total.empty.text)];
+  if (total.empty) return [el('p', {}, el('strong', {}, total.empty.title), ` ${total.empty.text}`)];
   const { headline, lines } = costSummary(all, (c) => ownerCampaign(c)?.counts.delivered ?? 0);
   if (costRunsLine(total)) lines.push(costRunsLine(total));
   const work = (c) => el('section', { class: 'panel', 'data-focus-scope': `cost/${c.id}` },
-    el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, campaignTitle(c)),
+    el('div', { class: 'panel-header' }, el('div', {}, el('h4', {}, campaignTitle(c)),
       el('p', {}, `${plural(c.runsUsed, 'run')} · ${costText({ runs: c.runsUsed, ...c.cost })}`),
       unitCostText(c.costByUnit) ? el('p', { class: 'subtext' }, `Tokens and dollars, each counted on its own: ${unitCostText(c.costByUnit)}`) : null)),
     el('div', { class: 'steps' }, table(['Step', 'Runs', 'Cost', 'Retries', 'Checker rejections'], runOrder(c).map((task) => el('tr', { 'data-focus-scope': `cost/${c.id}/${task.id}` },
@@ -3069,7 +3102,7 @@ function costScreen(project, all) {
       cell(String(stepRuns(task.cost))), cell(costText(task.cost), unitCostText(task.costByUnit) ? el('div', { class: 'subtext' }, unitCostText(task.costByUnit)) : null),
       cell(String(task.cost.retries)), cell(String(task.cost.checkerRejections)))))),
     costNotes(c).body);
-  return [el('section', { class: 'panel' }, el('h2', {}, headline), ...lines.map((line) => el('p', {}, line))),
+  return [el('h3', {}, headline), ...lines.map((line) => el('p', {}, line)),
     disclosure(`cost/${project}`, 'See the breakdown', el('div', {}, ...all.map(work)))];
 }
 
@@ -3097,7 +3130,7 @@ async function loadProjectSettings(project) {
   finally {
     entry.loading = false;
     // Project settings and the project's Overview, whose budget panel reads the same view.
-    const shown = current.route.screen === 'project-settings' || current.route.screen === 'project' && current.route.tab === 'now';
+    const shown = current.route.screen === 'project-settings' || current.route.screen === 'project' && current.route.tab === 'overview';
     if (shown && current.route.project === project && state && !document.querySelector('dialog[open]')) render();
   }
 }
@@ -3174,7 +3207,31 @@ function budgetPanel(project) {
       spendLine('This month (UTC)', spend.month, spend.unknownRunCostUsd),
       el('p', { class: 'subtext' }, set ? 'Counts this project’s AI worker runs and the planning of its goals. Change it in ' : 'No budget is set, so no dollar limit stops a step here; each goal still keeps its own limits. Set one in ', where, '.')];
   }
-  return panel('Budget', 'What this project has counted and what is left.', el('div', { class: 'panel-body', 'data-focus-scope': `overview/${project}/budget` }, ...body.filter(Boolean)));
+  // What was spent sits on the budget line; what AIWorks used across all projects is in Settings › Usage.
+  body.push(...spending(project), el('p', { class: 'subtext' }, 'Everything AIWorks used on this computer, in all projects: ',
+    routeLink('Settings › Usage', { screen: 'settings', section: 'usage' }), '.'));
+  return panel('Budget', 'What this project has counted, spent and has left.', el('div', { class: 'panel-body', 'data-focus-scope': `overview/${project}/budget` }, ...body.filter(Boolean)));
+}
+
+/**
+ * Running work and its steps, under Details on Overview (OWNER_UI_V2 section 2: technical detail opens in place; formerly
+ * the Work tab, OWNER_WORKSPACE §4.7). Each step opens its own screen. Null when nothing runs or waits here.
+ */
+function workDetails(project) {
+  if (!state.supervisor.available) return null;
+  let body = [];
+  if (localProject(project)) body = localWork(project).length ? localWorkScreen(project) : [];
+  else {
+    const cards = campaignLayout().cards.filter((c) => sameProject(c.repository, project));
+    if (cards.length) body = [...cards.map((c) => workPanel(project, c)), cards.some((c) => c.agents.length) ? verdictExplanation() : null,
+      cards.some((c) => !['finished', 'cancelled'].includes(c.control)) ? providerNote() : null].filter(Boolean);
+  }
+  if (!body.length) return null;
+  const agents = projectCampaigns(project).reduce((n, c) => n + c.agents.length, 0);
+  return el('section', { class: 'panel', 'aria-labelledby': `work-title-${project}` },
+    el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: `work-title-${project}` }, 'Running work'),
+      el('p', {}, agents ? `${plural(agents, 'AI worker')} working now. Each step, its runs and its checks are under Details.` : 'Steps, their runs and their checks are under Details.'))),
+    el('div', { class: 'panel-body' }, disclosure(`overview/${project}/work`, 'Details', el('div', {}, ...body))));
 }
 const settingsLink = (project) => el('p', { class: 'subtext' }, routeLink('Project settings', { screen: 'project-settings', project }),
   ': how work runs, what AIWorks never does, protected areas, notes for the AI and budget.');
@@ -3184,7 +3241,7 @@ function projectSettingsScreen(project) {
   if (!v) {
     if (!entry.error) return [empty('Reading this project’s settings…', '')];
     return [empty(entry.error.status === 404 ? 'This project is not on this computer' : entry.error.status === 409 ? 'No settings yet' : 'Not known right now', ` ${entry.error.message}`),
-      routeLink('Back to the overview', { screen: 'project', project, tab: 'now' }, 'button secondary')];
+      routeLink('Back to the overview', { screen: 'project', project, tab: 'overview' }, 'button secondary')];
   }
   const address = settingsAddress(project), draft = settingsDraft(project, v), limits = v.limits;
   const areas = el('textarea', { id: 'settings-areas', rows: 4, 'aria-describedby': 'settings-areas-help', oninput: () => save() });
@@ -3309,7 +3366,7 @@ async function saveSettings(project, body) {
  * Settings -> Alerts (OWNER_UI_V2 WP6): the owner's alert rules and quiet hours, the transport's state as the operator set
  * it, and what the rehearsal transport recorded. Read on their own (GET /api/v2/settings/alerts) when opened and at every
  * refresh while shown; the form is kept as typed and binds the version it was started from. An alert never answers a
- * decision: its buttons open this dashboard, where Needs me asks with the same checks as always.
+ * decision: its buttons open this dashboard, where Needs you asks with the same checks as always.
  */
 const alertsEntry = { view: null, error: null, loading: false, readAt: null };
 let alertsBusy = false;
@@ -3318,12 +3375,12 @@ const ALERTS_ADDRESS = '#/settings/alerts';
 const ALERT_CLASS_WORDS = { B2: ['Action required', 'Something only you can do, such as signing in again.'], B3: ['Decision required', 'A step waits for your choice.'],
   B4: ['External wait', 'A provider or service is unavailable; AIWorks rechecks by itself.'], B5: ['Incident', 'Something went wrong that AIWorks will not retry on its own.'] };
 const TRANSPORT_WORDS = {
-  unconfigured: 'Delivery unavailable: no alert transport is set up on this computer. Alerts wait in Needs me; nothing is sent.',
+  unconfigured: 'Delivery unavailable: no alert transport is set up on this computer. Alerts wait in Needs you; nothing is sent.',
   rehearsal: 'Rehearsal only: alerts are recorded on this computer as they would be sent. Nothing leaves this computer, and nothing is reported as delivered.',
   unavailable: 'Delivery unavailable: this version of AIWorks has no adapter for the transport in the configuration file, so nothing is sent.',
   incomplete: 'Delivery unavailable: Telegram needs both a credential reference and a recipient reference, each in a secret store AIWorks can read. Nothing is sent.',
   ready: 'Telegram is set up, but sending is switched off in the configuration file. Nothing is sent.',
-  sending: 'Alerts are sent to Telegram. A reply there does nothing: answer in Needs me on this computer. An alert whose arrival is unknown is not sent again.',
+  sending: 'Alerts are sent to Telegram. A reply there does nothing: answer in Needs you on this computer. An alert whose arrival is unknown is not sent again.',
   invalid: 'Delivery unavailable: the transport setting in the configuration file is not valid (it must name secret store references, never a credential). Nothing is sent.' };
 const DECISION_WORDS = { send: 'would be sent now', hold: 'would wait until quiet hours end', mute: 'would not be sent: its kind is off' };
 async function loadAlerts() {
@@ -3357,7 +3414,7 @@ function alertsParts() {
   return [
     el('p', { class: d.transport === 'rehearsal' || d.sending ? 'notice' : 'notice warning', role: 'status' },
       TRANSPORT_WORDS[d.sending ? 'sending' : d.transport] ?? TRANSPORT_WORDS.unconfigured),
-    d.recording ? null : el('p', { class: 'subtext' }, 'Owner alerts are not recorded on this computer yet: the owner-intervention setting is off. What needs you still shows in Needs me.'),
+    d.recording ? null : el('p', { class: 'subtext' }, 'Owner alerts are not recorded on this computer yet: the owner-intervention setting is off. What needs you still shows in Needs you.'),
     el('p', { class: 'subtext', role: 'status' }, v.version ? `Applied: version ${v.version}, saved ${clock(v.savedAt)}.${v.quietNow ? ' Quiet hours now.' : ''}` : 'Nothing saved yet: the default rules apply.'),
     alertsEntry.error || offline ? el('p', { class: 'needs-stale', role: 'status' }, `Shown as read at ${clock(alertsEntry.readAt)}. ${offline
       ? 'The page is disconnected; it reads these settings again when it reconnects.' : alertsEntry.error.message}`) : null,
@@ -3406,7 +3463,7 @@ function alertsScreen() {
       el('label', { class: 'field' }, el('strong', {}, 'Until'), end),
       el('label', { class: 'field' }, el('strong', {}, 'Time zone'), zone, el('span', { class: 'subtext' }, 'Such as Europe/Berlin or UTC.')),
       el('label', { class: 'choice' }, incidents, 'Incidents may still alert me during quiet hours')),
-    el('p', { class: 'subtext' }, 'An alert held by quiet hours is sent when they end. An alert whose kind is off is not sent later. Needs me always shows everything.'),
+    el('p', { class: 'subtext' }, 'An alert held by quiet hours is sent when they end. An alert whose kind is off is not sent later. Needs you always shows everything.'),
     el('button', { class: 'button', type: 'submit', disabled: alertsOff() }, 'Save alert rules'));
   return [el('section', { class: 'panel', 'aria-labelledby': 'alerts-title' },
     el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'alerts-title' }, 'Alerts'), el('p', {}, 'When AIWorks tells you that something needs you.'))),
@@ -3525,7 +3582,7 @@ function knowledgeScreen(project) {
   if (!v) {
     if (!entry.error) return [empty('Reading what AIWorks knows about this project…', '')];
     return [empty(entry.error.status === 404 ? 'This project is not on this computer' : 'Not known right now', ` ${entry.error.message}`),
-      routeLink('Back to the overview', { screen: 'project', project, tab: 'now' }, 'button secondary')];
+      routeLink('Back to the overview', { screen: 'project', project, tab: 'overview' }, 'button secondary')];
   }
   const address = knowledgeAddress(project), active = v.facts.filter((fact) => fact.state !== 'retired'), retired = v.facts.filter((fact) => fact.state === 'retired');
   const text = el('textarea', { id: 'fact-new', rows: 2, maxlength: v.limits.text, required: true, 'aria-describedby': 'fact-new-help', oninput: () => drafts.set(address, 'add', text.value) });
@@ -3673,7 +3730,7 @@ function releasesScreen(project) {
   if (!v) {
     if (!entry.error) return [empty('Reading the releases of this project…', '')];
     return [empty(entry.error.status === 404 ? 'This project is not on this computer' : 'Not known right now', ` ${entry.error.message}`),
-      routeLink('Back to results', { screen: 'project', project, tab: 'results' }, 'button secondary')];
+      routeLink('Back to Review', { screen: 'project', project, tab: 'review' }, 'button secondary')];
   }
   if (!v.available) return [unavailable()];
   const stale = entry.error || offline ? el('p', { class: 'needs-stale', role: 'status' }, `Shown as read at ${clock(entry.readAt)}. ${offline
@@ -3710,12 +3767,6 @@ async function checkSite(project, releaseId) {
     notice(error.known ? error.message : 'The check was not confirmed. Its answer shows here once AIWorks records it.', null, error.known ? error.detail : null, from);
   } finally { releaseBusy = false; await loadReleases(project); }
 }
-const releasesLink = (project) => el('p', { class: 'subtext' }, routeLink('Releases', { screen: 'releases', project }),
-  ': what reached users, its health, and what can be restored.');
-const planLink = (project) => el('p', { class: 'subtext' }, routeLink('Plan', { screen: 'plan', project }),
-  `: ${plural(projectPlans(project).length, 'plan')}, grouped Now, Next and Later, with each plan’s versions.`);
-const knowledgeLink = (project) => el('p', { class: 'subtext' }, routeLink('Knowledge', { screen: 'knowledge', project }),
-  ': what AIWorks knows about this product, and where each fact came from.');
 
 /** One act on a fact. A retry reuses its request id, so the server saves it once; a refusal keeps what was typed. True when saved. */
 async function saveFact(project, body) {
@@ -3792,8 +3843,9 @@ function usageScreen() {
 function projectScreen(route) {
   const project = route.project, all = projectCampaigns(project);
   // Now from the state copy module, for a project this computer knows (or while its state cannot be read).
-  if (route.screen === 'project' && route.tab === 'now' && (offline || !state.supervisor.available || all.length ||
-    projectList().some((item) => sameProject(item.id, project)))) return [...nowScreen(project), budgetPanel(project), planLink(project), settingsLink(project), knowledgeLink(project)];
+  // Overview (OWNER_UI_V2 screen 3): the goal, then the budget with what was spent, then running work under Details.
+  if (route.screen === 'project' && route.tab === 'overview' && (offline || !state.supervisor.available || all.length ||
+    projectList().some((item) => sameProject(item.id, project)))) return [...nowScreen(project), budgetPanel(project), workDetails(project), settingsLink(project)].filter(Boolean);
   // Project settings are read on their own, so they show whatever the supervisor's snapshot says (WP5).
   if (route.screen === 'project-settings') return projectSettingsScreen(project);
   // Knowledge is read on its own too (WP8).
@@ -3807,13 +3859,12 @@ function projectScreen(route) {
   }
   if (route.screen === 'review') return [...reviewScreen(project, route.plan), el('p', { class: 'subtext' }, routeLink('All plans for this project', { screen: 'plan', project }))];
   if (route.screen === 'plan') return planScreen(project);
-  // A project without GitHub: its Work and Results come from the work view; never a pull request (UI17). Earlier work and
+  // A project without GitHub: its work and results come from the work view; never a pull request (UI17). Earlier work and
   // results stay reachable after its rules are revoked, so an applied result can still be undone.
   const local = localProject(project);
   if (local && route.screen === 'project') {
-    if (route.tab === 'cost') return [empty('Not shown here yet.', 'The cost of work in a project without GitHub is not added up on this page yet.')];
     if (!localWork(project).length && !local.connection?.startWork.allowed) return [empty('No work yet.', local.connection?.startWork.text ?? '')];
-    return route.tab === 'results' ? localResultsScreen(project) : localWorkScreen(project);
+    return route.tab === 'review' ? localResultsScreen(project) : localWorkScreen(project);
   }
   // A connected project where work cannot start says what its Now says, never a reason that is not its own (review 5 G2).
   const cannot = !all.length ? projectList().find((item) => sameProject(item.id, project) && item.connection && !item.connection.startWork.allowed) : null;
@@ -3822,21 +3873,15 @@ function projectScreen(route) {
   if (!all.length && projectList().some((item) => sameProject(item.id, project))) return [empty('No work yet.', `Work in ${projectName(project)} appears here once it is registered on this computer. Starting work from this page is not built yet.`)];
   if (!all.length) return [empty('This project has no work on this computer', 'The address may be mistyped, or its work was removed.'), routeLink('All projects', '#/projects', 'button secondary')];
   const layout = campaignLayout(), mine = (list) => list.filter((c) => sameProject(c.repository, project));
-  // Campaigns with something for the owner and active ones get cards; finished ones are one line each, under Results.
+  // Campaigns with something for the owner and active ones get cards; finished ones are one line each, under Review.
   const cards = mine(layout.cards), finished = mine(layout.finished);
   if (route.screen === 'step') {
     const c = all.find((item) => item.id === route.work), task = c?.tasks.find((item) => item.id === route.step);
-    if (!task) return [empty('This step is not recorded for this project', 'It may belong to another project, or the address is mistyped.'), routeLink('All work in this project', { screen: 'project', project, tab: 'work' }, 'button secondary')];
+    if (!task) return [empty('This step is not recorded for this project', 'It may belong to another project, or the address is mistyped.'), routeLink('All work in this project', { screen: 'project', project, tab: 'overview' }, 'button secondary')];
     return stepScreen(project, c, task);
   }
-  if (route.tab === 'work') {
-    return [...cards.map((c) => workPanel(project, c)), cards.some((c) => c.agents.length) ? verdictExplanation() : null,
-      cards.some((c) => !['finished', 'cancelled'].includes(c.control)) ? providerNote() : null,
-      cards.length ? null : empty('Nothing is running or waiting in this project', 'Finished work is under Results.')].filter(Boolean);
-  }
-  if (route.tab === 'results') return [resultsScreen(project), finishedList(finished)].filter(Boolean);
-  if (route.tab === 'cost') return costScreen(project, all);
-  return cards.length ? [...cards.map((c) => campaignCard(c, false))] : [empty('No work is running in this project', 'Finished work and its results are under Results.')];
+  if (route.tab === 'review') return [resultsScreen(project), finishedList(finished)].filter(Boolean);
+  return cards.length ? [...cards.map((c) => campaignCard(c, false))] : [empty('No work is running in this project', 'Finished work and its results are under Review.')];
 }
 
 /*
@@ -4134,12 +4179,12 @@ function reuse(old, node) {
 
 function render() {
   if (!state) return;
+  showTabs();
   const content = $('#content'), route = current.route;
   const focusKey = (node) => JSON.stringify([node.closest('[data-focus-scope]')?.dataset.focusScope, node.tagName, node.getAttribute('href'), node.textContent]);
   const focused = content.contains(document.activeElement) ? focusKey(document.activeElement) : null;
   const diagnostics = route.screen === 'settings' && route.section === 'diagnostics';
-  renderMetrics(route.project ? projectCampaigns(route.project) : state.supervisor.campaigns, diagnostics ? ['Platform roadmap items']
-    : route.screen === 'project' && route.tab === 'work' ? ['AI workers working'] : []);
+  renderMetrics(route.project ? projectCampaigns(route.project) : state.supervisor.campaigns, diagnostics ? ['Platform roadmap items'] : []);
   if (route.screen === 'home') patch(content, homeScreen());
   else if (route.screen === 'needs') patch(content, [needsYou() ?? unavailable()]);
   else if (route.screen === 'settings' && route.section === 'connections') patch(content, connectionsScreen());
@@ -4170,7 +4215,7 @@ function render() {
   // Focus stays where it was; only when its element was replaced does it move to the one that took its place.
   if (focused && !content.contains(document.activeElement)) [...content.querySelectorAll('a, button, summary')].find((node) => focusKey(node) === focused)?.focus({ preventScroll: true });
   // How fresh a merge check is, and whether its last fetch failed, is said on the row that uses it (a step, a result, a
-  // Needs me item, Settings and Diagnostics), never page-wide (OWNER_WORKSPACE §7.4; aiworks#11 review F8).
+  // Needs you item, Settings and Diagnostics), never page-wide (OWNER_WORKSPACE §7.4; aiworks#11 review F8).
   const warning = $('#source-warning');
   warning.hidden = state.supervisor.available;
   warning.textContent = state.supervisor.available ? '' : state.supervisor.message ?? '';
@@ -4265,7 +4310,8 @@ try { history.scrollRestoration = 'manual'; } catch { /* the browser restores by
 function go(address, { restore = false } = {}) {
   scrollMemory.set(current.address, window.scrollY);
   let next = resolveRoute(address);
-  const left = !restore && next.route.screen === 'project' && next.route.tab === 'now' && !sameProject(next.route.project, current.route.project)
+  if (next.replace) drafts.carry(address, next.address);
+  const left = !restore && next.route.screen === 'project' && next.route.tab === 'overview' && !sameProject(next.route.project, current.route.project)
     ? projectMemory.get(next.route.project.toLowerCase()) : null;
   if (left) next = resolveRoute(left);
   if (!restore) history.pushState(null, '', next.address);
@@ -4394,7 +4440,7 @@ window.addEventListener('hashchange', () => { if (location.hash !== current.addr
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') writeLastSeen(); });
 window.addEventListener('pagehide', writeLastSeen);
 // An empty, legacy or unknown address is rewritten once, without a new history entry.
-if (current.replace) history.replaceState(null, '', current.address);
+if (current.replace) { drafts.carry(location.hash, current.address); history.replaceState(null, '', current.address); }
 showRoute();
 try { csrf = (await (await fetch('/api/session')).json()).csrf; } catch { notice('Command session unavailable. Reload when the dashboard reconnects.', null, null, null); }
 await poll();

@@ -57,14 +57,14 @@ Below 960px navigation moves to the bottom, with focus and scroll clearance. Bel
 | Capability | Owner | Contract |
 | --- | --- | --- |
 | Tokens, responsive shell, focus and scrollbars | `dashboard.css` | One palette and geometry across every screen; visible focus and reduced-motion handling |
-| Routes, tabs, back links | `router.mjs`, `showRoute`, `routeLink` | Real hash links, browser Back, project context preserved; Home is the first destination and opens for an empty address; a project's first tab is Overview |
+| Routes, tabs, back links | `router.mjs`, `showRoute`, `routeLink` | Real hash links, browser Back, project context preserved; Home is the first destination and opens for an empty address; a project's tabs are Overview, Plan, Review, Knowledge and, only where a release is configured, Releases (OWNER_UI_V2 section 2), fitting at 320px; old tab addresses redirect once with their drafts |
 | Home, Overview, Connections | `homeScreen`, `overviewPanel`, `connectionsScreen` over the server views (`views.mjs`) | Typed events in page words only; Built, Checked and Available to users stay apart and unknown stays unknown; pause controls name stopping and stopped |
 | Plan | `planScreen` over `work.plans` (`work.mjs`) | Now, Next and Later from the plan's own outline; version history from stored drafts only; Edit plan continues on Review as Review's draft; approval only on Review, for the version shown |
 | Decision card | `decisionPanel` | One card on the step and on Home's first decision; options with consequences, suggestion, snooze and "did not need me" |
-| Result Review | `reviewPanel` on the step; `reviewEntry` rows (`owner.mjs`) on Results, Home and Overview | One project, goal and step identity everywhere; accept and request changes bind the verified head and report; "Accepted" only from recorded acceptance |
+| Result Review | `reviewPanel` on the step; `reviewEntry` rows (`owner.mjs`) on the Review tab, Home and Overview | One project, goal and step identity everywhere; accept and request changes bind the verified head and report; "Accepted" only from recorded acceptance |
 | Idea-first start | `ideaPanel` on Add project | The idea stays a draft until the owner connects a folder; then it is the project's unsent Plan work goal; nothing is provisioned or dispatched before approval |
 | Buttons, panels, badges | `dashboard.js` helpers + shared CSS | One emphasis hierarchy; words accompany status color |
-| Needs me | `needsItem`, `needsGroups`, `attentionSummary` | Derive counts from server evidence; preserve unknown merge checks; open real issue/PR links |
+| Needs you | `needsItem`, `needsGroups`, `attentionSummary` | Derive counts from server evidence; preserve unknown merge checks; open real issue/PR links |
 | Project list | `projectsScreen` | Identity, state and next action remain separate; details remain available |
 | Text and number field errors | `validateForm` | Trim required values, inline error with aria-invalid/describedby, focus first invalid field |
 | Select/listbox and radio choices | Native HTML | Platform popup and keyboard behavior; product owns labels and surrounding appearance |
@@ -77,9 +77,9 @@ Below 960px navigation moves to the bottom, with focus and scroll clearance. Bel
 
 Primary blue buttons represent the next useful action. Secondary buttons are white. Buttons have visible hover, pressed and focus states; disabled buttons retain their label. Busy commands use the established pending state to prevent repeat submissions. Destructive commands stay separated and retain their confirmation dialog.
 
-Needs me uses neutral cards with a small amber action label, a readable subject, real evidence and a clear link. Supporting impact is separated by a subtle divider. Do not wrap a full page of requests in warning-colored panels. The Projects summary uses the same server count as Needs me; unknown evidence stays visibly qualified. Work's single active-worker metric is compact rather than an isolated quarter-width KPI card.
+Needs you uses neutral cards with a small amber action label, a readable subject, real evidence and a clear link. Supporting impact is separated by a subtle divider. Do not wrap a full page of requests in warning-colored panels. The Projects summary uses the same server count as Needs you; unknown evidence stays visibly qualified. Work's single active-worker metric is compact rather than an isolated quarter-width KPI card.
 
-Needs me, Projects and Results share the same merge evidence. A recorded merge bound to the verified commit and published PR remains merged after refresh or a change in repository history. Without that receipt, the current base-branch check determines the state. A historical merge does not imply deployment or availability to users.
+Needs you, Projects and Results share the same merge evidence. A recorded merge bound to the verified commit and published PR remains merged after refresh or a change in repository history. Without that receipt, the current base-branch check determines the state. A historical merge does not imply deployment or availability to users.
 
 Plan work always explains what submission permits. Plan only proposes steps without changing the project. When planning is enabled for a connected project, Plan and do drafts a plan for Review; nothing starts until the owner chooses Approve and start. Projects without GitHub first need confirmed rules. An unavailable execution mode is explained in a disclosure. Existing `/start` routes stay compatible. Merge and release remain separate permissions.
 
@@ -91,4 +91,4 @@ Long report and plan text can be checking, available or unavailable independentl
 
 ## Verification
 
-Use the synthetic `tests/dashboard/fixtures/review-store.mjs` dashboard for screenshots and browser checks, never a live installation. Its full store has Plan and do and Add project on, plans with several versions in Now, Next and Later, an out-of-date plan, results waiting for review and a report recorded in the local work list. Check desktop and narrow (320–390px) Home, Projects, Needs me, Overview, Plan, Review, Results, Work, Plan work, Add project, Settings and Connections; check keyboard focus, form errors, route/draft retention and query clearing. Run the repository checks. Synthetic previews and passing source tests are not evidence of a production deployment.
+Use the synthetic `tests/dashboard/fixtures/review-store.mjs` dashboard for screenshots and browser checks, never a live installation. Its full store has Plan and do and Add project on, plans with several versions in Now, Next and Later, an out-of-date plan, results waiting for review and a report recorded in the local work list. Check desktop and narrow (320–390px) Home, Projects, Needs you, the project tabs (Overview, Plan, Review, Knowledge, and Releases where configured), a plan's Review, Plan work, Add project, Settings and Connections; check keyboard focus, form errors, route/draft retention and query clearing. Run the repository checks. Synthetic previews and passing source tests are not evidence of a production deployment.
