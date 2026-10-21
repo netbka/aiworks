@@ -10,7 +10,8 @@ import { pendingInstructions } from '../supervisor/instructions.mjs';
 import { decisionId, isDecision, structuredDecision } from '../supervisor/decisions.mjs';
 import { criterionEvidence, MAX_FEEDBACK, mergedHead, OWNER_CHANGES, pendingChanges, unresolvedOf, verifiedReview } from '../supervisor/result-review.mjs';
 import { mergeSettings } from '../supervisor/merge.mjs';
-import { previewManifest, previewSupport, PreviewError } from '../supervisor/preview.mjs';
+import { previewManifest, previewSupport, PreviewError, PreviewSessions } from '../supervisor/preview.mjs';
+import { captureSupport, CaptureError } from '../supervisor/preview-capture.mjs';
 import { resolveCheckout, resolveLocalProject } from '../supervisor/project-connect.mjs';
 import { configuredGitCommand } from './merges.mjs';
 import { roleUnavailableReason, runNotCounted } from '../supervisor/adapters/executors.mjs';
@@ -1352,14 +1353,13 @@ export function applyResultReview(dataDir, action, input, now = Date.now(), { co
 const PREVIEW_KEYS = ['campaignId', 'taskId', 'taskVersion', 'version', 'authorizationVersion', 'scopeDigest', 'verifiedSha', 'reportDigest'];
 
 /**
- * Open a preview of a checked version (OWNER_UI_V2 WP7). The request binds the same goal, step, verified head and report
- * as Review's accept, and nothing else: no command, path or address. The review is read again here, so only the exact
- * head of a finished step that passed the independent check with that report is previewed; a changed, unverified,
- * reopened or report-only result is refused. The pages are read from that commit's Git objects in AIWorks's own
- * checkout (preview.mjs); nothing is built or started, and nothing is written. The answer names the preview's address and the commit,
- * never a folder.
+ * The checked version a preview request binds (OWNER_UI_V2 WP7): the same goal, step, verified head and report as Review's
+ * accept, and nothing else: no command, path or address. The review is read again here, so only the exact head of a
+ * finished step that passed the independent check with that report is previewed; a changed, unverified, reopened or
+ * report-only result is refused. The pages are read from that commit's Git objects in AIWorks's own checkout
+ * (preview.mjs); nothing of the project is built or started, and nothing is written.
  */
-export function openResultPreview(dataDir, input, sessions, { config = readConfig(dataDir) } = {}) {
+function checkedPreviewSource(dataDir, input, config) {
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !PREVIEW_KEYS.includes(key)) ||
       !identifier.test(input.campaignId ?? '') || !identifier.test(input.taskId ?? '') || !Number.isSafeInteger(input.taskVersion) ||
       !Number.isSafeInteger(input.version) || input.version < 1 || !Number.isSafeInteger(input.authorizationVersion) ||
@@ -1388,6 +1388,51 @@ export function openResultPreview(dataDir, input, sessions, { config = readConfi
   let manifest;
   try { manifest = previewManifest({ git, repoPath, sha: input.verifiedSha }); }
   catch (error) { if (error instanceof PreviewError) throw fail(409, error.message); throw error; }
-  const { token, expiresAt } = sessions.add({ git, repoPath, sha: input.verifiedSha, manifest, binding: { campaignId: input.campaignId, taskId: input.taskId } });
-  return { url: `/preview/${token}/${manifest.entry.split('/').map(encodeURIComponent).join('/')}`, verifiedSha: input.verifiedSha, expiresAt };
+  return { git, repoPath, sha: input.verifiedSha, manifest,
+    binding: { campaignId: input.campaignId, taskId: input.taskId, verifiedSha: input.verifiedSha, reportDigest: input.reportDigest } };
+}
+
+/**
+ * Whether an open preview's version is still the checked one: the step's review still names that verified head and
+ * report and still offers a preview. A reopened step, one sent back for changes or one checked again at another head is not.
+ */
+export function previewStillChecked(dataDir, binding, { config = readConfig(dataDir) } = {}) {
+  if (!existsSync(join(dataDir, 'supervisor.db'))) return false;
+  const store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true });
+  try {
+    const c = store.campaign(binding.campaignId), task = c && store.task(c.id, binding.taskId);
+    const spec = c?.declaration.tasks.find((item) => item.id === binding.taskId);
+    const review = task ? resultReview(store, c, task, spec, config) : null;
+    return Boolean(review && review.verifiedSha === binding.verifiedSha && review.reportDigest === binding.reportDigest && review.preview.available);
+  } finally { store.close(); }
+}
+
+/**
+ * Open a preview of a checked version (OWNER_UI_V2 WP7), bound as checkedPreviewSource checks. The answer names the
+ * preview's address, the commit, when it ends and whether screenshots can be captured here; never a folder.
+ */
+export function openResultPreview(dataDir, input, sessions, { config = readConfig(dataDir) } = {}) {
+  const { binding, ...source } = checkedPreviewSource(dataDir, input, config);
+  const { token, expiresAt } = sessions.add({ ...source, binding });
+  return { url: `/preview/${token}/${source.manifest.entry.split('/').map(encodeURIComponent).join('/')}`, verifiedSha: input.verifiedSha, expiresAt,
+    capture: captureSupport(config.commands?.chrome) };
+}
+
+/**
+ * Desktop and phone screenshots of a checked version (WP7), bound as checkedPreviewSource checks, in the installation's
+ * Chrome under preview-capture.mjs containment. The browser reads only that version's preview files, each request checked
+ * again against the review; screenshots taken while the version stopped being the checked one are not answered.
+ */
+export async function captureResultPreview(dataDir, input, captures, { config = readConfig(dataDir), signal = null } = {}) {
+  const chrome = config.commands?.chrome, support = captureSupport(chrome);
+  if (!support.available) throw fail(409, support.reason);
+  const { binding, ...source } = checkedPreviewSource(dataDir, input, config);
+  const stillValid = () => previewStillChecked(dataDir, binding, { config });
+  const sessions = new PreviewSessions({ stillValid }), { token } = sessions.add({ ...source, binding });
+  let captured;
+  try { captured = await captures.run({ chrome, page: (path) => sessions.serve(token, path), entry: source.manifest.entry, sha: source.sha, signal }); }
+  catch (error) { if (error instanceof CaptureError) throw fail(409, error.message); throw error; }
+  if (!stillValid()) throw fail(409, COMMANDS.result.changed);
+  return { verifiedSha: captured.sha, capturedAt: captured.capturedAt,
+    shots: captured.shots.map(({ png, ...shot }) => ({ ...shot, image: `data:image/png;base64,${png.toString('base64')}` })) };
 }

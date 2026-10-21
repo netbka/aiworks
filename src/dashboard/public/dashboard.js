@@ -2697,7 +2697,9 @@ async function sendReview(action, binding, review, body, { address = current.add
  * Try this version (OWNER_UI_V2 WP7): the static pages of exactly the commit that passed the check, in a sandboxed frame
  * at desktop or phone width. Opening is bound to the same version and report as Accept result; the frame cannot reach the
  * dashboard or the network, and the preview ends by itself after 30 minutes. Each preview is kept per version, so the
- * 5-second refresh keeps the frame as it is. A result without one says why.
+ * 5-second refresh keeps the frame as it is. A result without one says why. Capture screenshots asks AIWorks for desktop
+ * and phone screenshots of the same version, taken in a browser it starts and stops (preview-capture.mjs); each names the
+ * page width the browser measured, the version and when, and none is kept once the preview is closed or reopened.
  */
 const previews = new Map();
 // The button pressed is replaced by the next state's controls, so focus moves to that preview's first control.
@@ -2706,11 +2708,59 @@ const showPreview = (key, value) => {
   render();
   [...document.querySelectorAll('.preview-panel')].find((node) => node.dataset.focusScope === `preview/${key}`)?.querySelector('button')?.focus({ preventScroll: true });
 };
+// The phone frame keeps a 390 px wide page and scales it down in a narrower window, so the page always lays out at phone
+// width and the note says how much smaller it is shown. Run after every render (the refresh resets the frame's style)
+// and when the window changes size.
+const PHONE_WIDTH = 390;
+function fitPhoneFrames() {
+  for (const frame of document.querySelectorAll('.preview-frame.phone')) {
+    const scale = Math.min(1, frame.clientWidth / PHONE_WIDTH) || 1;
+    frame.style.setProperty('--preview-scale', String(scale));
+    const note = frame.closest('.preview-panel')?.querySelector('.preview-fit');
+    if (note) note.textContent = scale < 1 ? ` This window is narrower, so it is shown at ${Math.round(scale * 100)}%; the page still lays out at ${PHONE_WIDTH} px.` : '';
+  }
+}
+window.addEventListener('resize', fitPhoneFrames);
+async function captureShots(key, binding, review) {
+  const shown = previews.get(key);
+  if (!shown || shown.state !== 'open') return;
+  previews.set(key, { ...shown, shots: { state: 'capturing' } });
+  render();
+  let shots;
+  try {
+    const captured = await post('/api/v2/results/preview/capture', { ...binding, verifiedSha: review.verifiedSha, reportDigest: review.reportDigest });
+    shots = captured.verifiedSha === review.verifiedSha ? { state: 'captured', ...captured } : { state: 'failed', error: COMMANDS.unconfirmed };
+  } catch (error) {
+    shots = { state: 'failed', error: error.known ? error.message : COMMANDS.unconfirmed };
+  }
+  // A preview closed or replaced meanwhile keeps nothing of this capture.
+  const now = previews.get(key);
+  if (now?.state !== 'open' || now.url !== shown.url) return;
+  previews.set(key, { ...now, shots });
+  render();
+  document.querySelector(`[data-capture="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
+}
+function shotsBlock(key, shown, sha7, control, captureAction) {
+  if (!shown.capture?.available) return el('p', { class: 'subtext' }, `Screenshots are not available here. ${shown.capture?.reason ?? ''}`);
+  const shots = shown.shots;
+  const capture = control(shots?.state === 'captured' ? 'Capture again' : 'Capture screenshots', captureAction, 'secondary',
+    { disabled: shots?.state === 'capturing' || offline, 'data-capture': key });
+  const status = shots?.state === 'capturing'
+    ? el('p', { role: 'status', 'aria-live': 'polite' }, `Capturing ${sha7} at desktop and phone width in a sealed browser on this computer… This can take a minute.`)
+    : shots?.state === 'failed' ? el('p', { class: 'notice warning', role: 'alert' }, `No screenshots were kept. ${shots.error}`)
+      : shots?.state === 'captured' ? null
+        : el('p', { class: 'subtext' }, 'Screenshots are taken by AIWorks in a browser it starts for this and stops afterwards. That browser reaches nothing but this version’s pages.');
+  const figures = shots?.state === 'captured' ? el('div', { class: 'preview-shots' }, shots.shots.map((shot) => el('figure', { class: `preview-shot ${shot.size}` },
+    el('img', { src: shot.image, alt: `Screenshot of the version checked at ${sha7} at ${shot.size} width`, loading: 'lazy' }),
+    el('figcaption', { class: 'subtext' }, `${shot.size === 'phone' ? 'Phone' : 'Desktop'}: ${shot.width} × ${shot.height} px screen, page laid out at ${shot.viewport.width} × ${shot.viewport.height} px as the browser measured it. `,
+      'Version ', el('code', { title: shots.verifiedSha }, sha7), `, captured at ${clock(shots.capturedAt)} on this computer.`)))) : null;
+  return el('div', { class: 'preview-evidence' }, el('div', { class: 'campaign-controls' }, capture), status, figures);
+}
 async function openPreview(key, binding, review) {
   showPreview(key, { state: 'opening', size: previews.get(key)?.size ?? 'desktop' });
   try {
     const opened = await post('/api/v2/results/preview', { ...binding, verifiedSha: review.verifiedSha, reportDigest: review.reportDigest });
-    showPreview(key, { state: 'open', size: previews.get(key)?.size ?? 'desktop', url: opened.url, sha: opened.verifiedSha, expiresAt: opened.expiresAt });
+    showPreview(key, { state: 'open', size: previews.get(key)?.size ?? 'desktop', url: opened.url, sha: opened.verifiedSha, expiresAt: opened.expiresAt, capture: opened.capture ?? null });
   } catch (error) {
     showPreview(key, { state: 'failed', size: previews.get(key)?.size ?? 'desktop', error: error.known ? error.message : COMMANDS.unconfirmed });
   }
@@ -2731,12 +2781,15 @@ function previewSection(review, binding) {
   if (shown.state === 'opening') return section(identity, el('p', { role: 'status', 'aria-live': 'polite' }, 'Opening the checked version…'));
   if (shown.state === 'failed') return section(identity, el('p', { class: 'notice warning', role: 'alert' }, `The preview did not open. ${shown.error}`), el('div', { class: 'campaign-controls' }, open('Try again')));
   const size = (name, label) => control(label, () => { previews.set(key, { ...shown, size: name }); render(); }, 'secondary', { 'aria-pressed': String(shown.size === name) });
+  const frame = el('div', { class: `preview-frame ${shown.size}` }, el('iframe', { src: shown.url, title: `Preview of the version checked at ${sha7} (${shown.size === 'phone' ? 'phone' : 'desktop'} width)`,
+    sandbox: 'allow-scripts', referrerpolicy: 'no-referrer', loading: 'lazy' }));
   return section(identity,
     el('div', { class: 'campaign-controls preview-controls', role: 'group', 'aria-label': 'Preview width' }, size('desktop', 'Desktop'), size('phone', 'Phone'),
       control('Close preview', () => showPreview(key, null))),
-    el('p', { class: 'subtext' }, `Showing ${shown.size === 'phone' ? 'a phone-width (390 px)' : 'a desktop-width'} view of ${sha7}. The preview ends at ${clock(shown.expiresAt)}; open it again after that.`),
-    el('div', { class: `preview-frame ${shown.size}` }, el('iframe', { src: shown.url, title: `Preview of the version checked at ${sha7} (${shown.size === 'phone' ? 'phone' : 'desktop'} width)`,
-      sandbox: 'allow-scripts', referrerpolicy: 'no-referrer', loading: 'lazy' })));
+    el('p', { class: 'subtext' }, `Showing ${shown.size === 'phone' ? `a phone-width (${PHONE_WIDTH} px)` : 'a desktop-width'} view of ${sha7}.`,
+      el('span', { class: 'preview-fit' }), ` The preview ends at ${clock(shown.expiresAt)}; open it again after that.`),
+    frame,
+    shotsBlock(key, shown, sha7, control, () => void captureShots(key, binding, review)));
 }
 
 function reviewPanel(review, binding, { merged = false } = {}) {
@@ -3985,6 +4038,7 @@ function render() {
     $('#host-detail').replaceChildren(routeLink(versionLabel, '#/settings/version', 'host-version-link'));
     $('#host-detail').title = `Dashboard v${ver} "${verName}" (revision ${state.host.revision?.slice(0, 7) ?? 'unknown'})`;
   }
+  fitPhoneFrames();
 }
 
 async function post(path, body) {
