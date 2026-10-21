@@ -28,7 +28,7 @@ import { ownerApplies, ownerApply, undoOwnerApply } from '../supervisor/release/
 import { CODE_ROOT, revisionNotMerged } from '../supervisor/provenance.mjs';
 import { configuredGitCommand } from './merges.mjs';
 import { safeText } from './roadmap.mjs';
-import { resultReview } from './supervisor.mjs';
+import { decisionFeedback, decisionView, resultReview } from './supervisor.mjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DIGEST = /^[0-9a-f]{64}$/;
@@ -211,10 +211,16 @@ function localWork(store, record, textChecks) {
         return { ...localResult(latest, attempts.filter((row) => row.taskId === taskId && row.seq === latest.seq).at(-1), titles.get(taskId) ?? safeText(taskId, 64), textChecks),
           taskVersion: task?.version ?? null, review: review && (review.verifiedSha === latest.sha || review.state === 'changes-requested') ? review : null };
       });
+      // A step's open decision (OWNER_UI_V2 WP2) is the same record a GitHub step serves: answered, snoozed or marked as not
+      // needed through /api/v2/decisions, bound to this goal's and step's versions. A stop that is no decision says so.
+      const feedback = decisionFeedback(store, c.id), now = Date.now();
       return { id: c.id, outcome: safeText(c.declaration.envelope?.outcome ?? c.id, 300), control: c.control,
         version: c.version, authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest,
-        steps: store.tasks(c.id).map((task) => ({ id: safeText(task.task_id, 64), title: titles.get(task.task_id) ?? safeText(task.task_id, 64),
-          state: task.blocked ? 'Stopped: needs your decision' : STEP_WORDS[task.state] ?? 'Not known yet' })),
+        steps: store.tasks(c.id).map((task) => {
+          const decision = ['registered', 'paused'].includes(c.control) ? decisionView(c.id, task, feedback, now) : null;
+          return { id: safeText(task.task_id, 64), title: titles.get(task.task_id) ?? safeText(task.task_id, 64), version: task.version, decision,
+            state: decision ? 'Stopped: needs your decision' : task.blocked ? 'Stopped; it will not retry by itself' : STEP_WORDS[task.state] ?? 'Not known yet' };
+        }),
         results };
     });
 }
