@@ -9,7 +9,8 @@
 // - each response is a sandboxed document with an opaque origin (CSP `sandbox allow-scripts`, no same-origin): its script
 //   cannot read the dashboard, its token or its commands, cannot send requests (connect-src 'none'), submit forms, open
 //   windows or leave its frame, and only the dashboard may frame it. A preview lives in the dashboard's memory only and
-//   ends after PREVIEW_TTL_MS or when the dashboard stops.
+//   ends after PREVIEW_TTL_MS, when the dashboard stops, or as soon as its version is no longer the checked one.
+// Only the `static` runtime class is supported (PREVIEW_RUNTIMES); a version that needs its own server says so instead.
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { containsSecret } from './coordinator.mjs';
@@ -19,6 +20,20 @@ const SHA = /^[0-9a-f]{40}$/;
 /** Where a checked version's web page may be, in this order; the folder of the first found is all a preview serves. */
 export const PREVIEW_ENTRIES = Object.freeze(['index.html', 'public/index.html', 'site/index.html', 'docs/index.html', 'www/index.html']);
 export const PREVIEW_TTL_MS = 30 * 60_000;
+/**
+ * What kind of version a preview can show. `static`: pages read from the checked commit's Git objects, as above.
+ * `server`: a version that needs its own process (a Node, Python or other app server) stays unavailable. A Job Object
+ * bounds such a process's lifetime and process tree, but nothing on this platform keeps its network to loopback or its
+ * file reads to its worktree, and its dependencies would first have to be installed, which runs their scripts too.
+ */
+export const PREVIEW_RUNTIMES = Object.freeze({
+  static: Object.freeze({ supported: true }),
+  server: Object.freeze({ supported: false, reason: 'AIWorks does not start a project’s own server: on this computer it cannot keep that program’s network to this computer or its file reads to the checked version.' }),
+});
+// Files that mean a version is an app with its own server rather than static pages.
+const SERVER_MARKERS = Object.freeze(['package.json', 'manage.py', 'requirements.txt', 'pyproject.toml', 'Gemfile', 'go.mod', 'Cargo.toml', 'composer.json']);
+/** How often an open preview checks again that its version is still the checked one. */
+const RECHECK_MS = 1000;
 /** Open previews at once; opening another ends the oldest. */
 export const MAX_PREVIEWS = 4;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -82,6 +97,7 @@ export function previewManifest({ git = ['git'], repoPath, sha }) {
     if (match && match[2] === 'blob' && ['100644', '100755'].includes(match[1])) tree.set(match[5], { blob: match[3], size: Number(match[4]) });
   }
   const entry = PREVIEW_ENTRIES.find((path) => tree.has(path));
+  if (!entry && SERVER_MARKERS.some((path) => tree.has(path))) throw new PreviewError('PREVIEW_NEEDS_SERVER', `This checked version has no static web page, and it looks like an app that runs its own server. ${PREVIEW_RUNTIMES.server.reason}`);
   if (!entry) throw new PreviewError('PREVIEW_NO_PAGE', `This checked version has no web page to preview (AIWorks looks for ${PREVIEW_ENTRIES.join(', ')}).`);
   const root = entry.includes('/') ? entry.slice(0, entry.lastIndexOf('/') + 1) : '';
   const files = new Map();
@@ -122,31 +138,50 @@ export function readPreviewFile({ git = ['git'], repoPath, file }) {
   return read.stdout;
 }
 
+/** One request for a file of `source` ({ git, repoPath, sha, manifest }): { status, body, type }. */
+export function servePreviewFile(source, requestPath) {
+  const file = previewFile(source.manifest, requestPath);
+  const bytes = file ? readPreviewFile({ git: source.git, repoPath: source.repoPath, file }) : null;
+  return bytes ? { status: 200, body: bytes, type: file.type, sha: source.sha } : { status: 404, body: 'Not in this preview.', type: 'text/plain; charset=utf-8' };
+}
+
 /**
  * The dashboard's open previews, in memory only: each is a random token bound to one checked commit, the checkout it is
- * read from and its manifest. Nothing is written; a preview ends after PREVIEW_TTL_MS, and the oldest ends when more than
- * MAX_PREVIEWS are open.
+ * read from and its manifest. Nothing is written; a preview ends after PREVIEW_TTL_MS, the oldest ends when more than
+ * MAX_PREVIEWS are open, and one ends as soon as `stillValid(binding)` says its version is no longer the checked one
+ * (reopened, sent back for changes, or checked again at another head), checked at most every RECHECK_MS.
  */
 export class PreviewSessions {
-  constructor({ now = () => Date.now() } = {}) { this.now = now; this.open = new Map(); }
+  constructor({ now = () => Date.now(), stillValid = () => true } = {}) { this.now = now; this.stillValid = stillValid; this.open = new Map(); }
 
   add({ git, repoPath, sha, manifest, binding }) {
     this.sweep();
     while (this.open.size >= MAX_PREVIEWS) this.open.delete(this.open.keys().next().value);
     const token = randomBytes(16).toString('hex'), expiresAt = this.now() + PREVIEW_TTL_MS;
-    this.open.set(token, { git, repoPath, sha, manifest, binding, expiresAt });
+    this.open.set(token, { git, repoPath, sha, manifest, binding, expiresAt, checkedAt: this.now() });
     return { token, expiresAt };
   }
 
   sweep() { for (const [token, session] of this.open) if (session.expiresAt <= this.now()) this.open.delete(token); }
 
-  /** One request under /preview/<token>/: { status, body, type }. Only a live preview's served files answer 200. */
-  serve(token, requestPath) {
+  /** The live preview of `token` whose version is still the checked one, or null (and it ends). */
+  live(token) {
     this.sweep();
     const session = /^[0-9a-f]{32}$/.test(token ?? '') ? this.open.get(token) : null;
+    if (!session) return null;
+    if (this.now() - session.checkedAt >= RECHECK_MS) {
+      let valid = false;
+      try { valid = this.stillValid(session.binding) === true; } catch { valid = false; }
+      if (!valid) { this.open.delete(token); return null; }
+      session.checkedAt = this.now();
+    }
+    return session;
+  }
+
+  /** One request under /preview/<token>/: { status, body, type }. Only a live preview's served files answer 200. */
+  serve(token, requestPath) {
+    const session = this.live(token);
     if (!session) return { status: 410, body: 'This preview has ended. Open it again from Review.', type: 'text/plain; charset=utf-8' };
-    const file = previewFile(session.manifest, requestPath);
-    const bytes = file ? readPreviewFile({ git: session.git, repoPath: session.repoPath, file }) : null;
-    return bytes ? { status: 200, body: bytes, type: file.type, sha: session.sha } : { status: 404, body: 'Not in this preview.', type: 'text/plain; charset=utf-8' };
+    return servePreviewFile(session, requestPath);
   }
 }
