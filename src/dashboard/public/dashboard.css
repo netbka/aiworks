@@ -385,7 +385,8 @@ main{padding:25px 15px}
 .chat-bubble.owner{background:#f3f6fb;justify-self:end;max-width:min(720px,100%)}
 .chat-bubble.aiworks .coordinator-reply{margin:6px 0 0;max-height:70vh;overflow:auto}
 .chat-composer{display:flex;gap:8px;align-items:flex-end;margin-top:16px}
-.chat-composer textarea{flex:1;min-height:64px}
+.chat-composer label{flex:1;display:grid;min-width:0}
+.chat-composer textarea{width:100%;min-height:64px}
 
 /* Approved owner workspace: the runtime tokens above own all shared visual values. */
 html{scrollbar-gutter:stable;scroll-padding-top:88px}

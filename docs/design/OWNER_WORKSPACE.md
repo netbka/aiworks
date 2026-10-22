@@ -194,7 +194,7 @@ The items are today's "Needs you" items, unchanged in meaning (observed: built i
 
 #### Chats (formerly Settings › Messages)
 
-- **Address.** `#/chats` lists the chats; `#/chats/<id>` opens one, named by the id of its first message. `#/settings/messages` opens `#/chats`.
+- **Address.** `#/chats` lists the chats; `#/chats/<id>` opens one, named by the id of its first message. `#/settings/messages` opens `#/chats`. An unsent new-message draft kept under `#/settings/messages` is taken up by New chat; a draft already kept under `#/chats` is newer and wins, and the old one is dropped once the new one is written.
 - **Question.** What did I ask AIWorks, and what did it answer?
 - **First visible.** The chats, newest activity first, each with its project, message count and state. An open chat shows each message with its reply, or its receipts (Received, Read, Answered) while it waits.
 - **Primary action.** "Send" in an open chat continues it: the coordinator reads the chat's earlier turns (up to six) as context, under the same read-only limits. "New chat" starts one. A reply in a chat keeps that chat's project and project budget.
