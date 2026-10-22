@@ -50,19 +50,19 @@ function rig(t) {
   return { env, store, sha, parent, bind };
 }
 
-test('a preview opens only the exact verified head with its report, and a request cannot name a command or a path', (t) => {
+test('a preview opens only the exact verified head with its report, and a request cannot name a command or a path', async (t) => {
   const { env, sha, parent, bind } = rig(t);
   const sessions = new PreviewSessions();
-  const refused = (input, status) => assert.throws(() => openResultPreview(env.dataDir, input, sessions), (error) => error.status === status);
-  refused(bind('T1', { command: 'node -e "process.exit(0)"' }), 400);
-  refused(bind('T1', { path: '../../' }), 400);
-  refused(bind('T1', { verifiedSha: parent }), 409);
-  refused(bind('T1', { reportDigest: 'c'.repeat(64) }), 409);
-  refused(bind('T1', { taskVersion: 99 }), 409);
+  const refused = (input, status) => assert.rejects(openResultPreview(env.dataDir, input, sessions), (error) => error.status === status);
+  await refused(bind('T1', { command: 'node -e "process.exit(0)"' }), 400);
+  await refused(bind('T1', { path: '../../' }), 400);
+  await refused(bind('T1', { verifiedSha: parent }), 409);
+  await refused(bind('T1', { reportDigest: 'c'.repeat(64) }), 409);
+  await refused(bind('T1', { taskVersion: 99 }), 409);
   // A step without an accepted check of its head is never previewed.
-  refused(bind('T2'), 409);
+  await refused(bind('T2'), 409);
   assert.equal(sessions.open.size, 0);
-  const opened = openResultPreview(env.dataDir, bind('T1'), sessions);
+  const opened = await openResultPreview(env.dataDir, bind('T1'), sessions);
   assert.match(opened.url, /^\/preview\/[0-9a-f]{32}\/index\.html$/);
   assert.equal(opened.verifiedSha, sha);
   assert.ok(!JSON.stringify(opened).includes(env.tmp.replaceAll('\\', '\\\\')) && !JSON.stringify(opened).includes(env.repo), 'the answer names no folder');
