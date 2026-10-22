@@ -17,6 +17,7 @@ import { createDashboardServer } from '../../src/dashboard/server.mjs';
 import { ownerView } from '../../src/dashboard/owner.mjs';
 import { COMMANDS } from '../../src/dashboard/copy.mjs';
 import { postOwnerMessage, replyBody } from '../../src/supervisor/coordinator.mjs';
+import { adoptDrafts } from '../../src/dashboard/public/router.mjs';
 
 test('completed campaigns do not appear offline or request controller recovery', (t) => {
   const { dataDir, store, d } = fixture(t);
@@ -379,4 +380,12 @@ test('every module the page imports is served by the real server, including the 
   for (const path of ['/public/copy.mjs', '/src/dashboard/copy.mjs', '/copy.mjs/', '/Copy.mjs', '/copy.js', '/projects.mjs']) {
     assert.equal((await fetch(`${base}${path}`)).status, 404, path);
   }
+});
+
+test('an unsent Messages draft is kept by Chats once, and a newer Chats draft is never overwritten', () => {
+  const other = { '#/p/notes/start start': { goal: 'A fictional goal.' } };
+  const adopted = adoptDrafts({ ...other, '#/settings/messages message': 'Review the example page.' });
+  assert.deepEqual(adopted, { ...other, '#/chats message': 'Review the example page.' });
+  assert.equal(adoptDrafts(adopted), null);
+  assert.equal(adoptDrafts({ '#/settings/messages message': 'Older text.', '#/chats message': 'Newer text.' }), null);
 });
