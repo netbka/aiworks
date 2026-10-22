@@ -33,7 +33,7 @@ governance provider's governance files (project registry, policies, project-cont
   - **Atomic:** the check and the insert run in one `BEGIN IMMEDIATE` transaction, so two concurrent registrations admit exactly one.
   - **Optional `workKey`.** A commit task may add `"workKey": "<key>"`: lowercase letters, digits and `. _ : -`, at most 96 characters. Two tasks with the same key are the same logical repair, even when worded differently or filed under different issues. A key is not a file lock or an issue lock. It is part of the scope digest, so it can be set only at first registration. A declaration without one keeps its `scopeDigest` and `authorityDigest`. Code older than this change refuses a declaration that carries one.
   - **Optional `writes` (write domain, #5 scope B).** A commit task may list the part of the repository it may change: path prefixes (`"src/dashboard/"`, `"docs/SUPERVISOR.md"`) and named exclusive resources (`"resource:port-4319"`). An entry covers itself and everything below it, never a sibling that only starts with the same letters (`docs/A.md` does not cover `docs/A.md.bak`). Without `writes` the task owns the whole repository. The worker and its verifier are told the planned files in the packet constraints. The list is a plan, not a stop ([AW-013](DECISIONS.md#aw-013---planned-files-are-a-plan-not-a-stop)): a commit may also change another file the outcome needs, and the implementer explains each one in its report. The verifier's packet lists the changed files outside the plan, and the verifier accepts or rejects each one. Only a secret-like path, or a path inside an envelope's `denyWrites`, is a **boundary violation**, held for the owner and never retried on another provider (paths compared case-folded; an integration repair is measured from the base it merged). Like `workKey` it is part of the scope digest, and a declaration without it keeps its digests. Who holds a domain is derived from existing rows (`domainHolders` in `src/supervisor/work-ownership.mjs`): an open implement operation (in any campaign, until it is settled), a task implemented, verifying or verified, and a published commit until it is in the base (in finished and cancelled campaigns too). Admission by domain belongs to the scheduler (section 7, built and off by default); while it is off, campaigns run as before.
-  - **Optional model routing fields ([MODEL_ROUTING](design/MODEL_ROUTING.md), slices R3 and R5).** Without `routing`, every step runs on the declared executor order, as before. With `mode: "auto"`, each dispatch chooses among the declared candidates by the deterministic policy of MODEL_ROUTING (`src/supervisor/router.mjs` `routeAuto`) and stores the receipt with the run. The live cohort and its comparison against a baseline (slice R7) have not happened.
+  - **Optional model routing fields ([MODEL_ROUTING](design/MODEL_ROUTING.md), slices R3 and R5).** Without `routing`, every step runs on the declared executor order, as before. With `mode: "auto"`, each dispatch chooses among the declared candidates by the deterministic policy of MODEL_ROUTING (`src/supervisor/router.mjs` `routeAuto`) and stores the receipt with the run. The cohort, its comparison against a baseline and the rollback are the operator's ([section 6](#model-routing-cohort-switch-on-compare-and-switch-back-mod7), slice R7); none has happened.
     - A campaign may add `routing`: `mode: "auto"`, 1 to 16 `candidates` (`{ kind, model, tier }`, tier 1, 2 or 3), optional `sensitivePaths` (path prefixes) and an optional `pin` (`implementer` and/or `verifier`, each `{ kind, model }` or `{ tier }`). A candidate's `kind` must already be one of the declared executor providers, and a pin must name a declared candidate or tier. So routing can never add a provider, a model outside the list, or a permission.
     - A task may add `role`, a role id from governance provider's catalog `registry/agents.json`, read from the governance checkout and never copied. A new registration with a role that is not in the catalog is refused, and so is one with any role when the catalog is missing or malformed. A declaration without roles does not read the catalog.
     - A task may add `routing: { risk: "high" }` and/or `complexity: "high"`. A declaration can only raise a level, so `"high"` is the only value.
@@ -372,7 +372,7 @@ node src/supervisor/cli.mjs baseline --data C:/example/aiworks/.local/supervisor
 - It prints a short table, then the JSON report (`--json` prints the report only). Rows are per stage, risk, size, provider and model; accepted outcomes are per class and per implementing provider and model.
 - Dollars are shown as the CLI reported them, never as spent. Tokens stay per provider. A run with no reported dollars counts as unknown, never zero, and dollars and tokens are never added together.
 - Refunded runs (refused before any work) are left out and listed separately.
-- The model is not stored on an operation yet. It is inferred from the declaration and its `executor-amended` journal entries; a provider without a declared model shows `cli-default (unknown)`.
+- An operation with a routing receipt is attributed to the model its receipt chose. An older one is inferred from the declaration and its `executor-amended` journal entries; a provider without a declared model shows `cli-default (unknown)`.
 - What it cannot measure is listed in the report (`cannotMeasure`).
 
 ### What fills workers' context, and cheaper declarations
@@ -551,6 +551,77 @@ No `maxWorkers`: the ceiling is the default, `clamp(floor(cores / 4), 1, 4)`. No
 - The supervisor log has no repeating `admission failed` line.
 
 **Switch back (rollback).** If any criterion fails, or the computer is too busy for the owner: pause all work and drain as above, set `"scheduler": { "enabled": false }` (or remove the key), deploy the same commit again with `deploy.ps1` to restart, resume with the identical declarations and compare `status` with the baseline again. Every campaign then runs one operation at a time, as before. Nothing is deleted: the `capacity` rows (learned fan-out, account limits, the pressure episode) stay in the store, unused while the scheduler is off, and are read again if it is switched on later. To keep the scheduler but use less of the computer, set `"maxWorkers": 1` instead, through the same steps.
+
+### Model routing: cohort, switch on, compare and switch back (MOD7)
+
+Routed dispatch ([MODEL_ROUTING](design/MODEL_ROUTING.md), slice R7) is built and used only by a private declaration that carries `routing`. Using it is a declaration change the installation's operator makes after an independent review accepts the exact commit to be deployed. Merging this runbook switches nothing. No account's model list, billing, live cohort or measurement is evidenced here, and no saving is claimed.
+
+- **Covered by synthetic tests (`tests/supervisor`):** the declaration fields and their refusals (`campaign-registry.test.mjs`). The activation cohort (`routing-activation.test.mjs`) runs a real controller over a disposable documentation campaign with three fictional models of one provider. A cold start takes the lowest eligible tier at the step's floor. A model the provider refuses waits alone, its run is refunded and the next eligible tier runs. Two rejected heads on a tier move the step up one tier, never down. Each verifier is a fresh session on the exact head, at tier 2 or higher even when a tier-1 model is eligible to implement and not waiting. Expected cost stays unknown, never zero, while there is no history. Every other run is charged exactly once within the declared run budget. An account usage limit holds every model on that login until it lifts. When every declared model is refused, nothing is charged and the step stops on one B2 blocker, without reaching for another model, provider or budget.
+- **Not covered by an automated test:** which models a real account accepts, what a run really costs or is billed, `deploy.ps1`, and the procedure below.
+
+**What the operator settles first, privately (MODEL_ROUTING Q1).** For each account the cohort uses: the model names its provider CLI accepts on that login, and whether the plan is flat or pay-per-use. Candidates are models of the providers the campaign already declares, on the logins already in use. Routing adds no account, login, subscription, provider, tool, permission or budget. On a pay-per-use account, declare candidates only when the campaign already has an owner-set `limits.maxCostUsd` and `unknownRunCostUsd`; otherwise keep today's single model. A model nobody has checked on the account may stay in the list: the first refusal makes it wait alone. A wrong list only costs refunded refusals, then one blocker. Until this is known, the cohort does not start.
+
+**The cohort.** The smallest that section 8.4 can compare is one AIWorks campaign of at least 10 documentation and design tasks, all in one class, R0/C1. Each task:
+
+- has `deliverable: "commit"`;
+- declares `writes` inside `docs/` or `DESIGN.md`, outside every `sensitivePaths` prefix;
+- has at most 5 references, at most 4 acceptance checks and at most one dependency;
+- has no `requiresMergedDependencies`, `role` or task `routing`.
+
+The campaign keeps its own limits; no other campaign or provider setting changes. A claim needs at least 10 accepted outcomes of that class on each side. With fewer in the baseline, the cohort may run as a functional pilot, but nothing is compared.
+
+**Private declaration template.** All names are fictional. Use the models settled above, and keep the campaign's declared executor, including its `model`, which applies again when `routing` is removed. Every candidate's `kind` must be a declared executor provider. Declare at least one candidate of tier 2 or 3, because the verifier's floor is tier 2. Tier 1 is the cheapest model trusted with small documentation changes; tier 3 is the strongest.
+
+```json
+"routing": {
+  "mode": "auto",
+  "sensitivePaths": ["src/", "scripts/", "deploy/"],
+  "pin": null,
+  "candidates": [
+    { "kind": "claude-cli", "model": "example-small-model", "tier": 1 },
+    { "kind": "claude-cli", "model": "example-medium-model", "tier": 2 },
+    { "kind": "claude-cli", "model": "example-large-model", "tier": 3 }
+  ]
+}
+```
+
+One task of the cohort, with the other fields every task of the campaign carries (such as its `issue`):
+
+```json
+{ "id": "D01", "title": "Explain the example flow", "deliverable": "commit", "goal": "Document the example flow in docs/design/EXAMPLE.md.",
+  "dependsOn": [], "writes": ["docs/design/"], "acceptance": ["The flow is described", "Links resolve"], "references": ["AGENTS.md", "docs/design/EXAMPLE.md"] }
+```
+
+**Baseline (before).** On the installation, read-only, before the cohort is registered: `node src/supervisor/cli.mjs baseline --data <data dir> --json`, saved privately as the baseline report together with the `status` of every unfinished campaign. Its `tasks` list the accepted outcomes per class; count the R0/C1 ones.
+
+**Disposable rehearsal (before the switch).** On the exact commit to be deployed, in a disposable checkout and never against the live data directory, its scheduled tasks or its dashboard: `npm ci`, then `npm run check`, which includes the activation cohort. Keep the summary with the private rehearsal record.
+
+**Switch on, on the installation.**
+
+1. Record the baseline as above.
+2. If the runtime does not run the exact reviewed commit, deploy it with the upgrade procedure, and compare `status` afterwards.
+3. Register the cohort campaign with `start <private declaration>` under existing owner authority. An existing campaign takes `routing` only by an amendment with a higher `authorization.version`, while paused and with no open operation (`ROUTING_HANDOVER_REQUIRED` otherwise; journal `routing-amended`). No `config.json` key changes.
+4. Compare `status` of every other campaign with the baseline: nothing changes.
+
+**Success criteria, while the cohort runs.**
+
+- Every cohort operation carries a `routing-policy/1` receipt, and the model its `operation-recorded` journal entry names is the model the receipt chose (the dashboard shows each step's model).
+- No step is dispatched twice and no run is charged twice. The cohort's `runs_used` grows by its counted operations only; a refused model's run is refunded (`run-refunded`).
+- Waits do not spin. A refused model waits alone (`model-unavailable`) until a recheck, and an account limit holds the campaign until it lifts. Neither is followed by a run of the same model.
+- Each verify run reviews the exact head in a new session. A move up (`escalation.escalated`) follows two poor results on a tier, never goes down and never leaves the declared candidates.
+- Unknown cost stays unknown in the dashboard and the receipts, never zero.
+- A B2 blocker *No authorized model is available for this task role* means the list is wrong for the account: correct it by amendment, or switch back.
+
+**Compare (after).** When the cohort campaign has finished, take a second report, `baseline --json`, and save it privately. Then run `node scripts/supervisor/routing-comparison.mjs --before <baseline report> --after <second report> --cohort <cohort campaignId>`. It reads only the two files. It refuses a pair from different stores, or a baseline that already holds cohort outcomes. Per class, it prints each side's measures, or *not comparable* when a side has fewer than 10 accepted outcomes. The cohort side counts only the cohort campaigns, so other campaigns that ran meanwhile do not mix in. Claims follow MODEL_ROUTING 8.4:
+
+- claim per class, only where the class is comparable;
+- claim fewer runs, fewer repairs or less time per accepted outcome in those units;
+- claim dollars only over runs that reported dollars, together with the share of unknown cost;
+- on a *quality drop* (lower first-pass acceptance or more repairs), keep routing off for that class.
+
+Publish the per-class result through the normal local publication of the work item, with no store path, account or campaign content. Until then, [STATUS.md](STATUS.md) claims no saving. routing-policy/1's acceptance priors remain the design's constants. Retuning them from the baseline would be a new policy version with its own review; this procedure does not change them.
+
+**Switch back (rollback).** If any criterion fails or the comparison shows a quality drop: pause the cohort campaign and wait until it has no open operation. Then `start` it with its declaration without `routing` and a higher `authorization.version` (journal `routing-amended`), and resume it. Its steps run on the declared executor and model again, as before. Nothing is deleted: receipts, model waits and history stay in the store, and `baseline` still reports them. No other campaign and no `config.json` key is touched.
 
 ## 7. Evidence and remaining gates
 
