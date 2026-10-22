@@ -297,8 +297,9 @@ A finished step's review offers **Try this version**: the static web pages of ex
 
 | Route | Effect |
 | --- | --- |
-| `POST /api/v2/results/preview` | Opens a preview of that verified head. Answers its address under `/preview/<token>/`, the commit and when the preview ends; never a folder. |
-| `GET /preview/<token>/<file>` | One file of that preview, or 404, or 410 once it has ended. |
+| `POST /api/v2/results/preview` | Opens a preview of that verified head. Answers its address under `/preview/<token>/`, the commit, when the preview ends and whether it runs the version's own server (`runtime`); never a folder, a port or a command. For a server preview the caller check runs first. |
+| `POST /api/v2/results/preview/close` | `{ url }`. Ends that preview at once; a server preview's server is stopped. |
+| `GET /preview/<token>/<file>` | One file of that preview (or its server's answer), or 404, or 410 once it has ended. |
 | `POST /api/v2/results/preview/capture` | The same binding. The caller check runs first; then desktop and phone screenshots of that verified head, each with its screen size, the page's layout viewport as the browser measured it, the commit and when. |
 
 The pages are read from the commit's Git objects in AIWorks's own checkout (`src/supervisor/preview.mjs`): nothing is built, installed, started or written, and nothing a request names is run. A preview serves only the folder of the first of `index.html`, `public/index.html`, `site/index.html`, `docs/index.html` or `www/index.html` in that commit, by exact path; dot segments, encoded separators, links, submodules, hidden files, secret-like names, credential-looking text and unknown file types are never served. Every response is a sandboxed document with an opaque origin (`sandbox allow-scripts`, `connect-src 'none'`, `form-action 'none'`, framed only by the dashboard), so its script cannot read the dashboard, its token or its commands, send requests, submit forms or open windows. A preview lives in the dashboard's memory only, for 30 minutes, at most four at a time, and ends when the dashboard stops. It also ends as soon as its version stops being the step's checked one: each open preview checks the review again at most once a second, so a reopened step, one sent back for changes or one checked again at another head answers 410. At phone width the frame keeps a 390 px page and scales it down in a narrower window, and says so, so a 320 px dashboard still shows the page as a phone lays it out.
@@ -311,7 +312,26 @@ The pages are read from the commit's Git objects in AIWorks's own checkout (`src
 
 One capture runs at a time. Screenshots are answered to the page and kept in its memory only, beside the preview, and are dropped when the preview is closed or its version changes; they are evidence of what this computer showed for that commit, not of a deployment.
 
-Only static pages are supported. A version without one of the entry pages above that has an app manifest (`package.json`, `pyproject.toml`, `go.mod` and similar) is reported as needing its own server, which AIWorks does not start: a Job Object bounds a process's lifetime and tree, but nothing on this platform keeps an arbitrary program's network to loopback or its file reads to its checked worktree, and installing its dependencies runs their scripts too. That runtime class stays unavailable until such containment exists.
+### Server preview of a checked version
+
+A version that needs its own server is previewed only for a project whose preview script the installation's operator named in `config.json`; without that, a version without one of the entry pages above that has an app manifest (`package.json`, `pyproject.toml`, `go.mod` and similar) is reported as needing its own server, and nothing is started. The source turns no project on.
+
+```json
+{ "previews": { "servers": { "example-org/sampleapp": { "script": "app/server.mjs", "ready": "/" } } } }
+```
+
+The key is the project's repository (or the `lp-` id of a project without GitHub). `script` is a repository-relative `.mjs`, `.cjs` or `.js` path; `ready` is the page opened first and polled until the server answers (`/` by default). Nothing else is accepted, and a malformed entry starts nothing. With a declaration, Review says that opening the preview starts the version's own server (`src/supervisor/preview-server.mjs`):
+
+| What | How |
+| --- | --- |
+| Authority | The operator's declaration names the script; the request names only the checked version, as for static pages, and the caller check runs before anything starts, so a program AIWorks started cannot start a server. The argv is AIWorks's own Node, fixed flags and that script: no shell, and no command or argument from a request or the project. |
+| Exact version | The files are written from Git objects of exactly the verified commit into a new folder under the dashboard's data folder (`preview-servers`), never from a working copy. Hidden files and secret-like names are left out; a name Windows cannot hold, or two names Windows holds as one, refuses the version. A version whose `package.json` on the script's path declares dependencies is refused: nothing is installed or built. |
+| Process | It runs under `runner.mjs` inside a Windows Job Object with no environment from the dashboard: what Windows needs to start a process (Windows also adds its logon variables, such as the user name), its own home and temporary folders, `HOST=127.0.0.1` and `PORT`. Node's permission model limits its file reads and writes to its own folder and refuses child processes, worker threads and native addons. |
+| Network | AIWorks picks a free loopback port for it, separate from the dashboard's and each capture's. It is ready once that port answers within 30 seconds. Every port it or a descendant listens on must be loopback: one that listens beyond this computer is stopped, at start and in a check every 10 seconds. The browser never reaches it directly: the dashboard, or the capture's own server, relays each GET path (no query, no cookies), follows redirects only within that server, serves only the known file types above up to 5 MB and never credential-looking text, and keeps the preview's sandbox policy, so the page's own scripts still cannot send requests. |
+| Lifetime | 10 minutes, at most two servers at once (starting another stops the oldest), one starting at a time. It is stopped with its whole process tree when the preview is closed, ends or is replaced, when the step is reopened, sent back or checked again at another head (checked every second, even with nothing requested), when the operator's declaration changes, when the dashboard closes, and at its deadline by its job even if the dashboard died. Its folder is removed with it. |
+| Screenshots | **Capture screenshots** starts a server of its own for the capture and stops it afterwards; the screenshots are answered only once both the browser's and the server's jobs are proved empty. |
+
+What stays unsupported: Python, Ruby, Go, PHP and other servers; any version that needs its dependencies installed or a build step; and outgoing network containment. Nothing on this computer keeps such a program's own outgoing connections to loopback without a firewall rule or an AppContainer per preview, which AIWorks does not create; that capability, and each other server type, needs its own design and the operator's authorization. A declaration therefore runs code the independent check already ran on this computer, with fewer rights than that check had.
 
 ## Knowledge, sample project and usage (owner UI v2, WP8)
 

@@ -10,7 +10,8 @@
 //   cannot read the dashboard, its token or its commands, cannot send requests (connect-src 'none'), submit forms, open
 //   windows or leave its frame, and only the dashboard may frame it. A preview lives in the dashboard's memory only and
 //   ends after PREVIEW_TTL_MS, when the dashboard stops, or as soon as its version is no longer the checked one.
-// Only the `static` runtime class is supported (PREVIEW_RUNTIMES); a version that needs its own server says so instead.
+// That is the `static` runtime class (PREVIEW_RUNTIMES). A version that needs its own server is previewed only where the
+// operator declared that project's preview script (preview-server.mjs); otherwise it says so instead.
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { containsSecret } from './coordinator.mjs';
@@ -22,13 +23,14 @@ export const PREVIEW_ENTRIES = Object.freeze(['index.html', 'public/index.html',
 export const PREVIEW_TTL_MS = 30 * 60_000;
 /**
  * What kind of version a preview can show. `static`: pages read from the checked commit's Git objects, as above.
- * `server`: a version that needs its own process (a Node, Python or other app server) stays unavailable. A Job Object
- * bounds such a process's lifetime and process tree, but nothing on this platform keeps its network to loopback or its
- * file reads to its worktree, and its dependencies would first have to be installed, which runs their scripts too.
+ * `server`: a Node server script of the checked commit, run by preview-server.mjs only for a project whose preview
+ * script the operator declared in config.json (`previews.servers`); without that declaration it stays unavailable. Other
+ * servers (Python, Ruby, Go and the like) and a version whose dependencies would first have to be installed, which runs
+ * their scripts too, are never run.
  */
 export const PREVIEW_RUNTIMES = Object.freeze({
   static: Object.freeze({ supported: true }),
-  server: Object.freeze({ supported: false, reason: 'AIWorks does not start a project’s own server: on this computer it cannot keep that program’s network to this computer or its file reads to the checked version.' }),
+  server: Object.freeze({ supported: 'declared', reason: 'AIWorks starts a project’s own server only where the operator has named that project’s preview script in AIWorks’s settings (previews.servers), and only a Node script that needs nothing installed.' }),
 });
 // Files that mean a version is an app with its own server rather than static pages.
 const SERVER_MARKERS = Object.freeze(['package.json', 'manage.py', 'requirements.txt', 'pyproject.toml', 'Gemfile', 'go.mod', 'Cargo.toml', 'composer.json']);
@@ -38,13 +40,13 @@ const RECHECK_MS = 1000;
 export const MAX_PREVIEWS = 4;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_FILES = 5000;
-const TYPES = Object.freeze({ html: 'text/html; charset=utf-8', htm: 'text/html; charset=utf-8', css: 'text/css; charset=utf-8',
+export const PREVIEW_TYPES = Object.freeze({ html: 'text/html; charset=utf-8', htm: 'text/html; charset=utf-8', css: 'text/css; charset=utf-8',
   js: 'text/javascript; charset=utf-8', mjs: 'text/javascript; charset=utf-8', json: 'application/json; charset=utf-8', txt: 'text/plain; charset=utf-8',
   svg: 'image/svg+xml', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', avif: 'image/avif', ico: 'image/x-icon',
   woff: 'font/woff', woff2: 'font/woff2', ttf: 'font/ttf', otf: 'font/otf', mp4: 'video/mp4', webm: 'video/webm', mp3: 'audio/mpeg', wav: 'audio/wav' });
 const TEXT = /^(?:text\/|application\/json|image\/svg)/;
 // Names that hold credentials or local configuration, never part of a page: `.env`, keys, certificates, npm and SSH files.
-const SECRET_NAME = /(?:^|\/)(?:\.[^/]*|[^/]*\.(?:pem|key|p12|pfx|crt|cer|keystore|jks|kdbx)|id_(?:rsa|dsa|ecdsa|ed25519)[^/]*|[^/]*(?:secret|credential)[^/]*)$/i;
+export const SECRET_NAME = /(?:^|\/)(?:\.[^/]*|[^/]*\.(?:pem|key|p12|pfx|crt|cer|keystore|jks|kdbx)|id_(?:rsa|dsa|ecdsa|ed25519)[^/]*|[^/]*(?:secret|credential)[^/]*)$/i;
 
 /** The headers of every preview response: an opaque-origin sandbox the dashboard alone may frame. */
 export const PREVIEW_POLICY = "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
@@ -68,24 +70,24 @@ export function previewSupport(task, spec, review) {
 }
 
 /** One read-only Git command in AIWorks's checkout. Inherited GIT_* variables could point Git elsewhere. */
-function readGit(git, repoPath, args, { bytes = false } = {}) {
+export function readGit(git, repoPath, args, { bytes = false, input = undefined, maxBuffer = 64 * 1024 * 1024 } = {}) {
   const [command, ...prefix] = git;
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^GIT_/i.test(name)));
   const result = spawnSync(command, [...prefix, '--no-optional-locks', '-c', 'core.fsmonitor=false', '-C', repoPath, ...args], {
-    encoding: bytes ? 'buffer' : 'utf8', windowsHide: true, timeout: 60_000, maxBuffer: 64 * 1024 * 1024,
+    encoding: bytes ? 'buffer' : 'utf8', windowsHide: true, timeout: 60_000, maxBuffer, input,
     env: { ...env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' },
   });
   return { ok: !result.error && result.status === 0, stdout: result.stdout ?? (bytes ? Buffer.alloc(0) : '') };
 }
 
-const typeOf = (path) => TYPES[/\.([a-z0-9]+)$/i.exec(path)?.[1]?.toLowerCase() ?? ''] ?? null;
+const typeOf = (path) => PREVIEW_TYPES[/\.([a-z0-9]+)$/i.exec(path)?.[1]?.toLowerCase() ?? ''] ?? null;
 
 /**
- * The servable files of the checked commit `sha`: its first PREVIEW_ENTRIES page and, under that page's folder, every
- * regular file of a known type that is not hidden, secret-like or too large, keyed by its path inside that folder.
- * Throws PreviewError PREVIEW_COMMIT_MISSING or PREVIEW_NO_PAGE.
+ * The regular files of the checked commit `sha` in AIWorks's checkout `repoPath`, by tree path: { blob, size }. A link
+ * (120000) could name a path outside any folder and a submodule (160000) has no bytes here, so neither is listed.
+ * Throws PreviewError PREVIEW_COMMIT_MISSING.
  */
-export function previewManifest({ git = ['git'], repoPath, sha }) {
+export function commitTree({ git = ['git'], repoPath, sha }) {
   if (!SHA.test(sha ?? '') || !repoPath) throw new PreviewError('PREVIEW_COMMIT_MISSING', 'AIWorks does not have this checked version on this computer.');
   if (!readGit(git, repoPath, ['cat-file', '-e', `${sha}^{commit}`]).ok) throw new PreviewError('PREVIEW_COMMIT_MISSING', 'AIWorks does not have this checked version on this computer.');
   const listed = readGit(git, repoPath, ['ls-tree', '-r', '-l', '-z', '--full-tree', sha]);
@@ -93,9 +95,18 @@ export function previewManifest({ git = ['git'], repoPath, sha }) {
   const tree = new Map();
   for (const line of listed.stdout.split('\0')) {
     const match = /^(\d{6}) (\w+) ([0-9a-f]{40,64}) +(\d+|-)\t(.+)$/s.exec(line);
-    // Regular files only: a link (120000) could name a path outside the folder, and a submodule (160000) has no bytes here.
     if (match && match[2] === 'blob' && ['100644', '100755'].includes(match[1])) tree.set(match[5], { blob: match[3], size: Number(match[4]) });
   }
+  return tree;
+}
+
+/**
+ * The servable files of the checked commit `sha`: its first PREVIEW_ENTRIES page and, under that page's folder, every
+ * regular file of a known type that is not hidden, secret-like or too large, keyed by its path inside that folder.
+ * Throws PreviewError PREVIEW_COMMIT_MISSING or PREVIEW_NO_PAGE.
+ */
+export function previewManifest({ git = ['git'], repoPath, sha }) {
+  const tree = commitTree({ git, repoPath, sha });
   const entry = PREVIEW_ENTRIES.find((path) => tree.has(path));
   if (!entry && SERVER_MARKERS.some((path) => tree.has(path))) throw new PreviewError('PREVIEW_NEEDS_SERVER', `This checked version has no static web page, and it looks like an app that runs its own server. ${PREVIEW_RUNTIMES.server.reason}`);
   if (!entry) throw new PreviewError('PREVIEW_NO_PAGE', `This checked version has no web page to preview (AIWorks looks for ${PREVIEW_ENTRIES.join(', ')}).`);
@@ -150,19 +161,36 @@ export function servePreviewFile(source, requestPath) {
  * read from and its manifest. Nothing is written; a preview ends after PREVIEW_TTL_MS, the oldest ends when more than
  * MAX_PREVIEWS are open, and one ends as soon as `stillValid(binding)` says its version is no longer the checked one
  * (reopened, sent back for changes, or checked again at another head), checked at most every RECHECK_MS.
+ * A server preview (preview-server.mjs) holds its running server: the server is stopped whenever its preview ends, its
+ * preview ends when the server has stopped, and while one is open its version is checked again every RECHECK_MS even
+ * when nothing is requested, so a version that stops being the checked one never keeps a server running.
  */
 export class PreviewSessions {
-  constructor({ now = () => Date.now(), stillValid = () => true } = {}) { this.now = now; this.stillValid = stillValid; this.open = new Map(); }
+  constructor({ now = () => Date.now(), stillValid = () => true } = {}) { this.now = now; this.stillValid = stillValid; this.open = new Map(); this.watch = null; }
 
-  add({ git, repoPath, sha, manifest, binding }) {
+  add({ git, repoPath, sha, manifest, binding, server = null }) {
     this.sweep();
-    while (this.open.size >= MAX_PREVIEWS) this.open.delete(this.open.keys().next().value);
-    const token = randomBytes(16).toString('hex'), expiresAt = this.now() + PREVIEW_TTL_MS;
-    this.open.set(token, { git, repoPath, sha, manifest, binding, expiresAt, checkedAt: this.now() });
+    while (this.open.size >= MAX_PREVIEWS) this.end(this.open.keys().next().value);
+    const token = randomBytes(16).toString('hex'), expiresAt = Math.min(this.now() + PREVIEW_TTL_MS, server?.expiresAt ?? Infinity);
+    this.open.set(token, { git, repoPath, sha, manifest, binding, server, expiresAt, checkedAt: this.now() });
+    if (server && !this.watch) {
+      this.watch = setInterval(() => { for (const key of [...this.open.keys()]) if (this.open.get(key)?.server) this.live(key); this.idle(); }, RECHECK_MS);
+      this.watch.unref?.();
+    }
     return { token, expiresAt };
   }
 
-  sweep() { for (const [token, session] of this.open) if (session.expiresAt <= this.now()) this.open.delete(token); }
+  /** End one preview, stopping its server if it has one. */
+  end(token) {
+    const session = this.open.get(token);
+    this.open.delete(token);
+    if (session?.server) void session.server.stop();
+    this.idle();
+  }
+
+  idle() { if (this.watch && ![...this.open.values()].some((session) => session.server)) { clearInterval(this.watch); this.watch = null; } }
+
+  sweep() { for (const [token, session] of this.open) if (session.expiresAt <= this.now() || session.server && !session.server.running()) this.end(token); }
 
   /** The live preview of `token` whose version is still the checked one, or null (and it ends). */
   live(token) {
@@ -172,16 +200,27 @@ export class PreviewSessions {
     if (this.now() - session.checkedAt >= RECHECK_MS) {
       let valid = false;
       try { valid = this.stillValid(session.binding) === true; } catch { valid = false; }
-      if (!valid) { this.open.delete(token); return null; }
+      if (!valid) { this.end(token); return null; }
       session.checkedAt = this.now();
     }
     return session;
   }
 
-  /** One request under /preview/<token>/: { status, body, type }. Only a live preview's served files answer 200. */
+  /**
+   * One request under /preview/<token>/: { status, body, type }, or a promise of it for a server preview. Only a live
+   * preview's served files, or its server's answers, answer 200.
+   */
   serve(token, requestPath) {
     const session = this.live(token);
     if (!session) return { status: 410, body: 'This preview has ended. Open it again from Review.', type: 'text/plain; charset=utf-8' };
-    return servePreviewFile(session, requestPath);
+    return session.server ? session.server.request(requestPath) : servePreviewFile(session, requestPath);
+  }
+
+  /** End every preview and stop every server they hold; resolves once each is stopped or could not be proved stopped. */
+  close() {
+    const servers = [...this.open.values()].map((session) => session.server).filter(Boolean);
+    this.open.clear();
+    this.idle();
+    return Promise.all(servers.map((server) => server.stop()));
   }
 }
