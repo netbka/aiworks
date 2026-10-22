@@ -880,11 +880,32 @@ function localReport(store, campaignId, task, spec) {
   return row ? { number: Number(number), at: row.created_at } : null;
 }
 
+/**
+ * A checked local review of AIWorks's own repository (controller.mjs recordLocalReview): the finished step's published
+ * link names a `review` work item the supervisor recorded for exactly this campaign and step. Its address is the work
+ * list's own dashboard route, never a path on this computer. Null otherwise: an `aiworks-work:` link alone is never taken
+ * as a review, and a review is never a merge or an acceptance.
+ */
+function localReviewAddress(store, campaignId, task) {
+  const number = /^aiworks-work:([1-9]\d{0,8})$/.exec(task.pr_url ?? '')?.[1];
+  if (!number || task.state !== 'done') return null;
+  let row = null;
+  try {
+    row = store.get("SELECT number FROM work_items WHERE number = ? AND kind = 'review' AND author_kind = 'supervisor' AND campaign_id = ? AND task_id = ?",
+      Number(number), campaignId, task.task_id);
+  } catch { row = null; }
+  return row ? `#/worklist/${number}` : null;
+}
+
+/**
+ * The merge recorded for exactly this step's verified commit and published link: a pull request merged on GitHub, or a
+ * local review the local merge gate merged into local main (merge.mjs recordLocal, `local: true`).
+ */
 function mergeReceipt(task, rows) {
   const row = rows.find(({ detail }) => detail?.task === task.task_id && detail.sha === task.verified_sha &&
     (detail.originalUrl ?? detail.url) === task.pr_url && /^[a-f0-9]{40}$/.test(detail.sha ?? '') &&
     /^[a-f0-9]{40}$/.test(detail.mergeCommit ?? '') &&
-    /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(detail.url ?? ''));
+    (/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(detail.url ?? '') || (detail.local === true && /^aiworks-work:[1-9]\d{0,8}$/.test(detail.url ?? ''))));
   if (!row) return null;
   const d = row.detail;
   return { sha: d.sha, originalUrl: d.originalUrl ?? d.url, url: d.url, mergeCommit: d.mergeCommit,
@@ -1081,7 +1102,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
           requiresMergedDependencies: specs.get(task.task_id)?.requiresMergedDependencies === true,
           blocked: code(task.blocked?.class), blockedReason: task.blocked ? stopReason(task) : null,
           errorClass: code(String(task.last_error ?? '').split(':')[0]),
-          retryAt: task.retry_at, dependsOn: specs.get(task.task_id)?.dependsOn ?? [], resultUrl: githubLink(task.pr_url),
+          retryAt: task.retry_at, dependsOn: specs.get(task.task_id)?.dependsOn ?? [], resultUrl: githubLink(task.pr_url) ?? localReviewAddress(store, id, task),
           headSha: task.head_sha, verifiedSha: task.verified_sha, lastOutcome: lastOutcome(task.task_id),
           // When the verified commit passed the check. Without a recorded check run, when the step last changed, which is
           // never earlier, so a wait is never overstated.

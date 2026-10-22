@@ -195,7 +195,7 @@ function fill(store, dataDir, root, now) {
       { branch: 'search-page', merged: true, files: SEARCH_PAGE },{ branch: 'search-filters', pushed: true }, { branch: 'sale-banner' },
       { branch: 'contracts-import', pushed: true }]),
     'example/recipes': repository(root, 'recipes', [{ branch: 'print-card', merged: true },
-      { branch: 'unit-converter', merged: true }, { branch: 'metric-units', merged: true }]),
+      { branch: 'unit-converter', merged: true }, { branch: 'metric-units', merged: true }, { branch: 'shopping-list', merged: true }, { branch: 'pantry-check' }]),
     'example/notes-site': repository(root, 'notes-site', [{ branch: 'sitemap' }], { origin: false }),
   };
   const sha = (repo, branch) => repos[repo].shas[branch];
@@ -411,6 +411,34 @@ function fill(store, dataDir, root, now) {
   store.journal(id, 'published', { task: 'T1', url: `aiworks-work:${researchItem.number}` }, now - 8 * H);
   setCampaign(id, { control: 'finished', status: 'ready' });
   lease(id, now - 7 * H);
+
+  // Checked local reviews (controller.mjs recordLocalReview), as for AIWorks's own repository with local main trusted: each
+  // step links the supervisor's review item in the local work list. T1 has the local merge gate's receipt for exactly its
+  // verified commit (merge.mjs recordLocal); T2 passed its check but is not merged; T3's link names a work item that is
+  // no review of this step, so it stays a step without a result link.
+  id = start(declaration('recipes-local', recipes, 'Plan the weekly shop', 110, [task('T1', 111, 'shopping list', 'Shopping list'),
+    task('T2', 112, 'pantry check', 'Pantry check'), task('T3', 113, 'meal plan', 'Meal plan')]), now - 6 * H);
+  for (const [taskId, branch] of [['T1', 'shopping-list'], ['T2', 'pantry-check']]) {
+    const verified = sha(recipes, branch);
+    operation(id, taskId, 'implement', { state: 'finished', at: now - 6 * H, outcome: finished({ result: 'implemented' }, 0.8) });
+    operation(id, taskId, 'verify', { state: 'finished', at: now - 5 * H, outcome: finished({ verdict: 'accepted', findings: [] }, 0.4) });
+    const review = createItem(store, { kind: 'review', title: `${taskId}: ${branch.replace('-', ' ')}`, body: 'Synthetic review fixture review.',
+      links: { campaignId: id, taskId, verifiedSha: verified }, authorKind: 'supervisor', now: now - 5 * H });
+    const report = `# ${taskId} report
+
+Synthetic review fixture report.`;
+    setTask(id, taskId, { state: 'done', attempts: 1, head_sha: verified, verified_sha: verified, pr_url: `aiworks-work:${review.number}`,
+      result: { result: 'resolved', summary: 'implemented', headSha: verified, report },
+      verification: { verdict: 'accepted', targetSha: verified, reportDigest: createHash('sha256').update(report, 'utf8').digest('hex'), summary: 'Checked on the fixture recipes.',
+        verdictSummary: 'Does what the plan promised on the fixture recipes.', findings: [], checks: [{ command: 'npm run check', result: 'pass' }],
+        criteria: [{ criterion: 1, result: 'pass', check: 'Opened the page', evidence: 'Synthetic evidence.' }], eyesOn: [] } });
+    store.journal(id, 'published', { task: taskId, url: `aiworks-work:${review.number}` }, now - 5 * H);
+    if (taskId === 'T1') store.journal(id, 'merged', { task: taskId, sha: verified, url: `aiworks-work:${review.number}`, mergeCommit: git(repos[recipes].path, 'rev-parse', 'main'),
+      reconciled: false, requested: true, local: true }, now - 4 * H);
+  }
+  setTask(id, 'T3', { state: 'done', attempts: 1, head_sha: sha(recipes, 'print-card'), verified_sha: sha(recipes, 'print-card'), pr_url: `aiworks-work:${researchItem.number}` });
+  setCampaign(id, { control: 'finished', status: 'ready' });
+  lease(id, now - 3 * H);
 
   // Plan (OWNER_UI_V2 WP3): example/recipes connected, with plans in Now, Next and Later, each with versions the owner
   // edited, one out of date and one still being drafted. Written as intake.mjs writes them; nothing approves or starts.
