@@ -2856,8 +2856,9 @@ async function sendReview(action, binding, review, body, { address = current.add
 }
 
 /**
- * Try this version (OWNER_UI_V2 WP7): the static pages of exactly the commit that passed the check, in a sandboxed frame
- * at desktop or phone width. Opening is bound to the same version and report as Accept result; the frame cannot reach the
+ * Try this version (OWNER_UI_V2 WP7): the static pages of exactly the commit that passed the check, or the pages its own
+ * server answers where the operator declared one for the project (`runtime: 'server'`), in a sandboxed frame at desktop
+ * or phone width. Opening is bound to the same version and report as Accept result; the frame cannot reach the
  * dashboard or the network, and the preview ends by itself after 30 minutes. Each preview is kept per version, so the
  * 5-second refresh keeps the frame as it is. A result without one says why. Capture screenshots asks AIWorks for desktop
  * and phone screenshots of the same version, taken in a browser it starts and stops (preview-capture.mjs); each names the
@@ -2919,11 +2920,16 @@ function shotsBlock(key, shown, sha7, control, captureAction) {
       'Version ', el('code', { title: shots.verifiedSha }, sha7), `, captured at ${clock(shots.capturedAt)} on this computer.`)))) : null;
   return el('div', { class: 'preview-evidence' }, el('div', { class: 'campaign-controls' }, capture), status, figures);
 }
+// Closing a server preview asks AIWorks to end it, which stops its server; a static one simply goes away.
+async function closePreview(key, shown) {
+  showPreview(key, null);
+  if (shown?.runtime === 'server' && shown.url) await post('/api/v2/results/preview/close', { url: shown.url }).catch(() => {});
+}
 async function openPreview(key, binding, review) {
   showPreview(key, { state: 'opening', size: previews.get(key)?.size ?? 'desktop' });
   try {
     const opened = await post('/api/v2/results/preview', { ...binding, verifiedSha: review.verifiedSha, reportDigest: review.reportDigest });
-    showPreview(key, { state: 'open', size: previews.get(key)?.size ?? 'desktop', url: opened.url, sha: opened.verifiedSha, expiresAt: opened.expiresAt, capture: opened.capture ?? null });
+    showPreview(key, { state: 'open', size: previews.get(key)?.size ?? 'desktop', url: opened.url, sha: opened.verifiedSha, expiresAt: opened.expiresAt, runtime: opened.runtime ?? 'static', capture: opened.capture ?? null });
   } catch (error) {
     showPreview(key, { state: 'failed', size: previews.get(key)?.size ?? 'desktop', error: error.known ? error.message : COMMANDS.unconfirmed });
   }
@@ -2934,21 +2940,23 @@ function previewSection(review, binding) {
   const key = `${binding.campaignId}/${binding.taskId}/${review.verifiedSha}`, shown = previews.get(key), sha7 = review.verifiedSha.slice(0, 7);
   const section = (...children) => el('div', { class: 'preview-panel', 'data-focus-scope': `preview/${key}` }, el('strong', {}, 'Try this version'), ...children);
   if (!review.preview.available) return section(el('p', { class: 'subtext' }, `Preview not available: ${review.preview.reason}`));
-  const identity = el('p', { class: 'subtext' }, 'The version checked at ', el('code', { title: review.verifiedSha }, sha7),
-    ', exactly as it passed the check. Its pages run in a sealed frame: they cannot reach this dashboard or the internet, and nothing of the project is built or started on this computer.');
+  const server = review.preview.runtime === 'server';
+  const identity = el('p', { class: 'subtext' }, 'The version checked at ', el('code', { title: review.verifiedSha }, sha7), server
+    ? ', exactly as it passed the check. Opening it starts that version’s own server on this computer, reachable only from here and stopped after 10 minutes or when the preview closes; nothing is installed or built. Its pages run in a sealed frame that cannot reach this dashboard or the internet.'
+    : ', exactly as it passed the check. Its pages run in a sealed frame: they cannot reach this dashboard or the internet, and nothing of the project is built or started on this computer.');
   // Each control names its preview: the refresh keeps a button that shows exactly the same, with its own action, so two
   // results' identical buttons must never be mistaken for each other.
   const control = (label, action, cls = 'secondary', extra = {}) => el('button', { class: `button ${cls}`, type: 'button', 'data-preview': key, onclick: action, ...extra }, label);
   const open = (label) => control(label, () => void openPreview(key, binding, review), shown ? 'secondary' : '', { disabled: shown?.state === 'opening' || offline });
   if (!shown) return section(identity, el('div', { class: 'campaign-controls' }, open('Open preview')));
-  if (shown.state === 'opening') return section(identity, el('p', { role: 'status', 'aria-live': 'polite' }, 'Opening the checked version…'));
+  if (shown.state === 'opening') return section(identity, el('p', { role: 'status', 'aria-live': 'polite' }, server ? 'Starting the checked version’s server… This can take half a minute.' : 'Opening the checked version…'));
   if (shown.state === 'failed') return section(identity, el('p', { class: 'notice warning', role: 'alert' }, `The preview did not open. ${shown.error}`), el('div', { class: 'campaign-controls' }, open('Try again')));
   const size = (name, label) => control(label, () => { previews.set(key, { ...shown, size: name }); render(); }, 'secondary', { 'aria-pressed': String(shown.size === name) });
   const frame = el('div', { class: `preview-frame ${shown.size}` }, el('iframe', { src: shown.url, title: `Preview of the version checked at ${sha7} (${shown.size === 'phone' ? 'phone' : 'desktop'} width)`,
     sandbox: 'allow-scripts', referrerpolicy: 'no-referrer', loading: 'lazy' }));
   return section(identity,
     el('div', { class: 'campaign-controls preview-controls', role: 'group', 'aria-label': 'Preview width' }, size('desktop', 'Desktop'), size('phone', 'Phone'),
-      control('Close preview', () => showPreview(key, null))),
+      control('Close preview', () => void closePreview(key, shown))),
     el('p', { class: 'subtext' }, `Showing a ${shown.size === 'phone' ? 'phone' : 'desktop'}-width (${PREVIEW_WIDTHS[shown.size === 'phone' ? 'phone' : 'desktop']} px) view of ${sha7}.`,
       el('span', { class: 'preview-fit' }), ` The preview ends at ${clock(shown.expiresAt)}; open it again after that.`),
     frame,

@@ -8,6 +8,7 @@ import { supervisorSnapshot, applyCommand, applyDecision, applyResultReview, cap
 import { Store } from '../supervisor/store.mjs';
 import { PREVIEW_POLICY, PreviewSessions } from '../supervisor/preview.mjs';
 import { PreviewCaptures } from '../supervisor/preview-capture.mjs';
+import { ServerPreviews } from '../supervisor/preview-server.mjs';
 import { ownerView } from './owner.mjs';
 import { configuredMergeDelegation } from './merges.mjs';
 import { checkConnectedProject, configuredRepositories, confirmProjectRules, connectedProjects, connectProject, createSampleProject, disconnectConnectedProject, listConnectedProjects,
@@ -75,6 +76,8 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
   // as that commit is no longer the step's checked version. Screenshots of one run one at a time and stop with the server.
   const previews = new PreviewSessions({ stillValid: (binding) => previewStillChecked(dataDir, binding) });
   const captures = new PreviewCaptures({ root: join(dataDir, 'preview-captures') });
+  // The servers of checked versions whose project has an operator-declared server preview (preview-server.mjs).
+  const servers = new ServerPreviews({ root: join(dataDir, 'preview-servers') });
   const textChecks = new DisplayTextChecks();
   // Which machine and dashboard version this is, so a screenshot identifies its supervisor.
   const machine = { name: safeText(host.name ?? hostname(), 64) || null, revision: /^[0-9a-f]{7,40}$/.test(host.revision ?? '') ? host.revision : null,
@@ -129,7 +132,8 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
     if (preview) {
       if (req.headers.host !== new URL(origin).host || req.headers.origin && !['null', origin].includes(req.headers.origin)) return send(403, { error: 'Only the local dashboard origin is allowed.' });
       if (req.method !== 'GET') return send(405, { error: 'Method not allowed.' });
-      const answer = previews.serve(preview[1], preview[2]);
+      const answer = await previews.serve(preview[1], preview[2]);
+      if (res.destroyed) return;
       res.writeHead(answer.status, { 'Content-Type': answer.type, 'Content-Length': Buffer.byteLength(answer.body), 'Cache-Control': 'no-store',
         'Content-Security-Policy': PREVIEW_POLICY, 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
       return res.end(answer.body);
@@ -277,8 +281,16 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
         await ownerCaller(dataDir, caller);
         return send(202, applyResultReview(dataDir, path.slice('/api/v2/results/'.length), value, Date.now()));
       }
-      // Preview of a checked version (WP7): bound to the same verified head and report as accept; it builds and starts nothing.
-      if (path === '/api/v2/results/preview') return send(200, openResultPreview(dataDir, value, previews));
+      // Preview of a checked version (WP7): bound to the same verified head and report as accept. Static pages build and
+      // start nothing; a server preview starts the version's own server, so for it the caller check runs first.
+      if (path === '/api/v2/results/preview') return send(200, await openResultPreview(dataDir, value, previews, { servers, ownerCheck: () => ownerCaller(dataDir, caller) }));
+      // Close a preview: it ends at once, and a server preview's server is stopped. Ending one widens nothing.
+      if (path === '/api/v2/results/preview/close') {
+        const token = /^\/preview\/([0-9a-f]{32})\//.exec(typeof value?.url === 'string' ? value.url : '')?.[1];
+        if (!token) return send(400, { error: 'Invalid dashboard command.' });
+        previews.end(token);
+        return send(200, { closed: true });
+      }
       // Check the site now (WP9): one read-only check of a settled release through the release role (release/health.mjs).
       // It runs a project command, so the caller check runs first: a program AIWorks started cannot make it run one.
       if (path === '/api/v2/releases/check') {
@@ -292,7 +304,7 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
         // A page that goes away before the answer cancels the capture, which stops its browser.
         const gone = new AbortController();
         res.once('close', () => { if (!res.writableEnded) gone.abort(); });
-        return send(200, await captureResultPreview(dataDir, value, captures, { signal: gone.signal }));
+        return send(200, await captureResultPreview(dataDir, value, captures, { signal: gone.signal, servers }));
       }
       // Mark the events up to a journal sequence as seen (the server-side last-seen marker, WP1).
       if (path === '/api/v2/events/seen') {
@@ -360,6 +372,6 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
   });
   server.requestTimeout = 10_000;
   server.headersTimeout = 10_000;
-  server.once('close', () => { void textChecks.close(); captures.close(); });
+  server.once('close', () => { void textChecks.close(); captures.close(); void previews.close(); void servers.close(); });
   return server;
 }
