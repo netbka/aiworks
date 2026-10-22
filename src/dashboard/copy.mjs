@@ -133,7 +133,8 @@ const STATES = {
   // §4.4: what needs the owner, when no §7.6–7.8 sentence says it more exactly.
   'review': { section: '4.4', needsYou: true, copy: (d) => [`Pull request #${d.number} waits for your review.`, sentence(d.step), review(d.number, d.url)] },
   'one-thing': { section: '4.4', needsYou: true, copy: (d) => ['One thing needs you.',
-    sentence([d.action, d.text].filter(Boolean).join(': ')), d.url ? { label: d.linkLabel ?? 'Open it', url: d.url } : { label: 'See what needs you', route: { screen: 'needs' } }] },
+    sentence([d.action, d.text].filter(Boolean).join(': ')), d.url ? { label: d.linkLabel ?? 'Open it', url: d.url }
+      : d.route ? { label: d.route.label, route: d.route.address } : { label: 'See what needs you', route: { screen: 'needs' } }] },
   'several': { section: '4.4', needsYou: true, copy: (d) => [`${capital(plural(d.count, 'thing'))} need you.`,
     'Each one says what to do in Needs you.', { label: `See the ${d.count} things that need you`, route: { screen: 'needs' } }] },
   // Not an owner action, so not one of the project's Needs you items (review F17).
@@ -214,7 +215,9 @@ export function progressText(counts) {
 export function sinceLines(recent, ids, failures = []) {
   if (!recent) return null;
   const mine = (list) => (list ?? []).filter((item) => ids.includes(item.campaignId));
-  const prs = (list) => list.filter((item) => item.url).map((item) => ({ label: `#${item.number}`, url: item.url }));
+  // A pull request on GitHub, or a local review's work-list item in the dashboard (owner.mjs localDelivery).
+  const prs = (list) => list.filter((item) => item.url || item.route)
+    .map((item) => item.url ? { label: `#${item.number}`, url: item.url } : { label: `Work list #${item.number}`, route: item.route.address });
   const merged = mine(recent.merged), delivered = mine(recent.delivered), waiting = mine(recent.waiting);
   const runs = mine(failures).filter((item) => ['failed-run', 'rejected'].includes(item.kind)), rejected = runs.filter((item) => item.kind === 'rejected').length;
   return [
@@ -268,7 +271,9 @@ function itemState(item, c, d) {
   const [, number] = PR.exec(item.link?.url ?? '') ?? [];
   // A delegated merge that waited too long (#139): the step and how long it waited; its action opens the pull request.
   if (item.kind === 'merge-stalled' && number) return ['one-thing', { action: item.text, text: item.points[0]?.text, url: item.link.url, linkLabel: `Open pull request #${number}` }];
-  return ['one-thing', { action: item.action, text: item.text, url: item.link?.url ?? null, linkLabel: number ? `Review pull request #${number}` : item.link ? 'Open the step issue' : null }];
+  return ['one-thing', { action: item.action, text: item.text, url: item.link?.url ?? null, linkLabel: number ? `Review pull request #${number}` : item.link ? 'Open the step issue' : null,
+    // A local review waiting for the owner opens its work-list item here (owner.mjs localDelivery).
+    route: item.kind === 'review' && !item.link ? item.route ?? null : null }];
 }
 
 /** The state of active (not finished or cancelled) work with nothing for the owner. */
