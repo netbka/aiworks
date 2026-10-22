@@ -135,11 +135,12 @@ export function orderCandidates(store, candidates) {
  * The one reason this candidate waits, or null when it may start now (section 4.1). Checked in WAIT_REASONS order, from
  * rows only, so the controller can call it again inside the recording transaction. `providerWaiting(candidate)` tells
  * whether every authorized provider for it is waiting (the controller's executorChoice); `pressure` is this pass's
- * hostPressure sample (null: none), which can only refuse; `integrated(campaignId, taskRow, declaration)` releases a published domain once it is in its base.
+ * hostPressure sample (null: none), which can only refuse; `integrated(campaignId, taskRow, declaration)` releases a published domain once it is in its base,
+ * and `gateOnly(declaration)` releases a cancelled campaign's published domain in a target only the merge gate integrates (domainHolders).
  * `accountFull(candidate)` returns null, or the account of the provider the candidate would get when that account
  * throttled earlier and is at its learned limit (accounts.mjs accountFull, slice RUN8).
  */
-export function admissionCheck(store, candidate, { ceiling, pressure = null, providerWaiting = () => false, accountFull = () => null, integrated = () => false }) {
+export function admissionCheck(store, candidate, { ceiling, pressure = null, providerWaiting = () => false, accountFull = () => null, integrated = () => false, gateOnly = () => false }) {
   const open = store.all("SELECT campaign_id, task_id FROM operations WHERE state IN ('recorded', 'dispatched')");
   if (open.some((op) => op.campaign_id === candidate.campaignId && op.task_id === candidate.taskId)) return { reason: 'already-running' };
   const bound = fanoutBound(candidate.declaration, ceiling);
@@ -149,7 +150,7 @@ export function admissionCheck(store, candidate, { ceiling, pressure = null, pro
   if (pressure) return { reason: 'host-pressure', detail: pressure };
   if (candidate.kind === 'implement') {
     const spec = candidate.declaration.tasks.find((task) => task.id === candidate.taskId);
-    const holders = domainHolders(store, { campaignId: candidate.campaignId, taskId: candidate.taskId, domain: domainOf(candidate.declaration, spec) }, { integrated });
+    const holders = domainHolders(store, { campaignId: candidate.campaignId, taskId: candidate.taskId, domain: domainOf(candidate.declaration, spec) }, { integrated, gateOnly });
     if (holders.length) return { reason: 'write-domain', detail: { holders } };
   }
   if (providerWaiting(candidate)) return { reason: 'provider-cooldown' };

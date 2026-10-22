@@ -125,15 +125,20 @@ const ACTIVE = new Set(['implementing', 'implemented', 'verifying', 'verified'])
  * - a task implemented, verifying or verified, not yet integrated ('unintegrated');
  * - a done commit task whose verified head is not in its base yet, in any campaign, finished or cancelled included
  *   ('published-unmerged'). `integrated(campaignId, taskRow, declaration)` answers that from the fetched base.
+ *   One exception: a cancelled campaign in a target whose base only the merge gate moves (`gateOnly(declaration)`: the
+ *   self-hosted repository with local main trusted). Cancellation is terminal and drained, and the gate never merges a
+ *   cancelled campaign's head, so that head can never reach its base; holding it would make every overlapping task wait
+ *   forever. This releases ownership only: it never counts the head as integrated or merged.
  * A pending task with nothing open holds nothing. The candidate task itself is skipped. Admitted child tasks hold their
  * `writes` like declared tasks (WORK_ENVELOPE 6.7); a cancelled child holds nothing.
  */
-export function domainHolders(store, { campaignId, taskId, domain }, { integrated = () => false } = {}) {
+export function domainHolders(store, { campaignId, taskId, domain }, { integrated = () => false, gateOnly = () => false } = {}) {
   if (!domain) return [];
   const holders = [];
   for (const c of store.all('SELECT id, control, declaration FROM campaigns ORDER BY created_at, id')) {
     if (!readable(c.declaration)) continue;
     const terminal = ['finished', 'cancelled'].includes(c.control);
+    const unmergeable = c.control === 'cancelled' && gateOnly(c.declaration);
     const writing = new Set(store.all("SELECT task_id FROM operations WHERE campaign_id = ? AND kind = 'implement' AND state IN ('recorded', 'dispatched')", c.id)
       .map((row) => row.task_id));
     const rows = new Map(store.all('SELECT * FROM tasks WHERE campaign_id = ?', c.id).map((row) => [row.task_id, row]));
@@ -144,7 +149,7 @@ export function domainHolders(store, { campaignId, taskId, domain }, { integrate
       if (!row) continue;
       const reason = writing.has(spec.id) ? 'writing'
         : !terminal && ACTIVE.has(row.state) ? 'unintegrated'
-          : row.state === 'done' && row.verified_sha && !integrated(c.id, row, c.declaration) ? 'published-unmerged' : null;
+          : row.state === 'done' && row.verified_sha && !unmergeable && !integrated(c.id, row, c.declaration) ? 'published-unmerged' : null;
       if (reason) holders.push({ campaignId: c.id, taskId: spec.id, reason });
     }
   }

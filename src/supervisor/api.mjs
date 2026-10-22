@@ -427,9 +427,11 @@ export function waitReason(task, { store, campaign: c, tasks, open, held = new M
   const pressure = store.get("SELECT reason FROM capacity WHERE scope = 'host' AND id = 'pressure' AND value = 1");
   const waiting = new Set(executorWaitsView(store, c).filter((row) => row.retry_at === null || row.retry_at > now).map((row) => row.executor_kind));
   const kind = executorOrder(decl.executor).map((provider) => provider.kind).find((item) => !waiting.has(item));
-  // Status cannot read the fetched base, so published work counts as unmerged until the controller sees it merged.
+  // Status cannot read the fetched base, so published work counts as unmerged until the controller sees it merged. A
+  // cancelled campaign's work in a target only the merge gate integrates holds nothing, as in the controller (domainHolders).
   const refusal = admissionCheck(store, { campaignId: c.id, taskId: task.task_id, kind: task.state === 'pending' ? 'implement' : 'verify', declaration: decl },
-    { ceiling: hostCeiling(config), pressure: pressure ? { signal: pressure.reason } : null, accountFull: () => (kind ? accountFull(store, config, kind) : null) });
+    { ceiling: hostCeiling(config), pressure: pressure ? { signal: pressure.reason } : null, accountFull: () => (kind ? accountFull(store, config, kind) : null),
+      gateOnly: (declaration) => trustsLocalMain(selfHostingSettings(config), declaration.target.repository) });
   return admissionReason(store, refusal ?? { reason: null });
 }
 

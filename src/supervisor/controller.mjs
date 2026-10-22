@@ -1844,6 +1844,8 @@ export class Controller {
       },
       // A local candidate is published nowhere and holds no base: the owner's Apply checks the folder again (WORK_ENVELOPE 8.6).
       integrated: (campaignId, row, decl) => isLocalTarget(decl) || this.inBase(decl, row.verified_sha) || this.mergedHeads.has(`${row.pr_url}#${row.verified_sha}`),
+      // Only the merge gate moves a trusted local main, and it never merges a cancelled campaign's head (domainHolders).
+      gateOnly: (decl) => this.selfHosted(decl.target.repository),
     };
   }
 
