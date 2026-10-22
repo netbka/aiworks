@@ -194,6 +194,8 @@ For the self-hosted repository with local trust:
 
 **Review campaigns** (UX reviews, audits, any report task) record their reports in the same way: a report deliverable becomes a comment on its task's item. The coordinator's review answer already stays local ([AW-004](../DECISIONS.md#aw-004---the-coordinator-is-read-only)); its inventory of "issues and pull requests" (`src/supervisor/coordinator.mjs:292`) reads the work list and local review items instead.
 
+The dashboard links a finished step to its `review` item only when that item is the supervisor's review of exactly this campaign and step; the link is the work list's own address (`#/worklist/<n>`), never a path on this computer. Such a step reads merged only from the local merge gate's receipt for its verified commit, or from local main containing that commit; otherwise it stays checked and not merged, and a step whose link names no such review stays without a result link. Merged is not accepted, pushed or deployed.
+
 A campaign for AIWorks itself may then name its owner authorization as `aiworks-work:<n>`, an item the owner created through the owner route. `src/supervisor/campaign.mjs:114` accepts that form only for the self-hosted repository with local trust, and only once STA17 has switched local admission on (6.3).
 
 ### 5.3 The scoped local reader

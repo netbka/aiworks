@@ -63,6 +63,8 @@ function needsAction(items) {
   const pr = PR_URL.exec(url);
   if (pr) return { label: `Review pull request #${pr[1]}`, url };
   if (ISSUE_URL.test(url)) return { label: 'Open the step issue', url };
+  // A local review waiting for the owner opens its work-list item (owner.mjs localDelivery).
+  if (items.length === 1 && item.kind === 'review' && !item.link && item.route) return { label: item.route.label, route: item.route.address };
   return { label: items.length === 1 ? 'See what needs you' : `See all ${items.length} in Needs you`, route: { screen: 'needs' } };
 }
 

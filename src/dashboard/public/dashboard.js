@@ -1361,7 +1361,9 @@ function sinceSummary() {
   const recent = state.owner?.recent;
   if (!recent) return null;
   const when = previousVisit ? `Since you last looked (${dateTime(previousVisit)})` : 'In the last 24 hours';
-  const prs = (list) => list.filter((item) => item.url).map((item) => link(`#${item.number} ↗`, item.url));
+  // A pull request opens on GitHub; a local review opens its work-list item here.
+  const prs = (list) => list.filter((item) => item.url || item.route)
+    .map((item) => item.url ? link(`#${item.number} ↗`, item.url) : routeLink(`Work list #${item.number}`, item.route.address));
   const facts = [
     recent.merged.length ? el('li', {}, `${plural(recent.merged.length, 'step')} merged `, ...prs(recent.merged)) : null,
     recent.delivered.length ? el('li', {}, `${plural(recent.delivered.length, 'step')} delivered by AI workers`) : null,
@@ -2630,7 +2632,7 @@ function nowScreen(project) {
   const goal = view.goal ? `${view.goal.text}${view.goal.variant ? ` (${view.goal.variant})` : ''}` : null;
   const since = view.since?.length ? el('section', { class: 'since', 'aria-labelledby': 'since-title' },
     el('h2', { id: 'since-title' }, previousVisit ? `Since you last looked (${dateTime(previousVisit)})` : 'In the last 24 hours'),
-    el('ul', {}, ...view.since.map((line) => el('li', { class: line.tone ?? '' }, `${line.text} `, ...line.links.map((item) => link(`${item.label} ↗`, item.url)))))) : null;
+    el('ul', {}, ...view.since.map((line) => el('li', { class: line.tone ?? '' }, `${line.text} `, ...line.links.map((item) => item.url ? link(`${item.label} ↗`, item.url) : routeLink(item.label, item.route)))))) : null;
   // The work as AIWorks names it, in owner words: no "campaign" where "work" will do (aiworks#11 review 5 G13).
   const others = details.others.map((item) => item.purpose ? `${item.purpose} (known to AIWorks as ${item.id})` : item.id);
   // What else goes on in the project stays in view, whatever leads (aiworks#11 review 5 G5): a pause carries its Resume.

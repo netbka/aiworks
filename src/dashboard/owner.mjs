@@ -7,6 +7,8 @@ import { rulesSummary } from './projects.mjs';
 
 const PR_URL = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)$/;
 const COMMENT_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(?:issues|pull)\/\d+#issuecomment-\d+$/;
+// A checked local review's work-list address (supervisor.mjs localReviewAddress), the only in-dashboard result link.
+const WORK_ADDRESS = /^#\/worklist\/([1-9]\d{0,8})$/;
 /** Attempts at which a step is flagged for a closer look. Information only: it never limits work (AW-002). */
 export const CHURN_ATTEMPTS = 5;
 /** A running agent whose own record shows activity within this window is treated as still working. */
@@ -72,8 +74,10 @@ const NOTES = { published: 'Your review and merge', 'report-posted': 'For you to
  * With merging delegated by the owner (`delegation`, config.json `merges`, #17), a verified pull request whose merge is
  * not seen and is not being checked is `delegated`: merged for the owner by `by`, or `held` with its reason key. One not
  * held that waited longer than `delegation.stallHours` since its check (`task.verifiedAt`) is `stalled`, in whole hours (#139).
+ * A checked local review (`task.resultUrl` its work-list address) is `local`, with its `route` (localDelivery);
+ * `target` is its campaign's repository, whose merge check says whether its merge can be seen here.
  */
-export function delivery(task, merges = NO_MERGES, now = Date.now(), campaignId = null, delegation = null) {
+export function delivery(task, merges = NO_MERGES, now = Date.now(), campaignId = null, delegation = null, target = null) {
   if (task.state !== 'done') return null;
   const url = task.resultUrl ?? '';
   if (COMMENT_URL.test(url)) return { state: 'report-posted', url, note: NOTES['report-posted'] };
@@ -83,6 +87,8 @@ export function delivery(task, merges = NO_MERGES, now = Date.now(), campaignId 
     return { state: 'report-posted', local: true, url: null, number: local.number, route: { label: `Read the report in work list #${local.number}`, address: `#/worklist/${local.number}` },
       note: NOTES['report-posted'] };
   }
+  const review = WORK_ADDRESS.exec(url);
+  if (review) return localDelivery(task, Number(review[1]), merges, now, campaignId, target);
   const pr = PR_URL.exec(url);
   if (!pr) return { state: 'unknown', reason: 'no-link', note: NOTES['no-link'] };
   const receipt = task.mergeReceipt, recordedPr = PR_URL.exec(receipt?.url ?? '');
@@ -108,6 +114,32 @@ export function delivery(task, merges = NO_MERGES, now = Date.now(), campaignId 
       note: held ? DELEGATED.held[held] : stalled ? DELEGATED.stalled(stalled) : DELEGATED.note(delegation.delegatedTo) };
   }
   return { state: 'published', ...base, reason, pending: reason === 'checking', note: NOTES[reason ?? 'published'] };
+}
+
+const LOCAL_NOTES = { published: 'Checked on this computer and recorded in the work list; not merged into local main yet',
+  checking: NOTES.checking, 'no-verified-sha': 'No verified commit is recorded, so the merge cannot be checked here',
+  'not-checked': 'The merge into local main cannot be seen on this computer; open the work list' };
+
+/**
+ * A checked local review of AIWorks's own repository, read in the work list (UI20). Merged only from the local merge
+ * gate's receipt for the verified commit and this review, or local main containing that commit (merges.mjs reads the
+ * local branch and never fetches). Merged is never accepted, deployed or pushed; merging delegation does not apply here.
+ */
+function localDelivery(task, number, merges, now, campaignId, repository) {
+  const base = { local: true, repository, number, url: null, asOf: null,
+    route: { label: `Open work list #${number}`, address: `#/worklist/${number}` } };
+  const receipt = task.mergeReceipt;
+  if (task.verifiedSha && receipt?.sha === task.verifiedSha && receipt.url === `aiworks-work:${number}`) {
+    return { state: 'merged', ...base, note: null, mergedAt: receipt.mergedAt ?? null };
+  }
+  const step = merges?.steps?.[`${campaignId}/${task.id}`];
+  const result = task.verifiedSha && step?.sha === task.verifiedSha ? step.merged : null;
+  if (result === true) return { state: 'merged', ...base, note: null, mergedAt: step.mergedAt ?? null };
+  // A merge check that cannot come (no checkout configured here, or a failed read) is not seen, never pending.
+  const check = repository ? mergeCheck(merges, repository, now) : null;
+  const unseen = !step || check?.reason === 'no-checkout' || (check?.reason === 'fetch-failed' && !check.fresh);
+  const reason = !task.verifiedSha ? 'no-verified-sha' : result !== null ? null : unseen ? 'not-checked' : 'checking';
+  return { state: 'published', ...base, reason, pending: reason === 'checking', note: LOCAL_NOTES[reason ?? 'published'] };
 }
 
 /**
@@ -175,6 +207,13 @@ function resultRow(c, task, d, releases, recorded = null) {
   if (d.state === 'unknown') {
     return { ...base, group: 'unknown', word: 'Not known yet', note: d.note, link: { label: NEEDS.stepIssue, url: task.issueUrl }, evidence: null, detail: null };
   }
+  // A checked local review opens its work-list item (UI20): it merges into local main, never through a pull request.
+  if (d.local) {
+    const row = { ...localReviewRow({ campaignId: c.id, taskId: task.id, number: d.number, verifiedSha: task.verifiedSha, mergedAt: d.mergedAt ?? null },
+      base.text, d.state === 'merged'), review: base.review, ladder: base.ladder, signature: base.signature };
+    // A merge check that can still come shortly: neither waiting nor merged. Why a merge cannot be seen is said.
+    return d.pending ? { ...row, group: 'unknown', word: 'Not known yet', note: d.note } : d.reason ? { ...row, note: d.note } : row;
+  }
   const evidence = resultEvidence(task), link = { label: `Pull request #${d.number}`, url: d.url }, number = d.number;
   const proof = { evidence: evidence.short, detail: evidence.text, number };
   // Merged only from a current merge check; what follows is the project's release rule, never "released" or "live".
@@ -204,14 +243,14 @@ function localReviews(workList) {
  * commit and recorded on this computer. Merged only when the local merge gate recorded that commit on main; never
  * "accepted", which is kept for recorded acceptance.
  */
-function localReviewRow(review, text) {
+function localReviewRow(review, text, merged = Boolean(review.mergedAt)) {
   const sha7 = review.verifiedSha ? review.verifiedSha.slice(0, 7) : null;
   const evidence = sha7 ? { short: `Passed the check at commit ${sha7}`, text: `Passed the independent check at commit ${sha7}. Nothing was pushed to GitHub.` }
     : { short: 'Independent check not recorded here', text: 'The independent check is not recorded here.' };
   const base = { campaignId: review.campaignId, taskId: review.taskId, repository: null, text, release: null, asOf: null, signature: null, ladder: null, number: review.number,
     link: null, route: { label: `Work list #${review.number}`, address: `#/worklist/${review.number}` }, evidence: evidence.short, detail: evidence.text };
-  return review.mergedAt
-    ? { ...base, group: 'merged', word: 'Merged into local main', mergedAt: review.mergedAt, note: null,
+  return merged
+    ? { ...base, group: 'merged', word: 'Merged into local main', mergedAt: review.mergedAt ?? null, note: null,
       release: 'Into local main on this computer; nothing was pushed. Merged is not accepted: acceptance is recorded only when you accept it.' }
     : { ...base, group: 'local-review', word: 'Checked on this computer · not merged, not accepted', mergedAt: null,
       note: 'A local review: it passed the independent check and is recorded in the work list, not on GitHub.' };
@@ -273,6 +312,7 @@ function resultsByProject(supervisor, campaigns, releases, reviews = new Map(), 
     const d = campaigns[c.id].deliveries[task.id], review = reviews.get(`${c.id}/${task.id}`);
     if (review && d?.state === 'unknown') { shown.add(review.number); add(c.repository, { ...localReviewRow(review, label(task)), review: reviewEntry(c, task, d) }); continue; }
     if (!d) continue;
+    if (d.local) shown.add(d.number);
     add(c.repository, resultRow(c, task, d, releases, recorded.get(`${c.id}/${task.id}`) ?? null));
   }
   // Reviews of work no longer on this computer still belong to AIWorks's own repository.
@@ -404,7 +444,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
   const entries = supervisor.campaigns.map((c) => ({ id: c.id, purpose: purpose(c) }));
   distinguish(entries);
   for (const c of supervisor.campaigns) {
-    const steps = c.tasks.map((task) => ({ task, delivery: delivery(task, merges, now, c.id, delegation) }));
+    const steps = c.tasks.map((task) => ({ task, delivery: delivery(task, merges, now, c.id, delegation, c.repository) }));
     const by = (state) => steps.filter((step) => step.delivery?.state === state);
     // "Checking for merges" only while a merge check that can still come shortly is running or due. Every other
     // published step waits for the owner's review: its merge is not seen, whatever the reason.
@@ -461,7 +501,9 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       const gated = pending.filter((other) => other.requiresMergedDependencies);
       const churn = task.attempts >= CHURN_ATTEMPTS || task.verifierRejections > 0;
       const evidence = reviewEvidence(task);
-      items.push({ ...base, kind: 'review', action: 'Review and merge', text: label(task), link: { label: `Open PR #${d.number}`, url: d.url },
+      // A local review opens its work-list item in the dashboard; a pull request opens on GitHub.
+      items.push({ ...base, kind: 'review', action: 'Review and merge', text: label(task), link: d.local ? null : { label: `Open PR #${d.number}`, url: d.url },
+        ...(d.local ? { route: d.route } : {}),
         evidence: evidence.short, detail: evidence.text, mergeCheck: d.asOf,
         points: [
           // Why the merge cannot be seen at all on this computer, when that is the case.
@@ -689,9 +731,9 @@ function recentSummary(supervisor, campaigns) {
   const merged = [], waiting = [];
   for (const c of supervisor.campaigns) for (const task of c.tasks) {
     const d = campaigns[c.id].deliveries[task.id];
-    if (d?.state === 'merged' && d.mergedAt >= recent.since) merged.push({ campaignId: c.id, taskId: task.id, number: d.number, url: d.url, at: d.mergedAt });
+    if (d?.state === 'merged' && d.mergedAt >= recent.since) merged.push({ campaignId: c.id, taskId: task.id, number: d.number, url: d.url, route: d.route ?? null, at: d.mergedAt });
     if (d?.state === 'published' && recent.published.some((p) => p.campaignId === c.id && p.taskId === task.id)) {
-      waiting.push({ campaignId: c.id, taskId: task.id, number: d.number, url: d.url });
+      waiting.push({ campaignId: c.id, taskId: task.id, number: d.number, url: d.url, route: d.route ?? null });
     }
   }
   // Agent runs and the supervisor's own problems are counted apart: a failing supervisor step is journaled on every tick.
