@@ -166,7 +166,8 @@ export function usageView(dataDir, supervisor) {
   if (!supervisor?.available || !existsSync(storePath(dataDir))) return { available: false };
   const store = new Store(storePath(dataDir), { readOnly: true });
   try {
-    return { available: true, workers: workerUsage(supervisor.campaigns ?? []), coordinator: coordinatorUsage(store), planning: planningEstimate(store),
+    // Work in projects without GitHub is the snapshot's `local` list, apart from its campaigns, so each run counts once.
+    return { available: true, workers: workerUsage([...(supervisor.campaigns ?? []), ...(supervisor.local ?? [])]), coordinator: coordinatorUsage(store), planning: planningEstimate(store),
       untracked: ['hosting', 'subscriptions'] };
   } finally { store.close(); }
 }

@@ -101,6 +101,39 @@ export function recordMainCommit(store, { repository, kind, oldTip, newTip, camp
   });
 }
 
+// A commit put on main by hand is the owner's to trust (AW-005), but changes to these still need an independent review of
+// their exact head before they merge (AGENTS.md); the owner route never stands in for it. Compared case-insensitively.
+const REVIEWED_ONLY = ['src/supervisor/'];
+
+/**
+ * The owner route (LOCAL_OPERATION 4.2): record the commits the owner put on local main by hand as trusted, with one
+ * `owner` row from `oldTip`, the trusted tip the page showed, to `newTip`, the local main it showed. In one transaction
+ * with the ledger read, so a gate merge or a second request cannot interleave. Refused when either tip moved, when main
+ * does not descend from the trusted tip, or when the commits change a path that needs an independent review. Recording the
+ * main that is already the trusted tip again is answered as done. Never moves, fetches or pushes a ref.
+ * Returns { recorded: true, seq } or { recorded: false, already?, code, reason }.
+ */
+export function recordOwnerMain(store, { git = ['git'], repoPath, repository, oldTip, newTip, now }) {
+  const no = (code, reason) => ({ recorded: false, code, reason });
+  if (!REPOSITORY.test(String(repository ?? ''))) return no('TRUSTED_MAIN_INVALID', 'the repository must be owner/name');
+  if (!SHA.test(String(oldTip ?? '')) || !SHA.test(String(newTip ?? ''))) return no('TRUSTED_MAIN_INVALID', 'both tips must be full commit SHAs');
+  return store.tx(() => {
+    const current = trustedTip(store, { git, repoPath, repository });
+    if (current.state !== 'TRUSTED') return no('TRUSTED_MAIN_UNKNOWN', current.reason);
+    if (current.tip === newTip && current.main === newTip) return { recorded: false, already: true, code: 'TRUSTED_MAIN_RECORDED', reason: `local main ${newTip.slice(0, 12)} is already trusted` };
+    if (current.tip !== oldTip) return no('TRUSTED_MAIN_MOVED', `the trusted tip is now ${current.tip.slice(0, 12)}, not ${oldTip.slice(0, 12)}`);
+    if (current.main !== newTip) return no('TRUSTED_MAIN_MOVED', `local main is now ${current.main.slice(0, 12)}, not ${newTip.slice(0, 12)}`);
+    const ancestor = gitA.exec(git, ['merge-base', '--is-ancestor', oldTip, newTip], { cwd: repoPath, timeoutMs: 30_000 });
+    if (!ancestor.ok) return no('TRUSTED_MAIN_MOVED', `local main ${newTip.slice(0, 12)} does not contain the trusted tip ${oldTip.slice(0, 12)}`);
+    const diff = gitA.exec(git, ['diff', '--name-only', '-z', '--no-renames', oldTip, newTip, '--'], { cwd: repoPath, timeoutMs: 30_000 });
+    if (!diff.ok) return no('TRUSTED_MAIN_UNKNOWN', 'the commits after the trusted tip cannot be compared');
+    const reviewed = diff.stdout.split('\0').filter((path) => path && REVIEWED_ONLY.some((prefix) => path.toLowerCase().startsWith(prefix)));
+    if (reviewed.length) return no('TRUSTED_MAIN_NEEDS_REVIEW', `they change ${reviewed.slice(0, 5).join(', ')}${reviewed.length > 5 ? ', ...' : ''}, which needs an independent review of its exact head first`);
+    const row = recordMainCommit(store, { repository, kind: 'owner', oldTip, newTip, now });
+    return row.recorded ? row : no('TRUSTED_MAIN_INVALID', row.reason);
+  });
+}
+
 function append(store, { repository, kind, oldTip, newTip, campaignId = null, taskId = null, verifiedSha = null, now }) {
   if (!KINDS.has(kind)) throw new TypeError(`unknown main ledger kind ${kind}`);
   return Number(store.run(`INSERT INTO main_ledger (repository, old_tip, new_tip, kind, campaign_id, task_id, verified_sha, recorded_at)

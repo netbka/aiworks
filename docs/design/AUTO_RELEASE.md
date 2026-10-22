@@ -2,7 +2,7 @@
 
 **Privacy boundary:** this is a design proposal, not a live installation record. Campaign declarations and approval records stay private under [AW-009](../DECISIONS.md#aw-009---public-commits-contain-no-installation-data). Any proposal to publish declarations through source branches or pull requests is superseded. Merged executable code, explicit owner authorization, scope binding and independent verification remain required.
 
-**Status:** design only. Nothing in this document is built, enabled or deployed, and nothing here grants a release. The AW-008 decision and the governance provider changes in section 10 are **proposals**. Refs #13, #14.
+**Status:** the release decision is recorded as [AW-010](../DECISIONS.md#aw-010---auto-release-is-a-separate-release-role-under-a-standing-per-project-grant), and the release code and its disposable rehearsal are built in source since this design, switched off ([SUPERVISOR.md section 12](../SUPERVISOR.md#12-auto-release-built-not-enabled)). Nothing here grants a release: no grant exists in this repository and no canary release has run. The governance provider changes in section 10 remain **proposals**. The rest of this document is the design as written: its "today", "observed" and "planned" statements describe the code at its basis revision, and [STATUS.md](../STATUS.md) holds what the source does now. Refs #13, #14.
 
 **Basis:** design notes; implementation status must be checked against the selected runtime revision.
 

@@ -2,7 +2,7 @@
 
 **Privacy boundary:** this is a design proposal, not a live installation record. Campaign declarations and approval records stay private under [AW-009](../DECISIONS.md#aw-009---public-commits-contain-no-installation-data). Any proposal to publish declarations through source branches or pull requests is superseded. Merged executable code, explicit owner authorization, scope binding and independent verification remain required.
 
-**Status:** design only, for AIWorks design work. Nothing here is built, enabled or deployed. It implements section 3.1 of [PROJECT_WORKSPACE_PLAN.md](../PROJECT_WORKSPACE_PLAN.md) under the owner's decision D1 (section 8 there). Section 7 designs decision D2 as the owner decided it on 2026-10-16 (#24): it is planned, not built.
+**Status:** built in source since this design, switched off by default (`projectConnection.enabled`; [OPERATIONS_DASHBOARD.md](../OPERATIONS_DASHBOARD.md#add-project-built-off-by-default)), including the owner-confirmed rules of decision D2; not deployed by this repository. The rest of this document is the design as written: its "today", "observed" and "planned" statements describe the code at its basis revision, and [STATUS.md](../STATUS.md) holds what the source does now. It implements section 3.1 of [PROJECT_WORKSPACE_PLAN.md](../PROJECT_WORKSPACE_PLAN.md) under the owner's decision D1 (section 8 there). Section 7 designs decision D2 as the owner decided it on 2026-10-16 (#24): it is planned, not built.
 
 **Basis:** design notes; implementation status must be checked against the selected runtime revision.
 
@@ -160,7 +160,7 @@ The following are never copied into the mirror, never shown by content and never
 2. links and nested repositories (section 4.3);
 3. paths matched by `.gitignore` files inside the folder. The `.gitignore` files are copied into the snapshot first. Then `git check-ignore --no-index --stdin` runs in the snapshot, with relative paths on standard input. Git never gets the source as a work tree;
 4. `node_modules` directories by default, which the owner can override;
-5. the owner's own `exclusions`.
+5. the owner's own `exclusions`, matched case-insensitively on Windows like `node_modules`.
 
 The notice lists counts and at most 10 example relative paths for each class. A Git project is not filtered, because its worktrees contain only committed files, as today. A committed file that matches the secret-like pattern raises the notice `SECRET_TRACKED` and does not block.
 
@@ -177,7 +177,7 @@ These limits apply to a `folder` scan. Each one stops before copying.
 | Free disk space at the mirror | the included bytes × 2.2 (copy plus Git objects), from `fs.statfs` | `MIRROR_SPACE` |
 
 - A file that is included but cannot be read stops the scan (`UNREADABLE_FILES`), because the baseline would be incomplete.
-- **Change during the copy:** the scan records size, `mtimeNs` and SHA-256 for each file, copies, then hashes the copies again. A mismatch triggers one retry. A second mismatch gives `CHANGED_DURING_COPY` (*Temporarily unavailable*). The project's earlier baseline stays current.
+- **Change during the copy:** the scan records size, `mtimeNs` and SHA-256 for each file, copies, then hashes the copies again. Each file is read through one handle that must still be the file the listing saw (same device and file id), and the copy is written from those bytes, so a folder replaced by a link or junction mid-copy reads as a change. A mismatch triggers one retry. A second mismatch gives `CHANGED_DURING_COPY` (*Temporarily unavailable*). The project's earlier baseline stays current.
 - Binary files are allowed. The manifest marks them (a NUL byte in the first 8 KiB) so later review and apply can treat them differently.
 
 ### 4.6 Reconnect, relocation and identity changes

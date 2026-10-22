@@ -20,7 +20,7 @@ import { applyResult, approvePlan, editPlan, requestPlanAndDo, undoApply, workVi
 import { projectSettingsView, saveProjectSettings } from './project-settings.mjs';
 import { alertsView, saveAlerts } from './alerts.mjs';
 import { knowledgeView, planningCost, saveKnowledge, usageView } from './knowledge.mjs';
-import { closeImportedIssues, commentWorkItem, createWorkItem, ownerOnly, setWorkItemState, workItemView, workListView } from './work-list.mjs';
+import { closeImportedIssues, commentWorkItem, createWorkItem, ownerOnly, recordTrustedMain, setWorkItemState, workItemView, workListView } from './work-list.mjs';
 import { connectionsView, EVENT_TYPES, homeView, markSeen, overviewView, readLastSeen, releasesView, trustedMainView, typedEvents, withReadOnlyStore } from './views.mjs';
 
 /**
@@ -65,7 +65,7 @@ const pageNavigation = (req, path) => req.method === 'GET' && path === '/' && !r
 // state. `work` is for tests only (governanceRoot, synthetic git and gh for the plan's freshness check); main.mjs gives none.
 // `callerCheck`: the caller check's process lookup and platform (local-admission.mjs checkCaller). main.mjs gives the native
 // Windows lookup (caller-lookup.mjs); tests give a synthetic one. Without a lookup every protected owner action (project
-// rules, a local project's Approve and start, Apply and Undo apply, settings, alerts, Knowledge, the work list) refuses
+// rules, a local project's Approve and start, Apply and Undo apply, settings, alerts, Knowledge, the work list, trusting local main) refuses
 // with APPROVAL_UNCHECKED; so do Accept result, Request changes and answering, snoozing or dismissing a decision.
 // `workList` is for tests only: the work list's close switched on and a synthetic GitHub command (work-list.mjs closeImportedIssues).
 export function createDashboardServer({ dataDir, roadmap, merges = null, host = {}, releases = {}, projectConnection = {}, provenanceRoot = undefined, work = {},
@@ -92,10 +92,11 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
     const addProject = projectConnectionEnabled(dataDir), records = addProject ? connectedProjects(dataDir) : [];
     // The local work list (UI20): its open decisions join Needs you and its checked reviews join Results.
     const worklist = workListView(dataDir, { closeOn: workList.available });
-    const owner = ownerView(supervisor, merged, { host: machine.name, now, releases, delegation: configuredMergeDelegation(dataDir), connected: records, workList: worklist });
     // Plan and do and Review (UI14, UI17): requests and draft plans of connected projects, and the local work and
-    // checked results of projects without GitHub, allowlisted fields only.
+    // checked results of projects without GitHub, allowlisted fields only. Its open decisions join Needs you.
     const work = workView(dataDir, { textChecks });
+    const owner = ownerView(supervisor, merged, { host: machine.name, now, releases, delegation: configuredMergeDelegation(dataDir), connected: records, workList: worklist,
+      localWork: work.local });
     // Projects: campaign repositories, the repositories config.json lists and connected projects, by name only (never a path).
     const projects = projectsView(supervisor, owner, { repositories: configuredRepositories(dataDir), removed: removedProjects(dataDir),
       ...(addProject ? { records, addProject, localWork: work.local } : {}) });
@@ -345,6 +346,8 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       if (path === '/api/work-list/items') return send(200, await createWorkItem(dataDir, value, { caller }));
       if (path === '/api/work-list/comment') return send(200, await commentWorkItem(dataDir, value, { caller }));
       if (path === '/api/work-list/state') return send(200, await setWorkItemState(dataDir, value, { caller }));
+      // Trust the commits the owner put on local main by hand (AW-005): the caller check runs first; it binds both tips the page showed.
+      if (path === '/api/v2/settings/trusted-main') return send(200, await recordTrustedMain(dataDir, value, { caller }));
       if (path === '/api/work-list/close-imported') return send(200, await closeImportedIssues(dataDir, value, { ...workList, caller }));
       return send(404, { error: 'Not found.' });
     } catch (error) {

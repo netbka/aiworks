@@ -110,7 +110,7 @@ export function refreshStep(controller, ctx, item, repoPath, baseSha, settings) 
     let plan;
     try { plan = refreshPlan(git, repoPath, baseSha, sha); } catch (error) { return fail(`the merge could not be computed: ${error.message}`); }
     if (!plan.tree) return fail(plan.reason, plan.shared ? { paths: plan.shared } : {});
-    const path = join(controller.repo(decl).worktreeRoot, `${campaignId}-${task.task_id}-refresh-${sha.slice(0, 12)}-${baseSha.slice(0, 12)}`);
+    const path = join(controller.repo(decl).worktreeRoot, `${gitA.workspaceName(campaignId, task.task_id)}-refresh-${sha.slice(0, 12)}-${baseSha.slice(0, 12)}`);
     try {
       const commit = gitA.exec(git, [...IDENTITY, 'commit-tree', plan.tree, '-p', baseSha, '-p', sha, '-m', `AIWorks refresh: ${sha} merged with ${baseSha} (local only)`], { cwd: repoPath });
       if (!commit.ok) throw new Error(`commit-tree failed: ${commit.stderr || `exit ${commit.status}`}`);

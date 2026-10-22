@@ -533,6 +533,7 @@ export const DELEGATED = {
 export const NEEDS = {
   stepIssue: 'Open the step issue',
   // A decision the owner snoozed (WP2): still listed, because its step stays stopped until it is answered.
+  localDecision: (outcome) => `${/[.!?…]$/.test(outcome) ? outcome : `${outcome}.`} AIWorks stopped this step for your decision; nothing in your folder changed. Answer it on the project's Overview.`,
   snoozed: (until) => `Snoozed until ${new Date(until).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).replace(',', '')}; the step waits for your answer.`,
   // A connected project where work can't start until the owner confirms its rules (review 5 G7): not an item, since no
   // work is blocked, but the calm headline names it and a row links to its Now, where the rules are confirmed.

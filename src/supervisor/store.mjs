@@ -107,6 +107,13 @@ CREATE TABLE IF NOT EXISTS outbox (
   state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, posted TEXT, updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS journal (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT, at INTEGER NOT NULL, kind TEXT NOT NULL, detail TEXT);
+-- Reads of one campaign's records (status, the dashboard, the merge gate). Without them each such read scans the whole
+-- table, so reading every campaign grows with campaigns times rows (aiworks#49). Additive: CREATE IF NOT EXISTS adds them
+-- when a writer opens an older store, and the store version does not change. Every index ends in the rowid, so the
+-- journal and events rows of one campaign and kind come in seq order.
+CREATE INDEX IF NOT EXISTS operations_campaign ON operations (campaign_id, task_id);
+CREATE INDEX IF NOT EXISTS journal_campaign ON journal (campaign_id, kind);
+CREATE INDEX IF NOT EXISTS events_campaign ON events (campaign_id, kind);
 CREATE TABLE IF NOT EXISTS owner_messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL UNIQUE, text TEXT NOT NULL, source TEXT NOT NULL,
   received_at INTEGER NOT NULL, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, not_before INTEGER,

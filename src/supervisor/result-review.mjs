@@ -51,22 +51,39 @@ export function unresolvedOf(criteria, verification) {
   return { failed: criteria.filter((item) => item.result === 'fail').length, notChecked: criteria.filter((item) => item.result === 'not-checked').length, blocking };
 }
 
+/**
+ * One campaign's review records, each read from the store once, on first use: its merges and the owner's pending change
+ * requests and acceptances. A view of many steps asks it per step instead of reading the campaign's records again for
+ * each one; the single-step helpers below answer from it, so both always give the same answer. `merged()` is the
+ * campaign's merge entries, newest first.
+ */
+export function reviewRecords(store, campaignId) {
+  const rows = {};
+  const merged = () => (rows.merged ??= store.all("SELECT at, detail FROM journal WHERE campaign_id = ? AND kind = 'merged' ORDER BY seq DESC", campaignId));
+  const changes = () => (rows.changes ??= store.all(
+    "SELECT seq, payload, received_at FROM events WHERE campaign_id = ? AND kind = 'result-changes' AND processed_at IS NULL ORDER BY seq", campaignId));
+  const accepted = () => (rows.accepted ??= store.all(
+    "SELECT seq, payload, received_at FROM events WHERE campaign_id = ? AND kind = 'result-accepted' ORDER BY seq", campaignId));
+  return {
+    merged,
+    mergedHead: (taskId, sha) => merged().some((row) => row.detail?.task === taskId && row.detail?.sha === sha),
+    pendingChanges: (taskId, sha) => changes().find((event) => event.payload?.taskId === taskId && event.payload?.verifiedSha === sha) ?? null,
+    acceptedHead: (taskId, sha, reportDigest) => accepted()
+      .find((event) => event.payload?.taskId === taskId && event.payload?.verifiedSha === sha && event.payload?.reportDigest === reportDigest) ?? null,
+  };
+}
+
 /** Whether a step's verified head was recorded as merged. */
-export const mergedHead = (store, campaignId, taskId, sha) => store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'merged'", campaignId)
-  .some((row) => row.detail?.task === taskId && row.detail?.sha === sha);
+export const mergedHead = (store, campaignId, taskId, sha) => reviewRecords(store, campaignId).mergedHead(taskId, sha);
 
 /** The owner's change request for a verified head that the controller has not handled yet, or null. */
-export const pendingChanges = (store, campaignId, taskId, sha) => store.all(
-  "SELECT seq, payload, received_at FROM events WHERE campaign_id = ? AND kind = 'result-changes' AND processed_at IS NULL ORDER BY seq", campaignId)
-  .find((event) => event.payload?.taskId === taskId && event.payload?.verifiedSha === sha) ?? null;
+export const pendingChanges = (store, campaignId, taskId, sha) => reviewRecords(store, campaignId).pendingChanges(taskId, sha);
 
 /**
  * The owner's recorded acceptance of exactly this verified head and the report it was checked with, or null. An
  * acceptance of another head, or of the same head with another report, is not this one.
  */
-export const acceptedHead = (store, campaignId, taskId, sha, reportDigest) => store.all(
-  "SELECT seq, payload, received_at FROM events WHERE campaign_id = ? AND kind = 'result-accepted' ORDER BY seq", campaignId)
-  .find((event) => event.payload?.taskId === taskId && event.payload?.verifiedSha === sha && event.payload?.reportDigest === reportDigest) ?? null;
+export const acceptedHead = (store, campaignId, taskId, sha, reportDigest) => reviewRecords(store, campaignId).acceptedHead(taskId, sha, reportDigest);
 
 /**
  * Why the merge gate holds a verified head for the owner (AW-015), or null. With the project's acceptance mode "owner"

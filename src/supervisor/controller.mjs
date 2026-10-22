@@ -12,12 +12,13 @@ import { researchContext } from './adapters/research-context.mjs';
 import * as gitA from './adapters/git.mjs';
 import * as github from './adapters/github.mjs';
 import { authorityDigest, campaignLimits, canonicalJson, executorOrder, overlayGovernance, projectGovernance } from './campaign.mjs';
-import { resolveCheckout, resolveLocalProject } from './project-connect.mjs';
+import { localProjectName, resolveCheckout, resolveLocalProject } from './project-connect.mjs';
 import { admissionBudget } from './api.mjs';
 import { currentSettings, projectOf, protectedAreasFor, protectedPaths } from './project-settings.mjs';
-import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountOf, accountWait, buildTaskSignature, clearAccountWait, formatSignatureLines, formatTokensUsage, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
+import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountFull, accountOf, accountWait, buildTaskSignature, clearAccountWait, formatSignatureLines, formatTokensUsage, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
 import { BEYOND_RULE, beyondConstraint, domainOf, outsideWrites, writeDomainConstraint } from './work-ownership.mjs';
-import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
+import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, hostPressure, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
+import { hostSamplerFor } from './host.mjs';
 import { containsSecret, coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
 import { ANCHOR, MAX_DOCUMENT_BYTES, parseReference, resolveSection } from './reading.mjs';
 import { MAX_CITES } from './adapters/claude.mjs';
@@ -91,6 +92,11 @@ const RECOVERY_TRIED = {
   'owner-decision': 'none: the worker reported an owner-reserved decision',
 };
 const MAX_NOTIFY_ATTEMPTS = 5;
+// Why a pending owner notification was retired unsent (notificationObsolete), as its outbox entry records it.
+const OBSOLETE_WORDS = {
+  resolved: 'its blocker was resolved before it was sent, so it is not sent',
+  'goal-ended': 'its work ended and nothing still waits on its blocker, so it is not sent',
+};
 // A task whose run raised the blocker resumes in the phase that run started from.
 const RESUME_PHASE = { implementing: 'pending', verifying: 'implemented' };
 // A provider usage limit belongs to the executor account, not to one task: the latest pending reset holds every dispatch.
@@ -372,6 +378,10 @@ function envelopeConstraint(envelope) {
 }
 /** Where a task's work belongs in owner-facing text: `owner/name#issue`, or the project id of a project without GitHub. */
 const whereOf = (decl, issue) => (isLocalTarget(decl) ? decl.target.projectId : `${decl.target.repository}#${issue}`);
+// A project without GitHub has no task issue and its owner runs no CLI: a decision there is answered under Needs you and
+// its work is checked again with Check again on the dashboard, so its owner texts name those actions instead.
+const LOCAL_DECISION_RECHECK = 'Answer it under Needs you in AIWorks; the step then runs again and is checked again.';
+const recheckWords = (decl, id) => (isLocalTarget(decl) ? 'then choose Check again on this work in AIWorks' : `then run: supervisor recheck ${id}`);
 
 /**
  * The controller note a retried verifier receives after its predecessor's result for the same head was refused
@@ -412,7 +422,7 @@ export class Controller {
   constructor({ store, config, dataDir, log = () => {}, now = () => Date.now(), instanceId = randomUUID(),
     codeRevision = null, fault = process.env.AIWORKS_FAULT ?? null, notifier = noopTransport, probes = {},
     governanceRoot = undefined, revisionCheck = null, revisionCheckMs = REVISION_CHECK_MS, profiles = null, profileHomes = null,
-    alertDeps = {} }) {
+    alertDeps = {}, sampler = null }) {
     Object.assign(this, { store, dataDir, log, now, instanceId, codeRevision, fault, notifier, probes, governanceRoot,
       revisionCheck, revisionCheckMs, profiles, profileHomes });
     this.config = { ...DEFAULTS, ...config };
@@ -451,6 +461,11 @@ export class Controller {
     // CAAM profiles that a dispatch found at their learned limit while no profile could run (CAAM5): per-tick memory, as
     // fanoutWaited; the next useful result on one of them raises its limit by one.
     this.profileWaited = new Set();
+    // RUN7 and RUN8 in admission: one host sample per admission pass (host.mjs; it keeps its CPU window between passes, and
+    // an injected sampler replaces the host in tests), and the static accounts a pass found at their learned limit
+    // (per-tick memory, as profileWaited; the next useful result on one of them raises its limit by one).
+    this.sampler = this.sched ? sampler ?? hostSamplerFor(this.config) : null;
+    this.accountWaited = new Set();
     this.waitReasons = new Map();
     this.domainWaits = [];
     this.baseCheckedAt = new Map();
@@ -498,6 +513,14 @@ export class Controller {
     if (this.ci) {
       for (const { id } of this.store.all("SELECT id FROM campaigns WHERE control = 'finished'")) {
         if (!ids.includes(id) && (this.ciNextAt.get(id) ?? -Infinity) <= this.now()) ids.push(id);
+      }
+    }
+    // And a finished or cancelled campaign with an owner notification still waiting or being sent, so the drain settles it
+    // under that campaign's lease: retired when nothing waits on its blocker any more, otherwise handed to the transport.
+    if (this.oi) {
+      for (const { id } of this.store.all(`SELECT DISTINCT n.campaign_id AS id FROM owner_notifications n JOIN campaigns c ON c.id = n.campaign_id
+        WHERE n.state IN ('pending', 'sending') AND c.control IN ('finished', 'cancelled')`)) {
+        if (!ids.includes(id)) ids.push(id);
       }
     }
     // And a finished campaign whose owner asked for changes to one of its results (OWNER_UI_V2 WP4).
@@ -1032,9 +1055,11 @@ export class Controller {
         this.endAccountWait(op.executor_kind, op.id, now, profile);
       }
       // A usage limit halves that profile's concurrency, and a useful result while work waited for it raises it by one;
-      // sibling profiles keep their own limits. Runs on the static account follow RUN8 (not wired here yet).
+      // sibling profiles keep their own limits. With the scheduler on, runs on the static account follow RUN8 the same way.
       if (profile) accountAfterRun(this.store, this.config, { kind: fresh.executor_kind, account: profile, opId: op.id, quota: verdict.class === 'quota',
         run: classifyRun(op.kind, verdict), waited: this.profileWaited, campaignId: ctx.id, now });
+      else if (this.sched) accountAfterRun(this.store, this.config, { kind: fresh.executor_kind, opId: op.id, quota: verdict.class === 'quota',
+        run: classifyRun(op.kind, verdict), waited: this.accountWaited, campaignId: ctx.id, now });
       const blocked = this.store.campaign(ctx.id);
       // Only the operation whose ownership was unresolved clears its blocker; another operation finishing proves nothing
       // about it. A blocker recorded before the operation id was kept (no `operation`) keeps the old behaviour.
@@ -1059,7 +1084,8 @@ export class Controller {
         const reason = redact(change.blocked.reason);
         const record = this.openBlocker(ctx, campaign.declaration, { dependency: 'owner-decision', cls: change.blocked.class,
           identity: `${task.task_id}:${/^no progress:/.test(reason) ? 'no-progress' : reason}`, summary: `${task.task_id}: ${reason}`,
-          requestedAction: `Decide on ${whereOf(campaign.declaration, specOf(this.store, ctx.id, task.task_id, campaign.declaration).issue)}: ${reason}`,
+          requestedAction: isLocalTarget(campaign.declaration) ? `Decide under Needs you in AIWorks (${this.projectWords(campaign.declaration)}): ${reason}`
+            : `Decide on ${whereOf(campaign.declaration, specOf(this.store, ctx.id, task.task_id, campaign.declaration).issue)}: ${reason}`,
           parents: [{ ...task, state: change.state ?? task.state }], scope: 'task' }, now);
         change.blocked = { ...change.blocked, reason, fingerprint: record.fingerprint };
       }
@@ -1257,7 +1283,7 @@ export class Controller {
     // an account row here would outlive that resolution. (A chain records it on the account above.)
     if (v.class === 'auth') {
       this.raiseBlocker(ctx, decl, { kind: 'auth', class: 'B2', reason: v.detail,
-        requestedAction: `Re-authenticate the selected CLI on this PC, then run: supervisor recheck ${ctx.id}` }, now,
+        requestedAction: `Re-authenticate the selected CLI on this PC, ${recheckWords(decl, ctx.id)}` }, now,
       { identity: op.executor_kind });
       return { state: back, last_error: `auth: ${v.detail}` };
     }
@@ -1798,14 +1824,23 @@ export class Controller {
     await this.dispatch(ctx, campaign, ready, opKind(ready));
   }
 
-  /** Admission inputs, all from store rows or local refs (ADAPTIVE_SCHEDULER 4.1). Host pressure is slice RUN7. */
+  /**
+   * Admission inputs, all from store rows or local refs (ADAPTIVE_SCHEDULER 4.1), plus this pass's one host sample (4.6,
+   * RUN7), which can only refuse: a sampler that throws fails the whole pass, so nothing starts until a later pass samples.
+   * `accountFull` names the static account of the provider the candidate would get when that account throttled earlier
+   * and is at its learned limit (4.5, RUN8); a kind run under CAAM profiles is limited per profile by profileChoice instead.
+   */
   admissionInputs() {
+    const now = this.now();
+    const choice = (candidate) => this.executorChoice(candidate.declaration, this.store.task(candidate.campaignId, candidate.taskId), now).executor;
     return {
       ceiling: hostCeiling(this.config),
-      pressure: null,
-      providerWaiting: (candidate) => {
-        const task = this.store.task(candidate.campaignId, candidate.taskId);
-        return !this.executorChoice(candidate.declaration, task).executor;
+      pressure: hostPressure(this.store, this.sampler, now),
+      providerWaiting: (candidate) => !choice(candidate),
+      accountFull: (candidate) => {
+        const kind = choice(candidate)?.kind;
+        if (!kind || this.profileChoice(kind, now)) return null;
+        return accountFull(this.store, this.config, kind, this.accountWaited);
       },
       // A local candidate is published nowhere and holds no base: the owner's Apply checks the folder again (WORK_ENVELOPE 8.6).
       integrated: (campaignId, row, decl) => isLocalTarget(decl) || this.inBase(decl, row.verified_sha) || this.mergedHeads.has(`${row.pr_url}#${row.verified_sha}`),
@@ -2234,7 +2269,7 @@ export class Controller {
       if (!binding.current) {
         this.raiseBlocker(ctx, decl, { kind: 'plan-integrity', class: 'B2',
           reason: `No worker dispatched for ${task.task_id}: the approved plan does not verify (${String(binding.problem).slice(0, 400)})`,
-          requestedAction: `Restore the plan rows of ${ctx.id} (plan_amendments, task_specs) from a backup of the supervisor store, or cancel the campaign; then run: supervisor recheck ${ctx.id}` },
+          requestedAction: `Restore the plan rows of ${ctx.id} (plan_amendments, task_specs) from a backup of the supervisor store, or cancel the campaign; ${recheckWords(decl, ctx.id)}` },
         this.now(), { identity: binding.problem });
         return null;
       }
@@ -2254,8 +2289,8 @@ export class Controller {
         } catch (error) {
           if (!error?.code) throw error;
           this.raiseBlocker(ctx, decl, { kind: 'local-admission', class: 'B2', code: error.code,
-            reason: `No new worker started for ${decl.target.projectId}: ${String(error.message).slice(0, 400)} (${error.code})`,
-            requestedAction: `Confirm this project's rules or approve the plan again in the AIWorks dashboard, then run: supervisor recheck ${ctx.id}` },
+            reason: `No new worker started for ${this.projectWords(decl)}: ${String(error.message).slice(0, 400)} (${error.code})`,
+            requestedAction: `Confirm this project's rules or approve the plan again in the AIWorks dashboard, ${recheckWords(decl, ctx.id)}` },
           this.now(), { identity: error.code });
           return null;
         }
@@ -3033,7 +3068,7 @@ export class Controller {
         control = 'finished';
         const reportsOnly = decl.tasks.every((task) => task.deliverable === 'report');
         if (isLocalTarget(decl)) {
-          nextAction = `Review the verified results of ${decl.target.projectId} in AIWorks. Nothing was applied to your folder.`;
+          nextAction = `Review the verified results of ${this.projectWords(decl)} in AIWorks. Nothing was applied to your folder.`;
           this.enqueue(ctx.id, `${ctx.id}:ready`, decl, `Campaign \`${ctx.id}\` (${decl.target.projectId}): all ${tasks.length} tasks passed independent verification and are ready for your review in AIWorks. Nothing was applied to your folder.`, now);
         } else {
           nextAction = reportsOnly ? `Planning reports published in ${decl.target.repository}; review recommendations before assigning implementation.`
@@ -3127,7 +3162,8 @@ export class Controller {
     if (!existing) {
       this.store.insert('blockers', { fingerprint, project, environment, dependency, class: cls, identity: redact(identity, 300), subject,
         status: 'open', episode: 1, summary: redact(summary), requested_action: action,
-        recheck_procedure: (dependency === 'runtime-not-merged' && this.trustedMain !== 'origin/main' ? LOCAL_MAIN_RECHECK : RECHECK_PROCEDURE[dependency])
+        recheck_procedure: (dependency === 'runtime-not-merged' && this.trustedMain !== 'origin/main' ? LOCAL_MAIN_RECHECK
+          : dependency === 'owner-decision' && isLocalTarget(decl) ? LOCAL_DECISION_RECHECK : RECHECK_PROCEDURE[dependency])
           ?? 'Run the held task once; a structured result is the evidence.',
         first_detected_at: now, last_seen_at: now, occurrences: 1, recheck_attempts: 0,
         next_recheck_at: timed ? nextRecheckAt(cls, 0, now) : null, reminders: 0, updated_at: now });
@@ -3160,12 +3196,18 @@ export class Controller {
     return this.store.blocker(fingerprint);
   }
 
+  /** A project in owner-facing words: its repository, or for a project without GitHub the owner's name of it, never its `lp-` id. */
+  projectWords(decl) {
+    return isLocalTarget(decl) ? localProjectName(this.store, decl.target.projectId) ?? 'your project' : decl.target.repository;
+  }
+
   /** Outbox entry for what the owner would be told (§8, §10). The key makes repeats of the same notice no-ops. */
   recordNotification(ctx, decl, record, kind, now) {
     const parents = this.store.all('SELECT campaign_id, task_id FROM blocker_parents WHERE fingerprint = ? AND released_at IS NULL ORDER BY campaign_id, task_id', record.fingerprint);
     const key = `${record.fingerprint}:${record.episode}:${kind}`;
     const message = ownerMessage({ record, kind, parents, repository: decl.target.repository, trackingIssue: decl.target.trackingIssue,
-      tried: RECOVERY_TRIED[record.dependency], workList: this.selfHosted(decl.target.repository) });
+      tried: RECOVERY_TRIED[record.dependency], workList: this.selfHosted(decl.target.repository),
+      ...(isLocalTarget(decl) ? { projectName: this.projectWords(decl) } : {}) });
     const info = this.store.run(`INSERT OR IGNORE INTO owner_notifications (key, fingerprint, campaign_id, kind, class, message, state, attempts, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`, key, record.fingerprint, ctx.id, kind, record.class, message, now, now);
     if (!info.changes) return;
@@ -3273,15 +3315,18 @@ export class Controller {
    * lost lease or an answer that may have arrived becomes `unknown` and is never sent again, so the owner gets no
    * duplicate. An answer that certainly reached nobody backs off and stops after MAX_NOTIFY_ATTEMPTS; one the provider
    * refused (`rejected`) stops at once. A rehearsal is recorded as `rehearsed`, never as delivered.
+   * Whatever the transport, under each held campaign's lease: an entry left `sending` becomes `unknown` as above, and a
+   * pending one nothing waits on any more is retired as `obsolete` and never sent (notificationObsolete). A goal that
+   * finished sends nothing because it finished: its entries are only retired, or sent like any other while their blocker
+   * still holds other work.
    */
   async drainOwnerNotifications() {
-    const live = this.config.ownerIntervention?.deliver === true && this.notifier?.live === true;
-    if (!this.oi || !live && this.notifier?.rehearsal !== true) return;
-    const noProviderDedup = this.notifier.dedup === 'none';
+    if (!this.oi) return;
     for (const id of this.held.keys()) {
       const stale = this.store.all("SELECT key FROM owner_notifications WHERE campaign_id = ? AND state = 'sending'", id)
         .filter((row) => !this.notificationsInFlight.has(row.key));
-      if (!stale.length) continue;
+      const pending = this.store.all("SELECT key, fingerprint, campaign_id FROM owner_notifications WHERE campaign_id = ? AND state = 'pending'", id);
+      if (!stale.length && !pending.length) continue;
       try {
         this.fenced({ id, generation: this.held.get(id) }, () => {
           const at = this.now();
@@ -3290,11 +3335,20 @@ export class Controller {
               'the supervisor stopped while sending; it may have arrived, so it is not sent again', at, key).changes) continue;
             this.store.journal(id, 'owner-notification-unknown', { key, reason: 'interrupted' }, at);
           }
+          for (const item of pending) {
+            const reason = this.notificationObsolete(item);
+            if (!reason || !this.store.run("UPDATE owner_notifications SET state = 'obsolete', last_error = ?, updated_at = ? WHERE key = ? AND state = 'pending'",
+              OBSOLETE_WORDS[reason], at, item.key).changes) continue;
+            this.store.journal(id, 'owner-notification-obsolete', { key: item.key, reason }, at);
+          }
         });
       } catch (error) {
         if (!(error instanceof FencedError)) throw error;
       }
     }
+    const live = this.config.ownerIntervention?.deliver === true && this.notifier?.live === true;
+    if (!live && this.notifier?.rehearsal !== true) return;
+    const noProviderDedup = this.notifier.dedup === 'none';
     const now = this.now();
     const rules = currentAlertRules(this.store).rules;
     const items = [...this.held.keys()].flatMap((id) => this.store.all(
@@ -3352,6 +3406,23 @@ export class Controller {
         this.log(`owner notification ${item.key}: ${error.message}`);
       }
     }
+  }
+
+  /**
+   * Why a pending owner notification is no longer worth sending, or null while it is: `resolved` when its blocker was
+   * resolved or has opened a later episode since it was recorded; `goal-ended` when its own campaign finished or was
+   * cancelled and no campaign still running holds work on its blocker. Positive evidence only: an entry whose blocker or
+   * campaign the store does not hold stays as it is. Called inside the campaign's fenced transaction.
+   */
+  notificationObsolete(item) {
+    const record = this.store.blocker(item.fingerprint);
+    const episode = Number(String(item.key).slice(String(item.fingerprint).length + 1).split(':')[0]);
+    if (record && (record.status === 'resolved' || record.episode !== episode)) return 'resolved';
+    const control = this.store.get('SELECT control FROM campaigns WHERE id = ?', item.campaign_id)?.control;
+    if (!['finished', 'cancelled'].includes(control)) return null;
+    const held = this.store.get(`SELECT 1 AS held FROM blocker_parents p JOIN campaigns c ON c.id = p.campaign_id
+      WHERE p.fingerprint = ? AND p.released_at IS NULL AND c.control NOT IN ('finished', 'cancelled') LIMIT 1`, item.fingerprint);
+    return held ? null : 'goal-ended';
   }
 
   enqueue(campaignId, key, decl, body, now) {
