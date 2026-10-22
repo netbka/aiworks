@@ -153,7 +153,7 @@ A **write domain** is the part of a project one implement step may change.
 | `done` with a commit deliverable, not yet in the fetched base branch | Yes | Published but unmerged. Released when the verified SHA (or its exact-head merge) is in the base, using the existing check `missingIntegratedDependencies` (`controller.mjs:463-477`). |
 | `pending` after a cancelled or abandoned attempt, nothing pushed | No | Nothing was published. Its worktree stays and is reused by the same task only. |
 | Campaign `paused` | Yes, for the rows above | Pausing does not release ownership (scope A rule). |
-| Campaign `cancelled` or `finished` | Only for published-but-unmerged commits | Scope A releases registration ownership; the unmerged PR still changes those files. Released when merged or closed. |
+| Campaign `cancelled` or `finished` | Only for published-but-unmerged commits | Scope A releases registration ownership; the unmerged PR still changes those files. Released when merged or closed. A cancelled campaign of the self-hosted repository with local main trusted holds none: only the merge gate moves that main and it never merges a cancelled campaign. |
 
 So a domain is held from the first implement dispatch until the change is integrated or provably never published. This is #5 scope B ("extend ownership through dispatch and verified integration ... do not create an indefinite lock"). It is implemented as `domainHolders(store, candidate)` next to `findWorkConflict` in `src/supervisor/work-ownership.mjs`. That is one module, one rule set and no new lock table.
 

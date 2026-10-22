@@ -161,6 +161,48 @@ test('published but unmerged work keeps its domain until merged', (t) => {
 });
 
 /** One registered campaign; the test plays the implementer. */
+test('a cancelled campaign whose head only the merge gate could integrate releases its domain; open, unresolved and finished work stay held', (t) => {
+  const env = environment();
+  const dbPath = join(env.dataDir, 'supervisor.db');
+  let store = new Store(dbPath);
+  t.after(() => { store.close(); env.cleanup(); });
+  const github = { ...env.config, scheduler: { enabled: true } };
+  const selfHosted = { ...github, selfHosting: { repository: 'example-org/sampleapp', trustedMain: 'local' } };
+  const inputs = (config) => new Controller({ store, config, dataDir: env.dataDir, fault: null, sampler: { sample: () => null } }).admissionInputs();
+  const other = (id) => declaration({ campaignId: id, tasks: [commitTask('X', 940, { writes: ['src/'], goal: `Produce X in ${id}.` })] });
+  const mine = declaration({ campaignId: 'mine', tasks: [commitTask('M', 941, { writes: ['src/a/'] })] });
+  campaignStart(store, mine);
+  const candidate = { campaignId: 'mine', taskId: 'M', domain: domainOf(mine, mine.tasks[0]) };
+  const holders = (config = selfHosted) => domainHolders(store, candidate, inputs(config)).map((h) => `${h.campaignId}:${h.reason}`);
+  const set = (id, control, task) => {
+    campaignStart(store, other(id));
+    const row = store.task(id, 'X');
+    store.patch('tasks', { campaign_id: id, task_id: 'X' }, row.version, task, Date.now());
+    store.patch('campaigns', { id }, store.campaign(id).version, { control }, Date.now());
+  };
+  // Verified heads absent from the checkout, as after old history was replaced: none of them can be in the trusted main.
+  set('old', 'cancelled', { state: 'done', verified_sha: 'b'.repeat(40), pr_url: 'aiworks-work:7' });
+  set('kept', 'finished', { state: 'done', verified_sha: 'c'.repeat(40), pr_url: 'aiworks-work:8' });
+  set('live', 'cancel-requested', { state: 'implementing' });
+  const now = Date.now();
+  store.run(`INSERT INTO operations (id, campaign_id, task_id, kind, seq, idempotency_key, lease_generation, state, session_id, run_dir,
+    workspace, packet, packet_digest, created_at, updated_at) VALUES ('live.X.implement.1', 'live', 'X', 'implement', 1, 'live.X.implement.1', 1,
+    'dispatched', 's', 'r', 'w', '{}', 'd', ?, ?)`, now, now);
+
+  assert.deepEqual(holders(), ['kept:published-unmerged', 'live:writing'],
+    'the cancelled head is released; a finished unmerged head and an unresolved run under cancellation stay held');
+  assert.deepEqual(holders(github), ['old:published-unmerged', 'kept:published-unmerged', 'live:writing'],
+    'where a pull request could still be merged outside the gate, cancellation keeps its hold');
+  assert.equal(store.all("SELECT 1 FROM journal WHERE kind = 'merged'").length, 0, 'no absent head is recorded as merged');
+
+  // The release is derived from rows, so it survives a restart; the settled run then releases its domain too.
+  store.run("UPDATE operations SET state = 'abandoned' WHERE id = 'live.X.implement.1'");
+  store.patch('campaigns', { id: 'live' }, store.campaign('live').version, { control: 'cancelled' }, Date.now());
+  store.close();
+  store = new Store(dbPath);
+  assert.deepEqual(holders(), ['kept:published-unmerged'], 'after a restart only the finished unmerged head holds the domain');
+});
+
 function rig(t, task) {
   const env = environment();
   const store = new Store(join(env.dataDir, 'supervisor.db'));
