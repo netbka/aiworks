@@ -115,3 +115,21 @@ export const tabOf = (route) => route.screen === 'project' ? LEGACY_TABS[route.t
     : ['step', 'project-settings'].includes(route.screen) ? 'overview' : null;
 /** The route each project tab opens. */
 export const tabRoute = (project, tab) => ['overview', 'review'].includes(tab) ? { screen: 'project', project, tab } : { screen: tab, project };
+
+/** Draft keys ("<address> <name>") by the key they were kept under before their address moved: Messages became Chats. */
+export const MOVED_DRAFTS = Object.freeze({ '#/chats message': '#/settings/messages message' });
+/**
+ * Every kept draft, with an unsent one left under a moved address taken up by its new key (aiworks#39), or null when
+ * nothing changes. A draft already kept at the new key is newer and wins; the old key then stays until the new key is
+ * written (typed, sent or cleared), which drops it too, so the old text can never come back.
+ */
+export function adoptDrafts(all) {
+  let next = null;
+  for (const [key, old] of Object.entries(MOVED_DRAFTS)) {
+    if (Object.hasOwn(all, key) || typeof all[old] !== 'string' || !all[old]) continue;
+    next ??= { ...all };
+    next[key] = all[old];
+    delete next[old];
+  }
+  return next;
+}

@@ -1,4 +1,4 @@
-import { formatRoute, globalOf, resolveRoute, tabOf, tabRoute, TABS } from '/router.mjs';
+import { MOVED_DRAFTS, adoptDrafts, formatRoute, globalOf, resolveRoute, tabOf, tabRoute, TABS } from '/router.mjs';
 // The state copy of OWNER_WORKSPACE §7 and the Now screen (slice S4); the server serves src/dashboard/copy.mjs here.
 import { COMMANDS, DELEGATED, DIALOGS, NEEDS, NOT_READ, busyOnCommand, costRunsLine, nowView, readingLines, resultMeaning, stateCopy, workLine, DASHBOARD_VERSION, DASHBOARD_VERSION_NAME, DASHBOARD_VERSIONS } from '/copy.mjs';
 
@@ -50,10 +50,13 @@ const DRAFTS_KEY = 'aiworks-dashboard:drafts';
 let draftMemory = null;
 const readDrafts = () => { if (draftMemory) return draftMemory; try { return JSON.parse(sessionStorage.getItem(DRAFTS_KEY) ?? '{}') ?? {}; } catch { return (draftMemory = {}); } };
 const writeDrafts = (all) => { if (draftMemory) { draftMemory = all; return; } try { sessionStorage.setItem(DRAFTS_KEY, JSON.stringify(all)); } catch { draftMemory = all; } };
+// Writing a draft also drops the one its address kept before it moved (router.mjs adoptDrafts), so that text never returns.
 const drafts = {
   get: (address, key) => readDrafts()[`${address} ${key}`] ?? null,
-  set(address, key, value) { const all = readDrafts(); all[`${address} ${key}`] = value; writeDrafts(all); },
-  delete(address, key) { const all = readDrafts(); delete all[`${address} ${key}`]; writeDrafts(all); },
+  set(address, key, value) { const all = readDrafts(); all[`${address} ${key}`] = value; delete all[MOVED_DRAFTS[`${address} ${key}`]]; writeDrafts(all); },
+  delete(address, key) { const all = readDrafts(); delete all[`${address} ${key}`]; delete all[MOVED_DRAFTS[`${address} ${key}`]]; writeDrafts(all); },
+  // A draft typed before its address moved (Messages to Chats) is taken up by the new address when it is next read.
+  adopt() { const adopted = adoptDrafts(readDrafts()); if (adopted) writeDrafts(adopted); },
   // An old project tab address (#/p/<id>/work, results, cost or now) redirects to the tab its content moved to; what was
   // typed there moves with it, and a draft already kept at the new address wins.
   carry(from, to) {
@@ -621,9 +624,10 @@ function chatView(chat, coordinator) {
     placeholder: waiting ? 'AIWorks reads your reply after it answers the last message.' : 'Ask a follow-up. AIWorks sees the earlier messages of this chat.',
     oninput: () => { if (text.value) drafts.set(address, 'reply', text.value); else drafts.delete(address, 'reply'); } });
   text.value = drafts.get(address, 'reply') ?? '';
+  // Checked by the page like every form, so an empty or blank reply says why it was not sent beside the field.
   const send = (event) => {
     event.preventDefault();
-    if (!text.value.trim() || startBlocked()) return;
+    if (!validateForm(event.currentTarget) || startBlocked()) return;
     void sendMessage(text.value, chat.id);
   };
   return panel(chatTitle(chat.turns[0]), chat.turns[0].repository ? `Project ${chat.turns[0].repository}` : null,
@@ -634,7 +638,16 @@ function chatView(chat, coordinator) {
           ? el('p', { class: 'subtext' }, 'Not shown here: the credential check flagged it. The full reply stays in the work records on this computer.')
           : el('pre', { class: 'coordinator-reply' }, m.replyCampaign)) : null)
         : el('ol', { class: 'receipt-steps' }, ...receiptSteps(m, coordinator, state.supervisor.controller)))),
-    coordinator.configured ? el('form', { class: 'chat-composer', onsubmit: send }, text, el('button', { type: 'submit', class: 'button', disabled: startBlocked() }, 'Send')) : null));
+    coordinator.configured ? el('form', { class: 'chat-composer', 'data-chat-form': chat.id, novalidate: true, onsubmit: send }, el('label', {}, text), el('button', { type: 'submit', class: 'button', disabled: startBlocked() }, 'Send')) : null));
+}
+
+// While the owner is typing a reply the refresh leaves the chat as it is, so focus, caret and a field message stay; Send
+// still follows sending and the connection. The chat shows what changed once the owner leaves the box.
+function refreshChat(content, chatId) {
+  const form = content.querySelector(`form[data-chat-form="${chatId}"]`);
+  if (!form || !form.contains(document.activeElement) || !document.activeElement.matches('textarea')) return false;
+  form.querySelector('button[type="submit"]').disabled = startBlocked();
+  return true;
 }
 
 // Receipt transitions become a notice here and a desktop notification, so the owner learns when work was read.
@@ -654,7 +667,7 @@ function trackReceipts() {
     if (key.startsWith('m')) {
       if (now === 'received' && !before) announce('Sent', `AIWorks received your request at ${clock(item.receivedAt)}.`);
       else if (now === 'read') announce('Read', 'AIWorks started working on your request.');
-      else if (now === 'answered') announce('Answered', item.replyBody ? 'The reply is ready in Messages.' : item.replyUrl ? 'The reply is posted.' : 'Check Messages for the reply.');
+      else if (now === 'answered') announce('Answered', item.replyBody ? 'The reply is ready in Chats.' : item.replyUrl ? 'The reply is posted.' : 'Check Chats for the reply.');
       else if (now === 'failed') announce('Not answered', 'Two reads of your request ended without an answer.');
     } else if (now === 'attached:dispatched' || now === 'attached:recorded') announce(`Guidance for ${item.step} read`, `The ${roleName(item.role)} (${provider(item.executor)}) received it.`);
     else if (now === 'attached:finished') announce(`The AI worker that read your guidance for ${item.step} finished`, `Outcome: ${terminalLabels[item.runOutcome] ?? outcomeLabels[item.runOutcome] ?? item.runOutcome ?? 'unknown'}.`);
@@ -666,10 +679,10 @@ function trackReceipts() {
 }
 const askNotifications = () => { try { if ('Notification' in window && Notification.permission === 'default') void Notification.requestPermission(); } catch { /* unsupported */ } };
 
-// The new-chat box opens from Chats, so its draft is kept under that address.
+// The new-chat box opens from Chats, so its draft is kept under that address; one typed under Messages before is kept.
 const MESSAGES_ADDRESS = formatRoute({ screen: 'chats' });
 const messageDraft = {
-  get text() { return drafts.get(MESSAGES_ADDRESS, 'message') ?? ''; },
+  get text() { drafts.adopt(); return drafts.get(MESSAGES_ADDRESS, 'message') ?? ''; },
   set text(value) { if (value) drafts.set(MESSAGES_ADDRESS, 'message', value); else drafts.delete(MESSAGES_ADDRESS, 'message'); },
 };
 function openMessage() {
@@ -684,18 +697,26 @@ function openMessage() {
 async function sendMessage(text, threadId = null) {
   sending = true; render();
   const requestId = crypto.randomUUID(), from = current.address;
+  // An unconfirmed send keeps its Retry: it is said after the refresh, whose "Sent" for the same message would hide it.
+  const unconfirmed = () => notice('Delivery could not be confirmed. Retry: the same message is never stored twice.', attempt, null, from);
+  let first = true, lost = false;
   const attempt = async () => {
     try {
       const result = await post('/api/messages', { requestId, text, ...(threadId ? { threadId } : {}) });
       const chat = formatRoute({ screen: 'chats', chat: result.threadId ?? result.id });
-      if (threadId) { drafts.delete(chat, 'reply'); if ($('#chat-reply')) $('#chat-reply').value = ''; } else messageDraft.text = '';
+      // Only the text that was sent is cleared: anything typed while it was on its way stays a draft.
+      if (threadId) {
+        if (drafts.get(chat, 'reply') === text) { drafts.delete(chat, 'reply'); if (current.address === chat && $('#chat-reply')) $('#chat-reply').value = ''; }
+      } else if (messageDraft.text === text) messageDraft.text = '';
       notice(result.duplicate ? 'This message was already received; it was not stored twice.' : `Sent · AIWorks received your request at ${clock(Date.now())}. You will see "Read" when AIWorks starts on it.`, null, null, chat);
       if (current.address !== chat) go(chat);
     } catch (error) {
-      notice(error.known ? error.message : 'Delivery could not be confirmed. Retry: the same message is never stored twice.', error.known ? null : attempt, null, from);
+      if (error.known) notice(error.message, null, null, from);
+      else if (first) lost = true;
+      else unconfirmed();
     }
   };
-  try { await attempt(); } finally { sending = false; await poll(); }
+  try { await attempt(); } finally { first = false; sending = false; await poll(); if (lost) unconfirmed(); }
 }
 
 /*
@@ -4299,6 +4320,7 @@ function render() {
   else if (route.screen === 'settings' && route.section === 'alerts' && refreshAlerts(content)) { /* the form stays as the owner typed it */ }
   else if (route.screen === 'settings' && route.section === 'alerts') patch(content, alertsScreen());
   else if (route.screen === 'settings' && route.section === 'usage') patch(content, usageScreen());
+  else if (route.screen === 'chats' && refreshChat(content, route.chat)) { /* the reply stays as the owner typed it */ }
   else if (route.screen === 'chats') patch(content, chatsScreen(route.chat ?? null));
   else if (route.screen === 'settings' && route.section === 'accounts') patch(content, accountsScreen());
   else if (route.screen === 'settings' && route.section === 'version') patch(content, versionScreen());

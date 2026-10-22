@@ -373,6 +373,7 @@ export async function journey(root) {
       const other = document.getElementById('start-goal').value; location.hash = '#/p/site/start'; await sleep(1200);
       return { other, own: document.getElementById('start-goal').value, focus: document.activeElement?.id };`);
     record('drafts-per-project-and-focus', drafts.other !== 'A site-only draft.' && drafts.own === 'A site-only draft.' && drafts.focus === 'view-title', drafts);
+    await chatSteps({ p, ui, record, shot });
 
     // Owner writes, each through the caller check: a Knowledge fact, the project budget, the alert rules.
     const knowledge = await ui(`location.hash = '#/p/notes/knowledge'; return press('Confirm');`);
@@ -483,11 +484,124 @@ export async function journey(root) {
   return steps;
 }
 
+/**
+ * Chats and the drafts kept from Messages (aiworks#39), on a running journey page. The page before Chats kept the unsent
+ * new-message draft under Messages' address: New chat keeps it across reload and navigation and never shows it again
+ * once sent, while a newer Chats draft wins over it. A new chat and a follow-up in it: a blank reply is refused beside
+ * the field, a refused or unconfirmed send keeps its text, a retry is stored once and the reply stays in its chat.
+ */
+export async function chatSteps({ p, ui, record, shot }) {
+  const OLD = 'Old draft: review the example page before Friday.', NEWER = 'Newer draft typed in Chats.';
+  const kept = "JSON.parse(sessionStorage.getItem('aiworks-dashboard:drafts') ?? '{}')";
+  const messages = "(await api('/api/state')).supervisor.coordinator.messages";
+  const reload = async () => { await p.send('Page.reload'); await sleep(3000); };
+  await p.viewport(1366, 900);
+  // What the page before the upgrade left in this tab; then the upgraded page loads.
+  await ui(`sessionStorage.setItem('aiworks-dashboard:drafts', JSON.stringify({ '#/settings/messages message': ${JSON.stringify(OLD)} })); location.hash = '#/settings/messages';`);
+  await reload();
+  const upgraded = await ui(`const address = location.hash; location.hash = '#/projects'; await sleep(1200); location.hash = '#/chats'; await sleep(1200);
+    await click('✉ New chat'); return { address, text: document.getElementById('message-text').value, focus: document.activeElement?.id, kept: ${kept} };`);
+  record('chat-old-draft-kept', upgraded.address === '#/chats' && upgraded.text === OLD && upgraded.focus === 'message-text' &&
+    upgraded.kept['#/chats message'] === OLD && !('#/settings/messages message' in upgraded.kept), upgraded);
+  await ui(`document.getElementById('close-message').click();`);
+  await reload();
+  const reloaded = await ui(`location.hash = '#/settings'; await sleep(1200); location.hash = '#/chats'; await sleep(1200); await click('✉ New chat');
+    return document.getElementById('message-text').value;`);
+  record('chat-old-draft-survives-reload', reloaded === OLD, { reloaded });
+
+  // Sent: the old text is gone for good, from the box and from both keys.
+  const sent = await ui(`const before = ${messages}.length; const n = await press('Send message'); await sleep(1500);
+    return { notice: n, address: location.hash, stored: ${messages}.length - before };`);
+  await reload();
+  const after = await ui(`location.hash = '#/chats'; await sleep(1200); await click('✉ New chat'); const text = document.getElementById('message-text').value;
+    document.getElementById('close-message').click(); return { text, kept: ${kept} };`);
+  record('chat-old-draft-not-resurrected', /^Sent/.test(sent.notice) && /^#\/chats\/\d+$/.test(sent.address) && sent.stored === 1 && after.text === '' &&
+    !('#/chats message' in after.kept) && !('#/settings/messages message' in after.kept), { sent, after });
+
+  // A newer Chats draft is not overwritten by an old one left beside it, and clearing it does not bring the old one back.
+  await ui(`sessionStorage.setItem('aiworks-dashboard:drafts', JSON.stringify({ '#/settings/messages message': ${JSON.stringify(OLD)}, '#/chats message': ${JSON.stringify(NEWER)} }));`);
+  await reload();
+  const newer = await ui(`location.hash = '#/chats'; await sleep(1200); await click('✉ New chat'); const shown = document.getElementById('message-text').value;
+    type('message-text', ''); document.getElementById('close-message').click(); await sleep(300); await click('✉ New chat');
+    const cleared = document.getElementById('message-text').value; document.getElementById('close-message').click(); return { shown, cleared, kept: ${kept} };`);
+  record('chat-newer-draft-wins', newer.shown === NEWER && newer.cleared === '' && !('#/chats message' in newer.kept) && !('#/settings/messages message' in newer.kept), newer);
+
+  // A new chat the server refuses (a control character) keeps its text; nothing is stored.
+  const REFUSED = 'A refused\u0007 message.';
+  const refused = await ui(`const before = ${messages}.length; await click('✉ New chat'); type('message-text', ${JSON.stringify(REFUSED)});
+    const n = await press('Send message'); await sleep(500); await click('✉ New chat'); const text = document.getElementById('message-text').value;
+    type('message-text', ''); document.getElementById('close-message').click(); return { notice: n, text, stored: ${messages}.length - before };`);
+  record('chat-new-refused-keeps-text', refused.stored === 0 && refused.text === REFUSED && !/^Sent/.test(refused.notice), refused);
+
+  // A follow-up in the chat just started: blank is refused beside the field with focus on it; the box keeps focus and text
+  // through the 5-second refresh.
+  const chat = sent.address, id = Number(chat.split('/').pop()), reply = 'A follow-up: also check the footer.', replyKey = JSON.stringify(`${chat} reply`);
+  const blank = await ui(`location.hash = ${JSON.stringify(chat)}; await sleep(1500); const before = ${messages}.length; type('chat-reply', '   ');
+    await click('Send'); const box = document.getElementById('chat-reply');
+    return { focus: document.activeElement?.id, invalid: box.getAttribute('aria-invalid'), error: document.getElementById('chat-reply-validation')?.hidden === false, stored: ${messages}.length - before };`);
+  record('chat-reply-blank-refused', blank.focus === 'chat-reply' && blank.invalid === 'true' && blank.error && blank.stored === 0, blank);
+  const typing = await ui(`type('chat-reply', ${JSON.stringify(reply)}); await sleep(6500);
+    return { focus: document.activeElement?.id, text: document.getElementById('chat-reply').value, kept: ${kept}[${replyKey}] };`);
+  record('chat-reply-kept-through-refresh', typing.focus === 'chat-reply' && typing.text === reply && typing.kept === reply, typing);
+
+  // The answer to the reply is lost on the way back: the text stays, Retry stores it once, in the same chat, with its project.
+  const unknown = await ui(`const real = window.fetch; let lost = false;
+    window.fetch = async (...args) => { const response = await real(...args); if (!lost && args[0] === '/api/messages') { lost = true; throw new TypeError('Failed to fetch'); } return response; };
+    const n = await press('Send'); window.fetch = real; return { notice: n, kept: ${kept}[${replyKey}] };`);
+  record('chat-reply-unknown-keeps-text', /could not be confirmed/.test(unknown.notice) && unknown.kept === reply, unknown);
+  const retried = await ui(`document.querySelector('#notice button').click(); for (let i = 0; i < 40 && /could not be confirmed/.test(notice()); i++) await sleep(250);
+    await sleep(1500); const all = ${messages}, same = all.filter((m) => m.text === ${JSON.stringify(reply)}), first = all.find((m) => m.id === ${id});
+    return { notice: notice(), copies: same.length, threadId: same[0]?.threadId, inherited: Boolean(first) && same[0]?.repository === first.repository,
+      text: document.getElementById('chat-reply')?.value, kept: ${replyKey} in ${kept}, address: location.hash };`);
+  // The notice may already announce an answer to the chat; what counts is one stored copy and a cleared box.
+  record('chat-reply-retry-stored-once', !/could not be confirmed/.test(retried.notice) && retried.copies === 1 && retried.threadId === id && retried.inherited &&
+    retried.text === '' && !retried.kept && retried.address === chat, retried);
+  // A refused follow-up keeps its text through a reload.
+  const REFUSED_REPLY = 'A refused\u0007 reply.';
+  const knownReply = await ui(`type('chat-reply', ${JSON.stringify(REFUSED_REPLY)}); return press('Send');`);
+  await reload();
+  const knownKept = await ui(`return document.getElementById('chat-reply')?.value;`);
+  record('chat-reply-refused-keeps-text', !/^Sent/.test(knownReply) && knownKept === REFUSED_REPLY, { notice: knownReply, knownKept });
+  await ui(`type('chat-reply', '');`);
+
+  // 320 px and a phone: the chat list and an open chat do not scroll sideways, and the reply box takes focus clear of the bar.
+  const wide = [];
+  for (const [width, height, mobile] of [[320, 640, false], [390, 844, true]]) {
+    await p.viewport(width, height, mobile);
+    for (const route of ['#/chats', chat]) {
+      const overflow = await ui(`location.hash = ${JSON.stringify(route)}; await sleep(1200); return document.documentElement.scrollWidth - document.documentElement.clientWidth;`);
+      if (overflow > 0) wide.push({ width, route, overflow });
+    }
+    await shot(`chat-${width}`, true);
+    const reach = await ui(`const box = document.getElementById('chat-reply'); box.focus(); await sleep(300); const r = box.getBoundingClientRect(), bar = document.querySelector('.sidebar').getBoundingClientRect();
+      return { focus: document.activeElement?.id, clear: bar.top < innerHeight / 2 || r.bottom <= bar.top };`);
+    if (reach.focus !== 'chat-reply' || !reach.clear) wide.push({ width, reach });
+  }
+  record('chat-narrow-layouts', wide.length === 0, { wide });
+  await p.viewport(1366, 900);
+}
+
 const [command, folder, ...rest] = process.argv.slice(2);
 if (command) {
   if (!folder) { console.error('Usage: node scripts/supervisor/owner-journey.mjs journey|setup|start|stop|eval|shot <folder> [...]'); process.exit(2); }
   const root = resolve(folder);
-  if (command === 'journey') {
+  if (command === 'chats') {
+    // The Chats steps alone on a fresh runtime; their outcomes go to <folder>/evidence/chats.json.
+    setup(root);
+    const steps = [], state = await start(root), p = await page(state.devtools);
+    const record = (step, ok, detail) => {
+      steps.push({ step, ok, detail });
+      writeFileSync(join(root, 'evidence', 'chats.json'), JSON.stringify(steps, null, 2));
+      if (!ok) throw new Error(`${step}: ${JSON.stringify(detail)}`);
+    };
+    try {
+      await p.navigate(state.url);
+      await chatSteps({ p, record, ui: (body) => p.evaluate(`(async () => { ${PRELUDE} ${body} })()`),
+        shot: (name, full) => p.screenshot(join(root, 'evidence', `${name}.png`), { full }) });
+      for (const step of steps) console.log(`ok ${step.step}`);
+    } catch (error) { console.error(`chats failed: ${error.message}`); process.exitCode = 1; }
+    finally { p.close(); await stop(root); }
+  } else if (command === 'journey') {
     try { for (const step of await journey(root)) console.log(`ok ${step.step}`); }
     catch (error) { console.error(`journey failed: ${error.message}`); process.exitCode = 1; }
   } else if (command === 'setup') console.log(JSON.stringify(setup(root), null, 2));
