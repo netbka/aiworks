@@ -196,7 +196,7 @@ function localResult(candidate, attempt, title, textChecks) {
  * The local work of a project without GitHub: each registered plan, newest first, with its steps and checked results.
  * Read from the store only; a store that never ran local work has none. Never a pull request, issue or merge field.
  */
-function localWork(store, record, textChecks) {
+function localWork(store, record, textChecks, config) {
   let rulesId = null;
   try { rulesId = store.get('SELECT id FROM project_overlays WHERE project_id = ?', record.id)?.id ?? null; } catch { rulesId = null; }
   if (!rulesId) return [];
@@ -207,7 +207,8 @@ function localWork(store, record, textChecks) {
       const results = [...new Set(found.map((row) => row.taskId))].map((taskId) => {
         const latest = found.filter((row) => row.taskId === taskId).at(-1), task = store.task(c.id, taskId);
         // Its criteria with their evidence and Request changes (OWNER_UI_V2 WP4), about this candidate's head only; Apply is its acceptance.
-        const review = task ? resultReview(store, c, task, c.declaration.tasks.find((item) => item.id === taskId)) : null;
+        // The config says whether its preview starts the version's own server (the operator's `previews.servers`).
+        const review = task ? resultReview(store, c, task, c.declaration.tasks.find((item) => item.id === taskId), config) : null;
         return { ...localResult(latest, attempts.filter((row) => row.taskId === taskId && row.seq === latest.seq).at(-1), titles.get(taskId) ?? safeText(taskId, 64), textChecks),
           taskVersion: task?.version ?? null, review: review && (review.verifiedSha === latest.sha || review.state === 'changes-requested') ? review : null };
       });
@@ -237,12 +238,12 @@ export function workView(dataDir, { textChecks } = {}) {
   let store;
   try {
     store = new Store(path, { readOnly: true });
-    const governanceRoot = configuredGovernanceRoot(dataDir);
+    const governanceRoot = configuredGovernanceRoot(dataDir), config = readConfig(dataDir);
     const records = readProjects(store).filter((record) => !isLocal(record) || record.disconnected_at == null);
     const plans = records.flatMap((record) => store.all('SELECT * FROM work_requests WHERE project_id = ? ORDER BY id DESC LIMIT 20', record.id)
       .map((request) => planView(store, record, request, latestDraft(store, request.request_id), textChecks)));
     const ready = enabled ? records.filter((record) => startable(record) || localStartable(store, record, governanceRoot)).map(routeOf) : [];
-    const local = Object.fromEntries(records.filter(isLocal).map((record) => [record.id, localWork(store, record, textChecks)]));
+    const local = Object.fromEntries(records.filter(isLocal).map((record) => [record.id, localWork(store, record, textChecks, config)]));
     return { planAndDo: enabled, projects: ready, plans, local };
   } catch { return empty; } finally { store?.close(); }
 }

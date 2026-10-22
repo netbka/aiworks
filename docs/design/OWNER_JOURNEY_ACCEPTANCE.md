@@ -15,7 +15,7 @@ Windows with Chrome installed. `<new-folder>` must be new or empty and lie outsi
 - copies this checkout's `src`, `scripts/lib`, `registry`, `schemas` and the test fixtures into `<new-folder>/runtime` as one commit that its own `origin/main` contains, so merged-code admission (AW-005) holds;
 - starts the real `src/supervisor/cli.mjs serve` and `src/dashboard/main.mjs` from that copy, each hidden and through a launcher that exits at once, as a scheduled task would start them. The dashboard keeps its production Windows caller lookup;
 - starts headless Chrome the same way, as a browser the owner opens: no AIWorks job, and no live parent in this session;
-- drives Chrome over the DevTools protocol through 49 steps, writing each outcome to `<new-folder>/evidence/journey.json` with the source commit and whether it had uncommitted changes. Screenshots go beside it, with the computer's name replaced by a fictional one. The [static showcase](../../site/README.md) is built from a reviewed selection of them;
+- drives Chrome over the DevTools protocol through 51 steps, writing each outcome to `<new-folder>/evidence/journey.json` with the source commit and whether it had uncommitted changes. Screenshots go beside it, with the computer's name replaced by a fictional one. The [static showcase](../../site/README.md) is built from a reviewed selection of them;
 - near the end switches local trust on as an installation's operator would: it stops everything, makes the runtime AIWorks's own repository (`example-org/aiworks`) with `selfHosting.trustedMain` set to local, records the runtime's main as the ledger's anchor with `cli.mjs trusted-main anchor` and starts again. Commits put on the runtime's main by the script play the owner's hand commits; the running code stays at the anchor;
 - stops every process it started.
 
@@ -34,6 +34,7 @@ Without the exiting launcher, a process this session started would have this ses
 | Ask for a plan, Edit plan, save version 2, approve | Draft from the planner run; an edit draft survives navigation; "Priority: Normal → High" listed as a change; Approve and start admits exactly that version |
 | Isolated implementation, independent check of the exact head | A local candidate at the verified commit; the owner's folder untouched |
 | Try this version, Capture screenshots | Sealed `allow-scripts` frame; desktop and phone captures under job containment |
+| The operator declares the project's Node preview script (`previews.servers`, keyed by its `lp-` id); Open preview, Capture screenshots, Close preview | Review says opening starts that version's own server; the frame shows the server's answer for exactly the checked version; desktop and phone captures; on Close the server's processes are gone, its folder removed and its address answers 410. The declaration is then removed again |
 | Apply with a conflicting owner edit | Refused, file named, nothing written |
 | Apply, unrelated owner edit present | Applied; the unrelated edit kept |
 | Undo apply over an edited applied file, then without | Refused with the file named; then the folder restored byte for byte, the unrelated edit kept |
@@ -58,6 +59,8 @@ Without the exiting launcher, a process this session started would have this ses
 Checked by hand on the same runtime as well: keyboard-only answering, using Tab to Send answer with a visible focus ring; the offline state, which turns controls off and says *Disconnected · retrying*; Request changes on a local result, which ran a repair round that was checked again; the sample project; desktop and narrow screenshots of every tab.
 
 ## Findings repaired in this change
+
+- **A local project's Review hid that a preview starts a server** (found by the remainder closeout journey, the first run with a declared preview script). Review of a project without GitHub was built without the configuration, so with a declared script it still said *nothing of the project is built or started on this computer* while Open preview started the version's server. It now reads the configuration like a GitHub project's Review (`src/dashboard/work.mjs`).
 
 - **Local decisions were invisible.** A local step stopped for the owner was left out of the supervisor snapshot. Needs you said nothing waited, Overview said "All steps are finished", and the decision could not be answered. Local steps now carry the same decision record (`src/dashboard/work.mjs`). Needs you and Home list it under its project (`src/dashboard/owner.mjs`, `src/dashboard/projects.mjs`), and Overview answers it with the shared decision card through the existing bound route. A stop without options shows what the worker asked, credential-filtered.
 - **A restarted dashboard refused the open page's next command** until a manual reload: the CSRF token had changed. The page now takes a new session when it reconnects.
@@ -98,5 +101,6 @@ The duplicate "Worker accounts" link in Settings, listed here at first, is remov
 
 | What | Cause | Next action |
 | --- | --- | --- |
-| A human study of the novice flow | None has taken place | Run the plan's blind UX test with a person; this record is not one |
+| A human study of the novice flow | None has taken place | Run the [usability session](USABILITY_SESSION.md) with people who did not build AIWorks; this record is not one |
+| Server preview of a real project | The journey's server is a fictional four-line Node script; its outgoing network is not contained on any computer | The installation's operator declares a real project's script after accepting that limit (STATUS.md) |
 | Real notification delivery, release destinations, remote access | Owner-reserved configuration and authority | Stay off until the owner configures them |
