@@ -13,6 +13,7 @@ import { acceptanceMode } from '../supervisor/project-settings.mjs';
 import { mergeSettings } from '../supervisor/merge.mjs';
 import { previewManifest, previewSupport, PreviewError, PreviewSessions } from '../supervisor/preview.mjs';
 import { captureSupport, CaptureError } from '../supervisor/preview-capture.mjs';
+import { serverPreviewDeclaration, serverPreviewPlan, serverPreviewSupport } from '../supervisor/preview-server.mjs';
 import { resolveCheckout, resolveLocalProject } from '../supervisor/project-connect.mjs';
 import { configuredGitCommand } from './merges.mjs';
 import { roleUnavailableReason, runNotCounted } from '../supervisor/adapters/executors.mjs';
@@ -822,8 +823,9 @@ export function decisionView(campaignId, task, feedback, now) {
  */
 export function resultReview(store, c, task, spec, config = {}, { records = reviewRecords(store, c.id), acceptance = (project) => acceptanceMode(store, project) } = {}) {
   const review = reviewOf(store, c, task, spec, config, records, acceptance);
-  // Whether Review offers a preview of this checked version (WP7), and why not when it does not.
-  return review && { ...review, preview: previewSupport(task, spec, review) };
+  // Whether Review offers a preview of this checked version (WP7), and why not when it does not. `runtime` says whether
+  // opening it starts the version's own server, which the operator declared for this project (preview-server.mjs).
+  return review && { ...review, preview: { ...previewSupport(task, spec, review), runtime: serverPreviewDeclaration(config, projectOf(c.declaration)) ? 'server' : 'static' } };
 }
 
 function reviewOf(store, c, task, spec, config, records, acceptanceOf) {
@@ -1524,7 +1526,9 @@ const PREVIEW_KEYS = ['campaignId', 'taskId', 'taskVersion', 'version', 'authori
  * accept, and nothing else: no command, path or address. The review is read again here, so only the exact head of a
  * finished step that passed the independent check with that report is previewed; a changed, unverified, reopened or
  * report-only result is refused. The pages are read from that commit's Git objects in AIWorks's own checkout
- * (preview.mjs); nothing of the project is built or started, and nothing is written.
+ * (preview.mjs); nothing of the project is built or started, and nothing is written. Where the operator declared the
+ * project's server preview (config.json `previews.servers`), the answer is instead the plan of that version's own
+ * server (preview-server.mjs), which only openResultPreview or captureResultPreview starts, after the caller check.
  */
 function checkedPreviewSource(dataDir, input, config) {
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !PREVIEW_KEYS.includes(key)) ||
@@ -1535,7 +1539,7 @@ function checkedPreviewSource(dataDir, input, config) {
   }
   if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'AIWorks can’t read its work records on this computer right now.');
   const store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true });
-  let repoPath = null;
+  let repoPath = null, project = null;
   try {
     const c = store.campaign(input.campaignId);
     if (!c) throw fail(404, COMMANDS.notFound);
@@ -1550,24 +1554,30 @@ function checkedPreviewSource(dataDir, input, config) {
     if (!review.preview.available) throw fail(409, review.preview.reason);
     try { repoPath = isLocalTarget(c.declaration) ? resolveLocalProject(store, c.declaration).checkout.path : resolveCheckout(store, config, c.declaration.target.repository)?.path ?? null; }
     catch { repoPath = null; }
+    project = projectOf(c.declaration);
   } finally { store.close(); }
-  const git = configuredGitCommand(dataDir);
-  let manifest;
-  try { manifest = previewManifest({ git, repoPath, sha: input.verifiedSha }); }
-  catch (error) { if (error instanceof PreviewError) throw fail(409, error.message); throw error; }
-  return { git, repoPath, sha: input.verifiedSha, manifest,
-    binding: { campaignId: input.campaignId, taskId: input.taskId, verifiedSha: input.verifiedSha, reportDigest: input.reportDigest } };
+  const git = configuredGitCommand(dataDir), declared = serverPreviewDeclaration(config, project);
+  const binding = { campaignId: input.campaignId, taskId: input.taskId, verifiedSha: input.verifiedSha, reportDigest: input.reportDigest,
+    ...(declared ? { server: declared } : {}) };
+  if (declared?.error) throw fail(409, declared.error);
+  try {
+    if (declared) return { kind: 'server', git, repoPath, sha: input.verifiedSha, plan: serverPreviewPlan({ git, repoPath, sha: input.verifiedSha, declaration: declared }), binding };
+    return { kind: 'static', git, repoPath, sha: input.verifiedSha, manifest: previewManifest({ git, repoPath, sha: input.verifiedSha }), binding };
+  } catch (error) { if (error instanceof PreviewError) throw fail(409, error.message); throw error; }
 }
 
 /**
  * Whether an open preview's version is still the checked one: the step's review still names that verified head and
- * report and still offers a preview. A reopened step, one sent back for changes or one checked again at another head is not.
+ * report and still offers a preview. A reopened step, one sent back for changes or one checked again at another head is not;
+ * nor is a server preview once the operator's declaration of it changed or was removed.
  */
 export function previewStillChecked(dataDir, binding, { config = readConfig(dataDir) } = {}) {
   if (!existsSync(join(dataDir, 'supervisor.db'))) return false;
   const store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true });
   try {
     const c = store.campaign(binding.campaignId), task = c && store.task(c.id, binding.taskId);
+    const declared = c ? serverPreviewDeclaration(config, projectOf(c.declaration)) : null;
+    if (JSON.stringify(declared ?? null) !== JSON.stringify(binding.server ?? null)) return false;
     const spec = c?.declaration.tasks.find((item) => item.id === binding.taskId);
     const review = task ? resultReview(store, c, task, spec, config) : null;
     return Boolean(review && review.verifiedSha === binding.verifiedSha && review.reportDigest === binding.reportDigest && review.preview.available);
@@ -1576,13 +1586,32 @@ export function previewStillChecked(dataDir, binding, { config = readConfig(data
 
 /**
  * Open a preview of a checked version (OWNER_UI_V2 WP7), bound as checkedPreviewSource checks. The answer names the
- * preview's address, the commit, when it ends and whether screenshots can be captured here; never a folder.
+ * preview's address, the commit, when it ends, whether it runs the version's own server and whether screenshots can be
+ * captured here; never a folder, a port or a command. A server preview starts that version's server (preview-server.mjs)
+ * in `servers` only after `ownerCheck()` passed, since a program AIWorks started must not make it start one.
  */
-export function openResultPreview(dataDir, input, sessions, { config = readConfig(dataDir) } = {}) {
-  const { binding, ...source } = checkedPreviewSource(dataDir, input, config);
-  const { token, expiresAt } = sessions.add({ ...source, binding });
-  return { url: `/preview/${token}/${source.manifest.entry.split('/').map(encodeURIComponent).join('/')}`, verifiedSha: input.verifiedSha, expiresAt,
-    capture: captureSupport(config.commands?.chrome) };
+export async function openResultPreview(dataDir, input, sessions, { config = readConfig(dataDir), servers = null, ownerCheck = null } = {}) {
+  const { binding, kind, ...source } = checkedPreviewSource(dataDir, input, config);
+  let server = null;
+  if (kind === 'server') {
+    const support = serverPreviewSupport();
+    if (!support.available) throw fail(409, support.reason);
+    if (!servers || !ownerCheck) throw fail(409, 'This dashboard cannot start a preview server.');
+    await ownerCheck();
+    server = await startPreviewServer(servers, source);
+    // The version may have stopped being the checked one while its server started.
+    if (!previewStillChecked(dataDir, binding, { config })) { await server.stop(); throw fail(409, COMMANDS.result.changed); }
+  }
+  const { token, expiresAt } = sessions.add({ ...source, binding, server });
+  const entry = server ? server.entry : source.manifest.entry;
+  return { url: `/preview/${token}/${entry.split('/').map(encodeURIComponent).join('/')}`, verifiedSha: input.verifiedSha, expiresAt,
+    runtime: kind, capture: captureSupport(config.commands?.chrome) };
+}
+
+/** Start the server of a checked version's server preview, with its refusal in the owner's words. */
+async function startPreviewServer(servers, source, signal = null) {
+  try { return await servers.start({ git: source.git, repoPath: source.repoPath, plan: source.plan, signal }); }
+  catch (error) { if (error instanceof PreviewError) throw fail(409, error.message); throw error; }
 }
 
 /**
@@ -1590,15 +1619,28 @@ export function openResultPreview(dataDir, input, sessions, { config = readConfi
  * Chrome under preview-capture.mjs containment. The browser reads only that version's preview files, each request checked
  * again against the review; screenshots taken while the version stopped being the checked one are not answered.
  */
-export async function captureResultPreview(dataDir, input, captures, { config = readConfig(dataDir), signal = null } = {}) {
+export async function captureResultPreview(dataDir, input, captures, { config = readConfig(dataDir), signal = null, servers = null } = {}) {
   const chrome = config.commands?.chrome, support = captureSupport(chrome);
   if (!support.available) throw fail(409, support.reason);
-  const { binding, ...source } = checkedPreviewSource(dataDir, input, config);
+  const { binding, kind, ...source } = checkedPreviewSource(dataDir, input, config);
   const stillValid = () => previewStillChecked(dataDir, binding, { config });
-  const sessions = new PreviewSessions({ stillValid }), { token } = sessions.add({ ...source, binding });
-  let captured;
-  try { captured = await captures.run({ chrome, page: (path) => sessions.serve(token, path), entry: source.manifest.entry, sha: source.sha, signal }); }
-  catch (error) { if (error instanceof CaptureError) throw fail(409, error.message); throw error; }
+  // A server preview's capture starts that version's server of its own, and stops it with the capture.
+  let server = null;
+  if (kind === 'server') {
+    const serverSupport = serverPreviewSupport();
+    if (!serverSupport.available) throw fail(409, serverSupport.reason);
+    if (!servers) throw fail(409, 'This dashboard cannot start a preview server.');
+    server = await startPreviewServer(servers, source, signal);
+  }
+  const sessions = new PreviewSessions({ stillValid }), { token } = sessions.add({ ...source, binding, server });
+  let captured, failure = null;
+  try { captured = await captures.run({ chrome, page: (path) => sessions.serve(token, path), entry: server ? server.entry : source.manifest.entry, sha: source.sha, signal }); }
+  catch (error) { failure = error; }
+  // Screenshots are answered only once the server, like the browser, is proved stopped.
+  await sessions.close();
+  const stopped = server ? await server.stop() : 'stopped';
+  if (failure) { if (failure instanceof CaptureError) throw fail(409, failure.message); throw failure; }
+  if (stopped !== 'stopped') throw fail(409, 'AIWorks could not prove that the server it started has stopped, so no screenshot is shown.');
   if (!stillValid()) throw fail(409, COMMANDS.result.changed);
   return { verifiedSha: captured.sha, capturedAt: captured.capturedAt,
     shots: captured.shots.map(({ png, ...shot }) => ({ ...shot, image: `data:image/png;base64,${png.toString('base64')}` })) };

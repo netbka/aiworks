@@ -56,14 +56,17 @@ const delay = (ms, signal) => new Promise((resolve, reject) => {
 /**
  * The preview's own server on 127.0.0.1 and a random port: GET of the preview's files by their path, nothing else. As the
  * browser's proxy it also receives every request for another address, with that address as its Host, and refuses it.
+ * `page` may answer with a promise (a server preview relays the request to the checked version's own server).
  */
 async function previewServer(page) {
-  const server = createServer((req, res) => {
+  const server = createServer(async (req, res) => {
     const origin = `http://127.0.0.1:${server.address().port}`;
     let url = null;
     try { url = new URL(req.url, origin); } catch { /* refused below */ }
     const answer = req.headers.host !== new URL(origin).host || url?.origin !== origin ? { status: 403, body: 'Not this preview.', type: 'text/plain; charset=utf-8' }
-      : req.method !== 'GET' ? { status: 405, body: 'Method not allowed.', type: 'text/plain; charset=utf-8' } : page(url.pathname.slice(1));
+      : req.method !== 'GET' ? { status: 405, body: 'Method not allowed.', type: 'text/plain; charset=utf-8' }
+        : await Promise.resolve().then(() => page(url.pathname.slice(1))).catch(() => ({ status: 502, body: 'The preview could not answer.', type: 'text/plain; charset=utf-8' }));
+    if (res.destroyed) return;
     res.writeHead(answer.status, { 'Content-Type': answer.type, 'Content-Length': Buffer.byteLength(answer.body), 'Cache-Control': 'no-store',
       'Content-Security-Policy': PREVIEW_POLICY, 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', Connection: 'close' });
     res.end(answer.body);
@@ -131,7 +134,7 @@ const exits = (child, ms) => child.exitCode !== null || child.signalCode !== nul
  * Stop the runner's job and prove it empty: the runner's own result after the browser exited, or the job's owned stop
  * by the runner's recorded identity. Only that job's processes are ever stopped. Answers 'stopped' or why not.
  */
-async function reclaim(child, workDir, hurry) {
+export async function reclaim(child, workDir, hurry) {
   const result = () => readJsonIfExists(join(workDir, 'result.json'));
   if (!hurry && await exits(child, 15_000)) return result()?.containmentStopped === true ? 'stopped' : 'unproved';
   // The runner records its job only after the helper reports it ready; wait briefly for that identity.
