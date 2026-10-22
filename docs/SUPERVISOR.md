@@ -508,6 +508,50 @@ The switch is a `config.json` change made through the upgrade procedure. It adds
 
 **Switch back.** Pause and drain as above. Set `selfHosting.trustedMain` to `"origin"` (or remove `selfHosting`), and remove `cleanup` or set its `enabled` to `false`. `origin/main` must contain the commit to be deployed: with the backup on it may already; otherwise publish the trusted tip through the ordinary GitHub review and merge first, because runtime code must be merged into the trusted main. Deploy `origin/main` with `deploy.ps1`, resume with the identical declarations and compare `status` again. The main ledger and the work list stay in the store, with their items and numbers; nothing is deleted. The anchor is recorded once per ledger, so a later switch on trusts only commits the ledger already holds until the owner route exists. Removed worktrees do not come back by themselves; a repair round recreates the ones it needs.
 
+### Scheduler: rehearsal, switch on and switch back (RUN10)
+
+The scheduler (section 7) is built and off. Switching it on is one `config.json` change on an installation, made by its operator through the upgrade procedure after an independent review accepts the exact commit to be deployed. Merging this runbook switches nothing, and no installation is evidenced here.
+
+- **Covered by synthetic tests (`tests/supervisor`):** admission rules, fair order, fan-out and the host ceiling (`scheduler.test.mjs`); write domains and their holders (`write-domain.test.mjs`); several open operations and cost reservation (`multi-op.test.mjs`); takeover, two controllers and cancellation with parallel work (`restart-parallel.test.mjs`, `restart-publish.test.mjs`). The activation cohort (`scheduler-activation.test.mjs`) runs actual `serve` controllers over four disposable campaigns: under host pressure nothing starts; an account at its learned limit of one runs one step at a time until a useful result raises it; a never-served project is admitted before a served one; an overlapping write domain waits until its holder is merged; the ceiling of two is never exceeded; and a controller killed with two runs open is replaced with each step dispatched and charged exactly once.
+- **Not covered by an automated test:** a real host's memory, CPU and disk, a real provider's limits, `deploy.ps1`, and the procedure below.
+
+**Configuration.** Only the `scheduler` key of the data directory's `config.json` changes; every other key, budget, provider setting and declaration stays as it is.
+
+Before (today: the key is absent, or):
+
+```json
+"scheduler": { "enabled": false }
+```
+
+After:
+
+```json
+"scheduler": { "enabled": true }
+```
+
+No `maxWorkers`: the ceiling is the default, `clamp(floor(cores / 4), 1, 4)`. No `scheduler.pressure`: the default thresholds of section 7. No `providerAccounts`: every campaign using one executor kind on the host shares one account, as today. No new account, budget or declaration. A declaration without `limits.slots` keeps one operation at a time per campaign, so the switch runs different campaigns side by side, never two steps of one campaign. To see the ceiling the default gives on the host, run `node -e "const os = require('node:os'); console.log(Math.min(4, Math.max(1, Math.floor(os.availableParallelism() / 4))))"`.
+
+**Disposable rehearsal (before the switch).** On the exact commit to be deployed, in a disposable checkout and never against the live data directory, its scheduled tasks or its dashboard: `npm ci`, then `npm run check`, which includes the activation cohort. Keep the summary with the private rehearsal record. A further rehearsal on a throwaway copy follows steps 1 to 3 of the local-operation rehearsal above, with `"scheduler": { "enabled": true }` in the synthetic `config.json` and two fictional projects.
+
+**Switch on, on the installation.**
+
+1. Baseline: `status` of every unfinished campaign, kept privately, and the ceiling the command above prints.
+2. Pause all work and wait until no operation is open (upgrade, step 2).
+3. With nothing open, change `config.json` from *before* to *after*. A running supervisor does not read it again; the restart in step 4 applies it.
+4. Deploy the exact reviewed commit with the upgrade procedure, `deploy.ps1` (with `-Main local` under local trust). Run it also when the runtime already runs that commit: it is the supported stop and start.
+5. Resume each campaign with its identical private declaration.
+6. Compare `status` with the baseline: only the controller revision and lease generation change; scope, authorization versions, budgets, retry timers and task outcomes match. Each waiting step names one scheduler reason (section 7).
+
+**Success criteria, over the first working day.**
+
+- Open operations across all campaigns never exceed the ceiling, and no task ever has two open operations (`status` of each campaign lists its open operations).
+- No step is dispatched twice and no run is charged twice: each campaign's `budget.runsUsed` grows by exactly its new operations, and each task has at most one PR or report comment.
+- When two campaigns of different projects have ready steps and room under the ceiling, their operations overlap at least once.
+- Host pressure and account limits only delay work: each `host-pressure` journal entry is followed by `host-pressure-cleared`, and the switch raises no new owner blocker.
+- The supervisor log has no repeating `admission failed` line.
+
+**Switch back (rollback).** If any criterion fails, or the computer is too busy for the owner: pause all work and drain as above, set `"scheduler": { "enabled": false }` (or remove the key), deploy the same commit again with `deploy.ps1` to restart, resume with the identical declarations and compare `status` with the baseline again. Every campaign then runs one operation at a time, as before. Nothing is deleted: the `capacity` rows (learned fan-out, account limits, the pressure episode) stay in the store, unused while the scheduler is off, and are read again if it is switched on later. To keep the scheduler but use less of the computer, set `"maxWorkers": 1` instead, through the same steps.
+
 ## 7. Evidence and remaining gates
 
 `tests/supervisor/` cover the following with synthetic `claude`/`gh` executables and disposable git repositories:
@@ -524,7 +568,7 @@ They make no model, network or GitHub calls. They read governance files from a s
 
 **The test runner.** `npm test` (`scripts/run-tests.mjs`) runs the test files in three tiers ([#102](https://github.com/netbka/aiworks/issues/102)): *unit* files (pure logic, no process) 4 at a time first; then, side by side, *service* files (a dashboard server, the review fixture, git in disposable repositories) 4 at a time and *rehearsal* files (supervisor controllers, contained worker runs, the CLI, containment) 2 at a time, slowest first. A file is a rehearsal when it uses the process-starting exports of `tests/supervisor/helpers.mjs` or a `*-harness.mjs`, a fault, a fixture executable or containment. A file that starts any other child process, such as git or a synthetic executable, is a service file; only a file that starts none is a unit. Each rehearsal file takes its own temporary and data directories and ports the OS assigns, so two files never share state. Each file runs in its own process; its output appears whole when it ends, and a table of every file's time, slowest first, comes before the summary. `npm run test:quick` (`--tiers unit,service`) leaves the rehearsals out for a fast local pass; it is not the gate. `npm run test:affected` (`--affected [base]`, default `origin/main`) runs only the files that the changes since the merge base can reach, committed or not: each test reaches what it imports and every repository path it names, transitively, and a change to `package.json`, the lock file or the runner selects every file (`scripts/lib/affected-tests.mjs`). It is not the gate either. `AIWORKS_HEAVY_CONCURRENCY=1` runs the rehearsals one at a time in the order before #102; `AIWORKS_TEST_CONCURRENCY` sets the other two tiers. The last summary block, after `# all test files`, is the total of every file. The crash/restart rehearsal is three files (`restart`, `restart-publish`, `restart-parallel`) over one harness, so the longest cases run side by side. Since 2026-10-17 the suite holds only product-critical tests ([AGENTS.md](../AGENTS.md#validation)); a design document that names a test file describes the slice as it was built, and a file removed since is in git history.
 
-**Several steps at once (built, off by default).** When the scheduler is on, steps that do not depend on each other and do not change the same files run at the same time, across campaigns and projects, and a busy project cannot hold up a quiet one. It is off unless the data directory's `config.json` says `"scheduler": { "enabled": true }`. Off, every campaign runs one operation at a time, exactly as before. Turning it on at workstation is a runtime configuration change made through the upgrade procedure (section 6), after the owner's answer on the live scheduler (slice RUN10; [ADAPTIVE_SCHEDULER](design/ADAPTIVE_SCHEDULER.md#9-owner-reserved-questions) Q2 and Q3).
+**Several steps at once (built, off by default).** When the scheduler is on, steps that do not depend on each other and do not change the same files run at the same time, across campaigns and projects, and a busy project cannot hold up a quiet one. It is off unless the data directory's `config.json` says `"scheduler": { "enabled": true }`. Off, every campaign runs one operation at a time, exactly as before. Turning it on at an installation is a runtime configuration change its operator makes through the upgrade procedure ([section 6](#scheduler-rehearsal-switch-on-and-switch-back-run10), slice RUN10), with the default ceiling of [ADAPTIVE_SCHEDULER](design/ADAPTIVE_SCHEDULER.md#9-owner-reserved-questions) Q3.
 
 How it decides (`src/supervisor/scheduler.mjs`, design [ADAPTIVE_SCHEDULER §4](design/ADAPTIVE_SCHEDULER.md#4-design)):
 - Each tick, every campaign settles as before (results, publication, integration), but only lists its ready steps. One admission pass then orders all of them and starts **at most one** per tick, so lease renewals stay on time.
