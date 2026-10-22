@@ -869,14 +869,31 @@ function planItem(project, plan) {
     // Once approved and started: its approved versions and admitted amendments, from the goal's own record.
     plan.code === 'APPROVED' && plan.campaignId ? goalVersionList(campaignById(plan.campaignId)) : null);
 }
+/**
+ * Whether Plan work offers a form for this project, as `startScreen` decides it and Overview offers it: Plan and do where
+ * it can start, Plan only on a GitHub project whose connection allows work or that already has work.
+ */
+function planWorkOpen(project) {
+  if (offline || !state.supervisor.available) return false;
+  if (localProject(project)) return Boolean(state.work?.planAndDo && state.work.projects?.some((item) => sameProject(item, project)));
+  if (projectCampaigns(project).length) return true;
+  const row = projectList().find((item) => sameProject(item.id, project));
+  return row?.kind === 'GitHub' && (!row.connection || Boolean(row.connection.startWork?.allowed));
+}
 function planScreen(project) {
   if (!state.supervisor.available) return [unavailable()];
-  const plans = projectPlans(project);
-  const start = state.work?.projects?.some((item) => sameProject(item, project)) && !offline ? routeLink('Plan work', { screen: 'start', project }, 'button secondary') : null;
+  const plans = projectPlans(project), open = planWorkOpen(project);
+  const doable = Boolean(state.work?.planAndDo && state.work.projects?.some((item) => sameProject(item, project)));
+  const start = open ? routeLink('Plan work', { screen: 'start', project }, 'button secondary') : null;
   if (!plans.length) {
-    return [el('section', { class: 'panel', 'data-focus-scope': `plan/${project}` }, empty('No plans yet', state.work?.planAndDo
+    const off = state.work?.planAndDo ? 'Plan and do, which drafts plans here for Review, is not available for this project.'
+      : 'Plan and do, which drafts plans here for Review, is off on this computer.';
+    return [el('section', { class: 'panel', 'data-focus-scope': `plan/${project}` }, empty('No plans yet', doable && open
       ? 'Describe a result under Plan work; AIWorks drafts a plan here for you to review. Nothing starts until you approve it.'
-      : 'Plan and do is off on this computer, so AIWorks drafts no plans here.'), start)];
+      : open ? `Ask under Plan work and AIWorks proposes a plan there, changing nothing in the project. ${off}`
+        : offline ? 'Plan work opens again when this page is connected.'
+          : localProject(project) && state.work?.planAndDo ? 'Confirm this project’s rules on its Overview first. Then you can ask for a plan under Plan work.'
+            : `Plan work is not available for this project. ${off}`), start)];
   }
   const group = (key, title, list) => list.length ? el('section', { class: 'needs-group', 'aria-labelledby': `plan-group-${key}`, 'data-focus-scope': `plan-group/${key}` },
     el('h3', { id: `plan-group-${key}`, class: 'section-title' }, `${title} (${list.length})`),
@@ -1568,8 +1585,8 @@ function addProjectScreen() {
   }
   // One primary action at a time: Check folder until the folder is checked, then Connect project.
   const ready = Boolean(found && !result.confirm && !draft.outcome && !addBusy);
-  const form = el('form', { class: 'panel-body start-form add-form', 'data-add-form': 'add', 'data-focus-scope': 'add-project',
-    onsubmit: (event) => { event.preventDefault(); void checkFolder(); } },
+  const form = el('form', { novalidate: true, class: 'panel-body start-form add-form', 'data-add-form': 'add', 'data-focus-scope': 'add-project',
+    onsubmit: (event) => { event.preventDefault(); if (validateForm(form)) void checkFolder(); } },
     el('label', { class: 'field' }, el('strong', {}, 'Folder path'), path,
       el('span', { class: 'subtext', id: 'add-path-hint' }, 'Type or paste the full path of a folder on this computer, for example D:\\Projects\\my-app. AIWorks only reads it to check what it is.')),
     el('button', { class: `button${ready ? ' secondary' : ''}`, type: 'submit', disabled: busy }, 'Check folder'),
@@ -2780,19 +2797,20 @@ const showPreview = (key, value) => {
   render();
   [...document.querySelectorAll('.preview-panel')].find((node) => node.dataset.focusScope === `preview/${key}`)?.querySelector('button')?.focus({ preventScroll: true });
 };
-// The phone frame keeps a 390 px wide page and scales it down in a narrower window, so the page always lays out at phone
-// width and the note says how much smaller it is shown. Run after every render (the refresh resets the frame's style)
-// and when the window changes size.
-const PHONE_WIDTH = 390;
-function fitPhoneFrames() {
-  for (const frame of document.querySelectorAll('.preview-frame.phone')) {
-    const scale = Math.min(1, frame.clientWidth / PHONE_WIDTH) || 1;
+// Each frame keeps its stated page width (desktop as the screenshots capture it, phone 390 px) and scales it down in a
+// narrower window, so the page always lays out at that width and the note says how much smaller it is shown. Run after
+// every render (the refresh resets the frame's style) and when the window changes size.
+const PREVIEW_WIDTHS = { desktop: 1366, phone: 390 };
+function fitPreviewFrames() {
+  for (const frame of document.querySelectorAll('.preview-frame')) {
+    const width = PREVIEW_WIDTHS[frame.classList.contains('phone') ? 'phone' : 'desktop'];
+    const scale = Math.min(1, frame.clientWidth / width) || 1;
     frame.style.setProperty('--preview-scale', String(scale));
     const note = frame.closest('.preview-panel')?.querySelector('.preview-fit');
-    if (note) note.textContent = scale < 1 ? ` This window is narrower, so it is shown at ${Math.round(scale * 100)}%; the page still lays out at ${PHONE_WIDTH} px.` : '';
+    if (note) note.textContent = scale < 1 ? ` This window is narrower, so it is shown at ${Math.round(scale * 100)}%; the page still lays out at ${width} px.` : '';
   }
 }
-window.addEventListener('resize', fitPhoneFrames);
+window.addEventListener('resize', fitPreviewFrames);
 async function captureShots(key, binding, review) {
   const shown = previews.get(key);
   if (!shown || shown.state !== 'open') return;
@@ -2858,7 +2876,7 @@ function previewSection(review, binding) {
   return section(identity,
     el('div', { class: 'campaign-controls preview-controls', role: 'group', 'aria-label': 'Preview width' }, size('desktop', 'Desktop'), size('phone', 'Phone'),
       control('Close preview', () => showPreview(key, null))),
-    el('p', { class: 'subtext' }, `Showing ${shown.size === 'phone' ? `a phone-width (${PHONE_WIDTH} px)` : 'a desktop-width'} view of ${sha7}.`,
+    el('p', { class: 'subtext' }, `Showing a ${shown.size === 'phone' ? 'phone' : 'desktop'}-width (${PREVIEW_WIDTHS[shown.size === 'phone' ? 'phone' : 'desktop']} px) view of ${sha7}.`,
       el('span', { class: 'preview-fit' }), ` The preview ends at ${clock(shown.expiresAt)}; open it again after that.`),
     frame,
     shotsBlock(key, shown, sha7, control, () => void captureShots(key, binding, review)));
@@ -4269,7 +4287,7 @@ function render() {
     $('#host-detail').replaceChildren(routeLink(versionLabel, '#/settings/version', 'host-version-link'));
     $('#host-detail').title = `Dashboard v${ver} "${verName}" (revision ${state.host.revision?.slice(0, 7) ?? 'unknown'})`;
   }
-  fitPhoneFrames();
+  fitPreviewFrames();
 }
 
 async function post(path, body) {
