@@ -283,6 +283,8 @@ export function trustedMainView(store, config) {
   const backup = backupStatus(store, settings, settings.repository, tip.tip ?? null);
   return { mode: 'local', repository: settings.repository, problem: null, state: tip.state, tip: short(tip.tip), main: short(tip.main),
     unrecordedCount: Number.isSafeInteger(tip.unrecordedCount) ? tip.unrecordedCount : null,
+    // The exact tips the owner route records (POST /api/v2/settings/trusted-main), shown in full beside its button.
+    record: tip.state === 'TRUSTED' && tip.unrecordedCount > 0 ? { oldTip: tip.tip, newTip: tip.main } : null,
     backup: { enabled: backup.enabled, remote: backup.remote, branch: backup.branch, state: backup.state, at: backup.at, current: backup.current,
       tip: short(backup.tip), nextAttemptAfter: backup.nextAttemptAfter } };
 }

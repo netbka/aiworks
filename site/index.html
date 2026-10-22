@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>AIWorks: a synthetic walk through the owner journey</title>
+<meta name="description" content="Screens of AIWorks, a local manager for AI coding agents, captured from a disposable synthetic runtime with fictional projects.">
+<link rel="stylesheet" href="showcase.css">
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="top">
+  <div class="top-inner">
+    <span class="brand"><span class="brand-mark" aria-hidden="true">aw</span> AIWorks</span>
+    <nav aria-label="On this page">
+      <ul>
+        <li><a href="#kinds">What this page is</a></li>
+        <li><a href="#journey">The journey</a></li>
+        <li><a href="#phone">On a phone</a></li>
+        <li><a href="#not-shown">Not shown</a></li>
+        <li><a href="#docs">Documentation</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="content" tabindex="-1">
+  <h1>Plan once, check every result, decide only what needs you</h1>
+  <p class="lead">AIWorks is a manager for AI coding agents that runs on your own Windows computer. You approve a plan; an AI builder does each step in an isolated copy; a fresh AI session checks that exact version; and nothing in your folder changes until you press Apply.</p>
+
+  <div class="notice" role="note">
+    <p><strong>Synthetic demonstration.</strong> Every screen below was captured from a disposable runtime with two fictional projects, <em>notes</em> (a plain folder) and <em>site</em> (a local Git repository), and a synthetic AI worker that makes no model or network call. The computer name in the header is replaced with “Example PC”.</p>
+    <p>It is not an installation, nobody's real projects appear in it, and this page makes no claim about any installed or running copy of AIWorks.</p>
+  </div>
+
+  <section class="panel" id="kinds" aria-labelledby="kinds-title">
+    <h2 id="kinds-title">Three different answers, kept apart</h2>
+    <p>This page talks about one of them at a time and says which.</p>
+    <ul class="kinds">
+      <li><span class="label code">In the source code</span><p>What the repository's code can do. Some of it is off until its setting is switched on in the AIWorks configuration file.</p></li>
+      <li><span class="label demo">Shown in this demonstration</span><p>What the scripted owner journey did, step by step, on the production entry points of that source, with its settings on. Each step's outcome was recorded and checked by the script.</p></li>
+      <li><span class="label live">On your computer</span><p>Which version is installed, and what it runs. Only that computer can tell. Merged source is not deployed, and a passing demonstration is not a running service.</p></li>
+    </ul>
+  </section>
+
+  <section class="panel" id="journey" aria-labelledby="journey-title">
+    <h2 id="journey-title">The owner journey</h2>
+    <p>The <a href="../docs/design/OWNER_JOURNEY_ACCEPTANCE.md">owner journey acceptance</a> runs 29 checked steps. These are the ones you can see. <span class="label demo">Shown in this demonstration</span> applies to every step in this section.</p>
+
+    <article class="step" aria-labelledby="s1">
+      <div>
+        <h3 id="s1">1. Start from nothing</h3>
+        <p>Home answers “What changed, and what needs me?”. With no projects it says so and offers Add project: an idea first, then a folder on this computer.</p>
+        <ul>
+          <li>Confirming a project's rules is a protected owner action. It passed the Windows check that the request came from the owner's browser, not from an AI worker.</li>
+          <li><span class="label off">Off by default</span> Add project needs <code>projectConnection.enabled</code>; planning and starting work from the page need <code>coordinator.intake</code>.</li>
+        </ul>
+      </div>
+      <figure>
+        <a href="assets/home-empty.png"><img src="assets/home-empty.png" width="1366" height="900" alt="Home with no projects yet: Needs you says nothing needs you right now, and Projects offers Add project."></a>
+        <figcaption>Home, before any project. Open the image for full size.</figcaption>
+      </figure>
+    </article>
+
+    <article class="step" aria-labelledby="s2">
+      <div>
+        <h3 id="s2">2. Agree on a plan, version by version</h3>
+        <p>Ask for a plan and the planner drafts one: goal, done when, included, later, estimate and main steps. Edit plan saves a new version and lists what changed from the last one.</p>
+        <ul>
+          <li>An unsent edit survived leaving the page and coming back.</li>
+          <li>Approve and start admits exactly the version on screen, and nothing starts before it.</li>
+          <li>Plan groups plans as Now, Next and Later, with their version history.</li>
+        </ul>
+      </div>
+      <figure>
+        <a href="assets/plan-review.png"><img src="assets/plan-review.png" width="1366" height="900" alt="Review of a plan: saved as version 2, with the change Priority: Normal to High listed above the goal and the done-when criterion."></a>
+        <figcaption>A plan's version 2, with its change listed, waiting for approval.</figcaption>
+      </figure>
+    </article>
+
+    <article class="step" aria-labelledby="s2b">
+      <div>
+        <h3 id="s2b">The Plan tab</h3>
+        <p>Each approved plan with its priority, version and estimate. Approval stays on Review, for the version it shows.</p>
+      </div>
+      <figure>
+        <a href="assets/plan-versions.png"><img src="assets/plan-versions.png" width="1366" height="900" alt="The Plan tab of the notes project: two approved plans under Now, version 1 at normal priority and version 2 at high priority."></a>
+        <figcaption>Plan, after both plans were approved.</figcaption>
+      </figure>
+    </article>
+
+    <article class="step" aria-labelledby="s3">
+      <div>
+        <h3 id="s3">3. Review the checked result, then Apply it yourself</h3>
+        <p>The builder worked in an isolated copy. A separate checker approved that exact version, and Review shows it, named by its commit.</p>
+        <ul>
+          <li>Try this version opens the checked pages in a sealed frame that cannot reach the dashboard or the internet. Desktop and phone screenshots of it were taken under the same containment as the workers.</li>
+          <li>Apply refused while the owner had changed the same file and wrote nothing; it then applied and kept an unrelated owner edit.</li>
+          <li>Undo apply refused while the owner had edited an applied file, then put the folder back byte for byte.</li>
+          <li>For the local Git project, Apply refused a dirty working tree, then fast-forwarded the branch; a builder that tried to press Apply from inside its job was refused.</li>
+        </ul>
+      </div>
+      <figure>
+        <a href="assets/result-review.png"><img src="assets/result-review.png" width="1366" height="900" alt="Review of a result: ready for your review, checked at a named commit, an Apply button, the checker's verdict and a Try this version panel showing the checked page."></a>
+        <figcaption>A result waiting on Review, with its preview open.</figcaption>
+      </figure>
+    </article>
+
+    <article class="step" aria-labelledby="s4">
+      <div>
+        <h3 id="s4">4. A step stops for your decision</h3>
+        <p>When a step needs the owner, it stops, nothing in the folder changes, and it appears in Needs you and on Home under its project.</p>
+        <ul>
+          <li>The answer was written on the project's Overview; its draft was kept across navigation.</li>
+          <li>The next builder run received the answer, and its result was checked again.</li>
+          <li>Checked by hand in the acceptance run: answering with the keyboard alone, Tab to Send answer, with a visible focus ring.</li>
+        </ul>
+      </div>
+      <figure>
+        <a href="assets/decision.png"><img src="assets/decision.png" width="1366" height="900" alt="Home with one item in Needs you: a decision needed on the Greeting step, with an Answer button and a text field for the answer."></a>
+        <figcaption>Home, with a decision waiting.</figcaption>
+      </figure>
+    </article>
+
+    <article class="step" aria-labelledby="s5">
+      <div>
+        <h3 id="s5">5. Releases say what is true</h3>
+        <p>A project without GitHub is never released: its results are applied from Review. Publish is not available, and the page says why.</p>
+        <ul>
+          <li><span class="label reserved">Owner-reserved</span> A manual Publish button is not built. Release destinations need the owner's explicit grant; this demonstration had none.</li>
+        </ul>
+      </div>
+      <figure>
+        <a href="assets/releases.png"><img src="assets/releases.png" width="1366" height="900" alt="Releases of the site project: Publish a checked version is not available, because release does not apply to a project without GitHub, and no release is recorded."></a>
+        <figcaption>Releases for the local Git project.</figcaption>
+      </figure>
+    </article>
+
+    <article class="step" aria-labelledby="s6">
+      <div>
+        <h3 id="s6">6. Alerts, rehearsed</h3>
+        <p>The decision raised an alert. The rehearsal transport recorded it on this computer as it would be sent: nothing was sent and nothing was reported delivered.</p>
+        <ul>
+          <li>Alert rules, a Knowledge fact and the project budget were each saved through the same owner check.</li>
+          <li><span class="label reserved">Owner-reserved</span> Real delivery needs a recipient the owner configures. None was configured.</li>
+        </ul>
+      </div>
+      <figure>
+        <a href="assets/alerts.png"><img src="assets/alerts.png" width="1366" height="900" alt="Settings, Alerts: Rehearsal only, nothing leaves this computer; one alert rehearsed and none delivered; the Alert me about choices."></a>
+        <figcaption>Settings › Alerts after the rehearsal.</figcaption>
+      </figure>
+    </article>
+  </section>
+
+  <section class="panel" id="phone" aria-labelledby="phone-title">
+    <h2 id="phone-title">On a phone</h2>
+    <p>Below 960px the navigation moves to the bottom. At a 320px window and a 390px phone, none of the 13 checked screens scrolled sideways.</p>
+    <div class="phones">
+      <figure>
+        <a href="assets/phone-home.png"><img src="assets/phone-home.png" width="390" height="844" alt="Home on a 390 pixel phone: what changed, Needs you with nothing waiting, and the notes project with two checked results waiting for review."></a>
+        <figcaption>Home at 390px.</figcaption>
+      </figure>
+      <figure>
+        <a href="assets/phone-review.png"><img src="assets/phone-review.png" width="390" height="844" alt="Review on a 390 pixel phone: a result ready for review with its Apply button and the checker's verdict, above the bottom navigation."></a>
+        <figcaption>Review at 390px.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="panel" id="not-shown" aria-labelledby="not-shown-title">
+    <h2 id="not-shown-title">What this page does not show</h2>
+    <table>
+      <thead><tr><th scope="col">What</th><th scope="col">Where it stands</th></tr></thead>
+      <tbody>
+        <tr><th scope="row">GitHub-backed projects: pull requests, merging</th><td data-label="Where it stands"><span class="label code">In the source code</span> Not part of this journey; covered by the repository's own tests. Merging is off until the owner turns it on per project.</td></tr>
+        <tr><th scope="row">Real notification delivery</th><td data-label="Where it stands"><span class="label reserved">Owner-reserved</span> Needs a recipient and secret references the owner configures.</td></tr>
+        <tr><th scope="row">Release destinations and a Publish button</th><td data-label="Where it stands"><span class="label reserved">Owner-reserved</span> Needs a specific grant; the button is not built.</td></tr>
+        <tr><th scope="row">Opening the dashboard from another device</th><td data-label="Where it stands"><span class="label reserved">Owner-reserved</span> The dashboard answers on this computer only; remote access is not designed yet.</td></tr>
+        <tr><th scope="row">Model and cost per step for local work</th><td data-label="Where it stands">Not built yet for projects without GitHub. Their project budget does count their work.</td></tr>
+        <tr><th scope="row">A study with a person</th><td data-label="Where it stands">Not done. The journey is a scripted check by an AI implementer, not a usability study.</td></tr>
+        <tr><th scope="row">Real AI workers and their limits</th><td data-label="Where it stands">Not exercised: the demonstration's worker is synthetic.</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">The full list of what stays open is in the <a href="../docs/design/OWNER_JOURNEY_ACCEPTANCE.md#still-open">acceptance record</a>.</p>
+  </section>
+
+  <section class="panel" id="docs" aria-labelledby="docs-title">
+    <h2 id="docs-title">Documentation</h2>
+    <ul class="docs">
+      <li><a href="../README.md">README</a>: what AIWorks does, and what is in production, off by default or planned</li>
+      <li><a href="../docs/guides/README.md">Start using AIWorks</a></li>
+      <li><a href="../docs/guides/INSTALLATION.md">Installation</a> and <a href="../docs/guides/FIRST_PROJECT.md">your first task</a></li>
+      <li><a href="../docs/guides/CONFIGURATION.md">Settings</a></li>
+      <li><a href="../docs/design/OWNER_JOURNEY_ACCEPTANCE.md">Owner journey acceptance</a>: every step, how to run it, what stays open</li>
+      <li><a href="../docs/design/OWNER_UI_V2.md">Owner UI v2 design</a></li>
+      <li><a href="../docs/PRODUCT_CONSTITUTION.md">Product constitution</a> and <a href="../docs/DECISIONS.md">decisions</a></li>
+      <li><a href="../docs/STATUS.md">Development status</a></li>
+      <li><a href="../SECURITY.md">Security</a> and <a href="../LICENSE">MIT License</a></li>
+    </ul>
+  </section>
+</main>
+
+<footer>
+  <p>Screens captured by <code>scripts/supervisor/owner-journey.mjs</code> from a source revision whose product code is the accepted owner-journey revision; how to capture them again is in <a href="README.md">site/README.md</a>. All projects, names and data on this page are fictional.</p>
+</footer>
+</body>
+</html>

@@ -499,6 +499,12 @@ function overlayRowById(store, overlayId) {
   try { return store.get('SELECT * FROM project_overlays WHERE id = ?', overlayId); } catch { return null; }
 }
 
+/** The owner's name of the project whose confirmed rules have this `lp-` id, or null: what owner-facing text calls it. */
+export function localProjectName(store, overlayId) {
+  const row = overlayRowById(store, overlayId);
+  return (row && project(store, row.project_id)?.name) || null;
+}
+
 /**
  * What a local plan works on (design 8.3, slice E12), read from the store only: the rules the owner confirmed in the
  * dashboard under target.projectId (an `lp-` id), the connected project they belong to, the baseline the plan starts

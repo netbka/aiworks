@@ -388,7 +388,7 @@ const agentWorking = (agent, now) => agent.heartbeatState === 'recent' || (agent
  * `connected` are the connected project records when Add project is on (connectedProjects): a project held up by the
  * owner's decisions is in `held`, and the calm headline names it (aiworks#11 review 5 G7).
  */
-export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = Date.now(), releases = {}, delegation = null, connected = [], workList = null } = {}) {
+export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = Date.now(), releases = {}, delegation = null, connected = [], workList = null, localWork = {} } = {}) {
   // Results with nothing finished in a project show the §7.1 empty copy, written once in copy.mjs.
   const { title, text } = stateCopy('results-empty'), noResults = { title, text };
   if (!supervisor?.available) return { available: false, headline: null, count: 0, items: [], groups: [], held: [], unknownResults: 0, also: null, layout: { cards: [], finished: [] }, reply: null, campaigns: {}, results: {}, noResults, recent: null };
@@ -543,6 +543,20 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       kind: 'decision', action: 'Decision needed', text: `#${decision.number} ${decision.title}`, route: { label: 'Open in the work list', address: `#/worklist/${decision.number}` },
       points: [] });
   }
+  // The open decisions of projects without GitHub (work.mjs workView `local`): each is answered on its project's Overview
+  // with the same card as a step's, and listed under that project, never under AIWorks itself.
+  for (const record of connected.filter((item) => item.source_kind !== 'github')) {
+    for (const c of (localWork[record.id] ?? []).filter((plan) => ['registered', 'paused'].includes(plan.control))) {
+      for (const step of c.steps.filter((item) => item.decision && !item.decision.answered)) {
+        items.push({ campaignId: null, repository: null, project: record.id, projectName: record.name, kind: 'decision', action: 'Decision needed',
+          text: step.title, local: { project: record.id, campaignId: c.id, taskId: step.id },
+          route: { label: 'Answer', address: { screen: 'project', project: record.id, tab: 'overview' } },
+          ...(step.decision.snoozedUntil ? { snoozedUntil: step.decision.snoozedUntil } : {}),
+          points: [{ link: null, text: NEEDS.localDecision(c.outcome) },
+            ...(step.decision.snoozedUntil ? [{ link: null, text: NEEDS.snoozed(step.decision.snoozedUntil) }] : [])] });
+      }
+    }
+  }
   // AIWorks stopped on this computer is one fact, listed once under AIWorks itself with the work it holds up, not once
   // per piece of work (aiworks#11 review F9). Restarting it is the owner's action, so it counts toward Needs you.
   if (halted.length) items.push(stoppedItem(halted, entries, supervisor.controller?.stopRequested === true));
@@ -632,9 +646,10 @@ export const SYSTEM_GROUP = 'AIWorks itself';
 function needsGroups(items) {
   const groups = new Map(), system = [];
   for (const item of items) {
-    if (item.system || !item.repository) { system.push(item); continue; }
-    const key = item.repository.toLowerCase();
-    if (!groups.has(key)) groups.set(key, { key, project: item.repository, name: short(item.repository), items: [] });
+    if (item.system || !item.repository && !item.project) { system.push(item); continue; }
+    // A project without GitHub is grouped by its id and named by its own name.
+    const key = item.repository ? item.repository.toLowerCase() : `local-${item.project}`;
+    if (!groups.has(key)) groups.set(key, { key, project: item.repository ?? item.project, name: item.repository ? short(item.repository) : item.projectName, items: [] });
     groups.get(key).items.push(item);
   }
   const projects = [...groups.values()];
