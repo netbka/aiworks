@@ -55,7 +55,7 @@ test('a routed cohort picks the eligible model, sidesteps a refused one, escalat
   assert.deepEqual(calls.map((call) => [call.role, modelOf(call)]), [
     ['implement', SMALL], // cold start: the lowest tier at the R0/C1 floor
     ['implement', MEDIUM], // the refused model waits alone; the next eligible tier runs
-    ['verify', MEDIUM], // the verifier floor is tier 2
+    ['verify', MEDIUM], // the small model still waits; the floor test below shows tier 1 refused for review
     ['implement', MEDIUM],
     ['verify', MEDIUM],
     ['implement', LARGE], // two rejected results on tier 2 move the step up, never down
@@ -85,6 +85,20 @@ test('a routed cohort picks the eligible model, sidesteps a refused one, escalat
     assert.equal(op.routing.decision.independence, op.routing.decision.chosen.model === head ? 'fresh-session-same-model' : 'different-model');
   }
   assert.equal(store.task(id, 'D1').verified_sha, ops.at(-2).outcome.value.headSha, 'only the accepted head is verified');
+});
+
+test('a verifier skips an eligible tier-1 model that is below the review floor', { skip: skipWithoutSqlite }, async (t) => {
+  // The small model is on the account and implements; nothing waits. Only the floor keeps it from reviewing its own head.
+  const { env, store, controller, id } = setup(t, 'routed-floor', 2, {
+    [SMALL]: { implement: ['commit'] }, [MEDIUM]: { verify: ['accept'] },
+  });
+  await runUntil(controller, store, id, (c) => c.control === 'finished', { timeoutMs: 60_000 });
+  assert.deepEqual(env.calls().map((call) => [call.role, modelOf(call)]), [['implement', SMALL], ['verify', MEDIUM]]);
+  assert.equal(store.get('SELECT COUNT(*) AS n FROM executor_waits WHERE campaign_id = ?', id).n, 0, 'no model waits');
+  const verify = operations(store, id).find((op) => op.kind === 'verify').routing.decision;
+  assert.equal(verify.floor, 2);
+  assert.deepEqual(verify.eligibility.find((row) => row.model === SMALL && row.role === 'verification').reasons, ['below-floor']);
+  assert.deepEqual(verify.eligibility.find((row) => row.model === SMALL && row.role === 'implementer').reasons, []);
 });
 
 test('an account wait holds every model on it and no declared model that fits runs nothing at all', { skip: skipWithoutSqlite }, async (t) => {
