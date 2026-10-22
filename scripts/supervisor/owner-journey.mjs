@@ -54,6 +54,15 @@ export function setup(root) {
   writeFileSync(join(notes, 'AGENTS.md'), '# Notes rules\n\nKeep the page small.\n');
   writeFileSync(join(notes, 'README.md'), '# Notes\n\nA fictional notes page.\n');
   writeFileSync(join(notes, 'index.html'), page);
+  // The project's own preview server, which the operator declares later in the journey: it serves the version's home page.
+  mkdirSync(join(notes, 'app'));
+  writeFileSync(join(notes, 'app', 'server.mjs'), `import { createServer } from 'node:http';
+import { readFileSync } from 'node:fs';
+createServer((req, res) => {
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+  res.end(String(readFileSync(new URL('../index.html', import.meta.url))).replace('</h1>', ' (served)</h1>'));
+}).listen(Number(process.env.PORT), process.env.HOST);
+`);
   const site = join(dirs.owner, 'site');
   mkdirSync(site);
   writeFileSync(join(site, 'AGENTS.md'), '# Site rules\n\nKeep the page small.\n');
@@ -289,6 +298,7 @@ export async function journey(root) {
       return { sandbox, captured: /Desktop: [0-9]/.test(main()) && /Phone: [0-9]/.test(main()) };`);
     record('preview-and-capture', preview.sandbox === 'allow-scripts' && preview.captured, preview);
     await shot('04-review-preview');
+    await serverPreviewSteps({ root, ui, record, shot, waitFor });
 
     // Apply refuses a file the owner changed and writes nothing; Apply then keeps unrelated owner edits; Undo refuses an
     // applied file the owner edited, then puts the folder back.
@@ -482,6 +492,49 @@ export async function journey(root) {
     await stop(root);
   }
   return steps;
+}
+
+/**
+ * Server preview of the checked version (aiworks#39), on a running journey page at the notes project's Review. The
+ * operator declares the project's Node script in config.json as SUPERVISOR.md describes; the owner's Open preview then
+ * starts exactly that version's server, contained, and the frame shows its answer; Capture screenshots works on it; Close
+ * preview stops the server and ends its address. The declaration is removed again afterwards (the operator's switch-back).
+ */
+export async function serverPreviewSteps({ root, ui, record, shot, waitFor }) {
+  const file = join(root, 'data', 'config.json'), config = JSON.parse(readFileSync(file, 'utf8'));
+  const { Store } = await import('../../src/supervisor/store.mjs');
+  const store = new Store(join(root, 'data', 'supervisor.db'), { readOnly: true });
+  let id;
+  // The key is the project's lp- id, the id of its confirmed rules (OPERATIONS_DASHBOARD, server preview).
+  try { id = store.get("SELECT o.id FROM project_overlays o JOIN projects p ON p.id = o.project_id WHERE p.name = 'notes' AND p.disconnected_at IS NULL")?.id; }
+  finally { store.close(); }
+  // Processes whose command line names the dashboard's preview server folder: the version's server and its runner.
+  const folder = join(root, 'data', 'preview-servers');
+  const servers = () => Number(spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    `@(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.Contains('${folder.replaceAll("'", "''")}') }).Count`],
+  { encoding: 'utf8', windowsHide: true, timeout: 60_000 }).stdout.trim());
+  writeFileSync(file, JSON.stringify({ ...config, previews: { servers: { [id]: { script: 'app/server.mjs' } } } }, null, 2));
+  try {
+    await ui(`await click('Close preview'); return 1;`);
+    const offered = await waitFor(`return main().includes('starts that version’s own server') ? true : null;`, 30_000);
+    const opened = await ui(`await click('Open preview'); let frame; for (let i = 0; i < 160 && !(frame = document.querySelector('main iframe')); i++) await sleep(250);
+      if (!frame) return { opened: false, text: main().slice(0, 400) };
+      const url = frame.getAttribute('src'), r = await fetch(url);
+      return { opened: true, url, sandbox: frame.getAttribute('sandbox'), status: r.status, served: /Hello from [^<]* \\(served\\)/.test(await r.text()) };`);
+    const running = servers();
+    const captured = await ui(`await click('Capture screenshots'); for (let i = 0; i < 90 && !/Phone: [0-9]/.test(main()); i++) await sleep(1000);
+      return /Desktop: [0-9]/.test(main()) && /Phone: [0-9]/.test(main());`);
+    record('server-preview-shows-checked-version', /^lp-/.test(id ?? '') && Boolean(offered) && opened.opened && opened.sandbox === 'allow-scripts' && opened.status === 200 &&
+      opened.served && running >= 1 && captured, { declared: Boolean(id), offered: Boolean(offered), ...opened, url: undefined, running, captured });
+    await shot('04b-review-server-preview');
+    await ui(`await click('Close preview'); return 1;`);
+    let left = servers();
+    for (let i = 0; i < 30 && left > 0; i++) { await sleep(1000); left = servers(); }
+    const ended = opened.url ? await ui(`return (await fetch(${JSON.stringify(opened.url)})).status;`) : null;
+    record('server-preview-stopped-on-close', left === 0 && ended === 410 && (!existsSync(folder) || readdirSync(folder).length === 0), { left, ended });
+  } finally {
+    writeFileSync(file, JSON.stringify(config, null, 2));
+  }
 }
 
 /**
