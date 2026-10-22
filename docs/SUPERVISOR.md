@@ -561,6 +561,8 @@ Routed dispatch ([MODEL_ROUTING](design/MODEL_ROUTING.md), slice R7) is built an
 
 **What the operator settles first, privately (MODEL_ROUTING Q1).** For each account the cohort uses: the model names its provider CLI accepts on that login, and whether the plan is flat or pay-per-use. Candidates are models of the providers the campaign already declares, on the logins already in use. Routing adds no account, login, subscription, provider, tool, permission or budget. On a pay-per-use account, declare candidates only when the campaign already has an owner-set `limits.maxCostUsd` and `unknownRunCostUsd`; otherwise keep today's single model. A model nobody has checked on the account may stay in the list: the first refusal makes it wait alone. A wrong list only costs refunded refusals, then one blocker. Until this is known, the cohort does not start.
 
+**Live-routing consent (MODEL_ROUTING Q2).** Running routing on the live workstation runtime is an owner-reserved production change, separate from Q1. Before switching on, the operator confirms the owner's Q2 consent is already recorded (the recorded answer is the default: one cohort of AIWorks documentation and design campaigns first, compared with the baseline before wider use) and that the deployed commit was independently accepted on its exact head. A recorded owner authorization to activate covers Q1 and Q2 and is not asked again; ask only when it is missing or the cohort would go beyond what it names. This adds no gate, account, permission or budget.
+
 **The cohort.** The smallest that section 8.4 can compare is one AIWorks campaign of at least 10 documentation and design tasks, all in one class, R0/C1. Each task:
 
 - has `deliverable: "commit"`;
