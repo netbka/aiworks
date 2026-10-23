@@ -13,7 +13,7 @@ git --version
 node --input-type=module -e "import { DatabaseSync } from 'node:sqlite'; const db = new DatabaseSync(':memory:'); db.close(); console.log('SQLite ready');"
 ```
 
-For a real run, install and sign in to at least one supported worker CLI under the same Windows account that will run AIWorks. Start with the native Claude Code installation described by [its vendor](https://code.claude.com/docs/en/setup). Follow [the official Codex instructions](https://developers.openai.com/codex/cli/) for optional Codex setup. Do not infer adapter/role compatibility from vendor support alone; see [provider configuration](CONFIGURATION.md#worker-commands).
+For a real run, install and sign in to at least one supported worker CLI under the same Windows account that will run AIWorks. Start with the native Claude Code installation described by [its vendor](https://code.claude.com/docs/en/setup). AIWorks uses that account's existing login as it is: it does not sign in, create, switch or grant an account or subscription, and the scheduled tasks in step 5 must run as the same user so they see the same login. Follow [the official Codex instructions](https://developers.openai.com/codex/cli/) for optional Codex setup. Do not infer adapter/role compatibility from vendor support alone; see [provider configuration](CONFIGURATION.md#worker-commands).
 
 AI-provider usage can consume your subscription allowance or API credits. No provider subscription, API credit or paid upgrade is included in this repository.
 
@@ -55,9 +55,11 @@ Run one instance at a time and stop the previous instance with Ctrl+C. Some fixt
 
 ### 1. Check access before configuring anything
 
-You need all of the following: an owner-approved local governance directory; a target project's actual registered identity/rules; a clean local GitHub-backed project checkout; GitHub access for reading the relevant issues and publishing the authorized result; and a compatible, authenticated worker CLI.
+You need all of the following: an owner-approved local governance directory; a target project's actual registered identity/rules; a clean local project checkout; GitHub access for reading the relevant issues and publishing the authorized result (only where that project publishes through GitHub); and a compatible, authenticated worker CLI.
 
-AIWorks includes a [public governance starter](../../resources/governance/README.md): the contract, baseline policies and role catalog, with an empty project registry. The owner registers their actual project locally and separately approves its work. Never substitute `tests/fixtures/governance`, invent authorization or remove the admission check.
+**Actions stay disabled.** Builds and tests run on this computer. For each GitHub repository AIWorks manages, a repository administrator disables GitHub Actions once at the repository level and cancels unfinished workflow runs. AIWorks reads that setting before any push, comment or merge and leaves publication pending unless it reads `enabled: false`; it never changes the setting. Do not add a workflow, a self-hosted runner, Codespaces, Packages or LFS storage to satisfy an installation step. Local work and verification continue while publication waits ([boundary](../SUPERVISOR.md#1-boundary)).
+
+AIWorks includes a [public governance starter](../../resources/governance/README.md): the contract, baseline policies and role catalog, with an empty project registry. The owner registers their actual project locally and separately approves its work. Governance is read-only to AIWorks and to these instructions: nothing here edits an existing registry, approval or policy, and changing it needs the owner's separate authority. Never substitute `tests/fixtures/governance`, invent authorization or remove the admission check.
 
 ### 2. Keep source, runtime and state separate
 
@@ -80,9 +82,9 @@ npm ci
 if ($LASTEXITCODE -ne 0) { throw 'Runtime dependency installation failed' }
 ```
 
-Use an independently reviewed merged revision approved for installation, not an arbitrary new main tip. The commands select the fetched tip; verify its review/installation evidence before executing the `worktree add` step. An existing runtime must instead follow [the upgrade procedure](../SUPERVISOR.md#upgrade), not a pull, checkout or reinstall while workers are running.
+Use an independently reviewed merged revision approved for installation, not an arbitrary new main tip. Runtime code must descend from the trusted main, and a new installation trusts `origin/main` by default, which is what the commands above use. Verify the fetched tip's review/installation evidence before executing the `worktree add` step. An installation that has switched to local trust (`selfHosting.trustedMain: "local"` in `config.json`, see [Local operation](../SUPERVISOR.md#local-operation-rehearsal-switch-on-and-switch-back)) does not take the revision from `origin/main`: it takes the first line of `node src/supervisor/cli.mjs trusted-main --data <data>`, and a local `main` commit the main ledger does not record is not trusted. An existing runtime must instead follow [the upgrade procedure](../SUPERVISOR.md#upgrade), not a pull, checkout or reinstall while workers are running.
 
-For a new installation, create governance from the bundled starter in the source checkout:
+If approved governance already exists, for example a private checkout kept outside this one, do **not** run the starter setup. Pass that directory as `--governance` (or `governanceRoot` in `config.json`) and leave it unchanged. Otherwise, for a new installation, create governance from the bundled starter in the source checkout:
 
 ```powershell
 Set-Location $Root
@@ -90,7 +92,7 @@ npm run setup:local
 if ($LASTEXITCODE -ne 0) { throw 'Local governance was not created; existing data is never overwritten' }
 ```
 
-Follow `.local/governance/README.md` to add the owner's approved project record inside `.local/governance/registry/projects/`. Keep the directory read-only to AIWorks. Existing approved governance remains supported; do not replace it with the starter. Keep all actual plans, approvals, inventories, logs, screenshots and machine settings under ignored `.local/`. Never put installation details in public source, issues or pull requests.
+Follow `.local/governance/README.md` to add the owner's approved project record inside `.local/governance/registry/projects/`. That record is the owner's act, not a step AIWorks or an assistant performs. Keep the directory read-only to AIWorks. The starter refuses to overwrite existing data. Existing approved governance remains supported; do not replace it with the starter. Keep all actual plans, approvals, inventories, logs, screenshots and machine settings under ignored `.local/`. Never put installation details in public source, issues or pull requests.
 
 ### 3. Create your configuration
 
@@ -100,11 +102,13 @@ Copy the inert example into the new data directory:
 Copy-Item "$Root/docs/guides/examples/config.example.json" "$Data/config.json"
 ```
 
-Replace every sample path, repository and issue with your real approved values. The example enables no coordinator; it cannot work unchanged. See [Configuration](CONFIGURATION.md). Use native executable paths, keep Git on PATH, and authenticate your tools normally. Do not place credentials in `config.json`.
+Replace every sample path, repository and issue with your real approved values. Add `selfHosting` only if the owner has chosen local trust for AIWorks's own repository. The example enables no coordinator; it cannot work unchanged. See [Configuration](CONFIGURATION.md). Use native executable paths, keep Git on PATH, and authenticate your tools normally. Do not place credentials in `config.json`.
 
 Before the first run, inspect the target with `git -C <project-path> status --short --branch` and confirm its remote identity locally. Never print a credential-bearing remote URL into a shared report. Do not clean, reset or switch a project someone else is editing.
 
 ### 4. Start the controller and dashboard
+
+The foreground form below is a first check by a person at the desk, in two terminals. Do not use it from an automated session or keep it as the long-term setup; step 5 runs both hidden.
 
 From the runtime checkout, in one terminal:
 
@@ -118,7 +122,7 @@ In a second terminal, also in the runtime checkout:
 npm run dashboard -- --data C:/Work/aiworks/.local/supervisor --governance C:/Work/aiworks/.local/governance
 ```
 
-Open `http://127.0.0.1:4318` on the same machine. Both processes use the same data directory. The controller initializes its store; the dashboard does not assign work merely by opening. Leave both terminals running for this foreground setup. Continue with [your first project](FIRST_PROJECT.md).
+Open `http://127.0.0.1:4318` on the same machine, from the desktop: protected owner actions refuse a caller they cannot place outside the worker runs, such as a browser started from an elevated or service process ([caller check](../SUPERVISOR.md#6-installation-and-maintenance)). Both processes use the same data directory. The controller initializes its store; the dashboard does not assign work merely by opening. Leave both terminals running for this foreground setup. Continue with [your first project](FIRST_PROJECT.md).
 
 ### 5. Optional automatic startup on Windows
 
@@ -135,10 +139,14 @@ powershell -NoProfile -File scripts/supervisor/install-windows-task.ps1 -Checkou
 powershell -NoProfile -File scripts/supervisor/install-dashboard-task.ps1 -Checkout C:/Work/aiworks/.local/runtime -DataDir C:/Work/aiworks/.local/supervisor
 ```
 
-Follow [the Windows runtime runbook](../SUPERVISOR.md#6-running-on-workstation) for validation and recovery. These are local per-user tasks, not a hosted 24/7 service; a sleeping or offline PC does not execute work. Do not run a foreground controller as a second unsupervised instance of the same installation.
+The tasks run `cli.mjs keep` and the dashboard hidden under your user, at logon and every 5 minutes if stopped, so no terminal window stays open. To preview a definition without changing anything, add `-DefinitionOnly`. If you launch AIWorks commands from your own scripts on Windows, start them as hidden, windowless processes (`CreateNoWindow = true`, `UseShellExecute = false`, output captured). Follow [the Windows runtime runbook](../SUPERVISOR.md#6-installation-and-maintenance) for validation and recovery. These are local per-user tasks, not a hosted 24/7 service; a sleeping or offline PC does not execute work. Do not run a foreground controller as a second unsupervised instance of the same installation.
 
 ## Stop or update safely
 
 Pause affected campaigns and reconcile their in-flight operations before an update. `stop` writes the data directory's `STOP` marker so the controller/keeper stops and stays stopped. It is not proof that every already-dispatched worker has terminated. Do not delete the store, its WAL files or run directories to recover. Use [Troubleshooting](TROUBLESHOOTING.md) and the canonical [upgrade procedure](../SUPERVISOR.md#upgrade).
 
-No live campaign, service, scheduled task or provider was changed by publishing these instructions.
+In outline, the upgrade is: record `status` for each unfinished campaign, pause and drain open operations, choose the reviewed trusted commit (never a hand-typed hash), then run `powershell -NoProfile -File scripts/supervisor/deploy.ps1 -Sha <hash>` from the source checkout, adding `-Main local` under local trust. It disables both tasks, stops the old processes, pins `.local/runtime` at that commit, runs `npm ci`, fast-forwards `.local/governance` when that is a Git checkout (refusing local changes there) and starts the tasks again. Resume each campaign with its identical private declaration and compare `status`.
+
+**Recovery.** `deploy.ps1` stops at the first failure. A bad commit or failed step leaves the tasks disabled and `STOP` in place, so the supervisor stays stopped and `status` says so. Fix the cause and run `deploy.ps1` again; do not remove `STOP` or enable the tasks by hand. If a deployed commit changed a task installer, rerun both installers from step 5 before resuming. The previous version and the journal stay in place.
+
+A merged change is not a runtime upgrade, and no live campaign, service, scheduled task or provider was changed by publishing these instructions.
