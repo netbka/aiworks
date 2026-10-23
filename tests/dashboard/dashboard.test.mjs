@@ -33,6 +33,26 @@ test('completed campaigns do not appear offline or request controller recovery',
   assert.deepEqual(snapshot.campaigns[0].tasks.map((task) => task.deliverable), ['commit', 'commit']);
 });
 
+test('a local review the merge gate merges is AIWorks work, never an accepted-unmerged or review chore for the owner', () => {
+  const sha = 'a'.repeat(40);
+  const step = (id, n, review, extra) => ({ id, title: `Feature ${id}`, state: 'done', resultUrl: `#/worklist/${n}`, verifiedSha: sha, verifiedAt: 0, attempts: 1, dependsOn: [], review, ...extra });
+  const view = (mergeGate, extra = {}) => ownerView({ available: true, campaigns: [{ id: 'c', repository: 'example/app', control: 'registered', controllerLive: true, agents: [], controls: {},
+    tasks: [step('T1', 5, { state: 'accepted', mergeGate, acceptedAt: 1 }, extra), step('T2', 6, { state: 'ready', mergeGate, canAccept: true }, extra)] }] },
+  { repositories: [], steps: {} }, { now: 200 * 3_600_000 });
+  const kinds = (v) => v.items.map((item) => `${item.taskId}:${item.kind}`);
+  // Gate on: the gate merges both, accepted or not, so nothing counts for the owner, however long they waited.
+  const on = view('on');
+  assert.equal(on.count, 0);
+  assert.deepEqual(kinds(on), []);
+  assert.deepEqual(on.handling.map((item) => item.taskId), ['T1', 'T2']);
+  // A wait the gate cannot settle by itself is listed under AIWorks itself, still no owner chore.
+  const refused = view('on', { mergeWait: { kind: 'refused' } });
+  assert.equal(refused.count, 0);
+  assert.ok(refused.items.every((item) => item.system && item.kind === 'merge-problem'));
+  // Gate off: nobody merges for the owner, so the result stays theirs.
+  assert.deepEqual(kinds(view('off')), ['T1:accepted-unmerged', 'T2:review']);
+});
+
 test('the platform roadmap is definitions from the governance checkout, with no GitHub work state or cache', (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'aiworks-dashboard-roadmap-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
