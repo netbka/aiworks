@@ -528,6 +528,15 @@ export const DELEGATED = {
    * is an owner decision by itself, and none is said to be in progress unless the gate recorded it.
    */
   waits: {
+    'local-unsaved': { routine: false, owner: true, action: 'Keep or finish your current edits', reason: 'Your project folder has changes that AIWorks must preserve', next: 'Save or set aside those changes when you are ready. AIWorks checks again automatically and will not overwrite them.' },
+    'local-unrecorded': { routine: false, owner: true, action: 'Review changes made outside AIWorks', reason: 'The project contains changes that AIWorks has not recorded as trusted', next: 'If these are your intended changes, approve them here before AIWorks continues.' },
+    'local-untrusted': { routine: false, owner: true, action: 'Restore trust in the project', reason: 'AIWorks cannot establish that the current project is the approved starting point', next: 'Review the project connection. AIWorks keeps work stopped until its starting point is trusted again.' },
+    'local-unreadable': { routine: true, reason: 'AIWorks cannot read the project folder on this computer', next: 'It will check access again before continuing.' },
+    'local-refused': { routine: false, reason: 'The project update could not be completed on this computer', next: 'AIWorks retained the failure record; the result is not marked complete.' },
+    'local-version-mismatch': { routine: false, reason: 'The prepared result changed after its independent check', next: 'AIWorks must verify the intended result before it can be included in the project.' },
+    'local-destination-mismatch': { routine: false, reason: 'The result targets a destination this project is not set up to update', next: 'AIWorks cannot finish it under the current plan.' },
+    'local-review-mismatch': { routine: false, reason: 'The result does not match its recorded review', next: 'AIWorks must reconcile that record before it can finish.' },
+    acceptance: { routine: true, reason: 'AIWorks is checking the latest acceptance decision', next: 'It continues only when the recorded decision and the checked result agree.' },
     'checks-pending': { routine: true, reason: 'The project’s own checks have not passed on this version yet', next: 'AIWorks merges it once they pass.' },
     'checks-failed': { routine: true, reason: 'The project’s own checks failed on this version', next: 'AIWorks repairs it first; a fresh independent check comes before it is merged.' },
     'mergeability-pending': { routine: true, reason: 'GitHub has not said yet whether it can be merged', next: 'AIWorks asks again on its next pass.' },

@@ -1032,16 +1032,16 @@ function reviewScreen(project, id) {
     part('Main steps', plan.steps.length ? el('ol', {}, ...plan.steps.map((step) => el('li', {}, step.title, step.check ? el('span', { class: 'subtext' }, ` · checked by: ${step.check}`) : null)))
       : items(plan.tasks.map((task) => task.title))),
     part('Overlaps with other work', plan.conflicts.length ? items(plan.conflicts.map((item) => item.code === 'DUPLICATE_WORK'
-      ? `"${item.campaignId}" already does this step (${item.taskId}). Starting is refused until that work finishes or is cancelled.`
-      : `"${item.campaignId}" is changing the same files (${item.taskId}). This step waits for it.`)) : el('p', {}, 'None found.')),
+      ? `${stepName(item.campaignId, item.taskId)} is already assigned. Starting is refused until that work finishes or is cancelled.`
+      : `${stepName(item.campaignId, item.taskId)} is changing the same files. This step waits for it.`)) : el('p', {}, 'None found.')),
     part('What it may change', plan.writes.length ? items(plan.writes) : el('p', {}, 'No files: it only reports.'),
       plan.denyWrites.length ? el('p', { class: 'subtext' }, `Never: ${plan.denyWrites.join(', ')}`) : null),
     part('AI workers and limits', el('p', {}, plan.providers.length ? `Uses ${plan.providers.join(', ')}.` : 'AI workers: not stated.'), el('p', {}, limits)),
     part('Release', el('p', {}, plan.local ? 'Release: Review only. AIWorks stops when a result passes the check. Nothing in your folder changes until you press Apply on it, and Undo apply puts it back.'
       : 'Release: Review only. AIWorks stops when a result passes the check and is published. You merge and release.')),
     plan.questions.length ? part('Open questions', items(plan.questions)) : null,
-    el('details', {}, el('summary', {}, 'Plan details'), el('p', { class: 'subtext' }, plan.summary), el('pre', { class: 'plan-text' }, plan.plan),
-      el('p', { class: 'subtext' }, `Plan fingerprint ${plan.fingerprint} · version ${plan.version}`)),
+    el('details', {}, el('summary', {}, 'Plan details'), el('p', { class: 'subtext' }, plan.summary),
+      el('p', { class: 'subtext' }, `Plan version ${plan.version}`)),
     plan.code === 'APPROVED' ? null : el('div', { class: 'review-actions' }, approve, edit)))];
 }
 
@@ -1340,8 +1340,7 @@ function openInstructions(c, task = null) {
   $('#instruction-text').focus();
 }
 
-// `technical` adds each event's run or goal identifier, for Settings › Diagnostics only; owner screens leave it out.
-function activityList(limit = 80, journal = state.supervisor.activity, { technical = true } = {}) {
+function activityList(limit = 80, journal = state.supervisor.activity) {
   const descriptions = { 'operation-recorded': 'Agent scheduled', 'operation-finished': 'Agent finished', 'lease-acquired': 'Supervisor took over the campaign',
     'run-refunded': 'Unused run not counted', 'runs-recounted': 'Run count corrected', 'dashboard-command': 'Your dashboard command',
     paused: 'Campaign paused', resumed: 'Campaign resumed', 'cancel-requested': 'Cancellation requested', cancelled: 'Campaign cancelled',
@@ -1364,7 +1363,7 @@ function activityList(limit = 80, journal = state.supervisor.activity, { technic
         : `${item.executor ? `${provider(item.executor)}: ` : ''}${descriptions[item.kind] ?? (item.kind ?? 'Event').replaceAll('-', ' ')}`,
       item.action ? ` · ${item.action}` : '',
       item.kind === 'operation-finished' ? ` · ${item.outcome === 'result' ? `${terminalLabels[item.terminal] ?? item.terminal ?? 'result'}${item.terminal === 'rejected' && item.blocking ? ` (${item.blocking} blocking)` : ''}` : outcomeLabels[item.outcome] ?? item.outcome ?? 'unknown'}`
-        : item.outcome ? ` · ${item.outcome}` : ''), technical ? el('div', { class: 'timeline-subtext' }, item.operation ?? item.campaignId) : null),
+        : item.outcome ? ` · ${item.outcome}` : '')),
     el('time', { class: 'timeline-time', datetime: new Date(item.at).toISOString(), title: dateTime(item.at) }, timeAgo(item.at)))));
 }
 
@@ -1520,6 +1519,10 @@ function planFromItem(item, project, { primary = false } = {}) {
 
 /** The one way to resolve an item on its card, by its kind, through the same bound requests as its step and Review. */
 function itemResolution(item, c, task) {
+  if (['local-unrecorded', 'local-untrusted'].includes(item.kind) && sameProject(item.repository, state.connections?.trustedMain?.repository)) {
+    return el('div', { class: 'needs-resolve' }, ...trustedMainLines(state.connections.trustedMain).filter(Boolean),
+      state.connections.trustedMain.record ? null : primaryAction(item.command));
+  }
   if (item.kind === 'decision') {
     const card = itemDecision(item);
     return card ? decisionPanel(card.c, card.task) : null;
@@ -2621,27 +2624,25 @@ function overviewPanel(project) {
 
 const SUPERVISOR_WORDS = { running: 'Running', stopped: 'Stopped', restarting: 'Restarting', 'not-started': 'Not started', idle: 'Idle: nothing needs it right now' };
 const ACCOUNT_WORDS = { ready: 'Ready', 'in-use': 'Working', unavailable: 'Not available' };
-const TRUST_WORDS = { TRUSTED: 'Trusted', MAIN_REWRITTEN: 'Local main was rewound or rewritten: no new work starts until it is fixed',
-  NO_ANCHOR: 'Not known: local trust has no starting point recorded yet', UNREADABLE: 'Not known: local main cannot be read on this computer' };
+const TRUST_WORDS = { TRUSTED: 'Trusted', MAIN_REWRITTEN: 'The approved project history changed: new work is stopped until it is restored',
+  NO_ANCHOR: 'No approved starting point is recorded yet', UNREADABLE: 'The project cannot be read on this computer' };
 const BACKUP_WORDS = { off: 'Off', none: 'On, not tried yet', pushing: 'Sending now', pushed: 'Sent', refused: 'Refused by the backup', failed: 'Could not reach the backup' };
 
 function trustedMainLines(trusted) {
   if (!trusted) return [el('p', {}, 'Not known right now: AIWorks could not read its records.')];
-  if (trusted.mode === 'origin') return [el('p', {}, 'Trusted main: GitHub’s main of each project. AIWorks’s own code runs only when GitHub’s main contains it.'),
-    trusted.problem ? el('p', { class: 'subtext' }, 'The self-hosting setting is not valid, so GitHub’s main stays trusted.') : null];
+  if (trusted.mode === 'origin') return [el('p', {}, 'AIWorks uses the approved project version on GitHub before starting work.'),
+    trusted.problem ? el('p', { class: 'subtext' }, 'The local trust setting is not valid, so the approved version on GitHub remains the starting point.') : null];
   const backup = trusted.backup;
-  return [el('p', {}, `Trusted main of ${trusted.repository}: local main on this computer. ${TRUST_WORDS[trusted.state] ?? 'Not known'}${trusted.tip ? ` at ${trusted.tip.slice(0, 7)}` : ''}.`),
+  return [el('p', {}, `${trusted.repository}: the approved project version is kept on this computer. ${TRUST_WORDS[trusted.state] ?? 'Trust not known'}.`),
     Number.isSafeInteger(trusted.unrecordedCount) && trusted.unrecordedCount > 0
-      ? el('p', { class: 'subtext' }, `Main has ${plural(trusted.unrecordedCount, 'commit')} AIWorks did not put there; ${trusted.unrecordedCount === 1 ? 'it is' : 'they are'} not trusted.`) : null,
+      ? el('p', { class: 'subtext' }, `${plural(trusted.unrecordedCount, 'saved change')} made outside AIWorks still need your trust.`) : null,
     trusted.record ? el('div', { 'data-focus-scope': 'connections/trusted-main' },
-      el('p', { class: 'subtext local-text' }, 'If you put them there yourself, you can trust local main from ', el('code', {}, trusted.record.oldTip), ' to ',
-        el('code', {}, trusted.record.newTip), '. AIWorks only records this; it moves nothing. Changes to AIWorks’s supervisor code still need an independent review first.'),
-      // The tips it records are part of what the button shows, so a refresh that shows new tips replaces it (patch keeps
-      // an acting element only while it shows the same) instead of keeping one that would record the old tips.
+      el('p', { class: 'subtext local-text' }, 'Trust these changes only if you know and approve the changes made outside AIWorks. This records your approval; it changes no files. Changes to AIWorks’s worker controls still require independent review.'),
+      // Exact identities stay bound to the button so a refresh cannot retain approval for different changes.
       el('button', { class: 'button secondary', onclick: () => trustLocalMain(trusted.record), disabled: sending || offline,
-        'data-tips': `${trusted.record.oldTip}..${trusted.record.newTip}` }, 'Trust local main')) : null,
-    el('p', { class: 'subtext' }, `Backup to ${backup.remote} ${backup.branch}: ${BACKUP_WORDS[backup.state] ?? 'Not known'}${backup.at ? ` (${clock(backup.at)})` : ''}${
-      backup.enabled && backup.state === 'pushed' ? backup.current ? '; it has the trusted tip' : '; it is behind the trusted tip' : ''}${
+        'data-tips': `${trusted.record.oldTip}..${trusted.record.newTip}` }, 'Trust these changes')) : null,
+    el('p', { class: 'subtext' }, `Project backup: ${BACKUP_WORDS[backup.state] ?? 'Not known'}${backup.at ? ` (${clock(backup.at)})` : ''}${
+      backup.enabled && backup.state === 'pushed' ? backup.current ? '; it is up to date' : '; it is behind the approved version' : ''}${
       backup.nextAttemptAfter && ['refused', 'failed', 'pushing'].includes(backup.state) ? `; next try after ${clock(backup.nextAttemptAfter)}` : ''}. Nothing waits for the backup.`)];
 }
 
@@ -2653,7 +2654,7 @@ async function trustLocalMain({ oldTip, newTip }) {
     const result = await post('/api/v2/settings/trusted-main', { requestId: crypto.randomUUID(), oldTip, newTip });
     notice(result.message, null, null, from);
   } catch (error) {
-    notice(error.known ? error.message : 'Recording could not be confirmed. Read the page again before trying again.', null, error.known ? error.detail : null, from);
+    notice(error.known ? error.message : 'Recording could not be confirmed. Read the page again before trying again.', null, null, from);
   } finally { sending = false; await poll(); }
 }
 
@@ -2675,7 +2676,7 @@ function connectionsScreen() {
         el('div', { class: 'subtext' }, `${ACCOUNT_WORDS[account.state] ?? 'Waiting for a limit'}${account.retryAt ? ` until ${clock(account.retryAt)}` : ''}${account.limit ? ` · ${account.open} of ${account.limit} runs at once` : ''}`))))
         : el('p', {}, 'No AI worker account is set up on this computer.'))),
     panel('Merge checks', 'Where each project’s merges are seen from. The dashboard never calls GitHub’s API.', el('div', { class: 'panel-body' }, merges)),
-    panel('Trusted main and backup', 'The version AIWorks’s own code must be part of before it starts or resumes work.', el('div', { class: 'panel-body' }, ...trustedMainLines(view.trustedMain).filter(Boolean)))];
+    panel('Project trust and backup', 'The approved starting point AIWorks checks before it starts or resumes work.', el('div', { class: 'panel-body' }, ...trustedMainLines(view.trustedMain).filter(Boolean)))];
 }
 
 function settingsScreen() {
@@ -2684,7 +2685,7 @@ function settingsScreen() {
   const verName = host.versionName ?? DASHBOARD_VERSION_NAME;
   const currentVer = DASHBOARD_VERSIONS.find((v) => v.version === ver || v.status === 'current') ?? DASHBOARD_VERSIONS[DASHBOARD_VERSIONS.length - 2];
   const computer = panel('This computer', 'Each computer runs its own AIWorks. This page shows only this one.', el('div', { class: 'panel-body' },
-    el('p', {}, `${host.name ?? 'Unknown computer'} · Dashboard v${ver} (${verName}) · revision ${host.revision?.slice(0, 7) ?? 'unknown'}`),
+    el('p', {}, `${host.name ?? 'Unknown computer'} · Dashboard v${ver} (${verName})`),
     el('div', { class: 'version-card' },
       el('div', { class: 'version-card-header' },
         el('strong', {}, `Active version: v${ver} — ${verName}`),
@@ -2703,11 +2704,10 @@ function settingsScreen() {
       const { text, notes } = workerLine(w);
       return el('li', { 'data-focus-scope': `worker/${w.kind}` }, el('strong', {}, text), ...notes.map((note) => el('div', { class: 'subtext' }, note)));
     })),
-    // Details: provider order per piece of work and the supervisor version running it.
+    // Provider order and current supervision, without internal version identifiers.
     active.length ? disclosure('settings/workers', 'Details', el('ul', { class: 'settings-links' }, ...active.map((c) => el('li', {}, el('strong', {}, c.projectName !== undefined ? `${c.projectName ?? 'Project without GitHub'}: ${c.title}` : campaignTitle(c)),
       el('div', { class: 'subtext' }, `Tried in this order: ${c.executors.map(provider).join(' → ')}`),
-      el('div', { class: 'subtext' }, `Supervisor version ${c.controllerRevision ? String(c.controllerRevision).slice(0, 7) : 'not known (not running)'}`))))) : null,
-    el('p', { class: 'subtext' }, `Commands set in the AIWorks configuration file on this computer: ${settings.commands.length ? settings.commands.join(', ') : 'none'}.`)));
+      el('div', { class: 'subtext' }, c.controllerLive ? 'AIWorks is supervising this work.' : 'AIWorks is not currently supervising this work.'))))) : null));
   const projects = projectList();
   const connections = panel('Projects', 'Each project’s kind and whether this computer is connected to it.', el('div', {}, projects.length
     ? el('ul', { class: 'settings-links' },...projects.map((project) => el('li', { 'data-focus-scope': `connection/${project.id}` },
@@ -3225,7 +3225,7 @@ function stepScreen(project, c, task) {
       disclosure(`step/${c.id}/${task.id}/details`, `Details · ${plural(attempts.length, 'attempt')}`, el('div', {},
         attempts.length ? el('ol', { class: 'receipt-steps' }, ...attempts.map((a) => el('li', {}, attemptText(a))))
           : el('p', { class: 'subtext' }, 'No attempt has run yet.'),
-        activityList(30, events, { technical: false }),
+        activityList(30, events),
         el('p', { class: 'subtext' }, link('Step issue on GitHub ↗', task.issueUrl))))))];
 }
 
@@ -3273,7 +3273,7 @@ const resultRow = (row) => el('li', { class: `result-row ${row.group}`, 'data-fo
 
 /** The five release steps of one result, each Yes, No, In progress or Unknown, never one tick (AUTO_RELEASE.md section 1). */
 const releaseLadder = (ladder) => el('div', { class: 'release-ladder' },
-  el('ul', { 'aria-label': `Release steps${ladder.sha ? ` of commit ${ladder.sha}` : ''}` }, ...ladder.steps.map((step) => el('li', { class: `ladder-${step.answer}` }, step.text))),
+  el('ul', { 'aria-label': 'Release steps for this result' }, ...ladder.steps.map((step) => el('li', { class: `ladder-${step.answer}` }, step.text))),
   ladder.note ? el('div', { class: 'subtext' }, ladder.note) : null);
 
 /**
@@ -3816,7 +3816,7 @@ const knowledgeEntry = (project) => { if (!knowledgeViews.has(project)) void loa
 const SOURCE_WORDS = { owner: ['done', 'Confirmed by you'], material: ['review', 'Found in material'], ai: ['planned', 'Suggested by AI'] };
 /** Where a suggestion, or the fact made from one, came from. */
 function originText(source, origin) {
-  if (source === 'material') return `${origin.path} at version ${String(origin.commit).slice(0, 12)}`;
+  if (source === 'material') return `${origin.path} · saved project material`;
   return `${origin.goal ? `the plan for “${origin.goal}”` : 'a plan'}, version ${origin.version}`;
 }
 const KNOWLEDGE_ACTS = { written: 'Written by you', confirmed: 'Confirmed by you', edited: 'Edited by you', 'set-aside': 'Set aside by you', restored: 'Brought back by you' };
@@ -3908,7 +3908,7 @@ function knowledgeScreen(project) {
 const EVIDENCE_STATE = { registered: 'running', paused: 'paused', finished: 'finished', cancelled: 'cancelled', 'cancel-requested': 'cancelling' };
 function knowledgeEvidence(project, v) {
   const evidence = v.evidence ?? { requirements: [], decisions: [], references: [], withheldReferences: 0 };
-  const goalWords = (item) => `${item.goal ? `“${item.goal}”` : `goal ${item.campaignId}`}, approved version ${item.authorizationVersion}`;
+  const goalWords = (item) => `${item.goal ? `“${item.goal}”` : 'Recorded goal'}, approved version ${item.authorizationVersion}`;
   const answer = (item) => item.option ? `you chose “${item.option}”` : item.ownWords ? 'you answered in your own words' : 'you answered';
   return [
     el('h3', {}, 'Requirements and decisions'),
@@ -3918,12 +3918,12 @@ function knowledgeEvidence(project, v) {
       el('div', { class: 'subtext' }, `From ${goalWords(item)}, ${dateTime(item.approvedAt)} · ${EVIDENCE_STATE[item.control] ?? 'state not known'}. Not a fact you confirmed here: add it above if it stays true.`))))
       : el('p', { class: 'subtext' }, 'No approved goal of this project states done-when criteria yet.'),
     evidence.decisions.length ? el('ul', { class: 'settings-links' }, ...evidence.decisions.map((item) => el('li', {},
-      el('p', {}, `${capital(answer(item))} on ${item.step ? `“${item.step}”` : `step ${item.taskId}`}`, ' ', badge('done', 'Your answer')),
-      el('div', { class: 'subtext' }, `${dateTime(item.at)} · ${item.goal ? `“${item.goal}”` : `goal ${item.campaignId}`}. It guided that step only; it is not a standing rule.`))))
+      el('p', {}, `${capital(answer(item))} on ${item.step ? `“${item.step}”` : 'the recorded step'}`, ' ', badge('done', 'Your answer')),
+      el('div', { class: 'subtext' }, `${dateTime(item.at)} · ${item.goal ? `“${item.goal}”` : 'Recorded goal'}. It guided that step only; it is not a standing rule.`))))
       : el('p', { class: 'subtext' }, 'You have not answered a decision in this project yet.'),
     el('h3', {}, 'Materials'),
     el('ul', { class: 'settings-links' },
-      el('li', {}, v.materials.readme ? `README at version ${v.materials.readme}: its first paragraph is read for the suggestions above.` : 'README: none found in this project’s latest version.'),
+      el('li', {}, v.materials.readme ? 'README: its saved first paragraph is used for the suggestions above.' : 'README: none found in this project’s latest version.'),
       ...evidence.references.map((item) => el('li', {}, el('code', {}, item.reference),
         el('div', { class: 'subtext' }, `Named by ${plural(item.goals.length, 'approved goal')}; given to its AI workers. Not opened for this page.`)))),
     evidence.withheldReferences ? el('p', { class: 'subtext' }, `${plural(evidence.withheldReferences, 'other named document')} not listed: not a plain project path, or the name looks like a secret.`) : null,
@@ -3972,11 +3972,9 @@ const HEALTH_WORDS = { passed: ['done', 'Healthy at the last check'], failed: ['
   checking: ['verifying', 'Checking now'], 'not-checked': ['pending', 'Not checked yet'] };
 const HEALTH_BY = { release: 'the check after release', rollback: 'the check after the rollback, of the restored version', owner: 'your Check the site now' };
 const KIND_WORDS = { deploy: 'deployed after the merge', 'merge-then-deploy': 'merged, then deployed', merge: 'merged only', 'local-git-apply': 'applied to a local branch', 'local-folder-apply': 'applied to a local folder' };
-const shortDigest = (digest) => String(digest).replace(/^sha256:/, '').slice(0, 12);
 function restoreWords(restore) {
-  const previous = restore.previous ? shortDigest(restore.previous) : null;
   return {
-    'previous-version': `Can be restored: the project’s rollback command puts back the previous version (${previous}), then AIWorks checks it again.`,
+    'previous-version': 'Can be restored: AIWorks puts back the recorded previous version, then checks it again.',
     'previous-unknown': 'The previous version is not recorded yet, so whether it can be restored is not known.',
     'report-only': 'Not restored automatically: this destination’s grant asks for report-only rollback, so you restore it yourself.',
     'no-rollback-command': 'Cannot be restored by AIWorks: this destination names no rollback command.',
@@ -3999,13 +3997,13 @@ function releaseItem(project, r) {
   const change = r.change ? `${plural(r.change.files, 'file')} changed, ${r.change.classes.length ? r.change.classes.join(', ') : 'no class recorded'}` : 'Which kinds of file changed is not recorded.';
   const v = r.version;
   return el('li', { 'data-focus-scope': `releases/${r.id}` },
-    el('p', {}, el('strong', {}, r.text ?? `Step ${r.taskId}`), ' ', badge(lineBadge, lineWord)),
+    el('p', {}, el('strong', {}, r.text ?? 'Released result'), ' ', badge(lineBadge, lineWord)),
     el('dl', { class: 'release-facts' },
       el('dt', {}, 'Destination'), el('dd', {}, where),
       el('dt', {}, 'What changes for users'), el('dd', {}, `${r.text ?? 'Not described'}. ${change}`),
-      el('dt', {}, 'Version'), el('dd', {}, `Checked commit ${v.verifiedSha ? v.verifiedSha.slice(0, 12) : 'not known'}`,
-        v.mergeCommit ? `, merge commit ${v.mergeCommit.slice(0, 12)}` : '', v.deployedDigest ? `, live version ${shortDigest(v.deployedDigest)}` : '',
-        v.grantVersion ? `, under grant version ${v.grantVersion}` : ''),
+      el('dt', {}, 'Result record'), el('dd', {}, v.verifiedSha ? 'The checked result is recorded.' : 'The checked result is not known.',
+        v.mergeCommit ? ' Its integration into the project is recorded.' : '', v.deployedDigest ? ' The released version is recorded.' : '',
+        v.grantVersion ? ` Release permission version ${v.grantVersion}.` : ''),
       el('dt', {}, 'Restore'), el('dd', {}, restoreWords(r.restore), ' Only the released version is restored: data the site stored, and anything its deploy does not manage, are not.'),
       el('dt', {}, 'Health'), el('dd', {}, badge(healthBadge, healthWord), r.health.at ? ` · ${whenAt(r.health.at)}, by ${HEALTH_BY[r.health.by] ?? 'a check'}` : '')),
     r.checkNow.available ? button('Check the site now', () => void checkSite(project, r.id), 'secondary small', releaseBusy || offline)
