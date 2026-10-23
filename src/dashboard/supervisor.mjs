@@ -204,6 +204,14 @@ function stepHistories(store, campaignId, rows) {
  * codes are waits the gate or a repair round settles by itself; the others need someone to look (owner.mjs mergeWaits).
  */
 const MERGE_WAIT_CODES = [
+  [/^your checkout has unsaved changes$/, 'local-unsaved'],
+  [/^main has \d+ commits AIWorks did not put there$/, 'local-unrecorded'],
+  [/^local main is not trusted/, 'local-untrusted'],
+  [/^the checkout that has main checked out cannot be read$/, 'local-unreadable'],
+  [/^the local branch .*not the verified/, 'local-version-mismatch'],
+  [/^the local merge gate merges into main only/, 'local-destination-mismatch'],
+  [/is not the review item recorded for this task$/, 'local-review-mismatch'],
+  [/^waits for your acceptance of this checked version/, 'acceptance'],
   [/^held by the owner/, 'held'],
   [/^CI failed/, 'checks-failed'],
   [/^CI has not passed/, 'checks-pending'],
@@ -216,8 +224,8 @@ const MERGE_WAIT_CODES = [
   [/head .* is not the|base .* is not the declared/, 'branch-mismatch'],
   [/refresh|gate|base/i, 'base-moved'],
 ];
-export function mergeWaitCode(kind, text) {
-  if (kind === 'merge-refused') return 'refused';
+export function mergeWaitCode(kind, text, local = false) {
+  if (kind === 'merge-refused') return local ? 'local-refused' : 'refused';
   return MERGE_WAIT_CODES.find(([pattern]) => pattern.test(String(text ?? '')))?.[1] ?? 'other';
 }
 
@@ -231,7 +239,7 @@ function mergeWaits(store, campaignId, taskRows) {
   for (const item of store.all("SELECT at, kind, detail FROM journal WHERE campaign_id = ? AND kind IN ('merge-waiting', 'merge-refused') ORDER BY seq DESC LIMIT 500", campaignId)) {
     const taskId = item.detail?.task;
     if (!taskId || waits.has(taskId) || !verified.get(taskId) || item.detail?.sha !== verified.get(taskId)) continue;
-    waits.set(taskId, { kind: mergeWaitCode(item.kind, item.detail?.reason), at: item.at });
+    waits.set(taskId, { kind: mergeWaitCode(item.kind, item.detail?.reason, item.detail?.local === true), at: item.at });
   }
   return waits;
 }

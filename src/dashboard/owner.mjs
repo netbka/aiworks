@@ -477,7 +477,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
   const entries = supervisor.campaigns.map((c) => ({ id: c.id, purpose: purpose(c) }));
   distinguish(entries);
   for (const c of supervisor.campaigns) {
-    const steps = c.tasks.map((task) => ({ task, delivery: delivery(task, merges, now, c.id, delegation, c.repository) }));
+    const steps = c.tasks.map((task) => ({ task, delivery: delivery(task, merges, now, c.id, ['registered', 'finished'].includes(c.control) ? delegation : null, c.repository) }));
     const by = (state) => steps.filter((step) => step.delivery?.state === state);
     // "Checking for merges" only while a merge check that can still come shortly is running or due. Every other
     // published step waits for the owner's review: its merge is not seen, whatever the reason.
@@ -522,19 +522,28 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     const stepRoute = (task, text = 'Open the step') => ({ label: text, address: { screen: 'step', project, work: c.id, step: task.id } });
     const reviewRoute = (task) => { const entry = reviewEntry(c, task); return entry ? { label: 'Open the full review', address: entry.address } : stepRoute(task); };
     const reference = (d) => d && !d.local && d.number ? { label: `Pull request #${d.number}`, url: d.url } : null;
+    const stopped = !['registered', 'finished'].includes(c.control);
+    const stoppedWords = c.control === 'paused' ? 'This work is paused. Resume it from its work controls when you want it to continue.'
+      : 'This work was stopped. AIWorks will not continue it; plan new work if you want to use this result.';
     // Accepted where AIWorks may not merge: the owner's approval is recorded, but the result is not merged and its goal is
     // not finished. Completing it is planned work, approved like any plan; no merge permission comes from here.
     const acceptedItem = (task, d) => ({ ...base, taskId: task.id, kind: 'accepted-unmerged', action: 'Accepted · not merged yet', text: label(task),
-      why: `You accepted exactly this version, but AIWorks may not merge in this project, so it is not merged and this goal is not finished.`,
+      why: stopped ? `You accepted this result. ${stoppedWords}` : 'You accepted this result, but AIWorks is not allowed to finish integrating it in this project. The goal is still unfinished.',
       route: reviewRoute(task), reference: reference(d), mergeCheck: d?.asOf ?? null,
-      plan: { label: 'Plan the completion…', goal: `Complete the accepted result “${label(task)}”: ` },
-      points: [{ link: null, text: `${OWN_MERGE}. To have AIWorks complete it, plan the follow-up; nothing starts until you approve the plan, and it gives AIWorks no permission to merge here.` }] });
+      plan: c.control === 'paused' ? null : { label: 'Plan the completion…', goal: `Complete the accepted result “${label(task)}”: ` },
+      command: c.control === 'paused' && c.controls?.primary === 'resume' ? { label: 'Resume this work', command: 'resume', campaignId: c.id } : null,
+      points: stopped ? [] : [{ link: null, text: `${OWN_MERGE}. To have AIWorks complete it, plan the follow-up; nothing starts until you approve the plan, and it gives AIWorks no permission to merge here.` }] });
     // A checked local review in a project whose merge gate is on merges into local main by that gate once its conditions
     // hold, with or without the owner's review (merge.mjs candidates): AIWorks's own work, never an owner chore. A wait
     // the gate recorded says why; one it cannot settle by itself is listed under AIWorks itself, as for pull requests.
-    const gateMerges = (task, d) => d.local && task.verifiedSha && task.review?.mergeGate === 'on';
+    const gateMerges = (task, d) => !stopped && d.local && task.verifiedSha && task.review?.mergeGate === 'on';
     const gateHandles = (task, accepted) => {
       const wait = task.mergeWait?.kind ?? null, words = wait ? mergeWaitWords('aiworks', wait) : null;
+      if (words?.owner) {
+        items.push({ ...base, taskId: task.id, kind: wait, action: words.action, text: label(task), why: `${words.reason}. ${words.next}`,
+          route: stepRoute(task, 'Open work controls'), command: wait === 'local-unsaved' ? null : { label: 'Review project connection', route: '#/settings/connections' }, points: [] });
+        return;
+      }
       if (words && !words.routine) {
         items.push({ ...base, repository: null, about: c.repository, taskId: task.id, kind: 'merge-problem', system: true, action: 'AIWorks cannot finish this by itself',
           text: label(task), why: `${words.reason}. ${words.next}`, route: stepRoute(task), reference: null,
@@ -543,20 +552,20 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       }
       handling.push({ ...base, taskId: task.id, text: label(task), recorded: Boolean(wait), since: task.verifiedAt ?? null,
         reason: words?.reason ?? (accepted ? 'You accepted this version' : 'It passed the independent check on this computer'),
-        next: words?.next ?? 'AIWorks’s merge gate merges it into local main when its merge conditions hold.' });
+        next: words?.next ?? 'AIWorks finishes integrating this result when its required checks and approvals pass.' });
     };
     // A checked version the merge gate holds for the owner's acceptance (AW-015): one item, resolved on its card or its
     // Review, where Accept result and Request changes bind exactly that version and report. Merged outside the gate, nothing is left.
     const accepting = steps.filter((step) => step.task.review?.awaitsAcceptance && step.delivery?.state !== 'merged');
     for (const { task, delivery: d } of accepting) {
       const evidence = reviewEvidence(task);
-      items.push({ ...base, taskId: task.id, kind: 'accept', action: NEEDS.accept.action, text: label(task), why: NEEDS.accept.point,
+      items.push({ ...base, taskId: task.id, kind: 'accept', action: NEEDS.accept.action, text: label(task), why: stopped ? stoppedWords : NEEDS.accept.point,
         route: reviewRoute(task), reference: reference(d), evidence: evidence.short, detail: evidence.text, points: [] });
     }
     // One item per step, led by what the step delivers. Nobody merges it for the owner here, so it waits for their review.
     // Requested changes wait for AIWorks; an accepted version is in Results, merged by the project's own rules.
     for (const { task, delivery: d } of by('published').filter((step) => !step.delivery.pending && settledReview(step))) {
-      const settled = ownerSettled(base, task);
+      const settled = stopped ? null : ownerSettled(base, task);
       if (settled) handling.push(settled);
       else if (task.review?.state === 'accepted') {
         if (gateMerges(task, d)) gateHandles(task, true);
@@ -586,7 +595,8 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       const evidence = reviewEvidence(task);
       items.push({ ...base, taskId: task.id, kind: 'review', action: 'Review this result', text: label(task),
         why: !task.verifiedSha ? 'AIWorks published it, but no independent check of it is recorded here, so it cannot be accepted here. It waits for your review.'
-          : d.local ? 'It passed the independent check on this computer. AIWorks’s merge gate does not merge in this project, so it stays unmerged until you review it.'
+          : stopped ? stoppedWords
+          : d.local ? 'It passed the independent check on this computer. Review it here; AIWorks is not allowed to finish integrating results in this project.'
             : 'It passed the independent check. Accept it to approve exactly this version, or request changes to send it back.',
         route: reviewEntry(c, task) ? reviewRoute(task) : d.route ?? stepRoute(task), reference: reference(d),
         evidence: evidence.short, detail: evidence.text, mergeCheck: d.asOf,
