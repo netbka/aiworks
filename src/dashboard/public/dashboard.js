@@ -3263,7 +3263,7 @@ const resultRow = (row) => el('li', { class: `result-row ${row.group}`, 'data-fo
   // A merged row says when, then the project's release rule: never released or live.
   el('div', { class: 'result-state' }, row.group === 'merged' ? [`Merged${row.mergedAt ? ` ${dateTime(row.mergedAt)}` : ''}.`, row.release].join(' ') : row.word),
   row.note ? el('div', { class: 'subtext' }, row.note) : null,
-  row.review?.acceptedAt ? el('div', { class: 'subtext' }, `Accepted by you at ${clock(row.review.acceptedAt)}. Merging follows the merge gate.`) : null,
+  row.review?.acceptedAt ? el('div', { class: 'subtext' }, `Accepted by you at ${clock(row.review.acceptedAt)}.`) : null,
   row.ladder ? releaseLadder(row.ladder) : null,
   row.asOf ? el('div', { class: 'needs-stale' }, mergeAsOf(row.asOf)) : null,
   row.evidence ? disclosure(`results/${row.campaignId}/${row.taskId}`, el('span', { class: 'evidence' }, row.evidence),
