@@ -30,8 +30,6 @@ import { prepareSampleFolder, SAMPLE_PROJECT, SampleError, writeSampleFiles } fr
 import { alsoSummary, nowView } from './copy.mjs';
 
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
-const PR_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/(\d+)$/;
-const ISSUE_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+$/;
 const TERMINAL = ['finished', 'cancelled'];
 /** Display order: projects that need the owner, then those with work running, then the rest by last activity. */
 const RANK = { 'needs-you': 0, 'needs-setup': 0, checking: 0, running: 1, 'possibly-stuck': 1, stopped: 1, fault: 1 };
@@ -57,15 +55,12 @@ const checkingText = (n) => `Checking GitHub… The state of ${n} result${n === 
 
 const lastActivity = (campaigns) => Math.max(0, ...campaigns.map((c) => Date.parse(c.lastProgressAt ?? '') || c.registeredAt || 0)) || null;
 
-/** The one next action for a project whose Needs you items are `items`: the item's own link when there is one item. */
+/**
+ * The one next action for a project whose Needs you items are `items`: Needs you, where each item is resolved on its
+ * card inside AIWorks. A GitHub pull request or issue is never the primary action (owner.mjs keeps it as reference).
+ */
 function needsAction(items) {
-  const [item] = items, url = items.length === 1 ? item.link?.url ?? '' : '';
-  const pr = PR_URL.exec(url);
-  if (pr) return { label: `Review pull request #${pr[1]}`, url };
-  if (ISSUE_URL.test(url)) return { label: 'Open the step issue', url };
-  // A local review waiting for the owner opens its work-list item (owner.mjs localDelivery).
-  if (items.length === 1 && item.kind === 'review' && !item.link && item.route) return { label: item.route.label, route: item.route.address };
-  return { label: items.length === 1 ? 'See what needs you' : `See all ${items.length} in Needs you`, route: { screen: 'needs' } };
+  return { label: items.length === 1 ? 'Resolve in Needs you' : `Resolve all ${items.length} in Needs you`, route: { screen: 'needs' } };
 }
 
 /**

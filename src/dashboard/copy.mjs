@@ -42,12 +42,13 @@ const shortName = (project) => String(project ?? '').split('/')[1] || String(pro
 const whose = (project) => { const name = shortName(project); return name.endsWith('s') ? `${name}’` : `${name}’s`; };
 const label = (task) => task?.outcome ?? task?.title ?? 'a step';
 const same = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
-const PR = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/(\d+)$/;
 const route = (project, tab) => ({ screen: 'project', project, tab });
 const openWork = (project) => ({ label: 'Open current work', route: route(project, 'overview') });
 const seeResults = (project) => ({ label: 'See results', route: route(project, 'review') });
-const stepIssue = (url) => url ? { label: 'Open the step issue', url } : null;
-const review = (number, url) => ({ label: `Review pull request #${number}`, url });
+// What the owner resolves is resolved in Needs you, inside AIWorks: never a GitHub page as the primary action.
+const resolve = { label: 'Resolve in Needs you', route: { screen: 'needs' } };
+const stepIssue = () => resolve;
+const review = () => resolve;
 // Locale-neutral English times, whatever the computer's own locale: "12:31" and "10 Oct 22:58".
 const TIME = (value) => new Date(value).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 const DATE_TIME = (value) => new Date(value).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).replace(',', '');
@@ -126,15 +127,14 @@ const STATES = {
     `An independent checker (${providerName(d.provider)}) is reviewing the result.`, openWork(d.project)] },
   'possibly-stuck': { section: '7.6', needsYou: false, copy: (d) => [`Possibly stuck: ${d.step} has made no progress for ${plural(d.minutes, 'minute')}.`,
     'AIWorks retries by itself if the worker stops.', openWork(d.project)] },
-  'waiting-for-merge': { section: '7.6', needsYou: true, copy: (d) => [`Waiting for you to merge “${d.step}”.`,
-    `${d.next ? `“${d.next}” starts` : 'The next step starts'} once you merge it.`, review(d.number, d.url)] },
+  'waiting-for-merge': { section: '7.6', needsYou: true, copy: (d) => [`Waiting for your review of “${d.step}”.`,
+    `${d.next ? `“${d.next}” starts` : 'The next step starts'} once it is merged.`, review(d.number, d.url)] },
   'awaiting-pickup': { section: '7.6', needsYou: false, copy: (d, f) => [`Approved at ${f.time(d.registeredAt)}; waiting for AIWorks to pick it up.`, 'Nothing for you to do yet.', null] },
   'cancelling': { section: '7.6', needsYou: false, copy: () => ['Cancelling: waiting for running AI workers to stop.', 'Nothing for you to do.', null] },
   // §4.4: what needs the owner, when no §7.6–7.8 sentence says it more exactly.
-  'review': { section: '4.4', needsYou: true, copy: (d) => [`Pull request #${d.number} waits for your review.`, sentence(d.step), review(d.number, d.url)] },
+  'review': { section: '4.4', needsYou: true, copy: (d) => ['A checked result waits for your review.', sentence(d.step), review(d.number, d.url)] },
   'one-thing': { section: '4.4', needsYou: true, copy: (d) => ['One thing needs you.',
-    sentence([d.action, d.text].filter(Boolean).join(': ')), d.url ? { label: d.linkLabel ?? 'Open it', url: d.url }
-      : d.route ? { label: d.route.label, route: d.route.address } : { label: 'See what needs you', route: { screen: 'needs' } }] },
+    sentence([d.action, d.text].filter(Boolean).join(': ')), resolve] },
   'several': { section: '4.4', needsYou: true, copy: (d) => [`${capital(plural(d.count, 'thing'))} need you.`,
     'Each one says what to do in Needs you.', { label: `See the ${d.count} things that need you`, route: { screen: 'needs' } }] },
   // Not an owner action, so not one of the project's Needs you items (review F17).
@@ -150,7 +150,7 @@ const STATES = {
     d.decision ? `${d.step} needs your decision.` : `${d.step} stopped after ${plural(d.attempts, 'failed attempt')}.`, stepIssue(d.url)] },
   // §7.8 Finished. "Merged" only with a current merge check; unknown is said, never counted as nothing.
   'finished-open': { section: '7.8', needsYou: true, copy: (d) => ['All steps are finished.',
-    `${plural(d.awaiting, 'pull request')} ${d.awaiting === 1 ? 'waits' : 'wait'} for your review${d.merged ? ` · ${d.merged} merged` : ''}.`, seeResults(d.project)] },
+    `${plural(d.awaiting, 'result')} ${d.awaiting === 1 ? 'waits' : 'wait'} for your review${d.merged ? ` · ${d.merged} merged` : ''}.`, resolve] },
   // OWNER_UI_V2 WP4: never "complete" while a result's evidence is unresolved; each step's Review shows what is.
   'finished-unresolved': { section: '7.8', needsYou: false, copy: (d) => ['All steps are finished, but not complete.',
     `${plural(d.count, 'result')} ${d.count === 1 ? 'has' : 'have'} criteria not checked, failed or open findings. Review ${d.count === 1 ? 'its' : 'their'} evidence before you accept.`, seeResults(d.project)] },
@@ -228,24 +228,24 @@ export function sinceLines(recent, ids, failures = []) {
   ].filter(Boolean);
 }
 
-/** The step a task row names, by its result or issue link. */
-const taskBy = (c, key, url) => url ? c?.tasks.find((task) => task[key] === url) ?? null : null;
+/** The step a Needs you item is about (owner.mjs: every step item names its `taskId`). */
+const taskOf = (c, item) => item.taskId ? c?.tasks.find((task) => task.id === item.taskId) ?? null : null;
 
 /** The state for one Needs you item of this project. */
 function itemState(item, c, d) {
   if (item.kind === 'review') {
-    const task = taskBy(c, 'resultUrl', item.link?.url), number = PR.exec(item.link?.url ?? '')?.[1];
-    if (task && number) {
+    const task = taskOf(c, item);
+    if (task) {
       // A step that cannot start until this one is merged: the owner's merge is what the work waits for.
       const gated = c.tasks.find((other) => other.state === 'pending' && other.requiresMergedDependencies && other.dependsOn.includes(task.id));
-      if (gated) return ['waiting-for-merge', { step: label(task), next: label(gated), number, url: item.link.url }];
+      if (gated) return ['waiting-for-merge', { step: label(task), next: label(gated) }];
       const counts = d.owner?.campaigns?.[c.id]?.counts;
       if (c.control === 'finished' && counts) return ['finished-open', { awaiting: counts.awaiting, merged: counts.merged }];
-      return ['review', { step: label(task), number, url: item.link.url }];
+      return ['review', { step: label(task) }];
     }
   }
   if (['decision', 'stopped'].includes(item.kind)) {
-    const task = taskBy(c, 'issueUrl', item.link?.url);
+    const task = taskOf(c, item);
     if (task?.blocked) {
       const decision = task.blocked === 'B3';
       const others = c.control !== 'paused' && c.tasks.some((other) => other !== task && other.state !== 'done' && !other.blocked);
@@ -268,12 +268,8 @@ function itemState(item, c, d) {
     if (view?.liveness === 'work-not-picked-up') return ['work-not-picked-up', { registeredAt: view.registeredAt }];
     return [c.control === 'paused' ? 'paused-work-lapsed' : 'work-lapsed', { stoppedAt: view?.lastCheckIn ?? null, pausedAt: c.pausedAt ?? null }];
   }
-  const [, number] = PR.exec(item.link?.url ?? '') ?? [];
-  // A delegated merge that waited too long (#139): the step and how long it waited; its action opens the pull request.
-  if (item.kind === 'merge-stalled' && number) return ['one-thing', { action: item.text, text: item.points[0]?.text, url: item.link.url, linkLabel: `Open pull request #${number}` }];
-  return ['one-thing', { action: item.action, text: item.text, url: item.link?.url ?? null, linkLabel: number ? `Review pull request #${number}` : item.link ? 'Open the step issue' : null,
-    // A local review waiting for the owner opens its work-list item here (owner.mjs localDelivery).
-    route: item.kind === 'review' && !item.link ? item.route ?? null : null }];
+  // One item: what it is about and why the owner is needed; it is resolved in Needs you, never on GitHub.
+  return ['one-thing', { action: item.action, text: item.why ? `${item.text}. ${item.why}` : item.text }];
 }
 
 /** The state of active (not finished or cancelled) work with nothing for the owner. */
@@ -500,15 +496,15 @@ export function stopReasonWords(blocked, rounds = 0) {
   const stuck = /^no progress: (\d+)/.exec(reason);
   if (/^boundary violation on [\w.-]+: changes inside the project's protected areas/.test(reason)) return 'it changed a protected area, so its result is held and never published; it can be redone without that change';
   if (/^boundary violation/.test(reason)) return 'it changed something outside what its plan allows, so its result is held and never published; it can be redone within the plan';
-  if (blocked?.class === 'B3' && stuck) return `no progress after ${plural(Number(stuck[1]), 'attempt')} that could not go on; see the step issue, then check it again`;
-  if (blocked?.class === 'B3') return /^owner-reserved/.test(reason) ? 'the AI worker needs your decision; see the step issue' : 'it needs your decision';
+  if (blocked?.class === 'B3' && stuck) return `no progress after ${plural(Number(stuck[1]), 'attempt')} that could not go on; send guidance and check it again`;
+  if (blocked?.class === 'B3') return /^owner-reserved/.test(reason) ? 'the AI worker needs your decision' : 'it needs your decision';
   // Only what the existing authority supports: an answer or guidance gives one more try under the same limit; a smaller
   // step or more rounds is a new plan for the owner to compare and approve. A rejected result is never accepted as it is.
   if (/^verifier still rejects/.test(reason)) return `the independent checker still rejects it after ${plural(rounds, 'repair round')}; answer with guidance for one more try within the same limit, or plan a smaller step or more rounds as a new plan for your approval`;
   if (/^admission blocked/.test(reason)) return 'the rules for AI workers on this computer did not let it start';
   const failed = /^(\d+) failed attempts; last ([a-z-]+)/.exec(reason);
-  if (failed) return `${failed[1]} failed attempts (last: ${failed[2].replaceAll('-', ' ')}); check it again after fixing the cause`;
-  return 'it stopped; see Settings › Diagnostics for what AIWorks recorded';
+  if (failed) return `${failed[1]} failed attempts (last: ${failed[2].replaceAll('-', ' ')}); send guidance and check it again`;
+  return 'it stopped and will not retry by itself; send guidance and check it again';
 }
 
 /**
@@ -525,12 +521,45 @@ export const DELEGATED = {
   row: (number, by) => `Pull request #${number} · passed the check · ${by === 'supervisor' ? MERGES_AFTER : 'will be merged for you'}`,
   heldRow: (number, reason) => `Pull request #${number} · ${reason.charAt(0).toLowerCase()}${reason.slice(1)}`,
   progress: (n) => `${n} to be merged for you`,
-  stalledAction: 'Check why it is not merged',
-  stalled: (hours) => `Checked and waiting to be merged for ${plural(hours, 'hour')}. Nothing has merged it.`,
-  stalledRow: (number, hours) => `Pull request #${number} · checked and waiting to be merged for ${plural(hours, 'hour')}`,
+  /**
+   * Why AIWorks's merge gate holds a result, by the code the supervisor view reads from the gate's journal
+   * (supervisor.mjs mergeWaitCode), and what happens next. `routine` waits are AIWorks's own work: the gate or a repair
+   * round settles them inside its existing authority, so they are no owner item. The others need someone to look; none
+   * is an owner decision by itself, and none is said to be in progress unless the gate recorded it.
+   */
+  waits: {
+    'local-unsaved': { routine: false, owner: true, action: 'Keep or finish your current edits', reason: 'Your project folder has changes that AIWorks must preserve', next: 'Save or set aside those changes when you are ready. AIWorks checks again automatically and will not overwrite them.' },
+    'local-unrecorded': { routine: false, owner: true, action: 'Review changes made outside AIWorks', reason: 'The project contains changes that AIWorks has not recorded as trusted', next: 'If these are your intended changes, approve them here before AIWorks continues.' },
+    'local-untrusted': { routine: false, owner: true, action: 'Restore trust in the project', reason: 'AIWorks cannot establish that the current project is the approved starting point', next: 'Review the project connection. AIWorks keeps work stopped until its starting point is trusted again.' },
+    'local-unreadable': { routine: true, reason: 'AIWorks cannot read the project folder on this computer', next: 'It will check access again before continuing.' },
+    'local-refused': { routine: false, reason: 'The project update could not be completed on this computer', next: 'AIWorks retained the failure record; the result is not marked complete.' },
+    'local-version-mismatch': { routine: false, reason: 'The prepared result changed after its independent check', next: 'AIWorks must verify the intended result before it can be included in the project.' },
+    'local-destination-mismatch': { routine: false, reason: 'The result targets a destination this project is not set up to update', next: 'AIWorks cannot finish it under the current plan.' },
+    'local-review-mismatch': { routine: false, reason: 'The result does not match its recorded review', next: 'AIWorks must reconcile that record before it can finish.' },
+    acceptance: { routine: true, reason: 'AIWorks is checking the latest acceptance decision', next: 'It continues only when the recorded decision and the checked result agree.' },
+    'checks-pending': { routine: true, reason: 'The project’s own checks have not passed on this version yet', next: 'AIWorks merges it once they pass.' },
+    'checks-failed': { routine: true, reason: 'The project’s own checks failed on this version', next: 'AIWorks repairs it first; a fresh independent check comes before it is merged.' },
+    'mergeability-pending': { routine: true, reason: 'GitHub has not said yet whether it can be merged', next: 'AIWorks asks again on its next pass.' },
+    conflict: { routine: true, reason: 'It conflicts with newer work in the project', next: 'Once the conflict is resolved, AIWorks checks again before finishing this result.' },
+    'base-moved': { routine: true, reason: 'Newer work arrived in the project first', next: 'AIWorks brings it up to date and checks it again before merging.' },
+    unreadable: { routine: true, reason: 'AIWorks could not read its state on GitHub last time', next: 'AIWorks reads it again on its next pass.' },
+    held: { routine: true, reason: 'It is held from merging on this computer', next: 'It stays unmerged until the hold is removed from AIWorks’s settings.' },
+    'pr-missing': { routine: false, reason: 'GitHub reports that its pull request no longer exists', next: 'AIWorks cannot merge it by itself.' },
+    'pr-closed': { routine: false, reason: 'Its pull request was closed', next: 'AIWorks cannot merge it by itself.' },
+    'merged-differently': { routine: false, reason: 'A different version than the checked one was merged', next: 'AIWorks does not count it as merged and does not merge it again.' },
+    'branch-mismatch': { routine: false, reason: 'Its pull request no longer holds exactly the checked version', next: 'AIWorks cannot merge it by itself.' },
+    refused: { routine: false, reason: 'GitHub refused the merge', next: 'AIWorks does not retry it by itself.' },
+    other: { routine: false, reason: 'AIWorks recorded a reason it does not recognise', next: 'AIWorks cannot say when it will merge.' },
+  },
+  /** A wait with no recorded reason: the gate has not held it yet, or held it before this version. Never guessed. */
+  unknown: { reason: 'AIWorks has not recorded why it is not merged yet', next: 'The merge gate checks it again on its next pass.' },
+  waitedRow: (hours) => `Passed the check · waiting to be merged for ${plural(hours, 'hour')}`,
+  /** Merging delegated to someone other than AIWorks, waiting longer than the owner allowed: AIWorks may not merge it. */
+  overdue: { action: 'Decide how this result continues',
+    why: (hours) => `It passed the check ${plural(hours, 'hour')} ago and is still not merged. Merging in this project is left to someone other than AIWorks, and AIWorks is not allowed to merge it.` },
   held: {
     'newer-work': 'Held: waiting to be combined with newer work',
-    other: 'Held for now; the pull request says why',
+    other: 'Held for now at your request',
   },
 };
 
@@ -538,7 +567,7 @@ export const DELEGATED = {
 export const NEEDS = {
   stepIssue: 'Open the step issue',
   // A decision the owner snoozed (WP2): still listed, because its step stays stopped until it is answered.
-  localDecision: (outcome) => `${/[.!?…]$/.test(outcome) ? outcome : `${outcome}.`} AIWorks stopped this step for your decision; nothing in your folder changed. Answer it on the project's Overview.`,
+  localDecision: (outcome) => `${/[.!?…]$/.test(outcome) ? outcome : `${outcome}.`} AIWorks stopped this step for your decision; nothing in your folder changed.`,
   snoozed: (until) => `Snoozed until ${new Date(until).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).replace(',', '')}; the step waits for your answer.`,
   // A connected project where work can't start until the owner confirms its rules (review 5 G7): not an item, since no
   // work is blocked, but the calm headline names it and a row links to its Now, where the rules are confirmed.
@@ -588,11 +617,11 @@ export const NEEDS = {
   /** The banner when this computer's AIWorks has stopped; `at` is its last check-in. */
   banner: (at, f, onPurpose) => `AIWorks has stopped on this computer. It last checked in ${at ? f.dateTime(at) : 'at a time not known'}${onPurpose ? ' (it was stopped on purpose: an update or its operator)' : ''}.`,
   /** The check evidence of a step waiting for review (§2.3: "Passed the check", never "accepted"). */
-  evidence: (sha7) => ({ short: `Passed the check at ${sha7} · CI and conflicts on the PR`,
-    text: `Passed the independent check at commit ${sha7}. This dashboard does not read CI checks or conflicts; see them on the pull request before merging.` }),
+  evidence: () => ({ short: 'Passed the independent check',
+    text: 'Passed the independent check of exactly this version. AIWorks keeps the check’s evidence; Review shows its criteria and findings.' }),
   noEvidence: { short: 'Independent check not recorded here',
-    text: 'Published by AIWorks; the independent check is not recorded here. See CI checks and conflicts on the pull request before merging.' },
-  churn: (attempts, rejections) => `Check its review history first: it took ${plural(attempts, 'try', 'tries')}${rejections ? ` and the independent checker rejected it ${plural(rejections, 'time')}` : ''} before it passed the check.`,
+    text: 'Published by AIWorks; the independent check is not recorded here, so it cannot be accepted here.' },
+  churn: (attempts, rejections) => `It took ${plural(attempts, 'try', 'tries')}${rejections ? ` and the independent checker rejected it ${plural(rejections, 'time')}` : ''} before it passed the check.`,
   gated: (names) => `${names} cannot start until you merge it.`,
   buildsOn: (names) => `Merging lets ${names} build on it.`,
   startedWithout: (names, n) => `${names} already started without it, so merging now does not change ${n === 1 ? 'that step' : 'those steps'}.`,
@@ -642,6 +671,7 @@ export const COMMANDS = {
   accepted: { pause: 'Paused. No new step starts; a step already running may finish.', resume: 'Resumed with the goal and limits you approved.',
     instruct: 'Guidance received. The AI worker you chose reads it at its next run on this step; the receipt shows Received, Read and what the worker did.',
     recheck: 'Check again requested. AIWorks looks at this work again; its limits and the independent check still apply.',
+    guided: 'Guidance received and Check again requested. The next try of this step reads your words; its limits and the independent check still apply.',
     cancel: 'Cancel requested. AIWorks stops the AI workers running on this work.' },
   duplicate: 'This command was already accepted; it was not applied again.',
   unconfirmed: 'Delivery could not be confirmed. Retry this same command safely.',
@@ -672,7 +702,7 @@ export const COMMANDS = {
   // Review of a result (OWNER_UI_V2 WP4): accept and request changes are bound to one verified head and its report.
   result: {
     accept: (gate) => gate === 'on' ? 'Accepted. AIWorks recorded your acceptance of this checked version; the merge gate merges it when its own conditions hold.'
-      : 'Accepted. AIWorks recorded your acceptance of this checked version. Nothing was merged: merging follows this project’s own gate.',
+      : 'Accepted. AIWorks recorded your approval of this checked version and took it off Needs you. Merging follows this project’s own rules: AIWorks merges only in projects where you allowed it.',
     'request-changes': 'Changes requested. AIWorks reopens this step as a repair round within the approved plan; nothing of it is published or merged until a fresh independent check passes.',
     changed: 'This result changed since you opened it, or it is not the version that passed the check. Nothing was recorded. Refresh the page and review it again.',
     closed: 'This work is paused, cancelled or not finished, so its result takes no review now. Refresh the page to see where it stands.',
