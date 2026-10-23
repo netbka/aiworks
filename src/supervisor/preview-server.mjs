@@ -4,8 +4,9 @@
 // - authority: a project has a server preview only when the operator's config.json names its script under
 //   `previews.servers` (a repository-relative `.mjs`, `.cjs` or `.js` path, and optionally the page to open). Nothing in
 //   a request names a command, an argument, a path or a revision, and no shell is used: the argv is AIWorks's own Node,
-//   fixed flags and that script. A version whose package.json declares dependencies is refused, because installing them
-//   runs their scripts; nothing is ever installed or built;
+//   fixed flags and that script. Nothing is ever installed or built, and no install script runs: a version whose
+//   package.json declares dependencies runs only with the packages its lockfile in the same commit pins, each placed by
+//   preview-packages.mjs from a verified copy already in the npm cache on this computer, and is refused otherwise;
 // - identity: the files are written from Git objects of exactly the verified commit into a new folder this preview owns
 //   (hidden files and secret-like names are left out, and an unsafe or colliding name refuses the version), never from a
 //   working copy, and the preview ends as soon as that commit stops being the step's checked version;
@@ -31,6 +32,7 @@ import { fileURLToPath } from 'node:url';
 import { containsSecret } from './coordinator.mjs';
 import { POWERSHELL } from './proc.mjs';
 import { reclaim } from './preview-capture.mjs';
+import { declaresDependencies, lockedPackages, materializePackages } from './preview-packages.mjs';
 import { commitTree, PREVIEW_TYPES, PreviewError, readGit, SECRET_NAME } from './preview.mjs';
 import { projectKey } from './project-settings.mjs';
 
@@ -86,27 +88,27 @@ export function serverPreviewDeclaration(config, project) {
 }
 
 /**
- * What a server preview of commit `sha` would run, from its Git objects only: the declared script, the page to open and
- * every file to write. Throws PreviewError when the version cannot be run as declared.
+ * What a server preview of commit `sha` would run, from its Git objects only: the declared script, the page to open,
+ * every file to write and the locked packages to place from the npm cache `packageCache` (preview-packages.mjs).
+ * Throws PreviewError when the version cannot be run as declared.
  */
-export function serverPreviewPlan({ git = ['git'], repoPath, sha, declaration }) {
+export function serverPreviewPlan({ git = ['git'], repoPath, sha, declaration, packageCache = null }) {
   const tree = commitTree({ git, repoPath, sha });
   const { script, ready } = declaration;
   if (!tree.has(script) || hidden(script) || SECRET_NAME.test(script)) {
     throw new PreviewError('PREVIEW_SERVER_SCRIPT_MISSING', `This checked version has no ${script}, the preview script named for its project, so nothing was started.`);
   }
-  // Every package.json from the repository root down to the script's folder: one that declares dependencies needs an install.
-  const parts = script.split('/');
+  // Every package.json from the repository root down to the script's folder: one that declares dependencies needs them
+  // placed exactly as its lockfile pins them.
+  const parts = script.split('/'), packages = [];
   for (let depth = 0; depth < parts.length; depth++) {
-    const manifest = tree.get([...parts.slice(0, depth), 'package.json'].join('/'));
+    const folder = parts.slice(0, depth).map((part) => `${part}/`).join(''), manifest = tree.get(`${folder}package.json`);
     if (!manifest) continue;
     let declared = null;
     const read = readGit(git, repoPath, ['cat-file', 'blob', manifest.blob]);
     try { declared = read.ok ? JSON.parse(read.stdout) : null; } catch { declared = null; }
     if (!plainObject(declared)) throw new PreviewError('PREVIEW_SERVER_NEEDS_INSTALL', 'This checked version’s package.json could not be read, so nothing was started.');
-    if (['dependencies', 'optionalDependencies', 'peerDependencies', 'bundleDependencies', 'bundledDependencies'].some((name) => Object.keys(plainObject(declared[name]) ? declared[name] : Array.isArray(declared[name]) ? declared[name] : {}).length > 0)) {
-      throw new PreviewError('PREVIEW_SERVER_NEEDS_INSTALL', 'This checked version declares dependencies, and AIWorks never installs them for a preview (installing runs their scripts), so nothing was started.');
-    }
+    if (declaresDependencies(declared)) packages.push(...lockedPackages({ git, repoPath, tree, folder, manifest: declared, cache: packageCache }));
   }
   const files = [];
   let bytes = 0;
@@ -117,7 +119,7 @@ export function serverPreviewPlan({ git = ['git'], repoPath, sha, declaration })
     bytes += file.size;
     if (files.length > MAX_FILES || bytes > MAX_TREE_BYTES) throw new PreviewError('PREVIEW_SERVER_TOO_LARGE', 'This checked version is too large for a preview, so it was not started.');
   }
-  return { sha, script, ready, entry: ready.slice(1), files };
+  return { sha, script, ready, entry: ready.slice(1), files, packages };
 }
 
 /** Write the plan's files from Git objects into `appDir`, each exactly once and inside it. */
@@ -247,6 +249,7 @@ export async function startServerPreview({ git = ['git'], repoPath, plan, workDi
   try {
     for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true });
     materialize({ git, repoPath, plan, appDir: dirs.app });
+    materializePackages(plan.packages ?? [], dirs.app);
     const port = await freePort(), origin = `http://127.0.0.1:${port}`;
     const access = (dir) => [dir, join(dir, '*')];
     writeFileSync(join(workDir, 'prompt.txt'), '');
