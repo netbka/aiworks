@@ -1,12 +1,15 @@
 // Server preview of a checked version (aiworks#39): for a project whose preview script the operator declared, only the
-// exact verified head's server starts, only after the caller check, contained, and it stops as soon as its version is no
-// longer the checked one. Synthetic repository, store and servers under the real Windows job containment.
+// exact verified head's server starts, only after the caller check, contained, with exactly the dependencies its lockfile
+// pins, and it stops as soon as its version is no longer the checked one. The checked version is shaped like AIWorks's
+// own dashboard: a root package.json and lockfile, a locked dependency and src/dashboard/main.mjs. Synthetic repository,
+// npm cache, store and servers under the real Windows job containment.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../../src/supervisor/store.mjs';
 import { campaignStart } from '../../src/supervisor/api.mjs';
@@ -16,6 +19,7 @@ import { PreviewSessions } from '../../src/supervisor/preview.mjs';
 import { PreviewCaptures } from '../../src/supervisor/preview-capture.mjs';
 import { ServerPreviews } from '../../src/supervisor/preview-server.mjs';
 import { declaration, environment } from '../supervisor/helpers.mjs';
+import { cache, locked, lockfile, packageTarball } from '../fixtures/preview-packages.mjs';
 
 const skip = process.platform !== 'win32' ? 'Windows job containment only' : false;
 const CHROME = [process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.LOCALAPPDATA].filter(Boolean)
@@ -30,13 +34,14 @@ const ALLOWED_ENV = ['SYSTEMROOT', 'WINDIR', 'PATH', 'TEMP', 'TMP', 'USERPROFILE
 const SERVER = `import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { heading } from 'example-dashboard-kit';
 const probe = (act) => { try { act(); return 'allowed'; } catch (error) { return error.code ?? 'refused'; } };
 const report = { outside: probe(() => readFileSync(process.env.SystemRoot + '\\\\win.ini')), dotenv: probe(() => readFileSync(new URL('./.env', import.meta.url))),
   child: probe(() => spawnSync(process.execPath, ['-e', '0'])), env: Object.keys(process.env), host: process.env.HOST };
 createServer((req, res) => {
   if (req.url === '/leak') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end('token ghp_${'a'.repeat(36)}'); }
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-  res.end('<!doctype html><meta name="viewport" content="width=device-width"><title>Synthetic shop</title><h1>Find a product</h1><pre id="report" style="white-space:pre-wrap;word-break:break-all">' + JSON.stringify(report) + '</pre>');
+  res.end('<!doctype html><meta name="viewport" content="width=device-width"><title>Synthetic dashboard</title><h1>' + heading + '</h1><p>Find a product</p><pre id="report" style="white-space:pre-wrap;word-break:break-all">' + JSON.stringify(report) + '</pre>');
 }).listen(Number(process.env.PORT), process.env.HOST);
 `;
 const git = (cwd, ...args) => {
@@ -51,18 +56,29 @@ const processesIn = (dir) => {
   return Number(out.stdout.trim());
 };
 
+const HEADING = 'Needs you';
+const SCRIPT = 'src/dashboard/main.mjs';
+
 function rig(t) {
-  const env = environment({ config: { previews: { servers: { 'example-org/sampleapp': { script: 'app/server.mjs' } } }, ...(CHROME ? { commands: { chrome: [CHROME] } } : {}) } });
+  // The locked dependency, prepared in a disposable npm cache as an earlier install on this computer would have left it.
+  const npmCache = mkdtempSync(join(tmpdir(), 'aiworks-preview-cache-'));
+  const kit = cache(npmCache, packageTarball('example-dashboard-kit', '3.0.1', { 'index.mjs': `export const heading = ${JSON.stringify(HEADING)};\n` }));
+  const env = environment({ config: { previews: { servers: { 'example-org/sampleapp': { script: SCRIPT } }, packageCache: npmCache }, ...(CHROME ? { commands: { chrome: [CHROME] } } : {}) } });
   const store = new Store(join(env.dataDir, 'supervisor.db'));
-  t.after(() => { store.close(); env.cleanup(); });
-  mkdirSync(join(env.repo, 'app'), { recursive: true });
-  writeFileSync(join(env.repo, 'app', 'server.mjs'), SERVER);
-  writeFileSync(join(env.repo, 'app', '.env'), 'SHOP_MODE=demo\n');
+  t.after(() => { store.close(); env.cleanup(); rmSync(npmCache, { recursive: true, force: true }); });
+  // Its own scripts never run: a prepare script would fail, as nothing it names exists.
+  const manifest = { name: 'example-dashboard', version: '0.1.0', private: true, type: 'module', scripts: { prepare: 'node scripts/never-run.mjs' },
+    dependencies: { 'example-dashboard-kit': '^3.0.0' } };
+  mkdirSync(join(env.repo, 'src', 'dashboard'), { recursive: true });
+  writeFileSync(join(env.repo, 'package.json'), JSON.stringify(manifest, null, 2));
+  writeFileSync(join(env.repo, 'package-lock.json'), lockfile(manifest, { 'node_modules/example-dashboard-kit': locked('example-dashboard-kit', '3.0.1', kit) }));
+  writeFileSync(join(env.repo, SCRIPT), SERVER);
+  writeFileSync(join(env.repo, 'src', 'dashboard', '.env'), 'SHOP_MODE=demo\n');
   git(env.repo, 'add', '-A');
-  git(env.repo, 'commit', '-q', '-m', 'Synthetic shop server');
+  git(env.repo, 'commit', '-q', '-m', 'Synthetic dashboard server');
   const sha = git(env.repo, 'rev-parse', 'HEAD'), parent = git(env.repo, 'rev-parse', 'HEAD~1');
   // A later, unchecked change in the working copy is never what a preview runs.
-  writeFileSync(join(env.repo, 'app', 'server.mjs'), SERVER.replace('Find a product', 'Unchecked edit'));
+  writeFileSync(join(env.repo, SCRIPT), SERVER.replace('Find a product', 'Unchecked edit'));
   const d = declaration({ campaignId: 'preview-goal' });
   campaignStart(store, d);
   const row = store.task(d.campaignId, 'T1');
@@ -86,7 +102,7 @@ test('a server preview starts only the declared script of the exact checked head
   const owner = async () => { checks++; };
   const refusedCaller = async () => { throw Object.assign(new Error('Only the owner can do this.'), { status: 403 }); };
   // A request that names a command or another head, and a caller that fails the check, start nothing.
-  await assert.rejects(openResultPreview(env.dataDir, bind('T1', { command: 'node app/server.mjs' }), sessions, { servers, ownerCheck: owner }), { status: 400 });
+  await assert.rejects(openResultPreview(env.dataDir, bind('T1', { command: `node ${SCRIPT}` }), sessions, { servers, ownerCheck: owner }), { status: 400 });
   await assert.rejects(openResultPreview(env.dataDir, bind('T1', { verifiedSha: parent }), sessions, { servers, ownerCheck: owner }), { status: 409 });
   await assert.rejects(openResultPreview(env.dataDir, bind('T2'), sessions, { servers, ownerCheck: owner }), { status: 409 });
   await assert.rejects(openResultPreview(env.dataDir, bind('T1'), sessions, { servers, ownerCheck: refusedCaller }), { status: 403 });
@@ -113,6 +129,7 @@ test('a server preview starts only the declared script of the exact checked head
   assert.equal(page.status, 200);
   const body = page.body.toString('utf8');
   assert.ok(body.includes('Find a product') && !body.includes('Unchecked edit'), 'the checked commit, not the working copy');
+  assert.ok(body.includes(HEADING), 'with the dependency its lockfile pins');
   const report = JSON.parse(/<pre id="report"[^>]*>(.*)<\/pre>/s.exec(body)[1]);
   assert.equal(report.outside, 'ERR_ACCESS_DENIED', 'no file outside its own folder can be read');
   assert.equal(report.child, 'ERR_ACCESS_DENIED', 'it cannot start another program');

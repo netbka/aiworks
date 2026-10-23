@@ -9,7 +9,8 @@ import { accountFull, laterWait } from './accounts.mjs';
 import { admissionCheck, hostCeiling, schedulerEnabled } from './scheduler.mjs';
 import { releaseStatus } from './release/eligibility.mjs';
 import { releaseNarrowings } from './release/state.mjs';
-import { candidateStatus } from './local-candidates.mjs';
+import { candidateStatus, isLocalTarget } from './local-candidates.mjs';
+import { reviewRecords } from './result-review.mjs';
 import { selfHostingSettings, trustedTip, trustsLocalMain } from './self-hosting.mjs';
 import { resolveCheckout } from './project-connect.mjs';
 import { backupStatus } from './github-backup.mjs';
@@ -348,7 +349,8 @@ function admissionReason(store, refusal) {
     case 'host-pressure': return reason('host-pressure', `This computer is low on ${PRESSURE_TEXT[refusal.detail?.signal] ?? 'memory'}`, 'Starts when the computer has room again');
     case 'provider-concurrency': return reason('provider-concurrency', 'The AI provider asked to slow down', 'Starts when a run on that provider account finishes');
     case 'write-domain': {
-      const first = refusal.detail.holders[0];
+      // A step still writing or not yet published is the live wait; a published one is named only when nothing else holds.
+      const first = refusal.detail.holders.find((holder) => holder.reason !== 'published-unmerged') ?? refusal.detail.holders[0];
       const owner = store.campaign(first.campaignId);
       const spec = owner ? specOf(store, first.campaignId, first.taskId, owner.declaration) : undefined;
       const prUrl = store.task(first.campaignId, first.taskId)?.pr_url ?? null;
@@ -427,10 +429,19 @@ export function waitReason(task, { store, campaign: c, tasks, open, held = new M
   const pressure = store.get("SELECT reason FROM capacity WHERE scope = 'host' AND id = 'pressure' AND value = 1");
   const waiting = new Set(executorWaitsView(store, c).filter((row) => row.retry_at === null || row.retry_at > now).map((row) => row.executor_kind));
   const kind = executorOrder(decl.executor).map((provider) => provider.kind).find((item) => !waiting.has(item));
-  // Status cannot read the fetched base, so published work counts as unmerged until the controller sees it merged. A
-  // cancelled campaign's work in a target only the merge gate integrates holds nothing, as in the controller (domainHolders).
+  // Status reads no base: published work counts as integrated only on stored evidence the controller also reaches
+  // (admissionInputs): a local target, or the merge gate's `merged` record of exactly this verified head (GitHub reported
+  // the PR merged at that head, or the local gate merged it into trusted main with its ledger row). Anything else counts
+  // as unmerged until the controller sees it merged. A cancelled campaign's work in a target only the merge gate
+  // integrates holds nothing, as in the controller (domainHolders).
+  const records = new Map();
+  const merged = (campaignId, row) => {
+    if (!records.has(campaignId)) records.set(campaignId, reviewRecords(store, campaignId));
+    return records.get(campaignId).mergedHead(row.task_id, row.verified_sha);
+  };
   const refusal = admissionCheck(store, { campaignId: c.id, taskId: task.task_id, kind: task.state === 'pending' ? 'implement' : 'verify', declaration: decl },
     { ceiling: hostCeiling(config), pressure: pressure ? { signal: pressure.reason } : null, accountFull: () => (kind ? accountFull(store, config, kind) : null),
+      integrated: (campaignId, row, declaration) => isLocalTarget(declaration) || merged(campaignId, row),
       gateOnly: (declaration) => trustsLocalMain(selfHostingSettings(config), declaration.target.repository) });
   return admissionReason(store, refusal ?? { reason: null });
 }
