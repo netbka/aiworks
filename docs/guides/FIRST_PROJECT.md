@@ -41,6 +41,8 @@ A step that passes the independent check appears on **Review** with its criteria
 - **Project without GitHub:** nothing in your folder changes until you press **Apply**. AIWorks first rereads the folder; if a file the result touches changed since AIWorks copied it, Apply is refused and nothing is written. It keeps a backup, and **Undo apply** puts the folder back unless a file has changed since. No pull request exists for such a project.
 - **GitHub project:** you may **Accept result** or **Request changes**. If your project is set to accept automatically, a checked result merges under the merge gate without waiting for you; if you set it to accept results yourself, it waits in **Needs you**.
 
+Requested changes are made only while the work runs. If the work is paused or cancelled, the result stays in **Needs you** as *Changes requested · not being made*: paused work offers **Resume this work**, cancelled work **Plan this work again…**, and nothing starts until you approve a plan.
+
 Applying or merging is not deploying. Nothing here publishes your application: release stays a separate step that needs its own authorization. Compare the result with your request, and ask what was checked and what remains uncertain.
 
 ## Prompt: start existing approved work
