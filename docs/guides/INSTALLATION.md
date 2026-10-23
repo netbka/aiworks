@@ -34,6 +34,24 @@ A useful answer is either **"Ready for your first task"** with what was checked,
 
 Continue with [your first task](FIRST_PROJECT.md). Keep the computer awake while local work is running. During an initial foreground setup, the assistant should tell you which windows need to stay open.
 
+## Reuse or update an existing installation
+
+If AIWorks is already installed and healthy, your assistant should reuse it. A missing project or campaign is not a reason to create a second installation; two copies would split your work history and approvals.
+
+An installation keeps three things apart:
+
+- **Source**: the public AIWorks code you download.
+- **Runtime**: the exact reviewed version that actually runs the work. Downloading or merging newer source does not change it.
+- **Your private data**: projects, approvals, budgets, history and settings. They stay on your computer, outside the public source, and an update must not remove or replace them.
+
+Only a version that has been independently reviewed and merged is installed. The assistant should tell you which version it proposes and why it is trusted, not pick the newest source. You do not type any version identifier.
+
+To update, the assistant prepares it and works through [the upgrade procedure](../SUPERVISOR.md#upgrade) with you. In plain terms: it records where each unfinished project stands, pauses new work, waits for running work to finish, stops the services and confirms they stopped, installs the reviewed version, resumes the same work and compares the result with the earlier status. If you want to pause everything yourself, use **Pause all work** on the dashboard's Home. Do not delete data or reinstall over a running installation to "fix" an update.
+
+What only you can supply: signing in to your AI client and workers, choosing your project folder, and approving projects and work. Installing, merging and verifying are separate steps, so a prepared update is not yet a running one.
+
+All building and checking happens on your computer. AIWorks does not use GitHub Actions or paid GitHub features for any project.
+
 ## Manual installation (optional)
 
 For readers who prefer the terminal, the complete [manual installation guide](MANUAL_INSTALLATION.md) covers the required software, source download, configuration, automatic Windows startup and safe updates. The [command reference](CLI_REFERENCE.md) covers starting and controlling work.
