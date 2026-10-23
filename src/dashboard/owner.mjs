@@ -603,12 +603,9 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
         points: [
           // Why the merge cannot be seen at all on this computer, when that is the case.
           ['no-checkout', 'no-verified-sha'].includes(d.reason) ? `${d.note}.` : null,
-          task.verifiedSha && !d.local ? `${OWN_MERGE}.` : null,
           churn ? NEEDS.churn(task.attempts, task.verifierRejections) : null,
           gated.length ? NEEDS.gated(named(gated)) : pending.length ? NEEDS.buildsOn(named(pending))
-            : started.length ? NEEDS.startedWithout(named(started), started.length)
-              // Who releases is the project's rule (registry), never assumed to be the owner.
-              : NEEDS.nothingWaits(releaseRule(releases, d.repository)),
+            : started.length ? NEEDS.startedWithout(named(started), started.length) : null,
         ].filter(Boolean).map((text) => ({ link: null, text })) });
     }
     // Delegated merges (#139). Time alone never makes one the owner's: what it means comes from who merges and why the
