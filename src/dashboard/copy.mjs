@@ -531,7 +531,7 @@ export const DELEGATED = {
     'checks-pending': { routine: true, reason: 'The project’s own checks have not passed on this version yet', next: 'AIWorks merges it once they pass.' },
     'checks-failed': { routine: true, reason: 'The project’s own checks failed on this version', next: 'AIWorks repairs it first; a fresh independent check comes before it is merged.' },
     'mergeability-pending': { routine: true, reason: 'GitHub has not said yet whether it can be merged', next: 'AIWorks asks again on its next pass.' },
-    conflict: { routine: true, reason: 'It conflicts with newer work in the project', next: 'AIWorks combines it with the newer work and checks it again before merging.' },
+    conflict: { routine: true, reason: 'It conflicts with newer work in the project', next: 'Once the conflict is resolved, AIWorks checks again before finishing this result.' },
     'base-moved': { routine: true, reason: 'Newer work arrived in the project first', next: 'AIWorks brings it up to date and checks it again before merging.' },
     unreadable: { routine: true, reason: 'AIWorks could not read its state on GitHub last time', next: 'AIWorks reads it again on its next pass.' },
     held: { routine: true, reason: 'It is held from merging on this computer', next: 'It stays unmerged until the hold is removed from AIWorks’s settings.' },
