@@ -59,6 +59,30 @@ You do not have to inspect pull requests, task files or logs. When something nee
 
 None of this requires a new installation, external notifications or a release. If you already have a working installation, the assistant should reuse it.
 
+## Prompt: inspect and plan a new project
+
+To explore without making changes, say:
+
+```text
+Look at this project and help me decide what to work on first.
+Prepare a short plan for AIWorks. Do not edit the project or start implementation.
+```
+
+The plan is a proposal until you approve it on **Review**.
+
+## Prompt: start existing approved work
+
+To return to work you already approved, say:
+
+```text
+Continue my approved AIWorks task for this project.
+Check what is already running and reuse the existing job.
+Tell me whether it is working, waiting for a tool, waiting for me or
+finished, and whether you need anything from me.
+```
+
+In a new conversation, name the project and describe the task so the assistant can find it. You do not need to remember its internal ID.
+
 ## Will Gemini, Cursor or Codex do every task?
 
 Not necessarily. The client helping you set up and start AIWorks is separate from the tools AIWorks uses to do the work. **Gemini CLI is a setup assistant here, not a built-in AIWorks worker.** Other worker support also depends on the installed version, account and type of task. The assistant should check what is available rather than assume your chosen client can fill every role.
