@@ -25,12 +25,12 @@ export const PREVIEW_TTL_MS = 30 * 60_000;
  * What kind of version a preview can show. `static`: pages read from the checked commit's Git objects, as above.
  * `server`: a Node server script of the checked commit, run by preview-server.mjs only for a project whose preview
  * script the operator declared in config.json (`previews.servers`); without that declaration it stays unavailable. Other
- * servers (Python, Ruby, Go and the like) and a version whose dependencies would first have to be installed, which runs
- * their scripts too, are never run.
+ * servers (Python, Ruby, Go and the like), and a version whose dependencies are not pinned by its lockfile and already in
+ * this computer's npm cache, or need an install script, are never run (preview-packages.mjs).
  */
 export const PREVIEW_RUNTIMES = Object.freeze({
   static: Object.freeze({ supported: true }),
-  server: Object.freeze({ supported: 'declared', reason: 'AIWorks starts a project’s own server only where the operator has named that project’s preview script in AIWorks’s settings (previews.servers), and only a Node script that needs nothing installed.' }),
+  server: Object.freeze({ supported: 'declared', reason: 'AIWorks starts a project’s own server only where the operator has named that project’s preview script in AIWorks’s settings (previews.servers), and only a Node script whose dependencies, if any, its lockfile pins and this computer already holds, with no install script to run.' }),
 });
 // Files that mean a version is an app with its own server rather than static pages.
 const SERVER_MARKERS = Object.freeze(['package.json', 'manage.py', 'requirements.txt', 'pyproject.toml', 'Gemfile', 'go.mod', 'Cargo.toml', 'composer.json']);
