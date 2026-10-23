@@ -20,7 +20,7 @@ On a task-installed Windows machine, inspect the existing `AIWorks Supervisor` t
 | `node:sqlite` unavailable | Use a maintained Node 22.x build at least 22.18 for the guide and run its in-memory SQLite probe. Do not install an unrelated SQLite npm package to replace the built-in module. |
 | `GOVERNANCE_ROOT_REQUIRED` / `GOVERNANCE_ROOT_INVALID` | Check the selected `governanceRoot` and approved checkout/schema availability. A test fixture is not a production rules bundle. |
 | Target is not a registered project | Configuring a repository path is not governance registration. Use the governance provider's approved registration workflow. |
-| `RUNTIME_NOT_MERGED` / `runtime-not-merged` | Compare the actual runtime revision to its fetched origin/main. An old merged revision is allowed; an unmerged branch is not. Do not bypass provenance or update an active runtime in place. |
+| `RUNTIME_NOT_MERGED` / `runtime-not-merged` | The runtime must be an ancestor of the trusted main, and which main that is depends on the installation. With origin trust, compare it to the last fetched `origin/main`. With `selfHosting.trustedMain: "local"`, compare it to the trusted tip printed on the first line of `node <runtime>/src/supervisor/cli.mjs trusted-main --data <data>`, never to raw local `main` or `origin/main`: a commit on local `main` that the main ledger does not record is not trusted. An old merged revision is allowed; an unmerged branch is not. The check is read-only and never fetches. If local `main` holds commits AIWorks did not put there, the owner reviews them in Settings › Connections and chooses **Trust local main**; commits that change `src/supervisor/` are refused there and still need an independent review of their exact head. Do not bypass provenance, hand-edit refs or the ledger, or update an active runtime in place. |
 | `STORE_NOT_FOUND` | Confirm the installed task's data path. Status is read-only and does not create a new store. Start the legitimate installation's controller only after identifying it. |
 | `CAMPAIGN_NOT_FOUND` | Check store and campaign identity. On a first assignment registration may be pending; on an existing assignment a wrong data path is a likely cause. |
 | `DATA_DIR_MISMATCH` | Make explicit --data and AIWORKS_DATA agree, or remove the stale shell variable. Do not silently search for another database. |
@@ -32,7 +32,16 @@ On a task-installed Windows machine, inspect the existing `AIWorks Supervisor` t
 
 `ACTIVE` describes a controller lease, not a currently working model. Inspect task/operation state, progress time, provider wait and next wakeup. A declared fallback may be unusable for this host or role. Do not remove its sandbox protections.
 
-A known provider limit should be allowed to reset. `recheck` can clear waits, so repeatedly running it to force retries wastes attempts and defeats recovery. Use it after evidence the named prerequisite has recovered. Authentication requires the owner's supported login flow, not token copying or a new subscription purchase.
+Most waits are routine and need no owner action. AIWorks keeps its own timers and resumes by itself:
+
+| Wait | What happens |
+| --- | --- |
+| Provider usage limit | A subscription limit is held for the provider account, for every campaign on this PC that uses it, until its recorded reset (30 minutes when none was reported). It sends no owner notification, and the work resumes by itself. A declared alternative provider takes the step only if it is already authorized for that role. |
+| Failed attempt or timeout | Bounded retries with backoff. Four fresh sessions that end without evidence stop the task with a decision for the owner. |
+| Publication rate limit | The result publishes by itself at the reset time. |
+| Merge waits | A merge waits while local `main` holds commits AIWorks did not put there, or while the checkout that has `main` checked out has unsaved changes. Saving or committing that work in the checkout lets the wait end; AIWorks never merges over it. |
+
+A known provider limit should be allowed to reset. `recheck` can clear waits, so repeatedly running it to force retries wastes attempts and defeats recovery. Use it after evidence the named prerequisite has recovered. Only these need the owner: a login that must be restored through the supported login flow (not token copying or a new subscription purchase), a paid upgrade, a budget the owner set, a worker's `blocked-owner-reserved` decision, a boundary violation, or an access or destination only the owner can grant. A decision shown in the dashboard is answered there. Anything else is investigated by AIWorks, not by the owner.
 
 If the bridge reported a timeout, reconcile its operation ID and the AIWorks campaign before another write. A missing response is not proof that the command failed. A pre-acceptance bridge rejection means no local command was accepted; record that separately from AIWorks readiness.
 
@@ -44,7 +53,9 @@ To implement, follow [the approved declaration and start path](FIRST_PROJECT.md)
 
 ## The result says finished, but the product is not live
 
-Publication completes a declared deliverable. It does not prove a merge, a release or the original user journey. Inspect the exact verified revision and actual CI. CI repair and integration repair only run when the relevant installed switches are enabled. Local Git/folder work must not show fictitious PRs, and optional Auto Release is not implicitly enabled by a campaign start.
+Source acceptance, a merge, runtime installation and a release are separate facts. Publication completes a declared deliverable, and independent verification accepts one exact head. Neither proves that the head is merged, that the running runtime contains it, or that the original user journey works. A merged change reaches the running system only through the [upgrade procedure](../SUPERVISOR.md#upgrade), which deploys the exact trusted-main revision: `git rev-parse origin/main` with origin trust, or the first line of `trusted-main` with local trust. Compare the runtime revision from the first command on this page with that commit before saying the change is live.
+
+Under the No Actions policy this project and the repositories it manages are built and tested on this computer. Do not look for, enable, dispatch or rerun hosted CI. Check the verified result locally: the recorded verification of the exact head, the local test and check commands the repository documents, and `status`, which reads only the journal. A published head's `ci` of `unknown` or `none` is expected there. Integration repair and CI repair only run when the relevant installed switches are enabled. Local Git/folder work must not show fictitious PRs, and optional Auto Release is not implicitly enabled by a campaign start.
 
 ## Pause, stop and recovery
 
