@@ -62,6 +62,27 @@ function fixture(t) {
   return { dataDir, store, d, payload };
 }
 
+test('a merge AIWorks may not do stays the owner\'s, and time alone never turns AIWorks\'s own merge wait into an owner item', () => {
+  const now = Date.UTC(2026, 9, 23, 12), H = 60 * 60_000, sha = 'a'.repeat(40), url = 'https://github.com/example/app/pull/7';
+  const step = (mergeGate, mergeWait) => ({ id: 'T1', title: 'alerts', outcome: 'Low-stock alerts', state: 'done', attempts: 1, verifierRejections: 0, dependsOn: [],
+    resultUrl: url, verifiedSha: sha, headSha: sha, verifiedAt: now - 116 * H, mergeWait, review: { state: 'ready', mergeGate, awaitsAcceptance: false } });
+  const view = (task, delegatedTo = 'supervisor') => ownerView({ available: true, controller: { state: 'running' }, campaigns: [{ id: 'app-alerts', repository: 'example/app',
+    control: 'registered', controllerLive: true, agents: [], controls: { more: [] }, tasks: [task] }] },
+  { repositories: [{ repository: 'example/app', configured: true, fetchedAt: now - 60_000 }], steps: { 'app-alerts/T1': { sha, merged: false } } },
+  { now, delegation: { delegatedTo, decision: '#1', held: {}, stallHours: 3 } });
+  // Opted in: AIWorks's gate holds it for a recorded routine reason. Listed as AIWorks's own work, never counted for the owner.
+  const handled = view(step('on', { kind: 'checks-pending', at: now - H }));
+  assert.equal(handled.count, 0);
+  assert.deepEqual(handled.handling.map((entry) => entry.taskId), ['T1']);
+  // Not opted in: delegating to AIWorks does not cover this repository, so nothing merges it for the owner. It stays theirs.
+  const notAllowed = view(step('off', null));
+  assert.equal(notAllowed.campaigns['app-alerts'].deliveries.T1.state, 'published');
+  assert.deepEqual(notAllowed.items.map((item) => [item.kind, Boolean(item.system)]), [['review', false]]);
+  assert.equal(notAllowed.count, 1);
+  // Left to someone else and overdue: AIWorks may not merge it, so the owner decides how it continues.
+  assert.deepEqual(view(step('off', null), 'monitor').items.map((item) => item.kind), ['merge-overdue']);
+});
+
 test('a reply is shown without its flagged campaign, and a flagged reply text is still withheld', (t) => {
   const { dataDir, store } = fixture(t);
   writeFileSync(join(dataDir, 'config.json'), '{}');

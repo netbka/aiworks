@@ -321,8 +321,9 @@ export async function journey(root) {
     record('undo-restores-folder', /^Undone/.test(undone) && read(join(notes, 'index.html')) === original && !existsSync(greeting) &&
       read(join(notes, 'README.md')).includes('An owner note'), { notice: undone });
 
-    // A step stops for the owner: Needs you and Home list it under its project; it is answered on Overview with a draft
-    // kept across navigation; the answer reaches the next try; the alert is recorded by the rehearsal transport only.
+    // A step stops for the owner: Needs you and Home list it under its project; it is answered on its Needs you card with a
+    // draft kept across navigation; the answer reaches the next try; the alert is recorded by the rehearsal transport only.
+    // Each decision's controls are named for that decision (decision-text-<id>), so two decisions on one page stay apart.
     const second = await plan('notes', 'Add a footer.');
     await ui(`location.hash = '#/p/notes/review/${second}'; await click('Approve and start');`);
     const needs = await waitFor(`const s = await api('/api/state'); return s.owner.count ? s.owner.groups.map((g) => g.name + ':' + g.items.map((i) => i.kind).join(',')).join(' ') : null;`);
@@ -332,11 +333,12 @@ export async function journey(root) {
       open: s.supervisor.local.filter((c) => !['finished', 'cancelled'].includes(c.control) && c.executors.includes('claude-cli')).length };`);
     record('ai-workers-count-local', workers.open >= 1 && workers.usedBy === workers.open, workers);
     await ui(`location.hash = '#/'; return 1;`);
-    const home = await waitFor(`return document.getElementById('decision-text') && main().includes('A step waits for your decision.') ? { card: true, project: true } : null;`, 30_000);
+    const home = await waitFor(`return document.querySelector('textarea[id^="decision-text-"]') && main().includes('A step waits for your decision.') ? { card: true, project: true } : null;`, 30_000);
     record('decision-on-home', Boolean(home), home);
     await shot('05-home-decision');
-    const answer = await ui(`location.hash = '#/needs'; await click('Answer'); type('decision-text', 'Stay on the free plan.'); location.hash = '#/needs'; await sleep(1200);
-      location.hash = '#/p/notes'; await sleep(1500); const kept = document.getElementById('decision-text').value; return { kept, notice: await press('Send answer') };`);
+    const answer = await ui(`location.hash = '#/needs'; await sleep(1500); const id = () => document.querySelector('textarea[id^="decision-text-"]').id;
+      type(id(), 'Stay on the free plan.'); location.hash = '#/p/notes'; await sleep(1200);
+      location.hash = '#/needs'; await sleep(1500); const kept = document.getElementById(id()).value; return { kept, notice: await press('Send answer') };`);
     record('decision-answered', answer.kept === 'Stay on the free plan.' && /Answer received/.test(answer.notice), answer);
     const resumed = await waitFor(`const s = await api('/api/state'); return s.work.local.notes.find((c) => c.id.includes('${second.slice(0, 8).toLowerCase()}'))?.results.length ? true : null;`);
     const runs = join(root, 'data', 'runs');

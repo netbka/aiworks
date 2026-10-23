@@ -8,7 +8,8 @@
 //   node tests/dashboard/fixtures/review-store.mjs --port 4319
 //
 // Options: `--store full` (default; every state), `--store stopped` (the full store after AIWorks stopped on this
-// computer: every lease ended two hours ago), `--store empty` (the first run: no projects) or `--store unreadable`
+// computer: every lease ended two hours ago), `--store coordinator-down` (the full store whose coordinator cannot read
+// messages), `--store empty` (the first run: no projects) or `--store unreadable`
 // (AIWorks can't read its work records). `--dir <new or empty directory>` builds there instead of a temporary directory
 // and leaves it in place. Port 4318 is refused: it is the live dashboard's port. Never point --dir at .local.
 // Then open http://127.0.0.1:4319. It runs the unchanged dashboard (src/dashboard/main.mjs) against the fixture, with its
@@ -54,6 +55,8 @@ export const PROJECTS = ['example/shop-app', 'example/recipes', 'example/notes-s
 const REVIEW_SUPERVISOR_ISSUE = 'https://github.com/example/aiworks/issues/2';
 /** What the full store's coordinator posts to: made up, and nothing reads or posts it (no supervisor runs). */
 const COORDINATOR = { repositories: PROJECTS, reportTo: 'example/recipes#1' };
+/** Merging delegated to AIWorks's merge gate, for example/recipes only, by a made-up owner decision. */
+const MERGES = { delegatedTo: 'supervisor', decision: '#138', repositories: ['example/recipes'] };
 /** The code the runtime checkout copies: what the dashboard and the supervisor modules it imports read. */
 const RUNTIME_PARTS = ['package.json', 'registry', 'schemas', 'scripts', 'src'];
 
@@ -195,7 +198,8 @@ function fill(store, dataDir, root, now) {
       { branch: 'search-page', merged: true, files: SEARCH_PAGE },{ branch: 'search-filters', pushed: true }, { branch: 'sale-banner' },
       { branch: 'contracts-import', pushed: true }]),
     'example/recipes': repository(root, 'recipes', [{ branch: 'print-card', merged: true },
-      { branch: 'unit-converter', merged: true }, { branch: 'metric-units', merged: true }, { branch: 'shopping-list', merged: true }, { branch: 'pantry-check' }]),
+      { branch: 'unit-converter', merged: true }, { branch: 'metric-units', merged: true }, { branch: 'shopping-list', merged: true }, { branch: 'pantry-check' },
+      { branch: 'low-stock', pushed: true }, { branch: 'pantry-photos', pushed: true }, { branch: 'pantry-export', pushed: true }]),
     'example/notes-site': repository(root, 'notes-site', [{ branch: 'sitemap' }], { origin: false }),
   };
   const sha = (repo, branch) => repos[repo].shas[branch];
@@ -440,6 +444,30 @@ Synthetic review fixture report.`;
   setCampaign(id, { control: 'finished', status: 'ready' });
   lease(id, now - 3 * H);
 
+  // Merging delegated to AIWorks's merge gate in example/recipes only (config.json `merges`, written below), and three
+  // checked pull requests it holds. The step's name is the feature it delivers, never why it waits: "Low-stock alerts"
+  // waited 116 hours because the project's own checks have not passed, a routine wait AIWorks handles; "Pantry photos"
+  // passed its check an hour ago, an ordinary wait; "Pantry export" has a closed pull request, which AIWorks cannot
+  // settle by itself and lists under AIWorks itself. None of them is an owner chore, and nothing here merges.
+  id = start(declaration('recipes-pantry', recipes, 'Keep the pantry stocked: alerts, photos and an export for the weekly shop, so nobody buys twice', 210, [
+    task('T1', 211, 'low stock alerts', 'Low-stock alerts'), task('T2', 212, 'pantry photos', 'Pantry photos'), task('T3', 213, 'pantry export', 'Pantry export')]), now - 130 * H);
+  live(id);
+  for (const [taskId, branch, n, checkedAt, wait] of [['T1', 'low-stock', 211, now - 116 * H, 'CI has not passed at the verified head yet'],
+    ['T2', 'pantry-photos', 212, now - H, null], ['T3', 'pantry-export', 213, now - 20 * H, 'the pull request is not open']]) {
+    const verified = sha(recipes, branch), report = `# ${taskId} report\n\nSynthetic review fixture report.`;
+    operation(id, taskId, 'implement', { state: 'finished', at: checkedAt - 2 * H, outcome: finished({ result: 'implemented' }, 0.6) });
+    operation(id, taskId, 'verify', { state: 'finished', at: checkedAt - 10 * M, outcome: finished({ verdict: 'accepted', findings: [] }, 0.3) });
+    setTask(id, taskId, { state: 'done', attempts: 1, head_sha: verified, verified_sha: verified, pr_url: pull(recipes, n),
+      result: { result: 'resolved', summary: 'implemented', headSha: verified, report },
+      verification: { verdict: 'accepted', targetSha: verified, reportDigest: createHash('sha256').update(report, 'utf8').digest('hex'), summary: 'Checked on the fixture pantry.',
+        verdictSummary: 'Does what the plan promised on the fixture pantry.', findings: [], checks: [{ command: 'npm run check', result: 'pass' }],
+        criteria: [{ criterion: 1, result: 'pass', check: 'Opened the pantry page', evidence: 'Synthetic evidence.' }], eyesOn: [] } });
+    // When it passed the check: the step's last change, as the dashboard reads it without a recorded check run.
+    store.run('UPDATE tasks SET updated_at = ? WHERE campaign_id = ? AND task_id = ?', checkedAt, id, taskId);
+    store.journal(id, 'published', { task: taskId, url: pull(recipes, n) }, checkedAt);
+    if (wait) store.journal(id, 'merge-waiting', { task: taskId, sha: verified, url: pull(recipes, n), reason: wait }, checkedAt + H);
+  }
+
   // Plan (OWNER_UI_V2 WP3): example/recipes connected, with plans in Now, Next and Later, each with versions the owner
   // edited, one out of date and one still being drafted. Written as intake.mjs writes them; nothing approves or starts.
   createProject(store, { id: 'recipes', tenant_id: 'example', name: 'Recipes', source_kind: 'github', root_path: repos[recipes].path,
@@ -549,7 +577,11 @@ function buildRuntime(root, declarations) {
  * `<root>/claude`, the Claude transcripts of the working agents; and `<root>/runtime` (runtimeCheckout).
  */
 export function buildReviewFixture(root, { now = Date.now(), store: kind = 'full' } = {}) {
-  if (!['full', 'stopped', 'empty', 'unreadable'].includes(kind)) throw new Error('store must be full, stopped, empty or unreadable');
+  if (!['full', 'stopped', 'coordinator-down', 'empty', 'unreadable'].includes(kind)) throw new Error('store must be full, stopped, coordinator-down, empty or unreadable');
+  // The full store whose coordinator configuration is invalid: AIWorks cannot read the owner's messages, and Needs you says
+  // so under AIWorks itself without counting it; every resolution on a card still works, because none goes through it.
+  const broken = kind === 'coordinator-down';
+  if (broken) kind = 'full';
   if (existsSync(root) && readdirSync(root).length) throw new Error('the review fixture needs a new or empty directory');
   const dataDir = join(root, 'data');
   mkdirSync(dataDir, { recursive: true });
@@ -570,7 +602,9 @@ export function buildReviewFixture(root, { now = Date.now(), store: kind = 'full
   const chrome = [process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.LOCALAPPDATA].filter(Boolean)
     .map((dir) => join(dir, 'Google', 'Chrome', 'Application', 'chrome.exe')).find((path) => existsSync(path));
   writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ repositories: paths.repositories, governanceRoot: join(root, 'governance'),
-    ...(['full', 'stopped'].includes(kind) ? { coordinator: { ...COORDINATOR, intake: true }, projectConnection: { enabled: true } } : {}),
+    ...(['full', 'stopped'].includes(kind) ? { coordinator: { ...COORDINATOR, intake: true, ...(broken ? { timeoutMinutes: 0 } : {}) }, projectConnection: { enabled: true },
+      // AIWorks's merge gate merges in example/recipes only; elsewhere checked results stay the owner's to review (MERGES).
+      merges: MERGES } : {}),
     ...(chrome && process.platform === 'win32' ? { commands: { chrome: [chrome] } } : {}), supervisorIssue: REVIEW_SUPERVISOR_ISSUE }, null, 2));
   const governance = join(root, 'governance');
   cpSync(GOVERNANCE, governance, { recursive: true });
@@ -584,7 +618,7 @@ async function serve(args) {
   const options = { '--port': String(REVIEW_PORT), '--store': 'full' };
   for (let i = 0; i < args.length; i += 2) {
     if (!['--port', '--store', '--dir'].includes(args[i]) || !args[i + 1]) {
-      throw new Error('Usage: node tests/dashboard/fixtures/review-store.mjs [--port 4319] [--store full|stopped|empty|unreadable] [--dir <new directory>]');
+      throw new Error('Usage: node tests/dashboard/fixtures/review-store.mjs [--port 4319] [--store full|stopped|coordinator-down|empty|unreadable] [--dir <new directory>]');
     }
     options[args[i]] = args[i + 1];
   }

@@ -198,6 +198,44 @@ function stepHistories(store, campaignId, rows) {
   return histories;
 }
 
+/**
+ * Why the merge gate holds a published result (src/supervisor/merge.mjs `wait` and its refusals), as one code the owner
+ * view words itself: the gate's own sentences name commits and branches, so only the code leaves this module. Routine
+ * codes are waits the gate or a repair round settles by itself; the others need someone to look (owner.mjs mergeWaits).
+ */
+const MERGE_WAIT_CODES = [
+  [/^held by the owner/, 'held'],
+  [/^CI failed/, 'checks-failed'],
+  [/^CI has not passed/, 'checks-pending'],
+  [/not computed mergeability/, 'mergeability-pending'],
+  [/not mergeable/, 'conflict'],
+  [/could not be read/, 'unreadable'],
+  [/does not exist/, 'pr-missing'],
+  [/is not open/, 'pr-closed'],
+  [/^merged on GitHub|in the base but GitHub does not report/, 'merged-differently'],
+  [/head .* is not the|base .* is not the declared/, 'branch-mismatch'],
+  [/refresh|gate|base/i, 'base-moved'],
+];
+export function mergeWaitCode(kind, text) {
+  if (kind === 'merge-refused') return 'refused';
+  return MERGE_WAIT_CODES.find(([pattern]) => pattern.test(String(text ?? '')))?.[1] ?? 'other';
+}
+
+/**
+ * The newest merge wait or refusal the gate journaled for each step's verified head, by task: { kind, at }. A wait of an
+ * earlier head is not this result's, so it is not returned; a step the gate never held has none.
+ */
+function mergeWaits(store, campaignId, taskRows) {
+  const verified = new Map(taskRows.map((task) => [task.task_id, task.verified_sha]));
+  const waits = new Map();
+  for (const item of store.all("SELECT at, kind, detail FROM journal WHERE campaign_id = ? AND kind IN ('merge-waiting', 'merge-refused') ORDER BY seq DESC LIMIT 500", campaignId)) {
+    const taskId = item.detail?.task;
+    if (!taskId || waits.has(taskId) || !verified.get(taskId) || item.detail?.sha !== verified.get(taskId)) continue;
+    waits.set(taskId, { kind: mergeWaitCode(item.kind, item.detail?.reason), at: item.at });
+  }
+  return waits;
+}
+
 const cents = (value) => Math.round(value * 10000) / 10000;
 const reportedCost = (outcome) => Number.isFinite(outcome?.receipt?.costUsd) && outcome.receipt.costUsd > 0 ? outcome.receipt.costUsd : 0;
 /**
@@ -1030,6 +1068,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
       // the latest finished check that accepted it, by task and commit (a delegated merge that waits too long, #139).
       const { rejections, acceptedAt } = checkerVerdicts(ops);
       const histories = stepHistories(store, id, ops);
+      const waits = mergeWaits(store, id, taskRows);
       const riskOf = stepRisks(ops, c.declaration);
       const costs = stepCosts(ops);
       const paused = c.control === 'paused' ? store.get("SELECT at, detail FROM journal WHERE campaign_id = ? AND kind = 'paused' ORDER BY seq DESC LIMIT 1", id) : null;
@@ -1093,6 +1132,8 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
           decision: decisionView(id, task, feedback, now),
           review: resultReview(store, c, task, specs.get(task.task_id), config, { records, acceptance }),
            mergeReceipt: mergeReceipt(task, merged),
+          // Why the merge gate holds this verified head, as a code (mergeWaitCode); null when it never held it.
+          mergeWait: waits.get(task.task_id) ?? null,
           localReport: localReport(store, id, task, specs.get(task.task_id)),
           outcome: specs.get(task.task_id)?.outcome ? safeText(specs.get(task.task_id).outcome) : null,
           deliverable: code(specs.get(task.task_id)?.deliverable), verifierRejections: rejections.get(task.task_id) ?? 0,

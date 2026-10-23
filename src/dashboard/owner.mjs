@@ -72,8 +72,13 @@ const NOTES = { published: 'Your review and merge', 'report-posted': 'For you to
  * step carries why its merge is not seen: `pending` when a check that can still come shortly is running or due.
  * `asOf` is the time of a merge check that is not current, or that is current but whose last fetch failed.
  * With merging delegated by the owner (`delegation`, config.json `merges`, #17), a verified pull request whose merge is
- * not seen and is not being checked is `delegated`: merged for the owner by `by`, or `held` with its reason key. One not
- * held that waited longer than `delegation.stallHours` since its check (`task.verifiedAt`) is `stalled`, in whole hours (#139).
+ * not seen and is not being checked is `delegated`: merged for the owner by `by`, or `held` with its reason key. Merging
+ * delegated to AIWorks itself (`supervisor`) covers only the repositories the owner opted in (the step's review says
+ * `mergeGate: 'on'`); in any other repository nobody merges for the owner, so the result stays theirs to review.
+ * `merger` is who merges: 'aiworks' (its merge gate) or 'delegate' (someone else). `wait` is why the gate holds it, as
+ * the code it journaled for this verified head (supervisor.mjs mergeWaitCode), or null. One not held that waited longer
+ * than `delegation.stallHours` since its check (`task.verifiedAt`) is `stalled`, in whole hours (#139): time alone never
+ * says why, so what that means for the owner is decided from `merger` and `wait` (needsForMerge).
  * A checked local review (`task.resultUrl` its work-list address) is `local`, with its `route` (localDelivery);
  * `target` is its campaign's repository, whose merge check says whether its merge can be seen here.
  */
@@ -106,14 +111,23 @@ export function delivery(task, merges = NO_MERGES, now = Date.now(), campaignId 
   const reason = !task.verifiedSha ? 'no-verified-sha' : check.reason === 'no-checkout' ? 'no-checkout'
     : check.reason === 'fetch-failed' && !check.fresh ? 'fetch-failed' : !check.fresh || result === null ? 'checking' : null;
   // A version the owner accepts themselves (AW-015) is not merged for them until they do: it waits for their review.
-  if (delegation && task.verifiedSha && reason !== 'checking' && !task.review?.awaitsAcceptance) {
+  const merger = delegation?.delegatedTo === 'supervisor' ? 'aiworks' : 'delegate';
+  const optedIn = merger !== 'aiworks' || task.review?.mergeGate === 'on';
+  if (delegation && optedIn && task.verifiedSha && reason !== 'checking' && !task.review?.awaitsAcceptance) {
     const held = delegation.held?.[url.toLowerCase()] ?? null;
     const waited = !held && Number.isSafeInteger(task.verifiedAt) ? now - task.verifiedAt : null;
     const stalled = waited !== null && waited > (delegation.stallHours ?? MERGE_STALL_HOURS) * HOUR_MS ? Math.floor(waited / HOUR_MS) : null;
-    return { state: 'delegated', ...base, reason, pending: false, held, stalled, by: delegation.delegatedTo,
-      note: held ? DELEGATED.held[held] : stalled ? DELEGATED.stalled(stalled) : DELEGATED.note(delegation.delegatedTo) };
+    const wait = held ? 'held' : task.mergeWait?.kind ?? null;
+    return { state: 'delegated', ...base, reason, pending: false, held, stalled, by: delegation.delegatedTo, merger, wait,
+      note: held ? DELEGATED.held[held] : stalled ? mergeWaitWords(merger, wait).reason : DELEGATED.note(delegation.delegatedTo) };
   }
   return { state: 'published', ...base, reason, pending: reason === 'checking', note: NOTES[reason ?? 'published'] };
+}
+
+/** Why a delegated merge waits and what happens next, in owner words; unknown stays unknown (DELEGATED.unknown). */
+function mergeWaitWords(merger, wait) {
+  if (merger !== 'aiworks') return { routine: false, reason: 'Merging is left to someone other than AIWorks', next: 'AIWorks is not allowed to merge it.' };
+  return wait ? DELEGATED.waits[wait] ?? DELEGATED.waits.other : { routine: true, ...DELEGATED.unknown };
 }
 
 const LOCAL_NOTES = { published: 'Checked on this computer and recorded in the work list; not merged into local main yet',
@@ -143,23 +157,21 @@ function localDelivery(task, number, merges, now, campaignId, repository) {
 }
 
 /**
- * What the owner can know before merging. The dashboard does not read CI checks or conflicts: it names the commit the
- * independent checker accepted and points to the pull request. `short` is one compact line; `text` the full sentence.
+ * What the owner can know before merging: whether the exact version passed the independent check. The version's identity
+ * stays in the review binding, never in these words. `short` is one compact line; `text` the full sentence.
  */
 export function reviewEvidence(task) {
   if (!task.verifiedSha) return { ...NEEDS.noEvidence };
-  return NEEDS.evidence(String(task.verifiedSha).toLowerCase().slice(0, 7));
+  return NEEDS.evidence();
 }
 
 /**
  * The check evidence of one result, in the Results words (OWNER_WORKSPACE §2.3): "Passed the check", never
  * "accepted", which is kept for recorded acceptance (#4). `short` is the row line; `text` the sentence in its details.
  */
-export function resultEvidence(task, pullRequest = true) {
-  const where = pullRequest ? ' This dashboard does not read CI checks or conflicts; see them on the pull request.' : '';
-  if (!task.verifiedSha) return { short: 'Independent check not recorded here', text: `The independent check is not recorded here.${where}` };
-  const sha7 = String(task.verifiedSha).toLowerCase().slice(0, 7);
-  return { short: `Passed the check at commit ${sha7}`, text: `Passed the independent check at commit ${sha7}.${where}` };
+export function resultEvidence(task) {
+  if (!task.verifiedSha) return { short: 'Independent check not recorded here', text: 'The independent check is not recorded here.' };
+  return { short: 'Passed the independent check', text: 'Passed the independent check of exactly this version; Review shows its criteria and evidence.' };
 }
 
 /**
@@ -199,13 +211,14 @@ function resultRow(c, task, d, releases, recorded = null) {
     // A report is read, never released, so it has no release steps.
     ladder: d.state === 'report-posted' ? null : releaseLadder(task, d, recorded) };
   if (d.state === 'report-posted') {
-    const evidence = task.verifiedSha ? resultEvidence(task, false) : null;
+    const evidence = task.verifiedSha ? resultEvidence(task) : null;
     return { ...base, group: 'reports', word: d.local ? 'Report recorded in the work list · for you to read' : 'Report posted · for you to read', note: null,
       link: d.local ? null : { label: 'Read the report', url: d.url }, route: d.local ? d.route : null,
       evidence: evidence?.short ?? null, detail: evidence?.text ?? null };
   }
   if (d.state === 'unknown') {
-    return { ...base, group: 'unknown', word: 'Not known yet', note: d.note, link: { label: NEEDS.stepIssue, url: task.issueUrl }, evidence: null, detail: null };
+    return { ...base, group: 'unknown', word: 'Not known yet', note: 'AIWorks did not record where this result went', link: null,
+      route: { label: 'Open the step', address: { screen: 'step', project: c.repository, work: c.id, step: task.id } }, evidence: null, detail: null };
   }
   // A checked local review opens its work-list item (UI20): it merges into local main, never through a pull request.
   if (d.local) {
@@ -214,6 +227,7 @@ function resultRow(c, task, d, releases, recorded = null) {
     // A merge check that can still come shortly: neither waiting nor merged. Why a merge cannot be seen is said.
     return d.pending ? { ...row, group: 'unknown', word: 'Not known yet', note: d.note } : d.reason ? { ...row, note: d.note } : row;
   }
+  // The pull request is supporting reference only: Review, inside AIWorks, is where the result is resolved.
   const evidence = resultEvidence(task), link = { label: `Pull request #${d.number}`, url: d.url }, number = d.number;
   const proof = { evidence: evidence.short, detail: evidence.text, number };
   // Merged only from a current merge check; what follows is the project's release rule, never "released" or "live".
@@ -221,7 +235,7 @@ function resultRow(c, task, d, releases, recorded = null) {
     release: `Release follows ${releaseRule(releases, c.repository)}.` };
   // Merging delegated by the owner: passed the check and merged for them, held with its reason, or waiting too long.
   if (d.state === 'delegated') return { ...base, ...proof, group: 'delegated', note: d.note, link,
-    word: d.held ? DELEGATED.heldRow(number, DELEGATED.held[d.held]) : d.stalled ? DELEGATED.stalledRow(number, d.stalled) : DELEGATED.row(number, d.by) };
+    word: d.held ? DELEGATED.heldRow(number, DELEGATED.held[d.held]) : d.stalled ? DELEGATED.waitedRow(d.stalled) : DELEGATED.row(number, d.by) };
   // A merge check that can still come shortly: the state is not known yet, so it is neither waiting nor merged.
   if (d.pending) return { ...base, ...proof, group: 'unknown', word: 'Not known yet', note: d.note, link };
   return { ...base, ...proof, group: 'review', word: `Pull request #${number} · waiting for your review`,
@@ -244,8 +258,7 @@ function localReviews(workList) {
  * "accepted", which is kept for recorded acceptance.
  */
 function localReviewRow(review, text, merged = Boolean(review.mergedAt)) {
-  const sha7 = review.verifiedSha ? review.verifiedSha.slice(0, 7) : null;
-  const evidence = sha7 ? { short: `Passed the check at commit ${sha7}`, text: `Passed the independent check at commit ${sha7}. Nothing was pushed to GitHub.` }
+  const evidence = review.verifiedSha ? { short: 'Passed the independent check', text: 'Passed the independent check of exactly this version. Nothing was pushed to GitHub.' }
     : { short: 'Independent check not recorded here', text: 'The independent check is not recorded here.' };
   const base = { campaignId: review.campaignId, taskId: review.taskId, repository: null, text, release: null, asOf: null, signature: null, ladder: null, number: review.number,
     link: null, route: { label: `Work list #${review.number}`, address: `#/worklist/${review.number}` }, evidence: evidence.short, detail: evidence.text };
@@ -431,9 +444,9 @@ const agentWorking = (agent, now) => agent.heartbeatState === 'recent' || (agent
 export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = Date.now(), releases = {}, delegation = null, connected = [], workList = null, localWork = {} } = {}) {
   // Results with nothing finished in a project show the §7.1 empty copy, written once in copy.mjs.
   const { title, text } = stateCopy('results-empty'), noResults = { title, text };
-  if (!supervisor?.available) return { available: false, headline: null, count: 0, items: [], groups: [], held: [], unknownResults: 0, also: null, layout: { cards: [], finished: [] }, reply: null, campaigns: {}, results: {}, noResults, recent: null };
+  if (!supervisor?.available) return { available: false, headline: null, count: 0, items: [], handling: [], groups: [], held: [], unknownResults: 0, also: null, layout: { cards: [], finished: [] }, reply: null, campaigns: {}, results: {}, noResults, recent: null };
   // `host` names this computer in the page header; the items say "this computer" (aiworks#11 review F22).
-  const items = [], campaigns = {}, halted = [];
+  const items = [], handling = [], campaigns = {}, halted = [];
   let unknownResults = 0;
   // A step of AIWorks's own repository recorded in the local work list (UI20) is a checked local review, not a missing link.
   const reviews = localReviews(workList);
@@ -482,15 +495,20 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
         // Results with evidence still unresolved (WP4): a finished goal with any is not shown as complete.
         unresolved: c.tasks.filter(unresolvedResult).length } };
     const base = { campaignId: c.id, repository: c.repository };
-    // A checked version the merge gate holds for the owner's acceptance (AW-015): one item that opens its Review, where
-    // Accept result and Request changes bind exactly that version and report. Merged outside the gate, nothing is left.
+    // Every step item names its step (`taskId`) and opens it inside AIWorks; a GitHub link is supporting reference only.
+    const project = (supervisor.goals ?? []).find((goal) => goal.id === c.id)?.project ?? c.repository;
+    const stepRoute = (task, text = 'Open the step') => ({ label: text, address: { screen: 'step', project, work: c.id, step: task.id } });
+    const reviewRoute = (task) => { const entry = reviewEntry(c, task); return entry ? { label: 'Open the full review', address: entry.address } : stepRoute(task); };
+    const reference = (d) => d && !d.local && d.number ? { label: `Pull request #${d.number}`, url: d.url } : null;
+    // A checked version the merge gate holds for the owner's acceptance (AW-015): one item, resolved on its card or its
+    // Review, where Accept result and Request changes bind exactly that version and report. Merged outside the gate, nothing is left.
     const accepting = steps.filter((step) => step.task.review?.awaitsAcceptance && step.delivery?.state !== 'merged');
-    for (const { task } of accepting) {
+    for (const { task, delivery: d } of accepting) {
       const evidence = reviewEvidence(task);
-      items.push({ ...base, kind: 'accept', action: NEEDS.accept.action, text: label(task), route: { label: NEEDS.accept.open, address: reviewEntry(c, task).address },
-        evidence: evidence.short, detail: evidence.text, points: [{ link: null, text: NEEDS.accept.point }] });
+      items.push({ ...base, taskId: task.id, kind: 'accept', action: NEEDS.accept.action, text: label(task), why: NEEDS.accept.point,
+        route: reviewRoute(task), reference: reference(d), evidence: evidence.short, detail: evidence.text, points: [] });
     }
-    // One item per step, led by what the step delivers. The evidence is one compact line; the full sentence is one click away.
+    // One item per step, led by what the step delivers. Nobody merges it for the owner here, so it waits for their review.
     for (const { task, delivery: d } of awaiting.filter((step) => !accepting.includes(step))) {
       const waitingOn = c.tasks.filter((other) => other.state !== 'done' && other.dependsOn.includes(task.id));
       // A step starts from the base branch as it is at its first run and keeps that base (its worktree is created
@@ -501,9 +519,11 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       const gated = pending.filter((other) => other.requiresMergedDependencies);
       const churn = task.attempts >= CHURN_ATTEMPTS || task.verifierRejections > 0;
       const evidence = reviewEvidence(task);
-      // A local review opens its work-list item in the dashboard; a pull request opens on GitHub.
-      items.push({ ...base, kind: 'review', action: 'Review and merge', text: label(task), link: d.local ? null : { label: `Open PR #${d.number}`, url: d.url },
-        ...(d.local ? { route: d.route } : {}),
+      items.push({ ...base, taskId: task.id, kind: 'review', action: 'Review this result', text: label(task),
+        why: !task.verifiedSha ? 'AIWorks published it, but no independent check of it is recorded here, so it cannot be accepted here. It waits for your review.'
+          : d.local ? 'It passed the independent check on this computer and waits for your review before it is merged.'
+            : 'It passed the independent check. Nobody merges it for you in this project, so it waits for your review.',
+        route: reviewEntry(c, task) ? reviewRoute(task) : d.route ?? stepRoute(task), reference: reference(d),
         evidence: evidence.short, detail: evidence.text, mergeCheck: d.asOf,
         points: [
           // Why the merge cannot be seen at all on this computer, when that is the case.
@@ -515,36 +535,53 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
               : NEEDS.nothingWaits(releaseRule(releases, d.repository)),
         ].filter(Boolean).map((text) => ({ link: null, text })) });
     }
-    // A delegated merge that waited too long: nothing has merged it, so it is the owner's again (#139).
-    for (const { task, delivery: d } of by('delegated').filter((step) => step.delivery.stalled)) {
-      items.push({ ...base, kind: 'merge-stalled', action: DELEGATED.stalledAction, text: label(task), link: { label: `Open PR #${d.number}`, url: d.url },
-        mergeCheck: d.asOf, points: [{ link: null, text: DELEGATED.stalled(d.stalled) }] });
+    // Delegated merges (#139). Time alone never makes one the owner's: what it means comes from who merges and why the
+    // gate holds it. AIWorks's routine waits are its own work (`handling`, listed, not counted); a problem AIWorks cannot
+    // settle by itself is listed under AIWorks itself, never as an owner chore; only a merge left to someone else that
+    // waited past `stallHours` is the owner's, because AIWorks may not merge it. A hold the owner set stays in Results.
+    for (const { task, delivery: d } of by('delegated').filter((step) => !step.delivery.held)) {
+      const words = mergeWaitWords(d.merger, d.wait);
+      if (d.merger === 'aiworks' && words.routine) {
+        if (d.stalled || d.wait) handling.push({ ...base, taskId: task.id, text: label(task), reason: words.reason, next: words.next, since: task.verifiedAt ?? null, recorded: Boolean(d.wait) });
+      } else if (d.merger === 'aiworks') {
+        items.push({ ...base, repository: null, about: c.repository, taskId: task.id, kind: 'merge-problem', system: true, action: 'AIWorks cannot finish this by itself',
+          text: label(task), why: `${words.reason}. ${words.next}`, route: stepRoute(task), reference: reference(d),
+          points: [{ link: null, text: 'Not an investigation for you: AIWorks keeps what it recorded for its maintainers. If this result should not continue, stop this work from its project.' }] });
+      } else if (d.stalled) {
+        const evidence = reviewEvidence(task);
+        items.push({ ...base, taskId: task.id, kind: 'merge-overdue', action: DELEGATED.overdue.action, text: label(task), why: DELEGATED.overdue.why(d.stalled),
+          route: reviewRoute(task), reference: reference(d), evidence: evidence.short, detail: evidence.text, mergeCheck: d.asOf,
+          points: [{ link: null, text: 'Accepting records your decision for exactly this version; it does not merge. Request changes sends it back as a repair round within the approved plan.' }] });
+      }
     }
+    // A finished step whose result AIWorks did not record is AIWorks's own record problem, never an owner chore on GitHub.
     for (const { task } of unknown.filter((step) => !reviews.has(`${c.id}/${step.task.id}`))) {
-      items.push({ ...base, kind: 'check', action: 'Check on GitHub', text: label(task), link: { label: NEEDS.stepIssue, url: task.issueUrl }, mergeCheck: null,
-        points: [{ link: null, text: 'This step finished, but no result link was recorded, so the dashboard cannot tell where it stands.' }] });
+      items.push({ ...base, repository: null, about: c.repository, taskId: task.id, kind: 'unrecorded', system: true, action: 'Result not recorded', text: label(task),
+        why: 'This step finished, but AIWorks did not record where its result went, so it cannot say where it stands. Nothing of it is counted as merged.',
+        route: stepRoute(task), mergeCheck: null, points: [] });
     }
     // A cancelled campaign's stops are history: no answer or recheck resumes it, so they are no owner item. Its open
     // pull requests above still are, because a published result can still be merged.
     const cancelled = c.control === 'cancelled';
     if (c.blocker && !cancelled) {
-      // What happened and what to do in owner words; what the supervisor recorded is one click away. The card carries the
-      // Check again its sentence names, while the work takes it: a Needs you card has no More menu (review 5 G8).
+      // What happened and what to do in owner words; what the supervisor recorded stays in its records. The card carries
+      // the Check again its sentence names, while the work takes it: a Needs you card has no More menu (review 5 G8).
       const check = (c.controls?.more ?? []).includes('recheck') ? blockerCheck(c.blocker, c.id) : null;
       const words = blockerWords(c.blocker, { check: Boolean(check) });
       items.push({ ...base, kind: c.blockerClass === 'B3' ? 'decision' : 'stopped', text: NEEDS.workStopped, command: check,
-        evidence: NEEDS.recorded, detail: [c.blockerClass, c.blockerReason, c.blockerAction].filter(Boolean).join(' · '),
-        points: [{ link: { label: 'Tracking issue', url: c.trackingUrl }, text: `${words.reason}. What to do: ${words.action}.` }] });
+        points: [{ link: null, text: `${words.reason}. What to do: ${words.action}.` }] });
     }
     for (const task of cancelled ? [] : c.tasks.filter((item) => item.blocked && item.state !== 'done')) {
-      // A decision (WP2) opens its step, where it is answered, snoozed or marked as not needing the owner.
-      const decision = task.decision, project = (supervisor.goals ?? []).find((goal) => goal.id === c.id)?.project ?? c.repository;
-      items.push({ ...base, kind: task.blocked === 'B3' || decision ? 'decision' : 'stopped', action: task.blocked === 'B3' || decision ? 'Decision needed' : 'Stopped; will not retry by itself',
-        text: label(task), link: { label: NEEDS.stepIssue, url: task.issueUrl },
-        ...(decision && project ? { route: { label: 'Answer', address: { screen: 'step', project, work: c.id, step: task.id } } } : {}),
-        ...(decision?.snoozedUntil ? { snoozedUntil: decision.snoozedUntil } : {}),
+      // A decision (WP2) is answered on its card or its step, snoozed or marked as not needing the owner. A step that
+      // stopped for good takes the owner's guidance and Check again on its card: one more try within the same plan.
+      const decision = task.blocked === 'B3' || Boolean(task.decision);
+      items.push({ ...base, taskId: task.id, kind: decision ? 'decision' : 'stopped', action: decision ? 'Decision needed' : 'Stopped; will not retry by itself',
+        text: label(task), why: decision ? 'An AI worker stopped this step for your decision. The step waits for your answer.'
+          : 'It will not retry by itself. Your guidance with Check again gives it one more try within the approved plan; a wider change is new work to plan.',
+        route: stepRoute(task),
+        ...(task.decision?.snoozedUntil ? { snoozedUntil: task.decision.snoozedUntil } : {}),
         points: [{ link: null, text: `${task.blockedReason.charAt(0).toUpperCase()}${task.blockedReason.slice(1)}.` },
-          ...(decision?.snoozedUntil ? [{ link: null, text: NEEDS.snoozed(decision.snoozedUntil) }] : [])] });
+          ...(task.decision?.snoozedUntil ? [{ link: null, text: NEEDS.snoozed(task.decision.snoozedUntil) }] : [])] });
     }
     // A pause by itself is not for the owner: the campaign card shows it in a neutral state, with the reason given (the
     // store does not record who paused, so nothing is inferred from the reason text). A paused campaign still needs a
@@ -570,7 +607,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
   // unknown one is listed, not only those past their check window: the dashboard reads no grant to know the window.
   for (const r of (supervisor.releases ?? []).filter((item) => ['unknown', 'rollback-failed'].includes(item.state))) {
     const c = supervisor.campaigns.find((item) => item.id === r.campaignId);
-    const where = `${r.verifiedSha ? r.verifiedSha.slice(0, 7) : 'an unknown version'} to ${[r.project, r.destination].filter(Boolean).join(' ') || 'an unknown destination'}`;
+    const where = `${r.verifiedSha ? 'the checked version' : 'an unknown version'} to ${[r.project, r.destination].filter(Boolean).join(' ') || 'an unknown destination'}`;
     items.push(r.state === 'unknown'
       ? { campaignId: c ? r.campaignId : null, repository: c?.repository ?? null, kind: 'release-unknown', action: 'Release outcome unknown',
         text: `Release of ${where}: outcome unknown`, since: r.stepStartedAt ?? r.updatedAt,
@@ -592,7 +629,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       for (const step of c.steps.filter((item) => item.decision && !item.decision.answered)) {
         items.push({ campaignId: null, repository: null, project: record.id, projectName: record.name, kind: 'decision', action: 'Decision needed',
           text: step.title, local: { project: record.id, campaignId: c.id, taskId: step.id },
-          route: { label: 'Answer', address: { screen: 'project', project: record.id, tab: 'overview' } },
+          why: 'An AI worker stopped this step for your decision. The step waits for your answer.', route: { label: 'Open the project', address: { screen: 'project', project: record.id, tab: 'overview' } },
           ...(step.decision.snoozedUntil ? { snoozedUntil: step.decision.snoozedUntil } : {}),
           points: [{ link: null, text: NEEDS.localDecision(c.outcome) },
             ...(step.decision.snoozedUntil ? [{ link: null, text: NEEDS.snoozed(step.decision.snoozedUntil) }] : [])] });
@@ -607,7 +644,6 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     const waiting = coordinator.messages.filter((m) => m.state === 'received').length;
     // Owner words at this level (aiworks#11 review 4 F4); the machine's reason is one click away, under What AIWorks recorded.
     items.push({ kind: 'coordinator', system: true, campaignId: null, repository: null, text: 'AIWorks cannot read your messages',
-      evidence: 'What AIWorks recorded', detail: coordinator.configError ?? coordinator.blocked,
       points: [{ link: null, text: `${waiting ? `${plural(waiting, 'message')} waiting. ` : ''}Not yours to fix: the AIWorks configuration file on this computer needs a fix by whoever maintains AIWorks.` }] });
   }
   const answered = (coordinator?.messages ?? []).filter((m) => m.state === 'answered' && (m.replyBody || m.replyUrl)).sort((a, b) => b.answeredAt - a.answeredAt)[0];
@@ -626,7 +662,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
   const terminal = (c) => ['finished', 'cancelled'].includes(c.control), recency = (c) => Date.parse(c.lastProgressAt ?? '') || 0;
   const layout = { cards: [...supervisor.campaigns.filter((c) => listed.has(c.id)), ...supervisor.campaigns.filter((c) => !listed.has(c.id) && !terminal(c))].map((c) => c.id),
     finished: supervisor.campaigns.filter((c) => !listed.has(c.id) && terminal(c)).sort((a, b) => recency(b) - recency(a)).map((c) => c.id) };
-  return { available: true, headline, count, items, groups: needsGroups(items), held, unknownResults, also: alsoForYou(supervisor, campaigns, releases), layout, campaigns,
+  return { available: true, headline, count, items, handling, groups: needsGroups(items), held, unknownResults, also: alsoForYou(supervisor, campaigns, releases), layout, campaigns,
     results: resultsByProject(supervisor, campaigns, releases, reviews, workList?.repository ?? null), noResults, recent: recentSummary(supervisor, campaigns), reply: answered ? { messageId: answered.id, threadId: answered.threadId ?? answered.id, answeredAt: answered.answeredAt, url: answered.replyBody ? null : answered.replyUrl } : null };
 }
 
