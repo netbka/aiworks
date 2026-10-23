@@ -37,37 +37,27 @@ While AIWorks is in preview, access to its source and required project setup may
 
 ## Ask for your first job
 
-Once ready, give the assistant your project folder and a task:
+Once ready, name your project and what you want. Agree the scope once; AIWorks does the execution and routine investigation.
 
 ```text
 Use AIWorks for my project in C:/Work/my-project.
 I want to fix the sign-in error.
-Show me a short plan first. After I approve it, start the work through
-AIWorks and show me where to follow its progress.
+Draft a short plan for me: the result, how it will be checked, what is
+included and what waits. Do not edit the project yet.
+Then tell me where to review it.
 ```
 
-Replace the folder and task. After approval, the assistant performs the supported startup steps and shows whether the job is running or waiting. [Your first task](FIRST_PROJECT.md) explains what to expect and how to review the result.
+Replace the folder and task. The plan appears on **Review** in the dashboard, where you press **Approve and start** yourself: an assistant cannot press it for you, and a press from a program AIWorks started is refused. Nothing begins before that. Afterwards the page says AIWorks is waiting to pick the work up, which is not the same as work having begun. Ask the assistant to check, or open **Needs you** and the project's Overview, to see whether work is underway, waiting for an available AI tool or waiting for you.
 
-## Prompt: inspect and plan a new project
+You do not have to inspect pull requests, task files or logs. When something needs you, it appears in the dashboard as a decision in business terms, or as a checked result with **Accept result** or **Request changes**; answer or request changes there, in place, and the answer stays inside the plan you approved. New or wider scope is not an edit: ask for a new plan through the same plan route and approve it. [Your first task](FIRST_PROJECT.md) explains what to expect and how to review the result.
 
-To explore without making changes, say:
+## Demo, working installation and delivery are different
 
-```text
-Look at this project and help me decide what to work on first.
-Prepare a short plan for AIWorks. Do not edit the project or start implementation.
-```
+- A **demo** runs a synthetic review fixture on a disposable local address. Its projects, costs and worker states are made up. It shows the screens only: no worker is active and nothing is delivered.
+- A **working installation** has your project connected and an approved plan. Only then can workers be active, and only the dashboard (not the setup message) tells you whether they are.
+- **Delivery** is a checked result you have reviewed. Accepting or applying it is not releasing it: publishing your application stays a separate step with its own authorization.
 
-## Prompt: start existing approved work
-
-To return to work you already approved, say:
-
-```text
-Continue my approved AIWorks task for this project.
-Check what is already running and reuse the existing job.
-Tell me what is happening and whether you need anything from me.
-```
-
-In a new conversation, name the project and describe the task so the assistant can find it. You do not need to remember its internal ID.
+None of this requires a new installation, external notifications or a release. If you already have a working installation, the assistant should reuse it.
 
 ## Will Gemini, Cursor or Codex do every task?
 
