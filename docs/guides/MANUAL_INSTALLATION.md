@@ -122,7 +122,7 @@ In a second terminal, also in the runtime checkout:
 npm run dashboard -- --data C:/Work/aiworks/.local/supervisor --governance C:/Work/aiworks/.local/governance
 ```
 
-Open `http://127.0.0.1:4318` on the same machine, from the desktop: protected owner actions refuse a caller they cannot place outside the worker runs, such as a browser started from an elevated or service process ([caller check](../SUPERVISOR.md#6-running-on-workstation)). Both processes use the same data directory. The controller initializes its store; the dashboard does not assign work merely by opening. Leave both terminals running for this foreground setup. Continue with [your first project](FIRST_PROJECT.md).
+Open `http://127.0.0.1:4318` on the same machine, from the desktop: protected owner actions refuse a caller they cannot place outside the worker runs, such as a browser started from an elevated or service process ([caller check](../SUPERVISOR.md#6-installation-and-maintenance)). Both processes use the same data directory. The controller initializes its store; the dashboard does not assign work merely by opening. Leave both terminals running for this foreground setup. Continue with [your first project](FIRST_PROJECT.md).
 
 ### 5. Optional automatic startup on Windows
 
@@ -139,7 +139,7 @@ powershell -NoProfile -File scripts/supervisor/install-windows-task.ps1 -Checkou
 powershell -NoProfile -File scripts/supervisor/install-dashboard-task.ps1 -Checkout C:/Work/aiworks/.local/runtime -DataDir C:/Work/aiworks/.local/supervisor
 ```
 
-The tasks run `cli.mjs keep` and the dashboard hidden under your user, at logon and every 5 minutes if stopped, so no terminal window stays open. To preview a definition without changing anything, add `-DefinitionOnly`. If you launch AIWorks commands from your own scripts on Windows, start them as hidden, windowless processes (`CreateNoWindow = true`, `UseShellExecute = false`, output captured). Follow [the Windows runtime runbook](../SUPERVISOR.md#6-running-on-workstation) for validation and recovery. These are local per-user tasks, not a hosted 24/7 service; a sleeping or offline PC does not execute work. Do not run a foreground controller as a second unsupervised instance of the same installation.
+The tasks run `cli.mjs keep` and the dashboard hidden under your user, at logon and every 5 minutes if stopped, so no terminal window stays open. To preview a definition without changing anything, add `-DefinitionOnly`. If you launch AIWorks commands from your own scripts on Windows, start them as hidden, windowless processes (`CreateNoWindow = true`, `UseShellExecute = false`, output captured). Follow [the Windows runtime runbook](../SUPERVISOR.md#6-installation-and-maintenance) for validation and recovery. These are local per-user tasks, not a hosted 24/7 service; a sleeping or offline PC does not execute work. Do not run a foreground controller as a second unsupervised instance of the same installation.
 
 ## Stop or update safely
 
