@@ -431,6 +431,13 @@ html{scrollbar-gutter:stable;scroll-padding-top:88px}
 .needs-item .needs-text{line-height:1.45}
 .needs-item details>summary{padding:6px 0;border:0;font-size:12px}
 .needs-list{gap:14px}
+/* A Needs you card resolves in place: why the owner is needed, then the resolution, then secondary links (OWNER_WORKSPACE §4.2). */
+.needs-why{margin:8px 0 0;font-size:13px;color:var(--ink);line-height:1.55;overflow-wrap:anywhere}
+.needs-item .evidence{font-size:12px;color:var(--muted);margin-top:6px}
+.needs-item>.needs-resolve,.needs-item>form.start-form,.needs-item>.needs-actions{padding:14px 20px;margin:0;border-top:1px solid var(--line)}
+.needs-item>.needs-secondary{margin:0;padding:10px 20px 14px;border-top:0}
+.needs-item>.needs-secondary:empty{display:none}
+.needs-handling .needs-item{border-style:dashed}
 #content>.panel>.start-form{max-width:800px}
 .planning-mode{border:1px solid var(--line);border-left:3px solid var(--blue);border-radius:9px;padding:14px 16px;margin-top:20px;background:var(--page)}
 .planning-mode>p{font-size:13px}
@@ -475,7 +482,7 @@ html{scrollbar-gutter:stable;scroll-padding-top:88px}
 .button:active{filter:brightness(.94)}
 .button[aria-busy=true]{cursor:wait}
 @media(max-width:959px){.topbar{position:relative}.sidebar{z-index:5}html{scroll-padding-top:16px}.project-row{gap:8px 16px}.attention-summary{flex-wrap:wrap}}
-@media(max-width:599px){.project-row{grid-template-columns:minmax(0,1fr);gap:8px}.project-status{text-align:left;padding-left:48px}.project-action{padding-left:48px}.project-row>details{padding-left:48px}.needs-body,.needs-impact{padding:16px}.attention-summary{padding:16px}.metrics-inline .metric-foot{flex-basis:100%;margin-left:0}.button.small{min-height:40px}.needs-text{font-size:15px}.start-form textarea{font-size:16px}}
+@media(max-width:599px){.project-row{grid-template-columns:minmax(0,1fr);gap:8px}.project-status{text-align:left;padding-left:48px}.project-action{padding-left:48px}.project-row>details{padding-left:48px}.needs-body,.needs-impact,.needs-item>.needs-resolve,.needs-item>form.start-form,.needs-item>.needs-actions{padding:16px}.attention-summary{padding:16px}.metrics-inline .metric-foot{flex-basis:100%;margin-left:0}.button.small{min-height:40px}.needs-text{font-size:15px}.start-form textarea{font-size:16px}}
 
 @media(min-width:960px){.nav-item{display:grid;grid-template-columns:20px minmax(0,1fr);gap:8px 10px}.nav-item>.nav-count{grid-column:2;margin-left:0;justify-self:start;max-width:100%;overflow-wrap:anywhere}.project-action{grid-column:auto;max-width:190px}}
 @media(min-width:600px) and (max-width:959px){.project-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.project-action{grid-column:1/-1}}

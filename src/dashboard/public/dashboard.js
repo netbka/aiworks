@@ -23,7 +23,7 @@ const plural = (n, word, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
 const usd = (value) => `$${value.toFixed(2)}`;
 const campaignTitle = (c, { inProject = false } = {}) => {
   const purpose = ownerCampaign(c)?.purpose;
-  const text = `${purpose?.text ?? c.id}${purpose?.variant ? ` (${purpose.variant})` : ''}`;
+  const text = `${purpose?.text ?? 'Work without a name'}${purpose?.variant ? ` (${purpose.variant})` : ''}`;
   return inProject ? text : `${shortRepo(c.repository)}: ${text}`;
 };
 
@@ -395,25 +395,36 @@ function formatTaskSignatureBrief(sig) {
 }
 
 // Step rows: on a phone, CSS turns each row into a stacked card (name, where it stands, link) with no clipped columns.
+/**
+ * The supervisor's own sentences name a goal's steps by identifier ("Verify T1"). On owner screens each of that goal's
+ * step identifiers reads as what the step delivers; the sentence is otherwise unchanged and the record keeps it as written.
+ */
+const stepWords = (c, text) => {
+  if (!c || !text) return text;
+  return c.tasks.reduce((out, t) => out.replace(new RegExp(`(^|[^\\w.-])${t.id.replace(/[.]/g, '\\.')}(?![\\w-])`, 'g'), (m, pre) => `${pre}${stepName(c.id, t.id)}`), String(text));
+};
+// A step is named by its place in the work and by what it delivers, never by its identifier.
+const stepNumber = (c, id) => c.tasks.findIndex((item) => item.id === id) + 1;
+const stepNames = (c, ids) => ids.map((id) => stepName(c.id, id)).join(', ');
 function taskRow(c, task) {
   const canRecheck = !sending && !offline && state.supervisor.available && ['registered', 'paused'].includes(c.control) && Boolean(task.blocked || task.retryAt || task.errorClass) && task.state !== 'done';
   const last = task.state === 'done' ? null : outcomeText(task.lastOutcome);
   const delivery = deliveryOf(c, task);
   const td = (cls, ...children) => el('td', { class: cls }, ...children);
-  return el('tr', { 'data-focus-scope': `${c.id}/${task.id}` }, td('c-id', el('span', { class: 'package-id' }, task.id)),
+  return el('tr', { 'data-focus-scope': `${c.id}/${task.id}` }, td('c-id', el('span', { class: 'package-id' }, String(stepNumber(c, task.id)))),
     td('c-work', link(task.outcome ?? task.title, task.issueUrl, 'task-name'), task.outcome ? el('div', { class: 'subtext' }, task.title) : null,
-      el('div', { class: 'subtext' }, task.dependsOn.length ? `After ${task.dependsOn.join(', ')}` : 'Independent step')),
+      el('div', { class: 'subtext' }, task.dependsOn.length ? `After ${stepNames(c, task.dependsOn)}` : 'Independent step')),
     td('c-state', stepBadge(c, task),
       delivery?.state === 'merged' && delivery.mergedAt ? el('div', { class: 'subtext' }, `Merged ${dateTime(delivery.mergedAt)}`)
         : delivery?.note ? el('div', { class: 'subtext' }, delivery.note) : null,
       delivery?.asOf ? el('div', { class: 'subtext' }, mergeAsOf(delivery.asOf)) : null,
       task.signature ? el('div', { class: 'subtext task-signature' }, formatTaskSignatureBrief(task.signature)) : null,
       // Supervisor-authored wait (for example, dependencies that must be merged first); never worker text.
-      task.waitingReason && !task.blocked && task.state !== 'done' ? el('div', { class: 'subtext' }, task.waitingReason) : null,
+      task.waitingReason && !task.blocked && task.state !== 'done' ? el('div', { class: 'subtext' }, stepWords(c, task.waitingReason)) : null,
       task.retryAt ? el('div', { class: 'subtext' }, `Next check ${timeOnly(task.retryAt)}`) : null,
       task.blockedReason ? el('div', { class: 'subtext' }, `Stopped: ${task.blockedReason}`) : null,
       !task.blocked && !task.waitingReason && task.state === 'pending' && task.dependsOn.some((dep) => c.tasks.find((item) => item.id === dep)?.state !== 'done')
-        ? el('div', { class: 'subtext' }, `Waiting for ${task.dependsOn.filter((dep) => c.tasks.find((item) => item.id === dep)?.state !== 'done').join(', ')}`) : null,
+        ? el('div', { class: 'subtext' }, `Waiting for ${stepNames(c, task.dependsOn.filter((dep) => c.tasks.find((item) => item.id === dep)?.state !== 'done'))}`) : null,
       last ? el('div', { class: 'subtext' }, `Last: ${last}`) : null),
     td('c-tries', el('span', { class: 'number tries' }, plural(task.attempts, 'try', 'tries')), watchChip(task)),
     el('td', { class: 'table-actions c-action' }, delivery?.route ? routeLink(delivery.route.label, delivery.route.address)
@@ -1329,7 +1340,8 @@ function openInstructions(c, task = null) {
   $('#instruction-text').focus();
 }
 
-function activityList(limit = 80, journal = state.supervisor.activity) {
+// `technical` adds each event's run or goal identifier, for Settings › Diagnostics only; owner screens leave it out.
+function activityList(limit = 80, journal = state.supervisor.activity, { technical = true } = {}) {
   const descriptions = { 'operation-recorded': 'Agent scheduled', 'operation-finished': 'Agent finished', 'lease-acquired': 'Supervisor took over the campaign',
     'run-refunded': 'Unused run not counted', 'runs-recounted': 'Run count corrected', 'dashboard-command': 'Your dashboard command',
     paused: 'Campaign paused', resumed: 'Campaign resumed', 'cancel-requested': 'Cancellation requested', cancelled: 'Campaign cancelled',
@@ -1352,7 +1364,7 @@ function activityList(limit = 80, journal = state.supervisor.activity) {
         : `${item.executor ? `${provider(item.executor)}: ` : ''}${descriptions[item.kind] ?? (item.kind ?? 'Event').replaceAll('-', ' ')}`,
       item.action ? ` · ${item.action}` : '',
       item.kind === 'operation-finished' ? ` · ${item.outcome === 'result' ? `${terminalLabels[item.terminal] ?? item.terminal ?? 'result'}${item.terminal === 'rejected' && item.blocking ? ` (${item.blocking} blocking)` : ''}` : outcomeLabels[item.outcome] ?? item.outcome ?? 'unknown'}`
-        : item.outcome ? ` · ${item.outcome}` : ''), el('div', { class: 'timeline-subtext' }, item.operation ?? item.campaignId)),
+        : item.outcome ? ` · ${item.outcome}` : ''), technical ? el('div', { class: 'timeline-subtext' }, item.operation ?? item.campaignId) : null),
     el('time', { class: 'timeline-time', datetime: new Date(item.at).toISOString(), title: dateTime(item.at) }, timeAgo(item.at)))));
 }
 
@@ -1404,7 +1416,7 @@ function roadmapView() {
 
 const campaignById = (id) => state.supervisor.campaigns.find((c) => c.id === id);
 /** "SampleApp: <purpose>": the work a row belongs to. Its ID is in the work's Details on Now and in Diagnostics. */
-const campaignContext = (id) => { const c = campaignById(id); return c ? campaignTitle(c) : id; };
+const campaignContext = (id) => { const c = campaignById(id); return c ? campaignTitle(c) : 'work no longer listed'; };
 /** Campaign order from the owner view: cards for campaigns with something for the owner, then active ones; then finished ones. */
 function campaignLayout() {
   const layout = state.owner?.layout;
@@ -1427,22 +1439,122 @@ function finishedList(list) {
 const mergeAsOf = (check) => `Merge check from ${!check.at ? 'an unknown time' : new Date(check.at).toDateString() === new Date().toDateString() ? timeOnly(check.at) : dateTime(check.at)}; ${
   check.reason === 'fetch-failed' ? 'the last fetch failed, retrying within 5 minutes' : 'checking again'}`;
 
-/** One Needs you row: what to do, then the subject (what the step delivers) with its link, then the evidence in one line. */
-const needsItem = (item) => el('li', { class: `needs-item ${item.kind}` },
-  el('div', { class: 'needs-body' },
-    el('div', { class: 'needs-context' }, [item.about ? `Project ${projectName(item.about)}` : null,
-      item.campaignId ? campaignContext(item.campaignId) : null].filter(Boolean).join(' · ')),
-    item.action ? el('div', { class: 'needs-action' }, item.action) : null,
-    el('div', { class: 'needs-text' }, el('span', {}, `${item.text}${item.at ? ` at about ${timeOnly(item.at)}` : ''}${item.since ? ` since ${timeOnly(item.since)}` : ''}`)),
-    item.mergeCheck ? el('div', { class: 'needs-stale' }, mergeAsOf(item.mergeCheck)) : null,
-    item.link ? el('div', { class: 'needs-actions' }, link(`${item.link.label} ↗`, item.link.url, 'button secondary needs-link')) : null,
-    item.route ? el('div', { class: 'needs-actions' }, routeLink(item.route.label, item.route.address, 'button secondary needs-link')) : null,
-    item.evidence ? disclosure(`needs/${item.link?.url ?? item.text}`, el('span', { class: 'evidence' }, item.evidence),
-      el('p', { class: 'needs-detail' }, item.detail)) : null),
-  // The Check again a stopped work's sentence names is on its card, after that sentence: a card has no More menu (aiworks#11 review 5 G8).
-  item.points.length || item.command ? el('div', { class: 'needs-impact' }, ...item.points.map((point) => el('div', { class: 'needs-point' },
-    point.link ? link(`${point.link.label} ↗`, point.link.url, 'needs-link') : null, el('span', {}, point.text))),
-    item.command ? el('div', { class: 'needs-actions' }, primaryAction(item.command)) : null) : null);
+/** A brief business topic: the first sentence of a long name, cut at a word. Display only; the record keeps the full text. */
+const brief = (text, max = 80) => {
+  const value = String(text ?? ''), sentence = /^(.{20,}?[.!?])\s/.exec(value)?.[1] ?? value;
+  if (sentence.length <= max) return sentence;
+  const cut = sentence.slice(0, max), space = cut.lastIndexOf(' ');
+  return `${(space > max / 2 ? cut.slice(0, space) : cut).replace(/[\s,;:·-]+$/, '')}…`;
+};
+/** The work an item belongs to, briefly, by its business name. A goal without a name is "this work", never its identifier. */
+const workName = (c) => brief(ownerCampaign(c)?.purpose?.text ?? 'this work');
+
+/** Stable per item: its goal and step, or what it is about. Names its drafts' scope and its focus scope across refreshes. */
+const itemKey = (item) => item.local ? `local/${item.local.campaignId}/${item.local.taskId}`
+  : item.taskId ? `${item.campaignId}/${item.taskId}` : `${item.kind}/${item.campaignId ?? item.about ?? item.text}`;
+
+/** The binding of a step's result: the goal's and the step's versions, authorization and scope (applyResultReview). */
+const resultBinding = (c, task) => ({ campaignId: c.id, taskId: task.id, taskVersion: task.version, version: c.version,
+  authorizationVersion: c.authorizationVersion, scopeDigest: c.scopeDigest });
+
+/*
+ * Guidance and Check again for a step that stopped for good, on its Needs you card: the owner's words reach the next try
+ * of this step (an instruction, OWNER_WORKSPACE §4.8) and Check again gives it that try, within the approved plan and
+ * its limits. Both requests are kept in the draft as they were first sent, so a retry after an unconfirmed delivery
+ * repeats exactly the same requests and the server applies each once; a refused one is dropped and nothing is applied.
+ */
+let guidanceBusy = null;
+async function sendGuidance(c, task, address, key) {
+  c = campaignById(c.id) ?? c; task = c.tasks.find((item) => item.id === task.id) ?? task;
+  const draft = drafts.get(address, key) ?? { text: '' }, text = draft.text?.trim() ? draft.text : null;
+  const bind = { campaignId: c.id, version: c.version, authorizationVersion: c.authorizationVersion, scopeDigest: c.scopeDigest, taskId: task.id, taskVersion: task.version };
+  let pending = draft.pending && draft.pending.text === text ? draft.pending
+    : { text, instruct: text ? { ...bind, action: 'instruct', role: task.state === 'implemented' ? 'verify' : 'implement', text, requestId: crypto.randomUUID() } : null, instructed: false, recheck: null };
+  if (!pending.recheck) pending = { ...pending, recheck: { ...bind, action: 'recheck', requestId: crypto.randomUUID() } };
+  const keep = (changes) => drafts.set(address, key, { ...(drafts.get(address, key) ?? {}), ...changes });
+  keep({ pending });
+  guidanceBusy = key; render();
+  try {
+    if (pending.instruct && !pending.instructed) { await post('/api/commands', pending.instruct); pending = { ...pending, instructed: true }; keep({ pending }); }
+    const result = await post('/api/commands', pending.recheck);
+    drafts.delete(address, key);
+    notice(result.duplicate ? COMMANDS.duplicate : pending.instruct ? COMMANDS.accepted.guided : COMMANDS.accepted.recheck, null, null, address);
+  } catch (error) {
+    // A refusal applied nothing of that request: the next try binds what the page shows then. Guidance already
+    // accepted stays accepted and is not sent again.
+    if (error.known) keep({ pending: pending.instructed ? { ...pending, recheck: null } : null });
+    notice(error.known ? error.message : COMMANDS.unconfirmed, error.known ? null : () => void sendGuidance(c, task, address, key), error.known ? error.detail : null, address);
+  } finally { guidanceBusy = null; await poll(); }
+}
+function guidancePanel(c, task) {
+  if (!canCheckAgain(c, task)) return null;
+  const address = current.address, key = `guidance:${c.id}/${task.id}`, ids = `${c.id}-${task.id}`;
+  const off = guidanceBusy !== null || commandsOff(), draft = drafts.get(address, key) ?? { text: '' };
+  const words = el('textarea', { id: `guidance-text-${ids}`, rows: 3, maxlength: 2000,
+    oninput: () => drafts.set(address, key, { ...(drafts.get(address, key) ?? {}), text: words.value }) });
+  words.value = draft.text ?? '';
+  // A high-risk step's retry is decided on a computer, like its decision.
+  const deferred = task.risk?.level === 'high' && onPhone();
+  return el('form', { novalidate: true, class: 'start-form needs-resolve', 'data-focus-scope': `guidance/${c.id}/${task.id}`,
+    onsubmit: (event) => { event.preventDefault(); if (!off && !deferred) void sendGuidance(c, task, address, key); } },
+    el('label', { class: 'field' }, el('strong', {}, 'Your guidance for the next try (optional)'), words),
+    el('p', { class: 'subtext' }, 'AIWorks gives this step one more try with your words, within the approved plan and its limits; the independent check still applies. No secrets; up to 2,000 characters.'),
+    deferred ? el('p', { class: 'notice warning', role: 'status' }, 'This step is high risk, so it is tried again from a computer, not a phone.')
+      : el('div', { class: 'campaign-controls' }, el('button', { class: 'button', type: 'submit', disabled: off }, guidanceBusy === key ? 'Sending…' : 'Check again')));
+}
+
+/**
+ * New scope is planned, never chatted: "Plan different work" opens this project's Plan work with the item as the start of
+ * an unsent goal (kept if the owner already typed one), where the plan is drafted and only Approve and start on Review
+ * starts anything (OWNER_WORKSPACE §5.4).
+ */
+function planFromItem(item, project) {
+  if (!project || !planWorkOpen(project)) return null;
+  return button('Plan different work…', () => {
+    const address = formatRoute({ screen: 'start', project }), draft = startDraft(address);
+    if (!draft.goal.trim()) drafts.set(address, 'start', { ...draft, goal: `Instead of “${item.text}”: ` });
+    go(address);
+  }, 'secondary small');
+}
+
+/** The one way to resolve an item on its card, by its kind, through the same bound requests as its step and Review. */
+function itemResolution(item, c, task) {
+  if (item.kind === 'decision') {
+    const card = itemDecision(item);
+    return card ? decisionPanel(card.c, card.task) : null;
+  }
+  if (['review', 'accept', 'merge-overdue'].includes(item.kind) && c && task?.review) {
+    const box = el('div', { class: 'needs-resolve', 'data-focus-scope': `needs-review/${c.id}/${task.id}` },
+      ...reviewActions(task.review, resultBinding(c, task)));
+    return box;
+  }
+  if (item.kind === 'stopped' && c && task) return guidancePanel(c, task);
+  return item.command ? el('div', { class: 'needs-actions' }, primaryAction(item.command)) : null;
+}
+
+/**
+ * One Needs you card: the work it belongs to and its business topic, why the owner is needed, what follows, and the
+ * resolution on the card itself. Opening the step or its full Review, the pull request number and planning different work
+ * follow as secondary links. Identifiers, commits and recorded machine detail stay out of it.
+ */
+function needsItem(item) {
+  const c = item.campaignId ? campaignById(item.campaignId) : null, task = c && item.taskId ? c.tasks.find((t) => t.id === item.taskId) : null;
+  const project = item.repository ?? item.project ?? null;
+  const when = `${item.at ? ` at about ${timeOnly(item.at)}` : ''}${item.since ? ` since ${timeOnly(item.since)}` : ''}`;
+  return el('li', { class: `needs-item ${item.kind}`, 'data-focus-scope': `needs-item/${itemKey(item)}` },
+    el('div', { class: 'needs-body' },
+      el('div', { class: 'needs-context' }, [item.about ? `Project ${projectName(item.about)}` : null, c ? workName(c) : null].filter(Boolean).join(' · ')),
+      item.action ? el('div', { class: 'needs-action' }, item.action) : null,
+      el('div', { class: 'needs-text' }, el('span', {}, `${item.text}${when}`)),
+      item.why ? el('p', { class: 'needs-why' }, item.why) : null,
+      item.evidence ? el('div', { class: 'evidence' }, item.evidence) : null,
+      item.mergeCheck ? el('div', { class: 'needs-stale' }, mergeAsOf(item.mergeCheck)) : null),
+    item.points.length ? el('div', { class: 'needs-impact' }, ...item.points.map((point) => el('div', { class: 'needs-point' },
+      point.link ? link(`${point.link.label} ↗`, point.link.url, 'needs-link') : null, el('span', {}, point.text)))) : null,
+    itemResolution(item, c, task),
+    el('div', { class: 'needs-actions needs-secondary' }, item.route ? routeLink(item.route.label, item.route.address, 'needs-link') : null,
+      item.reference ? link(`${item.reference.label} ↗`, item.reference.url, 'needs-link subtext') : null, item.system || !item.taskId ? null : planFromItem(item, project)));
+}
 
 /**
  * One Needs you group (OWNER_WORKSPACE S3): a project, named and linked to its own screen, or "AIWorks itself" (always
@@ -1452,11 +1564,30 @@ const needsGroup = (group) => el('section', { class: 'needs-group', 'aria-labell
   el('h3', { id: `needs-group-${group.key}`, class: 'section-title' }, group.project ? routeLink(group.name, { screen: 'project', project: group.project }) : group.name, NEEDS.groupCount(group.count, group.notCounted)),
   el('ul', { class: 'needs-list' }, ...group.items.map(needsItem)));
 
-/** Needs you: what is waiting for the owner, grouped by project, in plain words, each with the link to act on. */
+/**
+ * What AIWorks is handling itself (owner.mjs `handling`): routine merge waits its gate or a repair round settles within
+ * the authority already given, each with the recorded reason, or that none is recorded, and what happens next. Listed
+ * so nothing stalled is hidden; never counted, because none needs the owner.
+ */
+function handlingList(handling) {
+  if (!handling.length) return null;
+  return el('section', { class: 'needs-group needs-handling', 'aria-labelledby': 'needs-handling-title', 'data-focus-scope': 'needs/handling' },
+    el('h3', { id: 'needs-handling-title', class: 'section-title' }, `AIWorks is handling (${handling.length}) · not counted`),
+    el('p', { class: 'subtext' }, 'Routine waits AIWorks settles itself, inside the authority you already gave it. Nothing here needs you.'),
+    el('ul', { class: 'needs-list' }, ...handling.map((entry) => el('li', { class: 'needs-item handling', 'data-focus-scope': `needs-handling/${entry.campaignId}/${entry.taskId}` },
+      el('div', { class: 'needs-body' },
+        el('div', { class: 'needs-context' }, [`Project ${projectName(entry.repository)}`, campaignById(entry.campaignId) ? workName(campaignById(entry.campaignId)) : null].filter(Boolean).join(' · ')),
+        el('div', { class: 'needs-text' }, el('span', {}, entry.text)),
+        el('p', { class: 'needs-why' }, `${entry.reason}. ${entry.next}`),
+        entry.since ? el('div', { class: 'subtext' }, `Passed the check ${dateTime(entry.since)}`) : null),
+      el('div', { class: 'needs-actions needs-secondary' }, routeLink('Open the step', { screen: 'step', project: entry.repository, work: entry.campaignId, step: entry.taskId }, 'needs-link'))))));
+}
+
+/** Needs you: what is waiting for the owner, grouped by project, in plain words, each resolved on its own card. */
 function needsYou() {
   const owner = state.owner;
   if (!owner?.available) return null;
-  const { headline, count, groups = [], held = [], unknownResults: unknown, reply } = owner;
+  const { headline, count, groups = [], handling = [], held = [], unknownResults: unknown, reply } = owner;
   // aiworks#18: a stopped supervisor leads, with the time it last renewed its leases, unless the one item for AIWorks
   // stopped already says it with its time (one fact, once; review 4 F2).
   const controller = state.supervisor.controller;
@@ -1467,6 +1598,7 @@ function needsYou() {
       unknown ? el('span', { class: 'needs-unknown' }, `Merge of ${unknown} published step${unknown === 1 ? '' : 's'} being checked`) : null),
     // Only owner actions here (owner, 2026-10-13): posted reports and merged work ready for release are on Results.
     ...groups.map(needsGroup),
+    handlingList(handling),
     // Projects held up by the owner's decisions: no work is blocked, so they are not counted, but each is named with a
     // link to its Now, which says which decisions (aiworks#11 review 5 G7).
     held.length ? el('ul', { class: 'needs-list', 'data-focus-scope': 'needs/held' }, ...held.map((project) => el('li', {},
@@ -2321,7 +2453,7 @@ const SUMMARY_WORDS = { 'needs-you': 'new for you', 'result-ready': 'ready for r
   'decision-cleared': 'questions cleared' };
 
 let scopedBusy = null, seenBusy = false;
-const goalName = (id) => { const c = campaignById(id); return c ? campaignTitle(c, { inProject: true }) : id; };
+const goalName = (id) => { const c = campaignById(id); return c ? campaignTitle(c, { inProject: true }) : 'work no longer listed'; };
 
 /** Pause or resume all, a project or a goal: exactly the goals the view showed, at their versions (views.mjs pauseSummary). */
 async function scopedControl(action, scope, goals, extra = {}) {
@@ -2354,7 +2486,7 @@ const eventProject = (event) => event.project ? projectName(event.project) : nul
 function eventList(events) {
   return el('ul', { class: 'event-list' }, ...events.map((event) => el('li', { 'data-type': event.type },
     el('span', {}, EVENT_WORDS[event.type] ?? 'Recorded'),
-    el('span', { class: 'subtext' }, [eventProject(event), event.campaignId ? goalName(event.campaignId) : null, event.taskId ? `step ${event.taskId}` : null].filter(Boolean).join(' · ')),
+    el('span', { class: 'subtext' }, [eventProject(event), event.campaignId ? goalName(event.campaignId) : null, event.taskId && event.campaignId ? stepName(event.campaignId, event.taskId) : null].filter(Boolean).join(' · ')),
     el('time', { class: 'timeline-time', datetime: new Date(event.at).toISOString(), title: dateTime(event.at) }, timeAgo(event.at)))));
 }
 
@@ -2402,11 +2534,11 @@ function homeScreen() {
     el('p', { role: 'status', 'aria-live': 'polite' }, counts.length ? `${counts.join(' · ')}${since.more ? ', and more' : ''}.` : 'Nothing changed.'),
     since.events.length ? disclosure('home/events', `What changed (${since.more ? `latest ${since.events.length}` : since.events.length})`, eventList(since.events)) : null,
     since.count ? button(seenBusy ? 'Marking…' : 'Mark as seen', markSeen, 'secondary small', seenBusy || offline) : null);
-  const first = state.owner?.items?.[0], card = home.needsYou.count ? itemDecision(first) : null;
-  // The first item's decision is answered here with the same card as on its step: options, suggestion, snooze, "did not need me".
-  const decision = panel('Needs you', home.needsYou.count ? 'The first decision; the rest are in Needs you.' : null, el('div', { class: 'panel-body', 'data-focus-scope': 'home/needs' },
+  // The first item is resolved here on the same card as in Needs you: a decision with its options, a result with Accept
+  // and Request changes, a stopped step with guidance and Check again.
+  const first = state.owner?.items?.find((item) => !item.system);
+  const decision = panel('Needs you', home.needsYou.count ? 'The first one; the rest are in Needs you.' : null, el('div', { class: 'panel-body', 'data-focus-scope': 'home/needs' },
     home.needsYou.count && first ? el('ul', { class: 'needs-list' }, needsItem(first)) : el('p', {}, 'Nothing needs you right now.'),
-    card ? decisionPanel(card.c, card.task) : null,
     home.needsYou.count > 1 ? routeLink(`All ${home.needsYou.count} in Needs you`, '#/needs', 'button secondary small') : null));
   const projects = home.projects.length
     ? el('ul', { class: 'settings-links home-projects' }, ...home.projects.map((project) => el('li', { 'data-focus-scope': `home/project/${project.id}`, 'data-state': project.state.key },
@@ -2434,7 +2566,7 @@ function overviewGoal(goal) {
       el('div', {}, el('dt', {}, 'Available to users'), el('dd', {}, strip.available.state === 'recorded' ? `${strip.available.live} live` : AVAILABLE_WORDS[strip.available.state] ?? 'Not known'))) : null,
     budget ? el('div', { class: 'subtext' }, [budget.maxWorkerRuns ? `${budget.runsUsed ?? 0} of ${budget.maxWorkerRuns} AI worker runs used` : null,
       budget.reportedUsd !== null ? `${usd(budget.reportedUsd)} reported` : 'cost not reported', budget.unreportedRuns ? `${plural(budget.unreportedRuns, 'run')} without a reported cost` : null].filter(Boolean).join(' · ')) : null,
-    goal.next ? el('div', { class: 'subtext' }, `Next: ${clockTimes(goal.next)}`) : null,
+    goal.next ? el('div', { class: 'subtext' }, `Next: ${clockTimes(stepWords(campaignById(goal.id), goal.next))}`) : null,
     goalVersionList(campaignById(goal.id)),
     el('div', { class: 'campaign-controls' }, goal.control === 'registered'
       ? button(busy ? 'Pausing…' : 'Pause goal', () => scopedControl('pause', 'goal', [goal.binding], { campaignId: goal.id }), 'secondary small', commandsOff())
@@ -2459,7 +2591,7 @@ function versionChanges(v) {
 function goalVersionList(c) {
   const versions = c?.versions?.versions ?? [], amendments = c?.versions?.amendments ?? [];
   if (versions.length < 2 && !amendments.length) return null;
-  const steps = (label, ids) => ids.length ? `${label} ${ids.join(', ')}` : null;
+  const steps = (label, ids) => ids.length ? `${label} ${ids.map((id) => stepName(c.id, id)).join(', ')}` : null;
   return disclosure(`overview/${c.id}/versions`, `Approved versions (${versions.length})${amendments.length ? ` · ${plural(amendments.length, 'plan amendment')}` : ''}`,
     el('ol', { class: 'plan-versions', reversed: true },
       ...[...versions].reverse().map((v) => el('li', { 'data-version': String(v.version ?? '') },
@@ -2634,7 +2766,7 @@ function nowScreen(project) {
     el('h2', { id: 'since-title' }, previousVisit ? `Since you last looked (${dateTime(previousVisit)})` : 'In the last 24 hours'),
     el('ul', {}, ...view.since.map((line) => el('li', { class: line.tone ?? '' }, `${line.text} `, ...line.links.map((item) => item.url ? link(`${item.label} ↗`, item.url) : routeLink(item.label, item.route)))))) : null;
   // The work as AIWorks names it, in owner words: no "campaign" where "work" will do (aiworks#11 review 5 G13).
-  const others = details.others.map((item) => item.purpose ? `${item.purpose} (known to AIWorks as ${item.id})` : item.id);
+  const others = details.others.map((item) => item.purpose ?? 'work without a name');
   // What else goes on in the project stays in view, whatever leads (aiworks#11 review 5 G5): a pause carries its Resume.
   const also = view.also?.length ? el('section', { 'aria-labelledby': `now-also-${project}` },
     el('h3', { id: `now-also-${project}`, class: 'section-title' }, 'Also in this project'),
@@ -2649,8 +2781,8 @@ function nowScreen(project) {
     primaryAction(now.primary), startWork, also,
     view.progress ? el('p', { class: 'subtext' }, view.progress) : null,
     view.note ? el('p', { class: 'subtext' }, `${view.note.title} ${view.note.text}`) : null,
-    details.workId || others.length ? disclosure(`now/${project}/details`, 'Details', el('div', { class: 'subtext' }, [
-      details.workId ? `Known to AIWorks as ${details.workId}` : null, details.trackingUrl ? link(`tracking issue #${details.trackingIssue} ↗`, details.trackingUrl) : null,
+    details.trackingUrl || others.length ? disclosure(`now/${project}/details`, 'Details', el('div', { class: 'subtext' }, [
+      details.trackingUrl ? link(`tracking issue #${details.trackingIssue} ↗`, details.trackingUrl) : null,
       others.length ? `Other work in this project: ${others.join(', ')}` : null].filter(Boolean).flatMap((part, index) => index ? [' · ', part] : [part]))) : null)),
   overviewPanel(project), reviewList(resultsToReview(project), { scope: `overview/${project}/reviews` }), row?.connection ? connectionPanel(row) : null, since].filter(Boolean);
 }
@@ -2783,38 +2915,39 @@ function decisionPanel(c, task) {
       el('p', { role: 'status' }, `Answered at ${clock(d.answered.at)}${chosen ? `: ${chosen.label}` : ''}. AIWorks continues the step with your answer.`));
   }
   const draft = drafts.get(address, key) ?? { option: null, text: '', feedback: '' };
-  const save = () => drafts.set(address, key, { option: form.querySelector('input[name="decision-option"]:checked')?.value ?? null, text: words.value, feedback: feedback.value });
-  const words = el('textarea', { id: 'decision-text', rows: 3, maxlength: 2000, required: !d.structured, oninput: save });
+  // Every control is named for this decision: two decisions on one page (Needs you) never share an id, a radio group or a draft.
+  const radios = `decision-option-${d.id}`;
+  const save = () => drafts.set(address, key, { option: form.querySelector(`input[name="${radios}"]:checked`)?.value ?? null, text: words.value, feedback: feedback.value });
+  const words = el('textarea', { id: `decision-text-${d.id}`, rows: 3, maxlength: 2000, required: !d.structured, oninput: save });
   words.value = draft.text ?? '';
-  const feedback = el('textarea', { id: 'decision-feedback', rows: 2, maxlength: 2000, oninput: save });
+  const feedback = el('textarea', { id: `decision-feedback-${d.id}`, rows: 2, maxlength: 2000, oninput: save });
   feedback.value = draft.feedback ?? '';
-  const choice = el('span', { id: 'decision-choice-error', class: 'validation-error', role: 'alert', hidden: true }, COMMANDS.decision.notOption);
+  const choice = el('span', { id: `decision-choice-error-${d.id}`, class: 'validation-error', role: 'alert', hidden: true }, COMMANDS.decision.notOption);
   const options = d.structured && deferred ? el('div', {}, el('p', {}, el('strong', {}, d.question)),
     el('ul', {}, ...d.options.map((o) => el('li', {}, `${o.label}${d.suggestion?.option === o.id ? ' (suggested)' : ''}`, el('div', { class: 'subtext' }, o.consequence)))))
     : d.structured ? el('fieldset', {}, el('legend', {}, d.question),
     ...d.options.map((o) => {
-      const input = el('input', { type: 'radio', name: 'decision-option', value: o.id, 'aria-describedby': `decision-option-${o.id}`, onchange: save });
+      const input = el('input', { type: 'radio', name: radios, value: o.id, 'aria-describedby': `${radios}-${o.id}`, onchange: save });
       input.checked = draft.option === o.id;
       return [el('label', { class: 'choice' }, input, el('span', {}, o.label, d.suggestion?.option === o.id ? ' (suggested)' : '')),
-        el('p', { id: `decision-option-${o.id}`, class: 'subtext' }, o.consequence)];
+        el('p', { id: `${radios}-${o.id}`, class: 'subtext' }, o.consequence)];
     }), choice) : null;
-  const snooze = el('select', { id: 'decision-snooze' },
+  const snooze = el('select', { id: `decision-snooze-${d.id}` },
     el('option', { value: '1h' }, '1 hour'), el('option', { value: '4h' }, '4 hours'), el('option', { value: '1d' }, '1 day'));
   const form = el('form', { novalidate: true, class: 'start-form', 'data-decision': d.id, 'data-focus-scope': `decision/${d.id}`,
     onsubmit: (event) => {
       event.preventDefault();
       if (off || !validateForm(form)) return;
-      const option = form.querySelector('input[name="decision-option"]:checked')?.value;
+      const option = form.querySelector(`input[name="${radios}"]:checked`)?.value;
       choice.hidden = Boolean(option || words.value.trim());
-      if (!choice.hidden) { form.querySelector('input[name="decision-option"]')?.focus(); return; }
+      if (!choice.hidden) { form.querySelector(`input[name="${radios}"]`)?.focus(); return; }
       void sendDecision('answer', c, task, { ...(option ? { option } : {}), ...(words.value.trim() ? { text: words.value } : {}) },
         { address, done: () => drafts.delete(address, key) });
     } },
     el('h3', { class: 'section-title' }, d.structured ? 'Your decision' : 'Your answer'),
     deferred ? el('p', { class: 'notice warning', role: 'status' }, 'This step is high risk, so this decision is answered on a computer, not on a phone. Open this page on your computer to answer; the step waits meanwhile.') : null,
     d.structured || deferred ? null : el('p', {}, d.asked ? `The AI worker asked: “${d.asked}” It described no options; answer in your own words.`
-      : task.issueUrl ? 'The AI worker described no options for this stop. Answer in your own words; the step issue says what it needs.'
-        : 'The AI worker described no options for this stop. Answer in your own words.'),
+      : 'The AI worker described no options for this stop. Answer in your own words.'),
     options,
     d.suggestion ? el('p', { class: 'subtext' }, `AIWorks suggests ${d.options.find((o) => o.id === d.suggestion.option)?.label ?? d.suggestion.option}: ${d.suggestion.reason}`) : null,
     d.continues ? el('p', { class: 'subtext' }, `Meanwhile: ${d.continues}`) : null,
@@ -2906,20 +3039,20 @@ async function captureShots(key, binding, review) {
   render();
   document.querySelector(`[data-capture="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
 }
-function shotsBlock(key, shown, sha7, control, captureAction) {
+function shotsBlock(key, shown, control, captureAction) {
   if (!shown.capture?.available) return el('p', { class: 'subtext' }, `Screenshots are not available here. ${shown.capture?.reason ?? ''}`);
   const shots = shown.shots;
   const capture = control(shots?.state === 'captured' ? 'Capture again' : 'Capture screenshots', captureAction, 'secondary',
     { disabled: shots?.state === 'capturing' || offline, 'data-capture': key });
   const status = shots?.state === 'capturing'
-    ? el('p', { role: 'status', 'aria-live': 'polite' }, `Capturing ${sha7} at desktop and phone width in a sealed browser on this computer… This can take a minute.`)
+    ? el('p', { role: 'status', 'aria-live': 'polite' }, 'Capturing the checked version at desktop and phone width in a sealed browser on this computer… This can take a minute.')
     : shots?.state === 'failed' ? el('p', { class: 'notice warning', role: 'alert' }, `No screenshots were kept. ${shots.error}`)
       : shots?.state === 'captured' ? null
         : el('p', { class: 'subtext' }, 'Screenshots are taken by AIWorks in a browser it starts for this and stops afterwards. That browser reaches nothing but this version’s pages.');
   const figures = shots?.state === 'captured' ? el('div', { class: 'preview-shots' }, shots.shots.map((shot) => el('figure', { class: `preview-shot ${shot.size}` },
-    el('img', { src: shot.image, alt: `Screenshot of the version checked at ${sha7} at ${shot.size} width`, loading: 'lazy' }),
+    el('img', { src: shot.image, alt: `Screenshot of the checked version at ${shot.size} width`, loading: 'lazy' }),
     el('figcaption', { class: 'subtext' }, `${shot.size === 'phone' ? 'Phone' : 'Desktop'}: ${shot.width} × ${shot.height} px screen, page laid out at ${shot.viewport.width} × ${shot.viewport.height} px as the browser measured it. `,
-      'Version ', el('code', { title: shots.verifiedSha }, sha7), `, captured at ${clock(shots.capturedAt)} on this computer.`)))) : null;
+      `The checked version, captured at ${clock(shots.capturedAt)} on this computer.`)))) : null;
   return el('div', { class: 'preview-evidence' }, el('div', { class: 'campaign-controls' }, capture), status, figures);
 }
 // Closing a server preview asks AIWorks to end it, which stops its server; a static one simply goes away.
@@ -2939,11 +3072,11 @@ async function openPreview(key, binding, review) {
 
 function previewSection(review, binding) {
   if (!review.preview) return null;
-  const key = `${binding.campaignId}/${binding.taskId}/${review.verifiedSha}`, shown = previews.get(key), sha7 = review.verifiedSha.slice(0, 7);
+  const key = `${binding.campaignId}/${binding.taskId}/${review.verifiedSha}`, shown = previews.get(key);
   const section = (...children) => el('div', { class: 'preview-panel', 'data-focus-scope': `preview/${key}` }, el('strong', {}, 'Try this version'), ...children);
   if (!review.preview.available) return section(el('p', { class: 'subtext' }, `Preview not available: ${review.preview.reason}`));
   const server = review.preview.runtime === 'server';
-  const identity = el('p', { class: 'subtext' }, 'The version checked at ', el('code', { title: review.verifiedSha }, sha7), server
+  const identity = el('p', { class: 'subtext' }, 'The checked version', server
     ? ', exactly as it passed the check. Opening it starts that version’s own server on this computer, reachable only from here and stopped after 10 minutes or when the preview closes; nothing is installed or built. Its pages run in a sealed frame that cannot reach this dashboard or the internet.'
     : ', exactly as it passed the check. Its pages run in a sealed frame: they cannot reach this dashboard or the internet, and nothing of the project is built or started on this computer.');
   // Each control names its preview: the refresh keeps a button that shows exactly the same, with its own action, so two
@@ -2954,43 +3087,64 @@ function previewSection(review, binding) {
   if (shown.state === 'opening') return section(identity, el('p', { role: 'status', 'aria-live': 'polite' }, server ? 'Starting the checked version’s server… This can take half a minute.' : 'Opening the checked version…'));
   if (shown.state === 'failed') return section(identity, el('p', { class: 'notice warning', role: 'alert' }, `The preview did not open. ${shown.error}`), el('div', { class: 'campaign-controls' }, open('Try again')));
   const size = (name, label) => control(label, () => { previews.set(key, { ...shown, size: name }); render(); }, 'secondary', { 'aria-pressed': String(shown.size === name) });
-  const frame = el('div', { class: `preview-frame ${shown.size}` }, el('iframe', { src: shown.url, title: `Preview of the version checked at ${sha7} (${shown.size === 'phone' ? 'phone' : 'desktop'} width)`,
+  const frame = el('div', { class: `preview-frame ${shown.size}` }, el('iframe', { src: shown.url, title: `Preview of the checked version (${shown.size === 'phone' ? 'phone' : 'desktop'} width)`,
     sandbox: 'allow-scripts', referrerpolicy: 'no-referrer', loading: 'lazy' }));
   return section(identity,
     el('div', { class: 'campaign-controls preview-controls', role: 'group', 'aria-label': 'Preview width' }, size('desktop', 'Desktop'), size('phone', 'Phone'),
       control('Close preview', () => void closePreview(key, shown))),
-    el('p', { class: 'subtext' }, `Showing a ${shown.size === 'phone' ? 'phone' : 'desktop'}-width (${PREVIEW_WIDTHS[shown.size === 'phone' ? 'phone' : 'desktop']} px) view of ${sha7}.`,
+    el('p', { class: 'subtext' }, `Showing a ${shown.size === 'phone' ? 'phone' : 'desktop'}-width (${PREVIEW_WIDTHS[shown.size === 'phone' ? 'phone' : 'desktop']} px) view of the checked version.`,
       el('span', { class: 'preview-fit' }), ` The preview ends at ${clock(shown.expiresAt)}; open it again after that.`),
     frame,
-    shotsBlock(key, shown, sha7, control, () => void captureShots(key, binding, review)));
+    shotsBlock(key, shown, control, () => void captureShots(key, binding, review)));
 }
 
 function reviewPanel(review, binding, { merged = false } = {}) {
   if (!review) return null;
   // Merged outside the merge gate (seen in local git): nothing is left to accept or send back.
   if (merged && ['ready', 'accepted'].includes(review.state)) review = { ...review, state: 'merged', canAccept: false, canRequestChanges: false };
-  const scope = `review/${binding.campaignId}/${binding.taskId}`, sha7 = (review.from ?? review.verifiedSha).slice(0, 7);
+  const scope = `review/${binding.campaignId}/${binding.taskId}`;
   const box = (...children) => el('div', { class: 'instruction-list review-panel', 'data-review': review.state, 'data-focus-scope': scope }, ...children);
-  if (review.state === 'changes-requested') {
-    return box(el('h3', { class: 'section-title' }, 'Changes requested'),
-      el('p', { role: 'status' }, review.stalled
-        ? `You asked for changes to the version checked at ${sha7}, but this step has used all its repair rounds, so it stopped. Nothing of it was published or merged.`
-        : `You asked for changes to the version checked at ${sha7}${review.requestedAt ? ` at ${clock(review.requestedAt)}` : ''}. AIWorks repairs this step within the approved plan; a fresh independent check comes before anything is published or merged. The earlier check stays on record.`),
-      previewSection(review, binding));
-  }
+  if (review.state === 'changes-requested') return box(el('h3', { class: 'section-title' }, 'Changes requested'), ...reviewActions(review, binding), previewSection(review, binding));
   if (review.state === 'no-evidence') {
     return box(el('h3', { class: 'section-title' }, 'Review'), el('p', {}, 'No independent check of this version is on record, so it cannot be accepted here.'), previewSection(review, binding));
   }
+  return box(
+    el('h3', { class: 'section-title' }, 'Review of the checked version'),
+    review.summary ? el('p', {}, `The independent checker: ${review.summary}`) : null,
+    previewSection(review, binding),
+    el('ol', { class: 'review-criteria', 'aria-label': 'Done-when criteria and their evidence' }, ...review.criteria.map((item) => el('li', {},
+      el('span', {}, item.text), ' ', el('span', { class: `badge ${CRITERION_WORDS[item.result][0]}` }, CRITERION_WORDS[item.result][1]),
+      el('div', { class: 'subtext' }, item.check ? `Checked: ${item.check}` : 'The checker reported no check for this criterion.'),
+      item.evidence ? el('div', { class: 'subtext' }, `Evidence: ${item.evidence}`) : null))),
+    review.findings.length ? el('div', {}, el('strong', {}, 'Findings'), el('ul', {}, ...review.findings.map((f) => el('li', {}, `${f.severity === 'blocking' ? 'Blocking' : 'Not blocking'}: ${f.description}`)))) : null,
+    review.eyesOn.length ? el('div', {}, el('strong', {}, 'Where your eyes matter'), el('ul', {}, ...review.eyesOn.map((item) => el('li', {}, item)))) : null,
+    ...reviewActions(review, binding));
+}
+
+/**
+ * What the owner can do with a checked result, on its Review and on its Needs you card alike: where it stands, Accept
+ * result and Request changes, each bound to exactly the version that passed the check and its report (sendReview). The
+ * controls are named for the goal and step, so two results on one page never share an id or a draft. Request changes
+ * reopens the step as a repair round of the approved plan; nothing is merged from here.
+ */
+function reviewActions(review, binding) {
+  if (review.state === 'changes-requested') {
+    return [el('p', { role: 'status' }, review.stalled
+      ? 'You asked for changes to this checked version, but this step has used all its repair rounds, so it stopped. Nothing of it was published or merged.'
+      : `You asked for changes to this checked version${review.requestedAt ? ` at ${clock(review.requestedAt)}` : ''}. AIWorks repairs this step within the approved plan; a fresh independent check comes before anything is published or merged. The earlier check stays on record.`)];
+  }
+  if (review.state === 'no-evidence') return [el('p', {}, 'No independent check of this version is on record, so it cannot be accepted here.')];
   const off = reviewBusy || commandsOff(), address = current.address, key = `review:${binding.campaignId}/${binding.taskId}/${review.verifiedSha}`;
+  const ids = `${binding.campaignId}-${binding.taskId}`;
   const u = review.unresolved, open = u.failed + u.notChecked + u.blocking;
   const draft = drafts.get(address, key) ?? { text: '', criterion: '' };
-  const words = el('textarea', { id: `review-text-${binding.taskId}`, rows: 3, maxlength: 2000, required: true,
+  const words = el('textarea', { id: `review-text-${ids}`, rows: 3, maxlength: 2000, required: true,
     oninput: () => drafts.set(address, key, { text: words.value, criterion: which.value }) });
   words.value = draft.text ?? '';
-  const which = el('select', { id: `review-criterion-${binding.taskId}`, onchange: () => drafts.set(address, key, { text: words.value, criterion: which.value }) },
+  const which = el('select', { id: `review-criterion-${ids}`, onchange: () => drafts.set(address, key, { text: words.value, criterion: which.value }) },
     el('option', { value: '' }, 'The result as a whole'), ...review.criteria.map((item) => el('option', { value: String(item.criterion) }, `${item.criterion}. ${item.text}`)));
   which.value = draft.criterion ?? '';
-  const form = review.canRequestChanges ? el('form', { novalidate: true, class: 'start-form', 'data-focus-scope': `${scope}/changes`,
+  const form = review.canRequestChanges ? el('form', { novalidate: true, class: 'start-form', 'data-focus-scope': `review/${binding.campaignId}/${binding.taskId}/changes`,
     onsubmit: (event) => {
       event.preventDefault();
       if (off || !validateForm(form)) return;
@@ -3003,25 +3157,16 @@ function reviewPanel(review, binding, { merged = false } = {}) {
     el('div', { class: 'campaign-controls' }, el('button', { class: 'button secondary', type: 'submit', disabled: off }, 'Request changes'))) : null;
   const accepted = review.state === 'accepted' ? `You accepted this version at ${clock(review.acceptedAt)}. ${review.mergeGate === 'on' ? 'The merge gate merges it when its own conditions hold.' : 'Merging follows this project’s own gate.'}`
     : review.state === 'merged' ? 'This version is merged.' : null;
-  return box(
-    el('h3', { class: 'section-title' }, `Review of the version checked at ${sha7}`),
-    review.summary ? el('p', {}, `The independent checker: ${review.summary}`) : null,
-    previewSection(review, binding),
+  return [
     el('p', { role: 'status' }, open ? `Not complete: ${[u.failed ? `${plural(u.failed, 'criterion', 'criteria')} failed` : null, u.notChecked ? `${plural(u.notChecked, 'criterion', 'criteria')} not checked` : null,
       u.blocking ? `${plural(u.blocking, 'blocking finding')} open` : null].filter(Boolean).join(' · ')}.` : 'Every criterion passed the independent check.'),
-    el('ol', { class: 'review-criteria', 'aria-label': 'Done-when criteria and their evidence' }, ...review.criteria.map((item) => el('li', {},
-      el('span', {}, item.text), ' ', el('span', { class: `badge ${CRITERION_WORDS[item.result][0]}` }, CRITERION_WORDS[item.result][1]),
-      el('div', { class: 'subtext' }, item.check ? `Checked: ${item.check}` : 'The checker reported no check for this criterion.'),
-      item.evidence ? el('div', { class: 'subtext' }, `Evidence: ${item.evidence}`) : null))),
-    review.findings.length ? el('div', {}, el('strong', {}, 'Findings'), el('ul', {}, ...review.findings.map((f) => el('li', {}, `${f.severity === 'blocking' ? 'Blocking' : 'Not blocking'}: ${f.description}`)))) : null,
-    review.eyesOn.length ? el('div', {}, el('strong', {}, 'Where your eyes matter'), el('ul', {}, ...review.eyesOn.map((item) => el('li', {}, item)))) : null,
     accepted ? el('p', { role: 'status' }, accepted) : null,
     // You accept results yourself here (AW-015): the merge gate holds this version until you accept it or ask for changes.
     review.awaitsAcceptance ? el('p', { role: 'status' }, 'Waiting for you: you accept results yourself in this project, so this version is not merged until you accept it.') : null,
     !review.local && review.state === 'ready' && !review.canAccept && (u.failed || u.blocking) ? el('p', { class: 'subtext' }, COMMANDS.result.unresolved) : null,
     review.canAccept ? el('div', { class: 'campaign-controls' }, button('Accept result', () => sendReview('accept', binding, review, {}, { address }), '', off),
       el('span', { class: 'subtext' }, review.mergeGate === 'on' ? 'Records your acceptance; the merge gate merges it when its own conditions hold.' : 'Records your acceptance. Nothing is merged from here.')) : null,
-    form);
+    form].filter(Boolean);
 }
 
 /**
@@ -3038,7 +3183,7 @@ function stepScreen(project, c, task) {
     : delivery?.route ? routeLink(delivery.route.label, delivery.route.address, 'button')
     : task.resultUrl ? link(number ? `Open pull request #${number} ↗` : 'Open the result ↗', delivery?.url ?? task.resultUrl, 'button')
       : unfinished && c.controls?.more.length ? button('Send guidance', () => openInstructions(c, task), '', commandsOff()) : null;
-  const last = task.verifiedSha ? `Passed the check at commit ${task.verifiedSha.slice(0, 7)}` : outcomeText(task.lastOutcome);
+  const last = task.verifiedSha ? 'Passed the independent check' : outcomeText(task.lastOutcome);
   const meaning = task.verifiedSha ? null : resultMeaning(task.lastOutcome, { stopped: Boolean(task.stopped), check: canCheckAgain(c, task) });
   const guidance = (c.instructions ?? []).filter((item) => item.taskId === task.id);
   const reading = readingLines(task.reading);
@@ -3071,10 +3216,10 @@ function stepScreen(project, c, task) {
         ? el('div', { class: 'campaign-controls' }, primary, button('Check again', () => command(c, 'recheck', task), 'secondary', commandsOff())) : primary,
       guidance.length ? el('div', { class: 'instruction-list' }, el('h3', { class: 'section-title' }, 'Guidance you sent'), ...guidance.map((item) => instructionReceipt(item, c))) : null,
       disclosure(`step/${c.id}/${task.id}/details`, `Details · ${plural(attempts.length, 'attempt')}`, el('div', {},
-        attempts.length ? el('ol', { class: 'receipt-steps' }, ...attempts.map((a) => el('li', {}, attemptText(a), a.id ? el('div', { class: 'subtext' }, `Run ${a.id}`) : null)))
+        attempts.length ? el('ol', { class: 'receipt-steps' }, ...attempts.map((a) => el('li', {}, attemptText(a))))
           : el('p', { class: 'subtext' }, 'No attempt has run yet.'),
-        activityList(30, events),
-        el('p', { class: 'subtext' }, `Step ${task.id} · campaign ${c.id} · `, link('step issue ↗', task.issueUrl))))))];
+        activityList(30, events, { technical: false }),
+        el('p', { class: 'subtext' }, link('Step issue on GitHub ↗', task.issueUrl))))))];
 }
 
 /*
@@ -4153,7 +4298,7 @@ function itemParts(number) {
   }
   const review = v.kind === 'review' ? (worklist()?.reviews ?? []).find((row) => row.number === v.number) : null;
   const c = v.campaignId ? campaignById(v.campaignId) : null, task = c?.tasks.find((t) => t.id === v.taskId);
-  const other = v.state === 'open' ? 'closed' : 'open', sha7 = v.verifiedSha ? ` at commit ${v.verifiedSha.slice(0, 7)}` : '';
+  const other = v.state === 'open' ? 'closed' : 'open';
   return [el('section', { class: 'panel', 'aria-labelledby': 'worklist-item-title', 'data-focus-scope': `worklist/item/${number}` },
     el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'worklist-item-title', class: 'work-text' }, v.title), el('p', {}, worklistMeta(v))),
       button(v.state === 'open' ? 'Close item' : 'Reopen item', () => void sendWorklist('/api/work-list/state', { number, version: v.version, state: other }, { number }), 'secondary', worklistOff())),
@@ -4162,8 +4307,8 @@ function itemParts(number) {
         ? 'The page is disconnected; it reads this item again when it reconnects.' : entry.error.message}`) : null,
       // A local review is checked, never merged or accepted by itself (OWNER_WORKSPACE §2.3).
       v.kind === 'review' ? el('p', { class: 'notice warning local-review' }, review?.mergedAt
-        ? `Local review: passed the independent check${sha7} and merged into local main ${clock(review.mergedAt)}. Merged is not accepted.`
-        : `Local review: passed the independent check${sha7} on this computer. Not merged and not accepted.`) : null,
+        ? `Local review: passed the independent check and merged into local main ${clock(review.mergedAt)}. Merged is not accepted.`
+        : `Local review: passed the independent check on this computer. Not merged and not accepted.`) : null,
       v.source ? el('p', { class: 'subtext' }, 'Imported from ', link(`GitHub issue #${v.number} ↗`, v.source.url), ` as it was at ${dateTime(v.source.updatedAt)}.`) : null,
       task ? el('p', { class: 'subtext' }, 'Step: ', routeLink(task.outcome ?? task.title ?? task.id, { screen: 'step', project: c.repository, work: c.id, step: task.id }), ` · ${campaignTitle(c)}`) : null,
       el('div', { class: 'work-text' }, v.body || 'No details.'),
