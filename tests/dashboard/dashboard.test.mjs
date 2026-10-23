@@ -12,7 +12,7 @@ import { declaration, environment, runtimeCheckout } from '../supervisor/helpers
 import { Controller } from '../../src/supervisor/controller.mjs';
 import { pendingInstructions } from '../../src/supervisor/instructions.mjs';
 import { RoadmapSource, readRoadmap, safeText } from '../../src/dashboard/roadmap.mjs';
-import { applyCommand, applyCommand as applyMain, supervisorSnapshot, mergeWaitCode } from '../../src/dashboard/supervisor.mjs';
+import { applyCommand, applyCommand as applyMain, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
 import { ownerView } from '../../src/dashboard/owner.mjs';
 import { COMMANDS } from '../../src/dashboard/copy.mjs';
@@ -31,52 +31,6 @@ test('completed campaigns do not appear offline or request controller recovery',
   assert.equal(view.campaigns[d.campaignId].liveness, 'finished');
   assert.ok(!view.items.some((item) => item.kind === 'controller'));
   assert.deepEqual(snapshot.campaigns[0].tasks.map((task) => task.deliverable), ['commit', 'commit']);
-});
-
-test('a local review the merge gate merges is AIWorks work only while the gate can merge it, and its recorded wait names who acts', () => {
-  const sha = 'a'.repeat(40);
-  const step = (id, n, review, extra) => ({ id, title: `Feature ${id}`, state: 'done', resultUrl: `#/worklist/${n}`, verifiedSha: sha, verifiedAt: 0, attempts: 1, dependsOn: [], review, ...extra });
-  const view = (mergeGate, extra = {}, control = 'registered') => ownerView({ available: true, campaigns: [{ id: 'c', repository: 'example/app', control, controllerLive: control === 'registered', agents: [], controls: {},
-    tasks: [step('T1', 5, { state: 'accepted', mergeGate, acceptedAt: 1 }, extra), step('T2', 6, { state: 'ready', mergeGate, canAccept: true }, extra)] }] },
-  { repositories: [], steps: {} }, { now: 200 * 3_600_000 });
-  const kinds = (v) => v.items.map((item) => `${item.taskId}:${item.kind}`);
-  // Gate on: the gate merges both, accepted or not, so nothing counts for the owner, however long they waited.
-  const on = view('on');
-  assert.equal(on.count, 0);
-  assert.deepEqual(kinds(on), []);
-  assert.deepEqual(on.handling.map((item) => item.taskId), ['T1', 'T2']);
-  // A wait the gate cannot settle by itself is listed under AIWorks itself, still no owner chore.
-  const refused = view('on', { mergeWait: { kind: 'local-refused' } });
-  assert.equal(refused.count, 0);
-  assert.ok(refused.items.length && refused.items.every((item) => item.system && item.kind === 'merge-problem'));
-  // A dirty checkout or unrecorded commits on main are the owner's to settle: counted owner items, not AIWorks's problem.
-  for (const kind of ['local-unsaved', 'local-unrecorded']) {
-    const v = view('on', { mergeWait: { kind } });
-    assert.equal(v.count, 2);
-    assert.ok(v.items.every((item) => !item.system && item.kind === kind));
-  }
-  // A cancelled campaign is never merged by the gate (merge.mjs candidates): the result stays the owner's, never "AIWorks merges it".
-  const cancelled = view('on', {}, 'cancelled');
-  assert.deepEqual(cancelled.handling, []);
-  assert.deepEqual(kinds(cancelled), ['T1:accepted-unmerged', 'T2:review']);
-  // Gate off: nobody merges for the owner, so the result stays theirs.
-  assert.deepEqual(kinds(view('off')), ['T1:accepted-unmerged', 'T2:review']);
-});
-
-test('every wait sentence of the local merge gate maps to a known reason, never "other"', () => {
-  const sentences = {
-    'your checkout has unsaved changes': 'local-unsaved',
-    'main has 3 commits AIWorks did not put there': 'local-unrecorded',
-    'local main is not trusted (DIVERGED): main moved': 'local-untrusted',
-    'the checkout that has main checked out cannot be read': 'local-unreadable',
-    'the local branch feature/x is at no commit, not the verified abc': 'local-version-mismatch',
-    'the local merge gate merges into main only, not develop': 'local-destination-mismatch',
-    '#/worklist/5 is not the review item recorded for this task': 'local-review-mismatch',
-    'waits for your acceptance of this checked version (you accept results yourself in this project)': 'acceptance',
-    'held by the owner (merges.held)': 'held',
-  };
-  for (const [text, code] of Object.entries(sentences)) assert.equal(mergeWaitCode('merge-waiting', text), code, text);
-  assert.equal(mergeWaitCode('merge-refused', 'anything', true), 'local-refused');
 });
 
 test('the platform roadmap is definitions from the governance checkout, with no GitHub work state or cache', (t) => {

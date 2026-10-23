@@ -47,20 +47,20 @@ function readOnly(dataDir, fn, fallback) {
   try { store = new Store(storePath(dataDir), { readOnly: true }); return fn(store); } catch { return fallback; } finally { store?.close(); }
 }
 
-/** One list row: allowlisted fields only, never a body. */
-const row = (entry) => ({ number: entry.number, kind: entry.kind, kindWord: KIND_WORDS[entry.kind] ?? 'Item', title: safeText(entry.title, 256), state: entry.state,
+/** One list row: allowlisted fields only, never a body. `merged` is a review whose verified commit the local merge gate recorded on main. */
+const row = (entry, merged = new Set()) => ({ number: entry.number, kind: entry.kind, kindWord: KIND_WORDS[entry.kind] ?? 'Item', title: safeText(entry.title, 256), state: entry.state,
   labels: (entry.labels ?? []).slice(0, 10).map((label) => safeText(label, 50)), needsOwner: entry.needs_owner === true,
   campaignId: entry.campaign_id ? safeText(entry.campaign_id, 128) : null, taskId: entry.task_id ? safeText(entry.task_id, 128) : null,
-  author: AUTHOR_WORDS[entry.author_kind] ?? 'Unknown', updatedAt: isoTime(entry.updated_at) });
+  author: AUTHOR_WORDS[entry.author_kind] ?? 'Unknown', updatedAt: isoTime(entry.updated_at), merged: merged.has(entry.number) });
 
 /**
  * The checked local reviews (section 5.2): each `review` item the supervisor recorded, with its verified commit, and
  * whether the local merge gate recorded that very commit on main. Checked is never merged, and merged is never accepted.
  */
-function reviewRows(store, repository) {
+function reviewRows(store, repository, limit = MAX_REVIEWS) {
   const merges = repository ? mainLedger(store, repository).filter((entry) => entry.kind === 'gate-merge') : [];
   return store.all(`SELECT number, title, state, campaign_id, task_id, verified_sha, updated_at FROM work_items
-    WHERE kind = 'review' AND author_kind = 'supervisor' ORDER BY number DESC LIMIT ${MAX_REVIEWS}`).map((entry) => {
+    WHERE kind = 'review' AND author_kind = 'supervisor' ORDER BY number DESC${limit ? ` LIMIT ${limit}` : ''}`).map((entry) => {
     const merged = merges.find((merge) => merge.verified_sha === entry.verified_sha && merge.campaign_id === entry.campaign_id && merge.task_id === entry.task_id);
     return { number: entry.number, title: safeText(entry.title, 256), state: entry.state, campaignId: entry.campaign_id, taskId: entry.task_id,
       verifiedSha: /^[0-9a-f]{40}$/.test(entry.verified_sha ?? '') ? entry.verified_sha : null, mergedAt: merged ? isoTime(merged.recorded_at) : null,
@@ -80,11 +80,13 @@ export function workListView(dataDir, { closeOn = CLOSE_IMPORTED_ON } = {}) {
     imported: { candidates: [], closeOn, max: MAX_CONFIRM } };
   return readOnly(dataDir, (store) => {
     if (!present(store)) return { ...off, readable: true };
-    const all = items(store);
+    const all = items(store), reviews = reviewRows(store, repository, null);
+    // Merged results stay open as history; they are told apart from unfinished work, never closed here.
+    const merged = new Set(reviews.filter((review) => review.mergedAt).map((review) => review.number));
     const candidates = repository ? closeCandidates(store, repository).map((entry) => ({ ...entry, title: safeText(item(store, entry.number)?.title, 256) })) : [];
-    return { available: Boolean(repository) || all.length > 0, readable: true, repository, total: all.length, items: all.slice(0, MAX_ITEMS).map(row),
-      decisions: all.filter((entry) => entry.state === 'open' && entry.needs_owner === true && entry.kind === 'decision').map(row),
-      reviews: reviewRows(store, repository), imported: { candidates, closeOn, max: MAX_CONFIRM } };
+    return { available: Boolean(repository) || all.length > 0, readable: true, repository, total: all.length, items: all.slice(0, MAX_ITEMS).map((entry) => row(entry, merged)),
+      decisions: all.filter((entry) => entry.state === 'open' && entry.needs_owner === true && entry.kind === 'decision').map((entry) => row(entry)),
+      reviews: reviews.slice(0, MAX_REVIEWS), imported: { candidates, closeOn, max: MAX_CONFIRM } };
   }, off);
 }
 
