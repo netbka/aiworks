@@ -3083,7 +3083,7 @@ function previewSection(review, binding) {
   if (!review.preview.available) return section(el('p', { class: 'subtext' }, `Preview not available: ${review.preview.reason}`));
   const server = review.preview.runtime === 'server';
   const identity = el('p', { class: 'subtext' }, 'The checked version', server
-    ? ', exactly as it passed the check. Opening it starts that version’s own server on this computer, reachable only from here and stopped after 10 minutes or when the preview closes; nothing is installed or built. Its pages run in a sealed frame that cannot reach this dashboard or the internet.'
+    ? ', exactly as it passed the check. Opening it starts that version’s own server on this computer, reachable only from here and stopped after 10 minutes or when the preview closes; nothing is built and no install script runs. Its pages run in a sealed frame that cannot reach this dashboard or the internet.'
     : ', exactly as it passed the check. Its pages run in a sealed frame: they cannot reach this dashboard or the internet, and nothing of the project is built or started on this computer.');
   // Each control names its preview: the refresh keeps a button that shows exactly the same, with its own action, so two
   // results' identical buttons must never be mistaken for each other.
