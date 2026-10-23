@@ -14,6 +14,7 @@ import { mergeSettings } from '../supervisor/merge.mjs';
 import { previewManifest, previewSupport, PreviewError, PreviewSessions } from '../supervisor/preview.mjs';
 import { captureSupport, CaptureError } from '../supervisor/preview-capture.mjs';
 import { serverPreviewDeclaration, serverPreviewPlan, serverPreviewSupport } from '../supervisor/preview-server.mjs';
+import { packageCacheOf } from '../supervisor/preview-packages.mjs';
 import { resolveCheckout, resolveLocalProject } from '../supervisor/project-connect.mjs';
 import { configuredGitCommand } from './merges.mjs';
 import { roleUnavailableReason, runNotCounted } from '../supervisor/adapters/executors.mjs';
@@ -1631,7 +1632,7 @@ function checkedPreviewSource(dataDir, input, config) {
     ...(declared ? { server: declared } : {}) };
   if (declared?.error) throw fail(409, declared.error);
   try {
-    if (declared) return { kind: 'server', git, repoPath, sha: input.verifiedSha, plan: serverPreviewPlan({ git, repoPath, sha: input.verifiedSha, declaration: declared }), binding };
+    if (declared) return { kind: 'server', git, repoPath, sha: input.verifiedSha, plan: serverPreviewPlan({ git, repoPath, sha: input.verifiedSha, declaration: declared, packageCache: packageCacheOf(config) }), binding };
     return { kind: 'static', git, repoPath, sha: input.verifiedSha, manifest: previewManifest({ git, repoPath, sha: input.verifiedSha }), binding };
   } catch (error) { if (error instanceof PreviewError) throw fail(409, error.message); throw error; }
 }
