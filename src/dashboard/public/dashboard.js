@@ -1555,7 +1555,7 @@ function needsItem(item) {
       item.action ? el('div', { class: 'needs-action' }, item.action) : null,
       el('div', { class: 'needs-text' }, el('span', {}, `${item.text}${when}`)),
       item.why ? el('p', { class: 'needs-why' }, item.why) : null,
-      item.evidence ? el('div', { class: 'evidence' }, item.evidence) : null,
+      item.evidence && !['review', 'accept', 'unchecked'].includes(item.kind) ? el('div', { class: 'evidence' }, item.evidence) : null,
       item.mergeCheck ? el('div', { class: 'needs-stale' }, mergeAsOf(item.mergeCheck)) : null),
     item.points.length ? el('div', { class: 'needs-impact' }, ...item.points.map((point) => el('div', { class: 'needs-point' },
       point.link ? link(`${point.link.label} ↗`, point.link.url, 'needs-link') : null, el('span', {}, point.text)))) : null,
@@ -2635,7 +2635,7 @@ function trustedMainLines(trusted) {
   const backup = trusted.backup;
   return [el('p', {}, `${trusted.repository}: the approved project version is kept on this computer. ${TRUST_WORDS[trusted.state] ?? 'Trust not known'}.`),
     Number.isSafeInteger(trusted.unrecordedCount) && trusted.unrecordedCount > 0
-      ? el('p', { class: 'subtext' }, `${plural(trusted.unrecordedCount, 'saved change')} made outside AIWorks still need your trust.`) : null,
+      ? el('p', { class: 'subtext' }, `${plural(trusted.unrecordedCount, 'saved change')} made outside AIWorks still ${trusted.unrecordedCount === 1 ? 'needs' : 'need'} your trust.`) : null,
     trusted.record ? el('div', { 'data-focus-scope': 'connections/trusted-main' },
       el('p', { class: 'subtext local-text' }, 'Trust these changes only if you know and approve the changes made outside AIWorks. This records your approval; it changes no files. Changes to AIWorks’s worker controls still require independent review.'),
       // Exact identities stay bound to the button so a refresh cannot retain approval for different changes.
