@@ -1566,20 +1566,21 @@ const needsGroup = (group) => el('section', { class: 'needs-group', 'aria-labell
 
 /**
  * What AIWorks is handling itself (owner.mjs `handling`): routine merge waits its gate or a repair round settles within
- * the authority already given, each with the recorded reason, or that none is recorded, and what happens next. Listed
+ * the authority already given, and answers or requested changes the owner already sent that AIWorks has yet to apply,
+ * each with the recorded reason, or that none is recorded, and what happens next. Listed
  * so nothing stalled is hidden; never counted, because none needs the owner.
  */
 function handlingList(handling) {
   if (!handling.length) return null;
   return el('section', { class: 'needs-group needs-handling', 'aria-labelledby': 'needs-handling-title', 'data-focus-scope': 'needs/handling' },
     el('h3', { id: 'needs-handling-title', class: 'section-title' }, `AIWorks is handling (${handling.length}) · not counted`),
-    el('p', { class: 'subtext' }, 'Routine waits AIWorks settles itself, inside the authority you already gave it. Nothing here needs you.'),
+    el('p', { class: 'subtext' }, 'What you already settled and routine waits, continued by AIWorks inside the authority you already gave it. Nothing here needs you.'),
     el('ul', { class: 'needs-list' }, ...handling.map((entry) => el('li', { class: 'needs-item handling', 'data-focus-scope': `needs-handling/${entry.campaignId}/${entry.taskId}` },
       el('div', { class: 'needs-body' },
         el('div', { class: 'needs-context' }, [`Project ${projectName(entry.repository)}`, campaignById(entry.campaignId) ? workName(campaignById(entry.campaignId)) : null].filter(Boolean).join(' · ')),
         el('div', { class: 'needs-text' }, el('span', {}, entry.text)),
         el('p', { class: 'needs-why' }, `${entry.reason}. ${entry.next}`),
-        entry.since ? el('div', { class: 'subtext' }, `Passed the check ${dateTime(entry.since)}`) : null),
+        entry.since ? el('div', { class: 'subtext' }, `${entry.sinceWords ?? 'Passed the check'} ${dateTime(entry.since)}`) : null),
       el('div', { class: 'needs-actions needs-secondary' }, routeLink('Open the step', { screen: 'step', project: entry.repository, work: entry.campaignId, step: entry.taskId }, 'needs-link'))))));
 }
 
@@ -3155,7 +3156,7 @@ function reviewActions(review, binding) {
     el('label', { class: 'field' }, el('strong', {}, 'What should change'), words),
     el('p', { class: 'subtext' }, `AIWorks reopens this step as a repair round within the approved plan${review.roundsLeft === null ? '' : ` (${plural(review.roundsLeft, 'round')} left)`}. A wider change needs a new plan. No secrets; up to 2,000 characters.`),
     el('div', { class: 'campaign-controls' }, el('button', { class: 'button secondary', type: 'submit', disabled: off }, 'Request changes'))) : null;
-  const accepted = review.state === 'accepted' ? `You accepted this version at ${clock(review.acceptedAt)}. ${review.mergeGate === 'on' ? 'The merge gate merges it when its own conditions hold.' : 'Merging follows this project’s own gate.'}`
+  const accepted = review.state === 'accepted' ? `You accepted this version at ${clock(review.acceptedAt)}. ${review.mergeGate === 'on' ? 'AIWorks merges it when its merge conditions hold.' : 'Merging follows this project’s own rules: AIWorks merges only in projects where you allowed it.'}`
     : review.state === 'merged' ? 'This version is merged.' : null;
   return [
     el('p', { role: 'status' }, open ? `Not complete: ${[u.failed ? `${plural(u.failed, 'criterion', 'criteria')} failed` : null, u.notChecked ? `${plural(u.notChecked, 'criterion', 'criteria')} not checked` : null,
@@ -3165,7 +3166,7 @@ function reviewActions(review, binding) {
     review.awaitsAcceptance ? el('p', { role: 'status' }, 'Waiting for you: you accept results yourself in this project, so this version is not merged until you accept it.') : null,
     !review.local && review.state === 'ready' && !review.canAccept && (u.failed || u.blocking) ? el('p', { class: 'subtext' }, COMMANDS.result.unresolved) : null,
     review.canAccept ? el('div', { class: 'campaign-controls' }, button('Accept result', () => sendReview('accept', binding, review, {}, { address }), '', off),
-      el('span', { class: 'subtext' }, review.mergeGate === 'on' ? 'Records your acceptance; the merge gate merges it when its own conditions hold.' : 'Records your acceptance. Nothing is merged from here.')) : null,
+      el('span', { class: 'subtext' }, review.mergeGate === 'on' ? 'Approves exactly this version; AIWorks merges it when its merge conditions hold.' : 'Approves exactly this version and takes it off Needs you. Merging follows this project’s own rules: AIWorks merges only in projects where you allowed it.')) : null,
     form].filter(Boolean);
 }
 
@@ -3181,7 +3182,8 @@ function stepScreen(project, c, task) {
   // With a decision to answer on this screen, Send answer is the one primary action; the step issue is secondary.
   const primary = task.stopped ? primaryAction(task.stopped.primary, task.decision && !task.decision.answered ? 'button secondary' : 'button')
     : delivery?.route ? routeLink(delivery.route.label, delivery.route.address, 'button')
-    : task.resultUrl ? link(number ? `Open pull request #${number} ↗` : 'Open the result ↗', delivery?.url ?? task.resultUrl, 'button')
+    // A checked result is resolved in its Review below; its pull request is supporting reference, never the primary action.
+    : task.resultUrl ? link(number ? `Pull request #${number} ↗` : 'Open the result ↗', delivery?.url ?? task.resultUrl, task.review ? 'needs-link' : 'button')
       : unfinished && c.controls?.more.length ? button('Send guidance', () => openInstructions(c, task), '', commandsOff()) : null;
   const last = task.verifiedSha ? 'Passed the independent check' : outcomeText(task.lastOutcome);
   const meaning = task.verifiedSha ? null : resultMeaning(task.lastOutcome, { stopped: Boolean(task.stopped), check: canCheckAgain(c, task) });

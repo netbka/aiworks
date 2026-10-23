@@ -62,9 +62,9 @@ export function mergeCheck(merges, repository, now = Date.now()) {
 const NOTES = { published: 'Your review and merge', 'report-posted': 'For you to read and decide on',
   checking: 'Checking the base branch for the merge; check again shortly',
   'fetch-failed': 'The last check of the base branch failed; showing the last known state',
-  'no-checkout': 'This computer has no checkout of the repository configured, so the merge cannot be seen here; check the pull request',
-  'no-verified-sha': 'No verified commit is recorded, so the merge cannot be checked here; check the pull request',
-  'no-link': 'No result link was recorded; check the step issue' };
+  'no-checkout': 'This computer has no checkout of the repository configured, so AIWorks cannot see the merge here',
+  'no-verified-sha': 'No independent check is recorded, so AIWorks cannot see the merge here',
+  'no-link': 'AIWorks did not record where this result went' };
 
 /**
  * Owner-facing state of a finished step: merged, published (merge not seen yet), report posted, or unknown when no
@@ -130,6 +130,20 @@ function mergeWaitWords(merger, wait) {
   return wait ? DELEGATED.waits[wait] ?? DELEGATED.waits.other : { routine: true, ...DELEGATED.unknown };
 }
 
+/** Who merges a result in a repository AIWorks may not merge in: said once, the same on every screen. */
+const OWN_MERGE = 'Merging follows this project’s own rules: AIWorks merges only in projects where you allowed it';
+
+/**
+ * What the owner already settled on a step, so it waits for AIWorks, not for them (`handling`, never counted): an answer
+ * to its decision that the controller has not applied yet, or requested changes it has not reopened yet. Null otherwise.
+ */
+function ownerSettled(base, task) {
+  const entry = { ...base, taskId: task.id, text: label(task), recorded: true };
+  if (task.decision?.answered) return { ...entry, reason: 'Your answer is recorded', next: 'AIWorks resumes this step with it on its next pass.', since: task.decision.answered.at ?? null, sinceWords: 'Answered' };
+  if (task.review?.state === 'changes-requested') return { ...entry, reason: 'Your requested changes are recorded', next: 'AIWorks reopens this step as a repair round within the approved plan.', since: task.review.requestedAt ?? null, sinceWords: 'Requested' };
+  return null;
+}
+
 const LOCAL_NOTES = { published: 'Checked on this computer and recorded in the work list; not merged into local main yet',
   checking: NOTES.checking, 'no-verified-sha': 'No verified commit is recorded, so the merge cannot be checked here',
   'not-checked': 'The merge into local main cannot be seen on this computer; open the work list' };
@@ -182,6 +196,7 @@ export function resultEvidence(task) {
  */
 export const RESULT_GROUPS = [
   { key: 'review', title: 'Waiting for your review' },
+  { key: 'accepted', title: 'Accepted by you · not merged yet' },
   { key: 'local-review', title: 'Checked on this computer · not merged yet' },
   { key: 'delegated', title: 'Being merged for you' },
   { key: 'closed', title: 'Closed without merging' },
@@ -238,6 +253,8 @@ function resultRow(c, task, d, releases, recorded = null) {
     word: d.held ? DELEGATED.heldRow(number, DELEGATED.held[d.held]) : d.stalled ? DELEGATED.waitedRow(d.stalled) : DELEGATED.row(number, d.by) };
   // A merge check that can still come shortly: the state is not known yet, so it is neither waiting nor merged.
   if (d.pending) return { ...base, ...proof, group: 'unknown', word: 'Not known yet', note: d.note, link };
+  // Accepted by the owner where AIWorks may not merge: their decision is recorded, merging follows the project's own rules.
+  if (task.review?.state === 'accepted') return { ...base, ...proof, group: 'accepted', word: 'Accepted by you · not merged yet', note: OWN_MERGE, link };
   return { ...base, ...proof, group: 'review', word: `Pull request #${number} · waiting for your review`,
     note: d.reason ? d.note : 'The merge is not seen on the base branch yet', link };
 }
@@ -368,17 +385,20 @@ function finishedSummary(c, steps, releases) {
   const state = (name) => count((step) => step.delivery?.state === name);
   const has = (n) => n === 1 ? 'has' : 'have';
   const missing = count((step) => !step.delivery), noLink = state('unknown'),
-    checking = count((step) => step.delivery?.pending), published = state('published') - checking,
+    checking = count((step) => step.delivery?.pending),
+    accepted = count((step) => step.delivery?.state === 'published' && !step.delivery.pending && step.task.review?.state === 'accepted'),
+    published = state('published') - checking - accepted,
     reports = state('report-posted'), merged = state('merged'), delegated = state('delegated'), unresolved = count((step) => unresolvedResult(step.task));
   // Merged work is ready for release only when every other step is a report: none unknown, being checked or unmerged,
   // and no result has a criterion failed or not checked, a blocking finding or requested changes (WP4).
-  const releaseReady = merged > 0 && !(missing + noLink + checking + published + delegated + unresolved);
+  const releaseReady = merged > 0 && !(missing + noLink + checking + published + accepted + delegated + unresolved);
   const parts = [
     unresolved ? `${plural(unresolved, 'step')} ${has(unresolved)} criteria not checked, failed or open findings; see ${unresolved === 1 ? 'its' : 'their'} evidence` : null,
     missing ? `${plural(missing, 'step')} ${has(missing)} no recorded result` : null,
     checking ? `the merge of ${plural(checking, 'step')} is being checked; check again shortly` : null,
     noLink ? `${plural(noLink, 'step')} ${has(noLink)} no recorded result link; check ${noLink === 1 ? 'its issue' : 'their issues'}` : null,
     published ? `${plural(published, 'step')} ${published === 1 ? 'waits' : 'wait'} for your review (merge not seen yet)` : null,
+    accepted ? `${plural(accepted, 'step')} accepted by you, not merged yet` : null,
     delegated ? DELEGATED.progress(delegated) : null,
     // A report is for the owner to read and decide on. A campaign of reports only shows the supervisor's own next action.
     reports ? reports === steps.length && REPORTS_ACTION.test(c.nextAction ?? '') ? c.nextAction : `${plural(reports, 'report')} posted for you to read` : null,
@@ -462,7 +482,9 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     // "Checking for merges" only while a merge check that can still come shortly is running or due. Every other
     // published step waits for the owner's review: its merge is not seen, whatever the reason.
     const checking = by('published').filter((step) => step.delivery.pending);
-    const awaiting = by('published').filter((step) => !step.delivery.pending), unknown = by('unknown');
+    // A result the owner accepted or asked to change no longer waits for their review (ownerSettled, OWN_MERGE).
+    const settledReview = (step) => ['accepted', 'changes-requested'].includes(step.task.review?.state);
+    const awaiting = by('published').filter((step) => !step.delivery.pending && !settledReview(step)), unknown = by('unknown');
     unknownResults += checking.length;
     const working = c.agents.filter((agent) => agentWorking(agent, now)).length;
     const leaseEnded = c.leaseExpiresAt ? Date.parse(c.leaseExpiresAt) : null;
@@ -509,6 +531,11 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
         route: reviewRoute(task), reference: reference(d), evidence: evidence.short, detail: evidence.text, points: [] });
     }
     // One item per step, led by what the step delivers. Nobody merges it for the owner here, so it waits for their review.
+    // Requested changes wait for AIWorks; an accepted version is in Results, merged by the project's own rules.
+    for (const { task } of by('published').filter((step) => !step.delivery.pending && settledReview(step))) {
+      const settled = ownerSettled(base, task);
+      if (settled) handling.push(settled);
+    }
     for (const { task, delivery: d } of awaiting.filter((step) => !accepting.includes(step))) {
       const waitingOn = c.tasks.filter((other) => other.state !== 'done' && other.dependsOn.includes(task.id));
       // A step starts from the base branch as it is at its first run and keeps that base (its worktree is created
@@ -522,12 +549,13 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       items.push({ ...base, taskId: task.id, kind: 'review', action: 'Review this result', text: label(task),
         why: !task.verifiedSha ? 'AIWorks published it, but no independent check of it is recorded here, so it cannot be accepted here. It waits for your review.'
           : d.local ? 'It passed the independent check on this computer and waits for your review before it is merged.'
-            : 'It passed the independent check. Nobody merges it for you in this project, so it waits for your review.',
+            : 'It passed the independent check. Accept it to approve exactly this version, or request changes to send it back.',
         route: reviewEntry(c, task) ? reviewRoute(task) : d.route ?? stepRoute(task), reference: reference(d),
         evidence: evidence.short, detail: evidence.text, mergeCheck: d.asOf,
         points: [
           // Why the merge cannot be seen at all on this computer, when that is the case.
           ['no-checkout', 'no-verified-sha'].includes(d.reason) ? `${d.note}.` : null,
+          task.verifiedSha && !d.local ? `${OWN_MERGE}.` : null,
           churn ? NEEDS.churn(task.attempts, task.verifierRejections) : null,
           gated.length ? NEEDS.gated(named(gated)) : pending.length ? NEEDS.buildsOn(named(pending))
             : started.length ? NEEDS.startedWithout(named(started), started.length)
@@ -540,6 +568,8 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     // settle by itself is listed under AIWorks itself, never as an owner chore; only a merge left to someone else that
     // waited past `stallHours` is the owner's, because AIWorks may not merge it. A hold the owner set stays in Results.
     for (const { task, delivery: d } of by('delegated').filter((step) => !step.delivery.held)) {
+      const settled = ownerSettled(base, task);
+      if (settled) { handling.push(settled); continue; }
       const words = mergeWaitWords(d.merger, d.wait);
       if (d.merger === 'aiworks' && words.routine) {
         if (d.stalled || d.wait) handling.push({ ...base, taskId: task.id, text: label(task), reason: words.reason, next: words.next, since: task.verifiedAt ?? null, recorded: Boolean(d.wait) });
@@ -547,11 +577,11 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
         items.push({ ...base, repository: null, about: c.repository, taskId: task.id, kind: 'merge-problem', system: true, action: 'AIWorks cannot finish this by itself',
           text: label(task), why: `${words.reason}. ${words.next}`, route: stepRoute(task), reference: reference(d),
           points: [{ link: null, text: 'Not an investigation for you: AIWorks keeps what it recorded for its maintainers. If this result should not continue, stop this work from its project.' }] });
-      } else if (d.stalled) {
+      } else if (d.stalled && task.review?.state !== 'accepted') {
         const evidence = reviewEvidence(task);
         items.push({ ...base, taskId: task.id, kind: 'merge-overdue', action: DELEGATED.overdue.action, text: label(task), why: DELEGATED.overdue.why(d.stalled),
           route: reviewRoute(task), reference: reference(d), evidence: evidence.short, detail: evidence.text, mergeCheck: d.asOf,
-          points: [{ link: null, text: 'Accepting records your decision for exactly this version; it does not merge. Request changes sends it back as a repair round within the approved plan.' }] });
+          points: [{ link: null, text: 'Accept approves exactly this version for whoever merges in this project. Request changes sends it back as a repair round within the approved plan.' }] });
       }
     }
     // A finished step whose result AIWorks did not record is AIWorks's own record problem, never an owner chore on GitHub.
@@ -572,6 +602,9 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
         points: [{ link: null, text: `${words.reason}. What to do: ${words.action}.` }] });
     }
     for (const task of cancelled ? [] : c.tasks.filter((item) => item.blocked && item.state !== 'done')) {
+      // An answered decision has left the owner's queue: it waits for AIWorks to resume the step with the answer.
+      const settled = task.decision?.answered ? ownerSettled(base, task) : null;
+      if (settled) { handling.push(settled); continue; }
       // A decision (WP2) is answered on its card or its step, snoozed or marked as not needing the owner. A step that
       // stopped for good takes the owner's guidance and Check again on its card: one more try within the same plan.
       const decision = task.blocked === 'B3' || Boolean(task.decision);
