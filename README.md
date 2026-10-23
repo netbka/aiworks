@@ -40,7 +40,7 @@ You end up as a full-time project manager for your AI helpers instead of working
 | 🔁 **Keeps work moving** | Starts the next step as soon as the last one is done. Restarts itself after a crash or a reboot and carries on where it stopped. When an AI service hits its usage limit, AIWorks waits for the reset and continues, without bothering you. |
 | 🔍 **Gets a second opinion on every change** | A fresh AI session that did not write the code checks each result. It runs the tests again on that exact version and looks for problems. Work that fails goes back for another round, with the findings attached. |
 | 📬 **Delivers to GitHub, where you already work** | Each finished step arrives as a pull request with the builder's report and the checker's verdict inside. Reports and research arrive as comments on the step's issue. |
-| 🙋 **Asks you only for real decisions** | One list, **Needs you**, shows the few things only you can do: make a decision, review a pull request, look at a step that stopped for good. AIWorks handles the rest. |
+| 🙋 **Asks you only for real decisions** | One list, **Needs you**, shows the few things only you can do, and you settle each one right there: answer a decision, accept a checked result or send it back with what should change, or guide a step that stopped for good and let it try again. Routine waits stay AIWorks's job. |
 | 🛡️ **Stays inside the lines you draw** | Runs only plans you approved. Merges a checked pull request only if you switch that on for the project. Never deploys or changes your accounts by itself. Runs on your PC, and its settings hold no passwords or keys. |
 
 ```mermaid
@@ -96,7 +96,7 @@ Day to day, you don't type commands. You work in the AIWorks dashboard on your c
 
 ### 2. Handle only what needs you
 
-**Needs you** collects the things only you can do, grouped by project: a decision an AI worker asked for, a pull request to review, a step that stopped and will not retry by itself. Each item says what to do next. Usage limits, pauses and routine waiting never end up here.
+**Needs you** collects the things only you can do, grouped by project: a decision an AI worker asked for, a checked result to review, a step that stopped and will not retry by itself. Each card says in business words what it is about and why you are needed, and you resolve it on the card: choose an option or write your answer, accept the result or request changes, or send guidance and check again. Something new to build is planned with *Plan different work* and starts only when you approve the plan. Usage limits, pauses, routine merge waits and AIWorks's own problems never count here; AIWorks lists what it is handling, so nothing stalls out of sight.
 
 <p align="center"><img src="docs/assets/readme/needs-me.png" alt="The Needs you screen: decisions and reviews grouped by project, each with what to do" width="100%"></p>
 

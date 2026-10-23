@@ -321,8 +321,9 @@ export async function journey(root) {
     record('undo-restores-folder', /^Undone/.test(undone) && read(join(notes, 'index.html')) === original && !existsSync(greeting) &&
       read(join(notes, 'README.md')).includes('An owner note'), { notice: undone });
 
-    // A step stops for the owner: Needs you and Home list it under its project; it is answered on Overview with a draft
-    // kept across navigation; the answer reaches the next try; the alert is recorded by the rehearsal transport only.
+    // A step stops for the owner: Needs you and Home list it under its project; it is answered on its Needs you card with a
+    // draft kept across navigation; the answer reaches the next try; the alert is recorded by the rehearsal transport only.
+    // Each decision's controls are named for that decision (decision-text-<id>), so two decisions on one page stay apart.
     const second = await plan('notes', 'Add a footer.');
     await ui(`location.hash = '#/p/notes/review/${second}'; await click('Approve and start');`);
     const needs = await waitFor(`const s = await api('/api/state'); return s.owner.count ? s.owner.groups.map((g) => g.name + ':' + g.items.map((i) => i.kind).join(',')).join(' ') : null;`);
@@ -332,11 +333,12 @@ export async function journey(root) {
       open: s.supervisor.local.filter((c) => !['finished', 'cancelled'].includes(c.control) && c.executors.includes('claude-cli')).length };`);
     record('ai-workers-count-local', workers.open >= 1 && workers.usedBy === workers.open, workers);
     await ui(`location.hash = '#/'; return 1;`);
-    const home = await waitFor(`return document.getElementById('decision-text') && main().includes('A step waits for your decision.') ? { card: true, project: true } : null;`, 30_000);
+    const home = await waitFor(`return document.querySelector('textarea[id^="decision-text-"]') && main().includes('A step waits for your decision.') ? { card: true, project: true } : null;`, 30_000);
     record('decision-on-home', Boolean(home), home);
     await shot('05-home-decision');
-    const answer = await ui(`location.hash = '#/needs'; await click('Answer'); type('decision-text', 'Stay on the free plan.'); location.hash = '#/needs'; await sleep(1200);
-      location.hash = '#/p/notes'; await sleep(1500); const kept = document.getElementById('decision-text').value; return { kept, notice: await press('Send answer') };`);
+    const answer = await ui(`location.hash = '#/needs'; await sleep(1500); const id = () => document.querySelector('textarea[id^="decision-text-"]').id;
+      type(id(), 'Stay on the free plan.'); location.hash = '#/p/notes'; await sleep(1200);
+      location.hash = '#/needs'; await sleep(1500); const kept = document.getElementById(id()).value; return { kept, notice: await press('Send answer') };`);
     record('decision-answered', answer.kept === 'Stay on the free plan.' && /Answer received/.test(answer.notice), answer);
     const resumed = await waitFor(`const s = await api('/api/state'); return s.work.local.notes.find((c) => c.id.includes('${second.slice(0, 8).toLowerCase()}'))?.results.length ? true : null;`);
     const runs = join(root, 'data', 'runs');
@@ -437,9 +439,9 @@ export async function journey(root) {
     const runtime = join(root, 'runtime');
     const handCommit = (file, text) => { mkdirSync(dirname(join(runtime, file)), { recursive: true }); writeFileSync(join(runtime, file), text);
       git(runtime, 'add', '--', file); git(runtime, 'commit', '-q', '-m', `owner: ${file}`); return git(runtime, 'rev-parse', 'HEAD'); };
-    // The offer for `newTip`, once the view and the open Connections page both show it.
+    // The approval still binds the exact identities, without displaying them to the owner.
     const shown = (newTip) => waitFor(`const t = (await api('/api/v2/settings')).trustedMain;
-      return t?.record?.newTip === ${JSON.stringify(newTip)} && (location.hash !== '#/settings/connections' || main().includes(${JSON.stringify(newTip)})) ? t : null;`, 30_000);
+      return t?.record?.newTip === ${JSON.stringify(newTip)} && (location.hash !== '#/settings/connections' || document.querySelector('button[data-tips]')?.dataset.tips.endsWith('..' + ${JSON.stringify(newTip)})) ? t : null;`, 30_000);
     // Posted from the browser with the page's own session, as a page that still shows older tips would.
     const postTrust = (body) => ui(`const { csrf } = await api('/api/session'); const r = await fetch('/api/v2/settings/trusted-main', { method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Dashboard-CSRF': csrf }, body: JSON.stringify({ requestId: crypto.randomUUID(), ...${JSON.stringify(body)} }) });
@@ -450,15 +452,17 @@ export async function journey(root) {
     const handTip = handCommit('docs/owner-note.md', 'An owner note.\n');
     const offered = await shown(handTip);
     await ui(`location.hash = '#/settings/connections'; return 1;`);
-    const connections = await waitFor(`return main().includes(${JSON.stringify(handTip)}) ? main() : null;`, 30_000) ?? '';
-    const exact = { old: offered?.record.oldTip === revision, oldShown: connections.includes(revision), newShown: connections.includes(handTip) };
-    record('trusted-main-offers-exact-tips', Boolean(offered) && exact.old && exact.oldShown && exact.newShown, { unrecorded: offered?.unrecordedCount, ...exact });
+    const connections = await waitFor(`const tips = document.querySelector('button[data-tips]')?.dataset.tips;
+      return tips === ${JSON.stringify(`${revision}..${handTip}`)} ? { tips, text: main() } : null;`, 30_000);
+    const exact = { old: offered?.record.oldTip === revision, bound: connections?.tips === `${revision}..${handTip}`,
+      hidden: Boolean(connections) && !connections.text.includes(revision) && !connections.text.includes(handTip) };
+    record('trusted-main-offers-exact-tips', Boolean(offered) && exact.old && exact.bound && exact.hidden, { unrecorded: offered?.unrecordedCount, ...exact });
     await shot('06-connections-trust');
     const handTip2 = handCommit('docs/owner-note.md', 'An owner note, edited.\n');
     const moved = await postTrust({ oldTip: revision, newTip: handTip });
     record('trusted-main-refuses-moved-tips', moved.status === 409 && moved.code === 'TRUSTED_MAIN_MOVED' && ledger().length === 1, moved);
     await shown(handTip2);
-    const trusted = await ui(`return press('Trust local main');`);
+    const trusted = await ui(`return press('Trust these changes');`);
     const rows = ledger();
     record('trusted-main-recorded', /is trusted/.test(trusted) && rows.length === 2 && rows[1].kind === 'owner' && rows[1].oldTip === revision && rows[1].newTip === handTip2,
       { notice: trusted, rows: rows.map((row) => row.kind) });
@@ -466,7 +470,7 @@ export async function journey(root) {
     record('trusted-main-repeat-changes-nothing', again.status === 200 && ledger().length === 2, again);
     const supervisorTip = handCommit('src/supervisor/owner-note.md', 'Not reviewed.\n');
     await shown(supervisorTip);
-    const unreviewed = await ui(`return press('Trust local main');`);
+    const unreviewed = await ui(`return press('Trust these changes');`);
     const after = await ui(`return (await api('/api/v2/settings')).trustedMain;`);
     record('trusted-main-refuses-unreviewed', /independent review/.test(unreviewed) && ledger().length === 2 && handTip2.startsWith(after.tip) && after.unrecordedCount === 1,
       { notice: unreviewed });

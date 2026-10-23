@@ -23,7 +23,7 @@ const plural = (n, word, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
 const usd = (value) => `$${value.toFixed(2)}`;
 const campaignTitle = (c, { inProject = false } = {}) => {
   const purpose = ownerCampaign(c)?.purpose;
-  const text = `${purpose?.text ?? c.id}${purpose?.variant ? ` (${purpose.variant})` : ''}`;
+  const text = `${purpose?.text ?? 'Work without a name'}${purpose?.variant ? ` (${purpose.variant})` : ''}`;
   return inProject ? text : `${shortRepo(c.repository)}: ${text}`;
 };
 
@@ -395,25 +395,36 @@ function formatTaskSignatureBrief(sig) {
 }
 
 // Step rows: on a phone, CSS turns each row into a stacked card (name, where it stands, link) with no clipped columns.
+/**
+ * The supervisor's own sentences name a goal's steps by identifier ("Verify T1"). On owner screens each of that goal's
+ * step identifiers reads as what the step delivers; the sentence is otherwise unchanged and the record keeps it as written.
+ */
+const stepWords = (c, text) => {
+  if (!c || !text) return text;
+  return c.tasks.reduce((out, t) => out.replace(new RegExp(`(^|[^\\w.-])${t.id.replace(/[.]/g, '\\.')}(?![\\w-])`, 'g'), (m, pre) => `${pre}${stepName(c.id, t.id)}`), String(text));
+};
+// A step is named by its place in the work and by what it delivers, never by its identifier.
+const stepNumber = (c, id) => c.tasks.findIndex((item) => item.id === id) + 1;
+const stepNames = (c, ids) => ids.map((id) => stepName(c.id, id)).join(', ');
 function taskRow(c, task) {
   const canRecheck = !sending && !offline && state.supervisor.available && ['registered', 'paused'].includes(c.control) && Boolean(task.blocked || task.retryAt || task.errorClass) && task.state !== 'done';
   const last = task.state === 'done' ? null : outcomeText(task.lastOutcome);
   const delivery = deliveryOf(c, task);
   const td = (cls, ...children) => el('td', { class: cls }, ...children);
-  return el('tr', { 'data-focus-scope': `${c.id}/${task.id}` }, td('c-id', el('span', { class: 'package-id' }, task.id)),
+  return el('tr', { 'data-focus-scope': `${c.id}/${task.id}` }, td('c-id', el('span', { class: 'package-id' }, String(stepNumber(c, task.id)))),
     td('c-work', link(task.outcome ?? task.title, task.issueUrl, 'task-name'), task.outcome ? el('div', { class: 'subtext' }, task.title) : null,
-      el('div', { class: 'subtext' }, task.dependsOn.length ? `After ${task.dependsOn.join(', ')}` : 'Independent step')),
+      el('div', { class: 'subtext' }, task.dependsOn.length ? `After ${stepNames(c, task.dependsOn)}` : 'Independent step')),
     td('c-state', stepBadge(c, task),
       delivery?.state === 'merged' && delivery.mergedAt ? el('div', { class: 'subtext' }, `Merged ${dateTime(delivery.mergedAt)}`)
         : delivery?.note ? el('div', { class: 'subtext' }, delivery.note) : null,
       delivery?.asOf ? el('div', { class: 'subtext' }, mergeAsOf(delivery.asOf)) : null,
       task.signature ? el('div', { class: 'subtext task-signature' }, formatTaskSignatureBrief(task.signature)) : null,
       // Supervisor-authored wait (for example, dependencies that must be merged first); never worker text.
-      task.waitingReason && !task.blocked && task.state !== 'done' ? el('div', { class: 'subtext' }, task.waitingReason) : null,
+      task.waitingReason && !task.blocked && task.state !== 'done' ? el('div', { class: 'subtext' }, stepWords(c, task.waitingReason)) : null,
       task.retryAt ? el('div', { class: 'subtext' }, `Next check ${timeOnly(task.retryAt)}`) : null,
       task.blockedReason ? el('div', { class: 'subtext' }, `Stopped: ${task.blockedReason}`) : null,
       !task.blocked && !task.waitingReason && task.state === 'pending' && task.dependsOn.some((dep) => c.tasks.find((item) => item.id === dep)?.state !== 'done')
-        ? el('div', { class: 'subtext' }, `Waiting for ${task.dependsOn.filter((dep) => c.tasks.find((item) => item.id === dep)?.state !== 'done').join(', ')}`) : null,
+        ? el('div', { class: 'subtext' }, `Waiting for ${stepNames(c, task.dependsOn.filter((dep) => c.tasks.find((item) => item.id === dep)?.state !== 'done'))}`) : null,
       last ? el('div', { class: 'subtext' }, `Last: ${last}`) : null),
     td('c-tries', el('span', { class: 'number tries' }, plural(task.attempts, 'try', 'tries')), watchChip(task)),
     el('td', { class: 'table-actions c-action' }, delivery?.route ? routeLink(delivery.route.label, delivery.route.address)
@@ -1021,16 +1032,16 @@ function reviewScreen(project, id) {
     part('Main steps', plan.steps.length ? el('ol', {}, ...plan.steps.map((step) => el('li', {}, step.title, step.check ? el('span', { class: 'subtext' }, ` · checked by: ${step.check}`) : null)))
       : items(plan.tasks.map((task) => task.title))),
     part('Overlaps with other work', plan.conflicts.length ? items(plan.conflicts.map((item) => item.code === 'DUPLICATE_WORK'
-      ? `"${item.campaignId}" already does this step (${item.taskId}). Starting is refused until that work finishes or is cancelled.`
-      : `"${item.campaignId}" is changing the same files (${item.taskId}). This step waits for it.`)) : el('p', {}, 'None found.')),
+      ? `${stepName(item.campaignId, item.taskId)} is already assigned. Starting is refused until that work finishes or is cancelled.`
+      : `${stepName(item.campaignId, item.taskId)} is changing the same files. This step waits for it.`)) : el('p', {}, 'None found.')),
     part('What it may change', plan.writes.length ? items(plan.writes) : el('p', {}, 'No files: it only reports.'),
       plan.denyWrites.length ? el('p', { class: 'subtext' }, `Never: ${plan.denyWrites.join(', ')}`) : null),
     part('AI workers and limits', el('p', {}, plan.providers.length ? `Uses ${plan.providers.join(', ')}.` : 'AI workers: not stated.'), el('p', {}, limits)),
     part('Release', el('p', {}, plan.local ? 'Release: Review only. AIWorks stops when a result passes the check. Nothing in your folder changes until you press Apply on it, and Undo apply puts it back.'
       : 'Release: Review only. AIWorks stops when a result passes the check and is published. You merge and release.')),
     plan.questions.length ? part('Open questions', items(plan.questions)) : null,
-    el('details', {}, el('summary', {}, 'Plan details'), el('p', { class: 'subtext' }, plan.summary), el('pre', { class: 'plan-text' }, plan.plan),
-      el('p', { class: 'subtext' }, `Plan fingerprint ${plan.fingerprint} · version ${plan.version}`)),
+    el('details', {}, el('summary', {}, 'Plan details'), el('p', { class: 'subtext' }, plan.summary),
+      el('p', { class: 'subtext' }, `Plan version ${plan.version}`)),
     plan.code === 'APPROVED' ? null : el('div', { class: 'review-actions' }, approve, edit)))];
 }
 
@@ -1352,7 +1363,7 @@ function activityList(limit = 80, journal = state.supervisor.activity) {
         : `${item.executor ? `${provider(item.executor)}: ` : ''}${descriptions[item.kind] ?? (item.kind ?? 'Event').replaceAll('-', ' ')}`,
       item.action ? ` · ${item.action}` : '',
       item.kind === 'operation-finished' ? ` · ${item.outcome === 'result' ? `${terminalLabels[item.terminal] ?? item.terminal ?? 'result'}${item.terminal === 'rejected' && item.blocking ? ` (${item.blocking} blocking)` : ''}` : outcomeLabels[item.outcome] ?? item.outcome ?? 'unknown'}`
-        : item.outcome ? ` · ${item.outcome}` : ''), el('div', { class: 'timeline-subtext' }, item.operation ?? item.campaignId)),
+        : item.outcome ? ` · ${item.outcome}` : '')),
     el('time', { class: 'timeline-time', datetime: new Date(item.at).toISOString(), title: dateTime(item.at) }, timeAgo(item.at)))));
 }
 
@@ -1404,7 +1415,7 @@ function roadmapView() {
 
 const campaignById = (id) => state.supervisor.campaigns.find((c) => c.id === id);
 /** "SampleApp: <purpose>": the work a row belongs to. Its ID is in the work's Details on Now and in Diagnostics. */
-const campaignContext = (id) => { const c = campaignById(id); return c ? campaignTitle(c) : id; };
+const campaignContext = (id) => { const c = campaignById(id); return c ? campaignTitle(c) : 'work no longer listed'; };
 /** Campaign order from the owner view: cards for campaigns with something for the owner, then active ones; then finished ones. */
 function campaignLayout() {
   const layout = state.owner?.layout;
@@ -1427,22 +1438,131 @@ function finishedList(list) {
 const mergeAsOf = (check) => `Merge check from ${!check.at ? 'an unknown time' : new Date(check.at).toDateString() === new Date().toDateString() ? timeOnly(check.at) : dateTime(check.at)}; ${
   check.reason === 'fetch-failed' ? 'the last fetch failed, retrying within 5 minutes' : 'checking again'}`;
 
-/** One Needs you row: what to do, then the subject (what the step delivers) with its link, then the evidence in one line. */
-const needsItem = (item) => el('li', { class: `needs-item ${item.kind}` },
-  el('div', { class: 'needs-body' },
-    el('div', { class: 'needs-context' }, [item.about ? `Project ${projectName(item.about)}` : null,
-      item.campaignId ? campaignContext(item.campaignId) : null].filter(Boolean).join(' · ')),
-    item.action ? el('div', { class: 'needs-action' }, item.action) : null,
-    el('div', { class: 'needs-text' }, el('span', {}, `${item.text}${item.at ? ` at about ${timeOnly(item.at)}` : ''}${item.since ? ` since ${timeOnly(item.since)}` : ''}`)),
-    item.mergeCheck ? el('div', { class: 'needs-stale' }, mergeAsOf(item.mergeCheck)) : null,
-    item.link ? el('div', { class: 'needs-actions' }, link(`${item.link.label} ↗`, item.link.url, 'button secondary needs-link')) : null,
-    item.route ? el('div', { class: 'needs-actions' }, routeLink(item.route.label, item.route.address, 'button secondary needs-link')) : null,
-    item.evidence ? disclosure(`needs/${item.link?.url ?? item.text}`, el('span', { class: 'evidence' }, item.evidence),
-      el('p', { class: 'needs-detail' }, item.detail)) : null),
-  // The Check again a stopped work's sentence names is on its card, after that sentence: a card has no More menu (aiworks#11 review 5 G8).
-  item.points.length || item.command ? el('div', { class: 'needs-impact' }, ...item.points.map((point) => el('div', { class: 'needs-point' },
-    point.link ? link(`${point.link.label} ↗`, point.link.url, 'needs-link') : null, el('span', {}, point.text))),
-    item.command ? el('div', { class: 'needs-actions' }, primaryAction(item.command)) : null) : null);
+/** A brief business topic: the first sentence of a long name, cut at a word. Display only; the record keeps the full text. */
+const brief = (text, max = 80) => {
+  const value = String(text ?? ''), sentence = /^(.{20,}?[.!?])\s/.exec(value)?.[1] ?? value;
+  if (sentence.length <= max) return sentence;
+  const cut = sentence.slice(0, max), space = cut.lastIndexOf(' ');
+  return `${(space > max / 2 ? cut.slice(0, space) : cut).replace(/[\s,;:·-]+$/, '')}…`;
+};
+/** The work an item belongs to, briefly, by its business name. A goal without a name is "this work", never its identifier. */
+const workName = (c) => brief(ownerCampaign(c)?.purpose?.text ?? 'this work');
+
+/** Stable per item: its goal and step, or what it is about. Names its drafts' scope and its focus scope across refreshes. */
+const itemKey = (item) => item.local ? `local/${item.local.campaignId}/${item.local.taskId}`
+  : item.taskId ? `${item.campaignId}/${item.taskId}` : `${item.kind}/${item.campaignId ?? item.about ?? item.text}`;
+
+/** The binding of a step's result: the goal's and the step's versions, authorization and scope (applyResultReview). */
+const resultBinding = (c, task) => ({ campaignId: c.id, taskId: task.id, taskVersion: task.version, version: c.version,
+  authorizationVersion: c.authorizationVersion, scopeDigest: c.scopeDigest });
+
+/*
+ * Guidance and Check again for a step that stopped for good, on its Needs you card: the owner's words reach the next try
+ * of this step (an instruction, OWNER_WORKSPACE §4.8) and Check again gives it that try, within the approved plan and
+ * its limits. Both requests are kept in the draft as they were first sent, so a retry after an unconfirmed delivery
+ * repeats exactly the same requests and the server applies each once; a refused one is dropped and nothing is applied.
+ */
+let guidanceBusy = null;
+async function sendGuidance(c, task, address, key) {
+  c = campaignById(c.id) ?? c; task = c.tasks.find((item) => item.id === task.id) ?? task;
+  const draft = drafts.get(address, key) ?? { text: '' }, text = draft.text?.trim() ? draft.text : null;
+  const bind = { campaignId: c.id, version: c.version, authorizationVersion: c.authorizationVersion, scopeDigest: c.scopeDigest, taskId: task.id, taskVersion: task.version };
+  let pending = draft.pending && draft.pending.text === text ? draft.pending
+    : { text, instruct: text ? { ...bind, action: 'instruct', role: task.state === 'implemented' ? 'verify' : 'implement', text, requestId: crypto.randomUUID() } : null, instructed: false, recheck: null };
+  if (!pending.recheck) pending = { ...pending, recheck: { ...bind, action: 'recheck', requestId: crypto.randomUUID() } };
+  const keep = (changes) => drafts.set(address, key, { ...(drafts.get(address, key) ?? {}), ...changes });
+  keep({ pending });
+  guidanceBusy = key; render();
+  try {
+    if (pending.instruct && !pending.instructed) { await post('/api/commands', pending.instruct); pending = { ...pending, instructed: true }; keep({ pending }); }
+    const result = await post('/api/commands', pending.recheck);
+    drafts.delete(address, key);
+    notice(result.duplicate ? COMMANDS.duplicate : pending.instruct ? COMMANDS.accepted.guided : COMMANDS.accepted.recheck, null, null, address);
+  } catch (error) {
+    // A refusal applied nothing of that request: the next try binds what the page shows then. Guidance already
+    // accepted stays accepted and is not sent again.
+    if (error.known) keep({ pending: pending.instructed ? { ...pending, recheck: null } : null });
+    notice(error.known ? error.message : COMMANDS.unconfirmed, error.known ? null : () => void sendGuidance(c, task, address, key), error.known ? error.detail : null, address);
+  } finally { guidanceBusy = null; await poll(); }
+}
+function guidancePanel(c, task) {
+  if (!canCheckAgain(c, task)) return null;
+  const address = current.address, key = `guidance:${c.id}/${task.id}`, ids = `${c.id}-${task.id}`;
+  const off = guidanceBusy !== null || commandsOff(), draft = drafts.get(address, key) ?? { text: '' };
+  const words = el('textarea', { id: `guidance-text-${ids}`, rows: 3, maxlength: 2000,
+    oninput: () => drafts.set(address, key, { ...(drafts.get(address, key) ?? {}), text: words.value }) });
+  words.value = draft.text ?? '';
+  // A high-risk step's retry is decided on a computer, like its decision.
+  const deferred = task.risk?.level === 'high' && onPhone();
+  return el('form', { novalidate: true, class: 'start-form needs-resolve', 'data-focus-scope': `guidance/${c.id}/${task.id}`,
+    onsubmit: (event) => { event.preventDefault(); if (!off && !deferred) void sendGuidance(c, task, address, key); } },
+    el('label', { class: 'field' }, el('strong', {}, 'Your guidance for the next try (optional)'), words),
+    el('p', { class: 'subtext' }, 'AIWorks gives this step one more try with your words, within the approved plan and its limits; the independent check still applies. No secrets; up to 2,000 characters.'),
+    deferred ? el('p', { class: 'notice warning', role: 'status' }, 'This step is high risk, so it is tried again from a computer, not a phone.')
+      : el('div', { class: 'campaign-controls' }, el('button', { class: 'button', type: 'submit', disabled: off }, guidanceBusy === key ? 'Sending…' : 'Check again')));
+}
+
+/**
+ * New scope is planned, never chatted: "Plan different work" opens this project's Plan work with the item as the start of
+ * an unsent goal (kept if the owner already typed one), where the plan is drafted and only Approve and start on Review
+ * starts anything (OWNER_WORKSPACE §5.4).
+ */
+function planFromItem(item, project, { primary = false } = {}) {
+  if (!project || !planWorkOpen(project)) return null;
+  // An item whose only way forward is planned work names it (`item.plan`); otherwise planning is the alternative.
+  return button(item.plan?.label ?? 'Plan different work…', () => {
+    const address = formatRoute({ screen: 'start', project }), draft = startDraft(address);
+    if (!draft.goal.trim()) drafts.set(address, 'start', { ...draft, goal: item.plan?.goal ?? `Instead of “${item.text}”: ` });
+    go(address);
+  }, primary ? 'button' : 'secondary small');
+}
+
+/** The one way to resolve an item on its card, by its kind, through the same bound requests as its step and Review. */
+function itemResolution(item, c, task) {
+  if (['local-unrecorded', 'local-untrusted'].includes(item.kind) && sameProject(item.repository, state.connections?.trustedMain?.repository)) {
+    return el('div', { class: 'needs-resolve' }, ...trustedMainLines(state.connections.trustedMain).filter(Boolean),
+      state.connections.trustedMain.record ? null : primaryAction(item.command));
+  }
+  if (item.kind === 'decision') {
+    const card = itemDecision(item);
+    return card ? decisionPanel(card.c, card.task) : null;
+  }
+  if (['review', 'accept', 'merge-overdue'].includes(item.kind) && c && task?.review) {
+    const box = el('div', { class: 'needs-resolve', 'data-focus-scope': `needs-review/${c.id}/${task.id}` },
+      ...reviewActions(task.review, resultBinding(c, task)));
+    return box;
+  }
+  if (item.kind === 'stopped' && c && task) return guidancePanel(c, task);
+  if (item.plan) {
+    const plan = planFromItem(item, item.repository ?? item.project ?? null, { primary: true });
+    return el('div', { class: 'needs-actions' }, plan ?? el('p', { class: 'subtext', role: 'status' }, 'Plan work is not available for this project right now, so this cannot be planned from here.'));
+  }
+  return item.command ? el('div', { class: 'needs-actions' }, primaryAction(item.command)) : null;
+}
+
+/**
+ * One Needs you card: the work it belongs to and its business topic, why the owner is needed, what follows, and the
+ * resolution on the card itself. Opening the step or its full Review, the pull request number and planning different work
+ * follow as secondary links. Identifiers, commits and recorded machine detail stay out of it.
+ */
+function needsItem(item) {
+  const c = item.campaignId ? campaignById(item.campaignId) : null, task = c && item.taskId ? c.tasks.find((t) => t.id === item.taskId) : null;
+  const project = item.repository ?? item.project ?? null;
+  const when = `${item.at ? ` at about ${timeOnly(item.at)}` : ''}${item.since ? ` since ${timeOnly(item.since)}` : ''}`;
+  return el('li', { class: `needs-item ${item.kind}`, 'data-focus-scope': `needs-item/${itemKey(item)}` },
+    el('div', { class: 'needs-body' },
+      el('div', { class: 'needs-context' }, [item.about ? `Project ${projectName(item.about)}` : null, c ? workName(c) : null].filter(Boolean).join(' · ')),
+      item.action ? el('div', { class: 'needs-action' }, item.action) : null,
+      el('div', { class: 'needs-text' }, el('span', {}, `${item.text}${when}`)),
+      item.why ? el('p', { class: 'needs-why' }, item.why) : null,
+      item.evidence && !['review', 'accept', 'unchecked'].includes(item.kind) ? el('div', { class: 'evidence' }, item.evidence) : null,
+      item.mergeCheck ? el('div', { class: 'needs-stale' }, mergeAsOf(item.mergeCheck)) : null),
+    item.points.length ? el('div', { class: 'needs-impact' }, ...item.points.map((point) => el('div', { class: 'needs-point' },
+      point.link ? link(`${point.link.label} ↗`, point.link.url, 'needs-link') : null, el('span', {}, point.text)))) : null,
+    itemResolution(item, c, task),
+    el('div', { class: 'needs-actions needs-secondary' }, item.route ? routeLink(item.route.label, item.route.address, 'needs-link') : null,
+      item.reference ? link(`${item.reference.label} ↗`, item.reference.url, 'needs-link subtext') : null, item.system || !item.taskId || item.plan ? null : planFromItem(item, project)));
+}
 
 /**
  * One Needs you group (OWNER_WORKSPACE S3): a project, named and linked to its own screen, or "AIWorks itself" (always
@@ -1452,11 +1572,31 @@ const needsGroup = (group) => el('section', { class: 'needs-group', 'aria-labell
   el('h3', { id: `needs-group-${group.key}`, class: 'section-title' }, group.project ? routeLink(group.name, { screen: 'project', project: group.project }) : group.name, NEEDS.groupCount(group.count, group.notCounted)),
   el('ul', { class: 'needs-list' }, ...group.items.map(needsItem)));
 
-/** Needs you: what is waiting for the owner, grouped by project, in plain words, each with the link to act on. */
+/**
+ * What AIWorks is handling itself (owner.mjs `handling`): routine merge waits its gate or a repair round settles within
+ * the authority already given, and answers or requested changes the owner already sent that AIWorks has yet to apply,
+ * each with the recorded reason, or that none is recorded, and what happens next. Listed
+ * so nothing stalled is hidden; never counted, because none needs the owner.
+ */
+function handlingList(handling) {
+  if (!handling.length) return null;
+  return el('section', { class: 'needs-group needs-handling', 'aria-labelledby': 'needs-handling-title', 'data-focus-scope': 'needs/handling' },
+    el('h3', { id: 'needs-handling-title', class: 'section-title' }, `AIWorks is handling (${handling.length}) · not counted`),
+    el('p', { class: 'subtext' }, 'What you already settled and routine waits, continued by AIWorks inside the authority you already gave it. Nothing here needs you.'),
+    el('ul', { class: 'needs-list' }, ...handling.map((entry) => el('li', { class: 'needs-item handling', 'data-focus-scope': `needs-handling/${entry.campaignId}/${entry.taskId}` },
+      el('div', { class: 'needs-body' },
+        el('div', { class: 'needs-context' }, [`Project ${projectName(entry.repository)}`, campaignById(entry.campaignId) ? workName(campaignById(entry.campaignId)) : null].filter(Boolean).join(' · ')),
+        el('div', { class: 'needs-text' }, el('span', {}, entry.text)),
+        el('p', { class: 'needs-why' }, `${entry.reason}. ${entry.next}`),
+        entry.since ? el('div', { class: 'subtext' }, `${entry.sinceWords ?? 'Passed the check'} ${dateTime(entry.since)}`) : null),
+      el('div', { class: 'needs-actions needs-secondary' }, routeLink('Open the step', { screen: 'step', project: entry.repository, work: entry.campaignId, step: entry.taskId }, 'needs-link'))))));
+}
+
+/** Needs you: what is waiting for the owner, grouped by project, in plain words, each resolved on its own card. */
 function needsYou() {
   const owner = state.owner;
   if (!owner?.available) return null;
-  const { headline, count, groups = [], held = [], unknownResults: unknown, reply } = owner;
+  const { headline, count, groups = [], handling = [], held = [], unknownResults: unknown, reply } = owner;
   // aiworks#18: a stopped supervisor leads, with the time it last renewed its leases, unless the one item for AIWorks
   // stopped already says it with its time (one fact, once; review 4 F2).
   const controller = state.supervisor.controller;
@@ -1467,6 +1607,7 @@ function needsYou() {
       unknown ? el('span', { class: 'needs-unknown' }, `Merge of ${unknown} published step${unknown === 1 ? '' : 's'} being checked`) : null),
     // Only owner actions here (owner, 2026-10-13): posted reports and merged work ready for release are on Results.
     ...groups.map(needsGroup),
+    handlingList(handling),
     // Projects held up by the owner's decisions: no work is blocked, so they are not counted, but each is named with a
     // link to its Now, which says which decisions (aiworks#11 review 5 G7).
     held.length ? el('ul', { class: 'needs-list', 'data-focus-scope': 'needs/held' }, ...held.map((project) => el('li', {},
@@ -2321,7 +2462,7 @@ const SUMMARY_WORDS = { 'needs-you': 'new for you', 'result-ready': 'ready for r
   'decision-cleared': 'questions cleared' };
 
 let scopedBusy = null, seenBusy = false;
-const goalName = (id) => { const c = campaignById(id); return c ? campaignTitle(c, { inProject: true }) : id; };
+const goalName = (id) => { const c = campaignById(id); return c ? campaignTitle(c, { inProject: true }) : 'work no longer listed'; };
 
 /** Pause or resume all, a project or a goal: exactly the goals the view showed, at their versions (views.mjs pauseSummary). */
 async function scopedControl(action, scope, goals, extra = {}) {
@@ -2354,7 +2495,7 @@ const eventProject = (event) => event.project ? projectName(event.project) : nul
 function eventList(events) {
   return el('ul', { class: 'event-list' }, ...events.map((event) => el('li', { 'data-type': event.type },
     el('span', {}, EVENT_WORDS[event.type] ?? 'Recorded'),
-    el('span', { class: 'subtext' }, [eventProject(event), event.campaignId ? goalName(event.campaignId) : null, event.taskId ? `step ${event.taskId}` : null].filter(Boolean).join(' · ')),
+    el('span', { class: 'subtext' }, [eventProject(event), event.campaignId ? goalName(event.campaignId) : null, event.taskId && event.campaignId ? stepName(event.campaignId, event.taskId) : null].filter(Boolean).join(' · ')),
     el('time', { class: 'timeline-time', datetime: new Date(event.at).toISOString(), title: dateTime(event.at) }, timeAgo(event.at)))));
 }
 
@@ -2402,11 +2543,11 @@ function homeScreen() {
     el('p', { role: 'status', 'aria-live': 'polite' }, counts.length ? `${counts.join(' · ')}${since.more ? ', and more' : ''}.` : 'Nothing changed.'),
     since.events.length ? disclosure('home/events', `What changed (${since.more ? `latest ${since.events.length}` : since.events.length})`, eventList(since.events)) : null,
     since.count ? button(seenBusy ? 'Marking…' : 'Mark as seen', markSeen, 'secondary small', seenBusy || offline) : null);
-  const first = state.owner?.items?.[0], card = home.needsYou.count ? itemDecision(first) : null;
-  // The first item's decision is answered here with the same card as on its step: options, suggestion, snooze, "did not need me".
-  const decision = panel('Needs you', home.needsYou.count ? 'The first decision; the rest are in Needs you.' : null, el('div', { class: 'panel-body', 'data-focus-scope': 'home/needs' },
+  // The first item is resolved here on the same card as in Needs you: a decision with its options, a result with Accept
+  // and Request changes, a stopped step with guidance and Check again.
+  const first = state.owner?.items?.find((item) => !item.system);
+  const decision = panel('Needs you', home.needsYou.count ? 'The first one; the rest are in Needs you.' : null, el('div', { class: 'panel-body', 'data-focus-scope': 'home/needs' },
     home.needsYou.count && first ? el('ul', { class: 'needs-list' }, needsItem(first)) : el('p', {}, 'Nothing needs you right now.'),
-    card ? decisionPanel(card.c, card.task) : null,
     home.needsYou.count > 1 ? routeLink(`All ${home.needsYou.count} in Needs you`, '#/needs', 'button secondary small') : null));
   const projects = home.projects.length
     ? el('ul', { class: 'settings-links home-projects' }, ...home.projects.map((project) => el('li', { 'data-focus-scope': `home/project/${project.id}`, 'data-state': project.state.key },
@@ -2434,7 +2575,7 @@ function overviewGoal(goal) {
       el('div', {}, el('dt', {}, 'Available to users'), el('dd', {}, strip.available.state === 'recorded' ? `${strip.available.live} live` : AVAILABLE_WORDS[strip.available.state] ?? 'Not known'))) : null,
     budget ? el('div', { class: 'subtext' }, [budget.maxWorkerRuns ? `${budget.runsUsed ?? 0} of ${budget.maxWorkerRuns} AI worker runs used` : null,
       budget.reportedUsd !== null ? `${usd(budget.reportedUsd)} reported` : 'cost not reported', budget.unreportedRuns ? `${plural(budget.unreportedRuns, 'run')} without a reported cost` : null].filter(Boolean).join(' · ')) : null,
-    goal.next ? el('div', { class: 'subtext' }, `Next: ${clockTimes(goal.next)}`) : null,
+    goal.next ? el('div', { class: 'subtext' }, `Next: ${clockTimes(stepWords(campaignById(goal.id), goal.next))}`) : null,
     goalVersionList(campaignById(goal.id)),
     el('div', { class: 'campaign-controls' }, goal.control === 'registered'
       ? button(busy ? 'Pausing…' : 'Pause goal', () => scopedControl('pause', 'goal', [goal.binding], { campaignId: goal.id }), 'secondary small', commandsOff())
@@ -2459,7 +2600,7 @@ function versionChanges(v) {
 function goalVersionList(c) {
   const versions = c?.versions?.versions ?? [], amendments = c?.versions?.amendments ?? [];
   if (versions.length < 2 && !amendments.length) return null;
-  const steps = (label, ids) => ids.length ? `${label} ${ids.join(', ')}` : null;
+  const steps = (label, ids) => ids.length ? `${label} ${ids.map((id) => stepName(c.id, id)).join(', ')}` : null;
   return disclosure(`overview/${c.id}/versions`, `Approved versions (${versions.length})${amendments.length ? ` · ${plural(amendments.length, 'plan amendment')}` : ''}`,
     el('ol', { class: 'plan-versions', reversed: true },
       ...[...versions].reverse().map((v) => el('li', { 'data-version': String(v.version ?? '') },
@@ -2483,27 +2624,25 @@ function overviewPanel(project) {
 
 const SUPERVISOR_WORDS = { running: 'Running', stopped: 'Stopped', restarting: 'Restarting', 'not-started': 'Not started', idle: 'Idle: nothing needs it right now' };
 const ACCOUNT_WORDS = { ready: 'Ready', 'in-use': 'Working', unavailable: 'Not available' };
-const TRUST_WORDS = { TRUSTED: 'Trusted', MAIN_REWRITTEN: 'Local main was rewound or rewritten: no new work starts until it is fixed',
-  NO_ANCHOR: 'Not known: local trust has no starting point recorded yet', UNREADABLE: 'Not known: local main cannot be read on this computer' };
+const TRUST_WORDS = { TRUSTED: 'Trusted', MAIN_REWRITTEN: 'The approved project history changed: new work is stopped until it is restored',
+  NO_ANCHOR: 'No approved starting point is recorded yet', UNREADABLE: 'The project cannot be read on this computer' };
 const BACKUP_WORDS = { off: 'Off', none: 'On, not tried yet', pushing: 'Sending now', pushed: 'Sent', refused: 'Refused by the backup', failed: 'Could not reach the backup' };
 
 function trustedMainLines(trusted) {
   if (!trusted) return [el('p', {}, 'Not known right now: AIWorks could not read its records.')];
-  if (trusted.mode === 'origin') return [el('p', {}, 'Trusted main: GitHub’s main of each project. AIWorks’s own code runs only when GitHub’s main contains it.'),
-    trusted.problem ? el('p', { class: 'subtext' }, 'The self-hosting setting is not valid, so GitHub’s main stays trusted.') : null];
+  if (trusted.mode === 'origin') return [el('p', {}, 'AIWorks uses the approved project version on GitHub before starting work.'),
+    trusted.problem ? el('p', { class: 'subtext' }, 'The local trust setting is not valid, so the approved version on GitHub remains the starting point.') : null];
   const backup = trusted.backup;
-  return [el('p', {}, `Trusted main of ${trusted.repository}: local main on this computer. ${TRUST_WORDS[trusted.state] ?? 'Not known'}${trusted.tip ? ` at ${trusted.tip.slice(0, 7)}` : ''}.`),
+  return [el('p', {}, `${trusted.repository}: the approved project version is kept on this computer. ${TRUST_WORDS[trusted.state] ?? 'Trust not known'}.`),
     Number.isSafeInteger(trusted.unrecordedCount) && trusted.unrecordedCount > 0
-      ? el('p', { class: 'subtext' }, `Main has ${plural(trusted.unrecordedCount, 'commit')} AIWorks did not put there; ${trusted.unrecordedCount === 1 ? 'it is' : 'they are'} not trusted.`) : null,
+      ? el('p', { class: 'subtext' }, `${plural(trusted.unrecordedCount, 'saved change')} made outside AIWorks still ${trusted.unrecordedCount === 1 ? 'needs' : 'need'} your trust.`) : null,
     trusted.record ? el('div', { 'data-focus-scope': 'connections/trusted-main' },
-      el('p', { class: 'subtext local-text' }, 'If you put them there yourself, you can trust local main from ', el('code', {}, trusted.record.oldTip), ' to ',
-        el('code', {}, trusted.record.newTip), '. AIWorks only records this; it moves nothing. Changes to AIWorks’s supervisor code still need an independent review first.'),
-      // The tips it records are part of what the button shows, so a refresh that shows new tips replaces it (patch keeps
-      // an acting element only while it shows the same) instead of keeping one that would record the old tips.
+      el('p', { class: 'subtext local-text' }, 'Trust these changes only if you know and approve the changes made outside AIWorks. This records your approval; it changes no files. Changes to AIWorks’s worker controls still require independent review.'),
+      // Exact identities stay bound to the button so a refresh cannot retain approval for different changes.
       el('button', { class: 'button secondary', onclick: () => trustLocalMain(trusted.record), disabled: sending || offline,
-        'data-tips': `${trusted.record.oldTip}..${trusted.record.newTip}` }, 'Trust local main')) : null,
-    el('p', { class: 'subtext' }, `Backup to ${backup.remote} ${backup.branch}: ${BACKUP_WORDS[backup.state] ?? 'Not known'}${backup.at ? ` (${clock(backup.at)})` : ''}${
-      backup.enabled && backup.state === 'pushed' ? backup.current ? '; it has the trusted tip' : '; it is behind the trusted tip' : ''}${
+        'data-tips': `${trusted.record.oldTip}..${trusted.record.newTip}` }, 'Trust these changes')) : null,
+    el('p', { class: 'subtext' }, `Project backup: ${BACKUP_WORDS[backup.state] ?? 'Not known'}${backup.at ? ` (${clock(backup.at)})` : ''}${
+      backup.enabled && backup.state === 'pushed' ? backup.current ? '; it is up to date' : '; it is behind the approved version' : ''}${
       backup.nextAttemptAfter && ['refused', 'failed', 'pushing'].includes(backup.state) ? `; next try after ${clock(backup.nextAttemptAfter)}` : ''}. Nothing waits for the backup.`)];
 }
 
@@ -2515,7 +2654,7 @@ async function trustLocalMain({ oldTip, newTip }) {
     const result = await post('/api/v2/settings/trusted-main', { requestId: crypto.randomUUID(), oldTip, newTip });
     notice(result.message, null, null, from);
   } catch (error) {
-    notice(error.known ? error.message : 'Recording could not be confirmed. Read the page again before trying again.', null, error.known ? error.detail : null, from);
+    notice(error.known ? error.message : 'Recording could not be confirmed. Read the page again before trying again.', null, null, from);
   } finally { sending = false; await poll(); }
 }
 
@@ -2537,7 +2676,7 @@ function connectionsScreen() {
         el('div', { class: 'subtext' }, `${ACCOUNT_WORDS[account.state] ?? 'Waiting for a limit'}${account.retryAt ? ` until ${clock(account.retryAt)}` : ''}${account.limit ? ` · ${account.open} of ${account.limit} runs at once` : ''}`))))
         : el('p', {}, 'No AI worker account is set up on this computer.'))),
     panel('Merge checks', 'Where each project’s merges are seen from. The dashboard never calls GitHub’s API.', el('div', { class: 'panel-body' }, merges)),
-    panel('Trusted main and backup', 'The version AIWorks’s own code must be part of before it starts or resumes work.', el('div', { class: 'panel-body' }, ...trustedMainLines(view.trustedMain).filter(Boolean)))];
+    panel('Project trust and backup', 'The approved starting point AIWorks checks before it starts or resumes work.', el('div', { class: 'panel-body' }, ...trustedMainLines(view.trustedMain).filter(Boolean)))];
 }
 
 function settingsScreen() {
@@ -2546,7 +2685,7 @@ function settingsScreen() {
   const verName = host.versionName ?? DASHBOARD_VERSION_NAME;
   const currentVer = DASHBOARD_VERSIONS.find((v) => v.version === ver || v.status === 'current') ?? DASHBOARD_VERSIONS[DASHBOARD_VERSIONS.length - 2];
   const computer = panel('This computer', 'Each computer runs its own AIWorks. This page shows only this one.', el('div', { class: 'panel-body' },
-    el('p', {}, `${host.name ?? 'Unknown computer'} · Dashboard v${ver} (${verName}) · revision ${host.revision?.slice(0, 7) ?? 'unknown'}`),
+    el('p', {}, `${host.name ?? 'Unknown computer'} · Dashboard v${ver} (${verName})`),
     el('div', { class: 'version-card' },
       el('div', { class: 'version-card-header' },
         el('strong', {}, `Active version: v${ver} — ${verName}`),
@@ -2565,11 +2704,10 @@ function settingsScreen() {
       const { text, notes } = workerLine(w);
       return el('li', { 'data-focus-scope': `worker/${w.kind}` }, el('strong', {}, text), ...notes.map((note) => el('div', { class: 'subtext' }, note)));
     })),
-    // Details: provider order per piece of work and the supervisor version running it.
+    // Provider order and current supervision, without internal version identifiers.
     active.length ? disclosure('settings/workers', 'Details', el('ul', { class: 'settings-links' }, ...active.map((c) => el('li', {}, el('strong', {}, c.projectName !== undefined ? `${c.projectName ?? 'Project without GitHub'}: ${c.title}` : campaignTitle(c)),
       el('div', { class: 'subtext' }, `Tried in this order: ${c.executors.map(provider).join(' → ')}`),
-      el('div', { class: 'subtext' }, `Supervisor version ${c.controllerRevision ? String(c.controllerRevision).slice(0, 7) : 'not known (not running)'}`))))) : null,
-    el('p', { class: 'subtext' }, `Commands set in the AIWorks configuration file on this computer: ${settings.commands.length ? settings.commands.join(', ') : 'none'}.`)));
+      el('div', { class: 'subtext' }, c.controllerLive ? 'AIWorks is supervising this work.' : 'AIWorks is not currently supervising this work.'))))) : null));
   const projects = projectList();
   const connections = panel('Projects', 'Each project’s kind and whether this computer is connected to it.', el('div', {}, projects.length
     ? el('ul', { class: 'settings-links' },...projects.map((project) => el('li', { 'data-focus-scope': `connection/${project.id}` },
@@ -2634,7 +2772,7 @@ function nowScreen(project) {
     el('h2', { id: 'since-title' }, previousVisit ? `Since you last looked (${dateTime(previousVisit)})` : 'In the last 24 hours'),
     el('ul', {}, ...view.since.map((line) => el('li', { class: line.tone ?? '' }, `${line.text} `, ...line.links.map((item) => item.url ? link(`${item.label} ↗`, item.url) : routeLink(item.label, item.route)))))) : null;
   // The work as AIWorks names it, in owner words: no "campaign" where "work" will do (aiworks#11 review 5 G13).
-  const others = details.others.map((item) => item.purpose ? `${item.purpose} (known to AIWorks as ${item.id})` : item.id);
+  const others = details.others.map((item) => item.purpose ?? 'work without a name');
   // What else goes on in the project stays in view, whatever leads (aiworks#11 review 5 G5): a pause carries its Resume.
   const also = view.also?.length ? el('section', { 'aria-labelledby': `now-also-${project}` },
     el('h3', { id: `now-also-${project}`, class: 'section-title' }, 'Also in this project'),
@@ -2649,8 +2787,8 @@ function nowScreen(project) {
     primaryAction(now.primary), startWork, also,
     view.progress ? el('p', { class: 'subtext' }, view.progress) : null,
     view.note ? el('p', { class: 'subtext' }, `${view.note.title} ${view.note.text}`) : null,
-    details.workId || others.length ? disclosure(`now/${project}/details`, 'Details', el('div', { class: 'subtext' }, [
-      details.workId ? `Known to AIWorks as ${details.workId}` : null, details.trackingUrl ? link(`tracking issue #${details.trackingIssue} ↗`, details.trackingUrl) : null,
+    details.trackingUrl || others.length ? disclosure(`now/${project}/details`, 'Details', el('div', { class: 'subtext' }, [
+      details.trackingUrl ? link(`tracking issue #${details.trackingIssue} ↗`, details.trackingUrl) : null,
       others.length ? `Other work in this project: ${others.join(', ')}` : null].filter(Boolean).flatMap((part, index) => index ? [' · ', part] : [part]))) : null)),
   overviewPanel(project), reviewList(resultsToReview(project), { scope: `overview/${project}/reviews` }), row?.connection ? connectionPanel(row) : null, since].filter(Boolean);
 }
@@ -2783,38 +2921,39 @@ function decisionPanel(c, task) {
       el('p', { role: 'status' }, `Answered at ${clock(d.answered.at)}${chosen ? `: ${chosen.label}` : ''}. AIWorks continues the step with your answer.`));
   }
   const draft = drafts.get(address, key) ?? { option: null, text: '', feedback: '' };
-  const save = () => drafts.set(address, key, { option: form.querySelector('input[name="decision-option"]:checked')?.value ?? null, text: words.value, feedback: feedback.value });
-  const words = el('textarea', { id: 'decision-text', rows: 3, maxlength: 2000, required: !d.structured, oninput: save });
+  // Every control is named for this decision: two decisions on one page (Needs you) never share an id, a radio group or a draft.
+  const radios = `decision-option-${d.id}`;
+  const save = () => drafts.set(address, key, { option: form.querySelector(`input[name="${radios}"]:checked`)?.value ?? null, text: words.value, feedback: feedback.value });
+  const words = el('textarea', { id: `decision-text-${d.id}`, rows: 3, maxlength: 2000, required: !d.structured, oninput: save });
   words.value = draft.text ?? '';
-  const feedback = el('textarea', { id: 'decision-feedback', rows: 2, maxlength: 2000, oninput: save });
+  const feedback = el('textarea', { id: `decision-feedback-${d.id}`, rows: 2, maxlength: 2000, oninput: save });
   feedback.value = draft.feedback ?? '';
-  const choice = el('span', { id: 'decision-choice-error', class: 'validation-error', role: 'alert', hidden: true }, COMMANDS.decision.notOption);
+  const choice = el('span', { id: `decision-choice-error-${d.id}`, class: 'validation-error', role: 'alert', hidden: true }, COMMANDS.decision.notOption);
   const options = d.structured && deferred ? el('div', {}, el('p', {}, el('strong', {}, d.question)),
     el('ul', {}, ...d.options.map((o) => el('li', {}, `${o.label}${d.suggestion?.option === o.id ? ' (suggested)' : ''}`, el('div', { class: 'subtext' }, o.consequence)))))
     : d.structured ? el('fieldset', {}, el('legend', {}, d.question),
     ...d.options.map((o) => {
-      const input = el('input', { type: 'radio', name: 'decision-option', value: o.id, 'aria-describedby': `decision-option-${o.id}`, onchange: save });
+      const input = el('input', { type: 'radio', name: radios, value: o.id, 'aria-describedby': `${radios}-${o.id}`, onchange: save });
       input.checked = draft.option === o.id;
       return [el('label', { class: 'choice' }, input, el('span', {}, o.label, d.suggestion?.option === o.id ? ' (suggested)' : '')),
-        el('p', { id: `decision-option-${o.id}`, class: 'subtext' }, o.consequence)];
+        el('p', { id: `${radios}-${o.id}`, class: 'subtext' }, o.consequence)];
     }), choice) : null;
-  const snooze = el('select', { id: 'decision-snooze' },
+  const snooze = el('select', { id: `decision-snooze-${d.id}` },
     el('option', { value: '1h' }, '1 hour'), el('option', { value: '4h' }, '4 hours'), el('option', { value: '1d' }, '1 day'));
   const form = el('form', { novalidate: true, class: 'start-form', 'data-decision': d.id, 'data-focus-scope': `decision/${d.id}`,
     onsubmit: (event) => {
       event.preventDefault();
       if (off || !validateForm(form)) return;
-      const option = form.querySelector('input[name="decision-option"]:checked')?.value;
+      const option = form.querySelector(`input[name="${radios}"]:checked`)?.value;
       choice.hidden = Boolean(option || words.value.trim());
-      if (!choice.hidden) { form.querySelector('input[name="decision-option"]')?.focus(); return; }
+      if (!choice.hidden) { form.querySelector(`input[name="${radios}"]`)?.focus(); return; }
       void sendDecision('answer', c, task, { ...(option ? { option } : {}), ...(words.value.trim() ? { text: words.value } : {}) },
         { address, done: () => drafts.delete(address, key) });
     } },
     el('h3', { class: 'section-title' }, d.structured ? 'Your decision' : 'Your answer'),
     deferred ? el('p', { class: 'notice warning', role: 'status' }, 'This step is high risk, so this decision is answered on a computer, not on a phone. Open this page on your computer to answer; the step waits meanwhile.') : null,
     d.structured || deferred ? null : el('p', {}, d.asked ? `The AI worker asked: “${d.asked}” It described no options; answer in your own words.`
-      : task.issueUrl ? 'The AI worker described no options for this stop. Answer in your own words; the step issue says what it needs.'
-        : 'The AI worker described no options for this stop. Answer in your own words.'),
+      : 'The AI worker described no options for this stop. Answer in your own words.'),
     options,
     d.suggestion ? el('p', { class: 'subtext' }, `AIWorks suggests ${d.options.find((o) => o.id === d.suggestion.option)?.label ?? d.suggestion.option}: ${d.suggestion.reason}`) : null,
     d.continues ? el('p', { class: 'subtext' }, `Meanwhile: ${d.continues}`) : null,
@@ -2906,20 +3045,20 @@ async function captureShots(key, binding, review) {
   render();
   document.querySelector(`[data-capture="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
 }
-function shotsBlock(key, shown, sha7, control, captureAction) {
+function shotsBlock(key, shown, control, captureAction) {
   if (!shown.capture?.available) return el('p', { class: 'subtext' }, `Screenshots are not available here. ${shown.capture?.reason ?? ''}`);
   const shots = shown.shots;
   const capture = control(shots?.state === 'captured' ? 'Capture again' : 'Capture screenshots', captureAction, 'secondary',
     { disabled: shots?.state === 'capturing' || offline, 'data-capture': key });
   const status = shots?.state === 'capturing'
-    ? el('p', { role: 'status', 'aria-live': 'polite' }, `Capturing ${sha7} at desktop and phone width in a sealed browser on this computer… This can take a minute.`)
+    ? el('p', { role: 'status', 'aria-live': 'polite' }, 'Capturing the checked version at desktop and phone width in a sealed browser on this computer… This can take a minute.')
     : shots?.state === 'failed' ? el('p', { class: 'notice warning', role: 'alert' }, `No screenshots were kept. ${shots.error}`)
       : shots?.state === 'captured' ? null
         : el('p', { class: 'subtext' }, 'Screenshots are taken by AIWorks in a browser it starts for this and stops afterwards. That browser reaches nothing but this version’s pages.');
   const figures = shots?.state === 'captured' ? el('div', { class: 'preview-shots' }, shots.shots.map((shot) => el('figure', { class: `preview-shot ${shot.size}` },
-    el('img', { src: shot.image, alt: `Screenshot of the version checked at ${sha7} at ${shot.size} width`, loading: 'lazy' }),
+    el('img', { src: shot.image, alt: `Screenshot of the checked version at ${shot.size} width`, loading: 'lazy' }),
     el('figcaption', { class: 'subtext' }, `${shot.size === 'phone' ? 'Phone' : 'Desktop'}: ${shot.width} × ${shot.height} px screen, page laid out at ${shot.viewport.width} × ${shot.viewport.height} px as the browser measured it. `,
-      'Version ', el('code', { title: shots.verifiedSha }, sha7), `, captured at ${clock(shots.capturedAt)} on this computer.`)))) : null;
+      `The checked version, captured at ${clock(shots.capturedAt)} on this computer.`)))) : null;
   return el('div', { class: 'preview-evidence' }, el('div', { class: 'campaign-controls' }, capture), status, figures);
 }
 // Closing a server preview asks AIWorks to end it, which stops its server; a static one simply goes away.
@@ -2939,11 +3078,11 @@ async function openPreview(key, binding, review) {
 
 function previewSection(review, binding) {
   if (!review.preview) return null;
-  const key = `${binding.campaignId}/${binding.taskId}/${review.verifiedSha}`, shown = previews.get(key), sha7 = review.verifiedSha.slice(0, 7);
+  const key = `${binding.campaignId}/${binding.taskId}/${review.verifiedSha}`, shown = previews.get(key);
   const section = (...children) => el('div', { class: 'preview-panel', 'data-focus-scope': `preview/${key}` }, el('strong', {}, 'Try this version'), ...children);
   if (!review.preview.available) return section(el('p', { class: 'subtext' }, `Preview not available: ${review.preview.reason}`));
   const server = review.preview.runtime === 'server';
-  const identity = el('p', { class: 'subtext' }, 'The version checked at ', el('code', { title: review.verifiedSha }, sha7), server
+  const identity = el('p', { class: 'subtext' }, 'The checked version', server
     ? ', exactly as it passed the check. Opening it starts that version’s own server on this computer, reachable only from here and stopped after 10 minutes or when the preview closes; nothing is installed or built. Its pages run in a sealed frame that cannot reach this dashboard or the internet.'
     : ', exactly as it passed the check. Its pages run in a sealed frame: they cannot reach this dashboard or the internet, and nothing of the project is built or started on this computer.');
   // Each control names its preview: the refresh keeps a button that shows exactly the same, with its own action, so two
@@ -2954,43 +3093,64 @@ function previewSection(review, binding) {
   if (shown.state === 'opening') return section(identity, el('p', { role: 'status', 'aria-live': 'polite' }, server ? 'Starting the checked version’s server… This can take half a minute.' : 'Opening the checked version…'));
   if (shown.state === 'failed') return section(identity, el('p', { class: 'notice warning', role: 'alert' }, `The preview did not open. ${shown.error}`), el('div', { class: 'campaign-controls' }, open('Try again')));
   const size = (name, label) => control(label, () => { previews.set(key, { ...shown, size: name }); render(); }, 'secondary', { 'aria-pressed': String(shown.size === name) });
-  const frame = el('div', { class: `preview-frame ${shown.size}` }, el('iframe', { src: shown.url, title: `Preview of the version checked at ${sha7} (${shown.size === 'phone' ? 'phone' : 'desktop'} width)`,
+  const frame = el('div', { class: `preview-frame ${shown.size}` }, el('iframe', { src: shown.url, title: `Preview of the checked version (${shown.size === 'phone' ? 'phone' : 'desktop'} width)`,
     sandbox: 'allow-scripts', referrerpolicy: 'no-referrer', loading: 'lazy' }));
   return section(identity,
     el('div', { class: 'campaign-controls preview-controls', role: 'group', 'aria-label': 'Preview width' }, size('desktop', 'Desktop'), size('phone', 'Phone'),
       control('Close preview', () => void closePreview(key, shown))),
-    el('p', { class: 'subtext' }, `Showing a ${shown.size === 'phone' ? 'phone' : 'desktop'}-width (${PREVIEW_WIDTHS[shown.size === 'phone' ? 'phone' : 'desktop']} px) view of ${sha7}.`,
+    el('p', { class: 'subtext' }, `Showing a ${shown.size === 'phone' ? 'phone' : 'desktop'}-width (${PREVIEW_WIDTHS[shown.size === 'phone' ? 'phone' : 'desktop']} px) view of the checked version.`,
       el('span', { class: 'preview-fit' }), ` The preview ends at ${clock(shown.expiresAt)}; open it again after that.`),
     frame,
-    shotsBlock(key, shown, sha7, control, () => void captureShots(key, binding, review)));
+    shotsBlock(key, shown, control, () => void captureShots(key, binding, review)));
 }
 
 function reviewPanel(review, binding, { merged = false } = {}) {
   if (!review) return null;
   // Merged outside the merge gate (seen in local git): nothing is left to accept or send back.
   if (merged && ['ready', 'accepted'].includes(review.state)) review = { ...review, state: 'merged', canAccept: false, canRequestChanges: false };
-  const scope = `review/${binding.campaignId}/${binding.taskId}`, sha7 = (review.from ?? review.verifiedSha).slice(0, 7);
+  const scope = `review/${binding.campaignId}/${binding.taskId}`;
   const box = (...children) => el('div', { class: 'instruction-list review-panel', 'data-review': review.state, 'data-focus-scope': scope }, ...children);
-  if (review.state === 'changes-requested') {
-    return box(el('h3', { class: 'section-title' }, 'Changes requested'),
-      el('p', { role: 'status' }, review.stalled
-        ? `You asked for changes to the version checked at ${sha7}, but this step has used all its repair rounds, so it stopped. Nothing of it was published or merged.`
-        : `You asked for changes to the version checked at ${sha7}${review.requestedAt ? ` at ${clock(review.requestedAt)}` : ''}. AIWorks repairs this step within the approved plan; a fresh independent check comes before anything is published or merged. The earlier check stays on record.`),
-      previewSection(review, binding));
-  }
+  if (review.state === 'changes-requested') return box(el('h3', { class: 'section-title' }, 'Changes requested'), ...reviewActions(review, binding), previewSection(review, binding));
   if (review.state === 'no-evidence') {
-    return box(el('h3', { class: 'section-title' }, 'Review'), el('p', {}, 'No independent check of this version is on record, so it cannot be accepted here.'), previewSection(review, binding));
+    return box(el('h3', { class: 'section-title' }, 'Review'), ...reviewActions(review, binding), previewSection(review, binding));
   }
+  return box(
+    el('h3', { class: 'section-title' }, 'Review of the checked version'),
+    review.summary ? el('p', {}, `The independent checker: ${review.summary}`) : null,
+    previewSection(review, binding),
+    el('ol', { class: 'review-criteria', 'aria-label': 'Done-when criteria and their evidence' }, ...review.criteria.map((item) => el('li', {},
+      el('span', {}, item.text), ' ', el('span', { class: `badge ${CRITERION_WORDS[item.result][0]}` }, CRITERION_WORDS[item.result][1]),
+      el('div', { class: 'subtext' }, item.check ? `Checked: ${item.check}` : 'The checker reported no check for this criterion.'),
+      item.evidence ? el('div', { class: 'subtext' }, `Evidence: ${item.evidence}`) : null))),
+    review.findings.length ? el('div', {}, el('strong', {}, 'Findings'), el('ul', {}, ...review.findings.map((f) => el('li', {}, `${f.severity === 'blocking' ? 'Blocking' : 'Not blocking'}: ${f.description}`)))) : null,
+    review.eyesOn.length ? el('div', {}, el('strong', {}, 'Where your eyes matter'), el('ul', {}, ...review.eyesOn.map((item) => el('li', {}, item)))) : null,
+    ...reviewActions(review, binding));
+}
+
+/**
+ * What the owner can do with a checked result, on its Review and on its Needs you card alike: where it stands, Accept
+ * result and Request changes, each bound to exactly the version that passed the check and its report (sendReview). The
+ * controls are named for the goal and step, so two results on one page never share an id or a draft. Request changes
+ * reopens the step as a repair round of the approved plan; nothing is merged from here.
+ */
+function reviewActions(review, binding) {
+  if (review.state === 'changes-requested') {
+    return [el('p', { role: 'status' }, review.stalled
+      ? 'You asked for changes to this checked version, but this step has used all its repair rounds, so it stopped. Nothing of it was published or merged.'
+      : `You asked for changes to this checked version${review.requestedAt ? ` at ${clock(review.requestedAt)}` : ''}. AIWorks repairs this step within the approved plan; a fresh independent check comes before anything is published or merged. The earlier check stays on record.`)];
+  }
+  if (review.state === 'no-evidence') return [el('p', {}, 'No independent check of this version is on record, so it can be neither accepted nor sent back here. Its Needs you card offers to plan this work again; nothing starts until you approve the plan.')];
   const off = reviewBusy || commandsOff(), address = current.address, key = `review:${binding.campaignId}/${binding.taskId}/${review.verifiedSha}`;
+  const ids = `${binding.campaignId}-${binding.taskId}`;
   const u = review.unresolved, open = u.failed + u.notChecked + u.blocking;
   const draft = drafts.get(address, key) ?? { text: '', criterion: '' };
-  const words = el('textarea', { id: `review-text-${binding.taskId}`, rows: 3, maxlength: 2000, required: true,
+  const words = el('textarea', { id: `review-text-${ids}`, rows: 3, maxlength: 2000, required: true,
     oninput: () => drafts.set(address, key, { text: words.value, criterion: which.value }) });
   words.value = draft.text ?? '';
-  const which = el('select', { id: `review-criterion-${binding.taskId}`, onchange: () => drafts.set(address, key, { text: words.value, criterion: which.value }) },
+  const which = el('select', { id: `review-criterion-${ids}`, onchange: () => drafts.set(address, key, { text: words.value, criterion: which.value }) },
     el('option', { value: '' }, 'The result as a whole'), ...review.criteria.map((item) => el('option', { value: String(item.criterion) }, `${item.criterion}. ${item.text}`)));
   which.value = draft.criterion ?? '';
-  const form = review.canRequestChanges ? el('form', { novalidate: true, class: 'start-form', 'data-focus-scope': `${scope}/changes`,
+  const form = review.canRequestChanges ? el('form', { novalidate: true, class: 'start-form', 'data-focus-scope': `review/${binding.campaignId}/${binding.taskId}/changes`,
     onsubmit: (event) => {
       event.preventDefault();
       if (off || !validateForm(form)) return;
@@ -3001,27 +3161,18 @@ function reviewPanel(review, binding, { merged = false } = {}) {
     el('label', { class: 'field' }, el('strong', {}, 'What should change'), words),
     el('p', { class: 'subtext' }, `AIWorks reopens this step as a repair round within the approved plan${review.roundsLeft === null ? '' : ` (${plural(review.roundsLeft, 'round')} left)`}. A wider change needs a new plan. No secrets; up to 2,000 characters.`),
     el('div', { class: 'campaign-controls' }, el('button', { class: 'button secondary', type: 'submit', disabled: off }, 'Request changes'))) : null;
-  const accepted = review.state === 'accepted' ? `You accepted this version at ${clock(review.acceptedAt)}. ${review.mergeGate === 'on' ? 'The merge gate merges it when its own conditions hold.' : 'Merging follows this project’s own gate.'}`
+  const accepted = review.state === 'accepted' ? `You accepted this version at ${clock(review.acceptedAt)}. ${review.mergeGate === 'on' ? 'AIWorks merges it when its merge conditions hold.' : 'Merging follows this project’s own rules: AIWorks merges only in projects where you allowed it.'}`
     : review.state === 'merged' ? 'This version is merged.' : null;
-  return box(
-    el('h3', { class: 'section-title' }, `Review of the version checked at ${sha7}`),
-    review.summary ? el('p', {}, `The independent checker: ${review.summary}`) : null,
-    previewSection(review, binding),
+  return [
     el('p', { role: 'status' }, open ? `Not complete: ${[u.failed ? `${plural(u.failed, 'criterion', 'criteria')} failed` : null, u.notChecked ? `${plural(u.notChecked, 'criterion', 'criteria')} not checked` : null,
       u.blocking ? `${plural(u.blocking, 'blocking finding')} open` : null].filter(Boolean).join(' · ')}.` : 'Every criterion passed the independent check.'),
-    el('ol', { class: 'review-criteria', 'aria-label': 'Done-when criteria and their evidence' }, ...review.criteria.map((item) => el('li', {},
-      el('span', {}, item.text), ' ', el('span', { class: `badge ${CRITERION_WORDS[item.result][0]}` }, CRITERION_WORDS[item.result][1]),
-      el('div', { class: 'subtext' }, item.check ? `Checked: ${item.check}` : 'The checker reported no check for this criterion.'),
-      item.evidence ? el('div', { class: 'subtext' }, `Evidence: ${item.evidence}`) : null))),
-    review.findings.length ? el('div', {}, el('strong', {}, 'Findings'), el('ul', {}, ...review.findings.map((f) => el('li', {}, `${f.severity === 'blocking' ? 'Blocking' : 'Not blocking'}: ${f.description}`)))) : null,
-    review.eyesOn.length ? el('div', {}, el('strong', {}, 'Where your eyes matter'), el('ul', {}, ...review.eyesOn.map((item) => el('li', {}, item)))) : null,
     accepted ? el('p', { role: 'status' }, accepted) : null,
     // You accept results yourself here (AW-015): the merge gate holds this version until you accept it or ask for changes.
     review.awaitsAcceptance ? el('p', { role: 'status' }, 'Waiting for you: you accept results yourself in this project, so this version is not merged until you accept it.') : null,
     !review.local && review.state === 'ready' && !review.canAccept && (u.failed || u.blocking) ? el('p', { class: 'subtext' }, COMMANDS.result.unresolved) : null,
     review.canAccept ? el('div', { class: 'campaign-controls' }, button('Accept result', () => sendReview('accept', binding, review, {}, { address }), '', off),
-      el('span', { class: 'subtext' }, review.mergeGate === 'on' ? 'Records your acceptance; the merge gate merges it when its own conditions hold.' : 'Records your acceptance. Nothing is merged from here.')) : null,
-    form);
+      el('span', { class: 'subtext' }, review.mergeGate === 'on' ? 'Approves exactly this version; AIWorks merges it when its merge conditions hold.' : 'Approves exactly this version and takes it off Needs you. Merging follows this project’s own rules: AIWorks merges only in projects where you allowed it.')) : null,
+    form].filter(Boolean);
 }
 
 /**
@@ -3036,9 +3187,10 @@ function stepScreen(project, c, task) {
   // With a decision to answer on this screen, Send answer is the one primary action; the step issue is secondary.
   const primary = task.stopped ? primaryAction(task.stopped.primary, task.decision && !task.decision.answered ? 'button secondary' : 'button')
     : delivery?.route ? routeLink(delivery.route.label, delivery.route.address, 'button')
-    : task.resultUrl ? link(number ? `Open pull request #${number} ↗` : 'Open the result ↗', delivery?.url ?? task.resultUrl, 'button')
+    // A checked result is resolved in its Review below; its pull request is supporting reference, never the primary action.
+    : task.resultUrl ? link(number ? `Pull request #${number} ↗` : 'Open the result ↗', delivery?.url ?? task.resultUrl, task.review ? 'needs-link' : 'button')
       : unfinished && c.controls?.more.length ? button('Send guidance', () => openInstructions(c, task), '', commandsOff()) : null;
-  const last = task.verifiedSha ? `Passed the check at commit ${task.verifiedSha.slice(0, 7)}` : outcomeText(task.lastOutcome);
+  const last = task.verifiedSha ? 'Passed the independent check' : outcomeText(task.lastOutcome);
   const meaning = task.verifiedSha ? null : resultMeaning(task.lastOutcome, { stopped: Boolean(task.stopped), check: canCheckAgain(c, task) });
   const guidance = (c.instructions ?? []).filter((item) => item.taskId === task.id);
   const reading = readingLines(task.reading);
@@ -3071,10 +3223,10 @@ function stepScreen(project, c, task) {
         ? el('div', { class: 'campaign-controls' }, primary, button('Check again', () => command(c, 'recheck', task), 'secondary', commandsOff())) : primary,
       guidance.length ? el('div', { class: 'instruction-list' }, el('h3', { class: 'section-title' }, 'Guidance you sent'), ...guidance.map((item) => instructionReceipt(item, c))) : null,
       disclosure(`step/${c.id}/${task.id}/details`, `Details · ${plural(attempts.length, 'attempt')}`, el('div', {},
-        attempts.length ? el('ol', { class: 'receipt-steps' }, ...attempts.map((a) => el('li', {}, attemptText(a), a.id ? el('div', { class: 'subtext' }, `Run ${a.id}`) : null)))
+        attempts.length ? el('ol', { class: 'receipt-steps' }, ...attempts.map((a) => el('li', {}, attemptText(a))))
           : el('p', { class: 'subtext' }, 'No attempt has run yet.'),
         activityList(30, events),
-        el('p', { class: 'subtext' }, `Step ${task.id} · campaign ${c.id} · `, link('step issue ↗', task.issueUrl))))))];
+        el('p', { class: 'subtext' }, link('Step issue on GitHub ↗', task.issueUrl))))))];
 }
 
 /*
@@ -3111,7 +3263,7 @@ const resultRow = (row) => el('li', { class: `result-row ${row.group}`, 'data-fo
   // A merged row says when, then the project's release rule: never released or live.
   el('div', { class: 'result-state' }, row.group === 'merged' ? [`Merged${row.mergedAt ? ` ${dateTime(row.mergedAt)}` : ''}.`, row.release].join(' ') : row.word),
   row.note ? el('div', { class: 'subtext' }, row.note) : null,
-  row.review?.acceptedAt ? el('div', { class: 'subtext' }, `Accepted by you at ${clock(row.review.acceptedAt)}. Merging follows the merge gate.`) : null,
+  row.review?.acceptedAt ? el('div', { class: 'subtext' }, `Accepted by you at ${clock(row.review.acceptedAt)}.`) : null,
   row.ladder ? releaseLadder(row.ladder) : null,
   row.asOf ? el('div', { class: 'needs-stale' }, mergeAsOf(row.asOf)) : null,
   row.evidence ? disclosure(`results/${row.campaignId}/${row.taskId}`, el('span', { class: 'evidence' }, row.evidence),
@@ -3121,7 +3273,7 @@ const resultRow = (row) => el('li', { class: `result-row ${row.group}`, 'data-fo
 
 /** The five release steps of one result, each Yes, No, In progress or Unknown, never one tick (AUTO_RELEASE.md section 1). */
 const releaseLadder = (ladder) => el('div', { class: 'release-ladder' },
-  el('ul', { 'aria-label': `Release steps${ladder.sha ? ` of commit ${ladder.sha}` : ''}` }, ...ladder.steps.map((step) => el('li', { class: `ladder-${step.answer}` }, step.text))),
+  el('ul', { 'aria-label': 'Release steps for this result' }, ...ladder.steps.map((step) => el('li', { class: `ladder-${step.answer}` }, step.text))),
   ladder.note ? el('div', { class: 'subtext' }, ladder.note) : null);
 
 /**
@@ -3664,7 +3816,7 @@ const knowledgeEntry = (project) => { if (!knowledgeViews.has(project)) void loa
 const SOURCE_WORDS = { owner: ['done', 'Confirmed by you'], material: ['review', 'Found in material'], ai: ['planned', 'Suggested by AI'] };
 /** Where a suggestion, or the fact made from one, came from. */
 function originText(source, origin) {
-  if (source === 'material') return `${origin.path} at version ${String(origin.commit).slice(0, 12)}`;
+  if (source === 'material') return `${origin.path} · saved project material`;
   return `${origin.goal ? `the plan for “${origin.goal}”` : 'a plan'}, version ${origin.version}`;
 }
 const KNOWLEDGE_ACTS = { written: 'Written by you', confirmed: 'Confirmed by you', edited: 'Edited by you', 'set-aside': 'Set aside by you', restored: 'Brought back by you' };
@@ -3756,7 +3908,7 @@ function knowledgeScreen(project) {
 const EVIDENCE_STATE = { registered: 'running', paused: 'paused', finished: 'finished', cancelled: 'cancelled', 'cancel-requested': 'cancelling' };
 function knowledgeEvidence(project, v) {
   const evidence = v.evidence ?? { requirements: [], decisions: [], references: [], withheldReferences: 0 };
-  const goalWords = (item) => `${item.goal ? `“${item.goal}”` : `goal ${item.campaignId}`}, approved version ${item.authorizationVersion}`;
+  const goalWords = (item) => `${item.goal ? `“${item.goal}”` : 'Recorded goal'}, approved version ${item.authorizationVersion}`;
   const answer = (item) => item.option ? `you chose “${item.option}”` : item.ownWords ? 'you answered in your own words' : 'you answered';
   return [
     el('h3', {}, 'Requirements and decisions'),
@@ -3766,12 +3918,12 @@ function knowledgeEvidence(project, v) {
       el('div', { class: 'subtext' }, `From ${goalWords(item)}, ${dateTime(item.approvedAt)} · ${EVIDENCE_STATE[item.control] ?? 'state not known'}. Not a fact you confirmed here: add it above if it stays true.`))))
       : el('p', { class: 'subtext' }, 'No approved goal of this project states done-when criteria yet.'),
     evidence.decisions.length ? el('ul', { class: 'settings-links' }, ...evidence.decisions.map((item) => el('li', {},
-      el('p', {}, `${capital(answer(item))} on ${item.step ? `“${item.step}”` : `step ${item.taskId}`}`, ' ', badge('done', 'Your answer')),
-      el('div', { class: 'subtext' }, `${dateTime(item.at)} · ${item.goal ? `“${item.goal}”` : `goal ${item.campaignId}`}. It guided that step only; it is not a standing rule.`))))
+      el('p', {}, `${capital(answer(item))} on ${item.step ? `“${item.step}”` : 'the recorded step'}`, ' ', badge('done', 'Your answer')),
+      el('div', { class: 'subtext' }, `${dateTime(item.at)} · ${item.goal ? `“${item.goal}”` : 'Recorded goal'}. It guided that step only; it is not a standing rule.`))))
       : el('p', { class: 'subtext' }, 'You have not answered a decision in this project yet.'),
     el('h3', {}, 'Materials'),
     el('ul', { class: 'settings-links' },
-      el('li', {}, v.materials.readme ? `README at version ${v.materials.readme}: its first paragraph is read for the suggestions above.` : 'README: none found in this project’s latest version.'),
+      el('li', {}, v.materials.readme ? 'README: its saved first paragraph is used for the suggestions above.' : 'README: none found in this project’s latest version.'),
       ...evidence.references.map((item) => el('li', {}, el('code', {}, item.reference),
         el('div', { class: 'subtext' }, `Named by ${plural(item.goals.length, 'approved goal')}; given to its AI workers. Not opened for this page.`)))),
     evidence.withheldReferences ? el('p', { class: 'subtext' }, `${plural(evidence.withheldReferences, 'other named document')} not listed: not a plain project path, or the name looks like a secret.`) : null,
@@ -3820,11 +3972,9 @@ const HEALTH_WORDS = { passed: ['done', 'Healthy at the last check'], failed: ['
   checking: ['verifying', 'Checking now'], 'not-checked': ['pending', 'Not checked yet'] };
 const HEALTH_BY = { release: 'the check after release', rollback: 'the check after the rollback, of the restored version', owner: 'your Check the site now' };
 const KIND_WORDS = { deploy: 'deployed after the merge', 'merge-then-deploy': 'merged, then deployed', merge: 'merged only', 'local-git-apply': 'applied to a local branch', 'local-folder-apply': 'applied to a local folder' };
-const shortDigest = (digest) => String(digest).replace(/^sha256:/, '').slice(0, 12);
 function restoreWords(restore) {
-  const previous = restore.previous ? shortDigest(restore.previous) : null;
   return {
-    'previous-version': `Can be restored: the project’s rollback command puts back the previous version (${previous}), then AIWorks checks it again.`,
+    'previous-version': 'Can be restored: AIWorks puts back the recorded previous version, then checks it again.',
     'previous-unknown': 'The previous version is not recorded yet, so whether it can be restored is not known.',
     'report-only': 'Not restored automatically: this destination’s grant asks for report-only rollback, so you restore it yourself.',
     'no-rollback-command': 'Cannot be restored by AIWorks: this destination names no rollback command.',
@@ -3847,13 +3997,13 @@ function releaseItem(project, r) {
   const change = r.change ? `${plural(r.change.files, 'file')} changed, ${r.change.classes.length ? r.change.classes.join(', ') : 'no class recorded'}` : 'Which kinds of file changed is not recorded.';
   const v = r.version;
   return el('li', { 'data-focus-scope': `releases/${r.id}` },
-    el('p', {}, el('strong', {}, r.text ?? `Step ${r.taskId}`), ' ', badge(lineBadge, lineWord)),
+    el('p', {}, el('strong', {}, r.text ?? 'Released result'), ' ', badge(lineBadge, lineWord)),
     el('dl', { class: 'release-facts' },
       el('dt', {}, 'Destination'), el('dd', {}, where),
       el('dt', {}, 'What changes for users'), el('dd', {}, `${r.text ?? 'Not described'}. ${change}`),
-      el('dt', {}, 'Version'), el('dd', {}, `Checked commit ${v.verifiedSha ? v.verifiedSha.slice(0, 12) : 'not known'}`,
-        v.mergeCommit ? `, merge commit ${v.mergeCommit.slice(0, 12)}` : '', v.deployedDigest ? `, live version ${shortDigest(v.deployedDigest)}` : '',
-        v.grantVersion ? `, under grant version ${v.grantVersion}` : ''),
+      el('dt', {}, 'Result record'), el('dd', {}, v.verifiedSha ? 'The checked result is recorded.' : 'The checked result is not known.',
+        v.mergeCommit ? ' Its integration into the project is recorded.' : '', v.deployedDigest ? ' The released version is recorded.' : '',
+        v.grantVersion ? ` Release permission version ${v.grantVersion}.` : ''),
       el('dt', {}, 'Restore'), el('dd', {}, restoreWords(r.restore), ' Only the released version is restored: data the site stored, and anything its deploy does not manage, are not.'),
       el('dt', {}, 'Health'), el('dd', {}, badge(healthBadge, healthWord), r.health.at ? ` · ${whenAt(r.health.at)}, by ${HEALTH_BY[r.health.by] ?? 'a check'}` : '')),
     r.checkNow.available ? button('Check the site now', () => void checkSite(project, r.id), 'secondary small', releaseBusy || offline)
@@ -4153,7 +4303,7 @@ function itemParts(number) {
   }
   const review = v.kind === 'review' ? (worklist()?.reviews ?? []).find((row) => row.number === v.number) : null;
   const c = v.campaignId ? campaignById(v.campaignId) : null, task = c?.tasks.find((t) => t.id === v.taskId);
-  const other = v.state === 'open' ? 'closed' : 'open', sha7 = v.verifiedSha ? ` at commit ${v.verifiedSha.slice(0, 7)}` : '';
+  const other = v.state === 'open' ? 'closed' : 'open';
   return [el('section', { class: 'panel', 'aria-labelledby': 'worklist-item-title', 'data-focus-scope': `worklist/item/${number}` },
     el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'worklist-item-title', class: 'work-text' }, v.title), el('p', {}, worklistMeta(v))),
       button(v.state === 'open' ? 'Close item' : 'Reopen item', () => void sendWorklist('/api/work-list/state', { number, version: v.version, state: other }, { number }), 'secondary', worklistOff())),
@@ -4162,8 +4312,8 @@ function itemParts(number) {
         ? 'The page is disconnected; it reads this item again when it reconnects.' : entry.error.message}`) : null,
       // A local review is checked, never merged or accepted by itself (OWNER_WORKSPACE §2.3).
       v.kind === 'review' ? el('p', { class: 'notice warning local-review' }, review?.mergedAt
-        ? `Local review: passed the independent check${sha7} and merged into local main ${clock(review.mergedAt)}. Merged is not accepted.`
-        : `Local review: passed the independent check${sha7} on this computer. Not merged and not accepted.`) : null,
+        ? `Local review: passed the independent check and merged into local main ${clock(review.mergedAt)}. Merged is not accepted.`
+        : `Local review: passed the independent check on this computer. Not merged and not accepted.`) : null,
       v.source ? el('p', { class: 'subtext' }, 'Imported from ', link(`GitHub issue #${v.number} ↗`, v.source.url), ` as it was at ${dateTime(v.source.updatedAt)}.`) : null,
       task ? el('p', { class: 'subtext' }, 'Step: ', routeLink(task.outcome ?? task.title ?? task.id, { screen: 'step', project: c.repository, work: c.id, step: task.id }), ` · ${campaignTitle(c)}`) : null,
       el('div', { class: 'work-text' }, v.body || 'No details.'),
@@ -4369,7 +4519,8 @@ function render() {
     const verName = state.host.versionName ?? DASHBOARD_VERSION_NAME;
     const versionLabel = `v${ver} · ${verName}`;
     $('#host-detail').replaceChildren(routeLink(versionLabel, '#/settings/version', 'host-version-link'));
-    $('#host-detail').title = `Dashboard v${ver} "${verName}" (revision ${state.host.revision?.slice(0, 7) ?? 'unknown'})`;
+    // The revision stays in the host state for version checks, never in this human-facing tooltip.
+    $('#host-detail').title = `Dashboard v${ver} "${verName}"`;
   }
   fitPreviewFrames();
 }
