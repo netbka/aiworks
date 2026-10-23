@@ -191,11 +191,13 @@ export function resultEvidence(task) {
 /**
  * Results (OWNER_WORKSPACE §4.9, slice S6, build slice UI7): the groups in screen order, each with its §2.3 state word.
  * "Closed without merging" has no source yet: the local merge check cannot tell a closed pull request from an open
- * one, so such a result stays under "Waiting for your review" and is never merged. "Changes requested" is not built:
- * it needs GitHub's review state, which the dashboard does not read (PROJECT_WORKSPACE_PLAN §6.12 C1, gap G3).
+ * one, so such a result stays under "Waiting for your review" and is never merged. "Changes requested by you" is the
+ * owner's own request recorded in AIWorks (Request changes), never GitHub's review state, which the dashboard does not
+ * read (PROJECT_WORKSPACE_PLAN §6.12 C1, gap G3).
  */
 export const RESULT_GROUPS = [
   { key: 'review', title: 'Waiting for your review' },
+  { key: 'changes', title: 'Changes requested by you' },
   { key: 'accepted', title: 'Accepted by you · not merged yet' },
   { key: 'local-review', title: 'Checked on this computer · not merged yet' },
   { key: 'delegated', title: 'Being merged for you' },
@@ -253,6 +255,11 @@ function resultRow(c, task, d, releases, recorded = null) {
     word: d.held ? DELEGATED.heldRow(number, DELEGATED.held[d.held]) : d.stalled ? DELEGATED.waitedRow(d.stalled) : DELEGATED.row(number, d.by) };
   // A merge check that can still come shortly: the state is not known yet, so it is neither waiting nor merged.
   if (d.pending) return { ...base, ...proof, group: 'unknown', word: 'Not known yet', note: d.note, link };
+  // Sent back by the owner: no longer waiting for their review. Only running work repairs it (ownerSettled).
+  if (task.review?.state === 'changes-requested') return { ...base, ...proof, group: 'changes', word: 'Changes requested by you · not merged',
+    note: c.control === 'paused' ? 'This work is paused, so nobody is making the changes until you resume it.'
+      : c.control === 'cancelled' ? 'This work was stopped, so AIWorks will not make the changes; plan this work again if you still want them.'
+        : 'AIWorks repairs this step within the approved plan.', link };
   // Accepted by the owner where AIWorks may not merge: their decision is recorded, merging follows the project's own rules.
   if (task.review?.state === 'accepted') return { ...base, ...proof, group: 'accepted', word: 'Accepted by you · not merged yet', note: OWN_MERGE, link };
   return { ...base, ...proof, group: 'review', word: `Pull request #${number} · waiting for your review`,
@@ -533,6 +540,15 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       plan: c.control === 'paused' ? null : { label: 'Plan the completion…', goal: `Complete the accepted result “${label(task)}”: ` },
       command: c.control === 'paused' && c.controls?.primary === 'resume' ? { label: 'Resume this work', command: 'resume', campaignId: c.id } : null,
       points: stopped ? [] : [{ link: null, text: `${OWN_MERGE}. To have AIWorks complete it, plan the follow-up; nothing starts until you approve the plan, and it gives AIWorks no permission to merge here.` }] });
+    // Changes the owner requested in stopped work: nothing repairs them while it is paused, and cancelled work never
+    // resumes, so the request stays theirs to continue with the work's own Resume or with new planned work. It claims no
+    // worker and resumes nothing by itself.
+    const changesItem = (task, d) => ({ ...base, taskId: task.id, kind: 'changes-stopped', action: 'Changes requested · not being made', text: label(task),
+      why: `You requested changes to this result. ${c.control === 'paused' ? 'This work is paused, so nobody is making them. Resume it from its work controls when you want them made.'
+        : 'This work was stopped, so AIWorks will not make them. Plan this work again if you still want them; nothing starts until you approve the plan.'}`,
+      route: reviewRoute(task), reference: reference(d), mergeCheck: d?.asOf ?? null,
+      plan: c.control === 'paused' ? null : { label: 'Plan this work again…', goal: `Make the changes I requested to “${label(task)}”: ` },
+      command: c.control === 'paused' && c.controls?.primary === 'resume' ? { label: 'Resume this work', command: 'resume', campaignId: c.id } : null, points: [] });
     // A checked local review in a project whose merge gate is on merges into local main by that gate once its conditions
     // hold, with or without the owner's review (merge.mjs candidates): AIWorks's own work, never an owner chore. A wait
     // the gate recorded says why; one it cannot settle by itself is listed under AIWorks itself, as for pull requests.
@@ -567,6 +583,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     for (const { task, delivery: d } of by('published').filter((step) => !step.delivery.pending && settledReview(step))) {
       const settled = stopped ? null : ownerSettled(base, task);
       if (settled) handling.push(settled);
+      else if (task.review?.state === 'changes-requested') items.push(changesItem(task, d));
       else if (task.review?.state === 'accepted') {
         if (gateMerges(task, d)) gateHandles(task, true);
         else items.push(acceptedItem(task, d));

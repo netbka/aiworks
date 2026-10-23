@@ -1615,7 +1615,7 @@ function needsYou() {
     reply ? el('div', { class: 'needs-reply' }, `AIWorks answered your message (${dateTime(reply.answeredAt)}). `,
       reply.url ? link('Read its “What needs you” ↗', reply.url) : routeLink('Open the chat', { screen: 'chats', chat: reply.threadId ?? reply.messageId })) : null,
     // The local work list (UI20): its open decisions are counted above; the list itself is one link away.
-    worklist()?.available ? el('p', { class: 'needs-reply' }, `AIWorks’s own work list: ${plural(worklist().items.filter((entry) => entry.state === 'open').length, 'open item')}. `,
+    worklist()?.available ? el('p', { class: 'needs-reply' }, `AIWorks’s own work list: ${plural(worklist().items.filter((entry) => worklistBucket(entry) === 'outstanding').length, 'unfinished item')}. `,
       routeLink('Open the work list', WORKLIST_ADDRESS)) : null);
 }
 
@@ -3135,6 +3135,12 @@ function reviewPanel(review, binding, { merged = false } = {}) {
  */
 function reviewActions(review, binding) {
   if (review.state === 'changes-requested') {
+    // Only running work is repaired: paused work waits for Resume, and stopped work is never resumed.
+    const control = campaignById(binding.campaignId)?.control;
+    if (['paused', 'cancelled'].includes(control)) {
+      return [el('p', { role: 'status' }, `You asked for changes to this checked version${review.requestedAt ? ` at ${clock(review.requestedAt)}` : ''}. ${control === 'paused'
+        ? 'This work is paused, so nobody is making them until you resume it.' : 'This work was stopped, so AIWorks will not make them; plan this work again if you still want them.'} The earlier check stays on record.`)];
+    }
     return [el('p', { role: 'status' }, review.stalled
       ? 'You asked for changes to this checked version, but this step has used all its repair rounds, so it stopped. Nothing of it was published or merged.'
       : `You asked for changes to this checked version${review.requestedAt ? ` at ${clock(review.requestedAt)}` : ''}. AIWorks repairs this step within the approved plan; a fresh independent check comes before anything is published or merged. The earlier check stays on record.`)];
@@ -4211,24 +4217,43 @@ function worklistBlocked() {
   return null;
 }
 
+/**
+ * Where an item stands for the owner: a decision waiting for them, unfinished work, a result merged into local main
+ * (kept open as history) or a decision already recorded that stays in force. Grouping only: every item stays listed.
+ */
+const worklistBucket = (entry) => entry.state !== 'open' ? 'closed' : entry.kind === 'decision' ? entry.needsOwner ? 'owner' : 'standing'
+  : entry.kind === 'review' && entry.merged ? 'merged' : 'outstanding';
 const worklistMeta = (entry) => [entry.kindWord, entry.state === 'open' ? 'Open' : 'Closed', entry.needsOwner && entry.state === 'open' ? 'Needs you' : null,
+  entry.kind === 'review' ? entry.merged ? 'merged into local main' : 'not merged yet' : null,
   `from ${entry.author}`, entry.updatedAt ? `updated ${clock(entry.updatedAt)}` : null].filter(Boolean).join(' · ');
 const worklistRow = (entry) => el('li', { class: 'result-row worklist-row', 'data-focus-scope': `worklist/${entry.number}` },
   el('div', { class: 'needs-text' }, routeLink(`#${entry.number} ${entry.title}`, { screen: 'worklist-item', number: entry.number })),
   el('div', { class: 'result-state' }, worklistMeta(entry)));
 
-/** The list's changing part: imported issues to review, open items, and closed ones behind a disclosure. */
+/**
+ * The list's changing part: imported issues to review, decisions waiting for the owner, unfinished work, then merged
+ * results, standing decisions and closed items behind disclosures, kept as history.
+ */
 function worklistParts() {
-  const wl = worklist(), open = wl.items.filter((entry) => entry.state === 'open'), closed = wl.items.filter((entry) => entry.state === 'closed');
+  const wl = worklist(), of = (bucket) => wl.items.filter((entry) => worklistBucket(entry) === bucket);
+  const owner = of('owner'), open = of('outstanding'), merged = of('merged'), standing = of('standing'), closed = of('closed');
   const waiting = wl.imported.candidates.length;
+  const history = (key, title, note, rows) => rows.length ? el('section', { class: 'panel', 'data-focus-scope': `worklist/${key}` },
+    disclosure(`worklist/${key}`, `${title} (${rows.length})`,
+      el('div', {}, note ? el('p', { class: 'subtext' }, note) : null, el('ul', { class: 'needs-list' }, ...rows.map(worklistRow))))) : null;
   return [
     waiting ? el('p', { class: 'notice' }, `${plural(waiting, 'imported issue')} still open on GitHub. `, routeLink('Review the imported issues', IMPORT_ADDRESS)) : null,
+    owner.length ? el('section', { class: 'panel', 'aria-labelledby': 'worklist-owner-title', 'data-focus-scope': 'worklist/owner' },
+      el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'worklist-owner-title' }, `Decisions for you (${owner.length})`),
+        el('p', {}, 'Also on Needs you.'))),
+      el('ul', { class: 'needs-list' }, ...owner.map(worklistRow))) : null,
     el('section', { class: 'panel', 'aria-labelledby': 'worklist-open-title', 'data-focus-scope': 'worklist/open' },
-      el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'worklist-open-title' }, `Open (${open.length})`),
-        el('p', {}, 'On this computer only. Checked results and decisions AIWorks records appear here too.'))),
-      open.length ? el('ul', { class: 'needs-list' }, ...open.map(worklistRow)) : empty('Nothing open.', ' Add an item below.')),
-    closed.length ? el('section', { class: 'panel', 'data-focus-scope': 'worklist/closed' },
-      disclosure('worklist/closed', `Closed (${closed.length})`, el('ul', { class: 'needs-list' }, ...closed.map(worklistRow)))) : null,
+      el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'worklist-open-title' }, `Not finished (${open.length})`),
+        el('p', {}, 'On this computer only: tasks, findings and notes, and checked results not merged yet.'))),
+      open.length ? el('ul', { class: 'needs-list' }, ...open.map(worklistRow)) : empty('Nothing unfinished.', ' Add an item below.')),
+    history('merged', 'Merged results', 'Merged into local main and kept for reference. Merged is not accepted.', merged),
+    history('standing', 'Standing decisions', 'Decisions already recorded; they stay in force and need nothing from you.', standing),
+    history('closed', 'Closed', null, closed),
     wl.total > wl.items.length ? el('p', { class: 'subtext' }, `Showing the newest ${wl.items.length} of ${wl.total} items.`) : null,
   ].filter(Boolean);
 }
