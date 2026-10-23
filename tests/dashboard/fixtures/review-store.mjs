@@ -100,6 +100,8 @@ export const REVIEW_STATES = {
   'finished-reports': { section: '7.8', campaignId: 'notes-audit' },
   'finished-unknown': { section: '7.8', campaignId: 'notes-links' },
   'cancelled': { section: '7.8', campaignId: 'recipes-print' },
+  'changes-paused': { section: '7.5', campaignId: 'recipes-ratings', taskId: 'T1' },
+  'changes-cancelled': { section: '7.8', campaignId: 'recipes-scaling', taskId: 'T1' },
 };
 
 function git(cwd, ...args) {
@@ -199,7 +201,8 @@ function fill(store, dataDir, root, now) {
       { branch: 'contracts-import', pushed: true }]),
     'example/recipes': repository(root, 'recipes', [{ branch: 'print-card', merged: true },
       { branch: 'unit-converter', merged: true }, { branch: 'metric-units', merged: true }, { branch: 'shopping-list', merged: true }, { branch: 'pantry-check' },
-      { branch: 'low-stock', pushed: true }, { branch: 'pantry-photos', pushed: true }, { branch: 'pantry-export', pushed: true }]),
+      { branch: 'low-stock', pushed: true }, { branch: 'pantry-photos', pushed: true }, { branch: 'pantry-export', pushed: true },
+      { branch: 'recipe-ratings', pushed: true }, { branch: 'recipe-scaling', pushed: true }]),
     'example/notes-site': repository(root, 'notes-site', [{ branch: 'sitemap' }], { origin: false }),
   };
   const sha = (repo, branch) => repos[repo].shas[branch];
@@ -324,6 +327,27 @@ function fill(store, dataDir, root, now) {
   setCampaign(id, { control: 'cancelled', status: 'cancelled' });
   lease(id, now - 40 * H);
 
+  // Changes the owner requested to a checked result before its work stopped: paused work keeps the request until it is
+  // resumed; cancelled work never makes them. Neither is running, and nothing here resumes either.
+  for (const [cid, branch, n, title, outcome, control] of [['recipes-ratings', 'recipe-ratings', 221, 'recipe ratings', 'Recipe ratings', 'paused'],
+    ['recipes-scaling', 'recipe-scaling', 222, 'recipe scaling', 'Recipe scaling', 'cancelled']]) {
+    id = start(declaration(cid, recipes, `${outcome} for every recipe`, n, [task('T1', n, title, outcome)]), now - 20 * H);
+    const verified = sha(recipes, branch), report = '# T1 report\n\nSynthetic review fixture report.', reportDigest = createHash('sha256').update(report, 'utf8').digest('hex');
+    operation(id, 'T1', 'implement', { state: 'finished', at: now - 19 * H, outcome: finished({ result: 'implemented' }, 0.7) });
+    operation(id, 'T1', 'verify', { state: 'finished', at: now - 18 * H, outcome: finished({ verdict: 'accepted', findings: [] }, 0.3) });
+    setTask(id, 'T1', { state: 'done', attempts: 1, head_sha: verified, verified_sha: verified, pr_url: pull(recipes, n),
+      result: { result: 'resolved', summary: 'implemented', headSha: verified, report },
+      verification: { verdict: 'accepted', targetSha: verified, reportDigest, summary: 'Checked on the fixture recipes.',
+        verdictSummary: 'Does what the plan promised on the fixture recipes.', findings: [], checks: [{ command: 'npm run check', result: 'pass' }],
+        criteria: [{ criterion: 1, result: 'pass', check: 'Opened a recipe', evidence: 'Synthetic evidence.' }], eyesOn: [] } });
+    store.journal(id, 'published', { task: 'T1', url: pull(recipes, n) }, now - 17 * H);
+    const c = store.campaign(id);
+    store.addEvent(id, 'result-changes', { taskId: 'T1', verifiedSha: verified, reportDigest, criterion: null, text: 'Show the average rating as stars.',
+      authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest, requestId: '00000000-0000-4000-8000-0000000000a1' }, `result-changes:${id}:T1:${verified}`, now - 16 * H);
+    if (control === 'paused') { live(id); campaignPause(store, id, 'Paused by the owner', now - 15 * H); }
+    else { setCampaign(id, { control: 'cancelled', status: 'cancelled' }); lease(id, now - 15 * H); }
+  }
+
   // Every step finished and merged into main, so every state is known and only the release follows.
   id = start(declaration('recipes-units', recipes, 'Convert recipe units', 105, [task('T1', 106, 'unit converter', 'Unit converter'),
     task('T2', 107, 'metric units', 'Metric units')]), now - 30 * H);
@@ -409,6 +433,8 @@ function fill(store, dataDir, root, now) {
   id = start(declaration('notes-research', notes, 'Compare static site hosts', 200, [task('T1', 201, 'hosting comparison', 'Hosting comparison', { deliverable: 'report' })]), now - 10 * H);
   const researchReport = '# Hosting comparison\n\nSynthetic review fixture report: three made-up hosts compared by price and build time.';
   const researchItem = createItem(store, { kind: 'task', title: 'Compare static site hosts', body: 'Synthetic review fixture item.', authorKind: 'owner', now: now - 10 * H });
+  // A decision the owner recorded: it stays open and in force, and needs nothing from them.
+  createItem(store, { kind: 'decision', title: 'Recipes show metric units first', body: 'Synthetic standing decision.', authorKind: 'owner', now: now - 12 * H });
   addComment(store, { number: researchItem.number, authorKind: 'supervisor', now: now - 8 * H, body: `${researchReport}\n\nVerified by an independent checker.`,
     idempotencyKey: `${id}:T1:report:${createHash('sha256').update(researchReport, 'utf8').digest('hex')}` });
   setTask(id, 'T1', { state: 'done', attempts: 1, pr_url: `aiworks-work:${researchItem.number}`, result: { result: 'resolved', summary: 'reported', report: researchReport } });
