@@ -1508,13 +1508,14 @@ function guidancePanel(c, task) {
  * an unsent goal (kept if the owner already typed one), where the plan is drafted and only Approve and start on Review
  * starts anything (OWNER_WORKSPACE §5.4).
  */
-function planFromItem(item, project) {
+function planFromItem(item, project, { primary = false } = {}) {
   if (!project || !planWorkOpen(project)) return null;
-  return button('Plan different work…', () => {
+  // An item whose only way forward is planned work names it (`item.plan`); otherwise planning is the alternative.
+  return button(item.plan?.label ?? 'Plan different work…', () => {
     const address = formatRoute({ screen: 'start', project }), draft = startDraft(address);
-    if (!draft.goal.trim()) drafts.set(address, 'start', { ...draft, goal: `Instead of “${item.text}”: ` });
+    if (!draft.goal.trim()) drafts.set(address, 'start', { ...draft, goal: item.plan?.goal ?? `Instead of “${item.text}”: ` });
     go(address);
-  }, 'secondary small');
+  }, primary ? 'button' : 'secondary small');
 }
 
 /** The one way to resolve an item on its card, by its kind, through the same bound requests as its step and Review. */
@@ -1529,6 +1530,10 @@ function itemResolution(item, c, task) {
     return box;
   }
   if (item.kind === 'stopped' && c && task) return guidancePanel(c, task);
+  if (item.plan) {
+    const plan = planFromItem(item, item.repository ?? item.project ?? null, { primary: true });
+    return el('div', { class: 'needs-actions' }, plan ?? el('p', { class: 'subtext', role: 'status' }, 'Plan work is not available for this project right now, so this cannot be planned from here.'));
+  }
   return item.command ? el('div', { class: 'needs-actions' }, primaryAction(item.command)) : null;
 }
 
@@ -1553,7 +1558,7 @@ function needsItem(item) {
       point.link ? link(`${point.link.label} ↗`, point.link.url, 'needs-link') : null, el('span', {}, point.text)))) : null,
     itemResolution(item, c, task),
     el('div', { class: 'needs-actions needs-secondary' }, item.route ? routeLink(item.route.label, item.route.address, 'needs-link') : null,
-      item.reference ? link(`${item.reference.label} ↗`, item.reference.url, 'needs-link subtext') : null, item.system || !item.taskId ? null : planFromItem(item, project)));
+      item.reference ? link(`${item.reference.label} ↗`, item.reference.url, 'needs-link subtext') : null, item.system || !item.taskId || item.plan ? null : planFromItem(item, project)));
 }
 
 /**
@@ -3107,7 +3112,7 @@ function reviewPanel(review, binding, { merged = false } = {}) {
   const box = (...children) => el('div', { class: 'instruction-list review-panel', 'data-review': review.state, 'data-focus-scope': scope }, ...children);
   if (review.state === 'changes-requested') return box(el('h3', { class: 'section-title' }, 'Changes requested'), ...reviewActions(review, binding), previewSection(review, binding));
   if (review.state === 'no-evidence') {
-    return box(el('h3', { class: 'section-title' }, 'Review'), el('p', {}, 'No independent check of this version is on record, so it cannot be accepted here.'), previewSection(review, binding));
+    return box(el('h3', { class: 'section-title' }, 'Review'), ...reviewActions(review, binding), previewSection(review, binding));
   }
   return box(
     el('h3', { class: 'section-title' }, 'Review of the checked version'),
@@ -3134,7 +3139,7 @@ function reviewActions(review, binding) {
       ? 'You asked for changes to this checked version, but this step has used all its repair rounds, so it stopped. Nothing of it was published or merged.'
       : `You asked for changes to this checked version${review.requestedAt ? ` at ${clock(review.requestedAt)}` : ''}. AIWorks repairs this step within the approved plan; a fresh independent check comes before anything is published or merged. The earlier check stays on record.`)];
   }
-  if (review.state === 'no-evidence') return [el('p', {}, 'No independent check of this version is on record, so it cannot be accepted here.')];
+  if (review.state === 'no-evidence') return [el('p', {}, 'No independent check of this version is on record, so it can be neither accepted nor sent back here. Its Needs you card offers to plan this work again; nothing starts until you approve the plan.')];
   const off = reviewBusy || commandsOff(), address = current.address, key = `review:${binding.campaignId}/${binding.taskId}/${review.verifiedSha}`;
   const ids = `${binding.campaignId}-${binding.taskId}`;
   const u = review.unresolved, open = u.failed + u.notChecked + u.blocking;
@@ -4516,7 +4521,8 @@ function render() {
     const verName = state.host.versionName ?? DASHBOARD_VERSION_NAME;
     const versionLabel = `v${ver} · ${verName}`;
     $('#host-detail').replaceChildren(routeLink(versionLabel, '#/settings/version', 'host-version-link'));
-    $('#host-detail').title = `Dashboard v${ver} "${verName}" (revision ${state.host.revision?.slice(0, 7) ?? 'unknown'})`;
+    // The revision stays in the host state for version checks, never in this human-facing tooltip.
+    $('#host-detail').title = `Dashboard v${ver} "${verName}"`;
   }
   fitPreviewFrames();
 }

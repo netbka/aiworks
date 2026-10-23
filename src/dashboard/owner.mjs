@@ -175,7 +175,7 @@ function localDelivery(task, number, merges, now, campaignId, repository) {
  * stays in the review binding, never in these words. `short` is one compact line; `text` the full sentence.
  */
 export function reviewEvidence(task) {
-  if (!task.verifiedSha) return { ...NEEDS.noEvidence };
+  if (!task.verifiedSha || task.review?.state === 'no-evidence') return { ...NEEDS.noEvidence };
   return NEEDS.evidence();
 }
 
@@ -184,7 +184,7 @@ export function reviewEvidence(task) {
  * "accepted", which is kept for recorded acceptance (#4). `short` is the row line; `text` the sentence in its details.
  */
 export function resultEvidence(task) {
-  if (!task.verifiedSha) return { short: 'Independent check not recorded here', text: 'The independent check is not recorded here.' };
+  if (!task.verifiedSha || task.review?.state === 'no-evidence') return { short: 'Independent check not recorded here', text: 'The independent check is not recorded here.' };
   return { short: 'Passed the independent check', text: 'Passed the independent check of exactly this version; Review shows its criteria and evidence.' };
 }
 
@@ -522,6 +522,13 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     const stepRoute = (task, text = 'Open the step') => ({ label: text, address: { screen: 'step', project, work: c.id, step: task.id } });
     const reviewRoute = (task) => { const entry = reviewEntry(c, task); return entry ? { label: 'Open the full review', address: entry.address } : stepRoute(task); };
     const reference = (d) => d && !d.local && d.number ? { label: `Pull request #${d.number}`, url: d.url } : null;
+    // Accepted where AIWorks may not merge: the owner's approval is recorded, but the result is not merged and its goal is
+    // not finished. Completing it is planned work, approved like any plan; no merge permission comes from here.
+    const acceptedItem = (task, d) => ({ ...base, taskId: task.id, kind: 'accepted-unmerged', action: 'Accepted · not merged yet', text: label(task),
+      why: `You accepted exactly this version, but AIWorks may not merge in this project, so it is not merged and this goal is not finished.`,
+      route: reviewRoute(task), reference: reference(d), mergeCheck: d?.asOf ?? null,
+      plan: { label: 'Plan the completion…', goal: `Complete the accepted result “${label(task)}”: ` },
+      points: [{ link: null, text: `${OWN_MERGE}. To have AIWorks complete it, plan the follow-up; nothing starts until you approve the plan, and it gives AIWorks no permission to merge here.` }] });
     // A checked version the merge gate holds for the owner's acceptance (AW-015): one item, resolved on its card or its
     // Review, where Accept result and Request changes bind exactly that version and report. Merged outside the gate, nothing is left.
     const accepting = steps.filter((step) => step.task.review?.awaitsAcceptance && step.delivery?.state !== 'merged');
@@ -532,11 +539,22 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     }
     // One item per step, led by what the step delivers. Nobody merges it for the owner here, so it waits for their review.
     // Requested changes wait for AIWorks; an accepted version is in Results, merged by the project's own rules.
-    for (const { task } of by('published').filter((step) => !step.delivery.pending && settledReview(step))) {
+    for (const { task, delivery: d } of by('published').filter((step) => !step.delivery.pending && settledReview(step))) {
       const settled = ownerSettled(base, task);
       if (settled) handling.push(settled);
+      else if (task.review?.state === 'accepted') items.push(acceptedItem(task, d));
     }
     for (const { task, delivery: d } of awaiting.filter((step) => !accepting.includes(step))) {
+      // Published without an independent check on record: it can be neither accepted nor sent back, so the owner's real
+      // choice is to plan its completion again (approved like any plan) or leave it unmerged. Never "passed the check".
+      if (!d.local && (!task.verifiedSha || task.review?.state === 'no-evidence')) {
+        items.push({ ...base, taskId: task.id, kind: 'unchecked', action: 'Decide how this result continues', text: label(task),
+          why: 'AIWorks published this result, but no independent check of it is on record, so it cannot be accepted or sent back here, and nothing of it counts as passed or merged.',
+          route: reviewEntry(c, task) ? reviewRoute(task) : d.route ?? stepRoute(task), reference: reference(d), evidence: NEEDS.noEvidence.short, mergeCheck: d.asOf,
+          plan: { label: 'Plan this work again…', goal: `Redo and check “${label(task)}”: ` },
+          points: [{ link: null, text: 'Plan this work again to have AIWorks rebuild and check it; nothing starts until you approve the plan. If it is not needed, leave it unmerged.' }] });
+        continue;
+      }
       const waitingOn = c.tasks.filter((other) => other.state !== 'done' && other.dependsOn.includes(task.id));
       // A step starts from the base branch as it is at its first run and keeps that base (its worktree is created
       // once), so only steps that have not started yet can build on the merge.
@@ -577,7 +595,9 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
         items.push({ ...base, repository: null, about: c.repository, taskId: task.id, kind: 'merge-problem', system: true, action: 'AIWorks cannot finish this by itself',
           text: label(task), why: `${words.reason}. ${words.next}`, route: stepRoute(task), reference: reference(d),
           points: [{ link: null, text: 'Not an investigation for you: AIWorks keeps what it recorded for its maintainers. If this result should not continue, stop this work from its project.' }] });
-      } else if (d.stalled && task.review?.state !== 'accepted') {
+      } else if (d.stalled && task.review?.state === 'accepted') {
+        items.push(acceptedItem(task, d));
+      } else if (d.stalled) {
         const evidence = reviewEvidence(task);
         items.push({ ...base, taskId: task.id, kind: 'merge-overdue', action: DELEGATED.overdue.action, text: label(task), why: DELEGATED.overdue.why(d.stalled),
           route: reviewRoute(task), reference: reference(d), evidence: evidence.short, detail: evidence.text, mergeCheck: d.asOf,
