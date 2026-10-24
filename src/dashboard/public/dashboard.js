@@ -2809,7 +2809,9 @@ function nowScreen(project) {
         c?.controls?.primary === 'resume' ? button(line.primary.label, () => command(c, 'resume'), 'secondary', commandsOff()) : null);
     }))) : null;
   return [el('section', { class: 'panel', 'data-focus-scope': `now/${project}` }, el('div', { class: 'panel-body' },
-    goal ? el('p', { class: 'eyebrow' }, goal) : null,
+    // owner-ui-v2 03-overview: the goal in the owner's own words leads as the headline; the state sentence below it
+    // (now.title/now.text) is the supporting line, not the other way around.
+    goal ? el('p', { class: 'now-goal' }, goal) : null,
     el('p', { role: 'status', 'aria-live': 'polite', 'data-state': now.key }, el('strong', {}, now.title), now.text ? ` ${now.text}` : ''),
     primaryAction(now.primary), startWork, also,
     view.progress ? el('p', { class: 'subtext' }, view.progress) : null,
