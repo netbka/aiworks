@@ -46,7 +46,7 @@ An installation keeps three things apart:
 
 Only a version that has been independently reviewed and merged is installed. The assistant should tell you which version it proposes and why it is trusted, not pick the newest source. You do not type any version identifier.
 
-To update, the assistant prepares it and works through [the upgrade procedure](../SUPERVISOR.md#upgrade) with you. In plain terms: it records where each unfinished project stands, pauses new work, waits for running work to finish, stops the services and confirms they stopped, installs the reviewed version, resumes the same work and compares the result with the earlier status. If you want to pause everything yourself, use **Pause all work** on the dashboard's Home. Do not delete data or reinstall over a running installation to "fix" an update.
+To update, the assistant prepares it and works through [the upgrade procedure](../SUPERVISOR.md#upgrade) with you. In plain terms: it records where each unfinished project stands, pauses new work, waits for running work to finish, stops the services and confirms they stopped, installs the reviewed version, resumes the same work and compares the result with the earlier status. `npm run rebuild` does all of this in one command, and running it again after a problem continues where it stopped. If you want to pause everything yourself, use **Pause all work** on the dashboard's Home. Do not delete data or reinstall over a running installation to "fix" an update.
 
 What only you can supply: signing in to your AI client and workers, choosing your project folder, and approving projects and work. Installing, merging and verifying are separate steps, so a prepared update is not yet a running one.
 
