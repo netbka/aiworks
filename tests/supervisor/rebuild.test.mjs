@@ -43,7 +43,7 @@ function services(inst, { git = {}, onDeploy = () => undefined, onSleep = () => 
       if (key === 'rev-parse --verify --quiet refs/remotes/origin/main^{commit}') return ok(TARGET);
       return ok('');
     },
-    deploy(step, params) {
+    maintain(step, params) {
       calls.push(['deploy', step, params]);
       const out = onDeploy(step, params) ?? ok('');
       if (out.exitCode !== 0) return out;
