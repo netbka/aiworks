@@ -27,12 +27,16 @@ const PHASES = ['draining', 'stopped', 'backed-up', 'installed', 'started', 'res
 const TAIL = 4000;
 const digest = (value) => createHash('sha256').update(canonicalJson(value ?? null), 'utf8').digest('hex');
 
-/** The installation an AIWorks root holds (docs/SUPERVISOR.md section 6). Everything the rebuild writes is under <data>/rebuild. */
+/**
+ * The installation an AIWorks root holds (docs/SUPERVISOR.md section 6). Everything the rebuild writes is under <data>/rebuild,
+ * except the installation's runtime maintenance lock, which every session maintaining the runtime takes.
+ */
 export function installationPaths(root) {
   const data = join(root, '.local', 'supervisor');
   const dir = join(data, 'rebuild');
   return { root, data, runtime: join(root, '.local', 'runtime'), cli: join(root, '.local', 'runtime', 'src', 'supervisor', 'cli.mjs'),
-    db: join(data, 'supervisor.db'), config: join(data, 'config.json'), stop: join(data, 'STOP'), dir, state: join(dir, 'state.json'), lock: join(dir, 'lock') };
+    db: join(data, 'supervisor.db'), config: join(data, 'config.json'), stop: join(data, 'STOP'), dir, state: join(dir, 'state.json'),
+    lock: join(root, '.local', 'runtime-maintenance.lock') };
 }
 
 /** The pause reason that marks a campaign as paused by this invocation, and by nothing else. */
@@ -134,7 +138,7 @@ export async function rebuild(options, services) {
     if (!existsSync(path)) refuse('INSTALLATION_NOT_FOUND', `no ${what} at ${path}: --root must name the root of an existing AIWorks installation`);
   }
   mkdirSync(paths.dir, { recursive: true });
-  acquireLock(paths, services, now);
+  const lockToken = acquireLock(paths, services, now);
   let state = readJson(paths.state);
   const save = () => writeAtomic(paths.state, `${JSON.stringify(state, null, 2)}\n`);
   const evidence = (step, entry) => {
@@ -166,6 +170,9 @@ export async function rebuild(options, services) {
     // ---- Preflight: nothing changes before every check has passed. ----
     const settings = selfHostingSettings(readJson(paths.config) ?? {});
     const sourceStatus = await git('preflight', ['status', '--porcelain'], source);
+    // The runtime is a worktree of the canonical AIWorks repository and shares its objects and refs; the installation
+    // root may be a separate checkout without the new commits, so the target is resolved and checked in the runtime.
+    const repo = paths.runtime;
     if (sourceStatus.exitCode !== 0 || sourceStatus.stdout.trim()) halt('SOURCE_NOT_CLEAN', `the operator checkout ${source} has uncommitted changes or is not a Git checkout`);
     const sourceHead = (await git('preflight', ['rev-parse', 'HEAD'], source)).stdout.trim();
     const runtimeStatus = await git('preflight', ['status', '--porcelain'], paths.runtime);
@@ -179,20 +186,20 @@ export async function rebuild(options, services) {
         tip = out.exitCode === 0 ? out.stdout.split(/\r?\n/)[0].trim() : null;
         if (!SHA.test(tip ?? '')) halt('TARGET_NOT_TRUSTED', `trusted-main gave no trusted tip of local main: ${out.stderr.trim()}`);
       } else {
-        const fetch = await git('preflight', ['fetch', '-q', 'origin'], root);
+        const fetch = await git('preflight', ['fetch', '-q', 'origin'], repo);
         if (fetch.exitCode !== 0) halt('TARGET_NOT_TRUSTED', `git fetch origin failed: ${fetch.stderr.trim()}`);
-        tip = (await git('preflight', ['rev-parse', '--verify', '--quiet', 'refs/remotes/origin/main^{commit}'], root)).stdout.trim();
-        if (!SHA.test(tip)) halt('TARGET_NOT_TRUSTED', 'the installation root has no origin/main');
+        tip = (await git('preflight', ['rev-parse', '--verify', '--quiet', 'refs/remotes/origin/main^{commit}'], repo)).stdout.trim();
+        if (!SHA.test(tip)) halt('TARGET_NOT_TRUSTED', 'the repository of the runtime has no origin/main');
       }
       if (!target) target = tip;
-      else if (target !== tip && (await git('preflight', ['merge-base', '--is-ancestor', target, tip], root)).exitCode !== 0) {
+      else if (target !== tip && (await git('preflight', ['merge-base', '--is-ancestor', target, tip], repo)).exitCode !== 0) {
         halt('TARGET_NOT_TRUSTED', `${target}, the revision this rebuild started with, is no longer on the trusted main`);
       }
     }
     if (sourceHead !== target) {
       halt('SOURCE_NOT_AT_TARGET', `the operator checkout is at ${sourceHead || 'no commit'}, not the trusted ${target}: the rebuild runs only the reviewed code it installs. Check out ${target} there and run npm run rebuild again`);
     }
-    if ((await git('preflight', ['cat-file', '-e', `${target}^{commit}`], root)).exitCode !== 0) halt('TARGET_NOT_IN_ROOT', `the installation root ${root} does not have ${target}`);
+    if ((await git('preflight', ['cat-file', '-e', `${target}^{commit}`], repo)).exitCode !== 0) halt('TARGET_NOT_IN_REPOSITORY', `the repository of the runtime ${repo} does not have ${target}`);
 
     if (!state) {
       const fresh = withStore((store) => ({ stopPreexisting: existsSync(paths.stop), open: openWork(store) }));
@@ -310,7 +317,7 @@ export async function rebuild(options, services) {
     renameSync(paths.state, join(paths.dir, state.id, 'state.json'));
     return summary;
   } finally {
-    rmSync(paths.lock, { force: true });
+    if (readJson(paths.lock)?.token === lockToken) rmSync(paths.lock, { force: true });
   }
 
   // Pause every running campaign under this invocation's reason and record it, including one paused just before a crash.
@@ -373,18 +380,24 @@ export async function rebuild(options, services) {
   }
 }
 
-// One maintenance session at a time. A lock left by a process that no longer exists is taken over: its state file says
-// where it stopped, and this invocation continues from there.
+// One maintenance session at a time: the installation's runtime maintenance lock, which any session maintaining the runtime
+// holds. Only a lock this command left behind with a process that no longer exists is taken over: its state file says
+// where it stopped, and this invocation continues from there. Another session's lock is never removed.
+const LOCK_OWNER = 'aiworks rebuild';
 function acquireLock(paths, services, now) {
+  const token = randomBytes(8).toString('hex');
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const fd = openSync(paths.lock, 'wx');
-      try { writeSync(fd, JSON.stringify({ pid: process.pid, at: new Date(now()).toISOString() })); } finally { closeSync(fd); }
-      return;
+      try { writeSync(fd, JSON.stringify({ owner: LOCK_OWNER, pid: process.pid, token, at: new Date(now()).toISOString() })); } finally { closeSync(fd); }
+      return token;
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
       const holder = readJson(paths.lock);
-      if (Number.isSafeInteger(holder?.pid) && holder.pid !== process.pid && services.processAlive(holder.pid)) {
+      if (holder?.owner !== LOCK_OWNER || !Number.isSafeInteger(holder.pid)) {
+        throw new RebuildError('MAINTENANCE_IN_PROGRESS', `another session holds the runtime maintenance lock ${paths.lock}; nothing was changed. Run npm run rebuild again once that session has finished and released it`);
+      }
+      if (holder.pid !== process.pid && services.processAlive(holder.pid)) {
         throw new RebuildError('REBUILD_IN_PROGRESS', `another rebuild (pid ${holder.pid}, since ${holder.at}) is maintaining this installation; nothing was changed`);
       }
       rmSync(paths.lock, { force: true });
