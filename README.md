@@ -304,6 +304,8 @@ powershell -NoProfile -File scripts\supervisor\install-dashboard-task.ps1 -Check
 
 These register the per-user tasks **AIWorks Supervisor** and **AIWorks Dashboard**. Both start at sign-in and every 5 minutes, and do nothing if they are already running. Add `-DefinitionOnly` to see the task definition without changing anything. `cli.mjs stop` keeps the supervisor stopped until its STOP file is removed. The live copy runs from a separate checkout of a reviewed commit and changes only through the [upgrade procedure](docs/SUPERVISOR.md#upgrade).
 
+To update it, run `npm run rebuild` from a clean checkout at the trusted commit (add `-- --root <installation root>` when the installation is elsewhere). It pauses running work, lets open runs finish and be recorded, stops and backs up, installs the trusted commit with `npm ci`, restarts, and resumes only the work it paused. Run it again after a failure and it continues where it stopped ([Rebuild](docs/SUPERVISOR.md#rebuild-the-upgrade-as-one-command)).
+
 ### Try the dashboard with made-up data
 
 ```sh
