@@ -9,6 +9,7 @@
   "scripts": {
     "prepare": "node scripts/install-hooks.mjs",
     "setup:local": "node scripts/setup-local.mjs",
+    "rebuild": "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File .local/rebuild.ps1",
     "test": "node scripts/run-tests.mjs",
     "test:quick": "node scripts/run-tests.mjs --tiers unit,service",
     "test:affected": "node scripts/run-tests.mjs --affected",
