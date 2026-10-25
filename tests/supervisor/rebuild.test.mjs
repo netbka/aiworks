@@ -212,12 +212,31 @@ test('earlier pauses, cancellations and STOP stay, and the resumed campaign keep
 
 test('after a failed install the same command continues without repeating a step and resumes only what it paused and nobody changed', { skip }, async () => {
   const inst = installation();
+  const originalGet = Store.prototype.get;
   try {
     for (const id of ['alpha', 'beta']) register(inst.store, id);
     openRun(inst.store, 'done-run', 'alpha', 'T1');
     finishRun(inst.store, 'done-run');
     let installs = 0;
-    const svc = services(inst, { onDeploy: (step) => (step === 'Install' && ++installs === 1 ? { exitCode: 1, stdout: '', stderr: 'npm ci failed' } : undefined) });
+    let competingOwner = false, checkedConcurrentWriter = false;
+    inst.store.db.exec('PRAGMA busy_timeout=0');
+    const svc = services(inst, { onDeploy: (step) => {
+      if (step === 'Start') competingOwner = true;
+      if (step === 'Install' && ++installs === 1) return { exitCode: 1, stdout: '', stderr: 'npm ci failed' };
+    } });
+    Store.prototype.get = function (sql, ...args) {
+      const row = originalGet.call(this, sql, ...args);
+      if (competingOwner && sql.includes("kind = 'paused'") && args[0] === 'alpha') {
+        competingOwner = false;
+        // A separate dashboard connection tries to replace the pause after the resume guard reads it.
+        assert.throws(() => inst.store.tx(() => {
+          campaignStart(inst.store, inst.store.campaign('alpha').declaration);
+          campaignPause(inst.store, 'alpha', 'new owner pause');
+        }), /locked|busy/i);
+        checkedConcurrentWriter = true;
+      }
+      return row;
+    };
     await assert.rejects(rebuild(inst.options, svc), (error) => error.code === 'INSTALL_FAILED');
     assert.equal(inst.store.campaign('alpha').control, 'paused');
     assert.equal(inst.store.campaign('beta').control, 'paused');
@@ -238,7 +257,8 @@ test('after a failed install the same command continues without repeating a step
     assert.equal(lastPause(inst.store, 'alpha'), pauseReason(summary.id));
     assert.equal(inst.store.get('SELECT COUNT(*) AS n FROM operations').n, 1);
     assert.ok(!existsSync(inst.paths.state));
-  } finally { inst.close(); }
+    assert.equal(checkedConcurrentWriter, true);
+  } finally { Store.prototype.get = originalGet; inst.close(); }
 });
 
 test('a dirty checkout, a revision that is not the trusted main or another maintenance session is refused before anything is paused or stopped', { skip }, async () => {
