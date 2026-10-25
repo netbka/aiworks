@@ -14,7 +14,8 @@
     "test:affected": "node scripts/run-tests.mjs --affected",
     "check": "node scripts/check-public-scope.mjs && node scripts/check-campaigns.mjs && npm test",
     "dashboard": "node src/dashboard/main.mjs",
-    "supervisor": "node src/supervisor/cli.mjs"
+    "supervisor": "node src/supervisor/cli.mjs",
+    "rebuild": "node scripts/supervisor/rebuild.mjs"
   },
   "engines": {
     "node": ">=22.5"

@@ -94,6 +94,14 @@ These are alternative operations, not a script to execute from top to bottom. Pa
 
 `pause` stops new dispatch and publication; a worker already running finishes and its result is recorded, so wait until `status` shows no open operation (drained) before stopping services or upgrading. For all running campaigns at once, use *Pause all work* on the local dashboard Home and *Resume all work* afterwards; the owner's pause and resume actions live there rather than in new commands. `stop` only creates the `STOP` file so `serve` and `keep` exit cleanly; it does not pause or drain work. The full maintenance sequence is [the upgrade procedure](../SUPERVISOR.md#upgrade).
 
+To upgrade the installation, run the whole sequence as one command from a clean operator checkout at the trusted commit:
+
+```powershell
+npm run rebuild -- --root C:/Work/aiworks
+```
+
+It refuses before changing anything when a checkout is dirty or the commit is not the trusted main. Otherwise it pauses running campaigns, waits for open runs to finish and be recorded, stops the services and proves they exited, backs up the store, installs the commit with `npm ci`, restarts, compares and resumes only the campaigns it paused. Campaigns paused or cancelled before it, and an existing `STOP`, stay as they were. After a failure, the same command continues from the step that failed ([Rebuild](../SUPERVISOR.md#rebuild-the-upgrade-as-one-command)).
+
 To inspect reported usage and outcomes without new model calls (read-only; no model, network or GitHub call):
 
 ```powershell
