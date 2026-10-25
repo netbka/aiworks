@@ -28,7 +28,11 @@ function installation() {
   return { root, paths, store, options, close: () => { store.close(); rmSync(root, { recursive: true, force: true }); } };
 }
 
-/** Recorded stand-ins for Git, deploy.ps1 and the tasks. A started supervisor takes leases under the runtime's commit. */
+/**
+ * Recorded stand-ins for Git, deploy.ps1 and the tasks. A started supervisor takes leases under the runtime's commit.
+ * As in the supported layout, the installation root is a separate checkout: only the runtime, a worktree of the canonical
+ * repository, has the trusted commits and origin.
+ */
 function services(inst, { git = {}, onDeploy = () => undefined, onSleep = () => {} } = {}) {
   let runtimeHead = OLD;
   const calls = [];
@@ -39,6 +43,7 @@ function services(inst, { git = {}, onDeploy = () => undefined, onSleep = () => 
       const key = args.join(' ');
       calls.push(['exec', file, key, cwd]);
       if (git[key]) return git[key](cwd);
+      if (/^(fetch|cat-file|merge-base|rev-parse --verify)/.test(key) && cwd !== inst.paths.runtime) return { exitCode: 128, stdout: '', stderr: 'not in this repository' };
       if (key === 'rev-parse HEAD') return ok(cwd === inst.paths.runtime ? runtimeHead : TARGET);
       if (key === 'rev-parse --verify --quiet refs/remotes/origin/main^{commit}') return ok(TARGET);
       return ok('');
@@ -170,7 +175,7 @@ test('after a failed install the same command continues without repeating a step
   } finally { inst.close(); }
 });
 
-test('a dirty checkout or a revision that is not the trusted main is refused before anything is paused or stopped', { skip }, async () => {
+test('a dirty checkout, a revision that is not the trusted main or another maintenance session is refused before anything is paused or stopped', { skip }, async () => {
   const inst = installation();
   try {
     register(inst.store, 'alpha');
@@ -188,5 +193,12 @@ test('a dirty checkout or a revision that is not the trusted main is refused bef
       assert.equal(inst.store.campaign('alpha').control, 'registered');
       assert.ok(!existsSync(inst.paths.state) && !existsSync(inst.paths.lock));
     }
+    // Another session maintaining the runtime holds the installation's lock: refused, and its lock is left in place.
+    writeFileSync(inst.paths.lock, 'held by another maintenance session');
+    const svc = services(inst);
+    await assert.rejects(rebuild(inst.options, svc), (error) => error.code === 'MAINTENANCE_IN_PROGRESS');
+    assert.deepEqual(svc.calls, []);
+    assert.equal(inst.store.campaign('alpha').control, 'registered');
+    assert.ok(!existsSync(inst.paths.state) && existsSync(inst.paths.lock));
   } finally { inst.close(); }
 });
