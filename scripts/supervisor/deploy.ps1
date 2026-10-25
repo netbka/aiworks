@@ -27,7 +27,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'hidden-exec.ps1')
 $data = "$Root/.local/supervisor"
 $runtime = "$Root/.local/runtime"
-$governance = "$Root/.local/governance"
+$governanceDir = "$Root/.local/governance"
 function Note([string]$m) { Write-Output "$([DateTime]::UtcNow.ToString('o')) $m" }
 function Run([string]$file, [string[]]$arguments, [string]$cwd = $Root) { Invoke-Hidden -File $file -Arguments $arguments -WorkingDirectory $cwd }
 function Git([string[]]$arguments) { Run 'git' $arguments }
@@ -137,20 +137,20 @@ function Install-Runtime([switch]$Guard) {
 
 # 4. Refresh the read-only governance checkout (governance provider main).
 function Update-Governance {
-  if (Test-Path "$governance/.git") {
-    $gdirty = (Git @('-C', $governance, 'status', '--porcelain')).stdout.Trim()
+  if (Test-Path "$governanceDir/.git") {
+    $gdirty = (Git @('-C', $governanceDir, 'status', '--porcelain')).stdout.Trim()
     if ($gdirty) { throw "governance checkout has local changes: $gdirty" }
-    $pull = Git @('-C', $governance, 'pull', '-q', '--ff-only')
-    $gHead = (Git @('-C', $governance, 'rev-parse', 'HEAD')).stdout.Trim()
+    $pull = Git @('-C', $governanceDir, 'pull', '-q', '--ff-only')
+    $gHead = (Git @('-C', $governanceDir, 'rev-parse', 'HEAD')).stdout.Trim()
     if ($pull.exitCode -ne 0) {
       # With local trust the network is not on the deploy's critical path: governance changes take effect only once pulled,
       # so the checkout stays at its current commit. With origin trust a failed pull stops the deploy, as before.
       if ($Main -ne 'local') { throw "governance pull failed (exit $($pull.exitCode)); the supervisor stays stopped" }
-      $gAfter = (Git @('-C', $governance, 'status', '--porcelain')).stdout.Trim()
+      $gAfter = (Git @('-C', $governanceDir, 'status', '--porcelain')).stdout.Trim()
       if ($gAfter) { throw "governance pull failed (exit $($pull.exitCode)) and left local changes: $gAfter; the supervisor stays stopped" }
       Note "WARNING: governance pull failed (exit $($pull.exitCode)); the governance checkout stays at $gHead"
     } else { Note "governance checkout at $gHead" }
-  } else { Note "WARNING: no governance checkout at $governance" }
+  } else { Note "WARNING: no governance checkout at $governanceDir" }
 }
 
 # 5. Remove STOP, enable the tasks and start them again.
