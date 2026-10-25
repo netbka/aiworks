@@ -119,8 +119,8 @@ const refuse = (code, message) => { throw new RebuildError(code, `${message}; no
 
 /**
  * Run the rebuild of the installation at `options.root` from the operator checkout `options.source`.
- * services: { exec(file, args, { cwd, timeoutMs }), deploy(step, { sha, main, keepStop }), dashboardAnswers(port),
- * processAlive(pid), sleep(ms), now(), log(line) }; exec and deploy resolve to { exitCode, stdout, stderr }.
+ * services: { exec(file, args, { cwd, timeoutMs }), maintain(step, { sha, main, keepStop }), dashboardAnswers(port),
+ * processAlive(pid), sleep(ms), now(), log(line) }; exec and maintain resolve to { exitCode, stdout, stderr }.
  */
 export async function rebuild(options, services) {
   const root = resolve(options.root);
@@ -146,9 +146,9 @@ export async function rebuild(options, services) {
     return { exitCode: out.exitCode, stdout: String(out.stdout ?? ''), stderr: String(out.stderr ?? '') };
   };
   const git = (step, args, cwd) => exec(step, 'git', args, cwd);
-  const deploy = async (step, params = {}) => {
+  const maintain = async (step, params = {}) => {
     log(`deploy.ps1 -Step ${step}`);
-    const out = await services.deploy(step, params);
+    const out = await services.maintain(step, params);
     evidence(`deploy-${step.toLowerCase()}`, { params, exitCode: out.exitCode, stdout: tail(out.stdout), stderr: tail(out.stderr) });
     for (const line of String(out.stdout ?? '').split(/\r?\n/).filter(Boolean)) log(`  ${line}`);
     return out;
@@ -227,7 +227,7 @@ export async function rebuild(options, services) {
           state.stopWritten = true;
           save();
         }
-        const stop = await deploy('Stop');
+        const stop = await maintain('Stop');
         if (stop.exitCode !== 0) {
           throw new RebuildError('STOP_FAILED', `deploy.ps1 -Step Stop failed (exit ${stop.exitCode}): ${tail(stop.stderr).trim()}. The runtime is unchanged and the paused campaigns stay paused; fix the cause and run npm run rebuild again`);
         }
@@ -237,7 +237,7 @@ export async function rebuild(options, services) {
         // no admission gate): the unchanged runtime starts again, records it, and the drain repeats. The run is never
         // stopped or started a second time.
         log(`opened while the supervisor stopped: ${open.slice(0, 5).join(', ')}; starting the unchanged runtime again to record it`);
-        const start = await deploy('Start', { keepStop: state.stopPreexisting });
+        const start = await maintain('Start', { keepStop: state.stopPreexisting });
         if (start.exitCode !== 0) throw new RebuildError('START_FAILED', `deploy.ps1 -Step Start failed (exit ${start.exitCode}): ${tail(start.stderr).trim()}; run npm run rebuild again`);
         state.stopWritten = false;
         save();
@@ -262,7 +262,7 @@ export async function rebuild(options, services) {
 
     // ---- Install the exact trusted revision with its locked dependencies, then check it. ----
     if (state.phase === 'backed-up') {
-      const install = await deploy('Install', { sha: state.target, main: state.trustedMain });
+      const install = await maintain('Install', { sha: state.target, main: state.trustedMain });
       if (install.exitCode !== 0) {
         throw new RebuildError('INSTALL_FAILED', `deploy.ps1 -Step Install failed (exit ${install.exitCode}): ${tail(install.stderr).trim()}. The supervisor stays stopped and every paused campaign keeps its pause; fix the cause and run npm run rebuild again`);
       }
@@ -280,7 +280,7 @@ export async function rebuild(options, services) {
 
     // ---- Start the new runtime and prove it runs the installed commit. ----
     if (state.phase === 'installed') {
-      const start = await deploy('Start', { keepStop: state.stopPreexisting });
+      const start = await maintain('Start', { keepStop: state.stopPreexisting });
       if (start.exitCode !== 0) throw new RebuildError('START_FAILED', `deploy.ps1 -Step Start failed (exit ${start.exitCode}): ${tail(start.stderr).trim()}; run npm run rebuild again`);
       if (!state.stopPreexisting) await controllerStarted();
       const deadline = now() + 60_000;

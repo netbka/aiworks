@@ -42,7 +42,8 @@ const services = {
     const out = powershell([HIDDEN, '-Request', request], timeoutMs + 60_000);
     try { return JSON.parse(out.stdout); } catch { return { exitCode: -1, stdout: '', stderr: `hidden-exec.ps1 failed (exit ${out.exitCode}): ${out.stderr}` }; }
   },
-  deploy(step, { sha, main, keepStop } = {}) {
+  // One step of deploy.ps1 (Stop, Install or Start).
+  maintain(step, { sha, main, keepStop } = {}) {
     return powershell([DEPLOY, '-Step', step, '-Root', root, '-Node', process.execPath, '-Governance', 'no', '-KeepStop', keepStop ? 'yes' : 'no',
       ...(sha ? ['-Sha', sha, '-Main', main] : [])], 60 * 60_000);
   },
