@@ -74,10 +74,13 @@ try {
     const run = (file, args, cwd = configured, timeoutMs = 120_000) => services.exec(file, args, { cwd, timeoutMs });
     const trusted = recovering ? { exitCode: 0, stdout: state.target } : run(process.execPath,
       [join(root, '.local/runtime/src/supervisor/cli.mjs'), 'trusted-main', '--data', join(root, '.local/supervisor')], join(root, '.local/runtime'));
-    const target = trusted.stdout?.split(/\r?\n/)[0].trim();
+    const tip = trusted.stdout?.split(/\r?\n/)[0].trim();
+    const target = state?.target ?? tip;
+    const stillTrusted = recovering || target === tip || (/^[0-9a-f]{40}$/.test(target ?? '') && /^[0-9a-f]{40}$/.test(tip ?? '') &&
+      run('git', ['merge-base', '--is-ancestor', target, tip], join(root, '.local/runtime')).exitCode === 0);
     const head = run('git', ['rev-parse', 'HEAD']);
     const status = run('git', ['status', '--porcelain']);
-    if (trusted.exitCode !== 0 || !/^[0-9a-f]{40}$/.test(target ?? '') || head.exitCode !== 0 || status.exitCode !== 0 ||
+    if (trusted.exitCode !== 0 || !stillTrusted || !/^[0-9a-f]{40}$/.test(target ?? '') || head.exitCode !== 0 || status.exitCode !== 0 ||
         head.stdout.trim() !== target || status.stdout.trim()) {
       throw new Error('The configured AIWorks source must be clean and at the reviewed trusted version before rebuilding; nothing was changed');
     }
