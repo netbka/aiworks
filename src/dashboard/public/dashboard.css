@@ -551,3 +551,44 @@ html{scrollbar-gutter:stable;scroll-padding-top:88px}
 .work-text{white-space:pre-wrap;overflow-wrap:anywhere}.work-comments{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:12px}
 .work-comment{border-top:1px solid var(--line);padding-top:10px}.worklist-row .needs-text a{overflow-wrap:anywhere}
 .local-review{margin:0 0 12px}#close-imported-dialog input[type=text]{min-height:44px}.start-form .choice .work-text{min-width:0}
+/* Home at a glance (live control room). Colour says who acts (OWNER_UI_V2 §5): amber the owner, blue the builder,
+   violet the independent checker, grey a wait under control, green merged. Colour always comes with words. */
+:root{--tone-you:#c27400;--tone-building:#335eea;--tone-checking:#6d4ad8;--tone-waiting:#a2adbd;--tone-merged:#14724f;--tone-delivered:#5fae84;--tone-todo:#e3e8f0;--tone-cost:#59677d}
+.tone-dot{flex:none;width:8px;height:8px;border-radius:50%;display:inline-block;background:var(--tone-todo)}
+.tone-dot.you{background:var(--tone-you)}.tone-dot.building{background:var(--tone-building)}.tone-dot.checking{background:var(--tone-checking)}
+.tone-dot.waiting{background:var(--tone-waiting)}.tone-dot.merged{background:var(--tone-merged)}.tone-dot.cost{background:var(--tone-cost)}
+.live-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:0 0 18px}
+.live-tile{display:flex;flex-direction:column;gap:6px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px;color:var(--ink);min-height:44px}
+a.live-tile:hover{text-decoration:none;border-color:#e8c88f;background:#fffcf6}
+.live-tile.you{border-color:#f0dcb4}
+.live-tile-title{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:550;color:var(--muted)}
+.live-tile-value{font-size:26px;font-weight:650;letter-spacing:-.5px;line-height:1.1}
+.live-tile.you .live-tile-value{color:#8a5a14}.live-tile.merged .live-tile-value{color:var(--tone-merged)}
+.live-tile-foot{font-size:12px;color:var(--muted);line-height:1.4}
+.live-table{overflow-x:auto}
+.live-head,.live-row{display:grid;grid-template-columns:minmax(200px,1.6fr) minmax(170px,1.4fr) minmax(120px,1fr) minmax(110px,.8fr) minmax(90px,.6fr);gap:14px;align-items:center;padding:0 24px;min-width:760px}
+.live-head{font-size:12px;color:var(--muted);background:#fafbfd;border-bottom:1px solid var(--line);padding-top:8px;padding-bottom:8px}
+.live-head span:last-child,.live-when{text-align:right}
+.live-rows{list-style:none;margin:0;padding:0}
+.live-row{padding-top:12px;padding-bottom:12px;border-bottom:1px solid #eff2f6}
+.live-row:last-child{border-bottom:0}
+.live-row:hover{background:#fafbfd}
+.live-cell{min-width:0;display:flex;flex-direction:column;gap:5px}
+.live-name .subtext{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.live-agents{flex-direction:row;flex-wrap:wrap;align-items:center;gap:6px}
+.live-state{align-items:flex-start}
+.step-strip{display:flex;gap:3px}
+.step-seg{flex:1 1 0;min-width:4px;max-width:28px;height:8px;border-radius:2px;background:var(--tone-todo)}
+.step-seg.you{background:var(--tone-you)}.step-seg.building{background:var(--tone-building)}.step-seg.checking{background:var(--tone-checking)}
+.step-seg.waiting{background:var(--tone-waiting)}.step-seg.merged{background:var(--tone-merged)}.step-seg.delivered{background:var(--tone-delivered)}
+.role-chip{display:inline-flex;align-items:center;gap:6px;border-radius:5px;padding:3px 7px;font-size:12px;font-weight:550;white-space:nowrap}
+.role-chip.building{background:#edf2ff;color:#2f4fb8}.role-chip.checking{background:#f3effc;color:#5a3cb5}
+/* The page's freshness: a calm pulse while updates arrive, amber once they stop. */
+.connection.fresh:before{background:#2caa80;animation:fresh-pulse 2s infinite}
+.connection.stale{color:#805114}.connection.stale:before{background:#d19038}
+.fresh-age{font-variant-numeric:tabular-nums}
+@keyframes fresh-pulse{0%{box-shadow:0 0 0 0 rgba(44,170,128,.5)}70%{box-shadow:0 0 0 6px rgba(44,170,128,0)}100%{box-shadow:0 0 0 0 rgba(44,170,128,0)}}
+@media(prefers-reduced-motion:reduce){.connection.fresh:before{animation:none}}
+@media(max-width:599px){.live-tiles{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.live-tile{padding:12px}.live-tile-value{font-size:22px}
+  .live-head{display:none}.live-row{min-width:0;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"name state" "progress progress" "agents when";padding:12px 16px}
+  .live-name{grid-area:name}.live-state{grid-area:state;align-items:flex-end}.live-progress{grid-area:progress}.live-agents{grid-area:agents}.live-when{grid-area:when}}
