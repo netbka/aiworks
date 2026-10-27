@@ -1011,3 +1011,68 @@ What the controller does on each pass (slice CLN1). Code: `src/supervisor/cleanu
 **Rollback.** Remove `cleanup` from `config.json` (or set `enabled` to `false`) and restart the supervisor. Nothing removed comes back by itself; a repair round recreates the worktrees it needs.
 
 **What is not done yet (planned):** CLN2 records the baseline, switches `cleanup.enabled` on and compares after the first passes. Worktrees that no run recorded, such as merge refresh checkouts, are only listed.
+
+## 16. External campaign API (off by default)
+
+**In short.** An external system on this computer — a change-request tracker that assembles campaign declarations
+itself, for example — can register a campaign and read its status over HTTP instead of running `cli.mjs` as a local
+process: `POST /api/campaigns` and `GET /api/campaigns/:id/status` on the dashboard's own HTTP server
+([OPERATIONS_DASHBOARD.md](OPERATIONS_DASHBOARD.md), `http://127.0.0.1:4318`). It is additive: the CLI and the owner's
+browser dashboard work exactly as before, and this surface widens nothing either can already do. Code:
+`src/supervisor/remote-campaigns.mjs`, wired into `src/dashboard/server.mjs`. Critical-behaviour tests:
+`tests/dashboard/campaign-api.test.mjs`.
+
+**Why the dashboard's own server, and why a status poll rather than an outgoing webhook.** The dashboard already is the
+one process that listens on a local port and reads the store; adding two routes to it needs no new service, no new
+port and no new process to supervise or restart. Posting status to a URL the campaign declaration names would instead
+make the supervisor's own process open outbound connections chosen by whoever can submit a declaration — a new kind of
+external write the existing boundary does not have (section 1: "the only writes outside this repository are
+worktrees, branches, pull requests and issue comments, for work the owner registered"; a webhook destination is none
+of those) — and it would need its own delivery, retry and signing story that a poll does not. A status poll fits the
+architecture's own stated shape instead: "No route calls GitHub" and nothing here is pushed; a caller reads
+`/api/campaigns/:id/status` as often as it wants, exactly as the dashboard itself re-reads `/api/state`.
+
+**Fit with [AW-003](DECISIONS.md#aw-003---the-operations-dashboard-is-local-only).** AW-003 binds the dashboard to
+loopback and requires exact origin checks and CSRF protection for mutating requests, and says remote access needs a
+separately reviewed authentication design. This stays bound to `127.0.0.1` exactly as before: nothing here is remote,
+only a second local process. Its two routes are exempt from the origin/CSRF check — a static bearer token resolved
+from the operator's own secret store in its place — because their caller is by design not a browser holding the
+dashboard's session, so CSRF protection (which defends a browser session against another page's script) does not
+apply to it; this is the separately reviewed authentication design AW-003 anticipates for a caller that is not that
+browser session. This PR is that review.
+
+- **The switch.** `config.json` `"campaignApi": { "enabled": true, "tokenRef": "<name>", "credentialStore"?: { "kind":
+  "windows" } | { "kind": "command", "command": [...] } }`. Absent, malformed, `enabled` not exactly `true`, or an
+  invalid `tokenRef` (the same short reference shape as a release credential, `release/credential.mjs`
+  `validCredentialRef`) all leave it off: both routes then answer `404 Not Found`, exactly as "Add project" answers 404
+  while it is off. Without `credentialStore` the Windows Credential Manager is used, exactly as the release
+  credential's own default.
+- **The token is a reference, never a value.** `config.json` holds the `tokenRef`, never the token (AGENTS.md:
+  "configuration holds executable paths and repository paths, never secret values"). Its value lives in the same kind
+  of operator-managed secret store the release credential already reads (`release/credential.mjs`): the Windows
+  Credential Manager by default, or an operator's credential helper command. It is resolved fresh on every request,
+  never cached, logged or journalled; a store that
+  cannot tell whether the reference resolves is treated as refused, never as open access.
+- **Authentication is a header, never a query parameter.** `Authorization: Bearer <token>`, compared to the resolved
+  value with a constant-time comparison. A missing or wrong token answers `401`. This token is never the dashboard's
+  own per-process CSRF secret that a browser session reads from `GET /api/session` (server.mjs): the two surfaces share
+  no secret, so a token good for one never reaches a route of the other.
+- **`POST /api/campaigns`** accepts exactly the JSON a private declaration file holds — the same contract
+  `src/supervisor/campaign.mjs` `validateDeclaration` checks, the same examples under `tests/fixtures/campaigns/` — up
+  to the same 1 MiB a file may be. It does exactly what `cli.mjs start <file>` does with no `--approval`, in order:
+  the AW-005 merged-code check (section 1, "Merged runtime code"); for a new campaign id, the registered-project gate
+  (section 1, "Registered targets only"); then registration, amendment or resume
+  (`approvals.mjs` `approvedStart`, honouring `config.json` `"approvals": { "required": true }` exactly as a plain
+  `start` would). A resend of the exact declaration already registered is never refused, exactly as `start` never
+  refuses one: the response is `200` with `created: false` in place of `201` and `created: true`, and nothing is
+  registered twice. The response body otherwise is the same reading `cli.mjs status` prints (`campaignStatus` below).
+  A refusal names its code and message the same way the CLI does (`RUNTIME_NOT_MERGED`, `WORK_ALREADY_ASSIGNED`,
+  `SCOPE_CONFLICT`, a declaration validation message, and so on), at the HTTP status that best fits it: `503` for an
+  operator-side condition (unmerged runtime, a missing governance checkout), `403` for a target this installation has
+  not registered, `409` for a conflict with existing work, `400` otherwise.
+- **`GET /api/campaigns/:id/status`** answers exactly the reading `cli.mjs status <id>` prints (`api.mjs`
+  `campaignStatus`): phase, readiness, tasks, budget, CI and release status, never worker output or a local path. An
+  unregistered id answers `404` with `code: "CAMPAIGN_NOT_FOUND"`.
+- **Never a replacement for the CLI or the dashboard.** Pause, cancel, recheck, instructions and every owner-facing
+  control stay on the existing CLI commands and the browser dashboard, unchanged. This surface only starts a campaign
+  and reads its status, exactly as `start` and `status` already do locally.

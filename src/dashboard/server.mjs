@@ -1,11 +1,15 @@
 import { createServer } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
 import { supervisorSnapshot, applyCommand, applyDecision, applyResultReview, captureResultPreview, checkRelease, openResultPreview, previewStillChecked, applyScopedControl, postMessage, dashboardAccounts, removeDashboardAccount, configuredModelPreferences, saveDashboardModelPreferences } from './supervisor.mjs';
 import { Store } from '../supervisor/store.mjs';
+import { campaignStatus } from '../supervisor/api.mjs';
+import { configuredGovernanceRoot } from '../supervisor/governance.mjs';
+import { RELEASE_STOP } from '../supervisor/release/state.mjs';
+import { campaignApiSettings, registerRemoteCampaign, resolveCampaignApiToken } from '../supervisor/remote-campaigns.mjs';
 import { PREVIEW_POLICY, PreviewSessions } from '../supervisor/preview.mjs';
 import { PreviewCaptures } from '../supervisor/preview-capture.mjs';
 import { ServerPreviews } from '../supervisor/preview-server.mjs';
@@ -37,6 +41,46 @@ async function ownerCaller(dataDir, caller) {
 
 /** The request body limit of pause and resume (WP1): the largest valid scoped request, 200 goal bindings, fits. */
 export const SCOPED_CONTROL_BYTES = 65_536;
+
+// The external campaign API (off by default, docs/SUPERVISOR.md section 16): the same 1 MiB a private declaration file
+// may be (provenance.mjs privateJson), since the body is the same declaration shape, just sent over HTTP.
+export const CAMPAIGN_API_BYTES = 1024 * 1024;
+const CAMPAIGN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/**
+ * Whether the external campaign API is on, and whether this request's `Authorization: Bearer <token>` matches the
+ * configured reference's current value. The token is resolved fresh from the operator's own secret store on every
+ * request (release/credential.mjs via remote-campaigns.mjs): never cached, logged or journalled. A store that cannot
+ * tell, or an unresolved reference, refuses the request exactly like a wrong token — this never opens access.
+ * This is never the dashboard's own per-process CSRF secret (`csrf` below), and that secret is never accepted here.
+ */
+function checkCampaignApiAuth(dataDir, req) {
+  let config = {};
+  try { config = JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { /* campaignApi stays off */ }
+  const settings = campaignApiSettings(config);
+  if (!settings.enabled) return { enabled: false, ok: false };
+  let token = null;
+  try { token = resolveCampaignApiToken(settings); } catch { token = null; }
+  const match = /^Bearer (.+)$/.exec(String(req.headers.authorization ?? ''));
+  const supplied = Buffer.from(match ? match[1] : '', 'utf8');
+  const expected = Buffer.from(token ?? '', 'utf8');
+  const ok = Boolean(token) && supplied.length === expected.length && timingSafeEqual(supplied, expected);
+  return { enabled: true, ok };
+}
+
+/** Read a JSON request body up to `limit` bytes, or throw a `{ status }` error the route's catch can send as-is. */
+async function readJsonBody(req, limit) {
+  if (req.headers['content-type'] !== 'application/json') throw Object.assign(new Error('The request body must be JSON.'), { status: 415 });
+  if (Number(req.headers['content-length']) > limit) throw Object.assign(new Error('The request body is too large.'), { status: 413 });
+  const chunks = []; let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > limit) throw Object.assign(new Error('The request body is too large.'), { status: 413 });
+    chunks.push(chunk);
+  }
+  try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))); }
+  catch { throw Object.assign(new Error('Invalid JSON.'), { status: 400 }); }
+}
 
 const staticFiles = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
@@ -237,9 +281,54 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
         if (path === '/api/accounts/preferences') {
           return send(200, { preferences: configuredModelPreferences(dataDir) });
         }
+        // The external campaign API's status poll (off by default, docs/SUPERVISOR.md section 16): the same reading
+        // `cli.mjs status <id>` prints, gated by the campaign API's own bearer token, never the browser session's CSRF
+        // secret. 404 while the API is off, exactly like Add project's routes while that feature is off.
+        const campaignStatusRoute = /^\/api\/campaigns\/([^/]+)\/status$/.exec(path);
+        if (campaignStatusRoute) {
+          const auth = checkCampaignApiAuth(dataDir, req);
+          if (!auth.enabled) return send(404, { error: 'Not found.' });
+          if (!auth.ok) return send(401, { error: 'A valid campaign API token is required (Authorization: Bearer <token>).' });
+          let id = null;
+          try { id = decodeURIComponent(campaignStatusRoute[1]); } catch { /* refused below */ }
+          if (!CAMPAIGN_ID.test(id ?? '')) return send(404, { error: 'Not found.' });
+          if (!existsSync(join(dataDir, 'supervisor.db'))) return send(503, { error: 'AIWorks can’t read its work records on this computer right now.' });
+          let store;
+          try {
+            store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true });
+            let config = {};
+            try { config = JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { /* default empty config */ }
+            return send(200, campaignStatus(store, id, Date.now(), { config, selfHostingConfig: config, releaseStop: existsSync(join(dataDir, RELEASE_STOP)) }));
+          } catch (error) {
+            if (error.code === 'CAMPAIGN_NOT_FOUND') return send(404, { error: error.message, code: error.code });
+            throw error;
+          } finally { store?.close(); }
+        }
         return send(404, { error: 'Not found.' });
       }
       if (req.method !== 'POST') return send(405, { error: 'Method not allowed.' });
+      // The external campaign API's registration route (off by default, docs/SUPERVISOR.md section 16): authenticated
+      // and handled before the dashboard's own CSRF check below, which is for the browser session only and is never
+      // accepted here. It does exactly what `cli.mjs start <file>` does, from an HTTP body instead of a private file.
+      if (path === '/api/campaigns') {
+        const auth = checkCampaignApiAuth(dataDir, req);
+        if (!auth.enabled) return send(404, { error: 'Not found.' });
+        if (!auth.ok) return send(401, { error: 'A valid campaign API token is required (Authorization: Bearer <token>).' });
+        let declaration;
+        try { declaration = await readJsonBody(req, CAMPAIGN_API_BYTES); }
+        catch (error) { return send(error.status ?? 400, { error: error.message }); }
+        if (!existsSync(join(dataDir, 'supervisor.db'))) return send(503, { error: 'AIWorks can’t read its work records on this computer right now.' });
+        let config = {};
+        try { config = JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { /* default empty config */ }
+        const store = new Store(join(dataDir, 'supervisor.db'));
+        try {
+          const { status, created } = registerRemoteCampaign(store, declaration, { provenanceRoot, governanceRoot: configuredGovernanceRoot(dataDir), config });
+          return send(created ? 201 : 200, status);
+        } catch (error) {
+          if (error.status) return send(error.status, { error: error.message, code: error.code ?? null });
+          throw error;
+        } finally { store.close(); }
+      }
       const token = Buffer.from(String(req.headers['x-dashboard-csrf'] ?? ''));
       if (req.headers.origin !== origin || token.length !== csrf.length || !timingSafeEqual(token, Buffer.from(csrf))) {
         return send(403, { error: 'Refresh the dashboard before sending a command.' });
