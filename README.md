@@ -173,7 +173,7 @@ Everything ends up in GitHub, next to the rest of your project:
 | Several AI accounts with automatic switching | Choosing a login per run and starting the worker inside that login's own home folder is built and switched off. Turning it on waits for the owner's pilot. |
 | Slowing down when the PC is busy or an account is throttled | The building blocks are written and the status reports them, but they do not yet hold back new work. |
 | Automatic release, opt-in per project | Built and switched off: "review only" by default, a standing grant per destination, a stop switch, one lock per destination, deploy, check and rollback through a project's own commands, and a **Releases** tab. A disposable rehearsal runs it against a synthetic project. No grant exists and nothing has been released. |
-| External campaign API | Built and switched off: another local system can register a campaign and read its status over HTTP, the same contract as `cli.mjs start`/`status`, with its own bearer token instead of the dashboard's browser session. One setting turns it on; see [docs/SUPERVISOR.md §16](docs/SUPERVISOR.md#16-external-campaign-api-off-by-default). |
+| External campaign API | Built and switched off: another local system can register a campaign and read its status over HTTP, the same contract as `cli.mjs start`/`status`, with its own bearer token instead of the dashboard's browser session. One setting turns it on, and `cli.mjs campaign-token create\|rotate <projectId>` creates or replaces that token for any AIWorks-registered project -- not only one; see [docs/SUPERVISOR.md §16](docs/SUPERVISOR.md#16-external-campaign-api-off-by-default). |
 
 ### 🗺️ On the roadmap
 

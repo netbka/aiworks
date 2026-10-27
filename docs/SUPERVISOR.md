@@ -1076,3 +1076,27 @@ browser session. This PR is that review.
 - **Never a replacement for the CLI or the dashboard.** Pause, cancel, recheck, instructions and every owner-facing
   control stay on the existing CLI commands and the browser dashboard, unchanged. This surface only starts a campaign
   and reads its status, exactly as `start` and `status` already do locally.
+
+**Managing the token (`campaign-token`, `src/supervisor/campaign-token.mjs`).** Turning this surface on for any
+AIWorks-registered project is one general CLI action, not a one-off done by hand for a single external project:
+
+```
+node src/supervisor/cli.mjs campaign-token create <projectId>
+node src/supervisor/cli.mjs campaign-token rotate <projectId>     # replace an existing token
+```
+
+`<projectId>` must be a project this installation already knows: `registry/projects/<projectId>.json` must exist in
+the governance checkout, the same registration a new campaign already needs
+(`campaign.mjs` `assertRegisteredTarget`). `create` generates a fresh random value
+(`crypto.randomBytes(32).toString('base64url')`, 256 bits) and writes it to the operator's credential store (the
+Windows Credential Manager by default, exactly as the release credential, `release/credential.mjs`) under the one
+standard reference `aiworks-campaign-api:<projectId>` -- never a name the caller invents, so the store's own listing
+already says which project a token belongs to. It then points `config.json` `campaignApi` at that reference:
+`{ enabled: true, tokenRef: "aiworks-campaign-api:<projectId>" }`. `create` refuses to overwrite a value already
+stored there (`TOKEN_ALREADY_EXISTS`: run `rotate` instead); `rotate` refuses when nothing is there yet to replace
+(`TOKEN_NOT_FOUND`: run `create` first). Either command prints only the fact that a token now exists and the
+reference it lives under -- **never the token value itself**, in any form, on any stream: an operator reads the value
+back from the credential store (Windows Credential Manager, `cmdkey`, or a configured credential helper command)
+only at the moment an external caller needs to be given it. Only one token is active at a time per installation
+(`config.json` `campaignApi` names one reference), so pointing it at a different project's token is itself a `create`
+or `rotate` for that project id. Critical-behaviour tests: `tests/supervisor/campaign-token.test.mjs`.
