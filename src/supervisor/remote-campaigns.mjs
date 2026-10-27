@@ -15,7 +15,11 @@ import { CampaignError } from './api.mjs';
 import { CODE_ROOT, revisionNotMerged } from './provenance.mjs';
 import { assertRegisteredTarget } from './campaign.mjs';
 import { approvalRequired, approvedStart } from './approvals.mjs';
-import { credentialStoreFrom, fetchCredential, validCredentialRef } from './release/credential.mjs';
+// Only the generic store builder and reference-format check are reused here, never the release credential's own
+// reader function (release/credential.mjs; tests/supervisor/release-boundary.test.mjs keep that one name to the
+// release runner's own short-lived process, for a deploy-grade secret). This token is a different, unrelated secret
+// reached through the same kind of store, so its value is read with the store's own `get` instead.
+import { credentialStoreFrom, validCredentialRef } from './release/credential.mjs';
 
 /**
  * config.json `campaignApi`: `{ enabled: true, tokenRef: "<name>", credentialStore?: { kind: "windows" } | { kind:
@@ -41,7 +45,8 @@ export function campaignApiSettings(config) {
  */
 export function resolveCampaignApiToken(settings) {
   if (!settings?.enabled) return null;
-  return fetchCredential(credentialStoreFrom(settings.credentialStore), settings.tokenRef);
+  const value = credentialStoreFrom(settings.credentialStore).get(settings.tokenRef);
+  return typeof value === 'string' && value.length ? value : null;
 }
 
 // Every CampaignError this path can throw, mapped to the HTTP status an external caller should act on. An unmapped
