@@ -5,7 +5,9 @@ import { configuredGovernanceRoot } from '../supervisor/governance.mjs';
 import { configuredCheckouts, configuredGitCommand, configuredLocalMain, MergeWatcher, publishedSteps } from './merges.mjs';
 import { execFileSync } from 'node:child_process';
 import { hostname } from 'node:os';
-import { createDashboardServer } from './server.mjs';
+import { readFileSync } from 'node:fs';
+import { createCampaignApiServer, createDashboardServer } from './server.mjs';
+import { campaignApiSettings } from '../supervisor/remote-campaigns.mjs';
 import { windowsCallerLookup } from '../supervisor/caller-lookup.mjs';
 import { DASHBOARD_VERSION, DASHBOARD_VERSION_NAME } from './copy.mjs';
 
@@ -40,4 +42,15 @@ server.on('error', (error) => { console.error(`Dashboard could not listen (${err
 server.listen(port, '127.0.0.1', () => {
   console.log(`AIWorks dashboard: http://127.0.0.1:${port}`);
 });
-for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { server.close(); });
+// The campaign API's own listener (config.json campaignApi.port, off by default; docs/SUPERVISOR.md section 16): read at
+// start, so a new or changed port takes effect when the dashboard restarts.
+let config = {};
+try { config = JSON.parse(readFileSync(resolve(dataDir, 'config.json'), 'utf8')); } catch { /* no campaign API listener */ }
+const apiPort = campaignApiSettings(config).port;
+const apiServer = apiPort && apiPort !== port ? createCampaignApiServer({ dataDir }) : null;
+if (apiPort && apiPort === port) console.error('campaignApi.port equals the dashboard port; the campaign API listener was not started.');
+apiServer?.on('error', (error) => { console.error(`Campaign API could not listen (${error.code ?? 'unknown'}).`); process.exitCode = 1; });
+apiServer?.listen(apiPort, '127.0.0.1', () => {
+  console.log(`AIWorks campaign API: http://127.0.0.1:${apiPort}`);
+});
+for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { server.close(); apiServer?.close(); });
