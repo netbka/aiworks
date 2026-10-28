@@ -69,14 +69,15 @@ function readConfig(dataDir) {
 
 /**
  * Point `config.json` `campaignApi` at `ref`: `{ enabled: true, tokenRef: ref }`, plus `credentialStore` when the
- * caller used a non-default one. This is the one field remote-campaigns.mjs `campaignApiSettings` reads; nothing
+ * caller used a non-default one, preserving the configured API listener port. Nothing
  * about the project id is stored here; config.json never holds a secret value (AGENTS.md: "configuration holds
  * executable paths and repository paths, never secret values").
  */
 export function applyCampaignApiConfig(dataDir, ref, { credentialStoreSpec } = {}) {
   const configFile = join(dataDir, 'config.json');
   const config = readConfig(dataDir);
-  config.campaignApi = { enabled: true, tokenRef: ref, ...(credentialStoreSpec ? { credentialStore: credentialStoreSpec } : {}) };
+  config.campaignApi = { enabled: true, tokenRef: ref, ...(credentialStoreSpec ? { credentialStore: credentialStoreSpec } : {}),
+    ...(config.campaignApi?.port === undefined ? {} : { port: config.campaignApi.port }) };
   writeAtomic(configFile, JSON.stringify(config, null, 2));
   return config.campaignApi;
 }
