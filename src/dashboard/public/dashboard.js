@@ -2548,7 +2548,9 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 function stepTone(c, task) {
   const delivery = deliveryOf(c, task), agent = c.agents.find((item) => item.taskId === task.id);
   if (delivery?.state === 'merged') return ['merged', 'Merged'];
-  if (delivery) return ['delivered', deliveryNames[delivery.state]?.[1] ?? 'Delivered'];
+  // As in stepBadge: a delegated result reads as passed only when every criterion passed, and cancelled work never runs.
+  if (delivery) return ['delivered', delivery.state === 'delegated' ? DELEGATED.word(task.checkPassed === true) : deliveryNames[delivery.state]?.[1] ?? 'Delivered'];
+  if (c.control === 'cancelled' && task.state !== 'done') return ['todo', 'Cancelled'];
   if (task.blocked) return ['you', 'Waiting for you'];
   if (agent) return isBuilderRole(agent.role) ? ['building', 'Being built'] : ['checking', 'Being checked'];
   if (task.state === 'done') return ['merged', 'Done'];
