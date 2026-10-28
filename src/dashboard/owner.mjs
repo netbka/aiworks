@@ -381,7 +381,8 @@ function resultsByProject(supervisor, campaigns, releases, reviews = new Map(), 
     add(c.repository, resultRow(c, task, d, releases, recorded.get(`${c.id}/${task.id}`) ?? null));
   }
   // Reviews of work no longer on this computer still belong to AIWorks's own repository.
-  if (selfRepository) for (const review of reviews.values()) if (!shown.has(review.number)) add(selfRepository, localReviewRow(review, review.title));
+  // Their criteria are not on this computer, so they are never shown as passed (checkedRow).
+  if (selfRepository) for (const review of reviews.values()) if (!shown.has(review.number)) add(selfRepository, checkedRow(localReviewRow(review, review.title), { verifiedSha: review.verifiedSha, checkPassed: false }));
   return Object.fromEntries([...projects].map(([key, { project, rows }]) => {
     const groups = RESULT_GROUPS.map((group) => {
       const mine = rows.filter((row) => row.group === group.key);
@@ -603,7 +604,8 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     const accepting = steps.filter((step) => step.task.review?.awaitsAcceptance && step.delivery?.state !== 'merged');
     for (const { task, delivery: d } of accepting) {
       const evidence = reviewEvidence(task);
-      items.push({ ...base, taskId: task.id, kind: 'accept', action: NEEDS.accept.action, text: label(task), why: stopped ? stoppedWords : NEEDS.accept.point,
+      items.push({ ...base, taskId: task.id, kind: 'accept', action: NEEDS.accept.action, text: label(task), why: stopped ? stoppedWords
+          : task.checkPassed ? NEEDS.accept.point : `${evidence.text} Review it before you accept it or request changes.`,
         route: reviewRoute(task), reference: reference(d), evidence: evidence.short, detail: evidence.text, points: [] });
     }
     // One item per step, led by what the step delivers. Nobody merges it for the owner here, so it waits for their review.
