@@ -7,11 +7,13 @@
 // git, node and npm through hidden-exec.ps1 (ProcessStartInfo with CreateNoWindow on and UseShellExecute off), capturing
 // stdout, stderr and the exit code. deploy.ps1 runs its own commands the same way.
 import { spawnSync } from 'node:child_process';
-import { resolve } from 'node:path';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { POWERSHELL } from '../../src/supervisor/proc.mjs';
 import { rebuild } from '../../src/supervisor/rebuild.mjs';
+import { selfHostingSettings } from '../../src/supervisor/self-hosting.mjs';
 
 const source = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const HIDDEN = fileURLToPath(new URL('./hidden-exec.ps1', import.meta.url));
@@ -59,8 +61,41 @@ const services = {
 };
 
 try {
-  const summary = await rebuild({ root, source, waitMinutes, port }, services);
-  console.log(JSON.stringify(summary, null, 2));
+  const configFile = join(root, '.local/supervisor/config.json');
+  const config = existsSync(configFile) ? JSON.parse(readFileSync(configFile, 'utf8')) : {};
+  const settings = selfHostingSettings(config);
+  if (settings.problem) throw new Error(settings.problem);
+  const configured = settings.local && config.repositories?.[settings.repository]?.path;
+  // A self-hosting installation can keep its reviewed source apart from the checkout the operator opens.
+  if (configured && realpathSync(configured).toLowerCase() !== realpathSync(source).toLowerCase()) {
+    const stateFile = join(root, '.local/supervisor/rebuild/state.json');
+    const state = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : null;
+    const recovering = ['stopped', 'backed-up', 'installed', 'started', 'resumed'].includes(state?.phase);
+    const run = (file, args, cwd = configured, timeoutMs = 120_000) => services.exec(file, args, { cwd, timeoutMs });
+    const trusted = recovering ? { exitCode: 0, stdout: state.target } : run(process.execPath,
+      [join(root, '.local/runtime/src/supervisor/cli.mjs'), 'trusted-main', '--data', join(root, '.local/supervisor')], join(root, '.local/runtime'));
+    const tip = trusted.stdout?.split(/\r?\n/)[0].trim();
+    const target = state?.target ?? tip;
+    const stillTrusted = recovering || target === tip || (/^[0-9a-f]{40}$/.test(target ?? '') && /^[0-9a-f]{40}$/.test(tip ?? '') &&
+      run('git', ['merge-base', '--is-ancestor', target, tip], join(root, '.local/runtime')).exitCode === 0);
+    const head = run('git', ['rev-parse', 'HEAD']);
+    const status = run('git', ['status', '--porcelain']);
+    if (trusted.exitCode !== 0 || !stillTrusted || !/^[0-9a-f]{40}$/.test(target ?? '') || head.exitCode !== 0 || status.exitCode !== 0 ||
+        head.stdout.trim() !== target || status.stdout.trim()) {
+      throw new Error('The configured AIWorks source must be clean and at the reviewed trusted version before rebuilding; nothing was changed');
+    }
+    const launcher = join(configured, 'scripts/supervisor/rebuild.mjs');
+    if (!existsSync(launcher)) throw new Error('The trusted AIWorks source does not contain the rebuild command yet; update that source first. Nothing was changed');
+    console.log('AIWorks: rebuilding from the configured reviewed source. Waiting for active work to finish.');
+    const result = run(process.execPath, [launcher, '--root', root, '--wait', String(waitMinutes), '--port', String(port)],
+      configured, (waitMinutes + 120) * 60_000);
+    process.stdout.write(result.stdout);
+    process.stderr.write(result.stderr);
+    process.exitCode = result.exitCode === 0 ? 0 : 1;
+  } else {
+    const summary = await rebuild({ root, source, waitMinutes, port }, services);
+    console.log(JSON.stringify(summary, null, 2));
+  }
 } catch (error) {
   console.error(`${error.code ?? error.name}: ${error.message}`);
   process.exitCode = 1;
