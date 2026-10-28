@@ -47,14 +47,15 @@ export async function loginBrowser(browser, settings, { store = null, timeoutMs 
   if (!settings) return;
   const credentials = store ?? credentialStoreFrom(settings.credentialStore);
   for (const profile of settings.profiles) {
+    const existingPages = new Set(await browser.pages());
     let page;
     let stage = 'opening the login page';
     try {
       page = await browser.newPage();
       page.setDefaultTimeout(timeoutMs);
       page.setDefaultNavigationTimeout(timeoutMs);
-      // Even a redirect or form action cannot send credentials to another origin. This is destination binding,
-      // not an interactive permission gate: a configured task signs in automatically for DEV or PROD alike.
+      // Defense in depth for this page's redirects/forms; browser-mcp also binds all targets to the login origin.
+      // This is destination binding, not a permission prompt: configured tasks sign in automatically.
       await page.setRequestInterception(true);
       page.on('request', (request) => {
         let sameOrigin = false;
@@ -83,9 +84,13 @@ export async function loginBrowser(browser, settings, { store = null, timeoutMs 
       // Browser, page and helper errors can contain request payloads or values. Never forward their text.
       throw new Error(`Browser pre-login failed while ${stage}`);
     } finally {
-      if (page) {
-        try { await page.close(); } catch { throw new Error('Browser pre-login could not close its login page'); }
-      }
+      try {
+        if (page && !page.isClosed()) await page.close();
+        // A login can open popups whose URL, form or request history contains credentials. None may reach MCP.
+        const opened = (await browser.pages()).filter((item) => !existingPages.has(item));
+        await Promise.all(opened.map((item) => item.close()));
+        if ((await browser.pages()).some((item) => !existingPages.has(item))) throw new Error();
+      } catch { throw new Error('Browser pre-login could not close its login pages'); }
     }
   }
 }
