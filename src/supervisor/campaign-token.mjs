@@ -9,26 +9,23 @@
 // The reference is never invented by the caller: it is always `aiworks-campaign-api:<projectId>` (campaignTokenRef
 // below), so the credential store's own listing already says which project a token belongs to, and no two callers can
 // collide on a name. The value is a fresh crypto.randomBytes(32).toString('base64url') (256 bits), written straight to
-// the store (release/credential.mjs windowsCredentialStore / commandCredentialStore: the same kind of store the
-// release credential already reads) and never returned, logged, journalled or printed by this module or its caller --
-// only the fact that it now exists under that reference. Only the store's own generic `set` and `has` are used here,
-// never the release credential's own reserved reader (release/credential.mjs; tests/supervisor/release-boundary.test.mjs
-// keep that one call to the release runner's own short-lived process for a deploy-grade secret): this token is a
-// different, unrelated secret.
+// the store (token-store.mjs: the Windows Credential Manager or an operator's helper command) and never returned,
+// logged, journalled or printed by this module or its caller -- only the fact that it now exists under that reference.
+// Only the store's `has` and `set` are used here; the release credential (release/credential.mjs) is never touched.
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CampaignError } from './api.mjs';
 import { requireGovernanceRoot } from './governance.mjs';
 import { writeAtomic } from './proc.mjs';
-import { credentialStoreFrom } from './release/credential.mjs';
+import { tokenStoreFrom } from './token-store.mjs';
 
 /** Every campaign-API token this module manages lives under this credential-store prefix. */
 export const CAMPAIGN_TOKEN_PREFIX = 'aiworks-campaign-api';
 
 /** A registry contract id's shape (schemas/project-contract.schema.json `id`): lowercase, digits, dash or underscore,
- * bounded so the composed reference always satisfies release/credential.mjs validCredentialRef's own 128-character cap. */
-const PROJECT_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+ * bounded so the composed reference always satisfies token-store.mjs validTokenRef's own 128-character cap. */
+export const PROJECT_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 function assertProjectId(projectId) {
   if (typeof projectId !== 'string' || !PROJECT_ID.test(projectId)) {
@@ -57,8 +54,18 @@ export function assertRegisteredProjectId(projectId, governanceRoot) {
   }
 }
 
-/** <dataDir>/config.json, or {} when absent or malformed. */
-const readConfig = (dataDir) => { try { return JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { return {}; } };
+/** <dataDir>/config.json, or {} when absent. A file that is not a JSON object refuses, so the operator's other settings
+ * are never replaced by a fresh file. */
+function readConfig(dataDir) {
+  const file = join(dataDir, 'config.json');
+  if (!existsSync(file)) return {};
+  let config;
+  try { config = JSON.parse(readFileSync(file, 'utf8')); } catch { config = null; }
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    throw new CampaignError('CONFIG_INVALID', 'config.json in the data directory is not a JSON object; fix it before creating a campaign API token');
+  }
+  return config;
+}
 
 /**
  * Point `config.json` `campaignApi` at `ref`: `{ enabled: true, tokenRef: ref }`, plus `credentialStore` when the
@@ -86,7 +93,9 @@ export function applyCampaignApiConfig(dataDir, ref, { credentialStoreSpec } = {
 export function issueCampaignToken(projectId, { governanceRoot, dataDir, rotate = false, credentialStoreSpec, applyConfig = true, randomToken = () => randomBytes(32).toString('base64url') } = {}) {
   assertRegisteredProjectId(projectId, governanceRoot);
   const ref = campaignTokenRef(projectId);
-  const store = credentialStoreFrom(credentialStoreSpec);
+  // config.json is checked before the store is written, so a refusal leaves both untouched.
+  if (applyConfig) readConfig(dataDir);
+  const store = tokenStoreFrom(credentialStoreSpec);
   let existed;
   try { existed = store.has(ref) === true; }
   catch (error) { throw new CampaignError('CREDENTIAL_STORE_UNREADABLE', `cannot tell whether ${ref} already exists: ${error.message}`); }
