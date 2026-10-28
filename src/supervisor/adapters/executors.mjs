@@ -205,7 +205,11 @@ export function unavailableReason(executor, workspace, ghCommand, { probe = null
       return 'Managed Claude configuration requires a scoped research adapter policy';
     }
     if (process.platform === 'win32') {
-      const script = "$ErrorActionPreference = 'Stop'; [bool]((Test-Path 'HKLM:\\SOFTWARE\\Policies\\ClaudeCode' -ErrorAction Stop) -or (Test-Path 'HKCU:\\SOFTWARE\\Policies\\ClaudeCode' -ErrorAction Stop))";
+      // $ProgressPreference: on some machines, Windows PowerShell writes a benign CLIXML progress record
+      // ("Preparing modules for first use") to stderr on every -EncodedCommand invocation, which would
+      // otherwise make this always-present stderr read as "policy unknown" and permanently block every
+      // researchOnly claude-cli campaign on that machine (observed; not a one-time, cache-warming event).
+      const script = "$ProgressPreference = 'SilentlyContinue'; $ErrorActionPreference = 'Stop'; [bool]((Test-Path 'HKLM:\\SOFTWARE\\Policies\\ClaudeCode' -ErrorAction Stop) -or (Test-Path 'HKCU:\\SOFTWARE\\Policies\\ClaudeCode' -ErrorAction Stop))";
       const out = spawnSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
         { encoding: 'utf8', windowsHide: true, timeout: 5000 });
       if (out.error || out.status !== 0 || typeof out.stdout !== 'string' || out.stdout.trim() !== 'False' ||
