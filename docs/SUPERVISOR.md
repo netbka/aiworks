@@ -1068,12 +1068,12 @@ process: `POST /api/campaigns`, `GET /api/campaigns/:id/status` and `GET /api/ca
 dashboard's own HTTP server ([OPERATIONS_DASHBOARD.md](OPERATIONS_DASHBOARD.md), `http://127.0.0.1:4318`), or on a
 listener of their own in the same process (`campaignApi.port`, below) for a tunnel. It is additive: the CLI and the owner's
 browser dashboard work exactly as before, and this surface widens nothing either can already do. Code:
-`src/supervisor/remote-campaigns.mjs`, wired into `src/dashboard/server.mjs` and `src/dashboard/main.mjs`.
-Critical-behaviour tests: `tests/dashboard/campaign-api.test.mjs`, `tests/supervisor/report-local.test.mjs`.
+`src/supervisor/remote-campaigns.mjs` and `src/supervisor/token-store.mjs`, wired into `src/dashboard/server.mjs` and `src/dashboard/main.mjs`.
+Critical-behaviour tests: `tests/dashboard/campaign-api.test.mjs`, `tests/supervisor/report-local.test.mjs`, `tests/supervisor/token-store.test.mjs`.
 
 **Why the dashboard's own server, and why a status poll rather than an outgoing webhook.** The dashboard already is the
-one process that listens on a local port and reads the store; adding two routes to it needs no new service, no new
-port and no new process to supervise or restart. Posting status to a URL the campaign declaration names would instead
+one process that listens on a local port and reads the store; adding these routes needs no new service or process,
+and a separate port is optional. Posting status to a URL the campaign declaration names would instead
 make the supervisor's own process open outbound connections chosen by whoever can submit a declaration — a new kind of
 external write the existing boundary does not have (section 1: "the only writes outside this repository are
 worktrees, branches, pull requests and issue comments, for work the owner registered"; a webhook destination is none
@@ -1084,23 +1084,25 @@ architecture's own stated shape instead: "No route calls GitHub" and nothing her
 **Fit with [AW-003](DECISIONS.md#aw-003---the-operations-dashboard-is-local-only).** AW-003 binds the dashboard to
 loopback and requires exact origin checks and CSRF protection for mutating requests, and says remote access needs a
 separately reviewed authentication design. This stays bound to `127.0.0.1` exactly as before: nothing here is remote,
-only a second local process. Its two routes are exempt from the origin/CSRF check — a static bearer token resolved
+only a second local process. Its campaign routes are exempt from the origin/CSRF check — a static bearer token resolved
 from the operator's own secret store in its place — because their caller is by design not a browser holding the
 dashboard's session, so CSRF protection (which defends a browser session against another page's script) does not
 apply to it; this is the separately reviewed authentication design AW-003 anticipates for a caller that is not that
-browser session. This PR is that review.
+browser session. The exemption exists only while the API is enabled, for exactly `POST /api/campaigns` and
+`GET /api/campaigns/:id/status|report`. Each is answered in full before another route is considered. The server gives
+no CORS answer; every other dashboard route retains its Host, Origin, CSRF and caller checks.
 
 - **The switch.** `config.json` `"campaignApi": { "enabled": true, "tokenRef": "<name>", "credentialStore"?: { "kind":
   "windows" } | { "kind": "command", "command": [...] }, "port"?: <number> }`. Absent, malformed, `enabled` not exactly
-  `true`, or an invalid `tokenRef` (the same short reference shape as a release credential, `release/credential.mjs`
-  `validCredentialRef`) all leave it off: every route then answers `404 Not Found`, exactly as "Add project" answers 404
-  while it is off. Without `credentialStore` the Windows Credential Manager is used, exactly as the release
-  credential's own default.
+  `true`, or an invalid `tokenRef`, store or port leaves it off. References use `token-store.mjs` `validTokenRef`:
+  short segments joined by `/` or `:`. While off, requests meet the dashboard's original gates (`403` for a foreign
+  Host or Origin or a POST without its CSRF token, `404` for the read paths); the dedicated API listener returns `404`.
+  Without `credentialStore` the Windows Credential Manager is used.
 - **The token is a reference, never a value.** `config.json` holds the `tokenRef`, never the token (AGENTS.md:
   "configuration holds executable paths and repository paths, never secret values"). Its value lives in the same kind
-  of operator-managed secret store the release credential already reads (`release/credential.mjs`): the Windows
-  Credential Manager by default, or an operator's credential helper command. It is resolved fresh on every request,
-  never cached, logged or journalled; a store that
+  of operator-managed secret store the release credential uses, through its own `token-store.mjs` module: the Windows
+  Credential Manager by default, or an operator's credential helper command. It is resolved fresh on every request
+  carrying a bearer token, never cached, logged or journalled; a store that
   cannot tell whether the reference resolves is treated as refused, never as open access.
 - **Infisical as the store.** `scripts/infisical-credential-helper.mjs` answers the credential helper protocol
   (`has`, `get`, `set <ref>`) from one Infisical project, environment and folder, so the token (and any other
@@ -1116,7 +1118,8 @@ browser session. This PR is that review.
   unexpected answer exits 4, which callers read as "cannot tell", never as absent. Only `get` writes to stdout (the
   value); messages name the step and an HTTP status only. Critical tests: `tests/supervisor/infisical-helper.test.mjs`.
 - **Authentication is a header, never a query parameter.** `Authorization: Bearer <token>`, compared to the resolved
-  value with a constant-time comparison. A missing or wrong token answers `401`. This token is never the dashboard's
+  value by comparing fixed-length SHA-256 digests in constant time. A missing or wrong token answers `401`, and a
+  token in the query string is ignored. This token is never the dashboard's
   own per-process CSRF secret that a browser session reads from `GET /api/session` (server.mjs): the two surfaces share
   no secret, so a token good for one never reaches a route of the other.
 - **`POST /api/campaigns`** accepts exactly the JSON a private declaration file holds — the same contract
@@ -1158,6 +1161,11 @@ browser session. This PR is that review.
 - **Never a replacement for the CLI or the dashboard.** Pause, cancel, recheck, instructions and every owner-facing
   control stay on the existing CLI commands and the browser dashboard, unchanged. This surface only starts a campaign
   and reads its status and verified reports.
+- **A project's token reaches that project only.** A standard reference `aiworks-campaign-api:<projectId>` binds the
+  token to the project's repository in the governance checkout. Registration and amendments of another project's
+  campaign are refused with `403 TOKEN_OUT_OF_SCOPE`, including an incoming declaration that disguises a stored id.
+  Status and report reads of another project's campaign return `404` as for an unknown id, on either listener.
+  Other reference shapes retain the same repository reach as the CLI.
 
 **Managing the token (`campaign-token`, `src/supervisor/campaign-token.mjs`).** Turning this surface on for any
 AIWorks-registered project is one general CLI action, not a one-off done by hand for a single external project:
@@ -1170,11 +1178,12 @@ node src/supervisor/cli.mjs campaign-token rotate <projectId>     # replace an e
 `<projectId>` must be a project this installation already knows: `registry/projects/<projectId>.json` must exist in
 the governance checkout, the same registration a new campaign already needs
 (`campaign.mjs` `assertRegisteredTarget`). `create` generates a fresh random value
-(`crypto.randomBytes(32).toString('base64url')`, 256 bits) and writes it to the operator's credential store (the
-Windows Credential Manager by default, exactly as the release credential, `release/credential.mjs`) under the one
+(`crypto.randomBytes(32).toString('base64url')`, 256 bits) and writes it over stdin to the operator's credential store
+(`token-store.mjs`: the Windows Credential Manager by default) under the one
 standard reference `aiworks-campaign-api:<projectId>` -- never a name the caller invents, so the store's own listing
 already says which project a token belongs to. It then points `config.json` `campaignApi` at that reference:
-`{ enabled: true, tokenRef: "aiworks-campaign-api:<projectId>" }`. `create` refuses to overwrite a value already
+`{ enabled: true, tokenRef: "aiworks-campaign-api:<projectId>" }`, keeping every other setting; a `config.json` that is
+not a JSON object refuses (`CONFIG_INVALID`) before anything is written. `create` refuses to overwrite a value already
 stored there (`TOKEN_ALREADY_EXISTS`: run `rotate` instead); `rotate` refuses when nothing is there yet to replace
 (`TOKEN_NOT_FOUND`: run `create` first). Either command prints only the fact that a token now exists and the
 reference it lives under -- **never the token value itself**, in any form, on any stream: an operator reads the value

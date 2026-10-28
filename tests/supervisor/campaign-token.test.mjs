@@ -15,7 +15,7 @@ import {
 } from '../../src/supervisor/campaign-token.mjs';
 import { GOVERNANCE } from './helpers.mjs';
 
-/** A synthetic credential-helper command (release/credential.mjs commandCredentialStore's contract), has/get/set
+/** A synthetic credential-helper command (token-store.mjs commandTokenStore's contract), has/get/set
  * all backed by one JSON file. `set` reads its value from stdin, exactly as the real helper contract requires, so the
  * value is never a process argument the test (or anything else on the machine) could observe in a listing. */
 function vaultHelper(t) {
@@ -115,4 +115,15 @@ test('applyCampaignApiConfig keeps the rest of config.json and names only tokenR
     assert.equal(config.tickMs, 50);
     assert.deepEqual(config.campaignApi, setting);
   } finally { rmSync(dataDir, { recursive: true, force: true }); }
+});
+
+test('a config.json that is not a JSON object refuses before the store or the file is touched', (t) => {
+  const vault = vaultHelper(t);
+  const dataDir = mkdtempSync(join(tmpdir(), 'aiworks-campaign-token-cfg-'));
+  t.after(() => rmSync(dataDir, { recursive: true, force: true }));
+  writeFileSync(join(dataDir, 'config.json'), '{ "governanceRoot": "unfinished edit"');
+  assert.throws(() => issueCampaignToken('sample-wiki', { governanceRoot: GOVERNANCE, dataDir, credentialStoreSpec: { kind: 'command', command: vault.command } }),
+    (error) => error.code === 'CONFIG_INVALID');
+  assert.equal(readFileSync(join(dataDir, 'config.json'), 'utf8'), '{ "governanceRoot": "unfinished edit"');
+  assert.equal(vault.read('aiworks-campaign-api:sample-wiki'), undefined);
 });

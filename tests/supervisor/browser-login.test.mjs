@@ -117,16 +117,16 @@ test('pre-login keeps credentials on the selected origin and closes its private 
     server.listen(0, '127.0.0.1'); await once(server, 'listening');
     t.after(() => { server.closeAllConnections(); server.close(); });
     const origin = `http://127.0.0.1:${server.address().port}`;
-    const settings = browserLoginSettings({ urls: [`${origin}/home`] }, { profiles: [profile(origin, 'dev')] });
+    const settings = browserLoginSettings({ urls: [`${origin}/home`] }, { profiles: [profile(origin, 'browser:dev')] });
     const servers = browserServers({ runDir: dir, web: { urls: [`${origin}/home`] }, chromeCommand: [chrome], browserLogin: settings });
     const runConfig = readFileSync(servers.mcpServers.browser.args[1], 'utf8');
     for (const value of [user, password]) assert.ok(!runConfig.includes(value));
     browser = await puppeteer.launch({ executablePath: chrome, headless: true, userDataDir: join(dir, 'profile'),
       args: ['--disable-background-networking', '--disable-extensions'] });
     const reads = [];
-    const store = { get(ref) { reads.push(ref); return ref === 'dev-user' ? user : password; } };
+    const store = { get(ref) { reads.push(ref); return ref === 'browser:dev-user' ? user : password; } };
     await loginBrowser(browser, settings, { store, timeoutMs: 5000 });
-    assert.deepEqual(reads, ['dev-user', 'dev-password']);
+    assert.deepEqual(reads, ['browser:dev-user', 'browser:dev-password']);
     assert.deepEqual(received, [{ body: `user=${user}&password=${password}` }]);
     assert.ok((await browser.cookies()).some((cookie) => cookie.name === 'session'));
     assert.deepEqual((await browser.pages()).map((page) => page.url()), ['about:blank'], 'no login form or request history is handed over');
@@ -142,7 +142,7 @@ test('pre-login keeps credentials on the selected origin and closes its private 
     await browser.close(); browser = null;
     mode = 'popup'; received.length = 0;
     const helper = join(dir, 'synthetic-helper.mjs');
-    writeFileSync(helper, `process.stdout.write(process.argv.at(-1) === 'dev-user' ? ${JSON.stringify(user)} : ${JSON.stringify(password)});`);
+    writeFileSync(helper, `process.stdout.write(process.argv.at(-1) === 'browser:dev-user' ? ${JSON.stringify(user)} : ${JSON.stringify(password)});`);
     const startup = browserServers({ runDir: dir, web: { urls: [`${origin}/home`], resourceOrigins: [foreignOrigin] },
       chromeCommand: [chrome], browserLogin: { ...settings, credentialStore: { kind: 'command', command: [process.execPath, helper] } } }).mcpServers.browser;
     child = spawn(startup.command, startup.args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });

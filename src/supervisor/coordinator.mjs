@@ -387,7 +387,8 @@ export function replyBody({ runId, messages, value }) {
     '',
     `Answering owner message${messages.length === 1 ? '' : 's'} ${messages.map((m) => `#${m.id} (received ${new Date(m.received_at).toISOString()})`).join(', ')}. Run \`${runId}\`.`,
     '',
-    ...messages.map((m) => `> ${clip(m.text, 600).replace(/\r?\n/g, '\n> ')}`),
+    // The owner's words are quoted whole (at most 4000 characters each), never clipped inside their prose.
+    ...messages.map((m) => `> ${m.text.replace(/\r?\n/g, '\n> ')}`),
     '',
     `**Summary:** ${value.summary}`,
     '',

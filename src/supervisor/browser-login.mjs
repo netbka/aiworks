@@ -1,6 +1,6 @@
 // Resolve the login for a task's page origins before its browser tools start. Configuration and run files carry
 // references only; credential values exist only in this process and the short-lived login page.
-import { credentialStoreFrom, validCredentialRef } from './release/credential.mjs';
+import { tokenStoreFrom, validTokenRef } from './token-store.mjs';
 
 const text = (value) => typeof value === 'string' && value.length > 0 && value.length <= 512;
 const originOf = (value) => {
@@ -23,15 +23,15 @@ export function browserLoginSettings(web, config) {
       if (url.protocol !== 'https:' && !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) throw new Error();
       if (seen.has(profile.origin)) throw new Error();
       seen.add(profile.origin);
-      if (originOf(profile.loginUrl) !== profile.origin || !validCredentialRef(profile.usernameRef) ||
-          !validCredentialRef(profile.passwordRef) ||
+      if (originOf(profile.loginUrl) !== profile.origin || !validTokenRef(profile.usernameRef) ||
+          !validTokenRef(profile.passwordRef) ||
           !['usernameSelector', 'passwordSelector', 'submitSelector', 'successSelector'].every((key) => text(profile[key]))) throw new Error();
       return true;
     }).map(({ origin, loginUrl, usernameRef, passwordRef, usernameSelector, passwordSelector, submitSelector, successSelector }) =>
       ({ origin, loginUrl, usernameRef, passwordRef, usernameSelector, passwordSelector, submitSelector, successSelector }));
     if (!profiles.length) return null;
     // Validate the store without reading any value. It is the operator's configured helper, never task input.
-    credentialStoreFrom(config.credentialStore);
+    tokenStoreFrom(config.credentialStore);
     return { credentialStore: config.credentialStore ?? { kind: 'windows' }, profiles };
   } catch {
     throw new Error('Browser pre-login configuration is invalid');
@@ -45,7 +45,7 @@ export function browserLoginSettings(web, config) {
  */
 export async function loginBrowser(browser, settings, { store = null, timeoutMs = 60_000 } = {}) {
   if (!settings) return;
-  const credentials = store ?? credentialStoreFrom(settings.credentialStore);
+  const credentials = store ?? tokenStoreFrom(settings.credentialStore);
   for (const profile of settings.profiles) {
     const existingPages = new Set(await browser.pages());
     let page;
