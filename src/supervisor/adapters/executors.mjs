@@ -283,7 +283,11 @@ export function prepare({ executor, command, role, deliverable, sessionId, diges
         '--json-schema', JSON.stringify(stageSchema(role, stage)),
         '--allowedTools', ...agy.TOOLS.map((name) => `mcp__${agy.BROWSER_SERVER}__${name}`),
         '--disallowedTools', `mcp__${agy.BROWSER_SERVER}__upload_file`],
-      prompt, cwd, env: { ...profile, ...claude.ISOLATION_ENV },
+      prompt, cwd, env: { ...profile, ...claude.ISOLATION_ENV,
+        // Login happens before MCP exposes any browser tools. Wait for that server in the first turn as well as
+        // during its handshake; the normal 30-second startup limit can expire on a healthy application login.
+        ...(browserLogin ? { MCP_TIMEOUT: String(30_000 + 300_000 * browserLogin.profiles.length),
+          MCP_CONNECT_TIMEOUT_MS: String(30_000 + 300_000 * browserLogin.profiles.length), MCP_CONNECTION_NONBLOCKING: '0' } : {}) },
     };
   }
   if (executor.researchOnly && deliverable !== 'report') throw new Error('Research-only executor requires a report deliverable');
