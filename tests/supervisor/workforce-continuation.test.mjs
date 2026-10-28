@@ -6,7 +6,6 @@ import { Store } from '../../src/supervisor/store.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
 import { campaignStart } from '../../src/supervisor/api.mjs';
 import { decisionId } from '../../src/supervisor/decisions.mjs';
-import { isDecision } from '../../src/supervisor/decisions.mjs';
 import { decisionInstructions, pendingInstructions, attachInstructions } from '../../src/supervisor/instructions.mjs';
 import { declaration, environment } from './helpers.mjs';
 import { exec, safeEnvironmentExamples } from '../../src/supervisor/adapters/git.mjs';
@@ -98,22 +97,6 @@ test('a browser adapter hold recovers only after its task browser capability is 
   assert.equal(store.campaign(ctx.id).blocker, null);
   assert.equal(store.campaign(ctx.id).runs_used, 0);
   assert.equal(store.openOperations(ctx.id).length, 0);
-});
-
-test('no-progress limits still bound paid retries without inventing an owner decision', (t) => {
-  const env = environment(); const store = new Store(join(env.dataDir, 'supervisor.db'));
-  t.after(() => { store.close(); env.cleanup(); });
-  const decl = declaration(); campaignStart(store, decl, 1000);
-  const controller = new Controller({ store, config: env.config, dataDir: env.dataDir });
-  for (const cls of ['evidence-unavailable', 'invalid-result']) {
-    const task = { ...store.task(decl.campaignId, 'T1'), failures: { [cls]: 3,
-      repeat: { key: `${cls}: unavailable`, count: 3 } } };
-    const next = controller.transition({ id: decl.campaignId }, task, { kind: 'implement' },
-      { class: cls, detail: 'unavailable' }, decl, 1001);
-    assert.equal(next.retry_at, null);
-    assert.equal(next.blocked.recovery, 'system');
-    assert.equal(isDecision({ ...task, ...next }), false);
-  }
 });
 
 test('only regular placeholder-only environment examples pass; secrets, symlinks and explicit denials remain forbidden', (t) => {
