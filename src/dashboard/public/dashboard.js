@@ -2458,7 +2458,7 @@ const EVENT_WORDS = { 'goal-started': 'Work started', paused: 'Paused', resumed:
 // The order of the one-line summary: what the owner acts on first.
 const EVENT_ORDER = ['needs-you', 'result-ready', 'accepted', 'merged', 'checked', 'check-rejected', 'paused', 'resumed', 'goal-started', 'cancelled',
   'limit-wait', 'wait-ended', 'run-failed', 'aiworks-problem', 'built', 'decision-cleared'];
-const SUMMARY_WORDS = { 'needs-you': 'new for you', 'result-ready': 'ready for review', accepted: 'accepted by you', merged: 'merged', checked: 'passed the check',
+const SUMMARY_WORDS = { 'needs-you': 'new for you', 'result-ready': 'ready for review', accepted: 'accepted by you', merged: 'merged', checked: 'checked by the independent checker',
   'check-rejected': 'sent back by the checker', paused: 'paused', resumed: 'resumed', 'goal-started': 'started', cancelled: 'cancelled',
   'limit-wait': 'limit waits', 'wait-ended': 'waits ended', 'run-failed': 'runs retried', 'aiworks-problem': 'AIWorks problems', built: 'builder runs',
   'decision-cleared': 'questions cleared' };
@@ -2518,7 +2518,8 @@ const resultsToReview = (project = null) => Object.values(state.owner?.results ?
   .flatMap((entry) => entry.groups.flatMap((group) => group.rows.map((row) => ({ ...row, project: entry.project })))).filter((row) => row.review?.state === 'ready');
 function reviewList(rows, { scope, withProject = false }) {
   if (!rows.length) return null;
-  return panel('Results to review', 'Each passed the independent check. Review shows its criteria and evidence, then Accept result or Request changes.',
+  // "Each passed" only when every listed result passed every criterion (owner.mjs row checkPassed); each row says what is missing.
+  return panel('Results to review', `${rows.every((row) => row.checkPassed === true) ? 'Each passed the independent check. ' : 'Not every one passed the independent check; each says what it found. '}Review shows its criteria and evidence, then Accept result or Request changes.`,
     el('div', { class: 'panel-body', 'data-focus-scope': scope }, el('ul', { class: 'needs-list' }, ...rows.slice(0, 5).map((row) => el('li', { class: 'result-row', 'data-focus-scope': `${scope}/${row.campaignId}/${row.taskId}` },
       el('div', { class: 'needs-text' }, routeLink(row.review.label, row.review.address, 'needs-link'), el('span', {}, ` ${row.text}`)),
       el('div', { class: 'subtext' }, [withProject ? `Project ${projectName(row.project)}` : null, row.evidence].filter(Boolean).join(' · '))))),

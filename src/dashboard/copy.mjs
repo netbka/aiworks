@@ -219,10 +219,13 @@ export function sinceLines(recent, ids, failures = []) {
   const prs = (list) => list.filter((item) => item.url || item.route)
     .map((item) => item.url ? { label: `#${item.number}`, url: item.url } : { label: `Work list #${item.number}`, route: item.route.address });
   const merged = mine(recent.merged), delivered = mine(recent.delivered), waiting = mine(recent.waiting);
+  // Passed only when the check passed every criterion (owner.mjs recentSummary); the rest finished with it not complete.
+  const passed = mine(recent.passed), incomplete = delivered.length - passed.length;
   const runs = mine(failures).filter((item) => ['failed-run', 'rejected'].includes(item.kind)), rejected = runs.filter((item) => item.kind === 'rejected').length;
   return [
     merged.length ? { text: `${plural(merged.length, 'step')} merged`, links: prs(merged), tone: null } : null,
-    delivered.length ? { text: `${plural(delivered.length, 'step')} finished and passed the check`, links: [], tone: null } : null,
+    passed.length ? { text: `${plural(passed.length, 'step')} finished and passed the check`, links: [], tone: null } : null,
+    incomplete > 0 ? { text: `${plural(incomplete, 'step')} finished; the independent check did not pass every criterion`, links: [], tone: 'attention' } : null,
     waiting.length ? { text: `${waiting.length} newly waiting for your review`, links: prs(waiting), tone: 'attention' } : null,
     runs.length ? { text: `${plural(runs.length, 'AI worker run')} did not succeed${rejected ? ` (${rejected} rejected by the independent checker)` : ''}; AIWorks retries by itself`, links: [], tone: 'warn' } : null,
   ].filter(Boolean);

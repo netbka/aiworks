@@ -237,6 +237,7 @@ export function reviewEntry(c, task, d = null) {
 /** One finished step as a Results row: its group, its state word, what it means, and the link to the result. */
 function resultRow(c, task, d, releases, recorded = null) {
   const base = { campaignId: c.id, taskId: task.id, repository: c.repository, text: label(task), mergedAt: null, release: null, asOf: d.asOf ?? null, signature: task.signature ?? null,
+    checkPassed: task.checkPassed === true,
     review: reviewEntry(c, task, d),
     // A report is read, never released, so it has no release steps.
     ladder: d.state === 'report-posted' ? null : releaseLadder(task, d, recorded) };
@@ -280,8 +281,12 @@ function resultRow(c, task, d, releases, recorded = null) {
     note: d.reason ? d.note : 'The merge is not seen on the base branch yet', link };
 }
 
+/** When a handling entry's check ran: "Passed the check" only when it passed every criterion (supervisor.mjs checkPassed). */
+const checkedWords = (task) => task.checkPassed ? 'Passed the check' : 'Checked';
+
 /** A local review row of a step whose check did not pass every criterion says what is missing, never that it passed. */
 function checkedRow(row, task) {
+  row.checkPassed = task.checkPassed === true;
   if (!task.verifiedSha || task.checkPassed) return row;
   const evidence = incompleteCheck(task);
   return Object.assign(row, { evidence: evidence.short, detail: evidence.text,
@@ -589,7 +594,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
           points: [{ link: null, text: 'Not an investigation for you: AIWorks keeps what it recorded for its maintainers. If this result should not continue, stop this work from its project.' }] });
         return;
       }
-      handling.push({ ...base, taskId: task.id, text: label(task), recorded: Boolean(wait), since: task.verifiedAt ?? null,
+      handling.push({ ...base, taskId: task.id, text: label(task), recorded: Boolean(wait), since: task.verifiedAt ?? null, sinceWords: checkedWords(task),
         reason: words?.reason ?? (accepted ? 'You accepted this version' : task.checkPassed ? 'It passed the independent check on this computer' : 'It was checked on this computer; not every criterion passed'),
         next: words?.next ?? 'AIWorks finishes integrating this result when its required checks and approvals pass.' });
     };
@@ -658,7 +663,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       if (settled) { handling.push(settled); continue; }
       const words = mergeWaitWords(d.merger, d.wait);
       if (d.merger === 'aiworks' && words.routine) {
-        if (d.stalled || d.wait) handling.push({ ...base, taskId: task.id, text: label(task), reason: words.reason, next: words.next, since: task.verifiedAt ?? null, recorded: Boolean(d.wait) });
+        if (d.stalled || d.wait) handling.push({ ...base, taskId: task.id, text: label(task), reason: words.reason, next: words.next, since: task.verifiedAt ?? null, sinceWords: checkedWords(task), recorded: Boolean(d.wait) });
       } else if (d.merger === 'aiworks') {
         items.push({ ...base, repository: null, about: c.repository, taskId: task.id, kind: 'merge-problem', system: true, action: 'AIWorks cannot finish this by itself',
           text: label(task), why: `${words.reason}. ${words.next}`, route: stepRoute(task), reference: reference(d),
@@ -895,6 +900,8 @@ function recentSummary(supervisor, campaigns) {
   }
   // Agent runs and the supervisor's own problems are counted apart: a failing supervisor step is journaled on every tick.
   const kind = (...kinds) => recent.failures.filter((f) => kinds.includes(f.kind)).length;
-  return { since: recent.since, merged, delivered: recent.published, waiting,
+  // Passed: published steps whose check passed every criterion; the others finished with their check not complete.
+  const passed = recent.published.filter((p) => supervisor.campaigns.find((c) => c.id === p.campaignId)?.tasks.find((task) => task.id === p.taskId)?.checkPassed === true);
+  return { since: recent.since, merged, delivered: recent.published, passed, waiting,
     failures: kind('failed-run', 'rejected'), rejected: kind('rejected'), supervisorErrors: kind('step-error'), livenessProblems: kind('liveness-defect') };
 }
