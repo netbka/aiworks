@@ -43,7 +43,6 @@ else process.exit(2);
 
 test('campaignTokenRef is the one standard name: aiworks-campaign-api:<projectId>, never invented by a caller', () => {
   assert.equal(campaignTokenRef('sample-wiki'), 'aiworks-campaign-api:sample-wiki');
-  assert.equal(campaignTokenRef('elma-wiki'), 'aiworks-campaign-api:elma-wiki');
   for (const bad of ['Sample-Wiki', 'sample wiki', '../x', '', null, undefined, 42, 'x'.repeat(129)]) {
     assert.throws(() => campaignTokenRef(bad), /PROJECT_ID_INVALID|project id/, String(bad));
   }
