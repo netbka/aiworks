@@ -42,14 +42,15 @@ function newestMerge(c, project, repo, base) {
   c.releaseOrderMemo ??= new Map();
   const key = `${project}:${base}:${events[0]?.seq ?? 0}`;
   if (c.releaseOrderMemo.has(key)) return c.releaseOrderMemo.get(key);
-  let newest = null;
+  let maxima = [];
   for (const event of events) {
     if (!ancestor(c, repo, event.detail.mergeCommit, base)) continue;
-    if (!newest) { newest = event; continue; }
-    if (event.detail.mergeCommit === newest.detail.mergeCommit) continue;
-    if (ancestor(c, repo, newest.detail.mergeCommit, event.detail.mergeCommit)) newest = event;
-    else if (!ancestor(c, repo, event.detail.mergeCommit, newest.detail.mergeCommit)) throw new Error('The merged branches need one independently verified combined release revision');
+    if (maxima.some((item) => ancestor(c, repo, event.detail.mergeCommit, item.detail.mergeCommit))) continue;
+    maxima = maxima.filter((item) => !ancestor(c, repo, item.detail.mergeCommit, event.detail.mergeCommit));
+    maxima.push(event);
   }
+  if (maxima.length > 1) throw new Error('The merged branches need one independently verified combined release revision');
+  const newest = maxima[0] ?? null;
   c.releaseOrderMemo.set(key, newest);
   return newest;
 }
