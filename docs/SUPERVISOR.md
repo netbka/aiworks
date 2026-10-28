@@ -1064,9 +1064,9 @@ browser session. This PR is that review.
   "--allow", "aiworks-campaign-api:sampleapp"] }`. The machine identity (universal auth) comes from
   `INFISICAL_HOST`, `INFISICAL_CLIENT_ID` and `INFISICAL_CLIENT_SECRET` in the environment or the `--env-file`, never
   from the command line; `INFISICAL_HOST` must be https. A reference maps to a key by uppercasing it and turning every
-  other character into `_` (`aiworks-campaign-api:sampleapp` → `AIWORKS_CAMPAIGN_API_SAMPLEAPP`). Only references on
-  the `--allow` list are answered; any other one exits 3 without contacting Infisical, so the helper never hands out
-  the other secrets the identity can read. Exit 1 means absent; Infisical unreachable, a refused login or an
+  other character into `_` (`aiworks-campaign-api:sampleapp` → `AIWORKS_CAMPAIGN_API_SAMPLEAPP`). Without `--allow`
+  every reference in the configured folder is answered; with an `--allow` list only those are, and any other exits 3
+  without contacting Infisical. Exit 1 means absent; Infisical unreachable, a refused login or an
   unexpected answer exits 4, which callers read as "cannot tell", never as absent. Only `get` writes to stdout (the
   value); messages name the step and an HTTP status only. Critical tests: `tests/supervisor/infisical-helper.test.mjs`.
 - **Authentication is a header, never a query parameter.** `Authorization: Bearer <token>`, compared to the resolved
