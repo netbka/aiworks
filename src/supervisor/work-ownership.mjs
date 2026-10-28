@@ -106,12 +106,14 @@ export function pathsOutside(domain, paths) {
 
 /**
  * Changed paths split by what they mean (AW-013). `forbidden`: any secret-like path, or one inside the envelope's
- * `denyWrites`, wherever it lies; the commit is a boundary violation. `beyond`: any other path outside the declared
+ * `denyWrites`, wherever it lies; the commit is a boundary violation. The caller may supply only template paths whose
+ * exact regular Git blobs passed safeEnvironmentExamples; explicit denials still win. `beyond`: any other path outside the declared
  * domain; the work goes on, the implementer explains it in the report and the verifier judges it.
  */
-export function outsideWrites(declaration, domain, paths) {
+export function outsideWrites(declaration, domain, paths, { safeTemplates = [] } = {}) {
   const deny = (declaration?.envelope?.denyWrites ?? []).map((entry) => normalise(entry).replace(/\/+$/, ''));
-  const banned = (path) => SECRET_LIKE.test(normalise(path)) || deny.some((entry) => normalise(path) === entry || normalise(path).startsWith(`${entry}/`));
+  const banned = (path) => (SECRET_LIKE.test(normalise(path)) && !safeTemplates.includes(path)) ||
+    deny.some((entry) => normalise(path) === entry || normalise(path).startsWith(`${entry}/`));
   const forbidden = paths.filter(banned);
   return { forbidden, beyond: pathsOutside(domain, paths).filter((path) => !banned(path)) };
 }

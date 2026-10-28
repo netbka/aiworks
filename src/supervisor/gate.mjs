@@ -85,6 +85,18 @@ function start(command) {
     console.log(`already running: process ${pid}. Wait for it with: ${again('wait')}`);
     return 0;
   }
+  let commandError = null;
+  if (!command.length) {
+    // Keep the existing convenience only where this project actually defines it.
+    // Other projects supply their documented gate explicitly; never guess a
+    // smaller substitute for the checks their acceptance contract requires.
+    let scripts;
+    try { scripts = JSON.parse(readFileSync('package.json', 'utf8')).scripts; } catch { /* explicit command required */ }
+    if (typeof scripts?.check !== 'string' || !scripts.check.trim()) {
+      commandError = 'not started: this project has no npm check script. Read its verification contract and pass its full command to gate.mjs start <command...>.';
+    }
+    command = ['npm', 'run', 'check'];
+  }
   try {
     if (existsSync(GATE_FILES.log)) renameSync(GATE_FILES.log, GATE_FILES.previous);
   } catch (error) {
@@ -94,6 +106,14 @@ function start(command) {
   }
   rmSync(GATE_FILES.exit, { force: true });
   const out = openSync(GATE_FILES.log, 'w');
+  if (commandError) {
+    // A failed attempt must replace a previous pass, never leave stale green evidence.
+    writeFileSync(out, `${commandError}\n`);
+    closeSync(out);
+    writeFileSync(GATE_FILES.exit, 'command-required\n');
+    console.log(commandError);
+    return 1;
+  }
   // Detached, so the worker's shell returns at once; it stays in the worker's containment, which ends it with the run.
   const child = spawn(process.execPath, [SELF, 'run', ...command], { detached: true, stdio: ['ignore', out, out], windowsHide: true });
   closeSync(out);
@@ -209,7 +229,7 @@ function option(args, name, fallback) {
 const samePath = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
 if (process.argv[1] && samePath(resolve(process.argv[1]), SELF)) {
   const [action, ...args] = process.argv.slice(2);
-  if (action === 'start') process.exitCode = start(args.length ? args : ['npm', 'run', 'check']);
+  if (action === 'start') process.exitCode = start(args);
   else if (action === 'run') await run(args);
   else if (action === 'wait') process.exitCode = await wait({ minutes: option(args, '--minutes', 25), pollSeconds: option(args, '--poll-seconds', 10) });
   else {
