@@ -87,7 +87,8 @@ function identity(options) {
 
 async function request(url, init) {
   try {
-    return await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
+    // A 307/308 redirect would forward the identity secret or a set payload to its new destination.
+    return await fetch(url, { ...init, redirect: 'error', signal: AbortSignal.timeout(TIMEOUT_MS) });
   } catch {
     throw new HelperError(EXIT.unavailable, 'Infisical cannot be reached');
   }
