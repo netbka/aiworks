@@ -843,7 +843,7 @@ Alert rules and transports (OWNER_UI_V2 WP6, `src/supervisor/alerts.mjs`): befor
 "alerts": { "transport": { "kind": "telegram", "secretRef": "windows:aiworks-alerts/bot", "recipientRef": "windows:aiworks-alerts/chat" } }
 ```
 
-- **References, never values.** `secretRef` names the bot credential and `recipientRef` the chat, each in a secret store the operator owns: `windows:<name>`, a generic credential in the Windows Credential Manager (read with `CredRead` in a hidden PowerShell child), or `helper:<name>`, the operator's credential helper (`commands.credentialHelper`, a native command asked `get <name>`, the contract of `release/credential.mjs`). The names above are examples. They are resolved inside each send only, for that one request, and their values are never stored, logged, journaled, served by the dashboard or put in an error; Telegram's own error description is cleaned of both before it is kept. A credential value in the setting reads `invalid`; one reference missing, the same reference twice, or another store reads `incomplete`. Settings › Alerts shows `ready` (sending switched off) or sending, and never a reference.
+- **References, never values.** `secretRef` names the bot credential and `recipientRef` the chat, each in a secret store the operator owns: `windows:<name>`, a generic credential in the Windows Credential Manager (read with `CredRead` in a hidden PowerShell child), or `helper:<name>`, the operator's credential helper (`commands.credentialHelper`, a native command asked `get <name>`, the contract of `release/credential.mjs`; `scripts/infisical-credential-helper.mjs` is one, section 16). The names above are examples. They are resolved inside each send only, for that one request, and their values are never stored, logged, journaled, served by the dashboard or put in an error; Telegram's own error description is cleaned of both before it is kept. A credential value in the setting reads `invalid`; one reference missing, the same reference twice, or another store reads `incomplete`. Settings › Alerts shows `ready` (sending switched off) or sending, and never a reference.
 - **What is sent.** One plain-text `sendMessage` to `https://api.telegram.org` per entry, with link previews off, no markup and no buttons; dashboard addresses are written out as places on this computer. Redirects are refused and a request is bounded to 15 seconds.
 - **No authority.** The adapter never calls `getUpdates` or registers a webhook, so no reply reaches AIWorks. An alert cannot approve a plan, answer a decision, accept a result or vouch for its sender; every such act stays a protected local dashboard route with its caller, CSRF and version checks until remote access is separately designed and approved (WP10, AW-003).
 - **Provider deduplication.** Telegram's Bot API has no idempotency key, so it cannot drop a repeated message: AIWorks's own `unknown` state is the only protection against a duplicate, and an `unknown` alert is not resent even when it never arrived.
@@ -1056,6 +1056,19 @@ browser session. This PR is that review.
   Credential Manager by default, or an operator's credential helper command. It is resolved fresh on every request,
   never cached, logged or journalled; a store that
   cannot tell whether the reference resolves is treated as refused, never as open access.
+- **Infisical as the store.** `scripts/infisical-credential-helper.mjs` answers the credential helper protocol
+  (`has`, `get`, `set <ref>`) from one Infisical project, environment and folder, so the token (and any other
+  reference a helper serves) can live in Infisical instead of the Windows Credential Manager:
+  `"credentialStore": { "kind": "command", "command": ["node", "<aiworks>/scripts/infisical-credential-helper.mjs",
+  "--env-file", "<operator env file>", "--project", "<project id>", "--environment", "dev", "--path", "/",
+  "--allow", "aiworks-campaign-api:sampleapp"] }`. The machine identity (universal auth) comes from
+  `INFISICAL_HOST`, `INFISICAL_CLIENT_ID` and `INFISICAL_CLIENT_SECRET` in the environment or the `--env-file`, never
+  from the command line; `INFISICAL_HOST` must be https. A reference maps to a key by uppercasing it and turning every
+  other character into `_` (`aiworks-campaign-api:sampleapp` → `AIWORKS_CAMPAIGN_API_SAMPLEAPP`). Only references on
+  the `--allow` list are answered; any other one exits 3 without contacting Infisical, so the helper never hands out
+  the other secrets the identity can read. Exit 1 means absent; Infisical unreachable, a refused login or an
+  unexpected answer exits 4, which callers read as "cannot tell", never as absent. Only `get` writes to stdout (the
+  value); messages name the step and an HTTP status only. Critical tests: `tests/supervisor/infisical-helper.test.mjs`.
 - **Authentication is a header, never a query parameter.** `Authorization: Bearer <token>`, compared to the resolved
   value with a constant-time comparison. A missing or wrong token answers `401`. This token is never the dashboard's
   own per-process CSRF secret that a browser session reads from `GET /api/session` (server.mjs): the two surfaces share
