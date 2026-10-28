@@ -267,7 +267,7 @@ function resultRow(c, task, d, releases, recorded = null) {
     release: `Release follows ${releaseRule(releases, c.repository)}.` };
   // Merging delegated by the owner: passed the check and merged for them, held with its reason, or waiting too long.
   if (d.state === 'delegated') return { ...base, ...proof, group: 'delegated', note: d.note, link,
-    word: d.held ? DELEGATED.heldRow(number, DELEGATED.held[d.held]) : d.stalled ? DELEGATED.waitedRow(d.stalled) : DELEGATED.row(number, d.by) };
+    word: d.held ? DELEGATED.heldRow(number, DELEGATED.held[d.held]) : d.stalled ? DELEGATED.waitedRow(d.stalled, task.checkPassed === true) : DELEGATED.row(number, d.by, task.checkPassed === true) };
   // A merge check that can still come shortly: the state is not known yet, so it is neither waiting nor merged.
   if (d.pending) return { ...base, ...proof, group: 'unknown', word: 'Not known yet', note: d.note, link };
   // Sent back by the owner: no longer waiting for their review. Only running work repairs it (ownerSettled).
@@ -672,7 +672,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
         items.push(acceptedItem(task, d));
       } else if (d.stalled) {
         const evidence = reviewEvidence(task);
-        items.push({ ...base, taskId: task.id, kind: 'merge-overdue', action: DELEGATED.overdue.action, text: label(task), why: DELEGATED.overdue.why(d.stalled),
+        items.push({ ...base, taskId: task.id, kind: 'merge-overdue', action: DELEGATED.overdue.action, text: label(task), why: DELEGATED.overdue.why(d.stalled, task.checkPassed === true),
           route: reviewRoute(task), reference: reference(d), evidence: evidence.short, detail: evidence.text, mergeCheck: d.asOf,
           points: [{ link: null, text: 'Accept approves exactly this version for whoever merges in this project. Request changes sends it back as a repair round within the approved plan.' }] });
       }

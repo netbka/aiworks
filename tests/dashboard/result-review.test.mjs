@@ -173,4 +173,20 @@ test('a checked result with its criteria not checked is never shown or counted a
   assert.equal(partly.step.checkPassed, false);
   assert.equal(partly.row.checkPassed, false);
   assert.notEqual(partly.row.evidence, passed.row.evidence, 'a partly checked result is never shown as passed');
+
+  // Merging delegated: the merge gate merges a verified version whatever its criteria say, so its row never says passed.
+  const other = rig(t), merges = { repositories: [{ repository: other.d.target.repository, configured: true, fetchedAt: Date.now() }],
+    steps: { 'review-goal/T1': { sha: SHA, merged: false } } };
+  const delegated = (criteria) => {
+    other.finish('T1', criteria);
+    const rows = Object.values(ownerView(supervisorSnapshot(other.env.dataDir), merges, { delegation: { delegatedTo: 'maintainer' } }).results)
+      .flatMap((project) => project.groups.flatMap((group) => group.rows));
+    return rows.find((item) => item.taskId === 'T1');
+  };
+  const both = [1, 2].map((criterion) => ({ criterion, result: 'pass', check: 'Opened the list', evidence: 'Shown.' }));
+  const ok = delegated(both), open = delegated(both.slice(0, 1));
+  assert.equal(ok.group, 'delegated');
+  assert.equal(open.group, 'delegated');
+  assert.equal(open.checkPassed, false);
+  assert.notEqual(open.word, ok.word, 'a delegated result with a criterion not checked is never shown as passed');
 });

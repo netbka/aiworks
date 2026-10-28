@@ -519,9 +519,11 @@ export function stopReasonWords(blocked, rounds = 0) {
  */
 const MERGES_AFTER = 'AIWorks merges it after it passes the check against the latest main';
 export const DELEGATED = {
-  word: 'Passed the check',
+  // "Passed" only when the check passed every criterion (supervisor.mjs checkPassed); the merge gate merges a verified
+  // version whatever its criteria say, so a delegated result with criteria not checked says so instead.
+  word: (passed) => passed ? 'Passed the check' : 'Checked · not every criterion passed',
   note: (by) => by === 'supervisor' ? `${MERGES_AFTER}. Nothing for you to do.` : 'Will be merged for you. Nothing for you to do.',
-  row: (number, by) => `Pull request #${number} · passed the check · ${by === 'supervisor' ? MERGES_AFTER : 'will be merged for you'}`,
+  row: (number, by, passed) => `Pull request #${number} · ${passed ? 'passed the check' : 'checked, not every criterion passed'} · ${by === 'supervisor' ? MERGES_AFTER : 'will be merged for you'}`,
   heldRow: (number, reason) => `Pull request #${number} · ${reason.charAt(0).toLowerCase()}${reason.slice(1)}`,
   progress: (n) => `${n} to be merged for you`,
   /**
@@ -556,10 +558,10 @@ export const DELEGATED = {
   },
   /** A wait with no recorded reason: the gate has not held it yet, or held it before this version. Never guessed. */
   unknown: { reason: 'AIWorks has not recorded why it is not merged yet', next: 'The merge gate checks it again on its next pass.' },
-  waitedRow: (hours) => `Passed the check · waiting to be merged for ${plural(hours, 'hour')}`,
+  waitedRow: (hours, passed) => `${passed ? 'Passed the check' : 'Checked, not every criterion passed'} · waiting to be merged for ${plural(hours, 'hour')}`,
   /** Merging delegated to someone other than AIWorks, waiting longer than the owner allowed: AIWorks may not merge it. */
   overdue: { action: 'Decide how this result continues',
-    why: (hours) => `It passed the check ${plural(hours, 'hour')} ago and is still not merged. Merging in this project is left to someone other than AIWorks, and AIWorks is not allowed to merge it.` },
+    why: (hours, passed) => `It ${passed ? 'passed the check' : 'was checked, with not every criterion passed,'} ${plural(hours, 'hour')} ago and is still not merged. Merging in this project is left to someone other than AIWorks, and AIWorks is not allowed to merge it.` },
   held: {
     'newer-work': 'Held: waiting to be combined with newer work',
     other: 'Held for now at your request',

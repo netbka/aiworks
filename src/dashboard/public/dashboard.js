@@ -12,7 +12,7 @@ const roleName = (role) => ({ Verifier: 'Independent checker', Implementer: 'Bui
 // What a finished step means for the owner: merged into the project (seen in local git), published with its merge
 // not seen yet, or passed the check and merged for the owner when merging is delegated (#97). The line under it (what
 // it means for the owner, why the merge is not seen, or why it is held) is `delivery.note`.
-const deliveryNames = { merged: ['done', 'Merged'], published: ['attention', 'Published, merge not seen yet'], delegated: ['in_progress', DELEGATED.word],
+const deliveryNames = { merged: ['done', 'Merged'], published: ['attention', 'Published, merge not seen yet'], delegated: ['in_progress', DELEGATED.word(true)],
   'report-posted': ['done', 'Report posted'], unknown: ['unknown', 'Result not known'] };
 const CHURN_ATTEMPTS = 5;
 const STUCK_MINUTES = 15;
@@ -365,7 +365,8 @@ function stepBadge(c, task) {
   if (!delivery && !task.blocked && task.waitingReason && task.state !== 'done') return badge('pending', /dependencies in main/.test(task.waitingReason) ? 'Waiting for merges' : 'Waiting');
   if (!delivery) return badge(task.blocked ? 'blocked' : task.state);
   const [cls, text] = deliveryNames[delivery.state] ?? ['unknown', delivery.state];
-  return badge(cls, text);
+  // Delegated merging merges a verified version whatever its criteria say: "passed" only when every criterion passed.
+  return badge(cls, delivery.state === 'delegated' ? DELEGATED.word(task.checkPassed === true) : text);
 }
 
 const watchChip = (task) => task.attempts >= CHURN_ATTEMPTS || task.verifierRejections > 0
