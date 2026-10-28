@@ -75,6 +75,8 @@ function publicTaskWait(task, spec) {
  * the owner's word for an AI worker (OWNER_WORKSPACE §2.1). A step being worked on, ready to start, stopped, finished or
  * in finished work has no wait: who is on it, the stop copy or the result says where it stands.
  */
+// A pause reason is checked for credentials whole, never cut short (aiworks#75).
+const pauseText = (reason) => { const text = String(reason ?? ''); return safeText(text, text.length); };
 const ownerWords = (text) => safeText(String(text ?? ''), 300).replace(/\bAI provider\b/g, 'AI worker').replace(/\bprovider account\b/g, 'AI worker account');
 function stepWait(task, wait, control) {
   if (!wait || ['running', 'ready'].includes(wait.code) || task.blocked || ['finished', 'cancelled'].includes(control)) return null;
@@ -1110,7 +1112,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
         repository: c.declaration.target.repository, trackingUrl: `https://github.com/${c.declaration.target.repository}/issues/${c.declaration.target.trackingIssue}`,
         trackingIssue: c.declaration.target.trackingIssue, purpose: c.declaration.purpose ? safeText(c.declaration.purpose) : null,
         // Who paused it and when: the pause reason is owner/operator command text, never worker output.
-        pausedAt: paused?.at ?? null, pausedReason: paused ? ownerPauseReason(safeText(String(paused.detail?.reason ?? ''), 2000), new Map([...workNames, [id, 'this work']])) : null,
+        pausedAt: paused?.at ?? null, pausedReason: paused ? ownerPauseReason(pauseText(paused.detail?.reason), new Map([...workNames, [id, 'this work']])) : null,
         control: c.control, status: status.status, readiness: status.readiness, controllerLive: status.controller.live,
         // When the campaign was registered: a campaign no supervisor has picked up yet gets a grace period from it.
         registeredAt: c.created_at,
