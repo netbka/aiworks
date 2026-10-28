@@ -471,7 +471,7 @@ export function aiWorkers(campaigns, config, { platform = process.platform, now 
  * lists: a connected GitHub project by its repository, and a project without GitHub with the sentence that release does
  * not apply to it yet, since no work can start there (aiworks#11 review 5 G10).
  */
-export function releaseModes(repositories, { waitsFor = null, connected = [], enabled = false, stop = false } = {}) {
+export function releaseModes(repositories, { waitsFor = null, connected = [], enabled = false, stop = false, releaseEvidence = [] } = {}) {
   const projects = new Map();
   const github = connected.filter((record) => record.source_kind === 'github').map((record) => record.github_repository);
   for (const repository of [...repositories, ...github]) if (/^[\w.-]+\/[\w.-]+$/.test(repository ?? '') && !projects.has(repository.toLowerCase())) projects.set(repository.toLowerCase(), repository);
@@ -479,11 +479,23 @@ export function releaseModes(repositories, { waitsFor = null, connected = [], en
     .map((record) => ({ repository: null, project: record.id, name: record.name, mode: null, modes: [], text: RELEASE_LOCAL }));
   const missing = [RELEASE_MISSING.grant, enabled === true ? null : RELEASE_MISSING.off,
     stop === true ? RELEASE_MISSING.stopped : stop === false ? null : RELEASE_MISSING.stopUnknown].filter(Boolean);
-  return [...[...projects.values()].sort((a, b) => a.localeCompare(b)).map((repository) => ({ repository, mode: 'review-only', modes: [
+  return [...[...projects.values()].sort((a, b) => a.localeCompare(b)).map((repository) => {
+    const observations = releaseEvidence.filter((item) => item.repository?.toLowerCase() === repository.toLowerCase() && item.release?.expected?.length);
+    const observed = (observations.find((item) => item.release.authorized) ?? observations[0])?.release;
+    if (enabled && observed) {
+      const on = observed.mode === 'auto-release' && stop === false;
+      return { repository, mode: on ? 'auto-release' : 'review-only', modes: [
+        { key: 'review-only', label: 'Review only', on: !on, text: 'Merging follows the project merge permissions.' },
+        { key: 'auto-release', label: 'Auto Release', on, available: on, missing: on ? [] : missing,
+          text: on ? 'The release supervisor checks the standing grant and exact verified merge before each deployment.'
+            : 'Automatic release is waiting for current destination authority or a release stop to clear.', waitsFor: null }] };
+    }
+    return { repository, mode: 'review-only', modes: [
     { key: 'review-only', label: 'Review only', on: true, text: 'Release is not enabled here. Merging follows the project’s merge permissions.' },
     { key: 'auto-release', label: 'Auto Release', on: false, available: false,
       text: 'Not available. Turning this on needs your separate release approval for this project, which has not been given.',
-      missing, waitsFor }] })), ...local];
+      missing, waitsFor }] };
+  }), ...local];
 }
 // Why Auto Release is unavailable, one condition each (AUTO_RELEASE.md section 3). The grant comes first: without it
 // nothing else matters, and the dashboard reads no grant, so it is always missing here.
@@ -503,7 +515,7 @@ export function computerSettings(campaigns, config, { platform = process.platfor
     accounts,
     modelPreferences: savedModelOrder(config),
     releases: releaseModes([...repositories, ...campaigns.map((c) => c.repository)], { waitsFor: issueLink(config?.autoReleaseDecision), connected,
-      enabled: config?.release?.enabled === true, stop: releaseStop.set }),
+      enabled: config?.release?.enabled === true, stop: releaseStop.set, releaseEvidence: campaigns }),
     // Stop all releases (AUTO_RELEASE.md 4.5): whether RELEASE-STOP is set; `set` null when it cannot be read.
     releaseStop,
     // Where supervisor faults are tracked: config.json "supervisorIssue" (a GitHub issue link) when set, so a disposable
@@ -601,6 +613,8 @@ function issueLink(value) {
 // is passed through only when it is exactly one of them (other next actions can quote stored worker text).
 const FINISHED_ACTION = /^(?:Planning reports published in [\w.-]+\/[\w.-]+; review recommendations before assigning implementation|Release gate: review campaign deliveries under [\w.-]+\/[\w.-]+'s own merge and release policy)\.$/;
 function publicNextAction(c, status, tasks, operations) {
+  if (c.control === 'finished' && status.release.expected?.length) return status.release.complete
+    ? 'Verified work is deployed and passed the project health check.' : 'The release supervisor is continuing or reconciling deployment; see Releases for its recorded outcome.';
   if (c.control === 'finished') return FINISHED_ACTION.test(c.next_action ?? '') ? c.next_action : 'All registered deliverables published; repository acceptance and release remain separate gates';
   if (c.control === 'cancelled') return 'Campaign cancelled';
   if (c.control === 'paused') return 'Paused; existing workers may finish';
@@ -1118,6 +1132,8 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
         budget: status.budget,
         nextAction: publicNextAction(c, status, taskRows, operations), lastProgressAt: status.lastProgressAt,
         controllerState: status.readiness,
+        release: { mode: status.release.mode, enabled: status.release.enabled, complete: status.release.complete ?? false,
+          expected: status.release.expected ?? [], authorized: status.release.authorized ?? false },
         waitingReason: status.phase === 'provider-wait' ? 'provider-availability' : null,
         // Budget and executor-selection text is deterministic; other blockers can contain native/worker errors.
         blockerClass: code(c.blocker?.class),
