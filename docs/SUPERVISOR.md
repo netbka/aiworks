@@ -1028,11 +1028,12 @@ What the controller does on each pass (slice CLN1). Code: `src/supervisor/cleanu
 
 **In short.** An external system on this computer — a change-request tracker that assembles campaign declarations
 itself, for example — can register a campaign and read its status over HTTP instead of running `cli.mjs` as a local
-process: `POST /api/campaigns` and `GET /api/campaigns/:id/status` on the dashboard's own HTTP server
-([OPERATIONS_DASHBOARD.md](OPERATIONS_DASHBOARD.md), `http://127.0.0.1:4318`). It is additive: the CLI and the owner's
+process: `POST /api/campaigns`, `GET /api/campaigns/:id/status` and `GET /api/campaigns/:id/report` on the
+dashboard's own HTTP server ([OPERATIONS_DASHBOARD.md](OPERATIONS_DASHBOARD.md), `http://127.0.0.1:4318`), or on a
+listener of their own in the same process (`campaignApi.port`, below) for a tunnel. It is additive: the CLI and the owner's
 browser dashboard work exactly as before, and this surface widens nothing either can already do. Code:
-`src/supervisor/remote-campaigns.mjs`, wired into `src/dashboard/server.mjs`. Critical-behaviour tests:
-`tests/dashboard/campaign-api.test.mjs`.
+`src/supervisor/remote-campaigns.mjs`, wired into `src/dashboard/server.mjs` and `src/dashboard/main.mjs`.
+Critical-behaviour tests: `tests/dashboard/campaign-api.test.mjs`, `tests/supervisor/report-local.test.mjs`.
 
 **Why the dashboard's own server, and why a status poll rather than an outgoing webhook.** The dashboard already is the
 one process that listens on a local port and reads the store; adding two routes to it needs no new service, no new
@@ -1054,9 +1055,9 @@ apply to it; this is the separately reviewed authentication design AW-003 antici
 browser session. This PR is that review.
 
 - **The switch.** `config.json` `"campaignApi": { "enabled": true, "tokenRef": "<name>", "credentialStore"?: { "kind":
-  "windows" } | { "kind": "command", "command": [...] } }`. Absent, malformed, `enabled` not exactly `true`, or an
-  invalid `tokenRef` (the same short reference shape as a release credential, `release/credential.mjs`
-  `validCredentialRef`) all leave it off: both routes then answer `404 Not Found`, exactly as "Add project" answers 404
+  "windows" } | { "kind": "command", "command": [...] }, "port"?: <number> }`. Absent, malformed, `enabled` not exactly
+  `true`, or an invalid `tokenRef` (the same short reference shape as a release credential, `release/credential.mjs`
+  `validCredentialRef`) all leave it off: every route then answers `404 Not Found`, exactly as "Add project" answers 404
   while it is off. Without `credentialStore` the Windows Credential Manager is used, exactly as the release
   credential's own default.
 - **The token is a reference, never a value.** `config.json` holds the `tokenRef`, never the token (AGENTS.md:
@@ -1085,9 +1086,29 @@ browser session. This PR is that review.
 - **`GET /api/campaigns/:id/status`** answers exactly the reading `cli.mjs status <id>` prints (`api.mjs`
   `campaignStatus`): phase, readiness, tasks, budget, CI and release status, never worker output or a local path. An
   unregistered id answers `404` with `code: "CAMPAIGN_NOT_FOUND"`.
+- **`GET /api/campaigns/:id/report`** answers the campaign's report tasks (`remote-campaigns.mjs` `campaignReports`):
+  per task its id, state, verified revision, report text and the report's sha256. The text is present only once
+  independent verification accepted that exact revision and report digest, passed every required acceptance criterion
+  and left no blocking finding (state `verified` or `done`); before that, and again
+  whenever the task is sent back for another round, `report` is `null`. An implementer's unverified output, verifier
+  evidence, worker logs and local paths are never part of the answer. `404 CAMPAIGN_NOT_FOUND` as for status.
+- **Reports kept local.** A declaration may set `"reportPublication": "local"` (`campaign.mjs`; part of the immutable
+  scope, so it cannot be dropped by an amendment without a new scope). The controller then posts none of the campaign's
+  verified reports to the task issue: the task's own stored result is the only copy, read through the report route,
+  and the task's `prUrl` reads `aiworks-report:<campaignId>/<taskId>`. The short "passed independent verification"
+  note on the tracking issue still names the task, never the report text. Use it when a report quotes material that
+  must not reach GitHub, such as a change request's own text. Critical test: `tests/supervisor/report-local.test.mjs`.
+- **Its own listener for a tunnel.** `config.json` `campaignApi.port` (1024..65535, read when the dashboard starts)
+  starts a second listener in the dashboard process, on `127.0.0.1:<port>`, that serves the three campaign routes and
+  nothing else: no page, no `/api/session`, no `/api/state`, no command route. It applies no Host or Origin check (a
+  tunnel forwards its own host name) and no CSRF secret; the bearer token is its only authentication. While `port` is
+  set, the dashboard's own port answers the campaign routes with `404`, so a tunnel pointed at the API port reaches
+  only them, and the dashboard stays reachable from this computer only (AW-003). An invalid `port` turns the whole
+  API off, never on; a `port` equal to the dashboard's own starts no second listener. Changing it needs a dashboard
+  restart.
 - **Never a replacement for the CLI or the dashboard.** Pause, cancel, recheck, instructions and every owner-facing
   control stay on the existing CLI commands and the browser dashboard, unchanged. This surface only starts a campaign
-  and reads its status, exactly as `start` and `status` already do locally.
+  and reads its status and verified reports.
 
 **Managing the token (`campaign-token`, `src/supervisor/campaign-token.mjs`).** Turning this surface on for any
 AIWorks-registered project is one general CLI action, not a one-off done by hand for a single external project:
