@@ -6,6 +6,8 @@ $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -17,6 +19,8 @@ public static class SupervisorProcess {
   [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern IntPtr OpenJobObject(uint access, bool inherit, string name);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool SetInformationJobObject(IntPtr job, int type, ref Limits limits, uint size);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool QueryInformationJobObject(IntPtr job, int type, out Accounting info, uint size, IntPtr returned);
+  [DllImport("kernel32.dll", EntryPoint="QueryInformationJobObject", SetLastError=true)] static extern bool QueryJobIds(IntPtr job, int type, IntPtr info, uint size, IntPtr returned);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool member);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool TerminateJobObject(IntPtr job, uint code);
   [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
@@ -47,15 +51,76 @@ public static class SupervisorProcess {
     if (job == IntPtr.Zero && Marshal.GetLastWin32Error() != 2) throw new Win32Exception(Marshal.GetLastWin32Error());
     return job;
   }
-  static void Empty(IntPtr job) {
-    Check(TerminateJobObject(job, 1));
-    for (int i = 0; i < 1000; i++) {
-      Accounting info;
-      Check(QueryInformationJobObject(job, 1, out info, (uint)Marshal.SizeOf(typeof(Accounting)), IntPtr.Zero));
-      if (info.active == 0) return;
-      Thread.Sleep(10);
+  // Retain process objects before requesting termination. Job accounting can
+  // reach zero before those objects are signaled. PID lookup alone is never
+  // ownership: confirm membership and retain the handle plus creation identity.
+  static void Members(IntPtr job, Dictionary<string, IntPtr> owned) {
+    int capacity = 64;
+    for (;;) {
+      int size = checked(8 + capacity * IntPtr.Size);
+      IntPtr list = Marshal.AllocHGlobal(size);
+      try {
+        bool ok = QueryJobIds(job, 3, list, (uint)size, IntPtr.Zero);
+        int error = Marshal.GetLastWin32Error();
+        if (!ok && error != 234) throw new Win32Exception(error);
+        int assigned = Marshal.ReadInt32(list), count = Marshal.ReadInt32(list, 4);
+        if (!ok || assigned > count) {
+          if (capacity >= 65536) throw new InvalidOperationException("Job membership could not be read completely");
+          capacity = Math.Min(65536, Math.Max(capacity * 2, assigned));
+          continue;
+        }
+        if (count < 0 || count > capacity) throw new InvalidOperationException("Invalid job membership");
+        for (int i = 0; i < count; i++) {
+          long value = Marshal.ReadIntPtr(list, 8 + i * IntPtr.Size).ToInt64();
+          if (value <= 0 || value > Int32.MaxValue) throw new InvalidOperationException("Invalid job process id");
+          IntPtr process = OpenProcess(QUERY | TERMINATE | SYNCHRONIZE, false, (int)value);
+          if (process == IntPtr.Zero) {
+            if (Marshal.GetLastWin32Error() == 87) continue; // the process object is already gone
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+          }
+          try {
+            bool member;
+            Check(IsProcessInJob(process, job, out member));
+            if (!member) continue; // a reused PID is never treated as owned
+            string identity = value.ToString() + ":" + Created(process).ToString();
+            if (!owned.ContainsKey(identity)) { owned.Add(identity, process); process = IntPtr.Zero; }
+          } finally { if (process != IntPtr.Zero) CloseHandle(process); }
+        }
+        return;
+      } finally { Marshal.FreeHGlobal(list); }
     }
-    throw new TimeoutException("Job did not stop");
+  }
+  static void Empty(IntPtr job) {
+    Dictionary<string, IntPtr> owned = new Dictionary<string, IntPtr>();
+    Stopwatch deadline = Stopwatch.StartNew();
+    bool proven = false;
+    try {
+      while (deadline.ElapsedMilliseconds < 10000) {
+        // Terminate only through retained, membership-checked handles. A child
+        // born during discovery stays discoverable on the next pass; killing
+        // the entire job first would hide it before its handle could be kept.
+        Members(job, owned);
+        bool exited = true;
+        foreach (IntPtr process in owned.Values) {
+          uint waited = WaitForSingleObject(process, 0);
+          if (waited == 258) {
+            exited = false;
+            if (!TerminateProcess(process, 1) && Marshal.GetLastWin32Error() != 5) Check(false);
+            // ACCESS_DENIED can mean termination already began; only the
+            // subsequent signaled handle proves that it actually finished.
+          }
+          else if (waited != 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        Accounting info;
+        Check(QueryInformationJobObject(job, 1, out info, (uint)Marshal.SizeOf(typeof(Accounting)), IntPtr.Zero));
+        if (info.active == 0 && exited) { Check(TerminateJobObject(job, 1)); proven = true; return; }
+        Thread.Sleep(10);
+      }
+      throw new TimeoutException("Job processes did not finish termination");
+    } finally {
+      if (!proven) TerminateJobObject(job, 1); // containment fallback, never a completion claim
+      foreach (IntPtr process in owned.Values) CloseHandle(process);
+    }
   }
   public static string Drain(string name) {
     IntPtr job = Job(name);
