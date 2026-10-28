@@ -1,10 +1,13 @@
 // npm run rebuild (src/supervisor/rebuild.mjs) against a synthetic installation: a real store, with Git, deploy.ps1 and
 // the scheduled tasks replaced by recorded stand-ins. Nothing here starts a process or touches a live installation.
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { POWERSHELL } from '../../src/supervisor/proc.mjs';
 import { campaignCancel, campaignPause, campaignStart } from '../../src/supervisor/api.mjs';
 import { canonicalJson } from '../../src/supervisor/campaign.mjs';
 import { installationPaths, pauseReason, rebuild } from '../../src/supervisor/rebuild.mjs';
@@ -15,6 +18,69 @@ const skip = SQLITE ? false : 'node:sqlite requires Node >= 22.5';
 const TARGET = 'a'.repeat(40);
 const OLD = 'b'.repeat(40);
 const ok = (stdout = '') => ({ exitCode: 0, stdout, stderr: '' });
+
+test('rebuild runs a separate configured source only at its clean trusted revision, including recovery',
+  { skip: skip || (process.platform !== 'win32' && 'Windows maintenance command') }, () => {
+    const root = mkdtempSync(join(tmpdir(), 'aw-launch-'));
+    const source = join(root, 'reviewed source');
+    const paths = installationPaths(root);
+    const marker = join(root, 'executed');
+    const hidden = fileURLToPath(new URL('../../scripts/supervisor/hidden-exec.ps1', import.meta.url));
+    const launcher = fileURLToPath(new URL('../../scripts/supervisor/rebuild.mjs', import.meta.url));
+    const run = (file, args, cwd = source) => {
+      const request = Buffer.from(JSON.stringify({ file, args, cwd, timeoutMs: 30_000 })).toString('base64');
+      const out = spawnSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', hidden, '-Request', request],
+        { encoding: 'utf8', windowsHide: true, timeout: 60_000 });
+      assert.equal(out.status, 0, out.stderr);
+      return JSON.parse(out.stdout);
+    };
+    const git = (...args) => { const out = run('git', args); assert.equal(out.exitCode, 0, out.stderr); return out.stdout.trim(); };
+    try {
+      mkdirSync(join(source, 'scripts/supervisor'), { recursive: true });
+      mkdirSync(dirname(paths.cli), { recursive: true });
+      mkdirSync(paths.data, { recursive: true });
+      writeFileSync(paths.config, JSON.stringify({ selfHosting: { repository: 'example/aiworks', trustedMain: 'local' },
+        repositories: { 'example/aiworks': { path: source } } }));
+      writeFileSync(join(source, 'scripts/supervisor/rebuild.mjs'),
+        `import {writeFileSync} from 'node:fs'; writeFileSync(${JSON.stringify(marker)}, 'ran');`);
+      git('init', '-q'); git('add', '.');
+      git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fixture');
+      const head = git('rev-parse', 'HEAD');
+      writeFileSync(paths.cli, `console.log('${'f'.repeat(40)}');`);
+      assert.equal(run(process.execPath, [launcher, '--root', root]).exitCode, 1);
+      assert.equal(existsSync(marker), false, 'an untrusted checkout must not execute');
+      writeFileSync(paths.cli, `console.log('${head}');`);
+      writeFileSync(join(source, 'unreviewed.txt'), 'dirty');
+      assert.equal(run(process.execPath, [launcher, '--root', root]).exitCode, 1);
+      assert.equal(existsSync(marker), false, 'a dirty checkout must not execute');
+      rmSync(join(source, 'unreviewed.txt'));
+      const accepted = run(process.execPath, [launcher, '--root', root]);
+      assert.equal(accepted.exitCode, 0, accepted.stderr);
+      assert.equal(existsSync(marker), true);
+      rmSync(marker);
+      mkdirSync(paths.dir, { recursive: true });
+      writeFileSync(paths.state, JSON.stringify({ phase: 'draining', target: head }));
+      writeFileSync(join(source, 'next.txt'), 'later reviewed work');
+      git('add', '.'); git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'next');
+      const next = git('rev-parse', 'HEAD');
+      git('-C', paths.runtime, 'init', '-q');
+      git('-C', paths.runtime, 'fetch', '-q', source, 'HEAD');
+      git('checkout', '-q', '--detach', head);
+      writeFileSync(paths.cli, `console.log('${next}');`);
+      const draining = run(process.execPath, [launcher, '--root', root]);
+      assert.equal(draining.exitCode, 0, draining.stderr);
+      assert.equal(existsSync(marker), true, 'recovery keeps its trusted ancestor when main advances');
+      rmSync(marker);
+      writeFileSync(paths.cli, `console.log('${'f'.repeat(40)}');`);
+      assert.equal(run(process.execPath, [launcher, '--root', root]).exitCode, 1);
+      assert.equal(existsSync(marker), false, 'recovery must not run a source outside current trust');
+      writeFileSync(paths.state, JSON.stringify({ phase: 'stopped', target: head }));
+      writeFileSync(paths.cli, 'throw new Error("runtime unavailable during recovery");');
+      const recovery = run(process.execPath, [launcher, '--root', root]);
+      assert.equal(recovery.exitCode, 0, recovery.stderr);
+      assert.equal(existsSync(marker), true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
 
 function installation() {
   const root = mkdtempSync(join(tmpdir(), 'aiworks-rebuild-'));
@@ -146,12 +212,31 @@ test('earlier pauses, cancellations and STOP stay, and the resumed campaign keep
 
 test('after a failed install the same command continues without repeating a step and resumes only what it paused and nobody changed', { skip }, async () => {
   const inst = installation();
+  const originalGet = Store.prototype.get;
   try {
     for (const id of ['alpha', 'beta']) register(inst.store, id);
     openRun(inst.store, 'done-run', 'alpha', 'T1');
     finishRun(inst.store, 'done-run');
     let installs = 0;
-    const svc = services(inst, { onDeploy: (step) => (step === 'Install' && ++installs === 1 ? { exitCode: 1, stdout: '', stderr: 'npm ci failed' } : undefined) });
+    let competingOwner = false, checkedConcurrentWriter = false;
+    inst.store.db.exec('PRAGMA busy_timeout=0');
+    const svc = services(inst, { onDeploy: (step) => {
+      if (step === 'Start') competingOwner = true;
+      if (step === 'Install' && ++installs === 1) return { exitCode: 1, stdout: '', stderr: 'npm ci failed' };
+    } });
+    Store.prototype.get = function (sql, ...args) {
+      const row = originalGet.call(this, sql, ...args);
+      if (competingOwner && sql.includes("kind = 'paused'") && args[0] === 'alpha') {
+        competingOwner = false;
+        // A separate dashboard connection tries to replace the pause after the resume guard reads it.
+        assert.throws(() => inst.store.tx(() => {
+          campaignStart(inst.store, inst.store.campaign('alpha').declaration);
+          campaignPause(inst.store, 'alpha', 'new owner pause');
+        }), /locked|busy/i);
+        checkedConcurrentWriter = true;
+      }
+      return row;
+    };
     await assert.rejects(rebuild(inst.options, svc), (error) => error.code === 'INSTALL_FAILED');
     assert.equal(inst.store.campaign('alpha').control, 'paused');
     assert.equal(inst.store.campaign('beta').control, 'paused');
@@ -172,7 +257,8 @@ test('after a failed install the same command continues without repeating a step
     assert.equal(lastPause(inst.store, 'alpha'), pauseReason(summary.id));
     assert.equal(inst.store.get('SELECT COUNT(*) AS n FROM operations').n, 1);
     assert.ok(!existsSync(inst.paths.state));
-  } finally { inst.close(); }
+    assert.equal(checkedConcurrentWriter, true);
+  } finally { Store.prototype.get = originalGet; inst.close(); }
 });
 
 test('a dirty checkout, a revision that is not the trusted main or another maintenance session is refused before anything is paused or stopped', { skip }, async () => {

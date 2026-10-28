@@ -525,12 +525,28 @@ html{scrollbar-gutter:stable;scroll-padding-top:88px}
 .event-list>li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px;padding:8px 0;border-top:1px solid var(--line)}
 .event-list>li>.subtext{grid-column:1;overflow-wrap:anywhere}
 .event-list>li>time{grid-row:1;grid-column:2}
-.overview-strip{display:flex;flex-wrap:wrap;gap:8px 24px;margin:8px 0}
-.overview-strip>div{min-width:0}
+/* owner-ui-v2 03-overview: Built, Checked and Available to users read as three bands, not a label/value row, so the
+   owner can scan where the result stands without reading every word. */
+.overview-strip{display:flex;flex-wrap:wrap;gap:16px 24px;margin:12px 0}
+/* Available to users (3rd band) stays a plain muted border, never green: its value is often "Not published yet" or
+   "Not known", and the border colour must not look like a live/confirmed claim the app has no evidence for. */
+.overview-strip>div{min-width:160px;flex:1 1 160px;border-top:3px solid var(--muted);padding-top:10px;display:flex;flex-direction:column;gap:3px}
+.overview-strip>div:nth-child(1){border-top-color:var(--blue)}
+.overview-strip>div:nth-child(2){border-top-color:var(--warning)}
 .overview-strip dt{font-size:12px;color:var(--muted)}
-.overview-strip dd{margin:0;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.overview-strip dd{margin:0;font-size:17px;font-weight:700;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+/* owner-ui-v2 03-overview: the goal is the headline on this panel, not a small label. */
+.now-goal{font-size:21px;font-weight:700;color:var(--ink);line-height:1.3;margin:0 0 4px}
 .pause-controls{margin-top:12px}
 .home-projects .task-name{font-weight:600}
+.home-projects .row-line{display:flex;align-items:center;justify-content:space-between;gap:12px}
+/* owner-ui-v2 02-home: the headline leads Home, with Pause/Resume beside it rather than in a panel below the fold. */
+.home-hero{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:22px}
+.home-hero h2{margin:0;font-size:26px;line-height:1.25}
+.home-hero .subtext{font-size:15px;margin-top:6px}
+.home-hero .pause-controls{margin-top:0}
+/* The one decision Home answers directly, set apart from the ordinary Needs you card list (owner-ui-v2 02-home). */
+.home-decision .needs-item{background:var(--warning-soft);border-color:var(--warning)}
 /* The local work list (UI20): user text keeps its lines and wraps at 320px; checkboxes and controls stay 44px tall. */
 .work-text{white-space:pre-wrap;overflow-wrap:anywhere}.work-comments{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:12px}
 .work-comment{border-top:1px solid var(--line);padding-top:10px}.worklist-row .needs-text a{overflow-wrap:anywhere}

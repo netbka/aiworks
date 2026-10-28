@@ -481,12 +481,14 @@ Relocation is an operator maintenance action, not worker cleanup: pause admissio
 
 ### Rebuild: the upgrade as one command
 
-Run it from an operator checkout of AIWorks at exactly the trusted commit, with its dependencies installed. `--root` names the installation root when it is not this checkout:
+Run it from an operator checkout of AIWorks at exactly the trusted commit, with its dependencies installed. When local main is trusted and the installation config names a separate AIWorks source checkout, the command checks that checkout is clean and at the trusted version, then runs its rebuild command. `--root` names the installation root when it is not this checkout:
 
 ```powershell
 git checkout --detach <trusted commit>      # the commit npm run rebuild names when the checkout is elsewhere
 npm run rebuild -- --root C:/example/aiworks
 ```
+
+The command and its helpers are tracked under `scripts/supervisor/`; no private `.local/rebuild.ps1` is needed on another PC. Pull the updated source and install its dependencies there. Each PC keeps its own `.local` installation and settings; do not copy another machine's private files. This command updates an existing installation; it does not perform first-time setup.
 
 `--wait <minutes>` (default 240) bounds the wait for open runs; `--port` names the dashboard port when it is not 4318. The command never asks a question: it refuses, changes nothing and says why, or it runs to the end.
 
