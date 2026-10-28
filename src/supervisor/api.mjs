@@ -175,9 +175,11 @@ function executorWaitsView(store, c) {
 }
 
 /** Status `release`: the report-only eligibility, plus `stopped` and `narrowed` only once the owner has used them. */
-function releaseView(store, project, tasks, releaseStop) {
+function releaseView(store, project, tasks, releaseStop, campaignId, config) {
   const narrowed = releaseNarrowings(store, project);
-  return { ...releaseStatus({ project, tasks }), ...(releaseStop === true ? { stopped: 'RELEASE-STOP is set: every release is stopped' } : {}),
+  const specs = specsOf(store, campaignId, store.campaign(campaignId).declaration);
+  return { ...releaseStatus({ project, tasks, store, campaignId, commitTasks: tasks.filter((task) => specs.get(task.task_id)?.deliverable === 'commit'),
+    enabled: config?.release?.enabled === true }), ...(releaseStop === true ? { stopped: 'RELEASE-STOP is set: every release is stopped' } : {}),
     ...(narrowed.length ? { narrowed } : {}) };
 }
 
@@ -192,10 +194,12 @@ export function campaignStatus(store, id, now = Date.now(), { releaseStop = fals
   if (!c) throw new CampaignError('CAMPAIGN_NOT_FOUND', `campaign ${id} is not registered in the selected store; check the installed task --data argument`);
   const lease = store.lease(id);
   const live = Boolean(lease && lease.expires_at > now);
-  const readiness = c.control === 'finished' ? 'COMPLETE' : c.control === 'cancelled' ? 'CANCELLED'
+  let readiness = c.control === 'finished' ? 'COMPLETE' : c.control === 'cancelled' ? 'CANCELLED'
     : c.control === 'paused' ? 'PAUSED' : c.control === 'cancel-requested' ? 'CANCELLING'
       : live ? 'ACTIVE' : lease ? 'CONTROLLER_OFFLINE' : 'BOOTSTRAP_REQUIRED';
   const tasks = store.tasks(id);
+  const projectRelease = releaseView(store, c.declaration.target.projectId, tasks, releaseStop, id, config);
+  if (c.control === 'finished' && projectRelease.expected?.length && !projectRelease.complete) readiness = 'RELEASE_PENDING';
   const operations = store.openOperations(id);
   const lastEvent = store.get('SELECT seq, kind, at FROM journal WHERE campaign_id = ? ORDER BY seq DESC LIMIT 1', id);
   const progress = store.get("SELECT MAX(at) AS at FROM journal WHERE campaign_id = ? AND kind != 'lease-acquired'", id);
@@ -260,7 +264,7 @@ export function campaignStatus(store, id, now = Date.now(), { releaseStop = fals
     ci: ci.summary,
     // Auto Release is built switched off (AUTO_RELEASE.md slice R2): report only, per done task. It never acts. The
     // owner's stops (slice R4) show only once used: RELEASE-STOP when the caller saw the file, and narrowed destinations.
-    release: releaseView(store, c.declaration.target.projectId, tasks, releaseStop),
+    release: projectRelease,
     tasks: tasks.map((t) => ({
       id: t.task_id, state: t.state, attempts: t.attempts, repairRounds: t.repair_rounds,
       headSha: t.head_sha, verifiedSha: t.verified_sha, prUrl: t.pr_url,

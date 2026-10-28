@@ -44,7 +44,8 @@ const isoDay = (time) => new Date(time).toISOString().slice(0, 10);
 const COMMANDS = {
   observe: `const live = json('live.json');
 if ((faults.observeUnreadable ?? []).includes(live.revision)) process.exit(2);
-console.log('revision: ' + live.revision); console.log('digest: ' + live.digest);`,
+console.log('revision: ' + live.revision); console.log('digest: ' + live.digest);
+if (existsSync(at('artifacts/' + live.digest.slice(7) + '.json'))) console.log('rollback-ready: ' + live.digest);`,
   deploy: `const revision = process.argv[2];
 const digest = 'sha256:' + createHash('sha256').update(revision).digest('hex');
 mkdirSync(at('artifacts'), { recursive: true });

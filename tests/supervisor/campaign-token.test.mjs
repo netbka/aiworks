@@ -86,17 +86,21 @@ test('create refuses to overwrite an existing token; rotate refuses when none ex
   const vault = vaultHelper(t);
   const dataDir = mkdtempSync(join(tmpdir(), 'aiworks-campaign-token-data-'));
   t.after(() => rmSync(dataDir, { recursive: true, force: true }));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ campaignApi: { port: 4399 } }));
   const spec = { governanceRoot: GOVERNANCE, dataDir, credentialStoreSpec: { kind: 'command', command: vault.command } };
 
   assert.throws(() => issueCampaignToken('sample-wiki', { ...spec, rotate: true }), (error) => error.code === 'TOKEN_NOT_FOUND');
 
   const first = issueCampaignToken('sample-wiki', spec);
+  assert.equal(first.config.port, 4399, 'creating a token keeps the dedicated listener');
   const firstValue = vault.read(first.ref);
 
   assert.throws(() => issueCampaignToken('sample-wiki', spec), (error) => error.code === 'TOKEN_ALREADY_EXISTS');
   assert.equal(vault.read(first.ref), firstValue, 'a refused create never touches the existing value');
 
   const rotated = issueCampaignToken('sample-wiki', { ...spec, rotate: true });
+  assert.equal(rotated.config.port, 4399, 'rotating a token never redirects its API onto the dashboard');
+  assert.equal(JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')).campaignApi.port, 4399);
   assert.equal(rotated.rotated, true);
   assert.equal(rotated.ref, first.ref);
   const secondValue = vault.read(first.ref);

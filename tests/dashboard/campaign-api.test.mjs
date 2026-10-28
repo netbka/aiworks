@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import http from 'node:http';
-import { createDashboardServer } from '../../src/dashboard/server.mjs';
+import { createCampaignApiServer, createDashboardServer } from '../../src/dashboard/server.mjs';
 import { Store } from '../../src/supervisor/store.mjs';
 import { campaignApiAuthorized, campaignApiSettings } from '../../src/supervisor/remote-campaigns.mjs';
 import { declaration, GOVERNANCE, runtimeCheckout } from '../supervisor/helpers.mjs';
@@ -60,14 +60,14 @@ function fixture(t, { campaignApi } = {}) {
   return dataDir;
 }
 
-async function serve(t, dataDir, { provenanceRoot } = {}) {
-  const server = createDashboardServer({ dataDir, provenanceRoot,
+async function serve(t, dataDir, { provenanceRoot, apiOnly = false } = {}) {
+  const server = apiOnly ? createCampaignApiServer({ dataDir, provenanceRoot }) : createDashboardServer({ dataDir, provenanceRoot,
     roadmap: { snapshot: () => ({ entries: [], governance: { configured: false, reason: 'Synthetic test.' } }) } });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(() => server.close());
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const { csrf } = await (await fetch(`${origin}/api/session`, { headers: { origin } })).json();
+  const { csrf } = apiOnly ? {} : await (await fetch(`${origin}/api/session`, { headers: { origin } })).json();
   return {
     csrf,
     post: (path, body, headers = {}) => fetch(`${origin}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', origin, ...headers }, body: JSON.stringify(body) }),
@@ -88,9 +88,11 @@ test('while off, the campaign routes meet the dashboard own gates exactly as bef
   const d = declaration({ campaignId: `off-${randomUUID()}` });
   assert.equal((await post('/api/campaigns', d, auth)).status, 403, 'without the session CSRF token, as any dashboard POST');
   assert.equal((await get(`/api/campaigns/${d.campaignId}/status`, auth)).status, 404);
+  assert.equal((await get(`/api/campaigns/${d.campaignId}/report`, auth)).status, 404);
   const tunnel = { Host: 'aiworks.example-tunnel.test', Authorization: `Bearer ${token.value}` };
   assert.equal((await rawRequest(origin, '/api/campaigns', { method: 'POST', headers: { ...tunnel, 'Content-Type': 'application/json' }, body: JSON.stringify(d) })).status, 403);
   assert.equal((await rawRequest(origin, `/api/campaigns/${d.campaignId}/status`, { headers: tunnel })).status, 403);
+  assert.equal((await rawRequest(origin, `/api/campaigns/${d.campaignId}/report`, { headers: tunnel })).status, 403);
   const store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true });
   try { assert.equal(store.campaign(d.campaignId), null); } finally { store.close(); }
 });
@@ -173,6 +175,36 @@ test('rejects an oversized, non-JSON or malformed body before touching the store
   assert.equal((await postRaw('/api/campaigns', big, { ...auth, 'content-type': 'application/json' })).status, 413);
 });
 
+test('with its own port configured, the campaign API listener serves only the campaign routes and the dashboard port none of them', async (t) => {
+  const token = tokenHelper(t);
+  const dataDir = fixture(t, { campaignApi: { enabled: true, tokenRef: token.ref, credentialStore: { kind: 'command', command: token.command }, port: 4399 } });
+  const runtime = runtimeCheckout();
+  t.after(() => runtime.cleanup());
+  const dashboard = await serve(t, dataDir, { provenanceRoot: runtime.root });
+  const api = createCampaignApiServer({ dataDir, provenanceRoot: runtime.root });
+  api.listen(0, '127.0.0.1');
+  await once(api, 'listening');
+  t.after(() => api.close());
+  const base = `http://127.0.0.1:${api.address().port}`;
+  const auth = { authorization: `Bearer ${token.value}` };
+  const d = declaration({ campaignId: `port-${randomUUID()}` });
+
+  // The dashboard's port no longer answers the campaign routes, even with a valid token.
+  assert.equal((await dashboard.post('/api/campaigns', d, auth)).status, 404);
+  assert.equal((await dashboard.get(`/api/campaigns/${d.campaignId}/status`, auth)).status, 404);
+
+  // The API listener: the bearer token is still required, and nothing but the campaign routes is served.
+  const json = { 'content-type': 'application/json' };
+  assert.equal((await fetch(`${base}/api/campaigns`, { method: 'POST', headers: json, body: JSON.stringify(d) })).status, 401);
+  assert.equal((await fetch(`${base}/api/campaigns`, { method: 'POST', headers: { ...auth, ...json }, body: JSON.stringify(d) })).status, 201);
+  assert.equal((await fetch(`${base}/api/campaigns/${d.campaignId}/status`, { headers: auth })).status, 200);
+  assert.equal((await fetch(`${base}/api/campaigns/${d.campaignId}/report`, { headers: auth })).status, 200);
+  for (const path of ['/', '/api/session', '/api/state', '/api/accounts', '/dashboard.js']) {
+    assert.equal((await fetch(`${base}${path}`, { headers: auth })).status, 404, path);
+  }
+  assert.equal((await fetch(`${base}/api/commands`, { method: 'POST', headers: { ...auth, ...json }, body: '{}' })).status, 404);
+});
+
 test('an external caller reaching the dashboard under a different Host (a configured tunnel) is not refused by the dashboard\'s own loopback Host/Origin gate, only by its bearer token; the same mismatched Host still refuses every other route', async (t) => {
   const token = tokenHelper(t);
   const dataDir = fixture(t, { campaignApi: { enabled: true, tokenRef: token.ref, credentialStore: { kind: 'command', command: token.command } } });
@@ -205,18 +237,20 @@ test('an external caller reaching the dashboard under a different Host (a config
 });
 
 test('a token under the standard reference of a project reaches only the campaigns of that project', async (t) => {
+  for (const apiOnly of [false, true]) await t.test(apiOnly ? 'dedicated API listener' : 'dashboard listener', async (t) => {
   const unscoped = tokenHelper(t);
   const scoped = tokenHelper(t, { ref: 'aiworks-campaign-api:sample-wiki' });
-  const dataDir = fixture(t, { campaignApi: { enabled: true, tokenRef: unscoped.ref, credentialStore: { kind: 'command', command: unscoped.command } } });
+  const listener = apiOnly ? { port: 4399 } : {};
+  const dataDir = fixture(t, { campaignApi: { enabled: true, tokenRef: unscoped.ref, credentialStore: { kind: 'command', command: unscoped.command }, ...listener } });
   const runtime = runtimeCheckout();
   t.after(() => runtime.cleanup());
-  const { post, get } = await serve(t, dataDir, { provenanceRoot: runtime.root });
+  const { post, get } = await serve(t, dataDir, { provenanceRoot: runtime.root, apiOnly });
   const other = declaration({ campaignId: `other-${randomUUID()}` }); // example-org/sampleapp
   assert.equal((await post('/api/campaigns', other, { authorization: `Bearer ${unscoped.value}` })).status, 201);
 
   // config.json is read on every request: the API now names the sample-wiki token.
   writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ governanceRoot: GOVERNANCE,
-    campaignApi: { enabled: true, tokenRef: scoped.ref, credentialStore: { kind: 'command', command: scoped.command } } }));
+    campaignApi: { enabled: true, tokenRef: scoped.ref, credentialStore: { kind: 'command', command: scoped.command }, ...listener } }));
   const auth = { authorization: `Bearer ${scoped.value}` };
   assert.equal((await post('/api/campaigns', other, { authorization: `Bearer ${unscoped.value}` })).status, 401, 'the replaced token no longer works');
   const foreign = declaration({ campaignId: `foreign-${randomUUID()}` });
@@ -225,8 +259,21 @@ test('a token under the standard reference of a project reaches only the campaig
   assert.equal((await refused.json()).code, 'TOKEN_OUT_OF_SCOPE');
   assert.equal((await post('/api/campaigns', other, auth)).status, 403, 'nor may it amend a stored campaign of another project');
   assert.equal((await get(`/api/campaigns/${other.campaignId}/status`, auth)).status, 404, 'a campaign of another project reads as absent');
+  assert.equal((await get(`/api/campaigns/${other.campaignId}/report`, auth)).status, 404, 'another project cannot expose its reports');
+  const base = declaration({ campaignId: `own-${randomUUID()}` });
+  const own = { ...base, target: { ...base.target, repository: 'example-org/sample-wiki', projectId: 'sample-wiki' } };
+  assert.equal((await post('/api/campaigns', own, auth)).status, 201);
+  assert.equal((await post('/api/campaigns', own, auth)).status, 200, 'the same scoped declaration is an idempotent resend');
+  assert.equal((await get(`/api/campaigns/${own.campaignId}/status`, auth)).status, 200);
+  assert.equal((await get(`/api/campaigns/${own.campaignId}/report`, auth)).status, 200);
+  assert.equal((await post('/api/campaigns', { ...own, campaignId: other.campaignId }, auth)).status, 403,
+    'an allowed incoming repository never disguises another project already stored under that id');
   const store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true });
-  try { assert.equal(store.campaign(foreign.campaignId), null); } finally { store.close(); }
+  try {
+    assert.equal(store.campaign(foreign.campaignId), null);
+    assert.deepEqual(store.campaign(other.campaignId).declaration, other, 'the refused amendment preserves existing authority');
+  } finally { store.close(); }
+  });
 });
 
 test('the bearer token is accepted only in the Authorization header, never as the session secret or a query parameter', async (t) => {

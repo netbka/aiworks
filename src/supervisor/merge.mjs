@@ -24,6 +24,7 @@ import { refreshSettings, refreshStep } from './merge-refresh.mjs';
 import { batchStep } from './merge-batch.mjs';
 import { ConflictError, FencedError } from './store.mjs';
 import { awaitingAcceptance, pendingChanges } from './result-review.mjs';
+import { authorityChange } from './release/authority-path.mjs';
 
 const SHA = /^[0-9a-f]{40}$/;
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
@@ -147,7 +148,8 @@ export async function mergePass(controller) {
       const branch = decl.target.baseBranch;
       bases.set(branch, controller.fetchBase(repoPath, branch).sha);
       try {
-        if (SHA.test(bases.get(branch) ?? '') && batchStep(controller, items.filter((item) => item.decl.target.baseBranch === branch), settings, repoPath, bases.get(branch))) continue;
+        if (SHA.test(bases.get(branch) ?? '') && batchStep(controller, items.filter((item) => item.decl.target.baseBranch === branch &&
+          !authorityBlocked(controller, item, repoPath, bases.get(branch))), settings, repoPath, bases.get(branch))) continue;
       } catch (error) {
         if (error instanceof FencedError || error instanceof ConflictError) { controller.log(`group merge for ${decl.target.repository} retried later: ${error.message}`); continue; }
         controller.log(`group merge for ${decl.target.repository} failed, merging one at a time: ${error.stack || error}`);
@@ -282,6 +284,7 @@ export function mergeBlocker(controller, { campaignId, task }, pr) {
  * merge call, a recorded merge or an integration repair), so the pass moves on to the next repository.
  */
 function mergeOne(controller, item, settings, repoPath, baseSha) {
+  if (authorityBlocked(controller, item, repoPath, baseSha)) return false;
   const git = controller.cmd.git, sha = item.task.verified_sha;
   const { pr, acted } = inspect(controller, item, settings, repoPath, baseSha);
   if (!pr) return acted;
@@ -299,6 +302,19 @@ function mergeOne(controller, item, settings, repoPath, baseSha) {
   const blocker = mergeBlocker(controller, item, pr);
   if (blocker) return wait(controller, item, blocker);
   return mergeNow(controller, item, baseSha);
+}
+
+function authorityBlocked(controller, item, repoPath, baseSha) {
+  let problem;
+  try {
+    // The common base excludes legitimate owner authority changes integrated
+    // from main, while retaining edits introduced by the worker's branch.
+    const common = gitA.exec(controller.cmd.git, ['merge-base', baseSha, item.task.verified_sha], { cwd: repoPath });
+    problem = common.ok ? authorityChange(controller, item.decl, repoPath, common.stdout, item.task.verified_sha)
+      : 'The release authority boundary could not be checked';
+  } catch { problem = 'The registered release authority boundary could not be read'; }
+  if (problem) wait(controller, item, problem);
+  return Boolean(problem);
 }
 
 /**
@@ -404,6 +420,7 @@ function mergeLocal(controller, item, settings, repoPath) {
   if (head !== sha) return wait(controller, item, `the local branch ${branch} is at ${head ?? 'no commit'}, not the verified ${sha}`);
   const tip = trustedTip(store, { git, repoPath, repository });
   if (tip.state !== 'TRUSTED') return wait(controller, item, `local main is not trusted (${tip.state}): ${tip.reason}`);
+  if (authorityBlocked(controller, item, repoPath, tip.tip)) return false;
   const stillDone = (t) => t.state === 'done' && !t.blocked && t.verified_sha === sha && t.pr_url === url;
   const still = () => ['registered', 'finished'].includes(store.campaign(campaignId).control) && stillDone(store.task(campaignId, task.task_id))
     && !pendingChanges(store, campaignId, task.task_id, sha);
