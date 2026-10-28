@@ -27,17 +27,31 @@ const KEEP = [...RELEASE_ENV_KEEP.map((key) => key.toLowerCase()), ...(process.p
 const PROBES = ['AIWORKS_SUPERVISOR_PROBE', 'CLAUDE_CODE_ENTRYPOINT', 'FAKE_GH_STATE'];
 
 test('a successful release command leaves no detached descendant and a pre-launch crash is safely retryable', { skip: process.platform !== 'win32' }, async (t) => {
-  const r = rig(t), late = join(r.work, 'late-write');
+  const r = rig(t), pulse = join(r.work, 'child-pulse'), childPid = join(r.work, 'child-pid');
+  const childScript = join(r.tools, 'pulse.mjs');
+  writeFileSync(childScript, `import {appendFileSync,writeFileSync} from 'node:fs';
+writeFileSync(${JSON.stringify(childPid)}, String(process.pid));
+const pulse = () => { try { appendFileSync(${JSON.stringify(pulse)}, '.'); } catch { process.exit(0); } };
+pulse(); setInterval(pulse, 20); setTimeout(() => process.exit(0), 30000).unref();`);
   const command = join(r.tools, 'spawn.mjs');
   writeFileSync(command, `import {spawn} from 'node:child_process';
-spawn(process.execPath,['-e',${JSON.stringify("setTimeout(()=>require('node:fs').writeFileSync(" + JSON.stringify(late) + ",'escaped'),1500)")}],{detached:true,stdio:'ignore',windowsHide:true}).unref();`);
+import {existsSync} from 'node:fs';
+spawn(process.execPath,[${JSON.stringify(childScript)}],{detached:true,stdio:'ignore',windowsHide:true}).unref();
+const deadline = Date.now() + 10000;
+while (!existsSync(${JSON.stringify(pulse)})) {
+  if (Date.now() >= deadline) throw new Error('synthetic child did not start');
+  await new Promise(resolve => setTimeout(resolve, 20));
+}`);
   const release = { id: 'test-release', history: [] };
   const result = await runReleaseCommand({ config: r.config, dataDir: r.dataDir, stepKey: release.id + '.deploy.1',
     command: [process.execPath, command], cwd: r.work, release });
   assert.equal(result.exitCode, 0);
+  const pid = Number(readFileSync(childPid, 'utf8'));
+  assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, 'the running descendant ended before success returned');
+  const atReturn = readFileSync(pulse, 'utf8');
   assert.equal(releaseCommandsStopped({ dataDir: r.dataDir, release }), true);
-  await new Promise((done) => setTimeout(done, 1800));
-  assert.equal(existsSync(late), false, 'success proves the whole owned process tree ended');
+  await new Promise((done) => setTimeout(done, 200));
+  assert.equal(readFileSync(pulse, 'utf8'), atReturn, 'no descendant writes after the command reports success');
   const preparing = join(r.dataDir, 'releases', release.id + '.deploy.2'); mkdirSync(preparing);
   writeFileSync(join(preparing, 'packet.json'), JSON.stringify({ stepKey: release.id + '.deploy.2', releaseId: release.id }));
   assert.equal(releaseCommandsStopped({ dataDir: r.dataDir, release }), true, 'no launch intent means nothing was started');
