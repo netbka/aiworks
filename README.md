@@ -181,7 +181,6 @@ Everything ends up in GitHub, next to the rest of your project:
 
 - **Approve an outcome once**, and let AIWorks split it into steps and add steps as it learns.
 - **Phone notifications** you can act on: Telegram alerts are built (above); answering from the phone needs remote access, which is not designed yet.
-- **Automatic release per project**, behind independent checks and a first trial run.
 - **Automatic model choice by cost and quality** for every plan, once a measured comparison supports it.
 - **An AI-assisted setup guide** for newcomers: a first version is in [docs/guides](docs/guides/AI_ASSISTED_START.md).
 - **Instant reaction to GitHub events**, instead of checking every minute.
@@ -322,7 +321,7 @@ This opens the dashboard at `http://127.0.0.1:4319` with three example projects 
 
 | Path | What it holds |
 | --- | --- |
-| `src/supervisor/` | The supervisor: CLI, controller, SQLite store, runner, Windows process containment, coordinator, owner-intervention core, browser wrapper, release groundwork |
+| `src/supervisor/` | The supervisor: CLI, controller, SQLite store, runner, Windows process containment, coordinator, owner-intervention core, browser wrapper, project release continuation |
 | `src/supervisor/adapters/` | Executors for the worker CLIs, plus the Git and GitHub adapters |
 | `src/dashboard/` | The dashboard: server, owner view and page |
 | `src/shared/` | Shared helpers |
