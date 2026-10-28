@@ -9,6 +9,7 @@ import { GATE_FILES } from '../gate.mjs';
 import { assertActionsDisabled } from './github.mjs';
 import { DEVELOPMENT_ENV } from '../development-policy.mjs';
 import { githubRemote } from '../project-preflight.mjs';
+import { environmentExamplePath, safeEnvironmentExample } from '../environment-example.mjs';
 
 const SHA = /^[0-9a-f]{40}$/;
 
@@ -109,6 +110,20 @@ export function checkImplementation({ git, path, baseSha, headSha }) {
 export function changedPaths({ git, path, from, to }) {
   const out = exec(git, ['diff', '--name-only', '-z', '--no-renames', `${from}...${to}`], { cwd: path });
   return out.ok ? out.stdout.split('\0').filter(Boolean) : null;
+}
+
+/** Inspect only small regular source-template blobs at the exact reported commit. */
+export function safeEnvironmentExamples({ git, path, sha, paths }) {
+  if (!SHA.test(sha ?? '')) return [];
+  return paths.filter(environmentExamplePath).filter((file) => {
+    const entry = exec(git, ['ls-tree', sha, '--', file], { cwd: path });
+    if (!entry.ok || !/^100644 blob [0-9a-f]{40}\t/.test(entry.stdout)) return false;
+    const blob = entry.stdout.split(/\s+/)[2];
+    const size = exec(git, ['cat-file', '-s', blob], { cwd: path });
+    if (!size.ok || !/^\d+$/.test(size.stdout) || Number(size.stdout) > 65536) return false;
+    const source = exec(git, ['cat-file', 'blob', blob], { cwd: path });
+    return source.ok && safeEnvironmentExample(file, source.stdout);
+  });
 }
 
 export function currentHead({ git, path }) {
