@@ -884,14 +884,17 @@ A task that declares `web` is a web acceptance task: a browser worker opens the 
   profile signs in automatically, for implementation and independent verification alike, without another approval
   or a DEV/PROD permission gate. A task that names neither origin gets neither credential.
   The browser wrapper resolves references only after the configured login page loads, signs in before starting
-  the MCP server, verifies the success selector, and closes its login tab. Authentication requests and form values
+  the MCP server, verifies the success selector, closes every login-created tab, and removes login service workers
+  before restoring the task's browser scope. Authentication requests and form values
   therefore do not enter the worker's browser-tool history. The fresh run-local browser profile retains its session;
   no cookies or credentials are exported to worker prompts, run JSON, reports or shared browser profiles. The
   authenticated application may still expose session state to its own JavaScript: this is not a claim that arbitrary
   browser scripts cannot read it. Login traffic stays on that exact origin, over HTTPS (HTTP is allowed only on
   loopback for local fixtures). A missing reference, unexpected redirect or unsuccessful login refuses browser
   handoff with a fixed diagnostic that never repeats helper or page error text. The ordinary browser isolation and
-  task URL scope remain in force. Code: `browser-login.mjs`, wired through both browser executors and
+  task URL scope remain in force. The pinned browser server is version 1.12.0, which applies URL restrictions to
+  service workers as well. It receives an explicit empty per-run configuration so global or ancestor settings cannot
+  widen its scope. Code: `browser-login.mjs`, wired through both browser executors and
   `browser-mcp.mjs`; synthetic Chrome regression: `tests/supervisor/browser-login.test.mjs`.
 - **Audit.** AGY has built-in tools no rule can deny (web search, messages, subagents, its own browser), so the audit runs before any other classification and fails closed:
   - a result is accepted only from a stream with exactly one `init` event in `request-review` mode;

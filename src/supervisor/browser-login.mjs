@@ -90,7 +90,23 @@ export async function loginBrowser(browser, settings, { store = null, timeoutMs 
         const opened = (await browser.pages()).filter((item) => !existingPages.has(item));
         await Promise.all(opened.map((item) => item.close()));
         if ((await browser.pages()).some((item) => !existingPages.has(item))) throw new Error();
-      } catch { throw new Error('Browser pre-login could not close its login pages'); }
+        // A login's background worker must not retain a credential when MCP restores the broader task scope.
+        // Clear only service-worker registrations in this fresh profile; keep the authenticated cookies/storage.
+        const controlPage = [...existingPages][0] ?? await browser.newPage();
+        const control = await controlPage.createCDPSession();
+        try {
+          await control.send('Storage.clearDataForOrigin', { origin: profile.origin, storageTypes: 'service_workers' });
+          await control.send('ServiceWorker.enable');
+          await control.send('ServiceWorker.stopAllWorkers');
+          const deadline = Date.now() + 10_000;
+          const workerOpen = () => browser.targets().some((target) => ['service_worker', 'shared_worker', 'worker'].includes(target.type()));
+          while (workerOpen() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+          if (workerOpen()) throw new Error();
+        } finally {
+          await control.detach();
+          if (!existingPages.has(controlPage)) await controlPage.close();
+        }
+      } catch { throw new Error('Browser pre-login could not clear its private pages and workers'); }
     }
   }
 }
