@@ -52,6 +52,18 @@ export function unresolvedOf(criteria, verification) {
 }
 
 /**
+ * Whether a step's result passed the independent check: an accepted verification of exactly its verified head and
+ * report, every acceptance criterion reported as passed and no blocking finding. A verified head alone is not a pass:
+ * a criterion not checked or failed leaves the result unchecked or partly checked, and it is never shown or counted as passed.
+ */
+export function passedCheck(task, acceptance) {
+  const v = verifiedReview(task);
+  if (!v) return false;
+  const unresolved = unresolvedOf(criterionEvidence(acceptance, v), v);
+  return !unresolved.failed && !unresolved.notChecked && !unresolved.blocking;
+}
+
+/**
  * One campaign's review records, each read from the store once, on first use: its merges and the owner's pending change
  * requests and acceptances. A view of many steps asks it per step instead of reading the campaign's records again for
  * each one; the single-step helpers below answer from it, so both always give the same answer. `merged()` is the
