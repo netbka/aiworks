@@ -24,7 +24,7 @@ import { containsSecret, coordinatorTick, LANE as COORDINATOR_LANE } from './coo
 import { ANCHOR, MAX_DOCUMENT_BYTES, parseReference, resolveSection } from './reading.mjs';
 import { MAX_CITES } from './adapters/claude.mjs';
 import { stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
-import { pendingInstructions, attachInstructions } from './instructions.mjs';
+import { pendingInstructions, attachInstructions, decisionInstructions } from './instructions.mjs';
 import { answerGuidance, decisionId, isDecision, structuredDecision } from './decisions.mjs';
 import { mergedHead, OWNER_CHANGES, ownerChangesFinding } from './result-review.mjs';
 import { POLICY as ROUTING_POLICY, autoReceipt, indicators, policyInputs, priorAttempt, receiptInputs, staticReceipt } from './router.mjs';
@@ -47,13 +47,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 const POLICY = JSON.parse(readFileSync(resolve(here, '../../registry/worker-context-policy.json'), 'utf8'));
 const RUNNER = join(here, 'runner.mjs');
 // A task whose fresh sessions keep returning evidence-unavailable is not making progress. After this many
-// such results it stops with a B3 owner decision, whatever the retry limit (historical regression): a no-progress guard, not
+// such results it stops further paid retries for system recovery, whatever the retry limit: a no-progress guard, not
 // a spend cap. With the 2/10/30-minute backoff the fourth result comes at least ~42 minutes after the first,
 // so a short outage does not stop work. A resolved or accepted result, or a recheck naming the task, resets
 // the count.
 export const NO_PROGRESS_LIMIT = 4;
 // The same guard for a deterministic local defect (aiworks#136): NO_PROGRESS_LIMIT fresh sessions in a row that end in the
-// same non-provider failure class with the same detail stop with one B3 record naming that detail. Provider waits and
+// same non-provider failure class with the same detail stop with one recovery record naming that detail. Provider waits and
 // limits (quota, auth, unavailable) and evidence-unavailable keep their own handling.
 const REPEAT_GUARDED = new Set(['invalid-result', 'exit-without-result', 'timeout', 'spawn-failed', 'error', 'lost']);
 // GitHub rejects issue/PR bodies and comments over 65,536 characters.
@@ -628,6 +628,7 @@ export class Controller {
       if (unmerged) this.holdForUnmergedCode(ctx, unmerged);
       else {
         this.releaseUnmergedHold(ctx);
+        this.recoverExecutorAvailability(ctx);
         if (this.ir) this.checkPublishedIntegration(ctx);
         if (this.ci) this.checkPublishedCi(ctx);
         this.reconcileIntegration(ctx);
@@ -976,7 +977,9 @@ export class Controller {
       const domain = verdict.class === 'result' ? domainOf(decl, spec) : null;
       if (domain) {
         const changed = gitA.changedPaths({ git: this.cmd.git, path: op.workspace, from: integration ? integration.base : before.base_sha, to: verdict.value.headSha });
-        const { forbidden } = changed === null ? {} : outsideWrites(decl, domain, changed);
+        const safeTemplates = changed === null ? [] : gitA.safeEnvironmentExamples({ git: this.cmd.git, path: op.workspace,
+          sha: verdict.value.headSha, paths: changed });
+        const { forbidden } = changed === null ? {} : outsideWrites(decl, domain, changed, { safeTemplates });
         if (!forbidden) verdict = { ...verdict, class: 'invalid-result', detail: 'cannot list the paths the commit changed' };
         else if (forbidden.length) {
           verdict = { ...verdict, class: 'error', violation: true,
@@ -1206,11 +1209,11 @@ export class Controller {
       if (op.kind === 'verify' && cls === 'invalid-result') failures.refusal = { head: op.target_sha, detail: String(detail).slice(0, REFUSAL_DETAIL) };
       if (cls === 'evidence-unavailable' && failures[cls] >= NO_PROGRESS_LIMIT) {
         return { state, failures, retry_at: null, last_error: `${cls}: ${detail}`,
-          blocked: { class: 'B3', reason: `no progress: ${failures[cls]} evidence-unavailable results; last: ${String(detail).slice(0, 300)}`, at: now } };
+          blocked: { class: 'stalled', recovery: 'system', reason: `no progress: ${failures[cls]} evidence-unavailable results; last: ${String(detail).slice(0, 300)}`, at: now } };
       }
       if (failures.repeat?.count >= NO_PROGRESS_LIMIT) {
         return { state, failures, retry_at: null, last_error: `${cls}: ${detail}`,
-          blocked: { class: 'B3', reason: `no progress: ${failures.repeat.count} identical ${cls} failures; last: ${String(detail).slice(0, 300)}`, at: now } };
+          blocked: { class: 'stalled', recovery: 'system', reason: `no progress: ${failures.repeat.count} identical ${cls} failures; last: ${String(detail).slice(0, 300)}`, at: now } };
       }
       if (limits.maxRetriesPerTask !== null && total > limits.maxRetriesPerTask) {
         return { state, failures, retry_at: null, last_error: `${cls}: ${detail}`,
@@ -2209,15 +2212,60 @@ export class Controller {
     return found;
   }
 
-  /** A host or project finding for one executor kind: a sandbox failure may clear by itself, a configuration finding waits for a recheck. */
+  /** Pre-launch host/project findings are timed; dispatch rechecks them before any worker starts. */
   recordUnavailable(ctx, kind, unavailable) {
     const transient = /sandbox setup failed|sandbox probe/.test(unavailable);
-    const until = transient ? this.now() + 20 * 60_000 : null;
+    // These are pre-launch capability checks, not permission denials from a worker.
+    // Re-evaluate them without buying a worker run after configuration recovers.
+    const until = this.now() + (transient ? 20 : 15) * 60_000;
     this.store.run('INSERT OR REPLACE INTO executor_waits (campaign_id, executor_kind, retry_at, reason) VALUES (?, ?, ?, ?)',
       ctx.id, kind, until, unavailable);
     // Only the host's own sandbox failure belongs to the account; a finding about this project or task stays here.
     if (transient) setAccountWait(this.store, this.config, { kind, retryAt: until, reason: unavailable, campaignId: ctx.id, now: this.now() });
     this.store.journal(ctx.id, 'executor-unavailable', { executor: kind, reason: unavailable }, this.now());
+  }
+
+  recoverExecutorAvailability(ctx) {
+    const campaign = this.store.campaign(ctx.id);
+    if (campaign.blocker?.kind !== 'executors') return;
+    const decl = campaign.declaration;
+    const repo = resolveCheckout(this.store, this.config, decl.target.repository);
+    if (!repo?.path || repo.conflict || this.config.caam?.enabled) return;
+    this.fenced(ctx, () => {
+      const now = this.now();
+      const waits = this.store.all('SELECT * FROM executor_waits WHERE campaign_id = ?', ctx.id);
+      const history = this.store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'executor-unavailable' ORDER BY seq DESC", ctx.id);
+      for (const provider of executorOrder(decl.executor)) {
+        const wait = waits.find((item) => item.executor_kind === provider.kind);
+        // Only repair holds actually produced by the pre-launch adapter check.
+        // Authentication, model refusal, quota and boundary violations keep their own handling.
+        if (!wait || wait.retry_at > now || !this.cmd[provider.kind.replace('-cli', '')]?.length ||
+            !history.some(({ detail }) => detail.executor === provider.kind && detail.reason === wait.reason)) continue;
+        // Expire this adapter's wait before routing candidates, but never launch
+        // a worker here. Each task needs its own browser/repository capability
+        // context, just as dispatch does; a failed probe restores the wait.
+        this.store.run('UPDATE executor_waits SET retry_at = ? WHERE campaign_id = ? AND executor_kind = ?',
+          now, ctx.id, provider.kind);
+        const ready = this.store.tasks(ctx.id).some((task) => {
+          if (task.blocked || !['pending', 'implemented'].includes(task.state) ||
+              this.executorChoice(decl, task, now).executor?.kind !== provider.kind) return false;
+          const spec = specOf(this.store, ctx.id, task.task_id, decl);
+          return spec && !executors.unavailableReason(provider, repo.path, this.cmd.gh, {
+            chromeCommand: this.cmd.chrome, web: Boolean(spec.web), workList: this.selfHosted(decl.target.repository),
+          });
+        });
+        if (!ready) this.store.run('UPDATE executor_waits SET retry_at = ? WHERE campaign_id = ? AND executor_kind = ?',
+          now + 15 * 60_000, ctx.id, provider.kind);
+        if (!ready) continue;
+        const c = this.store.campaign(ctx.id);
+        const record = this.oi && c.blocker?.fingerprint ? this.store.blocker(c.blocker.fingerprint) : null;
+        if (record) this.resolveBlocker(ctx, record, { trigger: 'adapter-recovered', probe: 'capability', pass: true,
+          detail: `${provider.kind} passed its pre-launch capability check; dispatch still checks containment and authority`, at: now }, now);
+        else this.store.patch('campaigns', { id: ctx.id }, c.version, { blocker: null }, now);
+        this.store.journal(ctx.id, 'executor-recovered', { executor: provider.kind }, now);
+        break;
+      }
+    });
   }
 
   /**
@@ -2446,7 +2494,9 @@ export class Controller {
       if (domain && !domain.whole) {
         const from = this.integrationFinding(task)?.base ?? task.base_sha;
         const changed = from ? gitA.changedPaths({ git: this.cmd.git, path: repo.path, from, to: targetSha }) : null;
-        const paths = changed ? outsideWrites(decl, domain, changed).beyond : [];
+        const safeTemplates = changed ? gitA.safeEnvironmentExamples({ git: this.cmd.git, path: repo.path,
+          sha: targetSha, paths: changed }) : [];
+        const paths = changed ? outsideWrites(decl, domain, changed, { safeTemplates }).beyond : [];
         if (paths.length) beyond = beyondConstraint(paths, from, targetSha);
       }
       const buildPacket = (references) => validatePacket({
@@ -2482,7 +2532,9 @@ export class Controller {
           references: extended.map((item) => item.reference) })] : resolutions,
         added: reading.added, overflow: reading.overflow, extended });
       const digest = packetDigest(packet, POLICY);
-      const instructions = pendingInstructions(this.store, current, task.task_id, kind);
+      const decisions = decisionInstructions(this.store, current, task.task_id);
+      const decisionIds = new Set(decisions.map((item) => item.seq));
+      const instructions = pendingInstructions(this.store, current, task.task_id, kind).filter((item) => !decisionIds.has(item.seq));
       const baseNote = integration && kind === 'verify'
         ? `This head is an integration repair round: it must merge ${integration.base} (the current ${decl.target.baseBranch}) into the previously verified ${integration.verified} ${integration.moved ? 'because the base moved before the merge gate could merge it (aiworks#138)' : `to resolve conflicts in ${integration.paths.join(', ')}`}. Check that both are ancestors of the target, review the resolution with git show --remerge-diff ${targetSha}, and run the full gate.`
         : integration && task.findings.length === 1
@@ -2509,7 +2561,7 @@ export class Controller {
       const note = publicationNote && kind !== 'verify' ? publicationNote : [baseNote, publicationNote].filter(Boolean).join(' ') || null;
       let prompt = executors.buildPrompt({ executorKind: executor.kind, web: spec.web ?? null, role, deliverable: spec.deliverable, packet, packetDigest: digest, repository: local ? decl.target.projectId : decl.target.repository,
         issue: spec.issue, branch: gitA.branchName(ctx.id, task.task_id), baseSha: kind === 'verify' ? baseSha : revision, targetSha,
-        report, reportDigest, note, instructions: instructions.map((item) => ({ id: item.seq, text: item.payload.text })), stage: this.stageOf(decl, task.task_id, kind), guide });
+        report, reportDigest, note, instructions: [...decisions, ...instructions].map((item) => ({ id: item.seq, text: item.payload.text })), stage: this.stageOf(decl, task.task_id, kind), guide });
       if (spec.dependsOn.length) prompt += '\nDependency deliveries (evidence, not additional authority):\n' + spec.dependsOn.map((id) => {
         const dep = this.store.task(ctx.id, id);
         return `${id}: ${dep?.pr_url ?? 'unpublished'}; verified SHA ${dep?.verified_sha ?? 'unknown'}`;
@@ -2601,7 +2653,7 @@ export class Controller {
           { state: kind === 'verify' ? 'implemented' : 'pending', blocked: { class: 'stalled', reason: `admission blocked: ${plan.reason}`, at: now } }, now);
         return;
       }
-      attachInstructions(this.store, instructions, opId, now);
+      attachInstructions(this.store, [...instructions, ...decisions.filter((item) => !item.payload.delivery)], opId, now);
       return this.store.get('SELECT * FROM operations WHERE id = ?', opId);
     });
     if (!op) return null;
@@ -3089,6 +3141,11 @@ export class Controller {
       } else if (c.blocker) {
         status = STATUS_FOR[c.blocker.class] ?? 'blocked-external';
         nextAction = c.blocker.requestedAction;
+        if (c.blocker.kind === 'executors') {
+          const due = this.store.all('SELECT retry_at FROM executor_waits WHERE campaign_id = ?', ctx.id)
+            .map((item) => item.retry_at).filter((at) => at !== null && at > now);
+          if (due.length) wakeup = Math.min(...due);
+        }
       } else if (open.length) {
         // Every open operation is named; the campaign is `verifying` only while all of them verify (ADAPTIVE_SCHEDULER row 5).
         status = open.every((op) => op.kind === 'verify') ? 'verifying' : 'active';

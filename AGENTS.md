@@ -24,7 +24,7 @@ Ask only for owner-reserved decisions, destructive actions that lack authorizati
 
 ## Review and runtime maintenance
 
-Changes to `src/supervisor` need independent approval of the exact head commit before merge. A green test run alone is insufficient. Preparing a branch does not upgrade the running system.
+Changes to `src/supervisor` need independent approval of the exact head commit before merge. Agents may delegate that review to a separate agent and resolve its findings as part of authorized work without asking the owner again. The reviewer must approve the final exact head after any revisions. A green test run alone is insufficient. Preparing a branch does not upgrade the running system.
 
 For an upgrade or relocation, record unfinished campaign status, pause admissions, drain open operations, stop the services and verify they exited. Preserve registered declarations, task outcomes, authority and scope digests, budgets, retry timers and historical evidence. Deploy the exact reviewed revision of the trusted main: `git rev-parse origin/main`, or `node src/supervisor/cli.mjs trusted-main` when AIWorks trusts local main (AW-005), then resume existing campaigns with their identical private declarations. Compare status afterward. Coordinate with any other session maintaining the runtime.
 

@@ -8,6 +8,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../../src/supervisor/store.mjs';
 import { mainLedger, recordAnchor, recordMainCommit, selfHostingSettings, trustedTip, trustsLocalMain } from '../../src/supervisor/self-hosting.mjs';
+import { registerRemoteCampaign } from '../../src/supervisor/remote-campaigns.mjs';
+import { declaration, GOVERNANCE } from './helpers.mjs';
 
 const REPOSITORY = 'example-org/aiworks';
 
@@ -29,6 +31,22 @@ function rig(t) {
   t.after(() => { for (const store of stores) try { store.close(); } catch { /* closed */ } rmSync(dir, { recursive: true, force: true }); });
   return { repoPath, git, commit, open, store: open(), at: { repoPath, repository: REPOSITORY } };
 }
+
+test('external registration honors reviewed local main and still refuses a later untrusted runtime', (t) => {
+  const r = rig(t);
+  const base = r.commit(); r.git('update-ref', 'refs/remotes/origin/main', base);
+  assert.equal(recordAnchor(r.store, { ...r.at, sha: base, now: 1 }).recorded, true);
+  const reviewed = r.commit();
+  assert.equal(recordMainCommit(r.store, { repository: REPOSITORY, kind: 'gate-merge', oldTip: base,
+    newTip: reviewed, campaignId: 'synthetic-review', taskId: 'T1', verifiedSha: reviewed, now: 2 }).recorded, true);
+  const options = { provenanceRoot: r.repoPath, governanceRoot: GOVERNANCE,
+    config: { selfHosting: { repository: REPOSITORY, trustedMain: 'local' } }, now: 3 };
+  assert.equal(registerRemoteCampaign(r.store, declaration(), options).created, true);
+  r.commit();
+  assert.throws(() => registerRemoteCampaign(r.store, declaration({ campaignId: 'untrusted' }), options),
+    (error) => error.code === 'RUNTIME_NOT_MERGED');
+  assert.equal(r.store.campaign('untrusted'), null);
+});
 
 test('a malformed selfHosting block is off and logged; an absent one is off without a word', () => {
   const logged = [];
