@@ -171,7 +171,8 @@ export function goalStrip(campaign, releases = []) {
   const unknown = recorded.filter((release) => !['accepted', 'refused', 'rolled-back'].includes(release.state)).length;
   return { steps: tasks.length,
     built: tasks.filter((task) => SHA.test(task.headSha ?? '') || ['verifying', 'verified', 'done'].includes(task.state)).length,
-    checked: tasks.filter((task) => SHA.test(task.verifiedSha ?? '')).length,
+    // Counted only when the check passed every criterion of the verified head (supervisor.mjs checkPassed).
+    checked: tasks.filter((task) => SHA.test(task.verifiedSha ?? '') && task.checkPassed === true).length,
     // Release is switched off today, so nothing is recorded: "not published", never "Live" or "No" for the users' side.
     available: recorded.length ? { state: unknown ? 'unknown' : 'recorded', live, unknown } : { state: 'not-published', reason: 'release-off', live: null, unknown: 0 } };
 }
