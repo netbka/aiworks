@@ -38,7 +38,15 @@ test('pre-login keeps credentials on the selected origin and closes its private 
     const { puppeteer } = await import(pathToFileURL(createRequire(import.meta.url)
       .resolve('chrome-devtools-mcp/build/src/third_party/index.js')).href);
     const dir = mkdtempSync(join(tmpdir(), 'aiworks-browser-login-'));
-    let browser, child, handedOver;
+    let browser, child, childExited, handedOver;
+    const waitForChild = async (ms) => {
+      let timer;
+      try {
+        return await Promise.race([childExited.then(() => true), new Promise(resolve => {
+          timer = setTimeout(() => resolve(false), ms);
+        })]);
+      } finally { clearTimeout(timer); }
+    };
     t.after(async () => {
       await browser?.close();
       const portFile = join(dir, 'chrome-profile', 'DevToolsActivePort');
@@ -47,10 +55,12 @@ test('pre-login keeps credentials on the selected origin and closes its private 
         handedOver = await puppeteer.connect({ browserURL: `http://127.0.0.1:${port}`, protocolTimeout: 5000 }).catch(() => null);
       }
       await handedOver?.close();
-      if (child && child.exitCode === null) {
-        const exited = once(child, 'exit'); child.stdin.end();
-        const stop = setTimeout(() => child.kill(), 3000);
-        try { await exited; } finally { clearTimeout(stop); }
+      if (child && child.exitCode === null && child.signalCode === null) {
+        child.stdin.end();
+        if (!await waitForChild(3000)) {
+          child.kill();
+          assert.ok(await waitForChild(5000), 'browser MCP exits during bounded cleanup');
+        }
       }
       rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
     });
@@ -136,6 +146,7 @@ test('pre-login keeps credentials on the selected origin and closes its private 
     const startup = browserServers({ runDir: dir, web: { urls: [`${origin}/home`], resourceOrigins: [foreignOrigin] },
       chromeCommand: [chrome], browserLogin: { ...settings, credentialStore: { kind: 'command', command: [process.execPath, helper] } } }).mcpServers.browser;
     child = spawn(startup.command, startup.args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    childExited = new Promise(resolve => { child.once('exit', resolve); child.once('error', resolve); });
     child.stderr.resume();
     await new Promise((resolve, reject) => {
       let output = '';
