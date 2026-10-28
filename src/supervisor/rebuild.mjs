@@ -343,15 +343,18 @@ export async function rebuild(options, services) {
 
   // Resume, with its identical registered declaration, each campaign this invocation paused that nobody changed since.
   function resumeOwn(store) {
-    const resumed = [], kept = [];
-    for (const entry of state.paused) {
-      const why = resumeRefusal(store, entry);
-      if (why) { kept.push({ id: entry.id, why }); log(`not resumed: ${entry.id}: ${why}`); continue; }
-      campaignStart(store, store.campaign(entry.id).declaration, now());
-      resumed.push(entry.id);
-      log(`resumed ${entry.id}`);
-    }
-    return { resumed, kept };
+    // Keep an owner action from slipping between the ownership check and the resume.
+    return store.tx(() => {
+      const resumed = [], kept = [];
+      for (const entry of state.paused) {
+        const why = resumeRefusal(store, entry);
+        if (why) { kept.push({ id: entry.id, why }); log(`not resumed: ${entry.id}: ${why}`); continue; }
+        campaignStart(store, store.campaign(entry.id).declaration, now());
+        resumed.push(entry.id);
+        log(`resumed ${entry.id}`);
+      }
+      return { resumed, kept };
+    });
   }
 
   // Give up before anything was replaced: the campaigns this invocation paused run again and the state is filed away.
