@@ -58,6 +58,9 @@ export function openWork(store) {
     open.push(...store.all(`SELECT id, step FROM releases WHERE step IS NOT NULL AND step_outcome IS NULL
       AND state NOT IN ('unknown', 'rollback-failed', 'accepted', 'rolled-back', 'refused')`).map((r) => `release ${r.id} step ${r.step}`));
   }
+  if (hasTable(store, 'release_activity')) {
+    open.push(...store.all('SELECT release_id FROM release_activity').map((r) => `release command custody ${r.release_id}`));
+  }
   return open;
 }
 
