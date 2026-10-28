@@ -182,6 +182,11 @@ Ran src/work.mjs (session ${sessionId})` });
   case 'accept':
     ok({ verdict: 'accepted', targetSha: target, reportDigest, summary: 'all acceptance criteria hold', findings: [], checks: [{ command: 'npm test', result: 'pass' }] });
     break;
+  case 'accept-report-criterion':
+    ok({ verdict: 'accepted', targetSha: target, reportDigest, summary: 'the requested finding is reported', findings: [],
+      checks: [{ command: 'read report', result: 'pass' }],
+      criteria: [{ criterion: 1, result: 'pass', check: 'Read the report', evidence: 'The requested finding is present.' }] });
+    break;
   case 'reject':
     ok({ verdict: 'rejected', targetSha: target, reportDigest, summary: 'criterion 1 fails', findings: [{ id: 'F1', severity: 'blocking', description: 'missing evidence for criterion 1' }], checks: [] });
     break;

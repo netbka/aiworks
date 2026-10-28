@@ -15,6 +15,7 @@
 import { createHash } from 'node:crypto';
 import { CampaignError } from './api.mjs';
 import { specsOf } from './plan.mjs';
+import { passedCheck } from './result-review.mjs';
 import { CODE_ROOT, revisionNotMerged, runtimeTrust } from './provenance.mjs';
 import { assertRegisteredTarget } from './campaign.mjs';
 import { approvalRequired, approvedStart } from './approvals.mjs';
@@ -44,7 +45,7 @@ export function campaignApiSettings(config) {
 
 /**
  * The verified reports of a campaign's report tasks, for `GET /api/campaigns/:id/report`. A task's report is returned
- * only once independent verification accepted it (state `verified` or `done` with a verified revision); before that
+ * only once independent verification accepted its exact head and report and passed every acceptance criterion; before that
  * the entry has `report: null`, so an implementer's unverified output never leaves this computer through the API.
  * No local path, worker log or verifier evidence is part of the answer. Throws CAMPAIGN_NOT_FOUND like campaignStatus.
  */
@@ -54,8 +55,9 @@ export function campaignReports(store, id) {
   const specs = specsOf(store, id, campaign.declaration);
   const tasks = [];
   for (const row of store.tasks(id)) {
-    if (specs.get(row.task_id)?.deliverable !== 'report') continue;
-    const verified = ['verified', 'done'].includes(row.state) && /^[0-9a-f]{40}$/.test(row.verified_sha ?? '') && typeof row.result?.report === 'string';
+    const spec = specs.get(row.task_id);
+    if (spec?.deliverable !== 'report') continue;
+    const verified = ['verified', 'done'].includes(row.state) && typeof row.result?.report === 'string' && passedCheck(row, spec.acceptance);
     const report = verified ? row.result.report : null;
     tasks.push({ taskId: row.task_id, state: row.state, verifiedSha: verified ? row.verified_sha : null, report,
       reportSha256: report === null ? null : createHash('sha256').update(report, 'utf8').digest('hex') });
