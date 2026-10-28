@@ -346,7 +346,8 @@ function providerStatus(c) {
 }
 
 // What the worker actually returned. "result" only means a valid response arrived; the verdict inside decides.
-const terminalLabels = { accepted: 'passed the check', rejected: 'rejected', resolved: 'built, waiting for the independent check', 'evidence-unavailable': 'could not gather required evidence', 'blocked-owner-reserved': 'blocked on a decision reserved for you' };
+// A run verdict, not the result's outcome: the result passed only when every criterion did (checkPassed).
+const terminalLabels = { accepted: 'accepted by the checker', rejected: 'rejected', resolved: 'built, waiting for the independent check', 'evidence-unavailable': 'could not gather required evidence', 'blocked-owner-reserved': 'blocked on a decision reserved for you' };
 const outcomeLabels = { unavailable: 'AI worker unavailable (run not counted)', quota: 'usage limit', auth: 'AI worker sign-in', timeout: 'timed out', lost: 'runner lost', 'invalid-result': 'invalid result', 'exit-without-result': 'exited without a result', 'spawn-failed': 'could not start', error: 'failed',
   'reply-withheld': 'reply withheld because it looked like it contained a credential (it was not posted)',
   'boundary-violation': 'the AI worker changed its checkout or the live runtime; nothing it produced was posted' };
@@ -3116,8 +3117,8 @@ function previewSection(review, binding) {
   if (!review.preview.available) return section(el('p', { class: 'subtext' }, `Preview not available: ${review.preview.reason}`));
   const server = review.preview.runtime === 'server';
   const identity = el('p', { class: 'subtext' }, 'The checked version', server
-    ? ', exactly as it passed the check. Opening it starts that version’s own server on this computer, reachable only from here and stopped after 10 minutes or when the preview closes; nothing is built and no install script runs. Its pages run in a sealed frame that cannot reach this dashboard or the internet.'
-    : ', exactly as it passed the check. Its pages run in a sealed frame: they cannot reach this dashboard or the internet, and nothing of the project is built or started on this computer.');
+    ? ', exactly as it was checked. Opening it starts that version’s own server on this computer, reachable only from here and stopped after 10 minutes or when the preview closes; nothing is built and no install script runs. Its pages run in a sealed frame that cannot reach this dashboard or the internet.'
+    : ', exactly as it was checked. Its pages run in a sealed frame: they cannot reach this dashboard or the internet, and nothing of the project is built or started on this computer.');
   // Each control names its preview: the refresh keeps a button that shows exactly the same, with its own action, so two
   // results' identical buttons must never be mistaken for each other.
   const control = (label, action, cls = 'secondary', extra = {}) => el('button', { class: `button ${cls}`, type: 'button', 'data-preview': key, onclick: action, ...extra }, label);
@@ -4373,10 +4374,11 @@ function itemParts(number) {
     el('div', { class: 'panel-body' },
       entry.error || offline ? el('p', { class: 'needs-stale', role: 'status' }, `Shown as read at ${clock(entry.readAt)}. ${offline
         ? 'The page is disconnected; it reads this item again when it reconnects.' : entry.error.message}`) : null,
-      // A local review is checked, never merged or accepted by itself (OWNER_WORKSPACE §2.3).
-      v.kind === 'review' ? el('p', { class: 'notice warning local-review' }, review?.mergedAt
-        ? `Local review: passed the independent check and merged into local main ${clock(review.mergedAt)}. Merged is not accepted.`
-        : `Local review: passed the independent check on this computer. Not merged and not accepted.`) : null,
+      // A local review is checked, never merged or accepted by itself (OWNER_WORKSPACE §2.3). "Passed" only when its step's
+      // check passed every criterion (owner.mjs checkPassed); a review alone never means passed.
+      v.kind === 'review' ? el('p', { class: 'notice warning local-review' }, `Local review: ${task?.checkPassed === true
+        ? 'passed the independent check' : task ? 'checked, not every criterion passed' : 'checked; its criteria are on its step'}${review?.mergedAt
+        ? ` and merged into local main ${clock(review.mergedAt)}. Merged is not accepted.` : ' on this computer. Not merged and not accepted.'}`) : null,
       v.source ? el('p', { class: 'subtext' }, 'Imported from ', link(`GitHub issue #${v.number} ↗`, v.source.url), ` as it was at ${dateTime(v.source.updatedAt)}.`) : null,
       task ? el('p', { class: 'subtext' }, 'Step: ', routeLink(task.outcome ?? task.title ?? task.id, { screen: 'step', project: c.repository, work: c.id, step: task.id }), ` · ${campaignTitle(c)}`) : null,
       el('div', { class: 'work-text' }, v.body || 'No details.'),
