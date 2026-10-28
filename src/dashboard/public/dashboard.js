@@ -1619,7 +1619,7 @@ function needsYou() {
     reply ? el('div', { class: 'needs-reply' }, `AIWorks answered your message (${dateTime(reply.answeredAt)}). `,
       reply.url ? link('Read its “What needs you” ↗', reply.url) : routeLink('Open the chat', { screen: 'chats', chat: reply.threadId ?? reply.messageId })) : null,
     // The local work list (UI20): its open decisions are counted above; the list itself is one link away.
-    worklist()?.available ? el('p', { class: 'needs-reply' }, `AIWorks’s own work list: ${plural(worklist().items.filter((entry) => worklistBucket(entry) === 'outstanding').length, 'unfinished item')}. `,
+    worklist()?.available ? el('p', { class: 'needs-reply' }, `AIWorks’s own work list: ${plural(worklistUnfinished().length, 'unfinished item')}. `,
       routeLink('Open the work list', WORKLIST_ADDRESS)) : null);
 }
 
@@ -2268,10 +2268,11 @@ function openSetPreference(role, order) {
   $('#preference-dialog').showModal();
 }
 
-function accountsSection(accounts = []) {
+// `workers`: the AI workers listed below the logins. "No worker accounts yet" is said only when neither lists anything.
+function accountsSection(accounts = [], workers = 0) {
   return el('div', { class: 'accounts-section' },
     el('div', { class: 'panel-header' }, el('h3', {}, 'Logins and usage'), routeLink('Manage on separate page →', '#/settings/accounts')),
-    accountRows(accounts));
+    accounts.length || !workers ? accountRows(accounts) : null);
 }
 
 /**
@@ -2805,7 +2806,7 @@ function settingsScreen() {
   // Work in projects without GitHub counts too, named by its project and goal.
   const active = [...state.supervisor.campaigns, ...(state.supervisor.local ?? [])].filter((c) => !['finished', 'cancelled'].includes(c.control));
   const workers = panel('AI workers', `Once for ${host.name ?? 'this computer'}, whatever the work.`, el('div', {},
-    accountsSection(settings.accounts ?? []),
+    accountsSection(settings.accounts ?? [], settings.workers.length),
     el('ul', { class: 'settings-links' }, ...settings.workers.map((w) => {
       const { text, notes } = workerLine(w);
       return el('li', { 'data-focus-scope': `worker/${w.kind}` }, el('strong', {}, text), ...notes.map((note) => el('div', { class: 'subtext' }, note)));
@@ -4231,16 +4232,20 @@ function usageScreen() {
   if (!v) return [usageEntry.error ? empty('Not known right now', ` ${usageEntry.error.message}`) : empty('Reading usage…', '')];
   if (!v.available) return [unavailable()];
   const w = v.workers, c = v.coordinator;
-  const dollars = (amount, runs) => amount === null ? 'No run reported a dollar cost.' : `${usd(amount)} reported by ${plural(runs, 'run')}.`;
-  const unknown = (runs) => runs ? el('p', {}, `${plural(runs, 'run')} reported no cost: unknown, not $0.`) : null;
+  // Each total names its runs, and every subset says which of them it counts, so the numbers add up on the page.
+  const dollars = (amount, runs, all) => !all ? 'No finished runs yet.' : amount === null ? `${plural(all, 'finished run')}. None reported a dollar cost.`
+    : `${plural(all, 'finished run')}. ${usd(amount)} reported by ${runs} of them.`;
+  const unknown = (runs, amount) => runs && amount !== null ? el('p', {}, `${runs} of them reported no cost: unknown, not $0.`) : null;
+  const tokenRuns = w.tokens.reduce((sum, t) => sum + t.runs, 0), workerRuns = w.usdRuns + w.unknownRuns;
   const stale = usageEntry.error || offline ? el('p', { class: 'needs-stale', role: 'status' }, `Shown as read at ${clock(usageEntry.readAt)}.`) : null;
   return [
     panel('AI worker runs', 'Every finished step’s runs, in all work on this computer. Running steps are counted when they finish.', el('div', { class: 'panel-body' }, stale,
-      el('p', {}, dollars(w.usd, w.usdRuns)), unknown(w.unknownRuns),
+      el('p', {}, dollars(w.usd, w.usdRuns, workerRuns)), unknown(w.unknownRuns, w.usd),
+      w.tokens.length ? el('p', {}, `Tokens by AI worker, from the ${tokenRuns} of them that reported tokens${workerRuns > tokenRuns ? `; ${workerRuns - tokenRuns} reported none` : ''}:`) : null,
       w.tokens.length ? el('ul', { class: 'settings-links' }, ...w.tokens.map((t) => el('li', {}, el('strong', {}, provider(t.executor)),
         el('div', { class: 'subtext' }, `${plural(t.runs, 'run')} · ${tokenCount(t.input)} input and ${tokenCount(t.output)} output tokens`)))) : null)),
     panel('AI coordinator', 'Planning goals and answering your messages.', el('div', { class: 'panel-body' },
-      el('p', {}, dollars(c.usd, c.reportedRuns)), unknown(c.unknownRuns), c.openRuns ? el('p', { class: 'subtext' }, `${plural(c.openRuns, 'run')} still running.`) : null,
+      el('p', {}, dollars(c.usd, c.reportedRuns, c.reportedRuns + c.unknownRuns)), unknown(c.unknownRuns, c.usd), c.openRuns ? el('p', { class: 'subtext' }, `${plural(c.openRuns, 'run')} still running.`) : null,
       el('p', {}, planningText(v.planning)))),
     panel('Hosting and subscriptions', null, el('div', { class: 'panel-body' },
       el('p', {}, 'Not tracked. AIWorks does not know what hosting or AI subscriptions cost you, so it shows no amount for them.'))),
@@ -4336,6 +4341,8 @@ function worklistBlocked() {
  */
 const worklistBucket = (entry) => entry.state !== 'open' ? 'closed' : entry.kind === 'decision' ? entry.needsOwner ? 'owner' : 'standing'
   : entry.kind === 'review' && entry.merged ? 'merged' : 'outstanding';
+/** The unfinished items: what Needs you counts and the Work list's "Not finished" lists, from this one place. */
+const worklistUnfinished = () => (worklist()?.items ?? []).filter((entry) => worklistBucket(entry) === 'outstanding');
 const worklistMeta = (entry) => [entry.kindWord, entry.state === 'open' ? 'Open' : 'Closed', entry.needsOwner && entry.state === 'open' ? 'Needs you' : null,
   entry.kind === 'review' ? entry.merged ? 'merged into local main' : 'not merged yet' : null,
   `from ${entry.author}`, entry.updatedAt ? `updated ${clock(entry.updatedAt)}` : null].filter(Boolean).join(' · ');
@@ -4349,7 +4356,7 @@ const worklistRow = (entry) => el('li', { class: 'result-row worklist-row', 'dat
  */
 function worklistParts() {
   const wl = worklist(), of = (bucket) => wl.items.filter((entry) => worklistBucket(entry) === bucket);
-  const owner = of('owner'), open = of('outstanding'), merged = of('merged'), standing = of('standing'), closed = of('closed');
+  const owner = of('owner'), open = worklistUnfinished(), merged = of('merged'), standing = of('standing'), closed = of('closed');
   const waiting = wl.imported.candidates.length;
   const history = (key, title, note, rows) => rows.length ? el('section', { class: 'panel', 'data-focus-scope': `worklist/${key}` },
     disclosure(`worklist/${key}`, `${title} (${rows.length})`,
