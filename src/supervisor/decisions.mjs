@@ -33,10 +33,11 @@ export function decisionId(campaignId, taskId, blocked) {
     .digest('hex').slice(0, 32);
 }
 
-/** The guidance an answer gives the next worker of the step: the chosen option and the owner's words, nothing else. */
+/** Durable decision context for the step's builders and verifiers, within its bound authority. */
 export function answerGuidance(decision, { option = null, text: words = null }) {
   const chosen = option ? decision?.options?.find((o) => o.id === option) : null;
   return ['The owner answered the decision this step stopped for.',
-    chosen ? `Chosen option: ${chosen.label} (${chosen.id}).` : null, words ? `The owner's words: ${words}` : null,
-    'Continue within the packet; this answer does not widen it.'].filter(Boolean).join(' ').slice(0, 2000);
+    decision?.question ? `Question: ${decision.question}` : null,
+    chosen ? `Chosen option: ${chosen.label} (${chosen.id}). Consequence: ${chosen.consequence}` : null, words ? `The owner's words: ${words}` : null,
+    'This is a recorded owner answer, available to implementers and verifiers. Apply it within the packet; do not ask for the same decision again. If it conflicts with the approved acceptance or permissions, identify the exact amendment needed; it does not silently widen authority.'].filter(Boolean).join(' ');
 }
