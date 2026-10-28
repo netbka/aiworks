@@ -4,12 +4,12 @@
 // environment and folder:
 //
 //   node scripts/infisical-credential-helper.mjs [--env-file <path>] --project <id> --environment <slug> [--path </folder>]
-//        --allow <ref> [--allow <ref> ...] has|get|set <ref>
+//        [--allow <ref> ...] has|get|set <ref>
 //
 // - `has <ref>` exits 0 when the secret exists, 1 when it does not; `get <ref>` prints the value and exits 0, or exits 1
 //   when absent; `set <ref>` reads the value from stdin and creates or updates the secret.
-// - Only references named by `--allow` are answered. Any other reference exits 3 (refused) without contacting
-//   Infisical, so the helper never hands out the other secrets the machine identity can read.
+// - Without `--allow`, every reference in the configured folder is answered. With `--allow`, only those are; any other
+//   reference exits 3 (refused) without contacting Infisical.
 // - A store that cannot tell (Infisical unreachable, login refused, an unexpected answer) exits 4, never 1: the
 //   callers treat "cannot tell" as refused, never as absent. Usage errors exit 2.
 // - The machine identity (universal auth) comes from INFISICAL_HOST, INFISICAL_CLIENT_ID and INFISICAL_CLIENT_SECRET,
@@ -52,7 +52,6 @@ function parseArgs(argv) {
   if (!['has', 'get', 'set'].includes(op) || !ref || extra.length) throw new HelperError(EXIT.usage, 'expected has|get|set <ref>');
   if (!options.project || !options.environment) throw new HelperError(EXIT.usage, '--project and --environment are required');
   if (!options.path.startsWith('/')) throw new HelperError(EXIT.usage, '--path is an Infisical folder starting with /');
-  if (!options.allow.length) throw new HelperError(EXIT.usage, 'at least one --allow <ref> is required');
   if (!REF.test(ref) || ref.length > 128) throw new HelperError(EXIT.usage, 'the reference is not a valid credential reference');
   return { ...options, op, ref };
 }
@@ -134,7 +133,7 @@ async function readStdin() {
 
 async function main(argv) {
   const options = parseArgs(argv);
-  if (!options.allow.includes(options.ref)) throw new HelperError(EXIT.refused, 'this reference is not on the helper\'s --allow list');
+  if (options.allow.length && !options.allow.includes(options.ref)) throw new HelperError(EXIT.refused, 'this reference is not on the helper\'s --allow list');
   const value = options.op === 'set' ? await readStdin() : null;
   if (options.op === 'set' && !value) throw new HelperError(EXIT.usage, 'set reads a non-empty value from stdin');
   const id = identity(options);
