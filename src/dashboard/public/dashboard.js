@@ -2531,6 +2531,82 @@ function itemDecision(item) {
   return task?.decision && !task.decision.answered ? { c, task } : null;
 }
 
+/*
+ * Home at a glance (live control room): what AIWorks is doing right now as a row of tiles, and each project as one dense
+ * row with its steps as a strip. Everything is counted from the same state the rest of the page reads; a number that is
+ * not known is said to be not known, never shown as zero.
+ */
+const isBuilderRole = (role) => /implement/i.test(String(role ?? ''));
+const DAY_MS = 24 * 60 * 60 * 1000;
+// What a step is doing now, in the colour language of OWNER_UI_V2 §5: amber for the owner, blue and violet while AIWorks
+// works, grey while it waits under control, green once merged.
+function stepTone(c, task) {
+  const delivery = deliveryOf(c, task), agent = c.agents.find((item) => item.taskId === task.id);
+  if (delivery?.state === 'merged') return ['merged', 'Merged'];
+  if (delivery) return ['delivered', deliveryNames[delivery.state]?.[1] ?? 'Delivered'];
+  if (task.blocked) return ['you', 'Waiting for you'];
+  if (agent) return isBuilderRole(agent.role) ? ['building', 'Being built'] : ['checking', 'Being checked'];
+  if (task.state === 'done') return ['merged', 'Done'];
+  if (task.waitingReason || task.retryAt) return ['waiting', 'Waiting, nothing for you to do'];
+  return ['todo', 'Not started'];
+}
+const openCampaigns = (list) => list.filter((c) => !['finished', 'cancelled'].includes(c.control));
+
+function homeTiles(home) {
+  const campaigns = state.supervisor.campaigns, open = openCampaigns(campaigns), now = Date.now();
+  const agents = open.flatMap((c) => c.agents), builders = agents.filter((a) => isBuilderRole(a.role)).length;
+  const waiting = open.flatMap((c) => c.tasks.filter((task) => stepTone(c, task)[0] === 'waiting')).length;
+  const merged = campaigns.flatMap((c) => c.tasks.filter((task) => {
+    const delivery = deliveryOf(c, task);
+    return delivery?.state === 'merged' && delivery.mergedAt && now - new Date(delivery.mergedAt).getTime() < DAY_MS;
+  })).length;
+  const reported = open.filter((c) => c.cost?.reportedUsd !== null && c.cost?.reportedUsd !== undefined);
+  const unreported = open.reduce((n, c) => n + (c.cost?.unreportedRuns ?? 0), 0);
+  const spent = reported.length ? usd(reported.reduce((n, c) => n + c.cost.reportedUsd, 0)) : '—';
+  // Needs you reads the same count as the global bar and the Needs you page: never zero or calm while a merge check runs
+  // (OPERATIONS_DASHBOARD: a step whose merge check is running is shown as "?", never as nothing).
+  const attention = state.owner?.count ?? home.needsYou.count, unknown = state.owner?.unknownResults ?? 0;
+  const needsValue = attention || (unknown ? '?' : 0), needsMore = attention && unknown ? '+ checking' : null;
+  const needsFoot = `${attention ? 'Settle each one in Needs you' : unknown ? 'Nothing confirmed yet' : 'Nothing is blocked on you'}${unknown ? ` · merge of ${plural(unknown, 'published step')} being checked` : ''}`;
+  const tiles = [
+    ['building', 'Building', builders, builders ? `${plural(builders, 'builder')} working` : 'No builder running'],
+    ['checking', 'Checking', agents.length - builders, 'A fresh session that did not write the code'],
+    ['waiting', 'Waiting', waiting, 'Limits and order: AIWorks resumes by itself'],
+    ['you', 'Needs you', needsValue, needsFoot, needsMore],
+    ['merged', 'Merged in 24 h', merged, 'Each checked before it merged'],
+    ['cost', 'Reported cost', spent, unreported ? `Running work · ${plural(unreported, 'run')} not reported yet` : 'Running work, as the AI workers reported it']
+  ];
+  return el('section', { class: 'live-tiles', 'aria-label': 'Right now' }, ...tiles.map(([tone, title, value, foot, more]) => {
+    const body = [el('div', { class: 'live-tile-title' }, el('span', { class: `tone-dot ${tone}`, 'aria-hidden': 'true' }), title),
+      el('div', { class: 'live-tile-value number' }, String(value), more ? el('small', {}, ` ${more}`) : null), el('div', { class: 'live-tile-foot' }, foot)];
+    return tone === 'you' && (attention || unknown) ? el('a', { class: `live-tile ${tone}`, href: '#/needs' }, ...body) : el('div', { class: `live-tile ${tone}` }, ...body);
+  }));
+}
+
+function homeProjectRow(project, badge) {
+  const campaigns = projectCampaigns(project.id), open = openCampaigns(campaigns);
+  const shown = open.length ? open : campaigns.slice(-1);
+  const steps = shown.flatMap((c) => c.tasks.map((task) => [c, task]));
+  const tones = steps.map(([c, task]) => stepTone(c, task));
+  const merged = tones.filter(([tone]) => tone === 'merged').length, delivered = merged + tones.filter(([tone]) => tone === 'delivered').length;
+  const agents = open.flatMap((c) => c.agents), builders = agents.filter((a) => isBuilderRole(a.role)).length, checkers = agents.length - builders;
+  const goal = shown.length ? campaignTitle(shown[shown.length - 1], { inProject: true }) : null;
+  return el('li', { class: 'live-row', 'data-focus-scope': `home/project/${project.id}`, 'data-state': project.state.key },
+    el('div', { class: 'live-cell live-name' }, routeLink(project.name, { screen: 'project', project: project.id, tab: 'overview' }, 'task-name'),
+      el('span', { class: 'subtext' }, goal ?? project.state.text ?? 'No work yet')),
+    el('div', { class: 'live-cell live-progress' }, ...(steps.length
+      ? [el('div', { class: 'step-strip', role: 'img', 'aria-label': `${delivered} of ${steps.length} steps delivered, ${merged} merged` },
+        ...tones.map(([tone, words], index) => el('span', { class: `step-seg ${tone}`, title: `${stepLabels(steps[index][1]).lead}: ${words}` }))),
+      el('span', { class: 'subtext number' }, `${delivered} of ${plural(steps.length, 'step')} delivered${delivered > merged ? ` · ${merged} merged` : ''}`)]
+      : [el('span', { class: 'subtext' }, 'No steps yet')])),
+    el('div', { class: 'live-cell live-agents' }, builders ? el('span', { class: 'role-chip building' }, el('span', { class: 'tone-dot building', 'aria-hidden': 'true' }), builders > 1 ? `${builders} builders` : 'Builder') : null,
+      checkers ? el('span', { class: 'role-chip checking' }, el('span', { class: 'tone-dot checking', 'aria-hidden': 'true' }), checkers > 1 ? `${checkers} checkers` : 'Checker') : null,
+      agents.length ? null : el('span', { class: 'subtext' }, 'No AI worker on it')),
+    el('div', { class: 'live-cell live-state' }, badge ? el('span', { class: `badge ${badge[0]}` }, badge[1]) : el('span', { class: 'subtext' }, project.state.text ?? 'Calm')),
+    el('div', { class: 'live-cell live-when subtext number' }, project.lastActivityAt
+      ? el('time', { datetime: new Date(project.lastActivityAt).toISOString(), title: dateTime(project.lastActivityAt) }, timeAgo(project.lastActivityAt)) : '—'));
+}
+
 /**
  * Home (docs/design/OWNER_UI_V2.md §6 screen 2, previews/owner-ui-v2/02-home.html): one headline sentence states
  * whether anything needs you, the decision itself follows as one card, then what changed, then every project in one
@@ -2574,18 +2650,14 @@ function homeScreen() {
     : reviews.some((row) => sameProject(row.project, project.id)) ? ['done', 'Review ready']
       : WORKING.includes(project.state.key) ? ['in_progress', 'Working'] : null;
   const projects = home.projects.length
-    ? el('ul', { class: 'settings-links home-projects' }, ...home.projects.map((project) => {
-      const badge = badgeOf(project);
-      return el('li', { 'data-focus-scope': `home/project/${project.id}`, 'data-state': project.state.key },
-        el('div', { class: 'row-line' }, routeLink(project.name, { screen: 'project', project: project.id, tab: 'overview' }, 'task-name'),
-          badge ? el('span', { class: `badge ${badge[0]}` }, badge[1]) : null),
-        el('div', { class: 'subtext' }, project.state.text ?? 'Not known right now.'));
-    }))
+    ? el('div', { class: 'live-table' },
+      el('div', { class: 'live-head', 'aria-hidden': 'true' }, el('span', {}, 'Project · current goal'), el('span', {}, 'Steps'), el('span', {}, 'AI workers'), el('span', {}, 'State'), el('span', {}, 'Last activity')),
+      el('ul', { class: 'live-rows home-projects' }, ...home.projects.map((project) => homeProjectRow(project, badgeOf(project)))))
     : state.projects?.addProject ? el('div', { class: 'empty-state' }, el('strong', {}, 'No projects yet.'), ' Start from an idea or a folder on this computer. ',
       routeLink('Add project', { screen: 'add-project' }))
       : empty('No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository.');
-  return [hero, decision, moreDecisions, changed,
-    panel('Projects', 'Each project in one sentence.', el('div', { class: 'panel-body' }, projects))].filter(Boolean);
+  return [hero, homeTiles(home), decision, moreDecisions, changed,
+    panel('Projects', 'Needs you first, then running. Each step of the current goal is one segment.', home.projects.length ? projects : el('div', { class: 'panel-body' }, projects))].filter(Boolean);
 }
 
 const AVAILABLE_WORDS = { 'not-published': 'Not published: release is off', unknown: 'Not known', recorded: 'Recorded' };
@@ -4617,6 +4689,28 @@ function command(c, action, task, extra = {}, draftAddress = null) {
     ...(task ? { taskId: task.id, taskVersion: task.version } : {}), ...extra }, draftAddress);
 }
 
+// How fresh this page's picture is: "Page connected · updated 4s ago", ticking every second, so a running AIWorks reads
+// as running. It stays about this page (OWNER_WORKSPACE §3.4): a refresh that has not arrived for a while says so
+// rather than going on looking current. "Live" stays reserved for release evidence (§2.3).
+const STALE_MS = 20_000;
+let freshAt = null;
+function showFreshness() {
+  const node = $('#connection');
+  if (offline || freshAt === null) return;
+  const seconds = Math.max(0, Math.round((Date.now() - freshAt) / 1000)), stale = Date.now() - freshAt > STALE_MS;
+  const ago = seconds < 60 ? `${seconds}s ago` : timeAgo(freshAt);
+  // The node is a status region: its words change only when the meaning does; the ticking age is hidden from it.
+  const words = stale ? 'Page connected, but no update for a while' : 'Page connected';
+  if (node.dataset.words !== words) {
+    node.dataset.words = words;
+    node.replaceChildren(el('span', {}, stale ? 'Page connected' : words), el('span', { class: 'fresh-age', 'aria-hidden': 'true' }));
+    if (stale) node.firstChild.append(el('span', { class: 'sr-only' }, ', but no update for a while'));
+  }
+  node.querySelector('.fresh-age').textContent = ` · ${stale ? 'last update' : 'updated'} ${ago}`;
+  node.className = `connection online${stale ? ' stale' : ' fresh'}`;
+}
+setInterval(showFreshness, 1000);
+
 async function poll() {
   try {
     const response = await fetch(`/api/state?since=${since}`, { signal: AbortSignal.timeout(6000) });
@@ -4626,8 +4720,7 @@ async function poll() {
     state = await response.json(); offline = false;
     // The header keeps only "Page connected" or the disconnected text (OWNER_WORKSPACE §3.4, §7.4; aiworks#11 review F8):
     // it is about this page, never read as "AIWorks is running" (review 4 F6).
-    $('#connection').textContent = 'Page connected';
-    $('#connection').className = 'connection online';
+    freshAt = Date.now(); showFreshness();
     trackReceipts();
     // An open work list item is read again with every refresh, so a change shows and a stale draft says so.
     if (current.route.screen === 'worklist-item') void loadItem(current.route.number);
@@ -4640,7 +4733,7 @@ async function poll() {
     if (!document.querySelector('dialog[open]')) render();
     $('#confirm-cancel').disabled = $('#send-instruction').disabled = $('#send-message').disabled = sending;
   } catch {
-    offline = true; $('#connection').textContent = 'Disconnected · retrying · controls off'; $('#connection').className = 'connection offline';
+    offline = true; delete $('#connection').dataset.words; $('#connection').textContent = 'Disconnected · retrying · controls off'; $('#connection').className = 'connection offline';
     $('#confirm-cancel').disabled = $('#send-instruction').disabled = $('#send-message').disabled = true;
     checkCloseStale();
     if (state && !document.querySelector('dialog[open]')) render();
