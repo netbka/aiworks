@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../../src/supervisor/store.mjs';
@@ -109,6 +109,17 @@ test('a deploy release whose merge commit holds another tree than the verified o
   assert.deepEqual(r.calls(), [], 'no project command ran');
   assert.deepEqual(r.live(), { revision: r.base, digest: 'sha256:old' });
   assert.equal(r.journaled('release-deploy-refused'), 1, 'the owner is told why');
+});
+
+test('a redirected release checkout cannot clean or overwrite another working tree', async (t) => {
+  const r = rig(t), id = r.locked(), owner = join(r.dir, 'owner');
+  git(r.dir, 'clone', '-q', r.repo, owner);
+  const marker = join(owner, 'unsaved.txt'); writeFileSync(marker, 'keep my work');
+  const privateHome = join(r.dataDir, 'releases', id); mkdirSync(privateHome, { recursive: true });
+  symlinkSync(owner, join(privateHome, 'checkout'), 'junction');
+  assert.equal((await r.adapter().preflight({ ...release(r.store, id), step_key: id + '.preflight' })).knownGood, false);
+  assert.equal(readFileSync(marker, 'utf8'), 'keep my work');
+  assert.equal(r.calls().length, 0);
 });
 
 test('observe disagreeing with the digest deploy printed is unknown, never success, and deploy never runs twice', async (t) => {

@@ -1,12 +1,13 @@
 // The release runner: one release command in its own clean process (docs/design/AUTO_RELEASE.md section 6, slices REL5
-// and REL5a). Built switched off: with `release.enabled` not true in config.json the runner is never started (REL11
-// switches it on). The owner answered example-org/aiworks#33 item 2 on 2026-10-17 (plan section 8 (i)): no release
+// and REL5a). New commands require release.enabled; pinned recovery after an
+// existing forward intent may observe, check and roll back even after a stop.
+// The owner answered example-org/aiworks#33 item 2 on 2026-10-17 (plan section 8 (i)): no release
 // credential. A step names none and runs with the logins already on this computer: the operator's GitHub CLI login and the
 // project's own commands with the access they already have. Its clean environment then gains only the variables those
 // logins need to find themselves (RELEASE_LOGIN_ENV); it never sets GH_TOKEN and never reads a credential store. The
 // older path that fetches a named credential stays for a destination that still names one. How one step runs:
 // 1. the supervisor (runReleaseCommand) writes a packet that names the command, its working directory and the
-//    credential by reference only, then starts `node runner.mjs --release-step <packet>` with a clean environment:
+//    credential by reference only, then starts a native contained runner with a clean environment:
 //    only PATH and SystemRoot, never the supervisor's own variables (workerEnv copies them; this does not). On Windows,
 //    libuv adds its fixed set of system variables (user name, profile, TEMP and the like) to every child it starts;
 //    they name the machine and user, not the supervisor's configuration;
@@ -25,6 +26,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readJsonIfExists, runnerIdentified, stopOwnedRun, writeAtomic } from '../proc.mjs';
 import { credentialStoreFrom, fetchCredential, validCredentialRef } from './credential.mjs';
+import { releasePath } from './paths.mjs';
 
 export const RELEASE_RUNNER = fileURLToPath(import.meta.url);
 const CONTAINED_RUNNER = fileURLToPath(new URL('../runner.mjs', import.meta.url));
@@ -90,7 +92,7 @@ export async function runReleaseCommand({ config, dataDir, stepKey, command, cwd
   if (typeof cwd !== 'string' || !cwd) throw new TypeError('a release command needs its release working directory');
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new TypeError('a release command needs a positive timeout');
   if (credential !== null && !validCredentialRef(credential?.ref)) throw new TypeError('a release credential is named by reference only');
-  const dir = join(dataDir, 'releases', stepKey);
+  const dir = releasePath(dataDir, stepKey);
   mkdirSync(dir, { recursive: true });
   const packet = join(dir, 'packet.json');
   if (existsSync(packet)) throw new Error('This release command was already recorded; reconcile its outcome before another action');
@@ -174,11 +176,11 @@ if (process.argv[2] === '--release-command' && process.argv[1] && self(process.a
  * command's owned process tree. An unreadable receipt is never permission to
  * repeat a deployment or to replace a checkout under a surviving process. */
 export function releaseCommandsStopped({ dataDir, release: row }) {
-  const root = join(dataDir, 'releases');
+  const root = releasePath(dataDir);
   if (!existsSync(root)) return true;
   for (const item of readdirSync(root, { withFileTypes: true })) {
     if (!item.isDirectory() || !item.name.startsWith(row.id + '.')) continue;
-    const dir = join(root, item.name), packet = readJsonIfExists(join(dir, 'packet.json'));
+    const dir = releasePath(dataDir, item.name), packet = readJsonIfExists(join(dir, 'packet.json'));
     // Packet/spec creation precedes launch intent. A crash in that preparation
     // window is positively known to have launched nothing.
     if (!existsSync(join(dir, 'launch.json')) && !existsSync(join(dir, 'runner.json')) && !existsSync(join(dir, 'run.lock'))) continue;
