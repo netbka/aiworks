@@ -355,7 +355,9 @@ that lease expires; status does not probe/kill processes or take over leases.
 `CONTROLLER_OFFLINE` means a previously acquired lease expired (including orderly release).
 `BOOTSTRAP_REQUIRED` means no lease has ever been acquired. With no live controller,
 `recordedStatus` retains the historical campaign status while `status` says `controller-offline`;
-paused/terminal control states retain their own readiness. `lastProgressAt` excludes lease
+paused/terminal control states retain their own readiness. A cancelled campaign reports
+`status` and `recordedStatus` as `cancelled`, whatever status was stored before the cancel; the
+stored row and journal stay unchanged. `lastProgressAt` excludes lease
 acquisition, so a heartbeat alone cannot masquerade as task progress.
 
 Errors are evidence-specific:
