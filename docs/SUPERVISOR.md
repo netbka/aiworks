@@ -1124,7 +1124,8 @@ browser session. This PR is that review.
   unregistered id answers `404` with `code: "CAMPAIGN_NOT_FOUND"`.
 - **`GET /api/campaigns/:id/report`** answers the campaign's report tasks (`remote-campaigns.mjs` `campaignReports`):
   per task its id, state, verified revision, report text and the report's sha256. The text is present only once
-  independent verification accepted it (state `verified` or `done` with a verified revision); before that, and again
+  independent verification accepted that exact revision and report digest, passed every required acceptance criterion
+  and left no blocking finding (state `verified` or `done`); before that, and again
   whenever the task is sent back for another round, `report` is `null`. An implementer's unverified output, verifier
   evidence, worker logs and local paths are never part of the answer. `404 CAMPAIGN_NOT_FOUND` as for status.
 - **Reports kept local.** A declaration may set `"reportPublication": "local"` (`campaign.mjs`; part of the immutable
