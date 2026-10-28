@@ -6,10 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
 import { supervisorSnapshot, applyCommand, applyDecision, applyResultReview, captureResultPreview, checkRelease, openResultPreview, previewStillChecked, applyScopedControl, postMessage, dashboardAccounts, removeDashboardAccount, configuredModelPreferences, saveDashboardModelPreferences } from './supervisor.mjs';
 import { Store } from '../supervisor/store.mjs';
-import { campaignStatus } from '../supervisor/api.mjs';
 import { configuredGovernanceRoot } from '../supervisor/governance.mjs';
 import { RELEASE_STOP } from '../supervisor/release/state.mjs';
-import { campaignApiSettings, campaignReports, registerRemoteCampaign, resolveCampaignApiToken } from '../supervisor/remote-campaigns.mjs';
+import { campaignApiAuthorized, campaignApiScope, campaignApiSettings, campaignReports, registerRemoteCampaign, remoteCampaignStatus } from '../supervisor/remote-campaigns.mjs';
 import { PREVIEW_POLICY, PreviewSessions } from '../supervisor/preview.mjs';
 import { PreviewCaptures } from '../supervisor/preview-capture.mjs';
 import { ServerPreviews } from '../supervisor/preview-server.mjs';
@@ -46,104 +45,78 @@ export const SCOPED_CONTROL_BYTES = 65_536;
 // may be (provenance.mjs privateJson), since the body is the same declaration shape, just sent over HTTP.
 export const CAMPAIGN_API_BYTES = 1024 * 1024;
 const CAMPAIGN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-const CAMPAIGN_READ = /^\/api\/campaigns\/([^/]+)\/(status|report)$/;
-const isCampaignApiPath = (path) => path === '/api/campaigns' || CAMPAIGN_READ.test(path ?? '');
 
-/** <dataDir>/config.json, or {} when absent or malformed: re-read on every request, so a change shows without a restart. */
-function readDataConfig(dataDir) {
-  try { return JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { return {}; }
+/** The external campaign API's routes, by exact method and path. */
+function campaignApiRoute(method, path) {
+  if (method === 'POST' && path === '/api/campaigns') return { register: true };
+  const read = method === 'GET' ? /^\/api\/campaigns\/([^/]+)\/(status|report)$/.exec(path) : null;
+  return read ? { id: read[1], kind: read[2] } : null;
 }
 
+const readConfig = (dataDir) => {
+  try { const config = JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); return config && typeof config === 'object' && !Array.isArray(config) ? config : {}; }
+  catch { return {}; }
+};
+
+const TOKEN_REQUIRED = 'A valid campaign API token is required (Authorization: Bearer <token>).';
+const RECORDS_UNREADABLE = 'AIWorks can’t read its work records on this computer right now.';
+
 /**
- * The external campaign API's three routes (off by default, docs/SUPERVISOR.md section 16), for whichever listener
- * serves them: `POST /api/campaigns` registers exactly as `cli.mjs start <file>`, `GET /api/campaigns/:id/status`
- * reads what `cli.mjs status <id>` prints, `GET /api/campaigns/:id/report` the campaign's verified reports only
- * (remote-campaigns.mjs campaignReports). Gated by the campaign API's own bearer token, never the browser session's
- * CSRF secret; 404 while the API is off, exactly like Add project's routes while that feature is off.
+ * One request to the external campaign API while it is on: [status, body]. Its caller is not the dashboard's browser
+ * session, so it is authenticated by its own bearer token (remote-campaigns.mjs campaignApiAuthorized), never by the
+ * session's CSRF secret. Registration, status and verified reports are limited to a project-named token's own project.
  */
-async function campaignApiRoute(req, path, send, { dataDir, provenanceRoot }) {
-  const read = CAMPAIGN_READ.exec(path);
-  if (read ? req.method !== 'GET' : req.method !== 'POST') return send(405, { error: 'Method not allowed.' });
-  const auth = checkCampaignApiAuth(dataDir, req);
-  if (!auth.enabled) return send(404, { error: 'Not found.' });
-  if (!auth.ok) return send(401, { error: 'A valid campaign API token is required (Authorization: Bearer <token>).' });
-  if (read) {
-    let id = null;
-    try { id = decodeURIComponent(read[1]); } catch { /* refused below */ }
-    if (!CAMPAIGN_ID.test(id ?? '')) return send(404, { error: 'Not found.' });
-    if (!existsSync(join(dataDir, 'supervisor.db'))) return send(503, { error: 'AIWorks can’t read its work records on this computer right now.' });
-    let store;
+async function answerCampaignApi(req, route, { dataDir, settings, config, provenanceRoot }) {
+  if (!campaignApiAuthorized(settings, req.headers.authorization)) return [401, { error: TOKEN_REQUIRED }];
+  const governanceRoot = configuredGovernanceRoot(dataDir);
+  if (route.register) {
+    const declaration = await readJsonBody(req, CAMPAIGN_API_BYTES);
+    if (!existsSync(join(dataDir, 'supervisor.db'))) return [503, { error: RECORDS_UNREADABLE }];
+    const scope = campaignApiScope(settings, governanceRoot);
+    const store = new Store(join(dataDir, 'supervisor.db'));
     try {
-      store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true });
-      if (read[2] === 'report') return send(200, campaignReports(store, id));
-      const config = readDataConfig(dataDir);
-      return send(200, campaignStatus(store, id, Date.now(), { config, selfHostingConfig: config, releaseStop: existsSync(join(dataDir, RELEASE_STOP)) }));
-    } catch (error) {
-      if (error.code === 'CAMPAIGN_NOT_FOUND') return send(404, { error: error.message, code: error.code });
-      throw error;
-    } finally { store?.close(); }
+      const { status, created } = registerRemoteCampaign(store, declaration, { provenanceRoot, governanceRoot, config, scope });
+      return [created ? 201 : 200, status];
+    } finally { store.close(); }
   }
-  let declaration;
-  try { declaration = await readJsonBody(req, CAMPAIGN_API_BYTES); }
-  catch (error) { return send(error.status ?? 400, { error: error.message }); }
-  if (!existsSync(join(dataDir, 'supervisor.db'))) return send(503, { error: 'AIWorks can’t read its work records on this computer right now.' });
-  const config = readDataConfig(dataDir);
-  const store = new Store(join(dataDir, 'supervisor.db'));
+  let id = null;
+  try { id = decodeURIComponent(route.id); } catch { /* refused below */ }
+  if (!CAMPAIGN_ID.test(id ?? '')) return [404, { error: 'Not found.' }];
+  if (!existsSync(join(dataDir, 'supervisor.db'))) return [503, { error: RECORDS_UNREADABLE }];
+  const scope = campaignApiScope(settings, governanceRoot);
+  const store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true });
   try {
-    const { status, created } = registerRemoteCampaign(store, declaration, { provenanceRoot, governanceRoot: configuredGovernanceRoot(dataDir), config });
-    return send(created ? 201 : 200, status);
-  } catch (error) {
-    if (error.status) return send(error.status, { error: error.message, code: error.code ?? null });
-    throw error;
+    if (route.kind === 'report') return [200, campaignReports(store, id, { scope })];
+    return [200, remoteCampaignStatus(store, id, { scope, config, releaseStop: existsSync(join(dataDir, RELEASE_STOP)) })];
   } finally { store.close(); }
 }
 
-/**
- * The campaign API's own listener (config.json `campaignApi.port`, off by default): it serves the three campaign routes
- * and nothing else, so a tunnel can point at it while the dashboard's port stays reachable from this computer only.
- * It binds 127.0.0.1 like the dashboard; with no browser session behind it, it applies no Host or Origin check and no
- * CSRF secret: the bearer token is its only authentication. Same process as the dashboard (main.mjs), no new service.
- */
+/** Optional loopback listener for campaign routes alone. It shares bearer authentication and project scope with
+ * the dashboard listener, but exposes no browser session, dashboard data or owner controls. */
 export function createCampaignApiServer({ dataDir, provenanceRoot = undefined }) {
   const server = createServer(async (req, res) => {
     const send = (status, body) => {
       const value = JSON.stringify(body);
-      res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(value), 'Cache-Control': 'no-store',
-        'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
+      res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(value),
+        'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
       res.end(value);
     };
     let path = null;
     try { path = new URL(req.url, 'http://127.0.0.1').pathname; } catch { /* refused below */ }
+    const route = path === null ? null : campaignApiRoute(req.method, path);
+    const config = readConfig(dataDir), settings = campaignApiSettings(config);
+    if (!route || !settings.enabled || !settings.port) return send(404, { error: 'Not found.' });
     try {
-      // Off, or switched to the dashboard's own port by removing `port`: this listener answers nothing until restarted.
-      if (!isCampaignApiPath(path) || !campaignApiSettings(readDataConfig(dataDir)).port) return send(404, { error: 'Not found.' });
-      return await campaignApiRoute(req, path, send, { dataDir, provenanceRoot });
-    } catch {
+      const [status, body] = await answerCampaignApi(req, route, { dataDir, settings, config, provenanceRoot });
+      return send(status, body);
+    } catch (error) {
+      if (error.status) return send(error.status, { error: error.message, ...(typeof error.code === 'string' ? { code: error.code } : {}) });
       return send(503, { error: 'The supervisor is busy or unavailable. Try again later.' });
     }
   });
   server.requestTimeout = 10_000;
   server.headersTimeout = 10_000;
   return server;
-}
-
-/**
- * Whether the external campaign API is on, and whether this request's `Authorization: Bearer <token>` matches the
- * configured reference's current value. The token is resolved fresh from the operator's own secret store on every
- * request (release/credential.mjs via remote-campaigns.mjs): never cached, logged or journalled. A store that cannot
- * tell, or an unresolved reference, refuses the request exactly like a wrong token — this never opens access.
- * This is never the dashboard's own per-process CSRF secret (`csrf` below), and that secret is never accepted here.
- */
-function checkCampaignApiAuth(dataDir, req) {
-  const settings = campaignApiSettings(readDataConfig(dataDir));
-  if (!settings.enabled) return { enabled: false, ok: false };
-  let token = null;
-  try { token = resolveCampaignApiToken(settings); } catch { token = null; }
-  const match = /^Bearer (.+)$/.exec(String(req.headers.authorization ?? ''));
-  const supplied = Buffer.from(match ? match[1] : '', 'utf8');
-  const expected = Buffer.from(token ?? '', 'utf8');
-  const ok = Boolean(token) && supplied.length === expected.length && timingSafeEqual(supplied, expected);
-  return { enabled: true, ok };
 }
 
 /** Read a JSON request body up to `limit` bytes, or throw a `{ status }` error the route's catch can send as-is. */
@@ -260,17 +233,28 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
         'Content-Security-Policy': PREVIEW_POLICY, 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
       return res.end(answer.body);
     }
-    if (path === null) return send(403, { error: 'Only the local dashboard origin is allowed.' });
-    if (!isCampaignApiPath(path) && (req.headers.host !== new URL(origin).host || req.headers.origin && req.headers.origin !== origin ||
-        req.headers['sec-fetch-site'] === 'cross-site' && !pageNavigation(req, path))) return send(403, { error: 'Only the local dashboard origin is allowed.' });
-    try {
-      // The external campaign API (off by default): handled before the dashboard's own CSRF check, which is for the
-      // browser session only and is never accepted there. With its own listener configured (campaignApi.port), this
-      // port no longer serves it.
-      if (isCampaignApiPath(path)) {
-        if (campaignApiSettings(readDataConfig(dataDir)).port) return send(404, { error: 'Not found.' });
-        return await campaignApiRoute(req, path, send, { dataDir, provenanceRoot });
+    // The external campaign API (docs/SUPERVISOR.md section 16): only while config.json switches it on, only its exact
+    // method and path pairs, and answered here in full, so an exempt request never reaches another route. Its caller is
+    // not a browser (one cannot send the bearer token cross-origin without a CORS answer this server never gives), so
+    // the loopback Host/Origin gate below does not apply to it; off, these requests meet that gate exactly as before.
+    const apiRoute = path === null ? null : campaignApiRoute(req.method, path);
+    if (apiRoute) {
+      const config = readConfig(dataDir);
+      const settings = campaignApiSettings(config);
+      if (settings.enabled) {
+        if (settings.port) return send(404, { error: 'Not found.' });
+        try {
+          const [status, body] = await answerCampaignApi(req, apiRoute, { dataDir, settings, config, provenanceRoot });
+          return send(status, body);
+        } catch (error) {
+          if (error.status) return send(error.status, { error: error.message, ...(typeof error.code === 'string' ? { code: error.code } : {}) });
+          return send(503, { error: 'The supervisor is busy or unavailable. Try again later.' });
+        }
       }
+    }
+    if (path === null || req.headers.host !== new URL(origin).host || req.headers.origin && req.headers.origin !== origin ||
+        req.headers['sec-fetch-site'] === 'cross-site' && !pageNavigation(req, path)) return send(403, { error: 'Only the local dashboard origin is allowed.' });
+    try {
       if (req.method === 'GET') {
         if (staticFiles.has(path)) {
           const [file, type] = staticFiles.get(path);

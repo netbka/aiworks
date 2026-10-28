@@ -266,40 +266,6 @@ test('the Windows Credential Manager adapter reads by reference, and presence wi
   assert.equal(calls.length, before);
 });
 
-// aiworks campaign-token CLI (src/supervisor/campaign-token.mjs): a generic `set`, usable for any reference this
-// store holds, not only the release credential. The value must reach the child only over stdin, never argv.
-test('the Windows Credential Manager adapter writes by reference, the value only over stdin', () => {
-  const calls = [];
-  const answer = (out) => (file, args, options) => { calls.push({ file, args, options }); return out; };
-  const writer = windowsCredentialStore({ exec: answer({ status: 0 }), powershell: 'ps.exe' });
-  writer.set(REF, 'synthetic-value');
-  const call = calls.at(-1);
-  assert.equal(call.file, 'ps.exe');
-  assert.equal(call.options.input, 'synthetic-value', 'the secret is piped over stdin, an exec option, never a command-line argument');
-  for (const arg of call.args) assert.ok(!String(arg).includes('synthetic-value'), 'the value never appears in argv');
-  const script = Buffer.from(call.args.at(-1), 'base64').toString('utf16le');
-  assert.match(script, /CredWrite/);
-  assert.ok(script.includes(`Write('${REF}', `), 'the reference is embedded, the value is read from stdin at run time');
-  assert.ok(!script.includes('synthetic-value'), 'the value is never embedded in the script text');
-  assert.throws(() => windowsCredentialStore({ exec: answer({ status: 5 }), powershell: 'ps.exe' }).set(REF, 'v'), /could not be written/);
-  assert.throws(() => windowsCredentialStore({ exec: answer({ status: 0 }), powershell: null }).set(REF, 'v'), /only on Windows/);
-  for (const bad of ['', null, undefined, 42]) assert.throws(() => writer.set(REF, bad), /non-empty string/);
-  for (const bad of ["x'); Remove-Item C:\\", 'a b', '']) assert.throws(() => writer.set(bad, 'v'), /by reference|short name/);
-});
-
-test('a configured command helper can also set a reference, the value only over stdin', () => {
-  const calls = [];
-  const exec = (file, args, options) => { calls.push({ file, args, options }); return { status: 0 }; };
-  const store = commandCredentialStore(['helper'], { exec });
-  store.set(REF, 'synthetic-value');
-  const call = calls.at(-1);
-  assert.deepEqual(call.args, ['set', REF]);
-  assert.equal(call.options.input, 'synthetic-value');
-  assert.throws(() => store.set(REF, ''), /non-empty string/);
-  const failing = commandCredentialStore(['helper'], { exec: () => ({ status: 2 }) });
-  assert.throws(() => failing.set(REF, 'v'), /could not set/);
-});
-
 // REL5a (plan section 8 (i)): a step that names no credential uses the logins already on this computer.
 test('a step without a credential reads no credential store and never sets GH_TOKEN', async (t) => {
   const r = rig(t);

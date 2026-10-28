@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// An Infisical credential helper for the `{ kind: 'command' }` credential store (src/supervisor/release/credential.mjs
-// commandCredentialStore; docs/SUPERVISOR.md section 16). It answers the helper protocol for one Infisical project,
+// An Infisical credential helper for the `{ kind: 'command' }` token store (src/supervisor/token-store.mjs
+// commandTokenStore; docs/SUPERVISOR.md section 16). It answers the helper protocol for one Infisical project,
 // environment and folder:
 //
 //   node scripts/infisical-credential-helper.mjs [--env-file <path>] --project <id> --environment <slug> [--path </folder>]
