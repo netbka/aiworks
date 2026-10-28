@@ -2240,12 +2240,21 @@ export class Controller {
         // Authentication, model refusal, quota and boundary violations keep their own handling.
         if (!wait || wait.retry_at > now || !this.cmd[provider.kind.replace('-cli', '')]?.length ||
             !history.some(({ detail }) => detail.executor === provider.kind && detail.reason === wait.reason)) continue;
-        const reason = executors.unavailableReason(provider, repo.path, this.cmd.gh);
+        // Expire this adapter's wait before routing candidates, but never launch
+        // a worker here. Each task needs its own browser/repository capability
+        // context, just as dispatch does; a failed probe restores the wait.
         this.store.run('UPDATE executor_waits SET retry_at = ? WHERE campaign_id = ? AND executor_kind = ?',
-          reason ? now + 15 * 60_000 : now, ctx.id, provider.kind);
-        if (reason) continue;
-        const ready = this.store.tasks(ctx.id).some((task) => !task.blocked && ['pending', 'implemented'].includes(task.state) &&
-          this.executorChoice(decl, task, now).executor?.kind === provider.kind);
+          now, ctx.id, provider.kind);
+        const ready = this.store.tasks(ctx.id).some((task) => {
+          if (task.blocked || !['pending', 'implemented'].includes(task.state) ||
+              this.executorChoice(decl, task, now).executor?.kind !== provider.kind) return false;
+          const spec = specOf(this.store, ctx.id, task.task_id, decl);
+          return spec && !executors.unavailableReason(provider, repo.path, this.cmd.gh, {
+            chromeCommand: this.cmd.chrome, web: Boolean(spec.web), workList: this.selfHosted(decl.target.repository),
+          });
+        });
+        if (!ready) this.store.run('UPDATE executor_waits SET retry_at = ? WHERE campaign_id = ? AND executor_kind = ?',
+          now + 15 * 60_000, ctx.id, provider.kind);
         if (!ready) continue;
         const c = this.store.campaign(ctx.id);
         const record = this.oi && c.blocker?.fingerprint ? this.store.blocker(c.blocker.fingerprint) : null;
