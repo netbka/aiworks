@@ -36,6 +36,10 @@ test('a policy probe reporting absence with a nonterminating error cannot admit 
       const script = Buffer.from(argv.at(-1), 'base64').toString('utf16le');
       assert.match(script, /ErrorActionPreference = 'Stop'/);
       assert.match(script, /-ErrorAction Stop/);
+      // ProgressPreference: Windows PowerShell writes a benign CLIXML progress record to stderr on some
+      // machines for every -EncodedCommand call, which would otherwise always read as "policy unknown" and
+      // permanently block every researchOnly claude-cli campaign there (found live, not a one-time event).
+      assert.match(script, /ProgressPreference = 'SilentlyContinue'/);
       return { status: 0, stdout: 'False\r\n', stderr: 'Registry provider access failed' };
     };
     syncBuiltinESMExports();
