@@ -12,3 +12,13 @@ export function attachInstructions(store, instructions, operationId, now) {
     store.journal(instruction.campaign_id, 'instruction-attached', { op: operationId, instruction: instruction.seq }, now);
   }
 }
+
+// Unlike ordinary one-use guidance, an applied owner decision is evidence for every
+// later run of both roles. Read the controller's durable receipt, including receipts
+// created before this change. Stale authority and other tasks never inherit it.
+export function decisionInstructions(store, campaign, taskId) {
+  return store.all("SELECT * FROM events WHERE campaign_id = ? AND kind = 'agent-instruction' ORDER BY seq", campaign.id)
+    .filter(({ dedup_key, payload }) => dedup_key?.startsWith(`instruction:decision:${campaign.id}:`) &&
+      payload.taskId === taskId && payload.authorizationVersion === campaign.authorization_version &&
+      payload.scopeDigest === campaign.scope_digest);
+}

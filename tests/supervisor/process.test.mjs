@@ -1,6 +1,6 @@
 // Synthetic process containment tests.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -11,6 +11,13 @@ import { fileURLToPath } from 'node:url';
 import { readJsonIfExists, stopOwnedRun } from '../../src/supervisor/proc.mjs';
 
 const runnerPath = fileURLToPath(new URL('../../src/supervisor/runner.mjs', import.meta.url));
+test('job drain proves owned process handles signaled before reporting completion', { skip: process.platform !== 'win32' }, () => {
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
+    fileURLToPath(new URL('./fixtures/job-drain-proof.ps1', import.meta.url)), '-Helper',
+    fileURLToPath(new URL('../../src/supervisor/windows-process.ps1', import.meta.url)), '-Node', process.execPath],
+  { encoding: 'utf8', windowsHide: true, timeout: 60_000 });
+  assert.equal(result.status, 0, result.stderr || result.error?.message || result.stdout);
+});
 async function waitFor(predicate, diagnostics = () => null) {
   const end = Date.now() + 60_000;
   while (Date.now() < end) { const value = predicate(); if (value) return value; await sleep(25); }

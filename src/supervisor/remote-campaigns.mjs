@@ -15,7 +15,7 @@
 import { createHash } from 'node:crypto';
 import { CampaignError } from './api.mjs';
 import { specsOf } from './plan.mjs';
-import { CODE_ROOT, revisionNotMerged } from './provenance.mjs';
+import { CODE_ROOT, revisionNotMerged, runtimeTrust } from './provenance.mjs';
 import { assertRegisteredTarget } from './campaign.mjs';
 import { approvalRequired, approvedStart } from './approvals.mjs';
 // Only the generic store builder and reference-format check are reused here, never the release credential's own
@@ -96,7 +96,7 @@ const remoteFail = (status, code, message) => Object.assign(new Error(message), 
  * approval requirement (`approvals.required`); without it the external caller needs none, exactly as a plain `start`.
  */
 export function registerRemoteCampaign(store, declaration, { provenanceRoot = CODE_ROOT, governanceRoot, config = {}, now = Date.now() } = {}) {
-  const notMerged = revisionNotMerged({ root: provenanceRoot });
+  const notMerged = revisionNotMerged({ root: provenanceRoot, trust: runtimeTrust(config, store) });
   if (notMerged) throw remoteFail(503, 'RUNTIME_NOT_MERGED', notMerged);
   const campaignId = typeof declaration?.campaignId === 'string' ? declaration.campaignId : null;
   const created = campaignId !== null && !store.campaign(campaignId);
