@@ -10,6 +10,7 @@ import { campaignStart } from '../../src/supervisor/api.mjs';
 import { validResult } from '../../src/supervisor/adapters/claude.mjs';
 import { applyResultReview, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { ownerView } from '../../src/dashboard/owner.mjs';
+import { goalStrip } from '../../src/dashboard/views.mjs';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
 import { declaration, environment } from '../supervisor/helpers.mjs';
 
@@ -129,4 +130,44 @@ test('Accept result and Request changes run the caller check first: a program AI
   const accepted = await owner('/api/v2/results/accept', bind('T1'));
   assert.equal(accepted.status, 202, accepted.body.error);
   assert.equal(store.all("SELECT 1 FROM journal WHERE kind = 'result-accepted'").length, 1);
+});
+
+test('a checked result with its criteria not checked is never shown or counted as passed, and links only to its own result', (t) => {
+  const env = environment();
+  const store = new Store(join(env.dataDir, 'supervisor.db'));
+  t.after(() => { store.close(); env.cleanup(); });
+  const d = declaration({ campaignId: 'report-goal', tasks: [{ ...task('R1', 601), deliverable: 'report',
+    acceptance: ['The review names each risk', 'Each risk has evidence', 'Each risk has an owner action'] }] });
+  campaignStart(store, d);
+  const finish = (criteria, url) => {
+    const row = store.task(d.campaignId, 'R1');
+    store.patch('tasks', { campaign_id: d.campaignId, task_id: 'R1' }, row.version, { state: 'done', head_sha: SHA, verified_sha: SHA,
+      result: { result: 'resolved', report: REPORT }, verification: verification(criteria), pr_url: url }, Date.now());
+  };
+  const read = () => {
+    const snapshot = supervisorSnapshot(env.dataDir), c = snapshot.campaigns[0];
+    const rows = Object.values(ownerView(snapshot).results).flatMap((project) => project.groups.flatMap((group) => group.rows));
+    return { step: c.tasks[0], strip: goalStrip(c), row: rows.find((item) => item.taskId === 'R1') };
+  };
+
+  // Accepted by the checker, yet none of its three criteria reported, and its comment sits on an unrelated pull request.
+  finish([], 'https://github.com/example-org/sampleapp/pull/9#issuecomment-12');
+  const unchecked = read();
+  assert.equal(unchecked.step.review.unresolved.notChecked, 3);
+  assert.equal(unchecked.step.checkPassed, false);
+  assert.equal(unchecked.strip.checked, 0, 'an unchecked result is never counted as checked');
+  assert.equal(unchecked.step.resultUrl, null, 'a link to another pull request is not this step\'s result');
+
+  const all = [1, 2, 3].map((criterion) => ({ criterion, result: 'pass', check: 'Read the report', evidence: 'Present.' }));
+  finish(all, 'https://github.com/example-org/sampleapp/issues/601#issuecomment-13');
+  const passed = read();
+  assert.equal(passed.step.checkPassed, true);
+  assert.equal(passed.strip.checked, 1);
+  assert.equal(passed.step.resultUrl, 'https://github.com/example-org/sampleapp/issues/601#issuecomment-13');
+
+  // Partly checked on its own issue: the row's evidence is never the passed one.
+  finish(all.slice(0, 2), 'https://github.com/example-org/sampleapp/issues/601#issuecomment-13');
+  const partly = read();
+  assert.equal(partly.step.checkPassed, false);
+  assert.notEqual(partly.row.evidence, passed.row.evidence, 'a partly checked result is never shown as passed');
 });

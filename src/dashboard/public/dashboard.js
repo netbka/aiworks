@@ -360,6 +360,8 @@ function outcomeText(o) {
 // Owner-facing state: a finished step shows whether its merge is seen (merged, published with the merge not seen yet, ...).
 function stepBadge(c, task) {
   const delivery = deliveryOf(c, task);
+  // Cancelled work never reads as running: its unfinished steps stop with it.
+  if (c.control === 'cancelled' && task.state !== 'done') return badge('pending', 'Cancelled');
   if (!delivery && !task.blocked && task.waitingReason && task.state !== 'done') return badge('pending', /dependencies in main/.test(task.waitingReason) ? 'Waiting for merges' : 'Waiting');
   if (!delivery) return badge(task.blocked ? 'blocked' : task.state);
   const [cls, text] = deliveryNames[delivery.state] ?? ['unknown', delivery.state];
@@ -2449,7 +2451,7 @@ function modelInstructionsScreen() {
 // server sends (views.mjs). Typed events carry no text of their own, so every word here is the page's.
 
 const EVENT_WORDS = { 'goal-started': 'Work started', paused: 'Paused', resumed: 'Resumed', cancelled: 'Cancel requested',
-  'result-ready': 'Result ready for your review', accepted: 'You accepted a checked result', merged: 'Merged', built: 'Builder finished a run', checked: 'Passed the independent check',
+  'result-ready': 'Result ready for your review', accepted: 'You accepted a checked result', merged: 'Merged', built: 'Builder finished a run', checked: 'Checked by the independent checker',
   'check-rejected': 'The independent checker asked for changes', 'run-failed': 'An AI worker run did not finish; AIWorks retries by itself',
   'limit-wait': 'Waiting for an AI worker limit', 'wait-ended': 'An AI worker can take work again', 'needs-you': 'Needs you',
   'decision-cleared': 'A question for you was cleared', 'aiworks-problem': 'AIWorks had a problem of its own' };
@@ -3225,7 +3227,12 @@ function stepScreen(project, c, task) {
     // A checked result is resolved in its Review below; its pull request is supporting reference, never the primary action.
     : task.resultUrl ? link(number ? `Pull request #${number} ↗` : 'Open the result ↗', delivery?.url ?? task.resultUrl, task.review ? 'needs-link' : 'button')
       : unfinished && c.controls?.more.length ? button('Send guidance', () => openInstructions(c, task), '', commandsOff()) : null;
-  const last = task.verifiedSha ? 'Passed the independent check' : outcomeText(task.lastOutcome);
+  // Passed only when the check passed every criterion (the server's checkPassed); otherwise what is still open.
+  const u = task.review?.unresolved;
+  const open = u ? [u.failed ? `${plural(u.failed, 'criterion', 'criteria')} failed` : null, u.notChecked ? `${plural(u.notChecked, 'criterion', 'criteria')} not checked` : null,
+    u.blocking ? `${plural(u.blocking, 'blocking finding')} open` : null].filter(Boolean).join(' · ') : '';
+  const last = !task.verifiedSha ? outcomeText(task.lastOutcome) : task.checkPassed ? 'Passed the independent check'
+    : `Checked, not complete: ${open || 'not every criterion is recorded as passed'}`;
   const meaning = task.verifiedSha ? null : resultMeaning(task.lastOutcome, { stopped: Boolean(task.stopped), check: canCheckAgain(c, task) });
   const guidance = (c.instructions ?? []).filter((item) => item.taskId === task.id);
   const reading = readingLines(task.reading);

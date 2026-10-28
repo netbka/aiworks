@@ -241,8 +241,10 @@ export function campaignStatus(store, id, now = Date.now(), { releaseStop = fals
       leaseAcquiredAt: lease ? new Date(lease.acquired_at).toISOString() : null,
     },
     control: c.control,
-    status: live || ['finished', 'cancelled', 'paused', 'cancel-requested'].includes(c.control) ? c.status : 'controller-offline',
-    recordedStatus: c.status,
+    // Cancelled work is reported as cancelled: the status stored before the cancel (active, blocked on the owner) is no
+    // longer what the campaign does. The stored row and its history are left as they were.
+    status: c.control === 'cancelled' ? 'cancelled' : live || ['finished', 'paused', 'cancel-requested'].includes(c.control) ? c.status : 'controller-offline',
+    recordedStatus: c.control === 'cancelled' ? 'cancelled' : c.status,
     nextAction: c.next_action,
     nextWakeupAt: c.next_wakeup_at ? new Date(c.next_wakeup_at).toISOString() : null,
     blocker: c.blocker,
