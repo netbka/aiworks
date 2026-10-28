@@ -233,7 +233,7 @@ A step stopped for the owner (a B3 stop, or a checker that still rejects after i
 
 | Route | Effect |
 | --- | --- |
-| `POST /api/v2/decisions/answer` `{ option?, text? }` | Records one answer per decision. The controller then clears exactly that stop, resolves its blocker record and gives the step's next builder run the answer as guidance under the unchanged packet. |
+| `POST /api/v2/decisions/answer` `{ option?, text? }` | Records one answer per decision. The controller then clears exactly that stop, resolves its blocker record and retains the answer for subsequent builder and verifier runs under the same task, scope and authorization. Ordinary guidance remains one-use; an answer cannot silently change approved acceptance or permissions. |
 | `POST /api/v2/decisions/snooze` `{ snooze: 1h, 4h or 1d }` | Feedback only: the item says until when and moves to the end of Needs you; it stays counted, because the step stays stopped. |
 | `POST /api/v2/decisions/not-needed` `{ text? }` | "This did not need me", once per decision. Feedback only. |
 

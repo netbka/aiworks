@@ -38,6 +38,17 @@ const gateIn = (dir, extra, ...args) => {
   return { code: result.status, out: result.stdout };
 };
 const gate = (dir, ...args) => gateIn(dir, {}, ...args);
+
+test('a project without check uses its explicit gate; a missing command cannot leave stale passing evidence', (t) => {
+  const dir = workdir(t);
+  assert.equal(gate(dir, 'start', 'node', 'pass.mjs').code, 0);
+  assert.equal(gate(dir, 'wait', '--minutes', '0.2', '--poll-seconds', '0.1').code, 0);
+  assert.equal(gate(dir, 'start').code, 1);
+  assert.notEqual(readFileSync(join(dir, 'gate-exit.log'), 'utf8').trim(), '0');
+  assert.equal(gate(dir, 'wait', '--minutes', '0.2', '--poll-seconds', '0.1').code, 1);
+  assert.equal(gate(dir, 'start', 'node', 'fail.mjs').code, 0);
+  assert.equal(gate(dir, 'wait', '--minutes', '0.2', '--poll-seconds', '0.1').code, 1);
+});
 const waitFast = (dir, ...more) => gate(dir, 'wait', '--poll-seconds', '0.1', ...more);
 const ended = () => spawnSync(process.execPath, ['-e', '']).pid;
 
