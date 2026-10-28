@@ -1,8 +1,8 @@
 // The deploy adapter: deploy, check and roll back one release through the project's own commands (docs/design/
-// AUTO_RELEASE.md sections 4.4, 7.2 steps 3 and 5 to 7, 7.4 and 8; plan slice REL7). Built switched off: it runs a
-// command only through release/runner.mjs, which starts nothing while `release.enabled` is not true in config.json, and
-// the supervisor builds this adapter for no release until slice REL11 switches Auto Release on (the disposable rehearsal,
-// release/rehearsal.mjs, and the owner's Check the site now, release/health.mjs, build it under that same switch). It is the adapter that
+// AUTO_RELEASE.md sections 4.4, 7.2 steps 3 and 5 to 7, 7.4 and 8; plan slice REL7). It runs a
+// command only through release/runner.mjs. New deployment requires release.enabled;
+// pinned recovery remains available after a stop. The production controller, the
+// disposable rehearsal and the owner's health check use this adapter. It is the adapter that
 // release/state.mjs drives: state.mjs records each step's intent before this acts and its outcome after. The rules:
 // - the revision: for kind `deploy`, the merge commit the merge gate journaled as `merged` for this task at its verified
 //   revision (one merge path per repository, plan section 8 (k)); for `merge-then-deploy`, the merge commit the merge
@@ -21,11 +21,12 @@
 //   goes to the owner (AUTO_RELEASE.md section 8).
 // Commands print `revision: <sha>` and `digest: <digest>` lines on standard output.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
 import { writeAtomic } from '../proc.mjs';
 import { mergedEventReader } from './eligibility.mjs';
-import { runReleaseCommand } from './runner.mjs';
+import { releaseCommandsStopped, runReleaseCommand } from './runner.mjs';
+import { releasePath } from './paths.mjs';
 
 export const DEPLOY_RECORD = 'deploy.json';
 const SHA = /^[0-9a-f]{40}$/;
@@ -49,9 +50,9 @@ const same = (a, b) => {
 /** The `revision:` and `digest:` a command printed on standard output; a field printed twice with two values is null. */
 export function printed(output) {
   const stdout = String(output ?? '').split(STDERR)[0];
-  const found = { revision: undefined, digest: undefined };
+  const found = { revision: undefined, digest: undefined, 'rollback-ready': undefined };
   for (const line of stdout.split(/\r?\n/)) {
-    const match = /^\s*(revision|digest)\s*:\s*(\S+)\s*$/i.exec(line);
+    const match = /^\s*(revision|digest|rollback-ready)\s*:\s*(\S+)\s*$/i.exec(line);
     if (!match) continue;
     const key = match[1].toLowerCase();
     found[key] = found[key] === undefined || found[key] === match[2] ? match[2] : null;
@@ -59,6 +60,7 @@ export function printed(output) {
   return {
     revision: SHA.test(found.revision ?? '') ? found.revision : null,
     digest: DIGEST.test(found.digest ?? '') ? found.digest : null,
+    ...(found['rollback-ready'] !== undefined ? { rollbackReady: DIGEST.test(found['rollback-ready'] ?? '') ? found['rollback-ready'] : null } : {}),
   };
 }
 
@@ -86,7 +88,8 @@ function commandLine(file, args) {
  * - `runCommand`: release/runner.mjs runReleaseCommand, replaceable only in tests of the runner itself.
  */
 export function deployAdapter({ destination, repo, config, dataDir, store, merged = null, timeoutMs = 600_000, checkIntervalMs = 15_000,
-  clock = Date.now, sleep = (ms) => new Promise((done) => setTimeout(done, ms)), runCommand = runReleaseCommand }) {
+  clock = Date.now, sleep = (ms) => new Promise((done) => setTimeout(done, ms)), runCommand = runReleaseCommand,
+  beforeDeploy = async () => null, mutate = (fn) => fn() }) {
   if (!['deploy', 'merge-then-deploy'].includes(destination?.kind)) throw new TypeError('the deploy adapter serves a deploy or merge-then-deploy destination');
   if (!destination.commands?.deploy || !destination.commands?.observe) throw new TypeError('a deploy destination names its deploy and observe commands');
   if (!Number.isInteger(destination.checkWindowMinutes) || destination.checkWindowMinutes <= 0) throw new TypeError('a deploy destination names its check window');
@@ -95,11 +98,11 @@ export function deployAdapter({ destination, repo, config, dataDir, store, merge
   if (!store) throw new TypeError('the deploy adapter needs the supervisor store');
   const windowMs = destination.checkWindowMinutes * 60_000;
 
-  const home = (r) => join(dataDir, 'releases', r.id);
+  const home = (r) => releasePath(dataDir, r.id);
   const hooksOff = (r) => join(home(r), 'no-hooks');
   const read = (r) => { const path = join(home(r), DEPLOY_RECORD); return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null; };
-  const save = (r, record) => { mkdirSync(home(r), { recursive: true }); writeAtomic(join(home(r), DEPLOY_RECORD), JSON.stringify(record, null, 2)); return record; };
-  const tell = (r, kind, detail) => store.journal(r.campaign_id, kind, { release: r.id, ...detail }, clock());
+  const save = (r, record) => mutate(() => { mkdirSync(home(r), { recursive: true }); writeAtomic(join(home(r), DEPLOY_RECORD), JSON.stringify(record, null, 2)); return record; });
+  const tell = (r, kind, detail) => mutate(() => store.journal(r.campaign_id, kind, { release: r.id, ...detail }, clock()));
 
   /** The revision to deploy, after the tree check of AUTO_RELEASE.md 7.2 step 3: { revision } or { refused: reason }. */
   function revisionOf(r) {
@@ -119,10 +122,15 @@ export function deployAdapter({ destination, repo, config, dataDir, store, merge
   }
 
   /** A clean, detached release checkout at `revision`, under the release's own directory. Returns its path. */
-  function checkout(r, revision) {
-    const dir = join(home(r), 'checkout'), off = hooksOff(r);
+  const checkout = (r, revision) => mutate(() => checkoutOwned(r, revision));
+  function checkoutOwned(r, revision) {
+    if (!releaseCommandsStopped({ dataDir, release: r })) throw new Error('An earlier release command has no process-tree stop proof');
+    const dir = releasePath(dataDir, r.id, 'checkout'), off = hooksOff(r);
     mkdirSync(home(r), { recursive: true });
     if (existsSync(dir)) {
+      const source = git(repo, off, 'rev-parse', '--path-format=absolute', '--git-common-dir');
+      const owned = git(dir, off, 'rev-parse', '--path-format=absolute', '--git-common-dir');
+      if (!source.ok || !owned.ok || !same(source.stdout, owned.stdout)) throw new Error('The release checkout is no longer an owned worktree of the project');
       // Reuse it only when it is a worktree of its own: a Git command in a broken directory would reach a parent repository.
       const top = git(dir, off, 'rev-parse', '--show-toplevel');
       if (top.ok && same(top.stdout, dir) && git(dir, off, 'checkout', '--quiet', '--detach', '--force', revision).ok && git(dir, off, 'clean', '-ffdxq').ok) return verify(dir, off, revision);
@@ -141,18 +149,17 @@ export function deployAdapter({ destination, repo, config, dataDir, store, merge
 
   /** Run one project command in the checkout through the release runner: { exitCode, output } or null when unknown. */
   async function command(r, record, name, dir, args = [], key = r.step_key) {
-    const path = destination.commands[name];
-    const file = resolve(dir, ...path.split('/'));
-    try {
-      if (!statSync(file).isFile() || !realpathSync.native(file).startsWith(realpathSync.native(dir) + sep)) return null;
-    } catch { return null; }
+    const file = commandFile(dir, destination.commands[name]);
+    if (!file) return null;
     record.runs = (record.runs ?? 0) + 1;
     save(r, record);
     let result;
     try {
       result = await runCommand({ config, dataDir, stepKey: `${key}.${record.runs}.${name}`, command: commandLine(file, args), cwd: dir,
-        timeoutMs, store, release: r, now: clock });
+        timeoutMs, store, release: r, now: clock, credential: destination.credential ?? null,
+        recovery: record.deploy !== 'not-started' && ['observe', 'check', 'rollback'].includes(name) ? name : null });
     } catch { return null; }
+    mutate(() => null); // a takeover may have stopped the command while it was awaited
     return result?.ran === true && Number.isInteger(result.exitCode) ? { exitCode: result.exitCode, output: result.output ?? '' } : null;
   }
 
@@ -166,7 +173,7 @@ export function deployAdapter({ destination, repo, config, dataDir, store, merge
 
   /** `check` until it passes or the window ends: 'done', or 'failed' (a fail or unknown still at the end). */
   async function checks(r, record, dir, startedAt) {
-    if (!destination.commands.check) return 'done';
+    if (!destination.commands.check) return 'failed';
     const deadline = startedAt + windowMs;
     for (;;) {
       const result = await command(r, record, 'check', dir);
@@ -197,8 +204,16 @@ export function deployAdapter({ destination, repo, config, dataDir, store, merge
     }
     const { record, dir } = prepared;
     if (record.deploy !== 'not-started') return { outcome: 'unknown' }; // it may have run: only observe settles it
-    const before = await look(r, record, dir);
-    if (!before) return { outcome: 'unknown' };
+    const proof = await preflight(r);
+    if (!proof.knownGood || !proof.rollback) return { outcome: 'unknown' }; // no deploy intent: reconciliation proves not-done
+    const before = proof.live;
+    // Preflight ran the existing version's health check. Recreate the target
+    // checkout only after every command's native process tree has stopped.
+    checkout(r, record.revision);
+    Object.assign(record, read(r));
+    if (!git(repo, hooksOff(r), 'merge-base', '--is-ancestor', before.revision, record.revision).ok) return { outcome: 'refused' };
+    const blocked = await beforeDeploy();
+    if (blocked !== null) { tell(r, 'release-deploy-waiting', { reason: blocked }); return { outcome: 'unknown' }; }
     record.previousDigest = before.digest;
     record.deploy = 'started'; // intent before effect: from here on the deploy may have run
     save(r, record);
@@ -301,6 +316,38 @@ export function deployAdapter({ destination, repo, config, dataDir, store, merge
     const result = await command(r, known, 'check', checkout(r, known.revision), [], key);
     return result?.exitCode === 0 ? 'passed' : result?.exitCode === 1 ? 'failed' : 'unknown';
   }
+  // Read-only evidence before admitting a release. The caller uses a private,
+  // instance-specific probe id so no destination lock or another probe is raced.
+  async function preflight(r) {
+    if (!destination.commands.check || !destination.commands.rollback) return { knownGood: false, rollback: false };
+    const prepared = prepare(r);
+    if (prepared.refused) return { knownGood: false, rollback: false, reason: prepared.refused };
+    if (Object.values(destination.commands).some((path) => !commandFile(prepared.dir, path))) {
+      return { knownGood: false, rollback: false, reason: 'A project release command is not a regular file inside the verified checkout' };
+    }
+    const live = await look(r, prepared.record, prepared.dir);
+    if (!live?.revision || !live.digest || live.rollbackReady !== live.digest) return { knownGood: false, rollback: false,
+      reason: 'Observe must identify the live revision and its retained rollback artifact' };
+    const current = checkout(r, live.revision);
+    const health = await command(r, prepared.record, 'check', current);
+    return { knownGood: health?.exitCode === 0, rollback: true, live };
+  }
   return { run: guarded(steps.run), observe: guarded(steps.observe),
+    preflight: async (r) => { try { return await preflight(r); } catch { return { knownGood: false, rollback: false }; } },
     health: async (r, key) => { try { return await health(r, key); } catch { return 'unknown'; } } };
+}
+
+/** Refuse links, junctions and paths outside the private checkout, including a
+ * linked parent directory. A command is code from the verified Git tree. */
+function commandFile(dir, path) {
+  if (typeof path !== 'string' || !path || /[\\:]/.test(path) || path.split('/').some((part) => !part || part === '.' || part === '..')) return null;
+  try {
+    let at = dir;
+    for (const part of path.split('/')) {
+      at = join(at, part);
+      if (lstatSync(at).isSymbolicLink()) return null;
+    }
+    const canonical = (value) => process.platform === 'win32' ? value.toLowerCase() : value;
+    return lstatSync(at).isFile() && canonical(realpathSync.native(at)).startsWith(canonical(realpathSync.native(dir) + sep)) ? at : null;
+  } catch { return null; }
 }

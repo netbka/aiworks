@@ -1,12 +1,13 @@
 // The release runner: one release command in its own clean process (docs/design/AUTO_RELEASE.md section 6, slices REL5
-// and REL5a). Built switched off: with `release.enabled` not true in config.json the runner is never started (REL11
-// switches it on). The owner answered example-org/aiworks#33 item 2 on 2026-10-17 (plan section 8 (i)): no release
+// and REL5a). New commands require release.enabled; pinned recovery after an
+// existing forward intent may observe, check and roll back even after a stop.
+// The owner answered example-org/aiworks#33 item 2 on 2026-10-17 (plan section 8 (i)): no release
 // credential. A step names none and runs with the logins already on this computer: the operator's GitHub CLI login and the
 // project's own commands with the access they already have. Its clean environment then gains only the variables those
 // logins need to find themselves (RELEASE_LOGIN_ENV); it never sets GH_TOKEN and never reads a credential store. The
 // older path that fetches a named credential stays for a destination that still names one. How one step runs:
 // 1. the supervisor (runReleaseCommand) writes a packet that names the command, its working directory and the
-//    credential by reference only, then starts `node runner.mjs --release-step <packet>` with a clean environment:
+//    credential by reference only, then starts a native contained runner with a clean environment:
 //    only PATH and SystemRoot, never the supervisor's own variables (workerEnv copies them; this does not). On Windows,
 //    libuv adds its fixed set of system variables (user name, profile, TEMP and the like) to every child it starts;
 //    they name the machine and user, not the supervisor's configuration;
@@ -20,13 +21,15 @@
 // (slices REL6 to REL8) live in this directory too; tests/supervisor/release-boundary.test.mjs keeps them here.
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readJsonIfExists, writeAtomic } from '../proc.mjs';
+import { readJsonIfExists, runnerIdentified, stopOwnedRun, writeAtomic } from '../proc.mjs';
 import { credentialStoreFrom, fetchCredential, validCredentialRef } from './credential.mjs';
+import { releasePath } from './paths.mjs';
 
 export const RELEASE_RUNNER = fileURLToPath(import.meta.url);
+const CONTAINED_RUNNER = fileURLToPath(new URL('../runner.mjs', import.meta.url));
 /** The only inherited variables a release process keeps (AUTO_RELEASE.md section 6). */
 export const RELEASE_ENV_KEEP = Object.freeze(['PATH', 'SystemRoot']);
 /**
@@ -79,28 +82,40 @@ const masked = (text, secret) => (secret ? String(text).replaceAll(secret, MASK)
  * switched off (nothing is started) and when the runner gives no result (the outcome is then unknown).
  */
 export async function runReleaseCommand({ config, dataDir, stepKey, command, cwd, credential = null, timeoutMs = 600_000,
-  store = null, release = null, inherited = process.env, start = startRunner, now = Date.now }) {
-  if (config?.release?.enabled !== true) throw new Error('Auto Release is switched off (release.enabled is not true): the release runner is not started');
+  store = null, release = null, inherited = process.env, start = startRunner, now = Date.now, recovery = null, mutate = (fn) => fn() }) {
+  const recovering = ['observe', 'check', 'rollback'].includes(recovery) && release?.history?.some((entry) =>
+    ['deploy', 'apply', 'merge'].includes(entry.step) && entry.outcome !== 'not-done' && entry.outcome !== 'refused');
+  if (config?.release?.enabled !== true && !recovering) throw new Error('Auto Release is switched off (release.enabled is not true): the release runner is not started');
   if (typeof dataDir !== 'string' || !dataDir) throw new TypeError('the release runner needs the supervisor data directory');
   if (!KEY.test(stepKey ?? '')) throw new TypeError('the release step key must be a plain name');
   if (!Array.isArray(command) || !command.length || command.some((part) => typeof part !== 'string' || !part)) throw new TypeError('a release command is a non-empty array');
   if (typeof cwd !== 'string' || !cwd) throw new TypeError('a release command needs its release working directory');
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new TypeError('a release command needs a positive timeout');
   if (credential !== null && !validCredentialRef(credential?.ref)) throw new TypeError('a release credential is named by reference only');
-  const dir = join(dataDir, 'releases', stepKey);
+  const dir = releasePath(dataDir, stepKey);
   mkdirSync(dir, { recursive: true });
   const packet = join(dir, 'packet.json');
+  if (existsSync(packet)) throw new Error('This release command was already recorded; reconcile its outcome before another action');
   writeAtomic(packet, JSON.stringify({ version: 1, stepKey, command, cwd: resolve(cwd), timeoutMs,
+    releaseId: release?.id ?? null,
     credential: credential && { ref: credential.ref, store: config.release.credentialStore ?? { kind: 'windows' } } }, null, 2));
+  // The credential is fetched inside the contained command wrapper. The native
+  // runner therefore writes only that wrapper's already-masked output to disk.
+  writeAtomic(join(dir, 'prompt.txt'), '');
+  writeAtomic(join(dir, 'spec.json'), JSON.stringify({ cwd: resolve(cwd), heartbeatMs: 1000, timeoutMs: timeoutMs + 10_000,
+    argv: [process.execPath, RELEASE_RUNNER, '--release-command', packet] }));
   const startedAt = new Date(now()).toISOString();
   const env = credential ? releaseEnv(inherited) : releaseLoginEnv(inherited);
+  writeAtomic(join(dir, 'launch.json'), JSON.stringify({ stepKey, releaseId: release?.id ?? null, startedAt }));
   const exit = await start(packet, { cwd: resolve(cwd), env, timeoutMs: timeoutMs + 30_000 });
-  const result = readJsonIfExists(join(dir, 'result.json'));
+  const custody = readJsonIfExists(join(dir, 'result.json'));
+  const stopped = custody?.containment === 'windows-job-v1' && custody.containmentStopped === true;
+  const result = stopped ? readJsonIfExists(join(dir, 'command-result.json')) : null;
   const endedAt = new Date(now()).toISOString();
   if (store && release) {
-    store.journal(release.campaign_id, 'release-command', { release: release.id, key: stepKey, command, cwd: resolve(cwd),
+    mutate(() => store.journal(release.campaign_id, 'release-command', { release: release.id, key: stepKey, command, cwd: resolve(cwd),
       credentialRef: credential?.ref ?? null, startedAt, endedAt, ran: result?.ran ?? null, exitCode: result?.exitCode ?? null,
-      outputDigest: result?.outputDigest ?? null, reason: result?.reason ?? null }, now());
+      outputDigest: result?.outputDigest ?? null, reason: result?.reason ?? null, containmentStopped: stopped }, now()));
   }
   if (!result) throw new Error(`the release runner gave no result (runner exit ${exit.code ?? exit.signal})`);
   return { ...result, startedAt, endedAt };
@@ -109,8 +124,14 @@ export async function runReleaseCommand({ config, dataDir, stepKey, command, cwd
 /** Start the runner process and wait for it. A runner past its deadline is killed; its missing result is unknown. */
 function startRunner(packet, { cwd, env, timeoutMs }) {
   return new Promise((resolveExit) => {
-    const child = spawn(process.execPath, ['--no-warnings', RELEASE_RUNNER, '--release-step', packet], { cwd, env, stdio: 'ignore', windowsHide: true });
-    const timer = setTimeout(() => child.kill(), timeoutMs);
+    const dir = resolve(packet, '..');
+    const child = spawn(process.execPath, ['--no-warnings', CONTAINED_RUNNER, dir], { cwd, env, stdio: 'ignore', windowsHide: true });
+    const timer = setTimeout(() => {
+      const identity = readJsonIfExists(join(dir, 'runner.json'));
+      const proof = runnerIdentified(identity) ? stopOwnedRun(identity) : 'ownership-unavailable';
+      if (['stopped', 'not-running'].includes(proof)) writeAtomic(join(dir, 'containment-stop.json'), JSON.stringify({ identity, proof }));
+      else child.kill(); // closes the owned job; an absent proof remains unknown
+    }, timeoutMs);
     child.on('error', () => { clearTimeout(timer); resolveExit({ code: null, signal: 'spawn-failed' }); });
     child.on('exit', (code, signal) => { clearTimeout(timer); resolveExit({ code, signal }); });
   });
@@ -123,7 +144,12 @@ function startRunner(packet, { cwd, env, timeoutMs }) {
 async function runStepProcess(packetPath) {
   const packet = JSON.parse(readFileSync(packetPath, 'utf8'));
   const dir = resolve(packetPath, '..');
-  const finish = (result) => writeAtomic(join(dir, 'result.json'), JSON.stringify({ version: 1, ...result }, null, 2));
+  const finish = (result) => writeAtomic(join(dir, 'command-result.json'), JSON.stringify({ version: 1, ...result }, null, 2));
+  // The shared containment runner adds worker policy variables. Strip those
+  // before touching the credential helper or project command.
+  const clean = packet.credential ? releaseEnv(process.env) : releaseLoginEnv(process.env);
+  for (const key of Object.keys(process.env)) if (!(key in clean)) delete process.env[key];
+  Object.assign(process.env, clean);
   let secret = null;
   if (packet.credential) {
     try { secret = fetchCredential(credentialStoreFrom(packet.credential.store), packet.credential.ref); }
@@ -142,6 +168,33 @@ async function runStepProcess(packetPath) {
 }
 
 const self = (path) => (process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path));
-if (process.argv[2] === '--release-step' && process.argv[1] && self(process.argv[1]) === self(RELEASE_RUNNER)) {
+if (process.argv[2] === '--release-command' && process.argv[1] && self(process.argv[1]) === self(RELEASE_RUNNER)) {
   await runStepProcess(process.argv[3]);
+}
+
+/** Before reconciliation or rebuilding a release checkout, settle every earlier
+ * command's owned process tree. An unreadable receipt is never permission to
+ * repeat a deployment or to replace a checkout under a surviving process. */
+export function releaseCommandsStopped({ dataDir, release: row }) {
+  const root = releasePath(dataDir);
+  if (!existsSync(root)) return true;
+  for (const item of readdirSync(root, { withFileTypes: true })) {
+    if (!item.isDirectory() || !item.name.startsWith(row.id + '.')) continue;
+    const dir = releasePath(dataDir, item.name), packet = readJsonIfExists(join(dir, 'packet.json'));
+    // Packet/spec creation precedes launch intent. A crash in that preparation
+    // window is positively known to have launched nothing.
+    if (!existsSync(join(dir, 'launch.json')) && !existsSync(join(dir, 'runner.json')) && !existsSync(join(dir, 'run.lock'))) continue;
+    if (!packet || packet.releaseId !== row.id || packet.stepKey !== item.name) return false;
+    const result = readJsonIfExists(join(dir, 'result.json'));
+    if (result?.containment === 'windows-job-v1' && result.containmentStopped === true) continue;
+    const identity = readJsonIfExists(join(dir, 'runner.json'));
+    const receipt = readJsonIfExists(join(dir, 'containment-stop.json'));
+    if (receipt && runnerIdentified(identity) && JSON.stringify(receipt.identity) === JSON.stringify(identity) &&
+        ['stopped', 'not-running'].includes(receipt.proof)) continue;
+    if (!runnerIdentified(identity)) return false;
+    const proof = stopOwnedRun(identity);
+    if (!['stopped', 'not-running'].includes(proof)) return false;
+    writeAtomic(join(dir, 'containment-stop.json'), JSON.stringify({ identity, proof }));
+  }
+  return true;
 }
