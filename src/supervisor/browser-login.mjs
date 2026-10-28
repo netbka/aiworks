@@ -43,7 +43,7 @@ export function browserLoginSettings(web, config) {
  * authentication requests cannot appear in the worker's snapshots or network history. Cookies stay in the fresh
  * run-local browser profile; they are never exported to a packet, result, log or shared browser profile.
  */
-export async function loginBrowser(browser, settings, { store = null, timeoutMs = 30_000 } = {}) {
+export async function loginBrowser(browser, settings, { store = null, timeoutMs = 60_000 } = {}) {
   if (!settings) return;
   const credentials = store ?? credentialStoreFrom(settings.credentialStore);
   for (const profile of settings.profiles) {

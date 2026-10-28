@@ -88,3 +88,22 @@ test('an unreachable Infisical is never reported as an absent secret', async () 
     assert.notEqual(out.code, 1, `${op} must say "cannot tell", never "absent"`);
   }
 });
+
+test('an Infisical redirect never forwards the identity secret to a different destination', async () => {
+  let forwarded = 0;
+  const destination = createServer((_req, res) => { forwarded++; res.end('{}'); });
+  await new Promise((resolve) => destination.listen(0, '127.0.0.1', resolve));
+  const redirect = createServer((_req, res) => {
+    res.writeHead(307, { Location: `http://127.0.0.1:${destination.address().port}/login` }).end();
+  });
+  await new Promise((resolve) => redirect.listen(0, '127.0.0.1', resolve));
+  try {
+    const out = await runHelper(`http://127.0.0.1:${redirect.address().port}`, ['get', 'aiworks-campaign-api:sampleapp']);
+    assert.equal(out.code, 4);
+    assert.equal(forwarded, 0);
+    assert.ok(!`${out.stdout}${out.stderr}`.includes(IDENTITY_SECRET));
+  } finally {
+    redirect.closeAllConnections(); destination.closeAllConnections();
+    await Promise.all([new Promise((resolve) => redirect.close(resolve)), new Promise((resolve) => destination.close(resolve))]);
+  }
+});
