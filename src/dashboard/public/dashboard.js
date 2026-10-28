@@ -2563,18 +2563,23 @@ function homeTiles(home) {
   const reported = open.filter((c) => c.cost?.reportedUsd !== null && c.cost?.reportedUsd !== undefined);
   const unreported = open.reduce((n, c) => n + (c.cost?.unreportedRuns ?? 0), 0);
   const spent = reported.length ? usd(reported.reduce((n, c) => n + c.cost.reportedUsd, 0)) : '—';
+  // Needs you reads the same count as the global bar and the Needs you page: never zero or calm while a merge check runs
+  // (OPERATIONS_DASHBOARD: a step whose merge check is running is shown as "?", never as nothing).
+  const attention = state.owner?.count ?? home.needsYou.count, unknown = state.owner?.unknownResults ?? 0;
+  const needsValue = attention || (unknown ? '?' : 0), needsMore = attention && unknown ? '+ checking' : null;
+  const needsFoot = `${attention ? 'Settle each one in Needs you' : unknown ? 'Nothing confirmed yet' : 'Nothing is blocked on you'}${unknown ? ` · merge of ${plural(unknown, 'published step')} being checked` : ''}`;
   const tiles = [
     ['building', 'Building', builders, builders ? `${plural(builders, 'builder')} working` : 'No builder running'],
     ['checking', 'Checking', agents.length - builders, 'A fresh session that did not write the code'],
     ['waiting', 'Waiting', waiting, 'Limits and order: AIWorks resumes by itself'],
-    ['you', 'Needs you', home.needsYou.count, home.needsYou.count ? 'Settle each one in Needs you' : 'Nothing is blocked on you'],
+    ['you', 'Needs you', needsValue, needsFoot, needsMore],
     ['merged', 'Merged in 24 h', merged, 'Each checked before it merged'],
     ['cost', 'Reported cost', spent, unreported ? `Running work · ${plural(unreported, 'run')} not reported yet` : 'Running work, as the AI workers reported it']
   ];
-  return el('section', { class: 'live-tiles', 'aria-label': 'Right now' }, ...tiles.map(([tone, title, value, foot]) => {
+  return el('section', { class: 'live-tiles', 'aria-label': 'Right now' }, ...tiles.map(([tone, title, value, foot, more]) => {
     const body = [el('div', { class: 'live-tile-title' }, el('span', { class: `tone-dot ${tone}`, 'aria-hidden': 'true' }), title),
-      el('div', { class: 'live-tile-value number' }, String(value)), el('div', { class: 'live-tile-foot' }, foot)];
-    return tone === 'you' && home.needsYou.count ? el('a', { class: `live-tile ${tone}`, href: '#/needs' }, ...body) : el('div', { class: `live-tile ${tone}` }, ...body);
+      el('div', { class: 'live-tile-value number' }, String(value), more ? el('small', {}, ` ${more}`) : null), el('div', { class: 'live-tile-foot' }, foot)];
+    return tone === 'you' && (attention || unknown) ? el('a', { class: `live-tile ${tone}`, href: '#/needs' }, ...body) : el('div', { class: `live-tile ${tone}` }, ...body);
   }));
 }
 

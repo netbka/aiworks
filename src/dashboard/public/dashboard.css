@@ -563,6 +563,7 @@ a.live-tile:hover{text-decoration:none;border-color:#e8c88f;background:#fffcf6}
 .live-tile.you{border-color:#f0dcb4}
 .live-tile-title{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:550;color:var(--muted)}
 .live-tile-value{font-size:26px;font-weight:650;letter-spacing:-.5px;line-height:1.1}
+.live-tile-value small{font-size:13px;font-weight:550;letter-spacing:0;color:var(--muted)}
 .live-tile.you .live-tile-value{color:#8a5a14}.live-tile.merged .live-tile-value{color:var(--tone-merged)}
 .live-tile-foot{font-size:12px;color:var(--muted);line-height:1.4}
 .live-table{overflow-x:auto}
