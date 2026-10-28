@@ -87,7 +87,7 @@ const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--go
   campaign-token create <projectId>     create the external campaign API's bearer token for a registered project
                                         (registry/projects/<projectId>.json must exist in the governance checkout).
                                         A fresh random value is written to the operator's credential store under the
-                                        standard reference aiworks-campaign-api:<projectId> (release/credential.mjs:
+                                        standard reference aiworks-campaign-api:<projectId> (token-store.mjs:
                                         the Windows Credential Manager by default); config.json campaignApi is then
                                         pointed at it. The value is never printed: only the reference it was stored
                                         under. Refused (TOKEN_ALREADY_EXISTS) if one already exists; use rotate instead
