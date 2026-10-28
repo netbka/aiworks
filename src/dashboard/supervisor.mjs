@@ -31,6 +31,7 @@ import { FORWARD_STEPS, RELEASE_STOP } from '../supervisor/release/state.mjs';
 import { checkReleaseNow, healthCheckBlocker, releaseStopped } from '../supervisor/release/health.mjs';
 import { isLocalTarget } from '../supervisor/local-candidates.mjs';
 import { pauseSummary, projectOf, sameProject } from './views.mjs';
+import { ownerPauseReason, ownerReply } from './owner-text.mjs';
 
 const readConfig = (dataDir) => {
   try { return JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { return {}; }
@@ -74,6 +75,8 @@ function publicTaskWait(task, spec) {
  * the owner's word for an AI worker (OWNER_WORKSPACE §2.1). A step being worked on, ready to start, stopped, finished or
  * in finished work has no wait: who is on it, the stop copy or the result says where it stands.
  */
+// A pause reason is checked for credentials whole, never cut short (aiworks#75).
+const pauseText = (reason) => { const text = String(reason ?? ''); return safeText(text, text.length); };
 const ownerWords = (text) => safeText(String(text ?? ''), 300).replace(/\bAI provider\b/g, 'AI worker').replace(/\bprovider account\b/g, 'AI worker account');
 function stepWait(task, wait, control) {
   if (!wait || ['running', 'ready'].includes(wait.code) || task.blocked || ['finished', 'cancelled'].includes(control)) return null;
@@ -1060,6 +1063,8 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
     // AI workers are served, apart, as `local` (localRuns), so nothing counts them twice.
     const all = store.all("SELECT id FROM campaigns ORDER BY CASE WHEN control IN ('finished', 'cancelled') THEN 1 ELSE 0 END, created_at")
       .map(({ id }) => store.campaign(id));
+    // What names each piece of work in owner words, where AIWorks-written text would otherwise show its id.
+    const workNames = new Map(all.map((c) => [c.id, `“${safeText(c.declaration.envelope?.outcome ?? c.declaration.purpose ?? 'another piece of work')}”`]));
     let owners = null;
     const projectOf = (overlayId) => {
       if (!owners) {
@@ -1107,7 +1112,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
         repository: c.declaration.target.repository, trackingUrl: `https://github.com/${c.declaration.target.repository}/issues/${c.declaration.target.trackingIssue}`,
         trackingIssue: c.declaration.target.trackingIssue, purpose: c.declaration.purpose ? safeText(c.declaration.purpose) : null,
         // Who paused it and when: the pause reason is owner/operator command text, never worker output.
-        pausedAt: paused?.at ?? null, pausedReason: paused ? safeText(String(paused.detail?.reason ?? ''), 160) || null : null,
+        pausedAt: paused?.at ?? null, pausedReason: paused ? ownerPauseReason(pauseText(paused.detail?.reason), new Map([...workNames, [id, 'this work']])) : null,
         control: c.control, status: status.status, readiness: status.readiness, controllerLive: status.controller.live,
         // When the campaign was registered: a campaign no supervisor has picked up yet gets a grace period from it.
         registeredAt: c.created_at,
@@ -1209,7 +1214,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
       blocked: view.blocked ? safeText(view.blocked, 300) : null, reportTo: view.reportTo ?? null, runsToday: view.runsToday ?? 0, maxRunsPerDay: view.maxRunsPerDay ?? null,
       messages: view.messages.map((m) => ({ id: m.id, threadId: m.threadId, text: textChecks?.read(m.text, 4000).text ?? safeText(m.text, 4000), source: safeText(m.source, 80), state: code(m.state),
         receivedAt: m.receivedAt, readAt: m.readAt, answeredAt: m.answeredAt, failure: code(m.failure), retryAt: m.retryAt, attempts: m.attempts,
-        repository: m.repository, replyBody: shown(m.replyBody), replyCampaign: shown(m.replyCampaign),
+        repository: m.repository, replyBody: m.replyBody ? shown(ownerReply(m.replyBody, workNames)) : null, replyCampaign: shown(m.replyCampaign),
         replyState: code(m.replyState), replyUrl: githubLink(m.replyUrl),
         progress: m.state === 'read' ? (() => {
           const run = view.runs.find((item) => item.id === m.runId);

@@ -37,7 +37,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Store } from '../../../src/supervisor/store.mjs';
 import { campaignStart, campaignPause } from '../../../src/supervisor/api.mjs';
 import { runNotCounted } from '../../../src/supervisor/adapters/executors.mjs';
-import { postOwnerMessage, LANE } from '../../../src/supervisor/coordinator.mjs';
+import { postOwnerMessage, LANE, replyBody } from '../../../src/supervisor/coordinator.mjs';
 import { planRequestText } from '../../../src/dashboard/supervisor.mjs';
 import { createProject } from '../../../src/supervisor/projects.mjs';
 import { recordDraft, reviseDraft, submitWorkRequest, workRequest } from '../../../src/supervisor/intake.mjs';
@@ -243,7 +243,8 @@ function fill(store, dataDir, root, now) {
   };
   const working = [];
   const beat = ({ runDir }, at = now) => { writeFileSync(join(runDir, 'heartbeat'), String(at)); working.push(runDir); };
-  const finished = (result, costUsd) => ({ class: 'result', value: result, ...(costUsd ? { receipt: { costUsd } } : {}) });
+  // `usage`: the tokens a run reported. Most fixture runs report none, so Usage shows a token breakdown of a few runs only.
+  const finished = (result, costUsd, usage = null) => ({ class: 'result', value: result, ...(costUsd ? { receipt: { costUsd, ...(usage ? { usage } : {}) } } : {}) });
 
   // example/shop-app: running work, a finished campaign with merged, open and closed results, and a merge wait.
   const shop = 'example/shop-app';
@@ -258,14 +259,14 @@ function fill(store, dataDir, root, now) {
 
   id = start(declaration('shop-reviews', shop, 'Show product reviews', 20, [task('T1', 21, 'review list', 'Product review list')]), now - 4 * H);
   live(id);
-  operation(id, 'T1', 'implement', { state: 'finished', at: now - 2 * H, outcome: finished({ result: 'implemented' }, 1.1) });
+  operation(id, 'T1', 'implement', { state: 'finished', at: now - 2 * H, outcome: finished({ result: 'implemented' }, 1.1, { input: 182000, output: 9400 }) });
   beat(operation(id, 'T1', 'verify', { at: now - 6 * M }));
   setTask(id, 'T1', { state: 'verifying', attempts: 1, head_sha: 'c'.repeat(40) });
 
   id = start(declaration('shop-wishlist', shop, 'Let customers save a wishlist', 30, [task('T1', 31, 'wishlist', 'Wishlist page')], CHAIN), now - 2 * H);
   live(id);
   // Claude built it; Codex checks it, which Settings says Codex can do here ("can check and report here").
-  operation(id, 'T1', 'implement', { state: 'finished', at: now - 2 * H, outcome: finished({ result: 'implemented' }, 0.7) });
+  operation(id, 'T1', 'implement', { state: 'finished', at: now - 2 * H, outcome: finished({ result: 'implemented' }, 0.7, { input: 96000, output: 5100 }) });
   run = operation(id, 'T1', 'verify', { executor: 'codex-cli', at: now - 70 * M });
   // The worker process is alive, but its own record has not moved for 25 minutes.
   writeFileSync(join(run.runDir, 'heartbeat'), String(now));
@@ -308,7 +309,9 @@ function fill(store, dataDir, root, now) {
   const recipes = 'example/recipes';
   id = start(declaration('recipes-import', recipes, 'Import recipes from a spreadsheet', 60, [task('T1', 61, 'spreadsheet import', 'Spreadsheet import')]), now - 9 * H);
   live(id);
-  campaignPause(store, id, 'Paused for an update on this computer', now - 50 * M);
+  // An operator's pause reason, longer than one line and naming other work by its id and a run by its number, as a typed
+  // reason can (aiworks#75 review): the page shows it whole, in owner words.
+  campaignPause(store, id, 'Paused by the operator while recipes-tags run 3 finishes; the spreadsheet import resumes once the operator has compared the imported columns with the sample sheet and confirmed that no recipe lost its ingredients or its steps.', now - 50 * M);
 
   id = start(declaration('recipes-tags', recipes, 'Tag recipes by diet', 70, [task('T1', 71, 'diet tags', 'Diet tags')]), now - 5 * H);
   live(id);
@@ -552,6 +555,24 @@ Synthetic review fixture report.`;
   store.run("INSERT INTO outbox (key, campaign_id, target, body, state, attempts, posted, updated_at) VALUES (?, ?, ?, ?, 'posted', 1, ?, ?)",
     key, LANE, COORDINATOR.reportTo, 'Synthetic plan reply.', 'https://github.com/example/recipes/issues/1#issuecomment-1001', now - 3 * H + 20 * M);
   store.run("UPDATE owner_messages SET state = 'answered', answered_at = ?, response_key = ?, updated_at = ? WHERE id = ?", now - 3 * H + 20 * M, key, now - 3 * H + 20 * M, answered);
+  // A chat from this dashboard answered with the coordinator's stored reply (aiworks#75 review). The owner's message is
+  // longer than the quote replies used to clip, and the reply names a run, commits, source files and work by its id, as a
+  // live coordinator's can. Chats shows the reply in owner words beside the owner's message in full.
+  const asked = postOwnerMessage(store, { text: ['Why did the search change for notes take three tries, and is it safe to keep going?',
+    '', 'I tried the search page this morning on my phone and on the laptop. Short words such as "tea" find nothing, while longer words work fine.',
+    'Before anything else starts I would like to understand what went wrong in the earlier attempts, what the independent checker objected to each time,',
+    'and whether the fix that is waiting now covers short words as well. If it does not, please propose the smallest next step and tell me what it would cost.',
+    'Please keep it short: I will read it on my phone between meetings, and I will answer any question you have this evening.'].join('\n'), requestId: `00000000-0000-4000-9000-${String(++seq).padStart(12, '0')}`,
+  source: 'owner (dashboard)', repository: 'example/notes-site' }, now - 95 * M).id;
+  const answer = coordinatorRun('answered', now - 94 * M, [asked]);
+  store.run('INSERT INTO coordinator_replies (run_id, body) VALUES (?, ?)', answer.runId, replyBody({ runId: answer.runId,
+    messages: [store.get('SELECT * FROM owner_messages WHERE id = ?', asked)], value: { summary: 'Two attempts were rejected for missing short-word results; the waiting fix covers them.',
+      reply: ['## What happened', '', 'Run `coordinator.1761600000000` read notes-search: attempt 1 (commit 3f9c2ab1d4e5) skipped words under four letters in `src/search/index.mjs:35`,',
+        'and attempt 2 changed src/pages/search.html but not the index. The checker rejected both. The fix waiting now (head 9e8d7c6b5a41) indexes every word.',
+        '', '**Recommendation:** keep it; aiworks-work:12 tracks the follow-up.'].join('\n'),
+      newWork: [{ repository: 'example/notes-site', number: 141, kind: 'issue', title: 'Search finds short words', classification: 'in-progress', wave: 1, reason: 'Covered by notes-search T1.' }],
+      plan: '1. Merge the checked fix.\n2. Try "tea" on the phone.', proposedCampaign: null } }));
+  store.run("UPDATE owner_messages SET state = 'answered', answered_at = ?, updated_at = ? WHERE id = ?", now - 80 * M, now - 80 * M, asked);
   const reading = coordinatorRun('dispatched', now - 11 * M, [message('example/shop-app', 'Customers can pay with a gift card.', now - 12 * M)]);
   transcript(reading, now - 11 * M, now - M);
   message('example/notes-site', 'Notes can be exported as a PDF.', now - 2 * M);
