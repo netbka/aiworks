@@ -70,6 +70,14 @@ CREATE TABLE IF NOT EXISTS releases (
 CREATE TABLE IF NOT EXISTS release_locks (
   destination TEXT PRIMARY KEY, release_id TEXT NOT NULL UNIQUE, instance_id TEXT NOT NULL, generation INTEGER NOT NULL,
   acquired_at INTEGER NOT NULL);
+-- Last observed grant identity. A version is immutable, and a revoked version
+-- never becomes active again after a restart or an older checkout is restored.
+CREATE TABLE IF NOT EXISTS release_activity (
+  release_id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL, instance_id TEXT NOT NULL,
+  generation INTEGER NOT NULL, started_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS release_grants (
+  project TEXT PRIMARY KEY, version INTEGER NOT NULL, digest TEXT NOT NULL,
+  revoked INTEGER NOT NULL, source TEXT NOT NULL, approval TEXT NOT NULL, updated_at INTEGER NOT NULL);
 -- Child tasks inside an approved envelope (docs/design/WORK_ENVELOPE.md section 6.4; accessor plan.mjs). Additive like
 -- every table above: CREATE IF NOT EXISTS migrates an older store and the store version stays 1. Append-only: an
 -- amendment row is only inserted, a revised child is a new task_specs revision, a cancel only sets cancelled_at.
