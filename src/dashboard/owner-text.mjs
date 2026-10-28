@@ -1,6 +1,7 @@
-// Machine text in owner words (OWNER_UI_V2): a coordinator reply and a pause reason are shown without commit hashes,
-// file paths, run ids or campaign ids. Only text AIWorks or an AI worker wrote passes through here; what the owner typed
-// is shown as typed. The stored text is unchanged: these only shape what the page shows.
+// Machine text in owner words (OWNER_UI_V2): a coordinator reply is shown without commit hashes, file paths, run ids or
+// campaign ids. Only text AIWorks or an AI worker wrote gets that; what the owner typed is shown as typed. A pause reason is
+// typed text, so only the ids of known campaigns and their runs are put in words there. The stored text is unchanged:
+// these only shape what the page shows.
 
 const HASH = String.raw`(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,64}`;
 const NAMED_HASH = new RegExp(String.raw`\b(?:(?:the|a|its|exact)\s+)*(?:commit|revision|sha|head)\s+${HASH}\b`, 'gi');
@@ -12,12 +13,11 @@ const RUN_ID = /\b(?:(?:the|a|its)\s+)?(?:run\s+)?(?:coordinator|intake)\.\d{10,
 const WORK_ITEM = /\baiworks-work:(\d+)\b/g;
 // A dated work slug such as notes-search-20260101, with any step or run suffix.
 const SLUG = /\b[a-z][a-z0-9]*(?:-[a-z0-9]+)*-\d{8}(?:[./][\w.-]+)*\b/g;
-const RUN_NUMBER = /\b(?:run|attempt)\s*#?\d+\b/gi;
 
 const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/** Replaces internal identifiers in AIWorks-written text. `names` maps a campaign id to the words that name it. */
-export function withoutInternalIds(text, names = new Map()) {
+/** Replaces the ids of known campaigns, and their runs and steps. `names` maps a campaign id to the words that name it. */
+function withoutCampaignIds(text, names) {
   let out = String(text ?? '');
   // Longest first, so a campaign id that starts another is never half replaced.
   for (const [id, words] of [...names].sort(([a], [b]) => b.length - a.length)) {
@@ -28,7 +28,12 @@ export function withoutInternalIds(text, names = new Map()) {
       .replace(new RegExp(String.raw`${named}\s+T\d+\b`, 'gi'), `a step of ${words}`)
       .replace(new RegExp(String.raw`${named}(?:[./][\w.-]+)*(?![\w-])`, 'gi'), words);
   }
-  return out.replace(RUN_ID, 'AIWorks').replace(WORK_ITEM, 'work item $1').replace(SLUG, 'other work')
+  return out;
+}
+
+/** Replaces internal identifiers in AIWorks-written text. `names` maps a campaign id to the words that name it. */
+export function withoutInternalIds(text, names = new Map()) {
+  return withoutCampaignIds(text, names).replace(RUN_ID, 'AIWorks').replace(WORK_ITEM, 'work item $1').replace(SLUG, 'other work')
     .replace(NAMED_HASH, 'a commit').replace(BARE_HASH, 'a commit').replace(PATH, 'a project file').replace(FILE_LINE, 'a project file')
     .replace(/\(\s*\)/g, '').replace(/[ \t]{2,}/g, ' ').replace(/ +([.,;:])/g, '$1');
 }
@@ -71,19 +76,15 @@ export function ownerReply(body, names = new Map()) {
 }
 
 const REBUILD = /^AIWorks rebuild \S+: paused for maintenance\b/;
-const REASON_MAX = 300;
 
 /**
- * A pause reason as a complete sentence or two without internal ids. The rebuild's own reason gets fixed words; any
- * other reason is shown as given, without ids, up to its last whole sentence that fits (else its last whole word).
+ * A pause reason, whole and as typed. The rebuild's own reason gets fixed words; in any other reason only the ids of known
+ * campaigns (and their runs and steps) are put in words. An id that is an ordinary word (no hyphen, dot or digit) is left
+ * alone, so no typed word is ever rewritten.
  */
 export function ownerPauseReason(reason, names = new Map()) {
   const raw = String(reason ?? '').trim();
   if (!raw) return null;
   if (REBUILD.test(raw)) return 'Paused while AIWorks is updated on this computer; it resumes when the update finishes';
-  const text = withoutInternalIds(raw, names).replace(RUN_NUMBER, 'a run').replace(/\s+/g, ' ').trim();
-  if (text.length <= REASON_MAX) return text;
-  const cut = text.slice(0, REASON_MAX), sentence = cut.search(/[.!?](?=\s)[^.!?]*$/);
-  if (sentence > 40) return cut.slice(0, sentence + 1);
-  return `${cut.slice(0, cut.lastIndexOf(' ') > 40 ? cut.lastIndexOf(' ') : REASON_MAX).replace(/[\s,;:–-]+$/, '')}…`;
+  return withoutCampaignIds(raw, new Map([...names].filter(([id]) => /[-.\d]/.test(id))));
 }
