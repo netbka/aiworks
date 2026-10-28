@@ -10,7 +10,7 @@
 // - chrome-devtools-mcp adds os.tmpdir() to the folders its file tools may read and write, so the temporary folder is
 //   the run's own before the package loads; together with --workspace no file tool reaches outside the run directory.
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -68,7 +68,10 @@ if (config.login) {
   }
 }
 
-process.argv = [process.argv[0], entry, '--browserUrl', `http://127.0.0.1:${port}`,
+// The pinned server can discover global/ancestor config. Use only this run's empty config plus explicit options.
+const mcpConfig = join(config.tempDir, 'mcp-settings.json');
+writeFileSync(mcpConfig, '{}\n');
+process.argv = [process.argv[0], entry, '--config', mcpConfig, '--no-watchConfig', '--browserUrl', `http://127.0.0.1:${port}`,
   '--no-usage-statistics', '--no-performance-crux', '--redactNetworkHeaders', '--no-category-memory', '--workspace', config.filesDir,
   ...config.allowedUrlPatterns.flatMap((pattern) => ['--allowedUrlPattern', pattern])];
 await import(pathToFileURL(entry).href);
