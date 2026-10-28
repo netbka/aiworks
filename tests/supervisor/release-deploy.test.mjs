@@ -17,7 +17,8 @@ const ELIGIBLE = () => ({ eligible: true, failed: [], inputs: { grantDigest: GRA
 
 /** The synthetic project commands. Each logs its call, then acts on the destination folder as `behave.json` says. */
 const SCRIPTS = {
-  observe: `const live = json('live.json'); console.log('revision: ' + live.revision); console.log('digest: ' + live.digest);`,
+  observe: `const live = json('live.json'); console.log('revision: ' + live.revision); console.log('digest: ' + live.digest);
+if (!behave.noRollback) console.log('rollback-ready: ' + live.digest);`,
   deploy: `writeFileSync(at('retained.json'), JSON.stringify(json('live.json')));
 if (behave.deploy !== 'noop') writeFileSync(at('live.json'), JSON.stringify({ revision: process.argv[2], digest: behave.deploy === 'drift' ? 'sha256:other' : 'sha256:new' }));
 console.log('digest: sha256:new');`,
@@ -42,7 +43,7 @@ function rig(t, { behave = {}, rollback = 'automatic' } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'aiworks-release-deploy-'));
   const repo = join(dir, 'repo'), dest = join(dir, 'destination'), dataDir = join(dir, 'data');
   for (const path of [repo, dest, dataDir]) mkdirSync(path);
-  const rig = { dir, repo, dest, dataDir, now: 1_000_000, time: 0, stores: [] };
+  const rig = { dir, repo, dest, dataDir, now: 1_000_000, time: 0, stores: [], config: { release: { enabled: true } } };
   t.after(() => { for (const store of rig.stores) try { store.close(); } catch { /* already closed */ } rmSync(dir, { recursive: true, force: true }); });
 
   git(repo, 'init', '-q', '-b', 'main');
@@ -86,7 +87,7 @@ ${body}
     return deployAdapter({
       destination: { id: 'prod', environment: 'production', kind: 'deploy', changeClasses: ['app-code'], rollback, checkWindowMinutes: 1,
         commands: { deploy: 'ops/deploy.mjs', observe: 'ops/observe.mjs', check: 'ops/check.mjs', rollback: 'ops/rollback.mjs' } },
-      repo, config: { release: { enabled: true } }, dataDir, store: rig.store, timeoutMs: 60_000, checkIntervalMs: 15_000,
+      repo, config: rig.config, dataDir, store: rig.store, timeoutMs: 60_000, checkIntervalMs: 15_000,
       clock: () => rig.time, sleep: async (ms) => { rig.time += ms; },
     });
   };
@@ -158,6 +159,7 @@ test('failing checks roll back automatically to the previous digest, which obser
   const r = rig(t, { behave: { check: { 'sha256:new': 1 } } });
   const adapter = r.adapter(), id = r.locked();
   assert.equal((await runStep(r.store, adapter, id, r.at())).state, 'deployed');
+  r.config.release.enabled = false;
   assert.equal((await runStep(r.store, adapter, id, r.at())).state, 'checking', 'the check failed for the whole window');
   assert.ok(r.calls('check').length > 1, 'check ran again within the window');
   const after = await runStep(r.store, adapter, id, r.at());

@@ -905,16 +905,28 @@ Probe findings behind these rules (agy 1.3.3, chrome-devtools-mcp 1.10.1, Chrome
 - A headless window cannot be narrower than about 500 px, so phone checks use `emulate`.
 - On a page with planted defects, a first probe found every planted defect but passed a phone-width criterion that measurement showed failing. The prompt therefore requires measured evidence and phone checks through `emulate`. Through this adapter and the contained runner, AGY then judged all eight criteria correctly (about 4.5 minutes), and a fresh AGY verifier re-measured every claim and accepted the report (about 3 minutes).
 
-## 12. Auto Release (built, not enabled)
+<a id="12-auto-release-built-not-enabled"></a>
 
-**In short.** No release runs. Every project and destination is **Review only**: the supervisor publishes checked results and never deploys them; it merges only under the opt-in merge gate (section 3), which is not a release ([AW-001](DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception)). Auto Release ([#13](https://github.com/example-org/aiworks/issues/13), [design](design/AUTO_RELEASE.md)) is being built switched off. The owner answered [#33](https://github.com/example-org/aiworks/issues/33) on 2026-10-17 ([plan section 8](PROJECT_WORKSPACE_PLAN.md#8-owner-decisions-and-remaining-implementation-design-gates) (h) to (k)): no release token, one merge path per repository, and nothing switched on before the disposable rehearsal (slice REL11). Until then this section describes all there is.
+## 12. Automatic project releases
 
-What exists in code, all inert (observed; nothing outside the tests drives a release):
+With `"release": { "enabled": true }`, the supervisor continues finished campaigns into deployment under each project's standing [AW-010](DECISIONS.md#aw-010---auto-release-is-a-separate-release-role-under-a-standing-per-project-grant) grant. A project uses its own commands and destination; the workflow does not depend on a particular hosting provider. Merging still follows the existing opt-in merge gate. The default remains off until the installation enables it.
+
+The connected destination kind is **deploy**: deploy the exact merge commit recorded by the merge gate, only when its tree equals the independently verified tree. Other destination kinds are reported as unsupported by automatic continuation. Local folder Apply retains its existing workflow. AIWorks never deploys its own runtime through this lane, creates provider resources, or treats a campaign approval as deployment authority.
+
+Set up a project once: its read-only governance registry entry points `governance.releaseAuthorization.source` at a JSON grant on its base branch, and the entry's approval reference matches the grant. The grant names its destination, accepted file classes and `deploy`, `observe`, `check`, and `rollback` command files. Keep the declaration and installation evidence private. The commands run in a clean, detached checkout through native process containment, using the existing machine logins. No new release token is required.
+
+Before deployment, `observe` must print `revision: <40-character Git SHA>`, `digest: <artifact digest>` and `rollback-ready: <same digest>`. The last line attests that the current artifact is retained and restorable. Its current revision must pass the project's read-only `check`. After `deploy <merge revision>`, observe must identify the deployed revision and digest, and the post-release check must pass. A failed check invokes the granted rollback policy; an uncertain result remains unknown and retains the destination lock. Project merges and other work continue independently of that incident.
+
+The controller also visits finished campaigns. It uses a separate asynchronous command lane, renews ownership while commands run and drains that lane during maintenance. After a restart it proves previous command trees stopped, then observes any uncertain effect. It never repeats an accepted, rolled-back or uncertain deployment. Temporary preflight outages retry automatically when no deployment started. A newer verified merge supersedes an earlier attempt that has not deployed. An owner grant renewal can update an eligible attempt only before any forward intent; recovery after a forward intent uses the original pinned commands.
+
+The registered grant file is protected from worker edits and queued merges. Grant versions cannot regress, a version's contents cannot silently change, and a revoked version cannot return. Missing registry evidence is a system wait, not an invented owner decision. Status records expected destinations and durable outcomes: a campaign with outstanding release destinations reports `RELEASE_PENDING`, and `release.complete` requires every expected destination and the current verified task heads to be covered.
+
+The production components are:
 
 - **Eligibility** (`src/supervisor/release/eligibility.mjs`) reports per done task "would be eligible" or "not eligible, because ...". It never acts.
 - **Release state** (`src/supervisor/release/state.mjs`, tables `releases` and `release_locks`): one release per destination at a time, a step recorded as started before it acts, and reconciliation instead of repetition after a restart.
 - **The switches**, checked before every release step ([design §4.5](design/AUTO_RELEASE.md#45-the-kill-switches)). A step may start only when all four allow it:
-  1. `release.enabled` in `config.json` is exactly `true`. Absent, or any other value, is off. It is off on every install.
+  1. `release.enabled` in `config.json` is exactly `true`. Absent, or any other value, is off.
   2. There is no file `RELEASE-STOP` in the data directory. If the supervisor cannot tell, it stops.
   3. A valid release grant names the destination.
   4. The destination's mode is Auto Release. The mode is Review only unless that grant is newer than the owner's last narrowing.

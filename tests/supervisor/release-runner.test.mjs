@@ -16,7 +16,7 @@ import { acquireLock, createRelease, release, releaseGate, runStep } from '../..
 import {
   commandCredentialStore, credentialResolves, fetchCredential, releaseRoleReader, validCredentialRef, windowsCredentialStore,
 } from '../../src/supervisor/release/credential.mjs';
-import { RELEASE_ENV_KEEP, RELEASE_LOGIN_ENV, releaseEnv, runReleaseCommand } from '../../src/supervisor/release/runner.mjs';
+import { RELEASE_ENV_KEEP, RELEASE_LOGIN_ENV, releaseCommandsStopped, releaseEnv, runReleaseCommand } from '../../src/supervisor/release/runner.mjs';
 
 const SHA = 'c'.repeat(40);
 const REF = 'aiworks-release/sampleapp';
@@ -25,6 +25,25 @@ const REF = 'aiworks-release/sampleapp';
 const LIBUV_WINDOWS = ['homedrive', 'homepath', 'logonserver', 'path', 'systemdrive', 'systemroot', 'temp', 'userdomain', 'username', 'userprofile', 'windir'];
 const KEEP = [...RELEASE_ENV_KEEP.map((key) => key.toLowerCase()), ...(process.platform === 'win32' ? LIBUV_WINDOWS : [])];
 const PROBES = ['AIWORKS_SUPERVISOR_PROBE', 'CLAUDE_CODE_ENTRYPOINT', 'FAKE_GH_STATE'];
+
+test('a successful release command leaves no detached descendant and a pre-launch crash is safely retryable', { skip: process.platform !== 'win32' }, async (t) => {
+  const r = rig(t), late = join(r.work, 'late-write');
+  const command = join(r.tools, 'spawn.mjs');
+  writeFileSync(command, `import {spawn} from 'node:child_process';
+spawn(process.execPath,['-e',${JSON.stringify("setTimeout(()=>require('node:fs').writeFileSync(" + JSON.stringify(late) + ",'escaped'),1500)")}],{detached:true,stdio:'ignore',windowsHide:true}).unref();`);
+  const release = { id: 'test-release', history: [] };
+  const result = await runReleaseCommand({ config: r.config, dataDir: r.dataDir, stepKey: release.id + '.deploy.1',
+    command: [process.execPath, command], cwd: r.work, release });
+  assert.equal(result.exitCode, 0);
+  assert.equal(releaseCommandsStopped({ dataDir: r.dataDir, release }), true);
+  await new Promise((done) => setTimeout(done, 1800));
+  assert.equal(existsSync(late), false, 'success proves the whole owned process tree ended');
+  const preparing = join(r.dataDir, 'releases', release.id + '.deploy.2'); mkdirSync(preparing);
+  writeFileSync(join(preparing, 'packet.json'), JSON.stringify({ stepKey: release.id + '.deploy.2', releaseId: release.id }));
+  assert.equal(releaseCommandsStopped({ dataDir: r.dataDir, release }), true, 'no launch intent means nothing was started');
+  writeFileSync(join(preparing, 'launch.json'), '{}');
+  assert.equal(releaseCommandsStopped({ dataDir: r.dataDir, release }), false, 'a missing receipt after launch intent is unknown');
+});
 
 /** A disposable rig: a synthetic credential helper holding one synthetic value, a synthetic `gh`, a data directory. */
 function rig(t, { present = true } = {}) {

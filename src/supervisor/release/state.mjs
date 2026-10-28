@@ -16,6 +16,7 @@
 // config.json, the RELEASE-STOP file, a valid grant and the destination's mode. A stop prevents the next step, never
 // recovery: a check after a forward step, and a rollback, still run.
 import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
 export const FORWARD_STEPS = Object.freeze(['merge', 'deploy', 'apply', 'check']);
@@ -26,13 +27,15 @@ const RECORDED = { mergeCommit: 'merge_commit', deployedDigest: 'deployed_digest
 const SHA = /^[0-9a-f]{40}$/;
 
 /** The lock key of one destination: `<project>.<destination>` (AUTO_RELEASE.md 7.1). */
-export const destinationKey = (project, destination) => `${project}.${destination}`;
+export const destinationKey = (project, destination) => 'r' + createHash('sha256').update(JSON.stringify([project, destination])).digest('hex');
 
 export const release = (store, id) => store.get('SELECT * FROM releases WHERE id = ?', id);
 
 /** Who holds a destination, for E11: { free, releaseId, state }. An unknown or rollback-failed holder keeps it taken. */
 export function destinationState(store, project, destination) {
-  const lock = store.get('SELECT release_id FROM release_locks WHERE destination = ?', destinationKey(project, destination));
+  // Read by the durable row's identity so older delimiter-based locks keep
+  // protecting their original destination after an upgrade.
+  const lock = store.get('SELECT l.release_id FROM release_locks l JOIN releases r ON r.id = l.release_id WHERE r.project = ? AND r.destination = ?', project, destination);
   return lock ? { free: false, releaseId: lock.release_id, state: release(store, lock.release_id)?.state ?? null } : { free: true, releaseId: null, state: null };
 }
 
@@ -85,7 +88,7 @@ export function acquireLock(store, id, { lease, now, recheck }) {
     if (!r) throw new Error(`no release ${id}`);
     fenced(store, r.campaign_id, lease, now);
     const key = destinationKey(r.project, r.destination);
-    const held = store.get('SELECT release_id FROM release_locks WHERE destination = ?', key);
+    const held = store.get('SELECT l.release_id FROM release_locks l JOIN releases r ON r.id = l.release_id WHERE r.project = ? AND r.destination = ?', r.project, r.destination);
     if (held?.release_id === id) return { locked: true, refused: false, waitingFor: null, release: r };
     if (r.state !== 'eligible') throw new Error(`release ${id} is ${r.state}; only an eligible release takes the lock`);
     if (held) return { locked: false, refused: false, waitingFor: held.release_id, release: r };
@@ -148,6 +151,8 @@ function finish(store, r, result, now, how) {
  * lock, and `reason` says why. The caller that will drive releases (slice REL5) always passes it.
  */
 export async function runStep(store, adapter, id, { lease, now, gate = null }) {
+  const clock = typeof now === 'function' ? now : () => now;
+  now = clock();
   if (gate !== null && typeof gate !== 'function') throw new TypeError('the runStep gate must be a function (release, step) -> reason or null');
   const started = store.tx(() => {
     const r = release(store, id);
@@ -155,7 +160,7 @@ export async function runStep(store, adapter, id, { lease, now, gate = null }) {
     fenced(store, r.campaign_id, lease, now);
     if (r.state === 'unknown') throw new Error(`release ${id} is unknown: reconcile it before any action`);
     if (r.generation !== lease.generation) throw new Error(`release ${id} was last acted on under generation ${r.generation}: reconcile it after the takeover first`);
-    const lock = store.get('SELECT release_id, generation FROM release_locks WHERE destination = ?', destinationKey(r.project, r.destination));
+    const lock = store.get('SELECT release_id, generation FROM release_locks WHERE release_id = ?', r.id);
     if (lock?.release_id !== id || lock.generation !== lease.generation) throw new Error(`release ${id} does not hold the lock of ${r.destination}`);
     const step = nextStep(r);
     if (!step) throw new Error(`release ${id} has no step to run in state ${r.state}`);
@@ -181,12 +186,13 @@ export async function runStep(store, adapter, id, { lease, now, gate = null }) {
   try { result = answer(await adapter.run(started, started.step), ['done', 'failed', ...(started.step === 'check' || started.step === 'rollback' ? [] : ['refused'])]); }
   catch { result = { outcome: 'unknown' }; }
   return store.tx(() => {
-    fenced(store, started.campaign_id, lease, now);
+    const endedAt = clock();
+    fenced(store, started.campaign_id, lease, endedAt);
     const r = release(store, id);
     if (r.step_key !== started.step_key || r.step_outcome !== null) return r;
-    if (result.outcome !== 'unknown') return finish(store, r, result, now, 'ran');
-    store.journal(r.campaign_id, 'release-unknown', { release: id, step: r.step, key: r.step_key }, now);
-    return update(store, id, { state: 'unknown' }, now);
+    if (result.outcome !== 'unknown') return finish(store, r, result, endedAt, 'ran');
+    store.journal(r.campaign_id, 'release-unknown', { release: id, step: r.step, key: r.step_key }, endedAt);
+    return update(store, id, { state: 'unknown' }, endedAt);
   });
 }
 
@@ -218,6 +224,8 @@ function before(r) {
  * adopted. Returns the release afterwards.
  */
 export async function reconcile(store, adapter, id, { lease, now }) {
+  const clock = typeof now === 'function' ? now : () => now;
+  now = clock();
   const looking = store.tx(() => {
     const r = release(store, id);
     if (!r) throw new Error(`no release ${id}`);
@@ -238,16 +246,17 @@ export async function reconcile(store, adapter, id, { lease, now }) {
   try { seen = answer(await adapter.observe(looking, looking.step), ['done', 'failed', 'not-done', 'unknown']); } // a read failure is never evidence
   catch { seen = { outcome: 'unknown' }; }
   return store.tx(() => {
-    fenced(store, looking.campaign_id, lease, now);
+    const endedAt = clock();
+    fenced(store, looking.campaign_id, lease, endedAt);
     const r = release(store, id);
     if (r.state !== 'unknown' || r.step_key !== looking.step_key) return r;
-    if (seen.outcome === 'done' || seen.outcome === 'failed') return finish(store, r, seen, now, 'observed');
+    if (seen.outcome === 'done' || seen.outcome === 'failed') return finish(store, r, seen, endedAt, 'observed');
     if (seen.outcome === 'not-done') {
-      const history = r.history.map((entry) => (entry.key === r.step_key ? { ...entry, endedAt: now, outcome: 'not-done', how: 'observed' } : entry));
-      store.journal(r.campaign_id, 'release-step-finished', { release: id, step: r.step, key: r.step_key, outcome: 'not-done', how: 'observed' }, now);
-      return update(store, id, { state: before(r), step_outcome: 'not-done', history }, now);
+      const history = r.history.map((entry) => (entry.key === r.step_key ? { ...entry, endedAt, outcome: 'not-done', how: 'observed' } : entry));
+      store.journal(r.campaign_id, 'release-step-finished', { release: id, step: r.step, key: r.step_key, outcome: 'not-done', how: 'observed' }, endedAt);
+      return update(store, id, { state: before(r), step_outcome: 'not-done', history }, endedAt);
     }
-    store.journal(r.campaign_id, 'release-still-unknown', { release: id, step: r.step, key: r.step_key }, now);
+    store.journal(r.campaign_id, 'release-still-unknown', { release: id, step: r.step, key: r.step_key }, endedAt);
     return r;
   });
 }

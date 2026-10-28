@@ -15,6 +15,8 @@ import { authorityDigest, campaignLimits, canonicalJson, executorOrder, overlayG
 import { localProjectName, resolveCheckout, resolveLocalProject } from './project-connect.mjs';
 import { admissionBudget } from './api.mjs';
 import { currentSettings, projectOf, protectedAreasFor, protectedPaths } from './project-settings.mjs';
+import { authorityChange, authorityPaths } from './release/authority-path.mjs';
+import { drainReleases, releasePass } from './release/controller.mjs';
 import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountFull, accountOf, accountWait, buildTaskSignature, clearAccountWait, formatSignatureLines, formatTokensUsage, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
 import { BEYOND_RULE, beyondConstraint, domainOf, outsideWrites, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, hostPressure, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
@@ -547,6 +549,8 @@ export class Controller {
     // Merge gate (aiworks#138): verified PRs in repositories the owner opted in, one per repository per pass.
     try { await mergePass(this); }
     catch (error) { this.log(`merge pass failed: ${error.stack || error}`); }
+    try { releasePass(this); }
+    catch (error) { this.log(`release pass failed: ${error.stack || error}`); }
     // Program waves (PROJECT_WORKSPACE_PLAN 6.8d, PROG3): off unless config.json `program.enabled`; registers at most the
     // next wave of each approved program, at most once an hour. The new campaign is stepped from the next tick.
     try { programPass(this); }
@@ -575,7 +579,10 @@ export class Controller {
   }
 
   /** Graceful shutdown: expire held leases so a restarted instance takes over at once. */
+  async drainReleases() { await drainReleases(this); }
+
   release() {
+    if (this.releaseJob) throw new Error('Drain release commands before releasing campaign leases');
     for (const [id, generation] of this.held) this.store.releaseLease(id, this.instanceId, generation, this.now());
     this.held.clear();
   }
@@ -992,6 +999,19 @@ export class Controller {
     const protectedHead = verdict.class !== 'result' || this.deliverable(ctx, op.task_id) !== 'commit' ? null
       : op.kind === 'implement' && verdict.value.result === 'resolved' ? verdict.value.headSha : op.kind === 'verify' ? op.target_sha : null;
     const areas = protectedHead ? protectedAreasFor(this.store, this.store.campaign(ctx.id)) : [];
+    if (protectedHead) {
+      let problem;
+      try { problem = authorityChange(this, this.store.campaign(ctx.id).declaration, op.workspace,
+        this.integrationFinding(before)?.base ?? before.base_sha, protectedHead); }
+      catch {
+        // Keep the finished operation's existing result for the next tick. A
+        // temporary registry failure neither burns another paid run nor asks
+        // the owner to resolve a boundary violation that was never observed.
+        this.log(`waiting to read project authority before consuming ${op.id}`);
+        return;
+      }
+      if (problem) verdict = { ...verdict, class: 'error', violation: true, detail: problem };
+    }
     if (areas.length) {
       const integration = this.integrationFinding(before);
       const changed = gitA.changedPaths({ git: this.cmd.git, path: op.workspace, from: integration ? integration.base : before.base_sha, to: protectedHead });
@@ -2569,6 +2589,8 @@ export class Controller {
       // The project's standing settings (WP5): its protected areas, which the commit check enforces, and the owner's
       // notes. They add care, never authority: the packet and its digest are unchanged by them.
       const areas = protectedAreasFor(this.store, current);
+      const authority = authorityPaths(this, decl);
+      if (authority.length) prompt += `\nOwner release authority: never modify ${authority.join(', ')}. A campaign cannot amend its own standing grant.\n`;
       const notes = currentSettings(this.store, projectOf(decl)).settings.notes;
       if (areas.length || notes) {
         prompt += '\nStanding project settings from the owner (they add protection and guidance, never authority):\n' +

@@ -8,6 +8,7 @@
 // refused in a repository the merge gate covers.
 import { FORBIDDEN_CLASSES, parseAuthorization } from './authorization.mjs';
 import { classify, UNCLASSIFIED } from './classify.mjs';
+import { releaseMode } from './state.mjs';
 
 const LOCAL_KINDS = new Set(['local-git-apply', 'local-folder-apply']);
 const DEPLOY_KINDS = new Set(['merge-then-deploy', 'deploy']);
@@ -275,7 +276,29 @@ export const REVIEW_ONLY_SUMMARY = 'Review only: checked results are published f
  * with the reason and the project stays in Review only. It runs the real evaluator so the report is the evaluator's own
  * answer, and it acts on nothing. Waits for the owner's decision on example-org/aiworks#33.
  */
-export function releaseStatus({ project, tasks }) {
+export function releaseStatus({ project, tasks, store = null, campaignId = null, enabled = false, commitTasks = tasks }) {
+  const rows = store && campaignId ? store.all('SELECT * FROM releases WHERE campaign_id = ? ORDER BY created_at DESC', campaignId) : [];
+  const last = store && campaignId ? store.get("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'release-waiting' ORDER BY seq DESC LIMIT 1", campaignId)?.detail : null;
+  const plan = store && campaignId ? store.get("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'release-plan' ORDER BY seq DESC LIMIT 1", campaignId)?.detail : null;
+  if (enabled || rows.length) {
+    const remembered = store?.get("SELECT name FROM sqlite_master WHERE type='table' AND name='release_grants'")
+      ? store.get('SELECT * FROM release_grants WHERE project = ?', project) : null;
+    const valid = Boolean(plan && remembered?.digest === plan.grantDigest && !remembered.revoked && Date.parse(plan.expiresAt) > Date.now());
+    const modes = plan?.destinations?.map((destination) => ({ destination, mode: releaseMode(store, { project, destination,
+      grant: valid ? { record: { version: plan.grantVersion, grantedAt: plan.grantedAt, destinations: plan.destinations.map((id) => ({ id })) } } : null }) })) ?? [];
+    const complete = Boolean(plan?.destinations?.length && commitTasks.length && commitTasks.every((task) =>
+      task.state === 'done' && plan.covered?.some((item) => item.task === task.task_id && item.sha === task.verified_sha)) &&
+      plan.destinations.every((destination) => rows.some((row) => row.destination === destination && row.verified_sha === plan.sha &&
+        row.state === 'accepted')));
+    return { mode: enabled && modes.some((d) => d.mode === 'auto-release') ? 'auto-release' : 'review-only', enabled, complete,
+      authorized: valid, modes, expected: plan?.destinations ?? [],
+      summary: rows.length ? !complete ? 'Release has not completed at every destination.' : 'The deployed revision passed its project health check.'
+        : last?.reason ?? 'No deployment has been recorded. Release needs a standing project grant and an exact verified merge.',
+      tasks: rows.map((row) => ({ taskId: row.task_id, verifiedSha: row.verified_sha, destination: row.destination,
+        state: row.state, releaseId: row.id, eligible: row.eligibility?.eligible === true,
+        summary: row.reason ?? row.state, failedChecks: row.eligibility?.failed?.map((item) => item.check) ?? [] })),
+    };
+  }
   const read = { switches: () => ({ enabled: false, stop: null, mode: 'review-only' }) };
   return {
     mode: 'review-only',
