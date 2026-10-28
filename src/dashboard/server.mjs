@@ -46,6 +46,13 @@ export const SCOPED_CONTROL_BYTES = 65_536;
 // may be (provenance.mjs privateJson), since the body is the same declaration shape, just sent over HTTP.
 export const CAMPAIGN_API_BYTES = 1024 * 1024;
 const CAMPAIGN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// The external campaign API's own two routes: a remote caller (by design, never the local loopback Host the
+// dashboard's browser session uses) with its own bearer-token authentication (checkCampaignApiAuth), independent of
+// Host/Origin. The dashboard's Host/Origin gate below exists to stop a browser page from reaching the session's own
+// CSRF-protected routes from another origin; it does not apply to these two, or the API could never be called from
+// outside this computer at all, defeating the point of an *external* campaign API (found calling it through a
+// configured tunnel: every request 403'd here before ever reaching the token check).
+const CAMPAIGN_API_PATH = /^\/api\/campaigns(?:\/[^/]+\/status)?$/;
 
 /**
  * Whether the external campaign API is on, and whether this request's `Authorization: Bearer <token>` matches the
@@ -182,8 +189,9 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
         'Content-Security-Policy': PREVIEW_POLICY, 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
       return res.end(answer.body);
     }
-    if (path === null || req.headers.host !== new URL(origin).host || req.headers.origin && req.headers.origin !== origin ||
-        req.headers['sec-fetch-site'] === 'cross-site' && !pageNavigation(req, path)) return send(403, { error: 'Only the local dashboard origin is allowed.' });
+    if (path === null) return send(403, { error: 'Only the local dashboard origin is allowed.' });
+    if (!CAMPAIGN_API_PATH.test(path) && (req.headers.host !== new URL(origin).host || req.headers.origin && req.headers.origin !== origin ||
+        req.headers['sec-fetch-site'] === 'cross-site' && !pageNavigation(req, path))) return send(403, { error: 'Only the local dashboard origin is allowed.' });
     try {
       if (req.method === 'GET') {
         if (staticFiles.has(path)) {

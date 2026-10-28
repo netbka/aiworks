@@ -11,9 +11,28 @@ import { once } from 'node:events';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import http from 'node:http';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
 import { Store } from '../../src/supervisor/store.mjs';
 import { declaration, GOVERNANCE, runtimeCheckout } from '../supervisor/helpers.mjs';
+
+/** A raw request with any Host/Origin, which fetch() refuses to send (Host is a forbidden header there): the only
+ * way to actually exercise an external caller — reaching the dashboard through a configured tunnel under a
+ * different hostname, exactly where this guard was found blocking every campaign-API call outright. */
+function rawRequest(origin, path, { method = 'GET', headers = {}, body } = {}) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(path, origin);
+    const req = http.request({ hostname: url.hostname, port: url.port, path: url.pathname + url.search, method, headers,
+      insecureHTTPParser: true }, res => {
+      const chunks = [];
+      res.on('data', chunk => chunks.push(chunk));
+      res.on('end', () => resolve({ status: res.statusCode, json: () => JSON.parse(Buffer.concat(chunks).toString('utf8')) }));
+    });
+    req.on('error', reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
 
 /** A synthetic credential helper command (release/credential.mjs commandCredentialStore's contract) holding one value. */
 function tokenHelper(t, { ref = 'aiworks-campaign-api', value = `synthetic-campaign-token-${randomUUID()}` } = {}) {
@@ -140,4 +159,35 @@ test('rejects an oversized, non-JSON or malformed body before touching the store
   assert.equal((await postRaw('/api/campaigns', 'not json', { ...auth, 'content-type': 'application/json' })).status, 400);
   const big = JSON.stringify({ padding: 'x'.repeat(1024 * 1024 + 1) });
   assert.equal((await postRaw('/api/campaigns', big, { ...auth, 'content-type': 'application/json' })).status, 413);
+});
+
+test('an external caller reaching the dashboard under a different Host (a configured tunnel) is not refused by the dashboard\'s own loopback Host/Origin gate, only by its bearer token; the same mismatched Host still refuses every other route', async (t) => {
+  const token = tokenHelper(t);
+  const dataDir = fixture(t, { campaignApi: { enabled: true, tokenRef: token.ref, credentialStore: { kind: 'command', command: token.command } } });
+  const runtime = runtimeCheckout();
+  t.after(() => runtime.cleanup());
+  const server = createDashboardServer({ dataDir, provenanceRoot: runtime.root,
+    roadmap: { snapshot: () => ({ entries: [], governance: { configured: false, reason: 'Synthetic test.' } }) } });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const tunnelHeaders = { Host: 'aiworks.example-tunnel.test', Origin: 'https://aiworks.example-tunnel.test' };
+  const d = declaration({ campaignId: `tunnel-${randomUUID()}` });
+
+  // Without a valid token, a mismatched Host is still refused — by the token check (401), never silently accepted.
+  const noToken = await rawRequest(origin, '/api/campaigns', { method: 'POST', headers: { ...tunnelHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify(d) });
+  assert.equal(noToken.status, 401);
+
+  // With a valid token, the mismatched Host no longer 403s the campaign routes: this is the whole point of an
+  // *external* campaign API, and it was refused outright before this fix (every call 403'd before the token check ran).
+  const created = await rawRequest(origin, '/api/campaigns', { method: 'POST', headers: { ...tunnelHeaders, 'Content-Type': 'application/json', Authorization: `Bearer ${token.value}` }, body: JSON.stringify(d) });
+  assert.equal(created.status, 201, JSON.stringify(created.json()));
+  const status = await rawRequest(origin, `/api/campaigns/${d.campaignId}/status`, { headers: { ...tunnelHeaders, Authorization: `Bearer ${token.value}` } });
+  assert.equal(status.status, 200);
+
+  // The same mismatched Host still refuses an ordinary dashboard route: this fix narrows the gate to the two
+  // campaign-API routes only, it does not open the dashboard itself to another origin.
+  const state = await rawRequest(origin, '/api/state', { headers: tunnelHeaders });
+  assert.equal(state.status, 403);
 });
