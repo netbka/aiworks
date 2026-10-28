@@ -2764,6 +2764,10 @@ export class Controller {
             const target = { gh: this.cmd.gh, repository: decl.target.repository, issue: Number(number), key: vKey };
             if (!github.findMarkedComment(target)) github.postComment({ ...target, body: `${verification}\n\n${github.marker(vKey)}`, bodyFile, terms });
           }
+        } else if (decl.reportPublication === 'local') {
+          // A campaign that keeps its reports local (campaign.mjs reportPublication): the verified report stays in this
+          // task's own result, read through the campaign API's report route; nothing is posted to the task issue.
+          url = `aiworks-report:${ctx.id}/${task.task_id}`;
         } else {
           // Reconcile before posting: a crash after an accepted post must not post twice.
           const digest = createHash('sha256').update(String(task.result?.report ?? ''), 'utf8').digest('hex');
@@ -2807,6 +2811,8 @@ export class Controller {
           ? `**${task.task_id}** (#${spec.issue}) ${repair.id === OWNER_CHANGES ? 'had changes requested by the owner at' : 'failed CI at'} \`${repair.verified}\`. A repair round ${repair.id === OWNER_CHANGES ? 'made them' : 'fixed it'}, a fresh independent verification accepted \`${task.verified_sha}\`, and it is pushed to the same PR: ${url}. Not merged; merge follows ${decl.target.repository}'s release gate.`
           : spec.deliverable === 'commit'
           ? `**${task.task_id}** (#${spec.issue}) passed independent verification and is published for review: ${url} at \`${task.verified_sha}\`. Not merged; merge follows ${decl.target.repository}'s release gate.`
+          : decl.reportPublication === 'local'
+          ? `**${task.task_id}** (#${spec.issue}) passed independent verification; the verified report is kept on the supervisor's computer (campaign API report route), not posted here.`
           : `**${task.task_id}** (#${spec.issue}) passed independent verification; the verified report is posted: ${url} (revision \`${task.verified_sha}\`).`) + ciNote, now);
         this.log(`published ${task.task_id}: ${url}`);
       });

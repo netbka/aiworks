@@ -1,5 +1,6 @@
-// The optional external campaign API (off by default; docs/SUPERVISOR.md section 16): `POST /api/campaigns` and
-// `GET /api/campaigns/:id/status` on the dashboard's own HTTP server (src/dashboard/server.mjs), for an external system
+// The optional external campaign API (off by default; docs/SUPERVISOR.md section 16): `POST /api/campaigns`,
+// `GET /api/campaigns/:id/status` and `GET /api/campaigns/:id/report` served by the dashboard process
+// (src/dashboard/server.mjs, on its own port or on `campaignApi.port`), for an external system
 // — a change-request tracker, for example — that registers a campaign and reads its status the same way the CLI and the
 // owner's dashboard already do, over HTTP instead of a local process or a browser session. It widens nothing: the same
 // declaration shape (campaign.mjs validateDeclaration), the same AW-005 merged-code gate (provenance.mjs
@@ -11,7 +12,10 @@
 // store the release credential already reads, release/credential.mjs): config.json never holds the token value itself
 // (AGENTS.md: configuration holds paths, never secret values). This token is never the dashboard's own per-process CSRF
 // secret (server.mjs), and the CSRF secret is never accepted here: the browser surface and this surface share no secret.
+import { createHash } from 'node:crypto';
 import { CampaignError } from './api.mjs';
+import { specsOf } from './plan.mjs';
+import { passedCheck } from './result-review.mjs';
 import { CODE_ROOT, revisionNotMerged, runtimeTrust } from './provenance.mjs';
 import { assertRegisteredTarget } from './campaign.mjs';
 import { approvalRequired, approvedStart } from './approvals.mjs';
@@ -30,12 +34,35 @@ import { credentialStoreFrom, validCredentialRef } from './release/credential.mj
 export function campaignApiSettings(config) {
   const raw = config?.campaignApi;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || raw.enabled !== true || !validCredentialRef(raw.tokenRef)) return { enabled: false };
-  if (Object.keys(raw).some((key) => !['enabled', 'tokenRef', 'credentialStore'].includes(key))) return { enabled: false };
+  if (Object.keys(raw).some((key) => !['enabled', 'tokenRef', 'credentialStore', 'port'].includes(key))) return { enabled: false };
   const store = raw.credentialStore;
   if (store !== undefined && (!store || typeof store !== 'object' || Array.isArray(store) || !['windows', 'command'].includes(store.kind))) {
     return { enabled: false };
   }
-  return { enabled: true, tokenRef: raw.tokenRef, credentialStore: store ?? { kind: 'windows' } };
+  if (raw.port !== undefined && !(Number.isSafeInteger(raw.port) && raw.port >= 1024 && raw.port <= 65535)) return { enabled: false };
+  return { enabled: true, tokenRef: raw.tokenRef, credentialStore: store ?? { kind: 'windows' }, port: raw.port ?? null };
+}
+
+/**
+ * The verified reports of a campaign's report tasks, for `GET /api/campaigns/:id/report`. A task's report is returned
+ * only once independent verification accepted its exact head and report and passed every acceptance criterion; before that
+ * the entry has `report: null`, so an implementer's unverified output never leaves this computer through the API.
+ * No local path, worker log or verifier evidence is part of the answer. Throws CAMPAIGN_NOT_FOUND like campaignStatus.
+ */
+export function campaignReports(store, id) {
+  const campaign = store.campaign(id);
+  if (!campaign) throw new CampaignError('CAMPAIGN_NOT_FOUND', `campaign ${id} is not registered in the selected store`);
+  const specs = specsOf(store, id, campaign.declaration);
+  const tasks = [];
+  for (const row of store.tasks(id)) {
+    const spec = specs.get(row.task_id);
+    if (spec?.deliverable !== 'report') continue;
+    const verified = ['verified', 'done'].includes(row.state) && typeof row.result?.report === 'string' && passedCheck(row, spec.acceptance);
+    const report = verified ? row.result.report : null;
+    tasks.push({ taskId: row.task_id, state: row.state, verifiedSha: verified ? row.verified_sha : null, report,
+      reportSha256: report === null ? null : createHash('sha256').update(report, 'utf8').digest('hex') });
+  }
+  return { campaignId: id, control: campaign.control, reportPublication: campaign.declaration.reportPublication ?? 'issue', tasks };
 }
 
 /**

@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import http from 'node:http';
-import { createDashboardServer } from '../../src/dashboard/server.mjs';
+import { createCampaignApiServer, createDashboardServer } from '../../src/dashboard/server.mjs';
 import { Store } from '../../src/supervisor/store.mjs';
 import { declaration, GOVERNANCE, runtimeCheckout } from '../supervisor/helpers.mjs';
 
@@ -159,6 +159,36 @@ test('rejects an oversized, non-JSON or malformed body before touching the store
   assert.equal((await postRaw('/api/campaigns', 'not json', { ...auth, 'content-type': 'application/json' })).status, 400);
   const big = JSON.stringify({ padding: 'x'.repeat(1024 * 1024 + 1) });
   assert.equal((await postRaw('/api/campaigns', big, { ...auth, 'content-type': 'application/json' })).status, 413);
+});
+
+test('with its own port configured, the campaign API listener serves only the campaign routes and the dashboard port none of them', async (t) => {
+  const token = tokenHelper(t);
+  const dataDir = fixture(t, { campaignApi: { enabled: true, tokenRef: token.ref, credentialStore: { kind: 'command', command: token.command }, port: 4399 } });
+  const runtime = runtimeCheckout();
+  t.after(() => runtime.cleanup());
+  const dashboard = await serve(t, dataDir, { provenanceRoot: runtime.root });
+  const api = createCampaignApiServer({ dataDir, provenanceRoot: runtime.root });
+  api.listen(0, '127.0.0.1');
+  await once(api, 'listening');
+  t.after(() => api.close());
+  const base = `http://127.0.0.1:${api.address().port}`;
+  const auth = { authorization: `Bearer ${token.value}` };
+  const d = declaration({ campaignId: `port-${randomUUID()}` });
+
+  // The dashboard's port no longer answers the campaign routes, even with a valid token.
+  assert.equal((await dashboard.post('/api/campaigns', d, auth)).status, 404);
+  assert.equal((await dashboard.get(`/api/campaigns/${d.campaignId}/status`, auth)).status, 404);
+
+  // The API listener: the bearer token is still required, and nothing but the campaign routes is served.
+  const json = { 'content-type': 'application/json' };
+  assert.equal((await fetch(`${base}/api/campaigns`, { method: 'POST', headers: json, body: JSON.stringify(d) })).status, 401);
+  assert.equal((await fetch(`${base}/api/campaigns`, { method: 'POST', headers: { ...auth, ...json }, body: JSON.stringify(d) })).status, 201);
+  assert.equal((await fetch(`${base}/api/campaigns/${d.campaignId}/status`, { headers: auth })).status, 200);
+  assert.equal((await fetch(`${base}/api/campaigns/${d.campaignId}/report`, { headers: auth })).status, 200);
+  for (const path of ['/', '/api/session', '/api/state', '/api/accounts', '/dashboard.js']) {
+    assert.equal((await fetch(`${base}${path}`, { headers: auth })).status, 404, path);
+  }
+  assert.equal((await fetch(`${base}/api/commands`, { method: 'POST', headers: { ...auth, ...json }, body: '{}' })).status, 404);
 });
 
 test('an external caller reaching the dashboard under a different Host (a configured tunnel) is not refused by the dashboard\'s own loopback Host/Origin gate, only by its bearer token; the same mismatched Host still refuses every other route', async (t) => {
