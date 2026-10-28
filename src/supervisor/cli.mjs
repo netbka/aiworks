@@ -12,6 +12,7 @@ import { approvedDeclaration, persistApproved, registerApproved } from './approv
 import { baselineReport, formatBaseline } from './baseline.mjs';
 import { CampaignError, campaignCancel, campaignPause, campaignRecheck, campaignStatus, supervisorLiveness } from './api.mjs';
 import { assertRegisteredTarget } from './campaign.mjs';
+import { issueCampaignToken } from './campaign-token.mjs';
 import { Controller, DEFAULTS } from './controller.mjs';
 import { configuredGovernanceRoot, requireGovernanceRoot } from './governance.mjs';
 import { clearCoordinatorViolation, coordinatorView, postOwnerMessage } from './coordinator.mjs';
@@ -83,6 +84,15 @@ const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--go
   account set-preference <role> <model1> [model2...] [--kind <kind>] [--effort <effort>]
                                         set model order and preferences for a role
   account clear-preferences [<role>]    clear model preferences for a role or all roles
+  campaign-token create <projectId>     create the external campaign API's bearer token for a registered project
+                                        (registry/projects/<projectId>.json must exist in the governance checkout).
+                                        A fresh random value is written to the operator's credential store under the
+                                        standard reference aiworks-campaign-api:<projectId> (token-store.mjs:
+                                        the Windows Credential Manager by default); config.json campaignApi is then
+                                        pointed at it. The value is never printed: only the reference it was stored
+                                        under. Refused (TOKEN_ALREADY_EXISTS) if one already exists; use rotate instead
+    --rotate                            same as campaign-token rotate: replace an existing token instead of refusing
+  campaign-token rotate <projectId>     replace an existing token the same way (TOKEN_NOT_FOUND if none exists yet)
 The data directory defaults to AIWORKS_DATA and holds config.json, supervisor.db, runs/ and supervisor.log.
 The governance checkout (an operator-configured read-only directory) is --governance, else config.json "governanceRoot".`;
 
@@ -108,6 +118,7 @@ const kindFlag = take('--kind');
 const effortFlag = take('--effort');
 const applyImport = args.includes('--apply') ? Boolean(args.splice(args.indexOf('--apply'), 1)) : false;
 const jsonOnly = args.includes('--json') ? Boolean(args.splice(args.indexOf('--json'), 1)) : false;
+const rotateFlag = args.includes('--rotate') ? Boolean(args.splice(args.indexOf('--rotate'), 1)) : false;
 const [command, ...rest] = args;
 if (!command || !selectedData) {
   console.error(USAGE);
@@ -156,8 +167,9 @@ try {
   const readOnlyCommand = (['status', 'messages', 'baseline', 'program-status', 'trusted-main', 'work-list'].includes(command) && !importWrites) ||
     ((command === 'account' || command === 'accounts') && existsSync(join(dataDir, 'supervisor.db')) && (!rest[0] || ['list', 'preferences', 'prefs'].includes(rest[0])));
   // program-status, trusted-main and work-list never create a store: without one there is no approved program, no main
-  // ledger and no work item.
-  if (!['program-status', 'trusted-main', 'work-list'].includes(command) || importWrites || existsSync(join(dataDir, 'supervisor.db'))) store = new Store(join(dataDir, 'supervisor.db'), { readOnly: readOnlyCommand });
+  // ledger and no work item. campaign-token touches only the governance checkout, the credential store and
+  // config.json: no campaign, task or lease is ever read or written by it, so it opens no store either.
+  if (!['program-status', 'trusted-main', 'work-list', 'campaign-token'].includes(command) || importWrites || existsSync(join(dataDir, 'supervisor.db'))) store = new Store(join(dataDir, 'supervisor.db'), { readOnly: readOnlyCommand });
   if (command === 'serve') await serve();
   else if (command === 'start' && approvedFlag !== null) {
     // The owner's private approved declaration (WORK_ENVELOPE.md section 5, slice E9), registered by merged code only.
@@ -318,6 +330,20 @@ try {
     } else {
       console.error(USAGE);
       process.exitCode = 2;
+    }
+  }
+  else if (command === 'campaign-token') {
+    const sub = rest[0];
+    const projectId = rest[1];
+    if (!['create', 'rotate'].includes(sub) || !projectId) { console.error(USAGE); process.exitCode = 2; }
+    else {
+      const governanceRoot = explicitGovernance ? resolve(explicitGovernance) : configuredGovernanceRoot(dataDir);
+      const result = issueCampaignToken(projectId, { governanceRoot, dataDir, rotate: sub === 'rotate' || rotateFlag });
+      // The token value itself is never printed, logged or returned here (AGENTS.md: "configuration holds
+      // executable paths and repository paths, never secret values"): only the reference it now lives under.
+      console.log(`campaign-api token ${result.rotated ? 'rotated' : 'created'} for ${result.projectId}: stored under credential reference ${result.ref}`);
+      console.log('the value itself is not printed; read it from the credential store (Windows Credential Manager, or your configured command helper) when you need it');
+      console.log(`config.json campaignApi now points at it: ${JSON.stringify(result.config)}`);
     }
   }
   else { console.error(USAGE); process.exitCode = 2; }
