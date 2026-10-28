@@ -150,7 +150,7 @@ const routeLink = (text, route, cls = '') => el('a', { href: typeof route === 's
 // A connected project without GitHub is addressed by its project id and named by its own name.
 const projectName = (project) => state?.projects?.projects?.find((item) => !item.repository && item.id === project)?.name ?? (shortRepo(project) || project);
 // Each screen's heading and the one question it answers (OWNER_WORKSPACE §3.1).
-const screenText = { home: ['Home', 'What changed, and what needs me?'], projects: ['Projects', 'Which project should I open?'], needs: ['Needs you', 'What is waiting for me, across projects?'],
+const screenText = { home: ['Home', 'What needs me, and what changed?'], projects: ['Projects', 'Which project should I open?'], needs: ['Needs you', 'What is waiting for me, across projects?'],
   settings: ['Settings', 'What can AIWorks use on this computer?'], accounts: ['Worker accounts', 'Which AI worker logins and accounts are on this computer?'],
   version: ['Version and roadmap', 'Which capabilities are turned on in this version?'],
   instructions: ['Model instructions', 'Which AI models should handle what kind of work?'],
@@ -2531,11 +2531,33 @@ function itemDecision(item) {
   return task?.decision && !task.decision.answered ? { c, task } : null;
 }
 
-/** Home: one line since the last visit (the server-side marker), the decision first, each project in one sentence, all work's pause. */
+/**
+ * Home (docs/design/OWNER_UI_V2.md §6 screen 2, previews/owner-ui-v2/02-home.html): one headline sentence states
+ * whether anything needs you, the decision itself follows as one card, then what changed, then every project in one
+ * sentence with a status badge. Results to review are not a separate panel: a project with one ready carries the
+ * badge on its own row, exactly as the approved preview folds it in (02-home.html, "Client portal" row).
+ */
 function homeScreen() {
   const home = state.home;
   if (!state.supervisor.available || !home?.available) return [unavailable()];
   const { since, lastSeen } = home;
+  const reviews = resultsToReview();
+  // The first item is resolved here on the same card as in Needs you: a decision with its options, a result with Accept
+  // and Request changes, a stopped step with guidance and Check again.
+  const first = state.owner?.items?.find((item) => !item.system);
+  const heroText = home.needsYou.count && reviews.length
+    ? `${plural(home.needsYou.count, 'decision')} need${home.needsYou.count === 1 ? 's' : ''} you. ${plural(reviews.length, 'new result')} ${reviews.length === 1 ? 'is' : 'are'} ready to try.`
+    : home.needsYou.count ? `${plural(home.needsYou.count, 'decision')} need${home.needsYou.count === 1 ? 's' : ''} you.`
+      : reviews.length ? `${plural(reviews.length, 'new result')} ${reviews.length === 1 ? 'is' : 'are'} ready to try.`
+        : 'Nothing needs you right now.';
+  // h2, not h1: index.html already carries the page's one h1 (#view-title) outside #content (showRoute()).
+  const hero = el('div', { class: 'home-hero' },
+    el('div', {}, el('h2', {}, 'Your work, at a glance'), el('p', { class: 'subtext' }, heroText)),
+    pauseControls(home.pause, 'all', {}, { label: 'all work' }));
+  // This count matches the nav badge and the Needs you screen exactly (owner.count): results to review carry their
+  // own badge on the project row below, never folded into this number (owner, 2026-10-13).
+  const decision = home.needsYou.count && first ? el('ul', { class: 'needs-list home-decision', 'data-focus-scope': 'home/needs' }, needsItem(first)) : null;
+  const moreDecisions = home.needsYou.count > 1 ? routeLink(`All ${home.needsYou.count} in Needs you`, '#/needs', 'button secondary small') : null;
   const counts = EVENT_ORDER.filter((type) => since.counts[type]).map((type) => `${since.counts[type]} ${SUMMARY_WORDS[type]}`);
   const when = lastSeen.at ? `Since your last visit (${dateTime(lastSeen.at)})` : 'Everything AIWorks recorded so far';
   const changed = el('section', { class: 'since', 'aria-labelledby': 'home-since-title', 'data-focus-scope': 'home/since' },
@@ -2543,22 +2565,27 @@ function homeScreen() {
     el('p', { role: 'status', 'aria-live': 'polite' }, counts.length ? `${counts.join(' · ')}${since.more ? ', and more' : ''}.` : 'Nothing changed.'),
     since.events.length ? disclosure('home/events', `What changed (${since.more ? `latest ${since.events.length}` : since.events.length})`, eventList(since.events)) : null,
     since.count ? button(seenBusy ? 'Marking…' : 'Mark as seen', markSeen, 'secondary small', seenBusy || offline) : null);
-  // The first item is resolved here on the same card as in Needs you: a decision with its options, a result with Accept
-  // and Request changes, a stopped step with guidance and Check again.
-  const first = state.owner?.items?.find((item) => !item.system);
-  const decision = panel('Needs you', home.needsYou.count ? 'The first one; the rest are in Needs you.' : null, el('div', { class: 'panel-body', 'data-focus-scope': 'home/needs' },
-    home.needsYou.count && first ? el('ul', { class: 'needs-list' }, needsItem(first)) : el('p', {}, 'Nothing needs you right now.'),
-    home.needsYou.count > 1 ? routeLink(`All ${home.needsYou.count} in Needs you`, '#/needs', 'button secondary small') : null));
+  // Working reuses the same liveness codes Now already shows for this project (copy.mjs). A project with none of
+  // these badges is calm, never "Live": OWNER_WORKSPACE §2.3 keeps "Live" for recorded release evidence only, which
+  // this view does not have per project, so showing it here would be a false claim the approved preview's fictional
+  // sample data does not have to respect.
+  const WORKING = ['builder-working', 'checker-working', 'possibly-stuck', 'cancelling'];
+  const badgeOf = (project) => project.needsYou ? ['attention', 'Needs you']
+    : reviews.some((row) => sameProject(row.project, project.id)) ? ['done', 'Review ready']
+      : WORKING.includes(project.state.key) ? ['in_progress', 'Working'] : null;
   const projects = home.projects.length
-    ? el('ul', { class: 'settings-links home-projects' }, ...home.projects.map((project) => el('li', { 'data-focus-scope': `home/project/${project.id}`, 'data-state': project.state.key },
-      routeLink(project.name, { screen: 'project', project: project.id, tab: 'overview' }, 'task-name'), el('div', { class: 'subtext' }, project.state.text ?? 'Not known right now.'))))
+    ? el('ul', { class: 'settings-links home-projects' }, ...home.projects.map((project) => {
+      const badge = badgeOf(project);
+      return el('li', { 'data-focus-scope': `home/project/${project.id}`, 'data-state': project.state.key },
+        el('div', { class: 'row-line' }, routeLink(project.name, { screen: 'project', project: project.id, tab: 'overview' }, 'task-name'),
+          badge ? el('span', { class: `badge ${badge[0]}` }, badge[1]) : null),
+        el('div', { class: 'subtext' }, project.state.text ?? 'Not known right now.'));
+    }))
     : state.projects?.addProject ? el('div', { class: 'empty-state' }, el('strong', {}, 'No projects yet.'), ' Start from an idea or a folder on this computer. ',
       routeLink('Add project', { screen: 'add-project' }))
       : empty('No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository.');
-  return [changed, decision, reviewList(resultsToReview(), { scope: 'home/reviews', withProject: true }),
-    panel('Projects', 'Each project in one sentence.', el('div', { class: 'panel-body' }, projects)),
-    panel('All work', 'Pause stops new steps everywhere; steps already running finish and are recorded. Resume all resumes only what Pause all paused.',
-      el('div', { class: 'panel-body' }, pauseControls(home.pause, 'all', {}, { label: 'all work' })))].filter(Boolean);
+  return [hero, decision, moreDecisions, changed,
+    panel('Projects', 'Each project in one sentence.', el('div', { class: 'panel-body' }, projects))].filter(Boolean);
 }
 
 const AVAILABLE_WORDS = { 'not-published': 'Not published: release is off', unknown: 'Not known', recorded: 'Recorded' };
@@ -2782,7 +2809,9 @@ function nowScreen(project) {
         c?.controls?.primary === 'resume' ? button(line.primary.label, () => command(c, 'resume'), 'secondary', commandsOff()) : null);
     }))) : null;
   return [el('section', { class: 'panel', 'data-focus-scope': `now/${project}` }, el('div', { class: 'panel-body' },
-    goal ? el('p', { class: 'eyebrow' }, goal) : null,
+    // owner-ui-v2 03-overview: the goal in the owner's own words leads as the headline; the state sentence below it
+    // (now.title/now.text) is the supporting line, not the other way around.
+    goal ? el('p', { class: 'now-goal' }, goal) : null,
     el('p', { role: 'status', 'aria-live': 'polite', 'data-state': now.key }, el('strong', {}, now.title), now.text ? ` ${now.text}` : ''),
     primaryAction(now.primary), startWork, also,
     view.progress ? el('p', { class: 'subtext' }, view.progress) : null,
