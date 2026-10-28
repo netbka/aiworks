@@ -1011,3 +1011,105 @@ What the controller does on each pass (slice CLN1). Code: `src/supervisor/cleanu
 **Rollback.** Remove `cleanup` from `config.json` (or set `enabled` to `false`) and restart the supervisor. Nothing removed comes back by itself; a repair round recreates the worktrees it needs.
 
 **What is not done yet (planned):** CLN2 records the baseline, switches `cleanup.enabled` on and compares after the first passes. Worktrees that no run recorded, such as merge refresh checkouts, are only listed.
+
+## 16. External campaign API (off by default)
+
+**In short.** An external system on this computer — a change-request tracker that assembles campaign declarations
+itself, for example — can register a campaign and read its status over HTTP instead of running `cli.mjs` as a local
+process: `POST /api/campaigns` and `GET /api/campaigns/:id/status` on the dashboard's own HTTP server
+([OPERATIONS_DASHBOARD.md](OPERATIONS_DASHBOARD.md), `http://127.0.0.1:4318`). It is additive: the CLI and the owner's
+browser dashboard work exactly as before, and this surface widens nothing either can already do. Code:
+`src/supervisor/remote-campaigns.mjs` and `src/supervisor/token-store.mjs`, wired into `src/dashboard/server.mjs`.
+Critical-behaviour tests: `tests/dashboard/campaign-api.test.mjs` and `tests/supervisor/token-store.test.mjs`.
+
+**Why the dashboard's own server, and why a status poll rather than an outgoing webhook.** The dashboard already is the
+one process that listens on a local port and reads the store; adding two routes to it needs no new service, no new
+port and no new process to supervise or restart. Posting status to a URL the campaign declaration names would instead
+make the supervisor's own process open outbound connections chosen by whoever can submit a declaration — a new kind of
+external write the existing boundary does not have (section 1: "the only writes outside this repository are
+worktrees, branches, pull requests and issue comments, for work the owner registered"; a webhook destination is none
+of those) — and it would need its own delivery, retry and signing story that a poll does not. A status poll fits the
+architecture's own stated shape instead: "No route calls GitHub" and nothing here is pushed; a caller reads
+`/api/campaigns/:id/status` as often as it wants, exactly as the dashboard itself re-reads `/api/state`.
+
+**Fit with [AW-003](DECISIONS.md#aw-003---the-operations-dashboard-is-local-only).** AW-003 binds the dashboard to
+loopback and requires exact origin checks and CSRF protection for mutating requests, and says remote access needs a
+separately reviewed authentication design. This stays bound to `127.0.0.1` exactly as before: nothing here is remote,
+only a second local process. Its two routes are exempt from the origin/CSRF check — a static bearer token resolved
+from the operator's own secret store in its place — because their caller is by design not a browser holding the
+dashboard's session, so CSRF protection (which defends a browser session against another page's script) does not
+apply to it; this is the separately reviewed authentication design AW-003 anticipates for a caller that is not that
+browser session. The exemption is narrow: it exists only while the switch below is on, it covers exactly
+`POST /api/campaigns` and `GET /api/campaigns/:id/status`, and such a request is answered by those two handlers in full,
+so it never reaches another route. A browser page cannot send the token across origins (the server gives no CORS
+answer), and a page that rebinds a name to `127.0.0.1` does not hold it. Every other route keeps its Host, Origin,
+CSRF and caller checks unchanged.
+
+- **The switch.** `config.json` `"campaignApi": { "enabled": true, "tokenRef": "<name>", "credentialStore"?: { "kind":
+  "windows" } | { "kind": "command", "command": [...] } }`. Absent, malformed, `enabled` not exactly `true`, or an
+  invalid `tokenRef` or store (`token-store.mjs` `validTokenRef`: short segments joined by `/` or `:`) all leave it off:
+  both requests then meet the dashboard's own gates exactly as before the API existed (`403` from another Host or
+  origin or without the session's CSRF token, `404` for the status path), whatever the store holds. Without
+  `credentialStore` the Windows Credential Manager is used.
+- **The token is a reference, never a value.** `config.json` holds the `tokenRef`, never the token (AGENTS.md:
+  "configuration holds executable paths and repository paths, never secret values"). Its value lives in the same kind
+  of operator-managed secret store the release credential uses, through its own module (`token-store.mjs`; the release
+  credential's `release/credential.mjs` is not involved): the Windows Credential Manager by default, or an operator's
+  credential helper command. It is resolved fresh on every request that carries a bearer token, never cached, logged
+  or journalled; a store that cannot tell whether the reference resolves is treated as refused, never as open access.
+- **Authentication is a header, never a query parameter.** `Authorization: Bearer <token>`, compared to the resolved
+  value by comparing fixed-length SHA-256 digests in constant time. A missing or wrong token answers `401`; a token in
+  the query string is ignored. This token is never the dashboard's
+  own per-process CSRF secret that a browser session reads from `GET /api/session` (server.mjs): the two surfaces share
+  no secret, so a token good for one never reaches a route of the other.
+- **`POST /api/campaigns`** accepts exactly the JSON a private declaration file holds — the same contract
+  `src/supervisor/campaign.mjs` `validateDeclaration` checks, the same examples under `tests/fixtures/campaigns/` — up
+  to the same 1 MiB a file may be. It does exactly what `cli.mjs start <file>` does with no `--approval`, in order:
+  the AW-005 merged-code check against the same trusted main `start` uses (section 1, "Merged runtime code", including
+  `selfHosting` local trust); for a campaign id not yet stored, the registered-project gate
+  (section 1, "Registered targets only"); then registration, amendment or resume
+  (`approvals.mjs` `approvedStart`, honouring `config.json` `"approvals": { "required": true }` exactly as a plain
+  `start` would). A resend of the exact declaration already registered is never refused, exactly as `start` never
+  refuses one: the response is `200` with `created: false` in place of `201` and `created: true`, and nothing is
+  registered twice. The response body otherwise is the same reading `cli.mjs status` prints (`campaignStatus` below).
+  A refusal names its code and message the same way the CLI does (`RUNTIME_NOT_MERGED`, `WORK_ALREADY_ASSIGNED`,
+  `SCOPE_CONFLICT`, a declaration validation message, and so on), at the HTTP status that best fits it: `503` for an
+  operator-side condition (unmerged runtime, a missing governance checkout), `403` for a target this installation has
+  not registered, `409` for a conflict with existing work, `400` otherwise.
+- **`GET /api/campaigns/:id/status`** answers exactly the reading `cli.mjs status <id>` prints (`api.mjs`
+  `campaignStatus`): phase, readiness, tasks, budget, CI and release status, never worker output or a local path. An
+  unregistered id answers `404` with `code: "CAMPAIGN_NOT_FOUND"`.
+- **A project's token reaches that project only.** When `tokenRef` is a project's standard reference
+  `aiworks-campaign-api:<projectId>` (below), registration needs a declaration whose `target.repository` is that
+  project's `repository.github` in the governance checkout, and refuses (`403`, `TOKEN_OUT_OF_SCOPE`) a declaration for
+  another repository or one that would amend another project's stored campaign; a status read of another project's
+  campaign answers `404` exactly like an unregistered id. A `tokenRef` of any other shape reaches what `start` and
+  `status` reach.
+- **Never a replacement for the CLI or the dashboard.** Pause, cancel, recheck, instructions and every owner-facing
+  control stay on the existing CLI commands and the browser dashboard, unchanged. This surface only starts a campaign
+  and reads its status, exactly as `start` and `status` already do locally.
+
+**Managing the token (`campaign-token`, `src/supervisor/campaign-token.mjs`).** Turning this surface on for any
+AIWorks-registered project is one general CLI action, not a one-off done by hand for a single external project:
+
+```
+node src/supervisor/cli.mjs campaign-token create <projectId>
+node src/supervisor/cli.mjs campaign-token rotate <projectId>     # replace an existing token
+```
+
+`<projectId>` must be a project this installation already knows: `registry/projects/<projectId>.json` must exist in
+the governance checkout, the same registration a new campaign already needs
+(`campaign.mjs` `assertRegisteredTarget`). `create` generates a fresh random value
+(`crypto.randomBytes(32).toString('base64url')`, 256 bits) and writes it over stdin to the operator's credential store
+(`token-store.mjs`: the Windows Credential Manager by default) under the one
+standard reference `aiworks-campaign-api:<projectId>` -- never a name the caller invents, so the store's own listing
+already says which project a token belongs to. It then points `config.json` `campaignApi` at that reference:
+`{ enabled: true, tokenRef: "aiworks-campaign-api:<projectId>" }`, keeping every other setting; a `config.json` that is
+not a JSON object refuses (`CONFIG_INVALID`) before anything is written. `create` refuses to overwrite a value already
+stored there (`TOKEN_ALREADY_EXISTS`: run `rotate` instead); `rotate` refuses when nothing is there yet to replace
+(`TOKEN_NOT_FOUND`: run `create` first). Either command prints only the fact that a token now exists and the
+reference it lives under -- **never the token value itself**, in any form, on any stream: an operator reads the value
+back from the credential store (Windows Credential Manager, `cmdkey`, or a configured credential helper command)
+only at the moment an external caller needs to be given it. Only one token is active at a time per installation
+(`config.json` `campaignApi` names one reference), so pointing it at a different project's token is itself a `create`
+or `rotate` for that project id. Critical-behaviour tests: `tests/supervisor/campaign-token.test.mjs`.

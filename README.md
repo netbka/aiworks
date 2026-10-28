@@ -173,6 +173,7 @@ Everything ends up in GitHub, next to the rest of your project:
 | Several AI accounts with automatic switching | Choosing a login per run and starting the worker inside that login's own home folder is built and switched off. Turning it on waits for the owner's pilot. |
 | Slowing down when the PC is busy or an account is throttled | The building blocks are written and the status reports them, but they do not yet hold back new work. |
 | Automatic release, opt-in per project | Built and switched off: "review only" by default, a standing grant per destination, a stop switch, one lock per destination, deploy, check and rollback through a project's own commands, and a **Releases** tab. A disposable rehearsal runs it against a synthetic project. No grant exists and nothing has been released. |
+| External campaign API | Built and switched off: another local system can register a campaign and read its status over HTTP, the same contract as `cli.mjs start`/`status`, with its own bearer token instead of the dashboard's browser session. One setting turns it on, and `cli.mjs campaign-token create\|rotate <projectId>` creates or replaces that token for any AIWorks-registered project -- not only one; see [docs/SUPERVISOR.md §16](docs/SUPERVISOR.md#16-external-campaign-api-off-by-default). |
 
 ### 🗺️ On the roadmap
 
@@ -248,7 +249,7 @@ The [getting-started guides](docs/guides/README.md) explain the same setup step 
 
 - The only writes outside this repository are worktrees, branches, pull requests and issue comments, for work the owner registered. Merging is off by default. The supervisor merges a pull request only under the merge gate, and only in a repository the owner lists in `config.json` (`merges.delegatedTo: "supervisor"`, decision AW-001, #138): the pull request is its own, its head is the checked commit, and what lands on the base branch is exactly the checked version. It never deploys, releases or changes provider resources.
 - AIWorks runs only from its own merged code; a supervisor running unmerged code starts no new work. Plans are private files on your computer, registered explicitly, and their scope can only change with a higher authorization version.
-- The dashboard listens on `127.0.0.1` only and needs the same origin plus a per-session token for every action. Text that looks like a secret is refused.
+- The dashboard listens on `127.0.0.1` only and needs the same origin plus a per-session token for every action. Text that looks like a secret is refused. The one exception is the optional external campaign API (below), off by default: a static bearer token instead, for a local system that is not a browser.
 - There are no budget caps by default. A plan can set run, retry, repair and cost limits.
 - A denied command, a sandbox refusal or a failed check is never routed around to another provider.
 - `config.json` holds executable and repository paths, never credentials.
