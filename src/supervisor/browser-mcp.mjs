@@ -53,16 +53,19 @@ const major = Number(/\/(\d+)\./.exec(String(version?.Browser ?? ''))?.[1] ?? 0)
 if (major < MIN_CHROME) fail(`Chrome ${MIN_CHROME} or newer is required for the URL allowlist (running ${version?.Browser ?? 'unknown'})`);
 
 if (config.login) {
-  // Use the same pinned Puppeteer implementation as the MCP server, with the same browser URL restrictions.
+  // Restrict every target, including popups and workers, to this login's origin while credentials are present.
+  // The complete task/resource allowlist is applied only by the MCP server after every login page is closed.
   const library = createRequire(import.meta.url).resolve('chrome-devtools-mcp/build/src/third_party/index.js');
   const { puppeteer } = await import(pathToFileURL(library).href);
-  let connection;
-  try {
-    connection = await puppeteer.connect({ browserURL: `http://127.0.0.1:${port}`, allowlist: config.allowedUrlPatterns });
-    await loginBrowser(connection, config.login);
-  } catch (error) {
-    fail(error.message.startsWith('Browser pre-login failed while ') ? error.message : 'Browser pre-login could not start');
-  } finally { await connection?.disconnect(); }
+  for (const profile of config.login.profiles) {
+    let connection;
+    try {
+      connection = await puppeteer.connect({ browserURL: `http://127.0.0.1:${port}`, allowlist: [`${profile.origin}/*`] });
+      await loginBrowser(connection, { ...config.login, profiles: [profile] });
+    } catch (error) {
+      fail(error.message.startsWith('Browser pre-login failed while ') ? error.message : 'Browser pre-login could not start');
+    } finally { await connection?.disconnect(); }
+  }
 }
 
 process.argv = [process.argv[0], entry, '--browserUrl', `http://127.0.0.1:${port}`,
