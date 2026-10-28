@@ -263,12 +263,12 @@ export function roleUnavailableReason(executor, role, deliverable, platform = pr
 // workList (LOCAL_OPERATION.md section 5.3, slice SELF6): for the self-hosted repository with local main trusted, the
 // scoped work-list reader replaces the GitHub reader, and Claude gets it too. Null: every argument is as before.
 export function prepare({ executor, command, role, deliverable, sessionId, digest, runDir, workspace, prompt, repository, ghCommand, projectSettings = null,
-  web = null, chromeCommand = null, timeoutMs = 60 * 60_000, profileHome = null, stage = null, workList = null }) {
+  web = null, chromeCommand = null, browserLogin = null, timeoutMs = 60 * 60_000, profileHome = null, stage = null, workList = null }) {
   // Resolved first, so a bad home or a kind CAAM does not rotate fails before any run file is written.
   const profile = profileEnv(executor.kind, profileHome);
   if (executor.kind === 'agy-cli') {
     if (!web || deliverable !== 'report') throw new Error('The AGY browser worker requires a web acceptance task with a report deliverable');
-    return agy.prepare({ command, executor, role, sessionId, digest, runDir, prompt, web, chromeCommand, timeoutMs });
+    return agy.prepare({ command, executor, role, sessionId, digest, runDir, prompt, web, chromeCommand, browserLogin, timeoutMs });
   }
   if (executor.kind === 'claude-cli' && web) {
     if (deliverable !== 'report' || executor.researchOnly) throw new Error('Claude browses only for a web acceptance task with a report deliverable');
@@ -276,7 +276,7 @@ export function prepare({ executor, command, role, deliverable, sessionId, diges
     mkdirSync(cwd, { recursive: true });
     return {
       argv: [...command, '-p', '--output-format', 'json', '--model', executor.model, '--session-id', sessionId,
-        ...claude.ISOLATION_ARGS, '--mcp-config', JSON.stringify(agy.browserServers({ runDir, web, chromeCommand })),
+        ...claude.ISOLATION_ARGS, '--mcp-config', JSON.stringify(agy.browserServers({ runDir, web, chromeCommand, browserLogin })),
         // No built-in tool at all (no shell, files, web search or subagents): the browser server is all this worker has,
         // and only its listed tools run; dontAsk denies anything else without a prompt.
         '--tools', '', '--permission-mode', 'dontAsk', '--permission-prompts', 'none',

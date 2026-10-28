@@ -873,6 +873,26 @@ A task that declares `web` is a web acceptance task: a browser worker opens the 
 
   A workstation probe confirmed that such a session lists only `mcp__browser__*` tools. Its declared `permissionMode` applies to its other tasks only.
 - **Browser.** The only MCP server is `src/supervisor/browser-mcp.mjs`. It sets the run's own temporary folder before chrome-devtools-mcp loads; the package adds `os.tmpdir()` to the folders its file tools may use, so together with `--workspace` no file tool reaches outside the run directory. It starts a headless Chrome with a fresh profile in the run directory and a loopback debugging port, under the same run-local environment, with WebRTC limited to proxied UDP (`--webrtc-ip-handling-policy=disable_non_proxied_udp`): URL patterns do not govern STUN/TURN traffic, and with no proxy WebRTC gets no UDP path. It refuses to continue unless the running Chrome is version 149 or newer, which `--allowedUrlPattern` needs. It then runs the pinned `chrome-devtools-mcp` with `--allowedUrlPattern` for each declared origin, the memory (heap snapshot) tools off, usage statistics off and network headers redacted. `evaluate_script` is available for measurement only. That limit, like "view only" and "never submit", is a prompt rule, not an enforced one: the click, fill and script tools can act on a page. What is enforced is where the browser can reach. So a web task should point at pages where an interaction can do no harm, such as Storybook or a test environment.
+- **Browser pre-login.** `config.json` may supply `browserLogin: { credentialStore, profiles: [...] }`. A profile
+  names an exact `origin`, a same-origin `loginUrl`, `usernameRef`, `passwordRef`, and CSS selectors
+  `usernameSelector`, `passwordSelector`, `submitSelector`, `successSelector`. The credential store has the same
+  Windows/command contract as the campaign API; the Infisical helper in section 16 can serve it. For example, a
+  profile for `https://dev.example.invalid` can use references `sampleapp-dev-user` and `sampleapp-dev-password`,
+  login URL `https://dev.example.invalid/login`, and selectors `input[name=user]`, `input[type=password]`,
+  `button[type=submit]`, and `#signed-in`. Keep each production origin in its own profile and use its own references.
+  Only origins in the task's `web.urls` select a profile; `resourceOrigins` never selects a login. Every matching
+  profile signs in automatically, for implementation and independent verification alike, without another approval
+  or a DEV/PROD permission gate. A task that names neither origin gets neither credential.
+  The browser wrapper resolves references only after the configured login page loads, signs in before starting
+  the MCP server, verifies the success selector, and closes its login tab. Authentication requests and form values
+  therefore do not enter the worker's browser-tool history. The fresh run-local browser profile retains its session;
+  no cookies or credentials are exported to worker prompts, run JSON, reports or shared browser profiles. The
+  authenticated application may still expose session state to its own JavaScript: this is not a claim that arbitrary
+  browser scripts cannot read it. Login traffic stays on that exact origin, over HTTPS (HTTP is allowed only on
+  loopback for local fixtures). A missing reference, unexpected redirect or unsuccessful login refuses browser
+  handoff with a fixed diagnostic that never repeats helper or page error text. The ordinary browser isolation and
+  task URL scope remain in force. Code: `browser-login.mjs`, wired through both browser executors and
+  `browser-mcp.mjs`; synthetic Chrome regression: `tests/supervisor/browser-login.test.mjs`.
 - **Audit.** AGY has built-in tools no rule can deny (web search, messages, subagents, its own browser), so the audit runs before any other classification and fails closed:
   - a result is accepted only from a stream with exactly one `init` event in `request-review` mode;
   - every update of every step is judged, whatever its state, so a disallowed tool counts even when it started without a terminal update, and a later update cannot rename it;

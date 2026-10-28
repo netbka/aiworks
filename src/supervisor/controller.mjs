@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { SECRET_LIKE_PATH_PATTERN, acceptsLease, packetDigest, planContext, validatePacket } from '../../scripts/lib/worker-context.mjs';
 import * as executors from './adapters/executors.mjs';
 import { researchContext } from './adapters/research-context.mjs';
+import { browserLoginSettings } from './browser-login.mjs';
 import * as gitA from './adapters/git.mjs';
 import * as github from './adapters/github.mjs';
 import { authorityDigest, campaignLimits, canonicalJson, executorOrder, overlayGovernance, projectGovernance } from './campaign.mjs';
@@ -2549,7 +2550,9 @@ export class Controller {
       const invocation = executors.prepare({ executor, command: this.cmd[executor.kind.replace('-cli', '')], role,
         deliverable: spec.deliverable, sessionId, digest, runDir, workspace, prompt,
         repository: decl.target.repository, ghCommand: this.cmd.gh, projectSettings: settings.ok ? settings.stdout : null,
-        web: spec.web ?? null, chromeCommand: this.cmd.chrome, timeoutMs, profileHome, stage: this.stageOf(decl, task.task_id, kind) });
+        web: spec.web ?? null, chromeCommand: this.cmd.chrome,
+        browserLogin: browserLoginSettings(spec.web, this.config.browserLogin),
+        timeoutMs, profileHome, stage: this.stageOf(decl, task.task_id, kind) });
       writeFileSync(join(runDir, 'prompt.txt'), invocation.prompt, 'utf8');
       writeAtomic(join(runDir, 'spec.json'), JSON.stringify({
         argv: invocation.argv, ...(invocation.env ? { env: invocation.env } : {}),
