@@ -2,10 +2,10 @@
 // freshly fetched base. Private receipts remember version/digest continuity;
 // neither a worker branch nor a dashboard label supplies release authority.
 import { mkdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { governanceForContract, registryEntriesFor } from '../campaign.mjs';
 import { writeAtomic } from '../proc.mjs';
 import { loadAuthorization, recordDigest, validateAuthorization } from './authorization.mjs';
+import { releasePath } from './paths.mjs';
 
 export function projectReleasePointer(controller, declaration) {
   const repository = declaration.target.repository;
@@ -64,10 +64,10 @@ export function readProjectGrant(controller, ctx, declaration, repo, { fetch = t
   return { ...grant, pointer, loaded, base: base ?? loaded.commit };
 }
 
-const snapshotPath = (dataDir, id) => join(dataDir, 'releases', id, 'authorization.json');
+const snapshotPath = (dataDir, id) => releasePath(dataDir, id, 'authorization.json');
 export function pinGrant(dataDir, row, loaded) {
   if (recordDigest(loaded.bytes) !== row.grant_digest) throw new Error('The release grant changed before it could be pinned');
-  mkdirSync(join(dataDir, 'releases', row.id), { recursive: true });
+  mkdirSync(releasePath(dataDir, row.id), { recursive: true });
   writeAtomic(snapshotPath(dataDir, row.id), loaded.bytes);
 }
 

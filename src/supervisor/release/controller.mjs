@@ -56,16 +56,35 @@ function newestMerge(c, project, repo, base) {
 }
 
 function expectRelease(c, ctx, grant, task, repo) {
-  const decl = c.store.campaign(ctx.id).declaration, specs = specsOf(c.store, ctx.id, decl);
-  const covered = c.store.tasks(ctx.id).filter((item) => specs.get(item.task_id)?.deliverable === 'commit' &&
-    item.state === 'done' && passedCheck(item, specs.get(item.task_id).acceptance) &&
-    ancestor(c, repo, item.verified_sha, task.verified_sha)).map((item) => ({ task: item.task_id, sha: item.verified_sha }));
+  const covered = [];
+  for (const campaign of c.store.all("SELECT * FROM campaigns WHERE json_extract(declaration, '$.target.projectId') = ?", grant.record.project)) {
+    const specs = specsOf(c.store, campaign.id, campaign.declaration);
+    for (const item of c.store.tasks(campaign.id)) if (specs.get(item.task_id)?.deliverable === 'commit' && item.state === 'done' &&
+        passedCheck(item, specs.get(item.task_id).acceptance) && ancestor(c, repo, item.verified_sha, task.verified_sha)) {
+      covered.push({ campaign: campaign.id, task: item.task_id, sha: item.verified_sha });
+    }
+  }
   const detail = { task: task.task_id, sha: task.verified_sha, grantDigest: grant.digest, grantVersion: grant.record.version,
     grantedAt: grant.record.grantedAt, expiresAt: grant.record.expiresAt,
     destinations: grant.record.destinations.map((d) => d.id), covered };
   c.fenced(ctx, () => {
     const last = c.store.get("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'release-plan' ORDER BY seq DESC LIMIT 1", ctx.id)?.detail;
     if (JSON.stringify(last) !== JSON.stringify(detail)) c.store.journal(ctx.id, 'release-plan', detail, c.now());
+  });
+}
+
+function recordCoverage(c, ctx, row) {
+  if (row.state !== 'accepted') return;
+  const plan = c.store.get("SELECT detail FROM journal WHERE campaign_id = ? AND kind='release-plan' AND json_extract(detail, '$.sha')=? ORDER BY seq DESC LIMIT 1",
+    ctx.id, row.verified_sha)?.detail;
+  if (!plan) return;
+  // The successor's accepted artifact is durable proof for its included heads,
+  // even when those tasks were assigned in earlier campaigns. Journal under
+  // the successor lease; readers select coverage by its explicit provenance.
+  c.fenced(ctx, () => {
+    if (c.store.get("SELECT 1 FROM journal WHERE kind='release-covered' AND json_extract(detail, '$.release')=?", row.id)) return;
+    c.store.journal(ctx.id, 'release-covered', { release: row.id, project: row.project, destination: row.destination,
+      destinations: plan.destinations, covered: plan.covered, sha: row.verified_sha }, c.now());
   });
 }
 
@@ -110,7 +129,15 @@ function evaluate(c, ctx, row, grant, repo, wayBack) {
   const protectedChange = authorityProblem(c, decl, repo, grant.base, row.verified_sha);
   const current = ancestor(c, repo, merged?.mergeCommit, grant.base) && task.verified_sha === row.verified_sha;
   const from = wayBack?.live?.revision ?? task.base_sha;
-  const diff = runGit(c, repo, ['diff', '--name-status', '--no-renames', from, row.verified_sha]);
+  const diff = runGit(c, repo, ['diff', '--name-status', '-z', '--no-renames', from, row.verified_sha]);
+  let paths = null;
+  if (diff.ok) {
+    const fields = diff.stdout.split('\0');
+    if (fields.at(-1) === '') fields.pop();
+    if (fields.length % 2 === 0 && fields.every((field, i) => i % 2 ? Boolean(field) : /^[ACDMRTUX]$/.test(field))) {
+      paths = fields.filter((_, i) => i % 2);
+    }
+  }
   const destState = destinationState(c.store, row.project, row.destination);
   const covered = (dep) => {
     const t = c.store.task(ctx.id, dep), s = specsOf(c.store, ctx.id, decl).get(dep);
@@ -128,7 +155,7 @@ function evaluate(c, ctx, row, grant, repo, wayBack) {
     verification: () => verification,
     merged: () => merged,
     current: () => ({ baseHead: grant.base, mergeCommitOnBase: current }),
-    diff: () => diff.ok ? diff.stdout : null,
+    diff: () => paths,
     checks: () => ({ sha: row.verified_sha, required: [{ name: 'independent verifier project gate', conclusion: gatePassed ? 'success' : 'unknown' }],
       preflight: wayBack?.knownGood === true && wayBack?.rollback === true }),
     wayBack: () => wayBack ?? { knownGood: false, rollback: false },
@@ -183,7 +210,7 @@ async function drive(c, ctx, initial, repo) {
         return;
       }
     }
-    if (row.state === 'eligible' && row.history.length === 0 && !grant.reason && grant.record?.version > row.grant_version &&
+    if (['eligible', 'locked'].includes(row.state) && row.history.length === 0 && !grant.reason && grant.record?.version > row.grant_version &&
         grant.record.destinations.some((d) => d.id === row.destination && d.kind === 'deploy')) {
       const record = readJsonIfExists(join(c.dataDir, 'releases', row.id, 'deploy.json'));
       if (!record || record.deploy === 'not-started') c.fenced(ctx, () => {
@@ -192,11 +219,26 @@ async function drive(c, ctx, initial, repo) {
         // Snapshot first. If interrupted before the DB update, the same valid
         // higher grant repeats this preparation; no forward intent exists.
         pinGrant(c.dataDir, updated, grant.loaded);
-        c.store.run('UPDATE releases SET grant_version=?, grant_digest=?, eligibility=NULL, reason=NULL, updated_at=? WHERE id=?',
+        c.store.run("UPDATE releases SET state='eligible', grant_version=?, grant_digest=?, eligibility=NULL, reason=NULL, updated_at=? WHERE id=?",
           updated.grant_version, updated.grant_digest, c.now(), row.id);
+        c.store.run('DELETE FROM release_locks WHERE release_id=?', row.id);
         c.store.journal(ctx.id, 'release-grant-renewed', { release: row.id, previous, version: updated.grant_version, digest: updated.grant_digest }, c.now());
         row = release(c.store, row.id);
       });
+    }
+    if (row.history.length && row.history.every((entry) => entry.step === 'deploy' && entry.outcome === 'not-done') &&
+        !grant.reason && grant.record?.version > row.grant_version && grant.record.destinations.some((d) => d.id === row.destination && d.kind === 'deploy') &&
+        readJsonIfExists(join(c.dataDir, 'releases', row.id, 'deploy.json'))?.deploy === 'not-started') {
+      c.fenced(ctx, () => {
+        c.store.run("UPDATE releases SET state='refused', reason=?, updated_at=? WHERE id=?", 'No deployment occurred; a renewed grant authorizes a new attempt', c.now(), row.id);
+        c.store.run('DELETE FROM release_locks WHERE release_id=?', row.id);
+        const replacement = createRelease(c.store, { project: row.project, destination: row.destination, campaignId: ctx.id,
+          taskId: row.task_id, verifiedSha: row.verified_sha, grantVersion: grant.record.version, grantDigest: grant.digest,
+          steps: ['deploy', 'check'], lease: leaseOf(c, ctx), now: c.now() });
+        pinGrant(c.dataDir, replacement, grant.loaded);
+        c.store.journal(ctx.id, 'release-replanned', { previous: row.id, replacement: replacement.id, grantVersion: grant.record.version }, c.now());
+      });
+      return;
     }
     if (row.state === 'eligible' && grant.digest === row.grant_digest && !grant.reason) c.fenced(ctx, () => pinGrant(c.dataDir, row, grant.loaded));
     const original = pinnedGrant(c.dataDir, row);
@@ -225,13 +267,14 @@ async function drive(c, ctx, initial, repo) {
       row = lock.release;
     }
     row = await reconcile(c.store, adapter, row.id, options);
-    if (TERMINAL.includes(row.state) || row.state === 'unknown' || row.state === 'rollback-failed') return;
+    if (TERMINAL.includes(row.state) || row.state === 'unknown' || row.state === 'rollback-failed') { recordCoverage(c, ctx, row); return; }
     for (let n = 0; n < 3 && nextStep(row); n++) {
       grant = fresh();
       const previous = row.step_key;
       row = await runStep(c.store, adapter, row.id, { ...options, gate: (r) => forwardGate(c, ctx, r, repo, grant) });
       if (row.step_key === previous || TERMINAL.includes(row.state) || row.state === 'unknown') break;
     }
+    recordCoverage(c, ctx, row);
   } finally {
     c.fenced(ctx, () => {
       if (releaseCommandsStopped({ dataDir: c.dataDir, release: row })) c.store.run('DELETE FROM release_activity WHERE release_id = ?', row.id);
@@ -261,6 +304,7 @@ export function releasePass(c) {
     if (!row || ![...TERMINAL, 'rollback-failed'].includes(row.state)) continue;
     const ctx = context(c, activity.campaign_id);
     if (ctx) c.fenced(ctx, () => {
+      recordCoverage(c, ctx, row);
       if (releaseCommandsStopped({ dataDir: c.dataDir, release: row })) c.store.run('DELETE FROM release_activity WHERE release_id = ?', row.id);
     });
   }

@@ -1,8 +1,8 @@
 // The deploy adapter: deploy, check and roll back one release through the project's own commands (docs/design/
-// AUTO_RELEASE.md sections 4.4, 7.2 steps 3 and 5 to 7, 7.4 and 8; plan slice REL7). Built switched off: it runs a
-// command only through release/runner.mjs, which starts nothing while `release.enabled` is not true in config.json, and
-// the supervisor builds this adapter for no release until slice REL11 switches Auto Release on (the disposable rehearsal,
-// release/rehearsal.mjs, and the owner's Check the site now, release/health.mjs, build it under that same switch). It is the adapter that
+// AUTO_RELEASE.md sections 4.4, 7.2 steps 3 and 5 to 7, 7.4 and 8; plan slice REL7). It runs a
+// command only through release/runner.mjs. New deployment requires release.enabled;
+// pinned recovery remains available after a stop. The production controller, the
+// disposable rehearsal and the owner's health check use this adapter. It is the adapter that
 // release/state.mjs drives: state.mjs records each step's intent before this acts and its outcome after. The rules:
 // - the revision: for kind `deploy`, the merge commit the merge gate journaled as `merged` for this task at its verified
 //   revision (one merge path per repository, plan section 8 (k)); for `merge-then-deploy`, the merge commit the merge
@@ -26,6 +26,7 @@ import { extname, join, resolve, sep } from 'node:path';
 import { writeAtomic } from '../proc.mjs';
 import { mergedEventReader } from './eligibility.mjs';
 import { releaseCommandsStopped, runReleaseCommand } from './runner.mjs';
+import { releasePath } from './paths.mjs';
 
 export const DEPLOY_RECORD = 'deploy.json';
 const SHA = /^[0-9a-f]{40}$/;
@@ -97,7 +98,7 @@ export function deployAdapter({ destination, repo, config, dataDir, store, merge
   if (!store) throw new TypeError('the deploy adapter needs the supervisor store');
   const windowMs = destination.checkWindowMinutes * 60_000;
 
-  const home = (r) => join(dataDir, 'releases', r.id);
+  const home = (r) => releasePath(dataDir, r.id);
   const hooksOff = (r) => join(home(r), 'no-hooks');
   const read = (r) => { const path = join(home(r), DEPLOY_RECORD); return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null; };
   const save = (r, record) => mutate(() => { mkdirSync(home(r), { recursive: true }); writeAtomic(join(home(r), DEPLOY_RECORD), JSON.stringify(record, null, 2)); return record; });
@@ -124,9 +125,12 @@ export function deployAdapter({ destination, repo, config, dataDir, store, merge
   const checkout = (r, revision) => mutate(() => checkoutOwned(r, revision));
   function checkoutOwned(r, revision) {
     if (!releaseCommandsStopped({ dataDir, release: r })) throw new Error('An earlier release command has no process-tree stop proof');
-    const dir = join(home(r), 'checkout'), off = hooksOff(r);
+    const dir = releasePath(dataDir, r.id, 'checkout'), off = hooksOff(r);
     mkdirSync(home(r), { recursive: true });
     if (existsSync(dir)) {
+      const source = git(repo, off, 'rev-parse', '--path-format=absolute', '--git-common-dir');
+      const owned = git(dir, off, 'rev-parse', '--path-format=absolute', '--git-common-dir');
+      if (!source.ok || !owned.ok || !same(source.stdout, owned.stdout)) throw new Error('The release checkout is no longer an owned worktree of the project');
       // Reuse it only when it is a worktree of its own: a Git command in a broken directory would reach a parent repository.
       const top = git(dir, off, 'rev-parse', '--show-toplevel');
       if (top.ok && same(top.stdout, dir) && git(dir, off, 'checkout', '--quiet', '--detach', '--force', revision).ok && git(dir, off, 'clean', '-ffdxq').ok) return verify(dir, off, revision);

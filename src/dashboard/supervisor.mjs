@@ -480,7 +480,8 @@ export function releaseModes(repositories, { waitsFor = null, connected = [], en
   const missing = [RELEASE_MISSING.grant, enabled === true ? null : RELEASE_MISSING.off,
     stop === true ? RELEASE_MISSING.stopped : stop === false ? null : RELEASE_MISSING.stopUnknown].filter(Boolean);
   return [...[...projects.values()].sort((a, b) => a.localeCompare(b)).map((repository) => {
-    const observed = releaseEvidence.find((item) => item.repository?.toLowerCase() === repository.toLowerCase() && item.release?.expected?.length)?.release;
+    const observations = releaseEvidence.filter((item) => item.repository?.toLowerCase() === repository.toLowerCase() && item.release?.expected?.length);
+    const observed = (observations.find((item) => item.release.authorized) ?? observations[0])?.release;
     if (enabled && observed) {
       const on = observed.mode === 'auto-release' && stop === false;
       return { repository, mode: on ? 'auto-release' : 'review-only', modes: [

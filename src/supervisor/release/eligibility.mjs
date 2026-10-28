@@ -2,7 +2,7 @@
 // Report only: it answers "would be eligible" or "not eligible, because ..." and never acts. Every check needs positive
 // evidence: no reader, a reader that throws, returns undefined, null or a promise, or a value of the wrong shape fails
 // the check. There is no "assume yes". Readers are injected, synchronous and read-only; this module makes no write and
-// no external call of its own. Auto Release stays off: release.enabled is false until REL11. As amended on 2026-10-17
+// no external call of its own. Production readers come from release/controller.mjs. As amended on 2026-10-17
 // (plan section 8 (i) and (k), slice REL5a): E12 applies only to a destination that still names a credential; a `deploy`
 // destination releases only a task the merge gate journaled as `merged` at its verified revision; and a merge kind is
 // refused in a repository the merge gate covers.
@@ -279,20 +279,24 @@ export const REVIEW_ONLY_SUMMARY = 'Review only: checked results are published f
 export function releaseStatus({ project, tasks, store = null, campaignId = null, enabled = false, commitTasks = tasks }) {
   const rows = store && campaignId ? store.all('SELECT * FROM releases WHERE campaign_id = ? ORDER BY created_at DESC', campaignId) : [];
   const last = store && campaignId ? store.get("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'release-waiting' ORDER BY seq DESC LIMIT 1", campaignId)?.detail : null;
-  const plan = store && campaignId ? store.get("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'release-plan' ORDER BY seq DESC LIMIT 1", campaignId)?.detail : null;
-  if (enabled || rows.length) {
+  const planned = store && campaignId ? store.get("SELECT seq, detail FROM journal WHERE campaign_id = ? AND kind = 'release-plan' ORDER BY seq DESC LIMIT 1", campaignId) : null;
+  const plan = planned?.detail;
+  const delivered = store && campaignId ? store.all("SELECT seq, detail FROM journal WHERE kind='release-covered' AND json_extract(detail, '$.project')=? ORDER BY seq DESC", project)
+    .map((entry) => ({ ...entry.detail, seq: entry.seq })).filter((entry) => entry.covered?.some((item) => item.campaign === campaignId) &&
+      store.get("SELECT 1 FROM releases WHERE id=? AND state='accepted'", entry.release)) : [];
+  const destinations = planned && planned.seq > (delivered[0]?.seq ?? 0) ? plan.destinations : delivered[0]?.destinations ?? plan?.destinations ?? [];
+  if (enabled || rows.length || delivered.length) {
     const remembered = store?.get("SELECT name FROM sqlite_master WHERE type='table' AND name='release_grants'")
       ? store.get('SELECT * FROM release_grants WHERE project = ?', project) : null;
     const valid = Boolean(plan && remembered?.digest === plan.grantDigest && !remembered.revoked && Date.parse(plan.expiresAt) > Date.now());
     const modes = plan?.destinations?.map((destination) => ({ destination, mode: releaseMode(store, { project, destination,
       grant: valid ? { record: { version: plan.grantVersion, grantedAt: plan.grantedAt, destinations: plan.destinations.map((id) => ({ id })) } } : null }) })) ?? [];
-    const complete = Boolean(plan?.destinations?.length && commitTasks.length && commitTasks.every((task) =>
-      task.state === 'done' && plan.covered?.some((item) => item.task === task.task_id && item.sha === task.verified_sha)) &&
-      plan.destinations.every((destination) => rows.some((row) => row.destination === destination && row.verified_sha === plan.sha &&
-        row.state === 'accepted')));
+    const complete = Boolean(destinations.length && commitTasks.length && commitTasks.every((task) => task.state === 'done' &&
+      destinations.every((destination) => delivered.some((entry) => entry.destination === destination && entry.covered.some((item) =>
+        item.campaign === campaignId && item.task === task.task_id && item.sha === task.verified_sha)))));
     return { mode: enabled && modes.some((d) => d.mode === 'auto-release') ? 'auto-release' : 'review-only', enabled, complete,
-      authorized: valid, modes, expected: plan?.destinations ?? [],
-      summary: rows.length ? !complete ? 'Release has not completed at every destination.' : 'The deployed revision passed its project health check.'
+      authorized: valid, modes, expected: destinations, deliveredBy: [...new Set(delivered.map((entry) => entry.release))],
+      summary: rows.length || delivered.length ? !complete ? 'Release has not completed at every destination.' : 'The deployed revision passed its project health check.'
         : last?.reason ?? 'No deployment has been recorded. Release needs a standing project grant and an exact verified merge.',
       tasks: rows.map((row) => ({ taskId: row.task_id, verifiedSha: row.verified_sha, destination: row.destination,
         state: row.state, releaseId: row.id, eligible: row.eligibility?.eligible === true,

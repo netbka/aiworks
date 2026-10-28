@@ -14,6 +14,7 @@ import { releasePass } from '../../src/supervisor/release/controller.mjs';
 import { authorityChange } from '../../src/supervisor/release/authority-path.mjs';
 import { observeGrant } from '../../src/supervisor/release/grant-source.mjs';
 import { parseAuthorization } from '../../src/supervisor/release/authorization.mjs';
+import { acquireLock } from '../../src/supervisor/release/state.mjs';
 import { declaration, GOVERNANCE, skipWithoutSqlite } from './helpers.mjs';
 
 function git(dir, ...args) {
@@ -25,7 +26,7 @@ const day = (at) => new Date(at).toISOString().slice(0, 10);
 function grant(project, now) {
   return { schema: 'aiworks-release-authorization/1', project, version: 1, revoked: false,
     approval: 'https://github.com/example-org/approvals/issues/1', grantedAt: day(now - 86400000), expiresAt: day(now + 30 * 86400000),
-    classes: { 'app-code': ['app.txt'], permissions: ['deploy/AGENTS.md'] },
+    classes: { 'app-code': ['app.txt', 'src/**'], permissions: ['deploy/AGENTS.md'] },
     destinations: [{ id: 'prod', environment: 'prod', kind: 'deploy', changeClasses: ['app-code'], rollback: 'automatic', checkWindowMinutes: 1,
       commands: Object.fromEntries(['deploy', 'observe', 'check', 'rollback'].map((name) => [name, `ops/${name}.mjs`])) }] };
 }
@@ -60,6 +61,7 @@ appendFileSync(at('calls.log'),${JSON.stringify(name + '\n')}); ${body}`);
     git(repo, 'init', '-q', '-b', 'main'); git(repo, 'add', '.'); git(repo, 'commit', '-qm', 'base');
     const base = git(repo, 'rev-parse', 'HEAD');
     git(repo, 'checkout', '-qb', 'task'); writeFileSync(join(repo, 'app.txt'), 'verified artifact');
+    mkdirSync(join(repo, 'src')); writeFileSync(join(repo, 'src', '\u05d0.mjs'), 'export const checked = true;');
     git(repo, 'add', '.'); git(repo, 'commit', '-qm', 'work'); const verified = git(repo, 'rev-parse', 'HEAD');
     git(repo, 'checkout', '-q', 'main'); git(repo, 'merge', '--no-ff', '-qm', 'merge', 'task'); const merged = git(repo, 'rev-parse', 'HEAD');
     git(root, 'init', '-q', '--bare', origin); git(repo, 'remote', 'add', 'origin', origin); git(repo, 'push', '-q', 'origin', 'main');
@@ -89,12 +91,26 @@ appendFileSync(at('calls.log'),${JSON.stringify(name + '\n')}); ${body}`);
 
 test('the production continuation releases two finished projects exactly once and keeps their command work asynchronous', { skip: skipWithoutSqlite }, async (t) => {
   const r = rig(t), one = r.project('sample-one'), two = r.project('sample-two'); r.c = r.controller();
+  const older = declaration({ campaignId: 'previous-wave', tasks: [{ id: 'T0', issue: 2, title: 'base project', deliverable: 'commit',
+    goal: 'Validate base project', dependsOn: [], acceptance: ['artifact works'], references: ['AGENTS.md'] }] });
+  older.target = { ...one.decl.target };
+  campaignStart(r.store, older, r.clock);
+  const known = r.store.task(one.id, 'T1');
+  r.store.run("UPDATE campaigns SET control='finished' WHERE id=?", older.campaignId);
+  r.store.run("UPDATE tasks SET state='done', base_sha=?, head_sha=?, verified_sha=?, result=?, verification=? WHERE campaign_id=?",
+    one.base, one.base, one.base, known.result, { ...known.verification, targetSha: one.base }, older.campaignId);
+  r.store.journal(older.campaignId, 'merged', { task: 'T0', sha: one.base, mergeCommit: one.base }, r.clock);
+  r.store.journal(older.campaignId, 'release-plan', { task: 'T0', sha: one.base, destinations: ['prod'],
+    covered: [{ campaign: older.campaignId, task: 'T0', sha: one.base }] }, r.clock);
   for (const p of [one, two]) r.store.journal(p.id, 'merged', { task: 'OLD', sha: p.base, mergeCommit: p.base, reconciled: true }, r.clock);
   for (let n = 0; n < 2; n++) {
     releasePass(r.c);
     assert.ok(r.c.releaseJob, JSON.stringify(r.store.all("SELECT detail FROM journal WHERE kind='release-waiting'")));
     if (n === 0) {
       const p = [one, two].find((item) => item.id === r.c.releaseJob.campaignId);
+      const planned = r.store.get('SELECT * FROM releases WHERE campaign_id=?', p.id);
+      acquireLock(r.store, planned.id, { lease: { instanceId: r.c.instanceId, generation: r.c.held.get(p.id) }, now: r.clock,
+        recheck: () => ({ eligible: true, inputs: { grantDigest: planned.grant_digest } }) });
       // The owner renews authority on main after the task was merged and after
       // admission, before any forward intent. No new work commit is needed.
       writeFileSync(join(p.repo, 'deploy/AGENTS.md'), JSON.stringify({ ...p.record, version: 2 }));
@@ -117,6 +133,8 @@ test('the production continuation releases two finished projects exactly once an
   assert.equal(r.store.all("SELECT * FROM journal WHERE kind='release-grant-renewed'").length, 1);
   assert.equal(r.store.all('SELECT * FROM release_activity').length, 0);
   for (const p of [one, two]) assert.equal(p.calls().filter((n) => n === 'deploy').length, 1);
+  assert.equal(campaignStatus(r.store, older.campaignId, r.clock, { config: r.config }).release.complete, true,
+    'the accepted successor delivers included work from an earlier campaign');
 });
 
 test('ordinary worker changes cannot amend standing release authority and grant versions cannot regress or revive', (t) => {
