@@ -156,6 +156,7 @@ test('a checked result with its criteria not checked is never shown or counted a
   assert.equal(unchecked.step.review.unresolved.notChecked, 3);
   assert.equal(unchecked.step.checkPassed, false);
   assert.equal(unchecked.strip.checked, 0, 'an unchecked result is never counted as checked');
+  assert.equal(unchecked.row.checkPassed, false, 'its Results row is never listed as passed');
   assert.equal(unchecked.step.resultUrl, null, 'a link to another pull request is not this step\'s result');
 
   const all = [1, 2, 3].map((criterion) => ({ criterion, result: 'pass', check: 'Read the report', evidence: 'Present.' }));
@@ -163,11 +164,13 @@ test('a checked result with its criteria not checked is never shown or counted a
   const passed = read();
   assert.equal(passed.step.checkPassed, true);
   assert.equal(passed.strip.checked, 1);
+  assert.equal(passed.row.checkPassed, true);
   assert.equal(passed.step.resultUrl, 'https://github.com/example-org/sampleapp/issues/601#issuecomment-13');
 
   // Partly checked on its own issue: the row's evidence is never the passed one.
   finish(all.slice(0, 2), 'https://github.com/example-org/sampleapp/issues/601#issuecomment-13');
   const partly = read();
   assert.equal(partly.step.checkPassed, false);
+  assert.equal(partly.row.checkPassed, false);
   assert.notEqual(partly.row.evidence, passed.row.evidence, 'a partly checked result is never shown as passed');
 });
