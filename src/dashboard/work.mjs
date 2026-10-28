@@ -21,6 +21,7 @@ import { configuredGovernanceRoot } from '../supervisor/governance.mjs';
 import { draftChanges, draftCriteria, draftOutline, INTAKE_COPY, intakeState, IntakeError, latestDraft, pinRequest, reviseDraft, submitWorkRequest,
   workRequest } from '../supervisor/intake.mjs';
 import { candidates, isLocalTarget } from '../supervisor/local-candidates.mjs';
+import { passedCheck } from '../supervisor/result-review.mjs';
 import { checkCaller, localApprovals, recordLocalApproval, registerLocalPlan } from '../supervisor/local-admission.mjs';
 import { localStartWork, resolveLocalProject } from '../supervisor/project-connect.mjs';
 import { project as readProject, projects as readProjects } from '../supervisor/projects.mjs';
@@ -220,7 +221,11 @@ function localWork(store, record, textChecks, config) {
         steps: store.tasks(c.id).map((task) => {
           const decision = ['registered', 'paused'].includes(c.control) ? decisionView(c.id, task, feedback, now) : null;
           return { id: safeText(task.task_id, 64), title: titles.get(task.task_id) ?? safeText(task.task_id, 64), version: task.version, decision,
-            state: decision ? 'Stopped: needs your decision' : task.blocked ? 'Stopped; it will not retry by itself' : STEP_WORDS[task.state] ?? 'Not known yet' };
+            state: decision ? 'Stopped: needs your decision' : c.control === 'cancelled' && task.state !== 'done' ? 'Cancelled'
+              : task.blocked ? 'Stopped; it will not retry by itself'
+                // Checked, yet not every criterion passed: never "Passed the check" (result-review.mjs passedCheck).
+                : ['verified', 'done'].includes(task.state) && !passedCheck(task, c.declaration.tasks.find((item) => item.id === task.task_id)?.acceptance)
+                  ? 'Checked; not every criterion passed' : STEP_WORDS[task.state] ?? 'Not known yet' };
         }),
         results };
     });

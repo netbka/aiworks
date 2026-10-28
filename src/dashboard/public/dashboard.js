@@ -12,7 +12,7 @@ const roleName = (role) => ({ Verifier: 'Independent checker', Implementer: 'Bui
 // What a finished step means for the owner: merged into the project (seen in local git), published with its merge
 // not seen yet, or passed the check and merged for the owner when merging is delegated (#97). The line under it (what
 // it means for the owner, why the merge is not seen, or why it is held) is `delivery.note`.
-const deliveryNames = { merged: ['done', 'Merged'], published: ['attention', 'Published, merge not seen yet'], delegated: ['in_progress', DELEGATED.word],
+const deliveryNames = { merged: ['done', 'Merged'], published: ['attention', 'Published, merge not seen yet'], delegated: ['in_progress', DELEGATED.word(true)],
   'report-posted': ['done', 'Report posted'], unknown: ['unknown', 'Result not known'] };
 const CHURN_ATTEMPTS = 5;
 const STUCK_MINUTES = 15;
@@ -346,7 +346,8 @@ function providerStatus(c) {
 }
 
 // What the worker actually returned. "result" only means a valid response arrived; the verdict inside decides.
-const terminalLabels = { accepted: 'passed the check', rejected: 'rejected', resolved: 'built, waiting for the independent check', 'evidence-unavailable': 'could not gather required evidence', 'blocked-owner-reserved': 'blocked on a decision reserved for you' };
+// A run verdict, not the result's outcome: the result passed only when every criterion did (checkPassed).
+const terminalLabels = { accepted: 'accepted by the checker', rejected: 'rejected', resolved: 'built, waiting for the independent check', 'evidence-unavailable': 'could not gather required evidence', 'blocked-owner-reserved': 'blocked on a decision reserved for you' };
 const outcomeLabels = { unavailable: 'AI worker unavailable (run not counted)', quota: 'usage limit', auth: 'AI worker sign-in', timeout: 'timed out', lost: 'runner lost', 'invalid-result': 'invalid result', 'exit-without-result': 'exited without a result', 'spawn-failed': 'could not start', error: 'failed',
   'reply-withheld': 'reply withheld because it looked like it contained a credential (it was not posted)',
   'boundary-violation': 'the AI worker changed its checkout or the live runtime; nothing it produced was posted' };
@@ -360,10 +361,13 @@ function outcomeText(o) {
 // Owner-facing state: a finished step shows whether its merge is seen (merged, published with the merge not seen yet, ...).
 function stepBadge(c, task) {
   const delivery = deliveryOf(c, task);
+  // Cancelled work never reads as running: its unfinished steps stop with it.
+  if (c.control === 'cancelled' && task.state !== 'done') return badge('pending', 'Cancelled');
   if (!delivery && !task.blocked && task.waitingReason && task.state !== 'done') return badge('pending', /dependencies in main/.test(task.waitingReason) ? 'Waiting for merges' : 'Waiting');
   if (!delivery) return badge(task.blocked ? 'blocked' : task.state);
   const [cls, text] = deliveryNames[delivery.state] ?? ['unknown', delivery.state];
-  return badge(cls, text);
+  // Delegated merging merges a verified version whatever its criteria say: "passed" only when every criterion passed.
+  return badge(cls, delivery.state === 'delegated' ? DELEGATED.word(task.checkPassed === true) : text);
 }
 
 const watchChip = (task) => task.attempts >= CHURN_ATTEMPTS || task.verifierRejections > 0
@@ -2449,14 +2453,14 @@ function modelInstructionsScreen() {
 // server sends (views.mjs). Typed events carry no text of their own, so every word here is the page's.
 
 const EVENT_WORDS = { 'goal-started': 'Work started', paused: 'Paused', resumed: 'Resumed', cancelled: 'Cancel requested',
-  'result-ready': 'Result ready for your review', accepted: 'You accepted a checked result', merged: 'Merged', built: 'Builder finished a run', checked: 'Passed the independent check',
+  'result-ready': 'Result ready for your review', accepted: 'You accepted a checked result', merged: 'Merged', built: 'Builder finished a run', checked: 'Checked by the independent checker',
   'check-rejected': 'The independent checker asked for changes', 'run-failed': 'An AI worker run did not finish; AIWorks retries by itself',
   'limit-wait': 'Waiting for an AI worker limit', 'wait-ended': 'An AI worker can take work again', 'needs-you': 'Needs you',
   'decision-cleared': 'A question for you was cleared', 'aiworks-problem': 'AIWorks had a problem of its own' };
 // The order of the one-line summary: what the owner acts on first.
 const EVENT_ORDER = ['needs-you', 'result-ready', 'accepted', 'merged', 'checked', 'check-rejected', 'paused', 'resumed', 'goal-started', 'cancelled',
   'limit-wait', 'wait-ended', 'run-failed', 'aiworks-problem', 'built', 'decision-cleared'];
-const SUMMARY_WORDS = { 'needs-you': 'new for you', 'result-ready': 'ready for review', accepted: 'accepted by you', merged: 'merged', checked: 'passed the check',
+const SUMMARY_WORDS = { 'needs-you': 'new for you', 'result-ready': 'ready for review', accepted: 'accepted by you', merged: 'merged', checked: 'checked by the independent checker',
   'check-rejected': 'sent back by the checker', paused: 'paused', resumed: 'resumed', 'goal-started': 'started', cancelled: 'cancelled',
   'limit-wait': 'limit waits', 'wait-ended': 'waits ended', 'run-failed': 'runs retried', 'aiworks-problem': 'AIWorks problems', built: 'builder runs',
   'decision-cleared': 'questions cleared' };
@@ -2516,7 +2520,8 @@ const resultsToReview = (project = null) => Object.values(state.owner?.results ?
   .flatMap((entry) => entry.groups.flatMap((group) => group.rows.map((row) => ({ ...row, project: entry.project })))).filter((row) => row.review?.state === 'ready');
 function reviewList(rows, { scope, withProject = false }) {
   if (!rows.length) return null;
-  return panel('Results to review', 'Each passed the independent check. Review shows its criteria and evidence, then Accept result or Request changes.',
+  // "Each passed" only when every listed result passed every criterion (owner.mjs row checkPassed); each row says what is missing.
+  return panel('Results to review', `${rows.every((row) => row.checkPassed === true) ? 'Each passed the independent check. ' : 'Not every one passed the independent check; each says what it found. '}Review shows its criteria and evidence, then Accept result or Request changes.`,
     el('div', { class: 'panel-body', 'data-focus-scope': scope }, el('ul', { class: 'needs-list' }, ...rows.slice(0, 5).map((row) => el('li', { class: 'result-row', 'data-focus-scope': `${scope}/${row.campaignId}/${row.taskId}` },
       el('div', { class: 'needs-text' }, routeLink(row.review.label, row.review.address, 'needs-link'), el('span', {}, ` ${row.text}`)),
       el('div', { class: 'subtext' }, [withProject ? `Project ${projectName(row.project)}` : null, row.evidence].filter(Boolean).join(' · '))))),
@@ -2543,7 +2548,9 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 function stepTone(c, task) {
   const delivery = deliveryOf(c, task), agent = c.agents.find((item) => item.taskId === task.id);
   if (delivery?.state === 'merged') return ['merged', 'Merged'];
-  if (delivery) return ['delivered', deliveryNames[delivery.state]?.[1] ?? 'Delivered'];
+  // As in stepBadge: a delegated result reads as passed only when every criterion passed, and cancelled work never runs.
+  if (delivery) return ['delivered', delivery.state === 'delegated' ? DELEGATED.word(task.checkPassed === true) : deliveryNames[delivery.state]?.[1] ?? 'Delivered'];
+  if (c.control === 'cancelled' && task.state !== 'done') return ['todo', 'Cancelled'];
   if (task.blocked) return ['you', 'Waiting for you'];
   if (agent) return isBuilderRole(agent.role) ? ['building', 'Being built'] : ['checking', 'Being checked'];
   if (task.state === 'done') return ['merged', 'Done'];
@@ -3184,8 +3191,8 @@ function previewSection(review, binding) {
   if (!review.preview.available) return section(el('p', { class: 'subtext' }, `Preview not available: ${review.preview.reason}`));
   const server = review.preview.runtime === 'server';
   const identity = el('p', { class: 'subtext' }, 'The checked version', server
-    ? ', exactly as it passed the check. Opening it starts that version’s own server on this computer, reachable only from here and stopped after 10 minutes or when the preview closes; nothing is built and no install script runs. Its pages run in a sealed frame that cannot reach this dashboard or the internet.'
-    : ', exactly as it passed the check. Its pages run in a sealed frame: they cannot reach this dashboard or the internet, and nothing of the project is built or started on this computer.');
+    ? ', exactly as it was checked. Opening it starts that version’s own server on this computer, reachable only from here and stopped after 10 minutes or when the preview closes; nothing is built and no install script runs. Its pages run in a sealed frame that cannot reach this dashboard or the internet.'
+    : ', exactly as it was checked. Its pages run in a sealed frame: they cannot reach this dashboard or the internet, and nothing of the project is built or started on this computer.');
   // Each control names its preview: the refresh keeps a button that shows exactly the same, with its own action, so two
   // results' identical buttons must never be mistaken for each other.
   const control = (label, action, cls = 'secondary', extra = {}) => el('button', { class: `button ${cls}`, type: 'button', 'data-preview': key, onclick: action, ...extra }, label);
@@ -3297,7 +3304,12 @@ function stepScreen(project, c, task) {
     // A checked result is resolved in its Review below; its pull request is supporting reference, never the primary action.
     : task.resultUrl ? link(number ? `Pull request #${number} ↗` : 'Open the result ↗', delivery?.url ?? task.resultUrl, task.review ? 'needs-link' : 'button')
       : unfinished && c.controls?.more.length ? button('Send guidance', () => openInstructions(c, task), '', commandsOff()) : null;
-  const last = task.verifiedSha ? 'Passed the independent check' : outcomeText(task.lastOutcome);
+  // Passed only when the check passed every criterion (the server's checkPassed); otherwise what is still open.
+  const u = task.review?.unresolved;
+  const open = u ? [u.failed ? `${plural(u.failed, 'criterion', 'criteria')} failed` : null, u.notChecked ? `${plural(u.notChecked, 'criterion', 'criteria')} not checked` : null,
+    u.blocking ? `${plural(u.blocking, 'blocking finding')} open` : null].filter(Boolean).join(' · ') : '';
+  const last = !task.verifiedSha ? outcomeText(task.lastOutcome) : task.checkPassed ? 'Passed the independent check'
+    : `Checked, not complete: ${open || 'not every criterion is recorded as passed'}`;
   const meaning = task.verifiedSha ? null : resultMeaning(task.lastOutcome, { stopped: Boolean(task.stopped), check: canCheckAgain(c, task) });
   const guidance = (c.instructions ?? []).filter((item) => item.taskId === task.id);
   const reading = readingLines(task.reading);
@@ -4436,10 +4448,11 @@ function itemParts(number) {
     el('div', { class: 'panel-body' },
       entry.error || offline ? el('p', { class: 'needs-stale', role: 'status' }, `Shown as read at ${clock(entry.readAt)}. ${offline
         ? 'The page is disconnected; it reads this item again when it reconnects.' : entry.error.message}`) : null,
-      // A local review is checked, never merged or accepted by itself (OWNER_WORKSPACE §2.3).
-      v.kind === 'review' ? el('p', { class: 'notice warning local-review' }, review?.mergedAt
-        ? `Local review: passed the independent check and merged into local main ${clock(review.mergedAt)}. Merged is not accepted.`
-        : `Local review: passed the independent check on this computer. Not merged and not accepted.`) : null,
+      // A local review is checked, never merged or accepted by itself (OWNER_WORKSPACE §2.3). "Passed" only when its step's
+      // check passed every criterion (owner.mjs checkPassed); a review alone never means passed.
+      v.kind === 'review' ? el('p', { class: 'notice warning local-review' }, `Local review: ${task?.checkPassed === true
+        ? 'passed the independent check' : task ? 'checked, not every criterion passed' : 'checked; its criteria are on its step'}${review?.mergedAt
+        ? ` and merged into local main ${clock(review.mergedAt)}. Merged is not accepted.` : ' on this computer. Not merged and not accepted.'}`) : null,
       v.source ? el('p', { class: 'subtext' }, 'Imported from ', link(`GitHub issue #${v.number} ↗`, v.source.url), ` as it was at ${dateTime(v.source.updatedAt)}.`) : null,
       task ? el('p', { class: 'subtext' }, 'Step: ', routeLink(task.outcome ?? task.title ?? task.id, { screen: 'step', project: c.repository, work: c.id, step: task.id }), ` · ${campaignTitle(c)}`) : null,
       el('div', { class: 'work-text' }, v.body || 'No details.'),

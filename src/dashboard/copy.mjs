@@ -219,10 +219,13 @@ export function sinceLines(recent, ids, failures = []) {
   const prs = (list) => list.filter((item) => item.url || item.route)
     .map((item) => item.url ? { label: `#${item.number}`, url: item.url } : { label: `Work list #${item.number}`, route: item.route.address });
   const merged = mine(recent.merged), delivered = mine(recent.delivered), waiting = mine(recent.waiting);
+  // Passed only when the check passed every criterion (owner.mjs recentSummary); the rest finished with it not complete.
+  const passed = mine(recent.passed), incomplete = delivered.length - passed.length;
   const runs = mine(failures).filter((item) => ['failed-run', 'rejected'].includes(item.kind)), rejected = runs.filter((item) => item.kind === 'rejected').length;
   return [
     merged.length ? { text: `${plural(merged.length, 'step')} merged`, links: prs(merged), tone: null } : null,
-    delivered.length ? { text: `${plural(delivered.length, 'step')} finished and passed the check`, links: [], tone: null } : null,
+    passed.length ? { text: `${plural(passed.length, 'step')} finished and passed the check`, links: [], tone: null } : null,
+    incomplete > 0 ? { text: `${plural(incomplete, 'step')} finished; the independent check did not pass every criterion`, links: [], tone: 'attention' } : null,
     waiting.length ? { text: `${waiting.length} newly waiting for your review`, links: prs(waiting), tone: 'attention' } : null,
     runs.length ? { text: `${plural(runs.length, 'AI worker run')} did not succeed${rejected ? ` (${rejected} rejected by the independent checker)` : ''}; AIWorks retries by itself`, links: [], tone: 'warn' } : null,
   ].filter(Boolean);
@@ -516,9 +519,11 @@ export function stopReasonWords(blocked, rounds = 0) {
  */
 const MERGES_AFTER = 'AIWorks merges it after it passes the check against the latest main';
 export const DELEGATED = {
-  word: 'Passed the check',
+  // "Passed" only when the check passed every criterion (supervisor.mjs checkPassed); the merge gate merges a verified
+  // version whatever its criteria say, so a delegated result with criteria not checked says so instead.
+  word: (passed) => passed ? 'Passed the check' : 'Checked · not every criterion passed',
   note: (by) => by === 'supervisor' ? `${MERGES_AFTER}. Nothing for you to do.` : 'Will be merged for you. Nothing for you to do.',
-  row: (number, by) => `Pull request #${number} · passed the check · ${by === 'supervisor' ? MERGES_AFTER : 'will be merged for you'}`,
+  row: (number, by, passed) => `Pull request #${number} · ${passed ? 'passed the check' : 'checked, not every criterion passed'} · ${by === 'supervisor' ? MERGES_AFTER : 'will be merged for you'}`,
   heldRow: (number, reason) => `Pull request #${number} · ${reason.charAt(0).toLowerCase()}${reason.slice(1)}`,
   progress: (n) => `${n} to be merged for you`,
   /**
@@ -553,10 +558,10 @@ export const DELEGATED = {
   },
   /** A wait with no recorded reason: the gate has not held it yet, or held it before this version. Never guessed. */
   unknown: { reason: 'AIWorks has not recorded why it is not merged yet', next: 'The merge gate checks it again on its next pass.' },
-  waitedRow: (hours) => `Passed the check · waiting to be merged for ${plural(hours, 'hour')}`,
+  waitedRow: (hours, passed) => `${passed ? 'Passed the check' : 'Checked, not every criterion passed'} · waiting to be merged for ${plural(hours, 'hour')}`,
   /** Merging delegated to someone other than AIWorks, waiting longer than the owner allowed: AIWorks may not merge it. */
   overdue: { action: 'Decide how this result continues',
-    why: (hours) => `It passed the check ${plural(hours, 'hour')} ago and is still not merged. Merging in this project is left to someone other than AIWorks, and AIWorks is not allowed to merge it.` },
+    why: (hours, passed) => `It ${passed ? 'passed the check' : 'was checked, with not every criterion passed,'} ${plural(hours, 'hour')} ago and is still not merged. Merging in this project is left to someone other than AIWorks, and AIWorks is not allowed to merge it.` },
   held: {
     'newer-work': 'Held: waiting to be combined with newer work',
     other: 'Held for now at your request',

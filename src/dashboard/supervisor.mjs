@@ -8,7 +8,7 @@ import { DEFAULTS } from '../supervisor/controller.mjs';
 import { safeText } from './roadmap.mjs';
 import { pendingInstructions } from '../supervisor/instructions.mjs';
 import { decisionId, isDecision, structuredDecision } from '../supervisor/decisions.mjs';
-import { criterionEvidence, MAX_FEEDBACK, OWNER_CHANGES, reviewRecords, unresolvedOf, verifiedReview } from '../supervisor/result-review.mjs';
+import { criterionEvidence, MAX_FEEDBACK, OWNER_CHANGES, passedCheck, reviewRecords, unresolvedOf, verifiedReview } from '../supervisor/result-review.mjs';
 import { acceptanceMode } from '../supervisor/project-settings.mjs';
 import { mergeSettings } from '../supervisor/merge.mjs';
 import { previewManifest, previewSupport, PreviewError, PreviewSessions } from '../supervisor/preview.mjs';
@@ -44,6 +44,18 @@ const identifier = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 // A project as a pause scope names it: a GitHub repository or the lp- id of a project without GitHub, never a path.
 const PROJECT = /^(?:[\w.-]+\/[\w.-]+|lp-[a-z0-9][a-z0-9-]{0,38})$/;
 const githubLink = (value) => /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(?:issues|pull)\/\d+(?:#issuecomment-\d+)?$/.test(value ?? '') ? value : null;
+/**
+ * The step's own result on GitHub, or null: a pull request in its campaign's repository for a commit, and for a report
+ * the comment posted on the step's own issue there (controller.mjs publishes it nowhere else). A link to another
+ * repository, issue or pull request is not this step's evidence, so it is never offered as its result.
+ */
+function ownResultLink(value, repository, spec) {
+  const link = githubLink(value);
+  const at = link && /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(issues|pull)\/(\d+)(#issuecomment-\d+)?$/.exec(link);
+  if (!at || at[1].toLowerCase() !== String(repository ?? '').toLowerCase()) return null;
+  if (spec?.deliverable === 'report') return at[2] === 'issues' && at[4] && Number(at[3]) === spec.issue ? link : null;
+  return at[2] === 'pull' && !at[4] ? link : null;
+}
 const code = (value) => /^[a-z][a-z0-9-]{0,60}$/i.test(value ?? '') ? value : null;
 function publicTaskWait(task, spec) {
   if (task.blocked) return ({ B3: 'Owner decision or environment authorization required', stalled: 'Bounded attempts exhausted; recovery required' })[task.blocked.class] ?? 'Required evidence or worker recovery is blocked';
@@ -1152,8 +1164,10 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
           requiresMergedDependencies: specs.get(task.task_id)?.requiresMergedDependencies === true,
           blocked: code(task.blocked?.class), blockedReason: task.blocked ? stopReason(task) : null,
           errorClass: code(String(task.last_error ?? '').split(':')[0]),
-          retryAt: task.retry_at, dependsOn: specs.get(task.task_id)?.dependsOn ?? [], resultUrl: githubLink(task.pr_url) ?? localReviewAddress(store, id, task),
+          retryAt: task.retry_at, dependsOn: specs.get(task.task_id)?.dependsOn ?? [], resultUrl: ownResultLink(task.pr_url, c.declaration.target.repository, specs.get(task.task_id)) ?? localReviewAddress(store, id, task),
           headSha: task.head_sha, verifiedSha: task.verified_sha, lastOutcome: lastOutcome(task.task_id),
+          // Passed only when the accepted check of this head passed every criterion with no blocking finding (result-review.mjs).
+          checkPassed: passedCheck(task, specs.get(task.task_id)?.acceptance),
           // When the verified commit passed the check. Without a recorded check run, when the step last changed, which is
           // never earlier, so a wait is never overstated.
           verifiedAt: task.verified_sha ? acceptedAt.get(`${task.task_id}/${task.verified_sha}`) ?? task.updated_at : null,
