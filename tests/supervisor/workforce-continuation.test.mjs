@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { join } from 'node:path';
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { Store } from '../../src/supervisor/store.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
 import { campaignStart } from '../../src/supervisor/api.mjs';
@@ -72,6 +72,34 @@ test('an expired pre-launch adapter hold recovers without a paid run; auth and t
   assert.equal(store.campaign(ctx.id).blocker.kind, 'auth');
 });
 
+test('a browser adapter hold recovers only after its task browser capability is restored', (t) => {
+  const env = environment(); const store = new Store(join(env.dataDir, 'supervisor.db'));
+  t.after(() => { store.close(); env.cleanup(); });
+  let now = 1000;
+  const decl = declaration({ tasks: [{ ...declaration().tasks[0], deliverable: 'report',
+    web: { urls: ['https://example.invalid/'] } }] });
+  decl.executor = { kind: 'agy-cli', model: 'gemini-3.1-pro-high', implementerTimeoutMinutes: 1, verifierTimeoutMinutes: 1 };
+  campaignStart(store, decl, now);
+  const chrome = join(env.tmp, 'chrome.exe');
+  const config = { ...env.config, commands: { ...env.config.commands, agy: [process.execPath], chrome: [chrome] } };
+  const controller = new Controller({ store, config, dataDir: env.dataDir, now: () => now });
+  const lease = store.acquireLease(decl.campaignId, controller.instanceId, now, 3_600_000);
+  const ctx = { id: decl.campaignId, generation: lease.generation };
+  controller.recordUnavailable(ctx, 'agy-cli', 'web acceptance: commands.chrome does not exist on this PC');
+  controller.raiseBlocker(ctx, decl, { kind: 'executors', class: 'B2', reason: 'browser unavailable' }, now);
+  now += 16 * 60_000;
+  ctx.generation = store.acquireLease(decl.campaignId, controller.instanceId, now, 3_600_000).generation;
+  controller.recoverExecutorAvailability(ctx);
+  assert.equal(store.campaign(ctx.id).blocker.kind, 'executors');
+  writeFileSync(chrome, ''); mkdirSync(join(env.tmp, '155.0.8059.39'));
+  now += 16 * 60_000;
+  ctx.generation = store.acquireLease(decl.campaignId, controller.instanceId, now, 3_600_000).generation;
+  controller.recoverExecutorAvailability(ctx);
+  assert.equal(store.campaign(ctx.id).blocker, null);
+  assert.equal(store.campaign(ctx.id).runs_used, 0);
+  assert.equal(store.openOperations(ctx.id).length, 0);
+});
+
 test('no-progress limits still bound paid retries without inventing an owner decision', (t) => {
   const env = environment(); const store = new Store(join(env.dataDir, 'supervisor.db'));
   t.after(() => { store.close(); env.cleanup(); });
@@ -100,6 +128,11 @@ test('only regular placeholder-only environment examples pass; secrets, symlinks
   assert.deepEqual(outsideWrites({ ...decl, envelope: { denyWrites: ['.env.example'] } }, domain, ['.env.example'], { safeTemplates }).forbidden, ['.env.example']);
   assert.equal(safeEnvironmentExample('.ssh/.env.example', 'KEY=\n'), false);
   assert.equal(safeEnvironmentExample('.env.example', 'KEY=synthetic-concrete-value\n'), false);
+  assert.equal(safeEnvironmentExample('.env.example', '# SERVICE_TOKEN=\n# KEY=REPLACE_ME\n'), true);
+  for (const comment of ['# SERVICE_TOKEN=syntheticopaquecredential123456789', '# DATABASE_PASSWORD=syntheticpassword123',
+    '# Authorization: Bearer syntheticopaquecredential123456789', '# See https://example.invalid/setup?token=syntheticopaquecredential123456789']) {
+    assert.equal(safeEnvironmentExample('.env.example', `${comment}\nKEY=\n`), false);
+  }
   const blob = git('rev-parse', 'HEAD:.env.example');
   git('update-index', '--cacheinfo', `120000,${blob},.env.example`);
   git('commit', '-qm', 'synthetic symlink mode');
