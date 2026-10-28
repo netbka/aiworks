@@ -39,7 +39,7 @@ test('unknown is never shown as success: an open, unknown or unreadable release 
   const snapshot = supervisorSnapshot(dataDir);
   const byTask = Object.fromEntries(snapshot.releases.map((r) => [r.taskId, r]));
   assert.equal(byTask.T2.state, 'unknown');
-  const task = { headSha: SHA, verifiedSha: SHA };
+  const task = { headSha: SHA, verifiedSha: SHA, checkPassed: true };
   const answers = (ladder) => Object.fromEntries(ladder.steps.map((step) => [step.key, step.answer]));
   assert.deepEqual(answers(releaseLadder(task, { state: 'merged' }, byTask.T1)),
     { implemented: 'yes', checked: 'yes', merged: 'yes', deployed: 'unknown', 'release-checked': 'no' });

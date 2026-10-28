@@ -176,7 +176,19 @@ function localDelivery(task, number, merges, now, campaignId, repository) {
  */
 export function reviewEvidence(task) {
   if (!task.verifiedSha || task.review?.state === 'no-evidence') return { ...NEEDS.noEvidence };
-  return NEEDS.evidence();
+  return task.checkPassed ? NEEDS.evidence() : incompleteCheck(task);
+}
+
+/**
+ * What the independent check left open on a verified result that did not pass (supervisor.mjs `checkPassed`): its
+ * failed and not-checked criteria and open blocking findings, as Review counts them. Never "passed".
+ */
+function incompleteCheck(task) {
+  const u = task.review?.unresolved;
+  const missing = (u ? [u.failed ? `${plural(u.failed, 'criterion', 'criteria')} failed` : null,
+    u.notChecked ? `${plural(u.notChecked, 'criterion', 'criteria')} not checked` : null,
+    u.blocking ? `${plural(u.blocking, 'blocking finding')} open` : null].filter(Boolean).join(' · ') : '') || 'not every criterion is recorded as passed';
+  return { short: `Not complete: ${missing}`, text: `The independent check did not pass every criterion of this version (${missing}); Review shows what is missing.` };
 }
 
 /**
@@ -185,6 +197,7 @@ export function reviewEvidence(task) {
  */
 export function resultEvidence(task) {
   if (!task.verifiedSha || task.review?.state === 'no-evidence') return { short: 'Independent check not recorded here', text: 'The independent check is not recorded here.' };
+  if (!task.checkPassed) return incompleteCheck(task);
   return { short: 'Passed the independent check', text: 'Passed the independent check of exactly this version; Review shows its criteria and evidence.' };
 }
 
@@ -224,6 +237,7 @@ export function reviewEntry(c, task, d = null) {
 /** One finished step as a Results row: its group, its state word, what it means, and the link to the result. */
 function resultRow(c, task, d, releases, recorded = null) {
   const base = { campaignId: c.id, taskId: task.id, repository: c.repository, text: label(task), mergedAt: null, release: null, asOf: d.asOf ?? null, signature: task.signature ?? null,
+    checkPassed: task.checkPassed === true,
     review: reviewEntry(c, task, d),
     // A report is read, never released, so it has no release steps.
     ladder: d.state === 'report-posted' ? null : releaseLadder(task, d, recorded) };
@@ -241,6 +255,7 @@ function resultRow(c, task, d, releases, recorded = null) {
   if (d.local) {
     const row = { ...localReviewRow({ campaignId: c.id, taskId: task.id, number: d.number, verifiedSha: task.verifiedSha, mergedAt: d.mergedAt ?? null },
       base.text, d.state === 'merged'), review: base.review, ladder: base.ladder, signature: base.signature };
+    checkedRow(row, task);
     // A merge check that can still come shortly: neither waiting nor merged. Why a merge cannot be seen is said.
     return d.pending ? { ...row, group: 'unknown', word: 'Not known yet', note: d.note } : d.reason ? { ...row, note: d.note } : row;
   }
@@ -252,7 +267,7 @@ function resultRow(c, task, d, releases, recorded = null) {
     release: `Release follows ${releaseRule(releases, c.repository)}.` };
   // Merging delegated by the owner: passed the check and merged for them, held with its reason, or waiting too long.
   if (d.state === 'delegated') return { ...base, ...proof, group: 'delegated', note: d.note, link,
-    word: d.held ? DELEGATED.heldRow(number, DELEGATED.held[d.held]) : d.stalled ? DELEGATED.waitedRow(d.stalled) : DELEGATED.row(number, d.by) };
+    word: d.held ? DELEGATED.heldRow(number, DELEGATED.held[d.held]) : d.stalled ? DELEGATED.waitedRow(d.stalled, task.checkPassed === true) : DELEGATED.row(number, d.by, task.checkPassed === true) };
   // A merge check that can still come shortly: the state is not known yet, so it is neither waiting nor merged.
   if (d.pending) return { ...base, ...proof, group: 'unknown', word: 'Not known yet', note: d.note, link };
   // Sent back by the owner: no longer waiting for their review. Only running work repairs it (ownerSettled).
@@ -264,6 +279,18 @@ function resultRow(c, task, d, releases, recorded = null) {
   if (task.review?.state === 'accepted') return { ...base, ...proof, group: 'accepted', word: 'Accepted by you · not merged yet', note: OWN_MERGE, link };
   return { ...base, ...proof, group: 'review', word: `Pull request #${number} · waiting for your review`,
     note: d.reason ? d.note : 'The merge is not seen on the base branch yet', link };
+}
+
+/** When a handling entry's check ran: "Passed the check" only when it passed every criterion (supervisor.mjs checkPassed). */
+const checkedWords = (task) => task.checkPassed ? 'Passed the check' : 'Checked';
+
+/** A local review row of a step whose check did not pass every criterion says what is missing, never that it passed. */
+function checkedRow(row, task) {
+  row.checkPassed = task.checkPassed === true;
+  if (!task.verifiedSha || task.checkPassed) return row;
+  const evidence = incompleteCheck(task);
+  return Object.assign(row, { evidence: evidence.short, detail: evidence.text,
+    note: row.group === 'local-review' ? 'A local review recorded in the work list, not on GitHub; its independent check is not complete.' : row.note });
 }
 
 /** The newest checked local review of each campaign step, by `<campaignId>/<taskId>` (work-list.mjs reviewRows, newest first). */
@@ -319,7 +346,8 @@ export function releaseLadder(task, d, recorded = null, { github = true } = {}) 
   const releases = !recorded || ['deploy', 'apply'].some((step) => recorded.steps.includes(step));
   const steps = [
     { key: 'implemented', label: 'Implemented', answer: task.headSha ? 'yes' : 'unknown' },
-    { key: 'checked', label: 'Independently checked', answer: task.verifiedSha ? 'yes' : 'unknown' },
+    // Yes only when every criterion passed; checked with criteria failed or not checked is no (result-review.mjs passedCheck).
+    { key: 'checked', label: 'Independently checked', answer: task.checkPassed ? 'yes' : task.verifiedSha ? 'no' : 'unknown' },
     github ? { key: 'merged', label: 'Merged', answer: merged } : null,
     releases ? { key: 'deployed', label: github ? 'Deployed' : 'Applied', answer: forward('deploy') ?? forward('apply') ?? unreleased } : null,
     { key: 'release-checked', label: 'Release checked', answer: forward('check') ?? unreleased },
@@ -347,13 +375,14 @@ function resultsByProject(supervisor, campaigns, releases, reviews = new Map(), 
   };
   for (const c of supervisor.campaigns) for (const task of c.tasks) {
     const d = campaigns[c.id].deliveries[task.id], review = reviews.get(`${c.id}/${task.id}`);
-    if (review && d?.state === 'unknown') { shown.add(review.number); add(c.repository, { ...localReviewRow(review, label(task)), review: reviewEntry(c, task, d) }); continue; }
+    if (review && d?.state === 'unknown') { shown.add(review.number); add(c.repository, checkedRow({ ...localReviewRow(review, label(task)), review: reviewEntry(c, task, d) }, task)); continue; }
     if (!d) continue;
     if (d.local) shown.add(d.number);
     add(c.repository, resultRow(c, task, d, releases, recorded.get(`${c.id}/${task.id}`) ?? null));
   }
   // Reviews of work no longer on this computer still belong to AIWorks's own repository.
-  if (selfRepository) for (const review of reviews.values()) if (!shown.has(review.number)) add(selfRepository, localReviewRow(review, review.title));
+  // Their criteria are not on this computer, so they are never shown as passed (checkedRow).
+  if (selfRepository) for (const review of reviews.values()) if (!shown.has(review.number)) add(selfRepository, checkedRow(localReviewRow(review, review.title), { verifiedSha: review.verifiedSha, checkPassed: false }));
   return Object.fromEntries([...projects].map(([key, { project, rows }]) => {
     const groups = RESULT_GROUPS.map((group) => {
       const mine = rows.filter((row) => row.group === group.key);
@@ -566,8 +595,8 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
           points: [{ link: null, text: 'Not an investigation for you: AIWorks keeps what it recorded for its maintainers. If this result should not continue, stop this work from its project.' }] });
         return;
       }
-      handling.push({ ...base, taskId: task.id, text: label(task), recorded: Boolean(wait), since: task.verifiedAt ?? null,
-        reason: words?.reason ?? (accepted ? 'You accepted this version' : 'It passed the independent check on this computer'),
+      handling.push({ ...base, taskId: task.id, text: label(task), recorded: Boolean(wait), since: task.verifiedAt ?? null, sinceWords: checkedWords(task),
+        reason: words?.reason ?? (accepted ? 'You accepted this version' : task.checkPassed ? 'It passed the independent check on this computer' : 'It was checked on this computer; not every criterion passed'),
         next: words?.next ?? 'AIWorks finishes integrating this result when its required checks and approvals pass.' });
     };
     // A checked version the merge gate holds for the owner's acceptance (AW-015): one item, resolved on its card or its
@@ -575,7 +604,8 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     const accepting = steps.filter((step) => step.task.review?.awaitsAcceptance && step.delivery?.state !== 'merged');
     for (const { task, delivery: d } of accepting) {
       const evidence = reviewEvidence(task);
-      items.push({ ...base, taskId: task.id, kind: 'accept', action: NEEDS.accept.action, text: label(task), why: stopped ? stoppedWords : NEEDS.accept.point,
+      items.push({ ...base, taskId: task.id, kind: 'accept', action: NEEDS.accept.action, text: label(task), why: stopped ? stoppedWords
+          : task.checkPassed ? NEEDS.accept.point : `${evidence.text} Review it before you accept it or request changes.`,
         route: reviewRoute(task), reference: reference(d), evidence: evidence.short, detail: evidence.text, points: [] });
     }
     // One item per step, led by what the step delivers. Nobody merges it for the owner here, so it waits for their review.
@@ -613,6 +643,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       items.push({ ...base, taskId: task.id, kind: 'review', action: 'Review this result', text: label(task),
         why: !task.verifiedSha ? 'AIWorks published it, but no independent check of it is recorded here, so it cannot be accepted here. It waits for your review.'
           : stopped ? stoppedWords
+          : !task.checkPassed ? `${evidence.text} Review it before you accept it or request changes.`
           : d.local ? 'It passed the independent check on this computer. Review it here; AIWorks is not allowed to finish integrating results in this project.'
             : 'It passed the independent check. Accept it to approve exactly this version, or request changes to send it back.',
         route: reviewEntry(c, task) ? reviewRoute(task) : d.route ?? stepRoute(task), reference: reference(d),
@@ -634,7 +665,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       if (settled) { handling.push(settled); continue; }
       const words = mergeWaitWords(d.merger, d.wait);
       if (d.merger === 'aiworks' && words.routine) {
-        if (d.stalled || d.wait) handling.push({ ...base, taskId: task.id, text: label(task), reason: words.reason, next: words.next, since: task.verifiedAt ?? null, recorded: Boolean(d.wait) });
+        if (d.stalled || d.wait) handling.push({ ...base, taskId: task.id, text: label(task), reason: words.reason, next: words.next, since: task.verifiedAt ?? null, sinceWords: checkedWords(task), recorded: Boolean(d.wait) });
       } else if (d.merger === 'aiworks') {
         items.push({ ...base, repository: null, about: c.repository, taskId: task.id, kind: 'merge-problem', system: true, action: 'AIWorks cannot finish this by itself',
           text: label(task), why: `${words.reason}. ${words.next}`, route: stepRoute(task), reference: reference(d),
@@ -643,7 +674,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
         items.push(acceptedItem(task, d));
       } else if (d.stalled) {
         const evidence = reviewEvidence(task);
-        items.push({ ...base, taskId: task.id, kind: 'merge-overdue', action: DELEGATED.overdue.action, text: label(task), why: DELEGATED.overdue.why(d.stalled),
+        items.push({ ...base, taskId: task.id, kind: 'merge-overdue', action: DELEGATED.overdue.action, text: label(task), why: DELEGATED.overdue.why(d.stalled, task.checkPassed === true),
           route: reviewRoute(task), reference: reference(d), evidence: evidence.short, detail: evidence.text, mergeCheck: d.asOf,
           points: [{ link: null, text: 'Accept approves exactly this version for whoever merges in this project. Request changes sends it back as a repair round within the approved plan.' }] });
       }
@@ -871,6 +902,8 @@ function recentSummary(supervisor, campaigns) {
   }
   // Agent runs and the supervisor's own problems are counted apart: a failing supervisor step is journaled on every tick.
   const kind = (...kinds) => recent.failures.filter((f) => kinds.includes(f.kind)).length;
-  return { since: recent.since, merged, delivered: recent.published, waiting,
+  // Passed: published steps whose check passed every criterion; the others finished with their check not complete.
+  const passed = recent.published.filter((p) => supervisor.campaigns.find((c) => c.id === p.campaignId)?.tasks.find((task) => task.id === p.taskId)?.checkPassed === true);
+  return { since: recent.since, merged, delivered: recent.published, passed, waiting,
     failures: kind('failed-run', 'rejected'), rejected: kind('rejected'), supervisorErrors: kind('step-error'), livenessProblems: kind('liveness-defect') };
 }
