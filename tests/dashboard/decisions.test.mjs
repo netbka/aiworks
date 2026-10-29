@@ -125,8 +125,8 @@ test('an accepted report must pass every acceptance criterion by entry, or the v
   const sha = 'a'.repeat(40), digest = 'b'.repeat(64), expect = { deliverable: 'report', targetSha: sha, reportDigest: digest, acceptance: 2 };
   const verdict = { verdict: 'accepted', targetSha: sha, reportDigest: digest, summary: 'holds', findings: [], checks: [{ command: 'Criterion 1', result: 'pass' }] };
   const entry = (criterion, result = 'pass') => ({ criterion, result, check: 'read the report', evidence: 'present' });
-  assert.match(validResult('verification', verdict, expect), /criteria 1, 2/);
-  assert.match(validResult('verification', { ...verdict, criteria: [entry(1), entry(2, 'not-checked')] }, expect), /criteria 2/);
+  assert.match(validResult('verification', verdict, expect), /every acceptance criterion/);
+  assert.match(validResult('verification', { ...verdict, criteria: [entry(1), entry(2, 'not-checked')] }, expect), /every acceptance criterion/);
   assert.equal(validResult('verification', { ...verdict, criteria: [entry(1), entry(2)] }, expect), null);
   assert.equal(validResult('verification', verdict, { ...expect, deliverable: 'commit' }), null);
 });

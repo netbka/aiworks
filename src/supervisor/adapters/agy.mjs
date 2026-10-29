@@ -136,6 +136,7 @@ export function buildPrompt({ role, packet, packetDigest, repository, targetSha,
   const verify = [
     'The report below claims a result for each acceptance criterion. Re-open the pages yourself and re-check EVERY criterion.',
     'In checks, add one entry per criterion: command = the criterion ID and a short name; result = "pass" when the report\'s claimed result and evidence match what you observed, "fail" when they do not (a false pass or a false fail), "not-run" when you could not re-check it.',
+    'Also return criteria with one entry per acceptance criterion of the packet: { criterion (its 1-based position), result (pass, fail or not-checked), check (what you re-opened or measured), evidence (what you observed, in words) }. An accepted result needs a pass entry for every criterion.',
     'Return verdict "accepted" only if every claimed result holds and the report\'s headline verdict follows from them. Otherwise return "rejected" with one blocking finding per wrong claim (what the report says and what you observed). Return "evidence-unavailable" if the pages cannot be loaded or the browser tools fail, saying what you tried in summary.',
     `Your result MUST carry targetSha ${targetSha} and reportDigest ${reportDigest}.`,
     '',
