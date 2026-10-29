@@ -82,14 +82,15 @@ export function unavailableReason(chromeCommand) {
  * profile, file roots and temporary folder inside the run directory, Chrome limited to the declared origins). Every
  * browser worker, AGY or Claude, gets exactly this one server.
  */
-export function browserServers({ runDir, web, chromeCommand }) {
+export function browserServers({ runDir, web, chromeCommand, browserLogin = null }) {
   const browser = join(runDir, 'browser.json');
   writeFileSync(browser, JSON.stringify({ chrome: chromeCommand[0], profileDir: join(runDir, 'chrome-profile'),
-    filesDir: join(runDir, 'browser-files'), tempDir: join(runDir, 'browser-tmp'), allowedUrlPatterns: webScope(web).patterns }, null, 2));
+    filesDir: join(runDir, 'browser-files'), tempDir: join(runDir, 'browser-tmp'), allowedUrlPatterns: webScope(web).patterns,
+    ...(browserLogin ? { login: browserLogin } : {}) }, null, 2));
   return { mcpServers: { [BROWSER_SERVER]: { command: process.execPath, args: [BROWSER_MCP, browser] } } };
 }
 
-export function prepare({ command, executor, role, sessionId, digest, runDir, prompt, web, chromeCommand, timeoutMs }) {
+export function prepare({ command, executor, role, sessionId, digest, runDir, prompt, web, chromeCommand, browserLogin = null, timeoutMs }) {
   const home = join(runDir, 'agy-home');
   const cwd = join(runDir, 'agy-scratch');
   const temp = join(runDir, 'agy-tmp');
@@ -99,7 +100,7 @@ export function prepare({ command, executor, role, sessionId, digest, runDir, pr
   for (const dir of [cwd, temp, join(home, '.gemini', 'antigravity-cli'), join(home, '.gemini', 'config'),
     join(home, 'AppData', 'Local'), join(home, 'AppData', 'Roaming')]) mkdirSync(dir, { recursive: true });
   writeFileSync(join(home, '.gemini', 'antigravity-cli', 'settings.json'), JSON.stringify(settings(web), null, 2));
-  writeFileSync(join(home, '.gemini', 'config', 'mcp_config.json'), JSON.stringify(browserServers({ runDir, web, chromeCommand }), null, 2));
+  writeFileSync(join(home, '.gemini', 'config', 'mcp_config.json'), JSON.stringify(browserServers({ runDir, web, chromeCommand, browserLogin }), null, 2));
   const schemaPath = join(runDir, 'output-schema.json');
   writeFileSync(schemaPath, JSON.stringify(envelopeSchema(role, sessionId, digest)));
   return {

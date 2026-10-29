@@ -8,7 +8,7 @@ import { supervisorSnapshot, applyCommand, applyDecision, applyResultReview, cap
 import { Store } from '../supervisor/store.mjs';
 import { configuredGovernanceRoot } from '../supervisor/governance.mjs';
 import { RELEASE_STOP } from '../supervisor/release/state.mjs';
-import { campaignApiAuthorized, campaignApiScope, campaignApiSettings, registerRemoteCampaign, remoteCampaignStatus } from '../supervisor/remote-campaigns.mjs';
+import { campaignApiAuthorized, campaignApiScope, campaignApiSettings, campaignReports, registerRemoteCampaign, remoteCampaignStatus } from '../supervisor/remote-campaigns.mjs';
 import { PREVIEW_POLICY, PreviewSessions } from '../supervisor/preview.mjs';
 import { PreviewCaptures } from '../supervisor/preview-capture.mjs';
 import { ServerPreviews } from '../supervisor/preview-server.mjs';
@@ -46,11 +46,11 @@ export const SCOPED_CONTROL_BYTES = 65_536;
 export const CAMPAIGN_API_BYTES = 1024 * 1024;
 const CAMPAIGN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
-/** The external campaign API's two routes, by exact method and path: `{ register: true }`, `{ id }` or null. */
+/** The external campaign API's routes, by exact method and path. */
 function campaignApiRoute(method, path) {
   if (method === 'POST' && path === '/api/campaigns') return { register: true };
-  const status = method === 'GET' ? /^\/api\/campaigns\/([^/]+)\/status$/.exec(path) : null;
-  return status ? { id: status[1] } : null;
+  const read = method === 'GET' ? /^\/api\/campaigns\/([^/]+)\/(status|report)$/.exec(path) : null;
+  return read ? { id: read[1], kind: read[2] } : null;
 }
 
 const readConfig = (dataDir) => {
@@ -64,8 +64,7 @@ const RECORDS_UNREADABLE = 'AIWorks can’t read its work records on this comput
 /**
  * One request to the external campaign API while it is on: [status, body]. Its caller is not the dashboard's browser
  * session, so it is authenticated by its own bearer token (remote-campaigns.mjs campaignApiAuthorized), never by the
- * session's CSRF secret, and it reaches only these two handlers: `cli.mjs start` without `--approval` and
- * `cli.mjs status`, limited to a project-named token's own project.
+ * session's CSRF secret. Registration, status and verified reports are limited to a project-named token's own project.
  */
 async function answerCampaignApi(req, route, { dataDir, settings, config, provenanceRoot }) {
   if (!campaignApiAuthorized(settings, req.headers.authorization)) return [401, { error: TOKEN_REQUIRED }];
@@ -87,8 +86,37 @@ async function answerCampaignApi(req, route, { dataDir, settings, config, proven
   const scope = campaignApiScope(settings, governanceRoot);
   const store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true });
   try {
+    if (route.kind === 'report') return [200, campaignReports(store, id, { scope })];
     return [200, remoteCampaignStatus(store, id, { scope, config, releaseStop: existsSync(join(dataDir, RELEASE_STOP)) })];
   } finally { store.close(); }
+}
+
+/** Optional loopback listener for campaign routes alone. It shares bearer authentication and project scope with
+ * the dashboard listener, but exposes no browser session, dashboard data or owner controls. */
+export function createCampaignApiServer({ dataDir, provenanceRoot = undefined }) {
+  const server = createServer(async (req, res) => {
+    const send = (status, body) => {
+      const value = JSON.stringify(body);
+      res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(value),
+        'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
+      res.end(value);
+    };
+    let path = null;
+    try { path = new URL(req.url, 'http://127.0.0.1').pathname; } catch { /* refused below */ }
+    const route = path === null ? null : campaignApiRoute(req.method, path);
+    const config = readConfig(dataDir), settings = campaignApiSettings(config);
+    if (!route || !settings.enabled || !settings.port) return send(404, { error: 'Not found.' });
+    try {
+      const [status, body] = await answerCampaignApi(req, route, { dataDir, settings, config, provenanceRoot });
+      return send(status, body);
+    } catch (error) {
+      if (error.status) return send(error.status, { error: error.message, ...(typeof error.code === 'string' ? { code: error.code } : {}) });
+      return send(503, { error: 'The supervisor is busy or unavailable. Try again later.' });
+    }
+  });
+  server.requestTimeout = 10_000;
+  server.headersTimeout = 10_000;
+  return server;
 }
 
 /** Read a JSON request body up to `limit` bytes, or throw a `{ status }` error the route's catch can send as-is. */
@@ -205,7 +233,7 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
         'Content-Security-Policy': PREVIEW_POLICY, 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
       return res.end(answer.body);
     }
-    // The external campaign API (docs/SUPERVISOR.md section 16): only while config.json switches it on, only its two exact
+    // The external campaign API (docs/SUPERVISOR.md section 16): only while config.json switches it on, only its exact
     // method and path pairs, and answered here in full, so an exempt request never reaches another route. Its caller is
     // not a browser (one cannot send the bearer token cross-origin without a CORS answer this server never gives), so
     // the loopback Host/Origin gate below does not apply to it; off, these requests meet that gate exactly as before.
@@ -214,6 +242,7 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       const config = readConfig(dataDir);
       const settings = campaignApiSettings(config);
       if (settings.enabled) {
+        if (settings.port) return send(404, { error: 'Not found.' });
         try {
           const [status, body] = await answerCampaignApi(req, apiRoute, { dataDir, settings, config, provenanceRoot });
           return send(status, body);

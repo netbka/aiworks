@@ -41,7 +41,7 @@ You end up as a full-time project manager for your AI helpers instead of working
 | 🔍 **Gets a second opinion on every change** | A fresh AI session that did not write the code checks each result. It runs the tests again on that exact version and looks for problems. Work that fails goes back for another round, with the findings attached. |
 | 📬 **Delivers to GitHub, where you already work** | Each finished step arrives as a pull request with the builder's report and the checker's verdict inside. Reports and research arrive as comments on the step's issue. |
 | 🙋 **Asks you only for real decisions** | One list, **Needs you**, shows the few things only you can do, and you settle each one right there: answer a decision, accept a checked result or send it back with what should change, or guide a step that stopped for good and let it try again. Routine waits stay AIWorks's job. |
-| 🛡️ **Stays inside the lines you draw** | Runs only plans you approved. Merges a checked pull request only if you switch that on for the project. Never deploys or changes your accounts by itself. Runs on your PC, and its settings hold no passwords or keys. |
+| 🛡️ **Stays inside the lines you draw** | Runs only plans you approved. Merges a checked pull request only if you switch that on for the project. Deploys only under a standing project release grant. Runs on your PC, and its settings hold no passwords or keys. |
 
 ```mermaid
 flowchart LR
@@ -81,6 +81,8 @@ The AI tools report their own usage: a building run typically costs about **$5**
 - **Hours that used to be idle.** Nights, weekends and usage-limit resets become working time.
 - **Mistakes caught before you see them.** The checker sends weak work back with its findings. AIWorks also refuses a "passed" verdict when one of the checks actually failed.
 - **No more piecing the story together.** One screen answers "what needs me?" across all your projects, in plain words.
+
+Projects with a standing release grant can also continue from an independently verified merge through their own deployment and health checks. The supervisor observes interrupted deployments before acting again and uses the project's rollback command when required. [Configure automatic project releases](docs/SUPERVISOR.md#12-automatic-project-releases).
 
 ## How you use it
 
@@ -137,7 +139,7 @@ Everything ends up in GitHub, next to the rest of your project:
 - Each piece of work has a **tracking issue**, and each step has its own issue. AIWorks posts progress notes and blockers there.
 - Each code change is a **pull request** that contains the builder's report and the independent check.
 - Reports and research are posted as **comments** on the step's issue.
-- **AIWorks merges only if you switch it on.** By default you merge, or you hand merging of checked pull requests to an assistant you trust. You can instead let AIWorks merge them itself, one project at a time. It then merges a pull request only when the result on your main branch is exactly the version the checker approved. If main moved in the meantime, it brings the change up to date and has it checked again first. It never deploys.
+- **AIWorks merges only if you switch it on.** By default you merge, or you hand merging of checked pull requests to an assistant you trust. You can instead let AIWorks merge them itself, one project at a time. It then merges a pull request only when the result on your main branch is exactly the version the checker approved. If main moved in the meantime, it brings the change up to date and has it checked again first. Deployment additionally requires the project's standing release grant.
 
 ## In production and on the roadmap
 
@@ -172,14 +174,13 @@ Everything ends up in GitHub, next to the rest of your project:
 | Smarter choice of AI model per step | Every run records why its AI worker was chosen, and each step shows its models and cost. A plan can opt in to automatic choice among the models it already allows. No saving is claimed until a measured comparison has run. |
 | Several AI accounts with automatic switching | Choosing a login per run and starting the worker inside that login's own home folder is built and switched off. Turning it on waits for the owner's pilot. |
 | Slowing down when the PC is busy or an account is throttled | The building blocks are written and the status reports them, but they do not yet hold back new work. |
-| Automatic release, opt-in per project | Built and switched off: "review only" by default, a standing grant per destination, a stop switch, one lock per destination, deploy, check and rollback through a project's own commands, and a **Releases** tab. A disposable rehearsal runs it against a synthetic project. No grant exists and nothing has been released. |
-| External campaign API | Built and switched off: another local system can register a campaign and read its status over HTTP, the same contract as `cli.mjs start`/`status`, with its own bearer token instead of the dashboard's browser session. One setting turns it on, and `cli.mjs campaign-token create\|rotate <projectId>` creates or replaces that token for any AIWorks-registered project -- not only one; see [docs/SUPERVISOR.md §16](docs/SUPERVISOR.md#16-external-campaign-api-off-by-default). |
+| Automatic release, opt-in per project | With the installation switch enabled and a valid standing grant, finished campaigns continue from the verified merge through the project's deploy, observe, check and rollback commands. Interrupted deployments are reconciled before another action. Other release kinds remain outside automatic continuation. |
+| External campaign API | Built and switched off: another system can register a campaign and read its status and verified reports over HTTP, the same contract as `cli.mjs start`/`status`, with its own bearer token instead of the dashboard's browser session, optionally on a port of its own that serves nothing else (for a tunnel) and with reports kept off GitHub. One setting turns it on, and `cli.mjs campaign-token create\|rotate <projectId>` creates or replaces that token for any AIWorks-registered project; see [docs/SUPERVISOR.md §16](docs/SUPERVISOR.md#16-external-campaign-api-off-by-default). |
 
 ### 🗺️ On the roadmap
 
 - **Approve an outcome once**, and let AIWorks split it into steps and add steps as it learns.
 - **Phone notifications** you can act on: Telegram alerts are built (above); answering from the phone needs remote access, which is not designed yet.
-- **Automatic release per project**, behind independent checks and a first trial run.
 - **Automatic model choice by cost and quality** for every plan, once a measured comparison supports it.
 - **An AI-assisted setup guide** for newcomers: a first version is in [docs/guides](docs/guides/AI_ASSISTED_START.md).
 - **Instant reaction to GitHub events**, instead of checking every minute.
@@ -247,7 +248,7 @@ The [getting-started guides](docs/guides/README.md) explain the same setup step 
 
 **Safety rules.** These are accepted decisions, recorded in [docs/DECISIONS.md](docs/DECISIONS.md):
 
-- The only writes outside this repository are worktrees, branches, pull requests and issue comments, for work the owner registered. Merging is off by default. The supervisor merges a pull request only under the merge gate, and only in a repository the owner lists in `config.json` (`merges.delegatedTo: "supervisor"`, decision AW-001, #138): the pull request is its own, its head is the checked commit, and what lands on the base branch is exactly the checked version. It never deploys, releases or changes provider resources.
+- External writes follow the authority the owner registered. Merging is off by default. The supervisor merges a pull request only under the merge gate, and only in a repository the owner lists in `config.json` (`merges.delegatedTo: "supervisor"`, decision AW-001, #138): the pull request is its own, its head is the checked commit, and what lands on the base branch is exactly the checked version. Project deployment requires an AW-010 grant and exact verification; the supervisor never deploys its own runtime or creates provider resources.
 - AIWorks runs only from its own merged code; a supervisor running unmerged code starts no new work. Plans are private files on your computer, registered explicitly, and their scope can only change with a higher authorization version.
 - The dashboard listens on `127.0.0.1` only and needs the same origin plus a per-session token for every action. Text that looks like a secret is refused. The one exception is the optional external campaign API (below), off by default: a static bearer token instead, for a local system that is not a browser.
 - There are no budget caps by default. A plan can set run, retry, repair and cost limits.
@@ -320,7 +321,7 @@ This opens the dashboard at `http://127.0.0.1:4319` with three example projects 
 
 | Path | What it holds |
 | --- | --- |
-| `src/supervisor/` | The supervisor: CLI, controller, SQLite store, runner, Windows process containment, coordinator, owner-intervention core, browser wrapper, release groundwork |
+| `src/supervisor/` | The supervisor: CLI, controller, SQLite store, runner, Windows process containment, coordinator, owner-intervention core, browser wrapper, project release continuation |
 | `src/supervisor/adapters/` | Executors for the worker CLIs, plus the Git and GitHub adapters |
 | `src/dashboard/` | The dashboard: server, owner view and page |
 | `src/shared/` | Shared helpers |

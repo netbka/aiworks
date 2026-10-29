@@ -109,12 +109,15 @@ export function validateDeclaration(declaration) {
   if (!d || typeof d !== 'object' || Array.isArray(d)) throw new TypeError('campaign declaration must be an object');
   // Only a version 2 declaration may carry `envelope`; on version 1 it stays an unknown key, as before.
   const allowed = ['version', 'campaignId', 'purpose', 'authorization', 'target', 'limits', 'executor', 'routing', 'constraints', 'tasks',
-    ...(d.version === 2 ? ['envelope'] : [])];
+    'reportPublication', ...(d.version === 2 ? ['envelope'] : [])];
   for (const key of Object.keys(d)) if (!allowed.includes(key)) bad(`unknown key ${key}`);
   if (d.version !== 1 && d.version !== 2) bad('version must be 1, or 2 with an envelope');
   if (!ID.test(d.campaignId ?? '')) bad('campaignId must match [A-Za-z0-9._-], max 64');
   // Optional plain-language wording for the owner's dashboard; never part of a worker packet.
   if (d.purpose !== undefined && !text(d.purpose, 300)) bad('purpose must be a non-empty string (max 300)');
+  // Optional "local": every verified report of the campaign stays in this installation's store and is read through the
+  // campaign API's report route (remote-campaigns.mjs campaignReports), never posted to the task issue. Part of the scope.
+  if (d.reportPublication !== undefined && d.reportPublication !== 'local') bad('reportPublication must be "local" when present');
 
   // A project without GitHub (D1): its target names the project's confirmed rules and baseline, never a repository, and it
   // is registered only from the owner's dashboard approval (D4), which local-admission.mjs admits.
