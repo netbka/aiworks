@@ -92,6 +92,8 @@ export function delivery(task, merges = NO_MERGES, now = Date.now(), campaignId 
     return { state: 'report-posted', local: true, url: null, number: local.number, route: { label: `Read the report in work list #${local.number}`, address: `#/worklist/${local.number}` },
       note: NOTES['report-posted'] };
   }
+  // A report kept for the project that started the campaign (supervisor.mjs keptReport): that project reads it.
+  if (task.keptReport === true) return { state: 'report-posted', kept: true, url: null, note: NOTES['report-posted'] };
   const review = WORK_ADDRESS.exec(url);
   if (review) return localDelivery(task, Number(review[1]), merges, now, campaignId, target);
   const pr = PR_URL.exec(url);
@@ -243,8 +245,8 @@ function resultRow(c, task, d, releases, recorded = null) {
     ladder: d.state === 'report-posted' ? null : releaseLadder(task, d, recorded) };
   if (d.state === 'report-posted') {
     const evidence = task.verifiedSha ? resultEvidence(task) : null;
-    return { ...base, group: 'reports', word: d.local ? 'Report recorded in the work list · for you to read' : 'Report posted · for you to read', note: null,
-      link: d.local ? null : { label: 'Read the report', url: d.url }, route: d.local ? d.route : null,
+    return { ...base, group: 'reports', word: d.kept ? 'Report kept for the project that asked · read it there' : d.local ? 'Report recorded in the work list · for you to read' : 'Report posted · for you to read', note: null,
+      link: d.local || d.kept ? null : { label: 'Read the report', url: d.url }, route: d.local ? d.route : null,
       evidence: evidence?.short ?? null, detail: evidence?.text ?? null };
   }
   if (d.state === 'unknown') {
