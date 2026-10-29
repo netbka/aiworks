@@ -16,10 +16,14 @@
 // (scripts/lib/affected-tests.mjs): a fast check while working, never the gate. AIWORKS_TEST_CONCURRENCY sets how many
 // unit and service files run at once, AIWORKS_HEAVY_CONCURRENCY how many rehearsal files (1 = one at a time, in the
 // order before #102). Any other argument goes to node --test.
+//
+// Every file's temporary directories go to .aiworks-test-tmp beside the outermost repository (TMP, TEMP and TMPDIR; or
+// AIWORKS_TEST_TMP), not the system Temp directory, and a file still running after AIWORKS_TEST_FILE_MINUTES (default
+// 15) is stopped with its process tree and fails, so one stuck file never holds the gate for an hour.
 import { spawn, spawnSync } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { availableParallelism } from 'node:os';
-import { join, relative, resolve, sep } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { affectedTests, referenceGraph, repositoryFiles } from './lib/affected-tests.mjs';
 
@@ -92,10 +96,25 @@ const setting = (name, fallback) => {
 };
 const concurrency = setting('AIWORKS_TEST_CONCURRENCY', Math.min(4, Math.max(1, Math.floor(availableParallelism() / 4))));
 const heavyConcurrency = setting('AIWORKS_HEAVY_CONCURRENCY', 2);
+const fileLimitMs = setting('AIWORKS_TEST_FILE_MINUTES', 15) * 60_000;
 
 // An inherited test-worker marker makes a nested node --test silently skip its files.
 const env = { ...process.env };
 delete env.NODE_TEST_CONTEXT;
+// Never inside a checkout: a test folder there is part of AIWorks itself to the folder check, and git would find the outer
+// repository from a test directory that has none of its own. Beside the outermost repository holding this one instead.
+const outermost = (dir) => {
+  let top = null;
+  for (let at = dir; ; at = dirname(at)) {
+    if (existsSync(join(at, '.git'))) top = at;
+    if (dirname(at) === at) return top ?? dir;
+  }
+};
+const scratch = process.env.AIWORKS_TEST_TMP || join(dirname(outermost(root)), '.aiworks-test-tmp');
+try {
+  mkdirSync(scratch, { recursive: true });
+  Object.assign(env, { TMP: scratch, TEMP: scratch, TMPDIR: scratch });
+} catch (error) { console.log(`# temporary directories stay in the system default: ${scratch} could not be created (${error.code ?? error.message})`); }
 const COUNTS = ['tests', 'suites', 'pass', 'fail', 'cancelled', 'skipped', 'todo'];
 const total = Object.fromEntries(COUNTS.map((key) => [key, 0]));
 const times = [];
@@ -110,7 +129,16 @@ function runFile(file, tier, testArgs) {
     const output = [];
     child.stdout.on('data', (chunk) => output.push(chunk));
     child.stderr.on('data', (chunk) => output.push(chunk));
+    let finished = false;
+    const limit = setTimeout(() => {
+      output.push(Buffer.from(`# ${file} still running after ${fileLimitMs / 60_000} minutes; stopping it and its child processes\n`));
+      if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
+      else child.kill('SIGKILL');
+    }, fileLimitMs);
     const finish = (code) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(limit);
       const ms = Date.now() - started;
       const text = Buffer.concat(output).toString('utf8');
       process.stdout.write(text.endsWith('\n') || !text ? text : `${text}\n`);
