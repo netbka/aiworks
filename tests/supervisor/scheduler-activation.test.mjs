@@ -74,7 +74,10 @@ test('the activation cohort waits for pressure, account and domain limits withou
   assert.ok(ops[1].created_at >= ops[0].updated_at, 'while the account allowed one run, the second started only after the first ended');
   const raised = h.store.all("SELECT detail FROM journal WHERE kind = 'account-concurrency-raised'").map((row) => row.detail);
   assert.deepEqual(raised.map((d) => [d.account, d.from, d.to]), [[ACCOUNT, 1, 2]], 'a useful result while work waited raised the account limit once');
-  assert.ok(['act-c', 'act-d'].includes(ops[1].campaign_id), 'a never-served project was admitted before the served project went on');
+  // The killed pressure controller leaves leases with different expiry times, so any project can become eligible
+  // first during takeover. Fairness is relative to the project actually served, not a fixed campaign's position.
+  const projectOf = (op) => h.store.campaign(op.campaign_id).declaration.target.projectId;
+  assert.notEqual(projectOf(ops[1]), projectOf(ops[0]), 'a never-served project was admitted before the served project went on');
   assert.ok(peakOpen(h.store) <= 2, `never more than the host ceiling of two open (saw ${peakOpen(h.store)})`);
   assert.equal(peakOpen(h.store), 2, 'independent work ran side by side once the account allowed it');
 

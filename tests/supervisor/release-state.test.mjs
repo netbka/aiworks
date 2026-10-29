@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FencedError, Store } from '../../src/supervisor/store.mjs';
-import { acquireLock, createRelease, destinationState, markUnknownAfterRestart, reconcile, release, runStep } from '../../src/supervisor/release/state.mjs';
+import { acquireLock, createRelease, destinationKey, destinationState, markUnknownAfterRestart, reconcile, release, runStep } from '../../src/supervisor/release/state.mjs';
 
 const SHA = 'a'.repeat(40);
 const ELIGIBLE = () => ({ eligible: true, failed: [], inputs: { grantDigest: 'g'.repeat(64) } });
@@ -45,13 +45,13 @@ test('two candidates for one destination never hold the lock together', async (t
   const r = rig(t);
   const one = r.make(), two = r.make(), other = r.make('staging');
   assert.notEqual(one, two, 'a second attempt gets its own id');
-  assert.equal(release(r.store, two).idempotency_key, `sampleapp.prod.${SHA}.2`);
+  assert.equal(release(r.store, two).idempotency_key, `${destinationKey('sampleapp', 'prod')}.${SHA}.2`);
   assert.equal(acquireLock(r.store, one, { ...r.at(), recheck: ELIGIBLE }).locked, true);
   const waiting = acquireLock(r.store, two, { ...r.at(), recheck: ELIGIBLE });
   assert.deepEqual([waiting.locked, waiting.refused, waiting.waitingFor, waiting.release.state], [false, false, one, 'eligible'], 'it waits; it is not an error');
   assert.equal(acquireLock(r.store, one, { ...r.at(), recheck: ELIGIBLE }).locked, true, 'idempotent for the holder');
   assert.equal(acquireLock(r.store, other, { ...r.at(), recheck: ELIGIBLE }).locked, true, 'another destination is independent');
-  assert.throws(() => r.store.run("INSERT INTO release_locks (destination, release_id, instance_id, generation, acquired_at) VALUES ('sampleapp.prod', ?, 'x', 1, 0)", two),
+  assert.throws(() => r.store.run("INSERT INTO release_locks (destination, release_id, instance_id, generation, acquired_at) VALUES (?, ?, 'x', 1, 0)", destinationKey('sampleapp', 'prod'), two),
     /UNIQUE|PRIMARY KEY/, 'the table itself allows one holder per destination');
 
   // The lock is freed only at a known terminal state, so two only gets it after one is accepted.
@@ -72,6 +72,16 @@ test('two candidates for one destination never hold the lock together', async (t
     assert.deepEqual([result.locked, result.refused, result.release.state], [false, true, 'refused']);
     assert.equal(destinationState(r.store, 'sampleapp', 'canary').free, true);
   }
+  const dotted = [['a.b', 'c'], ['a', 'b.c'], ['3_foo', '3_bar'], ['foo', 'bar']].map(([project, destination]) => createRelease(r.store, {
+    project, destination, campaignId: 'c', taskId: 'T1', verifiedSha: SHA, grantDigest: 'g'.repeat(64), steps: ['check'], ...r.at() }));
+  assert.notEqual(dotted[0].id, dotted[1].id, 'different projects cannot share an idempotency key');
+  for (const row of dotted) assert.equal(acquireLock(r.store, row.id, { ...r.at(), recheck: ELIGIBLE }).locked, true);
+  r.store.run("UPDATE release_locks SET destination='3_foo.3_bar' WHERE release_id=?", dotted[2].id);
+  assert.equal(destinationState(r.store, 'foo', 'bar').releaseId, dotted[3].id);
+  r.store.run("UPDATE release_locks SET destination='a.b.c' WHERE release_id=?", dotted[0].id);
+  assert.equal(destinationState(r.store, 'a.b', 'c').releaseId, dotted[0].id, 'an older lock remains bound to its original project');
+  assert.equal((await runStep(r.store, fake(), dotted[0].id, r.at())).state, 'accepted', 'old locks still recover');
+  assert.equal(destinationState(r.store, 'a', 'b.c').releaseId, dotted[1].id);
 });
 
 test('unknown and rollback-failed keep the lock', async (t) => {
@@ -193,11 +203,12 @@ test('takeover with a new generation reconciles first', async (t) => {
 
 test('the release tables are additive to an existing store', (t) => {
   const r = rig(t);
-  r.store.db.exec('DROP TABLE releases; DROP TABLE release_locks;');
+  r.store.db.exec('DROP TABLE releases; DROP TABLE release_locks; DROP TABLE release_grants; DROP TABLE release_activity;');
   r.store.close();
   const store = r.open();
   const tables = store.all("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'release%' ORDER BY name").map((row) => row.name);
-  assert.deepEqual(tables, ['release_locks', 'releases']);
+  assert.deepEqual(tables, ['release_activity', 'release_grants', 'release_locks', 'releases']);
+  assert.equal(store.lease('c').generation, r.lease.generation, 'adding release storage preserves the existing campaign lease');
   assert.throws(() => createRelease(store, { project: 'sampleapp', destination: 'prod', campaignId: 'c', taskId: 'T1', verifiedSha: 'abc', steps: ['check'],
     lease: { instanceId: 'first', generation: 1 }, now: r.now }), /40-character/);
   assert.throws(() => createRelease(store, { project: 'sampleapp', destination: 'prod', campaignId: 'c', taskId: 'T1', verifiedSha: SHA, steps: ['merge'],

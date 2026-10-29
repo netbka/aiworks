@@ -50,6 +50,10 @@ export function classOf(path, classes) {
  * not name-status output throws, so unreadable evidence is never read as "nothing changed".
  */
 export function changedPaths(nameStatus) {
+  if (Array.isArray(nameStatus)) {
+    if (nameStatus.some((path) => typeof path !== 'string' || !path || path.includes('\0'))) throw new Error('the diff contains an invalid path');
+    return [...new Set(nameStatus)];
+  }
   if (typeof nameStatus !== 'string') throw new Error('the diff is not name-status text');
   const paths = [];
   for (const line of nameStatus.split('\n').map((text) => text.replace(/\r$/, '')).filter(Boolean)) {

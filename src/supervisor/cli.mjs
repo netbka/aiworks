@@ -389,6 +389,7 @@ async function serve() {
     await controller.tick();
     for (let waited = 0; waited < controller.config.tickMs && !stopping; waited += 100) await new Promise((done) => setTimeout(done, 100));
   }
+  await controller.drainReleases();
   controller.release();
   store.close();
   log(`supervisor instance ${controller.instanceId} stopped`);
