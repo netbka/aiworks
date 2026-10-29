@@ -2558,11 +2558,22 @@ export class Controller {
         governance,
       }, POLICY);
       let packet;
-      try { packet = buildPacket(reading.references); } catch (error) {
-        // Cites never stop a dispatch: past the packet byte budget they stay in the constraint text only (section 7.5).
-        if (!reading.added.length) throw error;
-        reading = { references: [...spec.references], added: [], overflow: [...reading.added, ...reading.overflow] };
-        packet = buildPacket(reading.references);
+      try {
+        try { packet = buildPacket(reading.references); } catch (error) {
+          // Cites never stop a dispatch: past the packet byte budget they stay in the constraint text only (section 7.5).
+          if (!reading.added.length) throw error;
+          reading = { references: [...spec.references], added: [], overflow: [...reading.added, ...reading.overflow] };
+          packet = buildPacket(reading.references);
+        }
+      } catch (error) {
+        // The declared goal, constraints and acceptance alone exceed the budget: no retry can shrink them, so the task
+        // stops and says so (2026-10-29: two Wiki checks failed this way every few seconds for hours, holding their slots).
+        if (error?.message !== 'Task packet byte budget exceeded') throw error;
+        const reason = `Task packet exceeds the worker budget of ${POLICY.maxPacketBytes} bytes; shorten the task's goal, constraints or acceptance and register it again.`;
+        this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
+          { blocked: { class: 'stalled', reason, at: this.now() }, retry_at: null, last_error: 'packet: byte budget exceeded' }, this.now());
+        this.store.journal(ctx.id, 'packet-too-large', { task: task.task_id, kind }, this.now());
+        return null;
       }
       // A section another task of this campaign missed reaches this guide when the packet marks sections of that document
       // (section 7.3). The packet, its digest and the spec are built before and without it.
