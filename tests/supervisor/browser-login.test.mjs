@@ -29,6 +29,15 @@ test('browser pre-login selects only declared page origins, keeping DEV and PROD
   assert.throws(() => browserLoginSettings({ urls: [plain.origin] }, { profiles: [plain] }));
 });
 
+// Closing Chrome waits for its process to exit, without a limit; a Chrome that does not exit is killed after 10 seconds.
+async function closeWithin(browser, ms = 10_000) {
+  if (!browser) return;
+  let timer;
+  const closed = await Promise.race([browser.close().then(() => true, () => true), new Promise((resolve) => { timer = setTimeout(() => resolve(false), ms); })]);
+  clearTimeout(timer);
+  if (!closed) browser.process()?.kill('SIGKILL');
+}
+
 const chrome = [process.env.AIWORKS_TEST_CHROME,
   process.env.PROGRAMFILES && join(process.env.PROGRAMFILES, 'Google/Chrome/Application/chrome.exe'),
   process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'Google/Chrome/Application/chrome.exe')].find((path) => path && existsSync(path));
@@ -48,13 +57,13 @@ test('pre-login keeps credentials on the selected origin and closes its private 
       } finally { clearTimeout(timer); }
     };
     t.after(async () => {
-      await browser?.close();
+      await closeWithin(browser);
       const portFile = join(dir, 'chrome-profile', 'DevToolsActivePort');
       if (!handedOver && existsSync(portFile)) {
         const port = Number(readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
         handedOver = await puppeteer.connect({ browserURL: `http://127.0.0.1:${port}`, protocolTimeout: 5000 }).catch(() => null);
       }
-      await handedOver?.close();
+      await closeWithin(handedOver);
       if (child && child.exitCode === null && child.signalCode === null) {
         child.stdin.end();
         if (!await waitForChild(3000)) {
@@ -62,7 +71,8 @@ test('pre-login keeps credentials on the selected origin and closes its private 
           assert.ok(await waitForChild(5000), 'browser MCP exits during bounded cleanup');
         }
       }
-      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+      // A file Chrome still holds stays behind in the run's scratch directory; it is not a result of this test.
+      try { rmSync(dir, { recursive: true, force: true, maxRetries: 5 }); } catch (error) { if (error.code !== 'EBUSY' && error.code !== 'EPERM') throw error; }
     });
     const user = 'synthetic-account', password = 'fake-password';
     const received = [];
@@ -139,7 +149,7 @@ test('pre-login keeps credentials on the selected origin and closes its private 
 
     // Exercise the actual MCP startup boundary: the task may use another origin after login, but a login popup
     // must not send it a credential, and even same-origin credential popups must disappear before tool handoff.
-    await browser.close(); browser = null;
+    await closeWithin(browser); browser = null;
     mode = 'popup'; received.length = 0;
     const helper = join(dir, 'synthetic-helper.mjs');
     writeFileSync(helper, `process.stdout.write(process.argv.at(-1) === 'browser:dev-user' ? ${JSON.stringify(user)} : ${JSON.stringify(password)});`);
