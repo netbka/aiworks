@@ -2,11 +2,14 @@
 // classification and one synthetic end-to-end run. No model, browser, network or GitHub access.
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { BROWSER_SERVER, DENY, TOOLS, webScope } from '../../src/supervisor/adapters/agy.mjs';
+import { BROWSER_SERVER, DENY, TOOLS, WEB_CRITERIA_RULE, webScope } from '../../src/supervisor/adapters/agy.mjs';
+import { CRITERIA_RULE, validResult } from '../../src/supervisor/adapters/claude.mjs';
+import { passedCheck } from '../../src/supervisor/result-review.mjs';
 import { buildPrompt, classify, prepare, roleUnavailableReason, unavailableReason } from '../../src/supervisor/adapters/executors.mjs';
 import { validateDeclaration } from '../../src/supervisor/campaign.mjs';
 import { declaration, environment, runUntil, skipWithoutSqlite } from './helpers.mjs';
@@ -228,6 +231,19 @@ test('the browser prompt names the pages and the browser-only rules; the verifie
     repository: 'example-org/sampleapp', targetSha: 'b'.repeat(40), report: '**Visual acceptance: ACCEPTED**', reportDigest: 'c'.repeat(64) });
   assert.match(verify, /INDEPENDENT VERIFIER/);
   assert.match(verify, /re-check EVERY criterion/);
+  assert.ok(verify.includes(WEB_CRITERIA_RULE), 'a browser verification returns one criteria entry per acceptance criterion, or its report is never released');
+  assert.ok(!verify.includes(CRITERIA_RULE), 'a truthful REJECTED report is accepted, so the repository «failed criterion» rule does not apply');
+  // A truthful REJECTED report: its claim «criterion 1 fails» holds (check pass), the criterion itself fails. The browser
+  // verification is valid, the repository one is not, and the result never counts as passed.
+  const digestOfR = createHash('sha256').update('r', 'utf8').digest('hex');
+  const truthful = { verdict: 'accepted', targetSha: 'b'.repeat(40), reportDigest: digestOfR, summary: 'The report is true.', findings: [],
+    checks: [{ command: 'C1 layout', result: 'pass' }], criteria: [{ criterion: 1, result: 'fail', check: 'Opened the page', evidence: 'It overflows, as reported.' }] };
+  const expect = { deliverable: 'report', targetSha: 'b'.repeat(40), reportDigest: digestOfR };
+  assert.equal(validResult('verification', truthful, { ...expect, web: true }), null);
+  assert.equal(validResult('verification', truthful, expect), 'accepted with a failed criterion');
+  assert.equal(passedCheck({ verification: truthful, verified_sha: 'b'.repeat(40), result: { report: 'r' } }, ['C1']), false, 'a page failing its criterion never passes');
+  const holds = { ...truthful, criteria: [{ ...truthful.criteria[0], result: 'pass' }] };
+  assert.equal(passedCheck({ verification: holds, verified_sha: 'b'.repeat(40), result: { report: 'r' } }, ['C1']), true, 'and one meeting it does');
   assert.ok(verify.includes(`targetSha ${'b'.repeat(40)} and reportDigest ${'c'.repeat(64)}`));
   assert.ok(verify.includes('<report>\n**Visual acceptance: ACCEPTED**\n</report>'));
   assert.match(buildPrompt({ role: 'implementer', deliverable: 'report', packet, packetDigest: digest, repository: 'example-org/sampleapp', baseSha: 'b'.repeat(40) }), /read AGENTS\.md/,
