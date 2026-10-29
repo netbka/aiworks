@@ -55,15 +55,29 @@ const row = (entry, merged = new Set()) => ({ number: entry.number, kind: entry.
 
 /**
  * The checked local reviews (section 5.2): each `review` item the supervisor recorded, with its verified commit, and
- * whether the local merge gate recorded that very commit on main. Checked is never merged, and merged is never accepted.
+ * whether the local merge gate recorded that commit or a refreshed version on the same item. The original verified
+ * SHA stays historical evidence; a refreshed merge needs both its item-bound journal receipt and its main-ledger row.
+ * Checked is never merged, and merged is never accepted.
  */
 function reviewRows(store, repository, limit = MAX_REVIEWS) {
   const merges = repository ? mainLedger(store, repository).filter((entry) => entry.kind === 'gate-merge') : [];
+  const refreshed = new Map();
+  for (const receipt of store.all("SELECT campaign_id, detail FROM journal WHERE kind = 'merged' ORDER BY seq DESC")) {
+    const detail = receipt.detail;
+    const key = JSON.stringify([receipt.campaign_id, detail?.task, detail?.url]);
+    if (detail?.local !== true || !/^aiworks-work:[1-9]\d*$/.test(detail.url ?? '') || refreshed.has(key)) continue;
+    const merge = merges.find((entry) => entry.campaign_id === receipt.campaign_id && entry.task_id === detail.task &&
+      entry.verified_sha === detail.sha && entry.new_tip === detail.mergeCommit);
+    if (merge) refreshed.set(key, merge);
+  }
   return store.all(`SELECT number, title, state, campaign_id, task_id, verified_sha, updated_at FROM work_items
     WHERE kind = 'review' AND author_kind = 'supervisor' ORDER BY number DESC${limit ? ` LIMIT ${limit}` : ''}`).map((entry) => {
-    const merged = merges.find((merge) => merge.verified_sha === entry.verified_sha && merge.campaign_id === entry.campaign_id && merge.task_id === entry.task_id);
+    const update = refreshed.get(JSON.stringify([entry.campaign_id, entry.task_id, `aiworks-work:${entry.number}`]));
+    const merged = update?.campaign_id === entry.campaign_id && update.task_id === entry.task_id ? update
+      : merges.find((merge) => merge.verified_sha === entry.verified_sha && merge.campaign_id === entry.campaign_id && merge.task_id === entry.task_id);
     return { number: entry.number, title: safeText(entry.title, 256), state: entry.state, campaignId: entry.campaign_id, taskId: entry.task_id,
       verifiedSha: /^[0-9a-f]{40}$/.test(entry.verified_sha ?? '') ? entry.verified_sha : null, mergedAt: merged ? isoTime(merged.recorded_at) : null,
+      mergedSha: merged?.verified_sha ?? null,
       updatedAt: isoTime(entry.updated_at) };
   });
 }
