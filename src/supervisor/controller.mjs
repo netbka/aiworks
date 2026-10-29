@@ -66,6 +66,9 @@ const WORK_TARGET = /^aiworks-work:([1-9]\d*)$/;
 // The longest refusal detail a retried verifier is told (aiworks#59): enough for every refusal the controller writes.
 const REFUSAL_DETAIL = 300;
 const RETRYABLE = new Set(['invalid-result', 'exit-without-result', 'timeout', 'spawn-failed', 'error', 'evidence-unavailable', 'lost']);
+// The failures that may move a stopping step to another declared provider once (#39): the worker's own unusable results.
+// Denials, sandbox refusals, boundary violations, rejected checks and owner-reserved stops never do.
+const WORKER_QUALITY = new Set(['invalid-result', 'exit-without-result', 'evidence-unavailable']);
 export const dispatchBudget = (executor, role, prompt) => ({
   inputTokens: Math.ceil(Buffer.byteLength(prompt) / 3) + (executor.researchOnly ? 20_000 : 40_000),
   outputReserveTokens: executor.researchOnly && role === 'verification' ? 16_000 : 32_000,
@@ -1326,9 +1329,11 @@ export class Controller {
       // A verification result the controller refused stays recorded with the head it judged, so the next verifier of
       // that head is told what was refused (aiworks#59); a new head never sees it.
       if (op.kind === 'verify' && cls === 'invalid-result') failures.refusal = { head: op.target_sha, detail: String(detail).slice(0, REFUSAL_DETAIL) };
+      // A step stopped by unusable results on one provider runs once more on another declared provider first (#39).
+      const stop = (blocked) => this.workerFallback(ctx, decl, task, op, failures, state, `${cls}: ${detail}`, now) ??
+        { state, failures, retry_at: null, last_error: `${cls}: ${detail}`, blocked: { ...blocked, at: now } };
       if (cls === 'evidence-unavailable' && failures[cls] >= NO_PROGRESS_LIMIT) {
-        return { state, failures, retry_at: null, last_error: `${cls}: ${detail}`,
-          blocked: { class: 'stalled', recovery: 'system', reason: `no progress: ${failures[cls]} evidence-unavailable results; last: ${String(detail).slice(0, 300)}`, at: now } };
+        return stop({ class: 'stalled', recovery: 'system', reason: `no progress: ${failures[cls]} evidence-unavailable results; last: ${String(detail).slice(0, 300)}` });
       }
       // Launches that never started have their own bound, whatever their details: a host that cannot start workers stops
       // with a reason instead of being retried for ever with alternating launch errors.
@@ -1337,12 +1342,10 @@ export class Controller {
           blocked: { class: 'stalled', recovery: 'system', reason: `no progress: ${failures[counted]} launches in a row never started a worker; last: ${String(detail).slice(0, 300)}`, at: now } };
       }
       if (failures.repeat?.count >= NO_PROGRESS_LIMIT) {
-        return { state, failures, retry_at: null, last_error: `${cls}: ${detail}`,
-          blocked: { class: 'stalled', recovery: 'system', reason: `no progress: ${failures.repeat.count} identical ${cls} failures; last: ${String(detail).slice(0, 300)}`, at: now } };
+        return stop({ class: 'stalled', recovery: 'system', reason: `no progress: ${failures.repeat.count} identical ${cls} failures; last: ${String(detail).slice(0, 300)}` });
       }
       if (limits.maxRetriesPerTask !== null && total > limits.maxRetriesPerTask) {
-        return { state, failures, retry_at: null, last_error: `${cls}: ${detail}`,
-          blocked: { class: 'stalled', reason: `${total} failed attempts; last ${cls}: ${String(detail).slice(0, 300)}`, at: now } };
+        return stop({ class: 'stalled', reason: `${total} failed attempts; last ${cls}: ${String(detail).slice(0, 300)}` });
       }
       // A class outside the retry budget (an unavailable host) still waits for the first backoff step, never 0 ms.
       const backoff = this.config.retryBackoffMs;
@@ -1471,6 +1474,46 @@ export class Controller {
       return { state: 'pending', verification: value, findings, repair_rounds: task.repair_rounds + 1, retry_at: null, last_error: null };
     }
     return retry('evidence-unavailable', value.summary, 'implemented');
+  }
+
+  /**
+   * One more run on another declared provider for a step about to stop (#39): only in a chain, only when every counted
+   * failure is an unusable result (invalid, exit without result, evidence unavailable), none a denial, all on the provider
+   * that just failed, while the campaign's run and cost limits allow another run, and once per step and head (journal
+   * `worker-fallback`). The pin (`failures.fallback`) holds the next choice off that provider until one more attempt of
+   * the step has finished. Returns the task change, or null to stop as before.
+   */
+  workerFallback(ctx, decl, task, op, failures, state, lastError, now) {
+    if (decl.executor.kind !== 'cli-chain' || !['implement', 'verify'].includes(op.kind)) return null;
+    const counted = Object.entries(failures).filter(([key]) => RETRYABLE.has(key));
+    if (!counted.length || counted.some(([key]) => !WORKER_QUALITY.has(key))) return null;
+    const total = counted.reduce((sum, [, n]) => sum + n, 0);
+    const attempts = this.store.all("SELECT id, executor_kind, outcome, routing FROM operations WHERE campaign_id = ? AND task_id = ? AND kind = ? AND state = 'finished' ORDER BY created_at DESC",
+      ctx.id, task.task_id, op.kind).map(priorAttempt).filter((item) => !item.denied &&
+      (WORKER_QUALITY.has(item.class) || item.class === 'result' && item.terminal === 'evidence-unavailable')).slice(0, total);
+    if (attempts.length < total || attempts.some((item) => item.kind !== op.executor_kind)) return null;
+    const head = op.kind === 'verify' ? op.target_sha : task.head_sha ?? null;
+    const used = this.store.get(`SELECT 1 AS used FROM journal WHERE campaign_id = ? AND kind = 'worker-fallback'
+      AND json_extract(detail, '$.task') = ? AND json_extract(detail, '$.stage') = ? AND json_extract(detail, '$.head') IS ?`,
+    ctx.id, task.task_id, op.kind, head);
+    if (used || admissionBudget(this.store, this.store.campaign(ctx.id), now).exhausted) return null;
+    const pin = { stage: op.kind, from: op.executor_kind, after: op.id };
+    const choice = this.executorChoice(decl, { ...task, state: op.kind === 'verify' ? 'implemented' : 'pending', failures: { fallback: pin } }, now);
+    if (!choice.executor && !choice.retryAt) return null;
+    const to = choice.executor?.kind ?? null;
+    this.store.journal(ctx.id, 'worker-fallback', { task: task.task_id, stage: op.kind, head, from: op.executor_kind, to,
+      reason: `${total} unusable result${total === 1 ? '' : 's'} on ${op.executor_kind}; last ${lastError.slice(0, 300)}` }, now);
+    return { state, failures: { ...failures, fallback: pin }, retry_at: choice.executor ? now : choice.retryAt,
+      last_error: `trying ${to ?? 'another provider'} after ${total} unusable results on ${op.executor_kind}: ${lastError}` };
+  }
+
+  /** The pin of a pending worker fallback, while the attempt it follows is still the step's newest finished one; or null. */
+  fallbackPin(decl, task) {
+    const pin = task.failures?.fallback;
+    if (!pin || pin.stage !== (task.state === 'implemented' ? 'verify' : 'implement')) return null;
+    const newest = this.store.get("SELECT id FROM operations WHERE campaign_id = ? AND task_id = ? AND kind = ? AND state = 'finished' ORDER BY created_at DESC LIMIT 1",
+      decl.campaignId, task.task_id, pin.stage);
+    return newest?.id === pin.after ? pin : null;
   }
 
   /**
@@ -2174,6 +2217,15 @@ export class Controller {
       const profile = this.profileChoice(kind, now);
       return { cliConfigured: true, hostUnavailable: null, wait: profile && !profile.account ? { retryAt: profile.retryAt, reason: profile.reason } : null };
     };
+    // A pending worker fallback (#39) leaves out the provider that stopped the step, unless no other could then run it.
+    const pin = this.fallbackPin(decl, task);
+    if (pin) {
+      const others = (list) => list.filter((provider) => provider.kind !== pin.from);
+      const narrowed = { ...decl, executor: { ...decl.executor, providers: others(executorOrder(decl.executor)) },
+        ...(decl.routing?.candidates ? { routing: { ...decl.routing, candidates: others(decl.routing.candidates) } } : {}) };
+      const choice = this.executorChoice(narrowed, { ...task, failures: {} }, now, { session, history, hostUnavailable });
+      if (choice.executor || choice.retryAt) return choice;
+    }
     if (decl.routing?.mode === 'auto') return this.routedChoice(decl, task, now, { facts, waits, session, history, hostUnavailable });
     // Stored dashboard preferences cannot rewrite a registered declaration.
     const providers = executorOrder(decl.executor);
