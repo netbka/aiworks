@@ -12,7 +12,7 @@ import { researchContext } from './adapters/research-context.mjs';
 import { browserLoginSettings } from './browser-login.mjs';
 import * as gitA from './adapters/git.mjs';
 import * as github from './adapters/github.mjs';
-import { authorityDigest, campaignLimits, canonicalJson, executorOrder, overlayGovernance, projectGovernance } from './campaign.mjs';
+import { authorityDigest, campaignLimits, canonicalJson, executorOrder, overlayGovernance, projectGovernance, webBuildRefusal } from './campaign.mjs';
 import { localProjectName, resolveCheckout, resolveLocalProject } from './project-connect.mjs';
 import { admissionBudget } from './api.mjs';
 import { currentSettings, projectOf, protectedAreasFor, protectedPaths } from './project-settings.mjs';
@@ -959,7 +959,7 @@ export class Controller {
       logBytes: existsSync(join(op.run_dir, 'stdout.json')) ? statSync(join(op.run_dir, 'stdout.json')).size : 0,
       stderrText: readTextIfExists(join(op.run_dir, 'stderr.log')),
       expect: { deliverable: this.deliverable(ctx, op.task_id), targetSha: op.target_sha, reportDigest: op.report_digest,
-        sessionId: op.session_id, packetDigest: op.packet_digest, web: Boolean(specOf(this.store, ctx.id, op.task_id, decl)?.web),
+        sessionId: op.session_id, packetDigest: op.packet_digest, web: executors.webFlag(specOf(this.store, ctx.id, op.task_id, decl)?.web),
         acceptance: this.acceptanceCount(ctx, op.task_id) },
       now: this.now(),
     });
@@ -2377,6 +2377,18 @@ export class Controller {
           this.raiseBlocker(ctx, decl, { kind: 'project-governance', class: 'B2',
             reason: `No new worker dispatched: the governance of ${decl.target.repository} cannot be resolved from the governance checkout (${error.code ? `${error.code}: ` : ''}${String(error.message).slice(0, 400)})`,
             requestedAction: `Make sure governanceRoot in the supervisor config.json names a current governance provider checkout in which exactly one registry/projects entry declares repository.github ${decl.target.repository}, then run: supervisor recheck ${ctx.id}` }, this.now());
+          return null;
+        }
+        // A build task changes pages: its origins must still be listed in the registry's web.buildOrigins, so removing one
+        // there stops new build runs on it (registration checked the same list; campaign.mjs assertWebBuildOrigins).
+        let buildRefusal = null;
+        try { buildRefusal = webBuildRefusal(decl.target.repository, specOf(this.store, ctx.id, task.task_id, decl), this.governanceRoot); }
+        catch (error) { buildRefusal = String(error.message); }
+        if (buildRefusal) {
+          this.raiseBlocker(ctx, decl, { kind: 'project-governance', class: 'B2', code: 'WEB_BUILD_ORIGIN_NOT_ALLOWED',
+            reason: `No new worker dispatched: ${buildRefusal.slice(0, 400)}`,
+            requestedAction: `List the origin in web.buildOrigins of the project's registry entry in the governance checkout if building there is allowed, or cancel the campaign; then run: supervisor recheck ${ctx.id}` },
+          this.now(), { identity: 'web-build-origin' });
           return null;
         }
       }

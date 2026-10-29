@@ -16,6 +16,11 @@ export const AGY_LOG_LIMIT = agy.LOG_LIMIT;
 // The browser workers: AGY, and Claude given the same isolated browser. When AGY is out of credits or waiting, a web task
 // moves to Claude instead of waiting.
 export const BROWSER_KINDS = ['agy-cli', 'claude-cli'];
+/**
+ * The web flag routing and role checks read: false without `web`, true for an acceptance review, "build" for a build task
+ * (web.mode build). An acceptance task keeps `true`, so its routing receipts are unchanged.
+ */
+export const webFlag = (web) => agy.webMode(web) === 'build' ? 'build' : Boolean(web);
 // Commit tasks only (#102): STA7's verifier returned evidence-unavailable because its npm run check did not finish within
 // one foreground command while other campaigns ran. Report tasks, including research-only runs, do not carry it.
 // Gate files end in .log (#135): a verifier's gate.exit left its checkout unclean, so checkVerification refused the
@@ -119,7 +124,8 @@ function withStageRule(prompt, role, stage) {
   return `${prompt.slice(0, at)}\n${role === 'verification' ? FOLLOW_UPS_RULE : STAGE_RULE[stage]}${prompt.slice(at)}`;
 }
 
-// A browser worker reviews pages, not a checkout, so a web task gets the browser prompt whichever worker runs it.
+// A browser worker works on pages, not a checkout, so a web task gets the browser prompt whichever worker runs it; a build
+// task (web.mode build) gets its own implementer and verifier prompt (agy.mjs buildModePrompt).
 export const buildPrompt = (args) => DEVELOPMENT_RESOURCE_RULE + '\n\n' + (args.web ? agy.buildPrompt(args)
   : withStageRule(withReadingRule(withGateRules(claude.buildPrompt(args), args.role, args.deliverable), args.role), args.role, args.stage ?? null));
 const nativeKind = (kind) => kind ?? 'claude-cli';
@@ -242,8 +248,10 @@ export function unavailableReason(executor, workspace, ghCommand, { probe = null
 }
 
 export function roleUnavailableReason(executor, role, deliverable, platform = process.platform, web = false) {
-  // A web acceptance task (task.web) needs a browser: only agy has one, and agy has nothing else.
-  if (executor.kind === 'agy-cli') return web ? null : 'AGY runs only web acceptance tasks';
+  // A web acceptance task (task.web) needs a browser: only agy has one, and agy has nothing else. A build task (web
+  // "build") changes pages, and agy's own browser cannot be audited for that, so it never runs one, in either role.
+  if (executor.kind === 'agy-cli') return web === 'build' ? 'AGY never runs a web build task: only Claude with the isolated browser does'
+    : web ? null : 'AGY runs only web acceptance tasks';
   if (web) return executor.kind === 'claude-cli' && !executor.researchOnly ? null
     : 'Web acceptance tasks run only on a browser worker: AGY, or Claude with the isolated browser';
   if (deliverable !== 'commit') return null;
@@ -267,11 +275,11 @@ export function prepare({ executor, command, role, deliverable, sessionId, diges
   // Resolved first, so a bad home or a kind CAAM does not rotate fails before any run file is written.
   const profile = profileEnv(executor.kind, profileHome);
   if (executor.kind === 'agy-cli') {
-    if (!web || deliverable !== 'report') throw new Error('The AGY browser worker requires a web acceptance task with a report deliverable');
+    if (!web || deliverable !== 'report' || agy.webMode(web) !== 'acceptance') throw new Error('The AGY browser worker requires a web acceptance task with a report deliverable');
     return agy.prepare({ command, executor, role, sessionId, digest, runDir, prompt, web, chromeCommand, browserLogin, timeoutMs });
   }
   if (executor.kind === 'claude-cli' && web) {
-    if (deliverable !== 'report' || executor.researchOnly) throw new Error('Claude browses only for a web acceptance task with a report deliverable');
+    if (deliverable !== 'report' || executor.researchOnly) throw new Error('Claude browses only for a web task with a report deliverable');
     const cwd = join(runDir, 'web-scratch');
     mkdirSync(cwd, { recursive: true });
     return {
