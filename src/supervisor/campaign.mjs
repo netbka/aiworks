@@ -63,6 +63,7 @@ const ROLE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const TASK_KEYS = ['id', 'issue', 'title', 'outcome', 'workKey', 'writes', 'deliverable', 'goal', 'dependsOn', 'requiresMergedDependencies',
   'constraints', 'acceptance', 'references', 'web', 'role', 'routing'];
 const plainObject = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+const WEB_MODES = ['acceptance', 'build'];
 
 export function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -215,6 +216,11 @@ export function validateDeclaration(declaration) {
       !providers.some((provider) => provider?.kind === 'agy-cli' || (provider?.kind === 'claude-cli' && !provider.researchOnly))) {
     bad('a task with web needs a browser worker: agy-cli, or claude-cli without researchOnly');
   }
+  // A build task changes the pages it opens. Only Claude with the isolated, audited browser runs it, never agy.
+  if (Array.isArray(tasks) && tasks.some((task) => task?.web?.mode === 'build') &&
+      !providers.some((provider) => provider?.kind === 'claude-cli' && !provider.researchOnly)) {
+    bad('a task with web.mode build needs claude-cli without researchOnly: agy-cli never runs a build task');
+  }
   if (Array.isArray(tasks) && tasks.some((task) => task && task.web === undefined) && providers.every((provider) => provider?.kind === 'agy-cli')) {
     bad('a task without web needs an executor other than agy-cli, which runs only web acceptance tasks');
   }
@@ -243,6 +249,8 @@ function validateLocalTarget(d, bad) {
   if (Array.isArray(d.tasks) && d.tasks.some((task) => task?.requiresMergedDependencies !== undefined)) {
     bad('a local plan has no base branch to wait on (requiresMergedDependencies)');
   }
+  // Build origins are listed in the governance registry entry of a GitHub project; a local plan has none.
+  if (Array.isArray(d.tasks) && d.tasks.some((task) => task?.web?.mode === 'build')) bad('a local plan has no web build task (web.mode build)');
   // Brokered research reads its evidence from GitHub, which a project without GitHub never calls.
   const providers = d.executor?.kind === 'cli-chain' && Array.isArray(d.executor.providers) ? d.executor.providers : [d.executor];
   if (providers.some((provider) => provider?.researchOnly === true)) bad('a local plan has no research-only executor: brokered research reads GitHub');
@@ -293,10 +301,12 @@ export function validateTask(task, where, { seen, constraints, bad, local = fals
       !task.references.every((reference) => text(reference, 512) && parseReference(reference))) {
     bad(`${where}.references must be 1..24 repository-relative paths`);
   }
-  // A web acceptance task: the AGY browser worker reviews these pages and reports. The pages' origins, plus any declared
-  // resource origins (fonts, CDNs), are all its browser can reach, so they belong to the owner's immutable scope.
+  // A web task: a browser worker opens these pages and reports. The pages' origins, plus any declared resource origins
+  // (fonts, CDNs), are all its browser can reach, so they belong to the owner's immutable scope. `mode` (default
+  // acceptance: look and report) is part of that scope too; build may change the pages, only on origins the project's
+  // registry entry lists (assertWebBuildOrigins), and only a Claude browser worker runs it.
   if (task.web !== undefined) {
-    validateWeb(task.web, `${where}.web`, bad);
+    validateWeb(task.web, `${where}.web`, bad, { task: true });
     if (task.deliverable !== 'report') bad(`${where}.web requires deliverable report`);
   }
   // Routing indicators (MODEL_ROUTING 3.1-3.3). They are part of scopeDigest; absent keys change no digest.
@@ -310,11 +320,16 @@ export function validateTask(task, where, { seen, constraints, bad, local = fals
   seen.add(task.id);
 }
 
-/** Pages a browser worker may open: a task's `web`, or the version 2 `envelope.web` that bounds every task's. */
-function validateWeb(w, where, bad) {
-  if (!w || typeof w !== 'object' || Array.isArray(w) || Object.keys(w).some((key) => !['urls', 'resourceOrigins'].includes(key))) {
-    bad(`${where} must be { urls, resourceOrigins? }`);
+/**
+ * Pages a browser worker may open: a task's `web`, or the version 2 `envelope.web` that bounds every task's. Only a task
+ * names a `mode`: "acceptance" (the default when absent, so older declarations digest as before) or "build".
+ */
+function validateWeb(w, where, bad, { task = false } = {}) {
+  const keys = ['urls', 'resourceOrigins', ...(task ? ['mode'] : [])];
+  if (!w || typeof w !== 'object' || Array.isArray(w) || Object.keys(w).some((key) => !keys.includes(key))) {
+    bad(`${where} must be { urls, resourceOrigins?${task ? ', mode?' : ''} }`);
   } else {
+    if (w.mode !== undefined && !WEB_MODES.includes(w.mode)) bad(`${where}.mode must be ${WEB_MODES.join(' or ')}`);
     if (!Array.isArray(w.urls) || w.urls.length < 1 || w.urls.length > 8 || !w.urls.every(webUrl)) bad(`${where}.urls must be 1..8 http(s) URLs without credentials`);
     if (w.resourceOrigins !== undefined && (!Array.isArray(w.resourceOrigins) || w.resourceOrigins.length > 16 ||
         !w.resourceOrigins.every((url) => webUrl(url) && new URL(url).origin === url))) bad(`${where}.resourceOrigins must be 0..16 http(s) origins`);
@@ -497,6 +512,44 @@ export function assertRegisteredTarget(declaration, governanceRoot) {
     throw new TypeError(`campaign target ${repository || '(none)'} is not a registered project: add registry/projects/<id>.json to the governance checkout before registering a campaign`);
   }
   assertKnownRoles(declaration, governanceRoot);
+  assertWebBuildOrigins(declaration, governanceRoot);
+}
+
+/**
+ * The origins on which a build task (task.web.mode "build") may change pages: `web.buildOrigins` of the target project's
+ * single registry entry in the governance checkout, an operator-owned list. Null when there is no single entry or the
+ * list is malformed, which allows nothing.
+ */
+export function webBuildOrigins(repository, governanceRoot) {
+  const entries = registryEntries(join(requireGovernanceRoot(governanceRoot), 'registry', 'projects'), String(repository ?? ''));
+  if (entries.length !== 1) return null;
+  const list = entries[0]?.web?.buildOrigins;
+  if (!Array.isArray(list) || !list.every((origin) => webUrl(origin) && new URL(origin).origin === origin)) return null;
+  return list;
+}
+
+/**
+ * Why `task` (a declared task spec) may not run as a build task under the registry now, or null. Every origin its browser
+ * can reach (each page's origin and each resource origin) must be listed in the project's web.buildOrigins.
+ */
+export function webBuildRefusal(repository, task, governanceRoot) {
+  if (task?.web?.mode !== 'build') return null;
+  const allowed = webBuildOrigins(repository, governanceRoot) ?? [];
+  const reached = [...(task.web.urls ?? []), ...(task.web.resourceOrigins ?? [])].filter(webUrl).map((url) => new URL(url).origin);
+  const outside = [...new Set(reached)].filter((origin) => !allowed.includes(origin));
+  return outside.length ? `task ${task.id} is a web build task reaching ${outside.join(', ')}, which the governance registry entry of ${repository} does not list in web.buildOrigins` : null;
+}
+
+/**
+ * A new campaign's build tasks may reach only origins its project lists in web.buildOrigins (WEB_BUILD_ORIGIN_NOT_ALLOWED).
+ * Checked by every registration path through assertRegisteredTarget; the scope is immutable afterwards, and the
+ * controller checks the list again before every dispatch, so removing an origin stops new build runs there.
+ */
+export function assertWebBuildOrigins(declaration, governanceRoot) {
+  for (const task of Array.isArray(declaration?.tasks) ? declaration.tasks : []) {
+    const refusal = webBuildRefusal(declaration?.target?.repository, task, governanceRoot);
+    if (refusal) throw Object.assign(new TypeError(`WEB_BUILD_ORIGIN_NOT_ALLOWED: ${refusal}`), { code: 'WEB_BUILD_ORIGIN_NOT_ALLOWED' });
+  }
 }
 
 /**

@@ -40,6 +40,34 @@ test('the check reads only the given governance root registry', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('a web build task to an origin its project does not list is refused at registration', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aiworks-registry-'));
+  try {
+    mkdirSync(join(dir, 'registry', 'projects'), { recursive: true });
+    writeFileSync(join(dir, 'registry', 'projects', 'one.json'), JSON.stringify({ id: 'one', repository: { github: 'owner/one' },
+      web: { buildOrigins: ['https://dev.example.invalid'] } }));
+    const decl = declaration();
+    decl.target = { ...decl.target, repository: 'owner/one' };
+    decl.executor = { kind: 'claude-cli', model: 'opus', permissionMode: 'auto', implementerTimeoutMinutes: 1, verifierTimeoutMinutes: 1 };
+    decl.tasks = [{ ...decl.tasks[0], deliverable: 'report', web: { urls: ['https://dev.example.invalid/app'], mode: 'build' } }];
+    delete decl.tasks[0].writes;
+    validateDeclaration(structuredClone(decl));
+    assert.doesNotThrow(() => assertRegisteredTarget(decl, dir), 'a listed origin may be built on');
+    const refused = (change) => {
+      const copy = structuredClone(decl);
+      change(copy);
+      assert.throws(() => assertRegisteredTarget(copy, dir), (error) => error.code === 'WEB_BUILD_ORIGIN_NOT_ALLOWED');
+    };
+    refused((c) => { c.tasks[0].web.urls = ['https://prod.example.invalid/app']; });
+    refused((c) => { c.tasks[0].web.urls.push('https://dev.example.invalid:8443/'); });
+    refused((c) => { c.tasks[0].web.resourceOrigins = ['https://cdn.example.invalid']; });
+    refused((c) => { c.target.repository = 'owner/two'; writeFileSync(join(dir, 'registry', 'projects', 'two.json'), JSON.stringify({ id: 'two', repository: { github: 'owner/two' } })); });
+    const acceptance = structuredClone(decl);
+    acceptance.tasks[0].web = { urls: ['https://prod.example.invalid/app'] };
+    assert.doesNotThrow(() => assertRegisteredTarget(acceptance, dir), 'an acceptance review needs no build origin');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('every committed campaign declaration targets a registered project', () => {
   const dir = join(ROOT, 'tests/fixtures/campaigns');
   for (const name of readdirSync(dir).filter((file) => file.endsWith('.json'))) {
