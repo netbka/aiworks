@@ -1616,7 +1616,7 @@ function needsYou() {
     // link to its Now, which says which decisions (aiworks#11 review 5 G7).
     held.length ? el('ul', { class: 'needs-list', 'data-focus-scope': 'needs/held' }, ...held.map((project) => el('li', {},
       el('strong', {}, project.name), ` · ${project.text} `, routeLink(`Open ${project.name}`, { screen: 'project', project: project.id })))) : null,
-    reply ? el('div', { class: 'needs-reply' }, `AIWorks answered your message (${dateTime(reply.answeredAt)}). `,
+    reply && isRecent(reply.answeredAt) ? el('div', { class: 'needs-reply' }, `AIWorks answered your message (${dateTime(reply.answeredAt)}). `,
       reply.url ? link('Read its “What needs you” ↗', reply.url) : routeLink('Open the chat', { screen: 'chats', chat: reply.threadId ?? reply.messageId })) : null,
     // The local work list (UI20): its open decisions are counted above; the list itself is one link away.
     worklist()?.available ? el('p', { class: 'needs-reply' }, `AIWorks’s own work list: ${plural(worklistUnfinished().length, 'unfinished item')}. `,
@@ -2519,6 +2519,14 @@ async function markSeen() {
  */
 const resultsToReview = (project = null) => Object.values(state.owner?.results ?? {}).filter((entry) => !project || sameProject(entry.project, project))
   .flatMap((entry) => entry.groups.flatMap((group) => group.rows.map((row) => ({ ...row, project: entry.project })))).filter((row) => row.review?.state === 'ready');
+// Home and Needs you show only what is recent: older results, projects and replies stay on their own screens.
+const RECENT_MS = 7 * 24 * 60 * 60 * 1000;
+const isRecent = (at) => { const time = at === null || at === undefined ? NaN : new Date(at).getTime(); return !Number.isFinite(time) || time >= Date.now() - RECENT_MS; };
+/** When a result was finished: its step's verification, else its goal's last progress; unknown counts as recent. */
+const recentResult = (row) => {
+  const campaign = campaignById(row.campaignId), task = campaign?.tasks?.find((entry) => entry.id === row.taskId);
+  return isRecent(task?.verifiedAt ?? campaign?.lastProgressAt ?? null);
+};
 function reviewList(rows, { scope, withProject = false }) {
   if (!rows.length) return null;
   // "Each passed" only when every listed result passed every criterion (owner.mjs row checkPassed); each row says what is missing.
@@ -2625,7 +2633,8 @@ function homeScreen() {
   const home = state.home;
   if (!state.supervisor.available || !home?.available) return [unavailable()];
   const { since, lastSeen } = home;
-  const reviews = resultsToReview();
+  // Only results finished in the last week are "new"; older ones wait on each project's Review.
+  const reviews = resultsToReview().filter(recentResult);
   // The first item is resolved here on the same card as in Needs you: a decision with its options, a result with Accept
   // and Request changes, a stopped step with guidance and Check again.
   const first = state.owner?.items?.find((item) => !item.system);
@@ -2643,11 +2652,13 @@ function homeScreen() {
   const decision = home.needsYou.count && first ? el('ul', { class: 'needs-list home-decision', 'data-focus-scope': 'home/needs' }, needsItem(first)) : null;
   const moreDecisions = home.needsYou.count > 1 ? routeLink(`All ${home.needsYou.count} in Needs you`, '#/needs', 'button secondary small') : null;
   const counts = EVENT_ORDER.filter((type) => since.counts[type]).map((type) => `${since.counts[type]} ${SUMMARY_WORDS[type]}`);
-  const when = lastSeen.at ? `Since your last visit (${dateTime(lastSeen.at)})` : 'Everything AIWorks recorded so far';
+  const windowHours = since.window ? Math.round(since.window / 3600000) : null;
+  const when = lastSeen.at && (!since.window || lastSeen.at >= Date.now() - since.window) ? `Since your last visit (${dateTime(lastSeen.at)})`
+    : windowHours ? `In the last ${windowHours} hours` : 'Everything AIWorks recorded so far';
   const changed = el('section', { class: 'since', 'aria-labelledby': 'home-since-title', 'data-focus-scope': 'home/since' },
     el('h2', { id: 'home-since-title' }, when),
     el('p', { role: 'status', 'aria-live': 'polite' }, counts.length ? `${counts.join(' · ')}${since.more ? ', and more' : ''}.` : 'Nothing changed.'),
-    since.events.length ? disclosure('home/events', `What changed (${since.more ? `latest ${since.events.length}` : since.events.length})`, eventList(since.events)) : null,
+    since.events.length ? disclosure('home/events', `What changed (${since.more || since.count > since.events.length ? `latest ${since.events.length}` : since.events.length})`, eventList(since.events)) : null,
     since.count ? button(seenBusy ? 'Marking…' : 'Mark as seen', markSeen, 'secondary small', seenBusy || offline) : null);
   // Working reuses the same liveness codes Now already shows for this project (copy.mjs). A project with none of
   // these badges is calm, never "Live": OWNER_WORKSPACE §2.3 keeps "Live" for recorded release evidence only, which
@@ -2657,10 +2668,15 @@ function homeScreen() {
   const badgeOf = (project) => project.needsYou ? ['attention', 'Needs you']
     : reviews.some((row) => sameProject(row.project, project.id)) ? ['done', 'Review ready']
       : WORKING.includes(project.state.key) ? ['in_progress', 'Working'] : null;
+  // A project with nothing waiting and no activity in the last week is quiet: folded under the active ones.
+  const quiet = (project) => !badgeOf(project) && project.lastActivityAt && !isRecent(project.lastActivityAt);
+  const active = home.projects.filter((project) => !quiet(project)), quietOnes = home.projects.filter(quiet);
+  const projectTable = (rows) => el('div', { class: 'live-table' },
+    el('div', { class: 'live-head', 'aria-hidden': 'true' }, el('span', {}, 'Project · current goal'), el('span', {}, 'Steps'), el('span', {}, 'AI workers'), el('span', {}, 'State'), el('span', {}, 'Last activity')),
+    el('ul', { class: 'live-rows home-projects' }, ...rows.map((project) => homeProjectRow(project, badgeOf(project)))));
   const projects = home.projects.length
-    ? el('div', { class: 'live-table' },
-      el('div', { class: 'live-head', 'aria-hidden': 'true' }, el('span', {}, 'Project · current goal'), el('span', {}, 'Steps'), el('span', {}, 'AI workers'), el('span', {}, 'State'), el('span', {}, 'Last activity')),
-      el('ul', { class: 'live-rows home-projects' }, ...home.projects.map((project) => homeProjectRow(project, badgeOf(project)))))
+    ? el('div', {}, active.length ? projectTable(active) : el('p', { class: 'panel-body subtext' }, 'No project had activity in the last week.'),
+      quietOnes.length ? disclosure('home/quiet-projects', `Quiet projects (${quietOnes.length}): no activity in the last week`, projectTable(quietOnes)) : null)
     : state.projects?.addProject ? el('div', { class: 'empty-state' }, el('strong', {}, 'No projects yet.'), ' Start from an idea or a folder on this computer. ',
       routeLink('Add project', { screen: 'add-project' }))
       : empty('No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository.');
