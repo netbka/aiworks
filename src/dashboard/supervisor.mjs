@@ -892,7 +892,8 @@ export function decisionView(campaignId, task, feedback, now) {
  * validated decision recorded with the answer and pass the same filter as an open decision's.
  */
 export function autoAnswers(store, campaignId, taskRows) {
-  const open = new Set(taskRows.filter((task) => task.state !== 'cancelled').map((task) => task.task_id));
+  // Shown while the step's result is still being made; once it is done the owner meets the choice in its Review.
+  const open = new Set(taskRows.filter((task) => !['done', 'cancelled'].includes(task.state)).map((task) => task.task_id));
   const seen = new Set(), out = [];
   for (const row of store.all("SELECT at, detail FROM journal WHERE campaign_id = ? AND kind = 'decision-answered' ORDER BY seq DESC LIMIT 200", campaignId)) {
     const detail = row.detail ?? {}, d = detail.auto ? structuredDecision({ decision: { question: detail.question, options: detail.options, suggestion: detail.suggestion } }) : null;
@@ -1202,6 +1203,10 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
             })() };
         }),
         autoDecisions: autoAnswers(store, id, taskRows),
+        // AW-016: the controller's own record of an unchecked published head, so the page never promises a check the
+        // controller will not run: `checked` once it went back to the checker, `left` when it was left for the owner.
+        uncheckedRecheck: Object.fromEntries(store.all("SELECT kind, payload FROM events WHERE campaign_id = ? AND kind IN ('unchecked-recheck', 'unchecked-recheck-skipped')", id)
+          .map((event) => [`${event.payload?.taskId}:${event.payload?.headSha}`, event.kind === 'unchecked-recheck' ? 'checked' : 'left'])),
         tasks: taskRows.map((task) => ({ id: task.task_id, title: safeText(specs.get(task.task_id)?.title),
           risk: riskOf(specs.get(task.task_id)),
           decision: decisionView(id, task, feedback, now),

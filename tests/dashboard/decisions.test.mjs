@@ -187,6 +187,15 @@ test('AW-016: AIWorks answers only a running step\'s reversible suggestion itsel
 
   const decided = supervisorSnapshot(env.dataDir).campaigns[0].autoDecisions;
   assert.deepEqual(decided.map((item) => [item.taskId, item.chosen, item.others]), [['T1', 'Neutral', ['Brand']]], 'the owner can read and change what AIWorks chose');
+
+  // A second decision on the same step, under the same approval, waits for the owner: no answer loop of paid runs.
+  block('T1', { class: 'B3', reason: 'owner-reserved: palette again', at: 5000, decision: { ...DECISION, reversible: true } });
+  controller.answerSuggested(ctx);
+  assert.equal(store.task(d.campaignId, 'T1').blocked?.class, 'B3', 'one automatic answer per step');
+  // A "verifier still rejects" stall at the repair limit is never answered for the owner, reversible or not.
+  block('T2', { class: 'stalled', reason: 'verifier still rejects after 2 repair rounds', at: 6000, decision: { ...DECISION, reversible: true } });
+  controller.answerSuggested(ctx);
+  assert.equal(store.task(d.campaignId, 'T2').blocked?.class, 'stalled', 'the owner\'s repair limit is never raised by AIWorks');
 });
 
 test('AW-016: a published result without a check on record goes back to the checker at the same head, once per head', (t) => {
@@ -201,6 +210,19 @@ test('AW-016: a published result without a check on record goes back to the chec
   const controller = new Controller({ store, config: env.config, dataDir: env.dataDir, fault: null });
   const lease = store.acquireLease(d.campaignId, controller.instanceId, Date.now(), 60_000);
   const ctx = { id: d.campaignId, generation: lease.generation };
+
+  // A head merged, closed or pushed by someone else is left for the owner, recorded once; an unreadable GitHub waits.
+  controller.uncheckedGone = () => undefined;
+  controller.recheckUnchecked(ctx);
+  assert.equal(store.task(d.campaignId, 'T1').state, 'done', 'nothing happens while GitHub cannot be read');
+  controller.uncheckedGone = () => 'its pull request is no longer open';
+  controller.recheckUnchecked(ctx);
+  assert.equal(store.task(d.campaignId, 'T1').state, 'done', 'a closed pull request is never checked and published again');
+  assert.equal(store.get("SELECT COUNT(*) AS n FROM events WHERE kind = 'unchecked-recheck-skipped'").n, 1);
+  controller.uncheckedGone = () => null;
+  controller.recheckUnchecked(ctx);
+  assert.equal(store.task(d.campaignId, 'T1').state, 'done', 'a head left for the owner stays left');
+  store.run("DELETE FROM events WHERE kind = 'unchecked-recheck-skipped'");
 
   controller.recheckUnchecked(ctx);
   const reopened = store.task(d.campaignId, 'T1');

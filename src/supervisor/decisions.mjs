@@ -38,7 +38,9 @@ export function decisionId(campaignId, taskId, blocked) {
  * AW-016: whether AIWorks answers a decision itself, with its suggestion. Only a suggested option the worker marked
  * reversible qualifies; anything else waits for the owner. The answer goes the same way as the owner's (answerDecision).
  */
-export const answersItself = (task) => isDecision(task) && task.blocked.decision?.reversible === true &&
+// Only an owner-reserved stop (B3): a "verifier still rejects" stall at the repair limit always waits for the owner,
+// because answering it would raise the owner's repair limit.
+export const answersItself = (task) => isDecision(task) && task.blocked.class === 'B3' && task.blocked.decision?.reversible === true &&
   Boolean(task.blocked.decision.suggestion && task.blocked.decision.options?.some((o) => o.id === task.blocked.decision.suggestion.option));
 
 /** Durable decision context for the step's builders and verifiers, within its bound authority. */
@@ -48,5 +50,6 @@ export function answerGuidance(decision, { option = null, text: words = null, au
     : 'The owner answered the decision this step stopped for.',
     decision?.question ? `Question: ${decision.question}` : null,
     chosen ? `Chosen option: ${chosen.label} (${chosen.id}). Consequence: ${chosen.consequence}` : null, words ? `The owner's words: ${words}` : null,
-    'This is a recorded owner answer, available to implementers and verifiers. Apply it within the packet; do not ask for the same decision again. If it conflicts with the approved acceptance or permissions, identify the exact amendment needed; it does not silently widen authority.'].filter(Boolean).join(' ');
+    auto ? 'This is AIWorks\'s recorded answer with the suggested option, available to implementers and verifiers. Apply it within the packet. If another decision is needed on this step, ask it: the owner answers it. If it conflicts with the approved acceptance or permissions, identify the exact amendment needed; it does not silently widen authority.'
+      : 'This is a recorded owner answer, available to implementers and verifiers. Apply it within the packet; do not ask for the same decision again. If it conflicts with the approved acceptance or permissions, identify the exact amendment needed; it does not silently widen authority.'].filter(Boolean).join(' ');
 }

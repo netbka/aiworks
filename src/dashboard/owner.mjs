@@ -633,10 +633,21 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       // choice is to plan its completion again (approved like any plan) or leave it unmerged. Never "passed the check".
       // AW-016: published without an independent check on record. AIWorks checks it again by itself, once per version
       // (controller.recheckUnchecked); the owner meets it again only as a checked result. Never "passed the check".
-      if (!d.local && !task.verifiedSha) {
+      // Only where the controller will check it (controller.recheckUnchecked): a commit, not yet sent back or left for
+      // the owner. Anything else keeps the owner's choice to plan it again or leave it unmerged.
+      const recheck = c.uncheckedRecheck?.[`${task.id}:${task.headSha}`] ?? null;
+      if (!d.local && !task.verifiedSha && task.deliverable === 'commit' && c.control !== 'cancelled' && !recheck) {
         handling.push({ ...base, taskId: task.id, text: label(task), recorded: true, since: null, sinceWords: null,
-          reason: 'No independent check of this version is on record', next: c.control === 'cancelled' ? 'This work was stopped; the result stays unmerged.'
-            : stopped ? 'AIWorks checks it again when this work resumes.' : 'AIWorks checks it again by itself; you see it once it is checked.' });
+          reason: 'No independent check of this version is on record',
+          next: stopped ? 'AIWorks checks it again when this work resumes.' : 'AIWorks checks it again by itself; you see it once it is checked.' });
+        continue;
+      }
+      if (!d.local && !task.verifiedSha) {
+        items.push({ ...base, taskId: task.id, kind: 'unchecked', action: 'Decide how this result continues', text: label(task),
+          why: 'AIWorks published this result, but no independent check of it is on record, so it cannot be accepted or sent back here, and nothing of it counts as passed or merged.',
+          route: reviewEntry(c, task) ? reviewRoute(task) : d.route ?? stepRoute(task), reference: reference(d), evidence: NEEDS.noEvidence.short, mergeCheck: d.asOf,
+          plan: { label: 'Plan this work again…', goal: `Redo and check “${label(task)}”: ` },
+          points: [{ link: null, text: 'Plan this work again to have AIWorks rebuild and check it; nothing starts until you approve the plan. If it is not needed, leave it unmerged.' }] });
         continue;
       }
       // A check is recorded but cannot be read: AIWorks's own record problem, for its maintainers, never a new paid run.
