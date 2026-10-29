@@ -173,14 +173,14 @@ Ran src/work.mjs (session ${sessionId})` });
     emit({ type: 'result', subtype: 'success', is_error: true, api_error_status: 401, session_id: sessionId, result: 'Invalid API key - Please run /login' }, 1);
     break;
   case 'accept-big': // an acceptance whose checks and notes push report + verification past 65,536 characters
-    ok({ verdict: 'accepted', targetSha: target, reportDigest, summary: `VERIFIED-SUMMARY ${'s'.repeat(3800)}`, checks: Array.from({ length: 12 }, (_, i) => ({ command: `check-${i}`, result: 'pass', detail: 'd'.repeat(1000) })),
+    ok({ verdict: 'accepted', targetSha: target, reportDigest, summary: `VERIFIED-SUMMARY ${'s'.repeat(3800)}`, checks: Array.from({ length: 12 }, (_, i) => ({ command: `check-${i}`, result: 'pass', detail: 'd'.repeat(1000) })), criteria: Array.from({ length: 16 }, (_, i) => ({ criterion: i + 1, result: 'pass', check: 'synthetic', evidence: 'synthetic' })),
       findings: Array.from({ length: 3 }, (_, i) => ({ id: `N${i}`, severity: 'non-blocking', description: 'n'.repeat(1500) })) });
     break;
   case 'accept-leak': // an acceptance whose check detail cites a synthetic absolute installation path (aiworks#8)
-    ok({ verdict: 'accepted', targetSha: target, reportDigest, summary: 'all acceptance criteria hold', findings: [], checks: [{ command: 'npm test', result: 'pass', detail: `ran in ${LEAK_PATH}` }] });
+    ok({ verdict: 'accepted', targetSha: target, reportDigest, summary: 'all acceptance criteria hold', findings: [], checks: [{ command: 'npm test', result: 'pass', detail: `ran in ${LEAK_PATH}` }], criteria: Array.from({ length: 16 }, (_, i) => ({ criterion: i + 1, result: 'pass', check: 'synthetic', evidence: 'synthetic' })) });
     break;
   case 'accept':
-    ok({ verdict: 'accepted', targetSha: target, reportDigest, summary: 'all acceptance criteria hold', findings: [], checks: [{ command: 'npm test', result: 'pass' }] });
+    ok({ verdict: 'accepted', targetSha: target, reportDigest, summary: 'all acceptance criteria hold', findings: [], checks: [{ command: 'npm test', result: 'pass' }], criteria: Array.from({ length: 16 }, (_, i) => ({ criterion: i + 1, result: 'pass', check: 'synthetic', evidence: 'synthetic' })) });
     break;
   case 'accept-report-criterion':
     ok({ verdict: 'accepted', targetSha: target, reportDigest, summary: 'the requested finding is reported', findings: [],
