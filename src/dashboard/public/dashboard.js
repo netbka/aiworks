@@ -1436,11 +1436,12 @@ function campaignLayout() {
 /** Finished and cancelled campaigns with nothing listed for the owner: one line each, their steps one click away. */
 function finishedList(list) {
   if (!list.length) return null;
-  return panel(`Finished work (${list.length})`, 'Most recent first. Each line says where that work’s results stand.',
+  // History, not a list to work through: folded until the owner opens it.
+  return el('section', { class: 'panel' }, el('div', { class: 'panel-body' }, disclosure('finished-work', `Finished work (${list.length}): most recent first`,
     el('div', { class: 'finished-list' }, ...list.map((c) => el('div', { class: 'finished-row', 'data-focus-scope': c.id },
       el('div', { class: 'row-line' }, el('strong', { class: 'finished-title' }, campaignTitle(c)), link(`tracking issue #${c.trackingIssue ?? ''} ↗`, c.trackingUrl)),
       el('div', { class: 'subtext' }, ownerCampaign(c)?.outcome ?? (c.control === 'cancelled' ? 'Cancelled' : 'All steps are finished')),
-      disclosure(`${c.id}/finished-steps`, `See all ${plural(c.tasks.length, 'step')}`, stepsTable(c))))));
+      disclosure(`${c.id}/finished-steps`, `See all ${plural(c.tasks.length, 'step')}`, stepsTable(c))))))));
 }
 
 /** When the merge check behind a step is not current, or its last fetch failed: when it is from, and what happens next. */
@@ -2650,7 +2651,9 @@ function homeScreen() {
         : 'Nothing needs you right now.';
   // h2, not h1: index.html already carries the page's one h1 (#view-title) outside #content (showRoute()).
   const hero = el('div', { class: 'home-hero' },
-    el('div', {}, el('h2', {}, 'Your work, at a glance'), el('p', { class: 'subtext' }, heroText)),
+    el('div', {}, el('h2', {}, 'Your work, at a glance'), el('p', { class: 'subtext' }, heroText),
+      // The owner's whole part in one line: AIWorks builds, checks and merges; everything else is optional.
+      el('p', { class: 'subtext' }, 'Your part: say what you want (Start work), answer decisions when asked, and try a result if you like. AIWorks builds, checks and merges the rest.')),
     pauseControls(home.pause, 'all', {}, { label: 'all work' }));
   // This count matches the nav badge and the Needs you screen exactly (owner.count): results to review carry their
   // own badge on the project row below, never folded into this number (owner, 2026-10-13).
@@ -3413,7 +3416,19 @@ const resultRow = (row) => el('li', { class: `result-row ${row.group}`, 'data-fo
   row.evidence ? disclosure(`results/${row.campaignId}/${row.taskId}`, el('span', { class: 'evidence' }, row.evidence),
     el('p', { class: 'needs-detail' }, row.detail)) : null,
   row.signature ? el('div', { class: 'subtext task-signature' }, formatTaskSignatureBrief(row.signature)) : null,
-  el('div', { class: 'subtext' }, campaignContext(row.campaignId)));
+  el('div', { class: 'subtext' }, campaignContext(row.campaignId)),
+  row.canMarkRead ? el('div', { class: 'actions' }, button(readBusy.has(`${row.campaignId}/${row.taskId}`) ? 'Marking…' : 'Mark as read',
+    () => void markRead(row), 'secondary small', readBusy.has(`${row.campaignId}/${row.taskId}`) || offline)) : null);
+
+/** Mark one report as read: it leaves Reports to read for the project's History. */
+const readBusy = new Set();
+async function markRead(row) {
+  const key = `${row.campaignId}/${row.taskId}`;
+  readBusy.add(key); render();
+  try { await post('/api/v2/results/read', { campaignId: row.campaignId, taskId: row.taskId, requestId: crypto.randomUUID() }); }
+  catch (error) { notice(error.known ? error.message : 'Marking as read could not be confirmed. Try again.', error.known ? null : () => void markRead(row)); }
+  finally { readBusy.delete(key); await poll(); }
+}
 
 /** The five release steps of one result, each Yes, No, In progress or Unknown, never one tick (AUTO_RELEASE.md section 1). */
 const releaseLadder = (ladder) => el('div', { class: 'release-ladder' },
@@ -3424,18 +3439,25 @@ const releaseLadder = (ladder) => el('div', { class: 'release-ladder' },
  * Results (OWNER_WORKSPACE §4.9, slice S6): the project's finished steps grouped by state in the owner view's order,
  * with "Review pull request #N" for the oldest waiting review as the one primary action.
  */
+const OWNER_GROUPS = ['review', 'changes', 'accepted', 'local-review', 'reports'];
 function resultsScreen(project) {
   const results = state.owner?.results?.[String(project).toLowerCase()];
   if (!state.owner?.available) return unavailable();
   // The §7.1 empty copy, from the copy module through the owner view.
   if (!results?.groups.length) return el('section', { class: 'panel' }, empty(state.owner.noResults.title, state.owner.noResults.text));
+  // Only what waits for the owner is open; merged, read and untraced results are history, folded below.
+  const open = results.groups.filter((group) => OWNER_GROUPS.includes(group.key)), past = results.groups.filter((group) => !OWNER_GROUPS.includes(group.key));
+  const waiting = open.reduce((n, group) => n + group.count, 0), history = past.reduce((n, group) => n + group.count, 0);
+  const groupList = (group) => el('section', { class: 'needs-group', 'aria-labelledby': `results-group-${group.key}` },
+    el('h3', { id: `results-group-${group.key}`, class: 'section-title' }, `${group.title} (${group.count})`),
+    el('ul', { class: 'needs-list' }, ...group.rows.map(resultRow)));
   return el('section', { class: 'panel', 'aria-labelledby': 'results-title', 'data-focus-scope': `results/${project}` },
-    el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'results-title' }, `${plural(results.total, 'result')}, grouped by state`)),
+    el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'results-title' }, waiting ? `${plural(waiting, 'result')} for you` : 'Nothing here needs you')),
       results.primary?.route ? routeLink(results.primary.label, results.primary.route, 'button')
         : results.primary ? link(`${results.primary.label} ↗`, results.primary.url, 'button') : null),
-    ...results.groups.map((group) => el('section', { class: 'needs-group', 'aria-labelledby': `results-group-${group.key}` },
-      el('h3', { id: `results-group-${group.key}`, class: 'section-title' }, `${group.title} (${group.count})`),
-      el('ul', { class: 'needs-list' }, ...group.rows.map(resultRow)))),
+    waiting ? null : el('p', { class: 'subtext' }, 'AIWorks checks and merges results itself. A result you can try, a decision or a new report appears here.'),
+    ...open.map(groupList),
+    history ? disclosure(`results/${project}/history`, `History (${history}): merged, read and untraced results`, el('div', {}, ...past.map(groupList))) : null,
     // Stop all releases is reachable from every project's Review (AUTO_RELEASE.md section 9).
     releaseStopLine(state.supervisor.settings?.releaseStop));
 }
