@@ -593,3 +593,8 @@ a.live-tile:hover{text-decoration:none;border-color:#e8c88f;background:#fffcf6}
 @media(max-width:599px){.live-tiles{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.live-tile{padding:12px}.live-tile-value{font-size:22px}
   .live-head{display:none}.live-row{min-width:0;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"name state" "progress progress" "agents when";padding:12px 16px}
   .live-name{grid-area:name}.live-state{grid-area:state;align-items:flex-end}.live-progress{grid-area:progress}.live-agents{grid-area:agents}.live-when{grid-area:when}}
+/* AW-016: what AIWorks decided itself, and its own state folded away below what needs the owner. */
+.needs-decided .needs-item{border-left:0}
+.needs-decided .needs-text strong{font-weight:650}
+.needs-own{margin-top:18px}
+.needs-own>details>summary{font-size:13px;font-weight:600;color:var(--muted);cursor:pointer;min-height:44px;display:flex;align-items:center}
