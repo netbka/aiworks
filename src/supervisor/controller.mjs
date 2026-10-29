@@ -955,7 +955,7 @@ export class Controller {
       logBytes: existsSync(join(op.run_dir, 'stdout.json')) ? statSync(join(op.run_dir, 'stdout.json')).size : 0,
       stderrText: readTextIfExists(join(op.run_dir, 'stderr.log')),
       expect: { deliverable: this.deliverable(ctx, op.task_id), targetSha: op.target_sha, reportDigest: op.report_digest,
-        sessionId: op.session_id, packetDigest: op.packet_digest },
+        sessionId: op.session_id, packetDigest: op.packet_digest, web: Boolean(specOf(this.store, ctx.id, op.task_id, decl)?.web) },
       now: this.now(),
     });
     this.applyOutcome(ctx, op, outcome);

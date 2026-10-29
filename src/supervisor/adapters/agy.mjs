@@ -14,8 +14,12 @@ import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as claude from './claude.mjs';
 
-/** criteria for a browser verification: one entry per acceptance criterion, judged like its checks entry. */
-export const WEB_CRITERIA_RULE = 'Also return verdictSummary = one or two plain sentences for the owner on whether the report is true to what the pages show; criteria = one entry per acceptance criterion of the packet, { criterion (its 1-based position), result ("pass" when the report’s claimed result for it matches what you observed, "fail" when it does not, "not-checked" when you could not re-check it), check (what you opened or measured), evidence (what you observed, in words, never a raw log or secret) }, matching your checks entry for that criterion; and eyesOn = at most 8 short items where the owner’s own judgement matters that no check can settle.';
+/**
+ * criteria for a browser verification: each criterion's observed outcome, exactly as in the repository rule, so
+ * passedCheck and every dashboard read it the same way. A truthful REJECTED or INCOMPLETE report is still "accepted"
+ * (its claims hold), so a failed criterion does not void it here (claude.validResult with expect.web).
+ */
+export const WEB_CRITERIA_RULE = 'Also return verdictSummary = one or two plain sentences for the owner on whether the pages do what was promised; criteria = one entry per acceptance criterion of the packet, { criterion (its 1-based position), result (what you observed for the criterion itself: "pass" when it holds, "fail" when it does not, "not-checked" when you could not check it), check (what you opened or measured), evidence (what you observed, in words, never a raw log or secret) }; and eyesOn = at most 8 short items where the owner’s own judgement matters that no check can settle. A criterion that fails is "fail" even when the report says so truthfully; checks still say whether each claim of the report holds.';
 
 export const BROWSER_SERVER = 'browser';
 export const BROWSER_MCP = fileURLToPath(new URL('../browser-mcp.mjs', import.meta.url));
@@ -142,8 +146,7 @@ export function buildPrompt({ role, packet, packetDigest, repository, targetSha,
     'Return verdict "accepted" only if every claimed result holds and the report\'s headline verdict follows from them. Otherwise return "rejected" with one blocking finding per wrong claim (what the report says and what you observed). Return "evidence-unavailable" if the pages cannot be loaded or the browser tools fail, saying what you tried in summary.',
     // The report endpoint releases a verified report only when every acceptance criterion has its own pass entry
     // (result-review.mjs criterionEvidence); without `criteria` a browser verification never released its report.
-    // Here, as in checks, a criterion passes when the report's claim about it is true: a truthful REJECTED report stays
-    // "accepted", so the repository rule «a failed criterion is never accepted» (claude.CRITERIA_RULE) does not apply.
+    // criteria record each criterion's own outcome; checks record whether the report's claims hold (see WEB_CRITERIA_RULE).
     WEB_CRITERIA_RULE,
     `Your result MUST carry targetSha ${targetSha} and reportDigest ${reportDigest}.`,
     '',
@@ -261,7 +264,7 @@ export function classify({ role, run, stdoutText, stderrText, expect, now, logBy
       envelope.runId !== expect.sessionId || envelope.packetDigest !== expect.packetDigest) {
     return { ...base, class: 'invalid-result', detail: 'terminal runId or packetDigest does not match the recorded operation' };
   }
-  const invalid = claude.validResult(role, envelope.result, expect);
+  const invalid = claude.validResult(role, envelope.result, { ...expect, web: true });
   if (invalid) return { ...base, class: 'invalid-result', detail: invalid };
   receipt.sessionId = envelope.runId;
   return { ...base, class: 'result', value: envelope.result };
