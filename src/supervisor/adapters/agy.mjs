@@ -201,6 +201,9 @@ export function buildPrompt({ role, packet, packetDigest, repository, targetSha,
  * pages; a fresh verifier re-opens them and checks every criterion against what is there now. The browser reaches only
  * the declared origins, which registration and every dispatch check against the registry's web.buildOrigins. That the
  * verifier changes nothing, and that the implementer deletes nothing the plan does not require, are prompt rules only.
+ * So is the limit on the implementer's same-origin API calls (evaluate_script with the signed-in session, allowed when the
+ * interface cannot do the job, with the object's state recorded before each write): such a call can change anything the
+ * origin's signed-in user can. The verifier may only send GET requests to that API, again by prompt.
  */
 function buildModePrompt({ role, packet, packetDigest, repository, targetSha, report, reportDigest, note, instructions, web }) {
   const header = role === 'verification'
@@ -219,15 +222,16 @@ function buildModePrompt({ role, packet, packetDigest, repository, targetSha, re
   ];
   const implement = [
     'Make exactly the changes the packet goal and constraints describe, only through the pages of the declared origins, and nothing else. Do not delete anything unless the packet requires that deletion. Do not change users, permissions, settings or data the packet does not name. If the change needs something the packet does not give (a login, a decision, data), stop and return blocked-owner-reserved instead of guessing.',
-    'Use evaluate_script only to read values; make changes through the application\'s own interface.',
+    'Prefer the application\'s own interface when it can do the job. When it cannot (for example a diagram canvas whose blocks and arrows the snapshot does not expose), you may use evaluate_script to call the HTTP API of the page\'s own origin with fetch and the signed-in session, to read and change what the packet requires. Same origin only: never call another origin, never copy cookies, tokens or credentials into the report or anywhere else, and never change users, permissions or authentication settings the packet does not name.',
+    'Before every write, read the object\'s current state through the same API and put it in the report (the object, its URL path and the relevant part of its current definition) so a person can restore it. After every write, read the object back and confirm the change is there. Publish a process or application version only when the packet requires publishing. Delete nothing unless the packet requires that deletion.',
     'After the change, re-open the affected pages and check each acceptance criterion yourself.',
     'Return exactly one terminal result:',
-    '- resolved: report = Markdown in the format the packet goal asks for (when it asks for a closing block such as a ```json block, end the report with exactly that block). Whatever the format, the report names every change you made (what, and where: the page or object name and its URL on the declared origin), how to see it, and what you could not do. Do not use a "Visual acceptance" headline. summary = one line on what changed. Omit headSha.',
+    '- resolved: report = Markdown in the format the packet goal asks for (when it asks for a closing block such as a ```json block, end the report with exactly that block). Whatever the format, the report names every change you made (what, and where: the page or object name and its URL on the declared origin), the state each changed object had before (from the read before the write), how to see the change, and what you could not do. Do not use a "Visual acceptance" headline. summary = one line on what changed. Omit headSha.',
     '- evidence-unavailable: tried = what you tried and why the pages could not be used (not reachable, browser tools failing). Use it only when a later attempt could succeed.',
     `- blocked-owner-reserved: ownerTrigger = the owner decision or access the change needs. ${claude.DECISION_RULE}`,
   ];
   const verify = [
-    'READ ONLY: do not create, edit, save, submit, delete, publish or undo anything, even to fix what you find. Open, navigate, read and hover; open a view or dialog only to look, and close it without saving. Use evaluate_script only to read values.',
+    'READ ONLY: do not create, edit, save, submit, delete, publish or undo anything, even to fix what you find. Open, navigate, read and hover; open a view or dialog only to look, and close it without saving. Use evaluate_script only to read values; it may send read-only GET requests to the HTTP API of the page\'s own origin to confirm what is there, never any other method and never another origin.',
     'The report below says what was changed and where. Re-open the declared pages and check EVERY acceptance criterion of the packet against what is actually there now, not against the report.',
     'In checks, add one entry per change the report claims: command = what was claimed (short); result = "pass" when you found it as described, "fail" when you did not, "not-run" when you could not look.',
     'Return verdict "accepted" only if every acceptance criterion passes and the report\'s claims hold. Otherwise return "rejected" with one blocking finding per failed criterion or false claim (what is expected and what you observed). Return "evidence-unavailable" if the pages cannot be loaded or the browser tools fail, saying what you tried in summary.',
