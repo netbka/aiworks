@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { request } from 'node:http';
+import { setTimeout as delay } from 'node:timers/promises';
 import { Store } from '../../src/supervisor/store.mjs';
 import { campaignStart, campaignPause } from '../../src/supervisor/api.mjs';
 import { declaration, environment, runtimeCheckout } from '../supervisor/helpers.mjs';
@@ -18,6 +19,7 @@ import { ownerView } from '../../src/dashboard/owner.mjs';
 import { COMMANDS } from '../../src/dashboard/copy.mjs';
 import { postOwnerMessage, replyBody } from '../../src/supervisor/coordinator.mjs';
 import { adoptDrafts } from '../../src/dashboard/public/router.mjs';
+import { DisplayTextChecks } from '../../src/dashboard/display-text.mjs';
 
 test('completed campaigns do not appear offline or request controller recovery', (t) => {
   const { dataDir, store, d } = fixture(t);
@@ -62,7 +64,7 @@ function fixture(t) {
   return { dataDir, store, d, payload };
 }
 
-test('a reply is shown without its flagged campaign, and a flagged reply text is still withheld', (t) => {
+test('a reply is shown without its flagged campaign, and withheld replies offer a safe fallback without altering their records', async (t) => {
   const { dataDir, store } = fixture(t);
   writeFileSync(join(dataDir, 'config.json'), '{}');
   const secret = 'https://example.test/?api_key=synthetic-value';
@@ -76,10 +78,30 @@ test('a reply is shown without its flagged campaign, and a flagged reply text is
   };
   const clean = answer('Synthetic reply text.', `{ "authorization": { "grantedBy": "${secret}" } }`);
   const flagged = answer(`Use ${secret}.`, '{ "version": 1 }');
-  const shown = (id) => supervisorSnapshot(dataDir).coordinator.messages.find((m) => m.id === id);
+  // The display boundary also recognizes credentials that the coordinator's narrower storage check does not.
+  const displayFlagged = answer(`${'Synthetic context. '.repeat(30)}https://example.test/?api_key=abc`, null);
+  const before = store.all('SELECT * FROM coordinator_replies ORDER BY run_id');
+  const shown = (id, textChecks) => supervisorSnapshot(dataDir, Date.now(), { textChecks }).coordinator.messages.find((m) => m.id === id);
   assert.ok(shown(clean).replyBody.includes('Synthetic reply text.'));
   assert.ok(!JSON.stringify(shown(clean)).includes('synthetic-value'), 'the flagged campaign was shown');
   assert.ok(!JSON.stringify(shown(flagged)).includes('synthetic-value'), 'a flagged reply text was shown');
+  for (const id of [flagged, displayFlagged]) {
+    assert.ok(shown(id).replyBody, 'withholding must leave a usable explanation');
+    assert.notEqual(shown(id).replyBody, '[sensitive content omitted]');
+    assert.ok(!shown(id).replyBody.includes('api_key'));
+  }
+  const checks = new DisplayTextChecks();
+  try {
+    const deadline = Date.now() + 10_000;
+    let checked = shown(displayFlagged, checks);
+    while (checked.replyBody !== shown(displayFlagged).replyBody && Date.now() < deadline) {
+      assert.ok(!checked.replyBody?.includes('api_key'), 'unchecked content escaped during polling');
+      await delay(25);
+      checked = shown(displayFlagged, checks);
+    }
+    assert.equal(checked.replyBody, shown(displayFlagged).replyBody);
+  } finally { await checks.close(); }
+  assert.deepEqual(store.all('SELECT * FROM coordinator_replies ORDER BY run_id'), before);
 });
 
 test('roadmap includes every product phase, next increment and rollout package', () => {
