@@ -216,6 +216,7 @@ export const RESULT_GROUPS = [
   { key: 'delegated', title: 'Being merged for you' },
   { key: 'closed', title: 'Closed without merging' },
   { key: 'reports', title: 'Reports to read' },
+  { key: 'read', title: 'Reports you read' },
   { key: 'merged', title: 'Merged' },
   { key: 'unknown', title: 'Not known yet' },
 ];
@@ -235,7 +236,7 @@ export function reviewEntry(c, task, d = null) {
 }
 
 /** One finished step as a Results row: its group, its state word, what it means, and the link to the result. */
-function resultRow(c, task, d, releases, recorded = null) {
+function resultRow(c, task, d, releases, recorded = null, read = new Set()) {
   const base = { campaignId: c.id, taskId: task.id, repository: c.repository, text: label(task), mergedAt: null, release: null, asOf: d.asOf ?? null, signature: task.signature ?? null,
     checkPassed: task.checkPassed === true,
     review: reviewEntry(c, task, d),
@@ -243,7 +244,9 @@ function resultRow(c, task, d, releases, recorded = null) {
     ladder: d.state === 'report-posted' ? null : releaseLadder(task, d, recorded) };
   if (d.state === 'report-posted') {
     const evidence = task.verifiedSha ? resultEvidence(task) : null;
-    return { ...base, group: 'reports', word: d.local ? 'Report recorded in the work list · for you to read' : 'Report posted · for you to read', note: null,
+    if (read.has(`${c.id}/${task.id}`)) return { ...base, group: 'read', word: 'Read by you', note: null,
+      link: d.local ? null : { label: 'Read the report', url: d.url }, route: d.local ? d.route : null, evidence: null, detail: null };
+    return { ...base, group: 'reports', canMarkRead: true, word: d.local ? 'Report recorded in the work list · for you to read' : 'Report posted · for you to read', note: null,
       link: d.local ? null : { label: 'Read the report', url: d.url }, route: d.local ? d.route : null,
       evidence: evidence?.short ?? null, detail: evidence?.text ?? null };
   }
@@ -365,7 +368,7 @@ export function releaseLadder(task, d, recorded = null, { github = true } = {}) 
  * primary action, "Review pull request #N" for the oldest waiting review (the lowest pull request number). Rows keep
  * the campaigns' order, except that reviews are oldest first.
  */
-function resultsByProject(supervisor, campaigns, releases, reviews = new Map(), selfRepository = null) {
+function resultsByProject(supervisor, campaigns, releases, reviews = new Map(), selfRepository = null, read = new Set()) {
   const projects = new Map(), shown = new Set();
   const recorded = new Map((supervisor.releases ?? []).map((r) => [`${r.campaignId}/${r.taskId}`, r]));
   const add = (project, row) => {
@@ -378,7 +381,7 @@ function resultsByProject(supervisor, campaigns, releases, reviews = new Map(), 
     if (review && d?.state === 'unknown') { shown.add(review.number); add(c.repository, checkedRow({ ...localReviewRow(review, label(task)), review: reviewEntry(c, task, d) }, task)); continue; }
     if (!d) continue;
     if (d.local) shown.add(d.number);
-    add(c.repository, resultRow(c, task, d, releases, recorded.get(`${c.id}/${task.id}`) ?? null));
+    add(c.repository, resultRow(c, task, d, releases, recorded.get(`${c.id}/${task.id}`) ?? null, read));
   }
   // Reviews of work no longer on this computer still belong to AIWorks's own repository.
   // Their criteria are not on this computer, so they are never shown as passed (checkedRow).
@@ -497,7 +500,7 @@ const agentWorking = (agent, now) => agent.heartbeatState === 'recent' || (agent
  * `connected` are the connected project records when Add project is on (connectedProjects): a project held up by the
  * owner's decisions is in `held`, and the calm headline names it (aiworks#11 review 5 G7).
  */
-export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = Date.now(), releases = {}, delegation = null, connected = [], workList = null, localWork = {} } = {}) {
+export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = Date.now(), releases = {}, delegation = null, connected = [], workList = null, localWork = {}, readReports = new Set() } = {}) {
   // Results with nothing finished in a project show the §7.1 empty copy, written once in copy.mjs.
   const { title, text } = stateCopy('results-empty'), noResults = { title, text };
   if (!supervisor?.available) return { available: false, headline: null, count: 0, items: [], handling: [], groups: [], held: [], unknownResults: 0, also: null, layout: { cards: [], finished: [] }, reply: null, campaigns: {}, results: {}, noResults, recent: null };
@@ -549,7 +552,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       outcome: finished?.line ?? (c.control === 'cancelled' ? `Cancelled · ${delivered} of ${plural(c.tasks.length, 'step')} delivered` : null),
       // `delegated` only when the owner delegated merging: without it the counts are as before.
       counts: { total: c.tasks.length, delivered, merged: by('merged').length,
-        awaiting: awaiting.length, ...(delegation ? { delegated: by('delegated').length } : {}), checking: checking.length, unknown: unknown.length, reports: by('report-posted').length,
+        awaiting: awaiting.length, ...(delegation ? { delegated: by('delegated').length } : {}), checking: checking.length, unknown: unknown.length, reports: by('report-posted').filter((step) => !readReports.has(`${c.id}/${step.task.id}`)).length,
         // Results with evidence still unresolved (WP4): a finished goal with any is not shown as complete.
         unresolved: c.tasks.filter(unresolvedResult).length } };
     const base = { campaignId: c.id, repository: c.repository };
@@ -791,7 +794,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
   const layout = { cards: [...supervisor.campaigns.filter((c) => listed.has(c.id)), ...supervisor.campaigns.filter((c) => !listed.has(c.id) && !terminal(c))].map((c) => c.id),
     finished: supervisor.campaigns.filter((c) => !listed.has(c.id) && terminal(c)).sort((a, b) => recency(b) - recency(a)).map((c) => c.id) };
   return { available: true, headline, count, items, handling, groups: needsGroups(items), held, unknownResults, also: alsoForYou(supervisor, campaigns, releases), layout, campaigns,
-    results: resultsByProject(supervisor, campaigns, releases, reviews, workList?.repository ?? null), noResults, recent: recentSummary(supervisor, campaigns), reply: answered ? { messageId: answered.id, threadId: answered.threadId ?? answered.id, answeredAt: answered.answeredAt, url: answered.replyBody ? null : answered.replyUrl } : null };
+    results: resultsByProject(supervisor, campaigns, releases, reviews, workList?.repository ?? null, readReports), noResults, recent: recentSummary(supervisor, campaigns), reply: answered ? { messageId: answered.id, threadId: answered.threadId ?? answered.id, answeredAt: answered.answeredAt, url: answered.replyBody ? null : answered.replyUrl } : null };
 }
 
 /**

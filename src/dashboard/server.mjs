@@ -25,7 +25,7 @@ import { projectSettingsView, saveProjectSettings } from './project-settings.mjs
 import { alertsView, saveAlerts } from './alerts.mjs';
 import { knowledgeView, planningCost, saveKnowledge, usageView } from './knowledge.mjs';
 import { closeImportedIssues, commentWorkItem, createWorkItem, ownerOnly, recordTrustedMain, setWorkItemState, workItemView, workListView } from './work-list.mjs';
-import { connectionsView, EVENT_TYPES, homeView, markSeen, overviewView, readLastSeen, releasesView, trustedMainView, typedEvents, withReadOnlyStore } from './views.mjs';
+import { connectionsView, EVENT_TYPES, homeView, markReportRead, markSeen, overviewView, readLastSeen, readReports, releasesView, trustedMainView, typedEvents, withReadOnlyStore } from './views.mjs';
 
 /**
  * The caller check of a protected owner action that writes through a synchronous store transaction (Review of a result):
@@ -196,7 +196,7 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
     // checked results of projects without GitHub, allowlisted fields only. Its open decisions join Needs you.
     const work = workView(dataDir, { textChecks });
     const owner = ownerView(supervisor, merged, { host: machine.name, now, releases, delegation: configuredMergeDelegation(dataDir), connected: records, workList: worklist,
-      localWork: work.local });
+      localWork: work.local, readReports: readReports(dataDir) });
     // Projects: campaign repositories, the repositories config.json lists and connected projects, by name only (never a path).
     const projects = projectsView(supervisor, owner, { repositories: configuredRepositories(dataDir), removed: removedProjects(dataDir),
       ...(addProject ? { records, addProject, localWork: work.local } : {}) });
@@ -397,6 +397,11 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
         await ownerCaller(dataDir, caller);
         return send(202, applyResultReview(dataDir, path.slice('/api/v2/results/'.length), value, Date.now()));
       }
+      // Mark a report as read: it moves from Reports to read to its project's History. Only the owner reads a report.
+      if (path === '/api/v2/results/read') {
+        await ownerCaller(dataDir, caller);
+        return send(200, markReportRead(dataDir, value));
+      }
       // Preview of a checked version (WP7): bound to the same verified head and report as accept. Static pages build and
       // start nothing; a server preview starts the version's own server, so for it the caller check runs first.
       if (path === '/api/v2/results/preview') return send(200, await openResultPreview(dataDir, value, previews, { servers, ownerCheck: () => ownerCaller(dataDir, caller) }));
@@ -455,7 +460,7 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
         const merged = merges?.snapshot() ?? { refreshing: false, repositories: [], steps: {} };
         const records = projectConnectionEnabled(dataDir) ? connectedProjects(dataDir) : [];
         const owner = ownerView(supervisor, merged, { host: machine.name, now, releases, delegation: configuredMergeDelegation(dataDir), connected: records,
-          workList: workListView(dataDir, { closeOn: workList.available }) });
+          workList: workListView(dataDir, { closeOn: workList.available }), readReports: readReports(dataDir) });
         return send(200, removeProject(dataDir, value, projectsView(supervisor, owner, { repositories: configuredRepositories(dataDir), records, now }), now));
       }
       if (path === '/api/projects/restore') return send(200, restoreProject(dataDir, value));

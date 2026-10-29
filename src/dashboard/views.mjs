@@ -117,6 +117,36 @@ export function markSeen(dataDir, input, newest, now = Date.now()) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// Reports the owner marked as read, by `<campaignId>/<taskId>`, beside the last-seen marker. A read report leaves
+// "Reports to read" for the History of its project's Review; nothing else changes.
+
+const READ_REPORTS_FILE = 'dashboard-read-reports.json';
+
+/** The set of read report keys, empty when none was recorded or the file is unreadable. */
+export function readReports(dataDir) {
+  try {
+    const value = JSON.parse(readFileSync(join(dataDir, READ_REPORTS_FILE), 'utf8'));
+    if (Array.isArray(value?.read)) return new Set(value.read.filter((key) => typeof key === 'string'));
+  } catch { /* none yet */ }
+  return new Set();
+}
+
+/** Mark one report as read; marking it again changes nothing. */
+export function markReportRead(dataDir, input) {
+  const valid = (text) => typeof text === 'string' && text.length > 0 && text.length <= 200 && !text.includes('/');
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['campaignId', 'taskId', 'requestId'].includes(key)) ||
+      !valid(input.campaignId) || !valid(input.taskId)) {
+    throw Object.assign(new Error('Invalid report. Refresh the page and try again.'), { status: 400 });
+  }
+  const read = readReports(dataDir), key = `${input.campaignId}/${input.taskId}`;
+  if (read.has(key)) return { accepted: true, duplicate: true };
+  const file = join(dataDir, READ_REPORTS_FILE), temporary = `${file}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify({ read: [...read, key] })}\n`);
+  renameSync(temporary, file);
+  return { accepted: true, duplicate: false };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // Pause for all, a project or a goal: stopping while a run it started is still open, stopped when none is.
 
 /** A paused goal's pause: who it covers (`scope`), since when, and whether runs it started are still finishing. */
