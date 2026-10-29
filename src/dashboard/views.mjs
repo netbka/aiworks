@@ -54,11 +54,11 @@ export function campaignProjects(store) {
 }
 
 /**
- * Typed events, newest first. `after`: only entries after this journal sequence (the last-seen marker); `cursor`: only
- * entries before it (the next page); `project` and `type` filter. Returns { events, next } where `next` is the cursor of
- * the following page, or null when there is none.
+ * Typed events, newest first. `after`: only entries after this journal sequence (the last-seen marker); `since`: only
+ * entries recorded at or after this time (ms); `cursor`: only entries before it (the next page); `project` and `type`
+ * filter. Returns { events, next } where `next` is the cursor of the following page, or null when there is none.
  */
-export function typedEvents(store, { after = 0, cursor = null, project = null, type = null, limit = 50 } = {}) {
+export function typedEvents(store, { after = 0, since = 0, cursor = null, project = null, type = null, limit = 50 } = {}) {
   const projects = campaignProjects(store);
   const kinds = type ? JOURNAL_KINDS.filter((kind) => eventType(kind, null) === type || kind === 'operation-finished') : JOURNAL_KINDS;
   if (type && !EVENT_TYPES.includes(type)) return { events: [], next: null };
@@ -68,8 +68,8 @@ export function typedEvents(store, { after = 0, cursor = null, project = null, t
   let before = Number.isSafeInteger(cursor) && cursor > 0 ? cursor : Number.MAX_SAFE_INTEGER, more = true;
   // Read in pages until enough entries of the asked type are found; each page is bounded.
   while (events.length <= limit && more) {
-    const rows = store.all(`SELECT seq, campaign_id, at, kind, detail FROM journal WHERE seq > ? AND seq < ? AND kind IN (${kinds.map(() => '?').join(', ')})
-      ${campaigns ? `AND campaign_id IN (${campaigns.map(() => '?').join(', ')})` : ''} ORDER BY seq DESC LIMIT 500`, after, before, ...kinds, ...(campaigns ?? []));
+    const rows = store.all(`SELECT seq, campaign_id, at, kind, detail FROM journal WHERE seq > ? AND seq < ? AND at >= ? AND kind IN (${kinds.map(() => '?').join(', ')})
+      ${campaigns ? `AND campaign_id IN (${campaigns.map(() => '?').join(', ')})` : ''} ORDER BY seq DESC LIMIT 500`, after, before, since, ...kinds, ...(campaigns ?? []));
     more = rows.length === 500;
     for (const row of rows) {
       before = row.seq;
@@ -149,14 +149,15 @@ const projectRow = (row) => ({ id: row.id, name: row.name, kind: row.kind, repos
 
 /**
  * Home (GET /api/v2/home): what changed since the last-seen marker, the decisions first, each project in one sentence,
- * and the pause of all work. `events` is typedEvents after the marker.
+ * and the pause of all work. `events` is typedEvents after the marker and no older than `window` (ms), so history the
+ * owner never marked as seen does not stay "new" forever.
  */
-export function homeView({ supervisor, owner, projects, events, lastSeen, newest }) {
+export function homeView({ supervisor, owner, projects, events, lastSeen, newest, window = null }) {
   if (!supervisor?.available) return { available: false, lastSeen, needsYou: null, projects: [], since: null, pause: null };
   const counts = {};
   for (const event of events.events) counts[event.type] = (counts[event.type] ?? 0) + 1;
   return { available: true, lastSeen, newest,
-    since: { count: events.events.length, more: events.next !== null, counts, events: events.events.slice(0, 20) },
+    since: { count: events.events.length, more: events.next !== null, counts, events: events.events.slice(0, 20), window },
     needsYou: { count: owner?.count ?? 0, items: (owner?.items ?? []).slice(0, 3).map((item) => ({ kind: item.kind, campaignId: id(item.campaignId),
       repository: item.repository ?? null, text: item.text ?? null, at: item.at ?? null })) },
     projects: (projects?.projects ?? []).map(projectRow),
