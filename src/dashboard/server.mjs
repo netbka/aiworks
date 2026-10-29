@@ -45,6 +45,8 @@ export const SCOPED_CONTROL_BYTES = 65_536;
 // may be (provenance.mjs privateJson), since the body is the same declaration shape, just sent over HTTP.
 export const CAMPAIGN_API_BYTES = 1024 * 1024;
 const CAMPAIGN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// Home's "what changed" never reaches further back than this, even when the owner has not marked anything as seen.
+const HOME_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /** The external campaign API's routes, by exact method and path. */
 function campaignApiRoute(method, path) {
@@ -200,11 +202,11 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       ...(addProject ? { records, addProject, localWork: work.local } : {}) });
     return { supervisor, merged, owner, work, projects, worklist };
   };
-  // Home: what changed after the owner's last-seen marker, read from the journal; never worker text.
+  // Home: what changed after the owner's last-seen marker and in the last day, read from the journal; never worker text.
   const home = (supervisor, owner, projects) => {
-    const lastSeen = readLastSeen(dataDir);
-    const events = withReadOnlyStore(dataDir, (store) => typedEvents(store, { after: lastSeen.seq, limit: 100 }), { events: [], next: null });
-    return homeView({ supervisor, owner, projects, events, lastSeen, newest: supervisor.newestEvent ?? 0 });
+    const lastSeen = readLastSeen(dataDir), window = HOME_WINDOW_MS;
+    const events = withReadOnlyStore(dataDir, (store) => typedEvents(store, { after: lastSeen.seq, since: Date.now() - window, limit: 100 }), { events: [], next: null });
+    return homeView({ supervisor, owner, projects, events, lastSeen, newest: supervisor.newestEvent ?? 0, window });
   };
   // Settings -> Connections, with the trusted main and its backup read locally (never fetched).
   const connections = (supervisor, merged) => connectionsView({ supervisor, merges: merged,
