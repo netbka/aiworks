@@ -1,6 +1,6 @@
 # AIWorks delivery supervisor
 
-Work-state authority: [example-org/aiworks#2](https://github.com/example-org/aiworks/issues/2). This runbook covers slice A: a durable store, one explicit campaign, controller lease and fencing, one bounded headless worker, an independent verifier, and restart recovery. Slices B (GitHub webhooks plus owner-notification recovery, [example-org/aiworks#1](https://github.com/example-org/aiworks/issues/1)), C (project release adapter) and D (install evidence and canary on an approved host) remain open.
+Work-state authority: [example-org/aiworks#2](https://github.com/example-org/aiworks/issues/2). This runbook covers durable campaign state, controller ownership, bounded workers, independent verification, restart recovery, merging and automatic project deployment. GitHub webhooks and further owner-notification recovery remain open ([example-org/aiworks#1](https://github.com/example-org/aiworks/issues/1)). The project deploy adapter is connected (section 12); real installation and destination evidence belong to each operator's private records.
 
 The supervisor applies the portfolio [CONTINUATION.md](https://github.com/example-org/governance/blob/main/docs/CONTINUATION.md) contract and this repository's [WORKER_CONTEXT_LIFECYCLE.md](WORKER_CONTEXT_LIFECYCLE.md). It does not redefine them. It reuses the C0 helpers in `scripts/lib/worker-context.mjs` (`validatePacket`, `packetDigest`, `planContext`, `acceptsLease`) and keeps no second packet or lease model.
 
@@ -71,7 +71,7 @@ governance provider's governance files (project registry, policies, project-cont
     - **Registration.** Only `registerLocalPlan` (`src/supervisor/local-admission.mjs`) registers it, in one transaction: the rules are confirmed and not revoked (`RULES_NONE`, `RULES_REVOKED`), the baseline is one AIWorks has (`BASELINE_UNKNOWN`), and the owner's approval admits exactly this plan once (expired rules, a changed plan, other rules, another code revision or a used approval are refused with their codes). `start` and program waves refuse a local plan with `LOCAL_APPROVAL_REQUIRED`.
     - **Running.** Before every dispatch the controller checks the rules and the approval again; a refusal is a B2 `local-admission` blocker and no new worker starts. Workers and verifiers run in worktrees of AIWorks's copy (the mirror for Local Git, the snapshot for a plain folder) from the plan's baseline; nothing is fetched. A verified task becomes a local candidate (*Ready for your review*); nothing is pushed or applied to the owner's folder. Reports, blockers and notes stay in this computer's store (outbox rows with state `local`); `gh` is never called for the project.
   - The envelope is part of `scopeDigest`, so a registered campaign's envelope cannot change (`SCOPE_CONFLICT`); a wider scope is a new campaign. Code older than this change refuses a version 2 declaration.
-- In the target repository it may create worktrees and `campaign/<campaign>/<task>` branches, push a verified commit to that branch, open a PR, and post issue comments ([AW-001](DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception)). It never deploys or releases. It never removes worktrees or deletes branches, except through cleanup after finished work (section 15, built, not enabled), which never touches a remote branch, a worktree with changes or run evidence. It merges only under the merge gate (section 3, "Merge gate"), in a repository the owner opted in; otherwise merge and release follow the project's own gate.
+- In the target repository it may create worktrees and `campaign/<campaign>/<task>` branches, push a verified commit to that branch, open a PR, and post issue comments ([AW-001](DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception)). It deploys only under the project's standing AW-010 grant with automatic release enabled (section 12). It never removes worktrees or deletes branches, except through cleanup after finished work (section 15, built, not enabled), which never touches a remote branch, a worktree with changes or run evidence. It merges only under the merge gate (section 3, "Merge gate"), in a repository the owner opted in; otherwise merge and release follow the project's own gate.
   - Git cannot hold both a `campaign/<campaign>` branch and `campaign/<campaign>/<task>` branches. A declaration branch named `campaign/<campaign>` in the target repository makes every dispatch fail with "cannot lock ref", so declaration branches are named `declare/<campaign>`.
   - **AIWorks's own repository with local main trusted** (`config.json` `selfHosting.trustedMain: "local"`, off by default; [LOCAL_OPERATION section 5.2](design/LOCAL_OPERATION.md#52-where-reports-and-notes-go), slice SELF7): publication pushes nothing and runs no `gh`. A verified commit becomes a `review` item in the local work list, linked to its campaign, task and verified SHA, with the local branch named in its body (not as a label, which a long legal campaign and task id would overflow); the task's result link is `aiworks-work:<n>`. A repaired head is a comment on that item, a report one whole comment on the task's item (up to 1 MiB, never split), and outbox notes and blockers are comments on the tracking item, whose number the owner notice links. Each is written in the transaction that marks the task done or the note posted, under a stable key, so a crash or retry records it once. Such a campaign may name its authorization `aiworks-work:<n>`: before every dispatch the item must be open, written by the owner and linked to this campaign, or a B2 `work-authorization` blocker holds new workers. Every other repository publishes exactly as above. For such a campaign, `trackingIssue` and `issue` are work-list numbers and reports go to the work list.
   - **The one-time issue import** (`work-list import [--apply]`, [LOCAL_OPERATION section 5.4](design/LOCAL_OPERATION.md#54-the-one-time-import-and-closing-on-github), slice SELF10) reads the open issues of `selfHosting.repository` and all their comments with REST `GET` only, page by page, and writes nothing without `--apply`. Pull requests are skipped, but the highest issue or pull request number is reserved, so a new item never takes a number GitHub used. An imported item keeps its number, source URL and the issue's `updated_at`; each comment keeps its author and time and is recorded once under its GitHub id. A re-run adds only new comments and lists changed titles and bodies without overwriting the item; a number held by another item is listed as a conflict. Secret-like text is withheld and listed by number and comment id, never printed. It never comments on or closes an issue.
@@ -146,7 +146,7 @@ deliverable. SQLite uses FULL synchronization; atomic file writes fsync their co
 but Windows rename metadata persistence under power loss remains unverified. Missing
 process ownership proof fails closed; these tests do not establish power-loss durability.
 
-When every task is published, the campaign becomes `ready` with control `finished`, and the next action is the project's release gate.
+When every task is published, campaign control becomes `finished`. The supervisor continues through the configured merge and release gates, including automatic deployment under an enabled standing project grant (section 12). Known outstanding release destinations report `RELEASE_PENDING`; published or merged work alone does not establish a completed release.
 
 ### Integration repair of a published PR
 
@@ -184,7 +184,7 @@ On a finished step's review the owner may request changes ([OPERATIONS_DASHBOARD
 
 ### Merge gate
 
-Merging used to be delegated to a monitoring session (`merges.delegatedTo: "monitor"`). When none ran, verified PRs waited for hours ([#138](https://github.com/example-org/aiworks/issues/138)). With the merge gate on, the supervisor merges a verified PR itself, and only when merging it puts exactly the independently verified tree on the base branch. It still never deploys, releases or changes provider resources ([AW-001](DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception)). The gate is `src/supervisor/merge.mjs`; its one merge call is `src/supervisor/release/github-merge.mjs`, since merge calls live only under `release/` (REL5).
+Merging used to be delegated to a monitoring session (`merges.delegatedTo: "monitor"`). When none ran, verified PRs waited for hours ([#138](https://github.com/example-org/aiworks/issues/138)). With the merge gate on, the supervisor merges a verified PR itself, and only when merging it puts exactly the independently verified tree on the base branch. The merge gate does not deploy; the separate release lane uses an AW-010 grant (section 12). Neither changes provider resources. The gate is `src/supervisor/merge.mjs`; its one merge call is `src/supervisor/release/github-merge.mjs`, since merge calls live only under `release/` (REL5).
 
 - **Off by default.** Only the owner's `config.json` turns it on, per repository. Without `merges`, with `"delegatedTo": "monitor"` (or anyone other than `"supervisor"`), or for a repository not listed, nothing is merged. A malformed setting also leaves it off and is logged. The setting is the one the dashboard already reads; `held` works for both:
 
@@ -504,7 +504,7 @@ The command and its helpers are tracked under `scripts/supervisor/`; no private 
 
 `--wait <minutes>` (default 240) bounds the wait for open runs; `--port` names the dashboard port when it is not 4318. The command never asks a question: it refuses, changes nothing and says why, or it runs to the end.
 
-1. **Preflight**, before anything changes. The operator checkout and `.local/runtime` must be clean Git checkouts. The commit is the trusted main, never a typed hash: with `selfHosting.trustedMain: "local"` the trusted tip from the runtime's `trusted-main`, otherwise `refs/remotes/origin/main` after `git fetch origin`. Git reads run in `.local/runtime`, a worktree of the canonical AIWorks repository that shares its commits and refs, and never in the installation root, which may be a separate checkout without the new commits. The operator checkout must be at exactly that commit (`SOURCE_NOT_AT_TARGET`), because the code that pauses and resumes is the code it installs, and the runtime's repository must have it (`TARGET_NOT_IN_REPOSITORY`). A `STOP` with work still open is refused (`STOPPED_WITH_OPEN_WORK`): no supervisor would record that work. The rebuild holds the installation's runtime maintenance lock, `.local/runtime-maintenance.lock`, from preflight to the end, so only one session maintains the runtime. A lock held by another session is refused (`MAINTENANCE_IN_PROGRESS`) and never removed. A lock held by another running rebuild is refused too (`REBUILD_IN_PROGRESS`). A rebuild's lock whose process no longer exists is taken over.
+1. **Preflight**, before anything changes. The operator checkout and `.local/runtime` must be clean Git checkouts. The commit is the trusted main, never a typed hash: with `selfHosting.trustedMain: "local"` the trusted tip from the runtime's `trusted-main`, otherwise `refs/remotes/origin/main` after `git fetch origin`. Git reads run in `.local/runtime`, a worktree of the canonical AIWorks repository that shares its commits and refs, and never in the installation root, which may be a separate checkout without the new commits. The operator checkout must be at exactly that commit (`SOURCE_NOT_AT_TARGET`), because the code that pauses and resumes is the code it installs, and the runtime's repository must have it (`TARGET_NOT_IN_REPOSITORY`). A `STOP` with work still open is refused (`STOPPED_WITH_OPEN_WORK`): no supervisor would record that work. The rebuild holds the installation's runtime maintenance lock, `.local/runtime-maintenance.lock`, from preflight to the end, so only one session maintains the runtime. A lock held by another session is refused (`MAINTENANCE_IN_PROGRESS`) and never removed. A lock held by another running rebuild is refused too (`REBUILD_IN_PROGRESS`). A rebuild's lock whose process no longer exists is taken over. A SQLite write lock in `<data>/rebuild/maintenance-guard.db` serializes rebuild retries through takeover and cleanup and releases automatically on process exit. Keep that guard file in place; deleting it during maintenance would break the serialization.
 2. **Pause and drain.** It records its private state in `<data>/rebuild/state.json`, then pauses every running campaign with the reason `AIWorks rebuild <id>`. A campaign that is already paused, cancelled or finished is left as it is, and so is its pause reason. A campaign registered during the wait is paused too. It waits, with the supervisor still running, until no campaign run, coordinator or planning run and no started release step is open, so each finishes and its result is recorded. Nothing is stopped under a running worker. If work stays open past `--wait`, it resumes what it paused and ends (`DRAIN_TIMEOUT`); nothing was replaced.
 3. **Stop and prove the drain.** `deploy.ps1 -Step Stop` disables both tasks, writes `STOP`, and waits for the supervisor and dashboard processes of this runtime to exit, failing if they do not. The store is then read again. The running supervisor has no admission gate for its coordinator, program waves or reopened finished campaigns, so one of them can admit one more run just before `STOP`. If one did, the unchanged runtime starts again (`-Step Start`), records it, and the drain repeats.
 4. **Back up.** A consistent copy of the drained store (`VACUUM INTO`) goes to `<data>/rebuild/<id>/supervisor.db`, with a snapshot of what must survive: every campaign's authority (scope digest, authorization version, declaration digest), runs and cost used, task outcomes, attempts and retry timers, recorded runs and journal history. The previous runtime commit is recorded as well.
@@ -701,8 +701,9 @@ How it decides (`src/supervisor/scheduler.mjs`, design [ADAPTIVE_SCHEDULER §4](
 Not yet implemented:
 - GitHub webhook intake and conditional-GET reconciliation (slice B);
 - a notification transport verified against a real provider (the Telegram adapter is built off and tested only against a synthetic network, section 10), replies from a notification, and reminders/incident timing beyond the section 10 defaults ([example-org/aiworks#1](https://github.com/example-org/aiworks/issues/1));
-- a project release to a real destination: the release code runs deploy, check and rollback through a project's own commands, switched off, and only the disposable rehearsal has run it (section 12);
 - a host other than workstation.
+
+Automatic project release is implemented and tested against disposable projects (section 12). A deployment to a real destination requires installation enablement and that project's configured grant and commands; source tests do not establish deployment status.
 
 The `claude -p` output shape was checked against Claude Code 2.1.295; the first live run is the canary for the real adapter.
 
@@ -853,7 +854,7 @@ Alert rules and transports (OWNER_UI_V2 WP6, `src/supervisor/alerts.mjs`): befor
 "alerts": { "transport": { "kind": "telegram", "secretRef": "windows:aiworks-alerts/bot", "recipientRef": "windows:aiworks-alerts/chat" } }
 ```
 
-- **References, never values.** `secretRef` names the bot credential and `recipientRef` the chat, each in a secret store the operator owns: `windows:<name>`, a generic credential in the Windows Credential Manager (read with `CredRead` in a hidden PowerShell child), or `helper:<name>`, the operator's credential helper (`commands.credentialHelper`, a native command asked `get <name>`, the contract of `release/credential.mjs`). The names above are examples. They are resolved inside each send only, for that one request, and their values are never stored, logged, journaled, served by the dashboard or put in an error; Telegram's own error description is cleaned of both before it is kept. A credential value in the setting reads `invalid`; one reference missing, the same reference twice, or another store reads `incomplete`. Settings › Alerts shows `ready` (sending switched off) or sending, and never a reference.
+- **References, never values.** `secretRef` names the bot credential and `recipientRef` the chat, each in a secret store the operator owns: `windows:<name>`, a generic credential in the Windows Credential Manager (read with `CredRead` in a hidden PowerShell child), or `helper:<name>`, the operator's credential helper (`commands.credentialHelper`, a native command asked `get <name>`, the contract of `release/credential.mjs`; `scripts/infisical-credential-helper.mjs` is one, section 16). The names above are examples. They are resolved inside each send only, for that one request, and their values are never stored, logged, journaled, served by the dashboard or put in an error; Telegram's own error description is cleaned of both before it is kept. A credential value in the setting reads `invalid`; one reference missing, the same reference twice, or another store reads `incomplete`. Settings › Alerts shows `ready` (sending switched off) or sending, and never a reference.
 - **What is sent.** One plain-text `sendMessage` to `https://api.telegram.org` per entry, with link previews off, no markup and no buttons; dashboard addresses are written out as places on this computer. Redirects are refused and a request is bounded to 15 seconds.
 - **No authority.** The adapter never calls `getUpdates` or registers a webhook, so no reply reaches AIWorks. An alert cannot approve a plan, answer a decision, accept a result or vouch for its sender; every such act stays a protected local dashboard route with its caller, CSRF and version checks until remote access is separately designed and approved (WP10, AW-003).
 - **Provider deduplication.** Telegram's Bot API has no idempotency key, so it cannot drop a repeated message: AIWorks's own `unknown` state is the only protection against a duplicate, and an `unknown` alert is not resent even when it never arrived.
@@ -883,6 +884,29 @@ A task that declares `web` is a web acceptance task: a browser worker opens the 
 
   A workstation probe confirmed that such a session lists only `mcp__browser__*` tools. Its declared `permissionMode` applies to its other tasks only.
 - **Browser.** The only MCP server is `src/supervisor/browser-mcp.mjs`. It sets the run's own temporary folder before chrome-devtools-mcp loads; the package adds `os.tmpdir()` to the folders its file tools may use, so together with `--workspace` no file tool reaches outside the run directory. It starts a headless Chrome with a fresh profile in the run directory and a loopback debugging port, under the same run-local environment, with WebRTC limited to proxied UDP (`--webrtc-ip-handling-policy=disable_non_proxied_udp`): URL patterns do not govern STUN/TURN traffic, and with no proxy WebRTC gets no UDP path. It refuses to continue unless the running Chrome is version 149 or newer, which `--allowedUrlPattern` needs. It then runs the pinned `chrome-devtools-mcp` with `--allowedUrlPattern` for each declared origin, the memory (heap snapshot) tools off, usage statistics off and network headers redacted. `evaluate_script` is available for measurement only. That limit, like "view only" and "never submit", is a prompt rule, not an enforced one: the click, fill and script tools can act on a page. What is enforced is where the browser can reach. So a web task should point at pages where an interaction can do no harm, such as Storybook or a test environment.
+- **Browser pre-login.** `config.json` may supply `browserLogin: { credentialStore, profiles: [...] }`. A profile
+  names an exact `origin`, a same-origin `loginUrl`, `usernameRef`, `passwordRef`, and CSS selectors
+  `usernameSelector`, `passwordSelector`, `submitSelector`, `successSelector`. The credential store has the same
+  Windows/command contract as the campaign API; the Infisical helper in section 16 can serve it. For example, a
+  profile for `https://dev.example.invalid` can use references `sampleapp-dev-user` and `sampleapp-dev-password`,
+  login URL `https://dev.example.invalid/login`, and selectors `input[name=user]`, `input[type=password]`,
+  `button[type=submit]`, and `#signed-in`. Keep each production origin in its own profile and use its own references.
+  Only origins in the task's `web.urls` select a profile; `resourceOrigins` never selects a login. Every matching
+  profile signs in automatically, for implementation and independent verification alike, without another approval
+  or a DEV/PROD permission gate. A task that names neither origin gets neither credential.
+  The browser wrapper resolves references only after the configured login page loads, signs in before starting
+  the MCP server, verifies the success selector, closes every login-created tab, and removes login service workers
+  before restoring the task's browser scope. Authentication requests and form values
+  therefore do not enter the worker's browser-tool history. The fresh run-local browser profile retains its session;
+  no cookies or credentials are exported to worker prompts, run JSON, reports or shared browser profiles. The
+  authenticated application may still expose session state to its own JavaScript: this is not a claim that arbitrary
+  browser scripts cannot read it. Login traffic stays on that exact origin, over HTTPS (HTTP is allowed only on
+  loopback for local fixtures). A missing reference, unexpected redirect or unsuccessful login refuses browser
+  handoff with a fixed diagnostic that never repeats helper or page error text. The ordinary browser isolation and
+  task URL scope remain in force. The pinned browser server is version 1.12.0, which applies URL restrictions to
+  service workers as well. It receives an explicit empty per-run configuration so global or ancestor settings cannot
+  widen its scope. Code: `browser-login.mjs`, wired through both browser executors and
+  `browser-mcp.mjs`; synthetic Chrome regression: `tests/supervisor/browser-login.test.mjs`.
 - **Audit.** AGY has built-in tools no rule can deny (web search, messages, subagents, its own browser), so the audit runs before any other classification and fails closed:
   - a result is accepted only from a stream with exactly one `init` event in `request-review` mode;
   - every update of every step is judged, whatever its state, so a disallowed tool counts even when it started without a terminal update, and a later update cannot rename it;
@@ -905,16 +929,28 @@ Probe findings behind these rules (agy 1.3.3, chrome-devtools-mcp 1.10.1, Chrome
 - A headless window cannot be narrower than about 500 px, so phone checks use `emulate`.
 - On a page with planted defects, a first probe found every planted defect but passed a phone-width criterion that measurement showed failing. The prompt therefore requires measured evidence and phone checks through `emulate`. Through this adapter and the contained runner, AGY then judged all eight criteria correctly (about 4.5 minutes), and a fresh AGY verifier re-measured every claim and accepted the report (about 3 minutes).
 
-## 12. Auto Release (built, not enabled)
+<a id="12-auto-release-built-not-enabled"></a>
 
-**In short.** No release runs. Every project and destination is **Review only**: the supervisor publishes checked results and never deploys them; it merges only under the opt-in merge gate (section 3), which is not a release ([AW-001](DECISIONS.md#aw-001---the-delivery-supervisor-is-the-one-external-write-exception)). Auto Release ([#13](https://github.com/example-org/aiworks/issues/13), [design](design/AUTO_RELEASE.md)) is being built switched off. The owner answered [#33](https://github.com/example-org/aiworks/issues/33) on 2026-10-17 ([plan section 8](PROJECT_WORKSPACE_PLAN.md#8-owner-decisions-and-remaining-implementation-design-gates) (h) to (k)): no release token, one merge path per repository, and nothing switched on before the disposable rehearsal (slice REL11). Until then this section describes all there is.
+## 12. Automatic project releases
 
-What exists in code, all inert (observed; nothing outside the tests drives a release):
+With `"release": { "enabled": true }`, the supervisor continues finished campaigns into deployment under each project's standing [AW-010](DECISIONS.md#aw-010---auto-release-is-a-separate-release-role-under-a-standing-per-project-grant) grant. A project uses its own commands and destination; the workflow does not depend on a particular hosting provider. Merging still follows the existing opt-in merge gate. The default remains off until the installation enables it.
+
+The connected destination kind is **deploy**: deploy the exact merge commit recorded by the merge gate, only when its tree equals the independently verified tree. Other destination kinds are reported as unsupported by automatic continuation. Local folder Apply retains its existing workflow. AIWorks never deploys its own runtime through this lane, creates provider resources, or treats a campaign approval as deployment authority.
+
+Set up a project once: its read-only governance registry entry points `governance.releaseAuthorization.source` at a JSON grant on its base branch, and the entry's approval reference matches the grant. The grant names its destination, accepted file classes and `deploy`, `observe`, `check`, and `rollback` command files. Keep the declaration and installation evidence private. The commands run in a clean, detached checkout through native process containment, using the existing machine logins. No new release token is required.
+
+Before deployment, `observe` must print `revision: <40-character Git SHA>`, `digest: <artifact digest>` and `rollback-ready: <same digest>`. The last line attests that the current artifact is retained and restorable. Its current revision must pass the project's read-only `check`. After `deploy <merge revision>`, observe must identify the deployed revision and digest, and the post-release check must pass. A failed check invokes the granted rollback policy; an uncertain result remains unknown and retains the destination lock. Project merges and other work continue independently of that incident.
+
+The controller also visits finished campaigns. It uses a separate asynchronous command lane, renews ownership while commands run and drains that lane during maintenance. After a restart it proves previous command trees stopped, then observes any uncertain effect. It never repeats an accepted, rolled-back or uncertain deployment. Temporary preflight outages retry automatically when no deployment started. A newer verified merge supersedes an earlier attempt that has not deployed. An owner grant renewal can update an eligible or locked attempt before any forward intent. Recovery after a forward intent uses the original pinned commands; if all earlier intents are proven not done, a newer grant can authorize a new attempt while the old intent stays pinned.
+
+The registered grant file is protected from worker edits and queued merges. Grant versions cannot regress, a version's contents cannot silently change, and a revoked version cannot return. Missing registry evidence is a system wait, not an invented owner decision. Status records expected destinations and durable outcomes: a campaign with outstanding release destinations reports `RELEASE_PENDING`, and `release.complete` requires every expected destination and the current verified task heads to be covered.
+
+The production components are:
 
 - **Eligibility** (`src/supervisor/release/eligibility.mjs`) reports per done task "would be eligible" or "not eligible, because ...". It never acts.
 - **Release state** (`src/supervisor/release/state.mjs`, tables `releases` and `release_locks`): one release per destination at a time, a step recorded as started before it acts, and reconciliation instead of repetition after a restart.
 - **The switches**, checked before every release step ([design §4.5](design/AUTO_RELEASE.md#45-the-kill-switches)). A step may start only when all four allow it:
-  1. `release.enabled` in `config.json` is exactly `true`. Absent, or any other value, is off. It is off on every install.
+  1. `release.enabled` in `config.json` is exactly `true`. Absent, or any other value, is off.
   2. There is no file `RELEASE-STOP` in the data directory. If the supervisor cannot tell, it stops.
   3. A valid release grant names the destination.
   4. The destination's mode is Auto Release. The mode is Review only unless that grant is newer than the owner's last narrowing.
@@ -940,9 +976,9 @@ Owner commands (both only narrow):
 
 Evidence only a running installation holds is synthetic there and named as such: the governance pointer (E3), the verifier's sessions (E4), required checks (E8), dependencies (E10) and owner-reserved reports (E13). `tests/supervisor/release-rehearsal.test.mjs` runs the same rehearsal in the suite. Passing it is evidence about source, not about any destination.
 
-**Releases and Check the site now** ([OWNER_UI_V2 WP9](design/OWNER_UI_V2.md)). Each release row now keeps, from eligibility, its destination (id, environment, kind, rollback rule, which commands it names) and where its grant was read (`ref`, `path`); a row recorded before says its restore scope is unknown. The dashboard's Releases screen (`#/p/<project>/releases`, linked from Results; `GET /api/v2/projects/<id>/releases`) shows per release the destination, the user-facing change with its change classes and file count, the checked commit, merge commit, live digest and grant version, the restore scope (the previous version through the project's rollback command, report-only, no rollback command, a revert pull request, a backup, or unknown) and the latest health (passed, failed, unknown, checking or not checked; unknown is never healthy). Checked, merged, live and accepted stay separate answers. Publish is shown not available with what is missing: a manual Publish is not built, and could only use a destination an existing valid grant names. **Check the site now** (`POST /api/v2/releases/check`, after the caller check) takes only a release id and runs `release/health.mjs`: one read-only `check` of a settled release (accepted, rolled back or rollback failed) at its deployed revision, through the release runner, only while `release.enabled` is true, `RELEASE-STOP` is absent and the grant, read again at the recorded ref and path, is valid and names the destination with a `check` command. It records the answer on the row (`health_check`, an additive column) and in the journal, and never changes the release's state or lock and never rolls back. With `release.enabled` false, as on every install, it is refused with that reason.
+**Releases and Check the site now** ([OWNER_UI_V2 WP9](design/OWNER_UI_V2.md)). Each release row now keeps, from eligibility, its destination (id, environment, kind, rollback rule, which commands it names) and where its grant was read (`ref`, `path`); a row recorded before says its restore scope is unknown. The dashboard's Releases screen (`#/p/<project>/releases`, linked from Results; `GET /api/v2/projects/<id>/releases`) shows per release the destination, the user-facing change with its change classes and file count, the checked commit, merge commit, live digest and grant version, the restore scope (the previous version through the project's rollback command, report-only, no rollback command, a revert pull request, a backup, or unknown) and the latest health (passed, failed, unknown, checking or not checked; unknown is never healthy). Checked, merged, live and accepted stay separate answers. Publish is shown not available with what is missing: a manual Publish is not built, and could only use a destination an existing valid grant names. **Check the site now** (`POST /api/v2/releases/check`, after the caller check) takes only a release id and runs `release/health.mjs`: one read-only `check` of a settled release (accepted, rolled back or rollback failed) at its deployed revision, through the release runner, only while `release.enabled` is true, `RELEASE-STOP` is absent and the grant, read again at the recorded ref and path, is valid and names the destination with a `check` command. It records the answer on the row (`health_check`, an additive column) and in the journal, and never changes the release's state or lock and never rolls back. With `release.enabled` false, it is refused with that reason.
 
-**Still missing before a real release** (explicit prerequisites, not done here): the governance pointer to a real grant (R11), the owner's canary grant for one destination (decision (j)), the supervisor driving releases on its own (switching on REL11), the destinations a manual Publish may reach (OWNER_UI_V2 WP9, owner's), and remote access to the dashboard (AW-003, WP10). AIWorks never releases into its own live runtime.
+**Installation prerequisites for a real release:** enable automatic release and configure the project's governance pointer, valid standing grant and destination commands. The first deployment needs the same positive eligibility, current health and retained rollback artifact evidence as every later deployment. Manual Publish and remote dashboard access remain separate work. AIWorks never releases into its own live runtime.
 
 Project connectors accept an explicit `tenantId`. When omitted, the installation-local identity `local` is used; existing stored project identities are unchanged.
 
@@ -1028,15 +1064,16 @@ What the controller does on each pass (slice CLN1). Code: `src/supervisor/cleanu
 
 **In short.** An external system on this computer — a change-request tracker that assembles campaign declarations
 itself, for example — can register a campaign and read its status over HTTP instead of running `cli.mjs` as a local
-process: `POST /api/campaigns` and `GET /api/campaigns/:id/status` on the dashboard's own HTTP server
-([OPERATIONS_DASHBOARD.md](OPERATIONS_DASHBOARD.md), `http://127.0.0.1:4318`). It is additive: the CLI and the owner's
+process: `POST /api/campaigns`, `GET /api/campaigns/:id/status` and `GET /api/campaigns/:id/report` on the
+dashboard's own HTTP server ([OPERATIONS_DASHBOARD.md](OPERATIONS_DASHBOARD.md), `http://127.0.0.1:4318`), or on a
+listener of their own in the same process (`campaignApi.port`, below) for a tunnel. It is additive: the CLI and the owner's
 browser dashboard work exactly as before, and this surface widens nothing either can already do. Code:
-`src/supervisor/remote-campaigns.mjs` and `src/supervisor/token-store.mjs`, wired into `src/dashboard/server.mjs`.
-Critical-behaviour tests: `tests/dashboard/campaign-api.test.mjs` and `tests/supervisor/token-store.test.mjs`.
+`src/supervisor/remote-campaigns.mjs` and `src/supervisor/token-store.mjs`, wired into `src/dashboard/server.mjs` and `src/dashboard/main.mjs`.
+Critical-behaviour tests: `tests/dashboard/campaign-api.test.mjs`, `tests/supervisor/report-local.test.mjs`, `tests/supervisor/token-store.test.mjs`.
 
 **Why the dashboard's own server, and why a status poll rather than an outgoing webhook.** The dashboard already is the
-one process that listens on a local port and reads the store; adding two routes to it needs no new service, no new
-port and no new process to supervise or restart. Posting status to a URL the campaign declaration names would instead
+one process that listens on a local port and reads the store; adding these routes needs no new service or process,
+and a separate port is optional. Posting status to a URL the campaign declaration names would instead
 make the supervisor's own process open outbound connections chosen by whoever can submit a declaration — a new kind of
 external write the existing boundary does not have (section 1: "the only writes outside this repository are
 worktrees, branches, pull requests and issue comments, for work the owner registered"; a webhook destination is none
@@ -1047,38 +1084,48 @@ architecture's own stated shape instead: "No route calls GitHub" and nothing her
 **Fit with [AW-003](DECISIONS.md#aw-003---the-operations-dashboard-is-local-only).** AW-003 binds the dashboard to
 loopback and requires exact origin checks and CSRF protection for mutating requests, and says remote access needs a
 separately reviewed authentication design. This stays bound to `127.0.0.1` exactly as before: nothing here is remote,
-only a second local process. Its two routes are exempt from the origin/CSRF check — a static bearer token resolved
+only a second local process. Its campaign routes are exempt from the origin/CSRF check — a static bearer token resolved
 from the operator's own secret store in its place — because their caller is by design not a browser holding the
 dashboard's session, so CSRF protection (which defends a browser session against another page's script) does not
 apply to it; this is the separately reviewed authentication design AW-003 anticipates for a caller that is not that
-browser session. The exemption is narrow: it exists only while the switch below is on, it covers exactly
-`POST /api/campaigns` and `GET /api/campaigns/:id/status`, and such a request is answered by those two handlers in full,
-so it never reaches another route. A browser page cannot send the token across origins (the server gives no CORS
-answer), and a page that rebinds a name to `127.0.0.1` does not hold it. Every other route keeps its Host, Origin,
-CSRF and caller checks unchanged.
+browser session. The exemption exists only while the API is enabled, for exactly `POST /api/campaigns` and
+`GET /api/campaigns/:id/status|report`. Each is answered in full before another route is considered. The server gives
+no CORS answer; every other dashboard route retains its Host, Origin, CSRF and caller checks.
 
 - **The switch.** `config.json` `"campaignApi": { "enabled": true, "tokenRef": "<name>", "credentialStore"?: { "kind":
-  "windows" } | { "kind": "command", "command": [...] } }`. Absent, malformed, `enabled` not exactly `true`, or an
-  invalid `tokenRef` or store (`token-store.mjs` `validTokenRef`: short segments joined by `/` or `:`) all leave it off:
-  both requests then meet the dashboard's own gates exactly as before the API existed (`403` from another Host or
-  origin or without the session's CSRF token, `404` for the status path), whatever the store holds. Without
-  `credentialStore` the Windows Credential Manager is used.
+  "windows" } | { "kind": "command", "command": [...] }, "port"?: <number> }`. Absent, malformed, `enabled` not exactly
+  `true`, or an invalid `tokenRef`, store or port leaves it off. References use `token-store.mjs` `validTokenRef`:
+  short segments joined by `/` or `:`. While off, requests meet the dashboard's original gates (`403` for a foreign
+  Host or Origin or a POST without its CSRF token, `404` for the read paths); the dedicated API listener returns `404`.
+  Without `credentialStore` the Windows Credential Manager is used.
 - **The token is a reference, never a value.** `config.json` holds the `tokenRef`, never the token (AGENTS.md:
   "configuration holds executable paths and repository paths, never secret values"). Its value lives in the same kind
-  of operator-managed secret store the release credential uses, through its own module (`token-store.mjs`; the release
-  credential's `release/credential.mjs` is not involved): the Windows Credential Manager by default, or an operator's
-  credential helper command. It is resolved fresh on every request that carries a bearer token, never cached, logged
-  or journalled; a store that cannot tell whether the reference resolves is treated as refused, never as open access.
+  of operator-managed secret store the release credential uses, through its own `token-store.mjs` module: the Windows
+  Credential Manager by default, or an operator's credential helper command. It is resolved fresh on every request
+  carrying a bearer token, never cached, logged or journalled; a store that
+  cannot tell whether the reference resolves is treated as refused, never as open access.
+- **Infisical as the store.** `scripts/infisical-credential-helper.mjs` answers the credential helper protocol
+  (`has`, `get`, `set <ref>`) from one Infisical project, environment and folder, so the token (and any other
+  reference a helper serves) can live in Infisical instead of the Windows Credential Manager:
+  `"credentialStore": { "kind": "command", "command": ["node", "<aiworks>/scripts/infisical-credential-helper.mjs",
+  "--env-file", "<operator env file>", "--project", "<project id>", "--environment", "dev", "--path", "/",
+  "--allow", "aiworks-campaign-api:sampleapp"] }`. The machine identity (universal auth) comes from
+  `INFISICAL_HOST`, `INFISICAL_CLIENT_ID` and `INFISICAL_CLIENT_SECRET` in the environment or the `--env-file`, never
+  from the command line; `INFISICAL_HOST` must be https. A reference maps to a key by uppercasing it and turning every
+  other character into `_` (`aiworks-campaign-api:sampleapp` → `AIWORKS_CAMPAIGN_API_SAMPLEAPP`). Without `--allow`
+  every reference in the configured folder is answered; with an `--allow` list only those are, and any other exits 3
+  without contacting Infisical. Exit 1 means absent; Infisical unreachable, a refused login or an
+  unexpected answer exits 4, which callers read as "cannot tell", never as absent. Only `get` writes to stdout (the
+  value); messages name the step and an HTTP status only. Critical tests: `tests/supervisor/infisical-helper.test.mjs`.
 - **Authentication is a header, never a query parameter.** `Authorization: Bearer <token>`, compared to the resolved
-  value by comparing fixed-length SHA-256 digests in constant time. A missing or wrong token answers `401`; a token in
-  the query string is ignored. This token is never the dashboard's
+  value by comparing fixed-length SHA-256 digests in constant time. A missing or wrong token answers `401`, and a
+  token in the query string is ignored. This token is never the dashboard's
   own per-process CSRF secret that a browser session reads from `GET /api/session` (server.mjs): the two surfaces share
   no secret, so a token good for one never reaches a route of the other.
 - **`POST /api/campaigns`** accepts exactly the JSON a private declaration file holds — the same contract
   `src/supervisor/campaign.mjs` `validateDeclaration` checks, the same examples under `tests/fixtures/campaigns/` — up
   to the same 1 MiB a file may be. It does exactly what `cli.mjs start <file>` does with no `--approval`, in order:
-  the AW-005 merged-code check against the same trusted main `start` uses (section 1, "Merged runtime code", including
-  `selfHosting` local trust); for a campaign id not yet stored, the registered-project gate
+  the AW-005 merged-code check (section 1, "Merged runtime code"); for a new campaign id, the registered-project gate
   (section 1, "Registered targets only"); then registration, amendment or resume
   (`approvals.mjs` `approvedStart`, honouring `config.json` `"approvals": { "required": true }` exactly as a plain
   `start` would). A resend of the exact declaration already registered is never refused, exactly as `start` never
@@ -1091,15 +1138,34 @@ CSRF and caller checks unchanged.
 - **`GET /api/campaigns/:id/status`** answers exactly the reading `cli.mjs status <id>` prints (`api.mjs`
   `campaignStatus`): phase, readiness, tasks, budget, CI and release status, never worker output or a local path. An
   unregistered id answers `404` with `code: "CAMPAIGN_NOT_FOUND"`.
-- **A project's token reaches that project only.** When `tokenRef` is a project's standard reference
-  `aiworks-campaign-api:<projectId>` (below), registration needs a declaration whose `target.repository` is that
-  project's `repository.github` in the governance checkout, and refuses (`403`, `TOKEN_OUT_OF_SCOPE`) a declaration for
-  another repository or one that would amend another project's stored campaign; a status read of another project's
-  campaign answers `404` exactly like an unregistered id. A `tokenRef` of any other shape reaches what `start` and
-  `status` reach.
+- **`GET /api/campaigns/:id/report`** answers the campaign's report tasks (`remote-campaigns.mjs` `campaignReports`):
+  per task its id, state, verified revision, report text and the report's sha256. The text is present only once
+  independent verification accepted that exact revision and report digest, passed every required acceptance criterion
+  and left no blocking finding (state `verified` or `done`); before that, and again
+  whenever the task is sent back for another round, `report` is `null`. An implementer's unverified output, verifier
+  evidence, worker logs and local paths are never part of the answer. `404 CAMPAIGN_NOT_FOUND` as for status.
+- **Reports kept local.** A declaration may set `"reportPublication": "local"` (`campaign.mjs`; part of the immutable
+  scope, so it cannot be dropped by an amendment without a new scope). The controller then posts none of the campaign's
+  verified reports to the task issue: the task's own stored result is the only copy, read through the report route,
+  and the task's `prUrl` reads `aiworks-report:<campaignId>/<taskId>`. The short "passed independent verification"
+  note on the tracking issue still names the task, never the report text. Use it when a report quotes material that
+  must not reach GitHub, such as a change request's own text. Critical test: `tests/supervisor/report-local.test.mjs`.
+- **Its own listener for a tunnel.** `config.json` `campaignApi.port` (1024..65535, read when the dashboard starts)
+  starts a second listener in the dashboard process, on `127.0.0.1:<port>`, that serves the three campaign routes and
+  nothing else: no page, no `/api/session`, no `/api/state`, no command route. It applies no Host or Origin check (a
+  tunnel forwards its own host name) and no CSRF secret; the bearer token is its only authentication. While `port` is
+  set, the dashboard's own port answers the campaign routes with `404`, so a tunnel pointed at the API port reaches
+  only them, and the dashboard stays reachable from this computer only (AW-003). An invalid `port` turns the whole
+  API off, never on; a `port` equal to the dashboard's own starts no second listener. Changing it needs a dashboard
+  restart.
 - **Never a replacement for the CLI or the dashboard.** Pause, cancel, recheck, instructions and every owner-facing
   control stay on the existing CLI commands and the browser dashboard, unchanged. This surface only starts a campaign
-  and reads its status, exactly as `start` and `status` already do locally.
+  and reads its status and verified reports.
+- **A project's token reaches that project only.** A standard reference `aiworks-campaign-api:<projectId>` binds the
+  token to the project's repository in the governance checkout. Registration and amendments of another project's
+  campaign are refused with `403 TOKEN_OUT_OF_SCOPE`, including an incoming declaration that disguises a stored id.
+  Status and report reads of another project's campaign return `404` as for an unknown id, on either listener.
+  Other reference shapes retain the same repository reach as the CLI.
 
 **Managing the token (`campaign-token`, `src/supervisor/campaign-token.mjs`).** Turning this surface on for any
 AIWorks-registered project is one general CLI action, not a one-off done by hand for a single external project:

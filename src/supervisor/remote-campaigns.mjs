@@ -1,5 +1,6 @@
-// The optional external campaign API (off by default; docs/SUPERVISOR.md section 16): `POST /api/campaigns` and
-// `GET /api/campaigns/:id/status` on the dashboard's own HTTP server (src/dashboard/server.mjs), for an external system
+// The optional external campaign API (off by default; docs/SUPERVISOR.md section 16): `POST /api/campaigns`,
+// `GET /api/campaigns/:id/status` and `GET /api/campaigns/:id/report`, served by the dashboard or its dedicated API
+// listener (src/dashboard/server.mjs), for an external system
 // — a change-request tracker, for example — that registers a campaign and reads its status the same way the CLI and the
 // owner's dashboard already do, over HTTP instead of a local process or a browser session. It widens nothing: the same
 // declaration shape (campaign.mjs validateDeclaration), the same AW-005 merged-code gate against the same trusted main
@@ -17,6 +18,8 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CampaignError, campaignStatus } from './api.mjs';
+import { specsOf } from './plan.mjs';
+import { passedCheck } from './result-review.mjs';
 import { CODE_ROOT, revisionNotMerged, runtimeTrust } from './provenance.mjs';
 import { assertRegisteredTarget } from './campaign.mjs';
 import { approvalRequired, approvedStart } from './approvals.mjs';
@@ -38,12 +41,13 @@ const validStoreSpec = (store) => store === undefined || (store && typeof store 
 export function campaignApiSettings(config) {
   const raw = config?.campaignApi;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || raw.enabled !== true || !validTokenRef(raw.tokenRef)) return { enabled: false };
-  if (Object.keys(raw).some((key) => !['enabled', 'tokenRef', 'credentialStore'].includes(key))) return { enabled: false };
+  if (Object.keys(raw).some((key) => !['enabled', 'tokenRef', 'credentialStore', 'port'].includes(key))) return { enabled: false };
   if (!validStoreSpec(raw.credentialStore)) return { enabled: false };
+  if (raw.port !== undefined && !(Number.isSafeInteger(raw.port) && raw.port >= 1024 && raw.port <= 65535)) return { enabled: false };
   const prefix = `${CAMPAIGN_TOKEN_PREFIX}:`;
   const named = raw.tokenRef.startsWith(prefix) ? raw.tokenRef.slice(prefix.length) : null;
   if (named !== null && !PROJECT_ID.test(named)) return { enabled: false };
-  return { enabled: true, tokenRef: raw.tokenRef, credentialStore: raw.credentialStore ?? { kind: 'windows' }, projectId: named };
+  return { enabled: true, tokenRef: raw.tokenRef, credentialStore: raw.credentialStore ?? { kind: 'windows' }, projectId: named, port: raw.port ?? null };
 }
 
 const digest = (value) => createHash('sha256').update(value, 'utf8').digest();
@@ -85,7 +89,25 @@ export function campaignApiScope(settings, governanceRoot) {
 }
 
 const repositoryOf = (declaration) => String(declaration?.target?.repository ?? '').toLowerCase();
-const storedRepository = (row) => { try { return repositoryOf(JSON.parse(row.declaration)); } catch { return ''; } };
+const storedRepository = (row) => repositoryOf(row?.declaration);
+
+/** Verified report text stays private until its exact head, digest and acceptance criteria pass independent review.
+ * A scoped token sees another project's campaign exactly as an unknown id, before any report is read. */
+export function campaignReports(store, id, { scope = null } = {}) {
+  const campaign = store.campaign(id);
+  if (!campaign || (scope !== null && storedRepository(campaign) !== scope)) throw remoteFail(404, 'CAMPAIGN_NOT_FOUND', `campaign ${id} is not registered`);
+  const specs = specsOf(store, id, campaign.declaration);
+  const tasks = [];
+  for (const row of store.tasks(id)) {
+    const spec = specs.get(row.task_id);
+    if (spec?.deliverable !== 'report') continue;
+    const verified = ['verified', 'done'].includes(row.state) && typeof row.result?.report === 'string' && passedCheck(row, spec.acceptance);
+    const report = verified ? row.result.report : null;
+    tasks.push({ taskId: row.task_id, state: row.state, verifiedSha: verified ? row.verified_sha : null, report,
+      reportSha256: report === null ? null : createHash('sha256').update(report, 'utf8').digest('hex') });
+  }
+  return { campaignId: id, control: campaign.control, reportPublication: campaign.declaration.reportPublication ?? 'issue', tasks };
+}
 
 // Every CampaignError this path can throw, mapped to the HTTP status an external caller should act on. An unmapped
 // CampaignError or a validateDeclaration TypeError defaults to 400: the declaration itself needs to change. A
