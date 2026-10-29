@@ -27,6 +27,13 @@ export const WEB_CRITERIA_RULE = 'Also return verdictSummary = one or two plain 
  */
 export const BUILD_CRITERIA_RULE = 'Also return verdictSummary = one or two plain sentences for the owner on whether the pages now do what was promised; criteria = one entry per acceptance criterion of the packet, { criterion (its 1-based position), result ("pass" when what the pages show now satisfies it, "fail" when it does not, "not-checked" when you could not check it), check (what you opened or measured), evidence (what you observed, in words, never a raw log or secret) }; and eyesOn = at most 8 short items where the owner’s own judgement matters that no check can settle. Return "accepted" only when every criterion is "pass".';
 
+// A build task's earlier attempts leave their page changes in place: nothing is rolled back between runs. A retry or a
+// repair round must therefore look before it acts, or it repeats an irreversible change (a record created twice).
+export const BUILD_RETRY_NOTE = 'An earlier attempt of this build task may already have changed the pages: nothing it did was undone. Before changing anything, open the affected pages and check what is already there. Never redo a change that is already present (never create the same record twice or reapply an edit); make only what is still missing, then report everything that is now in place, including what the earlier attempt changed.';
+export const BUILD_RECHECK_NOTE = 'A previous verification attempt ended without an accepted result. Check the pages again from the packet; change nothing.';
+export const buildRepairNote = (round, reportDigest) => `This is repair round ${round}: the independent verifier rejected the previous build report (sha256 ${reportDigest}), reproduced below; its blocking findings are listed in the packet constraints. The earlier changes are still on the pages. Open them first, fix on the pages what each blocking finding names, never redo a change that is already there, and return resolved with a COMPLETE report of everything now in place.`;
+export const BUILD_PUBLICATION_NOTE = ' Correct the report text only: do not change the pages again.';
+
 /** A task's web mode: null without `web`, else "acceptance" (the default) or "build". */
 export const webMode = (web) => web ? web.mode ?? 'acceptance' : null;
 

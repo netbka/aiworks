@@ -8,6 +8,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SECRET_LIKE_PATH_PATTERN, acceptsLease, packetDigest, planContext, validatePacket } from '../../scripts/lib/worker-context.mjs';
 import * as executors from './adapters/executors.mjs';
+import * as agy from './adapters/agy.mjs';
 import { researchContext } from './adapters/research-context.mjs';
 import { browserLoginSettings } from './browser-login.mjs';
 import * as gitA from './adapters/git.mjs';
@@ -2516,6 +2517,8 @@ export class Controller {
       // A verifier reviews the implementer's report; a repair implementer must also receive the rejected report,
       // otherwise it is asked to fix findings against an artifact it has never seen.
       const repairing = kind === 'implement' && Boolean(task.findings?.length);
+      // A build task's page changes survive a failed or rejected attempt, so its retry and repair notes differ (agy.mjs).
+      const build = executors.webFlag(spec.web) === 'build';
       const report = kind === 'verify' || repairing ? String(task.result?.report ?? '') : null;
       const reportDigest = report !== null ? createHash('sha256').update(report, 'utf8').digest('hex') : null;
       // Scoped reading (SCOPED_READING sections 4 and 6.4): a repair packet adds its findings' cited sections after the
@@ -2587,14 +2590,16 @@ export class Controller {
           : repairing
         ? spec.deliverable === 'commit'
           ? `This is repair round ${task.repair_rounds}: the independent verifier rejected ${task.head_sha}. Fix every blocking finding listed in the packet constraints, commit, and return resolved with the new headSha.`
+          : build ? agy.buildRepairNote(task.repair_rounds, reportDigest)
           : `This is repair round ${task.repair_rounds}: the independent verifier rejected the previous report (sha256 ${reportDigest}), reproduced below. Produce a corrected COMPLETE report that resolves every blocking finding listed in the packet constraints and return resolved with that report. Do not commit or change repository files; this task is report-only and read-only.`
         : refusal ? refusal
+        : task.last_error && build ? `A previous attempt ended without an accepted result (${String(task.last_error).slice(0, 400)}). ${kind === 'verify' ? agy.BUILD_RECHECK_NOTE : agy.BUILD_RETRY_NOTE}`
         : task.last_error ? `A previous attempt ended without an accepted result (${String(task.last_error).slice(0, 400)}). ${spec.deliverable === 'commit' ? 'Inspect git status and git log here and keep useful committed work.' : executor.researchOnly ? 'Start the report again from the packet; nothing from that attempt is retained. Inspect brokered local Git evidence; use the supplied read-only repository reader for missing issue/comment details.' : 'Start the report again from the packet; nothing from that attempt is retained.'}` : null;
       // aiworks#8: a publication repair asks for corrected text only; the verifier of its head is told why it runs again.
       const publication = this.publicationFinding(task);
       const publicationNote = !publication ? null : kind === 'verify'
         ? `The previous publication of this task was refused: its ${publication.sources.join(' and ')} text failed the publication privacy check (${publication.findings.join(', ')}). Reject a report that still cites absolute local paths, credentials or private names, and write the summary, checks and findings with repository-relative paths and synthetic examples only.`
-        : `This is repair round ${task.repair_rounds}, a publication repair: verified ${publication.verified} was not published because its report failed the publication privacy check (${publication.findings.join(', ')}). Nothing was pushed or published. Return a corrected COMPLETE report with repository-relative paths and synthetic examples only, keeping its headings, the exact revision and the actual test tallies.${spec.deliverable === 'commit' ? ' Change code only if a finding requires it; otherwise return resolved with the same headSha.' : ' Do not commit or change repository files; this task is report-only and read-only.'}`;
+        : `This is repair round ${task.repair_rounds}, a publication repair: verified ${publication.verified} was not published because its report failed the publication privacy check (${publication.findings.join(', ')}). Nothing was pushed or published. Return a corrected COMPLETE report with repository-relative paths and synthetic examples only, keeping its headings, the exact revision and the actual test tallies.${spec.deliverable === 'commit' ? ' Change code only if a finding requires it; otherwise return resolved with the same headSha.' : build ? agy.BUILD_PUBLICATION_NOTE : ' Do not commit or change repository files; this task is report-only and read-only.'}`;
       const note = publicationNote && kind !== 'verify' ? publicationNote : [baseNote, publicationNote].filter(Boolean).join(' ') || null;
       let prompt = executors.buildPrompt({ executorKind: executor.kind, web: spec.web ?? null, role, deliverable: spec.deliverable, packet, packetDigest: digest, repository: local ? decl.target.projectId : decl.target.repository,
         issue: spec.issue, branch: gitA.branchName(ctx.id, task.task_id), baseSha: kind === 'verify' ? baseSha : revision, targetSha,
