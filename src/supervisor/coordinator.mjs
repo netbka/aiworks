@@ -747,8 +747,10 @@ export function coordinatorView(store, config, now = Date.now()) {
       const body = m.state === 'answered' ? (hasReplies ? store.get('SELECT body FROM coordinator_replies WHERE run_id = ?', m.run_id)?.body : null)
         ?? (['pending', 'local'].includes(reply?.state) ? reply.body : null) : null;
       const parts = body ? replyParts(body) : null, safe = (text) => (text && !containsSecret(text) ? text : null);
+      const replyText = safe(parts?.text);
       return { id: m.id, threadId: m.thread_id ?? m.id, text: m.text, source: m.source, repository: messageRepository(m),
-        replyBody: safe(parts?.text), replyCampaign: parts?.campaign ? safe(parts.campaign) ?? WITHHELD : null, state: m.state, receivedAt: m.received_at, readAt: m.read_at,
+        replyBody: replyText, replyWithheld: Boolean(parts?.text && !replyText),
+        replyCampaign: parts?.campaign ? safe(parts.campaign) ?? WITHHELD : null, state: m.state, receivedAt: m.received_at, readAt: m.read_at,
         answeredAt: m.answered_at, failure: m.failure, retryAt: m.state === 'received' ? m.not_before : null, attempts: m.attempts,
         runId: m.run_id, replyState: reply?.state ?? null, replyUrl: reply?.state === 'posted' ? reply.posted : null };
     }),
