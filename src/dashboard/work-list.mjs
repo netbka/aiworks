@@ -111,7 +111,9 @@ export function workItemView(dataDir, number, { textChecks } = {}) {
     const found = present(store) ? item(store, number) : null;
     if (!found) return null;
     const all = comments(store, number);
-    return { ...row(found), version: itemVersion(found), body: textChecks?.read(found.body, MAX_SHOWN_BODY).text ?? safeText(found.body, MAX_SHOWN_BODY), shortened: found.body.length > MAX_SHOWN_BODY,
+    const repository = selfHostingSettings(readConfig(dataDir)).repository;
+    const merged = new Set(reviewRows(store, repository, null).filter((review) => review.mergedAt).map((review) => review.number));
+    return { ...row(found, merged), version: itemVersion(found), body: textChecks?.read(found.body, MAX_SHOWN_BODY).text ?? safeText(found.body, MAX_SHOWN_BODY), shortened: found.body.length > MAX_SHOWN_BODY,
       verifiedSha: found.verified_sha ?? null, source: found.source_url && /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+$/.test(found.source_url)
         ? { url: found.source_url, updatedAt: safeText(found.source_updated_at, 64) } : null,
       createdAt: isoTime(found.created_at), commentCount: all.length,
