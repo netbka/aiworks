@@ -957,6 +957,17 @@ function localReport(store, campaignId, task, spec) {
 }
 
 /**
+ * A report kept on this computer for the project that started the campaign (campaign.mjs reportPublication 'local',
+ * controller.mjs): the step's published link is exactly `aiworks-report:<campaign>/<step>`, and the caller reads the
+ * verified text through the campaign API's report route (remote-campaigns.mjs campaignReports). Where it went is
+ * recorded, so it is never an «unrecorded» result; it is never a merge or an acceptance either.
+ */
+function keptReport(declaration, campaignId, task, spec) {
+  return declaration?.reportPublication === 'local' && task.state === 'done' && spec?.deliverable === 'report'
+    && task.pr_url === `aiworks-report:${campaignId}/${task.task_id}`;
+}
+
+/**
  * A checked local review of AIWorks's own repository (controller.mjs recordLocalReview): the finished step's published
  * link names a `review` work item the supervisor recorded for exactly this campaign and step. Its address is the work
  * list's own dashboard route, never a path on this computer. Null otherwise: an `aiworks-work:` link alone is never taken
@@ -1177,6 +1188,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
           // Why the merge gate holds this verified head, as a code (mergeWaitCode); null when it never held it.
           mergeWait: waits.get(task.task_id) ?? null,
           localReport: localReport(store, id, task, specs.get(task.task_id)),
+          keptReport: keptReport(c.declaration, id, task, specs.get(task.task_id)),
           outcome: specs.get(task.task_id)?.outcome ? safeText(specs.get(task.task_id).outcome) : null,
           deliverable: code(specs.get(task.task_id)?.deliverable), verifierRejections: rejections.get(task.task_id) ?? 0,
           version: task.version, issueUrl: `https://github.com/${c.declaration.target.repository}/issues/${specs.get(task.task_id)?.issue}`,
