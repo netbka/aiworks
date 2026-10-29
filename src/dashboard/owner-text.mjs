@@ -61,6 +61,9 @@ const SUMMARY = '**Summary:** ';
 const CLOSING = /\n*Read-only planning by the AIWorks coordinator\.[^\n]*\s*$/;
 const HEADINGS = { '### Work reviewed': '### Work AIWorks looked at', '### Proposed execution plan': '### Proposed plan' };
 
+// A fixed explanation, never a fragment of the withheld answer. The reply composer remains the recovery route.
+export const WITHHELD_REPLY = 'This answer is hidden because it may contain private information. Ask AIWorks for a new summary without passwords, keys or other private details.';
+
 /**
  * A stored coordinator reply (replyParts text) as the owner reads it in Chats: the summary, the answer and the plan, in
  * plain words. The reply's own heading, its run and message numbers and its quote of the owner's message are left out:
