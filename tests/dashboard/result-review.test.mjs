@@ -132,6 +132,33 @@ test('Accept result and Request changes run the caller check first: a program AI
   assert.equal(store.all("SELECT 1 FROM journal WHERE kind = 'result-accepted'").length, 1);
 });
 
+test('a report kept for the project that started the campaign is a recorded report, never AIWorks\'s own fault', (t) => {
+  const env = environment();
+  const store = new Store(join(env.dataDir, 'supervisor.db'));
+  t.after(() => { store.close(); env.cleanup(); });
+  const d = { ...declaration({ campaignId: 'kept-goal', tasks: [{ ...task('K1', 701), deliverable: 'report', acceptance: ['The review names each risk'] }] }),
+    reportPublication: 'local' };
+  campaignStart(store, d);
+  const finish = (url) => {
+    const row = store.task(d.campaignId, 'K1');
+    store.patch('tasks', { campaign_id: d.campaignId, task_id: 'K1' }, row.version, { state: 'done', head_sha: SHA, verified_sha: SHA, result: { result: 'resolved', report: REPORT },
+      verification: verification([{ criterion: 1, result: 'pass', check: 'Read the report', evidence: 'Present.' }]), pr_url: url }, Date.now());
+  };
+  const read = () => {
+    const owner = ownerView(supervisorSnapshot(env.dataDir));
+    const rows = Object.values(owner.results).flatMap((project) => project.groups.flatMap((group) => group.rows));
+    return { row: rows.find((item) => item.taskId === 'K1'), fault: owner.items.find((item) => item.system && item.campaignId === d.campaignId) ?? null };
+  };
+
+  finish(`aiworks-report:${d.campaignId}/K1`);
+  const kept = read();
+  assert.deepEqual([kept.row.group, kept.row.word, kept.row.link, kept.fault], ['reports', 'Report kept for the project that asked · read it there', null, null]);
+
+  // Any other link, even of the same form for another step, says nothing about where this report went.
+  finish(`aiworks-report:${d.campaignId}/K2`);
+  assert.equal(read().fault?.kind, 'unrecorded');
+});
+
 test('a checked result with its criteria not checked is never shown or counted as passed, and links only to its own result', (t) => {
   const env = environment();
   const store = new Store(join(env.dataDir, 'supervisor.db'));
