@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { BROWSER_SERVER, DENY, TOOLS, webScope } from '../../src/supervisor/adapters/agy.mjs';
+import { CRITERIA_RULE } from '../../src/supervisor/adapters/claude.mjs';
 import { buildPrompt, classify, prepare, roleUnavailableReason, unavailableReason } from '../../src/supervisor/adapters/executors.mjs';
 import { validateDeclaration } from '../../src/supervisor/campaign.mjs';
 import { declaration, environment, runUntil, skipWithoutSqlite } from './helpers.mjs';
@@ -228,6 +229,7 @@ test('the browser prompt names the pages and the browser-only rules; the verifie
     repository: 'example-org/sampleapp', targetSha: 'b'.repeat(40), report: '**Visual acceptance: ACCEPTED**', reportDigest: 'c'.repeat(64) });
   assert.match(verify, /INDEPENDENT VERIFIER/);
   assert.match(verify, /re-check EVERY criterion/);
+  assert.ok(verify.includes(CRITERIA_RULE), 'a browser verification returns one criteria entry per acceptance criterion, or its report is never released');
   assert.ok(verify.includes(`targetSha ${'b'.repeat(40)} and reportDigest ${'c'.repeat(64)}`));
   assert.ok(verify.includes('<report>\n**Visual acceptance: ACCEPTED**\n</report>'));
   assert.match(buildPrompt({ role: 'implementer', deliverable: 'report', packet, packetDigest: digest, repository: 'example-org/sampleapp', baseSha: 'b'.repeat(40) }), /read AGENTS\.md/,
