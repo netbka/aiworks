@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { BROWSER_SERVER, DENY, TOOLS, webScope } from '../../src/supervisor/adapters/agy.mjs';
-import { CRITERIA_RULE } from '../../src/supervisor/adapters/claude.mjs';
+import { BROWSER_SERVER, DENY, TOOLS, WEB_CRITERIA_RULE, webScope } from '../../src/supervisor/adapters/agy.mjs';
+import { CRITERIA_RULE, validResult } from '../../src/supervisor/adapters/claude.mjs';
 import { buildPrompt, classify, prepare, roleUnavailableReason, unavailableReason } from '../../src/supervisor/adapters/executors.mjs';
 import { validateDeclaration } from '../../src/supervisor/campaign.mjs';
 import { declaration, environment, runUntil, skipWithoutSqlite } from './helpers.mjs';
@@ -229,7 +229,12 @@ test('the browser prompt names the pages and the browser-only rules; the verifie
     repository: 'example-org/sampleapp', targetSha: 'b'.repeat(40), report: '**Visual acceptance: ACCEPTED**', reportDigest: 'c'.repeat(64) });
   assert.match(verify, /INDEPENDENT VERIFIER/);
   assert.match(verify, /re-check EVERY criterion/);
-  assert.ok(verify.includes(CRITERIA_RULE), 'a browser verification returns one criteria entry per acceptance criterion, or its report is never released');
+  assert.ok(verify.includes(WEB_CRITERIA_RULE), 'a browser verification returns one criteria entry per acceptance criterion, or its report is never released');
+  assert.ok(!verify.includes(CRITERIA_RULE), 'a truthful REJECTED report is accepted, so the repository «failed criterion» rule does not apply');
+  // A truthful REJECTED report: the claim «criterion 1 fails» is true, so its criteria entry passes and the result is valid.
+  const truthful = { verdict: 'accepted', targetSha: 'b'.repeat(40), reportDigest: 'c'.repeat(64), summary: 'The report is true.', findings: [],
+    checks: [{ command: 'C1 layout', result: 'pass' }], criteria: [{ criterion: 1, result: 'pass', check: 'Opened the page', evidence: 'It overflows, as reported.' }] };
+  assert.equal(validResult('verification', truthful, { deliverable: 'report', targetSha: 'b'.repeat(40), reportDigest: 'c'.repeat(64) }), null);
   assert.ok(verify.includes(`targetSha ${'b'.repeat(40)} and reportDigest ${'c'.repeat(64)}`));
   assert.ok(verify.includes('<report>\n**Visual acceptance: ACCEPTED**\n</report>'));
   assert.match(buildPrompt({ role: 'implementer', deliverable: 'report', packet, packetDigest: digest, repository: 'example-org/sampleapp', baseSha: 'b'.repeat(40) }), /read AGENTS\.md/,
