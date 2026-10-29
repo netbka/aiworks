@@ -12,10 +12,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
 import { OWNER_CALLER } from '../supervisor/local-admission.mjs';
-import { mainLedger, recordOwnerMain, selfHostingSettings } from '../supervisor/self-hosting.mjs';
+import { recordOwnerMain, selfHostingSettings } from '../supervisor/self-hosting.mjs';
 import { addComment, comments, createItem, item, items, setItemState } from '../supervisor/work-list.mjs';
 import { CLOSE_IMPORTED_ON, closeCandidates, closeConfirmedIssues, itemVersion } from '../supervisor/work-list-import.mjs';
 import { safeText } from './roadmap.mjs';
+import { mergeReceipt } from './supervisor.mjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const VERSION = /^[0-9a-f]{64}$/;
@@ -55,29 +56,24 @@ const row = (entry, merged = new Set()) => ({ number: entry.number, kind: entry.
 
 /**
  * The checked local reviews (section 5.2): each `review` item the supervisor recorded, with its verified commit, and
- * whether the local merge gate recorded that commit or a refreshed version on the same item. The original verified
- * SHA stays historical evidence; a refreshed merge needs both its item-bound journal receipt and its main-ledger row.
+ * whether the local merge gate merged its step. Merged is read exactly as the step's own page reads it (supervisor.mjs
+ * mergeReceipt): the gate's `merged` receipt for the step's current verified commit and the published link that names
+ * this item, so every screen agrees. The item's original verified SHA stays historical evidence of a refreshed step.
  * Checked is never merged, and merged is never accepted.
  */
-function reviewRows(store, repository, limit = MAX_REVIEWS) {
-  const merges = repository ? mainLedger(store, repository).filter((entry) => entry.kind === 'gate-merge') : [];
-  const refreshed = new Map();
-  for (const receipt of store.all("SELECT campaign_id, detail FROM journal WHERE kind = 'merged' ORDER BY seq DESC")) {
-    const detail = receipt.detail;
-    const key = JSON.stringify([receipt.campaign_id, detail?.task, detail?.url]);
-    if (detail?.local !== true || !/^aiworks-work:[1-9]\d*$/.test(detail.url ?? '') || refreshed.has(key)) continue;
-    const merge = merges.find((entry) => entry.campaign_id === receipt.campaign_id && entry.task_id === detail.task &&
-      entry.verified_sha === detail.sha && entry.new_tip === detail.mergeCommit);
-    if (merge) refreshed.set(key, merge);
+function reviewRows(store, limit = MAX_REVIEWS) {
+  const receipts = new Map();
+  for (const row of store.all("SELECT campaign_id, at, detail FROM journal WHERE kind = 'merged' ORDER BY seq DESC")) {
+    receipts.set(row.campaign_id, [...(receipts.get(row.campaign_id) ?? []), row]);
   }
-  return store.all(`SELECT number, title, state, campaign_id, task_id, verified_sha, updated_at FROM work_items
-    WHERE kind = 'review' AND author_kind = 'supervisor' ORDER BY number DESC${limit ? ` LIMIT ${limit}` : ''}`).map((entry) => {
-    const update = refreshed.get(JSON.stringify([entry.campaign_id, entry.task_id, `aiworks-work:${entry.number}`]));
-    const merged = update?.campaign_id === entry.campaign_id && update.task_id === entry.task_id ? update
-      : merges.find((merge) => merge.verified_sha === entry.verified_sha && merge.campaign_id === entry.campaign_id && merge.task_id === entry.task_id);
+  return store.all(`SELECT w.number, w.title, w.state, w.campaign_id, w.task_id, w.verified_sha, w.updated_at, t.task_id AS step,
+    t.verified_sha AS step_sha, t.pr_url FROM work_items w LEFT JOIN tasks t ON t.campaign_id = w.campaign_id AND t.task_id = w.task_id
+    WHERE w.kind = 'review' AND w.author_kind = 'supervisor' ORDER BY w.number DESC${limit ? ` LIMIT ${limit}` : ''}`).map((entry) => {
+    const merged = entry.step && entry.pr_url === `aiworks-work:${entry.number}`
+      ? mergeReceipt({ task_id: entry.step, verified_sha: entry.step_sha, pr_url: entry.pr_url }, receipts.get(entry.campaign_id) ?? []) : null;
     return { number: entry.number, title: safeText(entry.title, 256), state: entry.state, campaignId: entry.campaign_id, taskId: entry.task_id,
-      verifiedSha: /^[0-9a-f]{40}$/.test(entry.verified_sha ?? '') ? entry.verified_sha : null, mergedAt: merged ? isoTime(merged.recorded_at) : null,
-      mergedSha: merged?.verified_sha ?? null,
+      verifiedSha: /^[0-9a-f]{40}$/.test(entry.verified_sha ?? '') ? entry.verified_sha : null, mergedAt: merged ? isoTime(merged.mergedAt) : null,
+      mergedSha: merged?.sha ?? null,
       updatedAt: isoTime(entry.updated_at) };
   });
 }
@@ -94,7 +90,7 @@ export function workListView(dataDir, { closeOn = CLOSE_IMPORTED_ON } = {}) {
     imported: { candidates: [], closeOn, max: MAX_CONFIRM } };
   return readOnly(dataDir, (store) => {
     if (!present(store)) return { ...off, readable: true };
-    const all = items(store), reviews = reviewRows(store, repository, null);
+    const all = items(store), reviews = reviewRows(store, null);
     // Merged results stay open as history; they are told apart from unfinished work, never closed here.
     const merged = new Set(reviews.filter((review) => review.mergedAt).map((review) => review.number));
     const candidates = repository ? closeCandidates(store, repository).map((entry) => ({ ...entry, title: safeText(item(store, entry.number)?.title, 256) })) : [];
@@ -111,8 +107,7 @@ export function workItemView(dataDir, number, { textChecks } = {}) {
     const found = present(store) ? item(store, number) : null;
     if (!found) return null;
     const all = comments(store, number);
-    const repository = selfHostingSettings(readConfig(dataDir)).repository;
-    const merged = new Set(reviewRows(store, repository, null).filter((review) => review.mergedAt).map((review) => review.number));
+    const merged = new Set(reviewRows(store, null).filter((review) => review.mergedAt).map((review) => review.number));
     return { ...row(found, merged), version: itemVersion(found), body: textChecks?.read(found.body, MAX_SHOWN_BODY).text ?? safeText(found.body, MAX_SHOWN_BODY), shortened: found.body.length > MAX_SHOWN_BODY,
       verifiedSha: found.verified_sha ?? null, source: found.source_url && /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+$/.test(found.source_url)
         ? { url: found.source_url, updatedAt: safeText(found.source_updated_at, 64) } : null,

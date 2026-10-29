@@ -977,7 +977,7 @@ function localReviewAddress(store, campaignId, task) {
  * The merge recorded for exactly this step's verified commit and published link: a pull request merged on GitHub, or a
  * local review the local merge gate merged into local main (merge.mjs recordLocal, `local: true`).
  */
-function mergeReceipt(task, rows) {
+export function mergeReceipt(task, rows) {
   const row = rows.find(({ detail }) => detail?.task === task.task_id && detail.sha === task.verified_sha &&
     (detail.originalUrl ?? detail.url) === task.pr_url && /^[a-f0-9]{40}$/.test(detail.sha ?? '') &&
     /^[a-f0-9]{40}$/.test(detail.mergeCommit ?? '') &&

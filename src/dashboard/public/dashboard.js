@@ -4168,17 +4168,19 @@ function releasesScreen(project) {
       el('h3', {}, `Releases (${v.releases.length})`),
       v.releases.length ? el('ul', { class: 'settings-links' }, ...v.releases.map((r) => releaseItem(project, r)))
         : el('p', { class: 'subtext' }, 'No release is recorded for this project. In Review only, AIWorks deploys nothing; whether a merged result is live is not known here.'),
-      el('h3', {}, `Checked results (${applied ?? v.results.length})`),
+      // Not "Checked results": a result here may have failed its check, and its release may not be checked at all.
+      el('h3', {}, `${applied ? 'Checked results' : 'Results'} (${applied ?? v.results.length})`),
       applied ? el('p', { class: 'subtext' }, 'They are never released: you apply each one to your folder, and undo it, on ',
         routeLink('Review', { screen: 'project', project, tab: 'review' }), '.')
       : v.results.length ? el('ul', { class: 'settings-links' }, ...v.results.map((item) => el('li', {}, el('strong', {}, item.text),
         el('div', { class: 'subtext' }, [...STEP_KEYS.map(([key, word]) => [word, item.steps.find((step) => step.key === key)?.answer]).filter(([, answer]) => answer)
-          .map(([word, answer]) => `${word}: ${LADDER_WORDS[answer] ?? 'Unknown'}`), `Accepted by you: ${LADDER_WORDS[item.accepted] ?? 'Unknown'}`].join(' · ')),
+          .map(([word, answer]) => `${word}: ${LADDER_WORDS[answer] ?? 'Not known'}`), `Accepted by you: ${LADDER_WORDS[item.accepted] ?? 'Not known'}`].join(' · ')),
+        item.liveFrom ? el('div', { class: 'subtext' }, `Live: Yes comes from AIWorks’s recorded release to ${item.liveFrom}, listed under Releases above.`) : null,
         item.note ? el('div', { class: 'subtext' }, item.note) : null)))
-        : el('p', { class: 'subtext' }, 'No checked result yet.')),
+        : el('p', { class: 'subtext' }, 'No result yet.')),
     el('div', { class: 'panel-body' }, releaseStopLine(state.supervisor.settings?.releaseStop)))];
 }
-const LADDER_WORDS = { yes: 'Yes', no: 'No', 'in-progress': 'In progress', unknown: 'Unknown' };
+const LADDER_WORDS = { yes: 'Yes', no: 'No', 'in-progress': 'In progress', unknown: 'Not known' };
 
 /** Check the site now: one read-only check through the release role. The answer is said as it came; unknown is unknown. */
 async function checkSite(project, releaseId) {

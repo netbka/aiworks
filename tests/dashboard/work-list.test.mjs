@@ -11,7 +11,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from '../../src/supervisor/store.mjs';
-import { comments, item } from '../../src/supervisor/work-list.mjs';
+import { comments, createItem, item } from '../../src/supervisor/work-list.mjs';
+import { workListView } from '../../src/dashboard/work-list.mjs';
 import { importIssues } from '../../src/supervisor/work-list-import.mjs';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
 
@@ -115,4 +116,24 @@ test('a confirmation closes exactly the version-bound list it showed, once, and 
   assert.equal(writes().length, sent);
   assert.deepEqual(remote().open.map((issue) => issue.number), [2]);
   assert.deepEqual((await owner.state()).imported.candidates.map((entry) => entry.number), [2]);
+});
+
+test('a checked local review reads merged only from the merge receipt of its step\'s current verified commit, as the step page does', (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'aiworks-dashboard-worklist-merged-'));
+  t.after(() => rmSync(dataDir, { recursive: true, force: true }));
+  const older = 'a'.repeat(40), current = 'b'.repeat(40), mergeCommit = 'c'.repeat(40), now = 1_760_000_000_000;
+  const store = new Store(join(dataDir, 'supervisor.db'));
+  const review = createItem(store, { kind: 'review', title: 'T1: shopping list', links: { campaignId: 'goal', taskId: 'T1', verifiedSha: older }, authorKind: 'supervisor', now });
+  const url = `aiworks-work:${review.number}`;
+  store.run(`INSERT INTO tasks (campaign_id, task_id, ord, state, verified_sha, pr_url, version, updated_at) VALUES ('goal', 'T1', 1, 'done', ?, ?, 1, ?)`, current, url, now);
+  const merged = () => workListView(dataDir).reviews.find((entry) => entry.number === review.number).mergedAt !== null;
+  // A receipt for the item's first commit, or for the current commit under another link, is not this step's merge.
+  store.journal('goal', 'merged', { task: 'T1', sha: older, url, mergeCommit, local: true }, now);
+  store.journal('goal', 'merged', { task: 'T1', sha: current, url: 'aiworks-work:999', mergeCommit, local: true }, now);
+  assert.equal(merged(), false);
+  // The merge gate's receipt for the refreshed verified commit on the same item: merged, on the step page and here.
+  store.journal('goal', 'merged', { task: 'T1', sha: current, url, mergeCommit, local: true }, now);
+  assert.equal(merged(), true);
+  assert.equal(workListView(dataDir).items.find((entry) => entry.number === review.number).merged, true);
+  store.close();
 });
