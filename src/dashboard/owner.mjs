@@ -725,7 +725,9 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     } else if (['work-lapsed', 'work-not-picked-up'].includes(liveness)) {
       // AIWorks runs, but not this work: an item of this work's project, worded for this work alone, with its one time.
       const words = liveness === 'work-lapsed' ? NEEDS.lapsed(paused, working > 0) : NEEDS.unpicked(paused);
-      items.push({ ...base, kind: 'unattended', at: liveness === 'work-lapsed' ? leaseEnded : undefined, text: words.text, points: [{ link: null, text: words.point }] });
+      // Its card offers Check again (shown only while the work takes it), never advice to sign out or restart (aiworks#99).
+      items.push({ ...base, kind: 'unattended', at: liveness === 'work-lapsed' ? leaseEnded : undefined, text: words.text, points: [{ link: null, text: words.point }],
+        command: { label: 'Check again', command: 'recheck', campaignId: c.id } });
     } else if (liveness === 'agent-working-supervisor-silent') {
       halted.push({ c, at: leaseEnded, how: 'silent', paused });
     } else if (liveness === 'stopped') {

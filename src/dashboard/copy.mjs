@@ -53,15 +53,14 @@ const review = () => resolve;
 const TIME = (value) => new Date(value).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 const DATE_TIME = (value) => new Date(value).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).replace(',', '');
 // The dashboard reads the AIWorks records of the computer it runs on (AW-006), so the computer AIWorks runs on is always
-// "this computer"; its name is in the page header (aiworks#11 review F22). AIWorks starts by itself when the owner signs
-// in (docs/SUPERVISOR.md §6), so the advice needs no name of how it runs; when that does not help, the fix is outside
-// this page, and the sentence says who makes it (aiworks#11 review 5 G4).
-const SIGN_IN = 'sign out of this computer and sign in again, or restart the computer: AIWorks starts again by itself when you sign in.';
-const RESTART = `If nobody is updating it right now, ${SIGN_IN} If AIWorks still does not start, whoever set up AIWorks on this computer needs to look at it.`;
-/** What restarts AIWorks when it has stopped (docs/SUPERVISOR.md §6), in the owner's words. */
+// "this computer"; its name is in the page header (aiworks#11 review F22). The owner is never told to sign out or restart
+// the computer (aiworks#99): the fix is outside this page, and the sentence says who makes it (aiworks#11 review 5 G4).
+const RESTART = 'If nobody is updating it right now, whoever set up AIWorks on this computer needs to start it again.';
+/** What to do when AIWorks has stopped (docs/SUPERVISOR.md §6), in the owner's words. */
 export const RESTART_ADVICE = RESTART;
-// AIWorks runs, but has not checked on one piece of work (aiworks#11 review 4 F2): restarting is the owner's fix only if it lasts.
-const RESTART_RUNNING = `If it stays like this, ${SIGN_IN} If that does not help, whoever set up AIWorks on this computer needs to look at it.`;
+// AIWorks runs, but has not checked on one piece of work (aiworks#11 review 4 F2): its card offers Check again.
+const RESTART_RUNNING = 'If it stays like this, press Check again. If that does not help, whoever set up AIWorks on this computer needs to look at it.';
+const CHECK_AGAIN = (campaignId) => (campaignId ? { label: 'Check again', command: 'recheck', campaignId } : null);
 
 /**
  * Every state of §7, by key. `d` is the data the sentence is filled from; `f` the time formatters. Keys a slice has
@@ -95,9 +94,9 @@ const STATES = {
   // One piece of work while AIWorks itself runs (aiworks#11 review 4 F2): its own state, with its one time. "AIWorks has
   // stopped" is said only from the computer-wide state (src/supervisor/api.mjs supervisorLiveness), never from one lease.
   'work-lapsed': { section: '7.2', needsYou: true, copy: (d, f) => [`AIWorks is running, but last checked on this work${stoppedAt(d.stoppedAt, f)}.`,
-    `Other work goes on. This work does not move until AIWorks checks on it again. ${RESTART_RUNNING}`, null] },
+    `Other work goes on. This work does not move until AIWorks checks on it again. ${RESTART_RUNNING}`, CHECK_AGAIN(d.campaignId)] },
   'work-not-picked-up': { section: '7.2', needsYou: true, copy: (d, f) => [`Approved${d.registeredAt ? ` at ${f.time(d.registeredAt)}` : ''}; AIWorks is running, but has not picked it up.`,
-    `Nothing of it starts until AIWorks picks it up. ${RESTART_RUNNING}`, null] },
+    `Nothing of it starts until AIWorks picks it up. ${RESTART_RUNNING}`, CHECK_AGAIN(d.campaignId)] },
   // §7.3 No worker
   'provider-wait': { section: '7.3', needsYou: false, copy: (d, f) => ['Waiting for an AI worker to be free.',
     `${d.retryAt ? `${providerName(d.provider)} can start again at ${f.time(d.retryAt)}. ` : ''}Work continues by itself. Nothing for you to do.`, null] },
@@ -119,7 +118,7 @@ const STATES = {
   'paused-stopped': { section: '7.5', needsYou: true, copy: (d, f) => [`${d.pausedAt ? `Paused since ${f.dateTime(d.pausedAt)}` : 'Paused'}, and AIWorks has stopped on this computer${stoppedAt(d.stoppedAt, f)}.`,
     `Nothing can resume until it runs again. ${RESTART}`, null] },
   'paused-work-lapsed': { section: '7.5', needsYou: true, copy: (d, f) => [`${d.pausedAt ? `Paused since ${f.dateTime(d.pausedAt)}` : 'Paused'}; AIWorks is running, but last checked on this work${stoppedAt(d.stoppedAt, f)}.`,
-    `It can’t resume until AIWorks checks on it again. ${RESTART_RUNNING}`, null] },
+    `It can’t resume until AIWorks checks on it again. ${RESTART_RUNNING}`, CHECK_AGAIN(d.campaignId)] },
   // §7.6 Running
   'builder-working': { section: '7.6', needsYou: false, copy: (d, f) => [`Working on: ${sentence(d.step)}`,
     `The builder (${providerName(d.provider)}) started at ${f.time(d.startedAt)}${d.lastActivityAt ? ` · last activity ${ago(d.now - d.lastActivityAt)}` : ''}.`, openWork(d.project)] },
@@ -268,8 +267,8 @@ function itemState(item, c, d) {
   // One piece of work AIWorks, while running, has not checked on or picked up (review 4 F2): that work's own state.
   if (item.kind === 'unattended' && c) {
     const view = d.owner?.campaigns?.[c.id];
-    if (view?.liveness === 'work-not-picked-up') return ['work-not-picked-up', { registeredAt: view.registeredAt }];
-    return [c.control === 'paused' ? 'paused-work-lapsed' : 'work-lapsed', { stoppedAt: view?.lastCheckIn ?? null, pausedAt: c.pausedAt ?? null }];
+    if (view?.liveness === 'work-not-picked-up') return ['work-not-picked-up', { registeredAt: view.registeredAt, campaignId: c.id }];
+    return [c.control === 'paused' ? 'paused-work-lapsed' : 'work-lapsed', { stoppedAt: view?.lastCheckIn ?? null, pausedAt: c.pausedAt ?? null, campaignId: c.id }];
   }
   // One item: what it is about and why the owner is needed; it is resolved in Needs you, never on GitHub.
   return ['one-thing', { action: item.action, text: item.why ? `${item.text}. ${item.why}` : item.text }];
