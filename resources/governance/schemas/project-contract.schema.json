@@ -14,6 +14,14 @@
     "lifecycle": { "enum": ["active", "experimental", "parked", "archived"] },
     "capabilities": { "type": "array", "uniqueItems": true, "maxItems": 16, "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" } },
     "environments": { "type": "array", "uniqueItems": true, "items": { "enum": ["local", "dev", "staging", "prod"] } },
+    "web": {
+      "$comment": "AIWorks web build tasks (docs/SUPERVISOR.md section 11): the only origins on which a task with web.mode build may change pages. Absent means none.",
+      "type": "object", "required": ["buildOrigins"],
+      "properties": {
+        "buildOrigins": { "type": "array", "uniqueItems": true, "maxItems": 16, "items": { "type": "string", "pattern": "^https?://[^/?#@\\s]+$" } }
+      },
+      "additionalProperties": false
+    },
     "governance": {
       "type": "object", "required": ["authorities", "independentVerificationGate"],
       "properties": {

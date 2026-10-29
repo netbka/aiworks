@@ -10,7 +10,8 @@ import { fileURLToPath } from 'node:url';
 import { BROWSER_SERVER, DENY, TOOLS, WEB_CRITERIA_RULE, webScope } from '../../src/supervisor/adapters/agy.mjs';
 import { CRITERIA_RULE, validResult } from '../../src/supervisor/adapters/claude.mjs';
 import { passedCheck } from '../../src/supervisor/result-review.mjs';
-import { buildPrompt, classify, prepare, roleUnavailableReason, unavailableReason } from '../../src/supervisor/adapters/executors.mjs';
+import { buildPrompt, classify, prepare, roleUnavailableReason, unavailableReason, webFlag } from '../../src/supervisor/adapters/executors.mjs';
+import { route } from '../../src/supervisor/router.mjs';
 import { validateDeclaration } from '../../src/supervisor/campaign.mjs';
 import { declaration, environment, runUntil, skipWithoutSqlite } from './helpers.mjs';
 
@@ -248,6 +249,36 @@ test('the browser prompt names the pages and the browser-only rules; the verifie
   assert.ok(verify.includes('<report>\n**Visual acceptance: ACCEPTED**\n</report>'));
   assert.match(buildPrompt({ role: 'implementer', deliverable: 'report', packet, packetDigest: digest, repository: 'example-org/sampleapp', baseSha: 'b'.repeat(40) }), /read AGENTS\.md/,
     'other providers keep the repository prompt');
+});
+
+test('a web build task is never routed to agy, to implement or to verify', () => {
+  const build = webFlag({ urls: ['https://dev.example.invalid/'], mode: 'build' });
+  for (const stage of ['implement', 'verify']) {
+    const decision = route({ stage, chain: true, task: { deliverable: 'report', web: build }, platform: 'win32',
+      candidates: [{ kind: 'agy-cli', model: agy.model }, { kind: 'claude-cli', model: 'opus' }],
+      hostFacts: ['agy-cli', 'claude-cli'].map((kind) => ({ kind, cliConfigured: true, hostUnavailable: false, wait: null })),
+      escalation: { priorAttempts: [] } });
+    assert.equal(decision.chosen.kind, 'claude-cli', stage);
+    const alone = route({ stage, chain: false, task: { deliverable: 'report', web: build }, platform: 'win32',
+      candidates: [{ kind: 'agy-cli', model: agy.model }], hostFacts: [{ kind: 'agy-cli', cliConfigured: true, hostUnavailable: false, wait: null }],
+      escalation: { priorAttempts: [] } });
+    assert.equal(alone.chosen, null, `${stage}: agy alone never takes a build task`);
+  }
+});
+
+test('an accepted build verification needs every criterion passed', () => {
+  const report = 'r';
+  const reportDigest = createHash('sha256').update(report, 'utf8').digest('hex');
+  const expect = { deliverable: 'report', targetSha: 'b'.repeat(40), reportDigest, acceptance: 2 };
+  const criterion = (n, result) => ({ criterion: n, result, check: 'Opened the page', evidence: 'Seen.' });
+  const accepted = (criteria) => ({ verdict: 'accepted', targetSha: 'b'.repeat(40), reportDigest, summary: 'Done.', findings: [],
+    checks: [{ command: 'change 1', result: 'pass' }], criteria });
+  for (const criteria of [[criterion(1, 'pass'), criterion(2, 'fail')], [criterion(1, 'pass')], [criterion(1, 'pass'), criterion(2, 'not-checked')]]) {
+    assert.ok(validResult('verification', accepted(criteria), { ...expect, web: 'build' }), JSON.stringify(criteria));
+  }
+  const full = accepted([criterion(1, 'pass'), criterion(2, 'pass')]);
+  assert.equal(validResult('verification', full, { ...expect, web: 'build' }), null);
+  assert.equal(passedCheck({ verification: full, verified_sha: 'b'.repeat(40), result: { report } }, ['C1', 'C2']), true, 'its report is released');
 });
 
 test('a campaign routes its web task to agy for acceptance and verification, and its code task elsewhere', { skip: skipWithoutSqlite }, async (t) => {
