@@ -887,6 +887,27 @@ export function decisionView(campaignId, task, feedback, now) {
 }
 
 /**
+ * AW-016: the decisions AIWorks answered itself with the worker's reversible suggestion, newest first, while their step's
+ * result is not accepted or merged yet, so the owner can still change them. Question, options and reason come from the
+ * validated decision recorded with the answer and pass the same filter as an open decision's.
+ */
+export function autoAnswers(store, campaignId, taskRows) {
+  const open = new Set(taskRows.filter((task) => task.state !== 'cancelled').map((task) => task.task_id));
+  const seen = new Set(), out = [];
+  for (const row of store.all("SELECT at, detail FROM journal WHERE campaign_id = ? AND kind = 'decision-answered' ORDER BY seq DESC LIMIT 200", campaignId)) {
+    const detail = row.detail ?? {}, d = detail.auto ? structuredDecision({ decision: { question: detail.question, options: detail.options, suggestion: detail.suggestion } }) : null;
+    if (!d || !open.has(detail.task) || seen.has(detail.task)) continue;
+    seen.add(detail.task);
+    const chosen = d.options.find((o) => o.id === detail.option);
+    if (!chosen) continue;
+    out.push({ taskId: detail.task, at: row.at, question: safeText(d.question, 500), chosen: safeText(chosen.label, 120),
+      reason: d.suggestion ? safeText(d.suggestion.reason, 500) : null,
+      others: d.options.filter((o) => o.id !== chosen.id).map((o) => safeText(o.label, 120)) });
+  }
+  return out;
+}
+
+/**
  * Review of one step's result (OWNER_UI_V2 WP4), or null before any head was verified. Each acceptance criterion of the
  * step with what the independent verifier checked and saw, from the validated fields of its accepted verification of
  * exactly the verified head and report (result-review.mjs); a criterion it did not report is "not checked". The verdict
@@ -1180,6 +1201,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
                 runOutcome: code(op?.outcome?.class === 'result' ? op.outcome.value?.result ?? op.outcome.value?.verdict : op?.outcome?.class) };
             })() };
         }),
+        autoDecisions: autoAnswers(store, id, taskRows),
         tasks: taskRows.map((task) => ({ id: task.task_id, title: safeText(specs.get(task.task_id)?.title),
           risk: riskOf(specs.get(task.task_id)),
           decision: decisionView(id, task, feedback, now),

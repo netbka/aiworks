@@ -137,3 +137,18 @@ Owner decision 2026-10-21 ([#45](https://github.com/example-org/aiworks/issues/4
 - Switching to the owner's mode holds every unmerged head without acceptance; switching back lets the existing gate continue. Waiting versions are listed in Needs you with Accept and Request changes.
 
 Acceptance still never merges by itself: the merge gate's other conditions and AW-001 stay. A project without GitHub is accepted by Apply, as before.
+
+## AW-016 - Needs you holds only what the owner alone can decide
+
+Owner decision 2026-10-29: AIWorks works for the owner, not the other way round. Needs you, its count and the Home headline hold only what changes the product and only the owner can answer. Everything else AIWorks settles inside the authority it already has, or lists apart as its own state, never counted.
+
+| Situation | Who |
+| --- | --- |
+| A decision with a suggestion that the worker marked reversible | AIWorks answers with the suggestion at once and tells the owner, who can change the answer until the result is accepted |
+| A decision without a usable suggestion | The owner. Workers are told to give 2 to 4 options and a suggestion |
+| A checked result waiting for acceptance; a merge left to someone else that stalled; an accepted result AIWorks may not merge; a failed rollback | The owner |
+| A published result without an independent check on record | AIWorks checks it again by itself, once per version, within the approved plan |
+| Work AIWorks has not looked at for a while; AIWorks stopped on this computer; a step stopped by failures, a missing tool or no AI worker for it; merge problems; results not recorded; an unknown release outcome; unreadable messages | AIWorks's own state: listed apart with what it does next, not counted |
+| Changes the owner requested on paused or cancelled work | Settled when they are requested: the request offers to resume. Not listed afterwards |
+
+A decision answered by AIWorks keeps its question, options and reason in the record. Answering it never widens the packet (decisions.mjs). A decision is only answered automatically when the worker said the suggestion changes nothing outside the step's own work and can be undone in a later round: no spending, credentials, deleted data, publishing or access changes. The owner still accepts the result as before.
