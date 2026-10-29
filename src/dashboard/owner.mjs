@@ -321,7 +321,7 @@ function localReviewRow(review, text, merged = Boolean(review.mergedAt)) {
 }
 
 /** The words of one release step's answer (AUTO_RELEASE.md section 1). */
-export const LADDER_ANSWERS = { yes: 'Yes', no: 'No', 'in-progress': 'In progress', unknown: 'Unknown' };
+export const LADDER_ANSWERS = { yes: 'Yes', no: 'No', 'in-progress': 'In progress', unknown: 'Not known' };
 
 /**
  * The five steps of one result (AUTO_RELEASE.md section 1 and 9, slice UI15), each yes, no, in-progress or unknown,
@@ -341,8 +341,9 @@ export function releaseLadder(task, d, recorded = null, { github = true } = {}) 
     return entry.outcome === null && recorded.state !== 'unknown' ? 'in-progress' : 'unknown';
   };
   const merged = !github ? null : d?.state === 'merged' ? 'yes' : forward('merge') ?? (!d || d.state === 'unknown' || d.pending ? 'unknown' : 'no');
-  // Without a recorded release AIWorks released nothing; whether the project's own release made it live is not known here.
-  const unreleased = merged === 'no' ? 'no' : 'unknown';
+  // Without a recorded release AIWorks released nothing; whether the project's own release made it live is not known here,
+  // so it is unknown, never no, even before the merge.
+  const unreleased = 'unknown';
   const releases = !recorded || ['deploy', 'apply'].some((step) => recorded.steps.includes(step));
   const steps = [
     { key: 'implemented', label: 'Implemented', answer: task.headSha ? 'yes' : 'unknown' },
@@ -724,7 +725,9 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     } else if (['work-lapsed', 'work-not-picked-up'].includes(liveness)) {
       // AIWorks runs, but not this work: an item of this work's project, worded for this work alone, with its one time.
       const words = liveness === 'work-lapsed' ? NEEDS.lapsed(paused, working > 0) : NEEDS.unpicked(paused);
-      items.push({ ...base, kind: 'unattended', at: liveness === 'work-lapsed' ? leaseEnded : undefined, text: words.text, points: [{ link: null, text: words.point }] });
+      // Its card offers Check again (shown only while the work takes it), never advice to sign out or restart (aiworks#99).
+      items.push({ ...base, kind: 'unattended', at: liveness === 'work-lapsed' ? leaseEnded : undefined, text: words.text, points: [{ link: null, text: words.point }],
+        command: { label: 'Check again', command: 'recheck', campaignId: c.id } });
     } else if (liveness === 'agent-working-supervisor-silent') {
       halted.push({ c, at: leaseEnded, how: 'silent', paused });
     } else if (liveness === 'stopped') {
