@@ -31,9 +31,12 @@ export const DECISION_SCHEMA = {
       properties: { option: { type: 'string', pattern: '^[a-z][a-z0-9-]{0,31}$' }, reason: DECISION_TEXT } },
     continues: DECISION_TEXT,
     unanswered: DECISION_TEXT,
+    // AW-016: true only when acting on the suggestion changes nothing outside the step's own work and a later round can
+    // undo it. AIWorks then answers with the suggestion at once and tells the owner, who can still change the answer.
+    reversible: { type: 'boolean' },
   },
 };
-export const DECISION_RULE = 'When the owner must choose, you may add decision = { question, options: 2 to 4 of { id (lowercase, a-z0-9-), label, consequence }, suggestion: { option (one of the ids), reason }, continues (what goes on meanwhile), unanswered (what happens without an answer) }; leave it out otherwise. An answer never widens the packet.';
+export const DECISION_RULE = 'When the owner must choose, add decision = { question, options: 2 to 4 of { id (lowercase, a-z0-9-), label, consequence }, suggestion: { option (one of the ids), reason }, continues (what goes on meanwhile), unanswered (what happens without an answer), reversible }; leave it out otherwise. Always give options and a suggestion: a bare question costs the owner more than a choice. Set reversible to true only when choosing the suggestion changes nothing outside this step\'s own work and a later round can undo it: no spending, credentials, deleted data, publishing, or access and permission changes. An answer never widens the packet.';
 
 // Acceptance evidence (OWNER_UI_V2 WP4): optional on a verifier result, so a result without it is valid as before. One
 // entry per acceptance criterion of the packet, by its 1-based position; what was checked and the evidence, in words the

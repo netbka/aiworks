@@ -377,13 +377,14 @@ function fill(store, dataDir, root, now) {
   id = start(declaration('notes-theme', notes, 'Give the site a dark theme', 110, [task('T1', 111, 'dark theme', 'Dark theme'),
     task('T2', 112, 'theme switch', 'Theme switch')]), now - 7 * H);
   live(id);
-  // A structured decision (OWNER_UI_V2 WP2): options with consequences, a suggestion, what continues and what happens unanswered.
-  setTask(id, 'T1', { attempts: 1, blocked: { class: 'B3', reason: 'owner-reserved: the colour palette is a brand decision', at: now - 6 * H, decision: {
+  // A reversible structured decision (OWNER_UI_V2 WP2, AW-016): AIWorks answered it with its suggestion and recorded the
+  // question, options and reason, so the owner sees what it chose under "AIWorks decided for you" and can change it.
+  setTask(id, 'T1', { attempts: 1 });
+  store.journal(id, 'decision-answered', { task: 'T1', decision: 'd'.repeat(32), option: 'neutral', auto: true,
     question: 'Which palette should the dark theme use?',
     options: [{ id: 'brand', label: 'Brand colours', consequence: 'Matches the logo; two contrast fixes are needed.' },
       { id: 'neutral', label: 'Neutral greys', consequence: 'Passes contrast as is; looks plainer.' }],
-    suggestion: { option: 'neutral', reason: 'It passes the contrast check without extra work.' },
-    continues: 'Other work on the site keeps going.', unanswered: 'Dark theme stays stopped; nothing is published.' } } });
+    suggestion: { option: 'neutral', reason: 'It passes the contrast check without extra work.' } }, now - 6 * H);
   // A free-text decision: the worker described no options, so the owner answers in their own words.
   setTask(id, 'T2', { attempts: 1, blocked: { class: 'B3', reason: 'owner-reserved: where the switch goes is a design decision', at: now - 5 * H } });
 
