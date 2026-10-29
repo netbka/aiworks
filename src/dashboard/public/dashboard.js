@@ -1596,6 +1596,36 @@ function handlingList(handling) {
       el('div', { class: 'needs-actions needs-secondary' }, routeLink('Open the step', { screen: 'step', project: entry.repository, work: entry.campaignId, step: entry.taskId }, 'needs-link'))))));
 }
 
+/**
+ * AW-016: the decisions AIWorks answered itself with the worker's reversible suggestion. One line each: what it chose
+ * and why, with the step, where Send guidance changes it. Never counted: nothing waits for the owner here.
+ */
+function decidedList(decided) {
+  if (!decided.length) return null;
+  return el('section', { class: 'needs-group needs-decided', 'aria-labelledby': 'needs-decided-title', 'data-focus-scope': 'needs/decided' },
+    el('h3', { id: 'needs-decided-title', class: 'section-title' }, `AIWorks decided for you (${decided.length})`),
+    el('p', { class: 'subtext' }, 'Reversible choices, made with the suggested option so work kept going. You can change each one while its step is still being made.'),
+    el('ul', { class: 'needs-list' }, ...decided.slice(0, 8).map((d) => el('li', { class: 'needs-item decided', 'data-focus-scope': `needs-decided/${d.campaignId}/${d.taskId}` },
+      el('div', { class: 'needs-body' },
+        el('div', { class: 'needs-context' }, [`Project ${projectName(d.project)}`, d.step].filter(Boolean).join(' · ')),
+        el('div', { class: 'needs-text' }, el('span', {}, `${d.question} `), el('strong', {}, d.chosen)),
+        d.reason ? el('p', { class: 'needs-why' }, d.reason) : null,
+        d.others.length ? el('div', { class: 'subtext' }, `Other options: ${d.others.join(' · ')}`) : null),
+      el('div', { class: 'needs-actions needs-secondary' }, routeLink('Change it', { screen: 'step', project: d.project, work: d.campaignId, step: d.taskId }, 'needs-link'))))));
+}
+
+/**
+ * AW-016: AIWorks's own state, apart from what needs the owner and folded away: its problems with their Check again,
+ * and the routine work it is continuing. Listed so nothing stalled is hidden; never counted.
+ */
+function ownStateList(group, handling) {
+  const problems = group?.items ?? [], total = problems.length + handling.length;
+  if (!total) return null;
+  return el('section', { class: 'needs-own', 'data-focus-scope': 'needs/own' }, disclosure('needs/own',
+    `AIWorks is handling ${plural(total, 'thing')} itself${problems.length ? ` · ${plural(problems.length, 'problem')} of its own` : ''}`,
+    el('div', {}, problems.length ? el('ul', { class: 'needs-list' }, ...problems.map(needsItem)) : null, handlingList(handling))));
+}
+
 /** Needs you: what is waiting for the owner, grouped by project, in plain words, each resolved on its own card. */
 function needsYou() {
   const owner = state.owner;
@@ -1609,9 +1639,10 @@ function needsYou() {
     controller?.stopped && !said ? el('p', { class: 'needs-stopped' }, NEEDS.banner(controller.lastLeaseRenewalAt, { dateTime }, controller.stopRequested)) : null,
     el('div', { class: 'needs-head' }, el('h2', { id: 'needs-title' }, headline),
       unknown ? el('span', { class: 'needs-unknown' }, `Merge of ${unknown} published step${unknown === 1 ? '' : 's'} being checked`) : null),
-    // Only owner actions here (owner, 2026-10-13): posted reports and merged work ready for release are on Results.
-    ...groups.map(needsGroup),
-    handlingList(handling),
+    // Only owner actions here (owner, 2026-10-13; AW-016): posted reports and merged work ready for release are on Results.
+    ...groups.filter((group) => group.key !== 'aiworks-itself').map(needsGroup),
+    decidedList(owner.decided ?? []),
+    ownStateList(groups.find((group) => group.key === 'aiworks-itself'), handling),
     // Projects held up by the owner's decisions: no work is blocked, so they are not counted, but each is named with a
     // link to its Now, which says which decisions (aiworks#11 review 5 G7).
     held.length ? el('ul', { class: 'needs-list', 'data-focus-scope': 'needs/held' }, ...held.map((project) => el('li', {},
@@ -2639,8 +2670,8 @@ function homeScreen() {
   // and Request changes, a stopped step with guidance and Check again.
   const first = state.owner?.items?.find((item) => !item.system);
   const heroText = home.needsYou.count && reviews.length
-    ? `${plural(home.needsYou.count, 'decision')} need${home.needsYou.count === 1 ? 's' : ''} you. ${plural(reviews.length, 'new result')} ${reviews.length === 1 ? 'is' : 'are'} ready to try.`
-    : home.needsYou.count ? `${plural(home.needsYou.count, 'decision')} need${home.needsYou.count === 1 ? 's' : ''} you.`
+    ? `${plural(home.needsYou.count, 'thing')} need${home.needsYou.count === 1 ? 's' : ''} you. ${plural(reviews.length, 'new result')} ${reviews.length === 1 ? 'is' : 'are'} ready to try.`
+    : home.needsYou.count ? `${plural(home.needsYou.count, 'thing')} need${home.needsYou.count === 1 ? 's' : ''} you.`
       : reviews.length ? `${plural(reviews.length, 'new result')} ${reviews.length === 1 ? 'is' : 'are'} ready to try.`
         : 'Nothing needs you right now.';
   // h2, not h1: index.html already carries the page's one h1 (#view-title) outside #content (showRoute()).
@@ -3063,8 +3094,6 @@ function decisionPanel(c, task) {
       return [el('label', { class: 'choice' }, input, el('span', {}, o.label, d.suggestion?.option === o.id ? ' (suggested)' : '')),
         el('p', { id: `${radios}-${o.id}`, class: 'subtext' }, o.consequence)];
     }), choice) : null;
-  const snooze = el('select', { id: `decision-snooze-${d.id}` },
-    el('option', { value: '1h' }, '1 hour'), el('option', { value: '4h' }, '4 hours'), el('option', { value: '1d' }, '1 day'));
   const form = el('form', { novalidate: true, class: 'start-form', 'data-decision': d.id, 'data-focus-scope': `decision/${d.id}`,
     onsubmit: (event) => {
       event.preventDefault();
@@ -3084,10 +3113,8 @@ function decisionPanel(c, task) {
     d.continues ? el('p', { class: 'subtext' }, `Meanwhile: ${d.continues}`) : null,
     d.unanswered ? el('p', { class: 'subtext' }, `If you do not answer: ${d.unanswered}`) : null,
     deferred ? null : el('label', { class: 'field' }, el('strong', {}, d.structured ? 'Your own words (optional with a choice)' : 'Your answer'), words),
-    deferred ? null : el('p', { class: 'subtext' }, 'Your answer reaches the next AI worker on this step as guidance. It cannot widen the approved plan: a wider change needs a new plan. No secrets; up to 2,000 characters.'),
+    deferred ? null : el('p', { class: 'subtext' }, 'Goes to the next AI worker on this step. It cannot widen the approved plan.'),
     deferred ? null : el('div', { class: 'campaign-controls' }, el('button', { class: 'button', type: 'submit', disabled: off }, 'Send answer')),
-    el('label', { class: 'field' }, el('strong', {}, d.snoozedUntil ? `Snoozed until ${clock(d.snoozedUntil)}. Remind me again in` : 'Remind me in'), snooze),
-    el('div', { class: 'campaign-controls' }, button('Remind me later', () => sendDecision('snooze', c, task, { snooze: snooze.value }, { address }), 'secondary', off)),
     d.notNeeded ? el('p', { class: 'subtext' }, 'You said this did not need you. The step still waits for an answer.')
       : deferred ? null : disclosure(`decision/${d.id}/not-needed`, 'This did not need me', el('div', {},
         el('label', { class: 'field' }, el('strong', {}, 'What should AIWorks have done instead? (optional)'), feedback),
@@ -3281,15 +3308,21 @@ function reviewActions(review, binding) {
   const which = el('select', { id: `review-criterion-${ids}`, onchange: () => drafts.set(address, key, { text: words.value, criterion: which.value }) },
     el('option', { value: '' }, 'The result as a whole'), ...review.criteria.map((item) => el('option', { value: String(item.criterion) }, `${item.criterion}. ${item.text}`)));
   which.value = draft.criterion ?? '';
+  // AW-016: changes asked of paused work are settled when they are asked: the request offers to resume, so the owner
+  // is not reminded later that nobody is making them.
+  const goal = campaignById(binding.campaignId), resumable = goal?.control === 'paused' && goal.controls?.primary === 'resume';
+  const resume = resumable ? el('input', { type: 'checkbox', id: `review-resume-${ids}` }) : null;
   const form = review.canRequestChanges ? el('form', { novalidate: true, class: 'start-form', 'data-focus-scope': `review/${binding.campaignId}/${binding.taskId}/changes`,
     onsubmit: (event) => {
       event.preventDefault();
       if (off || !validateForm(form)) return;
+      const andResume = Boolean(resume?.checked);
       void sendReview('request-changes', binding, review, { text: words.value, ...(which.value ? { criterion: Number(which.value) } : {}) },
-        { address, done: () => drafts.delete(address, key) });
+        { address, done: () => { drafts.delete(address, key); if (andResume) void command(goal, 'resume'); } });
     } },
     el('label', { class: 'field' }, el('strong', {}, 'About'), which),
     el('label', { class: 'field' }, el('strong', {}, 'What should change'), words),
+    resume ? el('label', { class: 'choice' }, resume, el('span', {}, 'This work is paused. Resume it so the changes start now')) : null,
     el('p', { class: 'subtext' }, `AIWorks reopens this step as a repair round within the approved plan${review.roundsLeft === null ? '' : ` (${plural(review.roundsLeft, 'round')} left)`}. A wider change needs a new plan. No secrets; up to 2,000 characters.`),
     el('div', { class: 'campaign-controls' }, el('button', { class: 'button secondary', type: 'submit', disabled: off }, 'Request changes'))) : null;
   const accepted = review.state === 'accepted' ? `You accepted this version at ${clock(review.acceptedAt)}. ${review.mergeGate === 'on' ? 'AIWorks merges it when its merge conditions hold.' : 'Merging follows this project’s own rules: AIWorks merges only in projects where you allowed it.'}`

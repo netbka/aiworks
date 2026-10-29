@@ -51,10 +51,9 @@ test('unknown is never shown as success: an open, unknown or unreadable release 
   assert.notEqual(answers(releaseLadder(task, { state: 'merged' }, null))['release-checked'], 'yes');
   // A project without GitHub shows no merge step.
   assert.ok(!releaseLadder(task, null, null, { github: false }).steps.some((step) => step.key === 'merged'));
-  // Both are owner lines in Needs you, counted.
+  // Both stay listed, never hidden; AIWorks is finding out, so they are its own state and not counted (AW-016).
   const view = ownerView(snapshot, { repositories: [], steps: {} });
-  assert.equal(view.items.filter((item) => item.kind === 'release-unknown').length, 2);
-  assert.ok(view.count >= 2);
+  assert.equal(view.items.filter((item) => item.kind === 'release-unknown' && item.system).length, 2);
 });
 
 test('the Auto Release switch is absent without a valid grant, even with release.enabled on', (t) => {

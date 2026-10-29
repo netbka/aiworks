@@ -156,3 +156,81 @@ test('scoped pause accepts its largest valid selection and refuses a larger body
   assert.equal(store.campaign(d.campaignId).control, 'registered');
   assert.equal(store.get("SELECT COUNT(*) AS n FROM events WHERE kind = 'dashboard-command'").n, 0);
 });
+
+test('AW-016: AIWorks answers only a running step\'s reversible suggestion itself, once, and the owner sees what it chose', (t) => {
+  const env = environment();
+  const store = new Store(join(env.dataDir, 'supervisor.db'));
+  t.after(() => { store.close(); env.cleanup(); });
+  const d = declaration(); campaignStart(store, d);
+  const block = (taskId, blocked) => { const task = store.task(d.campaignId, taskId); store.patch('tasks', { campaign_id: d.campaignId, task_id: taskId }, task.version, { blocked }, Date.now()); };
+  block('T1', { class: 'B3', reason: 'owner-reserved: palette', at: 1000, decision: { ...DECISION, reversible: true } });
+  block('T2', { class: 'B3', reason: 'owner-reserved: spending', at: 2000, decision: DECISION });
+  const controller = new Controller({ store, config: env.config, dataDir: env.dataDir, fault: null });
+  const lease = store.acquireLease(d.campaignId, controller.instanceId, Date.now(), 60_000);
+  const ctx = { id: d.campaignId, generation: lease.generation };
+  const campaign = () => store.campaign(d.campaignId);
+
+  // Paused work is never answered for the owner.
+  store.patch('campaigns', { id: d.campaignId }, campaign().version, { control: 'paused' }, Date.now());
+  controller.answerSuggested(ctx);
+  assert.equal(store.task(d.campaignId, 'T1').blocked.class, 'B3', 'nothing is answered while the work is paused');
+  store.patch('campaigns', { id: d.campaignId }, campaign().version, { control: 'registered' }, Date.now());
+
+  controller.answerSuggested(ctx);
+  controller.answerSuggested(ctx);
+  assert.equal(store.task(d.campaignId, 'T1').blocked, null, 'the reversible suggestion was taken');
+  assert.equal(store.task(d.campaignId, 'T2').blocked.class, 'B3', 'a suggestion not marked reversible waits for the owner');
+  const guidance = pendingInstructions(store, campaign(), 'T1', 'implement');
+  assert.equal(guidance.length, 1, 'answered once, as guidance to the next run');
+  assert.match(guidance[0].payload.text, /AIWorks answered.*Neutral \(neutral\)/);
+  assert.equal(pendingInstructions(store, campaign(), 'T2').length, 0);
+
+  const decided = supervisorSnapshot(env.dataDir).campaigns[0].autoDecisions;
+  assert.deepEqual(decided.map((item) => [item.taskId, item.chosen, item.others]), [['T1', 'Neutral', ['Brand']]], 'the owner can read and change what AIWorks chose');
+
+  // A second decision on the same step, under the same approval, waits for the owner: no answer loop of paid runs.
+  block('T1', { class: 'B3', reason: 'owner-reserved: palette again', at: 5000, decision: { ...DECISION, reversible: true } });
+  controller.answerSuggested(ctx);
+  assert.equal(store.task(d.campaignId, 'T1').blocked?.class, 'B3', 'one automatic answer per step');
+  // A "verifier still rejects" stall at the repair limit is never answered for the owner, reversible or not.
+  block('T2', { class: 'stalled', reason: 'verifier still rejects after 2 repair rounds', at: 6000, decision: { ...DECISION, reversible: true } });
+  controller.answerSuggested(ctx);
+  assert.equal(store.task(d.campaignId, 'T2').blocked?.class, 'stalled', 'the owner\'s repair limit is never raised by AIWorks');
+});
+
+test('AW-016: a published result without a check on record goes back to the checker at the same head, once per head', (t) => {
+  const env = environment();
+  const store = new Store(join(env.dataDir, 'supervisor.db'));
+  t.after(() => { store.close(); env.cleanup(); });
+  const d = declaration(); campaignStart(store, d);
+  const head = 'c'.repeat(40);
+  const task = store.task(d.campaignId, 'T1');
+  store.patch('tasks', { campaign_id: d.campaignId, task_id: 'T1' }, task.version,
+    { state: 'done', head_sha: head, verified_sha: null, verification: null, pr_url: 'https://github.com/example-org/sampleapp/pull/9' }, Date.now());
+  const controller = new Controller({ store, config: env.config, dataDir: env.dataDir, fault: null });
+  const lease = store.acquireLease(d.campaignId, controller.instanceId, Date.now(), 60_000);
+  const ctx = { id: d.campaignId, generation: lease.generation };
+
+  // A head merged, closed or pushed by someone else is left for the owner, recorded once; an unreadable GitHub waits.
+  controller.uncheckedGone = () => undefined;
+  controller.recheckUnchecked(ctx);
+  assert.equal(store.task(d.campaignId, 'T1').state, 'done', 'nothing happens while GitHub cannot be read');
+  controller.uncheckedGone = () => 'its pull request is no longer open';
+  controller.recheckUnchecked(ctx);
+  assert.equal(store.task(d.campaignId, 'T1').state, 'done', 'a closed pull request is never checked and published again');
+  assert.equal(store.get("SELECT COUNT(*) AS n FROM events WHERE kind = 'unchecked-recheck-skipped'").n, 1);
+  controller.uncheckedGone = () => null;
+  controller.recheckUnchecked(ctx);
+  assert.equal(store.task(d.campaignId, 'T1').state, 'done', 'a head left for the owner stays left');
+  store.run("DELETE FROM events WHERE kind = 'unchecked-recheck-skipped'");
+
+  controller.recheckUnchecked(ctx);
+  const reopened = store.task(d.campaignId, 'T1');
+  assert.deepEqual([reopened.state, reopened.head_sha, reopened.verified_sha], ['implemented', head, null], 'the next run is a check of the same head, nothing is rebuilt');
+
+  // The check is lost again at the same head: no second check is started for it.
+  store.patch('tasks', { campaign_id: d.campaignId, task_id: 'T1' }, reopened.version, { state: 'done' }, Date.now());
+  controller.recheckUnchecked(ctx);
+  assert.equal(store.task(d.campaignId, 'T1').state, 'done', 'one check per head, never a loop of paid runs');
+  assert.equal(store.get("SELECT COUNT(*) AS n FROM events WHERE kind = 'unchecked-recheck'").n, 1);
+});

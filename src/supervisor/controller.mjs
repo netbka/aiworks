@@ -28,7 +28,7 @@ import { ANCHOR, MAX_DOCUMENT_BYTES, parseReference, resolveSection } from './re
 import { MAX_CITES } from './adapters/claude.mjs';
 import { stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions, decisionInstructions } from './instructions.mjs';
-import { answerGuidance, decisionId, isDecision, structuredDecision } from './decisions.mjs';
+import { answerGuidance, answersItself, decisionId, isDecision, structuredDecision } from './decisions.mjs';
 import { mergedHead, OWNER_CHANGES, ownerChangesFinding } from './result-review.mjs';
 import { POLICY as ROUTING_POLICY, autoReceipt, indicators, policyInputs, priorAttempt, receiptInputs, staticReceipt } from './router.mjs';
 import { roleCatalog } from './governance.mjs';
@@ -615,9 +615,13 @@ export class Controller {
     if (this.ci && this.store.campaign(id).control === 'finished') this.checkPublishedCi(ctx);
     // The owner's request for changes reopens its finished step the same way (OWNER_UI_V2 WP4).
     this.requestedChanges(ctx);
+    // AW-016: a published result without an independent check on record is checked again by AIWorks, once per version.
+    this.recheckUnchecked(ctx);
     if (['finished', 'cancelled'].includes(this.store.campaign(id).control)) return;
 
     this.processEvents(ctx);
+    // AW-016: a reversible decision with a suggestion is answered by AIWorks with that suggestion, as the owner allows.
+    this.answerSuggested(ctx);
     if (this.oi) this.ownerInterventionTick(ctx);
     for (const op of this.store.openOperations(id)) await this.reconcile(ctx, op);
     const campaign = this.store.campaign(id);
@@ -876,12 +880,95 @@ export class Controller {
     this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version, { blocked: null, failures: {}, retry_at: null, last_error: null }, now);
     const record = this.oi && task.blocked.fingerprint ? this.store.blocker(task.blocked.fingerprint) : null;
     if (record && record.status !== 'resolved') {
-      this.resolveBlocker(ctx, record, { trigger: 'owner-decision', probe: 'decision', pass: true, detail: `owner answer to decision ${payload.decision.slice(0, 12)}`, at: now }, now);
+      this.resolveBlocker(ctx, record, payload.auto
+        ? { trigger: 'auto-decision', probe: 'decision', pass: true, detail: `AIWorks answered decision ${payload.decision.slice(0, 12)} with its reversible suggestion`, at: now }
+        : { trigger: 'owner-decision', probe: 'decision', pass: true, detail: `owner answer to decision ${payload.decision.slice(0, 12)}`, at: now }, now);
     }
     this.store.addEvent(ctx.id, 'agent-instruction', { taskId: task.task_id, role: 'implement',
       text: answerGuidance(task.blocked.decision, payload), authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest },
     `instruction:decision:${ctx.id}:${payload.decision}`, now);
-    this.store.journal(ctx.id, 'decision-answered', { task: task.task_id, decision: payload.decision, option: payload.option ?? null }, now);
+    // An answer AIWorks gave itself keeps the question, options and reason, so the owner can read and change it later.
+    this.store.journal(ctx.id, 'decision-answered', { task: task.task_id, decision: payload.decision, option: payload.option ?? null,
+      ...(payload.auto ? { auto: true, question: task.blocked.decision.question, options: task.blocked.decision.options, suggestion: task.blocked.decision.suggestion } : {}) }, now);
+  }
+
+  /**
+   * AW-016: AIWorks answers each open decision that answersItself allows, with its suggested option, exactly as the owner
+   * would (answerDecision, inside the fence): same authority, same scope, the answer as guidance to the next worker. It
+   * never answers a decision without a reversible suggestion, never one of a paused or cancelled campaign, and at most
+   * once per step under one approval (the event's dedup key): any later decision on that step waits for the owner.
+   */
+  answerSuggested(ctx) {
+    const c = this.store.campaign(ctx.id);
+    if (c.control !== 'registered') return;
+    for (const task of this.store.tasks(ctx.id).filter(answersItself)) {
+      this.fenced(ctx, () => {
+        const fresh = this.store.task(ctx.id, task.task_id), now = this.now(), campaign = this.store.campaign(ctx.id);
+        if (!answersItself(fresh)) return;
+        const key = `auto-decision:${ctx.id}:${fresh.task_id}:${campaign.authorization_version}`;
+        if (!this.store.addEvent(ctx.id, 'auto-decision', { taskId: fresh.task_id, authorizationVersion: campaign.authorization_version }, key, now)) return;
+        this.store.run('UPDATE events SET processed_at = ? WHERE dedup_key = ?', now, key);
+        this.answerDecision(ctx, { taskId: fresh.task_id, decision: decisionId(ctx.id, fresh.task_id, fresh.blocked), option: fresh.blocked.decision.suggestion.option,
+          authorizationVersion: campaign.authorization_version, scopeDigest: campaign.scope_digest, auto: true }, now);
+      });
+    }
+  }
+
+  /**
+   * Why a published, unchecked head is no longer AIWorks's to check, or null while it still is: already in the base
+   * branch, or (on GitHub) its pull request closed or pushed by someone else. `undefined` when GitHub could not be read:
+   * the caller waits and decides on a later pass.
+   */
+  uncheckedGone(ctx, decl, task) {
+    if (this.inBase(decl, task.head_sha)) return 'already in the base branch';
+    if (isLocalTarget(decl) || this.selfHosted(decl.target.repository)) return null;
+    let pr;
+    try { pr = github.findOpenPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, branch: gitA.branchName(ctx.id, task.task_id) }); } catch { return undefined; }
+    return pr?.headRefOid === task.head_sha ? null : pr ? 'its pull request now has another head' : 'its pull request is no longer open';
+  }
+
+  /**
+   * AW-016: a published step whose independent check is not on record goes back to the checker on exactly the published
+   * head, once per head (its event's dedup key). Nothing is rebuilt: the step returns to `implemented` at the same head,
+   * so the next run is a verification; a pass publishes the same head again (publishing looks for its pull request
+   * first), a rejection is an ordinary repair round. Paused, cancelled, merged or non-commit steps are left alone.
+   */
+  recheckUnchecked(ctx) {
+    if (!this.takesRepair(ctx.id)) return;
+    const c = this.store.campaign(ctx.id), decl = c.declaration;
+    for (const task of this.store.tasks(ctx.id)) {
+      // Only a step with no check on record at all: a recorded check that is merely unreadable is a record problem for
+      // AIWorks's maintainers, never a reason for another paid run.
+      if (task.state !== 'done' || task.blocked || !task.pr_url || !/^[0-9a-f]{40}$/.test(task.head_sha ?? '') || task.verified_sha || task.verification) continue;
+      if (specOf(this.store, ctx.id, task.task_id, c.declaration)?.deliverable !== 'commit' || mergedHead(this.store, ctx.id, task.task_id, task.head_sha)) continue;
+      const skipKey = `unchecked-recheck-skipped:${ctx.id}:${task.task_id}:${task.head_sha}`;
+      if (this.store.get('SELECT 1 AS seen FROM events WHERE dedup_key = ?', skipKey)) continue;
+      // Like an owner's request for changes and CI repair: a head merged, closed or pushed by someone else since it was
+      // published is no longer AIWorks's to check. It is recorded once and left for the owner; a read that fails waits.
+      const reason = this.uncheckedGone(ctx, decl, task);
+      if (reason === undefined) continue;
+      if (reason) {
+        this.fenced(ctx, () => {
+          const now = this.now();
+          if (this.store.addEvent(ctx.id, 'unchecked-recheck-skipped', { taskId: task.task_id, headSha: task.head_sha, reason }, skipKey, now)) {
+            this.store.run('UPDATE events SET processed_at = ? WHERE dedup_key = ?', now, skipKey);
+            this.store.journal(ctx.id, 'unchecked-recheck-skipped', { task: task.task_id, sha: task.head_sha, reason }, now);
+          }
+        });
+        continue;
+      }
+      this.fenced(ctx, () => {
+        const fresh = this.store.task(ctx.id, task.task_id), now = this.now();
+        if (fresh.state !== 'done' || fresh.blocked || fresh.head_sha !== task.head_sha || fresh.verified_sha || fresh.verification) return;
+        if (!this.store.addEvent(ctx.id, 'unchecked-recheck', { taskId: fresh.task_id, headSha: fresh.head_sha }, `unchecked-recheck:${ctx.id}:${fresh.task_id}:${fresh.head_sha}`, now)) return;
+        this.store.patch('tasks', { campaign_id: ctx.id, task_id: fresh.task_id }, fresh.version,
+          { state: 'implemented', verified_sha: null, failures: {}, retry_at: null, last_error: 'unchecked-recheck: no independent check on record' }, now);
+        const campaign = this.store.campaign(ctx.id);
+        if (campaign.control === 'finished') this.store.patch('campaigns', { id: ctx.id }, campaign.version, { control: 'registered', status: 'active', next_action: null }, now);
+        this.store.run("UPDATE events SET processed_at = ? WHERE dedup_key = ?", now, `unchecked-recheck:${ctx.id}:${fresh.task_id}:${fresh.head_sha}`);
+        this.store.journal(ctx.id, 'unchecked-recheck', { task: fresh.task_id, sha: fresh.head_sha }, now);
+      });
+    }
   }
 
   async reconcile(ctx, op) {
