@@ -31,9 +31,12 @@ export const DECISION_SCHEMA = {
       properties: { option: { type: 'string', pattern: '^[a-z][a-z0-9-]{0,31}$' }, reason: DECISION_TEXT } },
     continues: DECISION_TEXT,
     unanswered: DECISION_TEXT,
+    // AW-016: true only when acting on the suggestion changes nothing outside the step's own work and a later round can
+    // undo it. AIWorks then answers with the suggestion at once and tells the owner, who can still change the answer.
+    reversible: { type: 'boolean' },
   },
 };
-export const DECISION_RULE = 'When the owner must choose, you may add decision = { question, options: 2 to 4 of { id (lowercase, a-z0-9-), label, consequence }, suggestion: { option (one of the ids), reason }, continues (what goes on meanwhile), unanswered (what happens without an answer) }; leave it out otherwise. An answer never widens the packet.';
+export const DECISION_RULE = 'When the owner must choose, add decision = { question, options: 2 to 4 of { id (lowercase, a-z0-9-), label, consequence }, suggestion: { option (one of the ids), reason }, continues (what goes on meanwhile), unanswered (what happens without an answer), reversible }; leave it out otherwise. Always give options and a suggestion: a bare question costs the owner more than a choice. Set reversible to true only when choosing the suggestion changes nothing outside this step\'s own work and a later round can undo it: no spending, credentials, deleted data, publishing, or access and permission changes. An answer never widens the packet.';
 
 // Acceptance evidence (OWNER_UI_V2 WP4): optional on a verifier result, so a result without it is valid as before. One
 // entry per acceptance criterion of the packet, by its 1-based position; what was checked and the evidence, in words the
@@ -344,9 +347,12 @@ export function quotaRetryAt(text, now) {
 export const refusedBeforeWork = (verdict) => verdict?.class === 'quota' && verdict.receipt?.measured === true &&
   !(verdict.receipt.costUsd > 0) && (verdict.receipt.numTurns ?? 0) <= 1;
 
-// `web`: a browser verification, whose "accepted" means the report's claims hold — a truthful REJECTED report may carry
-// failed criteria (agy.mjs WEB_CRITERIA_RULE); passedCheck still reads those criteria as not passed.
-export function validResult(role, value, { deliverable, targetSha, reportDigest, web = false, acceptance = 0 }) {
+// `web`: true (or "acceptance") for a browser acceptance review, whose "accepted" means the report's claims hold — a
+// truthful REJECTED report may carry failed criteria (agy.mjs WEB_CRITERIA_RULE); passedCheck still reads those criteria
+// as not passed. "build" (web.mode build) is not lenient: its verifier checks the change itself, so an accepted build
+// report needs every criterion passed, like any other report.
+export function validResult(role, value, { deliverable, targetSha, reportDigest, web: webExpect = false, acceptance = 0 }) {
+  const web = webExpect === true || webExpect === 'acceptance';
   const validate = role === 'verification' ? validateVerifier : validateImplementer;
   if (!validate(value)) return `structured_output invalid: ${ajv.errorsText(validate.errors)}`;
   const sha = (s) => typeof s === 'string' && /^[0-9a-f]{40}$/.test(s);

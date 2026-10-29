@@ -92,6 +92,8 @@ export function delivery(task, merges = NO_MERGES, now = Date.now(), campaignId 
     return { state: 'report-posted', local: true, url: null, number: local.number, route: { label: `Read the report in work list #${local.number}`, address: `#/worklist/${local.number}` },
       note: NOTES['report-posted'] };
   }
+  // A report kept for the project that started the campaign (supervisor.mjs keptReport): that project reads it.
+  if (task.keptReport === true) return { state: 'report-posted', kept: true, url: null, note: NOTES['report-posted'] };
   const review = WORK_ADDRESS.exec(url);
   if (review) return localDelivery(task, Number(review[1]), merges, now, campaignId, target);
   const pr = PR_URL.exec(url);
@@ -245,9 +247,9 @@ function resultRow(c, task, d, releases, recorded = null, read = new Set()) {
   if (d.state === 'report-posted') {
     const evidence = task.verifiedSha ? resultEvidence(task) : null;
     if (read.has(`${c.id}/${task.id}`)) return { ...base, group: 'read', word: 'Read by you', note: null,
-      link: d.local ? null : { label: 'Read the report', url: d.url }, route: d.local ? d.route : null, evidence: null, detail: null };
-    return { ...base, group: 'reports', canMarkRead: true, word: d.local ? 'Report recorded in the work list · for you to read' : 'Report posted · for you to read', note: null,
-      link: d.local ? null : { label: 'Read the report', url: d.url }, route: d.local ? d.route : null,
+      link: d.local || d.kept ? null : { label: 'Read the report', url: d.url }, route: d.local ? d.route : null, evidence: null, detail: null };
+    return { ...base, group: 'reports', canMarkRead: true, word: d.kept ? 'Report kept for the project that asked · read it there' : d.local ? 'Report recorded in the work list · for you to read' : 'Report posted · for you to read', note: null,
+      link: d.local || d.kept ? null : { label: 'Read the report', url: d.url }, route: d.local ? d.route : null,
       evidence: evidence?.short ?? null, detail: evidence?.text ?? null };
   }
   if (d.state === 'unknown') {
@@ -617,7 +619,14 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     for (const { task, delivery: d } of by('published').filter((step) => !step.delivery.pending && settledReview(step))) {
       const settled = stopped ? null : ownerSettled(base, task);
       if (settled) handling.push(settled);
-      else if (task.review?.state === 'changes-requested') items.push(changesItem(task, d));
+      // AW-016: changes on paused or stopped work were settled when the owner asked (the request offers to resume): listed
+      // with what happens next, never counted.
+      else if (task.review?.state === 'changes-requested') {
+        const item = changesItem(task, d);
+        handling.push({ ...base, taskId: task.id, text: label(task), recorded: true, since: null, sinceWords: null,
+          reason: 'You requested changes', next: c.control === 'paused' ? 'They start when you resume this work.' : 'This work was stopped, so they will not be made.',
+          command: item.command });
+      }
       else if (task.review?.state === 'accepted') {
         if (gateMerges(task, d)) gateHandles(task, true);
         else items.push(acceptedItem(task, d));
@@ -626,12 +635,30 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     for (const { task, delivery: d } of awaiting.filter((step) => !accepting.includes(step))) {
       // Published without an independent check on record: it can be neither accepted nor sent back, so the owner's real
       // choice is to plan its completion again (approved like any plan) or leave it unmerged. Never "passed the check".
-      if (!d.local && (!task.verifiedSha || task.review?.state === 'no-evidence')) {
+      // AW-016: published without an independent check on record. AIWorks checks it again by itself, once per version
+      // (controller.recheckUnchecked); the owner meets it again only as a checked result. Never "passed the check".
+      // Only where the controller will check it (controller.recheckUnchecked): a commit, not yet sent back or left for
+      // the owner. Anything else keeps the owner's choice to plan it again or leave it unmerged.
+      const recheck = c.uncheckedRecheck?.[`${task.id}:${task.headSha}`] ?? null;
+      if (!d.local && !task.verifiedSha && task.deliverable === 'commit' && c.control !== 'cancelled' && !recheck) {
+        handling.push({ ...base, taskId: task.id, text: label(task), recorded: true, since: null, sinceWords: null,
+          reason: 'No independent check of this version is on record',
+          next: stopped ? 'AIWorks checks it again when this work resumes.' : 'AIWorks checks it again by itself; you see it once it is checked.' });
+        continue;
+      }
+      if (!d.local && !task.verifiedSha) {
         items.push({ ...base, taskId: task.id, kind: 'unchecked', action: 'Decide how this result continues', text: label(task),
           why: 'AIWorks published this result, but no independent check of it is on record, so it cannot be accepted or sent back here, and nothing of it counts as passed or merged.',
           route: reviewEntry(c, task) ? reviewRoute(task) : d.route ?? stepRoute(task), reference: reference(d), evidence: NEEDS.noEvidence.short, mergeCheck: d.asOf,
           plan: { label: 'Plan this work again…', goal: `Redo and check “${label(task)}”: ` },
           points: [{ link: null, text: 'Plan this work again to have AIWorks rebuild and check it; nothing starts until you approve the plan. If it is not needed, leave it unmerged.' }] });
+        continue;
+      }
+      // A check is recorded but cannot be read: AIWorks's own record problem, for its maintainers, never a new paid run.
+      if (!d.local && task.review?.state === 'no-evidence') {
+        items.push({ ...base, repository: null, about: c.repository, taskId: task.id, kind: 'unrecorded', system: true, action: 'Check not readable', text: label(task),
+          why: 'A check of this version is recorded, but AIWorks cannot read what it found, so the result cannot be accepted yet. It is kept for AIWorks’s maintainers.',
+          route: reviewEntry(c, task) ? reviewRoute(task) : d.route ?? stepRoute(task), reference: reference(d), mergeCheck: d.asOf, points: [] });
         continue;
       }
       if (gateMerges(task, d)) { gateHandles(task, false); continue; }
@@ -697,7 +724,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       // the Check again its sentence names, while the work takes it: a Needs you card has no More menu (review 5 G8).
       const check = (c.controls?.more ?? []).includes('recheck') ? blockerCheck(c.blocker, c.id) : null;
       const words = blockerWords(c.blocker, { check: Boolean(check) });
-      items.push({ ...base, kind: c.blockerClass === 'B3' ? 'decision' : 'stopped', text: NEEDS.workStopped, command: check,
+      items.push({ ...base, kind: c.blockerClass === 'B3' ? 'decision' : 'stopped', ...(c.blockerClass === 'B3' ? {} : { system: true }), text: NEEDS.workStopped, command: check,
         points: [{ link: null, text: `${words.reason}. What to do: ${words.action}.` }] });
     }
     for (const task of cancelled ? [] : c.tasks.filter((item) => item.blocked && item.state !== 'done')) {
@@ -707,7 +734,8 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       // A decision (WP2) is answered on its card or its step, snoozed or marked as not needing the owner. A step that
       // stopped for good takes the owner's guidance and Check again on its card: one more try within the same plan.
       const decision = task.blocked === 'B3' || Boolean(task.decision);
-      items.push({ ...base, taskId: task.id, kind: decision ? 'decision' : 'stopped', action: decision ? 'Decision needed' : 'Stopped; will not retry by itself',
+      // AW-016: only a decision is the owner's; a step stopped by failures stays listed with its Check again, not counted.
+      items.push({ ...base, taskId: task.id, kind: decision ? 'decision' : 'stopped', ...(decision ? {} : { system: true }), action: decision ? 'Decision needed' : 'Stopped; will not retry by itself',
         text: label(task), why: decision ? 'An AI worker stopped this step for your decision. The step waits for your answer.'
           : 'It will not retry by itself. Your guidance with Check again gives it one more try within the approved plan; a wider change is new work to plan.',
         route: stepRoute(task),
@@ -729,7 +757,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       // AIWorks runs, but not this work: an item of this work's project, worded for this work alone, with its one time.
       const words = liveness === 'work-lapsed' ? NEEDS.lapsed(paused, working > 0) : NEEDS.unpicked(paused);
       // Its card offers Check again (shown only while the work takes it), never advice to sign out or restart (aiworks#99).
-      items.push({ ...base, kind: 'unattended', at: liveness === 'work-lapsed' ? leaseEnded : undefined, text: words.text, points: [{ link: null, text: words.point }],
+      items.push({ ...base, kind: 'unattended', system: true, at: liveness === 'work-lapsed' ? leaseEnded : undefined, text: words.text, points: [{ link: null, text: words.point }],
         command: { label: 'Check again', command: 'recheck', campaignId: c.id } });
     } else if (liveness === 'agent-working-supervisor-silent') {
       halted.push({ c, at: leaseEnded, how: 'silent', paused });
@@ -743,7 +771,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     const c = supervisor.campaigns.find((item) => item.id === r.campaignId);
     const where = `${r.verifiedSha ? 'the checked version' : 'an unknown version'} to ${[r.project, r.destination].filter(Boolean).join(' ') || 'an unknown destination'}`;
     items.push(r.state === 'unknown'
-      ? { campaignId: c ? r.campaignId : null, repository: c?.repository ?? null, kind: 'release-unknown', action: 'Release outcome unknown',
+      ? { campaignId: c ? r.campaignId : null, repository: c?.repository ?? null, kind: 'release-unknown', system: true, action: 'Release outcome unknown',
         text: `Release of ${where}: outcome unknown`, since: r.stepStartedAt ?? r.updatedAt,
         points: [{ link: null, text: 'AIWorks is checking the destination and will not release there again until it knows. Stop all releases still works.' }] }
       : { campaignId: c ? r.campaignId : null, repository: c?.repository ?? null, kind: 'release-failed', action: 'Rollback failed',
@@ -771,7 +799,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     }
   }
   // AIWorks stopped on this computer is one fact, listed once under AIWorks itself with the work it holds up, not once
-  // per piece of work (aiworks#11 review F9). Restarting it is the owner's action, so it counts toward Needs you.
+  // per piece of work (aiworks#11 review F9). AW-016: it is AIWorks's own state, shown apart and as a banner, not counted.
   if (halted.length) items.push(stoppedItem(halted, entries, supervisor.controller?.stopRequested === true));
   const coordinator = supervisor.coordinator;
   if (coordinator && (coordinator.configError || coordinator.blocked)) {
@@ -796,7 +824,10 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
   const terminal = (c) => ['finished', 'cancelled'].includes(c.control), recency = (c) => Date.parse(c.lastProgressAt ?? '') || 0;
   const layout = { cards: [...supervisor.campaigns.filter((c) => listed.has(c.id)), ...supervisor.campaigns.filter((c) => !listed.has(c.id) && !terminal(c))].map((c) => c.id),
     finished: supervisor.campaigns.filter((c) => !listed.has(c.id) && terminal(c)).sort((a, b) => recency(b) - recency(a)).map((c) => c.id) };
-  return { available: true, headline, count, items, handling, groups: needsGroups(items), held, unknownResults, also: alsoForYou(supervisor, campaigns, releases), layout, campaigns,
+  const decided = supervisor.campaigns.flatMap((c) => (c.autoDecisions ?? []).map((d) => ({ ...d, campaignId: c.id, repository: c.repository,
+    project: (supervisor.goals ?? []).find((goal) => goal.id === c.id)?.project ?? c.repository,
+    step: label(c.tasks.find((task) => task.id === d.taskId) ?? { id: d.taskId }) }))).sort((a, b) => b.at - a.at);
+  return { available: true, headline, count, items, handling, decided, groups: needsGroups(items), held, unknownResults, also: alsoForYou(supervisor, campaigns, releases), layout, campaigns,
     results: resultsByProject(supervisor, campaigns, releases, reviews, workList?.repository ?? null, readReports), noResults, recent: recentSummary(supervisor, campaigns), reply: answered ? { messageId: answered.id, threadId: answered.threadId ?? answered.id, answeredAt: answered.answeredAt, url: answered.replyBody ? null : answered.replyUrl } : null };
 }
 
@@ -812,7 +843,7 @@ function stoppedItem(halted, entries, onPurpose) {
   if (halted.length === 1) {
     const [{ c, at, how, paused }] = halted;
     const words = how === 'silent' ? NEEDS.silent : how === 'not-picked-up' ? NEEDS.notPickedUp(paused) : NEEDS.stopped(paused);
-    return { kind: 'controller', campaignId: c.id, repository: null, about: c.repository, holdsUp: [c.repository], at, text: words.text, points: [{ link: null, text: why(words.point) }] };
+    return { kind: 'controller', system: true, campaignId: c.id, repository: null, about: c.repository, holdsUp: [c.repository], at, text: words.text, points: [{ link: null, text: why(words.point) }] };
   }
   const known = halted.map((entry) => entry.at).filter(Number.isFinite);
   // What all of it has in common is said once, in the item's text; each piece of work notes only what differs.
@@ -825,7 +856,7 @@ function stoppedItem(halted, entries, onPurpose) {
     if (!projects.has(key)) projects.set(key, { repository: c.repository, name: short(c.repository), works: [] });
     projects.get(key).works.push(NEEDS.heldWork(name, how === common ? null : how, paused));
   }
-  return { kind: 'controller', campaignId: null, repository: null, holdsUp: [...projects.values()].map((project) => project.repository),
+  return { kind: 'controller', system: true, campaignId: null, repository: null, holdsUp: [...projects.values()].map((project) => project.repository),
     at: known.length ? Math.max(...known) : null, text: words.text,
     points: [{ link: null, text: why(words.point) }, ...[...projects.values()].map(({ name, works }) => ({ link: null, text: NEEDS.heldUp(name, works) }))] };
 }

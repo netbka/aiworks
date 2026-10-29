@@ -8,11 +8,12 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SECRET_LIKE_PATH_PATTERN, acceptsLease, packetDigest, planContext, validatePacket } from '../../scripts/lib/worker-context.mjs';
 import * as executors from './adapters/executors.mjs';
+import * as agy from './adapters/agy.mjs';
 import { researchContext } from './adapters/research-context.mjs';
 import { browserLoginSettings } from './browser-login.mjs';
 import * as gitA from './adapters/git.mjs';
 import * as github from './adapters/github.mjs';
-import { authorityDigest, campaignLimits, canonicalJson, executorOrder, overlayGovernance, projectGovernance } from './campaign.mjs';
+import { authorityDigest, campaignLimits, canonicalJson, executorOrder, overlayGovernance, projectGovernance, webBuildRefusal } from './campaign.mjs';
 import { localProjectName, resolveCheckout, resolveLocalProject } from './project-connect.mjs';
 import { admissionBudget } from './api.mjs';
 import { currentSettings, projectOf, protectedAreasFor, protectedPaths } from './project-settings.mjs';
@@ -27,7 +28,7 @@ import { ANCHOR, MAX_DOCUMENT_BYTES, parseReference, resolveSection } from './re
 import { MAX_CITES } from './adapters/claude.mjs';
 import { stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions, decisionInstructions } from './instructions.mjs';
-import { answerGuidance, decisionId, isDecision, structuredDecision } from './decisions.mjs';
+import { answerGuidance, answersItself, decisionId, isDecision, structuredDecision } from './decisions.mjs';
 import { mergedHead, OWNER_CHANGES, ownerChangesFinding } from './result-review.mjs';
 import { POLICY as ROUTING_POLICY, autoReceipt, indicators, policyInputs, priorAttempt, receiptInputs, staticReceipt } from './router.mjs';
 import { roleCatalog } from './governance.mjs';
@@ -614,9 +615,13 @@ export class Controller {
     if (this.ci && this.store.campaign(id).control === 'finished') this.checkPublishedCi(ctx);
     // The owner's request for changes reopens its finished step the same way (OWNER_UI_V2 WP4).
     this.requestedChanges(ctx);
+    // AW-016: a published result without an independent check on record is checked again by AIWorks, once per version.
+    this.recheckUnchecked(ctx);
     if (['finished', 'cancelled'].includes(this.store.campaign(id).control)) return;
 
     this.processEvents(ctx);
+    // AW-016: a reversible decision with a suggestion is answered by AIWorks with that suggestion, as the owner allows.
+    this.answerSuggested(ctx);
     if (this.oi) this.ownerInterventionTick(ctx);
     for (const op of this.store.openOperations(id)) await this.reconcile(ctx, op);
     const campaign = this.store.campaign(id);
@@ -875,12 +880,95 @@ export class Controller {
     this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version, { blocked: null, failures: {}, retry_at: null, last_error: null }, now);
     const record = this.oi && task.blocked.fingerprint ? this.store.blocker(task.blocked.fingerprint) : null;
     if (record && record.status !== 'resolved') {
-      this.resolveBlocker(ctx, record, { trigger: 'owner-decision', probe: 'decision', pass: true, detail: `owner answer to decision ${payload.decision.slice(0, 12)}`, at: now }, now);
+      this.resolveBlocker(ctx, record, payload.auto
+        ? { trigger: 'auto-decision', probe: 'decision', pass: true, detail: `AIWorks answered decision ${payload.decision.slice(0, 12)} with its reversible suggestion`, at: now }
+        : { trigger: 'owner-decision', probe: 'decision', pass: true, detail: `owner answer to decision ${payload.decision.slice(0, 12)}`, at: now }, now);
     }
     this.store.addEvent(ctx.id, 'agent-instruction', { taskId: task.task_id, role: 'implement',
       text: answerGuidance(task.blocked.decision, payload), authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest },
     `instruction:decision:${ctx.id}:${payload.decision}`, now);
-    this.store.journal(ctx.id, 'decision-answered', { task: task.task_id, decision: payload.decision, option: payload.option ?? null }, now);
+    // An answer AIWorks gave itself keeps the question, options and reason, so the owner can read and change it later.
+    this.store.journal(ctx.id, 'decision-answered', { task: task.task_id, decision: payload.decision, option: payload.option ?? null,
+      ...(payload.auto ? { auto: true, question: task.blocked.decision.question, options: task.blocked.decision.options, suggestion: task.blocked.decision.suggestion } : {}) }, now);
+  }
+
+  /**
+   * AW-016: AIWorks answers each open decision that answersItself allows, with its suggested option, exactly as the owner
+   * would (answerDecision, inside the fence): same authority, same scope, the answer as guidance to the next worker. It
+   * never answers a decision without a reversible suggestion, never one of a paused or cancelled campaign, and at most
+   * once per step under one approval (the event's dedup key): any later decision on that step waits for the owner.
+   */
+  answerSuggested(ctx) {
+    const c = this.store.campaign(ctx.id);
+    if (c.control !== 'registered') return;
+    for (const task of this.store.tasks(ctx.id).filter(answersItself)) {
+      this.fenced(ctx, () => {
+        const fresh = this.store.task(ctx.id, task.task_id), now = this.now(), campaign = this.store.campaign(ctx.id);
+        if (!answersItself(fresh)) return;
+        const key = `auto-decision:${ctx.id}:${fresh.task_id}:${campaign.authorization_version}`;
+        if (!this.store.addEvent(ctx.id, 'auto-decision', { taskId: fresh.task_id, authorizationVersion: campaign.authorization_version }, key, now)) return;
+        this.store.run('UPDATE events SET processed_at = ? WHERE dedup_key = ?', now, key);
+        this.answerDecision(ctx, { taskId: fresh.task_id, decision: decisionId(ctx.id, fresh.task_id, fresh.blocked), option: fresh.blocked.decision.suggestion.option,
+          authorizationVersion: campaign.authorization_version, scopeDigest: campaign.scope_digest, auto: true }, now);
+      });
+    }
+  }
+
+  /**
+   * Why a published, unchecked head is no longer AIWorks's to check, or null while it still is: already in the base
+   * branch, or (on GitHub) its pull request closed or pushed by someone else. `undefined` when GitHub could not be read:
+   * the caller waits and decides on a later pass.
+   */
+  uncheckedGone(ctx, decl, task) {
+    if (this.inBase(decl, task.head_sha)) return 'already in the base branch';
+    if (isLocalTarget(decl) || this.selfHosted(decl.target.repository)) return null;
+    let pr;
+    try { pr = github.findOpenPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, branch: gitA.branchName(ctx.id, task.task_id) }); } catch { return undefined; }
+    return pr?.headRefOid === task.head_sha ? null : pr ? 'its pull request now has another head' : 'its pull request is no longer open';
+  }
+
+  /**
+   * AW-016: a published step whose independent check is not on record goes back to the checker on exactly the published
+   * head, once per head (its event's dedup key). Nothing is rebuilt: the step returns to `implemented` at the same head,
+   * so the next run is a verification; a pass publishes the same head again (publishing looks for its pull request
+   * first), a rejection is an ordinary repair round. Paused, cancelled, merged or non-commit steps are left alone.
+   */
+  recheckUnchecked(ctx) {
+    if (!this.takesRepair(ctx.id)) return;
+    const c = this.store.campaign(ctx.id), decl = c.declaration;
+    for (const task of this.store.tasks(ctx.id)) {
+      // Only a step with no check on record at all: a recorded check that is merely unreadable is a record problem for
+      // AIWorks's maintainers, never a reason for another paid run.
+      if (task.state !== 'done' || task.blocked || !task.pr_url || !/^[0-9a-f]{40}$/.test(task.head_sha ?? '') || task.verified_sha || task.verification) continue;
+      if (specOf(this.store, ctx.id, task.task_id, c.declaration)?.deliverable !== 'commit' || mergedHead(this.store, ctx.id, task.task_id, task.head_sha)) continue;
+      const skipKey = `unchecked-recheck-skipped:${ctx.id}:${task.task_id}:${task.head_sha}`;
+      if (this.store.get('SELECT 1 AS seen FROM events WHERE dedup_key = ?', skipKey)) continue;
+      // Like an owner's request for changes and CI repair: a head merged, closed or pushed by someone else since it was
+      // published is no longer AIWorks's to check. It is recorded once and left for the owner; a read that fails waits.
+      const reason = this.uncheckedGone(ctx, decl, task);
+      if (reason === undefined) continue;
+      if (reason) {
+        this.fenced(ctx, () => {
+          const now = this.now();
+          if (this.store.addEvent(ctx.id, 'unchecked-recheck-skipped', { taskId: task.task_id, headSha: task.head_sha, reason }, skipKey, now)) {
+            this.store.run('UPDATE events SET processed_at = ? WHERE dedup_key = ?', now, skipKey);
+            this.store.journal(ctx.id, 'unchecked-recheck-skipped', { task: task.task_id, sha: task.head_sha, reason }, now);
+          }
+        });
+        continue;
+      }
+      this.fenced(ctx, () => {
+        const fresh = this.store.task(ctx.id, task.task_id), now = this.now();
+        if (fresh.state !== 'done' || fresh.blocked || fresh.head_sha !== task.head_sha || fresh.verified_sha || fresh.verification) return;
+        if (!this.store.addEvent(ctx.id, 'unchecked-recheck', { taskId: fresh.task_id, headSha: fresh.head_sha }, `unchecked-recheck:${ctx.id}:${fresh.task_id}:${fresh.head_sha}`, now)) return;
+        this.store.patch('tasks', { campaign_id: ctx.id, task_id: fresh.task_id }, fresh.version,
+          { state: 'implemented', verified_sha: null, failures: {}, retry_at: null, last_error: 'unchecked-recheck: no independent check on record' }, now);
+        const campaign = this.store.campaign(ctx.id);
+        if (campaign.control === 'finished') this.store.patch('campaigns', { id: ctx.id }, campaign.version, { control: 'registered', status: 'active', next_action: null }, now);
+        this.store.run("UPDATE events SET processed_at = ? WHERE dedup_key = ?", now, `unchecked-recheck:${ctx.id}:${fresh.task_id}:${fresh.head_sha}`);
+        this.store.journal(ctx.id, 'unchecked-recheck', { task: fresh.task_id, sha: fresh.head_sha }, now);
+      });
+    }
   }
 
   async reconcile(ctx, op) {
@@ -959,11 +1047,13 @@ export class Controller {
       logBytes: existsSync(join(op.run_dir, 'stdout.json')) ? statSync(join(op.run_dir, 'stdout.json')).size : 0,
       stderrText: readTextIfExists(join(op.run_dir, 'stderr.log')),
       expect: { deliverable: this.deliverable(ctx, op.task_id), targetSha: op.target_sha, reportDigest: op.report_digest,
-        sessionId: op.session_id, packetDigest: op.packet_digest, web: Boolean(specOf(this.store, ctx.id, op.task_id, decl)?.web),
+        sessionId: op.session_id, packetDigest: op.packet_digest, web: executors.webFlag(specOf(this.store, ctx.id, op.task_id, decl)?.web),
         acceptance: this.acceptanceCount(ctx, op.task_id) },
       now: this.now(),
     });
-    this.applyOutcome(ctx, op, outcome);
+    // A runner that never attached its job proves no worker started (runner.mjs): the launch is retried, but it is not
+    // one of the task's attempts (maxRetriesPerTask). The repeat guard still stops a launch that keeps failing.
+    this.applyOutcome(ctx, op, outcome.class === 'spawn-failed' && run.attached === false ? { ...outcome, notStarted: true } : outcome);
   }
 
   applyOutcome(ctx, op, outcome) {
@@ -1220,7 +1310,11 @@ export class Controller {
     const limits = campaignLimits(decl);
     const back = op.kind === 'verify' ? 'implemented' : 'pending';
     const retry = (cls, detail, state) => {
-      const failures = { ...task.failures, [cls]: (task.failures?.[cls] ?? 0) + 1 };
+      // A launch that never started is kept apart ('not-started', outside RETRYABLE): it uses no attempt of the task.
+      const counted = cls === 'spawn-failed' && v.notStarted === true ? 'not-started' : cls;
+      const failures = { ...task.failures, [counted]: (task.failures?.[counted] ?? 0) + 1 };
+      // A run that did start shows the host can launch workers again, so earlier launch failures stop counting.
+      if (counted !== 'not-started') delete failures['not-started'];
       const total = Object.entries(failures).filter(([key]) => RETRYABLE.has(key)).reduce((sum, [, n]) => sum + n, 0);
       // Identical failures in a row (aiworks#136). A run that made no task attempt (refunded) keeps the count; any other
       // outcome with another class or detail starts it again.
@@ -1235,6 +1329,12 @@ export class Controller {
       if (cls === 'evidence-unavailable' && failures[cls] >= NO_PROGRESS_LIMIT) {
         return { state, failures, retry_at: null, last_error: `${cls}: ${detail}`,
           blocked: { class: 'stalled', recovery: 'system', reason: `no progress: ${failures[cls]} evidence-unavailable results; last: ${String(detail).slice(0, 300)}`, at: now } };
+      }
+      // Launches that never started have their own bound, whatever their details: a host that cannot start workers stops
+      // with a reason instead of being retried for ever with alternating launch errors.
+      if (counted === 'not-started' && failures[counted] >= NO_PROGRESS_LIMIT) {
+        return { state, failures, retry_at: null, last_error: `${cls}: ${detail}`,
+          blocked: { class: 'stalled', recovery: 'system', reason: `no progress: ${failures[counted]} launches in a row never started a worker; last: ${String(detail).slice(0, 300)}`, at: now } };
       }
       if (failures.repeat?.count >= NO_PROGRESS_LIMIT) {
         return { state, failures, retry_at: null, last_error: `${cls}: ${detail}`,
@@ -2379,6 +2479,18 @@ export class Controller {
             requestedAction: `Make sure governanceRoot in the supervisor config.json names a current governance provider checkout in which exactly one registry/projects entry declares repository.github ${decl.target.repository}, then run: supervisor recheck ${ctx.id}` }, this.now());
           return null;
         }
+        // A build task changes pages: its origins must still be listed in the registry's web.buildOrigins, so removing one
+        // there stops new build runs on it (registration checked the same list; campaign.mjs assertWebBuildOrigins).
+        let buildRefusal = null;
+        try { buildRefusal = webBuildRefusal(decl.target.repository, specOf(this.store, ctx.id, task.task_id, decl), this.governanceRoot); }
+        catch (error) { buildRefusal = String(error.message); }
+        if (buildRefusal) {
+          this.raiseBlocker(ctx, decl, { kind: 'project-governance', class: 'B2', code: 'WEB_BUILD_ORIGIN_NOT_ALLOWED',
+            reason: `No new worker dispatched: ${buildRefusal.slice(0, 400)}`,
+            requestedAction: `List the origin in web.buildOrigins of the project's registry entry in the governance checkout if building there is allowed, or cancel the campaign; then run: supervisor recheck ${ctx.id}` },
+          this.now(), { identity: 'web-build-origin' });
+          return null;
+        }
       }
       // A project and a config.json entry that disagree about this repository: B2, and nothing is dispatched (design 8.2).
       const checkout = local ? local.checkout : resolveCheckout(this.store, this.config, decl.target.repository);
@@ -2504,6 +2616,8 @@ export class Controller {
       // A verifier reviews the implementer's report; a repair implementer must also receive the rejected report,
       // otherwise it is asked to fix findings against an artifact it has never seen.
       const repairing = kind === 'implement' && Boolean(task.findings?.length);
+      // A build task's page changes survive a failed or rejected attempt, so its retry and repair notes differ (agy.mjs).
+      const build = executors.webFlag(spec.web) === 'build';
       const report = kind === 'verify' || repairing ? String(task.result?.report ?? '') : null;
       const reportDigest = report !== null ? createHash('sha256').update(report, 'utf8').digest('hex') : null;
       // Scoped reading (SCOPED_READING sections 4 and 6.4): a repair packet adds its findings' cited sections after the
@@ -2543,11 +2657,22 @@ export class Controller {
         governance,
       }, POLICY);
       let packet;
-      try { packet = buildPacket(reading.references); } catch (error) {
-        // Cites never stop a dispatch: past the packet byte budget they stay in the constraint text only (section 7.5).
-        if (!reading.added.length) throw error;
-        reading = { references: [...spec.references], added: [], overflow: [...reading.added, ...reading.overflow] };
-        packet = buildPacket(reading.references);
+      try {
+        try { packet = buildPacket(reading.references); } catch (error) {
+          // Cites never stop a dispatch: past the packet byte budget they stay in the constraint text only (section 7.5).
+          if (!reading.added.length) throw error;
+          reading = { references: [...spec.references], added: [], overflow: [...reading.added, ...reading.overflow] };
+          packet = buildPacket(reading.references);
+        }
+      } catch (error) {
+        // The declared goal, constraints and acceptance alone exceed the budget: no retry can shrink them, so the task
+        // stops and says so (2026-10-29: two Wiki checks failed this way every few seconds for hours, holding their slots).
+        if (error?.message !== 'Task packet byte budget exceeded') throw error;
+        const reason = `Task packet exceeds the worker budget of ${POLICY.maxPacketBytes} bytes; shorten the task's goal, constraints or acceptance and register it again.`;
+        this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
+          { blocked: { class: 'stalled', reason, at: this.now() }, retry_at: null, last_error: 'packet: byte budget exceeded' }, this.now());
+        this.store.journal(ctx.id, 'packet-too-large', { task: task.task_id, kind }, this.now());
+        return null;
       }
       // A section another task of this campaign missed reaches this guide when the packet marks sections of that document
       // (section 7.3). The packet, its digest and the spec are built before and without it.
@@ -2575,14 +2700,16 @@ export class Controller {
           : repairing
         ? spec.deliverable === 'commit'
           ? `This is repair round ${task.repair_rounds}: the independent verifier rejected ${task.head_sha}. Fix every blocking finding listed in the packet constraints, commit, and return resolved with the new headSha.`
+          : build ? agy.buildRepairNote(task.repair_rounds, reportDigest)
           : `This is repair round ${task.repair_rounds}: the independent verifier rejected the previous report (sha256 ${reportDigest}), reproduced below. Produce a corrected COMPLETE report that resolves every blocking finding listed in the packet constraints and return resolved with that report. Do not commit or change repository files; this task is report-only and read-only.`
         : refusal ? refusal
+        : task.last_error && build ? `A previous attempt ended without an accepted result (${String(task.last_error).slice(0, 400)}). ${kind === 'verify' ? agy.BUILD_RECHECK_NOTE : agy.BUILD_RETRY_NOTE}`
         : task.last_error ? `A previous attempt ended without an accepted result (${String(task.last_error).slice(0, 400)}). ${spec.deliverable === 'commit' ? 'Inspect git status and git log here and keep useful committed work.' : executor.researchOnly ? 'Start the report again from the packet; nothing from that attempt is retained. Inspect brokered local Git evidence; use the supplied read-only repository reader for missing issue/comment details.' : 'Start the report again from the packet; nothing from that attempt is retained.'}` : null;
       // aiworks#8: a publication repair asks for corrected text only; the verifier of its head is told why it runs again.
       const publication = this.publicationFinding(task);
       const publicationNote = !publication ? null : kind === 'verify'
         ? `The previous publication of this task was refused: its ${publication.sources.join(' and ')} text failed the publication privacy check (${publication.findings.join(', ')}). Reject a report that still cites absolute local paths, credentials or private names, and write the summary, checks and findings with repository-relative paths and synthetic examples only.`
-        : `This is repair round ${task.repair_rounds}, a publication repair: verified ${publication.verified} was not published because its report failed the publication privacy check (${publication.findings.join(', ')}). Nothing was pushed or published. Return a corrected COMPLETE report with repository-relative paths and synthetic examples only, keeping its headings, the exact revision and the actual test tallies.${spec.deliverable === 'commit' ? ' Change code only if a finding requires it; otherwise return resolved with the same headSha.' : ' Do not commit or change repository files; this task is report-only and read-only.'}`;
+        : `This is repair round ${task.repair_rounds}, a publication repair: verified ${publication.verified} was not published because its report failed the publication privacy check (${publication.findings.join(', ')}). Nothing was pushed or published. Return a corrected COMPLETE report with repository-relative paths and synthetic examples only, keeping its headings, the exact revision and the actual test tallies.${spec.deliverable === 'commit' ? ' Change code only if a finding requires it; otherwise return resolved with the same headSha.' : build ? agy.BUILD_PUBLICATION_NOTE : ' Do not commit or change repository files; this task is report-only and read-only.'}`;
       const note = publicationNote && kind !== 'verify' ? publicationNote : [baseNote, publicationNote].filter(Boolean).join(' ') || null;
       let prompt = executors.buildPrompt({ executorKind: executor.kind, web: spec.web ?? null, role, deliverable: spec.deliverable, packet, packetDigest: digest, repository: local ? decl.target.projectId : decl.target.repository,
         issue: spec.issue, branch: gitA.branchName(ctx.id, task.task_id), baseSha: kind === 'verify' ? baseSha : revision, targetSha,
@@ -2702,7 +2829,7 @@ export class Controller {
     child.on('error', (error) => {
       this.log(`runner spawn for ${op.id} failed: ${error.message}`);
       if (!child.pid) writeAtomic(join(op.run_dir, 'result.json'), JSON.stringify({
-        spawnError: String(error.code || error.message), containment: 'windows-job-v1', containmentStopped: true,
+        spawnError: String(error.code || error.message), containment: 'windows-job-v1', containmentStopped: true, attached: false,
       }));
     });
     child.unref();

@@ -17,7 +17,8 @@ export function structuredDecision(value) {
   const suggestion = d.suggestion && options.some((o) => o.id === d.suggestion.option) && text(d.suggestion.reason, 500)
     ? { option: d.suggestion.option, reason: d.suggestion.reason } : null;
   return { question: d.question, options, ...(suggestion ? { suggestion } : {}),
-    ...(text(d.continues, 500) ? { continues: d.continues } : {}), ...(text(d.unanswered, 500) ? { unanswered: d.unanswered } : {}) };
+    ...(text(d.continues, 500) ? { continues: d.continues } : {}), ...(text(d.unanswered, 500) ? { unanswered: d.unanswered } : {}),
+    ...(d.reversible === true ? { reversible: true } : {}) };
 }
 
 /** Whether a task's stop is an owner decision the dashboard may answer (the same rule as the "needs-decision" copy). */
@@ -33,11 +34,22 @@ export function decisionId(campaignId, taskId, blocked) {
     .digest('hex').slice(0, 32);
 }
 
+/**
+ * AW-016: whether AIWorks answers a decision itself, with its suggestion. Only a suggested option the worker marked
+ * reversible qualifies; anything else waits for the owner. The answer goes the same way as the owner's (answerDecision).
+ */
+// Only an owner-reserved stop (B3): a "verifier still rejects" stall at the repair limit always waits for the owner,
+// because answering it would raise the owner's repair limit.
+export const answersItself = (task) => isDecision(task) && task.blocked.class === 'B3' && task.blocked.decision?.reversible === true &&
+  Boolean(task.blocked.decision.suggestion && task.blocked.decision.options?.some((o) => o.id === task.blocked.decision.suggestion.option));
+
 /** Durable decision context for the step's builders and verifiers, within its bound authority. */
-export function answerGuidance(decision, { option = null, text: words = null }) {
+export function answerGuidance(decision, { option = null, text: words = null, auto = false }) {
   const chosen = option ? decision?.options?.find((o) => o.id === option) : null;
-  return ['The owner answered the decision this step stopped for.',
+  return [auto ? 'AIWorks answered the decision this step stopped for with the suggested option, as the owner allows for reversible choices; the owner may still change it.'
+    : 'The owner answered the decision this step stopped for.',
     decision?.question ? `Question: ${decision.question}` : null,
     chosen ? `Chosen option: ${chosen.label} (${chosen.id}). Consequence: ${chosen.consequence}` : null, words ? `The owner's words: ${words}` : null,
-    'This is a recorded owner answer, available to implementers and verifiers. Apply it within the packet; do not ask for the same decision again. If it conflicts with the approved acceptance or permissions, identify the exact amendment needed; it does not silently widen authority.'].filter(Boolean).join(' ');
+    auto ? 'This is AIWorks\'s recorded answer with the suggested option, available to implementers and verifiers. Apply it within the packet. If another decision is needed on this step, ask it: the owner answers it. If it conflicts with the approved acceptance or permissions, identify the exact amendment needed; it does not silently widen authority.'
+      : 'This is a recorded owner answer, available to implementers and verifiers. Apply it within the packet; do not ask for the same decision again. If it conflicts with the approved acceptance or permissions, identify the exact amendment needed; it does not silently widen authority.'].filter(Boolean).join(' ');
 }
