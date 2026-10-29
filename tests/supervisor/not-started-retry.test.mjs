@@ -25,3 +25,17 @@ test('a launch that never started is retried without using an attempt; the repea
   assert.equal(step({ task_id: 'T1', state: 'pending', failures: { timeout: 1 } }, { class: 'spawn-failed', detail: 'containment-helper-failed' }).blocked.class, 'stalled',
     'a launch failure after the worker started still counts');
 });
+
+test('launches that never start stop at the bound even when their errors alternate, and a started run clears the count', () => {
+  let task = { task_id: 'T1', state: 'pending', failures: {} };
+  const details = ['runner-process-identity-unavailable', 'containment-helper-failed'];
+  for (let i = 1; i <= 3; i++) {
+    task = step(task, { ...notStarted, detail: details[i % 2] });
+    assert.equal(task.blocked, undefined, `launch ${i} is retried`);
+  }
+  const stopped = step(task, { ...notStarted, detail: details[0] });
+  assert.equal(stopped.blocked?.class, 'stalled', 'the fourth launch failure in a row stops, whatever its detail');
+  assert.match(stopped.blocked.reason, /never started a worker/);
+  const cleared = step({ task_id: 'T1', state: 'pending', failures: { 'not-started': 3 } }, { class: 'timeout', detail: 'x' });
+  assert.equal(cleared.failures['not-started'], undefined, 'a run that started clears earlier launch failures');
+});

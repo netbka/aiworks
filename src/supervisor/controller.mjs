@@ -1226,6 +1226,8 @@ export class Controller {
       // A launch that never started is kept apart ('not-started', outside RETRYABLE): it uses no attempt of the task.
       const counted = cls === 'spawn-failed' && v.notStarted === true ? 'not-started' : cls;
       const failures = { ...task.failures, [counted]: (task.failures?.[counted] ?? 0) + 1 };
+      // A run that did start shows the host can launch workers again, so earlier launch failures stop counting.
+      if (counted !== 'not-started') delete failures['not-started'];
       const total = Object.entries(failures).filter(([key]) => RETRYABLE.has(key)).reduce((sum, [, n]) => sum + n, 0);
       // Identical failures in a row (aiworks#136). A run that made no task attempt (refunded) keeps the count; any other
       // outcome with another class or detail starts it again.
@@ -1240,6 +1242,12 @@ export class Controller {
       if (cls === 'evidence-unavailable' && failures[cls] >= NO_PROGRESS_LIMIT) {
         return { state, failures, retry_at: null, last_error: `${cls}: ${detail}`,
           blocked: { class: 'stalled', recovery: 'system', reason: `no progress: ${failures[cls]} evidence-unavailable results; last: ${String(detail).slice(0, 300)}`, at: now } };
+      }
+      // Launches that never started have their own bound, whatever their details: a host that cannot start workers stops
+      // with a reason instead of being retried for ever with alternating launch errors.
+      if (counted === 'not-started' && failures[counted] >= NO_PROGRESS_LIMIT) {
+        return { state, failures, retry_at: null, last_error: `${cls}: ${detail}`,
+          blocked: { class: 'stalled', recovery: 'system', reason: `no progress: ${failures[counted]} launches in a row never started a worker; last: ${String(detail).slice(0, 300)}`, at: now } };
       }
       if (failures.repeat?.count >= NO_PROGRESS_LIMIT) {
         return { state, failures, retry_at: null, last_error: `${cls}: ${detail}`,
