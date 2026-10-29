@@ -933,6 +933,10 @@ export class Controller {
     return taskId === PLAN_TASK ? 'report' : specOf(this.store, ctx.id, taskId).deliverable;
   }
 
+  acceptanceCount(ctx, taskId) {
+    return taskId === PLAN_TASK ? 0 : (specOf(this.store, ctx.id, taskId).acceptance ?? []).length;
+  }
+
   consume(ctx, op, run) {
     if (run.containment !== 'windows-job-v1' || run.containmentStopped !== true) {
       const runner = readJsonIfExists(join(op.run_dir, 'runner.json'));
@@ -955,7 +959,7 @@ export class Controller {
       logBytes: existsSync(join(op.run_dir, 'stdout.json')) ? statSync(join(op.run_dir, 'stdout.json')).size : 0,
       stderrText: readTextIfExists(join(op.run_dir, 'stderr.log')),
       expect: { deliverable: this.deliverable(ctx, op.task_id), targetSha: op.target_sha, reportDigest: op.report_digest,
-        sessionId: op.session_id, packetDigest: op.packet_digest },
+        sessionId: op.session_id, packetDigest: op.packet_digest, acceptance: this.acceptanceCount(ctx, op.task_id) },
       now: this.now(),
     });
     this.applyOutcome(ctx, op, outcome);
