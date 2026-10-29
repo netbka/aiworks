@@ -65,3 +65,18 @@ test('the report route never returns a report that independent verification has 
   patch({ state: 'pending' });
   assert.equal(campaignReports(store, decl.campaignId).tasks[0].report, null, 'a task sent back for another round is withheld again');
 });
+
+test('a task whose declared packet exceeds the worker budget stops with a reason instead of retrying without end', { skip: skipWithoutSqlite }, async (t) => {
+  // 2026-10-29: two Wiki AI checks with long Russian briefs failed «Task packet byte budget exceeded» every few seconds
+  // for hours, so the Wiki slots they held never freed. The packet cannot shrink on a retry, so the task is blocked.
+  const big = { ...reportTask, constraints: Array.from({ length: 12 }, (_, i) => `Часть ${i + 1}: ${'х'.repeat(1900)}`) };
+  const decl = { ...declaration({ campaignId: 'packet-too-large', tasks: [big] }), reportPublication: 'local' };
+  const h = await harness(t, { decl, scenario: { implement: ['report'], verify: ['accept-report-criterion'] } });
+  const run = h.serve();
+  await h.waitFor(() => h.store.task(h.id, 'R1').blocked);
+  run.kill();
+  const task = h.store.task(h.id, 'R1');
+  assert.match(task.blocked.reason, /exceeds the worker budget of \d+ bytes/);
+  assert.equal(task.last_error, 'packet: byte budget exceeded');
+  assert.equal(h.env.calls().filter((c) => c.role === 'implement').length, 0, 'no worker was started');
+});
