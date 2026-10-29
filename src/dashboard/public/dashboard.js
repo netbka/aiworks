@@ -1604,7 +1604,7 @@ function decidedList(decided) {
   if (!decided.length) return null;
   return el('section', { class: 'needs-group needs-decided', 'aria-labelledby': 'needs-decided-title', 'data-focus-scope': 'needs/decided' },
     el('h3', { id: 'needs-decided-title', class: 'section-title' }, `AIWorks decided for you (${decided.length})`),
-    el('p', { class: 'subtext' }, 'Reversible choices, made with the suggested option so work kept going. You can still change each one until you accept the result.'),
+    el('p', { class: 'subtext' }, 'Reversible choices, made with the suggested option so work kept going. You can change each one while its step is still being made.'),
     el('ul', { class: 'needs-list' }, ...decided.slice(0, 8).map((d) => el('li', { class: 'needs-item decided', 'data-focus-scope': `needs-decided/${d.campaignId}/${d.taskId}` },
       el('div', { class: 'needs-body' },
         el('div', { class: 'needs-context' }, [`Project ${projectName(d.project)}`, d.step].filter(Boolean).join(' · ')),
@@ -3312,7 +3312,6 @@ function reviewActions(review, binding) {
   // is not reminded later that nobody is making them.
   const goal = campaignById(binding.campaignId), resumable = goal?.control === 'paused' && goal.controls?.primary === 'resume';
   const resume = resumable ? el('input', { type: 'checkbox', id: `review-resume-${ids}` }) : null;
-  if (resume) resume.checked = true;
   const form = review.canRequestChanges ? el('form', { novalidate: true, class: 'start-form', 'data-focus-scope': `review/${binding.campaignId}/${binding.taskId}/changes`,
     onsubmit: (event) => {
       event.preventDefault();

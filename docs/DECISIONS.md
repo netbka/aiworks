@@ -144,10 +144,10 @@ Owner decision 2026-10-29: AIWorks works for the owner, not the other way round.
 
 | Situation | Who |
 | --- | --- |
-| A decision with a suggestion that the worker marked reversible | AIWorks answers with the suggestion at once and tells the owner, who can change the answer until the result is accepted |
+| An owner-reserved decision with a suggestion that the worker marked reversible | AIWorks answers with the suggestion at once and tells the owner, who can change it while the step is being made. At most once per step under one approval; any later decision on that step, and every stall at the repair limit, waits for the owner |
 | A decision without a usable suggestion | The owner. Workers are told to give 2 to 4 options and a suggestion |
 | A checked result waiting for acceptance; a merge left to someone else that stalled; an accepted result AIWorks may not merge; a failed rollback | The owner |
-| A published result without an independent check on record | AIWorks checks it again by itself, once per version, within the approved plan |
+| A published result without an independent check on record | AIWorks checks it again by itself, once per version, within the approved plan, unless it was merged, closed or pushed by someone else; then it stays the owner's to plan again or leave |
 | Work AIWorks has not looked at for a while; AIWorks stopped on this computer; a step stopped by failures, a missing tool or no AI worker for it; merge problems; results not recorded; an unknown release outcome; unreadable messages | AIWorks's own state: listed apart with what it does next, not counted |
 | Changes the owner requested on paused or cancelled work | Settled when they are requested: the request offers to resume. Not listed afterwards |
 
