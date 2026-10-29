@@ -1,9 +1,9 @@
 // npm run rebuild (src/supervisor/rebuild.mjs) against a synthetic installation: a real store, with Git, deploy.ps1 and
-// the scheduled tasks replaced by recorded stand-ins. Nothing here starts a process or touches a live installation.
+// the scheduled tasks replaced by recorded stand-ins. Disposable processes exercise locking; no live installation is used.
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { test } from 'node:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -146,6 +146,60 @@ const openRun = (store, id, campaignId, taskId) => store.insert('operations', { 
 const finishRun = (store, id) => store.run("UPDATE operations SET state = 'finished', outcome = ? WHERE id = ?", JSON.stringify({ status: 'resolved', id }), id);
 const lastPause = (store, id) => store.get("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'paused' ORDER BY seq DESC LIMIT 1", id)?.detail?.reason;
 
+test('simultaneous stale-lock retries admit one maintainer and recover again after that maintainer crashes', { skip, timeout: 60_000 }, async () => {
+  const inst = installation();
+  const children = [];
+  const launch = (pause) => {
+    const child = spawn(process.execPath, [fileURLToPath(new URL('./fixtures/rebuild-contender.mjs', import.meta.url)), inst.root, pause],
+      { cwd: inst.root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+    let output = '';
+    child.stdout.on('data', (chunk) => { output += chunk; });
+    child.stderr.on('data', (chunk) => { output += chunk; });
+    const events = [], waiters = [];
+    child.on('message', (event) => { if (waiters.length) waiters.shift()(event); else events.push(event); });
+    const exited = new Promise((resolve) => child.once('exit', resolve));
+    child.on('error', (error) => { output += error.message; });
+    const next = () => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`contender timed out: ${output}`)), 25_000);
+      const done = (event) => { clearTimeout(timer); resolve(event); };
+      if (events.length) done(events.shift()); else waiters.push(done);
+    });
+    const stop = async () => { if (child.exitCode === null && child.signalCode === null) child.kill(); await exited; };
+    const contender = { next, stop };
+    children.push(contender);
+    return contender;
+  };
+  try {
+    // Obtain a real dead PID instead of assuming a PID is unused on the test machine.
+    const dead = spawnSync(process.execPath, ['-e', ''], { cwd: inst.root, windowsHide: true });
+    assert.equal(dead.status, 0);
+    writeFileSync(inst.paths.lock, JSON.stringify({ owner: 'aiworks rebuild', pid: dead.pid, token: 'crashed' }));
+    const first = launch('pause');
+    assert.equal((await first.next()).event, 'stale');
+    const second = launch('continue');
+    const competing = await second.next();
+    writeFileSync(join(inst.root, 'continue'), 'go');
+    assert.equal((await first.next()).event, 'entered');
+    assert.equal(competing.event, 'refused', 'a delayed stale reader must not remove a new maintainer lock');
+    assert.equal(competing.code, 'REBUILD_IN_PROGRESS');
+    const owned = readFileSync(inst.paths.lock, 'utf8');
+    const svc = services(inst);
+    await assert.rejects(rebuild(inst.options, svc), { code: 'REBUILD_IN_PROGRESS' });
+    assert.deepEqual(svc.calls, [], 'a competing retry must not start preflight or maintenance');
+    assert.equal(readFileSync(inst.paths.lock, 'utf8'), owned);
+    await first.stop();
+    await second.stop();
+    register(inst.store, 'alpha');
+    const result = await rebuild(inst.options, svc);
+    assert.deepEqual(result.resumed, ['alpha']);
+    assert.deepEqual(svc.deploys(), ['Stop', 'Install', 'Start']);
+    assert.equal(existsSync(inst.paths.lock), false);
+  } finally {
+    await Promise.all(children.map((child) => child.stop()));
+    inst.close();
+  }
+});
+
 test('an open run finishes and is recorded before the runtime stops, and one admitted at the stop is recorded before anything is replaced', { skip }, async () => {
   const inst = installation();
   try {
@@ -286,5 +340,13 @@ test('a dirty checkout, a revision that is not the trusted main or another maint
     assert.deepEqual(svc.calls, []);
     assert.equal(inst.store.campaign('alpha').control, 'registered');
     assert.ok(!existsSync(inst.paths.state) && existsSync(inst.paths.lock));
+    for (const pid of [process.pid, process.pid + 1]) {
+      const holder = JSON.stringify({ owner: 'aiworks rebuild', pid, token: 'live-owner' });
+      writeFileSync(inst.paths.lock, holder);
+      svc.processAlive = () => true;
+      await assert.rejects(rebuild(inst.options, svc), { code: 'REBUILD_IN_PROGRESS' });
+      assert.equal(readFileSync(inst.paths.lock, 'utf8'), holder);
+      assert.deepEqual(svc.calls, []);
+    }
   } finally { inst.close(); }
 });

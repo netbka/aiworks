@@ -141,7 +141,7 @@ export async function rebuild(options, services) {
     if (!existsSync(path)) refuse('INSTALLATION_NOT_FOUND', `no ${what} at ${path}: --root must name the root of an existing AIWorks installation`);
   }
   mkdirSync(paths.dir, { recursive: true });
-  const lockToken = acquireLock(paths, services, now);
+  const releaseLock = acquireLock(paths, services, now);
   let state = readJson(paths.state);
   const save = () => writeAtomic(paths.state, `${JSON.stringify(state, null, 2)}\n`);
   const evidence = (step, entry) => {
@@ -320,7 +320,7 @@ export async function rebuild(options, services) {
     renameSync(paths.state, join(paths.dir, state.id, 'state.json'));
     return summary;
   } finally {
-    if (readJson(paths.lock)?.token === lockToken) rmSync(paths.lock, { force: true });
+    releaseLock();
   }
 
   // Pause every running campaign under this invocation's reason and record it, including one paused just before a crash.
@@ -391,23 +391,44 @@ export async function rebuild(options, services) {
 // where it stopped, and this invocation continues from there. Another session's lock is never removed.
 const LOCK_OWNER = 'aiworks rebuild';
 function acquireLock(paths, services, now) {
-  const token = randomBytes(8).toString('hex');
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const fd = openSync(paths.lock, 'wx');
-      try { writeSync(fd, JSON.stringify({ owner: LOCK_OWNER, pid: process.pid, token, at: new Date(now()).toISOString() })); } finally { closeSync(fd); }
-      return token;
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      const holder = readJson(paths.lock);
-      if (holder?.owner !== LOCK_OWNER || !Number.isSafeInteger(holder.pid)) {
-        throw new RebuildError('MAINTENANCE_IN_PROGRESS', `another session holds the runtime maintenance lock ${paths.lock}; nothing was changed. Run npm run rebuild again once that session has finished and released it`);
-      }
-      if (holder.pid !== process.pid && services.processAlive(holder.pid)) {
-        throw new RebuildError('REBUILD_IN_PROGRESS', `another rebuild (pid ${holder.pid}, since ${holder.at}) is maintaining this installation; nothing was changed`);
-      }
-      rmSync(paths.lock, { force: true });
+  // Keep an OS-backed SQLite write lock for the entire invocation, including token cleanup. Unlike another PID file,
+  // this guard is released by the OS after a crash; it never needs a racy stale-file takeover of its own. Keep this
+  // database at a stable path and never unlink it, or concurrent connections could lock different files.
+  const guard = new DatabaseSync(join(paths.dir, 'maintenance-guard.db'));
+  try {
+    guard.exec('PRAGMA busy_timeout = 0; BEGIN IMMEDIATE');
+  } catch (error) {
+    guard.close();
+    if (error.errcode === 5 || error.errcode === 6) {
+      throw new RebuildError('REBUILD_IN_PROGRESS', 'another rebuild holds the maintenance guard; nothing was changed');
     }
+    throw error;
   }
-  throw new RebuildError('REBUILD_IN_PROGRESS', 'the maintenance lock could not be taken; nothing was changed');
+  const token = randomBytes(8).toString('hex');
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const fd = openSync(paths.lock, 'wx');
+        try { writeSync(fd, JSON.stringify({ owner: LOCK_OWNER, pid: process.pid, token, at: new Date(now()).toISOString() })); } finally { closeSync(fd); }
+        return () => {
+          try { if (readJson(paths.lock)?.token === token) rmSync(paths.lock, { force: true }); }
+          finally { guard.close(); }
+        };
+      } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+        const holder = readJson(paths.lock);
+        if (holder?.owner !== LOCK_OWNER || !Number.isSafeInteger(holder.pid)) {
+          throw new RebuildError('MAINTENANCE_IN_PROGRESS', `another session holds the runtime maintenance lock ${paths.lock}; nothing was changed. Run npm run rebuild again once that session has finished and released it`);
+        }
+        if (holder.pid === process.pid || services.processAlive(holder.pid)) {
+          throw new RebuildError('REBUILD_IN_PROGRESS', `another rebuild (pid ${holder.pid}, since ${holder.at}) is maintaining this installation; nothing was changed`);
+        }
+        rmSync(paths.lock, { force: true });
+      }
+    }
+    throw new RebuildError('REBUILD_IN_PROGRESS', 'the maintenance lock could not be taken; nothing was changed');
+  } catch (error) {
+    guard.close();
+    throw error;
+  }
 }
