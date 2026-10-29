@@ -1006,6 +1006,11 @@ function reviewScreen(project, id) {
   }
   const items = (values) => el('ul', {}, ...values.map((value) => el('li', {}, value)));
   const part = (title, ...body) => el('div', { class: 'review-part' }, el('h3', {}, title), ...body);
+  // Each step of other work once (ownerTaskId is that step; taskId is this plan's), and none already merged.
+  const overlaps = [...new Map(plan.conflicts.map((item) => [`${item.campaignId}/${item.ownerTaskId || item.taskId}`, item])).values()].map((item) => {
+    const c = campaignById(item.campaignId), task = c?.tasks.find((t) => t.id === (item.ownerTaskId || item.taskId));
+    return { item, c, task };
+  }).filter(({ c, task }) => !(c && task && deliveryOf(c, task)?.state === 'merged'));
   const status = plan.code === 'APPROVED' ? el('p', { class: 'notice' }, approvedText(plan.approvedAt), ' · ', routeLink('Open Overview', { screen: 'project', project, tab: 'overview' }))
     : plan.code === 'DRAFT_STALE' ? el('p', { class: 'notice warning' }, `${projectName(project)} changed since this plan was drafted (${plan.staleWhat.join(', ') || 'its source changed'}). Draft it again before approving. `,
       routeLink('Plan again', { screen: 'start', project }))
@@ -1035,9 +1040,9 @@ function reviewScreen(project, id) {
     part('Estimate', el('p', {}, estimateText(plan.estimate))),
     part('Main steps', plan.steps.length ? el('ol', {}, ...plan.steps.map((step) => el('li', {}, step.title, step.check ? el('span', { class: 'subtext' }, ` · checked by: ${step.check}`) : null)))
       : items(plan.tasks.map((task) => task.title))),
-    part('Overlaps with other work', plan.conflicts.length ? items(plan.conflicts.map((item) => item.code === 'DUPLICATE_WORK'
-      ? `${stepName(item.campaignId, item.taskId)} is already assigned. Starting is refused until that work finishes or is cancelled.`
-      : `${stepName(item.campaignId, item.taskId)} is changing the same files. This step waits for it.`)) : el('p', {}, 'None found.')),
+    part('Overlaps with other work', overlaps.length ? items(overlaps.map(({ item, c, task }) => [
+      c && task ? routeLink(stepName(c.id, task.id).replace(/^“|”$/g, ''), { screen: 'step', project: c.repository, work: c.id, step: task.id }) : 'A step of other work',
+      item.code === 'DUPLICATE_WORK' ? ' is already assigned. Starting is refused until that work finishes or is cancelled.' : ' is changing the same files. This step waits for it.'])) : el('p', {}, 'None found.')),
     part('What it may change', plan.writes.length ? items(plan.writes) : el('p', {}, 'No files: it only reports.'),
       plan.denyWrites.length ? el('p', { class: 'subtext' }, `Never: ${plan.denyWrites.join(', ')}`) : null),
     part('AI workers and limits', el('p', {}, plan.providers.length ? `Uses ${plan.providers.join(', ')}.` : 'AI workers: not stated.'), el('p', {}, limits)),
@@ -2797,7 +2802,10 @@ function connectionsScreen() {
       view.accounts.length ? el('ul', { class: 'settings-links' }, ...view.accounts.map((account) => el('li', { 'data-focus-scope': `connections/account/${account.kind}/${account.name}` },
         el('strong', {}, `${provider(account.kind)} · ${account.name}`),
         el('div', { class: 'subtext' }, `${ACCOUNT_WORDS[account.state] ?? 'Waiting for a limit'}${account.retryAt ? ` until ${clock(account.retryAt)}` : ''}${account.limit ? ` · ${account.open} of ${account.limit} runs at once` : ''}`))))
-        : el('p', {}, 'No AI worker account is set up on this computer.'))),
+        // The same readiness as Settings › AI workers: workers that run on the default login are set up, with no account here.
+        : view.workers?.length ? el('p', {}, `No separate account is registered: ${view.workers.map((w) => provider(w.kind)).join(', ')} ${view.workers.length === 1 ? 'runs' : 'run'} on this computer’s default login. `,
+          routeLink('See AI workers in Settings', '#/settings'), '.')
+          : el('p', {}, 'No AI worker account is set up on this computer.'))),
     panel('Merge checks', 'Where each project’s merges are seen from. The dashboard never calls GitHub’s API.', el('div', { class: 'panel-body' }, merges)),
     panel('Project trust and backup', 'The approved starting point AIWorks checks before it starts or resumes work.', el('div', { class: 'panel-body' }, ...trustedMainLines(view.trustedMain).filter(Boolean)))];
 }

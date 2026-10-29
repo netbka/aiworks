@@ -296,12 +296,16 @@ export function trustedMainView(store, config) {
 
 /** Settings -> Connections (GET /api/v2/settings): AIWorks itself, each AI worker account, the merge checks and the trusted main. */
 export function connectionsView({ supervisor, merges, trustedMain }) {
-  if (!supervisor?.available) return { available: false, supervisor: null, accounts: [], merges: [], trustedMain: null };
+  if (!supervisor?.available) return { available: false, supervisor: null, accounts: [], workers: [], merges: [], trustedMain: null };
   const controller = supervisor.controller ?? {};
   return { available: true,
     supervisor: { state: controller.state ?? 'unknown', stopRequested: controller.stopRequested === true },
     accounts: (supervisor.settings?.accounts ?? []).map((account) => ({ kind: account.kind, name: account.name, state: account.state, retryAt: account.retryAt ?? null,
       open: account.open ?? 0, limit: account.limit ?? null })),
+    // The AI workers that can take work, from the same readiness Settings shows: with no account registered, they run on
+    // this computer's default login, and Connections says so instead of "none is set up".
+    workers: (supervisor.settings?.workers ?? []).filter((worker) => ['ready', 'running', 'waiting'].includes(worker.state))
+      .map((worker) => ({ kind: worker.kind, state: worker.state })),
     merges: (merges?.repositories ?? []).map((repo) => ({ repository: repo.repository, configured: repo.configured, local: repo.local === true,
       checkedAt: repo.fetchedAt ?? null, error: repo.error ?? null })),
     trustedMain };
