@@ -887,6 +887,28 @@ export function decisionView(campaignId, task, feedback, now) {
 }
 
 /**
+ * AW-016: the decisions AIWorks answered itself with the worker's reversible suggestion, newest first, while their step's
+ * result is not accepted or merged yet, so the owner can still change them. Question, options and reason come from the
+ * validated decision recorded with the answer and pass the same filter as an open decision's.
+ */
+export function autoAnswers(store, campaignId, taskRows) {
+  // Shown while the step's result is still being made; once it is done the owner meets the choice in its Review.
+  const open = new Set(taskRows.filter((task) => !['done', 'cancelled'].includes(task.state)).map((task) => task.task_id));
+  const seen = new Set(), out = [];
+  for (const row of store.all("SELECT at, detail FROM journal WHERE campaign_id = ? AND kind = 'decision-answered' ORDER BY seq DESC LIMIT 200", campaignId)) {
+    const detail = row.detail ?? {}, d = detail.auto ? structuredDecision({ decision: { question: detail.question, options: detail.options, suggestion: detail.suggestion } }) : null;
+    if (!d || !open.has(detail.task) || seen.has(detail.task)) continue;
+    seen.add(detail.task);
+    const chosen = d.options.find((o) => o.id === detail.option);
+    if (!chosen) continue;
+    out.push({ taskId: detail.task, at: row.at, question: safeText(d.question, 500), chosen: safeText(chosen.label, 120),
+      reason: d.suggestion ? safeText(d.suggestion.reason, 500) : null,
+      others: d.options.filter((o) => o.id !== chosen.id).map((o) => safeText(o.label, 120)) });
+  }
+  return out;
+}
+
+/**
  * Review of one step's result (OWNER_UI_V2 WP4), or null before any head was verified. Each acceptance criterion of the
  * step with what the independent verifier checked and saw, from the validated fields of its accepted verification of
  * exactly the verified head and report (result-review.mjs); a criterion it did not report is "not checked". The verdict
@@ -954,6 +976,17 @@ function localReport(store, campaignId, task, spec) {
       Number(number), `${campaignId}:${task.task_id}:report:${digest}`);
   } catch { row = null; }
   return row ? { number: Number(number), at: row.created_at } : null;
+}
+
+/**
+ * A report kept on this computer for the project that started the campaign (campaign.mjs reportPublication 'local',
+ * controller.mjs): the step's published link is exactly `aiworks-report:<campaign>/<step>`, and the caller reads the
+ * verified text through the campaign API's report route (remote-campaigns.mjs campaignReports). Where it went is
+ * recorded, so it is never an «unrecorded» result; it is never a merge or an acceptance either.
+ */
+function keptReport(declaration, campaignId, task, spec) {
+  return declaration?.reportPublication === 'local' && task.state === 'done' && spec?.deliverable === 'report'
+    && task.pr_url === `aiworks-report:${campaignId}/${task.task_id}`;
 }
 
 /**
@@ -1169,6 +1202,11 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
                 runOutcome: code(op?.outcome?.class === 'result' ? op.outcome.value?.result ?? op.outcome.value?.verdict : op?.outcome?.class) };
             })() };
         }),
+        autoDecisions: autoAnswers(store, id, taskRows),
+        // AW-016: the controller's own record of an unchecked published head, so the page never promises a check the
+        // controller will not run: `checked` once it went back to the checker, `left` when it was left for the owner.
+        uncheckedRecheck: Object.fromEntries(store.all("SELECT kind, payload FROM events WHERE campaign_id = ? AND kind IN ('unchecked-recheck', 'unchecked-recheck-skipped')", id)
+          .map((event) => [`${event.payload?.taskId}:${event.payload?.headSha}`, event.kind === 'unchecked-recheck' ? 'checked' : 'left'])),
         tasks: taskRows.map((task) => ({ id: task.task_id, title: safeText(specs.get(task.task_id)?.title),
           risk: riskOf(specs.get(task.task_id)),
           decision: decisionView(id, task, feedback, now),
@@ -1177,6 +1215,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
           // Why the merge gate holds this verified head, as a code (mergeWaitCode); null when it never held it.
           mergeWait: waits.get(task.task_id) ?? null,
           localReport: localReport(store, id, task, specs.get(task.task_id)),
+          keptReport: keptReport(c.declaration, id, task, specs.get(task.task_id)),
           outcome: specs.get(task.task_id)?.outcome ? safeText(specs.get(task.task_id).outcome) : null,
           deliverable: code(specs.get(task.task_id)?.deliverable), verifierRejections: rejections.get(task.task_id) ?? 0,
           version: task.version, issueUrl: `https://github.com/${c.declaration.target.repository}/issues/${specs.get(task.task_id)?.issue}`,

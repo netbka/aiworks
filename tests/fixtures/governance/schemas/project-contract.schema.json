@@ -57,6 +57,14 @@
       "additionalProperties": false
     },
     "notes": { "type": "array", "items": { "type": "string" } },
+    "web": {
+      "$comment": "AIWorks web build tasks (docs/SUPERVISOR.md section 11): the only origins on which a task with web.mode build may change pages. Absent means none.",
+      "type": "object", "required": ["buildOrigins"],
+      "properties": {
+        "buildOrigins": { "type": "array", "uniqueItems": true, "maxItems": 16, "items": { "type": "string", "pattern": "^https?://[^/?#@\\s]+$" } }
+      },
+      "additionalProperties": false
+    },
     "governance": { "$ref": "#/$defs/governance" }
   },
   "$defs": {
