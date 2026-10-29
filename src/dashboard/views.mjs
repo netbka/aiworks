@@ -247,8 +247,9 @@ export function releasesView(project, { supervisor, owner, projects }) {
   const row = (projects?.projects ?? []).find((item) => sameProject(item.id, project));
   const goals = (supervisor.goals ?? []).filter((goal) => sameProject(goal.project, project));
   if (!row && !goals.length) return null;
-  const mine = new Set(goals.map((goal) => goal.id));
   const campaigns = new Map((supervisor.campaigns ?? []).map((c) => [c.id, c]));
+  // Every goal of the project, finished ones too: a result's Live: Yes always has its release listed here.
+  const mine = new Set([...goals.map((goal) => goal.id), ...[...campaigns.values()].filter((c) => sameProject(c.repository, project)).map((c) => c.id)]);
   const text = (campaignId, taskId) => {
     const task = campaigns.get(campaignId)?.tasks?.find((item) => item.id === taskId);
     return task ? task.outcome ?? task.title ?? task.id : null;
@@ -268,7 +269,9 @@ export function releasesView(project, { supervisor, owner, projects }) {
       restore: restoreScope(r), health: releaseHealth(r), checkNow: r.checkNow ?? { available: false, reason: null }, updatedAt: r.updatedAt })),
     // Each checked result with checked, merged, live and accepted apart (the Results ladder and recorded acceptance).
     results: results.map((item) => ({ campaignId: item.campaignId, taskId: item.taskId, text: item.text, sha: item.ladder.sha,
-      steps: item.ladder.steps.map((step) => ({ key: step.key, answer: step.answer })), accepted: acceptance(item.review), note: item.ladder.note })) };
+      steps: item.ladder.steps.map((step) => ({ key: step.key, answer: step.answer })), accepted: acceptance(item.review), note: item.ladder.note,
+      // Live: Yes is only ever the recorded release's own deploy or apply step; this names that release's destination.
+      liveFrom: item.ladder.steps.some((step) => step.key === 'deployed' && step.answer === 'yes') ? item.ladder.destination ?? 'its destination' : null })) };
 }
 
 /**
@@ -293,12 +296,16 @@ export function trustedMainView(store, config) {
 
 /** Settings -> Connections (GET /api/v2/settings): AIWorks itself, each AI worker account, the merge checks and the trusted main. */
 export function connectionsView({ supervisor, merges, trustedMain }) {
-  if (!supervisor?.available) return { available: false, supervisor: null, accounts: [], merges: [], trustedMain: null };
+  if (!supervisor?.available) return { available: false, supervisor: null, accounts: [], workers: [], merges: [], trustedMain: null };
   const controller = supervisor.controller ?? {};
   return { available: true,
     supervisor: { state: controller.state ?? 'unknown', stopRequested: controller.stopRequested === true },
     accounts: (supervisor.settings?.accounts ?? []).map((account) => ({ kind: account.kind, name: account.name, state: account.state, retryAt: account.retryAt ?? null,
       open: account.open ?? 0, limit: account.limit ?? null })),
+    // The AI workers that can take work, from the same readiness Settings shows: with no account registered, they run on
+    // this computer's default login, and Connections says so instead of "none is set up".
+    workers: (supervisor.settings?.workers ?? []).filter((worker) => ['ready', 'running', 'waiting'].includes(worker.state))
+      .map((worker) => ({ kind: worker.kind, state: worker.state })),
     merges: (merges?.repositories ?? []).map((repo) => ({ repository: repo.repository, configured: repo.configured, local: repo.local === true,
       checkedAt: repo.fetchedAt ?? null, error: repo.error ?? null })),
     trustedMain };
