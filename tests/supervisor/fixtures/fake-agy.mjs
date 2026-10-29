@@ -35,7 +35,7 @@ const runId = schema.properties.runId.const;
 const packetDigest = schema.properties.packetDigest.const;
 const result = role === 'verify'
   ? { verdict: 'accepted', targetSha: /MUST carry targetSha ([0-9a-f]{40})/.exec(prompt)[1], reportDigest: /reportDigest ([0-9a-f]{64})/.exec(prompt)[1],
-    summary: 'Re-checked every criterion in the browser.', findings: [], checks: [{ command: 'A1 page loads', result: 'pass' }] }
+    summary: 'Re-checked every criterion in the browser.', findings: [], checks: [{ command: 'A1 page loads', result: 'pass' }], criteria: Array.from({ length: 16 }, (_, i) => ({ criterion: i + 1, result: 'pass', check: 'synthetic', evidence: 'synthetic' })) }
   : { result: 'resolved', summary: 'ACCEPTED; no failing criteria', report: `**Visual acceptance: ACCEPTED**\n\nPage: ${url}\n\n| Criterion | Result | Evidence |\n| --- | --- | --- |\n| A1 | pass | snapshot shows the heading |` };
 emit({ event: 'result', result: { conversation_id: conversation, status: 'SUCCESS', response: '', num_turns: 1,
   structured_output: { runId, packetDigest, result },

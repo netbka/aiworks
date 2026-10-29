@@ -344,7 +344,9 @@ export function quotaRetryAt(text, now) {
 export const refusedBeforeWork = (verdict) => verdict?.class === 'quota' && verdict.receipt?.measured === true &&
   !(verdict.receipt.costUsd > 0) && (verdict.receipt.numTurns ?? 0) <= 1;
 
-export function validResult(role, value, { deliverable, targetSha, reportDigest }) {
+// `web`: a browser verification, whose "accepted" means the report's claims hold — a truthful REJECTED report may carry
+// failed criteria (agy.mjs WEB_CRITERIA_RULE); passedCheck still reads those criteria as not passed.
+export function validResult(role, value, { deliverable, targetSha, reportDigest, web = false, acceptance = 0 }) {
   const validate = role === 'verification' ? validateVerifier : validateImplementer;
   if (!validate(value)) return `structured_output invalid: ${ajv.errorsText(validate.errors)}`;
   const sha = (s) => typeof s === 'string' && /^[0-9a-f]{40}$/.test(s);
@@ -355,7 +357,17 @@ export function validResult(role, value, { deliverable, targetSha, reportDigest 
     if (!Array.isArray(value.findings) || !Array.isArray(value.checks)) return 'findings/checks missing';
     if (value.verdict === 'accepted' && value.findings.some((f) => f?.severity === 'blocking')) return 'accepted with a blocking finding';
     if (value.verdict === 'accepted' && value.checks.some((check) => check.result === 'fail')) return 'accepted with a failed check';
-    if (value.verdict === 'accepted' && (value.criteria ?? []).some((item) => item.result === 'fail')) return 'accepted with a failed criterion';
+    if (!web && value.verdict === 'accepted' && (value.criteria ?? []).some((item) => item.result === 'fail')) return 'accepted with a failed criterion';
+    // A report is published only when every acceptance criterion passed (passedCheck). An accepted report without one
+    // passing entry per criterion would finish the campaign yet withhold its report forever, so it is refused here and
+    // the verification runs again with this reason. A browser verification may truthfully accept failed criteria (above).
+    if (!web && value.verdict === 'accepted' && deliverable === 'report' && acceptance > 0) {
+      // Exactly one passing entry per criterion, the same rule criterionEvidence applies when the report is read.
+      const entries = (n) => (value.criteria ?? []).filter((item) => item.criterion === n);
+      const missing = Array.from({ length: acceptance }, (_, i) => i + 1).filter((n) => entries(n).length !== 1 || entries(n)[0].result !== 'pass');
+      // A fixed detail: the repeat guard compares refusals, so varying criterion numbers would let it retry without bound.
+      if (missing.length) return 'accepted report without exactly one passing criteria entry for every acceptance criterion';
+    }
     return null;
   }
   if (!['resolved', 'blocked-owner-reserved', 'evidence-unavailable'].includes(value.result)) return 'result invalid';
