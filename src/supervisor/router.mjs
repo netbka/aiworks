@@ -7,7 +7,7 @@
 // Static mode keeps today's order of checks: the host and project check (unavailableReason) still runs after the choice,
 // inside dispatch, so each host fact's hostUnavailable is null here and the static policy does not read it.
 import { createHash } from 'node:crypto';
-import { BROWSER_KINDS, roleUnavailableReason } from './adapters/executors.mjs';
+import { BROWSER_KINDS, roleUnavailableReason, webFlag } from './adapters/executors.mjs';
 import { canonicalJson } from './campaign.mjs';
 
 export const RECEIPT_VERSION = 1;
@@ -40,7 +40,7 @@ export function receiptInputs({ stage, chain, spec, providers, platform, facts, 
     researchOnly: provider.researchOnly === true }));
   return {
     stage, chain,
-    task: { deliverable: spec.deliverable, web: Boolean(spec.web) },
+    task: { deliverable: spec.deliverable, web: webFlag(spec.web) },
     candidates, candidatesDigest: sha256(candidates), platform,
     hostFacts: candidates.map(({ kind }) => ({ kind, ...facts(kind) })),
     escalation: { priorAttempts },
@@ -347,7 +347,7 @@ export function policyInputs({ stage, spec, routing, providers, platform, facts,
     researchOnly: providers.find((provider) => provider.kind === kind)?.researchOnly === true }));
   return {
     stage,
-    task: { deliverable: spec.deliverable, web: Boolean(spec.web), role: spec.role ?? null, references: spec.references?.length ?? 0,
+    task: { deliverable: spec.deliverable, web: webFlag(spec.web), role: spec.role ?? null, references: spec.references?.length ?? 0,
       acceptance: spec.acceptance?.length ?? 0, dependsOn: spec.dependsOn?.length ?? 0,
       requiresMergedDependencies: spec.requiresMergedDependencies === true, writes: spec.writes ?? null,
       declared: { risk: spec.routing?.risk ?? null, complexity: spec.routing?.complexity ?? null } },

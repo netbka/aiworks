@@ -344,9 +344,12 @@ export function quotaRetryAt(text, now) {
 export const refusedBeforeWork = (verdict) => verdict?.class === 'quota' && verdict.receipt?.measured === true &&
   !(verdict.receipt.costUsd > 0) && (verdict.receipt.numTurns ?? 0) <= 1;
 
-// `web`: a browser verification, whose "accepted" means the report's claims hold — a truthful REJECTED report may carry
-// failed criteria (agy.mjs WEB_CRITERIA_RULE); passedCheck still reads those criteria as not passed.
-export function validResult(role, value, { deliverable, targetSha, reportDigest, web = false, acceptance = 0 }) {
+// `web`: true (or "acceptance") for a browser acceptance review, whose "accepted" means the report's claims hold — a
+// truthful REJECTED report may carry failed criteria (agy.mjs WEB_CRITERIA_RULE); passedCheck still reads those criteria
+// as not passed. "build" (web.mode build) is not lenient: its verifier checks the change itself, so an accepted build
+// report needs every criterion passed, like any other report.
+export function validResult(role, value, { deliverable, targetSha, reportDigest, web: webExpect = false, acceptance = 0 }) {
+  const web = webExpect === true || webExpect === 'acceptance';
   const validate = role === 'verification' ? validateVerifier : validateImplementer;
   if (!validate(value)) return `structured_output invalid: ${ajv.errorsText(validate.errors)}`;
   const sha = (s) => typeof s === 'string' && /^[0-9a-f]{40}$/.test(s);

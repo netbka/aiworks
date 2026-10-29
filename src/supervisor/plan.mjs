@@ -205,6 +205,8 @@ export function admitAmendment({ declaration, stored, head, merged = true, specs
     if (task.references.some((reference) => secretLike.test(reference) || secretLike.test(parseReference(reference)?.path ?? ''))) {
       return at('WIDEN_CAPABILITY', `${id} names a secret-like reference`);
     }
+    // A build task may change pages; only the owner's registration, checked against the registry's build origins, adds one.
+    if (task.web?.mode === 'build') return at('WIDEN_CAPABILITY', `${id} wants a web build task, which only the owner's registration adds`);
     if (task.web !== undefined && (task.web.urls.some((url) => !pages.includes(new URL(url).origin)) ||
         (task.web.resourceOrigins ?? []).some((origin) => !origins.includes(origin)))) {
       return at('WIDEN_CAPABILITY', `${id} wants a browser origin outside the approved pages`);

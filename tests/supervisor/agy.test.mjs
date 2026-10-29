@@ -1,18 +1,19 @@
 // The AGY browser worker for web acceptance tasks: declaration rules, routing, per-run isolation, result
 // classification and one synthetic end-to-end run. No model, browser, network or GitHub access.
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { BROWSER_SERVER, DENY, TOOLS, WEB_CRITERIA_RULE, webScope } from '../../src/supervisor/adapters/agy.mjs';
+import { BROWSER_SERVER, BUILD_RETRY_NOTE, DENY, TOOLS, WEB_CRITERIA_RULE, webScope } from '../../src/supervisor/adapters/agy.mjs';
 import { CRITERIA_RULE, validResult } from '../../src/supervisor/adapters/claude.mjs';
 import { passedCheck } from '../../src/supervisor/result-review.mjs';
-import { buildPrompt, classify, prepare, roleUnavailableReason, unavailableReason } from '../../src/supervisor/adapters/executors.mjs';
+import { buildPrompt, classify, prepare, roleUnavailableReason, unavailableReason, webFlag } from '../../src/supervisor/adapters/executors.mjs';
+import { route } from '../../src/supervisor/router.mjs';
 import { validateDeclaration } from '../../src/supervisor/campaign.mjs';
-import { declaration, environment, runUntil, skipWithoutSqlite } from './helpers.mjs';
+import { declaration, environment, GOVERNANCE, runUntil, skipWithoutSqlite } from './helpers.mjs';
 
 const FAKE_AGY = fileURLToPath(new URL('./fixtures/fake-agy.mjs', import.meta.url));
 const agy = { kind: 'agy-cli', model: 'gemini-3.1-pro-high' };
@@ -250,6 +251,36 @@ test('the browser prompt names the pages and the browser-only rules; the verifie
     'other providers keep the repository prompt');
 });
 
+test('a web build task is never routed to agy, to implement or to verify', () => {
+  const build = webFlag({ urls: ['https://dev.example.invalid/'], mode: 'build' });
+  for (const stage of ['implement', 'verify']) {
+    const decision = route({ stage, chain: true, task: { deliverable: 'report', web: build }, platform: 'win32',
+      candidates: [{ kind: 'agy-cli', model: agy.model }, { kind: 'claude-cli', model: 'opus' }],
+      hostFacts: ['agy-cli', 'claude-cli'].map((kind) => ({ kind, cliConfigured: true, hostUnavailable: false, wait: null })),
+      escalation: { priorAttempts: [] } });
+    assert.equal(decision.chosen.kind, 'claude-cli', stage);
+    const alone = route({ stage, chain: false, task: { deliverable: 'report', web: build }, platform: 'win32',
+      candidates: [{ kind: 'agy-cli', model: agy.model }], hostFacts: [{ kind: 'agy-cli', cliConfigured: true, hostUnavailable: false, wait: null }],
+      escalation: { priorAttempts: [] } });
+    assert.equal(alone.chosen, null, `${stage}: agy alone never takes a build task`);
+  }
+});
+
+test('an accepted build verification needs every criterion passed', () => {
+  const report = 'r';
+  const reportDigest = createHash('sha256').update(report, 'utf8').digest('hex');
+  const expect = { deliverable: 'report', targetSha: 'b'.repeat(40), reportDigest, acceptance: 2 };
+  const criterion = (n, result) => ({ criterion: n, result, check: 'Opened the page', evidence: 'Seen.' });
+  const accepted = (criteria) => ({ verdict: 'accepted', targetSha: 'b'.repeat(40), reportDigest, summary: 'Done.', findings: [],
+    checks: [{ command: 'change 1', result: 'pass' }], criteria });
+  for (const criteria of [[criterion(1, 'pass'), criterion(2, 'fail')], [criterion(1, 'pass')], [criterion(1, 'pass'), criterion(2, 'not-checked')]]) {
+    assert.ok(validResult('verification', accepted(criteria), { ...expect, web: 'build' }), JSON.stringify(criteria));
+  }
+  const full = accepted([criterion(1, 'pass'), criterion(2, 'pass')]);
+  assert.equal(validResult('verification', full, { ...expect, web: 'build' }), null);
+  assert.equal(passedCheck({ verification: full, verified_sha: 'b'.repeat(40), result: { report } }, ['C1', 'C2']), true, 'its report is released');
+});
+
 test('a campaign routes its web task to agy for acceptance and verification, and its code task elsewhere', { skip: skipWithoutSqlite }, async (t) => {
   const { Store } = await import('../../src/supervisor/store.mjs');
   const { Controller } = await import('../../src/supervisor/controller.mjs');
@@ -361,4 +392,48 @@ test('when AGY is not available, Claude takes the web task with the isolated bro
     assert.deepEqual(Object.keys(JSON.parse(call.args[call.args.indexOf('--mcp-config') + 1]).mcpServers), [BROWSER_SERVER]);
   }
   assert.equal(env.comments().filter((comment) => comment.issue === '439').length, 1, 'the verified report is posted');
+});
+
+/** A build campaign on a synthetic DEV origin, with a governance copy whose sampleapp entry lists `origins`. */
+async function buildCampaign(t, { scenario = {}, origins }) {
+  const { Store } = await import('../../src/supervisor/store.mjs');
+  const { Controller } = await import('../../src/supervisor/controller.mjs');
+  const { campaignStart } = await import('../../src/supervisor/api.mjs');
+  const scratch = mkdtempSync(join(tmpdir(), 'aiworks-build-gov-'));
+  const governanceRoot = join(scratch, 'governance');
+  cpSync(GOVERNANCE, governanceRoot, { recursive: true });
+  const entry = join(governanceRoot, 'registry', 'projects', 'sampleapp.json');
+  const list = (value) => writeFileSync(entry, JSON.stringify({ ...JSON.parse(readFileSync(entry, 'utf8')), web: { buildOrigins: value } }, null, 2));
+  list(origins);
+  const env = environment({ scenario, config: { governanceRoot } });
+  const config = { ...env.config, commands: { ...env.config.commands, chrome: fakeChrome(t, '155.0.8059.39') } };
+  const store = new Store(join(env.dataDir, 'supervisor.db'));
+  const d = declaration({ tasks: [{ ...webTask, goal: 'Add the synthetic field on the DEV server.', web: { urls: ['https://dev.example.invalid/app'], mode: 'build' } }] });
+  d.executor = chain(agy, claudeProvider);
+  campaignStart(store, d);
+  const controller = new Controller({ store, config, dataDir: env.dataDir, fault: null });
+  t.after(() => { controller.release(); store.close(); env.cleanup(); rmSync(scratch, { recursive: true, force: true }); });
+  return { store, controller, d, env, list };
+}
+
+test('a build retry and a build repair inspect the pages first and never redo a change', { skip: skipWithoutSqlite }, async (t) => {
+  const { store, controller, d } = await buildCampaign(t, { origins: ['https://dev.example.invalid'],
+    scenario: { implement: ['no-result', 'report', 'report'], verify: ['reject', 'accept-report-criterion'] } });
+  await runUntil(controller, store, d.campaignId, (c) => c.control === 'finished');
+  const prompts = store.all("SELECT kind, executor_kind, run_dir FROM operations WHERE campaign_id = ? AND kind = 'implement' ORDER BY created_at", d.campaignId)
+    .map((op) => { assert.equal(op.executor_kind, 'claude-cli'); return readFileSync(join(op.run_dir, 'prompt.txt'), 'utf8'); });
+  assert.equal(prompts.length, 3);
+  assert.ok(prompts[1].includes(BUILD_RETRY_NOTE), 'the retry after a run without a result is told the pages may already be changed');
+  assert.ok(prompts[2].includes('fix on the pages what each blocking finding names, never redo a change that is already there'));
+  for (const prompt of prompts.slice(1)) assert.doesNotMatch(prompt, /nothing from that attempt is retained|report-only and read-only/);
+  assert.equal(store.task(d.campaignId, 'W1').state, 'done', 'an accepted build report with its criterion passed completes');
+});
+
+test('an origin removed from the registry stops new build runs', { skip: skipWithoutSqlite }, async (t) => {
+  const { store, controller, d, list } = await buildCampaign(t, { origins: ['https://dev.example.invalid'] });
+  list(['https://other.example.invalid']);
+  await runUntil(controller, store, d.campaignId, (c) => Boolean(c.blocker));
+  for (let tick = 0; tick < 3; tick++) await controller.tick();
+  assert.equal(store.campaign(d.campaignId).blocker.code, 'WEB_BUILD_ORIGIN_NOT_ALLOWED');
+  assert.equal(store.all('SELECT id FROM operations WHERE campaign_id = ?', d.campaignId).length, 0, 'no worker was dispatched');
 });
