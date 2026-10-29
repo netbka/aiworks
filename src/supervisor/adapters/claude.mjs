@@ -363,7 +363,8 @@ export function validResult(role, value, { deliverable, targetSha, reportDigest,
       // Exactly one passing entry per criterion, the same rule criterionEvidence applies when the report is read.
       const entries = (n) => (value.criteria ?? []).filter((item) => item.criterion === n);
       const missing = Array.from({ length: acceptance }, (_, i) => i + 1).filter((n) => entries(n).length !== 1 || entries(n)[0].result !== 'pass');
-      if (missing.length) return `accepted report without a passing criteria entry for acceptance criteria ${missing.join(', ')}`;
+      // A fixed detail: the repeat guard compares refusals, so varying criterion numbers would let it retry without bound.
+      if (missing.length) return 'accepted report without exactly one passing criteria entry for every acceptance criterion';
     }
     return null;
   }
