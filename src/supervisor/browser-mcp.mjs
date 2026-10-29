@@ -10,11 +10,12 @@
 // - chrome-devtools-mcp adds os.tmpdir() to the folders its file tools may read and write, so the temporary folder is
 //   the run's own before the package loads; together with --workspace no file tool reaches outside the run directory.
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { MIN_CHROME } from './adapters/agy.mjs';
+import { loginBrowser } from './browser-login.mjs';
 
 const config = JSON.parse(readFileSync(process.argv[2], 'utf8'));
 const fail = (message) => { process.stderr.write(`browser worker: ${message}\n`); process.exit(1); };
@@ -51,7 +52,26 @@ const version = await fetch(`http://127.0.0.1:${port}/json/version`).then((respo
 const major = Number(/\/(\d+)\./.exec(String(version?.Browser ?? ''))?.[1] ?? 0);
 if (major < MIN_CHROME) fail(`Chrome ${MIN_CHROME} or newer is required for the URL allowlist (running ${version?.Browser ?? 'unknown'})`);
 
-process.argv = [process.argv[0], entry, '--browserUrl', `http://127.0.0.1:${port}`,
+if (config.login) {
+  // Restrict every target, including popups and workers, to this login's origin while credentials are present.
+  // The complete task/resource allowlist is applied only by the MCP server after every login page is closed.
+  const library = createRequire(import.meta.url).resolve('chrome-devtools-mcp/build/src/third_party/index.js');
+  const { puppeteer } = await import(pathToFileURL(library).href);
+  for (const profile of config.login.profiles) {
+    let connection;
+    try {
+      connection = await puppeteer.connect({ browserURL: `http://127.0.0.1:${port}`, allowlist: [`${profile.origin}/*`] });
+      await loginBrowser(connection, { ...config.login, profiles: [profile] });
+    } catch (error) {
+      fail(error.message.startsWith('Browser pre-login failed while ') ? error.message : 'Browser pre-login could not start');
+    } finally { await connection?.disconnect(); }
+  }
+}
+
+// The pinned server can discover global/ancestor config. Use only this run's empty config plus explicit options.
+const mcpConfig = join(config.tempDir, 'mcp-settings.json');
+writeFileSync(mcpConfig, '{}\n');
+process.argv = [process.argv[0], entry, '--config', mcpConfig, '--no-watchConfig', '--browserUrl', `http://127.0.0.1:${port}`,
   '--no-usage-statistics', '--no-performance-crux', '--redactNetworkHeaders', '--no-category-memory', '--workspace', config.filesDir,
   ...config.allowedUrlPatterns.flatMap((pattern) => ['--allowedUrlPattern', pattern])];
 await import(pathToFileURL(entry).href);
