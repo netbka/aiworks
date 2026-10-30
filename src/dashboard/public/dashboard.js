@@ -1049,7 +1049,9 @@ function reviewScreen(project, id) {
       plan.routing?.models.length > 1 ? el('p', { class: 'subtext' }, `AIWorks uses the cheaper of ${plan.routing.models.join(', ')} where a step is simple. Checks use the strongest.`) : null,
       el('p', {}, limits)),
     part('Release', el('p', {}, plan.local ? 'Release: Review only. AIWorks stops when a result passes the check. Nothing in your folder changes until you press Apply on it, and Undo apply puts it back.'
-      : 'Release: Review only. AIWorks stops when a result passes the check and is published. You merge and release.')),
+      : projectList().find((row) => sameProject(row.id, project))?.details?.merges === 'aiworks'
+        ? 'Release: Review only. AIWorks merges a result that passes the check when its merge conditions hold; release follows this project’s own rules.'
+        : 'Release: Review only. AIWorks stops when a result passes the check and is published. Merging and release follow this project’s own rules.')),
     plan.questions.length ? part('Open questions', items(plan.questions)) : null,
     el('details', {}, el('summary', {}, 'Plan details'), el('p', { class: 'subtext' }, plan.summary),
       el('p', { class: 'subtext' }, `Plan version ${plan.version}`)),
@@ -1621,13 +1623,31 @@ function handlingList(handling) {
   return el('section', { class: 'needs-group needs-handling', 'aria-labelledby': 'needs-handling-title', 'data-focus-scope': 'needs/handling' },
     el('h3', { id: 'needs-handling-title', class: 'section-title' }, `AIWorks is handling (${handling.length}) · not counted`),
     el('p', { class: 'subtext' }, 'What you already settled and routine waits, continued by AIWorks inside the authority you already gave it. Nothing here needs you.'),
-    el('ul', { class: 'needs-list' }, ...handling.map((entry) => el('li', { class: 'needs-item handling', 'data-focus-scope': `needs-handling/${entry.campaignId}/${entry.taskId}` },
-      el('div', { class: 'needs-body' },
-        el('div', { class: 'needs-context' }, [`Project ${projectName(entry.repository)}`, campaignById(entry.campaignId) ? workName(campaignById(entry.campaignId)) : null].filter(Boolean).join(' · ')),
-        el('div', { class: 'needs-text' }, el('span', {}, entry.text)),
-        el('p', { class: 'needs-why' }, `${entry.reason}. ${entry.next}`),
-        entry.since ? el('div', { class: 'subtext' }, `${entry.sinceWords ?? 'Passed the check'} ${dateTime(entry.since)}`) : null),
-      el('div', { class: 'needs-actions needs-secondary' }, routeLink('Open the step', { screen: 'step', project: entry.repository, work: entry.campaignId, step: entry.taskId }, 'needs-link'))))));
+    el('ul', { class: 'needs-list' }, ...handling.map((entry) => handlingEntry(entry, 'needs-handling'))));
+}
+
+/** One entry AIWorks listed with its recorded reason and what happens next (owner.mjs `handling` and `stalled`). */
+const handlingEntry = (entry, scope) => el('li', { class: 'needs-item handling', 'data-focus-scope': `${scope}/${entry.campaignId}/${entry.taskId}` },
+  el('div', { class: 'needs-body' },
+    el('div', { class: 'needs-context' }, [`Project ${projectName(entry.repository)}`, campaignById(entry.campaignId) ? workName(campaignById(entry.campaignId)) : null].filter(Boolean).join(' · ')),
+    el('div', { class: 'needs-text' }, el('span', {}, entry.text)),
+    el('p', { class: 'needs-why' }, `${entry.reason}. ${entry.next}`),
+    entry.since ? el('div', { class: 'subtext' }, `${entry.sinceWords ?? 'Passed the check'} ${dateTime(entry.since)}`) : null),
+  el('div', { class: 'needs-actions needs-secondary' }, routeLink('Open the step', { screen: 'step', project: entry.repository, work: entry.campaignId, step: entry.taskId }, 'needs-link')));
+
+/**
+ * AW-016: work that does not continue by itself until it is checked again, resumes or is planned again (owner.mjs
+ * `stalled` and the `stalled` group). Not counted, because AW-016 leaves none of it to the owner alone, and never under
+ * "AIWorks is handling", because nothing here moves by itself. Each says what restarts it.
+ */
+function stalledList(group, stalled) {
+  const items = group?.items ?? [], total = items.length + stalled.length;
+  if (!total) return null;
+  return el('section', { class: 'needs-own', 'data-focus-scope': 'needs/stalled' }, disclosure('needs/stalled',
+    `${plural(total, 'thing')} stopped until restarted · not counted`,
+    el('div', {}, el('p', { class: 'subtext' }, 'These do not move by themselves. Each says what restarts it: Check again, resuming its work, or planning it again.'),
+      items.length ? el('ul', { class: 'needs-list' }, ...items.map(needsItem)) : null,
+      stalled.length ? el('ul', { class: 'needs-list' }, ...stalled.map((entry) => handlingEntry(entry, 'needs-stalled'))) : null)));
 }
 
 /**
@@ -1674,8 +1694,9 @@ function needsYou() {
     el('div', { class: 'needs-head' }, el('h2', { id: 'needs-title' }, headline),
       unknown ? el('span', { class: 'needs-unknown' }, `Merge of ${unknown} published step${unknown === 1 ? '' : 's'} being checked`) : null),
     // Only owner actions here (owner, 2026-10-13; AW-016): posted reports and merged work ready for release are on Results.
-    ...groups.filter((group) => group.key !== 'aiworks-itself').map(needsGroup),
+    ...groups.filter((group) => !['aiworks-itself', 'stalled'].includes(group.key)).map(needsGroup),
     decidedList(owner.decided ?? []),
+    stalledList(groups.find((group) => group.key === 'stalled'), owner.stalled ?? []),
     ownStateList(groups.find((group) => group.key === 'aiworks-itself'), handling),
     // Projects held up by the owner's decisions: no work is blocked, so they are not counted, but each is named with a
     // link to its Now, which says which decisions (aiworks#11 review 5 G7).
@@ -1720,9 +1741,9 @@ const projectList = () => state.projects?.projects ?? [];
 const sameProject = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
 const projectCampaigns = (project) => state.supervisor.campaigns.filter((c) => sameProject(c.repository, project));
 const unavailable = () => empty('Not known right now', state.supervisor.message ?? `${stateCopy('unreadable').title} This is not the same as nothing happening.`);
-const stateTones = { 'needs-you': 'attention', checking: 'unknown', running: 'in_progress', paused: 'pending', finished: 'done', cancelled: 'pending', 'no-work': 'pending',
+const stateTones = { held: 'stale', 'needs-you': 'attention', checking: 'unknown', running: 'in_progress', paused: 'pending', finished: 'done', cancelled: 'pending', 'no-work': 'pending',
   ready: 'done', 'cannot-start': 'pending', 'needs-setup': 'attention', unavailable: 'pending', 'possibly-stuck': 'stale', stopped: 'stale', fault: 'stale' };
-const stateWords = { 'needs-you': 'Needs you', checking: 'Checking', running: 'Running', paused: 'Paused', finished: 'Finished', cancelled: 'Cancelled', 'no-work': 'No work yet',
+const stateWords = { held: 'Stopped', 'needs-you': 'Needs you', checking: 'Checking', running: 'Running', paused: 'Paused', finished: 'Finished', cancelled: 'Cancelled', 'no-work': 'No work yet',
   ready: 'Ready', 'cannot-start': "Can't start work yet", 'needs-setup': 'Needs setup', unavailable: 'Temporarily unavailable', 'possibly-stuck': 'Possibly stuck', stopped: 'AIWorks stopped',
   fault: 'AIWorks problem' };
 const projectAction = (action) => action.url ? link(`${action.label} ↗`, action.url, 'project-action') : routeLink(action.label, action.route, 'project-action');
@@ -2580,10 +2601,11 @@ async function markSeen() {
 
 /**
  * Results waiting for the owner's review (OWNER_UI_V2 WP4), read from the same Results rows as each project's Results
- * tab, so the result, its project and its Review are the same everywhere. `project` narrows to one project.
+ * tab, so the result, its project and its Review are the same everywhere. Only rows in the owner-action set
+ * (`needsYou`, owner.mjs `attention`): each is also a Needs you item. `project` narrows to one project.
  */
 const resultsToReview = (project = null) => Object.values(state.owner?.results ?? {}).filter((entry) => !project || sameProject(entry.project, project))
-  .flatMap((entry) => entry.groups.flatMap((group) => group.rows.map((row) => ({ ...row, project: entry.project })))).filter((row) => row.review?.state === 'ready');
+  .flatMap((entry) => entry.groups.flatMap((group) => group.rows.map((row) => ({ ...row, project: entry.project })))).filter((row) => row.needsYou && row.review?.state === 'ready');
 // Home and Needs you show only what is recent: older results, projects and replies stay on their own screens.
 const RECENT_MS = 7 * 24 * 60 * 60 * 1000;
 const isRecent = (at) => { const time = at === null || at === undefined ? NaN : new Date(at).getTime(); return !Number.isFinite(time) || time >= Date.now() - RECENT_MS; };
@@ -2696,6 +2718,20 @@ function homeProjectRow(project, badge) {
  * sentence with a status badge. Results to review are not a separate panel: a project with one ready carries the
  * badge on its own row, exactly as the approved preview folds it in (02-home.html, "Client portal" row).
  */
+/**
+ * The owner's part in one sentence, with who merges as each project's own rule says: AIWorks only where the owner let its
+ * merge gate merge (`merges: 'aiworks'`); elsewhere merging follows the project's own rules.
+ */
+function ownerPart(projects) {
+  const github = projects.filter((project) => ['aiworks', 'own-rules'].includes(project.merges));
+  const ours = github.filter((project) => project.merges === 'aiworks').map((project) => project.name);
+  const merging = !github.length ? 'AIWorks builds and checks the rest.'
+    : ours.length === github.length ? 'AIWorks builds, checks and merges the rest.'
+      : ours.length ? `AIWorks builds and checks the rest, and merges in ${ours.join(', ')}; in other projects merging follows each project’s own rules.`
+        : 'AIWorks builds and checks the rest; merging follows each project’s own rules.';
+  return `Your part: say what you want (Start work), answer decisions when asked, and review results when asked. ${merging}`;
+}
+
 function homeScreen() {
   const home = state.home;
   if (!state.supervisor.available || !home?.available) return [unavailable()];
@@ -2705,16 +2741,13 @@ function homeScreen() {
   // The first item is resolved here on the same card as in Needs you: a decision with its options, a result with Accept
   // and Request changes, a stopped step with guidance and Check again.
   const first = state.owner?.items?.find((item) => !item.system);
-  const heroText = home.needsYou.count && reviews.length
-    ? `${plural(home.needsYou.count, 'thing')} need${home.needsYou.count === 1 ? 's' : ''} you. ${plural(reviews.length, 'new result')} ${reviews.length === 1 ? 'is' : 'are'} ready to try.`
-    : home.needsYou.count ? `${plural(home.needsYou.count, 'thing')} need${home.needsYou.count === 1 ? 's' : ''} you.`
-      : reviews.length ? `${plural(reviews.length, 'new result')} ${reviews.length === 1 ? 'is' : 'are'} ready to try.`
-        : 'Nothing needs you right now.';
+  // Results to review are Needs you items (owner.mjs `attention`), so they are in this count, never added to it.
+  const heroText = home.needsYou.count ? `${plural(home.needsYou.count, 'thing')} need${home.needsYou.count === 1 ? 's' : ''} you.` : 'Nothing needs you right now.';
   // h2, not h1: index.html already carries the page's one h1 (#view-title) outside #content (showRoute()).
   const hero = el('div', { class: 'home-hero' },
     el('div', {}, el('h2', {}, 'Your work, at a glance'), el('p', { class: 'subtext' }, heroText),
-      // The owner's whole part in one line: AIWorks builds, checks and merges; everything else is optional.
-      el('p', { class: 'subtext' }, 'Your part: say what you want (Start work), answer decisions when asked, and try a result if you like. AIWorks builds, checks and merges the rest.')),
+      // The owner's whole part in one line, with each project's own merge rule (views.mjs projectRow `merges`).
+      el('p', { class: 'subtext' }, ownerPart(home.projects))),
     pauseControls(home.pause, 'all', {}, { label: 'all work' }));
   // This count matches the nav badge and the Needs you screen exactly (owner.count): results to review carry their
   // own badge on the project row below, never folded into this number (owner, 2026-10-13).
@@ -3531,7 +3564,9 @@ function resultsScreen(project) {
   if (!results?.groups.length) return el('section', { class: 'panel' }, empty(state.owner.noResults.title, state.owner.noResults.text));
   // Only what waits for the owner is open; merged, read and untraced results are history, folded below.
   const open = results.groups.filter((group) => OWNER_GROUPS.includes(group.key)), past = results.groups.filter((group) => !OWNER_GROUPS.includes(group.key));
-  const waiting = open.reduce((n, group) => n + group.count, 0), history = past.reduce((n, group) => n + group.count, 0);
+  // "For you" counts only the rows in the owner-action set (owner.mjs `attention`): the same results Needs you lists.
+  const waiting = open.reduce((n, group) => n + group.rows.filter((row) => row.needsYou).length, 0), history = past.reduce((n, group) => n + group.count, 0);
+  const merges = projectList().find((row) => sameProject(row.id, project))?.details?.merges;
   const groupList = (group) => el('section', { class: 'needs-group', 'aria-labelledby': `results-group-${group.key}` },
     el('h3', { id: `results-group-${group.key}`, class: 'section-title' }, `${group.title} (${group.count})`),
     el('ul', { class: 'needs-list' }, ...group.rows.map(resultRow)));
@@ -3539,7 +3574,7 @@ function resultsScreen(project) {
     el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'results-title' }, waiting ? `${plural(waiting, 'result')} for you` : 'Nothing here needs you')),
       results.primary?.route ? routeLink(results.primary.label, results.primary.route, 'button')
         : results.primary ? link(`${results.primary.label} ↗`, results.primary.url, 'button') : null),
-    waiting ? null : el('p', { class: 'subtext' }, 'AIWorks checks and merges results itself. A result you can try, a decision or a new report appears here.'),
+    waiting ? null : el('p', { class: 'subtext' }, `${merges === 'aiworks' ? 'AIWorks checks and merges results itself in this project.' : 'AIWorks checks results itself; merging follows this project’s own rules.'} A result for your review appears here and in Needs you.`),
     ...open.map(groupList),
     history ? disclosure(`results/${project}/history`, `History (${history}): merged, read and untraced results`, el('div', {}, ...past.map(groupList))) : null,
     // Stop all releases is reachable from every project's Review (AUTO_RELEASE.md section 9).
