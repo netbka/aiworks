@@ -429,8 +429,9 @@ export function nowView(project, data = {}, { now = Date.now(), format = {}, sta
   if (offline) return result(make('page-disconnected', { loadedAt: Date.parse(data.observedAt ?? '') || null }));
   if (!supervisor?.available || !owner?.available) return result(make('unreadable'));
   if (!campaigns.length) return result(make('no-work', { startWork }));
-  // This project's Needs you items: the ones the Projects screen counts and Needs you lists under it (review F6).
-  const items = (owner.items ?? []).filter((item) => same(item.repository, project));
+  // This project's Needs you items: the owner-action set (owner.mjs `attention`) the Projects screen counts and Needs you
+  // lists under it (review F6). Items not counted never make this project say it needs the owner (AW-016).
+  const mine = (owner.items ?? []).filter((item) => same(item.repository, project)), items = mine.filter((item) => !item.system);
   const byId = (id) => campaigns.find((c) => c.id === id) ?? null;
   // With several pieces of work, what needs the owner leads (review F16): this project's Needs you items, then a pause the
   // owner can resume, then AIWorks stopped for its work, then a fault of AIWorks itself; then work that goes on by itself.
@@ -444,6 +445,10 @@ export function nowView(project, data = {}, { now = Date.now(), format = {}, sta
     if (items.length > 1) return result(make('several', { count: items.length }), first);
     return result(make(...itemState(items[0], first, d)), first);
   }
+  // AIWorks's own state of this project's work (AW-016: listed apart, not counted): a stopped step or work AIWorks has
+  // not checked on leads in its own words, never as something that needs the owner.
+  const own = mine.find((item) => ['stopped', 'unattended'].includes(item.kind) && byId(item.campaignId));
+  if (own) return result({ ...make(...itemState(own, byId(own.campaignId), d)), needsYou: false }, byId(own.campaignId));
   const liveness = (c) => owner.campaigns?.[c.id]?.liveness;
   const active = campaigns.filter((c) => !['finished', 'cancelled'].includes(c.control));
   // Resume works only while AIWorks runs this work; a pause AIWorks is late on keeps today's "late" sentence.
