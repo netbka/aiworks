@@ -1,4 +1,4 @@
-// One owner-action set (AW-016, owner.mjs `attention`): on the review fixture, read through the dashboard API, Needs you,
+// One owner-action set (AW-016 as amended by AW-017, owner.mjs `attention`): on the review fixture, read through the dashboard API, Needs you,
 // its count, Home, every project row and Overview sentence and the results offered for review are that set; a result of
 // paused or stopped work is never offered for acceptance; and with the set empty nothing says the owner is needed.
 // Synthetic review fixture and local git only: no GitHub, network or model call.
@@ -61,12 +61,19 @@ test('Needs you, Home, project rows, Overview and offered results are one owner-
   const root = mkdtempSync(join(tmpdir(), 'aiworks-attention-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5 }));
   const { dataDir } = buildReviewFixture(root);
-  assert.ok(assertOneSet(await readState(t, dataDir)) > 0, 'the full fixture has something for the owner');
+  // AW-017: decisions, stopped steps and results to review are AIWorks's own; only the owner's own sign-in or payment counts.
+  assert.equal(assertOneSet(await readState(t, dataDir)), 0, 'decisions and results in the fixture claim nothing of the owner');
+  const store = new Store(join(dataDir, 'supervisor.db'));
+  try {
+    const c = store.campaign('notes-theme');
+    store.patch('campaigns', { id: c.id }, c.version, { blocker: { kind: 'budget', class: 'B3', reason: 'Synthetic: all approved runs used.', requestedAction: 'Approve more runs.' } }, Date.now());
+  } finally { store.close(); }
+  assert.equal(assertOneSet(await readState(t, dataDir)), 1, 'more runs than approved is a payment for the owner, in Needs you');
 
   // Settle what is left the owner's: the decision's work is cancelled and the result's work is paused.
-  const store = new Store(join(dataDir, 'supervisor.db'));
-  try { for (const [id, control] of [['notes-theme', 'cancelled'], ['shop-search', 'paused']]) store.patch('campaigns', { id }, store.campaign(id).version, { control, status: control }, Date.now()); }
-  finally { store.close(); }
+  const again = new Store(join(dataDir, 'supervisor.db'));
+  try { for (const [id, control] of [['notes-theme', 'cancelled'], ['shop-search', 'paused']]) again.patch('campaigns', { id }, again.campaign(id).version, { control, status: control }, Date.now()); }
+  finally { again.close(); }
   const empty = await readState(t, dataDir);
   assert.equal(assertOneSet(empty), 0, 'nothing is left for the owner');
   assert.deepEqual(empty.owner.attention, { count: 0, projects: {}, results: [] });

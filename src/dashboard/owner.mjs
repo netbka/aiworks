@@ -241,6 +241,13 @@ export function reviewEntry(c, task, d = null) {
 
 /** The Needs you kinds that settle one step's result: the Results rows offered for review are exactly these. */
 const RESULT_ACTIONS = ['accept', 'review', 'unchecked', 'accepted-unmerged', 'merge-overdue'];
+/**
+ * AW-017: the only Needs you kinds the owner is counted for: a sign-in or a payment that stops work (said as
+ * information), and a checked version waiting for the owner's acceptance where the owner chose to accept results (AW-015).
+ */
+const OWNER_KINDS = new Set(['accept', 'sign-in', 'payment']);
+/** The work stops (controller raiseBlocker kinds) that only the owner's own sign-in or payment can lift. */
+const OWNER_STOPS = { auth: 'sign-in', budget: 'payment' };
 
 /** One finished step as a Results row: its group, its state word, what it means, and the link to the result. */
 function resultRow(c, task, d, releases, recorded = null, read = new Set()) {
@@ -745,20 +752,29 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       // the Check again its sentence names, while the work takes it: a Needs you card has no More menu (review 5 G8).
       const check = (c.controls?.more ?? []).includes('recheck') ? blockerCheck(c.blocker, c.id) : null;
       const words = blockerWords(c.blocker, { check: Boolean(check) });
-      items.push({ ...base, kind: c.blockerClass === 'B3' ? 'decision' : 'stopped', ...(c.blockerClass === 'B3' ? {} : { system: true, stalled: true }), text: NEEDS.workStopped, command: check,
+      // AW-017: only a sign-in or a payment (more runs or cost than approved) is the owner's own, said as information.
+      const own = OWNER_STOPS[c.blocker] ?? null;
+      items.push({ ...base, kind: own ?? 'stopped', ...(own ? {} : { system: true, stalled: true }), text: NEEDS.workStopped, command: check,
         points: [{ link: null, text: `${words.reason}. What to do: ${words.action}.` }] });
     }
     for (const task of cancelled ? [] : c.tasks.filter((item) => item.blocked && item.state !== 'done')) {
       // An answered decision has left the owner's queue: it waits for AIWorks to resume the step with the answer.
       const settled = task.decision?.answered ? ownerSettled(base, task) : null;
       if (settled) { (stopped ? stalled : handling).push(stopped ? { ...settled, next: 'It continues with it when this work resumes.' } : settled); continue; }
-      // A decision (WP2) is answered on its card or its step, snoozed or marked as not needing the owner. A step that
-      // stopped for good takes the owner's guidance and Check again on its card: one more try within the same plan.
+      // AW-017: a decision or a stop is AIWorks's own, never the owner's: AIWorks answers the decision with the worker's
+      // suggestion (or sends it back once to decide within the plan) and finishes a stopped step by itself. While the
+      // work runs it is listed with what AIWorks does next; the owner may still answer a decision first on its card.
       const decision = task.blocked === 'B3' || Boolean(task.decision);
-      // AW-016: only a decision is the owner's; a step stopped by failures stays listed with its Check again, not counted.
-      items.push({ ...base, taskId: task.id, kind: decision ? 'decision' : 'stopped', ...(decision ? {} : { system: true, stalled: true }), action: decision ? 'Decision needed' : 'Stopped; will not retry by itself',
-        text: label(task), why: decision ? 'An AI worker stopped this step for your decision. The step waits for your answer.'
-          : 'It will not retry by itself. Your guidance with Check again gives it one more try within the approved plan; a wider change is new work to plan.',
+      if (!stopped) {
+        handling.push({ ...base, taskId: task.id, text: label(task), recorded: true, since: null, sinceWords: null,
+          reason: decision ? 'An AI worker stopped this step for a decision' : 'This step stopped',
+          next: decision ? 'AIWorks answers it with the worker\'s suggestion, or has the step decide within the approved plan.'
+            : 'AIWorks finishes it by itself: it delivers it with its known problems listed if its full check passed, or ends it as not done, and adds a follow-up.' });
+        continue;
+      }
+      items.push({ ...base, taskId: task.id, kind: decision ? 'decision' : 'stopped', system: true, stalled: true, action: decision ? 'Stopped for a decision' : 'Stopped; will not retry by itself',
+        text: label(task), why: decision ? 'An AI worker stopped this step for a decision. AIWorks answers it when this work resumes.'
+          : 'AIWorks finishes this step by itself when this work resumes.',
         route: stepRoute(task),
         ...(task.decision?.snoozedUntil ? { snoozedUntil: task.decision.snoozedUntil } : {}),
         points: [{ link: null, text: `${task.blockedReason.charAt(0).toUpperCase()}${task.blockedReason.slice(1)}.` },
@@ -812,7 +828,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       for (const step of c.steps.filter((item) => item.decision && !item.decision.answered)) {
         items.push({ campaignId: null, repository: null, project: record.id, projectName: record.name, kind: 'decision', action: 'Decision needed',
           text: step.title, local: { project: record.id, campaignId: c.id, taskId: step.id },
-          why: 'An AI worker stopped this step for your decision. The step waits for your answer.', route: { label: 'Open the project', address: { screen: 'project', project: record.id, tab: 'overview' } },
+          why: 'An AI worker stopped this step for a decision. AIWorks answers it with the suggestion it gave; you may answer it first here.', route: { label: 'Open the project', address: { screen: 'project', project: record.id, tab: 'overview' } },
           ...(step.decision.snoozedUntil ? { snoozedUntil: step.decision.snoozedUntil } : {}),
           points: [{ link: null, text: NEEDS.localDecision(c.outcome) },
             ...(step.decision.snoozedUntil ? [{ link: null, text: NEEDS.snoozed(step.decision.snoozedUntil) }] : [])] });
@@ -845,6 +861,9 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
   items.sort((a, b) => Boolean(a.snoozedUntil) - Boolean(b.snoozedUntil));
   // The one owner-action set (AW-016): Needs you, its count, the badges, each project's row and sentence and the results
   // offered for review are all read from it, so no screen can say something needs the owner that Needs you does not list.
+  // AW-017: of those, Needs you counts only what needs the owner's own sign-in, credential or payment, and the checked
+  // versions waiting for the acceptance the owner chose (AW-015, off by default). Everything else stays listed, apart.
+  for (const item of items) if (!item.system && !OWNER_KINDS.has(item.kind)) item.system = true;
   const actions = items.filter((item) => !item.system), count = actions.length;
   const attention = { count, projects: {}, results: [] };
   for (const item of actions) {

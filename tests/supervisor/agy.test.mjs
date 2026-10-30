@@ -317,7 +317,7 @@ test('a campaign routes its web task to agy for acceptance and verification, and
   assert.equal(store.task(d.campaignId, 'W1').state, 'done');
 });
 
-for (const mode of ['violation', 'long-violation']) test(`a boundary violation holds the web task for the owner instead of retrying it (${mode})`, { skip: skipWithoutSqlite }, async (t) => {
+for (const mode of ['violation', 'long-violation']) test(`a boundary violation ends the web task as not done instead of retrying it (${mode})`, { skip: skipWithoutSqlite }, async (t) => {
   const { Store } = await import('../../src/supervisor/store.mjs');
   const { Controller } = await import('../../src/supervisor/controller.mjs');
   const { campaignStart } = await import('../../src/supervisor/api.mjs');
@@ -332,10 +332,10 @@ for (const mode of ['violation', 'long-violation']) test(`a boundary violation h
   campaignStart(store, d);
   const controller = new Controller({ store, config, dataDir: env.dataDir, fault: null });
   t.after(() => { controller.release(); store.close(); env.cleanup(); delete process.env.FAKE_AGY_STATE; delete process.env.FAKE_AGY_MODE; });
-  await runUntil(controller, store, d.campaignId, () => store.task(d.campaignId, 'W1').blocked?.class === 'B3');
+  await runUntil(controller, store, d.campaignId, () => store.task(d.campaignId, 'W1').state === 'cancelled');
   for (let tick = 0; tick < 5; tick++) await controller.tick();
   const task = store.task(d.campaignId, 'W1');
-  assert.match(task.blocked.reason, /boundary violation on agy-cli: browser worker used an unexpected tool \(search_web\)/);
+  assert.match(task.last_error, /^not done: boundary violation on agy-cli: browser worker used an unexpected tool \(search_web\)/);
   assert.equal(store.all('SELECT id FROM operations WHERE campaign_id = ?', d.campaignId).length, 1, 'no retry on the same provider');
   assert.equal(readFileSync(join(agyState, 'calls.jsonl'), 'utf8').trim().split('\n').length, 1);
   assert.equal(env.comments().filter((comment) => comment.issue === '439').length, 0, 'nothing is published');
