@@ -1495,7 +1495,7 @@ async function sendGuidance(c, task, address, key) {
     notice(error.known ? error.message : COMMANDS.unconfirmed, error.known ? null : () => void sendGuidance(c, task, address, key), error.known ? error.detail : null, address);
   } finally { guidanceBusy = null; await poll(); }
 }
-function guidancePanel(c, task) {
+function guidancePanel(c, task, { more } = {}) {
   if (!canCheckAgain(c, task)) return null;
   const address = current.address, key = `guidance:${c.id}/${task.id}`, ids = `${c.id}-${task.id}`;
   const off = guidanceBusy !== null || commandsOff(), draft = drafts.get(address, key) ?? { text: '' };
@@ -1504,10 +1504,13 @@ function guidancePanel(c, task) {
   words.value = draft.text ?? '';
   // A high-risk step's retry is decided on a computer, like its decision.
   const deferred = task.risk?.level === 'high' && onPhone();
+  // What a retry does is an explanation, kept under the card's More (aiworks#39) when there is one.
+  const rule = el('p', { class: 'subtext' }, 'AIWorks gives this step one more try with your words, within the approved plan and its limits; the independent check still applies. No secrets; up to 2,000 characters.');
+  more?.push(rule);
   return el('form', { novalidate: true, class: 'start-form needs-resolve', 'data-focus-scope': `guidance/${c.id}/${task.id}`,
     onsubmit: (event) => { event.preventDefault(); if (!off && !deferred) void sendGuidance(c, task, address, key); } },
     el('label', { class: 'field' }, el('strong', {}, 'Your guidance for the next try (optional)'), words),
-    el('p', { class: 'subtext' }, 'AIWorks gives this step one more try with your words, within the approved plan and its limits; the independent check still applies. No secrets; up to 2,000 characters.'),
+    more ? null : rule,
     deferred ? el('p', { class: 'notice warning', role: 'status' }, 'This step is high risk, so it is tried again from a computer, not a phone.')
       : el('div', { class: 'campaign-controls' }, el('button', { class: 'button', type: 'submit', disabled: off }, guidanceBusy === key ? 'Sending…' : 'Check again')));
 }
@@ -1527,22 +1530,25 @@ function planFromItem(item, project, { primary = false } = {}) {
   }, primary ? 'button' : 'secondary small');
 }
 
-/** The one way to resolve an item on its card, by its kind, through the same bound requests as its step and Review. */
-function itemResolution(item, c, task) {
+/**
+ * The one way to resolve an item on its card, by its kind, through the same bound requests as its step and Review. Its
+ * explanations go into `more`, the card's one More, so the card itself shows only its action.
+ */
+function itemResolution(item, c, task, more) {
   if (['local-unrecorded', 'local-untrusted'].includes(item.kind) && sameProject(item.repository, state.connections?.trustedMain?.repository)) {
     return el('div', { class: 'needs-resolve' }, ...trustedMainLines(state.connections.trustedMain).filter(Boolean),
       state.connections.trustedMain.record ? null : primaryAction(item.command));
   }
   if (item.kind === 'decision') {
     const card = itemDecision(item);
-    return card ? decisionPanel(card.c, card.task) : null;
+    return card ? decisionPanel(card.c, card.task, { more }) : null;
   }
   if (['review', 'accept', 'merge-overdue'].includes(item.kind) && c && task?.review) {
     const box = el('div', { class: 'needs-resolve', 'data-focus-scope': `needs-review/${c.id}/${task.id}` },
-      ...reviewActions(task.review, resultBinding(c, task)));
+      ...reviewActions(task.review, resultBinding(c, task), { more }));
     return box;
   }
-  if (item.kind === 'stopped' && c && task) return guidancePanel(c, task);
+  if (item.kind === 'stopped' && c && task) return guidancePanel(c, task, { more });
   if (item.plan) {
     const plan = planFromItem(item, item.repository ?? item.project ?? null, { primary: true });
     return el('div', { class: 'needs-actions' }, plan ?? el('p', { class: 'subtext', role: 'status' }, 'Plan work is not available for this project right now, so this cannot be planned from here.'));
@@ -1550,28 +1556,48 @@ function itemResolution(item, c, task) {
   return item.command ? el('div', { class: 'needs-actions' }, primaryAction(item.command)) : null;
 }
 
+/** A text's first sentence and the rest: a card shows the first and keeps the rest under its More. */
+function splitSentence(text) {
+  const match = /^(.+?[.!?])\s+(?=\S)/s.exec(text ?? '');
+  return match ? [match[1], text.slice(match[0].length)] : [text ?? '', ''];
+}
+
+/** The one More of a card (aiworks#39): explanations, rules, feedback and secondary links, folded away. */
+function moreBox(key, nodes) {
+  const body = nodes.flat(Infinity).filter(Boolean);
+  return body.length ? el('div', { class: 'card-more' }, disclosure(key, 'More', el('div', {}, ...body))) : null;
+}
+
 /**
- * One Needs you card: the work it belongs to and its business topic, why the owner is needed, what follows, and the
- * resolution on the card itself. Opening the step or its full Review, the pull request number and planning different work
- * follow as secondary links. Identifiers, commits and recorded machine detail stay out of it.
+ * One Needs you card (aiworks#39): the work it belongs to, what the owner decides in one sentence and the one action that
+ * resolves it on the card itself. The rest of why, what follows, opening the step or its full Review, the pull request
+ * and planning different work are under its one More. Identifiers, commits and recorded machine detail stay out of it.
  */
 function needsItem(item) {
   const c = item.campaignId ? campaignById(item.campaignId) : null, task = c && item.taskId ? c.tasks.find((t) => t.id === item.taskId) : null;
   const project = item.repository ?? item.project ?? null;
   const when = `${item.at ? ` at about ${timeOnly(item.at)}` : ''}${item.since ? ` since ${timeOnly(item.since)}` : ''}`;
+  const [why, rest] = splitSentence(item.why), more = [];
+  const resolution = itemResolution(item, c, task, more);
+  // Without an action on the card, opening its step or Review is its one action; otherwise that is a secondary link.
+  const route = item.route ? routeLink(item.route.label, item.route.address, resolution ? 'needs-link' : 'button') : null;
+  const secondary = [resolution ? route : null, item.reference ? link(`${item.reference.label} ↗`, item.reference.url, 'needs-link subtext') : null,
+    item.system || !item.taskId || item.plan ? null : planFromItem(item, project)].filter(Boolean);
   return el('li', { class: `needs-item ${item.kind}`, 'data-focus-scope': `needs-item/${itemKey(item)}` },
     el('div', { class: 'needs-body' },
       el('div', { class: 'needs-context' }, [item.about ? `Project ${projectName(item.about)}` : null, c ? workName(c) : null].filter(Boolean).join(' · ')),
       item.action ? el('div', { class: 'needs-action' }, item.action) : null,
       el('div', { class: 'needs-text' }, el('span', {}, `${item.text}${when}`)),
-      item.why ? el('p', { class: 'needs-why' }, item.why) : null,
+      why ? el('p', { class: 'needs-why' }, why) : null),
+    resolution ?? (route ? el('div', { class: 'needs-actions' }, route) : null),
+    moreBox(`needs-more/${itemKey(item)}`, [
+      rest ? el('p', { class: 'needs-why' }, rest) : null,
       item.evidence && !['review', 'accept', 'unchecked'].includes(item.kind) ? el('div', { class: 'evidence' }, item.evidence) : null,
-      item.mergeCheck ? el('div', { class: 'needs-stale' }, mergeAsOf(item.mergeCheck)) : null),
-    item.points.length ? el('div', { class: 'needs-impact' }, ...item.points.map((point) => el('div', { class: 'needs-point' },
-      point.link ? link(`${point.link.label} ↗`, point.link.url, 'needs-link') : null, el('span', {}, point.text)))) : null,
-    itemResolution(item, c, task),
-    el('div', { class: 'needs-actions needs-secondary' }, item.route ? routeLink(item.route.label, item.route.address, 'needs-link') : null,
-      item.reference ? link(`${item.reference.label} ↗`, item.reference.url, 'needs-link subtext') : null, item.system || !item.taskId || item.plan ? null : planFromItem(item, project)));
+      item.mergeCheck ? el('div', { class: 'needs-stale' }, mergeAsOf(item.mergeCheck)) : null,
+      item.points.map((point) => el('div', { class: 'needs-point' },
+        point.link ? link(`${point.link.label} ↗`, point.link.url, 'needs-link') : null, el('span', {}, point.text))),
+      more,
+      secondary.length ? el('div', { class: 'needs-actions needs-secondary' }, ...secondary) : null]));
 }
 
 /**
@@ -3075,7 +3101,7 @@ const PHONE = '(pointer: coarse) and (max-width: 640px)';
 const onPhone = () => { try { return window.matchMedia(PHONE).matches; } catch { return false; } };
 try { window.matchMedia(PHONE).addEventListener('change', () => { if (state && !document.querySelector('dialog[open]')) render(); }); } catch { /* no media queries */ }
 
-function decisionPanel(c, task) {
+function decisionPanel(c, task, { more } = {}) {
   const d = task.decision;
   if (!d) return null;
   // A high-risk decision on a phone: read here, answered on a computer (the server's rules are the same either way).
@@ -3105,6 +3131,20 @@ function decisionPanel(c, task) {
       return [el('label', { class: 'choice' }, input, el('span', {}, o.label, d.suggestion?.option === o.id ? ' (suggested)' : '')),
         el('p', { id: `${radios}-${o.id}`, class: 'subtext' }, o.consequence)];
     }), choice) : null;
+  // The suggestion's reason, what goes on meanwhile, optional words and "This did not need me" are under one More
+  // (aiworks#39): the card's own, or this panel's on the step. Each control keeps its id, draft and binding.
+  const extra = [
+    d.suggestion ? el('p', { class: 'subtext' }, `AIWorks suggests ${d.options.find((o) => o.id === d.suggestion.option)?.label ?? d.suggestion.option}: ${d.suggestion.reason}`) : null,
+    d.continues ? el('p', { class: 'subtext' }, `Meanwhile: ${d.continues}`) : null,
+    d.unanswered ? el('p', { class: 'subtext' }, `If you do not answer: ${d.unanswered}`) : null,
+    deferred || !d.structured ? null : el('label', { class: 'field' }, el('strong', {}, 'Your own words (optional with a choice)'), words),
+    deferred ? null : el('p', { class: 'subtext' }, 'Goes to the next AI worker on this step. It cannot widen the approved plan.'),
+    d.notNeeded ? el('p', { class: 'subtext' }, 'You said this did not need you. The step still waits for an answer.')
+      : deferred ? null : el('div', { class: 'not-needed', 'data-focus-scope': `decision/${d.id}/not-needed` },
+        el('label', { class: 'field' }, el('strong', {}, 'This did not need me. What should AIWorks have done instead? (optional)'), feedback),
+        el('div', { class: 'campaign-controls' }, button('Send feedback', () => sendDecision('not-needed', c, task, feedback.value.trim() ? { text: feedback.value } : {},
+          { address, done: () => drafts.set(address, key, { ...(drafts.get(address, key) ?? {}), feedback: '' }) }), 'secondary', off)))];
+  more?.push(...extra);
   const form = el('form', { novalidate: true, class: 'start-form', 'data-decision': d.id, 'data-focus-scope': `decision/${d.id}`,
     onsubmit: (event) => {
       event.preventDefault();
@@ -3120,17 +3160,10 @@ function decisionPanel(c, task) {
     d.structured || deferred ? null : el('p', {}, d.asked ? `The AI worker asked: “${d.asked}” It described no options; answer in your own words.`
       : 'The AI worker described no options for this stop. Answer in your own words.'),
     options,
-    d.suggestion ? el('p', { class: 'subtext' }, `AIWorks suggests ${d.options.find((o) => o.id === d.suggestion.option)?.label ?? d.suggestion.option}: ${d.suggestion.reason}`) : null,
-    d.continues ? el('p', { class: 'subtext' }, `Meanwhile: ${d.continues}`) : null,
-    d.unanswered ? el('p', { class: 'subtext' }, `If you do not answer: ${d.unanswered}`) : null,
-    deferred ? null : el('label', { class: 'field' }, el('strong', {}, d.structured ? 'Your own words (optional with a choice)' : 'Your answer'), words),
-    deferred ? null : el('p', { class: 'subtext' }, 'Goes to the next AI worker on this step. It cannot widen the approved plan.'),
+    // A required answer in the owner's own words is the action itself; optional words with a choice are under More.
+    deferred || d.structured ? null : el('label', { class: 'field' }, el('strong', {}, 'Your answer'), words),
     deferred ? null : el('div', { class: 'campaign-controls' }, el('button', { class: 'button', type: 'submit', disabled: off }, 'Send answer')),
-    d.notNeeded ? el('p', { class: 'subtext' }, 'You said this did not need you. The step still waits for an answer.')
-      : deferred ? null : disclosure(`decision/${d.id}/not-needed`, 'This did not need me', el('div', {},
-        el('label', { class: 'field' }, el('strong', {}, 'What should AIWorks have done instead? (optional)'), feedback),
-        el('div', { class: 'campaign-controls' }, button('Send feedback', () => sendDecision('not-needed', c, task, feedback.value.trim() ? { text: feedback.value } : {},
-          { address, done: () => drafts.set(address, key, { ...(drafts.get(address, key) ?? {}), feedback: '' }) }), 'secondary', off)))));
+    more ? null : moreBox(`decision/${d.id}/more`, extra));
   return form;
 }
 
@@ -3294,9 +3327,11 @@ function reviewPanel(review, binding, { merged = false } = {}) {
  * What the owner can do with a checked result, on its Review and on its Needs you card alike: where it stands, Accept
  * result and Request changes, each bound to exactly the version that passed the check and its report (sendReview). The
  * controls are named for the goal and step, so two results on one page never share an id or a draft. Request changes
- * reopens the step as a repair round of the approved plan; nothing is merged from here.
+ * reopens the step as a repair round of the approved plan; nothing is merged from here. On a Needs you card (`more`)
+ * the explanations and the criterion choice go under the card's More: Request changes is one short field and its button.
  */
-function reviewActions(review, binding) {
+function reviewActions(review, binding, { more } = {}) {
+  const aside = (node) => { if (!more || !node) return node; more.push(node); return null; };
   if (review.state === 'changes-requested') {
     // Only running work is repaired: paused work waits for Resume, and stopped work is never resumed.
     const control = campaignById(binding.campaignId)?.control;
@@ -3313,7 +3348,7 @@ function reviewActions(review, binding) {
   const ids = `${binding.campaignId}-${binding.taskId}`;
   const u = review.unresolved, open = u.failed + u.notChecked + u.blocking;
   const draft = drafts.get(address, key) ?? { text: '', criterion: '' };
-  const words = el('textarea', { id: `review-text-${ids}`, rows: 3, maxlength: 2000, required: true,
+  const words = el('textarea', { id: `review-text-${ids}`, rows: more ? 2 : 3, maxlength: 2000, required: true,
     oninput: () => drafts.set(address, key, { text: words.value, criterion: which.value }) });
   words.value = draft.text ?? '';
   const which = el('select', { id: `review-criterion-${ids}`, onchange: () => drafts.set(address, key, { text: words.value, criterion: which.value }) },
@@ -3331,22 +3366,24 @@ function reviewActions(review, binding) {
       void sendReview('request-changes', binding, review, { text: words.value, ...(which.value ? { criterion: Number(which.value) } : {}) },
         { address, done: () => { drafts.delete(address, key); if (andResume) void command(goal, 'resume'); } });
     } },
-    el('label', { class: 'field' }, el('strong', {}, 'About'), which),
+    aside(el('label', { class: 'field' }, el('strong', {}, 'About'), which)),
     el('label', { class: 'field' }, el('strong', {}, 'What should change'), words),
     resume ? el('label', { class: 'choice' }, resume, el('span', {}, 'This work is paused. Resume it so the changes start now')) : null,
-    el('p', { class: 'subtext' }, `AIWorks reopens this step as a repair round within the approved plan${review.roundsLeft === null ? '' : ` (${plural(review.roundsLeft, 'round')} left)`}. A wider change needs a new plan. No secrets; up to 2,000 characters.`),
+    aside(el('p', { class: 'subtext' }, `AIWorks reopens this step as a repair round within the approved plan${review.roundsLeft === null ? '' : ` (${plural(review.roundsLeft, 'round')} left)`}. A wider change needs a new plan. No secrets; up to 2,000 characters.`)),
     el('div', { class: 'campaign-controls' }, el('button', { class: 'button secondary', type: 'submit', disabled: off }, 'Request changes'))) : null;
   const accepted = review.state === 'accepted' ? `You accepted this version at ${clock(review.acceptedAt)}. ${review.mergeGate === 'on' ? 'AIWorks merges it when its merge conditions hold.' : 'Merging follows this project’s own rules: AIWorks merges only in projects where you allowed it.'}`
     : review.state === 'merged' ? 'This version is merged.' : null;
+  // What is still open stays in sight beside Accept result; that everything passed is an explanation.
+  const verdict = el('p', { role: 'status' }, open ? `Not complete: ${[u.failed ? `${plural(u.failed, 'criterion', 'criteria')} failed` : null, u.notChecked ? `${plural(u.notChecked, 'criterion', 'criteria')} not checked` : null,
+      u.blocking ? `${plural(u.blocking, 'blocking finding')} open` : null].filter(Boolean).join(' · ')}.` : 'Every criterion passed the independent check.');
   return [
-    el('p', { role: 'status' }, open ? `Not complete: ${[u.failed ? `${plural(u.failed, 'criterion', 'criteria')} failed` : null, u.notChecked ? `${plural(u.notChecked, 'criterion', 'criteria')} not checked` : null,
-      u.blocking ? `${plural(u.blocking, 'blocking finding')} open` : null].filter(Boolean).join(' · ')}.` : 'Every criterion passed the independent check.'),
+    open ? verdict : aside(verdict),
     accepted ? el('p', { role: 'status' }, accepted) : null,
     // You accept results yourself here (AW-015): the merge gate holds this version until you accept it or ask for changes.
-    review.awaitsAcceptance ? el('p', { role: 'status' }, 'Waiting for you: you accept results yourself in this project, so this version is not merged until you accept it.') : null,
-    !review.local && review.state === 'ready' && !review.canAccept && (u.failed || u.blocking) ? el('p', { class: 'subtext' }, COMMANDS.result.unresolved) : null,
+    aside(review.awaitsAcceptance ? el('p', { role: 'status' }, 'Waiting for you: you accept results yourself in this project, so this version is not merged until you accept it.') : null),
+    aside(!review.local && review.state === 'ready' && !review.canAccept && (u.failed || u.blocking) ? el('p', { class: 'subtext' }, COMMANDS.result.unresolved) : null),
     review.canAccept ? el('div', { class: 'campaign-controls' }, button('Accept result', () => sendReview('accept', binding, review, {}, { address }), '', off),
-      el('span', { class: 'subtext' }, review.mergeGate === 'on' ? 'Approves exactly this version; AIWorks merges it when its merge conditions hold.' : 'Approves exactly this version and takes it off Needs you. Merging follows this project’s own rules: AIWorks merges only in projects where you allowed it.')) : null,
+      aside(el('span', { class: 'subtext' }, review.mergeGate === 'on' ? 'Approves exactly this version; AIWorks merges it when its merge conditions hold.' : 'Approves exactly this version and takes it off Needs you. Merging follows this project’s own rules: AIWorks merges only in projects where you allowed it.'))) : null,
     form].filter(Boolean);
 }
 
