@@ -26,6 +26,23 @@ export const GITHUB_ROUTES = Object.freeze(['issue', 'pr']);
  */
 export const DRAFT_EXECUTOR = Object.freeze({ kind: 'claude-cli', model: 'opus', permissionMode: 'auto',
   implementerTimeoutMinutes: 240, verifierTimeoutMinutes: 120 });
+/**
+ * The draft's model choice (MODEL_ROUTING 4.1 and 6): automatic, among the models the draft's providers already name and
+ * nothing else, with checks pinned to the strongest of them. A Claude model's tier follows its family; any other model is
+ * treated as the strongest, so it is never taken for a cheap one. A provider without a model adds no candidate, and with
+ * none the draft keeps the declared chain as before. It never adds a provider, a model or a permission.
+ */
+export function draftRouting(executor, sensitivePaths = []) {
+  const providers = executor?.kind === 'cli-chain' ? executor.providers ?? [] : [executor];
+  const tier = (model) => /haiku/i.test(model) ? 1 : /sonnet/i.test(model) ? 2 : 3;
+  const candidates = providers.filter((provider) => typeof provider?.model === 'string' && provider.model !== '')
+    .map((provider) => ({ kind: provider.kind, model: provider.model, tier: tier(provider.model) }));
+  if (!candidates.length) return null;
+  return { mode: 'auto', candidates, sensitivePaths: [...new Set(sensitivePaths)].slice(0, 32),
+    pin: { verifier: { tier: Math.max(...candidates.map((candidate) => candidate.tier)) } } };
+}
+/** The paths a self-hosted repository's changes need an independent review of (AGENTS.md): its high-risk paths. */
+const SELF_HOSTED_SENSITIVE = Object.freeze(['src/supervisor/']);
 const MAX_WAITING = 10;
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 const UUID = /^[0-9a-f-]{36}$/i;
@@ -261,11 +278,12 @@ function scopedWrites(list, where, notes) {
 /**
  * The draft declaration (WORK_ENVELOPE 3.2 step 4 and 4.1). The coordinator proposes only the outcome, checks, steps and
  * file scope. Code sets everything that decides power or destination: the target from the project record, the request
- * and its pinned versions, the providers (DRAFT_EXECUTOR, or the owner's), review-only release and the report issue.
+ * and its pinned versions, the providers (DRAFT_EXECUTOR, or the owner's) and their model choice (draftRouting, with the
+ * project's known high-risk paths), review-only release and the report issue.
  * Limits are left out (AW-002); the owner sets them on Review. Returns { declaration, notes }: notes name what the
  * proposal asked for and did not get.
  */
-export function draftDeclaration({ request, project: found, pinned, proposal, executor = DRAFT_EXECUTOR, environment = 'development', now = Date.now() }) {
+export function draftDeclaration({ request, project: found, pinned, proposal, executor = DRAFT_EXECUTOR, environment = 'development', sensitivePaths = [], now = Date.now() }) {
   const notes = [];
   const p = plainObject(proposal) ? proposal : {};
   const ignored = Object.keys(p).filter((key) => !PROPOSAL_FIELDS.includes(key));
@@ -296,6 +314,7 @@ export function draftDeclaration({ request, project: found, pinned, proposal, ex
     ...(request.route === 'pr' ? { headSha: pinned.headSha } : {}),
     ...(request.route === 'plan-file' ? { path: pinned.path, blob: pinned.blob } : {}) };
   const outcome = p.outcome;
+  const routing = draftRouting(executor, sensitivePaths);
   const declaration = {
     version: 2,
     campaignId: `${found.id}-intake-${request.request_id.slice(0, 8).toLowerCase()}`,
@@ -305,6 +324,7 @@ export function draftDeclaration({ request, project: found, pinned, proposal, ex
       text: `Approved in the AIWorks dashboard: ${typeof outcome === 'string' ? outcome : ''}`.slice(0, 2000) },
     target,
     executor: structuredClone(executor),
+    ...(routing ? { routing } : {}),
     constraints: p.constraints,
     envelope: {
       scopeVersion: 1,
@@ -358,14 +378,15 @@ const stringList = (value, maxItems, max) => Array.isArray(value) && value.lengt
  * IntakeError DRAFT_INVALID (with the validation message) or DRAFT_WITHHELD (credential-like text); the caller retries
  * once and then reports AIWorks couldn't draft a plan. Writes only work_drafts, work_requests and the journal.
  */
-export function recordDraft(store, { request, proposal, pinned, runId = null, executor, environment, now = Date.now() }) {
+export function recordDraft(store, { request, proposal, pinned, runId = null, executor, environment, selfHosting = null, now = Date.now() }) {
   const found = readProject(store, request.project_id);
   if (!found || found.disconnected_at != null) refuse('PROJECT_NOT_FOUND', 'That project is not connected.');
   if (!plainObject(proposal) || !text(proposal.summary, 2000) || typeof proposal.plan !== 'string' || proposal.plan.length > 20000 ||
       !Array.isArray(proposal.steps) || proposal.steps.length > 32 || !stringList(proposal.questions, 16, 1000)) {
     refuse('DRAFT_INVALID', 'the draft is missing its summary, plan, steps or questions');
   }
-  const { declaration, notes } = draftDeclaration({ request, project: found, pinned, proposal: proposal.declaration, executor, environment, now });
+  const sensitivePaths = found.source_kind === 'github' && trustsLocalMain(selfHosting, found.github_repository) ? SELF_HOSTED_SENSITIVE : [];
+  const { declaration, notes } = draftDeclaration({ request, project: found, pinned, proposal: proposal.declaration, executor, environment, sensitivePaths, now });
   let startCode;
   try { ({ startCode } = checkDraft(declaration)); } catch (error) { refuse('DRAFT_INVALID', error.message); }
   const outline = proposedOutline(proposal.outline, declaration.envelope.acceptance.length, notes);
@@ -562,7 +583,7 @@ export function draftChanges(before, after) {
   const da = before?.declaration ?? {}, db = after?.declaration ?? {};
   const scoped = [['writes', a.writes], ['denyWrites', a.denyWrites], ['deliverables', a.deliverables], ['release', a.release]];
   for (const [key, value] of scoped) if (!sameJson(value, b[key])) add(key, 'changed', {}, true);
-  if (!sameJson(da.executor, db.executor)) add('providers', 'changed', {}, true);
+  if (!sameJson(da.executor, db.executor) || !sameJson(da.routing, db.routing)) add('providers', 'changed', {}, true);
   if (!sameJson(da.limits, db.limits)) add('limits', 'changed', {}, true);
   if (!sameJson(da.tasks, db.tasks)) add('steps', 'changed', {}, true);
   if (!sameJson(before?.pinned, after?.pinned)) add('source', 'changed', {}, true);
