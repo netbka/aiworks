@@ -44,6 +44,7 @@ export const SCOPED_CONTROL_BYTES = 65_536;
 // The external campaign API (off by default, docs/SUPERVISOR.md section 16): the same 1 MiB a private declaration file
 // may be (provenance.mjs privateJson), since the body is the same declaration shape, just sent over HTTP.
 export const CAMPAIGN_API_BYTES = 1024 * 1024;
+const SLOW_STATE_MS = 3000, STATE_KEPT_MS = 15_000;
 const CAMPAIGN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 // Home's "what changed" never reaches further back than this, even when the owner has not marked anything as seen.
 const HOME_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -211,7 +212,11 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
   // Settings -> Connections, with the trusted main and its backup read locally (never fetched).
   const connections = (supervisor, merged) => connectionsView({ supervisor, merges: merged,
     trustedMain: withReadOnlyStore(dataDir, (store, config) => trustedMainView(store, config), null) });
+  // The page's poll gives up after 6 s and comes back 5 s later. When building the state takes longer, the finished answer
+  // is kept for that next poll, or no poll would ever be answered. A change made here drops it at once.
+  let keptState = null;
   const server = createServer(async (req, res) => {
+    if (req.method !== 'GET') { keptState = null; res.once('finish', () => { keptState = null; }); }
     const origin = `http://127.0.0.1:${server.address().port}`;
     const send = (status, body, type = 'application/json; charset=utf-8') => {
       const value = typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body);
@@ -264,17 +269,22 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
         }
         if (path === '/api/session') return send(200, { csrf });
         if (path === '/api/state') {
+          // A poll that gave up while waiting in the queue is not worked on: it would only delay the next one.
+          if (req.socket.destroyed) return undefined;
           // `since`: the viewer's last visit (ms), for "since you last looked"; bounded to the last 30 days.
           const now = Date.now(), raw = Number(new URL(req.url, origin).searchParams.get('since'));
+          if (keptState?.raw === raw && now - keptState.at < STATE_KEPT_MS) return send(200, keptState.body);
           const since = Number.isSafeInteger(raw) && raw > 0 ? Math.min(now, Math.max(raw, now - 30 * 86_400_000)) : undefined;
           const { supervisor, merged, owner, work, projects, worklist } = readState(now, since);
           // Home, Settings -> Connections (OWNER_UI_V2 WP1): the same allowlisted views /api/v2 serves, in the one poll.
-          return send(200, { observedAt: new Date(now).toISOString(), host: machine, supervisor, roadmap: roadmap.snapshot(),
+          const body = JSON.stringify({ observedAt: new Date(now).toISOString(), host: machine, supervisor, roadmap: roadmap.snapshot(),
             merges: { refreshing: merged.refreshing, repositories: merged.repositories }, owner, projects, work, worklist,
             home: home(supervisor, owner, projects), connections: connections(supervisor, merged),
             // First run states what planning costs before anything is planned (WP8): from history, or unavailable.
             ...(projects.addProject ? { planning: planningCost(dataDir) } : {}),
             overviews: Object.fromEntries((projects.projects ?? []).map((row) => [row.id, overviewView(row.id, { supervisor, projects })])) });
+          keptState = Date.now() - now >= SLOW_STATE_MS ? { raw, at: Date.now(), body } : null;
+          return send(200, body);
         }
         // The view layer of the owner UI v2 (OWNER_UI_V2 section 8, WP1): one allowlisted view per screen, read-only.
         if (path === '/api/v2/home') {

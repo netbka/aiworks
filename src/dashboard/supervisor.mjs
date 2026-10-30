@@ -75,6 +75,15 @@ function publicTaskWait(task, spec) {
  * the owner's word for an AI worker (OWNER_WORKSPACE §2.1). A step being worked on, ready to start, stopped, finished or
  * in finished work has no wait: who is on it, the stop copy or the result says where it stands.
  */
+// Settled campaigns' views, kept by store path and campaign id (supervisorSnapshot).
+const SETTLED = new Set(['finished', 'cancelled']);
+const settledViews = new Map();
+const settledMarks = (store) => ({
+  journal: new Map(store.all('SELECT campaign_id, MAX(seq) AS seq FROM journal GROUP BY campaign_id').map((row) => [row.campaign_id, row.seq])),
+  events: new Map(store.all('SELECT campaign_id, MAX(seq) AS seq FROM events GROUP BY campaign_id').map((row) => [row.campaign_id, row.seq])),
+  // Task and operation rows change without a journal entry, so their versions and times are part of the mark too.
+  tasks: new Map(store.all('SELECT campaign_id, SUM(version) AS v, MAX(updated_at) AS at FROM tasks GROUP BY campaign_id').map((row) => [row.campaign_id, `${row.v}:${row.at}`])),
+  operations: new Map(store.all('SELECT campaign_id, COUNT(*) AS n, MAX(updated_at) AS at FROM operations GROUP BY campaign_id').map((row) => [row.campaign_id, `${row.n}:${row.at}`])) });
 // A pause reason is checked for credentials whole, never cut short (aiworks#75).
 const pauseText = (reason) => { const text = String(reason ?? ''); return safeText(text, text.length); };
 const ownerWords = (text) => safeText(String(text ?? ''), 300).replace(/\bAI provider\b/g, 'AI worker').replace(/\bprovider account\b/g, 'AI worker account');
@@ -1141,7 +1150,11 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
       return owners.get(overlayId) ?? null;
     };
     const local = all.filter((c) => isLocalTarget(c.declaration)).map((c) => localRuns(store, c, now, config, projectOf));
-    const campaigns = all.filter((c) => !isLocalTarget(c.declaration)).map((c) => {
+    // A finished or cancelled campaign's view changes only with its own records, so it is kept between requests and
+    // rebuilt when its version, journal, events, task or operation rows or the config change. Hundreds of settled
+    // campaigns otherwise rebuild their status on every request and the page stops answering.
+    const marks = settledMarks(store), configStamp = createHash('sha256').update(JSON.stringify(config ?? null)).digest('base64');
+    const campaignView = (c) => {
       const id = c.id;
       // Connections reads trusted main once; this per-campaign view does not use that field.
       const status = campaignStatus(store, id, now, { config, selfHostingConfig: null });
@@ -1269,6 +1282,15 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
             heartbeatState: beat === null ? 'unknown' : now - beat < 90_000 ? 'recent' : 'stale',
             progress: workerProgress(dataDir, op) };
         }) };
+    };
+    const campaigns = all.filter((c) => !isLocalTarget(c.declaration)).map((c) => {
+      if (!SETTLED.has(c.control)) return campaignView(c);
+      const key = [c.version, c.updated_at, marks.journal.get(c.id) ?? 0, marks.events.get(c.id) ?? 0, marks.tasks.get(c.id) ?? '', marks.operations.get(c.id) ?? '', configStamp].join('|');
+      const slot = `${path}|${c.id}`, kept = settledViews.get(slot);
+      if (kept?.key === key) return structuredClone(kept.view);
+      const view = campaignView(c);
+      settledViews.set(slot, { key, view: structuredClone(view) });
+      return view;
     });
     const activity = store.all("SELECT seq, campaign_id, at, kind, detail FROM journal WHERE kind NOT IN ('event-dashboard-command', 'lease-acquired') ORDER BY seq DESC LIMIT 80").map((item) =>
       publicEvent(item, typeof item.detail?.op === 'string' ? store.get('SELECT * FROM operations WHERE id = ?', item.detail.op) : null));
