@@ -2207,7 +2207,7 @@ export class Controller {
     const reasons = new Map();
     const domainWaits = [];
     let launched = false;
-    for (const candidate of orderCandidates(this.store, this.candidates)) {
+    for (const candidate of orderCandidates(this.store, this.candidates, this.config)) {
       const key = `${candidate.campaignId}/${candidate.taskId}`;
       const refusal = admissionCheck(this.store, candidate, inputs);
       if (refusal) {

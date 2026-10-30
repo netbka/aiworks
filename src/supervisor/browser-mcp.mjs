@@ -10,7 +10,7 @@
 // - chrome-devtools-mcp adds os.tmpdir() to the folders its file tools may read and write, so the temporary folder is
 //   the run's own before the package loads; together with --workspace no file tool reaches outside the run directory.
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -43,9 +43,17 @@ process.on('exit', () => {
 });
 
 // Chrome writes the port it chose to DevToolsActivePort in the profile once its debugging endpoint is listening.
+// On Windows the file is locked (EBUSY) while Chrome writes it, which stopped 29 runs: that is not yet the answer, not a failure.
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const readPort = () => {
+  try { return Number(readFileSync(portFile, 'utf8').split(/\r?\n/)[0]); } catch (error) {
+    if (['ENOENT', 'EBUSY', 'EPERM', 'EACCES'].includes(error.code)) return NaN;
+    throw error;
+  }
+};
 const deadline = Date.now() + 30_000;
-while (!existsSync(portFile) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));
-const port = existsSync(portFile) ? Number(readFileSync(portFile, 'utf8').split(/\r?\n/)[0]) : NaN;
+let port = readPort();
+while ((!Number.isSafeInteger(port) || port <= 0) && Date.now() < deadline) { await sleep(100); port = readPort(); }
 if (!Number.isSafeInteger(port) || port <= 0) fail('Chrome did not open its debugging port within 30 s');
 // The URL allowlist depends on the running browser's version, whatever the install folder said before dispatch.
 const version = await fetch(`http://127.0.0.1:${port}/json/version`).then((response) => response.json()).catch(() => null);
@@ -58,15 +66,25 @@ if (config.login) {
   // The complete task/resource allowlist is applied only by the MCP server after every login page is closed.
   const library = createRequire(import.meta.url).resolve('chrome-devtools-mcp/build/src/third_party/index.js');
   const { puppeteer } = await import(pathToFileURL(library).href);
+  // Nothing reached the application in these, so one more try after a random pause is safe, and it spreads runs that
+  // started together. Never after the form was submitted: repeated logins could lock the account.
+  const RETRIED = ['Browser pre-login could not start', 'Browser pre-login could not connect to Chrome',
+    'Browser pre-login failed while opening the login page', 'Browser pre-login failed while resolving credential references'];
   for (const profile of config.login.profiles) {
-    let connection;
-    try {
-      const transport = await loginTransport(version.webSocketDebuggerUrl);
-      connection = await puppeteer.connect({ transport, allowlist: [`${profile.origin}/*`] });
-      await loginBrowser(connection, { ...config.login, profiles: [profile] }, { transport });
-    } catch (error) {
-      fail(error.message.startsWith('Browser pre-login failed while ') ? error.message : 'Browser pre-login could not start');
-    } finally { await connection?.disconnect(); }
+    for (let attempt = 1; ; attempt += 1) {
+      let connection, failure = null;
+      try {
+        const transport = await loginTransport(version.webSocketDebuggerUrl);
+        connection = await puppeteer.connect({ transport, allowlist: [`${profile.origin}/*`] });
+        await loginBrowser(connection, { ...config.login, profiles: [profile] }, { transport });
+      } catch (error) {
+        // Only our own fixed messages pass: any other text can contain a request payload or a value.
+        failure = error.message.startsWith('Browser pre-login ') ? error.message : 'Browser pre-login could not connect to Chrome';
+      } finally { await connection?.disconnect(); }
+      if (!failure) break;
+      if (attempt > 1 || !RETRIED.includes(failure)) fail(failure);
+      await sleep(5_000 + Math.random() * 10_000);
+    }
   }
 }
 
