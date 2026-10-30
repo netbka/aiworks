@@ -2524,7 +2524,7 @@ const EVENT_WORDS = { 'goal-started': 'Work started', paused: 'Paused', resumed:
 // The order of the one-line summary: what the owner acts on first.
 const EVENT_ORDER = ['needs-you', 'result-ready', 'accepted', 'merged', 'checked', 'check-rejected', 'paused', 'resumed', 'goal-started', 'cancelled',
   'limit-wait', 'wait-ended', 'run-failed', 'aiworks-problem', 'built', 'decision-cleared'];
-const SUMMARY_WORDS = { 'needs-you': 'new for you', 'result-ready': 'ready for review', accepted: 'accepted by you', merged: 'merged', checked: 'checked by the independent checker',
+const SUMMARY_WORDS = { 'needs-you': 'new for you', 'result-ready': 'ready for review', accepted: 'accepted by you', merged: 'recorded as merged by AIWorks', checked: 'checked by the independent checker',
   'check-rejected': 'sent back by the checker', paused: 'paused', resumed: 'resumed', 'goal-started': 'started', cancelled: 'cancelled',
   'limit-wait': 'limit waits', 'wait-ended': 'waits ended', 'run-failed': 'runs retried', 'aiworks-problem': 'AIWorks problems', built: 'builder runs',
   'decision-cleared': 'questions cleared' };
@@ -2635,6 +2635,8 @@ function homeTiles(home) {
   const campaigns = state.supervisor.campaigns, open = openCampaigns(campaigns), now = Date.now();
   const agents = open.flatMap((c) => c.agents), builders = agents.filter((a) => isBuilderRole(a.role)).length;
   const waiting = open.flatMap((c) => c.tasks.filter((task) => stepTone(c, task)[0] === 'waiting')).length;
+  // Merges the merge check finds in Git, by hand ones too; the change summary below counts only AIWorks's own merge
+  // records, so each says where its number comes from.
   const merged = campaigns.flatMap((c) => c.tasks.filter((task) => {
     const delivery = deliveryOf(c, task);
     return delivery?.state === 'merged' && delivery.mergedAt && now - new Date(delivery.mergedAt).getTime() < DAY_MS;
@@ -2652,7 +2654,7 @@ function homeTiles(home) {
     ['checking', 'Checking', agents.length - builders, 'A fresh session that did not write the code'],
     ['waiting', 'Waiting', waiting, 'Limits and order: AIWorks resumes by itself'],
     ['you', 'Needs you', needsValue, needsFoot, needsMore],
-    ['merged', 'Merged in 24 h', merged, 'Each checked before it merged'],
+    ['merged', 'Merged in 24 h', merged, 'Found in Git, however it was merged · each checked first'],
     ['cost', 'Reported cost', spent, unreported ? `Running work · ${plural(unreported, 'run')} not reported yet` : 'Running work, as the AI workers reported it']
   ];
   return el('section', { class: 'live-tiles', 'aria-label': 'Right now' }, ...tiles.map(([tone, title, value, foot, more]) => {
