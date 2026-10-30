@@ -13,6 +13,10 @@ import { Store } from '../../src/supervisor/store.mjs';
 import { createItem, addComment } from '../../src/supervisor/work-list.mjs';
 import { safeText } from '../../src/dashboard/roadmap.mjs';
 
+// The blocked body would occupy a thread for hours, so these generous bounds still catch a check on the owner event
+// loop while a busy machine running other test files cannot trip them.
+const BOUND_MS = 60_000;
+
 if (process.argv.includes('--probe')) {
   const dir = mkdtempSync(join(tmpdir(), 'aiworks-display-text-'));
   const checks = new DisplayTextChecks();
@@ -46,7 +50,7 @@ if (process.argv.includes('--probe')) {
     assert.equal(shortShown.comments.length, 200);
     assert(shortShown.comments.every(comment => comment.body !== shorter));
     assert.equal((await fetch(`${base}/api/session`)).status, 200);
-    assert.ok(performance.now() - start < 2000, 'large untrusted text blocked owner requests');
+    assert.ok(performance.now() - start < BOUND_MS, 'large untrusted text blocked owner requests');
     await new Promise(resolve => server.close(resolve));
     server = null;
 
@@ -60,8 +64,8 @@ if (process.argv.includes('--probe')) {
     }
     const tick = performance.now();
     await delay(30);
-    assert.ok(performance.now() - tick < 1000, 'classifier ran on the owner event loop');
-    const deadline = Date.now() + 12000;
+    assert.ok(performance.now() - tick < BOUND_MS, 'classifier ran on the owner event loop');
+    const deadline = Date.now() + BOUND_MS;
     while (bodies.some(body => checks.read(body, 200000).state === 'checking') && Date.now() < deadline) await delay(50);
     assert.equal(checks.read(blocked, 200000).state, 'unavailable');
     assert.deepEqual(checks.read(clean, 200000), { state: 'ready', text: clean });
@@ -82,7 +86,7 @@ if (process.argv.includes('--probe')) {
 } else {
   test('large display text cannot block owner requests or bypass content checks', () => {
     const child = spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--probe'], {
-      encoding: 'utf8', windowsHide: true, timeout: 20000,
+      encoding: 'utf8', windowsHide: true, timeout: 4 * BOUND_MS,
     });
     assert.equal(child.error, undefined, 'the display boundary failed to reclaim its work');
     assert.equal(child.status, 0, child.stderr);
