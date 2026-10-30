@@ -20,7 +20,7 @@ Do not change another project from work here, mutate the governance directory, r
 
 ## Owner intervention
 
-Ask only for owner-reserved decisions, destructive actions that lack authorization, or access only the operator can grant after allowed alternatives fail. Prove the concrete failing step and continue independent authorized work. Routine implementation choices, file sequencing and provider waits are not owner stops. Never introduce a new owner-dependent blocking gate without authorization.
+AIWorks decides and finishes without the owner ([AW-017](docs/DECISIONS.md#aw-017---aiworks-decides-and-finishes-without-the-owner)). Workers never stop for the owner: decide routine and implementation choices within the packet, and when a choice truly stays open, return it with 2 to 4 options and a suggestion, which AIWorks takes. A stalled or stopped step is delivered with its known defects or ended as not done, with a follow-up item; it never waits. Only the owner's own sign-in, credentials and payment are the owner's, and they are reported as information. Destructive actions that lack authorization are still not taken: end the step or record what is missing instead. Prove the concrete failing step and continue independent authorized work. Never introduce a new owner-dependent blocking gate without authorization.
 
 ## Review and runtime maintenance
 

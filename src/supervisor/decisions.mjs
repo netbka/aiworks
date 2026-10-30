@@ -1,5 +1,6 @@
-// Structured owner decisions (docs/design/OWNER_UI_V2.md WP2) over the existing task blockers. A decision is a task's
-// `blocked` record that needs the owner: a B3 stop, or a checker that still rejects after the repair rounds. Its options,
+// Structured decisions (docs/design/OWNER_UI_V2.md WP2) over the existing task blockers. A decision is a task's `blocked`
+// record a worker stopped for: a B3 stop, or a checker that still rejects after the repair rounds. AIWorks answers it
+// (AW-017, controller.answerSuggested); the owner may still answer it first from the dashboard. Its options,
 // suggestion, what continues and what happens unanswered come only from the validated `decision` field of a worker result
 // (adapters/claude.mjs DECISION_SCHEMA); a stop without one stays a free-text decision, answered in the owner's own words.
 // An answer is delivered as owner guidance under the unchanged packet and authority, so it can never widen the work.
@@ -35,21 +36,32 @@ export function decisionId(campaignId, taskId, blocked) {
 }
 
 /**
- * AW-016: whether AIWorks answers a decision itself, with its suggestion. Only a suggested option the worker marked
- * reversible qualifies; anything else waits for the owner. The answer goes the same way as the owner's (answerDecision).
+ * AW-017: whether AIWorks answers a decision itself, with its suggestion: every owner-reserved stop (B3) whose decision
+ * names a suggested option. The answer goes the same way as the owner's (answerDecision), so it never widens the packet.
  */
-// Only an owner-reserved stop (B3): a "verifier still rejects" stall at the repair limit always waits for the owner,
-// because answering it would raise the owner's repair limit.
-export const answersItself = (task) => isDecision(task) && task.blocked.class === 'B3' && task.blocked.decision?.reversible === true &&
-  Boolean(task.blocked.decision.suggestion && task.blocked.decision.options?.some((o) => o.id === task.blocked.decision.suggestion.option));
+// A "verifier still rejects" stall at the repair limit is not answered: answering it would raise the repair limit, so the
+// controller settles it instead (settleStopped: delivered with known defects, or ended as not done).
+export const answersItself = (task) => isDecision(task) && task.blocked.class === 'B3' &&
+  Boolean(task.blocked.decision?.suggestion && task.blocked.decision.options?.some((o) => o.id === task.blocked.decision.suggestion.option));
+
+/** AW-017: a worker's owner-reserved stop without a usable suggestion. It goes back to its step once, to decide within the packet. */
+export const sendsBack = (task) => isDecision(task) && task.blocked.class === 'B3' && /^owner-reserved:/.test(String(task.blocked.reason ?? '')) && !answersItself(task);
+
+/** The guidance for a step sent back to decide by itself (sendsBack). */
+export function decideGuidance(blocked) {
+  return ['AIWorks does not wait for the owner: this step stopped for a decision without options and a suggestion, so it comes back to you once to decide within the packet.',
+    blocked?.decision?.question ? `Question: ${blocked.decision.question}` : null, blocked?.reason ? `The stop: ${String(blocked.reason).slice(0, 1000)}` : null,
+    'Choose what keeps to the packet, its acceptance and its permissions, record the choice and why in your report, and finish the work. If the outcome cannot be reached within the packet, return evidence-unavailable and say exactly what is missing: AIWorks then ends the step as not done and records a follow-up. Never widen the packet.']
+    .filter(Boolean).join(' ');
+}
 
 /** Durable decision context for the step's builders and verifiers, within its bound authority. */
 export function answerGuidance(decision, { option = null, text: words = null, auto = false }) {
   const chosen = option ? decision?.options?.find((o) => o.id === option) : null;
-  return [auto ? 'AIWorks answered the decision this step stopped for with the suggested option, as the owner allows for reversible choices; the owner may still change it.'
+  return [auto ? 'AIWorks answered the decision this step stopped for with the suggested option, as the owner decided (AW-017).'
     : 'The owner answered the decision this step stopped for.',
     decision?.question ? `Question: ${decision.question}` : null,
     chosen ? `Chosen option: ${chosen.label} (${chosen.id}). Consequence: ${chosen.consequence}` : null, words ? `The owner's words: ${words}` : null,
-    auto ? 'This is AIWorks\'s recorded answer with the suggested option, available to implementers and verifiers. Apply it within the packet. If another decision is needed on this step, ask it: the owner answers it. If it conflicts with the approved acceptance or permissions, identify the exact amendment needed; it does not silently widen authority.'
+    auto ? 'This is AIWorks\'s recorded answer with the suggested option, available to implementers and verifiers. Apply it within the packet and decide any further choice yourself within it; do not stop for the owner. If it conflicts with the approved acceptance or permissions, identify the exact amendment needed; it does not silently widen authority.'
       : 'This is a recorded owner answer, available to implementers and verifiers. Apply it within the packet; do not ask for the same decision again. If it conflicts with the approved acceptance or permissions, identify the exact amendment needed; it does not silently widen authority.'].filter(Boolean).join(' ');
 }

@@ -152,6 +152,28 @@ export function reviewItem(store, { campaignId, taskId, verifiedSha = null }) {
     ${verifiedSha ? 'AND verified_sha = ?' : ''} ORDER BY number DESC LIMIT 1`, campaignId, taskId, ...(verifiedSha ? [verifiedSha] : [])));
 }
 
+export const FOLLOW_UP = 'follow-up';
+
+/**
+ * AW-017: the follow-up item for a step AIWorks finished by itself (delivered with known defects, or ended as not done).
+ * One per campaign, step and `key`, so a retry after a crash records nothing twice. Text that looks like a credential is
+ * never stored: the item is then recorded with a plain title and `fallback`, a body without the refused text. Not for the
+ * owner to answer: AIWorks plans it like any other work item.
+ */
+export function followUp(store, { campaignId, taskId, key, title, body, fallback, verifiedSha = null, now }) {
+  const label = `${FOLLOW_UP}:${String(key).slice(0, MAX_LABEL - FOLLOW_UP.length - 1)}`;
+  const found = present(store) && store.get(`SELECT number FROM work_items WHERE kind = 'task' AND author_kind = 'supervisor' AND campaign_id = ? AND task_id = ?
+    AND EXISTS (SELECT 1 FROM json_each(labels) WHERE value = ?) LIMIT 1`, campaignId, taskId, label);
+  if (found) return item(store, found.number);
+  const links = { campaignId, taskId, verifiedSha };
+  try {
+    return createItem(store, { kind: 'task', title, body, labels: [FOLLOW_UP, label], links, authorKind: 'supervisor', now });
+  } catch (error) {
+    if (error?.code !== 'WORK_ITEM_SECRET' && error?.code !== 'WORK_ITEM_TOO_LARGE') throw error;
+    return createItem(store, { kind: 'task', title: `Follow-up for step ${taskId}`, body: fallback, labels: [FOLLOW_UP, label], links, authorKind: 'supervisor', now });
+  }
+}
+
 /**
  * The work item a declaration names as its owner authorization (`aiworks-work:<n>`), checked: null when the reference
  * is another form. It admits only AIWorks's own repository with local main trusted, and only an open item the owner wrote

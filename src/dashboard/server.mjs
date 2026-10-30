@@ -14,6 +14,7 @@ import { PreviewCaptures } from '../supervisor/preview-capture.mjs';
 import { ServerPreviews } from '../supervisor/preview-server.mjs';
 import { ownerView } from './owner.mjs';
 import { configuredMergeDelegation } from './merges.mjs';
+import { mergeSettings } from '../supervisor/merge.mjs';
 import { checkConnectedProject, configuredRepositories, confirmProjectRules, connectedProjects, connectProject, createSampleProject, disconnectConnectedProject, listConnectedProjects,
   previewProject, projectConnectionEnabled, projectRulesView, projectsView, relocateConnectedProject, removedProjects, removeProject, restoreProject,
   revokeProjectRules } from './projects.mjs';
@@ -198,7 +199,7 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
     const owner = ownerView(supervisor, merged, { host: machine.name, now, releases, delegation: configuredMergeDelegation(dataDir), connected: records, workList: worklist,
       localWork: work.local, readReports: readReports(dataDir) });
     // Projects: campaign repositories, the repositories config.json lists and connected projects, by name only (never a path).
-    const projects = projectsView(supervisor, owner, { repositories: configuredRepositories(dataDir), removed: removedProjects(dataDir),
+    const projects = projectsView(supervisor, owner, { repositories: configuredRepositories(dataDir), removed: removedProjects(dataDir), mergeGate: mergeSettings(readConfig(dataDir)),
       ...(addProject ? { records, addProject, localWork: work.local } : {}) });
     return { supervisor, merged, owner, work, projects, worklist };
   };
