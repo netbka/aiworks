@@ -175,7 +175,7 @@ export function pauseSummary(goals, scope) {
 // Views.
 
 const projectRow = (row) => ({ id: row.id, name: row.name, kind: row.kind, repository: row.repository ?? null,
-  state: { key: row.state?.key ?? 'unknown', text: row.state?.text ?? null }, needsYou: row.details?.needsYou ?? 0, lastActivityAt: row.lastActivityAt ?? null });
+  state: { key: row.state?.key ?? 'unknown', text: row.state?.text ?? null }, needsYou: row.details?.needsYou ?? 0, merges: row.details?.merges ?? null, lastActivityAt: row.lastActivityAt ?? null });
 
 /**
  * Home (GET /api/v2/home): what changed since the last-seen marker, the decisions first, each project in one sentence,
@@ -188,7 +188,8 @@ export function homeView({ supervisor, owner, projects, events, lastSeen, newest
   for (const event of events.events) counts[event.type] = (counts[event.type] ?? 0) + 1;
   return { available: true, lastSeen, newest,
     since: { count: events.events.length, more: events.next !== null, counts, events: events.events.slice(0, 20), window },
-    needsYou: { count: owner?.count ?? 0, items: (owner?.items ?? []).slice(0, 3).map((item) => ({ kind: item.kind, campaignId: id(item.campaignId),
+    // The one owner-action set (owner.mjs `attention`): the same count as Needs you, the badge and every project row.
+    needsYou: { count: owner?.attention?.count ?? owner?.count ?? 0, items: (owner?.items ?? []).filter((item) => !item.system).slice(0, 3).map((item) => ({ kind: item.kind, campaignId: id(item.campaignId),
       repository: item.repository ?? null, text: item.text ?? null, at: item.at ?? null })) },
     projects: (projects?.projects ?? []).map(projectRow),
     pause: pauseSummary(supervisor.goals ?? [], { kind: 'all' }) };
