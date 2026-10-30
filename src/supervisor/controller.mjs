@@ -19,6 +19,7 @@ import { admissionBudget } from './api.mjs';
 import { currentSettings, projectOf, protectedAreasFor, protectedPaths } from './project-settings.mjs';
 import { authorityChange, authorityPaths } from './release/authority-path.mjs';
 import { drainReleases, releasePass } from './release/controller.mjs';
+import { autoApplyPass } from './release/owner-apply.mjs';
 import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountFull, accountOf, accountWait, buildTaskSignature, clearAccountWait, formatSignatureLines, formatTokensUsage, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
 import { BEYOND_RULE, beyondConstraint, domainOf, outsideWrites, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, hostPressure, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
@@ -559,6 +560,11 @@ export class Controller {
     // Merge gate (aiworks#138): verified PRs in repositories the owner opted in, one per repository per pass.
     try { await mergePass(this); }
     catch (error) { this.log(`merge pass failed: ${error.stack || error}`); }
+    // AW-018: a checked result of a project without GitHub is applied to its folder by AIWorks, with a backup, once.
+    try {
+      autoApplyPass(this.store, { dataDir: this.dataDir, runtimeRoot: this.runtimeRoot ?? resolve(here, '..', '..'), git: this.cmd.git,
+        now: this.now(), log: (line) => this.log(line), refused: (this.applyRefused ??= new Set()) });
+    } catch (error) { this.log(`apply pass failed: ${error.stack || error}`); }
     try { releasePass(this); }
     catch (error) { this.log(`release pass failed: ${error.stack || error}`); }
     // Program waves (PROJECT_WORKSPACE_PLAN 6.8d, PROG3): off unless config.json `program.enabled`; registers at most the
@@ -3283,7 +3289,8 @@ export class Controller {
 
   /**
    * A project without GitHub (WORK_ENVELOPE slice E10): the verified task becomes a local candidate in the ledger, never a
-   * pushed branch, a pull request or an issue comment, and nothing is applied to the owner's folder. No git push and no gh
+   * pushed branch, a pull request or an issue comment; the apply pass of a later tick writes it to the owner's folder with
+   * a backup (AW-018, owner-apply.mjs autoApplyPass). No git push and no gh
    * call happens on this path. Its report stays in the candidate row, in this computer's store.
    */
   recordLocalCandidate(ctx, decl, spec, task) {
