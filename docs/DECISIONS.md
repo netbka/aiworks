@@ -128,6 +128,8 @@ Each pull request was verified on its own, on the base it started from. What lan
 
 The merge gate's other rules stay: only listed repositories, only the exact verified heads, merge commits only, never a squash, rebase, force-push or branch deletion (AW-001).
 
+Amended 2026-10-30 ([#39](https://github.com/example-org/aiworks/issues/39)): AIWorks's own repository with local main trusted groups its verified local reviews the same way. The base is trusted local main with nothing unrecorded on it. After the one gate run, each step is a local merge commit of exactly the previous step and the verified head, carrying exactly the tree that step predicted, and is recorded with its main ledger row, as a local merge is today. A refused step ends the group like a moved main does. A crash after main moved records that step once and continues the same group. Every local merge condition stays: acceptance (AW-015), requested changes, the authority checks and the exact verified heads.
+
 ## AW-015 - Acceptance controls merging when the owner chooses it
 
 Owner decision 2026-10-21 ([#45](https://github.com/example-org/aiworks/issues/45)): each project has an acceptance mode, *automatic* (today's behaviour, the default) or *I accept results myself*. In the second mode the merge gate merges a verified head only after the owner has accepted exactly that checked version. Acceptance of an earlier head never counts.

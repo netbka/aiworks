@@ -10,11 +10,16 @@
 // can no longer merge ends the group; the rest go one at a time as before (merge.mjs). The journal (no campaign) records
 // `merge-batch-started`, `-passed`, `-failed`, `-stopped` and `-done`, so a restart continues the same group. A gate is
 // never killed.
+//
+// AIWorks's own repository with local main trusted groups its verified local reviews the same way: the base is trusted
+// local main, and each step is a local merge (merge.mjs mergeLocal) from exactly the previous step, with exactly the tree
+// that step predicted, recorded with its main ledger row and `merged` entry. A refused step ends the group.
 import { join } from 'node:path';
 import * as gitA from './adapters/git.mjs';
 import { gateFailure, readGateRun } from './gate.mjs';
 import { IDENTITY, alive, checkout, gatePid, startGate } from './merge-refresh.mjs';
-import { inspect, mergeBlocker, mergeNow, wait } from './merge.mjs';
+import { inspect, localBlocker, mergeBlocker, mergeLocal, mergeNow, wait } from './merge.mjs';
+import { trustedTip } from './self-hosting.mjs';
 
 const KINDS = ['merge-batch-started', 'merge-batch-passed', 'merge-batch-failed', 'merge-batch-stopped', 'merge-batch-done'];
 const ENDED = new Set(['merge-batch-failed', 'merge-batch-stopped', 'merge-batch-done']);
@@ -44,9 +49,28 @@ const refreshRunning = (store, { campaignId, task }, base) => store.all(`SELECT 
   .map((row) => row.kind).join(' ') === 'merge-refresh-started';
 
 /**
- * One group-merge step for the waiting pull requests of one repository and base branch (`items`, oldest campaign first,
- * then plan order). Returns true when the group handled the repository this pass (it acted or waits), false when the pull
- * requests go one at a time instead.
+ * The tree one verified head's step must carry in group `id` once that group's gate passed, or null. Read-only: the local
+ * merge gate uses it after a crash to recognize the group step it requested (merge.mjs mergeLocal).
+ */
+export function groupTree(store, id, { campaignId, task, sha }) {
+  const row = (kind) => store.get(`SELECT detail FROM journal WHERE campaign_id IS NULL AND kind = ? AND json_extract(detail, '$.id') = ?
+    ORDER BY seq DESC LIMIT 1`, kind, id)?.detail ?? null;
+  if (!row('merge-batch-passed')) return null;
+  const member = row('merge-batch-started')?.members?.find((m) => m.campaignId === campaignId && m.task === task && m.sha === sha);
+  return typeof member?.tree === 'string' ? member.tree : null;
+}
+
+/** Local main of the self-hosted repository: { tip, main } of trustedTip, or null when it is not trusted. */
+function localMain(controller, repoPath, repository) {
+  const tip = trustedTip(controller.store, { git: controller.cmd.git, repoPath, repository });
+  return tip.state === 'TRUSTED' ? tip : null;
+}
+
+/**
+ * One group-merge step for the waiting pull requests (or, in the self-hosted repository, local reviews) of one repository
+ * and base branch (`items`, oldest campaign first, then plan order). `baseSha` is the fetched base, or local main.
+ * Returns true when the group handled the repository this pass (it acted or waits), false when they go one at a time
+ * instead.
  */
 export function batchStep(controller, items, settings, repoPath, baseSha) {
   if (!items.length) return false;
@@ -59,8 +83,19 @@ export function batchStep(controller, items, settings, repoPath, baseSha) {
 }
 
 function startGroup(controller, all, items, settings, repoPath, baseSha, note) {
-  const git = controller.cmd.git, ready = [];
+  const git = controller.cmd.git, ready = [], local = Boolean(items[0].local);
+  // A local group starts only from trusted main with nothing unrecorded on it.
+  if (local) {
+    const tip = localMain(controller, repoPath, items[0].decl.target.repository);
+    if (!tip || tip.tip !== baseSha || tip.main !== baseSha) return false;
+  }
   for (const item of items) {
+    if (local) {
+      const blocker = localBlocker(controller, item, settings, repoPath);
+      if (blocker) { wait(controller, item, blocker); continue; }
+      if (!gitA.isAncestor({ git, path: repoPath, ancestor: item.task.verified_sha, descendant: baseSha })) ready.push(item);
+      continue;
+    }
     const { pr, acted } = inspect(controller, item, settings, repoPath, baseSha);
     if (acted) return true;
     if (!pr) continue;
@@ -106,7 +141,7 @@ function startGroup(controller, all, items, settings, repoPath, baseSha, note) {
 }
 
 function continueGroup(controller, open, items, settings, repoPath, baseSha, note) {
-  const { store } = controller, git = controller.cmd.git, { detail } = open.started;
+  const { store } = controller, git = controller.cmd.git, { detail } = open.started, local = Boolean(items[0].local);
   const matchesStep = (commit, member, parent) => {
     const actual = gitA.exec(git, ['show', '-s', '--format=%T %P', commit], { cwd: repoPath });
     return actual.ok && actual.stdout === `${member.tree} ${parent} ${member.sha}`;
@@ -142,6 +177,10 @@ function continueGroup(controller, open, items, settings, repoPath, baseSha, not
   const itemOf = (member) => items.find((entry) => entry.campaignId === member.campaignId && entry.task.task_id === member.task && entry.task.verified_sha === member.sha);
   /** Whether a member may merge onto `base` now: {} yes, { acted } or { waiting } keep the group, { stop } ends it. */
   const check = (member, item, base) => {
+    if (local) {
+      const blocker = localBlocker(controller, item, settings, repoPath);
+      return blocker ? { stop: `${member.campaignId}/${member.task}: ${blocker}` } : {};
+    }
     const { pr, acted } = inspect(controller, item, settings, repoPath, base);
     if (acted) return { acted: true };
     if (!pr) return { stop: `${member.campaignId}/${member.task} cannot merge now` };
@@ -185,21 +224,37 @@ function continueGroup(controller, open, items, settings, repoPath, baseSha, not
     const item = itemOf(member);
     if (!item) { end('merge-batch-stopped', `${member.campaignId}/${member.task} no longer waits to merge at ${member.sha}`); return false; }
     // A merge requested before a crash is settled by reading the pull request first, never by a second call. One GitHub
-    // refused ends the group: the pull request goes on alone, through mergeOne.
-    if (memberRow(store, member, 'merge-requested', since)) {
+    // refused ends the group: the pull request goes on alone, through mergeOne. A local step refused ends it too; a local
+    // step requested before a crash is settled by mergeLocal, which reads main first: it records the planned merge commit
+    // already on main once, or, while main is still the previous step, merges that step again.
+    const requested = memberRow(store, member, 'merge-requested', since);
+    if (requested && local) {
+      const refused = memberRow(store, member, 'merge-refused', since);
+      if (refused) { end('merge-batch-stopped', `${member.campaignId}/${member.task} was not merged: ${refused.detail}`); return false; }
+    } else if (requested) {
       if (inspect(controller, item, settings, repoPath, base).acted) return true;
       end('merge-batch-stopped', `${member.campaignId}/${member.task} was not merged: ${memberRow(store, member, 'merge-refused', since)?.detail ?? 'unknown'}`);
       return false;
     }
-    if (base !== parent) { end('merge-batch-stopped', `the base is ${base}, not the checked step ${parent}`); return false; }
+    // Main already past the previous step counts only as this step's planned merge commit, recorded by mergeLocal.
+    const recovering = Boolean(requested) && local && base !== parent;
+    const moved = () => { end('merge-batch-stopped', `the base is ${base}, not the checked step ${parent}`); return false; };
+    if (base !== parent && !recovering) return moved();
     const result = check(member, item, base);
     if (result.acted || result.waiting) return true;
     if (result.stop) { end('merge-batch-stopped', result.stop); return false; }
-    if (!mergeNow(controller, item, base)) return true;
+    // A merge that did not happen (a lost lease, a changed task) is judged again next pass.
+    if (local) mergeLocal(controller, item, settings, repoPath, { group: open.id, base: parent, tree: member.tree });
+    else mergeNow(controller, item, base);
     controller.mergePassReads = new Map();
     const done = memberRow(store, member, 'merged', since);
-    if (!done) return true;
-    base = controller.fetchBase(repoPath, detail.branch).sha;
+    if (!done) {
+      if (recovering) return moved();
+      const refused = local && memberRow(store, member, 'merge-refused', since);
+      if (refused) { end('merge-batch-stopped', `${member.campaignId}/${member.task} was not merged: ${refused.detail}`); return false; }
+      return true;
+    }
+    base = local ? localMain(controller, repoPath, items[0].decl.target.repository)?.main ?? null : controller.fetchBase(repoPath, detail.branch).sha;
     if (base !== done.mergeCommit || !matchesStep(done.mergeCommit, member, parent)) {
       end('merge-batch-stopped', `the merge of ${member.url} left the base at ${base}, not at the checked tree ${member.tree}`);
       return true;
