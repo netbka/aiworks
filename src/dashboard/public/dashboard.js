@@ -507,7 +507,8 @@ function campaignCard(c, expanded = true) {
       el('div', { class: 'campaign-meta' }, `Known to AIWorks as ${c.id} · `, link(`tracking issue #${c.trackingIssue ?? ''}`, c.trackingUrl))),
     terminal ? null : el('div', {}, controls, note ? el('div', { class: 'controls-note' }, note) : null)));
   const card = el('section', { class: 'panel', 'data-focus-scope': c.id }, title, el('div', { class: 'campaign-banner' }, el('div', {}, el('strong', {}, campaignNext(c)),
-    c.blocker && c.blockerAction ? el('div', { class: 'subtext' }, `What to do: ${c.blockerAction}`) : null),
+    c.blocker && c.blockerAction ? el('div', { class: 'subtext' }, `What to do: ${c.blockerAction}`) : null,
+    owner?.folder ? el('div', { class: 'subtext' }, owner.folder) : null),
   el('div', { class: 'campaign-progress' }, progress, el('span', { class: 'long' }, summary.text), el('span', { class: 'short' }, summary.short))));
   // Provider detail matters only while the campaign can still start agents.
   if (expanded) card.append(...(terminal ? [] : [providerStatus(c)]), disclosure(`${c.id}/agent-steps`, `See all ${plural(c.tasks.length, 'step')}`, stepsTable(c)));

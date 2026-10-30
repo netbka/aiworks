@@ -10,9 +10,15 @@
 // merges and never holds one. In a project whose acceptance mode is "owner" (AW-015, project-settings.mjs) every one of
 // these merges also needs the owner's acceptance of exactly the verified head and report (result-review.mjs
 // awaitingAcceptance), checked when candidates are chosen and again inside the fenced write that requests the merge.
+// After a recorded GitHub merge, the project's own folder is fast-forwarded to the merged base when it is clean on that
+// branch (updateFolder, AW-018); otherwise it is left as it is with the reason journaled.
+import { realpathSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import * as gitA from './adapters/git.mjs';
 import * as github from './adapters/github.mjs';
 import { mergeWithMergeCommit } from './release/github-merge.mjs';
+import { fastForwardFolder } from './release/folder-update.mjs';
 import { isPlannedMerge, moveMain, writeMergeCommit } from './release/local-merge.mjs';
 import { mainLedger, recordMainCommit, trustedTip } from './self-hosting.mjs';
 import { backupStep } from './github-backup.mjs';
@@ -183,8 +189,71 @@ export async function mergePass(controller) {
       }
     }
   }
-  // After the local merges, also in a pass with nothing to merge, so a backup the interval deferred still follows.
-  for (const key of due) if (controller.selfHosted(key)) backup(controller, key);
+  // After the local merges, also in a pass with nothing to merge, so a backup the interval deferred still follows. A
+  // GitHub project's own folder follows its newest recorded merge (AW-018).
+  for (const key of due) {
+    if (controller.selfHosted(key)) backup(controller, key);
+    else {
+      try { updateFolder(controller, key); } catch (error) {
+        if (error instanceof FencedError || error instanceof ConflictError) controller.log(`folder update for ${key} retried later: ${error.message}`);
+        else controller.log(`folder update for ${key} failed: ${error.message}`);
+      }
+    }
+  }
+}
+
+/** The journal kinds of a folder update (AW-018), shown on the project as information. */
+export const FOLDER_UPDATED = 'project-folder-updated';
+export const FOLDER_LEFT = 'project-folder-left';
+const RUNTIME_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const comparable = (path) => {
+  let value;
+  try { value = realpathSync.native(path); } catch { value = resolve(path); }
+  value = value.replaceAll('\\', '/').replace(/\/+$/, '');
+  return process.platform === 'win32' ? value.toLowerCase() : value;
+};
+const overlap = (a, b) => { const [x, y] = [comparable(a), comparable(b)]; return x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`); };
+
+/**
+ * Bring a GitHub project's configured folder (config.json `repositories` path, or the connected project's root) up to
+ * the newest merge AIWorks recorded for it (AW-018). Only a fast-forward of the base branch, and only when that branch
+ * is checked out there with no changes and no commits of its own: anything else is the owner's, left as it is with the
+ * reason recorded, and tried again after the next merge. Each recorded merge is tried once. Never the folder AIWorks
+ * itself runs from or keeps its data in, and never AIWorks's own repository (its main moves through the local merge
+ * gate). No hook of the folder runs. Returns the journal kind recorded, or null when nothing was due.
+ */
+export function updateFolder(controller, key) {
+  const { store } = controller, git = controller.cmd.git;
+  let newest = null;
+  for (const { id } of store.all("SELECT id FROM campaigns WHERE control IN ('registered', 'finished') ORDER BY created_at")) {
+    const decl = store.campaign(id).declaration;
+    if (String(decl.target.repository ?? '').toLowerCase() !== key || controller.selfHosted(decl.target.repository)) continue;
+    const row = store.get("SELECT seq, detail FROM journal WHERE campaign_id = ? AND kind = 'merged' ORDER BY seq DESC LIMIT 1", id);
+    if (row && !row.detail?.local && SHA.test(row.detail?.mergeCommit ?? '') && (!newest || row.seq > newest.seq)) newest = { ...row, campaignId: id, decl };
+  }
+  if (!newest) return null;
+  const { campaignId, decl } = newest, mergeCommit = newest.detail.mergeCommit, base = decl.target.baseBranch;
+  const tried = store.get(`SELECT 1 AS present FROM journal WHERE campaign_id = ? AND kind IN (?, ?) AND json_extract(detail, '$.mergeCommit') = ?`,
+    campaignId, FOLDER_UPDATED, FOLDER_LEFT, mergeCommit);
+  if (tried) return null;
+  const folder = resolveCheckout(store, controller.config, decl.target.repository);
+  if (!folder?.path || folder.conflict) return null;
+  const path = folder.path;
+  const note = (kind, detail) => {
+    const ctx = lease(controller, campaignId);
+    if (!ctx) return null;
+    controller.fenced(ctx, () => store.journal(campaignId, kind, { repository: decl.target.repository, branch: base, mergeCommit, task: newest.detail.task, ...detail }, controller.now()));
+    controller.log(`project folder of ${decl.target.repository} ${kind === FOLDER_UPDATED ? 'updated' : `left as it is (${detail.reason})`} after merge ${mergeCommit}`);
+    return kind;
+  };
+  const left = (reason) => note(FOLDER_LEFT, { reason });
+  if (overlap(path, controller.runtimeRoot ?? RUNTIME_ROOT) || (controller.dataDir && overlap(path, controller.dataDir))) return left('aiworks-runtime');
+  const fetched = controller.fetchBase(path, base, decl.target.repository);
+  // The merged base could not be read: nothing is recorded, so the next pass tries the same merge again.
+  if (!fetched.ok) return null;
+  if (!gitA.isAncestor({ git, path, ancestor: mergeCommit, descendant: fetched.sha })) return left('unreadable');
+  const moved = fastForwardFolder({ git, path, branch: base, target: fetched.sha, hooksOff: join(controller.dataDir, 'no-hooks') });
+  return moved.updated ? note(FOLDER_UPDATED, { from: moved.from, to: moved.to, already: moved.already }) : left(moved.reason);
 }
 
 /**

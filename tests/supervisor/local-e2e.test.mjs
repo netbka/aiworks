@@ -1,7 +1,8 @@
 // Work starts on a project without GitHub (docs/design/WORK_ENVELOPE.md section 8 and slice E12; plan STA17, decision
 // D4). A plain folder is connected, the owner confirms its rules and approves a plan through the dashboard's own code with
 // a synthetic owner caller, and the plan runs on AIWorks's copy to verified local candidates, across a restart. No gh call
-// at any step, and the owner's folder is never written. Without confirmed rules, with revoked or expired rules, or without
+// at any step; no worker runs in the owner's folder, which receives only the checked results, each with a backup (AW-018).
+// Without confirmed rules, with revoked or expired rules, or without
 // the owner's approval of exactly this plan, nothing starts. Synthetic executables and disposable folders only.
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -95,7 +96,7 @@ function refused(fn, code) {
   assert.throws(fn, (error) => { assert.equal(error.code, code, error.message); return true; });
 }
 
-test('WE E12: connect, confirm rules, approve, run on AIWorks\'s copy, verify, local candidates, restart; no gh, folder untouched', { skip: skipWithoutSqlite }, async (t) => {
+test('WE E12: connect, confirm rules, approve, run on AIWorks\'s copy, verify, local candidates, restart; no gh, only checked results applied',{ skip: skipWithoutSqlite }, async (t) => {
   const { env, store, folder, project } = setup(t);
   const before = snapshot(folder);
   await confirmRules(env, project);
@@ -132,7 +133,12 @@ test('WE E12: connect, confirm rules, approve, run on AIWorks\'s copy, verify, l
   assert.deepEqual(env.ghCalls(), [], 'gh is never called for a project without GitHub');
   assert.equal(store.all("SELECT * FROM outbox WHERE state <> 'local'").length, 0, 'nothing is queued for GitHub');
   assert.ok(store.get("SELECT * FROM outbox WHERE key = ? AND state = 'local'", `${id}:ready`), 'the ready note stays in this computer\'s store');
-  assert.deepEqual(snapshot(folder), before, 'nothing was applied to the owner\'s folder');
+  // AW-018: AIWorks applied each checked result itself, after a backup; the owner's own files are as they were.
+  const applies = store.all('SELECT * FROM local_applies WHERE campaign_id = ? ORDER BY task_id', id);
+  assert.deepEqual(applies.map((row) => [row.task_id, row.sha, row.last_outcome]), candidates.map((row) => [row.task_id, row.sha, 'applied']));
+  const after = snapshot(folder);
+  for (const [path, bytes] of Object.entries(before)) assert.equal(after[path], bytes, `${path} is untouched`);
+  assert.equal(Object.keys(after).length, Object.keys(before).length + 2, 'only the two checked results were added');
 });
 
 test('no confirmed rules, revoked rules or expired rules: nothing starts, and revoking stops new dispatches', { skip: skipWithoutSqlite }, async (t) => {
