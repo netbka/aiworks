@@ -64,8 +64,40 @@ export function printed(output) {
   };
 }
 
+/**
+ * A clean, detached checkout of `revision` of the release clone `repo`, as a worktree under
+ * `<dataDir>/releases/<release id>/checkout`, never the owner's working tree. Reused only while it is still an owned
+ * worktree of `repo`; made again otherwise. No hook runs. Throws unless it is clean at exactly `revision`, and while an
+ * earlier command of this release has no process-tree stop proof. Returns its path. The deploy adapter and the
+ * publication instructions (release/instructions.mjs) share it.
+ */
+export function releaseCheckout({ repo, dataDir, release: r, revision }) {
+  if (!releaseCommandsStopped({ dataDir, release: r })) throw new Error('An earlier release command has no process-tree stop proof');
+  const home = releasePath(dataDir, r.id), dir = releasePath(dataDir, r.id, 'checkout'), off = join(home, 'no-hooks');
+  mkdirSync(home, { recursive: true });
+  if (existsSync(dir)) {
+    const source = git(repo, off, 'rev-parse', '--path-format=absolute', '--git-common-dir');
+    const owned = git(dir, off, 'rev-parse', '--path-format=absolute', '--git-common-dir');
+    if (!source.ok || !owned.ok || !same(source.stdout, owned.stdout)) throw new Error('The release checkout is no longer an owned worktree of the project');
+    // Reuse it only when it is a worktree of its own: a Git command in a broken directory would reach a parent repository.
+    const top = git(dir, off, 'rev-parse', '--show-toplevel');
+    if (top.ok && same(top.stdout, dir) && git(dir, off, 'checkout', '--quiet', '--detach', '--force', revision).ok && git(dir, off, 'clean', '-ffdxq').ok) return cleanAt(dir, off, revision);
+    rmSync(dir, { recursive: true, force: true });
+    git(repo, off, 'worktree', 'prune');
+  }
+  const added = git(repo, off, 'worktree', 'add', '--quiet', '--detach', '--force', dir, revision);
+  if (!added.ok) throw new Error(`the release checkout could not be made: ${added.stderr}`);
+  return cleanAt(dir, off, revision);
+}
+
+function cleanAt(dir, off, revision) {
+  const head = git(dir, off, 'rev-parse', 'HEAD'), status = git(dir, off, 'status', '--porcelain', '--untracked-files=all', '--ignored');
+  if (!head.ok || head.stdout !== revision || !status.ok || status.stdout !== '') throw new Error(`the release checkout is not clean at ${revision}`);
+  return dir;
+}
+
 /** How a command file in the checkout is started without a shell: by its extension, or as an executable. */
-function commandLine(file, args) {
+export function commandLine(file, args) {
   switch (extname(file).toLowerCase()) {
     case '.mjs': case '.cjs': case '.js': return [process.execPath, file, ...args];
     case '.ps1': return ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', file, ...args];
@@ -122,30 +154,7 @@ export function deployAdapter({ destination, repo, config, dataDir, store, merge
   }
 
   /** A clean, detached release checkout at `revision`, under the release's own directory. Returns its path. */
-  const checkout = (r, revision) => mutate(() => checkoutOwned(r, revision));
-  function checkoutOwned(r, revision) {
-    if (!releaseCommandsStopped({ dataDir, release: r })) throw new Error('An earlier release command has no process-tree stop proof');
-    const dir = releasePath(dataDir, r.id, 'checkout'), off = hooksOff(r);
-    mkdirSync(home(r), { recursive: true });
-    if (existsSync(dir)) {
-      const source = git(repo, off, 'rev-parse', '--path-format=absolute', '--git-common-dir');
-      const owned = git(dir, off, 'rev-parse', '--path-format=absolute', '--git-common-dir');
-      if (!source.ok || !owned.ok || !same(source.stdout, owned.stdout)) throw new Error('The release checkout is no longer an owned worktree of the project');
-      // Reuse it only when it is a worktree of its own: a Git command in a broken directory would reach a parent repository.
-      const top = git(dir, off, 'rev-parse', '--show-toplevel');
-      if (top.ok && same(top.stdout, dir) && git(dir, off, 'checkout', '--quiet', '--detach', '--force', revision).ok && git(dir, off, 'clean', '-ffdxq').ok) return verify(dir, off, revision);
-      rmSync(dir, { recursive: true, force: true });
-      git(repo, off, 'worktree', 'prune');
-    }
-    const added = git(repo, off, 'worktree', 'add', '--quiet', '--detach', '--force', dir, revision);
-    if (!added.ok) throw new Error(`the release checkout could not be made: ${added.stderr}`);
-    return verify(dir, off, revision);
-  }
-  function verify(dir, off, revision) {
-    const head = git(dir, off, 'rev-parse', 'HEAD'), status = git(dir, off, 'status', '--porcelain', '--untracked-files=all', '--ignored');
-    if (!head.ok || head.stdout !== revision || !status.ok || status.stdout !== '') throw new Error(`the release checkout is not clean at ${revision}`);
-    return dir;
-  }
+  const checkout = (r, revision) => mutate(() => releaseCheckout({ repo, dataDir, release: r, revision }));
 
   /** Run one project command in the checkout through the release runner: { exitCode, output } or null when unknown. */
   async function command(r, record, name, dir, args = [], key = r.step_key) {
@@ -339,7 +348,7 @@ export function deployAdapter({ destination, repo, config, dataDir, store, merge
 
 /** Refuse links, junctions and paths outside the private checkout, including a
  * linked parent directory. A command is code from the verified Git tree. */
-function commandFile(dir, path) {
+export function commandFile(dir, path) {
   if (typeof path !== 'string' || !path || /[\\:]/.test(path) || path.split('/').some((part) => !part || part === '.' || part === '..')) return null;
   try {
     let at = dir;
