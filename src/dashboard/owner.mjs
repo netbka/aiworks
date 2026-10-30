@@ -510,6 +510,34 @@ function distinguish(entries) {
   }
 }
 
+// AW-018: why AIWorks left the project's folder as it is, in the owner's terms.
+const FOLDER_LEFT_WORDS = {
+  changes: 'it has changes of yours that are not committed',
+  'other-branch': 'another branch is checked out there',
+  'own-commits': 'its branch has commits of yours that are not in the merged result',
+  'aiworks-runtime': 'AIWorks itself runs from it',
+};
+const NOT_APPLIED_WORDS = {
+  APPLY_FOLDER_CHANGED: 'you changed files it would write since the work started',
+  APPLY_BRANCH_CHANGED: 'your branch moved since the work started',
+  APPLY_TREE_DIRTY: 'your folder has changes that are not committed',
+  APPLY_PATH_REFUSED: 'it would write a place AIWorks never writes',
+};
+
+/** The newest update of the project's own folder (api.mjs folderView), as one line of information, or null. */
+function folderWords(folder) {
+  if (!folder) return null;
+  if (folder.state === 'updated') return 'Your project folder is up to date with the merged result.';
+  if (folder.state === 'applied') return 'AIWorks applied the checked result to your folder, with a backup. Undo apply puts it back.';
+  if (folder.state === 'left') {
+    const why = FOLDER_LEFT_WORDS[folder.reason];
+    return why ? `Your project folder was left as it is because ${why}. AIWorks tries again after the next merge.`
+      : 'AIWorks could not update your project folder. It tries again after the next merge.';
+  }
+  const why = NOT_APPLIED_WORDS[folder.reason];
+  return `AIWorks did not apply the checked result to your folder${why ? ` because ${why}` : ''}; nothing was written. You can still apply it yourself.`;
+}
+
 /** Is an agent of this campaign still doing work by its own record (heartbeat or recent turns)? */
 const agentWorking = (agent, now) => agent.heartbeatState === 'recent' || (agent.progress?.lastActivityAt ?? 0) > now - ACTIVE_WINDOW_MS;
 
@@ -569,7 +597,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       else if (aiworks === 'restarting') liveness = neverLeased ? 'awaiting-pickup' : 'late';
     }
     campaigns[c.id] = { purpose: entries.find((entry) => entry.id === c.id).purpose, deliveries: Object.fromEntries(steps.map((step) => [step.task.id, step.delivery])),
-      liveness,
+      liveness, folder: folderWords(c.folder),
       lastCheckIn: c.controllerLive ? null : leaseEnded, registeredAt,
       finished: finished?.text ?? null, releaseReady: finished?.releaseReady ?? false,
       // One line for the compact list of finished and cancelled campaigns.
