@@ -261,6 +261,18 @@ The escalation state is derived from the task's finished operations and their re
 - Changing a pin is a routing amendment (section 4.1).
 - A campaign without `routing` is in effect pinned to its declared chain: today's behaviour.
 
+### 6.1 The default of a new plan
+
+A plan AIWorks drafts from an owner request (`intake.mjs` `draftRouting`, aiworks#39) gets a `routing` block next to its providers:
+
+- `mode: "auto"`. The candidates are exactly the models the draft's providers already name, one per provider, in declared order. A provider without a model adds none. If no provider names a model, the draft has no `routing` and keeps its declared chain.
+- Tiers: a Claude `haiku` model is tier 1, `sonnet` tier 2, and every other model tier 3, so an unknown model is never taken for a cheap one.
+- `pin: { "verifier": { "tier": <highest declared tier> } }`: every check runs on the strongest declared tier.
+- `sensitivePaths`: the project's known high-risk paths. Today that is `src/supervisor/` for the self-hosted repository with local main trusted, whose changes need an independent review of the exact head; otherwise empty.
+- It never adds a provider, a model or a permission, and the coordinator cannot set it: its proposal's `routing` is dropped. Review shows it with the AI workers and lists a change to it as a change to them. Like the providers, only a new plan changes it.
+
+With the example providers alone (one Claude model) the choice is that model, so the saving comes only where the owner's providers name cheaper models.
+
 ## 7. The role catalog comes from governance provider
 
 - The supervisor reads `registry/agents.json` from the configured governance root, through the same root rules as the project registry (`governance.mjs:28-39`). A new `roleCatalog(root)` returns the role ids and their `independent_from` lists. Nothing is copied into AIWorks.
