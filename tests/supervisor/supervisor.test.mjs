@@ -149,17 +149,14 @@ test('verifier rejection becomes a bounded repair round on the same branch', { s
   assert.ok(repairPrompt.constraints.some((c) => c.includes('Blocking verifier finding F1')));
 });
 
-test('exit without a structured result retries, then stalls with an explicit blocker until recheck', { skip: skipWithoutSqlite }, async (t) => {
+test('exit without a structured result retries within its limit, then the step ends as not done and the campaign finishes (AW-017)', { skip: skipWithoutSqlite }, async (t) => {
   const decl = declaration({ tasks: [declaration().tasks[0]], limits: { maxRetriesPerTask: 1 } });
-  const { m, store, controller, env, id } = await setup(t, { decl, scenario: { implement: ['no-result', 'no-result', 'commit'] } });
-  const blocked = await runUntil(controller, store, id, (c) => c.status === 'blocked-child');
-  assert.match(blocked.next_action, /2 failed attempts/);
-  const runs = blocked.runs_used;
-  for (let i = 0; i < 5; i++) { await controller.tick(); await sleep(30); }
-  assert.equal(store.campaign(id).runs_used, runs, 'no dispatch while blocked');
-  m.campaignRecheck(store, id, { note: 'investigated' });
+  const { store, controller, env, id } = await setup(t, { decl, scenario: { implement: ['no-result', 'no-result', 'commit'] } });
   await runUntil(controller, store, id, (c) => c.control === 'finished');
-  assert.equal(env.calls().filter((c) => c.role === 'implement').length, 3);
+  assert.equal(store.task(id, 'T1').state, 'cancelled');
+  assert.match(store.task(id, 'T1').last_error, /^not done: 2 failed attempts/);
+  for (let i = 0; i < 5; i++) { await controller.tick(); await sleep(30); }
+  assert.equal(env.calls().filter((c) => c.role === 'implement').length, 2, 'no run past the retry limit');
 });
 
 test('auth failure raises one B2 blocker and is not retried until recheck', { skip: skipWithoutSqlite }, async (t) => {
@@ -264,19 +261,14 @@ test('uncommitted work is not accepted as a resolved commit deliverable', { skip
   assert.match(first.detail, /uncommitted/);
 });
 
-test('owner-reserved result blocks only that task and waits for an explicit per-task recheck', { skip: skipWithoutSqlite }, async (t) => {
+test('AW-017: an owner-reserved result without a suggestion blocks only that task, goes back to it once and the campaign finishes without the owner', { skip: skipWithoutSqlite }, async (t) => {
   const tasks = declaration().tasks;
   const decl = declaration({ tasks: [tasks[0], { ...tasks[1], id: 'T3', dependsOn: [] }] });
-  const { m, store, controller, env, id } = await setup(t, { decl, scenario: { implement: ['owner', 'commit', 'commit'] } });
-  const blocked = await runUntil(controller, store, id, (c) => c.status === 'blocked-owner-decision');
-  assert.equal(store.task(id, 'T3').state, 'done', 'independent work continued');
-  assert.equal(store.task(id, 'T1').blocked.class, 'B3');
-  m.campaignRecheck(store, id);
-  for (let i = 0; i < 5; i++) { await controller.tick(); await sleep(30); }
-  assert.equal(store.task(id, 'T1').blocked.class, 'B3', 'a generic recheck does not clear an owner decision');
-  m.campaignRecheck(store, id, { task: 'T1', note: 'owner decided on #437' });
+  const { store, controller, env, id } = await setup(t, { decl, scenario: { implement: ['owner', 'commit', 'commit'] } });
   await runUntil(controller, store, id, (c) => c.control === 'finished');
-  assert.ok(blocked.next_action.includes('owner-reserved'));
+  assert.equal(store.task(id, 'T3').state, 'done', 'independent work continued');
+  assert.equal(store.task(id, 'T1').state, 'done', 'the step decided within its packet and finished');
+  assert.equal(store.all("SELECT 1 FROM journal WHERE campaign_id = ? AND kind = 'decision-sent-back'", id).length, 1);
   assert.equal(env.calls().filter((c) => c.role === 'implement').length, 3);
 });
 
