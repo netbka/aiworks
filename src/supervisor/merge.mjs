@@ -4,12 +4,12 @@
 // sha=<verified>); never a squash, a rebase, a force-push, an admin bypass or a branch deletion. It never deploys,
 // releases or changes provider resources. AIWorks's own repository with local main trusted (config.json `selfHosting`,
 // docs/design/LOCAL_OPERATION.md section 4.4, slice SELF8) merges its verified local reviews locally instead: a merge
-// commit of the trusted tip and the verified head with the verified tree, main moved only from the trusted tip, and a
-// main ledger row (release/local-merge.mjs). It reads no remote and makes no GitHub call; the owner's optional backup of
-// trusted main (github-backup.mjs, slice SELF9) runs after those merges and never holds one. In a project whose
-// acceptance mode is "owner" (AW-015, project-settings.mjs) every one of these merges also needs the owner's acceptance
-// of exactly the verified head and report (result-review.mjs awaitingAcceptance), checked when candidates are chosen and
-// again inside the fenced write that requests the merge.
+// commit of the trusted tip and the verified head with the verified tree (or, after a passed refresh, the gated merge
+// result), main moved only from the trusted tip, and a main ledger row (release/local-merge.mjs). It reads no remote and
+// makes no GitHub call; the owner's optional backup of trusted main (github-backup.mjs, slice SELF9) runs after those
+// merges and never holds one. In a project whose acceptance mode is "owner" (AW-015, project-settings.mjs) every one of
+// these merges also needs the owner's acceptance of exactly the verified head and report (result-review.mjs
+// awaitingAcceptance), checked when candidates are chosen and again inside the fenced write that requests the merge.
 import * as gitA from './adapters/git.mjs';
 import * as github from './adapters/github.mjs';
 import { mergeWithMergeCommit } from './release/github-merge.mjs';
@@ -20,7 +20,7 @@ import { reviewItem, WORK_REFERENCE, workLink } from './work-list.mjs';
 import { campaignLimits } from './campaign.mjs';
 import { specsOf } from './plan.mjs';
 import { resolveCheckout } from './project-connect.mjs';
-import { refreshSettings, refreshStep } from './merge-refresh.mjs';
+import { passedTree, refreshSettings, refreshStep } from './merge-refresh.mjs';
 import { batchStep } from './merge-batch.mjs';
 import { ConflictError, FencedError } from './store.mjs';
 import { awaitingAcceptance, pendingChanges } from './result-review.mjs';
@@ -404,8 +404,9 @@ function recordLocal(controller, ctx, item, { trusted, mergeCommit, reconciled, 
 
 /**
  * The local merge gate (LOCAL_OPERATION.md section 4.4) for one verified local review of the self-hosted repository.
- * Returns true when it acted on the repository (a merge, a recorded merge, a refusal or an integration repair). Main
- * moves only when the trusted tip is an ancestor of the verified head, main is exactly the trusted tip, the checkout that
+ * Returns true when it acted on the repository (a merge, a recorded merge, a refusal, a running refresh gate or an
+ * integration repair). Main moves only when the trusted tip is an ancestor of the verified head or a refresh gate passed
+ * on their exact merge result (merges.refresh), main is exactly the trusted tip, the checkout that
  * has main checked out is clean, the task's branch and review item are bound to the verified head, the campaign is
  * neither paused nor cancelled and this instance holds the campaign's lease.
  */
@@ -428,8 +429,12 @@ function mergeLocal(controller, item, settings, repoPath) {
   const accepted = () => !awaitingAcceptance(store, store.campaign(campaignId), store.task(campaignId, task.task_id));
 
   // After a crash, main is read before any retry: the planned merge commit on main is recorded once and never made again.
+  // A refreshed request names the gated tree, which counts only as the tree of the refresh that passed for this base.
   const requested = lastRequest(store, campaignId, task.task_id, sha);
-  if (requested && tip.main !== tip.tip && requested.base === tip.tip && isPlannedMerge({ git, repoPath, sha: tip.main, trusted: tip.tip, verified: sha })) {
+  const plannedTree = requested?.tree === undefined ? null : requested.tree;
+  if (requested && tip.main !== tip.tip && requested.base === tip.tip
+    && (plannedTree === null || plannedTree === passedTree(store, campaignId, task.task_id, sha, tip.tip))
+    && isPlannedMerge({ git, repoPath, sha: tip.main, trusted: tip.tip, verified: sha, tree: plannedTree })) {
     const ctx = lease(controller, campaignId);
     if (!ctx) return false;
     controller.fenced(ctx, () => {
@@ -438,11 +443,17 @@ function mergeLocal(controller, item, settings, repoPath) {
     return true;
   }
 
-  // The verified head must contain the trusted tip, or the merge result is a tree no verifier ran: integration repair.
+  // The verified head must contain the trusted tip, or the merge result is a tree no verifier ran: integration repair,
+  // unless the refresh (merges.refresh, merge-refresh.mjs) ran the gate on that exact merge result itself. Then the merge
+  // commit carries that gated tree. While its gate runs, the repository waits.
+  let gated = null;
   if (!gitA.isAncestor({ git, path: repoPath, ancestor: tip.tip, descendant: sha })) {
     const ctx = lease(controller, campaignId);
     if (!ctx) return false;
-    return controller.fenced(ctx, () => repair(controller, ctx, item, repoPath, tip.tip, null));
+    const step = settings.refresh ? refreshStep(controller, ctx, item, repoPath, tip.tip, settings.refresh) : { next: 'repair' };
+    if (step.next === 'wait') { wait(controller, item, step.reason); return true; }
+    if (step.next !== 'merge' || !SHA.test(step.tree ?? '')) return controller.fenced(ctx, () => repair(controller, ctx, item, repoPath, tip.tip, step.detail ?? null));
+    gated = step.tree;
   }
   if (tip.unrecordedCount) return wait(controller, item, `main has ${tip.unrecordedCount} commits AIWorks did not put there`);
   const checkout = mainCheckout(git, repoPath);
@@ -454,7 +465,7 @@ function mergeLocal(controller, item, settings, repoPath) {
   // The request names the trusted tip before any object is written, so a restart recognizes the planned commit.
   if (!controller.fenced(ctx, () => {
     if (!still() || !accepted()) return false;
-    store.journal(campaignId, 'merge-requested', { task: task.task_id, sha, url, base: tip.tip, local: true }, controller.now());
+    store.journal(campaignId, 'merge-requested', { task: task.task_id, sha, url, base: tip.tip, local: true, ...(gated ? { tree: gated } : {}) }, controller.now());
     return true;
   })) return false;
   controller.injectFault('before-merge');
@@ -463,8 +474,9 @@ function mergeLocal(controller, item, settings, repoPath) {
     controller.log(`merge of ${campaignId}/${task.task_id} refused: ${detail}`);
     return true;
   };
-  const planned = writeMergeCommit({ git, repoPath, trusted: tip.tip, verified: sha,
-    message: `Merge ${task.task_id} of campaign ${campaignId} (${url})\n\nVerified ${sha} on ${branch}, merged under the local merge gate.` });
+  const planned = writeMergeCommit({ git, repoPath, trusted: tip.tip, verified: sha, tree: gated,
+    message: `Merge ${task.task_id} of campaign ${campaignId} (${url})\n\nVerified ${sha} on ${branch}, merged under the local merge gate` +
+      `${gated ? `; its merge with ${tip.tip} passed the refresh gate` : ''}.` });
   if (!planned.ok) return refuse(planned.reason);
   controller.injectFault('after-commit-tree');
   try {
