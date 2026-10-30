@@ -160,6 +160,8 @@ const STATES = {
     `Release follows ${whose(d.project)} ${d.standing ? 'standing deploy authorization' : 'release policy'}.`, seeResults(d.project)] },
   'finished-unknown': { section: '7.8', needsYou: false, copy: (d) => ['All steps are finished.',
     `The merge state of ${plural(d.count, 'result')} is not known yet, so this is not settled.`, seeResults(d.project)] },
+  'finished-waiting': { section: '7.8', needsYou: false, copy: (d) => ['All steps are finished.',
+    `${plural(d.count, 'result')} ${d.count === 1 ? 'is' : 'are'} not merged yet; Results says what happens next${d.merged ? ` · ${d.merged} merged` : ''}.`, seeResults(d.project)] },
   'finished-reports': { section: '7.8', needsYou: false, copy: (d) => ['All steps are finished.',
     `${plural(d.reports, 'report')} posted for you to read${d.merged ? ` · ${d.merged} merged` : ''}.`, seeResults(d.project)] },
   // Needs the closed state of a pull request, which the local merge check does not see (C1); the copy is ready for it.
@@ -381,6 +383,8 @@ function finishedState(c, d) {
   // A result with a criterion failed or not checked, a blocking finding or requested changes keeps the goal open (WP4).
   if (counts.unresolved) return ['finished-unresolved', { count: counts.unresolved }];
   if (counts.awaiting) return ['finished-open', { awaiting: counts.awaiting, merged: counts.merged }];
+  // Published results outside the owner-action set (owner.mjs `waiting`): not merged, and not the owner's to review.
+  if (counts.waiting) return ['finished-waiting', { count: counts.waiting, merged: counts.merged }];
   // Reports are the owner's to read, so they are said before pull requests merged for the owner.
   if (counts.reports) return ['finished-reports', { reports: counts.reports, merged: counts.merged }];
   if (counts.delegated) return ['finished-delegated', { delegated: counts.delegated, merged: counts.merged }];
@@ -415,7 +419,10 @@ export function nowView(project, data = {}, { now = Date.now(), format = {}, sta
   const campaigns = (supervisor?.campaigns ?? []).filter((c) => same(c.repository, project));
   const recency = (c) => Date.parse(c.lastProgressAt ?? '') || c.registeredAt || 0;
   const readable = !offline && supervisor?.available && owner?.available;
-  const result = (state, c = null) => {
+  // False once this project has nothing in the owner-action set: no sentence then says it needs the owner (AW-016).
+  let owes = null;
+  const result = (sentence, c = null) => {
+    const state = owes === false && sentence.needsYou ? { ...sentence, needsYou: false } : sentence;
     const view = c ? owner?.campaigns?.[c.id] : null, merge = c ? mergeNote(project, merges, view?.counts, now) : null;
     // What the leading sentence already says about the same work is not said again.
     const also = readable ? alsoLines(campaigns, d, make).filter((line) => !(line.workId === c?.id && line.title === state.title)) : [];
@@ -445,10 +452,11 @@ export function nowView(project, data = {}, { now = Date.now(), format = {}, sta
     if (items.length > 1) return result(make('several', { count: items.length }), first);
     return result(make(...itemState(items[0], first, d)), first);
   }
+  owes = false;
   // AIWorks's own state of this project's work (AW-016: listed apart, not counted): a stopped step or work AIWorks has
   // not checked on leads in its own words, never as something that needs the owner.
   const own = mine.find((item) => ['stopped', 'unattended'].includes(item.kind) && byId(item.campaignId));
-  if (own) return result({ ...make(...itemState(own, byId(own.campaignId), d)), needsYou: false }, byId(own.campaignId));
+  if (own) return result(make(...itemState(own, byId(own.campaignId), d)), byId(own.campaignId));
   const liveness = (c) => owner.campaigns?.[c.id]?.liveness;
   const active = campaigns.filter((c) => !['finished', 'cancelled'].includes(c.control));
   // Resume works only while AIWorks runs this work; a pause AIWorks is late on keeps today's "late" sentence.

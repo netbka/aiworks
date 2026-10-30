@@ -852,6 +852,12 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     if (key) attention.projects[key] = (attention.projects[key] ?? 0) + 1;
     if (item.campaignId && item.taskId && RESULT_ACTIONS.includes(item.kind)) attention.results.push(`${item.campaignId}/${item.taskId}`);
   }
+  // A piece of work's results "waiting for your review" are its share of the set; a published result outside it (paused,
+  // checked again by AIWorks, its check unreadable) is `waiting`: not merged, and never said to wait for the owner.
+  for (const [id, view] of Object.entries(campaigns)) {
+    const mine = actions.filter((item) => item.campaignId === id && ['review', 'unchecked'].includes(item.kind)).length;
+    view.counts = { ...view.counts, awaiting: mine, waiting: Math.max(0, view.counts.awaiting - mine) };
+  }
   // No work is blocked, but a project waiting for the owner's decisions is named, never hidden behind an all-clear.
   const held = heldProjects(connected);
   const headline = count ? `Needs you (${count})` : unknownResults ? 'Checking for merges before listing what needs you'
