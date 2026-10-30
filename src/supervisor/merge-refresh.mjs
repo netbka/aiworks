@@ -7,7 +7,8 @@
 // Without a refresh that tree is the verified head itself. With a refresh it is the clean merge of the verified head
 // and the current base, built with `git merge-tree`, committed only locally (never pushed) and checked out in a detached
 // worktree, where the configured gate command runs through the gate helper (gate.mjs) as a separate process. GitHub's
-// merge of the unchanged pull request head into that same base writes that same tree. A shared file, a textual
+// merge of the unchanged pull request head into that same base writes that same tree; the local merge gate of the
+// self-hosted repository (merge.mjs mergeLocal) writes a merge commit with exactly that tree itself. A shared file, a textual
 // conflict, a failed or stuck gate, or a git failure falls back to the integration repair (merge.mjs repair). The
 // journal records every step, so a restart continues the same refresh: `merge-refresh-started` (with the worktree and
 // gate process), then `merge-refresh-passed` or `merge-refresh-failed`. A gate is never killed. Worktrees are left in
@@ -87,8 +88,17 @@ function refreshPlan(git, repoPath, baseSha, sha) {
 }
 
 /**
+ * The tree whose gate passed for one verified head against one base, or null. Read-only: the local merge gate uses it
+ * after a crash to recognize the refreshed merge commit it requested (merge.mjs mergeLocal).
+ */
+export function passedTree(store, campaignId, taskId, sha, base) {
+  const done = records(store, campaignId, taskId, sha, base).find((row) => row.kind !== 'merge-refresh-started');
+  return done?.kind === 'merge-refresh-passed' && typeof done.detail.tree === 'string' ? done.detail.tree : null;
+}
+
+/**
  * One step of the refresh of `item` against `baseSha`, inside the merge pass and holding the campaign lease (`ctx`).
- * Returns { next: 'merge' } when the exact merge result passed the gate, { next: 'wait', reason } while the gate runs, or
+ * Returns { tree, next: 'merge' } when the exact merge result, `tree`, passed the gate, { next: 'wait', reason } while the gate runs, or
  * { next: 'repair', detail } when the integration repair must run instead (`detail` goes into its finding).
  */
 export function refreshStep(controller, ctx, item, repoPath, baseSha, settings) {
@@ -97,7 +107,7 @@ export function refreshStep(controller, ctx, item, repoPath, baseSha, settings) 
   const journal = (kind, detail) => controller.fenced(ctx, () => store.journal(campaignId, kind, { ...key, ...detail }, now));
   const seen = records(store, campaignId, task.task_id, sha, baseSha);
   const done = seen.find((row) => row.kind !== 'merge-refresh-started');
-  if (done?.kind === 'merge-refresh-passed') return { next: 'merge' };
+  if (done?.kind === 'merge-refresh-passed') return { tree: done.detail.tree, next: 'merge' };
   if (done) return { next: 'repair', detail: done.detail.reason };
   const fail = (reason, extra = {}) => {
     journal('merge-refresh-failed', { reason, ...extra });
@@ -149,5 +159,5 @@ export function refreshStep(controller, ctx, item, repoPath, baseSha, settings) 
   }
   journal('merge-refresh-passed', { tree: started.detail.tree, summary: run.summary });
   controller.log(`refresh of ${campaignId}/${task.task_id}: the merge with ${baseSha} passed the gate`);
-  return { next: 'merge' };
+  return { tree: started.detail.tree, next: 'merge' };
 }
