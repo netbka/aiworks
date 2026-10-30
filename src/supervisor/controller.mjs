@@ -1498,13 +1498,38 @@ export class Controller {
     ctx.id, task.task_id, op.kind, head);
     if (used || admissionBudget(this.store, this.store.campaign(ctx.id), now).exhausted) return null;
     const pin = { stage: op.kind, from: op.executor_kind, after: op.id };
-    const choice = this.executorChoice(decl, { ...task, state: op.kind === 'verify' ? 'implemented' : 'pending', failures: { fallback: pin } }, now);
-    if (!choice.executor && !choice.retryAt) return null;
+    // Only another provider, now or after a timed wait: never a further run on the one that just failed.
+    const stageTask = { ...task, state: op.kind === 'verify' ? 'implemented' : 'pending' };
+    if (decl.executor.providers.every((provider) => provider.kind === op.executor_kind)) return null;
+    const choice = this.choiceWithout(decl, stageTask, op.executor_kind, now);
+    if (!this.fallbackGranted(choice, stageTask, op.executor_kind)) return null;
     const to = choice.executor?.kind ?? null;
     this.store.journal(ctx.id, 'worker-fallback', { task: task.task_id, stage: op.kind, head, from: op.executor_kind, to,
       reason: `${total} unusable result${total === 1 ? '' : 's'} on ${op.executor_kind}; last ${lastError.slice(0, 300)}` }, now);
     return { state, failures: { ...failures, fallback: pin }, retry_at: choice.executor ? now : choice.retryAt,
       last_error: `trying ${to ?? 'another provider'} after ${total} unusable results on ${op.executor_kind}: ${lastError}` };
+  }
+
+  /** The choice with one provider left out (#39): it never names that provider, even when no other can run the step. */
+  choiceWithout(decl, task, kind, now, options = {}) {
+    const others = (list) => list.filter((provider) => provider.kind !== kind);
+    const narrowed = { ...decl, executor: { ...decl.executor, providers: others(executorOrder(decl.executor)) },
+      ...(decl.routing?.candidates ? { routing: { ...decl.routing, candidates: others(decl.routing.candidates) } } : {}) };
+    return this.executorChoice(narrowed, { ...task, failures: {} }, now, options);
+  }
+
+  /**
+   * Whether a choice without `kind` grants a worker fallback: another provider runs the step now, or a timed account wait
+   * holds one that is installed and can do the role here. Never an untimed wait, a missing CLI or no able provider.
+   */
+  fallbackGranted(choice, task, kind) {
+    if (choice.executor) return choice.executor.kind !== kind;
+    if (!choice.retryAt) return false;
+    const role = task.state === 'implemented' ? 'verification' : 'implementer';
+    const { inputs, decision } = choice.receipt ?? {};
+    return Boolean(decision?.eligibility.some((item) => item.role === role && item.kind !== kind &&
+      item.reasons.length === 1 && item.reasons[0] === 'account-wait' && typeof inputs.hostFacts
+      .filter((fact) => fact.kind === item.kind && (fact.model === undefined || fact.model === item.model)).at(-1)?.wait?.retryAt === 'number'));
   }
 
   /** The pin of a pending worker fallback, while the attempt it follows is still the step's newest finished one; or null. */
@@ -2217,15 +2242,10 @@ export class Controller {
       const profile = this.profileChoice(kind, now);
       return { cliConfigured: true, hostUnavailable: null, wait: profile && !profile.account ? { retryAt: profile.retryAt, reason: profile.reason } : null };
     };
-    // A pending worker fallback (#39) leaves out the provider that stopped the step, unless no other could then run it.
+    // A pending worker fallback (#39) leaves out the provider that stopped the step: while it is pending, the step waits
+    // for another provider rather than running again on that one.
     const pin = this.fallbackPin(decl, task);
-    if (pin) {
-      const others = (list) => list.filter((provider) => provider.kind !== pin.from);
-      const narrowed = { ...decl, executor: { ...decl.executor, providers: others(executorOrder(decl.executor)) },
-        ...(decl.routing?.candidates ? { routing: { ...decl.routing, candidates: others(decl.routing.candidates) } } : {}) };
-      const choice = this.executorChoice(narrowed, { ...task, failures: {} }, now, { session, history, hostUnavailable });
-      if (choice.executor || choice.retryAt) return choice;
-    }
+    if (pin) return this.choiceWithout(decl, task, pin.from, now, { session, history, hostUnavailable });
     if (decl.routing?.mode === 'auto') return this.routedChoice(decl, task, now, { facts, waits, session, history, hostUnavailable });
     // Stored dashboard preferences cannot rewrite a registered declaration.
     const providers = executorOrder(decl.executor);

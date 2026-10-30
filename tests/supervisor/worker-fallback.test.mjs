@@ -40,8 +40,9 @@ function fixture(t, { executor = chain, limits = {} } = {}) {
   };
   const wait = (kind) => store.run("INSERT OR REPLACE INTO executor_waits (campaign_id, executor_kind, retry_at, reason) VALUES (?, ?, NULL, 'auth: synthetic')", id, kind);
   const back = (kind) => () => store.run('DELETE FROM executor_waits WHERE campaign_id = ? AND executor_kind = ?', id, kind);
+  const runs = () => store.all("SELECT executor_kind FROM operations WHERE campaign_id = ? AND task_id = 'T1'", id).map((row) => row.executor_kind);
   const fallbacks = () => store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'worker-fallback'", id).map((row) => row.detail);
-  return { store, controller, id, attempt, wait, back, fallbacks };
+  return { store, controller, id, attempt, wait, back, fallbacks, runs };
 }
 
 const invalid = (n) => ({ class: 'invalid-result', detail: `terminal message is not JSON (${n})` });
@@ -82,4 +83,24 @@ test('a campaign with a single provider stops at its retry limit as before', { s
   assert.equal(await attempt(invalid(2)), 'claude-cli');
   assert.equal(store.task(id, 'T1').blocked?.class, 'stalled');
   assert.equal(fallbacks().length, 0);
+});
+
+test('no further run on the provider that failed when no other provider can take the step', { skip: skipWithoutSqlite }, async (t) => {
+  for (const [name, options, setup] of [
+    ['a chain declaring one provider', { executor: { ...chain, providers: [{ kind: 'codex-cli' }] } }, () => {}],
+    ['the other provider in an untimed wait', {}, (f) => f.wait('claude-cli')],
+    ['the other provider not installed here', { executor: { ...chain, providers: [{ kind: 'codex-cli' }, { kind: 'cursor-cli' }] } }, () => {}],
+  ]) {
+    await t.test(name, async (st) => {
+      const f = fixture(st, options);
+      setup(f);
+      assert.equal(await f.attempt(invalid(1)), 'codex-cli');
+      assert.equal(await f.attempt(invalid(2)), 'codex-cli');
+      assert.equal(f.store.task(f.id, 'T1').blocked?.class, 'stalled', `${name}: the step stops`);
+      assert.equal(f.fallbacks().length, 0, `${name}: no fallback recorded`);
+      await sleep(60);
+      await f.controller.tick();
+      assert.deepEqual(f.runs(), ['codex-cli', 'codex-cli'], `${name}: no run past the retry limit`);
+    });
+  }
 });
