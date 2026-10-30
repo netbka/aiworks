@@ -262,6 +262,8 @@ A merge is not undone by force-pushing a branch. When a merge-only release fails
 
 There is no PR and no merge. The plan forbids fabricating either (`docs/PROJECT_WORKSPACE_PLAN.md:25`, `:106`). This needs the local project model of #7 and D2.
 
+Since [AW-018](../DECISIONS.md#aw-018---merged-results-land-in-the-projects-own-folder), the same adapters also apply each checked local result outside Auto Release. AIWorks applies it once by itself, under `<data>/applies/`, as the owner's Apply would (`autoApply`, [runbook](../SUPERVISOR.md#project-folder)). It runs steps 1 to 4 below without E1 to E13: no grant, no release record and no project `check`. The rescan against the baseline manifest, the backup, the refusal over the owner's changes and Undo apply are unchanged. A GitHub project's own folder is only fast-forwarded to the merged base. Neither path is a release. Auto Release for a local destination still needs its grant, as below.
+
 **Local Git** (`local-git-apply`), target: one named branch in the owner's repository.
 
 1. Re-check E1 to E13. The owner's working tree must be clean and the branch head must equal the baseline commit the work started from.
