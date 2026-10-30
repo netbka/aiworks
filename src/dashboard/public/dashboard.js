@@ -1045,7 +1045,9 @@ function reviewScreen(project, id) {
       item.code === 'DUPLICATE_WORK' ? ' is already assigned. Starting is refused until that work finishes or is cancelled.' : ' is changing the same files. This step waits for it.'])) : el('p', {}, 'None found.')),
     part('What it may change', plan.writes.length ? items(plan.writes) : el('p', {}, 'No files: it only reports.'),
       plan.denyWrites.length ? el('p', { class: 'subtext' }, `Never: ${plan.denyWrites.join(', ')}`) : null),
-    part('AI workers and limits', el('p', {}, plan.providers.length ? `Uses ${plan.providers.join(', ')}.` : 'AI workers: not stated.'), el('p', {}, limits)),
+    part('AI workers and limits', el('p', {}, plan.providers.length ? `Uses ${plan.providers.join(', ')}.` : 'AI workers: not stated.'),
+      plan.routing?.models.length > 1 ? el('p', { class: 'subtext' }, `AIWorks uses the cheaper of ${plan.routing.models.join(', ')} where a step is simple. Checks use the strongest.`) : null,
+      el('p', {}, limits)),
     part('Release', el('p', {}, plan.local ? 'Release: Review only. AIWorks stops when a result passes the check. Nothing in your folder changes until you press Apply on it, and Undo apply puts it back.'
       : 'Release: Review only. AIWorks stops when a result passes the check and is published. You merge and release.')),
     plan.questions.length ? part('Open questions', items(plan.questions)) : null,

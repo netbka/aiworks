@@ -281,9 +281,9 @@ test('workers inherit only exact, validated project tuning names, never paths, p
 
 // READ3 (docs/design/SCOPED_READING.md sections 5.4 and 13): both drafting prompts and the planning step ask for section
 // marks; the schemas they are checked against stay what they were at the task base (b0e63e7).
-test('both coordinator drafting prompts and PLAN_RULE ask for section marks; their schemas are unchanged', { skip: !SQLITE }, async () => {
+test('both coordinator drafting prompts and PLAN_RULE ask for section marks and bundled steps; their schemas are unchanged', { skip: !SQLITE }, async () => {
   const { createHash } = await import('node:crypto');
-  const { MARK_SECTIONS_RULE, PLAN_RULE, stageSchema } = await import('../../src/supervisor/adapters/executors.mjs');
+  const { BUNDLE_STEPS_RULE, MARK_SECTIONS_RULE, PLAN_RULE, stageSchema } = await import('../../src/supervisor/adapters/executors.mjs');
   assert.match(MARK_SECTIONS_RULE, /^In every task's `references`, mark the sections that bear on the task as `path#heading-slug`/);
   assert.match(MARK_SECTIONS_RULE, /The verifier reads every referenced document in full, so a narrow mark costs a rejection at worst, never a missed rule\.$/);
   const message = { id: 1, text: 'Plan the next work.', received_at: Date.parse('2026-10-15T08:00:00Z'), repository: 'example-org/sampleapp' };
@@ -294,6 +294,7 @@ test('both coordinator drafting prompts and PLAN_RULE ask for section marks; the
     plan: PLAN_RULE,
   };
   for (const [name, text] of Object.entries(drafts)) assert.equal(text.split(MARK_SECTIONS_RULE).length, 2, `${name} carries the sentence once`);
+  for (const [name, text] of Object.entries(drafts)) assert.equal(text.split(BUNDLE_STEPS_RULE).length, 2, `${name} carries the bundling rule once`);
   assert.ok(drafts.message.indexOf(MARK_SECTIONS_RULE) > drafts.message.indexOf('`proposedCampaign`'), 'after the draft declaration step');
   assert.ok(drafts.intake.indexOf(MARK_SECTIONS_RULE) > drafts.intake.indexOf('- Each task: id, title, goal, acceptance, references'), 'after the task fields');
   const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
