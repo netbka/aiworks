@@ -28,8 +28,8 @@ import { ANCHOR, MAX_DOCUMENT_BYTES, parseReference, resolveSection } from './re
 import { MAX_CITES } from './adapters/claude.mjs';
 import { stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions, decisionInstructions } from './instructions.mjs';
-import { answerGuidance, answersItself, decisionId, isDecision, structuredDecision } from './decisions.mjs';
-import { mergedHead, OWNER_CHANGES, ownerChangesFinding } from './result-review.mjs';
+import { answerGuidance, answersItself, decideGuidance, decisionId, isDecision, sendsBack, structuredDecision } from './decisions.mjs';
+import { deliverableWithDefects, mergedHead, OWNER_CHANGES, ownerChangesFinding } from './result-review.mjs';
 import { POLICY as ROUTING_POLICY, autoReceipt, indicators, policyInputs, priorAttempt, receiptInputs, staticReceipt } from './router.mjs';
 import { roleCatalog } from './governance.mjs';
 import { ACCEPT_TASK, PLAN_TASK, admitAmendment, settleAmendment, specOf as storedSpecOf, specsOf as storedSpecsOf, verifyChain } from './plan.mjs';
@@ -41,7 +41,7 @@ import { cleanupPass } from './cleanup.mjs';
 import { GATE_FILES, gateFailure, readGateRun } from './gate.mjs';
 import { isLocalTarget, recordCandidate } from './local-candidates.mjs';
 import { checkLocalDispatch, LOCAL_ADMISSION_ON } from './local-admission.mjs';
-import { addComment, createItem, reviewItem, WorkListError, workAuthorization, workLink } from './work-list.mjs';
+import { addComment, createItem, followUp, reviewItem, WorkListError, workAuthorization, workLink } from './work-list.mjs';
 import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
 import { alertDecision, configuredTransport, currentAlertRules, renderAlert } from './alerts.mjs';
 import { PUBLICATION_REFUSED, privateTerms, publicationFindings } from '../shared/public-text.mjs';
@@ -404,6 +404,8 @@ const sameItems = (a, b) => canonicalJson(a) === canonicalJson(b);
 const opKind = (task) => task.task_id === PLAN_TASK ? 'plan' : task.state === 'pending' ? 'implement' : 'verify';
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+// AW-017: the verifier findings a step was delivered with as known defects (settleStopped), or null for an accepted result.
+const defectsOf = (task) => Array.isArray(task?.verification?.knownDefects) ? task.verification.knownDefects : null;
 const runLease = (op, state, sessionId = op.session_id) => ({
   tenantId: op.packet.tenantId, projectId: op.packet.projectId, environment: op.packet.environment,
   taskId: op.packet.taskId, stageId: op.packet.stageId, runId: op.packet.runId, sessionId,
@@ -899,24 +901,101 @@ export class Controller {
   }
 
   /**
-   * AW-016: AIWorks answers each open decision that answersItself allows, with its suggested option, exactly as the owner
-   * would (answerDecision, inside the fence): same authority, same scope, the answer as guidance to the next worker. It
-   * never answers a decision without a reversible suggestion, never one of a paused or cancelled campaign, and at most
-   * once per step under one approval (the event's dedup key): any later decision on that step waits for the owner.
+   * AW-017: no step waits for the owner. Each stopped step of a running campaign is, inside the fence:
+   * - a decision with a suggestion: answered by AIWorks with it, exactly as the owner would (answerDecision): same
+   *   authority, same scope, the answer as guidance to the next worker;
+   * - a worker's decision without a usable suggestion: sent back once, to decide within the packet (decideGuidance);
+   * - anything else (a stall, a stop, a decision past the limit): finished by settleStopped.
+   * Automatic answers and send-backs on one step together stop at NO_PROGRESS_LIMIT; then the step is finished too, so
+   * answers never buy unbounded paid runs. A step with a run still open, and paused or cancelled work, are left alone.
    */
   answerSuggested(ctx) {
-    const c = this.store.campaign(ctx.id);
-    if (c.control !== 'registered') return;
-    for (const task of this.store.tasks(ctx.id).filter(answersItself)) {
+    if (this.store.campaign(ctx.id).control !== 'registered') return;
+    for (const task of this.store.tasks(ctx.id)) {
+      if (!task.blocked || ['done', 'cancelled'].includes(task.state)) continue;
       this.fenced(ctx, () => {
         const fresh = this.store.task(ctx.id, task.task_id), now = this.now(), campaign = this.store.campaign(ctx.id);
-        if (!answersItself(fresh)) return;
-        const key = `auto-decision:${ctx.id}:${fresh.task_id}:${campaign.authorization_version}`;
-        if (!this.store.addEvent(ctx.id, 'auto-decision', { taskId: fresh.task_id, authorizationVersion: campaign.authorization_version }, key, now)) return;
-        this.store.run('UPDATE events SET processed_at = ? WHERE dedup_key = ?', now, key);
-        this.answerDecision(ctx, { taskId: fresh.task_id, decision: decisionId(ctx.id, fresh.task_id, fresh.blocked), option: fresh.blocked.decision.suggestion.option,
-          authorizationVersion: campaign.authorization_version, scopeDigest: campaign.scope_digest, auto: true }, now);
+        if (campaign.control !== 'registered' || !fresh?.blocked || ['done', 'cancelled'].includes(fresh.state) ||
+            this.store.openOperations(ctx.id).some((op) => op.task_id === fresh.task_id)) return;
+        const answers = this.store.all("SELECT kind, detail FROM journal WHERE campaign_id = ? AND kind IN ('decision-answered', 'decision-sent-back')", ctx.id)
+          .filter((row) => row.detail?.task === fresh.task_id && (row.kind === 'decision-sent-back' || row.detail?.auto === true));
+        const within = answers.length < NO_PROGRESS_LIMIT;
+        if (within && answersItself(fresh)) {
+          const key = `auto-decision:${ctx.id}:${fresh.task_id}:${campaign.authorization_version}:${answers.length}`;
+          if (!this.store.addEvent(ctx.id, 'auto-decision', { taskId: fresh.task_id, authorizationVersion: campaign.authorization_version }, key, now)) return;
+          this.store.run('UPDATE events SET processed_at = ? WHERE dedup_key = ?', now, key);
+          this.answerDecision(ctx, { taskId: fresh.task_id, decision: decisionId(ctx.id, fresh.task_id, fresh.blocked), option: fresh.blocked.decision.suggestion.option,
+            authorizationVersion: campaign.authorization_version, scopeDigest: campaign.scope_digest, auto: true }, now);
+          return;
+        }
+        if (within && sendsBack(fresh) && !answers.some((row) => row.kind === 'decision-sent-back')) {
+          this.store.patch('tasks', { campaign_id: ctx.id, task_id: fresh.task_id }, fresh.version, { blocked: null, failures: {}, retry_at: null, last_error: null }, now);
+          this.resolveTaskBlocker(ctx, fresh, 'AIWorks sent the step back to decide within the packet', now);
+          this.store.addEvent(ctx.id, 'agent-instruction', { taskId: fresh.task_id, role: 'implement', text: decideGuidance(fresh.blocked),
+            authorizationVersion: campaign.authorization_version, scopeDigest: campaign.scope_digest }, `instruction:decide-alone:${ctx.id}:${fresh.task_id}`, now);
+          this.store.journal(ctx.id, 'decision-sent-back', { task: fresh.task_id, question: fresh.blocked.decision?.question ?? null,
+            reason: 'no options with a suggestion: the step decides within the packet' }, now);
+          return;
+        }
+        this.settleStopped(ctx, fresh, within ? fresh.blocked.reason : `no progress: AIWorks answered ${answers.length} decisions on this step`, now);
       });
+    }
+  }
+
+  /** The owner-intervention record of a task's stop, resolved by what AIWorks did about it. Call inside fenced(). */
+  resolveTaskBlocker(ctx, task, detail, now) {
+    const record = this.oi && task.blocked?.fingerprint ? this.store.blocker(task.blocked.fingerprint) : null;
+    if (record && record.status !== 'resolved') this.resolveBlocker(ctx, record, { trigger: 'auto-settled', probe: 'decision', pass: true, detail, at: now }, now);
+  }
+
+  /**
+   * AW-017: finish a stopped step without the owner, inside the fence. A step at the repair limit whose last head passed
+   * the full check and holds only the verifier's findings (deliverableWithDefects) is delivered as it is: it becomes
+   * `verified` at that head with the findings recorded as known defects, and goes the normal way, publication and the
+   * merge gate, which never merges a head that failed the full check (result-review.mjs mergeRefusal), and AW-015
+   * acceptance where the owner chose it. Any other step
+   * ends as not done (`cancelled`, the reason in last_error), and so does every step that waits for it. Either way a
+   * follow-up item goes to the work list and the campaign continues and finishes. Starts no run and widens nothing.
+   */
+  settleStopped(ctx, task, reason, now) {
+    const decl = this.store.campaign(ctx.id).declaration, spec = specOf(this.store, ctx.id, task.task_id, decl);
+    const words = redact(String(reason ?? 'stopped')).slice(0, 600), title = spec?.title ? `${task.task_id}: ${spec.title}` : task.task_id;
+    // A project without GitHub has no merge path: only the owner's Apply writes its folder (AW-012), so its step ends.
+    if (!isLocalTarget(decl) && deliverableWithDefects(task, spec?.deliverable)) {
+      const knownDefects = (task.findings ?? []).map((f) => ({ id: f.id, description: String(f.description ?? '').slice(0, 2000) }));
+      this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version, { state: 'verified', verified_sha: task.head_sha,
+        verification: { ...task.verification, knownDefects }, blocked: null, failures: {}, retry_at: null, last_error: null }, now);
+      this.resolveTaskBlocker(ctx, task, `AIWorks delivered ${task.head_sha.slice(0, 12)} with known defects`, now);
+      const item = followUp(this.store, { campaignId: ctx.id, taskId: task.task_id, key: task.head_sha.slice(0, 12), verifiedSha: task.head_sha, now,
+        title: `Fix the known defects of ${title}`.slice(0, 256),
+        body: [`AIWorks delivered \`${task.head_sha}\` as it is: ${words}. Its full check passed; these verifier findings remain open as known defects:`, '',
+          ...knownDefects.map((f) => `- ${f.id}: ${f.description}`)].join('\n'),
+        fallback: `AIWorks delivered \`${task.head_sha}\` as it is; its full check passed. ${knownDefects.length} verifier findings remain open as known defects; their text is kept in the step's records.` });
+      this.store.journal(ctx.id, 'step-delivered-with-defects', { task: task.task_id, sha: task.head_sha, defects: knownDefects.map((f) => f.id), reason: words, item: item.number }, now);
+      return;
+    }
+    const ended = [[task, words]];
+    this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
+      { state: 'cancelled', blocked: null, retry_at: null, last_error: `not done: ${words}`.slice(0, 1000) }, now);
+    this.resolveTaskBlocker(ctx, task, 'AIWorks ended the step as not done', now);
+    // Every step that waits for one that is not done can never start: it ends too, with the reason.
+    const specs = specsOf(this.store, ctx.id, decl), open = new Set(this.store.openOperations(ctx.id).map((op) => op.task_id));
+    for (let i = 0; i < ended.length; i++) {
+      for (const other of this.store.tasks(ctx.id)) {
+        if (['done', 'cancelled'].includes(other.state) || open.has(other.task_id) || !(specs.get(other.task_id)?.dependsOn ?? []).includes(ended[i][0].task_id)) continue;
+        const why = `it needs ${ended[i][0].task_id}, which was not done`;
+        this.store.patch('tasks', { campaign_id: ctx.id, task_id: other.task_id }, other.version,
+          { state: 'cancelled', blocked: null, retry_at: null, last_error: `not done: ${why}` }, now);
+        this.resolveTaskBlocker(ctx, other, 'AIWorks ended the step as not done', now);
+        ended.push([other, why]);
+      }
+    }
+    for (const [row, why] of ended) {
+      const item = followUp(this.store, { campaignId: ctx.id, taskId: row.task_id, key: 'not-done', now,
+        title: `Finish ${row.task_id === task.task_id ? title : row.task_id}`.slice(0, 256),
+        body: `AIWorks ended this step as not done: ${why}. Nothing of it was merged. Plan it again to finish it.`,
+        fallback: 'AIWorks ended this step as not done; the reason is kept in the step\'s records. Nothing of it was merged. Plan it again to finish it.' });
+      this.store.journal(ctx.id, 'step-not-done', { task: row.task_id, reason: why, item: item.number }, now);
     }
   }
 
@@ -1247,7 +1326,7 @@ export class Controller {
       }, now);
       if (change.blocked) {
         this.enqueue(ctx.id, `${ctx.id}:${task.task_id}:blocked:${op.id}`, campaign.declaration,
-          `**${task.task_id}** is blocked (${change.blocked.class}): ${change.blocked.reason}\n\nThe campaign keeps ownership. After recovery or an owner decision recorded on the task issue, run \`supervisor recheck ${ctx.id} --task ${task.task_id}\`.`, now);
+          `**${task.task_id}** is blocked (${change.blocked.class}): ${change.blocked.reason}\n\nThe campaign keeps ownership. AIWorks answers or finishes this step by itself (AW-017); nothing waits for the owner.`, now);
       }
     });
   }
@@ -3052,6 +3131,8 @@ export class Controller {
           ? `**${task.task_id}** (#${spec.issue}) ${integration.moved ? 'did not contain the current' : 'conflicted with'} ${decl.target.baseBranch} after a sibling merge. The supervisor merged the base, a fresh independent verification accepted \`${task.verified_sha}\`, and it is pushed to the same PR: ${url}. Not merged; merge follows ${decl.target.repository}'s release gate.`
           : repair
           ? `**${task.task_id}** (#${spec.issue}) ${repair.id === OWNER_CHANGES ? 'had changes requested by the owner at' : 'failed CI at'} \`${repair.verified}\`. A repair round ${repair.id === OWNER_CHANGES ? 'made them' : 'fixed it'}, a fresh independent verification accepted \`${task.verified_sha}\`, and it is pushed to the same PR: ${url}. Not merged; merge follows ${decl.target.repository}'s release gate.`
+          : spec.deliverable === 'commit' && defectsOf(task)
+          ? `**${task.task_id}** (#${spec.issue}) is delivered as it is, with ${defectsOf(task).length} known defects the verifier found; its full check passed. Published: ${url} at \`${task.verified_sha}\`. A follow-up item lists the defects. Not merged; merge follows ${decl.target.repository}'s release gate.`
           : spec.deliverable === 'commit'
           ? `**${task.task_id}** (#${spec.issue}) passed independent verification and is published for review: ${url} at \`${task.verified_sha}\`. Not merged; merge follows ${decl.target.repository}'s release gate.`
           : decl.reportPublication === 'local'
@@ -3194,6 +3275,7 @@ export class Controller {
   localPublishedNote(decl, spec, task, { repair, integration, url }) {
     if (integration) return `**${task.task_id}** (#${spec.issue}) ${integration.moved ? 'did not contain the current' : 'conflicted with'} ${decl.target.baseBranch} after a sibling merge. The supervisor merged the base, a fresh independent verification accepted \`${task.verified_sha}\`, and it is recorded on the same review item: ${url}. Nothing was pushed; not merged; merge follows ${decl.target.repository}'s release gate.`;
     if (repair) return `**${task.task_id}** (#${spec.issue}) ${repair.id === OWNER_CHANGES ? 'had changes requested by the owner at' : 'failed CI at'} \`${repair.verified}\`. A repair round ${repair.id === OWNER_CHANGES ? 'made them' : 'fixed it'}, a fresh independent verification accepted \`${task.verified_sha}\`, and it is recorded on the same review item: ${url}. Nothing was pushed; not merged; merge follows ${decl.target.repository}'s release gate.`;
+    if (spec.deliverable === 'commit' && defectsOf(task)) return `**${task.task_id}** (#${spec.issue}) is delivered as it is, with ${defectsOf(task).length} known defects the verifier found; its full check passed. Recorded in the work list: ${url} at \`${task.verified_sha}\`. A follow-up item lists the defects. Nothing was pushed; not merged; merge follows ${decl.target.repository}'s release gate.`;
     return spec.deliverable === 'commit'
       ? `**${task.task_id}** (#${spec.issue}) passed independent verification and is recorded for review in the work list: ${url} at \`${task.verified_sha}\` on the local branch \`${gitA.branchName(decl.campaignId, task.task_id)}\`. Nothing was pushed; not merged; merge follows ${decl.target.repository}'s release gate.`
       : `**${task.task_id}** (#${spec.issue}) passed independent verification; the verified report is recorded in the work list: ${url} (revision \`${task.verified_sha}\`).`;
@@ -3220,7 +3302,9 @@ export class Controller {
     const v = task.verification ?? {};
     const checks = (v.checks ?? []).map((check) => `- \`${check.command}\`: ${check.result}${check.detail ? ` - ${check.detail}` : ''}`);
     const notes = (v.findings ?? []).filter((f) => f.severity !== 'blocking').map((f) => `- ${f.id}: ${f.description}`);
-    return [v.summary ?? '', ...(checks.length ? ['', 'Checks:', ...checks] : []), ...(notes.length ? ['', 'Non-blocking findings:', ...notes] : [])];
+    const defects = (defectsOf(task) ?? []).map((f) => `- ${f.id}: ${f.description}`);
+    return [...(defects.length ? ['**Not accepted.** The verifier rejected this version; it is delivered as it is because its full check passed (AW-017). Known defects:', ...defects, ''] : []),
+      v.summary ?? '', ...(checks.length ? ['', 'Checks:', ...checks] : []), ...(notes.length ? ['', 'Non-blocking findings:', ...notes] : [])];
   }
 
   /** The independent verification alone, for publication split over GitHub's body limit. */
@@ -3326,6 +3410,7 @@ export class Controller {
       '',
       `Refs #${spec.issue}. Campaign \`${decl.campaignId}\` (parent plan #${decl.target.trackingIssue}), run by the AIWorks supervisor (AIWorks).`,
       '',
+      defectsOf(task) ? `**Delivered with known defects:** \`${task.verified_sha}\`. A separate fresh verifier session checked exactly this SHA and rejected it; its full check passed, so AIWorks delivers it as it is with the findings below as known defects; ${local ? `it is on the local branch \`${gitA.branchName(decl.campaignId, task.task_id)}\` and nothing was pushed` : 'the branch was pushed at that SHA'}.` :
       `**Verified commit:** \`${task.verified_sha}\`. A separate fresh verifier session accepted exactly this SHA; ${local ? `it is on the local branch \`${gitA.branchName(decl.campaignId, task.task_id)}\` and nothing was pushed` : 'the branch was pushed at that SHA'}.`,
       '',
       '### Implementer report',
@@ -3334,7 +3419,7 @@ export class Controller {
       '',
       '### Independent verification',
       '',
-      ...(verificationElsewhere ? ['Accepted. The full independent verification is posted as a separate supervisor comment on this PR (split to stay within the GitHub body limit).'] : this.verificationLines(task)),
+      ...(verificationElsewhere ? [`${defectsOf(task) ? 'Not accepted; delivered with known defects.' : 'Accepted.'} The full independent verification is posted as a separate supervisor comment on this PR (split to stay within the GitHub body limit).`] : this.verificationLines(task)),
       '',
       '### Gate',
       '',
@@ -3370,13 +3455,18 @@ export class Controller {
         status = 'ready';
         control = 'finished';
         const reportsOnly = decl.tasks.every((task) => task.deliverable === 'report');
+        // AW-017: steps AIWorks finished by itself are said as they are, never as passed.
+        const notDone = tasks.filter((task) => task.state === 'cancelled' && /^not done:/.test(task.last_error ?? '')).length;
+        const defects = tasks.filter((task) => task.state === 'done' && defectsOf(task)).length;
+        const outcome = !notDone && !defects ? `all ${tasks.length} tasks passed independent verification`
+          : `${tasks.length - notDone - defects} of ${tasks.length} tasks passed independent verification${defects ? `, ${defects} delivered with known defects` : ''}${notDone ? `, ${notDone} not done` : ''} (follow-up items are in the work list),`;
         if (isLocalTarget(decl)) {
           nextAction = `Review the verified results of ${this.projectWords(decl)} in AIWorks. Nothing was applied to your folder.`;
-          this.enqueue(ctx.id, `${ctx.id}:ready`, decl, `Campaign \`${ctx.id}\` (${decl.target.projectId}): all ${tasks.length} tasks passed independent verification and are ready for your review in AIWorks. Nothing was applied to your folder.`, now);
+          this.enqueue(ctx.id, `${ctx.id}:ready`, decl, `Campaign \`${ctx.id}\` (${decl.target.projectId}): ${outcome} and are ready for your review in AIWorks. Nothing was applied to your folder.`, now);
         } else {
           nextAction = reportsOnly ? `Planning reports published in ${decl.target.repository}; review recommendations before assigning implementation.`
             : `Release gate: review campaign deliveries under ${decl.target.repository}'s own merge and release policy.`;
-          this.enqueue(ctx.id, `${ctx.id}:ready`, decl, `Campaign \`${ctx.id}\` (${decl.target.repository}): all ${tasks.length} tasks passed independent verification and their declared deliverables are published. Status \`ready\`; nothing was merged or deployed.`, now);
+          this.enqueue(ctx.id, `${ctx.id}:ready`, decl, `Campaign \`${ctx.id}\` (${decl.target.repository}): ${outcome} and their declared deliverables are published. Status \`ready\`; nothing was merged or deployed.`, now);
         }
       } else if (c.blocker) {
         status = STATUS_FOR[c.blocker.class] ?? 'blocked-external';

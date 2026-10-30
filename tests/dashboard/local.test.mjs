@@ -242,7 +242,7 @@ test('WP3: an edited plan is a new version; only that exact version starts, once
   assert.equal(late.body.code, 'ALREADY_APPROVED', 'registered work is never edited in place');
 });
 
-test('WP2: a local step stopped for the owner is listed in Needs you under its project and answered once, never from a program AIWorks started', async (t) => {
+test('WP2, AW-017: a local step stopped for a decision is listed, not counted; the owner may answer it first, once, never a program AIWorks started', async (t) => {
   const r = await rig(t);
   const { campaignId, approval } = await planned(r);
   assert.equal((await r.owner.post('/api/work/approve', approval())).status, 200);
@@ -252,9 +252,8 @@ test('WP2: a local step stopped for the owner is listed in Needs you under its p
 
   const state = await r.owner.state();
   const item = state.owner.items.find((entry) => entry.kind === 'decision');
-  assert.deepEqual(item?.local, { project: 'notes', campaignId, taskId: 'T1' }, 'listed for its project, not as AIWorks itself');
-  assert.equal(state.owner.count, 1);
-  assert.equal(state.owner.groups.find((group) => group.items.some((entry) => entry.local))?.project, 'notes');
+  assert.deepEqual(item?.local, { project: 'notes', campaignId, taskId: 'T1' }, 'listed with its step');
+  assert.equal(state.owner.count, 0, 'AIWorks answers it: not counted for the owner');
   const c = state.work.local.notes.find((plan) => plan.id === campaignId), step = c.steps.find((entry) => entry.id === 'T1');
   assert.equal(step.decision.asked, 'synthetic paid spend question');
   const answer = () => ({ requestId: randomUUID(), campaignId, taskId: 'T1', taskVersion: step.version, version: c.version,

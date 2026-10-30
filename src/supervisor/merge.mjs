@@ -21,9 +21,9 @@ import { campaignLimits } from './campaign.mjs';
 import { specsOf } from './plan.mjs';
 import { resolveCheckout } from './project-connect.mjs';
 import { passedTree, refreshSettings, refreshStep } from './merge-refresh.mjs';
-import { batchStep } from './merge-batch.mjs';
+import { batchStep, groupTree } from './merge-batch.mjs';
 import { ConflictError, FencedError } from './store.mjs';
-import { awaitingAcceptance, pendingChanges } from './result-review.mjs';
+import { awaitingAcceptance, mergeRefusal, pendingChanges } from './result-review.mjs';
 import { authorityChange } from './release/authority-path.mjs';
 
 const SHA = /^[0-9a-f]{40}$/;
@@ -89,6 +89,9 @@ function candidates(controller, repositories) {
       if (merged.has(`${task.task_id}:${task.verified_sha}`)) continue;
       // The owner asked for changes to this head (OWNER_UI_V2 WP4): it is never merged while the request waits.
       if (pendingChanges(store, id, task.task_id, task.verified_sha)) continue;
+      // A head whose full check failed, or that neither passed its check nor is a delivery with known defects (AW-017), never merges.
+      const refused = mergeRefusal(task);
+      if (refused) { wait(controller, { campaignId: id, task }, `never merged: ${refused}`); continue; }
       // The owner accepts results in this project (AW-015): a head they have not accepted waits, said once per reason.
       const held = awaitingAcceptance(store, campaign, task);
       if (held) { wait(controller, { campaignId: id, task }, held); continue; }
@@ -131,6 +134,17 @@ export async function mergePass(controller) {
     let repoPath;
     try { repoPath = controller.repo(decl).path; } catch (error) { controller.log(`merge pass for ${decl.target.repository} skipped: ${error.message}`); continue; }
     if (items[0].local) {
+      // With merges.batch, AIWorks's own verified reviews waiting for trusted main first merge as one group (merge-batch.mjs).
+      if (settings.batch) {
+        try {
+          const tip = trustedTip(controller.store, { git: controller.cmd.git, repoPath, repository: decl.target.repository });
+          if (tip.state === 'TRUSTED' && batchStep(controller, items.filter((item) => item.decl.target.baseBranch === 'main' &&
+            !authorityBlocked(controller, item, repoPath, tip.tip)), settings, repoPath, tip.main)) continue;
+        } catch (error) {
+          if (error instanceof FencedError || error instanceof ConflictError) { controller.log(`group merge for ${decl.target.repository} retried later: ${error.message}`); continue; }
+          controller.log(`group merge for ${decl.target.repository} failed, merging one at a time: ${error.stack || error}`);
+        }
+      }
       for (const item of items) {
         try {
           if (mergeLocal(controller, item, settings, repoPath)) break;
@@ -330,7 +344,7 @@ export function mergeNow(controller, item, baseSha) {
   // The request is committed before the call: after a crash the next pass reads the pull request before any retry.
   const still = () => {
     const c = store.campaign(campaignId), t = store.task(campaignId, task.task_id);
-    return ['registered', 'finished'].includes(c.control) && t.state === 'done' && !t.blocked && t.verified_sha === sha && t.pr_url === url
+    return ['registered', 'finished'].includes(c.control) && t.state === 'done' && !t.blocked && t.verified_sha === sha && t.pr_url === url && !mergeRefusal(t)
       && !pendingChanges(store, campaignId, task.task_id, sha) && !awaitingAcceptance(store, c, t)
       && (!controller.ci || ciMergeable(store, campaignId, task.task_id, sha));
   };
@@ -394,12 +408,27 @@ function mainCheckout(git, repoPath) {
  * Record a local merge: the `gate-merge` main ledger row and the `merged` journal entry in the caller's fenced
  * transaction, so both commit or neither does. A ledger refusal throws and rolls the transaction back.
  */
-function recordLocal(controller, ctx, item, { trusted, mergeCommit, reconciled, requested }) {
+function recordLocal(controller, ctx, item, { trusted, mergeCommit, reconciled, requested, group = null }) {
   const { campaignId, decl, task } = item;
   const row = recordMainCommit(controller.store, { repository: decl.target.repository, kind: 'gate-merge', oldTip: trusted, newTip: mergeCommit,
     campaignId, taskId: task.task_id, verifiedSha: task.verified_sha, now: controller.now() });
   if (!row.recorded) throw new Error(`the main ledger refused the merge: ${row.reason}`);
-  record(controller, ctx, item, mergeCommit, { reconciled, requested, local: true, trusted, ledger: row.seq });
+  record(controller, ctx, item, mergeCommit, { reconciled, requested, local: true, trusted, ledger: row.seq, ...(group ? { group } : {}) });
+}
+
+/**
+ * Why a verified local review cannot merge into main, whatever main is (its target, an owner hold, its review item, its
+ * branch head), or null. Shared by mergeLocal and the group merge (merge-batch.mjs).
+ */
+export function localBlocker(controller, item, settings, repoPath) {
+  const { campaignId, decl, task } = item, sha = task.verified_sha, url = task.pr_url;
+  if (decl.target.baseBranch !== 'main') return `the local merge gate merges into main only, not ${decl.target.baseBranch}`;
+  if (settings.held.has(url.toLowerCase())) return 'held by the owner (merges.held)';
+  const review = reviewItem(controller.store, { campaignId, taskId: task.task_id });
+  if (!review || workLink(review.number) !== url) return `${url} is not the review item recorded for this task`;
+  const branch = gitA.branchName(campaignId, task.task_id), head = commitAt(controller.cmd.git, repoPath, `refs/heads/${branch}`);
+  if (head !== sha) return `the local branch ${branch} is at ${head ?? 'no commit'}, not the verified ${sha}`;
+  return null;
 }
 
 /**
@@ -408,37 +437,39 @@ function recordLocal(controller, ctx, item, { trusted, mergeCommit, reconciled, 
  * integration repair). Main moves only when the trusted tip is an ancestor of the verified head or a refresh gate passed
  * on their exact merge result (merges.refresh), main is exactly the trusted tip, the checkout that
  * has main checked out is clean, the task's branch and review item are bound to the verified head, the campaign is
- * neither paused nor cancelled and this instance holds the campaign's lease.
+ * neither paused nor cancelled and this instance holds the campaign's lease. With `step` ({ group, base, tree }, from the
+ * group merge, merge-batch.mjs) it merges one checked step of a group: only from the trusted tip `base`, with exactly the
+ * tree `tree` that step predicted.
  */
-function mergeLocal(controller, item, settings, repoPath) {
+export function mergeLocal(controller, item, settings, repoPath, step = null) {
   const { store } = controller, { campaignId, decl, task } = item;
   const git = controller.cmd.git, sha = task.verified_sha, url = task.pr_url, repository = decl.target.repository;
-  if (decl.target.baseBranch !== 'main') return wait(controller, item, `the local merge gate merges into main only, not ${decl.target.baseBranch}`);
-  if (settings.held.has(url.toLowerCase())) return wait(controller, item, 'held by the owner (merges.held)');
-  const review = reviewItem(store, { campaignId, taskId: task.task_id });
-  if (!review || workLink(review.number) !== url) return wait(controller, item, `${url} is not the review item recorded for this task`);
-  const branch = gitA.branchName(campaignId, task.task_id), head = commitAt(git, repoPath, `refs/heads/${branch}`);
-  if (head !== sha) return wait(controller, item, `the local branch ${branch} is at ${head ?? 'no commit'}, not the verified ${sha}`);
+  const blocked = localBlocker(controller, item, settings, repoPath);
+  if (blocked) return wait(controller, item, blocked);
+  const branch = gitA.branchName(campaignId, task.task_id);
   const tip = trustedTip(store, { git, repoPath, repository });
   if (tip.state !== 'TRUSTED') return wait(controller, item, `local main is not trusted (${tip.state}): ${tip.reason}`);
   if (authorityBlocked(controller, item, repoPath, tip.tip)) return false;
-  const stillDone = (t) => t.state === 'done' && !t.blocked && t.verified_sha === sha && t.pr_url === url;
+  const stillDone = (t) => t.state === 'done' && !t.blocked && t.verified_sha === sha && t.pr_url === url && !mergeRefusal(t);
   const still = () => ['registered', 'finished'].includes(store.campaign(campaignId).control) && stillDone(store.task(campaignId, task.task_id))
     && !pendingChanges(store, campaignId, task.task_id, sha);
   // A new merge also needs the owner's acceptance where they accept results (AW-015); a merge already made is recorded.
   const accepted = () => !awaitingAcceptance(store, store.campaign(campaignId), store.task(campaignId, task.task_id));
 
   // After a crash, main is read before any retry: the planned merge commit on main is recorded once and never made again.
-  // A refreshed request names the gated tree, which counts only as the tree of the refresh that passed for this base.
+  // A refreshed request names the gated tree, which counts only as the tree of the refresh that passed for this base, or,
+  // for a group step, as this head's step of the group whose gate passed.
   const requested = lastRequest(store, campaignId, task.task_id, sha);
   const plannedTree = requested?.tree === undefined ? null : requested.tree;
+  const group = typeof requested?.group === 'string' ? requested.group : null;
   if (requested && tip.main !== tip.tip && requested.base === tip.tip
-    && (plannedTree === null || plannedTree === passedTree(store, campaignId, task.task_id, sha, tip.tip))
+    && (plannedTree === null || plannedTree === (group ? groupTree(store, group, { campaignId, task: task.task_id, sha })
+      : passedTree(store, campaignId, task.task_id, sha, tip.tip)))
     && isPlannedMerge({ git, repoPath, sha: tip.main, trusted: tip.tip, verified: sha, tree: plannedTree })) {
     const ctx = lease(controller, campaignId);
     if (!ctx) return false;
     controller.fenced(ctx, () => {
-      if (still()) recordLocal(controller, ctx, item, { trusted: tip.tip, mergeCommit: tip.main, reconciled: true, requested: true });
+      if (still()) recordLocal(controller, ctx, item, { trusted: tip.tip, mergeCommit: tip.main, reconciled: true, requested: true, group });
     });
     return true;
   }
@@ -447,7 +478,10 @@ function mergeLocal(controller, item, settings, repoPath) {
   // unless the refresh (merges.refresh, merge-refresh.mjs) ran the gate on that exact merge result itself. Then the merge
   // commit carries that gated tree. While its gate runs, the repository waits.
   let gated = null;
-  if (!gitA.isAncestor({ git, path: repoPath, ancestor: tip.tip, descendant: sha })) {
+  if (step) {
+    if (tip.tip !== step.base || !SHA.test(step.tree ?? '')) return wait(controller, item, 'main is not at the checked step of its group');
+    gated = step.tree;
+  } else if (!gitA.isAncestor({ git, path: repoPath, ancestor: tip.tip, descendant: sha })) {
     const ctx = lease(controller, campaignId);
     if (!ctx) return false;
     const step = settings.refresh ? refreshStep(controller, ctx, item, repoPath, tip.tip, settings.refresh) : { next: 'repair' };
@@ -465,7 +499,8 @@ function mergeLocal(controller, item, settings, repoPath) {
   // The request names the trusted tip before any object is written, so a restart recognizes the planned commit.
   if (!controller.fenced(ctx, () => {
     if (!still() || !accepted()) return false;
-    store.journal(campaignId, 'merge-requested', { task: task.task_id, sha, url, base: tip.tip, local: true, ...(gated ? { tree: gated } : {}) }, controller.now());
+    store.journal(campaignId, 'merge-requested', { task: task.task_id, sha, url, base: tip.tip, local: true, ...(gated ? { tree: gated } : {}),
+      ...(step ? { group: step.group } : {}) }, controller.now());
     return true;
   })) return false;
   controller.injectFault('before-merge');
@@ -476,7 +511,7 @@ function mergeLocal(controller, item, settings, repoPath) {
   };
   const planned = writeMergeCommit({ git, repoPath, trusted: tip.tip, verified: sha, tree: gated,
     message: `Merge ${task.task_id} of campaign ${campaignId} (${url})\n\nVerified ${sha} on ${branch}, merged under the local merge gate` +
-      `${gated ? `; its merge with ${tip.tip} passed the refresh gate` : ''}.` });
+      `${step ? `; its group passed one gate on the combined result ${step.group}` : gated ? `; its merge with ${tip.tip} passed the refresh gate` : ''}.` });
   if (!planned.ok) return refuse(planned.reason);
   controller.injectFault('after-commit-tree');
   try {
@@ -486,7 +521,7 @@ function mergeLocal(controller, item, settings, repoPath) {
       const moved = moveMain({ git, repoPath, trusted: tip.tip, commit: planned.commit, checkout: checkout?.path ?? null });
       if (!moved.ok) throw new Error(moved.reason);
       controller.injectFault('after-merge');
-      recordLocal(controller, ctx, item, { trusted: tip.tip, mergeCommit: planned.commit, reconciled: false, requested: true });
+      recordLocal(controller, ctx, item, { trusted: tip.tip, mergeCommit: planned.commit, reconciled: false, requested: true, group: step?.group ?? null });
     });
   } catch (error) {
     if (error instanceof FencedError) throw error;

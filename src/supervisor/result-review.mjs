@@ -7,6 +7,7 @@
 // only through the supervisor's merge gate, and a local result is applied only by the owner's Apply. In a project whose
 // acceptance mode is "owner" (AW-015) the merge gate also waits for that acceptance (awaitingAcceptance).
 import { createHash } from 'node:crypto';
+import { gateFailure } from './gate.mjs';
 import { acceptanceMode, projectOf } from './project-settings.mjs';
 
 /** The finding that reopens a finished step at the owner's request. */
@@ -61,6 +62,35 @@ export function passedCheck(task, acceptance) {
   if (!v) return false;
   const unresolved = unresolvedOf(criterionEvidence(acceptance, v), v);
   return !unresolved.failed && !unresolved.notChecked && !unresolved.blocking;
+}
+
+/** Whether the verifier's own recorded run of the full check (gate.mjs) finished with exit 0 and no failed test. */
+export const fullCheckPassed = (gate) => Boolean(gate) && gate.exit === '0' && !gateFailure(gate);
+
+/**
+ * AW-017: whether a step stopped at the repair limit may still be delivered as it is, with its open findings recorded as
+ * known defects: a commit whose last verification judged exactly its current head and report, rejected only with the
+ * verifier's own findings (no integration, CI, owner or publication finding), on a head whose full check passed.
+ */
+export function deliverableWithDefects(task, deliverable) {
+  const v = task?.verification, head = task?.head_sha;
+  if (deliverable !== 'commit' || !SHA.test(head ?? '') || v?.verdict !== 'rejected' || v.targetSha !== head) return false;
+  if (!/^verifier still rejects/.test(String(task.blocked?.reason ?? '')) || v.reportDigest !== reportDigestOf(task)) return false;
+  return (task.findings ?? []).every((finding) => (v.findings ?? []).some((own) => own.id === finding.id)) && fullCheckPassed(v.gate);
+}
+
+/**
+ * Why the merge gate never merges a verified head, or null: its stored verification is not an acceptance of exactly
+ * that head, unless it is a delivery with known defects (AW-017) whose full check passed. A head that failed the full
+ * check is never merged.
+ */
+export function mergeRefusal(task) {
+  const v = task?.verification;
+  if (!v) return null;
+  if (v.targetSha && v.targetSha !== task.verified_sha) return 'its recorded check is of another version';
+  if (v.gate && !fullCheckPassed(v.gate)) return 'its full check did not pass';
+  if (v.verdict === 'accepted') return null;
+  return Array.isArray(v.knownDefects) && fullCheckPassed(v.gate) ? null : 'it did not pass the independent check';
 }
 
 /**

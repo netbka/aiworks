@@ -53,7 +53,7 @@ export const WORK_COPY = Object.freeze({
   START_REFUSED: "AIWorks didn't start this work: {reason}.",
   APPROVED: 'Approved at {time} · waiting for AIWorks to pick it up',
   PLAN_AND_DO_OFF: 'Plan and do is not available for this project. Its plans are drafted only when the AIWorks configuration file on this computer switches planning on, for a connected GitHub project.',
-  RELEASE: 'Release: Review only. AIWorks stops when a result passes the check and is published. You merge and release.',
+  RELEASE: 'Release: Review only. AIWorks stops when a result passes the check and is published. Merging and release follow this project’s own rules.',
   ALREADY_APPROVED: 'This plan was already approved, so it is not edited. Ask for a new plan to change it.',
   SCOPE_NOT_EDITABLE: 'What the work may change, protected areas, limits and release are not edited here. Ask for a new plan to change them.',
 });

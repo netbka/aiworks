@@ -128,6 +128,8 @@ Each pull request was verified on its own, on the base it started from. What lan
 
 The merge gate's other rules stay: only listed repositories, only the exact verified heads, merge commits only, never a squash, rebase, force-push or branch deletion (AW-001).
 
+Amended 2026-10-30 ([#39](https://github.com/example-org/aiworks/issues/39)): AIWorks's own repository with local main trusted groups its verified local reviews the same way. The base is trusted local main with nothing unrecorded on it. After the one gate run, each step is a local merge commit of exactly the previous step and the verified head, carrying exactly the tree that step predicted, and is recorded with its main ledger row, as a local merge is today. A refused step ends the group like a moved main does. A crash after main moved records that step once and continues the same group. Every local merge condition stays: acceptance (AW-015), requested changes, the authority checks and the exact verified heads.
+
 ## AW-015 - Acceptance controls merging when the owner chooses it
 
 Owner decision 2026-10-21 ([#45](https://github.com/example-org/aiworks/issues/45)): each project has an acceptance mode, *automatic* (today's behaviour, the default) or *I accept results myself*. In the second mode the merge gate merges a verified head only after the owner has accepted exactly that checked version. Acceptance of an earlier head never counts.
@@ -140,6 +142,8 @@ Acceptance still never merges by itself: the merge gate's other conditions and A
 
 ## AW-016 - Needs you holds only what the owner alone can decide
 
+Amended by [AW-017](#aw-017---aiworks-decides-and-finishes-without-the-owner): AIWorks now answers every decision and finishes every stopped step itself, and Needs you counts only sign-in, credential and payment needs and AW-015 acceptance. The rows below that leave a decision, a stall or a result for the owner are superseded.
+
 Owner decision 2026-10-29: AIWorks works for the owner, not the other way round. Needs you, its count and the Home headline hold only what changes the product and only the owner can answer. Everything else AIWorks settles inside the authority it already has, or lists apart as its own state, never counted.
 
 | Situation | Who |
@@ -151,4 +155,24 @@ Owner decision 2026-10-29: AIWorks works for the owner, not the other way round.
 | Work AIWorks has not looked at for a while; AIWorks stopped on this computer; a step stopped by failures, a missing tool or no AI worker for it; merge problems; results not recorded; an unknown release outcome; unreadable messages | AIWorks's own state: listed apart with what it does next, not counted |
 | Changes the owner requested on paused or cancelled work | Settled when they are requested: the request offers to resume. Not listed afterwards |
 
+The dashboard computes this as one owner-action set on the server (owner.mjs `attention`). Needs you, its count, the sidebar badge, Home, each project's row, sentence and Overview, and the results offered for review all come from that set, so no screen can claim the owner is needed when Needs you does not list it. Work that does not move by itself (a stopped step, a paused result, changes waiting for Resume) is listed apart, not counted and not shown as something AIWorks is handling. A result of paused or stopped work is never offered for acceptance. Where the owner's role is stated, merging follows each project's own rule: AIWorks merges only where its merge gate is on.
+
 A decision answered by AIWorks keeps its question, options and reason in the record. Answering it never widens the packet (decisions.mjs). A decision is only answered automatically when the worker said the suggestion changes nothing outside the step's own work and can be undone in a later round: no spending, credentials, deleted data, publishing or access changes. The owner still accepts the result as before.
+
+## AW-017 - AIWorks decides and finishes without the owner
+
+Owner decision 2026-10-30, in the owner's words (translated): "AIWorks decides and finishes everything without the owner." AIWorks answers every decision itself, with the suggestion when there is one; workers never stop for the owner. A stalled or stopped step never waits for the owner: AIWorks delivers it or ends it, records a follow-up and lets the work finish.
+
+| Situation | What AIWorks does |
+| --- | --- |
+| A worker stopped a step for a decision with a suggestion | Answers it with the suggestion, as an owner answer: same authority, never a wider packet. The record keeps the question, options and reason |
+| A worker stopped a step for a decision without options or a suggestion | Sends it back once to decide within the packet |
+| A step stopped at the repair limit whose last head passed the full check, with only the verifier's findings open | Delivers it as it is through the normal publication and merge path, with the findings recorded as known defects. It is never shown or counted as passed |
+| Any other stalled or stopped step, a second decision without a suggestion, or a step past the limit of automatic answers | Ends it as not done, with the steps that depend on it. Nothing of it is merged |
+| Either of the last two | Records a follow-up item in the work list and lets the campaign continue and finish |
+
+- Automatic answers and send-backs on one step stop after the no-progress limit (four); the step is then finished. No answer starts unbounded paid runs.
+- Needs you lists only what needs the owner's own sign-in, credential or payment (a provider login, more runs or cost than approved), as information, and the checked versions the owner chose to accept themselves ([AW-015](#aw-015---acceptance-controls-merging-when-the-owner-chooses-it), off by default). Everything else is listed apart, not counted.
+- What stays: exact-head independent verification, secret filtering, containment, run and cost limits and idempotence. A head that failed the full check is never merged. Releases happen only where an [AW-010](#aw-010---auto-release-is-a-separate-release-role-under-a-standing-per-project-grant) grant exists, and only for results that passed their check. A project without GitHub has no merge path, so its stopped step ends as not done; only the owner's Apply writes its folder ([AW-012](#aw-012---local-projects-start-from-an-owner-approval-in-the-dashboard)).
+
+The owner can still answer a decision first, accept or request changes, pause and cancel. The runbook section is [No step waits for the owner](SUPERVISOR.md#no-step-waits-for-the-owner).

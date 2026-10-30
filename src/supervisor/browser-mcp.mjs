@@ -15,7 +15,7 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { MIN_CHROME } from './adapters/agy.mjs';
-import { loginBrowser } from './browser-login.mjs';
+import { loginBrowser, loginTransport } from './browser-login.mjs';
 
 const config = JSON.parse(readFileSync(process.argv[2], 'utf8'));
 const fail = (message) => { process.stderr.write(`browser worker: ${message}\n`); process.exit(1); };
@@ -54,14 +54,16 @@ if (major < MIN_CHROME) fail(`Chrome ${MIN_CHROME} or newer is required for the 
 
 if (config.login) {
   // Restrict every target, including popups and workers, to this login's origin while credentials are present.
+  // Service and shared workers are held for loginBrowser's own binding: the allowlist does not bind them reliably.
   // The complete task/resource allowlist is applied only by the MCP server after every login page is closed.
   const library = createRequire(import.meta.url).resolve('chrome-devtools-mcp/build/src/third_party/index.js');
   const { puppeteer } = await import(pathToFileURL(library).href);
   for (const profile of config.login.profiles) {
     let connection;
     try {
-      connection = await puppeteer.connect({ browserURL: `http://127.0.0.1:${port}`, allowlist: [`${profile.origin}/*`] });
-      await loginBrowser(connection, { ...config.login, profiles: [profile] });
+      const transport = await loginTransport(version.webSocketDebuggerUrl);
+      connection = await puppeteer.connect({ transport, allowlist: [`${profile.origin}/*`] });
+      await loginBrowser(connection, { ...config.login, profiles: [profile] }, { transport });
     } catch (error) {
       fail(error.message.startsWith('Browser pre-login failed while ') ? error.message : 'Browser pre-login could not start');
     } finally { await connection?.disconnect(); }

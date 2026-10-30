@@ -244,9 +244,10 @@ function programWave(controller, row) {
   if (record.revoked === true) return null;
   const campaigns = store.all('SELECT id, declaration, control, created_at FROM campaigns ORDER BY created_at DESC, id DESC')
     .filter((c) => sameRepository(c.declaration, record));
-  // One wave at a time: a wave of this program with an unfinished task (not cancelled) holds the next one.
+  // One wave at a time: a wave of this program with an unfinished task holds the next one. A step AIWorks ended as not
+  // done (AW-017, a cancelled task) is settled, so its wave finishes and the next one may start.
   const waves = campaigns.filter((c) => waveOf(record.programId, c.id) !== null);
-  const open = waves.find((c) => c.control !== 'cancelled' && store.tasks(c.id).some((task) => task.state !== 'done'));
+  const open = waves.find((c) => c.control !== 'cancelled' && store.tasks(c.id).some((task) => !['done', 'cancelled'].includes(task.state)));
   if (open) return { programId: record.programId, waiting: `wave ${open.id} has unfinished tasks` };
   const numbers = [...waves.map((c) => waveOf(record.programId, c.id)),
     ...(hasWaves(store) ? store.all('SELECT wave FROM program_waves WHERE program_id = ?', record.programId).map((w) => w.wave) : [])];

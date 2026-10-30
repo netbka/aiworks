@@ -36,7 +36,9 @@ export const DECISION_SCHEMA = {
     reversible: { type: 'boolean' },
   },
 };
-export const DECISION_RULE = 'When the owner must choose, add decision = { question, options: 2 to 4 of { id (lowercase, a-z0-9-), label, consequence }, suggestion: { option (one of the ids), reason }, continues (what goes on meanwhile), unanswered (what happens without an answer), reversible }; leave it out otherwise. Always give options and a suggestion: a bare question costs the owner more than a choice. Set reversible to true only when choosing the suggestion changes nothing outside this step\'s own work and a later round can undo it: no spending, credentials, deleted data, publishing, or access and permission changes. An answer never widens the packet.';
+// AW-017: AIWorks, not the owner, answers a decision, with the worker's suggestion; without one the step comes back once to
+// decide within the packet. Workers never stop for the owner.
+export const DECISION_RULE = 'AIWorks answers this decision itself with your suggestion; the owner is not asked, so decide every routine or implementation choice within the packet yourself and stop only for a choice the packet leaves open. Add decision = { question, options: 2 to 4 of { id (lowercase, a-z0-9-), label, consequence }, suggestion: { option (one of the ids), reason }, continues (what goes on meanwhile), unanswered (what happens without an answer), reversible }. Always give options and a suggestion: without one the step comes back to you once to decide within the packet. Set reversible to true only when choosing the suggestion changes nothing outside this step\'s own work and a later round can undo it: no spending, credentials, deleted data, publishing, or access and permission changes. An answer never widens the packet.';
 
 // Acceptance evidence (OWNER_UI_V2 WP4): optional on a verifier result, so a result without it is valid as before. One
 // entry per acceptance criterion of the packet, by its 1-based position; what was checked and the evidence, in words the
@@ -236,7 +238,7 @@ export function buildPrompt({ role, deliverable, packet, packetDigest, repositor
       `Read the task issue (gh issue view ${issue} --repo ${repository}) unless a packet constraint restricts what you may read; packet constraints bind you too.`,
     'Check the deliverable against EVERY acceptance criterion in the packet, at the layer each criterion names. Re-run enough of the stated commands to falsify headline claims. Do not edit files, commit, push or comment.',
     'Return verdict "accepted" only if every criterion holds with evidence and no blocking finding remains. Otherwise return "rejected" with findings (severity blocking or non-blocking). Return "evidence-unavailable" if required evidence cannot be acquired, saying what you tried in summary.',
-    `If a rejection needs the owner's choice rather than another repair: ${DECISION_RULE}`,
+    `Run the full check through the gate helper even when you reject: at the repair limit AIWorks delivers a rejected version as it is only when that recorded run passed. If a rejection needs a choice rather than another repair: ${DECISION_RULE}`,
     CRITERIA_RULE,
     `Your result MUST carry targetSha ${targetSha} and reportDigest ${reportDigest}.`,
     '',

@@ -216,6 +216,8 @@ export const RESULT_GROUPS = [
   { key: 'accepted', title: 'Accepted by you · not merged yet' },
   { key: 'local-review', title: 'Checked on this computer · not merged yet' },
   { key: 'delegated', title: 'Being merged for you' },
+  // A published result Needs you does not list: its work is paused or stopped, or AIWorks checks it again by itself.
+  { key: 'waiting', title: 'Not waiting for your review' },
   { key: 'closed', title: 'Closed without merging' },
   { key: 'reports', title: 'Reports to read' },
   { key: 'read', title: 'Reports you read' },
@@ -236,6 +238,16 @@ export function reviewEntry(c, task, d = null) {
     acceptedAt: review.state === 'accepted' ? review.acceptedAt ?? null : null,
     address: { screen: 'step', project: c.repository, work: c.id, step: task.id } };
 }
+
+/** The Needs you kinds that settle one step's result: the Results rows offered for review are exactly these. */
+const RESULT_ACTIONS = ['accept', 'review', 'unchecked', 'accepted-unmerged', 'merge-overdue'];
+/**
+ * AW-017: the only Needs you kinds the owner is counted for: a sign-in or a payment that stops work (said as
+ * information), and a checked version waiting for the owner's acceptance where the owner chose to accept results (AW-015).
+ */
+const OWNER_KINDS = new Set(['accept', 'sign-in', 'payment']);
+/** The work stops (controller raiseBlocker kinds) that only the owner's own sign-in or payment can lift. */
+const OWNER_STOPS = { auth: 'sign-in', budget: 'payment' };
 
 /** One finished step as a Results row: its group, its state word, what it means, and the link to the result. */
 function resultRow(c, task, d, releases, recorded = null, read = new Set()) {
@@ -371,7 +383,7 @@ export function releaseLadder(task, d, recorded = null, { github = true } = {}) 
  * primary action, "Review pull request #N" for the oldest waiting review (the lowest pull request number). Rows keep
  * the campaigns' order, except that reviews are oldest first.
  */
-function resultsByProject(supervisor, campaigns, releases, reviews = new Map(), selfRepository = null, read = new Set()) {
+function resultsByProject(supervisor, campaigns, releases, reviews = new Map(), selfRepository = null, read = new Set(), actions = new Set()) {
   const projects = new Map(), shown = new Set();
   const recorded = new Map((supervisor.releases ?? []).map((r) => [`${r.campaignId}/${r.taskId}`, r]));
   const add = (project, row) => {
@@ -384,7 +396,14 @@ function resultsByProject(supervisor, campaigns, releases, reviews = new Map(), 
     if (review && d?.state === 'unknown') { shown.add(review.number); add(c.repository, checkedRow({ ...localReviewRow(review, label(task)), review: reviewEntry(c, task, d) }, task)); continue; }
     if (!d) continue;
     if (d.local) shown.add(d.number);
-    add(c.repository, resultRow(c, task, d, releases, recorded.get(`${c.id}/${task.id}`) ?? null, read));
+    const row = resultRow(c, task, d, releases, recorded.get(`${c.id}/${task.id}`) ?? null, read);
+    // Offered for review only while it is in the owner-action set; otherwise it says why it is not waiting for them.
+    row.needsYou = actions.has(`${c.id}/${task.id}`);
+    if (row.group === 'review' && !row.needsYou) Object.assign(row, { group: 'waiting', word: `Pull request #${row.number} · not merged`,
+      note: c.control === 'paused' ? 'This work is paused; it can be reviewed when it resumes.' : c.control === 'cancelled' ? 'This work was stopped, so this result is not finished.'
+        : task.review?.state === 'no-evidence' ? 'A check of this version is recorded, but AIWorks cannot read it; it is kept for AIWorks’s maintainers.'
+          : 'AIWorks checks it again by itself before it is offered for your review.' });
+    add(c.repository, row);
   }
   // Reviews of work no longer on this computer still belong to AIWorks's own repository.
   // Their criteria are not on this computer, so they are never shown as passed (checkedRow).
@@ -506,9 +525,11 @@ const agentWorking = (agent, now) => agent.heartbeatState === 'recent' || (agent
 export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = Date.now(), releases = {}, delegation = null, connected = [], workList = null, localWork = {}, readReports = new Set() } = {}) {
   // Results with nothing finished in a project show the §7.1 empty copy, written once in copy.mjs.
   const { title, text } = stateCopy('results-empty'), noResults = { title, text };
-  if (!supervisor?.available) return { available: false, headline: null, count: 0, items: [], handling: [], groups: [], held: [], unknownResults: 0, also: null, layout: { cards: [], finished: [] }, reply: null, campaigns: {}, results: {}, noResults, recent: null };
+  if (!supervisor?.available) return { available: false, headline: null, count: 0, items: [], handling: [], stalled: [], attention: { count: 0, projects: {}, results: [] }, groups: [], held: [], unknownResults: 0, also: null, layout: { cards: [], finished: [] }, reply: null, campaigns: {}, results: {}, noResults, recent: null };
   // `host` names this computer in the page header; the items say "this computer" (aiworks#11 review F22).
-  const items = [], handling = [], campaigns = {}, halted = [];
+  // `stalled`: what does not continue by itself until its work resumes or is planned again (AW-016: not counted, and never
+  // listed as something AIWorks is handling).
+  const items = [], handling = [], stalled = [], campaigns = {}, halted = [];
   let unknownResults = 0;
   // A step of AIWorks's own repository recorded in the local work list (UI20) is a checked local review, not a missing link.
   const reviews = localReviews(workList);
@@ -623,8 +644,8 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       // with what happens next, never counted.
       else if (task.review?.state === 'changes-requested') {
         const item = changesItem(task, d);
-        handling.push({ ...base, taskId: task.id, text: label(task), recorded: true, since: null, sinceWords: null,
-          reason: 'You requested changes', next: c.control === 'paused' ? 'They start when you resume this work.' : 'This work was stopped, so they will not be made.',
+        stalled.push({ ...base, taskId: task.id, text: label(task), recorded: true, since: null, sinceWords: null,
+          reason: 'You requested changes', next: c.control === 'paused' ? 'They start when this work resumes.' : 'This work was stopped, so they will not be made.',
           command: item.command });
       }
       else if (task.review?.state === 'accepted') {
@@ -641,7 +662,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       // the owner. Anything else keeps the owner's choice to plan it again or leave it unmerged.
       const recheck = c.uncheckedRecheck?.[`${task.id}:${task.headSha}`] ?? null;
       if (!d.local && !task.verifiedSha && task.deliverable === 'commit' && c.control !== 'cancelled' && !recheck) {
-        handling.push({ ...base, taskId: task.id, text: label(task), recorded: true, since: null, sinceWords: null,
+        (stopped ? stalled : handling).push({ ...base, taskId: task.id, text: label(task), recorded: true, since: null, sinceWords: null,
           reason: 'No independent check of this version is on record',
           next: stopped ? 'AIWorks checks it again when this work resumes.' : 'AIWorks checks it again by itself; you see it once it is checked.' });
         continue;
@@ -662,6 +683,14 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
         continue;
       }
       if (gateMerges(task, d)) { gateHandles(task, false); continue; }
+      // A result of paused or stopped work cannot be accepted or sent back (supervisor.mjs reviewOf `open`), so it is not
+      // offered for review: it waits for its work to resume, or for new planned work.
+      if (stopped) {
+        stalled.push({ ...base, taskId: task.id, text: label(task), recorded: true, since: task.verifiedAt ?? null, sinceWords: task.verifiedSha ? checkedWords(task) : null,
+          reason: 'This result is not merged', next: c.control === 'paused' ? 'It can be reviewed when this work resumes.' : 'This work was stopped, so it is not finished; plan new work to use it.',
+          command: c.control === 'paused' && c.controls?.primary === 'resume' ? { label: 'Resume this work', command: 'resume', campaignId: c.id } : null });
+        continue;
+      }
       const waitingOn = c.tasks.filter((other) => other.state !== 'done' && other.dependsOn.includes(task.id));
       // A step starts from the base branch as it is at its first run and keeps that base (its worktree is created
       // once), so only steps that have not started yet can build on the merge.
@@ -673,7 +702,6 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       const evidence = reviewEvidence(task);
       items.push({ ...base, taskId: task.id, kind: 'review', action: 'Review this result', text: label(task),
         why: !task.verifiedSha ? 'AIWorks published it, but no independent check of it is recorded here, so it cannot be accepted here. It waits for your review.'
-          : stopped ? stoppedWords
           : !task.checkPassed ? `${evidence.text} Review it before you accept it or request changes.`
           : d.local ? 'It passed the independent check on this computer. Review it here; AIWorks is not allowed to finish integrating results in this project.'
             : 'It passed the independent check. Accept it to approve exactly this version, or request changes to send it back.',
@@ -724,20 +752,29 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       // the Check again its sentence names, while the work takes it: a Needs you card has no More menu (review 5 G8).
       const check = (c.controls?.more ?? []).includes('recheck') ? blockerCheck(c.blocker, c.id) : null;
       const words = blockerWords(c.blocker, { check: Boolean(check) });
-      items.push({ ...base, kind: c.blockerClass === 'B3' ? 'decision' : 'stopped', ...(c.blockerClass === 'B3' ? {} : { system: true }), text: NEEDS.workStopped, command: check,
+      // AW-017: only a sign-in or a payment (more runs or cost than approved) is the owner's own, said as information.
+      const own = OWNER_STOPS[c.blocker] ?? null;
+      items.push({ ...base, kind: own ?? 'stopped', ...(own ? {} : { system: true, stalled: true }), text: NEEDS.workStopped, command: check,
         points: [{ link: null, text: `${words.reason}. What to do: ${words.action}.` }] });
     }
     for (const task of cancelled ? [] : c.tasks.filter((item) => item.blocked && item.state !== 'done')) {
       // An answered decision has left the owner's queue: it waits for AIWorks to resume the step with the answer.
       const settled = task.decision?.answered ? ownerSettled(base, task) : null;
-      if (settled) { handling.push(settled); continue; }
-      // A decision (WP2) is answered on its card or its step, snoozed or marked as not needing the owner. A step that
-      // stopped for good takes the owner's guidance and Check again on its card: one more try within the same plan.
+      if (settled) { (stopped ? stalled : handling).push(stopped ? { ...settled, next: 'It continues with it when this work resumes.' } : settled); continue; }
+      // AW-017: a decision or a stop is AIWorks's own, never the owner's: AIWorks answers the decision with the worker's
+      // suggestion (or sends it back once to decide within the plan) and finishes a stopped step by itself. While the
+      // work runs it is listed with what AIWorks does next; the owner may still answer a decision first on its card.
       const decision = task.blocked === 'B3' || Boolean(task.decision);
-      // AW-016: only a decision is the owner's; a step stopped by failures stays listed with its Check again, not counted.
-      items.push({ ...base, taskId: task.id, kind: decision ? 'decision' : 'stopped', ...(decision ? {} : { system: true }), action: decision ? 'Decision needed' : 'Stopped; will not retry by itself',
-        text: label(task), why: decision ? 'An AI worker stopped this step for your decision. The step waits for your answer.'
-          : 'It will not retry by itself. Your guidance with Check again gives it one more try within the approved plan; a wider change is new work to plan.',
+      if (!stopped) {
+        handling.push({ ...base, taskId: task.id, text: label(task), recorded: true, since: null, sinceWords: null,
+          reason: decision ? 'An AI worker stopped this step for a decision' : 'This step stopped',
+          next: decision ? 'AIWorks answers it with the worker\'s suggestion, or has the step decide within the approved plan.'
+            : 'AIWorks finishes it by itself: it delivers it with its known problems listed if its full check passed, or ends it as not done, and adds a follow-up.' });
+        continue;
+      }
+      items.push({ ...base, taskId: task.id, kind: decision ? 'decision' : 'stopped', system: true, stalled: true, action: decision ? 'Stopped for a decision' : 'Stopped; will not retry by itself',
+        text: label(task), why: decision ? 'An AI worker stopped this step for a decision. AIWorks answers it when this work resumes.'
+          : 'AIWorks finishes this step by itself when this work resumes.',
         route: stepRoute(task),
         ...(task.decision?.snoozedUntil ? { snoozedUntil: task.decision.snoozedUntil } : {}),
         points: [{ link: null, text: `${task.blockedReason.charAt(0).toUpperCase()}${task.blockedReason.slice(1)}.` },
@@ -791,10 +828,19 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       for (const step of c.steps.filter((item) => item.decision && !item.decision.answered)) {
         items.push({ campaignId: null, repository: null, project: record.id, projectName: record.name, kind: 'decision', action: 'Decision needed',
           text: step.title, local: { project: record.id, campaignId: c.id, taskId: step.id },
-          why: 'An AI worker stopped this step for your decision. The step waits for your answer.', route: { label: 'Open the project', address: { screen: 'project', project: record.id, tab: 'overview' } },
+          why: 'An AI worker stopped this step for a decision. AIWorks answers it with the suggestion it gave; you may answer it first here.', route: { label: 'Open the project', address: { screen: 'project', project: record.id, tab: 'overview' } },
           ...(step.decision.snoozedUntil ? { snoozedUntil: step.decision.snoozedUntil } : {}),
           points: [{ link: null, text: NEEDS.localDecision(c.outcome) },
             ...(step.decision.snoozedUntil ? [{ link: null, text: NEEDS.snoozed(step.decision.snoozedUntil) }] : [])] });
+      }
+    }
+    // AW-016: a checked result waiting for the owner's acceptance. In a project without GitHub that is Apply on its Overview.
+    for (const c of localWork[record.id] ?? []) {
+      for (const result of c.results.filter((row) => row.action === 'apply')) {
+        items.push({ campaignId: null, repository: null, project: record.id, projectName: record.name, kind: 'local-result', action: 'Review this result',
+          text: result.title, local: { project: record.id, campaignId: result.campaignId, taskId: result.taskId },
+          why: 'It passed the independent check. Nothing in your folder changes until you press Apply on it.',
+          route: { label: 'Open the project', address: { screen: 'project', project: record.id, tab: 'overview' } }, points: [] });
       }
     }
   }
@@ -813,7 +859,24 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
   // they are not owner actions (a supervisor fault, an unreadable inbox) are listed but not counted (review F17).
   // A snoozed decision still holds its step, so it stays listed and counted, after everything else.
   items.sort((a, b) => Boolean(a.snoozedUntil) - Boolean(b.snoozedUntil));
-  const count = items.filter((item) => !item.system).length;
+  // The one owner-action set (AW-016): Needs you, its count, the badges, each project's row and sentence and the results
+  // offered for review are all read from it, so no screen can say something needs the owner that Needs you does not list.
+  // AW-017: of those, Needs you counts only what needs the owner's own sign-in, credential or payment, and the checked
+  // versions waiting for the acceptance the owner chose (AW-015, off by default). Everything else stays listed, apart.
+  for (const item of items) if (!item.system && !OWNER_KINDS.has(item.kind)) item.system = true;
+  const actions = items.filter((item) => !item.system), count = actions.length;
+  const attention = { count, projects: {}, results: [] };
+  for (const item of actions) {
+    const key = item.repository ? item.repository.toLowerCase() : item.project ?? null;
+    if (key) attention.projects[key] = (attention.projects[key] ?? 0) + 1;
+    if (item.campaignId && item.taskId && RESULT_ACTIONS.includes(item.kind)) attention.results.push(`${item.campaignId}/${item.taskId}`);
+  }
+  // A piece of work's results "waiting for your review" are its share of the set; a published result outside it (paused,
+  // checked again by AIWorks, its check unreadable) is `waiting`: not merged, and never said to wait for the owner.
+  for (const [id, view] of Object.entries(campaigns)) {
+    const mine = actions.filter((item) => item.campaignId === id && ['review', 'unchecked'].includes(item.kind)).length;
+    view.counts = { ...view.counts, awaiting: mine, waiting: Math.max(0, view.counts.awaiting - mine) };
+  }
   // No work is blocked, but a project waiting for the owner's decisions is named, never hidden behind an all-clear.
   const held = heldProjects(connected);
   const headline = count ? `Needs you (${count})` : unknownResults ? 'Checking for merges before listing what needs you'
@@ -827,8 +890,8 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
   const decided = supervisor.campaigns.flatMap((c) => (c.autoDecisions ?? []).map((d) => ({ ...d, campaignId: c.id, repository: c.repository,
     project: (supervisor.goals ?? []).find((goal) => goal.id === c.id)?.project ?? c.repository,
     step: label(c.tasks.find((task) => task.id === d.taskId) ?? { id: d.taskId }) }))).sort((a, b) => b.at - a.at);
-  return { available: true, headline, count, items, handling, decided, groups: needsGroups(items), held, unknownResults, also: alsoForYou(supervisor, campaigns, releases), layout, campaigns,
-    results: resultsByProject(supervisor, campaigns, releases, reviews, workList?.repository ?? null, readReports), noResults, recent: recentSummary(supervisor, campaigns), reply: answered ? { messageId: answered.id, threadId: answered.threadId ?? answered.id, answeredAt: answered.answeredAt, url: answered.replyBody ? null : answered.replyUrl } : null };
+  return { available: true, headline, count, attention, items, handling, stalled, decided, groups: needsGroups(items), held, unknownResults, also: alsoForYou(supervisor, campaigns, releases), layout, campaigns,
+    results: resultsByProject(supervisor, campaigns, releases, reviews, workList?.repository ?? null, readReports, new Set(attention.results)), noResults, recent: recentSummary(supervisor, campaigns), reply: answered ? { messageId: answered.id, threadId: answered.threadId ?? answered.id, answeredAt: answered.answeredAt, url: answered.replyBody ? null : answered.replyUrl } : null };
 }
 
 /**
@@ -874,6 +937,7 @@ function heldProjects(records) {
 }
 
 export const SYSTEM_GROUP = 'AIWorks itself';
+export const STALLED_GROUP = 'Stopped until it is restarted';
 
 /**
  * Needs you (OWNER_WORKSPACE slice S3): the same items, grouped by project. One group per repository (case-insensitive,
@@ -887,8 +951,9 @@ export const SYSTEM_GROUP = 'AIWorks itself';
  * Grouping only: no item is added, dropped or reworded.
  */
 function needsGroups(items) {
-  const groups = new Map(), system = [];
+  const groups = new Map(), system = [], stalled = [];
   for (const item of items) {
+    if (item.stalled) { stalled.push(item); continue; }
     if (item.system || !item.repository && !item.project) { system.push(item); continue; }
     // A project without GitHub is grouped by its id and named by its own name.
     const key = item.repository ? item.repository.toLowerCase() : `local-${item.project}`;
@@ -903,6 +968,8 @@ function needsGroups(items) {
     const group = { key: 'aiworks-itself', project: null, name: SYSTEM_GROUP, items: [...system.filter(root), ...system.filter((item) => !root(item))] };
     if (system.some(root)) projects.unshift(group); else projects.push(group);
   }
+  // Work that does not continue by itself (AW-016: not counted): apart from what AIWorks is handling.
+  if (stalled.length) projects.push({ key: 'stalled', project: null, name: STALLED_GROUP, items: stalled });
   return projects.map((group) => {
     const count = group.items.filter((item) => !item.system).length;
     return { ...group, count, notCounted: group.items.length - count };

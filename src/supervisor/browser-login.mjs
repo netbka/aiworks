@@ -38,19 +38,82 @@ export function browserLoginSettings(web, config) {
   }
 }
 
+const HELD_WORKERS = ['service_worker', 'shared_worker'];
+
+/**
+ * The CDP transport of the pre-login connection. Puppeteer resumes every worker it auto-attaches, whether or not its
+ * network rules took hold (the 1.12.0 allowlist left a shared worker's fetch and WebSocket unbound), and one client's
+ * resume releases a held worker for every client. So puppeteer never auto-attaches a service or shared worker here;
+ * only the session loginBrowser registers as `guard` may hold, bind and start one.
+ */
+export async function loginTransport(endpoint) {
+  const socket = new WebSocket(endpoint);
+  await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = () => reject(new Error('Browser pre-login could not start')); });
+  const transport = {
+    guard: null, onmessage: null, onclose: null,
+    send(message) {
+      const command = JSON.parse(message);
+      if (command.method === 'Target.setAutoAttach' && command.sessionId !== transport.guard) {
+        // Chrome's default filter excludes browser and tab targets and attaches everything else.
+        const filter = command.params?.filter ?? [{ type: 'browser', exclude: true }, { type: 'tab', exclude: true }, {}];
+        command.params = { ...command.params, filter: [...HELD_WORKERS.map((type) => ({ type, exclude: true })), ...filter] };
+        message = JSON.stringify(command);
+      }
+      socket.send(message);
+    },
+    close() { socket.close(); },
+  };
+  socket.onmessage = ({ data }) => transport.onmessage?.(String(data));
+  socket.onclose = () => transport.onclose?.();
+  return transport;
+}
+
+/**
+ * Hold every service and shared worker, and the workers they start, at its first instruction and start it only after
+ * all its network traffic, WebSocket and redirects included, is bound to the login origin. Fetch interception does not
+ * see WebSocket handshakes; per-worker network conditions do. A worker that cannot be bound stays paused and is
+ * reported in `failed`. Only the browser's own extension workers may already run: page content cannot start one.
+ */
+async function bindWorkers(browser, transport, origin) {
+  const guard = await browser.target().createCDPSession();
+  const connection = guard.connection();
+  const state = { guard, failed: false };
+  const autoAttach = { autoAttach: true, waitForDebuggerOnStart: true, flatten: true };
+  const conditions = { matchedNetworkConditions: [`${origin}/*`, ''].map((urlPattern) =>
+    ({ urlPattern, offline: !urlPattern, latency: 0, downloadThroughput: -1, uploadThroughput: -1 })) };
+  const watch = (parent) => parent.on('Target.attachedToTarget', async ({ sessionId, targetInfo, waitingForDebugger }) => {
+    try {
+      const worker = connection.session(sessionId);
+      if (!worker || (!waitingForDebugger && !targetInfo.url.startsWith('chrome-extension://'))) throw new Error();
+      watch(worker);
+      await worker.send('Network.enable');
+      await worker.send('Network.emulateNetworkConditionsByRule', conditions);
+      await worker.send('Target.setAutoAttach', autoAttach);
+      if (waitingForDebugger) await worker.send('Runtime.runIfWaitingForDebugger');
+    } catch { state.failed = true; }
+  });
+  watch(guard);
+  transport.guard = guard.id();
+  await guard.send('Target.setAutoAttach', { ...autoAttach, filter: [...HELD_WORKERS.map((type) => ({ type })), { exclude: true }] });
+  return state;
+}
+
 /**
  * No worker/MCP client is attached yet. Close every login page before handing over the browser, so its form and
  * authentication requests cannot appear in the worker's snapshots or network history. Cookies stay in the fresh
  * run-local browser profile; they are never exported to a packet, result, log or shared browser profile.
  */
-export async function loginBrowser(browser, settings, { store = null, timeoutMs = 60_000 } = {}) {
+export async function loginBrowser(browser, settings, { store = null, timeoutMs = 60_000, transport = null } = {}) {
   if (!settings) return;
   const credentials = store ?? tokenStoreFrom(settings.credentialStore);
   for (const profile of settings.profiles) {
     const existingPages = new Set(await browser.pages());
-    let page;
-    let stage = 'opening the login page';
+    let page, workers;
+    let stage = 'binding workers';
     try {
+      if (!transport) throw new Error();
+      workers = await bindWorkers(browser, transport, profile.origin);
+      stage = 'opening the login page';
       page = await browser.newPage();
       page.setDefaultTimeout(timeoutMs);
       page.setDefaultNavigationTimeout(timeoutMs);
@@ -68,6 +131,8 @@ export async function loginBrowser(browser, settings, { store = null, timeoutMs 
       void page.goto(profile.loginUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
       await page.waitForSelector(profile.passwordSelector, { visible: true });
       if (originOf(page.url()) !== profile.origin) throw new Error();
+      stage = 'binding workers';
+      if (workers.failed) throw new Error();
       stage = 'resolving credential references';
       const username = credentials.get(profile.usernameRef);
       const password = credentials.get(profile.passwordRef);
@@ -80,6 +145,8 @@ export async function loginBrowser(browser, settings, { store = null, timeoutMs 
       await page.waitForSelector(profile.passwordSelector, { hidden: true });
       await page.waitForSelector(profile.successSelector, { visible: true });
       if (originOf(page.url()) !== profile.origin) throw new Error();
+      stage = 'binding workers';
+      if (workers.failed) throw new Error();
     } catch {
       // Browser, page and helper errors can contain request payloads or values. Never forward their text.
       throw new Error(`Browser pre-login failed while ${stage}`);
@@ -99,13 +166,17 @@ export async function loginBrowser(browser, settings, { store = null, timeoutMs 
           await control.send('ServiceWorker.enable');
           await control.send('ServiceWorker.stopAllWorkers');
           const deadline = Date.now() + 10_000;
-          const workerOpen = () => browser.targets().some((target) => ['service_worker', 'shared_worker', 'worker'].includes(target.type()));
-          while (workerOpen() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
-          if (workerOpen()) throw new Error();
+          // Puppeteer does not see the held workers, so ask the browser itself.
+          const workerOpen = async () => (await control.send('Target.getTargets')).targetInfos.some((target) =>
+            [...HELD_WORKERS, 'worker'].includes(target.type) && !target.url.startsWith('chrome-extension://'));
+          while (await workerOpen() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+          if (await workerOpen()) throw new Error();
         } finally {
           await control.detach();
           if (!existingPages.has(controlPage)) await controlPage.close();
         }
+        // Detaching releases a worker the guard still holds, so the guard leaves only once no login worker remains.
+        await workers?.guard.detach();
       } catch { throw new Error('Browser pre-login could not clear its private pages and workers'); }
     }
   }

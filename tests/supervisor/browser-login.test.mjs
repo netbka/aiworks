@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
-import { browserLoginSettings, loginBrowser } from '../../src/supervisor/browser-login.mjs';
+import { browserLoginSettings, loginBrowser, loginTransport } from '../../src/supervisor/browser-login.mjs';
 import { browserServers } from '../../src/supervisor/adapters/agy.mjs';
 
 const profile = (origin, prefix) => ({ origin, loginUrl: `${origin}/login`, usernameRef: `${prefix}-user`,
@@ -47,7 +47,7 @@ test('pre-login keeps credentials on the selected origin and closes its private 
     const { puppeteer } = await import(pathToFileURL(createRequire(import.meta.url)
       .resolve('chrome-devtools-mcp/build/src/third_party/index.js')).href);
     const dir = mkdtempSync(join(tmpdir(), 'aiworks-browser-login-'));
-    let browser, child, childExited, handedOver;
+    let browser, login, child, childExited, handedOver;
     const waitForChild = async (ms) => {
       let timer;
       try {
@@ -57,6 +57,7 @@ test('pre-login keeps credentials on the selected origin and closes its private 
       } finally { clearTimeout(timer); }
     };
     t.after(async () => {
+      await login?.disconnect();
       await closeWithin(browser);
       const portFile = join(dir, 'chrome-profile', 'DevToolsActivePort');
       if (!handedOver && existsSync(portFile)) {
@@ -78,6 +79,7 @@ test('pre-login keeps credentials on the selected origin and closes its private 
     const received = [];
     let mode = 'success';
     const foreign = createServer((req, res) => { received.push({ foreign: true }); res.end('foreign'); });
+    foreign.on('upgrade', (req, socket) => { received.push({ foreign: true }); socket.destroy(); });
     foreign.listen(0, '127.0.0.1'); await once(foreign, 'listening');
     t.after(() => { foreign.closeAllConnections(); foreign.close(); });
     const foreignOrigin = `http://127.0.0.1:${foreign.address().port}`;
@@ -93,6 +95,17 @@ test('pre-login keeps credentials on the selected origin and closes its private 
             catch { result = 'blocked'; }
             e.source.postMessage(result);
           })()));`);
+        return;
+      }
+      if (req.url === '/shared-worker.js') {
+        // Network rules matched by URL pattern also govern WebSocket handshakes; Fetch interception does not.
+        res.setHeader('content-type', 'application/javascript');
+        res.end(`onconnect = e => { const port = e.ports[0]; port.onmessage = async ({ data }) => {
+            const socket = new WebSocket('${foreignOrigin.replace('http', 'ws')}/?value=' + encodeURIComponent(data));
+            await new Promise(resolve => { socket.onerror = socket.onclose = resolve; });
+            await fetch('${foreignOrigin}/shared', { method: 'POST', mode: 'no-cors', body: data }).catch(() => {});
+            port.postMessage('shared done');
+          }; };`);
         return;
       }
       if (req.url === '/worker-result') {
@@ -115,6 +128,9 @@ test('pre-login keeps credentials on the selected origin and closes its private 
             ready.active.postMessage(secret);
           });
           await fetch('/worker-result', { method: 'POST', body: result });
+          const shared = new SharedWorker('/shared-worker.js');
+          const sharedResult = await new Promise(resolve => { shared.port.onmessage = e => resolve(e.data); shared.port.postMessage(secret); });
+          await fetch('/worker-result', { method: 'POST', body: sharedResult });
           document.querySelector('form').submit();
         };</script>`;
         res.end('<form method="POST" action="/session"><input name="user"><input name="password" type="password"><button type="submit">Sign in</button></form>' + popups);
@@ -133,22 +149,25 @@ test('pre-login keeps credentials on the selected origin and closes its private 
     for (const value of [user, password]) assert.ok(!runConfig.includes(value));
     browser = await puppeteer.launch({ executablePath: chrome, headless: true, userDataDir: join(dir, 'profile'),
       args: ['--disable-background-networking', '--disable-extensions'] });
+    const transport = await loginTransport(browser.wsEndpoint());
+    login = await puppeteer.connect({ transport });
     const reads = [];
     const store = { get(ref) { reads.push(ref); return ref === 'browser:dev-user' ? user : password; } };
-    await loginBrowser(browser, settings, { store, timeoutMs: 5000 });
+    await loginBrowser(login, settings, { store, timeoutMs: 5000, transport });
     assert.deepEqual(reads, ['browser:dev-user', 'browser:dev-password']);
     assert.deepEqual(received, [{ body: `user=${user}&password=${password}` }]);
     assert.ok((await browser.cookies()).some((cookie) => cookie.name === 'session'));
     assert.deepEqual((await browser.pages()).map((page) => page.url()), ['about:blank'], 'no login form or request history is handed over');
 
     mode = 'redirect'; reads.length = 0; received.length = 0;
-    await assert.rejects(loginBrowser(browser, settings, { store, timeoutMs: 1000 }), { message: 'Browser pre-login failed while opening the login page' });
+    await assert.rejects(loginBrowser(login, settings, { store, timeoutMs: 1000, transport }), { message: 'Browser pre-login failed while opening the login page' });
     assert.deepEqual(reads, [], 'a redirected page never receives a credential');
     assert.deepEqual(received, [], 'the foreign origin is not contacted');
     assert.deepEqual((await browser.pages()).map((page) => page.url()), ['about:blank']);
 
     // Exercise the actual MCP startup boundary: the task may use another origin after login, but a login popup
     // must not send it a credential, and even same-origin credential popups must disappear before tool handoff.
+    await login.disconnect(); login = null;
     await closeWithin(browser); browser = null;
     mode = 'popup'; received.length = 0;
     const helper = join(dir, 'synthetic-helper.mjs');
@@ -176,6 +195,7 @@ test('pre-login keeps credentials on the selected origin and closes its private 
     const port = Number(readFileSync(join(dir, 'chrome-profile', 'DevToolsActivePort'), 'utf8').split(/\r?\n/)[0]);
     handedOver = await puppeteer.connect({ browserURL: `http://127.0.0.1:${port}`, allowlist: [`${origin}/*`, `${foreignOrigin}/*`] });
     assert.ok(received.some(item => item.workerResult === 'blocked'), 'a login service worker also stays on its origin');
+    assert.ok(received.some(item => item.workerResult === 'shared done'), 'the login shared worker ran its WebSocket and fetch');
     assert.equal(received.filter(item => item.foreign).length, 0, 'popup could not send a credential to another task/resource origin');
     assert.deepEqual((await handedOver.pages()).map(page => page.url()), ['about:blank'], 'all login-created pages were removed');
     assert.equal(handedOver.targets().some(target => target.type() === 'service_worker'), false, 'no login worker survives scope widening');
