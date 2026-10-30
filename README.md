@@ -40,7 +40,7 @@ You end up as a full-time project manager for your AI helpers instead of working
 | 🔁 **Keeps work moving** | Starts the next step as soon as the last one is done. Restarts itself after a crash or a reboot and carries on where it stopped. When an AI service hits its usage limit, AIWorks waits for the reset and continues, without bothering you. |
 | 🔍 **Gets a second opinion on every change** | A fresh AI session that did not write the code checks each result. It runs the tests again on that exact version and looks for problems. Work that fails goes back for another round, with the findings attached. |
 | 📬 **Delivers to GitHub, where you already work** | Each finished step arrives as a pull request with the builder's report and the checker's verdict inside. Reports and research arrive as comments on the step's issue. |
-| 🙋 **Asks you only for real decisions** | One list, **Needs you**, shows the few things only you can do, and you settle each one right there: answer a decision, accept a checked result or send it back with what should change, or guide a step that stopped for good and let it try again. Routine waits stay AIWorks's job. |
+| 🙋 **Decides and finishes without you** | AIWorks answers the decisions its AI workers raise, with their suggestion, and finishes a step that stopped: it delivers it with its known problems listed, or ends it as not done and adds a follow-up. **Needs you** only tells you about your own sign-in, credentials or payment, and the results you chose to accept yourself. |
 | 🛡️ **Stays inside the lines you draw** | Runs only plans you approved. Merges a checked pull request only if you switch that on for the project. Deploys only under a standing project release grant. Runs on your PC, and its settings hold no passwords or keys. |
 
 ```mermaid
@@ -98,7 +98,7 @@ Day to day, you don't type commands. You work in the AIWorks dashboard on your c
 
 ### 2. Handle only what needs you
 
-**Needs you** collects the things only you can do, grouped by project: a decision an AI worker asked for, a checked result to review, a step that stopped and will not retry by itself. Each card says in business words what it is about and why you are needed, and you resolve it on the card: choose an option or write your answer, accept the result or request changes, or send guidance and check again. Something new to build is planned with *Plan different work* and starts only when you approve the plan. Usage limits, pauses, routine merge waits and AIWorks's own problems never count here; AIWorks lists what it is handling, so nothing stalls out of sight.
+**Needs you** counts only what needs your own sign-in, credentials or payment, and, if you chose to accept results yourself, the checked versions waiting for you ([AW-017](docs/DECISIONS.md#aw-017---aiworks-decides-and-finishes-without-the-owner)). Decisions, stopped steps and results to review are listed with what AIWorks does about them; you can still answer a decision first, accept a result or request changes. Something new to build is planned with *Plan different work* and starts only when you approve the plan. Usage limits, pauses, routine merge waits and AIWorks's own problems never count here; AIWorks lists what it is handling, so nothing stalls out of sight.
 
 <p align="center"><img src="docs/assets/readme/needs-me.png" alt="The Needs you screen: decisions and reviews grouped by project, each with what to do" width="100%"></p>
 
@@ -154,7 +154,7 @@ Everything ends up in GitHub, next to the rest of your project:
 | Waiting out usage limits | When an AI account hits its limit, every piece of work on that account pauses until the reset, then continues. No alert. |
 | Self-restart | After a crash, a sign-out or a reboot, AIWorks comes back by itself within minutes and picks up where it stopped. |
 | Only work you registered | AIWorks works only on plans you registered yourself, and a plan's scope cannot change without a new, higher authorization. It refuses a second plan for a fix that is already being worked on, and runs only its own reviewed (merged) code. |
-| Staying in its lane | A step that changes files outside its agreed area stops and waits for your decision. |
+| Staying in its lane | A step that changes files outside its agreed area is stopped and ended as not done, with a follow-up. |
 | Dashboard | Home, Projects and Needs you; each project with its Overview, Plan, Review and Knowledge tabs (Releases where a release is configured); Step, Settings, Messages and Diagnostics screens. |
 | Controls | Pause, Resume, Check again, Cancel and Send guidance. |
 | Planning assistant | Answers your messages and proposes plans, right in the dashboard. It can read your projects but never changes them, and it posts nothing to GitHub. |
