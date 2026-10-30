@@ -282,7 +282,23 @@ export function campaignStatus(store, id, now = Date.now(), { releaseStop = fals
       createdAt: new Date(op.created_at).toISOString(), updatedAt: new Date(op.updated_at).toISOString() })),
     ...(ownerBlockers.length ? { ownerBlockers } : {}),
     ...selfHostingView(store, selfHostingConfig, c.declaration.target?.repository),
+    folder: folderView(store, id),
   };
+}
+
+/**
+ * The newest update of the project's own folder this work recorded (AW-018): a GitHub folder brought up to the merged
+ * base or left as it is (merge.mjs updateFolder), or a checked local result AIWorks applied or did not (owner-apply.mjs
+ * autoApply). Codes only, never paths or revisions; null without one.
+ */
+function folderView(store, campaignId) {
+  const row = store.get(`SELECT kind, at, detail FROM journal WHERE campaign_id = ? AND kind IN ('project-folder-updated', 'project-folder-left', 'auto-apply-finished')
+    ORDER BY seq DESC LIMIT 1`, campaignId);
+  if (!row) return null;
+  const at = new Date(row.at).toISOString();
+  if (row.kind === 'project-folder-updated') return { state: 'updated', reason: null, at };
+  if (row.kind === 'project-folder-left') return { state: 'left', reason: String(row.detail?.reason ?? 'unreadable'), at };
+  return row.detail?.outcome === 'applied' ? { state: 'applied', reason: null, at } : { state: 'not-applied', reason: String(row.detail?.code ?? row.detail?.outcome ?? 'unknown'), at };
 }
 
 /**

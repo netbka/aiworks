@@ -99,7 +99,7 @@ A campaign whose target is a connected local project (Local Git or plain folder)
 3. **From the owner, not from AIWorks.** The dashboard refuses an approval that comes from a process AIWorks started, and refuses when it cannot tell.
 4. **Governed project.** The project has rules the owner confirmed in the dashboard, not revoked or expired, and the approval binds their digest. A project with GitHub can never use this path.
 5. **Append-only ledger.** Each approval and revocation is appended to a local hash-chained ledger. A broken ledger stops new dispatches until the owner approves again.
-6. **Same limits as every campaign.** For a local project the supervisor never merges, deploys or writes the owner's folder by itself ([AW-001](#aw-001---the-delivery-supervisor-is-the-one-external-write-exception)). Workers run on AIWorks's own copy of the project. A result is a verified local candidate; only the owner's Apply writes it to the folder. Reports and blockers stay in this computer's records, and nothing for the project calls GitHub.
+6. **Same limits as every campaign.** For a local project the supervisor never merges or deploys ([AW-001](#aw-001---the-delivery-supervisor-is-the-one-external-write-exception)). Workers run on AIWorks's own copy of the project. A result is a verified local candidate; the owner's Apply, and since [AW-018](#aw-018---merged-results-land-in-the-projects-own-folder) AIWorks itself with a backup, writes it to the folder. Reports and blockers stay in this computer's records, and nothing for the project calls GitHub.
 7. **Revocation.** Revoking or expiring the project's rules, or revoking the approval, stops new dispatches at the next check. Running operations finish and are recorded, as with a pause.
 
 This changes where an owner approval may come from, for local projects only. It does not let unmerged code run, and it does not change the GitHub path. The design is [WORK_ENVELOPE.md section 8](design/WORK_ENVELOPE.md#8-decision-d4-local-admission-without-github).
@@ -173,6 +173,22 @@ Owner decision 2026-10-30, in the owner's words (translated): "AIWorks decides a
 
 - Automatic answers and send-backs on one step stop after the no-progress limit (four); the step is then finished. No answer starts unbounded paid runs.
 - Needs you lists only what needs the owner's own sign-in, credential or payment (a provider login, more runs or cost than approved), as information, and the checked versions the owner chose to accept themselves ([AW-015](#aw-015---acceptance-controls-merging-when-the-owner-chooses-it), off by default). Everything else is listed apart, not counted.
-- What stays: exact-head independent verification, secret filtering, containment, run and cost limits and idempotence. A head that failed the full check is never merged. Releases happen only where an [AW-010](#aw-010---auto-release-is-a-separate-release-role-under-a-standing-per-project-grant) grant exists, and only for results that passed their check. A project without GitHub has no merge path, so its stopped step ends as not done; only the owner's Apply writes its folder ([AW-012](#aw-012---local-projects-start-from-an-owner-approval-in-the-dashboard)).
+- What stays: exact-head independent verification, secret filtering, containment, run and cost limits and idempotence. A head that failed the full check is never merged. Releases happen only where an [AW-010](#aw-010---auto-release-is-a-separate-release-role-under-a-standing-per-project-grant) grant exists, and only for results that passed their check. A project without GitHub has no merge path, so its stopped step ends as not done; only a checked result reaches its folder ([AW-018](#aw-018---merged-results-land-in-the-projects-own-folder)).
 
 The owner can still answer a decision first, accept or request changes, pause and cancel. The runbook section is [No step waits for the owner](SUPERVISOR.md#no-step-waits-for-the-owner).
+
+## AW-018 - Merged results land in the project's own folder
+
+Owner decision 2026-10-30 ([#39](https://github.com/example-org/aiworks/issues/39)), in the owner's words (translated): "Merged results land in the project's own folder." A checked and merged result is not finished while the owner's folder still holds the old files. AIWorks brings the folder up to date itself, and never over the owner's own work.
+
+| Project | What AIWorks does |
+| --- | --- |
+| GitHub project | After a merge AIWorks recorded, it fast-forwards the base branch in the project's configured folder (`config.json` `repositories` path, or the connected project's folder) to the merged base. Only while that branch is checked out there, with no uncommitted changes and no commits of the owner's own; no hook of the folder runs. Otherwise the folder is left as it is, the reason is recorded, and the next merge tries again |
+| Local Git or plain folder project | It applies each checked result to the folder by itself, once, with the same rescan, backup and adapters as the owner's Apply (`local-git-apply`, `local-folder-apply`). A file the owner changed since the work started is never written over: the apply is refused and nothing is written. Undo apply stays available, and the owner can still press Apply |
+
+- Never AIWorks's own live runtime checkout or data directory, and never AIWorks's own repository: its main moves through the local merge gate only.
+- A project whose owner accepts results themselves ([AW-015](#aw-015---acceptance-controls-merging-when-the-owner-chooses-it)) still applies by the owner's Apply.
+- Every update, and every folder left as it is, is recorded in the journal and shown on the project as information, not counted in Needs you.
+- No release grant is used or needed: this writes no deployment and creates no release record ([AW-010](#aw-010---auto-release-is-a-separate-release-role-under-a-standing-per-project-grant) is unchanged). The merge gate and its conditions stay exactly as they are.
+
+This amends [AW-012](#aw-012---local-projects-start-from-an-owner-approval-in-the-dashboard) point 6 and the last point of [AW-017](#aw-017---aiworks-decides-and-finishes-without-the-owner): the owner's Apply is no longer the only way a checked local result reaches the folder. The runbook section is [Project folder](SUPERVISOR.md#project-folder).

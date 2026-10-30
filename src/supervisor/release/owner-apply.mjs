@@ -1,8 +1,10 @@
 // The owner's Apply (docs/design/WORK_ENVELOPE.md section 8.6, slice E13; plan STA18). A verified local candidate
 // (local-candidates.mjs) is written to the owner's local Git repository or plain folder only when the owner presses
 // Apply, and Undo apply is the way back. An owner action under Review only, never Auto Release: it needs no release
-// grant, creates no release record (the `releases` and `release_locks` tables are never touched) and never runs by
-// itself. Auto Release for a local project stays off until example-org/aiworks#33.
+// grant and creates no release record (the `releases` and `release_locks` tables are never touched). Auto Release for
+// a local project stays off until example-org/aiworks#33. Since AW-018, AIWorks also applies a checked result itself
+// (autoApply, autoApplyPass): the same rescan, backup and adapters, once per result, with the owner's Apply and Undo
+// apply unchanged beside it.
 //
 // Every Apply and Undo apply passes the dashboard's caller check first (section 8.2): the route passes it in as
 // `caller(store)`, checkCaller of local admission bound to the request's connection, and it must answer `owner-browser`.
@@ -21,10 +23,11 @@
 // admission registered (slice STA17).
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { folderManifest, MIRROR_REPO, SNAPSHOT_DIR } from '../adapters/mirror.mjs';
-import { candidates } from '../local-candidates.mjs';
+import { candidates, isLocalTarget } from '../local-candidates.mjs';
+import { acceptanceMode, projectOf } from '../project-settings.mjs';
 import { project as projectRow } from '../projects.mjs';
 import { LOCAL_FOLDER_APPLY, LOCAL_GIT_APPLY, localFolderApply, localGitApply, reconcileLocalFolderApply, reconcileLocalGitApply,
   undoLocalFolderApply, undoLocalGitApply } from './local-apply.mjs';
@@ -231,20 +234,108 @@ export async function ownerApply(store, { campaignId, taskId, seq = null, reques
       kind, sha: candidate.sha, baseline_commit: baseline.commit_sha, backup_dir: join(dataDir, 'applies', project.id, applyId), last_outcome: null,
       created_at: now, updated_at: now };
   }
-  const plan = kind === LOCAL_FOLDER_APPLY ? folderChanges(candidate, project.mirror_root, baseline, options) : null;
-  // The attempt and the owner's receipt are recorded before the adapter writes its backup, so a crash leaves a row that
-  // names the backup directory to reconcile.
-  store.tx(() => {
-    if (!store.get('SELECT 1 AS present FROM local_applies WHERE apply_id = ?', row.apply_id)) store.insert('local_applies', row);
+  return write(store, { row, candidate, project, baseline, kind, options, now, finished: 'owner-apply-finished', recorded: () => {
     store.insert('local_apply_receipts', { request_id: requestId, apply_id: row.apply_id, action: 'apply', caller: callerResult, received_at: now });
     store.journal(row.campaign_id, 'owner-apply-pressed', { applyId: row.apply_id, task: row.task_id, seq: row.seq, sha: row.sha, caller: callerResult }, now);
+  } });
+}
+
+/**
+ * Rescan, back up and write one attempt through REL8's adapter. The attempt and `recorded` (the owner's receipt, or
+ * AIWorks's own start entry) are recorded before the adapter writes its backup, so a crash leaves a row that names the
+ * backup directory to reconcile.
+ */
+function write(store, { row, candidate, project, baseline, kind, options, now, finished, recorded }) {
+  const { git, gitEnv, hooks } = options;
+  const plan = kind === LOCAL_FOLDER_APPLY ? folderChanges(candidate, project.mirror_root, baseline, options) : null;
+  store.tx(() => {
+    if (!store.get('SELECT 1 AS present FROM local_applies WHERE apply_id = ?', row.apply_id)) store.insert('local_applies', row);
+    recorded();
   });
-  if (plan?.refusedPaths) return settle(store, row, { outcome: 'refused', code: 'APPLY_PATH_REFUSED', files: plan.refusedPaths, reason: 'AIWorks does not write these paths' }, 'owner-apply-finished', now);
+  if (plan?.refusedPaths) return settle(store, row, { outcome: 'refused', code: 'APPLY_PATH_REFUSED', files: plan.refusedPaths, reason: 'AIWorks does not write these paths' }, finished, now);
   const result = kind === LOCAL_GIT_APPLY
     ? localGitApply({ id: row.apply_id, repoRoot: project.root_path, branch: project.local_branch, baseline: baseline.commit_sha, verifiedSha: candidate.sha,
       source: join(project.mirror_root, MIRROR_REPO), backupDir: row.backup_dir, git, gitEnv, hooks })
     : localFolderApply({ id: row.apply_id, targetRoot: project.root_path, backupDir: row.backup_dir, changes: plan.changes, hooks });
-  return settle(store, row, result, 'owner-apply-finished', now);
+  return settle(store, row, result, finished, now);
+}
+
+/** Paths that are the same or one inside the other, links and junctions resolved; case folded on Windows. */
+const overlap = (a, b) => {
+  const real = (path) => {
+    let value;
+    try { value = realpathSync.native(path); } catch { value = resolve(path); }
+    value = value.replaceAll('\\', '/').replace(/\/+$/, '');
+    return process.platform === 'win32' ? value.toLowerCase() : value;
+  };
+  const [x, y] = [real(a), real(b)];
+  return x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
+};
+
+/**
+ * AIWorks applies a checked result itself (AW-018): the same rescan, backup and adapter as the owner's Apply, without
+ * waiting for the press. Once per candidate: a candidate with any attempt, the owner's or AIWorks's, is left to the
+ * owner's Apply, and a project with an attempt left open is left until that is settled. A project whose owner accepts
+ * results themselves (AW-015) waits for Apply as before. The project folder must not be AIWorks's own runtime checkout
+ * (`runtimeRoot`) or data directory, or lie inside or around them. A file the owner changed since the baseline is never
+ * written over: the rescan refuses and nothing is written. Undo apply stays available on what it applied. Returns
+ * the result as ownerApplies shows it, or null when it did not try.
+ */
+export function autoApply(store, { campaignId, taskId, seq = null, dataDir, runtimeRoot, git = ['git'], gitEnv, hooks = {}, now = Date.now() } = {}) {
+  if (typeof dataDir !== 'string' || !dataDir || typeof runtimeRoot !== 'string' || !runtimeRoot) throw new TypeError('AIWorks\'s own apply needs its data directory and runtime checkout');
+  const { candidate, project, baseline, kind } = bound(store, { campaignId, taskId, seq });
+  if (hasTables(store)) {
+    if (store.get('SELECT 1 AS present FROM local_applies WHERE campaign_id = ? AND task_id = ? AND seq = ?', candidate.campaignId, candidate.taskId, candidate.seq)) return null;
+    if (store.all('SELECT * FROM local_applies WHERE project_id = ?', project.id).some(isOpen)) return null;
+  }
+  store.db.exec(DDL);
+  const applyId = applyIdOf(candidate, 1);
+  const row = { apply_id: applyId, campaign_id: candidate.campaignId, task_id: candidate.taskId, seq: candidate.seq, attempt: 1, project_id: project.id,
+    kind, sha: candidate.sha, baseline_commit: baseline.commit_sha, backup_dir: join(dataDir, 'applies', project.id, applyId), last_outcome: null,
+    created_at: now, updated_at: now };
+  const started = () => store.journal(row.campaign_id, 'auto-apply-started', { applyId, task: row.task_id, seq: row.seq, sha: row.sha }, now);
+  if (overlap(project.root_path, runtimeRoot) || overlap(project.root_path, dataDir)) {
+    store.tx(() => { store.insert('local_applies', row); started(); });
+    return settle(store, row, { outcome: 'refused', code: 'APPLY_PATH_REFUSED', files: [], reason: 'the folder is where AIWorks itself runs; nothing was written' }, 'auto-apply-finished', now);
+  }
+  return write(store, { row, candidate, project, baseline, kind, options: { git, gitEnv, hooks }, now, finished: 'auto-apply-finished', recorded: started });
+}
+
+/** AIWorks's own attempts left open by a crash: no owner receipt names them. An owner's open Apply is the owner's to settle. */
+const ownOpen = (store) => store.all(`SELECT * FROM local_applies a WHERE NOT EXISTS (SELECT 1 FROM local_apply_receipts r
+  WHERE r.apply_id = a.apply_id AND r.action = 'apply') ORDER BY created_at, attempt`).filter(isOpen);
+
+/**
+ * One pass of AIWorks's own applies (AW-018), after the merge pass of a tick: its own attempts left open by a crash are
+ * reconciled from the folder first, never run again blindly; then the newest checked result of each finished commit step
+ * of local work that is neither paused nor cancelled is applied once. Returns what it did.
+ */
+export function autoApplyPass(store, { dataDir, runtimeRoot, git = ['git'], gitEnv, now = Date.now(), log = () => {}, refused = new Set() } = {}) {
+  const done = [];
+  const tables = hasTables(store);
+  if (tables) {
+    for (const row of ownOpen(store)) done.push(settle(store, row, reconcileAdapter(row, { git, gitEnv, hooks: {} }), 'auto-apply-reconciled', now));
+  }
+  for (const { id } of store.all("SELECT id FROM campaigns WHERE control IN ('registered', 'finished') ORDER BY created_at")) {
+    const campaign = store.campaign(id), decl = campaign.declaration;
+    if (!isLocalTarget(decl) || acceptanceMode(store, projectOf(decl)) === 'owner') continue;
+    const newest = new Map();
+    for (const candidate of candidates(store, id)) if (candidate.deliverable === 'commit') newest.set(candidate.taskId, candidate);
+    for (const candidate of newest.values()) {
+      // Tried before (an attempt row), or refused before it could start in this process (`refused`): nothing to do.
+      const key = `${id}\n${candidate.taskId}\n${candidate.seq}`;
+      if (refused.has(key) || store.task(id, candidate.taskId)?.state !== 'done') continue;
+      if (tables && store.get('SELECT 1 AS present FROM local_applies WHERE campaign_id = ? AND task_id = ? AND seq = ?', id, candidate.taskId, candidate.seq)) continue;
+      try {
+        const result = autoApply(store, { campaignId: id, taskId: candidate.taskId, seq: candidate.seq, dataDir, runtimeRoot, git, gitEnv, now });
+        if (result) { done.push(result); log(`applied ${id}/${candidate.taskId} #${candidate.seq} to its folder: ${result.outcome}${result.code ? ` (${result.code})` : ''}`); }
+      } catch (error) {
+        refused.add(key);
+        log(`apply of ${id}/${candidate.taskId} #${candidate.seq} not tried: ${error.message}`);
+      }
+    }
+  }
+  return done;
 }
 
 /**

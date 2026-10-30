@@ -1186,6 +1186,8 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
         // Why dispatch stopped, rebuilt from supervisor-known fields only (stored reasons can quote worker text).
         stopReasons: taskRows.filter((task) => task.blocked && task.state !== 'done').map((task) => `${task.task_id}: ${stopReason(task)}`),
         budget: status.budget,
+        // AW-018: the newest update of the project's own folder, codes only (owner.mjs words it).
+        folder: status.folder ?? null,
         nextAction: publicNextAction(c, status, taskRows, operations), lastProgressAt: status.lastProgressAt,
         controllerState: status.readiness,
         release: { mode: status.release.mode, enabled: status.release.enabled, complete: status.release.complete ?? false,
