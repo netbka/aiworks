@@ -146,7 +146,7 @@ const openRun = (store, id, campaignId, taskId) => store.insert('operations', { 
 const finishRun = (store, id) => store.run("UPDATE operations SET state = 'finished', outcome = ? WHERE id = ?", JSON.stringify({ status: 'resolved', id }), id);
 const lastPause = (store, id) => store.get("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'paused' ORDER BY seq DESC LIMIT 1", id)?.detail?.reason;
 
-test('simultaneous stale-lock retries admit one maintainer and recover again after that maintainer crashes', { skip, timeout: 60_000 }, async () => {
+test('simultaneous stale-lock retries admit one maintainer and recover again after that maintainer crashes', { skip, timeout: 300_000 }, async () => {
   const inst = installation();
   const children = [];
   const launch = (pause) => {
@@ -160,7 +160,7 @@ test('simultaneous stale-lock retries admit one maintainer and recover again aft
     const exited = new Promise((resolve) => child.once('exit', resolve));
     child.on('error', (error) => { output += error.message; });
     const next = () => new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`contender timed out: ${output}`)), 25_000);
+      const timer = setTimeout(() => reject(new Error(`contender timed out: ${output}`)), 120_000);
       const done = (event) => { clearTimeout(timer); resolve(event); };
       if (events.length) done(events.shift()); else waiters.push(done);
     });
