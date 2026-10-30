@@ -454,6 +454,9 @@ export class Controller {
     this.ap = this.config.adaptivePlanning?.enabled === true;
     this.ciNextAt = new Map();
     this.ciPolledAt = new Map();
+    // AW-016: when each unchecked published head's pull request may next be read (recheckUnchecked). Memory only: after a
+    // restart each such head is read once more, which is harmless.
+    this.recheckReadAt = new Map();
     // ADAPTIVE_SCHEDULER (slice RUN5): off unless the data-directory config enables it. Off, every campaign keeps one
     // operation at a time and nothing below changes behaviour. On, campaigns only collect candidates while they settle,
     // and one admission pass per tick starts at most one of them. Candidates, the campaigns that waited for fan-out and
@@ -916,14 +919,24 @@ export class Controller {
 
   /**
    * Why a published, unchecked head is no longer AIWorks's to check, or null while it still is: already in the base
-   * branch, or (on GitHub) its pull request closed or pushed by someone else. `undefined` when GitHub could not be read:
-   * the caller waits and decides on a later pass.
+   * branch, or (on GitHub) its pull request closed or pushed by someone else. `undefined` when GitHub could not be read
+   * or is not to be read yet: the caller waits and decides on a later pass. GitHub is read at most once per pollMs per
+   * head; a rate-limit refusal waits for its reset, as checkPublishedCi does.
    */
   uncheckedGone(ctx, decl, task) {
     if (this.inBase(decl, task.head_sha)) return 'already in the base branch';
     if (isLocalTarget(decl) || this.selfHosted(decl.target.repository)) return null;
+    const key = `${ctx.id}:${task.task_id}:${task.head_sha}`, now = this.now();
+    if ((this.recheckReadAt.get(key) ?? -Infinity) > now) return undefined;
+    this.recheckReadAt.set(key, now + this.config.pollMs);
     let pr;
-    try { pr = github.findOpenPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, branch: gitA.branchName(ctx.id, task.task_id) }); } catch { return undefined; }
+    try { pr = github.findOpenPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, branch: gitA.branchName(ctx.id, task.task_id) }); } catch (error) {
+      if (error instanceof github.RateLimitError && Number.isFinite(error.resetAt)) {
+        this.recheckReadAt.set(key, Math.min(Math.max(error.resetAt, now), now + RATE_LIMIT_MAX_WAIT_MS) + this.config.rateLimitMarginMs);
+      }
+      this.log(`pull request read of ${task.task_id} at ${task.head_sha} failed: ${error.message}`);
+      return undefined;
+    }
     return pr?.headRefOid === task.head_sha ? null : pr ? 'its pull request now has another head' : 'its pull request is no longer open';
   }
 
@@ -941,8 +954,9 @@ export class Controller {
       // AIWorks's maintainers, never a reason for another paid run.
       if (task.state !== 'done' || task.blocked || !task.pr_url || !/^[0-9a-f]{40}$/.test(task.head_sha ?? '') || task.verified_sha || task.verification) continue;
       if (specOf(this.store, ctx.id, task.task_id, c.declaration)?.deliverable !== 'commit' || mergedHead(this.store, ctx.id, task.task_id, task.head_sha)) continue;
+      // A head already sent back to the checker, or left for the owner, is never read again.
       const skipKey = `unchecked-recheck-skipped:${ctx.id}:${task.task_id}:${task.head_sha}`;
-      if (this.store.get('SELECT 1 AS seen FROM events WHERE dedup_key = ?', skipKey)) continue;
+      if (this.store.get('SELECT 1 AS seen FROM events WHERE dedup_key IN (?, ?)', skipKey, `unchecked-recheck:${ctx.id}:${task.task_id}:${task.head_sha}`)) continue;
       // Like an owner's request for changes and CI repair: a head merged, closed or pushed by someone else since it was
       // published is no longer AIWorks's to check. It is recorded once and left for the owner; a read that fails waits.
       const reason = this.uncheckedGone(ctx, decl, task);
