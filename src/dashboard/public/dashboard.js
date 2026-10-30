@@ -3322,7 +3322,17 @@ function reviewPanel(review, binding, { merged = false } = {}) {
       item.evidence ? el('div', { class: 'subtext' }, `Evidence: ${item.evidence}`) : null))),
     review.findings.length ? el('div', {}, el('strong', {}, 'Findings'), el('ul', {}, ...review.findings.map((f) => el('li', {}, `${f.severity === 'blocking' ? 'Blocking' : 'Not blocking'}: ${f.description}`)))) : null,
     review.eyesOn.length ? el('div', {}, el('strong', {}, 'Where your eyes matter'), el('ul', {}, ...review.eyesOn.map((item) => el('li', {}, item)))) : null,
+    autoDecisionNote(review.autoDecision),
     ...reviewActions(review, binding));
+}
+
+/** AW-016: a decision on this step that AIWorks answered itself with its suggestion, so the owner sees it before accepting. */
+function autoDecisionNote(d) {
+  if (!d) return null;
+  return el('div', { class: 'review-decided' }, el('strong', {}, 'AIWorks decided for you'),
+    el('p', {}, `${d.question} `, el('strong', {}, d.chosen)),
+    d.reason ? el('p', { class: 'subtext' }, d.reason) : null,
+    d.others.length ? el('p', { class: 'subtext' }, `Other options: ${d.others.join(' · ')}`) : null);
 }
 
 /**

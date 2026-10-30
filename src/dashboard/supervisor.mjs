@@ -896,16 +896,33 @@ export function autoAnswers(store, campaignId, taskRows) {
   const open = new Set(taskRows.filter((task) => !['done', 'cancelled'].includes(task.state)).map((task) => task.task_id));
   const seen = new Set(), out = [];
   for (const row of store.all("SELECT at, detail FROM journal WHERE campaign_id = ? AND kind = 'decision-answered' ORDER BY seq DESC LIMIT 200", campaignId)) {
-    const detail = row.detail ?? {}, d = detail.auto ? structuredDecision({ decision: { question: detail.question, options: detail.options, suggestion: detail.suggestion } }) : null;
-    if (!d || !open.has(detail.task) || seen.has(detail.task)) continue;
+    const detail = row.detail ?? {};
+    if (!open.has(detail.task) || seen.has(detail.task)) continue;
+    const answer = autoAnswer(row);
+    if (!answer) continue;
     seen.add(detail.task);
-    const chosen = d.options.find((o) => o.id === detail.option);
-    if (!chosen) continue;
-    out.push({ taskId: detail.task, at: row.at, question: safeText(d.question, 500), chosen: safeText(chosen.label, 120),
-      reason: d.suggestion ? safeText(d.suggestion.reason, 500) : null,
-      others: d.options.filter((o) => o.id !== chosen.id).map((o) => safeText(o.label, 120)) });
+    out.push(answer);
   }
   return out;
+}
+
+/** One journaled decision AIWorks answered itself with its suggestion, as the owner reads it; null for any other answer. */
+function autoAnswer(row) {
+  const detail = row.detail ?? {}, d = detail.auto ? structuredDecision({ decision: { question: detail.question, options: detail.options, suggestion: detail.suggestion } }) : null;
+  const chosen = d?.options.find((o) => o.id === detail.option);
+  if (!chosen) return null;
+  return { taskId: detail.task, at: row.at, question: safeText(d.question, 500), chosen: safeText(chosen.label, 120),
+    reason: d.suggestion ? safeText(d.suggestion.reason, 500) : null,
+    others: d.options.filter((o) => o.id !== chosen.id).map((o) => safeText(o.label, 120)) };
+}
+
+/** AW-016: the latest decision on this step that AIWorks answered itself, so the owner sees it when accepting its result. */
+function stepAutoAnswer(store, campaignId, taskId) {
+  for (const row of store.all("SELECT at, detail FROM journal WHERE campaign_id = ? AND kind = 'decision-answered' AND json_extract(detail, '$.task') = ? ORDER BY seq DESC LIMIT 20", campaignId, taskId)) {
+    const answer = autoAnswer(row);
+    if (answer) return answer;
+  }
+  return null;
 }
 
 /**
@@ -933,7 +950,8 @@ function reviewOf(store, c, task, spec, config, records, acceptanceOf) {
   const roundsLeft = limits.maxRepairRounds === null ? null : Math.max(0, limits.maxRepairRounds - task.repair_rounds);
   const base = { verifiedSha: task.verified_sha, local, commit, repairRounds: task.repair_rounds, roundsLeft, criteria: [], findings: [], eyesOn: [],
     unresolved: null, summary: null, reportDigest: null, acceptedAt: null, requestedAt: null, mergeGate: null, canAccept: false, canRequestChanges: false,
-    acceptance: local ? null : acceptanceOf(c.declaration.target.repository), awaitsAcceptance: false };
+    acceptance: local ? null : acceptanceOf(c.declaration.target.repository), awaitsAcceptance: false,
+    autoDecision: stepAutoAnswer(store, c.id, task.task_id) };
   if (task.state !== 'done') {
     // Reopened at the owner's request: the earlier result and its check stay in the record, and the new head is checked again.
     const reopened = (task.findings ?? []).find((finding) => finding?.id === OWNER_CHANGES);
