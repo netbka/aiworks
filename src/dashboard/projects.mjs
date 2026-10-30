@@ -32,9 +32,14 @@ import { alsoSummary, nowView } from './copy.mjs';
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
 const TERMINAL = ['finished', 'cancelled'];
 /** Display order: projects that need the owner, then those with work running, then the rest by last activity. */
-const RANK = { 'needs-you': 0, 'needs-setup': 0, checking: 0, running: 1, 'possibly-stuck': 1, stopped: 1, fault: 1 };
-/** A project's state key from the Now state it shows; every other Now state of active work is running. */
-const KEYS = { paused: 'paused', 'possibly-stuck': 'possibly-stuck', 'supervisor-stopped': 'stopped', 'paused-stopped': 'stopped', 'supervisor-fault': 'fault' };
+const RANK = { 'needs-you': 0, 'needs-setup': 0, checking: 0, running: 1, 'possibly-stuck': 1, stopped: 1, fault: 1, held: 1 };
+/**
+ * A project's state key from the Now state it shows; every other Now state of active work is running. A step stopped for
+ * good is `held` and work AIWorks has not checked on is its `fault`: AIWorks's own state, never `needs-you` (AW-016).
+ */
+const KEYS = { paused: 'paused', 'possibly-stuck': 'possibly-stuck', 'supervisor-stopped': 'stopped', 'paused-stopped': 'stopped', 'supervisor-fault': 'fault',
+  'failed-attempts': 'held', 'recorded-blocker': 'held', 'no-worker-can-run': 'held', 'others-continue': 'held',
+  'work-lapsed': 'fault', 'paused-work-lapsed': 'fault', 'work-not-picked-up': 'fault' };
 
 /**
  * The repositories the supervisor's config.json lists for this computer (`repositories.<owner/name>`). Names only:
@@ -59,8 +64,8 @@ const lastActivity = (campaigns) => Math.max(0, ...campaigns.map((c) => Date.par
  * The one next action for a project whose Needs you items are `items`: Needs you, where each item is resolved on its
  * card inside AIWorks. A GitHub pull request or issue is never the primary action (owner.mjs keeps it as reference).
  */
-function needsAction(items) {
-  return { label: items.length === 1 ? 'Resolve in Needs you' : `Resolve all ${items.length} in Needs you`, route: { screen: 'needs' } };
+function needsAction(count) {
+  return { label: count === 1 ? 'Resolve in Needs you' : `Resolve all ${count} in Needs you`, route: { screen: 'needs' } };
 }
 
 /**
@@ -98,7 +103,7 @@ const alsoOf = (repository, supervisor, owner, now) =>
  * `removed`, while it can still be removed and no work was registered in it since. A row that can be removed says
  * `removable`.
  */
-export function projectsView(supervisor, owner, { repositories = [], records = [], removed = {}, addProject = false, localWork = {}, now = Date.now() } = {}) {
+export function projectsView(supervisor, owner, { repositories = [], records = [], removed = {}, addProject = false, localWork = {}, now = Date.now(), mergeGate = null } = {}) {
   if (!supervisor?.available) return { available: false, ...(addProject ? { addProject } : {}), projects: [] };
   const groups = new Map();
   const group = (repository) => {
@@ -110,17 +115,21 @@ export function projectsView(supervisor, owner, { repositories = [], records = [
   for (const repository of repositories) if (REPOSITORY.test(repository)) group(repository).configured = true;
   for (const c of supervisor.campaigns) if (REPOSITORY.test(c.repository ?? '')) group(c.repository).campaigns.push(c);
   for (const record of records) if (record.source_kind === 'github' && REPOSITORY.test(record.github_repository ?? '')) group(record.github_repository).record = record;
-  const items = owner?.items ?? [], hidden = [];
+  // Each row's count is its share of the one owner-action set (owner.mjs `attention`), the same items Needs you lists.
+  const attention = owner?.attention?.projects ?? {}, hidden = [];
+  // Who merges checked results in a project (`details.merges`), from the merge gate's settings (merge.mjs mergeSettings):
+  // AIWorks where the owner opted the repository in, otherwise the project's own rules.
+  const merging = (repository) => mergeGate?.enabled && mergeGate.repositories?.has(repository.toLowerCase()) ? 'aiworks' : 'own-rules';
   const projects = [...groups.values()].map(({ repository, configured, campaigns, record }) => {
     const route = (tab) => ({ screen: 'project', project: repository, tab });
-    const mine = items.filter((item) => item.repository?.toLowerCase() === repository.toLowerCase());
+    const mine = attention[repository.toLowerCase()] ?? 0;
     const active = campaigns.filter((c) => !TERMINAL.includes(c.control));
     const connection = record ? connectionView(record, { path: false }) : null;
     // Results whose merge is still being checked: until the check ends, the state says it is partial.
     const checking = campaigns.reduce((n, c) => n + (owner?.campaigns?.[c.id]?.counts?.checking ?? 0), 0);
     let state, action;
-    if (mine.length) {
-      const needs = mine.length === 1 ? 'One thing needs you' : `${mine.length} things need you`, more = alsoOf(repository, supervisor, owner, now);
+    if (mine) {
+      const needs = mine === 1 ? 'One thing needs you' : `${mine} things need you`, more = alsoOf(repository, supervisor, owner, now);
       const text = checking ? `${needs} so far.` : `${needs}.`;
       state = { key: 'needs-you', text: [text, more ? `${more}.` : null, checking ? checkingText(checking) : null].filter(Boolean).join(' ') };
       action = needsAction(mine);
@@ -152,7 +161,7 @@ export function projectsView(supervisor, owner, { repositories = [], records = [
       return null;
     }
     return { id: repository, name: repository.split('/')[1], repository, kind: 'GitHub', state, action, lastActivityAt: lastActivity(campaigns),
-      details: { owner: repository.split('/')[0], work: campaigns.length, configured, needsYou: mine.length, checking }, ...(connection ? { connection } : {}),
+      details: { owner: repository.split('/')[0], work: campaigns.length, configured, needsYou: mine, checking, merges: merging(repository) }, ...(connection ? { connection } : {}),
       ...(removable ? { removable } : {}) };
   }).filter(Boolean);
   // Two repositories with the same name under different owners keep their owner in the name.
@@ -165,15 +174,16 @@ export function projectsView(supervisor, owner, { repositories = [], records = [
     const work = localWork[record.id] ?? [], waiting = work.flatMap((c) => c.results).filter((row) => row.action === 'apply').length;
     const active = work.find((c) => !['finished', 'cancelled'].includes(c.control));
     // Open decisions of its work first: they hold a step until the owner answers (work.mjs localWork).
-    const decisions = work.filter((c) => !['finished', 'cancelled'].includes(c.control)).flatMap((c) => c.steps).filter((step) => step.decision && !step.decision.answered).length;
+    const decisions = work.filter((c) => ['registered', 'paused'].includes(c.control)).flatMap((c) => c.steps).filter((step) => step.decision && !step.decision.answered).length;
+    const count = attention[record.id] ?? 0;
     projects.push({ id: record.id, name: record.name, repository: null, kind: connection.kind,
       state: connection.status !== 'ready' ? { key: connection.status, text: connection.message }
-        : decisions ? { key: 'needs-you', text: decisions === 1 ? 'A step waits for your decision.' : `${decisions} steps wait for your decision.` }
-        : waiting ? { key: 'needs-you', text: waiting === 1 ? 'A checked result waits for your review.' : `${waiting} checked results wait for your review.` }
+        : count && decisions ? { key: 'needs-you', text: decisions === 1 ? 'A step waits for your decision.' : `${decisions} steps wait for your decision.` }
+        : count && waiting ? { key: 'needs-you', text: waiting === 1 ? 'A checked result waits for your review.' : `${waiting} checked results wait for your review.` }
           : active ? { key: 'running', text: `Working on: ${/[.!?…]$/.test(active.outcome) ? active.outcome : `${active.outcome}.`}` }
             : connection.startWork.allowed ? { key: 'no-work', text: 'No work yet.' } : { key: 'cannot-start', text: connection.startWork.text },
       action: { label: 'Open project', route: { screen: 'project', project: record.id, tab: 'overview' } }, lastActivityAt: record.updated_at ?? null,
-      details: { owner: null, work: 0, configured: false, needsYou: decisions }, connection });
+      details: { owner: null, work: 0, configured: false, needsYou: count, merges: 'apply' }, connection });
   }
   projects.sort((a, b) => (RANK[a.state.key] ?? 2) - (RANK[b.state.key] ?? 2) || (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0) || a.name.localeCompare(b.name));
   return { available: true, ...(addProject ? { addProject } : {}), projects, removed: hidden.sort((a, b) => a.name.localeCompare(b.name)) };
