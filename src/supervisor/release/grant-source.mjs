@@ -10,6 +10,8 @@ import { releasePath } from './paths.mjs';
 export function projectReleasePointer(controller, declaration) {
   const repository = declaration.target.repository;
   const entries = registryEntriesFor(repository, controller.governanceRoot);
+  // A project with no registry entry has no standing grant: its own publication instructions stand for one (AW-018).
+  if (entries.length === 0) return null;
   if (entries.length !== 1) throw new Error('Release needs one unambiguous registered project');
   const contract = entries[0];
   governanceForContract(contract, controller.governanceRoot, repository);
