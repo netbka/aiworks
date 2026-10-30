@@ -123,10 +123,13 @@ function planView(store, record, request, draft, textChecks) {
   const d = draft.declaration, envelope = d.envelope ?? {};
   const providers = (d.executor?.kind === 'cli-chain' ? d.executor.providers : [d.executor]).filter(Boolean)
     .map((provider) => safeText([provider.kind, provider.model].filter(Boolean).join(' '), 80));
+  // The model choice beside the providers (intake.mjs draftRouting): automatic among these models, checks on the strongest.
+  const routing = d.routing?.mode === 'auto' ? { models: (d.routing.candidates ?? []).slice(0, 16).map((candidate) => safeText(candidate.model, 80)),
+    checkTier: Number.isSafeInteger(d.routing.pin?.verifier?.tier) ? d.routing.pin.verifier.tier : null } : null;
   return { ...view, version: draft.version, planOnly: Boolean(draft.plan_only), authorityDigest: draft.authority_digest, fingerprint: draft.authority_digest.slice(0, 12),
     campaignId: safeText(campaignId, 64), summary: summary.text, plan: planText.text, textCheck, outcome: safeText(envelope.outcome, 300),
     acceptance: list(envelope.acceptance), writes: list(envelope.writes, 200, 64), denyWrites: list(envelope.denyWrites, 200, 64),
-    deliverables: list(envelope.deliverables, 20, 4), providers, limits: d.limits ? Object.fromEntries(Object.entries(d.limits).filter(([, value]) => Number.isFinite(value))) : null,
+    deliverables: list(envelope.deliverables, 20, 4), providers, routing, limits: d.limits ? Object.fromEntries(Object.entries(d.limits).filter(([, value]) => Number.isFinite(value))) : null,
     release: 'review-only', steps: (Array.isArray(draft.steps) ? draft.steps : []).slice(0, 32).map((step) => typeof step === 'string' ? { title: safeText(step), check: null }
       : { title: safeText(step?.title ?? step?.outcome ?? ''), check: step?.check ? safeText(step.check) : null }),
     tasks: (Array.isArray(d.tasks) ? d.tasks : []).slice(0, 32).map((task) => ({ id: safeText(task.id, 64), title: safeText(task.outcome ?? task.title ?? task.id), deliverable: safeText(task.deliverable, 20),
