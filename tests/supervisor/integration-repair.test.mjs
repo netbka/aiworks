@@ -245,7 +245,9 @@ test('integration repair is bounded by maxRepairRounds', async (t) => {
   await r.tick();
   const [conflict] = r.journal(B, 'integration-conflict');
   assert.equal(conflict.stalled, true);
-  assert.match(r.store.task(B, 'B1').blocked.reason, /integration conflict with main after 0 repair rounds/);
+  // AW-017: past the bound the step does not wait for the owner; it ends as not done and nothing of it merges.
+  assert.equal(r.store.task(B, 'B1').state, 'cancelled');
+  assert.match(r.store.task(B, 'B1').last_error, /^not done: integration conflict with main after 0 repair rounds/);
   assert.equal(r.store.openOperations(B).length, 0, 'no worker is dispatched past the bound');
 });
 

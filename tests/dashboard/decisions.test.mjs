@@ -157,20 +157,20 @@ test('scoped pause accepts its largest valid selection and refuses a larger body
   assert.equal(store.get("SELECT COUNT(*) AS n FROM events WHERE kind = 'dashboard-command'").n, 0);
 });
 
-test('AW-016: AIWorks answers only a running step\'s reversible suggestion itself, once, and the owner sees what it chose', (t) => {
+test('AW-017: AIWorks answers a running step\'s decisions itself, sends one without a suggestion back once, and stops answering at the no-progress limit', (t) => {
   const env = environment();
   const store = new Store(join(env.dataDir, 'supervisor.db'));
   t.after(() => { store.close(); env.cleanup(); });
   const d = declaration(); campaignStart(store, d);
   const block = (taskId, blocked) => { const task = store.task(d.campaignId, taskId); store.patch('tasks', { campaign_id: d.campaignId, task_id: taskId }, task.version, { blocked }, Date.now()); };
-  block('T1', { class: 'B3', reason: 'owner-reserved: palette', at: 1000, decision: { ...DECISION, reversible: true } });
-  block('T2', { class: 'B3', reason: 'owner-reserved: spending', at: 2000, decision: DECISION });
+  block('T1', { class: 'B3', reason: 'owner-reserved: palette', at: 1000, decision: DECISION });
+  block('T2', { class: 'B3', reason: 'owner-reserved: which data', at: 2000 });
   const controller = new Controller({ store, config: env.config, dataDir: env.dataDir, fault: null });
   const lease = store.acquireLease(d.campaignId, controller.instanceId, Date.now(), 60_000);
   const ctx = { id: d.campaignId, generation: lease.generation };
   const campaign = () => store.campaign(d.campaignId);
 
-  // Paused work is never answered for the owner.
+  // Paused work is never answered.
   store.patch('campaigns', { id: d.campaignId }, campaign().version, { control: 'paused' }, Date.now());
   controller.answerSuggested(ctx);
   assert.equal(store.task(d.campaignId, 'T1').blocked.class, 'B3', 'nothing is answered while the work is paused');
@@ -178,22 +178,24 @@ test('AW-016: AIWorks answers only a running step\'s reversible suggestion itsel
 
   controller.answerSuggested(ctx);
   controller.answerSuggested(ctx);
-  assert.equal(store.task(d.campaignId, 'T1').blocked, null, 'the reversible suggestion was taken');
-  assert.equal(store.task(d.campaignId, 'T2').blocked.class, 'B3', 'a suggestion not marked reversible waits for the owner');
+  assert.equal(store.task(d.campaignId, 'T1').blocked, null, 'the suggestion was taken, reversible or not');
+  assert.equal(store.task(d.campaignId, 'T2').blocked, null, 'a decision without a suggestion goes back to its step');
   const guidance = pendingInstructions(store, campaign(), 'T1', 'implement');
   assert.equal(guidance.length, 1, 'answered once, as guidance to the next run');
   assert.match(guidance[0].payload.text, /AIWorks answered.*Neutral \(neutral\)/);
-  assert.equal(pendingInstructions(store, campaign(), 'T2').length, 0);
-
+  assert.equal(pendingInstructions(store, campaign(), 'T2', 'implement').length, 1, 'sent back once, with guidance to decide within the packet');
   const decided = supervisorSnapshot(env.dataDir).campaigns[0].autoDecisions;
-  assert.deepEqual(decided.map((item) => [item.taskId, item.chosen, item.others]), [['T1', 'Neutral', ['Brand']]], 'the owner can read and change what AIWorks chose');
+  assert.deepEqual(decided.map((item) => [item.taskId, item.chosen, item.others]), [['T1', 'Neutral', ['Brand']]], 'the owner can read what AIWorks chose');
 
-  // A second decision on the same step, under the same approval, waits for the owner: no answer loop of paid runs.
-  block('T1', { class: 'B3', reason: 'owner-reserved: palette again', at: 5000, decision: { ...DECISION, reversible: true } });
+  // A second stop without a suggestion is not sent back again: the step ends, with a follow-up, and nothing waits.
+  block('T2', { class: 'B3', reason: 'owner-reserved: which data again', at: 3000 });
   controller.answerSuggested(ctx);
-  assert.equal(store.task(d.campaignId, 'T1').blocked?.class, 'B3', 'one automatic answer per step');
-  // A "verifier still rejects" stall at the repair limit is never answered for the owner, reversible or not.
-  block('T2', { class: 'stalled', reason: 'verifier still rejects after 2 repair rounds', at: 6000, decision: { ...DECISION, reversible: true } });
-  controller.answerSuggested(ctx);
-  assert.equal(store.task(d.campaignId, 'T2').blocked?.class, 'stalled', 'the owner\'s repair limit is never raised by AIWorks');
+  assert.equal(store.task(d.campaignId, 'T2').state, 'cancelled', 'one send-back per step');
+  // Automatic answers on one step stop at the no-progress limit: no answer loop of paid runs.
+  for (let i = 1; i <= 4; i++) {
+    block('T1', { class: 'B3', reason: `owner-reserved: palette ${i}`, at: 4000 + i, decision: DECISION });
+    controller.answerSuggested(ctx);
+  }
+  assert.equal(store.task(d.campaignId, 'T1').state, 'cancelled', 'past the limit the step is finished instead of answered again');
+  assert.equal(store.all("SELECT 1 FROM journal WHERE campaign_id = ? AND kind = 'decision-answered'", d.campaignId).length, 4, 'four automatic answers at most');
 });
