@@ -25,26 +25,32 @@ export function commitShape({ git, repoPath, sha }) {
   return { sha, tree, parents: parents.split(/\s+/).slice(1) };
 }
 
-/** Whether `sha` is the merge commit planned for `trusted` and `verified`: exactly those two parents, the verified tree. */
-export function isPlannedMerge({ git, repoPath, sha, trusted, verified }) {
-  const shape = commitShape({ git, repoPath, sha }), tree = treeOf(git, repoPath, verified);
+/**
+ * Whether `sha` is the merge commit planned for `trusted` and `verified`: exactly those two parents and the verified
+ * tree, or, with `tree` (the merge result a passed refresh gate ran on, ../merge-refresh.mjs), exactly that tree.
+ */
+export function isPlannedMerge({ git, repoPath, sha, trusted, verified, tree: gated = null }) {
+  const shape = commitShape({ git, repoPath, sha });
+  const tree = gated === null ? treeOf(git, repoPath, verified) : (SHA.test(gated) ? gated : null);
   return Boolean(shape && SHA.test(tree ?? '') && shape.tree === tree && shape.parents.length === 2
     && shape.parents[0] === trusted && shape.parents[1] === verified);
 }
 
 /**
- * Write the merge commit: the verified tree, the trusted tip as first parent and the verified head as second. It writes
- * objects only; no ref moves. Returns { ok: true, commit, tree }, or { ok: false, reason } when the commit cannot be made
- * or its tree is not the verified tree, so nothing may move.
+ * Write the merge commit: the verified tree, the trusted tip as first parent and the verified head as second. With
+ * `tree`, the full SHA of the merge result a passed refresh gate ran on (the trusted tip moved under the verified head),
+ * that tree instead, with the same parents. It writes objects only; no ref moves. Returns { ok: true, commit, tree }, or
+ * { ok: false, reason } when the commit cannot be made or its tree is not the expected tree, so nothing may move.
  */
-export function writeMergeCommit({ git, repoPath, trusted, verified, message }) {
+export function writeMergeCommit({ git, repoPath, trusted, verified, message, tree: gated = null }) {
   if (!SHA.test(trusted ?? '') || !SHA.test(verified ?? '')) return { ok: false, reason: 'a local merge needs the full trusted and verified SHAs' };
-  const tree = treeOf(git, repoPath, verified);
-  if (!SHA.test(tree ?? '')) return { ok: false, reason: `the verified tree of ${verified} cannot be read` };
-  const out = exec(git, ['commit-tree', `${verified}^{tree}`, '-p', trusted, '-p', verified, '-F', '-'], { cwd: repoPath, input: `${message}\n`, timeoutMs: 60_000 });
+  if (gated !== null && !SHA.test(gated)) return { ok: false, reason: 'a refreshed local merge needs the full SHA of the gated tree' };
+  const tree = gated === null ? treeOf(git, repoPath, verified) : treeOf(git, repoPath, gated);
+  if (!SHA.test(tree ?? '') || (gated !== null && tree !== gated)) return { ok: false, reason: `the ${gated ? 'gated' : 'verified'} tree of ${verified} cannot be read` };
+  const out = exec(git, ['commit-tree', gated ?? `${verified}^{tree}`, '-p', trusted, '-p', verified, '-F', '-'], { cwd: repoPath, input: `${message}\n`, timeoutMs: 60_000 });
   if (!out.ok || !SHA.test(out.stdout)) return { ok: false, reason: `commit-tree failed: ${out.stderr || out.error || `exit ${out.status}`}`.slice(0, 500) };
-  if (!isPlannedMerge({ git, repoPath, sha: out.stdout, trusted, verified })) {
-    return { ok: false, reason: `the merge commit ${out.stdout} does not carry the verified tree ${tree} with parents ${trusted} and ${verified}` };
+  if (!isPlannedMerge({ git, repoPath, sha: out.stdout, trusted, verified, tree: gated })) {
+    return { ok: false, reason: `the merge commit ${out.stdout} does not carry the ${gated ? 'gated' : 'verified'} tree ${tree} with parents ${trusted} and ${verified}` };
   }
   return { ok: true, commit: out.stdout, tree };
 }

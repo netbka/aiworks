@@ -5,7 +5,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Store } from '../../src/supervisor/store.mjs';
 import { campaignStart } from '../../src/supervisor/api.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
@@ -15,6 +16,7 @@ import { createItem, item, items, reviewItem } from '../../src/supervisor/work-l
 import { declaration, environment, runUntil, skipWithoutSqlite } from './helpers.mjs';
 
 const REPOSITORY = 'example-org/sampleapp';
+const GATE = [`"${process.execPath}"`, `"${join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-refresh-gate.mjs')}"`];
 const FORCE_TREE = 'AIWORKS_TEST_FORCE_TREE';
 const git = (cwd, ...args) => {
   const out = spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true });
@@ -183,6 +185,65 @@ test('LO L8: a crash after main moved records the same merge once; a moved trust
   assert.equal(task.state, 'pending');
   assert.equal(task.findings[0].id, 'integration-conflict');
   assert.equal(fresh.journal('merge-base-moved').length, 1);
+});
+
+test('LO L8 refresh: a trusted tip moved under a verified review merges only the gated merge result, once after a crash; a failed gate repairs', { skip: skipWithoutSqlite }, async (t) => {
+  /** A delivered review whose trusted tip then moves by a recorded owner commit that shares no file with it. */
+  const moved = async (mode) => {
+    const r = await delivered(t);
+    const state = join(r.env.tmp, 'refresh-gate');
+    mkdirSync(state);
+    writeFileSync(join(state, 'mode'), mode);
+    process.env.FAKE_REFRESH_STATE = state;
+    t.after(() => { delete process.env.FAKE_REFRESH_STATE; });
+    writeFileSync(join(r.env.repo, 'owner.txt'), 'recorded by the owner\n');
+    git(r.env.repo, 'add', 'owner.txt');
+    git(r.env.repo, 'commit', '-q', '-m', 'owner commit');
+    const owner = git(r.env.repo, 'rev-parse', 'main');
+    assert.equal(recordMainCommit(r.store, { repository: REPOSITORY, kind: 'owner', oldTip: r.anchor, newTip: owner, now: 2 }).recorded, true);
+    r.controller.merges = mergeSettings({ merges: { delegatedTo: 'supervisor', repositories: [REPOSITORY], refresh: { command: GATE } } });
+    // Starts the gate, waits until it recorded its exit code, then runs the pass that reads it.
+    const gated = async () => {
+      await r.pass();
+      const [started] = r.journal('merge-refresh-started');
+      assert.equal(started.base, owner);
+      assert.equal(git(r.env.repo, 'rev-parse', 'main'), owner, 'main waits while the gate runs');
+      for (let i = 0; i < 600 && !existsSync(join(started.path, 'gate-exit.log')); i++) await new Promise((done) => setTimeout(done, 50));
+      await r.pass();
+      return started;
+    };
+    return { ...r, owner, gated };
+  };
+
+  // A failed gate on the merge result leaves main unmoved and reopens the task for the integration repair.
+  const failing = await moved('fail');
+  await failing.gated();
+  assert.equal(git(failing.env.repo, 'rev-parse', 'main'), failing.owner);
+  assert.equal(failing.gateRows().length, 0);
+  assert.equal(failing.journal('merge-requested').length, 0);
+  assert.equal(failing.store.task(failing.id, 'T1').findings[0].id, 'integration-conflict');
+
+  // A passed gate: the merge commit of the trusted tip and the unchanged verified head carries exactly the gated tree.
+  // A crash after main moved records that merge once on restart and never writes a second one.
+  const passing = await moved('pass');
+  let crashed = 0;
+  passing.controller.injectFault = (name) => { if (name === 'after-merge' && !crashed++) throw new Error('synthetic crash after the ref move'); };
+  const started = await passing.gated();
+  assert.equal(crashed, 1);
+  const main = () => git(passing.env.repo, 'rev-parse', 'main');
+  const merge = main();
+  assert.deepEqual(git(passing.env.repo, 'rev-list', '--parents', '-n', '1', merge).split(' ').slice(1), [passing.owner, passing.sha]);
+  assert.equal(git(passing.env.repo, 'rev-parse', `${merge}^{tree}`), started.tree);
+  assert.equal(lines(join(passing.env.tmp, 'refresh-gate', 'runs.jsonl')).map((line) => JSON.parse(line).tree).at(-1), started.tree, 'the gate ran on that tree');
+  assert.equal(passing.gateRows().length, 0, 'the record rolled back with the crash');
+  await passing.pass();
+  await passing.pass();
+  assert.equal(main(), merge, 'no second merge commit');
+  assert.deepEqual(passing.gateRows().map((row) => [row.old_tip, row.new_tip, row.verified_sha]), [[passing.owner, merge, passing.sha]]);
+  assert.deepEqual(passing.journal('merged').map((entry) => [entry.mergeCommit, entry.reconciled]), [[merge, true]]);
+  assert.equal(passing.store.task(passing.id, 'T1').state, 'done', 'no AI repair round');
+  assert.equal(git(passing.env.repo, 'status', '--porcelain'), '', 'the checkout followed main');
+  assert.deepEqual(lines(passing.forbidden.log), []);
 });
 
 test('a maximal legal campaign and task id records its whole verified review and merges that exact head', { skip: skipWithoutSqlite }, async (t) => {
