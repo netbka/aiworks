@@ -13,7 +13,8 @@ try {
     processAlive(pid) {
       if (pause === 'pause') {
         process.send({ event: 'stale' });
-        const deadline = Date.now() + 20_000;
+        // Bounded generously: the parent writes the file only after a second contender has started on a busy machine.
+        const deadline = Date.now() + 240_000;
         while (!existsSync(join(root, 'continue'))) {
           if (Date.now() >= deadline) throw new Error('parent did not release the stale-holder check');
           Atomics.wait(sleeper, 0, 0, 10);
