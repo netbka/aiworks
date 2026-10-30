@@ -23,7 +23,7 @@ import { resolveCheckout } from './project-connect.mjs';
 import { passedTree, refreshSettings, refreshStep } from './merge-refresh.mjs';
 import { batchStep } from './merge-batch.mjs';
 import { ConflictError, FencedError } from './store.mjs';
-import { awaitingAcceptance, pendingChanges } from './result-review.mjs';
+import { awaitingAcceptance, mergeRefusal, pendingChanges } from './result-review.mjs';
 import { authorityChange } from './release/authority-path.mjs';
 
 const SHA = /^[0-9a-f]{40}$/;
@@ -89,6 +89,9 @@ function candidates(controller, repositories) {
       if (merged.has(`${task.task_id}:${task.verified_sha}`)) continue;
       // The owner asked for changes to this head (OWNER_UI_V2 WP4): it is never merged while the request waits.
       if (pendingChanges(store, id, task.task_id, task.verified_sha)) continue;
+      // A head whose full check failed, or that neither passed its check nor is a delivery with known defects (AW-017), never merges.
+      const refused = mergeRefusal(task);
+      if (refused) { wait(controller, { campaignId: id, task }, `never merged: ${refused}`); continue; }
       // The owner accepts results in this project (AW-015): a head they have not accepted waits, said once per reason.
       const held = awaitingAcceptance(store, campaign, task);
       if (held) { wait(controller, { campaignId: id, task }, held); continue; }
@@ -330,7 +333,7 @@ export function mergeNow(controller, item, baseSha) {
   // The request is committed before the call: after a crash the next pass reads the pull request before any retry.
   const still = () => {
     const c = store.campaign(campaignId), t = store.task(campaignId, task.task_id);
-    return ['registered', 'finished'].includes(c.control) && t.state === 'done' && !t.blocked && t.verified_sha === sha && t.pr_url === url
+    return ['registered', 'finished'].includes(c.control) && t.state === 'done' && !t.blocked && t.verified_sha === sha && t.pr_url === url && !mergeRefusal(t)
       && !pendingChanges(store, campaignId, task.task_id, sha) && !awaitingAcceptance(store, c, t)
       && (!controller.ci || ciMergeable(store, campaignId, task.task_id, sha));
   };
@@ -422,7 +425,7 @@ function mergeLocal(controller, item, settings, repoPath) {
   const tip = trustedTip(store, { git, repoPath, repository });
   if (tip.state !== 'TRUSTED') return wait(controller, item, `local main is not trusted (${tip.state}): ${tip.reason}`);
   if (authorityBlocked(controller, item, repoPath, tip.tip)) return false;
-  const stillDone = (t) => t.state === 'done' && !t.blocked && t.verified_sha === sha && t.pr_url === url;
+  const stillDone = (t) => t.state === 'done' && !t.blocked && t.verified_sha === sha && t.pr_url === url && !mergeRefusal(t);
   const still = () => ['registered', 'finished'].includes(store.campaign(campaignId).control) && stillDone(store.task(campaignId, task.task_id))
     && !pendingChanges(store, campaignId, task.task_id, sha);
   // A new merge also needs the owner's acceptance where they accept results (AW-015); a merge already made is recorded.
