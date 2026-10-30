@@ -928,8 +928,15 @@ A task that declares `web` is a web acceptance task: a browser worker opens the 
   browser scripts cannot read it. Login traffic stays on that exact origin, over HTTPS (HTTP is allowed only on
   loopback for local fixtures). A missing reference, unexpected redirect or unsuccessful login refuses browser
   handoff with a fixed diagnostic that never repeats helper or page error text. The ordinary browser isolation and
-  task URL scope remain in force. The pinned browser server is version 1.12.0, which applies URL restrictions to
-  service workers as well. It receives an explicit empty per-run configuration so global or ancestor settings cannot
+  task URL scope remain in force. The pinned browser server is version 1.12.0. Its URL allowlist binds the login
+  page and dedicated workers, but it starts a shared worker before its rules take hold, so a shared worker's fetch
+  and WebSocket left the origin. During pre-login the wrapper's CDP transport therefore hides service and shared
+  workers from that library's auto-attach, and its own session holds each one, and any worker it starts, at its first
+  instruction until per-worker network rules allow only the login origin; these also cover WebSocket handshakes and
+  redirects, which Fetch interception does not. One client resuming a held worker releases it for all, which is why
+  only this session may start one. A worker that cannot be bound stays paused and fails the login, before any
+  credential reference is resolved when it appears first. The browser's own extension workers are bound as well.
+  The guard leaves only after every login page and worker is gone. The browser server receives an explicit empty per-run configuration so global or ancestor settings cannot
   widen its scope. Code: `browser-login.mjs`, wired through both browser executors and
   `browser-mcp.mjs`; synthetic Chrome regression: `tests/supervisor/browser-login.test.mjs`.
 - **Audit.** AGY has built-in tools no rule can deny (web search, messages, subagents, its own browser), so the audit runs before any other classification and fails closed:
