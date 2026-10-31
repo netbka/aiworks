@@ -22,7 +22,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 export const GATE_PIPE = '\\\\.\\pipe\\aiworks-docker-gate';
 const DEFAULT_SLOTS = 2;
 
-/** `docker` from config.json: { slots, gate } with defaults (2 slots, on). */
+/** `docker` from config.json: { slots, gate } with defaults (2 slots, off). */
 export function gateSettings(config) {
   const value = config?.docker ?? {};
   const slots = Number.isSafeInteger(value.slots) && value.slots >= 1 && value.slots <= 16 ? value.slots : DEFAULT_SLOTS;
@@ -40,14 +40,16 @@ export function hostPipe(host) {
 const START = /^\/(?:v[\d.]+\/)?containers\/([^/?]+)\/start(?:\?|$)/;
 const BUILD = /^\/(?:v[\d.]+\/)?build(?:\?|$)/;
 const PROJECT = 'com.docker.compose.project';
+const TESTCONTAINERS = 'org.testcontainers.sessionId';
 
 /**
  * A gate in front of the engine at `engine` (a named pipe or socket path). `listen(server)` is left to the caller.
  * Returns { server, occupancy, acquire }: occupancy() is the set of slot keys in use now, acquire(key) resolves when `key`
  * may start. `pollMs` is how often a waiting start looks again; `graceMs` how long an admitted start counts before its
- * containers show as running.
+ * containers show as running. A start never waits longer than `maxWaitMs`: it is then forwarded with a log line, so two
+ * workers that each wait for the other's stack cannot hold each other forever.
  */
-export function createDockerGate({ engine, slots = DEFAULT_SLOTS, log = () => {}, now = Date.now, pollMs = 2_000, graceMs = 60_000 }) {
+export function createDockerGate({ engine, slots = DEFAULT_SLOTS, log = () => {}, now = Date.now, pollMs = 2_000, graceMs = 60_000, maxWaitMs = 600_000 }) {
   const admitted = new Map(); // key -> time admitted, until the engine shows it running or the grace ends
   const builds = new Set();
 
@@ -66,7 +68,9 @@ export function createDockerGate({ engine, slots = DEFAULT_SLOTS, log = () => {}
     req.end();
   });
 
-  const keyOf = (container) => (container.Labels?.[PROJECT] ? `project:${container.Labels[PROJECT]}` : `container:${container.Id}`);
+  // One slot per Compose project, per Testcontainers session (its reaper and every container it starts) or per loose container.
+  const keyOf = (container) => (container.Labels?.[PROJECT] ? `project:${container.Labels[PROJECT]}`
+    : container.Labels?.[TESTCONTAINERS] ? `testcontainers:${container.Labels[TESTCONTAINERS]}` : `container:${container.Id}`);
 
   async function occupancy() {
     const running = await engineJson('/containers/json');
@@ -81,8 +85,13 @@ export function createDockerGate({ engine, slots = DEFAULT_SLOTS, log = () => {}
 
   async function acquire(key, { closed = () => false } = {}) {
     let said = false;
+    const since = now();
     for (;;) {
       if (closed()) return false;
+      if (now() - since >= maxWaitMs) {
+        log(`waited ${Math.round(maxWaitMs / 60_000)} min for ${key}: forwarded without a slot`);
+        return true;
+      }
       const keys = await occupancy();
       // Checked and recorded with no await in between, so two starts never take the last slot together.
       if (keys.has(key)) return true;
@@ -102,6 +111,8 @@ export function createDockerGate({ engine, slots = DEFAULT_SLOTS, log = () => {}
       res.writeHead(answer.statusCode, answer.statusMessage, answer.rawHeaders);
       answer.pipe(res);
     });
+    // A client that goes away (an interrupted `docker logs -f` or `docker events`) closes its engine stream too.
+    res.on('close', () => { if (!res.writableFinished) upstream.destroy(); });
     upstream.on('error', (error) => {
       if (!res.headersSent) { res.writeHead(502, { 'content-type': 'application/json' }); res.end(JSON.stringify({ message: `docker gate: ${error.message}` })); }
       else res.destroy(error);
@@ -144,6 +155,8 @@ export function createDockerGate({ engine, slots = DEFAULT_SLOTS, log = () => {}
     });
     upstream.on('error', () => socket.destroy());
     socket.on('error', () => upstream.destroy());
+    socket.on('close', () => upstream.destroy());
+    upstream.on('close', () => socket.destroy());
   });
   server.keepAliveTimeout = 0;
   server.requestTimeout = 0;
@@ -170,6 +183,8 @@ export function gateListening(pipe = GATE_PIPE, timeoutMs = 2_000) {
 export function engineEndpoint(docker = ['docker'], pipe = GATE_PIPE) {
   const own = process.env.DOCKER_HOST ? hostPipe(process.env.DOCKER_HOST) : null;
   if (own && own.toLowerCase() !== pipe.toLowerCase()) return Promise.resolve(own);
+  // An operator engine that is not a named pipe (tcp://, ssh://) is one the gate cannot serve: refuse rather than pick another.
+  if (process.env.DOCKER_HOST && !own) return Promise.resolve(null);
   return new Promise((done) => {
     const env = { ...process.env };
     delete env.DOCKER_HOST;

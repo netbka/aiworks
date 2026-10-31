@@ -32,11 +32,12 @@ const helper = (mode, jobName, extra = {}) => new Promise((done) => {
     (error, stdout) => done(error ? null : stdout.trim()));
 });
 
-/** Job CPU times from the helper: Map jobName -> { cpu (100 ns units), active }. */
+/** Job CPU times from the helper: Map jobName -> { cpu (100 ns units), active }, or null when the helper failed. */
 async function readUsage(jobNames) {
   const out = new Map();
   if (!jobNames.length) return out;
   const text = await helper('Usage', jobNames.join(','));
+  if (text === null) return null;
   for (const line of (text ?? '').split(/\r?\n/)) {
     try { const row = JSON.parse(line); out.set(row.job, { cpu: Number(row.cpu), active: Number(row.active) }); } catch { /* not a usage line */ }
   }
@@ -67,14 +68,19 @@ export function decide({ shares, load, lowered, settings }) {
 export function createCpuMonitor({ settings = CPU_DEFAULTS, basePriority = 'belownormal', os = nodeOs, usage = readUsage,
   setPriority = (jobName, priorityClass) => helper('Priority', jobName, { priorityClass }), clock = Date.now, log = () => {} } = {}) {
   let last = null; // { at, host, jobs: Map jobName -> cpu }
-  let latest = null, busy = false;
+  let latest = null, busy = false, started = false;
   const lowered = new Set();
+  const base = basePriority === 'normal' ? 'normal' : 'belownormal';
   async function check(jobs) {
     if (busy) return null;
     busy = true;
     try {
       const now = clock(), host = hostTimes(os);
       const readings = await usage(jobs.map((job) => job.jobName));
+      if (!readings) return null; // the helper failed: nothing is known, nothing is forgotten
+      // Runners outlive a restart of serve, and the lowered set does not: the first check puts every worker back on its
+      // starting priority, so none stays at idle from before.
+      if (!started) { started = true; for (const name of readings.keys()) await setPriority(name, base); }
       for (const name of [...lowered]) if (!readings.has(name)) lowered.delete(name); // the run ended
       const previous = last;
       last = { at: now, host, jobs: new Map([...readings].map(([name, row]) => [name, row.cpu])) };
@@ -97,7 +103,7 @@ export function createCpuMonitor({ settings = CPU_DEFAULTS, basePriority = 'belo
         actions.push({ kind: 'worker-cpu-lowered', op: byJob.get(lower) ?? null, share: shares.get(lower), load });
       }
       for (const name of restore) {
-        if (await setPriority(name, basePriority === 'normal' ? 'normal' : 'belownormal') === 'set') {
+        if (await setPriority(name, base) === 'set') {
           lowered.delete(name);
           actions.push({ kind: 'worker-cpu-restored', op: byJob.get(name) ?? null, load });
         }
