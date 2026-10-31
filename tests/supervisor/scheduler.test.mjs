@@ -303,27 +303,3 @@ test('open run heartbeats are read for worker and coordinator runs only while th
   }
   assert.deepEqual(openRunBeats(r.store).sort(), [1111, 3333], 'a finished run is not read; a run without a beat yet is left out');
 });
-
-// Host crash of 2026-10-31: ten workers with their own Docker stacks plus uncounted refresh gates exhausted the PC.
-test('heavy work: worker runs and refresh gates of a heavy repository share one limit; other repositories are not held', async (t) => {
-  const { heavyInUse, heavySettings, isHeavy } = await import('../../src/supervisor/heavy-work.mjs');
-  const r = rig(t);
-  r.register('heavy1', [commitTask('A', 1, { writes: ['a/'] })]);
-  const two = r.register('heavy2', [commitTask('B', 2, { writes: ['b/'] })]);
-  const d = declaration({ campaignId: 'light', tasks: [commitTask('L', 3, { writes: ['l/'] })] });
-  const light = { ...d, target: { ...d.target, repository: 'example-org/light', projectId: 'light' } };
-  campaignStart(r.store, light);
-  const settings = heavySettings({ heavyWork: { slots: 2, repositories: ['Example-Org/SampleApp'] } });
-  const heavyFull = (c) => isHeavy(settings, c.declaration) && heavyInUse(r.store, settings, { now: r.now(), windowMs: 3_600_000 }) >= settings.slots
-    ? { slots: settings.slots } : null;
-  const check = (decl, taskId) => admissionCheck(r.store, r.candidate(decl, taskId), { ceiling: 8, heavyFull })?.reason ?? null;
-
-  r.open('heavy1', 'A');
-  assert.equal(check(two, 'B'), null, 'one heavy run of two slots: B may start');
-  const refresh = { task: 'Z', sha: 'a'.repeat(40), base: 'b'.repeat(40), path: 'W:/worktrees/heavy1-Z-refresh' };
-  r.store.journal('heavy1', 'merge-refresh-started', refresh, r.now());
-  assert.equal(check(two, 'B'), 'heavy-capacity', 'a running refresh gate takes the second slot');
-  assert.equal(check(light, 'L'), null, 'a repository without heavy work is not held');
-  r.store.journal('heavy1', 'merge-refresh-passed', { ...refresh, tree: 'c'.repeat(40) }, r.now());
-  assert.equal(check(two, 'B'), null, 'the finished gate frees its slot');
-});

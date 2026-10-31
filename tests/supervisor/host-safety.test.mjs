@@ -1,8 +1,8 @@
-// Stack cleanup takes Docker Compose stacks down with their volumes (heavy-work.mjs). It must never touch a stack that a
+// Stack cleanup takes Docker Compose stacks down with their volumes (host-safety.mjs). It must never touch a stack that a
 // running step uses, one outside AIWorks's worktree root, or a project name another checkout shares. No Docker is run.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createStackSweeper } from '../../src/supervisor/heavy-work.mjs';
+import { createStackSweeper } from '../../src/supervisor/host-safety.mjs';
 
 test('stack cleanup removes only stray stacks inside the worktree root, never one in use, outside it or shared', async () => {
   const root = 'W:/worktrees/sampleapp';
