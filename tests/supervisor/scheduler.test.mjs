@@ -222,7 +222,7 @@ test('host pressure stops new admission and leaves running work alone', async (t
 
 test('the host sampler reports memory, CPU over a full window, disk on every volume and late heartbeats, in that order', async () => {
   const { createHostSampler, PRESSURE_SIGNALS, PRESSURE_DEFAULTS } = await import('../../src/supervisor/host.mjs');
-  assert.deepEqual(PRESSURE_SIGNALS, ['memory', 'cpu', 'disk', 'heartbeats']);
+  assert.deepEqual(PRESSURE_SIGNALS, ['memory', 'cpu', 'disk', 'ports', 'docker', 'heartbeats']);
   assert.equal(PRESSURE_DEFAULTS.minFreeMemoryBytes, 2 * GiB);
   const h = fakeHost();
   h.disk['V:/other'] = 100 * GiB;
@@ -252,6 +252,15 @@ test('the host sampler reports memory, CPU over a full window, disk on every vol
 
   h.free = 1 * GiB; h.disk['W:/worktrees'] = 1;
   assert.equal(host.sample({ now: 600_001, beats: [600_000 - 35_000] })?.signal, 'memory', 'the first signal that applies');
+
+  // Ports and Docker come from the probe's last reading (2026-10-31: TCP ports ran out while memory and CPU looked fine).
+  let reading = null;
+  const probed = createHostSampler({ os: fakeHost().os, fs: fakeHost().fs, probe: { latest: () => reading } });
+  reading = { at: 1_000, ports: { tcp: { used: 9_000, range: 16_384 }, udp: { used: 10, range: 16_384 } }, docker: { containers: 2 } };
+  assert.deepEqual(probed.sample({ now: 1_000 }), { signal: 'ports', detail: { protocol: 'tcp', used: 9_000, range: 16_384 } }, 'over half the ephemeral ports');
+  assert.equal(probed.sample({ now: 1_000 + 181_000 }), null, 'a stale reading says nothing');
+  reading = { at: 2_000, ports: null, docker: { unresponsive: true } };
+  assert.equal(probed.sample({ now: 2_000 })?.signal, 'docker', 'a docker that does not answer');
 });
 
 test('pressure thresholds come from config.scheduler.pressure; invalid values keep the defaults', async () => {
@@ -293,4 +302,28 @@ test('open run heartbeats are read for worker and coordinator runs only while th
     r.store.insert('coordinator_runs', { id, state, session_id: id, run_dir: runDir(id, beat), workspace: dirs, message_ids: [], created_at: 0, updated_at: 0 });
   }
   assert.deepEqual(openRunBeats(r.store).sort(), [1111, 3333], 'a finished run is not read; a run without a beat yet is left out');
+});
+
+// Host crash of 2026-10-31: ten workers with their own Docker stacks plus uncounted refresh gates exhausted the PC.
+test('heavy work: worker runs and refresh gates of a heavy repository share one limit; other repositories are not held', async (t) => {
+  const { heavyInUse, heavySettings, isHeavy } = await import('../../src/supervisor/heavy-work.mjs');
+  const r = rig(t);
+  r.register('heavy1', [commitTask('A', 1, { writes: ['a/'] })]);
+  const two = r.register('heavy2', [commitTask('B', 2, { writes: ['b/'] })]);
+  const d = declaration({ campaignId: 'light', tasks: [commitTask('L', 3, { writes: ['l/'] })] });
+  const light = { ...d, target: { ...d.target, repository: 'example-org/light', projectId: 'light' } };
+  campaignStart(r.store, light);
+  const settings = heavySettings({ heavyWork: { slots: 2, repositories: ['Example-Org/SampleApp'] } });
+  const heavyFull = (c) => isHeavy(settings, c.declaration) && heavyInUse(r.store, settings, { now: r.now(), windowMs: 3_600_000 }) >= settings.slots
+    ? { slots: settings.slots } : null;
+  const check = (decl, taskId) => admissionCheck(r.store, r.candidate(decl, taskId), { ceiling: 8, heavyFull })?.reason ?? null;
+
+  r.open('heavy1', 'A');
+  assert.equal(check(two, 'B'), null, 'one heavy run of two slots: B may start');
+  const refresh = { task: 'Z', sha: 'a'.repeat(40), base: 'b'.repeat(40), path: 'W:/worktrees/heavy1-Z-refresh' };
+  r.store.journal('heavy1', 'merge-refresh-started', refresh, r.now());
+  assert.equal(check(two, 'B'), 'heavy-capacity', 'a running refresh gate takes the second slot');
+  assert.equal(check(light, 'L'), null, 'a repository without heavy work is not held');
+  r.store.journal('heavy1', 'merge-refresh-passed', { ...refresh, tree: 'c'.repeat(40) }, r.now());
+  assert.equal(check(two, 'B'), null, 'the finished gate frees its slot');
 });

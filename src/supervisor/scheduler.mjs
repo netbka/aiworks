@@ -14,7 +14,7 @@ import { openRunBeats } from './host.mjs';
  * The wait reasons, in the order they are checked. A waiting step always has exactly one: the first that applies.
  * 'launch-turn' is the controller's, after the checks: admissible, but this tick already started one operation.
  */
-export const WAIT_REASONS = Object.freeze(['already-running', 'campaign-fanout', 'host-capacity', 'host-pressure', 'write-domain', 'provider-cooldown', 'provider-concurrency', 'launch-turn']);
+export const WAIT_REASONS = Object.freeze(['already-running', 'campaign-fanout', 'host-capacity', 'heavy-capacity', 'host-pressure', 'write-domain', 'provider-cooldown', 'provider-concurrency', 'launch-turn']);
 
 export const schedulerEnabled = (config) => config?.scheduler?.enabled === true;
 
@@ -144,15 +144,18 @@ export function orderCandidates(store, candidates, config = null) {
  * hostPressure sample (null: none), which can only refuse; `integrated(campaignId, taskRow, declaration)` releases a published domain once it is in its base,
  * and `gateOnly(declaration)` releases a cancelled campaign's published domain in a target only the merge gate integrates (domainHolders).
  * `accountFull(candidate)` returns null, or the account of the provider the candidate would get when that account
- * throttled earlier and is at its learned limit (accounts.mjs accountFull, slice RUN8).
+ * throttled earlier and is at its learned limit (accounts.mjs accountFull, slice RUN8). `heavyFull(candidate)` returns null, or
+ * { slots } when the candidate's repository does heavy work and every heavy slot is in use (heavy-work.mjs).
  */
-export function admissionCheck(store, candidate, { ceiling, pressure = null, providerWaiting = () => false, accountFull = () => null, integrated = () => false, gateOnly = () => false }) {
+export function admissionCheck(store, candidate, { ceiling, pressure = null, providerWaiting = () => false, accountFull = () => null, heavyFull = () => null, integrated = () => false, gateOnly = () => false }) {
   const open = store.all("SELECT campaign_id, task_id FROM operations WHERE state IN ('recorded', 'dispatched')");
   if (open.some((op) => op.campaign_id === candidate.campaignId && op.task_id === candidate.taskId)) return { reason: 'already-running' };
   const bound = fanoutBound(candidate.declaration, ceiling);
   const fanout = currentFanout(store, candidate.campaignId, bound);
   if (open.filter((op) => op.campaign_id === candidate.campaignId).length >= fanout) return { reason: 'campaign-fanout', detail: { fanout } };
   if (open.length >= ceiling) return { reason: 'host-capacity', detail: { ceiling } };
+  const heavy = heavyFull(candidate);
+  if (heavy) return { reason: 'heavy-capacity', detail: heavy };
   if (pressure) return { reason: 'host-pressure', detail: pressure };
   if (candidate.kind === 'implement') {
     const spec = candidate.declaration.tasks.find((task) => task.id === candidate.taskId);
