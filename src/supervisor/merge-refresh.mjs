@@ -111,12 +111,17 @@ export function refreshStep(controller, ctx, item, repoPath, baseSha, settings) 
   if (done) return { next: 'repair', detail: done.detail.reason };
   const fail = (reason, extra = {}) => {
     journal('merge-refresh-failed', { reason, ...extra });
+    controller.heavyChanged?.(decl);
     controller.log(`refresh of ${campaignId}/${task.task_id} against ${baseSha}: ${reason}`);
     return { next: 'repair', detail: reason };
   };
 
   const started = seen.find((row) => row.kind === 'merge-refresh-started');
   if (!started) {
+    // A refresh gate of a heavy repository takes one of the heavy-work slots its workers use (heavy-work.mjs). The merge
+    // pass runs before admission in every tick, so a waiting refresh gets the first slot that frees.
+    const heavy = controller.heavyFull?.(decl);
+    if (heavy) return { next: 'wait', reason: `every heavy-work slot is in use (${heavy.used} of ${heavy.slots}); the gate on the merge result starts when one is free` };
     let plan;
     try { plan = refreshPlan(git, repoPath, baseSha, sha); } catch (error) { return fail(`the merge could not be computed: ${error.message}`); }
     if (!plan.tree) return fail(plan.reason, plan.shared ? { paths: plan.shared } : {});
@@ -158,6 +163,7 @@ export function refreshStep(controller, ctx, item, repoPath, baseSha, settings) 
     return fail(`the gate passed, but its checkout is no longer at the merge result ${started.detail.commit}`);
   }
   journal('merge-refresh-passed', { tree: started.detail.tree, summary: run.summary });
+  controller.heavyChanged?.(decl);
   controller.log(`refresh of ${campaignId}/${task.task_id}: the merge with ${baseSha} passed the gate`);
   return { tree: started.detail.tree, next: 'merge' };
 }

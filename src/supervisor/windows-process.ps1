@@ -143,7 +143,7 @@ public static class SupervisorProcess {
       return process == IntPtr.Zero ? "not-running" : "stopped";
     } finally { if (job != IntPtr.Zero) CloseHandle(job); if (process != IntPtr.Zero) CloseHandle(process); }
   }
-  static void Attach(string name, int parentPid, string expected) {
+  static void Attach(string name, int parentPid, string expected, ulong jobMemory, uint processes) {
     IntPtr parent = OpenProcess(QUERY | DUP_HANDLE, false, parentPid);
     if (parent == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
     IntPtr job = IntPtr.Zero;
@@ -155,6 +155,9 @@ public static class SupervisorProcess {
       if (job == IntPtr.Zero || error == 183) throw new Win32Exception(error);
       Limits limits = new Limits();
       limits.basic.flags = 0x2000; // KILL_ON_JOB_CLOSE; neither breakaway flag is permitted.
+      // Host safety (2026-10-31): optional caps on the whole worker tree's committed memory and live process count.
+      if (jobMemory > 0) { limits.basic.flags |= 0x200; limits.jobMemory = new UIntPtr(jobMemory); } // JOB_OBJECT_LIMIT_JOB_MEMORY
+      if (processes > 0) { limits.basic.flags |= 0x8; limits.basic.activeLimit = processes; }       // JOB_OBJECT_LIMIT_ACTIVE_PROCESS
       Check(SetInformationJobObject(job, 9, ref limits, (uint)Marshal.SizeOf(typeof(Limits))));
       IntPtr owned;
       Check(DuplicateHandle(GetCurrentProcess(), job, parent, out owned, 0, false, 2));
@@ -178,8 +181,8 @@ public static class SupervisorProcess {
     if (handle == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error());
     return handle;
   }
-  public static void Run(string name, int parentPid, string expected, string directory, string cwd, string[] argv, uint timeout) {
-    Attach(name, parentPid, expected);
+  public static void Run(string name, int parentPid, string expected, string directory, string cwd, string[] argv, uint timeout, ulong jobMemory, uint processes) {
+    Attach(name, parentPid, expected, jobMemory, processes);
     IntPtr input = IntPtr.Zero, output = IntPtr.Zero, error = IntPtr.Zero;
     IntPtr attributes = IntPtr.Zero, handles = IntPtr.Zero;
     ProcessInfo child = new ProcessInfo();
@@ -221,7 +224,9 @@ try {
   switch ($Mode) {
     'Run' {
       $spec = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $RunDir 'spec.json') | ConvertFrom-Json
-      [SupervisorProcess]::Run($JobName, $RunnerPid, $CreationTime, $RunDir, $spec.cwd, [string[]]$spec.argv, [uint32]$spec.timeoutMs)
+      $jobMemory = if ($spec.jobMemoryBytes) { [uint64]$spec.jobMemoryBytes } else { [uint64]0 }
+      $processes = if ($spec.activeProcesses) { [uint32]$spec.activeProcesses } else { [uint32]0 }
+      [SupervisorProcess]::Run($JobName, $RunnerPid, $CreationTime, $RunDir, $spec.cwd, [string[]]$spec.argv, [uint32]$spec.timeoutMs, $jobMemory, $processes)
     }
     'Drain' { [SupervisorProcess]::Drain($JobName) }
     'Stop' { [SupervisorProcess]::Stop($JobName, $RunnerPid, $CreationTime) }

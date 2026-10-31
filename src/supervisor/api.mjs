@@ -338,7 +338,8 @@ const BLOCKER_TEXT = {
   'research-context': 'Needs you: the research material is missing',
   'runtime-not-merged': 'Needs you: the supervisor code running here is not on main',
 };
-const PRESSURE_TEXT = { cpu: 'processor time', disk: 'disk space', heartbeats: 'headroom: workers report late' };
+const PRESSURE_TEXT = { cpu: 'processor time', disk: 'disk space', ports: 'network ports', docker: 'Docker headroom: Docker is slow or runs many containers',
+  heartbeats: 'headroom: workers report late' };
 const iso = (ms) => (ms ? new Date(ms).toISOString() : null);
 const reason = (code, text, next, until = null, holder = null) => ({ code, text, next, until: iso(until), holder });
 
@@ -368,6 +369,7 @@ function admissionReason(store, refusal) {
   switch (refusal.reason) {
     case 'campaign-fanout': return reason('campaign-fanout', 'Waiting for a free worker in this work program', 'Starts when a running step finishes');
     case 'host-capacity': return reason('host-capacity', 'This computer is running its maximum number of workers', 'Starts when one finishes');
+    case 'heavy-capacity': return reason('heavy-capacity', 'This computer is running its maximum number of heavy checks (Docker stacks)', 'Starts when one finishes');
     case 'host-pressure': return reason('host-pressure', `This computer is low on ${PRESSURE_TEXT[refusal.detail?.signal] ?? 'memory'}`, 'Starts when the computer has room again');
     case 'provider-concurrency': return reason('provider-concurrency', 'The AI provider asked to slow down', 'Starts when a run on that provider account finishes');
     case 'write-domain': {

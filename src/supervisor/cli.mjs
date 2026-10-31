@@ -14,6 +14,8 @@ import { CampaignError, campaignCancel, campaignPause, campaignRecheck, campaign
 import { assertRegisteredTarget } from './campaign.mjs';
 import { issueCampaignToken } from './campaign-token.mjs';
 import { Controller, DEFAULTS } from './controller.mjs';
+import { createHostProbe } from './host.mjs';
+import { heavySettings } from './heavy-work.mjs';
 import { configuredGovernanceRoot, requireGovernanceRoot } from './governance.mjs';
 import { clearCoordinatorViolation, coordinatorView, postOwnerMessage } from './coordinator.mjs';
 import { approvalFromFile, CODE_ROOT, declarationFromFile, revisionNotMerged, runtimeTrust } from './provenance.mjs';
@@ -373,7 +375,10 @@ async function serve() {
   const governanceRoot = explicitGovernance ? resolve(explicitGovernance) : config.governanceRoot;
   let governanceNote = 'governance checkout ok';
   try { requireGovernanceRoot(governanceRoot); } catch (error) { governanceNote = `${error.code}: no worker will be dispatched until it is fixed`; }
-  const controller = new Controller({ store, config, dataDir, log, codeRevision, governanceRoot, revisionCheck });
+  // Ports and Docker for the scheduler's pressure gate (host.mjs), read on their own timer; Docker only where heavy work is set.
+  const probe = createHostProbe({ docker: heavySettings(config) ? config.commands?.docker ?? ['docker'] : null });
+  probe.start();
+  const controller = new Controller({ store, config, dataDir, log, codeRevision, governanceRoot, revisionCheck, probe });
   log(`supervisor instance ${controller.instanceId} started (pid ${process.pid}, code ${codeRevision ?? 'unknown'}, data ${dataDir}, ${governanceNote})`);
   const unmerged = controller.unmergedRevision();
   if (unmerged) log(`no new work will start: ${unmerged} (AW-005)`);
@@ -390,6 +395,7 @@ async function serve() {
     for (let waited = 0; waited < controller.config.tickMs && !stopping; waited += 100) await new Promise((done) => setTimeout(done, 100));
   }
   await controller.drainReleases();
+  probe.stop();
   controller.release();
   store.close();
   log(`supervisor instance ${controller.instanceId} stopped`);
