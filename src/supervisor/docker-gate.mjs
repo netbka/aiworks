@@ -40,7 +40,8 @@ export function hostPipe(host) {
 const START = /^\/(?:v[\d.]+\/)?containers\/([^/?]+)\/start(?:\?|$)/;
 const BUILD = /^\/(?:v[\d.]+\/)?build(?:\?|$)/;
 const PROJECT = 'com.docker.compose.project';
-const TESTCONTAINERS = 'org.testcontainers.sessionId';
+// Java and Go label the session `org.testcontainers.sessionId`; Node and Python `org.testcontainers.session-id`.
+const TESTCONTAINERS = ['org.testcontainers.sessionId', 'org.testcontainers.session-id'];
 
 /**
  * A gate in front of the engine at `engine` (a named pipe or socket path). `listen(server)` is left to the caller.
@@ -69,8 +70,12 @@ export function createDockerGate({ engine, slots = DEFAULT_SLOTS, log = () => {}
   });
 
   // One slot per Compose project, per Testcontainers session (its reaper and every container it starts) or per loose container.
-  const keyOf = (container) => (container.Labels?.[PROJECT] ? `project:${container.Labels[PROJECT]}`
-    : container.Labels?.[TESTCONTAINERS] ? `testcontainers:${container.Labels[TESTCONTAINERS]}` : `container:${container.Id}`);
+  const keyOf = (container) => {
+    const labels = container.Labels ?? {};
+    if (labels[PROJECT]) return `project:${labels[PROJECT]}`;
+    const session = TESTCONTAINERS.map((name) => labels[name]).find(Boolean);
+    return session ? `testcontainers:${session}` : `container:${container.Id}`;
+  };
 
   async function occupancy() {
     const running = await engineJson('/containers/json');
