@@ -25,7 +25,7 @@ import { BEYOND_RULE, beyondConstraint, domainOf, outsideWrites, writeDomainCons
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, hostPressure, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
 import { hostSamplerFor } from './host.mjs';
 import { totalmem } from 'node:os';
-import { cleans, cleanupSettings, createStackSweeper, inside, openOperations, runningRefreshes, workerJobLimits } from './host-safety.mjs';
+import { cleans, cleanupSettings, createStackSweeper, inside, openOperations, runningBatches, runningRefreshes, workerJobLimits } from './host-safety.mjs';
 import { containsSecret, coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
 import { ANCHOR, MAX_DOCUMENT_BYTES, parseReference, resolveSection } from './reading.mjs';
 import { MAX_CITES } from './adapters/claude.mjs';
@@ -514,7 +514,7 @@ export class Controller {
     // (host-safety.mjs) and every worker job is capped.
     this.cleanup = cleanupSettings(this.config);
     this.workerJob = workerJobLimits(this.config, totalmem());
-    this.sweeper = this.cleanup ? createStackSweeper({ docker: commands.docker ?? ['docker'], log: (line) => this.log(line),
+    this.sweeper = this.cleanup ? createStackSweeper({ docker: commands.docker ?? ['docker'], log: (line) => this.log(line), cwd: this.stackCleanupDir(),
       roots: () => this.cleanupRoots(), keep: () => this.cleanupKeep() }) : null;
     this.sweptAt = -Infinity;
     // The worker CPU monitor (worker-cpu.mjs), which cli.mjs serve supplies: lowers the busiest worker's priority while the
@@ -560,6 +560,8 @@ export class Controller {
     }
     this.candidates = [];
     for (const id of ids) {
+      // One long step must not let the other campaigns' leases lapse: every held lease is extended before each step.
+      this.renewHeld();
       try {
         await this.step(id);
       } catch (error) {
@@ -575,7 +577,10 @@ export class Controller {
       }
     }
     if (this.sweeper && this.now() - this.sweptAt >= SWEEP_MS) { this.sweptAt = this.now(); this.sweeper.sweep(); }
-    if (this.cpuMonitor && this.now() - this.cpuCheckedAt >= this.cpuMonitor.settings.intervalMs) { this.cpuCheckedAt = this.now(); this.checkWorkerCpu(); }
+    if (this.cpuMonitor && this.now() - this.cpuCheckedAt >= this.cpuMonitor.settings.intervalMs) {
+      this.cpuCheckedAt = this.now();
+      try { this.checkWorkerCpu(); } catch (error) { this.log(`worker CPU check failed: ${error.message}`); }
+    }
     // Merge gate (aiworks#138): verified PRs in repositories the owner opted in, one per repository per pass.
     try { await mergePass(this); }
     catch (error) { this.log(`merge pass failed: ${error.stack || error}`); }
@@ -620,6 +625,19 @@ export class Controller {
     if (this.releaseJob) throw new Error('Drain release commands before releasing campaign leases');
     for (const [id, generation] of this.held) this.store.releaseLease(id, this.instanceId, generation, this.now());
     this.held.clear();
+  }
+
+  /**
+   * Extends every lease this instance holds. Run before each step and on a timer while a step awaits (cli.mjs serve), so
+   * a slow campaign never makes this instance lose the others, and a second controller never takes them over meanwhile.
+   * A lease that already expired or changed hands stays lost.
+   */
+  renewHeld() {
+    const now = this.now();
+    for (const [id, generation] of this.held) {
+      try { if (!this.store.renewLease(id, this.instanceId, generation, now, this.config.leaseMs)) this.held.delete(id); }
+      catch { /* store busy: the next renewal or step tries again */ }
+    }
   }
 
   fenced(ctx, fn) {
@@ -2254,11 +2272,6 @@ export class Controller {
     this.domainWaits = domainWaits;
   }
 
-  /**
-   * The campaign's checkout (PROJECT_CONNECTION 6.1, slice STA3): the live GitHub project for target.repository, else
-   * config.json as before. A project and a config entry that disagree are never chosen between: CONFIG_CONFLICT. A
-   * project without GitHub works on AIWorks's copy of it, never on the owner's folder (WORK_ENVELOPE 8.3, slice E12).
-   */
   /** One CPU check over the open runs whose runner has its job; each priority change is journalled on the run's campaign. */
   checkWorkerCpu() {
     const jobs = [];
@@ -2272,6 +2285,13 @@ export class Controller {
         try { this.store.journal(campaignOf.get(action.op) ?? null, action.kind, action, this.now()); } catch { /* store closing */ }
       }
     }, (error) => this.log(`worker CPU check failed: ${error.message}`));
+  }
+
+  /** An empty folder for stack cleanup's `docker compose down`, so no compose file near AIWorks itself is read. */
+  stackCleanupDir() {
+    if (!this.dataDir) return undefined;
+    const dir = join(this.dataDir, 'stack-cleanup');
+    try { mkdirSync(dir, { recursive: true }); return dir; } catch { return undefined; }
   }
 
   /** A run of a docker.cleanup repository ended: the next tick looks for its stack. */
@@ -2289,13 +2309,19 @@ export class Controller {
     return roots;
   }
 
-  /** Folders whose stacks stay: every open operation's workspace and every running refresh gate's checkout. */
+  /** Folders whose stacks stay: every open operation's workspace and every running refresh or group gate's checkout. */
   cleanupKeep() {
     const windowMs = this.merges.refresh?.timeoutMs ?? 2 * 60 * 60_000;
     return [...openOperations(this.store, this.cleanup).map((op) => op.workspace),
-      ...runningRefreshes(this.store, this.cleanup, { now: this.now(), windowMs }).map((gate) => gate.path)].filter(Boolean);
+      ...runningRefreshes(this.store, this.cleanup, { now: this.now(), windowMs }).map((gate) => gate.path),
+      ...runningBatches(this.store, this.cleanup, { now: this.now(), windowMs })].filter(Boolean);
   }
 
+  /**
+   * The campaign's checkout (PROJECT_CONNECTION 6.1, slice STA3): the live GitHub project for target.repository, else
+   * config.json as before. A project and a config entry that disagree are never chosen between: CONFIG_CONFLICT. A
+   * project without GitHub works on AIWorks's copy of it, never on the owner's folder (WORK_ENVELOPE 8.3, slice E12).
+   */
   repo(decl) {
     if (isLocalTarget(decl)) return resolveLocalProject(this.store, decl).checkout;
     const repo = resolveCheckout(this.store, this.config, decl.target.repository);
