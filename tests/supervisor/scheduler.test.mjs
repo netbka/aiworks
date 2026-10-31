@@ -222,7 +222,7 @@ test('host pressure stops new admission and leaves running work alone', async (t
 
 test('the host sampler reports memory, CPU over a full window, disk on every volume and late heartbeats, in that order', async () => {
   const { createHostSampler, PRESSURE_SIGNALS, PRESSURE_DEFAULTS } = await import('../../src/supervisor/host.mjs');
-  assert.deepEqual(PRESSURE_SIGNALS, ['memory', 'cpu', 'disk', 'heartbeats']);
+  assert.deepEqual(PRESSURE_SIGNALS, ['memory', 'cpu', 'disk', 'ports', 'docker', 'heartbeats']);
   assert.equal(PRESSURE_DEFAULTS.minFreeMemoryBytes, 2 * GiB);
   const h = fakeHost();
   h.disk['V:/other'] = 100 * GiB;
@@ -252,6 +252,15 @@ test('the host sampler reports memory, CPU over a full window, disk on every vol
 
   h.free = 1 * GiB; h.disk['W:/worktrees'] = 1;
   assert.equal(host.sample({ now: 600_001, beats: [600_000 - 35_000] })?.signal, 'memory', 'the first signal that applies');
+
+  // Ports and Docker come from the probe's last reading (2026-10-31: TCP ports ran out while memory and CPU looked fine).
+  let reading = null;
+  const probed = createHostSampler({ os: fakeHost().os, fs: fakeHost().fs, probe: { latest: () => reading } });
+  reading = { at: 1_000, ports: { tcp: { used: 9_000, range: 16_384 }, udp: { used: 10, range: 16_384 } }, docker: { containers: 2 } };
+  assert.deepEqual(probed.sample({ now: 1_000 }), { signal: 'ports', detail: { protocol: 'tcp', used: 9_000, range: 16_384 } }, 'over half the ephemeral ports');
+  assert.equal(probed.sample({ now: 1_000 + 181_000 }), null, 'a stale reading says nothing');
+  reading = { at: 2_000, ports: null, docker: { unresponsive: true } };
+  assert.equal(probed.sample({ now: 2_000 })?.signal, 'docker', 'a docker that does not answer');
 });
 
 test('pressure thresholds come from config.scheduler.pressure; invalid values keep the defaults', async () => {

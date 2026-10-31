@@ -24,10 +24,12 @@ import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountFull, accou
 import { BEYOND_RULE, beyondConstraint, domainOf, outsideWrites, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, hostPressure, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
 import { hostSamplerFor } from './host.mjs';
+import { totalmem } from 'node:os';
+import { cleans, cleanupSettings, createStackSweeper, inside, openOperations, runningRefreshes, workerJobLimits } from './host-safety.mjs';
 import { containsSecret, coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
 import { ANCHOR, MAX_DOCUMENT_BYTES, parseReference, resolveSection } from './reading.mjs';
 import { MAX_CITES } from './adapters/claude.mjs';
-import { stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
+import { runnerIdentified, stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions, decisionInstructions } from './instructions.mjs';
 import { answerGuidance, answersItself, decideGuidance, decisionId, isDecision, sendsBack, structuredDecision } from './decisions.mjs';
 import { deliverableWithDefects, mergedHead, OWNER_CHANGES, ownerChangesFinding } from './result-review.mjs';
@@ -342,6 +344,8 @@ const CI_SETTLED = ['ci-passed', 'ci-failed', 'ci-inconclusive', 'ci-none'];
 const RATE_LIMIT_MAX_WAIT_MS = 60 * 60_000;
 // AW-005: how often a controller re-reads whether its own revision is merged. A constant, not a config.json key.
 const REVISION_CHECK_MS = 60_000;
+// How often stray Docker stacks of docker.cleanup repositories are looked for (host-safety.mjs), besides after one of their runs ends.
+const SWEEP_MS = 10 * 60_000;
 // routing-policy/1 history window (MODEL_ROUTING 5.3): the most recent attempts of one candidate and class, at most 90 days old.
 const HISTORY_ATTEMPTS = 200;
 const HISTORY_MS = 90 * 24 * 60 * 60_000;
@@ -432,7 +436,7 @@ export class Controller {
   constructor({ store, config, dataDir, log = () => {}, now = () => Date.now(), instanceId = randomUUID(),
     codeRevision = null, fault = process.env.AIWORKS_FAULT ?? null, notifier = noopTransport, probes = {},
     governanceRoot = undefined, revisionCheck = null, revisionCheckMs = REVISION_CHECK_MS, profiles = null, profileHomes = null,
-    alertDeps = {}, sampler = null }) {
+    alertDeps = {}, sampler = null, probe = null, cpuMonitor = null }) {
     Object.assign(this, { store, dataDir, log, now, instanceId, codeRevision, fault, notifier, probes, governanceRoot,
       revisionCheck, revisionCheckMs, profiles, profileHomes });
     this.config = { ...DEFAULTS, ...config };
@@ -477,7 +481,8 @@ export class Controller {
     // RUN7 and RUN8 in admission: one host sample per admission pass (host.mjs; it keeps its CPU window between passes, and
     // an injected sampler replaces the host in tests), and the static accounts a pass found at their learned limit
     // (per-tick memory, as profileWaited; the next useful result on one of them raises its limit by one).
-    this.sampler = this.sched ? sampler ?? hostSamplerFor(this.config) : null;
+    // `probe` (host.mjs createHostProbe) adds ports and Docker; cli.mjs serve supplies it, tests and other callers do not.
+    this.sampler = this.sched ? sampler ?? hostSamplerFor(this.config, { probe }) : null;
     this.accountWaited = new Set();
     this.waitReasons = new Map();
     this.domainWaits = [];
@@ -504,6 +509,18 @@ export class Controller {
     this.cmd = { codex: commands.codex, cursor: commands.cursor, agy: commands.agy, chrome: commands.chrome,
       claude: commands.claude ?? ['claude'], git: commands.git ?? ['git'], gh: commands.gh ?? ['gh'] };
     this.held = new Map();
+    // Host safety (after the crash of 2026-10-31): the Docker limit is the Docker gate, which cli.mjs serve puts in front of
+    // every process it starts (docker-gate.mjs). Here: stray stacks of docker.cleanup repositories are taken down
+    // (host-safety.mjs) and every worker job is capped.
+    this.cleanup = cleanupSettings(this.config);
+    this.workerJob = workerJobLimits(this.config, totalmem());
+    this.sweeper = this.cleanup ? createStackSweeper({ docker: commands.docker ?? ['docker'], log: (line) => this.log(line),
+      roots: () => this.cleanupRoots(), keep: () => this.cleanupKeep() }) : null;
+    this.sweptAt = -Infinity;
+    // The worker CPU monitor (worker-cpu.mjs), which cli.mjs serve supplies: lowers the busiest worker's priority while the
+    // computer stays busy and restores it afterwards. Its checks run beside the tick, never inside admission.
+    this.cpuMonitor = cpuMonitor;
+    this.cpuCheckedAt = -Infinity;
   }
 
   /** Crash rehearsal hook: terminate abruptly at a named point (AIWORKS_FAULT). */
@@ -557,6 +574,8 @@ export class Controller {
         }
       }
     }
+    if (this.sweeper && this.now() - this.sweptAt >= SWEEP_MS) { this.sweptAt = this.now(); this.sweeper.sweep(); }
+    if (this.cpuMonitor && this.now() - this.cpuCheckedAt >= this.cpuMonitor.settings.intervalMs) { this.cpuCheckedAt = this.now(); this.checkWorkerCpu(); }
     // Merge gate (aiworks#138): verified PRs in repositories the owner opted in, one per repository per pass.
     try { await mergePass(this); }
     catch (error) { this.log(`merge pass failed: ${error.stack || error}`); }
@@ -1087,6 +1106,7 @@ export class Controller {
         this.store.patch('tasks', { campaign_id: ctx.id, task_id: op.task_id }, task.version, { state: op.kind === 'verify' ? 'implemented' : 'pending' }, this.now());
         this.store.journal(ctx.id, 'operation-abandoned', { op: op.id, reason: 'cancel' }, this.now());
       });
+      this.runEnded(campaign.declaration);
       return;
     }
     if (result) { this.consume(ctx, op, result); return; }
@@ -1159,6 +1179,7 @@ export class Controller {
   }
 
   applyOutcome(ctx, op, outcome) {
+    this.runEnded(this.store.campaign(ctx.id)?.declaration);
     if (op.kind === 'plan') return this.settlePlan(ctx, op, outcome);
     let verdict = outcome;
     const before = this.store.task(ctx.id, op.task_id);
@@ -2238,6 +2259,43 @@ export class Controller {
    * config.json as before. A project and a config entry that disagree are never chosen between: CONFIG_CONFLICT. A
    * project without GitHub works on AIWorks's copy of it, never on the owner's folder (WORK_ENVELOPE 8.3, slice E12).
    */
+  /** One CPU check over the open runs whose runner has its job; each priority change is journalled on the run's campaign. */
+  checkWorkerCpu() {
+    const jobs = [];
+    for (const op of this.store.all("SELECT id, campaign_id, run_dir FROM operations WHERE state = 'dispatched'")) {
+      const runner = op.run_dir ? readJsonIfExists(join(op.run_dir, 'runner.json')) : null;
+      if (runnerIdentified(runner)) jobs.push({ op: op.id, campaignId: op.campaign_id, jobName: runner.jobName });
+    }
+    const campaignOf = new Map(jobs.map((job) => [job.op, job.campaignId]));
+    this.cpuMonitor.check(jobs).then((actions) => {
+      for (const action of actions ?? []) {
+        try { this.store.journal(campaignOf.get(action.op) ?? null, action.kind, action, this.now()); } catch { /* store closing */ }
+      }
+    }, (error) => this.log(`worker CPU check failed: ${error.message}`));
+  }
+
+  /** A run of a docker.cleanup repository ended: the next tick looks for its stack. */
+  runEnded(decl) { if (this.sweeper && cleans(this.cleanup, decl)) this.sweptAt = -Infinity; }
+
+  /** The worktree roots of docker.cleanup repositories, never one that holds the repository's own checkout. */
+  cleanupRoots() {
+    const names = new Set([...Object.keys(this.config.repositories ?? {}).filter((name) => this.cleanup.repositories.has(name.toLowerCase())),
+      ...this.cleanup.repositories]);
+    const roots = [];
+    for (const name of names) {
+      const repo = resolveCheckout(this.store, this.config, name);
+      if (repo?.worktreeRoot && repo.path && !inside(repo.worktreeRoot, repo.path) && !roots.includes(repo.worktreeRoot)) roots.push(repo.worktreeRoot);
+    }
+    return roots;
+  }
+
+  /** Folders whose stacks stay: every open operation's workspace and every running refresh gate's checkout. */
+  cleanupKeep() {
+    const windowMs = this.merges.refresh?.timeoutMs ?? 2 * 60 * 60_000;
+    return [...openOperations(this.store, this.cleanup).map((op) => op.workspace),
+      ...runningRefreshes(this.store, this.cleanup, { now: this.now(), windowMs }).map((gate) => gate.path)].filter(Boolean);
+  }
+
   repo(decl) {
     if (isLocalTarget(decl)) return resolveLocalProject(this.store, decl).checkout;
     const repo = resolveCheckout(this.store, this.config, decl.target.repository);
@@ -2933,7 +2991,7 @@ export class Controller {
       writeFileSync(join(runDir, 'prompt.txt'), invocation.prompt, 'utf8');
       writeAtomic(join(runDir, 'spec.json'), JSON.stringify({
         argv: invocation.argv, ...(invocation.env ? { env: invocation.env } : {}),
-        cwd: invocation.cwd ?? workspace, timeoutMs, heartbeatMs: this.config.heartbeatMs,
+        cwd: invocation.cwd ?? workspace, timeoutMs, heartbeatMs: this.config.heartbeatMs, ...this.workerJob,
       }));
 
       const now = this.now();

@@ -68,8 +68,8 @@ export function helperArgs(script, params) {
   return ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')];
 }
 
-export function windowsHelperArgs(mode, jobName, { runDir, pid, creationTime } = {}) {
-  return helperArgs(WINDOWS_PROCESS_HELPER, { Mode: mode, JobName: jobName, RunDir: runDir, RunnerPid: pid, CreationTime: creationTime });
+export function windowsHelperArgs(mode, jobName, { runDir, pid, creationTime, priorityClass } = {}) {
+  return helperArgs(WINDOWS_PROCESS_HELPER, { Mode: mode, JobName: jobName, RunDir: runDir, RunnerPid: pid, CreationTime: creationTime, PriorityClass: priorityClass });
 }
 
 /** The name runner.mjs gives its Windows job: `Local\aiworks-supervisor-<uuid>`. */

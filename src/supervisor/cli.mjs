@@ -14,6 +14,9 @@ import { CampaignError, campaignCancel, campaignPause, campaignRecheck, campaign
 import { assertRegisteredTarget } from './campaign.mjs';
 import { issueCampaignToken } from './campaign-token.mjs';
 import { Controller, DEFAULTS } from './controller.mjs';
+import { createHostProbe } from './host.mjs';
+import { GATE_PIPE, gateListening, gateSettings, pipeHost, serveGate } from './docker-gate.mjs';
+import { cpuSettings, createCpuMonitor } from './worker-cpu.mjs';
 import { configuredGovernanceRoot, requireGovernanceRoot } from './governance.mjs';
 import { clearCoordinatorViolation, coordinatorView, postOwnerMessage } from './coordinator.mjs';
 import { approvalFromFile, CODE_ROOT, declarationFromFile, revisionNotMerged, runtimeTrust } from './provenance.mjs';
@@ -28,6 +31,7 @@ import { modelPreferences, setRoleModelPreference, clearRoleModelPreferences, co
 const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--governance <governance-checkout>] ...
   serve                                 run the controller loop (exits cleanly when <data>/STOP exists)
   keep                                  OS-supervision helper: run serve and restart it after any exit until STOP
+  docker-gate                           run the Docker gate (serve starts it): one machine-wide limit on Docker stacks
   stop                                  create <data>/STOP so serve and keep exit cleanly
   start <declaration.json>              register, amend (authorization.version + 1) or resume a private local campaign.
                                         Runtime code must be merged into the trusted main (RUNTIME_NOT_MERGED). A new registration
@@ -127,6 +131,12 @@ if (!command || !selectedData) {
 
 const STOP = join(dataDir, 'STOP');
 if (command === 'keep') await keep();
+if (command === 'docker-gate') {
+  const config = (() => { try { return JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')); } catch { return {}; } })();
+  const logFile = join(dataDir, 'docker-gate.log');
+  const log = (line) => { try { appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`); } catch { /* keep running */ } };
+  process.exit(await serveGate({ config, stopFile: STOP, log, docker: config.commands?.docker ?? ['docker'] }));
+}
 if (command === 'stop') { writeFileSync(STOP, new Date().toISOString()); console.log(`created ${STOP}`); process.exit(0); }
 // Stop all releases is a file, so it works without SQLite and without healthy release code (AUTO_RELEASE.md 4.5).
 if (command === 'release-stop') {
@@ -373,7 +383,31 @@ async function serve() {
   const governanceRoot = explicitGovernance ? resolve(explicitGovernance) : config.governanceRoot;
   let governanceNote = 'governance checkout ok';
   try { requireGovernanceRoot(governanceRoot); } catch (error) { governanceNote = `${error.code}: no worker will be dispatched until it is fixed`; }
-  const controller = new Controller({ store, config, dataDir, log, codeRevision, governanceRoot, revisionCheck });
+  // The Docker gate (docker-gate.mjs): started here when it is not running, and put in front of every process serve starts
+  // (workers, refresh gates) through DOCKER_HOST. Checked again every minute; without a gate nothing is changed.
+  const gateOn = gateSettings(config).gate && process.platform === 'win32';
+  const directHost = process.env.DOCKER_HOST; // the operator's own engine choice, which the gate forwards to
+  const direct = () => { if (directHost === undefined) delete process.env.DOCKER_HOST; else process.env.DOCKER_HOST = directHost; };
+  const gateHost = pipeHost(GATE_PIPE);
+  const ensureGate = async () => {
+    if (!gateOn || await gateListening()) return gateOn;
+    const env = { ...process.env };
+    if (directHost === undefined) delete env.DOCKER_HOST; else env.DOCKER_HOST = directHost;
+    spawn(process.execPath, [fileURLToPath(import.meta.url), 'docker-gate', '--data', dataDir], { detached: true, stdio: 'ignore', windowsHide: true, env }).unref();
+    for (let i = 0; i < 20; i += 1) { if (await gateListening()) return true; await new Promise((done) => setTimeout(done, 500)); }
+    return false;
+  };
+  if (await ensureGate()) { process.env.DOCKER_HOST = gateHost; log(`docker gate in front of every worker (${gateSettings(config).slots} slot(s))`); }
+  else if (gateOn) log('docker gate not running: workers use Docker directly (see docker-gate.log)');
+  let gateCheckedAt = Date.now();
+  // Ports and Docker for the scheduler's pressure gate (host.mjs), read on their own timer.
+  const probe = createHostProbe({ docker: gateOn ? config.commands?.docker ?? ['docker'] : null });
+  probe.start();
+  // Worker CPU (worker-cpu.mjs): each worker job's share of the computer, and the busiest one lowered while it stays busy.
+  const cpu = cpuSettings(config);
+  const cpuMonitor = cpu.enabled && process.platform === 'win32'
+    ? createCpuMonitor({ settings: cpu, basePriority: config.workerJob?.priority === 'normal' ? 'normal' : 'belownormal', log }) : null;
+  const controller = new Controller({ store, config, dataDir, log, codeRevision, governanceRoot, revisionCheck, probe, cpuMonitor });
   log(`supervisor instance ${controller.instanceId} started (pid ${process.pid}, code ${codeRevision ?? 'unknown'}, data ${dataDir}, ${governanceNote})`);
   const unmerged = controller.unmergedRevision();
   if (unmerged) log(`no new work will start: ${unmerged} (AW-005)`);
@@ -387,9 +421,17 @@ async function serve() {
   while (!stopping) {
     if (existsSync(STOP)) { stop('STOP file'); break; }
     await controller.tick();
+    if (gateOn && Date.now() - gateCheckedAt >= 60_000) {
+      gateCheckedAt = Date.now();
+      const up = await ensureGate();
+      // Like the start: a gate that cannot run leaves new workers on Docker directly rather than on a dead pipe.
+      if (up && process.env.DOCKER_HOST !== gateHost) { process.env.DOCKER_HOST = gateHost; log('docker gate in front of every worker again'); }
+      if (!up && process.env.DOCKER_HOST === gateHost) { direct(); log('docker gate not running: new workers use Docker directly (see docker-gate.log)'); }
+    }
     for (let waited = 0; waited < controller.config.tickMs && !stopping; waited += 100) await new Promise((done) => setTimeout(done, 100));
   }
   await controller.drainReleases();
+  probe.stop();
   controller.release();
   store.close();
   log(`supervisor instance ${controller.instanceId} stopped`);
