@@ -143,7 +143,7 @@ public static class SupervisorProcess {
   public static string Priority(string name, uint priority) {
     IntPtr job = OpenJobObject(0x0004, false, name); // JOB_OBJECT_QUERY
     if (job == IntPtr.Zero) return "not-running";
-    int capacity = 256, size = 8 + capacity * IntPtr.Size;
+    int capacity = 1024, size = 8 + capacity * IntPtr.Size;
     IntPtr list = Marshal.AllocHGlobal(size);
     try {
       if (!QueryJobIds(job, 3, list, (uint)size, IntPtr.Zero) && Marshal.GetLastWin32Error() != 234) throw new Win32Exception(Marshal.GetLastWin32Error());

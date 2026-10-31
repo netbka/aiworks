@@ -393,7 +393,9 @@ async function serve() {
     if (!gateOn || await gateListening()) return gateOn;
     const env = { ...process.env };
     if (directHost === undefined) delete env.DOCKER_HOST; else env.DOCKER_HOST = directHost;
-    spawn(process.execPath, [fileURLToPath(import.meta.url), 'docker-gate', '--data', dataDir], { detached: true, stdio: 'ignore', windowsHide: true, env }).unref();
+    const child = spawn(process.execPath, [fileURLToPath(import.meta.url), 'docker-gate', '--data', dataDir], { detached: true, stdio: 'ignore', windowsHide: true, env });
+    child.on('error', (error) => log(`docker gate could not start: ${error.message}`));
+    child.unref();
     for (let i = 0; i < 20; i += 1) { if (await gateListening()) return true; await new Promise((done) => setTimeout(done, 500)); }
     return false;
   };
@@ -418,6 +420,9 @@ async function serve() {
     log(`received ${signal}; releasing leases`);
   };
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGBREAK']) process.on(signal, () => stop(signal));
+  // Held leases are renewed on their own timer as well, so a step that awaits a long operation keeps every lease.
+  const leaseTimer = setInterval(() => { try { controller.renewHeld(); } catch { /* store closing */ } }, Math.max(1_000, Math.floor(controller.config.leaseMs / 4)));
+  leaseTimer.unref();
   while (!stopping) {
     if (existsSync(STOP)) { stop('STOP file'); break; }
     await controller.tick();
@@ -430,6 +435,7 @@ async function serve() {
     }
     for (let waited = 0; waited < controller.config.tickMs && !stopping; waited += 100) await new Promise((done) => setTimeout(done, 100));
   }
+  clearInterval(leaseTimer);
   await controller.drainReleases();
   probe.stop();
   controller.release();

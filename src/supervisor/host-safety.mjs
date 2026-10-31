@@ -38,6 +38,18 @@ export function runningRefreshes(store, settings, { now, windowMs }) {
     .map((row) => ({ campaignId: row.campaign_id, path: row.detail?.path ?? null }));
 }
 
+const BATCH_ENDS = ['merge-batch-passed', 'merge-batch-failed', 'merge-batch-stopped', 'merge-batch-done'];
+
+/** Checkouts of group merge gates (merge-batch.mjs) of those repositories still running: started, with no end recorded. */
+export function runningBatches(store, settings, { now, windowMs }) {
+  if (!settings) return [];
+  return store.all(`SELECT seq, detail FROM journal WHERE campaign_id IS NULL AND kind = 'merge-batch-started' AND at >= ?`, now - windowMs)
+    .filter((row) => settings.repositories.has(String(row.detail?.repository ?? '').toLowerCase()) && !store.get(`SELECT 1 AS done FROM journal
+      WHERE campaign_id IS NULL AND kind IN (${BATCH_ENDS.map(() => '?').join(', ')}) AND seq > ? AND json_extract(detail, '$.id') = ?`,
+    ...BATCH_ENDS, row.seq, row.detail?.id))
+    .map((row) => row.detail?.path ?? null);
+}
+
 /** Open worker operations of those repositories: { campaignId, workspace }. */
 export function openOperations(store, settings) {
   if (!settings) return [];
@@ -58,9 +70,9 @@ export const inside = (root, path) => {
   return b === a || b.startsWith(a.endsWith(sep) ? a : a + sep);
 };
 
-const run = (command, args, timeoutMs) => new Promise((done) => {
+const run = (command, args, timeoutMs, { cwd, env } = {}) => new Promise((done) => {
   const [cmd, ...prefix] = command;
-  execFile(cmd, [...prefix, ...args], { encoding: 'utf8', windowsHide: true, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 },
+  execFile(cmd, [...prefix, ...args], { encoding: 'utf8', windowsHide: true, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, cwd, env },
     (error, stdout) => done({ ok: !error, stdout: stdout ?? '', error: error ? (error.killed ? 'timed out' : error.code ?? error.message) : null }));
 });
 
@@ -83,19 +95,27 @@ export function strayProjects(listing, { roots, keep }) {
 
 /**
  * One cleanup pass: list compose containers, read what is still in use (`keep()`, after the listing, so a run recorded
- * meanwhile is kept), and take every stray project down with its volumes. At most one pass at a time; every docker call
- * is bounded, and a docker that does not answer ends the pass. Resolves to the projects taken down.
+ * meanwhile is kept), and take every stray project down with its volumes. Each project is listed and checked against
+ * `keep()` again right before its own `down`, so a run that started during the pass keeps its stack. `down` runs in
+ * `cwd` (an empty folder) without COMPOSE_* variables, so no compose file of AIWorks's own folder is read. At most one
+ * pass at a time; every docker call is bounded, and a docker that does not answer ends the pass. Resolves to the
+ * projects taken down.
  */
-export function createStackSweeper({ docker = ['docker'], roots, keep, log = () => {}, exec = run, timeoutMs = 120_000 }) {
+export function createStackSweeper({ docker = ['docker'], roots, keep, log = () => {}, exec = run, timeoutMs = 120_000, cwd }) {
   let running = null;
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^COMPOSE_/i.test(key)));
+  const list = (project) => exec(docker, ['ps', '-a', '--filter', project ? `label=com.docker.compose.project=${project}` : 'label=com.docker.compose.project',
+    '--format', '{{.Label "com.docker.compose.project"}}\t{{.Label "com.docker.compose.project.working_dir"}}'], timeoutMs);
   const pass = async () => {
-    const listed = await exec(docker, ['ps', '-a', '--filter', 'label=com.docker.compose.project', '--format',
-      '{{.Label "com.docker.compose.project"}}\t{{.Label "com.docker.compose.project.working_dir"}}'], timeoutMs);
+    const listed = await list();
     if (!listed.ok) { log(`stack cleanup skipped: docker ps ${listed.error}`); return []; }
     const stray = strayProjects(listed.stdout, { roots: roots(), keep: keep() });
     const removed = [];
     for (const { project, dir } of stray) {
-      const down = await exec(docker, ['compose', '-p', project, 'down', '-v', '--remove-orphans'], timeoutMs);
+      const again = await list(project);
+      if (!again.ok) { log(`stack cleanup stopped: docker ps ${again.error}`); break; }
+      if (!strayProjects(again.stdout, { roots: roots(), keep: keep() }).some((one) => one.project === project)) continue;
+      const down = await exec(docker, ['compose', '-p', project, 'down', '-v', '--remove-orphans'], timeoutMs, { cwd, env });
       log(down.ok ? `stack cleanup: removed compose project ${project} (${dir})` : `stack cleanup: ${project} not removed: ${down.error}`);
       if (down.ok) removed.push(project);
       else break;
