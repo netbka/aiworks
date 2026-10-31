@@ -1784,14 +1784,15 @@ export class Controller {
    * Fetch the base branch into this supervisor's own ref and read it there. FETCH_HEAD is shared by every fetch in the
    * checkout (another campaign, the dashboard, the owner), so a base read from it can be another branch's tip.
    */
-  fetchBase(repoPath, base, repository = null) {
+  fetchBase(repoPath, base, repository = null, { fresh = false } = {}) {
     const ref = `refs/aiworks/base/${base}`;
     if (this.selfHosted(repository)) return this.localBase(repoPath, base, repository);
     // One network fetch per checkout and base for all campaign steps of a pass: each campaign fetching for itself made one
     // pass take minutes (2026-10-31). Only the step loop shares it; the merge pass, which moves the base, and everything
-    // after it fetch afresh. A failed fetch is not kept.
+    // after it fetch afresh, as does a caller passing `fresh` (the release job's grant read, which runs beside the pass).
+    // A failed fetch is not kept.
     const key = JSON.stringify([repoPath, base]);
-    const kept = this.baseFetches?.get(key);
+    const kept = fresh ? null : this.baseFetches?.get(key);
     if (kept) return kept;
     const fetched = gitA.exec(this.cmd.git, ['fetch', 'origin', `+refs/heads/${base}:${ref}`], { cwd: repoPath, timeoutMs: 30_000 });
     const sha = fetched.ok ? gitA.exec(this.cmd.git, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: repoPath }).stdout : '';
