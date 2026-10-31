@@ -530,7 +530,13 @@ export class Controller {
     process.exit(86);
   }
 
+  /** One pass of the controller loop; while it runs, `tickStartedAt` says since when (the lease timer reads it). */
   async tick() {
+    this.tickStartedAt = this.now();
+    try { return await this.tickOnce(); } finally { this.tickStartedAt = null; }
+  }
+
+  async tickOnce() {
     const ids = this.store.all(`SELECT id FROM campaigns WHERE control IN ('registered', 'paused', 'cancel-requested')
       OR EXISTS (SELECT 1 FROM outbox WHERE campaign_id = campaigns.id AND state = 'pending')`).map((row) => row.id);
     // A finished campaign is visited again only while integration repair is on and its published PRs are due a check.
@@ -638,6 +644,21 @@ export class Controller {
       try { if (!this.store.renewLease(id, this.instanceId, generation, now, this.config.leaseMs)) this.held.delete(id); }
       catch { /* store busy: the next renewal or step tries again */ }
     }
+  }
+
+  /**
+   * The serve timer's renewal. It renews only while the current tick is younger than max(10 leases, 15 min): a tick that
+   * hangs on an await then lets its leases lapse, so the dashboard and a rebuild see a stopped supervisor, not a running one.
+   */
+  renewOnTimer() {
+    const bound = Math.max(10 * this.config.leaseMs, 15 * 60_000);
+    if (this.tickStartedAt != null && this.now() - this.tickStartedAt > bound) {
+      if (!this.renewalHeldBack) this.log(`tick running for more than ${Math.round(bound / 60_000)} min: leases are no longer renewed until it ends`);
+      this.renewalHeldBack = true;
+      return;
+    }
+    this.renewalHeldBack = false;
+    this.renewHeld();
   }
 
   fenced(ctx, fn) {

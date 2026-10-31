@@ -420,8 +420,9 @@ async function serve() {
     log(`received ${signal}; releasing leases`);
   };
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGBREAK']) process.on(signal, () => stop(signal));
-  // Held leases are renewed on their own timer as well, so a step that awaits a long operation keeps every lease.
-  const leaseTimer = setInterval(() => { try { controller.renewHeld(); } catch { /* store closing */ } }, Math.max(1_000, Math.floor(controller.config.leaseMs / 4)));
+  // Held leases are renewed on their own timer as well, so a step that awaits a long operation keeps every lease; a tick
+  // that hangs stops being covered after a bound (Controller.renewOnTimer).
+  const leaseTimer = setInterval(() => { try { controller.renewOnTimer(); } catch { /* store closing */ } }, Math.max(1_000, Math.floor(controller.config.leaseMs / 4)));
   leaseTimer.unref();
   while (!stopping) {
     if (existsSync(STOP)) { stop('STOP file'); break; }

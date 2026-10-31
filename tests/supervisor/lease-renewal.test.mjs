@@ -30,4 +30,10 @@ test('held leases are renewed past one long step; a lapsed lease stays with its 
   controller.renewHeld();
   assert.equal(store.lease('second').instance_id, 'other-controller', 'renewal never revives a lease that changed hands');
   assert.equal(controller.held.has('second'), false, 'and the first controller stops counting it as held');
+
+  // A tick that hangs is covered by the timer only up to its bound; then its leases lapse, so it shows as stopped.
+  controller.tickStartedAt = time;
+  const bound = Math.max(10 * ttl, 15 * 60_000);
+  for (let elapsed = 0; elapsed <= bound + 2 * ttl; elapsed += ttl / 4) { time += ttl / 4; controller.renewOnTimer(); }
+  assert.ok(store.acquireLease('first', 'other-controller', time, ttl), 'a hung tick no longer keeps its campaigns');
 });
