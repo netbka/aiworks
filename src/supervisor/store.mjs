@@ -422,6 +422,15 @@ export class Store {
     }
   }
 
+  /**
+   * Extends a lease this instance still holds: same instance and generation, not yet expired. An expired or taken-over
+   * lease is never revived, so renewal cannot fence out a controller that already took the campaign.
+   */
+  renewLease(campaignId, instanceId, generation, now, ttlMs) {
+    return this.run('UPDATE leases SET expires_at = ? WHERE campaign_id = ? AND instance_id = ? AND generation = ? AND expires_at > ?',
+      now + ttlMs, campaignId, instanceId, generation, now).changes > 0;
+  }
+
   releaseLease(campaignId, instanceId, generation, now) {
     this.run('UPDATE leases SET expires_at = ? WHERE campaign_id = ? AND instance_id = ? AND generation = ?', now, campaignId, instanceId, generation);
   }
