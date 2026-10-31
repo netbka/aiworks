@@ -2719,20 +2719,6 @@ function homeProjectRow(project, badge) {
  * sentence with a status badge. Results to review are not a separate panel: a project with one ready carries the
  * badge on its own row, exactly as the approved preview folds it in (02-home.html, "Client portal" row).
  */
-/**
- * The owner's part in one sentence, with who merges as each project's own rule says: AIWorks only where the owner let its
- * merge gate merge (`merges: 'aiworks'`); elsewhere merging follows the project's own rules.
- */
-function ownerPart(projects) {
-  const github = projects.filter((project) => ['aiworks', 'own-rules'].includes(project.merges));
-  const ours = github.filter((project) => project.merges === 'aiworks').map((project) => project.name);
-  const merging = !github.length ? 'AIWorks builds and checks the rest.'
-    : ours.length === github.length ? 'AIWorks builds, checks and merges the rest.'
-      : ours.length ? `AIWorks builds and checks the rest, and merges in ${ours.join(', ')}; in other projects merging follows each project’s own rules.`
-        : 'AIWorks builds and checks the rest; merging follows each project’s own rules.';
-  return `Your part: say what you want (Start work), answer decisions when asked, and review results when asked. ${merging}`;
-}
-
 function homeScreen() {
   const home = state.home;
   if (!state.supervisor.available || !home?.available) return [unavailable()];
@@ -2743,12 +2729,10 @@ function homeScreen() {
   // and Request changes, a stopped step with guidance and Check again.
   const first = state.owner?.items?.find((item) => !item.system);
   // Results to review are Needs you items (owner.mjs `attention`), so they are in this count, never added to it.
-  const heroText = home.needsYou.count ? `${plural(home.needsYou.count, 'thing')} need${home.needsYou.count === 1 ? 's' : ''} you.` : 'Nothing needs you right now.';
+  const heroText = home.needsYou.count ? `${plural(home.needsYou.count, 'thing')} need${home.needsYou.count === 1 ? 's' : ''} you.` : null;
   // h2, not h1: index.html already carries the page's one h1 (#view-title) outside #content (showRoute()).
   const hero = el('div', { class: 'home-hero' },
-    el('div', {}, el('h2', {}, 'Your work, at a glance'), el('p', { class: 'subtext' }, heroText),
-      // The owner's whole part in one line, with each project's own merge rule (views.mjs projectRow `merges`).
-      el('p', { class: 'subtext' }, ownerPart(home.projects))),
+    el('div', {}, el('h2', {}, 'Your work, at a glance'), heroText && el('p', { class: 'subtext' }, heroText)),
     pauseControls(home.pause, 'all', {}, { label: 'all work' }));
   // This count matches the nav badge and the Needs you screen exactly (owner.count): results to review carry their
   // own badge on the project row below, never folded into this number (owner, 2026-10-13).
