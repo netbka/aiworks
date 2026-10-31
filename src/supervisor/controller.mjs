@@ -25,11 +25,11 @@ import { BEYOND_RULE, beyondConstraint, domainOf, outsideWrites, writeDomainCons
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, hostPressure, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
 import { hostSamplerFor } from './host.mjs';
 import { totalmem } from 'node:os';
-import { createStackSweeper, heavyInUse, heavySettings, inside, isHeavy, openHeavyOperations, runningRefreshes, workerJobLimits } from './heavy-work.mjs';
+import { cleans, cleanupSettings, createStackSweeper, inside, openOperations, runningRefreshes, workerJobLimits } from './host-safety.mjs';
 import { containsSecret, coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
 import { ANCHOR, MAX_DOCUMENT_BYTES, parseReference, resolveSection } from './reading.mjs';
 import { MAX_CITES } from './adapters/claude.mjs';
-import { stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
+import { runnerIdentified, stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions, decisionInstructions } from './instructions.mjs';
 import { answerGuidance, answersItself, decideGuidance, decisionId, isDecision, sendsBack, structuredDecision } from './decisions.mjs';
 import { deliverableWithDefects, mergedHead, OWNER_CHANGES, ownerChangesFinding } from './result-review.mjs';
@@ -344,7 +344,7 @@ const CI_SETTLED = ['ci-passed', 'ci-failed', 'ci-inconclusive', 'ci-none'];
 const RATE_LIMIT_MAX_WAIT_MS = 60 * 60_000;
 // AW-005: how often a controller re-reads whether its own revision is merged. A constant, not a config.json key.
 const REVISION_CHECK_MS = 60_000;
-// How often stray Docker stacks of heavy repositories are looked for (heavy-work.mjs), besides right after a heavy run ends.
+// How often stray Docker stacks of docker.cleanup repositories are looked for (host-safety.mjs), besides after one of their runs ends.
 const SWEEP_MS = 10 * 60_000;
 // routing-policy/1 history window (MODEL_ROUTING 5.3): the most recent attempts of one candidate and class, at most 90 days old.
 const HISTORY_ATTEMPTS = 200;
@@ -436,7 +436,7 @@ export class Controller {
   constructor({ store, config, dataDir, log = () => {}, now = () => Date.now(), instanceId = randomUUID(),
     codeRevision = null, fault = process.env.AIWORKS_FAULT ?? null, notifier = noopTransport, probes = {},
     governanceRoot = undefined, revisionCheck = null, revisionCheckMs = REVISION_CHECK_MS, profiles = null, profileHomes = null,
-    alertDeps = {}, sampler = null, probe = null }) {
+    alertDeps = {}, sampler = null, probe = null, cpuMonitor = null }) {
     Object.assign(this, { store, dataDir, log, now, instanceId, codeRevision, fault, notifier, probes, governanceRoot,
       revisionCheck, revisionCheckMs, profiles, profileHomes });
     this.config = { ...DEFAULTS, ...config };
@@ -509,14 +509,18 @@ export class Controller {
     this.cmd = { codex: commands.codex, cursor: commands.cursor, agy: commands.agy, chrome: commands.chrome,
       claude: commands.claude ?? ['claude'], git: commands.git ?? ['git'], gh: commands.gh ?? ['gh'] };
     this.held = new Map();
-    // Host safety (heavy-work.mjs, after the crash of 2026-10-31): one limit shared by heavy worker runs and refresh gates,
-    // cleanup of Docker stacks nothing uses any more (every 10 minutes, and on the tick after a heavy run ends), and caps on
-    // every worker's job.
-    this.heavy = heavySettings(this.config);
+    // Host safety (after the crash of 2026-10-31): the Docker limit is the Docker gate, which cli.mjs serve puts in front of
+    // every process it starts (docker-gate.mjs). Here: stray stacks of docker.cleanup repositories are taken down
+    // (host-safety.mjs) and every worker job is capped.
+    this.cleanup = cleanupSettings(this.config);
     this.workerJob = workerJobLimits(this.config, totalmem());
-    this.sweeper = this.heavy ? createStackSweeper({ docker: commands.docker ?? ['docker'], log: (line) => this.log(line),
-      roots: () => this.heavyRoots(), keep: () => this.heavyKeep() }) : null;
+    this.sweeper = this.cleanup ? createStackSweeper({ docker: commands.docker ?? ['docker'], log: (line) => this.log(line),
+      roots: () => this.cleanupRoots(), keep: () => this.cleanupKeep() }) : null;
     this.sweptAt = -Infinity;
+    // The worker CPU monitor (worker-cpu.mjs), which cli.mjs serve supplies: lowers the busiest worker's priority while the
+    // computer stays busy and restores it afterwards. Its checks run beside the tick, never inside admission.
+    this.cpuMonitor = cpuMonitor;
+    this.cpuCheckedAt = -Infinity;
   }
 
   /** Crash rehearsal hook: terminate abruptly at a named point (AIWORKS_FAULT). */
@@ -571,6 +575,7 @@ export class Controller {
       }
     }
     if (this.sweeper && this.now() - this.sweptAt >= SWEEP_MS) { this.sweptAt = this.now(); this.sweeper.sweep(); }
+    if (this.cpuMonitor && this.now() - this.cpuCheckedAt >= this.cpuMonitor.settings.intervalMs) { this.cpuCheckedAt = this.now(); this.checkWorkerCpu(); }
     // Merge gate (aiworks#138): verified PRs in repositories the owner opted in, one per repository per pass.
     try { await mergePass(this); }
     catch (error) { this.log(`merge pass failed: ${error.stack || error}`); }
@@ -1101,7 +1106,7 @@ export class Controller {
         this.store.patch('tasks', { campaign_id: ctx.id, task_id: op.task_id }, task.version, { state: op.kind === 'verify' ? 'implemented' : 'pending' }, this.now());
         this.store.journal(ctx.id, 'operation-abandoned', { op: op.id, reason: 'cancel' }, this.now());
       });
-      this.heavyChanged(campaign.declaration);
+      this.runEnded(campaign.declaration);
       return;
     }
     if (result) { this.consume(ctx, op, result); return; }
@@ -1174,7 +1179,7 @@ export class Controller {
   }
 
   applyOutcome(ctx, op, outcome) {
-    this.heavyChanged(this.store.campaign(ctx.id)?.declaration);
+    this.runEnded(this.store.campaign(ctx.id)?.declaration);
     if (op.kind === 'plan') return this.settlePlan(ctx, op, outcome);
     let verdict = outcome;
     const before = this.store.task(ctx.id, op.task_id);
@@ -2155,7 +2160,6 @@ export class Controller {
         return accountFull(this.store, this.config, kind, this.accountWaited);
       },
       // A local candidate is published nowhere and holds no base: the owner's Apply checks the folder again (WORK_ENVELOPE 8.6).
-      heavyFull: (candidate) => this.heavyFull(candidate.declaration),
       integrated: (campaignId, row, decl) => isLocalTarget(decl) || this.inBase(decl, row.verified_sha) || this.mergedHeads.has(`${row.pr_url}#${row.verified_sha}`),
       // Only the merge gate moves a trusted local main, and it never merges a cancelled campaign's head (domainHolders).
       gateOnly: (decl) => this.selfHosted(decl.target.repository),
@@ -2255,22 +2259,28 @@ export class Controller {
    * config.json as before. A project and a config entry that disagree are never chosen between: CONFIG_CONFLICT. A
    * project without GitHub works on AIWorks's copy of it, never on the owner's folder (WORK_ENVELOPE 8.3, slice E12).
    */
-  /** Heavy-work slots in use and the limit, when `decl`'s repository does heavy work and all are taken; otherwise null. */
-  heavyFull(decl) {
-    if (!isHeavy(this.heavy, decl)) return null;
-    const used = heavyInUse(this.store, this.heavy, { now: this.now(), windowMs: this.heavyWindowMs() });
-    return used >= this.heavy.slots ? { slots: this.heavy.slots, used } : null;
+  /** One CPU check over the open runs whose runner has its job; each priority change is journalled on the run's campaign. */
+  checkWorkerCpu() {
+    const jobs = [];
+    for (const op of this.store.all("SELECT id, campaign_id, run_dir FROM operations WHERE state = 'dispatched'")) {
+      const runner = op.run_dir ? readJsonIfExists(join(op.run_dir, 'runner.json')) : null;
+      if (runnerIdentified(runner)) jobs.push({ op: op.id, campaignId: op.campaign_id, jobName: runner.jobName });
+    }
+    const campaignOf = new Map(jobs.map((job) => [job.op, job.campaignId]));
+    this.cpuMonitor.check(jobs).then((actions) => {
+      for (const action of actions ?? []) {
+        try { this.store.journal(campaignOf.get(action.op) ?? null, action.kind, action, this.now()); } catch { /* store closing */ }
+      }
+    }, (error) => this.log(`worker CPU check failed: ${error.message}`));
   }
 
-  heavyWindowMs() { return this.merges.refresh?.timeoutMs ?? 2 * 60 * 60_000; }
+  /** A run of a docker.cleanup repository ended: the next tick looks for its stack. */
+  runEnded(decl) { if (this.sweeper && cleans(this.cleanup, decl)) this.sweptAt = -Infinity; }
 
-  /** A heavy run or refresh gate ended: the next tick looks for its stack. */
-  heavyChanged(decl) { if (this.sweeper && isHeavy(this.heavy, decl)) this.sweptAt = -Infinity; }
-
-  /** The worktree roots of heavy repositories, never one that holds the repository's own checkout. */
-  heavyRoots() {
-    const names = new Set([...Object.keys(this.config.repositories ?? {}).filter((name) => this.heavy.repositories.has(name.toLowerCase())),
-      ...this.heavy.repositories]);
+  /** The worktree roots of docker.cleanup repositories, never one that holds the repository's own checkout. */
+  cleanupRoots() {
+    const names = new Set([...Object.keys(this.config.repositories ?? {}).filter((name) => this.cleanup.repositories.has(name.toLowerCase())),
+      ...this.cleanup.repositories]);
     const roots = [];
     for (const name of names) {
       const repo = resolveCheckout(this.store, this.config, name);
@@ -2279,10 +2289,11 @@ export class Controller {
     return roots;
   }
 
-  /** Folders whose stacks stay: every open heavy operation's workspace and every running heavy refresh gate's checkout. */
-  heavyKeep() {
-    return [...openHeavyOperations(this.store, this.heavy).map((op) => op.workspace),
-      ...runningRefreshes(this.store, this.heavy, { now: this.now(), windowMs: this.heavyWindowMs() }).map((gate) => gate.path)].filter(Boolean);
+  /** Folders whose stacks stay: every open operation's workspace and every running refresh gate's checkout. */
+  cleanupKeep() {
+    const windowMs = this.merges.refresh?.timeoutMs ?? 2 * 60 * 60_000;
+    return [...openOperations(this.store, this.cleanup).map((op) => op.workspace),
+      ...runningRefreshes(this.store, this.cleanup, { now: this.now(), windowMs }).map((gate) => gate.path)].filter(Boolean);
   }
 
   repo(decl) {
