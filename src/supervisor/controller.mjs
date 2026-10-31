@@ -24,10 +24,12 @@ import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountFull, accou
 import { BEYOND_RULE, beyondConstraint, domainOf, outsideWrites, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, hostPressure, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
 import { hostSamplerFor } from './host.mjs';
+import { totalmem } from 'node:os';
+import { cleans, cleanupSettings, createStackSweeper, inside, openOperations, runningBatches, runningRefreshes, workerJobLimits } from './host-safety.mjs';
 import { containsSecret, coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
 import { ANCHOR, MAX_DOCUMENT_BYTES, parseReference, resolveSection } from './reading.mjs';
 import { MAX_CITES } from './adapters/claude.mjs';
-import { stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
+import { runnerIdentified, stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions, decisionInstructions } from './instructions.mjs';
 import { answerGuidance, answersItself, decideGuidance, decisionId, isDecision, sendsBack, structuredDecision } from './decisions.mjs';
 import { deliverableWithDefects, mergedHead, OWNER_CHANGES, ownerChangesFinding } from './result-review.mjs';
@@ -342,6 +344,8 @@ const CI_SETTLED = ['ci-passed', 'ci-failed', 'ci-inconclusive', 'ci-none'];
 const RATE_LIMIT_MAX_WAIT_MS = 60 * 60_000;
 // AW-005: how often a controller re-reads whether its own revision is merged. A constant, not a config.json key.
 const REVISION_CHECK_MS = 60_000;
+// How often stray Docker stacks of docker.cleanup repositories are looked for (host-safety.mjs), besides after one of their runs ends.
+const SWEEP_MS = 10 * 60_000;
 // routing-policy/1 history window (MODEL_ROUTING 5.3): the most recent attempts of one candidate and class, at most 90 days old.
 const HISTORY_ATTEMPTS = 200;
 const HISTORY_MS = 90 * 24 * 60 * 60_000;
@@ -432,7 +436,7 @@ export class Controller {
   constructor({ store, config, dataDir, log = () => {}, now = () => Date.now(), instanceId = randomUUID(),
     codeRevision = null, fault = process.env.AIWORKS_FAULT ?? null, notifier = noopTransport, probes = {},
     governanceRoot = undefined, revisionCheck = null, revisionCheckMs = REVISION_CHECK_MS, profiles = null, profileHomes = null,
-    alertDeps = {}, sampler = null }) {
+    alertDeps = {}, sampler = null, probe = null, cpuMonitor = null }) {
     Object.assign(this, { store, dataDir, log, now, instanceId, codeRevision, fault, notifier, probes, governanceRoot,
       revisionCheck, revisionCheckMs, profiles, profileHomes });
     this.config = { ...DEFAULTS, ...config };
@@ -477,7 +481,8 @@ export class Controller {
     // RUN7 and RUN8 in admission: one host sample per admission pass (host.mjs; it keeps its CPU window between passes, and
     // an injected sampler replaces the host in tests), and the static accounts a pass found at their learned limit
     // (per-tick memory, as profileWaited; the next useful result on one of them raises its limit by one).
-    this.sampler = this.sched ? sampler ?? hostSamplerFor(this.config) : null;
+    // `probe` (host.mjs createHostProbe) adds ports and Docker; cli.mjs serve supplies it, tests and other callers do not.
+    this.sampler = this.sched ? sampler ?? hostSamplerFor(this.config, { probe }) : null;
     this.accountWaited = new Set();
     this.waitReasons = new Map();
     this.domainWaits = [];
@@ -504,6 +509,20 @@ export class Controller {
     this.cmd = { codex: commands.codex, cursor: commands.cursor, agy: commands.agy, chrome: commands.chrome,
       claude: commands.claude ?? ['claude'], git: commands.git ?? ['git'], gh: commands.gh ?? ['gh'] };
     this.held = new Map();
+    // Host safety (after the crash of 2026-10-31): the Docker limit is the Docker gate, which cli.mjs serve puts in front of
+    // every process it starts (docker-gate.mjs). Here: stray stacks of docker.cleanup repositories are taken down
+    // (host-safety.mjs) and every worker job is capped.
+    this.cleanup = cleanupSettings(this.config);
+    this.workerJob = workerJobLimits(this.config, totalmem());
+    this.sweeper = this.cleanup ? createStackSweeper({ docker: commands.docker ?? ['docker'], log: (line) => this.log(line), cwd: this.stackCleanupDir(),
+      roots: () => this.cleanupRoots(), keep: () => this.cleanupKeep() }) : null;
+    this.sweptAt = -Infinity;
+    // The worker CPU monitor (worker-cpu.mjs), which cli.mjs serve supplies: lowers the busiest worker's priority while the
+    // computer stays busy and restores it afterwards. Its checks run beside the tick, never inside admission.
+    this.cpuMonitor = cpuMonitor;
+    this.cpuCheckedAt = -Infinity;
+    // Base fetches of the campaign steps of the current pass (fetchBase): checkout and base -> { ok, sha }; null outside them.
+    this.baseFetches = null;
   }
 
   /** Crash rehearsal hook: terminate abruptly at a named point (AIWORKS_FAULT). */
@@ -513,7 +532,13 @@ export class Controller {
     process.exit(86);
   }
 
+  /** One pass of the controller loop; while it runs, `tickStartedAt` says since when (the lease timer reads it). */
   async tick() {
+    this.tickStartedAt = this.now();
+    try { return await this.tickOnce(); } finally { this.tickStartedAt = null; }
+  }
+
+  async tickOnce() {
     const ids = this.store.all(`SELECT id FROM campaigns WHERE control IN ('registered', 'paused', 'cancel-requested')
       OR EXISTS (SELECT 1 FROM outbox WHERE campaign_id = campaigns.id AND state = 'pending')`).map((row) => row.id);
     // A finished campaign is visited again only while integration repair is on and its published PRs are due a check.
@@ -542,20 +567,30 @@ export class Controller {
       if (!ids.includes(id)) ids.push(id);
     }
     this.candidates = [];
-    for (const id of ids) {
-      try {
-        await this.step(id);
-      } catch (error) {
-        if (error instanceof FencedError) {
-          this.held.delete(id);
-          this.log(`fenced: ${error.message}`);
-        } else if (error instanceof ConflictError) {
-          this.log(`conflict, retrying next tick: ${error.message}`);
-        } else {
-          this.log(`campaign ${id} step failed: ${error.stack || error}`);
-          try { this.store.journal(id, 'step-error', { message: String(error.message).slice(0, 500) }, this.now()); } catch { /* store unavailable */ }
+    this.baseFetches = new Map();
+    try {
+      for (const id of ids) {
+        // One long step must not let the other campaigns' leases lapse: every held lease is extended before each step.
+        this.renewHeld();
+        try {
+          await this.step(id);
+        } catch (error) {
+          if (error instanceof FencedError) {
+            this.held.delete(id);
+            this.log(`fenced: ${error.message}`);
+          } else if (error instanceof ConflictError) {
+            this.log(`conflict, retrying next tick: ${error.message}`);
+          } else {
+            this.log(`campaign ${id} step failed: ${error.stack || error}`);
+            try { this.store.journal(id, 'step-error', { message: String(error.message).slice(0, 500) }, this.now()); } catch { /* store unavailable */ }
+          }
         }
       }
+    } finally { this.baseFetches = null; }
+    if (this.sweeper && this.now() - this.sweptAt >= SWEEP_MS) { this.sweptAt = this.now(); this.sweeper.sweep(); }
+    if (this.cpuMonitor && this.now() - this.cpuCheckedAt >= this.cpuMonitor.settings.intervalMs) {
+      this.cpuCheckedAt = this.now();
+      try { this.checkWorkerCpu(); } catch (error) { this.log(`worker CPU check failed: ${error.message}`); }
     }
     // Merge gate (aiworks#138): verified PRs in repositories the owner opted in, one per repository per pass.
     try { await mergePass(this); }
@@ -601,6 +636,34 @@ export class Controller {
     if (this.releaseJob) throw new Error('Drain release commands before releasing campaign leases');
     for (const [id, generation] of this.held) this.store.releaseLease(id, this.instanceId, generation, this.now());
     this.held.clear();
+  }
+
+  /**
+   * Extends every lease this instance holds. Run before each step and on a timer while a step awaits (cli.mjs serve), so
+   * a slow campaign never makes this instance lose the others, and a second controller never takes them over meanwhile.
+   * A lease that already expired or changed hands stays lost.
+   */
+  renewHeld() {
+    const now = this.now();
+    for (const [id, generation] of this.held) {
+      try { if (!this.store.renewLease(id, this.instanceId, generation, now, this.config.leaseMs)) this.held.delete(id); }
+      catch { /* store busy: the next renewal or step tries again */ }
+    }
+  }
+
+  /**
+   * The serve timer's renewal. It renews only while the current tick is younger than max(10 leases, 15 min): a tick that
+   * hangs on an await then lets its leases lapse, so the dashboard and a rebuild see a stopped supervisor, not a running one.
+   */
+  renewOnTimer() {
+    const bound = Math.max(10 * this.config.leaseMs, 15 * 60_000);
+    if (this.tickStartedAt != null && this.now() - this.tickStartedAt > bound) {
+      if (!this.renewalHeldBack) this.log(`tick running for more than ${Math.round(bound / 60_000)} min: leases are no longer renewed until it ends`);
+      this.renewalHeldBack = true;
+      return;
+    }
+    this.renewalHeldBack = false;
+    this.renewHeld();
   }
 
   fenced(ctx, fn) {
@@ -1087,6 +1150,7 @@ export class Controller {
         this.store.patch('tasks', { campaign_id: ctx.id, task_id: op.task_id }, task.version, { state: op.kind === 'verify' ? 'implemented' : 'pending' }, this.now());
         this.store.journal(ctx.id, 'operation-abandoned', { op: op.id, reason: 'cancel' }, this.now());
       });
+      this.runEnded(campaign.declaration);
       return;
     }
     if (result) { this.consume(ctx, op, result); return; }
@@ -1159,6 +1223,7 @@ export class Controller {
   }
 
   applyOutcome(ctx, op, outcome) {
+    this.runEnded(this.store.campaign(ctx.id)?.declaration);
     if (op.kind === 'plan') return this.settlePlan(ctx, op, outcome);
     let verdict = outcome;
     const before = this.store.task(ctx.id, op.task_id);
@@ -1719,12 +1784,21 @@ export class Controller {
    * Fetch the base branch into this supervisor's own ref and read it there. FETCH_HEAD is shared by every fetch in the
    * checkout (another campaign, the dashboard, the owner), so a base read from it can be another branch's tip.
    */
-  fetchBase(repoPath, base, repository = null) {
+  fetchBase(repoPath, base, repository = null, { fresh = false } = {}) {
     const ref = `refs/aiworks/base/${base}`;
     if (this.selfHosted(repository)) return this.localBase(repoPath, base, repository);
+    // One network fetch per checkout and base for all campaign steps of a pass: each campaign fetching for itself made one
+    // pass take minutes (2026-10-31). Only the step loop shares it; the merge pass, which moves the base, and everything
+    // after it fetch afresh, as does a caller passing `fresh` (the release job's grant read, which runs beside the pass).
+    // A failed fetch is not kept.
+    const key = JSON.stringify([repoPath, base]);
+    const kept = fresh ? null : this.baseFetches?.get(key);
+    if (kept) return kept;
     const fetched = gitA.exec(this.cmd.git, ['fetch', 'origin', `+refs/heads/${base}:${ref}`], { cwd: repoPath, timeoutMs: 30_000 });
     const sha = fetched.ok ? gitA.exec(this.cmd.git, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: repoPath }).stdout : '';
-    return /^[0-9a-f]{40}$/.test(sha ?? '') ? { ok: true, sha } : { ok: false, sha: null };
+    const result = /^[0-9a-f]{40}$/.test(sha ?? '') ? { ok: true, sha } : { ok: false, sha: null };
+    if (result.ok) this.baseFetches?.set(key, result);
+    return result;
   }
 
   /** Whether `repository` is AIWorks's own repository with local main trusted (config.json `selfHosting`). */
@@ -2213,7 +2287,7 @@ export class Controller {
     const reasons = new Map();
     const domainWaits = [];
     let launched = false;
-    for (const candidate of orderCandidates(this.store, this.candidates)) {
+    for (const candidate of orderCandidates(this.store, this.candidates, this.config)) {
       const key = `${candidate.campaignId}/${candidate.taskId}`;
       const refusal = admissionCheck(this.store, candidate, inputs);
       if (refusal) {
@@ -2231,6 +2305,51 @@ export class Controller {
     }
     this.waitReasons = reasons;
     this.domainWaits = domainWaits;
+  }
+
+  /** One CPU check over the open runs whose runner has its job; each priority change is journalled on the run's campaign. */
+  checkWorkerCpu() {
+    const jobs = [];
+    for (const op of this.store.all("SELECT id, campaign_id, run_dir FROM operations WHERE state = 'dispatched'")) {
+      const runner = op.run_dir ? readJsonIfExists(join(op.run_dir, 'runner.json')) : null;
+      if (runnerIdentified(runner)) jobs.push({ op: op.id, campaignId: op.campaign_id, jobName: runner.jobName });
+    }
+    const campaignOf = new Map(jobs.map((job) => [job.op, job.campaignId]));
+    this.cpuMonitor.check(jobs).then((actions) => {
+      for (const action of actions ?? []) {
+        try { this.store.journal(campaignOf.get(action.op) ?? null, action.kind, action, this.now()); } catch { /* store closing */ }
+      }
+    }, (error) => this.log(`worker CPU check failed: ${error.message}`));
+  }
+
+  /** An empty folder for stack cleanup's `docker compose down`, so no compose file near AIWorks itself is read. */
+  stackCleanupDir() {
+    if (!this.dataDir) return undefined;
+    const dir = join(this.dataDir, 'stack-cleanup');
+    try { mkdirSync(dir, { recursive: true }); return dir; } catch { return undefined; }
+  }
+
+  /** A run of a docker.cleanup repository ended: the next tick looks for its stack. */
+  runEnded(decl) { if (this.sweeper && cleans(this.cleanup, decl)) this.sweptAt = -Infinity; }
+
+  /** The worktree roots of docker.cleanup repositories, never one that holds the repository's own checkout. */
+  cleanupRoots() {
+    const names = new Set([...Object.keys(this.config.repositories ?? {}).filter((name) => this.cleanup.repositories.has(name.toLowerCase())),
+      ...this.cleanup.repositories]);
+    const roots = [];
+    for (const name of names) {
+      const repo = resolveCheckout(this.store, this.config, name);
+      if (repo?.worktreeRoot && repo.path && !inside(repo.worktreeRoot, repo.path) && !roots.includes(repo.worktreeRoot)) roots.push(repo.worktreeRoot);
+    }
+    return roots;
+  }
+
+  /** Folders whose stacks stay: every open operation's workspace and every running refresh or group gate's checkout. */
+  cleanupKeep() {
+    const windowMs = this.merges.refresh?.timeoutMs ?? 2 * 60 * 60_000;
+    return [...openOperations(this.store, this.cleanup).map((op) => op.workspace),
+      ...runningRefreshes(this.store, this.cleanup, { now: this.now(), windowMs }).map((gate) => gate.path),
+      ...runningBatches(this.store, this.cleanup, { now: this.now(), windowMs })].filter(Boolean);
   }
 
   /**
@@ -2933,7 +3052,7 @@ export class Controller {
       writeFileSync(join(runDir, 'prompt.txt'), invocation.prompt, 'utf8');
       writeAtomic(join(runDir, 'spec.json'), JSON.stringify({
         argv: invocation.argv, ...(invocation.env ? { env: invocation.env } : {}),
-        cwd: invocation.cwd ?? workspace, timeoutMs, heartbeatMs: this.config.heartbeatMs,
+        cwd: invocation.cwd ?? workspace, timeoutMs, heartbeatMs: this.config.heartbeatMs, ...this.workerJob,
       }));
 
       const now = this.now();
