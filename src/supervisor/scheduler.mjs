@@ -110,8 +110,13 @@ export function hostPressure(store, sampler, now) {
  * then the least recently served campaign in it, then campaign age and id; within a campaign verify before implement,
  * then declaration order. "Served" is MAX(operations.created_at), derived from rows: there is no fairness state to lose.
  * A candidate is { campaignId, taskId, kind: 'implement' | 'verify', ord, declaration, createdAt }.
+ * config.scheduler.priorityRepositories goes before all of that: steps of a listed repository are offered first, in
+ * the order listed, so other projects only get the capacity those steps leave. A running operation is never stopped.
  */
-export function orderCandidates(store, candidates) {
+export function orderCandidates(store, candidates, config = null) {
+  const listed = config?.scheduler?.priorityRepositories;
+  const priorities = Array.isArray(listed) ? listed : [];
+  const rank = (c) => { const at = priorities.indexOf(c.declaration.target.repository); return at < 0 ? priorities.length : at; };
   const served = new Map(store.all('SELECT campaign_id, MAX(created_at) AS at FROM operations GROUP BY campaign_id').map((row) => [row.campaign_id, row.at]));
   const project = (c) => `${c.declaration.target.tenantId}\u0000${c.declaration.target.projectId}`;
   const projectServed = new Map();
@@ -125,6 +130,7 @@ export function orderCandidates(store, candidates) {
     if (key && projectServed.has(key)) projectServed.set(key, Math.max(projectServed.get(key), served.get(row.id) ?? -Infinity));
   }
   return [...candidates].sort((a, b) =>
+    (rank(a) - rank(b)) ||
     (projectServed.get(project(a)) - projectServed.get(project(b))) ||
     ((served.get(a.campaignId) ?? -Infinity) - (served.get(b.campaignId) ?? -Infinity)) ||
     ((a.createdAt ?? 0) - (b.createdAt ?? 0)) || a.campaignId.localeCompare(b.campaignId) ||
