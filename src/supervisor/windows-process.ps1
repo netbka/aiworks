@@ -171,12 +171,13 @@ public static class SupervisorProcess {
     try {
       if (process != IntPtr.Zero && Created(process).ToString() != expected) return "identity-mismatch";
       job = Job(name);
+      // Stop descendants before runner death can hide their still-terminating handles from job accounting.
+      if (job != IntPtr.Zero) Empty(job);
       if (process != IntPtr.Zero && WaitForSingleObject(process, 0) != 0) {
         if (job == IntPtr.Zero) return "ownership-unavailable";
         Check(TerminateProcess(process, 1));
         if (WaitForSingleObject(process, 10000) != 0) return "stop-failed";
       }
-      if (job != IntPtr.Zero) Empty(job);
       return process == IntPtr.Zero ? "not-running" : "stopped";
     } finally { if (job != IntPtr.Zero) CloseHandle(job); if (process != IntPtr.Zero) CloseHandle(process); }
   }
