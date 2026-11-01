@@ -98,6 +98,8 @@ Before registering a task, inspect the callers, existing tests, fixtures and sch
 
 Every controller write runs in `BEGIN IMMEDIATE` and first checks that this instance still holds the campaign lease generation (`assertLease`). Workspace preparation, runner launch, publication and outbox effects hold that same write lock, so lease expiry cannot admit a conflicting controller while an external command is in progress. Commands remain bounded by adapter timeouts; competing owner actions can temporarily receive SQLite's busy error. A lease is taken over only after it expires, with generation + 1. Owner actions (start, pause, cancel, recheck) use compare-and-swap on the row version.
 
+Before releasing that lock after a successful effect, the controller extends all its held leases that were live on entry and whose ownership, generation and expiry remain unchanged. This covers synchronous commands that block the renewal timer. It does not make Git asynchronous or protect slow work outside the fence; already expired leases remain lost.
+
 ## 3. Lifecycle of one task
 
 1. **Implement.** The supervisor prepares the isolated worktree, builds and validates the packet, writes the run directory, then commits the operation record (idempotency key `<campaign>.<task>.<kind>.<seq>`, session UUID, packet and digest) and counts the run against `maxWorkerRuns`. Only after that commit does it launch a detached runner.
