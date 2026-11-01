@@ -3,22 +3,29 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// Read all stdin safely
-let input = '';
-try {
-  if (!process.stdin.isTTY) {
-    input = readFileSync(0, 'utf8');
-  }
-} catch {
-  input = '{}';
+// Read all stdin safely without deadlocking if EOF is not sent
+async function readInput() {
+  if (process.stdin.isTTY) return {};
+  return new Promise((done) => {
+    let data = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk) => {
+      data += chunk;
+      try {
+        const parsed = JSON.parse(data);
+        done(parsed);
+      } catch {}
+    });
+    process.stdin.on('end', () => {
+      try { done(JSON.parse(data)); } catch { done({}); }
+    });
+    setTimeout(() => {
+      try { done(JSON.parse(data)); } catch { done({}); }
+    }, 300);
+  });
 }
 
-let payload = {};
-try {
-  payload = input ? JSON.parse(input) : {};
-} catch {
-  payload = {};
-}
+const payload = await readInput();
 
 // Find repository root (one level up from .agents)
 const thisDir = dirname(fileURLToPath(import.meta.url));
