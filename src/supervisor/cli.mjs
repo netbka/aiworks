@@ -22,6 +22,7 @@ import { clearCoordinatorViolation, coordinatorView, postOwnerMessage } from './
 import { approvalFromFile, CODE_ROOT, declarationFromFile, revisionNotMerged, runtimeTrust } from './provenance.mjs';
 import { recordAnchor, selfHostingSettings, trustedTip } from './self-hosting.mjs';
 import { Store } from './store.mjs';
+import { maintenanceAudit } from './maintenance.mjs';
 import { comments as workItemComments, item as workItem, items as workItems } from './work-list.mjs';
 import { importIssues } from './work-list-import.mjs';
 import { approveProgram, programFromFile, programStatus, stopPrograms } from './program.mjs';
@@ -48,6 +49,9 @@ const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--go
   approval-revoke <campaignId> [reason] revoke the campaign's recorded private approvals and cancel the campaign:
                                         nothing starts under them again
   status <campaignId>
+  maintenance audit --repo <path>       read-only Git/worktree inventory; --root <dir> also discovers immediate repos
+    --root <dir>                       bounds linked-worktree inspection; optional --repo selects a nested repository
+                                        JSON includes ownership when the data store exists; never fetches or removes
   pause <campaignId> [reason]
   cancel <campaignId> [reason]
   recheck <campaignId> [--task <taskId>] [note]
@@ -120,6 +124,8 @@ const apiKeyFlag = take('--api-key');
 const passphraseFlag = take('--passphrase');
 const kindFlag = take('--kind');
 const effortFlag = take('--effort');
+const maintenanceRepo = take('--repo');
+const maintenanceRoot = take('--root');
 const applyImport = args.includes('--apply') ? Boolean(args.splice(args.indexOf('--apply'), 1)) : false;
 const jsonOnly = args.includes('--json') ? Boolean(args.splice(args.indexOf('--json'), 1)) : false;
 const rotateFlag = args.includes('--rotate') ? Boolean(args.splice(args.indexOf('--rotate'), 1)) : false;
@@ -165,6 +171,22 @@ const dataConfig = () => { try { return JSON.parse(readFileSync(join(dataDir, 'c
 const trustHere = () => runtimeTrust(dataConfig(), store);
 
 try {
+  if (command === 'maintenance') {
+    if (rest.length !== 1 || rest[0] !== 'audit' || (!maintenanceRepo && !maintenanceRoot)) {
+      throw new CampaignError('MAINTENANCE_USAGE', 'maintenance audit requires --repo <path> or --root <dir>; no mutation command is enabled');
+    }
+    let ownershipUnreadable = false;
+    if (existsSync(join(dataDir, 'supervisor.db'))) {
+      try { store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true }); }
+      catch { ownershipUnreadable = true; }
+    }
+    const report = maintenanceAudit({ repositories: maintenanceRepo ? [resolve(maintenanceRepo)] : [], root: maintenanceRoot ? resolve(maintenanceRoot) : undefined,
+      store, git: dataConfig().commands?.git ?? ['git'] });
+    store?.close();
+    if (ownershipUnreadable) report.errors.push({ reason: 'ownership-unreadable' });
+    await new Promise((done) => process.stdout.write(JSON.stringify(report, null, 2) + '\n', done));
+    process.exit(report.errors.length ? 1 : 0);
+  }
   // A conflicting shell default is evidence of an ambiguous status target, never a reason to create a store.
   const environmentData = process.env.AIWORKS_DATA;
   const canonical = (path) => existsSync(path) ? realpathSync(path) : resolve(path);
