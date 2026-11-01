@@ -338,7 +338,8 @@ const BLOCKER_TEXT = {
   'research-context': 'Needs you: the research material is missing',
   'runtime-not-merged': 'Needs you: the supervisor code running here is not on main',
 };
-const PRESSURE_TEXT = { cpu: 'processor time', disk: 'disk space', heartbeats: 'headroom: workers report late' };
+const PRESSURE_TEXT = { cpu: 'processor time', disk: 'disk space', ports: 'network ports', docker: 'Docker headroom: Docker is slow or runs many containers',
+  heartbeats: 'headroom: workers report late' };
 const iso = (ms) => (ms ? new Date(ms).toISOString() : null);
 const reason = (code, text, next, until = null, holder = null) => ({ code, text, next, until: iso(until), holder });
 
