@@ -296,7 +296,8 @@ export function releaseStatus({ project, tasks, store = null, campaignId = null,
         item.campaign === campaignId && item.task === task.task_id && item.sha === task.verified_sha)))));
     return { mode: enabled && modes.some((d) => d.mode === 'auto-release') ? 'auto-release' : 'review-only', enabled, complete,
       authorized: valid, modes, expected: destinations, deliveredBy: [...new Set(delivered.map((entry) => entry.release))],
-      summary: rows.length || delivered.length ? !complete ? 'Release has not completed at every destination.' : 'The deployed revision passed its project health check.'
+      summary: rows[0]?.grant_version === null ? rows[0].state === 'accepted' ? 'Published with the project\'s own publishing steps.' : 'Publishing with the project\'s own steps has not finished.'
+        : rows.length || delivered.length ? !complete ? 'Release has not completed at every destination.' : 'The deployed revision passed its project health check.'
         : last?.reason ?? 'No deployment has been recorded. Release needs a standing project grant and an exact verified merge.',
       tasks: rows.map((row) => ({ taskId: row.task_id, verifiedSha: row.verified_sha, destination: row.destination,
         state: row.state, releaseId: row.id, eligible: row.eligibility?.eligible === true,
