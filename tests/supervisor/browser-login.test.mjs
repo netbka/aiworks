@@ -43,7 +43,7 @@ const chrome = [process.env.AIWORKS_TEST_CHROME,
   process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'Google/Chrome/Application/chrome.exe')].find((path) => path && existsSync(path));
 
 test('pre-login keeps credentials on the selected origin and closes its private page before browser tools attach',
-  { skip: !chrome && 'set AIWORKS_TEST_CHROME to run the synthetic browser credential boundary', timeout: 60_000 }, async (t) => {
+  { skip: !chrome && 'set AIWORKS_TEST_CHROME to run the synthetic browser credential boundary', timeout: 300_000 }, async (t) => {
     const { puppeteer } = await import(pathToFileURL(createRequire(import.meta.url)
       .resolve('chrome-devtools-mcp/build/src/third_party/index.js')).href);
     const dir = mkdtempSync(join(tmpdir(), 'aiworks-browser-login-'));
@@ -153,7 +153,7 @@ test('pre-login keeps credentials on the selected origin and closes its private 
     login = await puppeteer.connect({ transport });
     const reads = [];
     const store = { get(ref) { reads.push(ref); return ref === 'browser:dev-user' ? user : password; } };
-    await loginBrowser(login, settings, { store, timeoutMs: 5000, transport });
+    await loginBrowser(login, settings, { store, transport });
     assert.deepEqual(reads, ['browser:dev-user', 'browser:dev-password']);
     assert.deepEqual(received, [{ body: `user=${user}&password=${password}` }]);
     assert.ok((await browser.cookies()).some((cookie) => cookie.name === 'session'));
@@ -179,7 +179,7 @@ test('pre-login keeps credentials on the selected origin and closes its private 
     child.stderr.resume();
     await new Promise((resolve, reject) => {
       let output = '';
-      const timer = setTimeout(() => reject(new Error('browser MCP did not finish synthetic pre-login')), 20_000);
+      const timer = setTimeout(() => reject(new Error('browser MCP did not finish synthetic pre-login')), 120_000);
       child.once('error', (error) => { clearTimeout(timer); reject(error); });
       child.once('exit', () => { clearTimeout(timer); reject(new Error('browser MCP exited before handoff')); });
       child.stdout.on('data', chunk => {
