@@ -1,6 +1,6 @@
 param(
-  [ValidateSet('Run', 'Drain', 'Stop')][string]$Mode,
-  [string]$RunDir, [string]$JobName, [int]$RunnerPid, [string]$CreationTime
+  [ValidateSet('Run', 'Drain', 'Stop', 'Usage', 'Priority')][string]$Mode,
+  [string]$RunDir, [string]$JobName, [int]$RunnerPid, [string]$CreationTime, [string]$PriorityClass
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
@@ -36,6 +36,7 @@ public static class SupervisorProcess {
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool UpdateProcThreadAttribute(IntPtr list, uint flags, IntPtr attribute, IntPtr value, IntPtr size, IntPtr previous, IntPtr returned);
   [DllImport("kernel32.dll")] static extern void DeleteProcThreadAttributeList(IntPtr list);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr process, out uint code);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool SetPriorityClass(IntPtr process, uint priority);
   [StructLayout(LayoutKind.Sequential)] struct BasicLimits { public long processTime, jobTime; public uint flags; public UIntPtr minWorking, maxWorking; public uint activeLimit; public UIntPtr affinity; public uint priority, scheduling; }
   [StructLayout(LayoutKind.Sequential)] struct Limits { public BasicLimits basic; public ulong readOps, writeOps, otherOps, readBytes, writeBytes, otherBytes; public UIntPtr processMemory, jobMemory, peakProcess, peakJob; }
   [StructLayout(LayoutKind.Sequential)] struct Accounting { public long userTime, kernelTime, periodUser, periodKernel; public uint faults, total, active, terminated; }
@@ -122,6 +123,42 @@ public static class SupervisorProcess {
       foreach (IntPtr process in owned.Values) CloseHandle(process);
     }
   }
+  // CPU monitor (worker-cpu.mjs): the CPU time (100 ns units) and live processes of each named job, one JSON line each;
+  // a job that no longer exists is left out.
+  public static string Usage(string names) {
+    StringBuilder lines = new StringBuilder();
+    foreach (string name in names.Split(',')) {
+      IntPtr job = OpenJobObject(0x0004, false, name); // JOB_OBJECT_QUERY
+      if (job == IntPtr.Zero) continue;
+      try {
+        Accounting info;
+        if (!QueryInformationJobObject(job, 1, out info, (uint)Marshal.SizeOf(typeof(Accounting)), IntPtr.Zero)) continue;
+        lines.Append("{\"job\":\"" + name.Replace("\\", "\\\\") + "\",\"cpu\":" + (info.userTime + info.kernelTime) + ",\"active\":" + info.active + "}\n");
+      } finally { CloseHandle(job); }
+    }
+    return lines.ToString().TrimEnd();
+  }
+  // Sets the priority class of every process now in the job (never above normal, which needs no privilege); processes they
+  // start later inherit it. A process that ended meanwhile is skipped.
+  public static string Priority(string name, uint priority) {
+    IntPtr job = OpenJobObject(0x0004, false, name); // JOB_OBJECT_QUERY
+    if (job == IntPtr.Zero) return "not-running";
+    int capacity = 1024, size = 8 + capacity * IntPtr.Size;
+    IntPtr list = Marshal.AllocHGlobal(size);
+    try {
+      if (!QueryJobIds(job, 3, list, (uint)size, IntPtr.Zero) && Marshal.GetLastWin32Error() != 234) throw new Win32Exception(Marshal.GetLastWin32Error());
+      int count = Math.Min(Marshal.ReadInt32(list, 4), capacity);
+      for (int i = 0; i < count; i++) {
+        long value = Marshal.ReadIntPtr(list, 8 + i * IntPtr.Size).ToInt64();
+        if (value <= 0 || value > Int32.MaxValue) continue;
+        IntPtr process = OpenProcess(0x0200 | QUERY, false, (int)value); // PROCESS_SET_INFORMATION
+        if (process == IntPtr.Zero) continue;
+        try { bool member; if (IsProcessInJob(process, job, out member) && member) SetPriorityClass(process, priority); }
+        finally { CloseHandle(process); }
+      }
+      return "set";
+    } finally { Marshal.FreeHGlobal(list); CloseHandle(job); }
+  }
   public static string Drain(string name) {
     IntPtr job = Job(name);
     if (job == IntPtr.Zero) return "stop-failed";
@@ -143,7 +180,7 @@ public static class SupervisorProcess {
       return process == IntPtr.Zero ? "not-running" : "stopped";
     } finally { if (job != IntPtr.Zero) CloseHandle(job); if (process != IntPtr.Zero) CloseHandle(process); }
   }
-  static void Attach(string name, int parentPid, string expected) {
+  static void Attach(string name, int parentPid, string expected, ulong jobMemory, uint processes) {
     IntPtr parent = OpenProcess(QUERY | DUP_HANDLE, false, parentPid);
     if (parent == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
     IntPtr job = IntPtr.Zero;
@@ -155,6 +192,9 @@ public static class SupervisorProcess {
       if (job == IntPtr.Zero || error == 183) throw new Win32Exception(error);
       Limits limits = new Limits();
       limits.basic.flags = 0x2000; // KILL_ON_JOB_CLOSE; neither breakaway flag is permitted.
+      // Host safety (2026-10-31): optional caps on the whole worker tree's committed memory and live process count.
+      if (jobMemory > 0) { limits.basic.flags |= 0x200; limits.jobMemory = new UIntPtr(jobMemory); } // JOB_OBJECT_LIMIT_JOB_MEMORY
+      if (processes > 0) { limits.basic.flags |= 0x8; limits.basic.activeLimit = processes; }       // JOB_OBJECT_LIMIT_ACTIVE_PROCESS
       Check(SetInformationJobObject(job, 9, ref limits, (uint)Marshal.SizeOf(typeof(Limits))));
       IntPtr owned;
       Check(DuplicateHandle(GetCurrentProcess(), job, parent, out owned, 0, false, 2));
@@ -178,8 +218,8 @@ public static class SupervisorProcess {
     if (handle == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error());
     return handle;
   }
-  public static void Run(string name, int parentPid, string expected, string directory, string cwd, string[] argv, uint timeout) {
-    Attach(name, parentPid, expected);
+  public static void Run(string name, int parentPid, string expected, string directory, string cwd, string[] argv, uint timeout, ulong jobMemory, uint processes, uint priority) {
+    Attach(name, parentPid, expected, jobMemory, processes);
     IntPtr input = IntPtr.Zero, output = IntPtr.Zero, error = IntPtr.Zero;
     IntPtr attributes = IntPtr.Zero, handles = IntPtr.Zero;
     ProcessInfo child = new ProcessInfo();
@@ -200,7 +240,9 @@ public static class SupervisorProcess {
         flags = 0x100, input = input, output = output, error = error }, attributes = attributes };
       StringBuilder command = new StringBuilder();
       foreach (string arg in argv) { if (command.Length > 0) command.Append(' '); command.Append(Quote(arg)); }
-      Check(CreateProcess(null, command, IntPtr.Zero, IntPtr.Zero, true, 0x08080000, IntPtr.Zero, cwd, ref startup, out child));
+      // A lower priority class (worker-cpu.mjs) is a creation flag, not a job limit: every descendant inherits it, and the
+      // monitor can still lower or restore each process without the privilege a job priority limit needs.
+      Check(CreateProcess(null, command, IntPtr.Zero, IntPtr.Zero, true, 0x08080000 | priority, IntPtr.Zero, cwd, ref startup, out child));
       uint waited = WaitForSingleObject(child.process, timeout);
       if (waited != 0 && waited != 258) throw new Win32Exception(Marshal.GetLastWin32Error());
       uint code; Check(GetExitCodeProcess(child.process, out code));
@@ -221,7 +263,15 @@ try {
   switch ($Mode) {
     'Run' {
       $spec = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $RunDir 'spec.json') | ConvertFrom-Json
-      [SupervisorProcess]::Run($JobName, $RunnerPid, $CreationTime, $RunDir, $spec.cwd, [string[]]$spec.argv, [uint32]$spec.timeoutMs)
+      $jobMemory = if ($spec.jobMemoryBytes) { [uint64]$spec.jobMemoryBytes } else { [uint64]0 }
+      $processes = if ($spec.activeProcesses) { [uint32]$spec.activeProcesses } else { [uint32]0 }
+      $priority = switch ($spec.priority) { 'belownormal' { [uint32]0x4000 } 'idle' { [uint32]0x40 } default { [uint32]0 } }
+      [SupervisorProcess]::Run($JobName, $RunnerPid, $CreationTime, $RunDir, $spec.cwd, [string[]]$spec.argv, [uint32]$spec.timeoutMs, $jobMemory, $processes, $priority)
+    }
+    'Usage' { [SupervisorProcess]::Usage($JobName) }
+    'Priority' {
+      $class = switch ($PriorityClass) { 'normal' { [uint32]0x20 } 'belownormal' { [uint32]0x4000 } 'idle' { [uint32]0x40 } default { throw 'unknown priority class' } }
+      [SupervisorProcess]::Priority($JobName, $class)
     }
     'Drain' { [SupervisorProcess]::Drain($JobName) }
     'Stop' { [SupervisorProcess]::Stop($JobName, $RunnerPid, $CreationTime) }
