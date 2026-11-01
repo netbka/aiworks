@@ -13,8 +13,10 @@ import { authorityChange } from './authority-path.mjs';
 import { deployAdapter } from './deploy.mjs';
 import { evaluateEligibility, mergedEventReader } from './eligibility.mjs';
 import { pinGrant, pinnedGrant, projectReleasePointer, readProjectGrant } from './grant-source.mjs';
+import { findInstructions, instructionsAdapter, INSTRUCTIONS_DESTINATION, pinInstructions, pinnedInstructions, publishRecord, treeReader } from './instructions.mjs';
 import { releaseCommandsStopped, runReleaseCommand } from './runner.mjs';
 import { acquireLock, createRelease, destinationState, nextStep, reconcile, release, releaseGate, releaseSwitches, runStep, TERMINAL } from './state.mjs';
+import { followUp } from '../work-list.mjs';
 
 const SOURCE = fileURLToPath(new URL('../../../', import.meta.url));
 const POLL_MS = 60_000;
@@ -282,13 +284,167 @@ async function drive(c, ctx, initial, repo) {
   }
 }
 
+// ---- Publishing by the project's own instructions (AW-018; release/instructions.mjs). A project without a registered
+// standing grant is published by the instructions it documents at the merged revision. Same lane, lock, intent records
+// and reconciliation as a grant release; the release row has no grant version and destination INSTRUCTIONS_DESTINATION.
+
+const byInstructions = (row) => row.destination === INSTRUCTIONS_DESTINATION && row.grant_version === null;
+/** The instructions stand in for a grant that is never newer than an owner narrowing: Review only stays until lifted. */
+const INSTRUCTIONS_GRANT = Object.freeze({ record: { version: 0, grantedAt: new Date(0).toISOString(), destinations: [{ id: INSTRUCTIONS_DESTINATION }] } });
+const instructionsSwitch = (c, project) => releaseGate({ config: c.config, dataDir: c.dataDir, store: c.store, project,
+  destination: INSTRUCTIONS_DESTINATION, grant: INSTRUCTIONS_GRANT });
+const treeOf = (c, repo, commit) => {
+  const out = runGit(c, repo, ['rev-parse', '--verify', '-q', `${commit}^{tree}`]);
+  return out.ok && /^[0-9a-f]{40}$/.test(out.stdout) ? out.stdout : null;
+};
+
+/** Why the exact merged and checked result may not be published now, or null. Asked before the lock and the first effect. */
+function publishGate(c, ctx, row, repo) {
+  const campaign = c.store.campaign(ctx.id);
+  if (!['registered', 'finished'].includes(campaign.control) || maintenance(c)) return 'Admissions are paused';
+  if (c.unmergedRevision()) return 'Release requires the trusted merged runtime';
+  const task = c.store.task(ctx.id, row.task_id), spec = specsOf(c.store, ctx.id, campaign.declaration).get(row.task_id);
+  const evidence = task && spec ? taskEvidence(c, campaign, task, spec) : null;
+  if (!evidence || evidence.verdict !== 'accepted' || evidence.targetSha !== row.verified_sha || task.state !== 'done' || task.verified_sha !== row.verified_sha ||
+      task.verification?.gate?.exit !== '0' || gateFailure(task.verification.gate)) return 'The exact merged and checked result is no longer current';
+  if (!ancestor(c, repo, row.verified_sha, row.merge_commit)) return 'The exact merged and checked result is no longer current';
+  return instructionsSwitch(c, row.project);
+}
+
+/** Record a publication's outcome once per state, and a follow-up item for anything but a passed publication. */
+function settlePublication(c, ctx, row) {
+  if (![...TERMINAL, 'unknown', 'rollback-failed'].includes(row.state)) return;
+  c.fenced(ctx, () => {
+    if (c.store.get("SELECT 1 FROM journal WHERE kind='publish-finished' AND json_extract(detail, '$.release')=? AND json_extract(detail, '$.state')=?", row.id, row.state)) return;
+    const record = publishRecord(c.dataDir, row);
+    const detail = { release: row.id, task: row.task_id, sha: row.verified_sha, revision: record?.revision ?? row.merge_commit ?? null,
+      source: record?.source ?? null, state: row.state, published: record?.publish ?? 'not-started', liveRevision: record?.liveRevision ?? null,
+      check: record?.check ?? null, rollback: record?.rollback ?? 'not-started' };
+    if (row.state !== 'accepted') {
+      const what = row.state === 'rolled-back' ? 'its check failed and the project\'s own steps rolled it back'
+        : row.state === 'rollback-failed' ? 'its check failed and the project\'s own steps did not roll it back'
+          : row.state === 'unknown' ? 'whether it was published is not known, and AIWorks does not run the publishing steps again'
+            : 'it was not published';
+      const item = followUp(c.store, { campaignId: ctx.id, taskId: row.task_id, key: `publish-${row.verified_sha.slice(0, 12)}`, verifiedSha: row.verified_sha, now: c.now(),
+        title: `Publishing of ${row.task_id} did not finish`.slice(0, 256),
+        body: `AIWorks followed the project's publishing steps for the merged result \`${detail.revision}\`: ${what}. Look at what is live and plan the next step.`,
+        fallback: `AIWorks followed the project's publishing steps for a merged result: ${what}.` });
+      detail.item = item.number;
+    }
+    c.store.journal(ctx.id, 'publish-finished', detail, c.now());
+  });
+}
+
+async function driveInstructions(c, ctx, initial, repo) {
+  let row = release(c.store, initial.id);
+  if (!c.fenced(ctx, () => releaseCommandsStopped({ dataDir: c.dataDir, release: row }))) throw new Error('Prior release process ownership is unresolved');
+  c.fenced(ctx, () => c.store.run('INSERT OR REPLACE INTO release_activity VALUES (?, ?, ?, ?, ?)', row.id, ctx.id, c.instanceId, ctx.generation, c.now()));
+  try {
+    const target = c.store.campaign(ctx.id).declaration.target;
+    const base = c.fetchBase(repo.path, target.baseBranch, target.repository).sha;
+    const newest = base ? newestMerge(c, row.project, repo, base) : null;
+    if (['eligible', 'locked'].includes(row.state) && row.history.length === 0 && newest &&
+        (newest.campaign_id !== row.campaign_id || newest.detail.sha !== row.verified_sha)) {
+      c.fenced(ctx, () => {
+        c.store.run("UPDATE releases SET state='refused', reason=?, updated_at=? WHERE id=?", 'Superseded by a newer merged result before publishing started', c.now(), row.id);
+        c.store.run('DELETE FROM release_locks WHERE release_id=?', row.id);
+        c.store.journal(ctx.id, 'release-superseded', { release: row.id, by: newest.detail.sha }, c.now());
+      });
+      return;
+    }
+    pinnedInstructions(c.dataDir, row);
+    const adapter = instructionsAdapter({ repo: repo.path, git: c.cmd.git, config: c.config, dataDir: c.dataDir, store: c.store, clock: () => c.now(),
+      mutate: (fn) => c.fenced(ctx, fn), beforePublish: async () => publishGate(c, ctx, release(c.store, row.id), repo),
+      runCommand: (args) => c.fenced(ctx, () => runReleaseCommand({ ...args, mutate: (fn) => c.fenced(ctx, fn) })) });
+    const options = { lease: leaseOf(c, ctx), now: () => c.now() };
+    if (row.state === 'eligible') {
+      const gate = publishGate(c, ctx, row, repo);
+      if (gate) { waiting(c, ctx, c.store.task(ctx.id, row.task_id), row.destination, gate); return; }
+      const lock = acquireLock(c.store, row.id, { ...options, now: c.now(), recheck: () => {
+        const reason = publishGate(c, ctx, row, repo);
+        return reason ? { eligible: false, failed: [{ reason }] } : { eligible: true, failed: [], inputs: {} };
+      } });
+      if (!lock.locked) return;
+      row = lock.release;
+    }
+    row = await reconcile(c.store, adapter, row.id, options);
+    for (let n = 0; n < 3 && !TERMINAL.includes(row.state) && row.state !== 'unknown' && nextStep(row); n++) {
+      const previous = row.step_key;
+      row = await runStep(c.store, adapter, row.id, { ...options, gate: (r) => publishGate(c, ctx, r, repo) });
+      if (row.step_key === previous) break;
+    }
+    settlePublication(c, ctx, row);
+  } finally {
+    c.fenced(ctx, () => {
+      if (releaseCommandsStopped({ dataDir: c.dataDir, release: row })) c.store.run('DELETE FROM release_activity WHERE release_id = ?', row.id);
+    });
+  }
+}
+
+/** Why the newest merged result of a project is not published: recorded once while the project's reason stays the same. */
+function publishSkipped(c, ctx, project, task, mergeCommit, reason, { followUpItem = false } = {}) {
+  c.fenced(ctx, () => {
+    const last = c.store.get("SELECT detail FROM journal WHERE kind='publish-skipped' AND json_extract(detail, '$.project')=? ORDER BY seq DESC LIMIT 1", project)?.detail;
+    if (last?.reason === reason && (!followUpItem || last.mergeCommit === mergeCommit)) return;
+    const detail = { project, task: task.task_id, sha: task.verified_sha, mergeCommit, reason };
+    if (followUpItem) {
+      detail.item = followUp(c.store, { campaignId: ctx.id, taskId: task.task_id, key: `publish-${task.verified_sha.slice(0, 12)}`, verifiedSha: task.verified_sha, now: c.now(),
+        title: `Publish ${task.task_id} by hand`.slice(0, 256), body: `AIWorks did not publish the merged result \`${mergeCommit}\`: ${reason}.`,
+        fallback: 'AIWorks did not publish a merged result; the reason is kept in its records.' }).number;
+    }
+    c.store.journal(ctx.id, 'publish-skipped', detail, c.now());
+  });
+}
+
+/**
+ * The newest merged result of a project without a standing grant: follow its own publication instructions. Returns the
+ * release to launch, or null. A project without instructions is skipped with the reason, recorded once.
+ */
+function publishCandidate(c, ctx, campaign, repo) {
+  const decl = campaign.declaration, project = decl.target.projectId;
+  const fetched = c.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository);
+  if (!fetched.ok) return null;
+  const newest = newestMerge(c, project, repo, fetched.sha);
+  if (newest?.campaign_id !== campaign.id || newest.detail.local) return null;
+  const task = c.store.task(campaign.id, newest.detail.task), mergeCommit = newest.detail.mergeCommit;
+  const spec = specsOf(c.store, campaign.id, decl).get(newest.detail.task);
+  if (!task || !spec || spec.deliverable !== 'commit' || task.state !== 'done' || task.verified_sha !== newest.detail.sha || !/^[0-9a-f]{40}$/.test(mergeCommit ?? '')) return null;
+  if (c.store.get('SELECT id FROM releases WHERE project = ? AND destination = ? AND verified_sha = ? LIMIT 1', project, INSTRUCTIONS_DESTINATION, task.verified_sha)) return null;
+  c.publishSeen ??= new Set();
+  const seen = `${project}:${mergeCommit}`;
+  if (c.publishSeen.has(seen)) return null;
+  const skip = (reason, options) => { publishSkipped(c, ctx, project, task, mergeCommit, reason, options); c.publishSeen.add(seen); return null; };
+  const instructions = findInstructions(treeReader({ git: c.cmd.git, repoPath: repo.path, revision: mergeCommit }));
+  if (!instructions.found) return skip(instructions.reason);
+  const gate = publishGate(c, ctx, { task_id: task.task_id, project, verified_sha: task.verified_sha, merge_commit: mergeCommit }, repo);
+  if (gate) { waiting(c, ctx, task, INSTRUCTIONS_DESTINATION, gate); return null; }
+  const mergedTree = treeOf(c, repo, mergeCommit), checkedTree = treeOf(c, repo, task.verified_sha);
+  if (!mergedTree || mergedTree !== checkedTree) return skip('The merged code is not exactly the checked code', { followUpItem: true });
+  // The instructions are the grant: a result that changes its own publishing steps is never published by itself.
+  let before = null;
+  try { before = /^[0-9a-f]{40}$/.test(task.base_sha ?? '') ? findInstructions(treeReader({ git: c.cmd.git, repoPath: repo.path, revision: task.base_sha })) : null; } catch { before = null; }
+  if (!before?.found || before.digest !== instructions.digest) return skip('This result changes the publishing steps themselves', { followUpItem: true });
+  if (!destinationState(c.store, project, INSTRUCTIONS_DESTINATION).free) {
+    waiting(c, ctx, task, INSTRUCTIONS_DESTINATION, 'An earlier publication of this project is not settled'); return null;
+  }
+  return c.fenced(ctx, () => {
+    if (c.store.get('SELECT id FROM releases WHERE project = ? AND destination = ? AND verified_sha = ? LIMIT 1', project, INSTRUCTIONS_DESTINATION, task.verified_sha)) return null;
+    const row = createRelease(c.store, { project, destination: INSTRUCTIONS_DESTINATION, campaignId: campaign.id, taskId: task.task_id,
+      verifiedSha: task.verified_sha, steps: ['deploy', 'check'], lease: leaseOf(c, ctx), now: c.now() });
+    pinInstructions(c.dataDir, row, { ...instructions, revision: mergeCommit });
+    c.store.run('UPDATE releases SET merge_commit = ? WHERE id = ?', mergeCommit, row.id);
+    c.store.journal(campaign.id, 'publish-planned', { release: row.id, task: task.task_id, sha: task.verified_sha, mergeCommit, source: instructions.source }, c.now());
+    return release(c.store, row.id);
+  });
+}
+
 function launch(c, ctx, row, repo) {
   // One nonblocking command lane. The main loop keeps serving other campaigns;
   // this lease stays alive even during a long health window or graceful shutdown.
   const timer = setInterval(() => {
     try { c.fenced(ctx, () => null); } catch { clearInterval(timer); }
   }, Math.max(50, Math.min(5000, Math.floor(c.config.leaseMs / 3))));
-  const promise = Promise.resolve().then(() => drive(c, ctx, row, repo)).catch((error) => {
+  const promise = Promise.resolve().then(() => (byInstructions(row) ? driveInstructions : drive)(c, ctx, row, repo)).catch((error) => {
     c.log(`release continuation: ${error.message}`);
     try { waiting(c, ctx, c.store.task(ctx.id, row.task_id), row.destination, String(error.message).slice(0, 400)); } catch { /* fenced */ }
   }).finally(() => { clearInterval(timer); c.releaseJob = null; });
@@ -304,7 +460,8 @@ export function releasePass(c) {
     if (!row || ![...TERMINAL, 'rollback-failed'].includes(row.state)) continue;
     const ctx = context(c, activity.campaign_id);
     if (ctx) c.fenced(ctx, () => {
-      recordCoverage(c, ctx, row);
+      if (byInstructions(row)) settlePublication(c, ctx, row);
+      else recordCoverage(c, ctx, row);
       if (releaseCommandsStopped({ dataDir: c.dataDir, release: row })) c.store.run('DELETE FROM release_activity WHERE release_id = ?', row.id);
     });
   }
@@ -331,9 +488,15 @@ export function releasePass(c) {
     if (!ctx) continue;
     try {
       const decl = campaign.declaration;
-      if (!projectReleasePointer(c, decl)) continue;
+      const pointer = projectReleasePointer(c, decl);
       const repo = c.repo(decl);
+      // Never AIWorks's own live runtime or repository, by a grant or by instructions.
       if (ownRuntime(c, decl, repo)) continue;
+      if (!pointer) {
+        const row = publishCandidate(c, ctx, campaign, repo);
+        if (row) { launch(c, ctx, row, repo); return; }
+        continue;
+      }
       const grant = readProjectGrant(c, ctx, decl, repo);
       if (grant.reason) { waiting(c, ctx, null, null, grant.reason); continue; }
       const newest = newestMerge(c, decl.target.projectId, repo, grant.base);
