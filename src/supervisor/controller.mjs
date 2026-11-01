@@ -521,6 +521,8 @@ export class Controller {
     // computer stays busy and restores it afterwards. Its checks run beside the tick, never inside admission.
     this.cpuMonitor = cpuMonitor;
     this.cpuCheckedAt = -Infinity;
+    // Base fetches of the campaign steps of the current pass (fetchBase): checkout and base -> { ok, sha }; null outside them.
+    this.baseFetches = null;
   }
 
   /** Crash rehearsal hook: terminate abruptly at a named point (AIWORKS_FAULT). */
@@ -565,23 +567,26 @@ export class Controller {
       if (!ids.includes(id)) ids.push(id);
     }
     this.candidates = [];
-    for (const id of ids) {
-      // One long step must not let the other campaigns' leases lapse: every held lease is extended before each step.
-      this.renewHeld();
-      try {
-        await this.step(id);
-      } catch (error) {
-        if (error instanceof FencedError) {
-          this.held.delete(id);
-          this.log(`fenced: ${error.message}`);
-        } else if (error instanceof ConflictError) {
-          this.log(`conflict, retrying next tick: ${error.message}`);
-        } else {
-          this.log(`campaign ${id} step failed: ${error.stack || error}`);
-          try { this.store.journal(id, 'step-error', { message: String(error.message).slice(0, 500) }, this.now()); } catch { /* store unavailable */ }
+    this.baseFetches = new Map();
+    try {
+      for (const id of ids) {
+        // One long step must not let the other campaigns' leases lapse: every held lease is extended before each step.
+        this.renewHeld();
+        try {
+          await this.step(id);
+        } catch (error) {
+          if (error instanceof FencedError) {
+            this.held.delete(id);
+            this.log(`fenced: ${error.message}`);
+          } else if (error instanceof ConflictError) {
+            this.log(`conflict, retrying next tick: ${error.message}`);
+          } else {
+            this.log(`campaign ${id} step failed: ${error.stack || error}`);
+            try { this.store.journal(id, 'step-error', { message: String(error.message).slice(0, 500) }, this.now()); } catch { /* store unavailable */ }
+          }
         }
       }
-    }
+    } finally { this.baseFetches = null; }
     if (this.sweeper && this.now() - this.sweptAt >= SWEEP_MS) { this.sweptAt = this.now(); this.sweeper.sweep(); }
     if (this.cpuMonitor && this.now() - this.cpuCheckedAt >= this.cpuMonitor.settings.intervalMs) {
       this.cpuCheckedAt = this.now();
@@ -1779,12 +1784,21 @@ export class Controller {
    * Fetch the base branch into this supervisor's own ref and read it there. FETCH_HEAD is shared by every fetch in the
    * checkout (another campaign, the dashboard, the owner), so a base read from it can be another branch's tip.
    */
-  fetchBase(repoPath, base, repository = null) {
+  fetchBase(repoPath, base, repository = null, { fresh = false } = {}) {
     const ref = `refs/aiworks/base/${base}`;
     if (this.selfHosted(repository)) return this.localBase(repoPath, base, repository);
+    // One network fetch per checkout and base for all campaign steps of a pass: each campaign fetching for itself made one
+    // pass take minutes (2026-10-31). Only the step loop shares it; the merge pass, which moves the base, and everything
+    // after it fetch afresh, as does a caller passing `fresh` (the release job's grant read, which runs beside the pass).
+    // A failed fetch is not kept.
+    const key = JSON.stringify([repoPath, base]);
+    const kept = fresh ? null : this.baseFetches?.get(key);
+    if (kept) return kept;
     const fetched = gitA.exec(this.cmd.git, ['fetch', 'origin', `+refs/heads/${base}:${ref}`], { cwd: repoPath, timeoutMs: 30_000 });
     const sha = fetched.ok ? gitA.exec(this.cmd.git, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: repoPath }).stdout : '';
-    return /^[0-9a-f]{40}$/.test(sha ?? '') ? { ok: true, sha } : { ok: false, sha: null };
+    const result = /^[0-9a-f]{40}$/.test(sha ?? '') ? { ok: true, sha } : { ok: false, sha: null };
+    if (result.ok) this.baseFetches?.set(key, result);
+    return result;
   }
 
   /** Whether `repository` is AIWorks's own repository with local main trusted (config.json `selfHosting`). */
