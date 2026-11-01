@@ -521,7 +521,8 @@ export class Controller {
     // computer stays busy and restores it afterwards. Its checks run beside the tick, never inside admission.
     this.cpuMonitor = cpuMonitor;
     this.cpuCheckedAt = -Infinity;
-    // Base fetches of the campaign steps of the current pass (fetchBase): checkout and base -> { ok, sha }; null outside them.
+    // Base fetches shared within one stretch of a pass (fetchBase): the campaign steps, then admission, each with its own
+    // map of checkout and base -> { ok, sha }; null outside them.
     this.baseFetches = null;
   }
 
@@ -1788,9 +1789,10 @@ export class Controller {
     const ref = `refs/aiworks/base/${base}`;
     if (this.selfHosted(repository)) return this.localBase(repoPath, base, repository);
     // One network fetch per checkout and base for all campaign steps of a pass: each campaign fetching for itself made one
-    // pass take minutes (2026-10-31). Only the step loop shares it; the merge pass, which moves the base, and everything
-    // after it fetch afresh, as does a caller passing `fresh` (the release job's grant read, which runs beside the pass).
-    // A failed fetch is not kept.
+    // pass take minutes (2026-10-31). Admission shares one too, opened after the merge pass so it sees every merge of the
+    // pass: each candidate needing merged dependencies fetched for itself (aiworks#39, 2026-11-01). The merge pass, which
+    // moves the base, and the passes between it and admission fetch afresh, as does a caller passing `fresh` (the release
+    // job's grant read, which runs beside the pass). A failed fetch is not kept.
     const key = JSON.stringify([repoPath, base]);
     const kept = fresh ? null : this.baseFetches?.get(key);
     if (kept) return kept;
@@ -2282,6 +2284,12 @@ export class Controller {
    * its next useful result may raise the fan-out. Every other candidate keeps exactly one reason (status shows it, RUN9).
    */
   async admit() {
+    // One base fetch per checkout and base for the whole admission (fetchBase); it opens after the merge pass.
+    this.baseFetches = new Map();
+    try { await this.admitCandidates(); } finally { this.baseFetches = null; }
+  }
+
+  async admitCandidates() {
     this.refreshPublished(this.domainWaits);
     const inputs = this.admissionInputs();
     const reasons = new Map();
