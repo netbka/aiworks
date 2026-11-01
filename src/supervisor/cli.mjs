@@ -175,12 +175,17 @@ try {
     if (rest.length !== 1 || rest[0] !== 'audit' || (!maintenanceRepo && !maintenanceRoot)) {
       throw new CampaignError('MAINTENANCE_USAGE', 'maintenance audit requires --repo <path> or --root <dir>; no mutation command is enabled');
     }
-    if (existsSync(join(dataDir, 'supervisor.db'))) store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true });
+    let ownershipUnreadable = false;
+    if (existsSync(join(dataDir, 'supervisor.db'))) {
+      try { store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true }); }
+      catch { ownershipUnreadable = true; }
+    }
     const report = maintenanceAudit({ repositories: maintenanceRepo ? [resolve(maintenanceRepo)] : [], root: maintenanceRoot ? resolve(maintenanceRoot) : undefined,
       store, git: dataConfig().commands?.git ?? ['git'] });
     store?.close();
+    if (ownershipUnreadable) report.errors.push({ reason: 'ownership-unreadable' });
     await new Promise((done) => process.stdout.write(JSON.stringify(report, null, 2) + '\n', done));
-    process.exit(0);
+    process.exit(report.errors.length ? 1 : 0);
   }
   // A conflicting shell default is evidence of an ambiguous status target, never a reason to create a store.
   const environmentData = process.env.AIWORKS_DATA;
