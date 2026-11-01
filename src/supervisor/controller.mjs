@@ -669,11 +669,16 @@ export class Controller {
 
   fenced(ctx, fn) {
     return this.store.tx(() => {
-      this.store.assertLease(ctx.id, this.instanceId, ctx.generation, this.now());
+      const enteredAt = this.now();
+      this.store.assertLease(ctx.id, this.instanceId, ctx.generation, enteredAt);
+      const held = new Map(this.held).set(ctx.id, ctx.generation);
+      const leases = [...held].map(([id]) => this.store.lease(id))
+        .filter((lease) => lease?.instance_id === this.instanceId && held.get(lease.campaign_id) === lease.generation && lease.expires_at > enteredAt);
       const value = fn();
-      // Hold the write lock across external effects so expiry cannot admit a second writer.
-      this.store.run('UPDATE leases SET expires_at = ? WHERE campaign_id = ? AND instance_id = ? AND generation = ?',
-        this.now() + this.config.leaseMs, ctx.id, this.instanceId, ctx.generation);
+      // Slow synchronous effects block the renewal timer; the write lock protects every unchanged, previously live lease.
+      const expiresAt = this.now() + this.config.leaseMs;
+      for (const lease of leases) this.store.run('UPDATE leases SET expires_at = ? WHERE campaign_id = ? AND instance_id = ? AND generation = ? AND expires_at = ?',
+        expiresAt, lease.campaign_id, this.instanceId, lease.generation, lease.expires_at);
       return value;
     });
   }
