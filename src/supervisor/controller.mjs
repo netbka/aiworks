@@ -123,7 +123,12 @@ export const DEFAULTS = {
   ciPollMs: 60_000, ciNoChecksMs: 30 * 60_000,
   // A GitHub rate-limit refusal waits for its reported reset plus this margin, instead of publishRetryMs (aiworks#21).
   rateLimitMarginMs: 5_000,
+  // aiworks#140: each step of a base read (the fetch, then the read of its ref) and each remote branch read ends by this.
+  baseReadMs: 30_000,
 };
+// The fixed failures of a base read (fetchBase): the stage that failed, never the command's own output. `unread`: a
+// dispatch needed a base that was not read before its fence (dispatchBase).
+export const BASE_READ_FAILURES = Object.freeze(['fetch-timeout', 'fetch-failed', 'read-timeout', 'unreadable', 'unread']);
 // Findings that reopen a published task as a repair round on its own branch and PR (aiworks#27, aiworks#42), and the
 // owner's request for changes to a finished result (OWNER_UI_V2 WP4).
 const REPAIR_FINDINGS = new Set(['integration-conflict', 'ci-failure', OWNER_CHANGES]);
@@ -524,6 +529,8 @@ export class Controller {
     // Base fetches shared within one stretch of a pass (fetchBase): the campaign steps, then admission, each with its own
     // map of checkout and base -> { ok, sha }; null outside them.
     this.baseFetches = null;
+    // Base reads still running, by checkout and base: a second read of one ref waits for the first (fetchBase).
+    this.baseReads = new Map();
   }
 
   /** Crash rehearsal hook: terminate abruptly at a named point (AIWORKS_FAULT). */
@@ -601,15 +608,15 @@ export class Controller {
       autoApplyPass(this.store, { dataDir: this.dataDir, runtimeRoot: this.runtimeRoot ?? resolve(here, '..', '..'), git: this.cmd.git,
         now: this.now(), log: (line) => this.log(line), refused: (this.applyRefused ??= new Set()) });
     } catch (error) { this.log(`apply pass failed: ${error.stack || error}`); }
-    try { releasePass(this); }
+    try { await releasePass(this); }
     catch (error) { this.log(`release pass failed: ${error.stack || error}`); }
     // Program waves (PROJECT_WORKSPACE_PLAN 6.8d, PROG3): off unless config.json `program.enabled`; registers at most the
     // next wave of each approved program, at most once an hour. The new campaign is stepped from the next tick.
-    try { programPass(this); }
+    try { await programPass(this); }
     catch (error) { this.log(`program pass failed: ${error.stack || error}`); }
     // Cleanup after finished work (PROJECT_WORKSPACE_PLAN 6.8c, CLN1): off unless config.json `cleanup.enabled` is true;
     // removes only finished, owned, clean worktrees and the local task branches the trusted main contains.
-    try { cleanupPass(this); }
+    try { await cleanupPass(this); }
     catch (error) { this.log(`cleanup pass failed: ${error.stack || error}`); }
     // Admission: at most one launch per tick across every campaign this instance holds (ADAPTIVE_SCHEDULER 4.1).
     if (this.sched) {
@@ -691,9 +698,9 @@ export class Controller {
     const ctx = { id, generation: lease.generation };
     // An open integration repair round whose PR was merged by someone else ends (aiworks#207). Checked before a finished
     // campaign's rounds reopen below, so a round opened by this pass is dispatched without a GitHub read.
-    if (this.store.campaign(id).control === 'registered' && !this.unmergedRevision()) this.endMergedRepairs(ctx);
+    if (this.store.campaign(id).control === 'registered' && !this.unmergedRevision()) await this.endMergedRepairs(ctx);
     // A conflicting published PR reopens its task and with it the finished campaign (aiworks#27).
-    if (this.ir && this.store.campaign(id).control === 'finished') this.checkPublishedIntegration(ctx);
+    if (this.ir && this.store.campaign(id).control === 'finished') await this.checkPublishedIntegration(ctx);
     // A published head whose CI fails reopens its task the same way (aiworks#42).
     if (this.ci && this.store.campaign(id).control === 'finished') this.checkPublishedCi(ctx);
     // The owner's request for changes reopens its finished step the same way (OWNER_UI_V2 WP4).
@@ -724,9 +731,9 @@ export class Controller {
       else {
         this.releaseUnmergedHold(ctx);
         this.recoverExecutorAvailability(ctx);
-        if (this.ir) this.checkPublishedIntegration(ctx);
+        if (this.ir) await this.checkPublishedIntegration(ctx);
         if (this.ci) this.checkPublishedCi(ctx);
-        this.reconcileIntegration(ctx);
+        await this.reconcileIntegration(ctx);
         if (this.ap) this.ensureClosingCheck(ctx);
         await this.schedule(ctx);
       }
@@ -1789,9 +1796,13 @@ export class Controller {
   /**
    * Fetch the base branch into this supervisor's own ref and read it there. FETCH_HEAD is shared by every fetch in the
    * checkout (another campaign, the dashboard, the owner), so a base read from it can be another branch's tip.
+   *
+   * Asynchronous and bounded (aiworks#140): the fetch and the read of the ref each end by config baseReadMs, so a hung remote
+   * costs a pass at most that long and never blocks the event loop meanwhile. Await it before fenced(), never inside:
+   * the fence then decides from the result, and acts on nothing when it failed. Resolves to { ok: true, sha }, or to
+   * { ok: false, sha: null, failure } where failure is one of BASE_READ_FAILURES, never Git's own words.
    */
-  fetchBase(repoPath, base, repository = null, { fresh = false } = {}) {
-    const ref = `refs/aiworks/base/${base}`;
+  async fetchBase(repoPath, base, repository = null, { fresh = false } = {}) {
     if (this.selfHosted(repository)) return this.localBase(repoPath, base, repository);
     // One network fetch per checkout and base for all campaign steps of a pass: each campaign fetching for itself made one
     // pass take minutes (2026-10-31). Admission shares one too, opened after the merge pass so it sees every merge of the
@@ -1799,13 +1810,36 @@ export class Controller {
     // moves the base, and the passes between it and admission fetch afresh, as does a caller passing `fresh` (the release
     // job's grant read, which runs beside the pass). A failed fetch is not kept.
     const key = JSON.stringify([repoPath, base]);
-    const kept = fresh ? null : this.baseFetches?.get(key);
+    const stretch = this.baseFetches;
+    const kept = fresh ? null : stretch?.get(key);
     if (kept) return kept;
-    const fetched = gitA.exec(this.cmd.git, ['fetch', 'origin', `+refs/heads/${base}:${ref}`], { cwd: repoPath, timeoutMs: 30_000 });
-    const sha = fetched.ok ? gitA.exec(this.cmd.git, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: repoPath }).stdout : '';
-    const result = /^[0-9a-f]{40}$/.test(sha ?? '') ? { ok: true, sha } : { ok: false, sha: null };
-    if (result.ok) this.baseFetches?.set(key, result);
+    // Two fetches into one ref contend for its lock. A caller that accepts a shared read takes the one running; a fresh
+    // one waits for it and reads again.
+    const running = this.baseReads.get(key);
+    if (running && !fresh) return running;
+    const read = (running ?? Promise.resolve()).catch(() => null).then(() => this.readBase(repoPath, base));
+    this.baseReads.set(key, read);
+    let result;
+    try { result = await read; } finally { if (this.baseReads.get(key) === read) this.baseReads.delete(key); }
+    // Kept only in the stretch it started in: a read that outlived its stretch is no base for the next one.
+    if (result.ok && stretch && this.baseFetches === stretch) stretch.set(key, result);
     return result;
+  }
+
+  /** One bounded fetch of `base` into refs/aiworks/base/<base> and its read (fetchBase). Never throws. */
+  async readBase(repoPath, base) {
+    const ref = `refs/aiworks/base/${base}`;
+    const failed = (failure) => {
+      this.log(`base read unavailable: ${failure}`);
+      return { ok: false, sha: null, failure };
+    };
+    // origin/<base> follows in the same fetch: a worktree branch started from the read base tracks it (dispatch).
+    const fetched = await gitA.execBounded(this.cmd.git, ['fetch', 'origin', `+refs/heads/${base}:${ref}`, `+refs/heads/${base}:refs/remotes/origin/${base}`],
+      { cwd: repoPath, timeoutMs: this.config.baseReadMs });
+    if (!fetched.ok) return failed(fetched.error === 'ETIMEDOUT' ? 'fetch-timeout' : 'fetch-failed');
+    const read = await gitA.execBounded(this.cmd.git, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: repoPath, timeoutMs: this.config.baseReadMs });
+    if (read.error === 'ETIMEDOUT') return failed('read-timeout');
+    return /^[0-9a-f]{40}$/.test(read.ok ? read.stdout : '') ? { ok: true, sha: read.stdout } : failed('unreadable');
   }
 
   /** Whether `repository` is AIWorks's own repository with local main trusted (config.json `selfHosting`). */
@@ -1838,7 +1872,7 @@ export class Controller {
   }
 
   /** Publication is not integration. Refresh only when an explicitly gated task is due, whatever else is running. */
-  reconcileIntegration(ctx) {
+  async reconcileIntegration(ctx) {
     const c = this.store.campaign(ctx.id);
     if (c.blocker) return;
     const tasks = this.store.tasks(ctx.id), specs = specsOf(this.store, ctx.id, c.declaration);
@@ -1847,9 +1881,11 @@ export class Controller {
     if (!due.length) return;
     // A project and config.json that disagree: refresh nothing, so dispatch raises the CONFIG_CONFLICT blocker.
     if (resolveCheckout(this.store, this.config, c.declaration.target.repository)?.conflict) return;
+    // The bounded base read runs before the fence (aiworks#140). Each task is then written at the version read with `due`,
+    // so a task that changed while the read ran is left to the next pass (ConflictError), never judged on the old read.
+    const repo = this.repo(c.declaration), base = c.declaration.target.baseBranch;
+    const fetched = await this.fetchBase(repo.path, base, c.declaration.target.repository);
     this.fenced(ctx, () => {
-      const repo = this.repo(c.declaration), base = c.declaration.target.baseBranch;
-      const fetched = this.fetchBase(repo.path, base, c.declaration.target.repository);
       const fetchedSha = fetched.sha;
       for (const task of due) {
         const missing = !fetched.ok ? specs.get(task.task_id).dependsOn
@@ -1873,7 +1909,7 @@ export class Controller {
    * reconcileIntegration, and never calls GitHub. A task is left alone once its remote branch no longer points at its
    * verified head (merged and deleted, or changed by someone else), or once the base contains it.
    */
-  checkPublishedIntegration(ctx) {
+  async checkPublishedIntegration(ctx) {
     if (!this.integrationDue(ctx.id)) return;
     const c = this.store.campaign(ctx.id);
     if (c.blocker) return;
@@ -1888,12 +1924,15 @@ export class Controller {
     this.integrationCheckedAt.set(ctx.id, !candidates && c.control === 'finished' ? Infinity : this.now());
     if (!candidates) return;
     if (resolveCheckout(this.store, this.config, decl.target.repository)?.conflict) { this.log(`integration check of ${ctx.id} skipped: CONFIG_CONFLICT`); return; }
+    // The slow reads, the base fetch and the remote branch heads, are bounded and run before the fence (aiworks#140); a
+    // failed or timed-out one reopens nothing. Inside the fence the tasks are read again and written at their versions.
+    const repo = this.repo(decl), base = decl.target.baseBranch, git = this.cmd.git;
+    const baseSha = (await this.fetchBase(repo.path, base, decl.target.repository)).sha;
+    const branches = this.selfHosted(decl.target.repository) ? gitA.localBranches
+      : (options) => gitA.remoteBranches({ ...options, timeoutMs: this.config.baseReadMs });
+    const heads = /^[0-9a-f]{40}$/.test(baseSha ?? '') ? await branches({ git, repoPath: repo.path, pattern: `refs/heads/campaign/${ctx.id}/*` }) : null;
+    if (!heads) { this.log(`integration check of ${ctx.id} skipped: remote refresh unavailable`); return; }
     this.fenced(ctx, () => {
-      const repo = this.repo(decl), base = decl.target.baseBranch, git = this.cmd.git;
-      const baseSha = this.fetchBase(repo.path, base, decl.target.repository).sha;
-      const branches = this.selfHosted(decl.target.repository) ? gitA.localBranches : gitA.remoteBranches;
-      const heads = /^[0-9a-f]{40}$/.test(baseSha ?? '') ? branches({ git, repoPath: repo.path, pattern: `refs/heads/campaign/${ctx.id}/*` }) : null;
-      if (!heads) { this.log(`integration check of ${ctx.id} skipped: remote refresh unavailable`); return; }
       const limits = campaignLimits(decl);
       let open = 0;
       for (const task of published(this.store.tasks(ctx.id))) {
@@ -1987,7 +2026,7 @@ export class Controller {
    * integrationPollMs while a round is open and no run of its task is open, the base is fetched and each such task is
    * checked by endMergedRepair. A task whose run is open is checked when the run settles, before it is dispatched again.
    */
-  endMergedRepairs(ctx) {
+  async endMergedRepairs(ctx) {
     if ((this.repairCheckedAt.get(ctx.id) ?? -Infinity) + this.config.integrationPollMs > this.now()) return;
     const decl = this.store.campaign(ctx.id).declaration;
     const running = new Set(this.store.openOperations(ctx.id).map((op) => op.task_id));
@@ -1995,8 +2034,9 @@ export class Controller {
     if (!open.length) return;
     this.repairCheckedAt.set(ctx.id, this.now());
     if (resolveCheckout(this.store, this.config, decl.target.repository)?.conflict) return;
+    // Read before the fence (aiworks#140); endMergedRepair ends nothing on a failed read and writes at the task's version.
+    const repo = this.repo(decl), baseSha = (await this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository)).sha;
     this.fenced(ctx, () => {
-      const repo = this.repo(decl), baseSha = this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository).sha;
       for (const task of open) this.endMergedRepair(ctx, decl, task, repo.path, baseSha);
     });
   }
@@ -2155,7 +2195,7 @@ export class Controller {
           detail: `budget available under authorization v${c.authorization_version}`, at: this.now() }, this.now());
       });
       campaign = this.store.campaign(ctx.id);
-      this.reconcileIntegration(ctx);
+      await this.reconcileIntegration(ctx);
     }
     const tasks = this.store.tasks(ctx.id);
     const done = new Set(tasks.filter((task) => task.state === 'done').map((task) => task.task_id));
@@ -2229,11 +2269,11 @@ export class Controller {
   /**
    * Published but unmerged work holds its write domain until it is in its base (ADAPTIVE_SCHEDULER 4.3). For each base
    * where the last pass refused a step because of such a holder, refresh the base ref at most every integrationPollMs
-   * (inside the fenced transaction, like every fetch) and, for a holder whose verified head is not in it, read its PR
+   * (a bounded read under a lease this instance holds before and after it, aiworks#140) and, for a holder whose verified head is not in it, read its PR
    * once (REST): a merge at that exact head whose merge commit is in the base releases the domain too (squash or rebase
    * merges leave the head itself out of the base). Without such a refusal nothing is fetched or read.
    */
-  refreshPublished(refusals) {
+  async refreshPublished(refusals) {
     const now = this.now();
     const due = new Map();
     for (const { candidate, refusal } of refusals) {
@@ -2253,7 +2293,10 @@ export class Controller {
       this.baseCheckedAt.set(key, now);
       const repo = this.checkout(decl);
       if (!repo?.path) continue;
-      const fetched = this.fenced(ctx, () => this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository));
+      // The lease is checked before the read and again after it: a lease lost meanwhile ends admission (FencedError).
+      this.fenced(ctx, () => null);
+      const fetched = await this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository);
+      this.fenced(ctx, () => null);
       if (!fetched?.ok) continue;
       for (const holder of holders.values()) {
         const row = this.store.task(holder.campaignId, holder.taskId);
@@ -2295,7 +2338,7 @@ export class Controller {
   }
 
   async admitCandidates() {
-    this.refreshPublished(this.domainWaits);
+    await this.refreshPublished(this.domainWaits);
     const inputs = this.admissionInputs();
     const reasons = new Map();
     const domainWaits = [];
@@ -2734,7 +2777,21 @@ export class Controller {
     };
   }
 
+  /**
+   * The base a dispatch may decide from, read before its fence (aiworks#140): bounded, so a hung remote delays the
+   * dispatch, never the fence. Null when the dispatch needs no fetched base (a local plan, the self-hosted repository,
+   * a verification outside an integration repair) or the checkout is unresolved; the fence then reads nothing over the
+   * network and dispatches nothing that needed a base.
+   */
+  async dispatchBase(decl, task, kind) {
+    if (isLocalTarget(decl) || this.selfHosted(decl.target.repository)) return null;
+    if (kind === 'verify' && this.publishedRepair(task)?.id !== 'integration-conflict') return null;
+    const repo = this.checkout(decl);
+    return repo?.path ? this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository) : null;
+  }
+
   async dispatch(ctx, campaign, task, kind, { admission = null } = {}) {
+    const prefetched = await this.dispatchBase(campaign.declaration, task, kind);
     const op = this.fenced(ctx, () => {
       const current = this.store.campaign(ctx.id);
       // The one-slot check, or with the scheduler the full admission predicate again, inside the transaction that
@@ -2863,12 +2920,15 @@ export class Controller {
       const integration = repair?.id === 'integration-conflict' ? repair : null;
       const ci = repair?.id === 'ci-failure' ? repair : null;
       const owner = repair?.id === OWNER_CHANGES ? repair : null;
+      // The base as read before the fence (dispatchBase), or for the self-hosted repository from local refs and the ledger.
+      const baseRead = () => this.selfHosted(decl.target.repository) ? this.localBase(repo.path, decl.target.baseBranch, decl.target.repository)
+        : prefetched ?? { ok: false, sha: null, failure: 'unread' };
       // aiworks#207: no further run of a round whose verified head is already in the freshly fetched base.
-      if (integration && this.endMergedRepair(ctx, decl, task, repo.path, this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository).sha, { read: false })) return null;
+      if (integration && this.endMergedRepair(ctx, decl, task, repo.path, baseRead().sha, { read: false })) return null;
       if (kind !== 'verify') {
         let integrationBase;
         if (spec.requiresMergedDependencies) {
-          const fetched = this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository);
+          const fetched = baseRead();
           integrationBase = fetched.sha;
           const missing = !fetched.ok ? spec.dependsOn : this.missingIntegratedDependencies(decl, spec, this.store.tasks(ctx.id), integrationBase, repo.path);
           if (!/^[0-9a-f]{40}$/.test(integrationBase ?? '') || missing.length) {
@@ -2879,18 +2939,29 @@ export class Controller {
         }
         // The self-hosted repository starts each worktree from its base as read from local refs and the ledger, never fetched.
         if (!repair && !local && !integrationBase && this.selfHosted(decl.target.repository)) {
-          integrationBase = this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository).sha;
+          integrationBase = baseRead().sha;
           if (!integrationBase) {
             this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
               { retry_at: this.now() + this.config.integrationPollMs, last_error: `base-unavailable: ${decl.target.baseBranch} has no trusted commit in the local checkout` }, this.now());
             return null;
           }
         }
+        // Any other repository starts it from the base fetched before the fence: no fetch runs inside it (aiworks#140).
+        if (!repair && !local && !integrationBase) {
+          const fetched = baseRead();
+          if (!fetched.ok) {
+            this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
+              { retry_at: this.now() + this.config.integrationPollMs, last_error: `base-unavailable: ${decl.target.baseBranch} could not be read (${fetched.failure})` }, this.now());
+            return null;
+          }
+          integrationBase = fetched.sha;
+        }
         // An integration or CI repair continues the published branch: a missing worktree and branch are recreated at the verified head.
         // A local plan starts from the baseline of AIWorks's copy it names, so nothing is fetched.
         const ws = gitA.prepareImplementWorkspace({ git: this.cmd.git, repoPath: repo.path, worktreeRoot: repo.worktreeRoot,
           campaignId: ctx.id, taskId: task.task_id, baseBranch: decl.target.baseBranch,
-          baseSha: repair ? repair.verified : local ? decl.target.baseline.commit : integrationBase });
+          baseSha: repair ? repair.verified : local ? decl.target.baseline.commit : integrationBase,
+          track: !repair && !local && !this.selfHosted(decl.target.repository) });
         if (repair && !gitA.isAncestor({ git: this.cmd.git, path: ws.path, ancestor: repair.verified, descendant: ws.head })) {
           const prefix = ci ? 'ci' : owner ? 'owner-changes' : 'integration';
           this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,

@@ -1,7 +1,7 @@
 // AIWorks workspace and publication adapter. Every function is idempotent: it inspects
 // existing state before creating anything, so a controller restarted at any point can call
 // it again. Removal is only the non-forced worktree remove and branch -d below; which ones may go is cleanup.mjs's rule.
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
@@ -19,6 +19,45 @@ export function exec(command, args, { cwd, input, timeoutMs = 180_000 } = {}) {
     env: { ...process.env, ...DEVELOPMENT_ENV },
   });
   return { ok: !result.error && result.status === 0, status: result.status, stdout: (result.stdout || '').trim(), stderr: (result.stderr || '').trim(), error: result.error?.code };
+}
+
+/**
+ * A slow Git read that must not stall the controller (aiworks#140): unlike exec it never blocks the event loop, so the
+ * lease timer and the release job keep running while it waits. It settles by `timeoutMs` at the latest, whatever the
+ * child or a process it started does with its pipes: on the deadline the child (on Windows its whole process tree) is
+ * killed and the result is the failure ETIMEDOUT. It never throws. Only for reads: publication and other effects stay
+ * synchronous inside the controller's fence.
+ */
+export function execBounded(command, args, { cwd, timeoutMs = 30_000, maxBytes = 16 * 1024 * 1024 } = {}) {
+  return new Promise((resolve) => {
+    let settled = false, timer = null, child = null, stdout = '', stderr = '';
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const failed = (error) => ({ ok: false, status: null, stdout: '', stderr: '', error });
+    const stop = () => {
+      try {
+        if (process.platform === 'win32' && child?.pid) spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }).on('error', () => {});
+        child?.kill('SIGKILL');
+      } catch { /* already gone */ }
+    };
+    try {
+      child = spawn(command[0], [...command.slice(1), ...args], { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, ...DEVELOPMENT_ENV } });
+    } catch (error) { finish(failed(error?.code ?? 'ESPAWN')); return; }
+    timer = setTimeout(() => { stop(); finish(failed('ETIMEDOUT')); }, timeoutMs);
+    const collect = (append) => (chunk) => {
+      if (stdout.length + stderr.length + chunk.length > maxBytes) { stop(); finish(failed('ENOBUFS')); return; }
+      append(chunk);
+    };
+    child.stdout.setEncoding('utf8').on('data', collect((chunk) => { stdout += chunk; }));
+    child.stderr.setEncoding('utf8').on('data', collect((chunk) => { stderr += chunk; }));
+    child.on('error', (error) => finish(failed(error?.code ?? 'ESPAWN')));
+    child.on('close', (status) => finish({ ok: status === 0, status, stdout: stdout.trim(), stderr: stderr.trim(), error: undefined }));
+  });
 }
 
 function must(result, what) {
@@ -60,8 +99,12 @@ function verificationCheckoutClean(git, path) {
   });
 }
 
-/** Isolated implementer worktree on the task branch; created from origin/<base> once, then reused. */
-export function prepareImplementWorkspace({ git, repoPath, worktreeRoot, campaignId, taskId, baseBranch, baseSha }) {
+/**
+ * Isolated implementer worktree on the task branch; created from origin/<base> once, then reused. With `baseSha` it is
+ * created from that commit without a fetch; `track` then gives a new branch origin/<base> as its upstream, as a branch
+ * started from origin/<base> gets (git branch -d judges a merged branch against it).
+ */
+export function prepareImplementWorkspace({ git, repoPath, worktreeRoot, campaignId, taskId, baseBranch, baseSha, track = false }) {
   if (baseSha !== undefined && !SHA.test(baseSha)) throw new Error('implementation base must be a full SHA');
   const path = workspacePath(worktreeRoot, campaignId, taskId);
   const branch = branchName(campaignId, taskId);
@@ -72,6 +115,8 @@ export function prepareImplementWorkspace({ git, repoPath, worktreeRoot, campaig
     if (!baseSha) must(exec(git, ['fetch', 'origin', baseBranch], { cwd: repoPath }), 'fetch base');
     const hasBranch = exec(git, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: repoPath }).ok;
     must(exec(git, hasBranch ? ['worktree', 'add', path, branch] : ['worktree', 'add', '-b', branch, path, baseSha ?? `origin/${baseBranch}`], { cwd: repoPath }), 'create worktree');
+    // Only a local configuration write: a missing origin/<base> leaves the branch without an upstream, nothing more.
+    if (!hasBranch && baseSha && track) exec(git, ['branch', `--set-upstream-to=origin/${baseBranch}`, branch], { cwd: repoPath });
   }
   const head = must(exec(git, ['rev-parse', 'HEAD'], { cwd: path }), 'read worktree head');
   return { path, branch, head };
@@ -183,9 +228,12 @@ export function isAncestor({ git, path, ancestor, descendant }) {
   return exec(git, ['merge-base', '--is-ancestor', ancestor, descendant], { cwd: path }).ok;
 }
 
-/** Heads of the remote branches matching `pattern` (for example `refs/heads/campaign/<id>/*`), or null when unreadable. */
-export function remoteBranches({ git, repoPath, pattern }) {
-  const out = exec(git, ['ls-remote', 'origin', pattern], { cwd: repoPath, timeoutMs: 30_000 });
+/**
+ * Heads of the remote branches matching `pattern` (for example `refs/heads/campaign/<id>/*`), or null when unreadable or
+ * not read within `timeoutMs`. A network read, so asynchronous and bounded (execBounded): await it before the fence.
+ */
+export async function remoteBranches({ git, repoPath, pattern, timeoutMs = 30_000 }) {
+  const out = await execBounded(git, ['ls-remote', 'origin', pattern], { cwd: repoPath, timeoutMs });
   if (!out.ok) return null;
   return new Map(out.stdout.split('\n').filter(Boolean).map((line) => line.split(/\s+/)).map(([sha, ref]) => [ref, sha]));
 }

@@ -104,7 +104,7 @@ test('the production continuation releases two finished projects exactly once an
     covered: [{ campaign: older.campaignId, task: 'T0', sha: one.base }] }, r.clock);
   for (const p of [one, two]) r.store.journal(p.id, 'merged', { task: 'OLD', sha: p.base, mergeCommit: p.base, reconciled: true }, r.clock);
   for (let n = 0; n < 2; n++) {
-    releasePass(r.c);
+    await releasePass(r.c);
     assert.ok(r.c.releaseJob, JSON.stringify(r.store.all("SELECT detail FROM journal WHERE kind='release-waiting'")));
     if (n === 0) {
       const p = [one, two].find((item) => item.id === r.c.releaseJob.campaignId);
@@ -128,7 +128,7 @@ test('the production continuation releases two finished projects exactly once an
     assert.equal(campaignStatus(r.store, p.id, r.clock, { config: r.config }).release.complete, true);
   }
   r.c.release(); r.c = r.controller();
-  for (let n = 0; n < 4; n++) { r.clock += 61000; releasePass(r.c); await r.c.drainReleases(); }
+  for (let n = 0; n < 4; n++) { r.clock += 61000; await releasePass(r.c); await r.c.drainReleases(); }
   assert.equal(r.store.all('SELECT * FROM releases').length, 2);
   assert.equal(r.store.all("SELECT * FROM journal WHERE kind='release-grant-renewed'").length, 1);
   assert.equal(r.store.all('SELECT * FROM release_activity').length, 0);

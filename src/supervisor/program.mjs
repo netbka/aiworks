@@ -236,7 +236,7 @@ function recordMisfit(controller, row, record, { wave, reason, proposal = null }
 }
 
 /** The next wave of one approved program, registered when it fits; see programPass. */
-function programWave(controller, row) {
+async function programWave(controller, row) {
   const { store } = controller;
   const record = JSON.parse(row.record_text);
   validateProgram(record);
@@ -254,7 +254,7 @@ function programWave(controller, row) {
   const wave = Math.max(0, ...numbers) + 1;
   // The trusted main: the base branch fetched into the supervisor's own ref, as the merge gate reads it. Read-only.
   const repo = controller.repo({ target: { repository: record.repository } });
-  const fetched = controller.fetchBase(repo.path, record.baseBranch);
+  const fetched = await controller.fetchBase(repo.path, record.baseBranch);
   if (!fetched.ok) return { programId: record.programId, waiting: `${record.baseBranch} could not be fetched` };
   const plan = gitA.exec(controller.cmd.git, ['show', `${fetched.sha}:${record.plan}`], { cwd: repo.path });
   if (!plan.ok) return recordMisfit(controller, row, record, { wave, reason: `${record.plan} is not on ${record.baseBranch} at ${fetched.sha.slice(0, 12)}` });
@@ -318,7 +318,7 @@ function programWave(controller, row) {
  * is a registered project. A wave that does not fit registers nothing and becomes one Needs you item. Returns one entry
  * per program checked (empty when off).
  */
-export function programPass(controller) {
+export async function programPass(controller) {
   if (!programEnabled(controller.config)) return [];
   const { store } = controller;
   if (!hasPrograms(store)) return [];
@@ -331,7 +331,7 @@ export function programPass(controller) {
     if ((controller.programCheckedAt.get(row.program_id) ?? -Infinity) + PROGRAM_PASS_MS > now) continue;
     controller.programCheckedAt.set(row.program_id, now);
     try {
-      const result = programWave(controller, row);
+      const result = await programWave(controller, row);
       if (result) results.push(result);
       if (result?.waiting) controller.log(`program ${row.program_id}: no wave registered: ${result.waiting}`);
     } catch (error) {
