@@ -11,6 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { Store } from '../../src/supervisor/store.mjs';
 import { campaignStart } from '../../src/supervisor/api.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
+import { cleanupPass } from '../../src/supervisor/cleanup.mjs';
+import { coordinatorWorktreeRoot } from '../../src/supervisor/coordinator.mjs';
 import { branchName, prepareImplementWorkspace } from '../../src/supervisor/adapters/git.mjs';
 import { declaration, environment, passedGate, skipWithoutSqlite } from './helpers.mjs';
 
@@ -187,4 +189,28 @@ test('a finished worktree holding ignored evidence or unknown ignored files is k
   assert.equal(readFileSync(join(aVerify, 'unknown.cache'), 'utf8'), 'synthetic\n');
   assert.ok(!existsSync(bImplement), 'a checkout whose only ignored entry is installed node_modules is removed');
   assert.equal(r.journal('cleanup-kept').filter((item) => item.reason === 'ignored-files').length, 2);
+});
+
+test('a coordinator checkout whose new run is recorded while cleanup reads a base is kept', { skip: skipWithoutSqlite }, async (t) => {
+  const r = rig(t, { [A]: [task('A1', 601, 'a.txt')] });
+  await finish(r, [A]);
+  r.start(ON);
+  // A reused coordinator checkout whose earlier run finished: cleanup may remove it while no run of it is open.
+  const checkout = join(coordinatorWorktreeRoot(r.controller), 'coordinator');
+  git(r.env.repo, 'worktree', 'add', '-q', '--detach', checkout, 'main');
+  const runDir = join(r.env.dataDir, 'coordinator-run');
+  mkdirSync(runDir, { recursive: true });
+  const record = (id, state) => r.store.insert('coordinator_runs', { id, state, session_id: id, run_dir: runDir, workspace: checkout,
+    message_ids: [], outcome: null, cost_usd: null, created_at: Date.now(), updated_at: Date.now() });
+  record('run-1', 'finished');
+  // Another instance records and dispatches a new run in that checkout while this pass awaits its base read.
+  const read = r.controller.fetchBase.bind(r.controller);
+  r.controller.fetchBase = async (...args) => { const result = await read(...args); if (!r.store.get("SELECT 1 AS v FROM coordinator_runs WHERE id = 'run-2'")) record('run-2', 'dispatched'); return result; };
+  await cleanupPass(r.controller);
+  assert.ok(existsSync(checkout), 'the checkout of a dispatched coordinator run is kept');
+  // Once that run has finished, the same checkout goes: the run above was all that kept it.
+  r.store.run("UPDATE coordinator_runs SET state = 'finished' WHERE id = 'run-2'");
+  r.start(ON);
+  await cleanupPass(r.controller);
+  assert.ok(!existsSync(checkout), 'a checkout with no open run is removed');
 });
