@@ -198,8 +198,8 @@ async function drive(c, ctx, initial, repo) {
   if (!c.fenced(ctx, () => releaseCommandsStopped({ dataDir: c.dataDir, release: row }))) throw new Error('Prior release process ownership is unresolved');
   c.fenced(ctx, () => c.store.run('INSERT OR REPLACE INTO release_activity VALUES (?, ?, ?, ?, ?)', row.id, ctx.id, c.instanceId, ctx.generation, c.now()));
   try {
-    const fresh = () => { try { return readProjectGrant(c, ctx, decl, repo); } catch (error) { return { reason: String(error.message) }; } };
-    let grant = fresh();
+    const fresh = async () => { try { return await readProjectGrant(c, ctx, decl, repo); } catch (error) { return { reason: String(error.message) }; } };
+    let grant = await fresh();
     const newest = newestMerge(c, row.project, repo, grant.base);
     if (newest && (newest.campaign_id !== row.campaign_id || newest.detail.sha !== row.verified_sha)) {
       const record = readJsonIfExists(join(c.dataDir, 'releases', row.id, 'deploy.json'));
@@ -249,7 +249,7 @@ async function drive(c, ctx, initial, repo) {
     const adapter = deployAdapter({ destination, repo: repo.path, config: c.config, dataDir: c.dataDir, store: c.store, clock: () => c.now(),
       mutate: (fn) => c.fenced(ctx, fn),
       beforeDeploy: async () => {
-        grant = fresh();
+        grant = await fresh();
         return forwardGate(c, ctx, release(c.store, row.id), repo, grant);
       },
       runCommand: (args) => c.fenced(ctx, () => runReleaseCommand({ ...args, mutate: (fn) => c.fenced(ctx, fn) })) });
@@ -258,7 +258,7 @@ async function drive(c, ctx, initial, repo) {
       const gate = forwardGate(c, ctx, row, repo, grant);
       if (gate) { waiting(c, ctx, c.store.task(ctx.id, row.task_id), row.destination, gate); return; }
       const proof = await adapter.preflight({ ...row, step_key: row.id + '.preflight' });
-      grant = fresh();
+      grant = await fresh();
       if (!grant.reason) expectRelease(c, ctx, grant, c.store.task(ctx.id, row.task_id), repo);
       const result = evaluate(c, ctx, row, grant, repo, proof);
       c.fenced(ctx, () => c.store.run('UPDATE releases SET eligibility = ?, reason = ?, updated_at = ? WHERE id = ?',
@@ -271,7 +271,7 @@ async function drive(c, ctx, initial, repo) {
     row = await reconcile(c.store, adapter, row.id, options);
     if (TERMINAL.includes(row.state) || row.state === 'unknown' || row.state === 'rollback-failed') { recordCoverage(c, ctx, row); return; }
     for (let n = 0; n < 3 && nextStep(row); n++) {
-      grant = fresh();
+      grant = await fresh();
       const previous = row.step_key;
       row = await runStep(c.store, adapter, row.id, { ...options, gate: (r) => forwardGate(c, ctx, r, repo, grant) });
       if (row.step_key === previous || TERMINAL.includes(row.state) || row.state === 'unknown') break;
@@ -341,7 +341,7 @@ async function driveInstructions(c, ctx, initial, repo) {
   c.fenced(ctx, () => c.store.run('INSERT OR REPLACE INTO release_activity VALUES (?, ?, ?, ?, ?)', row.id, ctx.id, c.instanceId, ctx.generation, c.now()));
   try {
     const target = c.store.campaign(ctx.id).declaration.target;
-    const base = c.fetchBase(repo.path, target.baseBranch, target.repository).sha;
+    const base = (await c.fetchBase(repo.path, target.baseBranch, target.repository)).sha;
     const newest = base ? newestMerge(c, row.project, repo, base) : null;
     if (['eligible', 'locked'].includes(row.state) && row.history.length === 0 && newest &&
         (newest.campaign_id !== row.campaign_id || newest.detail.sha !== row.verified_sha)) {
@@ -400,9 +400,9 @@ function publishSkipped(c, ctx, project, task, mergeCommit, reason, { followUpIt
  * The newest merged result of a project without a standing grant: follow its own publication instructions. Returns the
  * release to launch, or null. A project without instructions is skipped with the reason, recorded once.
  */
-function publishCandidate(c, ctx, campaign, repo) {
+async function publishCandidate(c, ctx, campaign, repo) {
   const decl = campaign.declaration, project = decl.target.projectId;
-  const fetched = c.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository);
+  const fetched = await c.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository);
   if (!fetched.ok) return null;
   const newest = newestMerge(c, project, repo, fetched.sha);
   if (newest?.campaign_id !== campaign.id || newest.detail.local) return null;
@@ -452,7 +452,7 @@ function launch(c, ctx, row, repo) {
 }
 
 /** Called every tick, including after a campaign has finished implementation. */
-export function releasePass(c) {
+export async function releasePass(c) {
   if (c.releaseJob || c.unmergedRevision()) return;
   c.releaseNextAt ??= new Map();
   for (const activity of c.store.all('SELECT * FROM release_activity')) {
@@ -493,11 +493,11 @@ export function releasePass(c) {
       // Never AIWorks's own live runtime or repository, by a grant or by instructions.
       if (ownRuntime(c, decl, repo)) continue;
       if (!pointer) {
-        const row = publishCandidate(c, ctx, campaign, repo);
+        const row = await publishCandidate(c, ctx, campaign, repo);
         if (row) { launch(c, ctx, row, repo); return; }
         continue;
       }
-      const grant = readProjectGrant(c, ctx, decl, repo);
+      const grant = await readProjectGrant(c, ctx, decl, repo);
       if (grant.reason) { waiting(c, ctx, null, null, grant.reason); continue; }
       const newest = newestMerge(c, decl.target.projectId, repo, grant.base);
       if (newest?.campaign_id !== campaign.id) continue;
