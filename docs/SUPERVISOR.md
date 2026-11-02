@@ -98,6 +98,8 @@ Before registering a task, inspect the callers, existing tests, fixtures and sch
 
 Every controller write runs in `BEGIN IMMEDIATE` and first checks that this instance still holds the campaign lease generation (`assertLease`). Workspace preparation, runner launch, publication and outbox effects hold that same write lock, so lease expiry cannot admit a conflicting controller while an external command is in progress. Commands remain bounded by adapter timeouts; competing owner actions can temporarily receive SQLite's busy error. A lease is taken over only after it expires, with generation + 1. Owner actions (start, pause, cancel, recheck) use compare-and-swap on the row version.
 
+Before releasing that lock after a successful effect, the controller extends all its held leases that were live on entry and whose ownership, generation and expiry remain unchanged. This covers synchronous commands that block the renewal timer. It does not make Git asynchronous or protect slow work outside the fence; already expired leases remain lost.
+
 ## 3. Lifecycle of one task
 
 1. **Implement.** The supervisor prepares the isolated worktree, builds and validates the packet, writes the run directory, then commits the operation record (idempotency key `<campaign>.<task>.<kind>.<seq>`, session UUID, packet and digest) and counts the run against `maxWorkerRuns`. Only after that commit does it launch a detached runner.
@@ -229,7 +231,7 @@ Merging used to be delegated to a monitoring session (`merges.delegatedTo: "moni
 
 ## 4. Liveness and failure semantics
 
-Idle ticks read local files and SQLite; no model is called for polling. Tasks explicitly declaring `requiresMergedDependencies: true` also refresh read-only Git base refs at a bounded one-minute interval after dependency publication. Direct ancestry or an exact reviewed-head GitHub merge receipt (including squash/rebase) must be present in the freshly fetched base before admission. Failed reads retain the wait. Independent eligible tasks continue; this wait never merges anything (merging is the separate, opt-in merge gate in section 3). Every nonterminal campaign has one of: an open operation, a durable `next_wakeup_at`, an owner pause, or an explicit blocker. A campaign with none is recorded as `liveness-defect`.
+Idle ticks read local files and SQLite; no model is called for polling. Tasks explicitly declaring `requiresMergedDependencies: true` also refresh read-only Git base refs at a bounded one-minute interval after dependency publication. Direct ancestry or an exact reviewed-head GitHub merge receipt (including squash/rebase) must be present in the freshly fetched base before admission. Failed reads retain the wait. A pass fetches each repository's base once for all campaign steps, and once more for admission after the merge pass, so admission sees every merge of that pass; the passes in between fetch afresh, as does the release job's grant read. A failed fetch is not reused. Independent eligible tasks continue; this wait never merges anything (merging is the separate, opt-in merge gate in section 3). Every nonterminal campaign has one of: an open operation, a durable `next_wakeup_at`, an owner pause, or an explicit blocker. A campaign with none is recorded as `liveness-defect`.
 
 | Event | Handling |
 | --- | --- |

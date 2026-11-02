@@ -35,11 +35,11 @@ const discover = (directory) => readdirSync(directory, { withFileTypes: true }).
   return entry.isFile() && entry.name.endsWith('.test.mjs') ? [relative(root, path).replaceAll(sep, '/')] : [];
 });
 
-// A file that starts a supervisor controller, a contained worker run, the CLI or a containment helper is a rehearsal:
+// A file that starts a supervisor controller, Chrome, a contained worker run, the CLI or a containment helper is a rehearsal:
 // it imports the supervisor harness's process-starting exports, or names a fault, a fixture executable or containment.
 // Every import from ./helpers.mjs except the pure ones (declaration, GOVERNANCE, ROOT, SQLITE, skipWithoutSqlite, sleep)
 // starts processes.
-const REHEARSAL = /\b(environment|runUntil|runtimeCheckout|runCli|CLI)\b[^;]*from '\.\/helpers\.mjs'|from '\.\/[a-z-]+-harness\.mjs'|new Controller|keep-preload|stopOwnedRun|containment|POWERSHELL|AIWORKS_FAULT|fake-(claude|gh|agy)|browser-mcp/;
+const REHEARSAL = /\b(environment|runUntil|runtimeCheckout|runCli|CLI)\b[^;]*from '\.\/helpers\.mjs'|from '\.\/[a-z-]+-harness\.mjs'|new Controller|keep-preload|stopOwnedRun|containment|POWERSHELL|AIWORKS_FAULT|fake-(claude|gh|agy)|browser-mcp|puppeteer\.launch/;
 // A file that starts a server, builds the review fixture, spawns git or runs any other child process (a synthetic
 // executable started through process.execPath) is a service file. Only a file that matches neither pattern is a unit.
 const SERVICE = /child_process|process\.execPath|\.listen\(|createServer|review-store|startDashboard|main\.mjs/;

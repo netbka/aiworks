@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { Store } from '../../src/supervisor/store.mjs';
@@ -165,4 +165,71 @@ test('new checkout uses the exact validated base instead of refetching a moving 
     worktreeRoot: env.config.repositories['example-org/sampleapp'].worktreeRoot,
     campaignId: 'pinned', taskId: 'T2', baseBranch: 'main', baseSha: sha });
   assert.equal(ws.head, sha);
+});
+
+test('one admission pass fetches the base once for every candidate needing merged dependencies and sees a merge made earlier in the pass', async (t) => {
+  const env = environment();
+  const store = new Store(join(env.dataDir, 'supervisor.db'));
+  t.after(() => { store.close(); env.cleanup(); });
+  // A git that counts the base fetches, then runs the real git.
+  const counter = join(env.tmp, 'base-fetches.txt');
+  const wrapper = join(env.tmp, 'counting-git.mjs');
+  writeFileSync(counter, '');
+  writeFileSync(wrapper, [
+    "import { appendFileSync } from 'node:fs';",
+    "import { spawnSync } from 'node:child_process';",
+    'const args = process.argv.slice(2);',
+    `if (args[0] === 'fetch' && args.some((a) => a.includes('refs/aiworks/base/'))) appendFileSync(${JSON.stringify(counter)}, 'f');`,
+    "const result = spawnSync('git', args, { stdio: 'inherit', windowsHide: true });",
+    'process.exit(result.status ?? 1);',
+  ].join('\n'));
+  const fetches = () => readFileSync(counter, 'utf8').length;
+  const task = (id, issue, writes, dependsOn = []) => ({ id, issue, title: `task ${id}`, deliverable: 'commit', goal: `Produce ${id}.`,
+    dependsOn, acceptance: [`${id} exists`], references: ['AGENTS.md'], writes: [writes],
+    ...(dependsOn.length ? { requiresMergedDependencies: true } : {}) });
+  const d = declaration({ tasks: [task('D0', 601, 'a/'), task('D1', 602, 'b/'),
+    task('W1', 603, 'c/', ['D0']), task('W2', 604, 'd/', ['D0']), task('R1', 605, 'e/', ['D1'])] });
+  campaignStart(store, d);
+  // Both dependencies are verified and published, neither is in main yet.
+  const heads = {};
+  for (const id of ['D0', 'D1']) {
+    git(env.repo, 'checkout', '-q', '-b', `dep-${id}`, 'main');
+    writeFileSync(join(env.repo, `${id}.txt`), `${id}\n`);
+    git(env.repo, 'add', '-A'); git(env.repo, 'commit', '-qm', id);
+    heads[id] = git(env.repo, 'rev-parse', 'HEAD');
+    git(env.repo, 'push', '-q', 'origin', `${heads[id]}:refs/heads/campaign/${id}`);
+    store.patch('tasks', { campaign_id: d.campaignId, task_id: id }, store.task(d.campaignId, id).version,
+      { state: 'done', verified_sha: heads[id], head_sha: heads[id] }, Date.now());
+  }
+  git(env.repo, 'checkout', '-q', 'main');
+  let now = Date.now();
+  const config = { ...env.config, scheduler: { enabled: true, maxWorkers: 4 }, commands: { ...env.config.commands, git: [process.execPath, wrapper] } };
+  const controller = new Controller({ store, config, dataDir: env.dataDir, now: () => now, fault: null, sampler: { sample: () => null } });
+  controller.launch = async () => {};
+  await controller.tick(); // takes the lease; the step loop finds every dependent waiting
+  assert.match(store.task(d.campaignId, 'R1').last_error, /dependency-integration/);
+
+  // Later in the same pass the merge pass merged D1; all three dependents are due again and reach admission.
+  git(env.repo, 'push', '-q', 'origin', `${heads.D1}:refs/heads/main`);
+  for (const id of ['W1', 'W2', 'R1']) {
+    store.patch('tasks', { campaign_id: d.campaignId, task_id: id }, store.task(d.campaignId, id).version, { retry_at: null, last_error: null }, now);
+  }
+  const ctx = { id: d.campaignId, generation: controller.held.get(d.campaignId) };
+  const decl = store.campaign(d.campaignId).declaration;
+  controller.candidates = ['W1', 'W2', 'R1'].map((id) => ({ ctx, campaignId: d.campaignId, taskId: id, kind: 'implement',
+    ord: store.task(d.campaignId, id).ord, declaration: decl, createdAt: store.campaign(d.campaignId).created_at }));
+  const before = fetches();
+  await controller.admit();
+  assert.equal(fetches() - before, 1, 'one base fetch for the whole admission pass');
+  for (const id of ['W1', 'W2']) {
+    assert.match(store.task(d.campaignId, id).last_error, /dependency-integration: waiting for D0/);
+    assert.ok(store.task(d.campaignId, id).retry_at > now);
+  }
+  const [op] = store.openOperations(d.campaignId);
+  assert.equal(op?.task_id, 'R1', 'the dependent of the dependency merged earlier in the pass launches');
+  assert.equal(op.base_sha, heads.D1, 'it starts from the base with that merge');
+  assert.equal(controller.baseFetches, null, 'the shared fetch ends with admission');
+  controller.fetchBase(env.repo, 'main', d.target.repository);
+  assert.equal(fetches() - before, 2, 'after admission the base is fetched afresh');
+  controller.release();
 });
