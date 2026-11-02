@@ -3,7 +3,7 @@
 // it again. Removal is only the non-forced worktree remove and branch -d below; which ones may go is cleanup.mjs's rule.
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GATE_FILES } from '../gate.mjs';
@@ -160,6 +160,8 @@ async function underJob(command, args, { cwd, runDir, timeoutMs, overheadMs, kil
     runner = spawn(process.execPath, [RUNNER, runDir], { cwd: runDir, windowsHide: true, stdio: 'ignore', env: { ...process.env, ...DEVELOPMENT_ENV } });
   } catch { return failed('ESPAWN', runner === null); }
   runner.on('error', () => { /* shown by its exit, or by its missing result */ });
+  // A spawn that failed outright never got a process id: that is the one start shown not to have happened.
+  if (runner.pid === undefined) return failed('ESPAWN');
   if (await exits(runner, timeoutMs + overheadMs)) {
     const proof = jobResult(runDir);
     if (!proof) return failed('ECONTAINMENT', false);
@@ -187,24 +189,25 @@ async function stopRun(runDir) {
   return ['stopped', 'not-running'].includes(await stopOwnedRunAsync(identity));
 }
 
-/** Whether every process of the run at `runDir` (execContained) is shown ended now. */
-async function runEnded(runDir, startedBefore) {
+/**
+ * Whether every process of the run at `runDir` (execContained) is shown ended now. Only proof counts: a run with no
+ * runner identity, no result and no group is never taken as ended, however old it is or whether `run.lock` exists, since
+ * a runner already spawned may still take its lock and start the command.
+ */
+async function runEnded(runDir) {
   const receipt = readJsonIfExists(join(runDir, 'receipt.json'));
   if (Number.isSafeInteger(receipt?.group) && receipt.group > 0) return groupGone(receipt.group, 0);
   if (jobResult(runDir)) return true;
   if (runnerIdentified(readJsonIfExists(join(runDir, 'runner.json')))) return stopRun(runDir);
   // A runner that records itself but never its job started no command: its result says so (`attached: false`).
-  if (existsSync(join(runDir, 'run.lock'))) return readJsonIfExists(join(runDir, 'result.json'))?.attached === false;
-  // A run whose runner never took its lock started nothing, once it is too old for that runner still to be starting.
-  return POWERSHELL !== null && statSync(runDir).birthtimeMs < startedBefore;
+  return readJsonIfExists(join(runDir, 'result.json'))?.attached === false;
 }
 
 /**
  * Shows the end of earlier execContained runs under `runRoot` that were not shown ended, removing each folder once it is,
- * and answers how many still are not. Runs in `active` (still running in this process) are left alone. A folder younger
- * than `boundMs` (a read's whole bound) is not taken as a runner that never started. Never throws.
+ * and answers how many still are not. Runs in `active` (still running in this process) are left alone. Never throws.
  */
-export async function settleContained(runRoot, active = new Set(), { boundMs = 120_000 } = {}) {
+export async function settleContained(runRoot, active = new Set()) {
   let names;
   try { names = readdirSync(runRoot); } catch (error) { return error?.code === 'ENOENT' ? 0 : 1; }
   let open = 0;
@@ -212,7 +215,7 @@ export async function settleContained(runRoot, active = new Set(), { boundMs = 1
     const runDir = join(runRoot, name);
     if (active.has(runDir)) continue;
     let ended = false;
-    try { ended = await runEnded(runDir, Date.now() - boundMs); } catch { ended = false; }
+    try { ended = await runEnded(runDir); } catch { ended = false; }
     if (ended) removeRun(runDir); else open += 1;
   }
   return open;
