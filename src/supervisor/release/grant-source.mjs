@@ -53,12 +53,21 @@ export function observeGrant(store, pointer, loaded, now) {
   return { record, digest: loaded.digest };
 }
 
-export function readProjectGrant(controller, ctx, declaration, repo, { fetch = true } = {}) {
+function currentPointer(controller, declaration) {
+  try { return projectReleasePointer(controller, declaration); } catch { return null; }
+}
+const samePointer = (a, b) => Boolean(a && b) && a.project === b.project && a.repository === b.repository && a.source === b.source && a.approval === b.approval;
+
+export async function readProjectGrant(controller, ctx, declaration, repo, { fetch = true } = {}) {
   const pointer = projectReleasePointer(controller, declaration);
   if (!pointer) return { reason: 'No standing release grant is registered for this project', absent: true };
-  // Fresh: the release job runs beside the controller's passes, and the base it reads authorizes a deploy.
-  const base = fetch ? controller.fetchBase(repo.path, declaration.target.baseBranch, declaration.target.repository, { fresh: true }).sha : null;
+  // Fresh: the release job runs beside the controller's passes, and the base it reads authorizes a deploy. The read is
+  // bounded and runs before the fence (aiworks#140); a failed one authorizes nothing.
+  const base = fetch ? (await controller.fetchBase(repo.path, declaration.target.baseBranch, declaration.target.repository, { fresh: true })).sha : null;
   if (fetch && !base) return { reason: 'The release base could not be fetched' };
+  // The read was awaited: the registered pointer is resolved again, and a pointer removed, made ambiguous or changed
+  // meanwhile authorizes nothing now; the next pass starts again from the current one.
+  if (!samePointer(pointer, currentPointer(controller, declaration))) return { reason: 'The registered release authority changed while the release base was read' };
   const ref = base ?? 'origin/' + declaration.target.baseBranch;
   const loaded = loadAuthorization({ git: controller.cmd.git, repoPath: repo.path, ref, path: pointer.source,
     project: pointer.project, now: controller.now(), mergeGate: { repository: pointer.repository, merges: controller.config.merges } });
