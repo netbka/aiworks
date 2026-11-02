@@ -24,7 +24,7 @@ import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountFull, accou
 import { BEYOND_RULE, beyondConstraint, domainOf, outsideWrites, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, hostPressure, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
 import { hostSamplerFor } from './host.mjs';
-import { totalmem } from 'node:os';
+import { tmpdir, totalmem } from 'node:os';
 import { cleans, cleanupSettings, createStackSweeper, inside, openOperations, runningBatches, runningRefreshes, workerJobLimits } from './host-safety.mjs';
 import { containsSecret, coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
 import { ANCHOR, MAX_DOCUMENT_BYTES, parseReference, resolveSection } from './reading.mjs';
@@ -125,10 +125,13 @@ export const DEFAULTS = {
   rateLimitMarginMs: 5_000,
   // aiworks#140: each step of a base read (the fetch, then the read of its ref) and each remote branch read ends by this.
   baseReadMs: 30_000,
+  // Beside it, the start and drain of the Windows job a base fetch runs in (execContained).
+  baseReadOverheadMs: 60_000,
 };
 // The fixed failures of a base read (fetchBase): the stage that failed, never the command's own output. `unread`: a
-// dispatch needed a base that was not read before its fence (dispatchBase).
-export const BASE_READ_FAILURES = Object.freeze(['fetch-timeout', 'fetch-failed', 'read-timeout', 'unreadable', 'unread']);
+// dispatch needed a base that was not read before its fence (dispatchBase). `uncontained`: a fetch in that checkout
+// started processes not yet shown ended (readBase).
+export const BASE_READ_FAILURES = Object.freeze(['fetch-timeout', 'fetch-failed', 'read-timeout', 'unreadable', 'unread', 'uncontained']);
 // Findings that reopen a published task as a repair round on its own branch and PR (aiworks#27, aiworks#42), and the
 // owner's request for changes to a finished result (OWNER_UI_V2 WP4).
 const REPAIR_FINDINGS = new Set(['integration-conflict', 'ci-failure', OWNER_CHANGES]);
@@ -531,6 +534,8 @@ export class Controller {
     this.baseFetches = null;
     // Base reads still running, by checkout and base: a second read of one ref waits for the first (fetchBase).
     this.baseReads = new Map();
+    // The folders of base fetches running in this process (execContained), which a receipt check leaves alone.
+    this.baseReadRuns = new Set();
   }
 
   /** Crash rehearsal hook: terminate abruptly at a named point (AIWORKS_FAULT). */
@@ -1833,15 +1838,26 @@ export class Controller {
       this.log(`base read unavailable: ${failure}`);
       return { ok: false, sha: null, failure };
     };
+    // A fetch whose processes were not all shown ended may still move this checkout's refs: until they are (its receipt
+    // under runRoot), nothing more is fetched or read there, so no step decides from or builds on such a ref.
+    const runRoot = this.baseReadRoot(repoPath);
+    const { baseReadMs, baseReadOverheadMs } = this.config;
+    if (await gitA.settleContained(runRoot, this.baseReadRuns, { boundMs: baseReadMs + baseReadOverheadMs + 60_000 }) > 0) return failed('uncontained');
     // origin/<base> follows in the same fetch: a worktree branch started from the read base tracks it (dispatch).
-    const fetched = await gitA.execBounded(this.cmd.git, ['fetch', 'origin', `+refs/heads/${base}:${ref}`, `+refs/heads/${base}:refs/remotes/origin/${base}`],
-      { cwd: repoPath, timeoutMs: this.config.baseReadMs });
-    // A fetch whose helpers could not be shown stopped is named apart, in fixed words: it may still move the ref.
-    if (fetched.contained === false) this.log('base read helpers not shown stopped');
+    const fetched = await gitA.execContained(this.cmd.git, ['fetch', 'origin', `+refs/heads/${base}:${ref}`, `+refs/heads/${base}:refs/remotes/origin/${base}`],
+      { cwd: repoPath, runRoot, timeoutMs: baseReadMs, overheadMs: baseReadOverheadMs, active: this.baseReadRuns });
+    if (fetched.contained === false) return failed('uncontained');
     if (!fetched.ok) return failed(fetched.error === 'ETIMEDOUT' ? 'fetch-timeout' : 'fetch-failed');
     const read = await gitA.execBounded(this.cmd.git, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: repoPath, timeoutMs: this.config.baseReadMs });
     if (read.error === 'ETIMEDOUT') return failed('read-timeout');
     return /^[0-9a-f]{40}$/.test(read.ok ? read.stdout : '') ? { ok: true, sha: read.stdout } : failed('unreadable');
+  }
+
+  /** The folder of a checkout's base fetches and their receipts (execContained): installation data, one per checkout. */
+  baseReadRoot(repoPath) {
+    const key = resolve(repoPath);
+    const id = createHash('sha256').update(process.platform === 'win32' ? key.toLowerCase() : key).digest('hex').slice(0, 24);
+    return join(this.dataDir ?? join(tmpdir(), 'aiworks-supervisor'), 'base-reads', id);
   }
 
   /** Whether `repository` is AIWorks's own repository with local main trusted (config.json `selfHosting`). */
