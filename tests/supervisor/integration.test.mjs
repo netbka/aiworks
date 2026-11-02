@@ -37,7 +37,7 @@ test('integration gate advances automatically only after fresh main contains ver
   const ctx = { id: d.campaignId, generation: lease.generation };
   const dispatched = [];
   controller.dispatch = async (_ctx, _c, task) => { dispatched.push(task.task_id); };
-  controller.reconcileIntegration(ctx);
+  await controller.reconcileIntegration(ctx);
   assert.match(store.task(d.campaignId, 'T2').last_error, /dependency-integration/);
   assert.ok(store.task(d.campaignId, 'T2').retry_at > now);
   await controller.schedule(ctx);
@@ -48,14 +48,14 @@ test('integration gate advances automatically only after fresh main contains ver
   git(env.repo, 'push', 'origin', `${sha}:refs/heads/main`);
   now += controller.config.integrationPollMs + 1;
   store.acquireLease(d.campaignId, controller.instanceId, now, 600_000);
-  controller.reconcileIntegration(ctx);
+  await controller.reconcileIntegration(ctx);
   assert.equal(store.task(d.campaignId, 'T2').retry_at, null);
   assert.equal(store.task(d.campaignId, 'T2').last_error, null);
   await controller.schedule(ctx);
   assert.deepEqual(dispatched, ['T3', 'T2']);
 });
 
-test('failed remote refresh cannot admit a dependency from stale local refs', (t) => {
+test('failed remote refresh cannot admit a dependency from stale local refs', async (t) => {
   const env = environment(); const store = new Store(join(env.dataDir, 'supervisor.db'));
   t.after(() => { store.close(); env.cleanup(); });
   const d = declaration(); d.tasks[1].requiresMergedDependencies = true; campaignStart(store, d);
@@ -64,7 +64,7 @@ test('failed remote refresh cannot admit a dependency from stale local refs', (t
   git(env.repo, 'remote', 'set-url', 'origin', join(env.tmp, 'missing-origin.git'));
   const controller = new Controller({ store, config: env.config, dataDir: env.dataDir, fault: null });
   const lease = store.acquireLease(d.campaignId, controller.instanceId, Date.now(), 60_000);
-  controller.reconcileIntegration({ id: d.campaignId, generation: lease.generation });
+  await controller.reconcileIntegration({ id: d.campaignId, generation: lease.generation });
   assert.match(store.task(d.campaignId, 'T2').last_error, /remote refresh unavailable/);
   assert.ok(store.task(d.campaignId, 'T2').retry_at > Date.now());
 });
@@ -74,7 +74,7 @@ test('integration declarations reject ambiguous switches', () => {
   assert.throws(() => validateDeclaration(d), /requiresMergedDependencies/);
 });
 
-test('squash merge receipt admits only the exact reviewed PR head in the freshly fetched base', (t) => {
+test('squash merge receipt admits only the exact reviewed PR head in the freshly fetched base', async (t) => {
   const env = environment(); const store = new Store(join(env.dataDir, 'supervisor.db'));
   t.after(() => { store.close(); env.cleanup(); });
   const d = declaration(); d.tasks[1].requiresMergedDependencies = true; campaignStart(store, d);
@@ -107,7 +107,7 @@ process.stdout.write('HTTP/2.0 200 OK\\r\\nContent-Type: application/json\\r\\n\
     { state: 'done', verified_sha: reviewedSha, pr_url: url }, Date.now());
   const controller = new Controller({ store, config: { ...env.config, commands: { ...env.config.commands, gh } }, dataDir: env.dataDir, fault: null });
   const lease = store.acquireLease(d.campaignId, controller.instanceId, Date.now(), 60_000);
-  controller.reconcileIntegration({ id: d.campaignId, generation: lease.generation });
+  await controller.reconcileIntegration({ id: d.campaignId, generation: lease.generation });
   assert.equal(store.task(d.campaignId, 'T2').retry_at, null);
   assert.equal(store.task(d.campaignId, 'T2').last_error, null);
 });
@@ -229,7 +229,71 @@ test('one admission pass fetches the base once for every candidate needing merge
   assert.equal(op?.task_id, 'R1', 'the dependent of the dependency merged earlier in the pass launches');
   assert.equal(op.base_sha, heads.D1, 'it starts from the base with that merge');
   assert.equal(controller.baseFetches, null, 'the shared fetch ends with admission');
-  controller.fetchBase(env.repo, 'main', d.target.repository);
+  await controller.fetchBase(env.repo, 'main', d.target.repository);
   assert.equal(fetches() - before, 2, 'after admission the base is fetched afresh');
   controller.release();
+});
+
+// aiworks#140: a Git command that runs the real git except for `fetch`, which sleeps `delayMs` first (or forever when
+// hung) after writing raw Git output with a URL to stderr that must never reach a log.
+function slowFetchGit(dir, { hung = false, delayMs = 0 } = {}) {
+  const script = join(dir, `slow-fetch-${hung ? 'hung' : delayMs}.mjs`);
+  writeFileSync(script, `import { spawnSync } from 'node:child_process';
+const args = process.argv.slice(2);
+const real = () => process.exit(spawnSync('git', args, { stdio: 'inherit', windowsHide: true }).status ?? 1);
+if (!args.includes('fetch')) real();
+process.stderr.write('fatal: unable to access https://example.invalid/repo.git synthetic-raw-marker');
+setTimeout(() => process.exit(0), 60_000);
+${hung ? '' : `setTimeout(real, ${delayMs});`}
+`);
+  return [process.execPath, script];
+}
+
+test('a hung base read ends at its deadline with a fixed failure, the event loop keeps running and nothing is admitted', async (t) => {
+  const env = environment(); const store = new Store(join(env.dataDir, 'supervisor.db'));
+  t.after(() => { store.close(); env.cleanup(); });
+  const d = declaration(); d.tasks[1].requiresMergedDependencies = true; campaignStart(store, d);
+  const sha = git(env.repo, 'rev-parse', 'HEAD');
+  git(env.repo, 'push', 'origin', `${sha}:refs/heads/main`);
+  store.patch('tasks', { campaign_id: d.campaignId, task_id: 'T1' }, 1, { state: 'done', verified_sha: sha }, Date.now());
+  const config = { ...env.config, baseReadMs: 300, commands: { ...env.config.commands, git: slowFetchGit(env.tmp, { hung: true }) } };
+  const controller = new Controller({ store, config, dataDir: env.dataDir, fault: null });
+  const logs = [];
+  controller.log = (line) => logs.push(line);
+  const lease = store.acquireLease(d.campaignId, controller.instanceId, Date.now(), 60_000);
+  let timerRuns = 0;
+  const timer = setInterval(() => { timerRuns += 1; }, 20);
+  const started = Date.now();
+  try {
+    await controller.reconcileIntegration({ id: d.campaignId, generation: lease.generation });
+  } finally { clearInterval(timer); }
+  assert.ok(Date.now() - started < 10_000, 'the read ends at its deadline, not when the remote answers');
+  assert.ok(timerRuns >= 3, 'timers such as the lease renewal keep running while the read waits');
+  assert.match(store.task(d.campaignId, 'T2').last_error, /remote refresh unavailable/, 'no dependency is admitted on a failed read');
+  assert.deepEqual(await controller.fetchBase(env.repo, 'main', d.target.repository), { ok: false, sha: null, failure: 'fetch-timeout' });
+  assert.ok(logs.includes('base read unavailable: fetch-timeout'));
+  assert.equal(logs.some((line) => /synthetic-raw-marker|example\.invalid|fatal/.test(line)), false, 'no raw error, URL or credential is logged');
+});
+
+test('a task changed while its base read runs is not written from that read', async (t) => {
+  const env = environment(); const store = new Store(join(env.dataDir, 'supervisor.db'));
+  t.after(() => { store.close(); env.cleanup(); });
+  const d = declaration(); d.tasks[1].requiresMergedDependencies = true; campaignStart(store, d);
+  const sha = git(env.repo, 'rev-parse', 'HEAD');
+  git(env.repo, 'push', 'origin', `${sha}:refs/heads/main`);
+  store.patch('tasks', { campaign_id: d.campaignId, task_id: 'T1' }, 1, { state: 'done', verified_sha: sha }, Date.now());
+  const config = { ...env.config, commands: { ...env.config.commands, git: slowFetchGit(env.tmp, { delayMs: 300 }) } };
+  const controller = new Controller({ store, config, dataDir: env.dataDir, fault: null });
+  const lease = store.acquireLease(d.campaignId, controller.instanceId, Date.now(), 60_000);
+  store.patch('tasks', { campaign_id: d.campaignId, task_id: 'T2' }, store.task(d.campaignId, 'T2').version,
+    { last_error: 'dependency-integration: waiting for T1 in main' }, Date.now());
+  // While the fetch runs, the task is changed (here: paused by its own retry time), so the read's verdict is stale.
+  setTimeout(() => store.patch('tasks', { campaign_id: d.campaignId, task_id: 'T2' }, store.task(d.campaignId, 'T2').version,
+    { retry_at: Date.now() + 3_600_000 }, Date.now()), 50);
+  const changed = new Promise((done) => setTimeout(done, 100));
+  await assert.rejects(controller.reconcileIntegration({ id: d.campaignId, generation: lease.generation }), /changed since version/);
+  await changed;
+  const row = store.task(d.campaignId, 'T2');
+  assert.match(row.last_error, /dependency-integration/, 'the stale read did not clear the wait');
+  assert.ok(row.retry_at > Date.now());
 });

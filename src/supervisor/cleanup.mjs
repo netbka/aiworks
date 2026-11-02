@@ -46,7 +46,7 @@ function insideRoot(root, path) {
  * One cleanup pass, at most once per integrationPollMs. Returns { removed, deleted, kept } (paths and branches), or null
  * when it did not run: switched off, unmerged runtime code (AW-005), or not yet due.
  */
-export function cleanupPass(ctl) {
+export async function cleanupPass(ctl) {
   if (!cleanupEnabled(ctl.config) || ctl.unmergedRevision()) return null;
   const state = memory.get(ctl) ?? { checkedAt: -Infinity, reconciled: false, reported: new Set() };
   memory.set(ctl, state);
@@ -62,10 +62,10 @@ export function cleanupPass(ctl) {
     state.reported.add(seen);
     ctl.store.journal(campaignId, 'cleanup-kept', item, ctl.now());
   };
-  const coordinator = coordinatorOwners(ctl);
-  for (const repo of repositories(ctl)) cleanRepository(ctl, repo, coordinator, report, keep);
-  // Shared planning checkouts have no repository scope; a scoped cleanup leaves them alone.
-  if (ctl.config.cleanup.repositories === undefined) cleanCoordinator(ctl, coordinator, report, keep);
+  for (const repo of repositories(ctl)) await cleanRepository(ctl, repo, report, keep);
+  // Shared planning checkouts have no repository scope; a scoped cleanup leaves them alone. Their owners are read after
+  // every await of the repositories above (aiworks#140): a coordinator run recorded meanwhile keeps its checkout.
+  if (ctl.config.cleanup.repositories === undefined) cleanCoordinator(ctl, report, keep);
   if (report.removed.length || report.deleted.length) ctl.log(`cleanup removed ${report.removed.length} worktrees and ${report.deleted.length} branches`);
   return report;
 }
@@ -91,14 +91,15 @@ function repositories(ctl) {
   return [...byPath.values()];
 }
 
-function cleanRepository(ctl, repo, coordinator, report, keep) {
+async function cleanRepository(ctl, repo, report, keep) {
   const git = ctl.cmd.git;
   const list = gitA.worktreeList({ git, repoPath: repo.path });
   if (!list) { keep(null, { path: repo.path, reason: 'worktree-list-unreadable' }); return; }
   const registered = new Map(list.slice(1).map((wt) => [key(wt.path), wt]));
   // The trusted main: origin/main as the supervisor fetches it, or the trusted tip of local main when self-hosted.
-  const main = repo.local || !repo.repository ? null : ctl.fetchBase(repo.path, 'main', repo.repository).sha;
+  const main = repo.local || !repo.repository ? null : (await ctl.fetchBase(repo.path, 'main', repo.repository)).sha;
   const contained = (sha) => SHA.test(sha ?? '') && SHA.test(main ?? '') && gitA.isAncestor({ git, path: repo.path, ancestor: sha, descendant: main });
+  const coordinator = coordinatorOwners(ctl);
   const owners = new Map(), finishedTasks = [];
   for (const c of repo.campaigns) {
     const terminal = ['finished', 'cancelled'].includes(c.control), foreign = foreignLease(ctl, c.id);
@@ -192,9 +193,15 @@ function coordinatorOwners(ctl) {
   return owners;
 }
 
-function cleanCoordinator(ctl, owners, report, keep) {
+/** Whether the coordinator lane may lose a checkout now: no other instance holds it and no boundary violation is open. */
+function coordinatorFree(ctl) {
   // A boundary violation keeps every coordinator checkout until the owner has inspected it and cleared the lane.
-  if (!owners.size || foreignLease(ctl, COORDINATOR_LANE) || ctl.store.get("SELECT 1 AS v FROM meta WHERE key = 'coordinator_violation'")) return;
+  return !foreignLease(ctl, COORDINATOR_LANE) && !ctl.store.get("SELECT 1 AS v FROM meta WHERE key = 'coordinator_violation'");
+}
+
+function cleanCoordinator(ctl, report, keep) {
+  const owners = coordinatorOwners(ctl);
+  if (!owners.size || !coordinatorFree(ctl)) return;
   const root = coordinatorWorktreeRoot(ctl);
   for (const owner of owners.values()) {
     if (!owner.finished || !existsSync(owner.path)) continue;
@@ -203,7 +210,13 @@ function cleanCoordinator(ctl, owners, report, keep) {
     const wt = list?.slice(1).find((entry) => key(entry.path) === key(owner.path));
     if (!wt) continue;
     if (!insideRoot(root, wt.path)) { keep(COORDINATOR_LANE, { path: wt.path, run: owner.run, reason: 'outside-root' }); continue; }
-    removeWorktree(ctl, list[0].path, wt, owner, report, keep);
+    // Checkouts are reused across runs, and a run is recorded inside an IMMEDIATE transaction (coordinator.mjs). The last
+    // check of its runs and the removal share one, so no run is recorded for this checkout between them.
+    ctl.store.tx(() => {
+      const current = coordinatorOwners(ctl).get(key(owner.path));
+      if (current?.finished !== true || !coordinatorFree(ctl)) return;
+      removeWorktree(ctl, list[0].path, wt, current, report, keep);
+    });
   }
 }
 
