@@ -43,7 +43,7 @@ function rig(t) {
   const root = mkdtempSync(join(tmpdir(), 'aiworks-publish-')), dataDir = join(root, 'data'), governance = join(root, 'governance');
   mkdirSync(dataDir); cpSync(GOVERNANCE, governance, { recursive: true });
   const store = new Store(join(dataDir, 'supervisor.db'));
-  const config = { release: { enabled: true }, governanceRoot: governance, repositories: {}, leaseMs: 3000, integrationPollMs: 60000 };
+  const config = { release: { enabled: true }, governanceRoot: governance, repositories: {}, leaseMs: 30_000, integrationPollMs: 60000 };
   const r = { root, store, config, dataDir, offset: 0 };
   Object.defineProperty(r, 'clock', { get: () => Date.now() + r.offset, set: (value) => { r.offset = value - Date.now(); } });
   r.controller = () => new Controller({ store, config, dataDir, now: () => r.clock, fault: null });
