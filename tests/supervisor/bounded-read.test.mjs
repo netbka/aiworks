@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { execBounded, execContained, treeKill } from '../../src/supervisor/adapters/git.mjs';
+import { execBounded, execContained, settleContained, treeKill } from '../../src/supervisor/adapters/git.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
 import { POWERSHELL, readJsonIfExists, runnerIdentified } from '../../src/supervisor/proc.mjs';
 import { Store } from '../../src/supervisor/store.mjs';
@@ -72,6 +72,24 @@ test('a contained fetch that times out has shown its whole tree ended and keeps 
   assert.deepEqual(readdirSync(runRoot), [], 'a run shown ended keeps no receipt');
   await sleep(3000);
   assert.equal(existsSync(late), false, 'nothing the read started writes after it settled');
+});
+
+test('an old run whose start is unknown stays a receipt until its end is shown', async (t) => {
+  const runRoot = join(tempDir(t), 'runs');
+  // A runner may have been spawned and not yet taken its lock: a folder with only its spec, and one with only the lock.
+  const specOnly = join(runRoot, 'read-spec-only'), lockOnly = join(runRoot, 'read-lock-only');
+  mkdirSync(specOnly, { recursive: true }); mkdirSync(lockOnly);
+  writeFileSync(join(specOnly, 'prompt.txt'), '');
+  writeFileSync(join(specOnly, 'spec.json'), JSON.stringify({ cwd: runRoot, timeoutMs: 1000, heartbeatMs: 1000, argv: [process.execPath, '-e', ''] }));
+  writeFileSync(join(lockOnly, 'run.lock'), '');
+  await sleep(50);
+  // However old the folder is (the former age bound is passed as zero, so both are past it), time is not proof.
+  for (let pass = 0; pass < 2; pass += 1) assert.equal(await settleContained(runRoot, new Set(), { boundMs: 0 }), 2, 'neither run is retryable');
+  assert.deepEqual(readdirSync(runRoot).sort(), ['read-lock-only', 'read-spec-only'], 'both receipts stay');
+  // The runner's own result is proof: one that never attached its job started nothing.
+  writeFileSync(join(lockOnly, 'result.json'), JSON.stringify({ attached: false }));
+  assert.equal(await settleContained(runRoot), 1);
+  assert.deepEqual(readdirSync(runRoot), ['read-spec-only']);
 });
 
 test('a checkout with a fetch not shown ended is not read again until its end is shown', { skip: skipWithoutSqlite || (!POWERSHELL && 'Windows job containment only') }, async (t) => {

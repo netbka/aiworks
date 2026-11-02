@@ -1842,7 +1842,7 @@ export class Controller {
     // under runRoot), nothing more is fetched or read there, so no step decides from or builds on such a ref.
     const runRoot = this.baseReadRoot(repoPath);
     const { baseReadMs, baseReadOverheadMs } = this.config;
-    if (await gitA.settleContained(runRoot, this.baseReadRuns, { boundMs: baseReadMs + baseReadOverheadMs + 60_000 }) > 0) return failed('uncontained');
+    if (await gitA.settleContained(runRoot, this.baseReadRuns) > 0) return failed('uncontained');
     // origin/<base> follows in the same fetch: a worktree branch started from the read base tracks it (dispatch).
     const fetched = await gitA.execContained(this.cmd.git, ['fetch', 'origin', `+refs/heads/${base}:${ref}`, `+refs/heads/${base}:refs/remotes/origin/${base}`],
       { cwd: repoPath, runRoot, timeoutMs: baseReadMs, overheadMs: baseReadOverheadMs, active: this.baseReadRuns });
