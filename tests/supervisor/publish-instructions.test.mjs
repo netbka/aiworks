@@ -47,7 +47,7 @@ function rig(t) {
   const r = { root, store, config, dataDir, offset: 0 };
   Object.defineProperty(r, 'clock', { get: () => Date.now() + r.offset, set: (value) => { r.offset = value - Date.now(); } });
   r.controller = () => new Controller({ store, config, dataDir, now: () => r.clock, fault: null });
-  r.pass = async (c) => { r.clock += 61_000; releasePass(c); await c.drainReleases(); };
+  r.pass = async (c) => { r.clock += 61_000; await releasePass(c); await c.drainReleases(); };
   t.after(async () => { if (r.c) { await r.c.drainReleases(); r.c.release(); } store.close(); rmSync(root, { recursive: true, force: true }); });
   /** A finished campaign whose one checked task was merged. `steps` is the publication text; `work` changes files in the task. */
   r.project = (id, { steps = STEPS, work = {} } = {}) => {

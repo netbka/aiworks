@@ -89,10 +89,10 @@ test('off, stopped or on unmerged code: a pass registers nothing and changes no 
   const on = setup(t);
   program.stopPrograms(on.env.dataDir, { now: on.clock.now });
   await on.controller().tick();
-  assert.deepEqual(program.programPass(on.controller({ revisionCheck: () => 'not merged' })), []);
+  assert.deepEqual(await program.programPass(on.controller({ revisionCheck: () => 'not merged' })), []);
   assert.deepEqual(waveIds(on.store), [], 'PROGRAM-STOP or code that is not merged registers nothing');
   rmSync(join(on.env.dataDir, program.PROGRAM_STOP));
-  assert.deepEqual(program.programPass(on.controller({ revisionCheck: () => 'not merged' })), []);
+  assert.deepEqual(await program.programPass(on.controller({ revisionCheck: () => 'not merged' })), []);
   assert.deepEqual(waveIds(on.store), []);
   // The same setup with every switch clear registers its first wave: the cases above were held by the switches alone.
   await on.controller().tick();
@@ -111,7 +111,7 @@ test('on: a fitting wave is registered once, also after a crash between registra
   assert.deepEqual(journal(store, 'program-registered'), []);
 
   clock.now += HOUR;
-  const [registered] = program.programPass(first);
+  const [registered] = await program.programPass(first);
   assert.equal(registered.registered, true);
   assert.deepEqual(waveIds(store), ['sample-program-w1']);
   assert.deepEqual(store.tasks('sample-program-w1').map((task) => [task.task_id, task.state]), [['WAV1', 'pending']]);
@@ -123,8 +123,8 @@ test('on: a fitting wave is registered once, also after a crash between registra
 
   // An unfinished wave holds the next one, also for a restarted controller that checks at once.
   clock.now += HOUR;
-  assert.deepEqual(program.programPass(first).map((result) => result.waiting), ['wave sample-program-w1 has unfinished tasks']);
-  assert.deepEqual(program.programPass(controller()).map((result) => result.waiting), ['wave sample-program-w1 has unfinished tasks']);
+  assert.deepEqual((await program.programPass(first)).map((result) => result.waiting), ['wave sample-program-w1 has unfinished tasks']);
+  assert.deepEqual((await program.programPass(controller())).map((result) => result.waiting), ['wave sample-program-w1 has unfinished tasks']);
   assert.deepEqual(waveIds(store), ['sample-program-w1']);
 
   // WAV1 done with its verified commit on main: the next pass registers wave 2 with WAV2, and nothing twice.
@@ -132,15 +132,15 @@ test('on: a fitting wave is registered once, also after a crash between registra
   store.run("UPDATE tasks SET state = 'done', verified_sha = ? WHERE campaign_id = 'sample-program-w1'", main);
   store.run("UPDATE campaigns SET control = 'finished' WHERE id = 'sample-program-w1'");
   clock.now += HOUR;
-  program.programPass(first);
-  program.programPass(controller());
+  await program.programPass(first);
+  await program.programPass(controller());
   assert.deepEqual(waveIds(store), ['sample-program-w1', 'sample-program-w2']);
   assert.deepEqual(store.tasks('sample-program-w2').map((task) => task.task_id), ['WAV2']);
   assert.deepEqual(store.all('SELECT wave FROM program_waves ORDER BY wave').map((row) => row.wave), [1, 2]);
   assert.equal(journal(store, 'program-registered').length, 2);
 });
 
-test('a misfit registers nothing and becomes one Needs you item with the reason and the proposed declaration', { skip: !SQLITE }, (t) => {
+test('a misfit registers nothing and becomes one Needs you item with the reason and the proposed declaration', { skip: !SQLITE }, async (t) => {
   // A governance checkout in which the target repository is not a registered project: cli.mjs start would refuse it too.
   const governance = mkdtempSync(join(tmpdir(), 'aiworks-governance-'));
   t.after(() => rmSync(governance, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
@@ -149,7 +149,7 @@ test('a misfit registers nothing and becomes one Needs you item with the reason 
   const { store, clock, controller } = setup(t, { governanceRoot: governance });
   const pass = controller();
   for (let n = 0; n < 2; n += 1) {
-    const [result] = program.programPass(pass);
+    const [result] = await program.programPass(pass);
     assert.equal(result.registered, false);
     clock.now += HOUR;
   }
@@ -165,13 +165,13 @@ test('a misfit registers nothing and becomes one Needs you item with the reason 
   assert.deepEqual(misfits[0].detail.declaration.tasks.map((task) => task.id), ['WAV1']);
 });
 
-test('no Needs you item while a verified wave task is not yet on main; one once only an excluded dependency holds', { skip: !SQLITE }, (t) => {
+test('no Needs you item while a verified wave task is not yet on main; one once only an excluded dependency holds', { skip: !SQLITE }, async (t) => {
   // WAV2 depends on WAV1 and on WAV3, which the record excludes: no wave ever builds WAV3 (#228).
   const plan = PLAN.replace('| WAV1 | The second test passes | No |', `| WAV1, WAV3 | The second test passes | No |
 | **WAV3** | A deferred module. | \`sup/three.mjs\` (new) | none | The third test passes | No |`);
   const { env, store, clock, controller } = setup(t, { plan, programRecord: { ...record, exclude: ['WAV3'] } });
   const pass = controller();
-  assert.equal(program.programPass(pass)[0].registered, true);
+  assert.equal((await program.programPass(pass))[0].registered, true);
   assert.deepEqual(store.tasks('sample-program-w1').map((task) => task.task_id), ['WAV1']);
 
   // WAV1 verified on a branch whose merge has not reached main yet: the wave is closed but its work is in flight.
@@ -185,7 +185,7 @@ test('no Needs you item while a verified wave task is not yet on main; one once 
   store.run("UPDATE tasks SET state = 'done', verified_sha = ? WHERE campaign_id = 'sample-program-w1'", verified);
   store.run("UPDATE campaigns SET control = 'finished' WHERE id = 'sample-program-w1'");
   clock.now += HOUR;
-  assert.deepEqual(program.programPass(pass).map((result) => result.waiting), ['no slice is ready']);
+  assert.deepEqual((await program.programPass(pass)).map((result) => result.waiting), ['no slice is ready']);
   assert.deepEqual(store.all('SELECT fingerprint FROM blockers'), [], 'work on its way to main is not a stall');
   assert.deepEqual(journal(store, 'program-misfit'), []);
 
@@ -193,7 +193,7 @@ test('no Needs you item while a verified wave task is not yet on main; one once 
   git(env.repo, 'merge', '-q', '--ff-only', 'wav1');
   git(env.repo, 'push', '-q', 'origin', 'main');
   clock.now += HOUR;
-  assert.equal(program.programPass(pass)[0].registered, false);
+  assert.equal((await program.programPass(pass))[0].registered, false);
   const items = store.all("SELECT * FROM blockers WHERE status = 'open'");
   assert.equal(items.length, 1);
   assert.equal(items[0].class, 'B3');

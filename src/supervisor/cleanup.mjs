@@ -46,7 +46,7 @@ function insideRoot(root, path) {
  * One cleanup pass, at most once per integrationPollMs. Returns { removed, deleted, kept } (paths and branches), or null
  * when it did not run: switched off, unmerged runtime code (AW-005), or not yet due.
  */
-export function cleanupPass(ctl) {
+export async function cleanupPass(ctl) {
   if (!cleanupEnabled(ctl.config) || ctl.unmergedRevision()) return null;
   const state = memory.get(ctl) ?? { checkedAt: -Infinity, reconciled: false, reported: new Set() };
   memory.set(ctl, state);
@@ -63,7 +63,7 @@ export function cleanupPass(ctl) {
     ctl.store.journal(campaignId, 'cleanup-kept', item, ctl.now());
   };
   const coordinator = coordinatorOwners(ctl);
-  for (const repo of repositories(ctl)) cleanRepository(ctl, repo, coordinator, report, keep);
+  for (const repo of repositories(ctl)) await cleanRepository(ctl, repo, coordinator, report, keep);
   // Shared planning checkouts have no repository scope; a scoped cleanup leaves them alone.
   if (ctl.config.cleanup.repositories === undefined) cleanCoordinator(ctl, coordinator, report, keep);
   if (report.removed.length || report.deleted.length) ctl.log(`cleanup removed ${report.removed.length} worktrees and ${report.deleted.length} branches`);
@@ -91,13 +91,13 @@ function repositories(ctl) {
   return [...byPath.values()];
 }
 
-function cleanRepository(ctl, repo, coordinator, report, keep) {
+async function cleanRepository(ctl, repo, coordinator, report, keep) {
   const git = ctl.cmd.git;
   const list = gitA.worktreeList({ git, repoPath: repo.path });
   if (!list) { keep(null, { path: repo.path, reason: 'worktree-list-unreadable' }); return; }
   const registered = new Map(list.slice(1).map((wt) => [key(wt.path), wt]));
   // The trusted main: origin/main as the supervisor fetches it, or the trusted tip of local main when self-hosted.
-  const main = repo.local || !repo.repository ? null : ctl.fetchBase(repo.path, 'main', repo.repository).sha;
+  const main = repo.local || !repo.repository ? null : (await ctl.fetchBase(repo.path, 'main', repo.repository)).sha;
   const contained = (sha) => SHA.test(sha ?? '') && SHA.test(main ?? '') && gitA.isAncestor({ git, path: repo.path, ancestor: sha, descendant: main });
   const owners = new Map(), finishedTasks = [];
   for (const c of repo.campaigns) {

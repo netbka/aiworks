@@ -115,28 +115,28 @@ const OWNER = (store) => checkCaller(store, { platform: 'win32', lookup: async (
 test('a clean folder on its base branch follows a recorded merge; a changed folder or another branch is left with the reason', async (t) => {
   const r = githubRig(t);
   const first = r.merge();
-  assert.equal(r.sync(), FOLDER_UPDATED);
+  assert.equal(await r.sync(), FOLDER_UPDATED);
   assert.equal(r.head(), first, 'the folder was fast-forwarded to the merged base');
-  assert.equal(r.sync(), null, 'a recorded merge is tried once');
+  assert.equal(await r.sync(), null, 'a recorded merge is tried once');
 
   // The owner has a change of their own: nothing is touched, the reason is recorded, the next merge tries again.
   const second = r.merge();
   writeFileSync(join(r.env.repo, 'AGENTS.md'), '# The owner is editing\n');
-  assert.equal(r.sync(), FOLDER_LEFT);
+  assert.equal(await r.sync(), FOLDER_LEFT);
   assert.equal(r.last().detail.reason, 'changes');
   assert.equal(r.head(), first, 'the branch did not move');
   assert.equal(readFileSync(join(r.env.repo, 'AGENTS.md'), 'utf8'), '# The owner is editing\n', 'the owner\'s change is kept');
-  assert.equal(r.sync(), null, 'not retried until the next merge');
+  assert.equal(await r.sync(), null, 'not retried until the next merge');
   run(r.env.repo, ['checkout', '--', 'AGENTS.md']);
   const third = r.merge();
-  assert.equal(r.sync(), FOLDER_UPDATED);
+  assert.equal(await r.sync(), FOLDER_UPDATED);
   assert.equal(r.head(), third, 'the next merge brought it up to date');
   assert.notEqual(second, third);
 
   // Another branch is checked out: neither it nor the base branch moves.
   run(r.env.repo, ['checkout', '-q', '-b', 'owner-work']);
   r.merge();
-  assert.equal(r.sync(), FOLDER_LEFT);
+  assert.equal(await r.sync(), FOLDER_LEFT);
   assert.equal(r.last().detail.reason, 'other-branch');
   assert.equal(r.head(), third);
   assert.equal(run(r.env.repo, ['rev-parse', 'refs/heads/main']), third);
@@ -173,7 +173,7 @@ test('AIWorks\'s own runtime checkout is never written by either path', async (t
   r.controller.runtimeRoot = r.env.repo;
   const before = r.head();
   r.merge();
-  assert.equal(r.sync(), FOLDER_LEFT);
+  assert.equal(await r.sync(), FOLDER_LEFT);
   assert.equal(r.last().detail.reason, 'aiworks-runtime');
   assert.equal(r.head(), before, 'the runtime checkout did not move');
 
