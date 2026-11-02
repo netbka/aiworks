@@ -23,40 +23,75 @@ export function exec(command, args, { cwd, input, timeoutMs = 180_000 } = {}) {
 
 /**
  * A slow Git read that must not stall the controller (aiworks#140): unlike exec it never blocks the event loop, so the
- * lease timer and the release job keep running while it waits. It settles by `timeoutMs` at the latest, whatever the
- * child or a process it started does with its pipes: on the deadline the child (on Windows its whole process tree) is
- * killed and the result is the failure ETIMEDOUT. It never throws. Only for reads: publication and other effects stay
- * synchronous inside the controller's fence.
+ * lease timer and the release job keep running while it waits. On the deadline its whole process tree is stopped before
+ * it settles, so no helper it started (a fetch's remote helper, say) outlives the read and writes refs afterwards: on
+ * Windows `taskkill /T /F` runs while the child is still alive to name its descendants, and the read waits for it; on
+ * other systems the child leads its own process group, which is killed as one. The result is then the failure ETIMEDOUT,
+ * with `contained: false` only when that tree stop could not be shown to finish within `killMs`. It never throws. Only
+ * for reads: publication and other effects stay synchronous inside the controller's fence.
  */
-export function execBounded(command, args, { cwd, timeoutMs = 30_000, maxBytes = 16 * 1024 * 1024 } = {}) {
+export function execBounded(command, args, { cwd, timeoutMs = 30_000, killMs = 10_000, maxBytes = 16 * 1024 * 1024 } = {}) {
   return new Promise((resolve) => {
-    let settled = false, timer = null, child = null, stdout = '', stderr = '';
+    let settled = false, stopping = false, timer = null, child = null, stdout = '', stderr = '';
     const finish = (result) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       resolve(result);
     };
-    const failed = (error) => ({ ok: false, status: null, stdout: '', stderr: '', error });
-    const stop = () => {
-      try {
-        if (process.platform === 'win32' && child?.pid) spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }).on('error', () => {});
-        child?.kill('SIGKILL');
-      } catch { /* already gone */ }
+    const failed = (error, contained = true) => ({ ok: false, status: null, stdout: '', stderr: '', error, ...(contained ? {} : { contained: false }) });
+    // Stops the child's whole tree, then settles. The child is killed only after the tree stop has finished, so its
+    // process identity stays valid while its descendants are found.
+    const stop = (error) => {
+      if (stopping || settled) return;
+      stopping = true;
+      clearTimeout(timer);
+      treeKill(child, killMs).then((contained) => {
+        try { child.kill('SIGKILL'); } catch { /* already gone */ }
+        finish(failed(error, contained));
+      });
     };
     try {
       child = spawn(command[0], [...command.slice(1), ...args], { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, ...DEVELOPMENT_ENV } });
+        detached: process.platform !== 'win32', env: { ...process.env, ...DEVELOPMENT_ENV } });
     } catch (error) { finish(failed(error?.code ?? 'ESPAWN')); return; }
-    timer = setTimeout(() => { stop(); finish(failed('ETIMEDOUT')); }, timeoutMs);
+    timer = setTimeout(() => stop('ETIMEDOUT'), timeoutMs);
     const collect = (append) => (chunk) => {
-      if (stdout.length + stderr.length + chunk.length > maxBytes) { stop(); finish(failed('ENOBUFS')); return; }
+      if (stopping) return;
+      if (stdout.length + stderr.length + chunk.length > maxBytes) { stop('ENOBUFS'); return; }
       append(chunk);
     };
     child.stdout.setEncoding('utf8').on('data', collect((chunk) => { stdout += chunk; }));
     child.stderr.setEncoding('utf8').on('data', collect((chunk) => { stderr += chunk; }));
-    child.on('error', (error) => finish(failed(error?.code ?? 'ESPAWN')));
-    child.on('close', (status) => finish({ ok: status === 0, status, stdout: stdout.trim(), stderr: stderr.trim(), error: undefined }));
+    child.on('error', (error) => { if (!stopping) finish(failed(error?.code ?? 'ESPAWN')); });
+    child.on('close', (status) => { if (!stopping) finish({ ok: status === 0, status, stdout: stdout.trim(), stderr: stderr.trim(), error: undefined }); });
+  });
+}
+
+/**
+ * Stops `child` with every process it started, and resolves true once that is shown done, false when it was not within
+ * `killMs`. Only this child's own tree is targeted: its pid on Windows, its own process group elsewhere.
+ */
+function treeKill(child, killMs) {
+  return new Promise((done) => {
+    if (!child?.pid) { done(true); return; }
+    if (child.exitCode !== null || child.signalCode !== null) {
+      // The child already exited: on Windows its orphans can no longer be found by its pid; its group still can be.
+      if (process.platform !== 'win32') { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* group gone */ } }
+      done(process.platform !== 'win32');
+      return;
+    }
+    if (process.platform !== 'win32') {
+      try { process.kill(-child.pid, 'SIGKILL'); done(true); } catch (error) { done(error?.code === 'ESRCH'); }
+      return;
+    }
+    let ended = false;
+    const end = (value) => { if (!ended) { ended = true; clearTimeout(bound); done(value); } };
+    const bound = setTimeout(() => { try { killer.kill(); } catch { /* gone */ } end(false); }, killMs);
+    const killer = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    killer.on('error', () => end(false));
+    // Exit 0: the tree was terminated; 128: the process was already gone.
+    killer.on('exit', (code) => end(code === 0 || code === 128));
   });
 }
 

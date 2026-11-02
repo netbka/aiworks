@@ -200,3 +200,23 @@ test('no Needs you item while a verified wave task is not yet on main; one once 
   assert.match(items[0].summary, /WAV2/);
   assert.deepEqual(waveIds(store), ['sample-program-w1']);
 });
+
+test('a stop or a revocation that arrives while the base read is awaited registers no wave', { skip: !SQLITE }, async (t) => {
+  const { env, store, clock, controller } = setup(t);
+  const pass = controller();
+  const read = pass.fetchBase.bind(pass);
+  let during = null;
+  // The base read completes only after the owner acted: the pass resumes from a snapshot taken before the act.
+  pass.fetchBase = async (...args) => { const result = await read(...args); during?.(); return result; };
+
+  during = () => program.stopPrograms(env.dataDir, { now: clock.now });
+  assert.deepEqual((await program.programPass(pass)).map((result) => result.registered ?? false), [false]);
+  assert.deepEqual(waveIds(store), [], 'PROGRAM-STOP during the read holds the wave');
+  rmSync(join(env.dataDir, program.PROGRAM_STOP));
+
+  clock.now += HOUR;
+  during = () => program.approveProgram(store, { ...record, revoked: true, authorization: { ...record.authorization, version: 2 } }, { now: clock.now });
+  assert.deepEqual((await program.programPass(pass)).map((result) => result.registered ?? false), [false]);
+  assert.deepEqual(waveIds(store), [], 'a revocation during the read holds the wave');
+  assert.deepEqual(store.all('SELECT fingerprint FROM blockers'), []);
+});
