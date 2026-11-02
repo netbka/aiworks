@@ -12,7 +12,7 @@ import { Controller } from '../../src/supervisor/controller.mjs';
 import { campaignStart, campaignStatus } from '../../src/supervisor/api.mjs';
 import { releasePass } from '../../src/supervisor/release/controller.mjs';
 import { authorityChange } from '../../src/supervisor/release/authority-path.mjs';
-import { observeGrant } from '../../src/supervisor/release/grant-source.mjs';
+import { observeGrant, readProjectGrant } from '../../src/supervisor/release/grant-source.mjs';
 import { parseAuthorization } from '../../src/supervisor/release/authorization.mjs';
 import { acquireLock } from '../../src/supervisor/release/state.mjs';
 import { declaration, GOVERNANCE, skipWithoutSqlite } from './helpers.mjs';
@@ -104,7 +104,7 @@ test('the production continuation releases two finished projects exactly once an
     covered: [{ campaign: older.campaignId, task: 'T0', sha: one.base }] }, r.clock);
   for (const p of [one, two]) r.store.journal(p.id, 'merged', { task: 'OLD', sha: p.base, mergeCommit: p.base, reconciled: true }, r.clock);
   for (let n = 0; n < 2; n++) {
-    releasePass(r.c);
+    await releasePass(r.c);
     assert.ok(r.c.releaseJob, JSON.stringify(r.store.all("SELECT detail FROM journal WHERE kind='release-waiting'")));
     if (n === 0) {
       const p = [one, two].find((item) => item.id === r.c.releaseJob.campaignId);
@@ -128,7 +128,7 @@ test('the production continuation releases two finished projects exactly once an
     assert.equal(campaignStatus(r.store, p.id, r.clock, { config: r.config }).release.complete, true);
   }
   r.c.release(); r.c = r.controller();
-  for (let n = 0; n < 4; n++) { r.clock += 61000; releasePass(r.c); await r.c.drainReleases(); }
+  for (let n = 0; n < 4; n++) { r.clock += 61000; await releasePass(r.c); await r.c.drainReleases(); }
   assert.equal(r.store.all('SELECT * FROM releases').length, 2);
   assert.equal(r.store.all("SELECT * FROM journal WHERE kind='release-grant-renewed'").length, 1);
   assert.equal(r.store.all('SELECT * FROM release_activity').length, 0);
@@ -151,4 +151,25 @@ test('ordinary worker changes cannot amend standing release authority and grant 
   assert.ok(observe(p.record).reason, 'revocation survives seeing the older non-revoked bytes');
   assert.equal(observe({ ...p.record, version: 2 }).reason, undefined);
   assert.ok(observe(p.record).reason, 'an older grant cannot return');
+});
+
+test('a release pointer removed or replaced while the release base is read authorizes nothing', { skip: skipWithoutSqlite }, async (t) => {
+  const r = rig(t), p = r.project('sample-pointer'); r.c = r.controller();
+  const ctx = { id: p.id, generation: r.store.acquireLease(p.id, r.c.instanceId, r.clock, 60_000).generation };
+  const file = join(r.governance, 'registry/projects', p.id + '.json'), registered = readFileSync(file, 'utf8');
+  const read = r.c.fetchBase.bind(r.c);
+  let change = null;
+  // The owner changes the registered pointer after it was resolved, while the base read is still awaited.
+  r.c.fetchBase = async (...args) => { const result = await read(...args); change?.(); return result; };
+  const grantFor = () => readProjectGrant(r.c, ctx, p.decl, { path: p.repo });
+  assert.equal((await grantFor()).reason, undefined, 'the unchanged pointer authorizes its grant');
+  const rewrite = (edit) => () => { const contract = JSON.parse(registered); edit(contract.governance); writeFileSync(file, JSON.stringify(contract)); };
+  for (const edit of [(g) => { delete g.releaseAuthorization; }, (g) => { g.releaseAuthorization.approval = 'https://github.com/example-org/approvals/issues/2'; },
+    (g) => { g.releaseAuthorization.source = 'deploy/OTHER.md'; }]) {
+    writeFileSync(file, registered);
+    change = rewrite(edit);
+    const grant = await grantFor();
+    assert.match(grant.reason ?? '', /changed while the release base was read/);
+    assert.equal(grant.record, undefined, 'no grant record reaches a deployment');
+  }
 });
