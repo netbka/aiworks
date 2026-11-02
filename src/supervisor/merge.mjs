@@ -144,7 +144,7 @@ export async function mergePass(controller) {
       if (settings.batch) {
         try {
           const tip = trustedTip(controller.store, { git: controller.cmd.git, repoPath, repository: decl.target.repository });
-          if (tip.state === 'TRUSTED' && batchStep(controller, items.filter((item) => item.decl.target.baseBranch === 'main' &&
+          if (tip.state === 'TRUSTED' && await batchStep(controller, items.filter((item) => item.decl.target.baseBranch === 'main' &&
             !authorityBlocked(controller, item, repoPath, tip.tip)), settings, repoPath, tip.main)) continue;
         } catch (error) {
           if (error instanceof FencedError || error instanceof ConflictError) { controller.log(`group merge for ${decl.target.repository} retried later: ${error.message}`); continue; }
@@ -166,19 +166,19 @@ export async function mergePass(controller) {
     controller.mergePassReads = new Map();
     if (settings.batch) {
       const branch = decl.target.baseBranch;
-      bases.set(branch, controller.fetchBase(repoPath, branch).sha);
+      bases.set(branch, (await controller.fetchBase(repoPath, branch)).sha);
       try {
-        if (SHA.test(bases.get(branch) ?? '') && batchStep(controller, items.filter((item) => item.decl.target.baseBranch === branch &&
+        if (SHA.test(bases.get(branch) ?? '') && await batchStep(controller, items.filter((item) => item.decl.target.baseBranch === branch &&
           !authorityBlocked(controller, item, repoPath, bases.get(branch))), settings, repoPath, bases.get(branch))) continue;
       } catch (error) {
         if (error instanceof FencedError || error instanceof ConflictError) { controller.log(`group merge for ${decl.target.repository} retried later: ${error.message}`); continue; }
         controller.log(`group merge for ${decl.target.repository} failed, merging one at a time: ${error.stack || error}`);
       }
-      bases.set(branch, controller.fetchBase(repoPath, branch).sha);
+      bases.set(branch, (await controller.fetchBase(repoPath, branch)).sha);
     }
     for (const item of items) {
       const branch = item.decl.target.baseBranch;
-      if (!bases.has(branch)) bases.set(branch, controller.fetchBase(repoPath, branch).sha);
+      if (!bases.has(branch)) bases.set(branch, (await controller.fetchBase(repoPath, branch)).sha);
       if (!SHA.test(bases.get(branch) ?? '')) { controller.log(`merge of ${item.campaignId}/${item.task.task_id} waits: ${branch} could not be fetched`); continue; }
       try {
         if (mergeOne(controller, item, settings, repoPath, bases.get(branch))) break;
@@ -194,7 +194,7 @@ export async function mergePass(controller) {
   for (const key of due) {
     if (controller.selfHosted(key)) backup(controller, key);
     else {
-      try { updateFolder(controller, key); } catch (error) {
+      try { await updateFolder(controller, key); } catch (error) {
         if (error instanceof FencedError || error instanceof ConflictError) controller.log(`folder update for ${key} retried later: ${error.message}`);
         else controller.log(`folder update for ${key} failed: ${error.message}`);
       }
@@ -222,7 +222,7 @@ const overlap = (a, b) => { const [x, y] = [comparable(a), comparable(b)]; retur
  * itself runs from or keeps its data in, and never AIWorks's own repository (its main moves through the local merge
  * gate). No hook of the folder runs. Returns the journal kind recorded, or null when nothing was due.
  */
-export function updateFolder(controller, key) {
+export async function updateFolder(controller, key) {
   const { store } = controller, git = controller.cmd.git;
   let newest = null;
   for (const { id } of store.all("SELECT id FROM campaigns WHERE control IN ('registered', 'finished') ORDER BY created_at")) {
@@ -248,7 +248,7 @@ export function updateFolder(controller, key) {
   };
   const left = (reason) => note(FOLDER_LEFT, { reason });
   if (overlap(path, controller.runtimeRoot ?? RUNTIME_ROOT) || (controller.dataDir && overlap(path, controller.dataDir))) return left('aiworks-runtime');
-  const fetched = controller.fetchBase(path, base, decl.target.repository);
+  const fetched = await controller.fetchBase(path, base, decl.target.repository);
   // The merged base could not be read: nothing is recorded, so the next pass tries the same merge again.
   if (!fetched.ok) return null;
   if (!gitA.isAncestor({ git, path, ancestor: mergeCommit, descendant: fetched.sha })) return left('unreadable');

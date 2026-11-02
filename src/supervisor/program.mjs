@@ -235,27 +235,54 @@ function recordMisfit(controller, row, record, { wave, reason, proposal = null }
   return { programId: record.programId, wave, registered: false, reason };
 }
 
-/** The next wave of one approved program, registered when it fits; see programPass. */
-function programWave(controller, row) {
-  const { store } = controller;
-  const record = JSON.parse(row.record_text);
-  validateProgram(record);
-  if (programDigest(record) !== row.digest) throw new CampaignError('PROGRAM_INVALID', `program ${row.program_id} does not match its stored digest`);
-  if (record.revoked === true) return null;
+/** The campaigns of the record's repository, this program's open wave if any, and the next wave number. */
+function waveState(store, record) {
   const campaigns = store.all('SELECT id, declaration, control, created_at FROM campaigns ORDER BY created_at DESC, id DESC')
     .filter((c) => sameRepository(c.declaration, record));
   // One wave at a time: a wave of this program with an unfinished task holds the next one. A step AIWorks ended as not
   // done (AW-017, a cancelled task) is settled, so its wave finishes and the next one may start.
   const waves = campaigns.filter((c) => waveOf(record.programId, c.id) !== null);
   const open = waves.find((c) => c.control !== 'cancelled' && store.tasks(c.id).some((task) => !['done', 'cancelled'].includes(task.state)));
-  if (open) return { programId: record.programId, waiting: `wave ${open.id} has unfinished tasks` };
   const numbers = [...waves.map((c) => waveOf(record.programId, c.id)),
     ...(hasWaves(store) ? store.all('SELECT wave FROM program_waves WHERE program_id = ?', record.programId).map((w) => w.wave) : [])];
-  const wave = Math.max(0, ...numbers) + 1;
+  return { campaigns, open, wave: Math.max(0, ...numbers) + 1 };
+}
+
+/** A wave that may not be registered now: the authority it was built under changed during the base read. */
+class WaveDeferred extends Error {}
+
+/**
+ * Why the authority read before the awaited base read no longer holds, or null: the program row is no longer the same
+ * unrevoked version and digest, programs are off or stopped, or this wave is no longer the next one or another is open.
+ */
+function authorityChanged(controller, row, record, wave) {
+  const { store } = controller;
+  const current = store.get('SELECT version, digest, revoked_at FROM programs WHERE program_id = ?', row.program_id);
+  if (!current || current.revoked_at !== null || current.version !== row.version || current.digest !== row.digest) return 'the program record changed during the base read';
+  if (!programEnabled(controller.config) || programStopped(controller.dataDir) !== false) return 'programs were stopped during the base read';
+  const now = waveState(store, record);
+  if (now.open || now.wave !== wave) return 'another wave was registered during the base read';
+  return null;
+}
+
+/** The next wave of one approved program, registered when it fits; see programPass. */
+async function programWave(controller, row) {
+  const { store } = controller;
+  const record = JSON.parse(row.record_text);
+  validateProgram(record);
+  if (programDigest(record) !== row.digest) throw new CampaignError('PROGRAM_INVALID', `program ${row.program_id} does not match its stored digest`);
+  if (record.revoked === true) return null;
+  const { open, wave } = waveState(store, record);
+  if (open) return { programId: record.programId, waiting: `wave ${open.id} has unfinished tasks` };
   // The trusted main: the base branch fetched into the supervisor's own ref, as the merge gate reads it. Read-only.
   const repo = controller.repo({ target: { repository: record.repository } });
-  const fetched = controller.fetchBase(repo.path, record.baseBranch);
+  const fetched = await controller.fetchBase(repo.path, record.baseBranch);
   if (!fetched.ok) return { programId: record.programId, waiting: `${record.baseBranch} could not be fetched` };
+  // The read was awaited: the owner may have revoked or replaced the record, stopped programs, or a wave may have been
+  // registered meanwhile (aiworks#140). Nothing is decided from the snapshot taken before it.
+  const changed = authorityChanged(controller, row, record, wave);
+  if (changed) return { programId: record.programId, waiting: changed };
+  const { campaigns } = waveState(store, record);
   const plan = gitA.exec(controller.cmd.git, ['show', `${fetched.sha}:${record.plan}`], { cwd: repo.path });
   if (!plan.ok) return recordMisfit(controller, row, record, { wave, reason: `${record.plan} is not on ${record.baseBranch} at ${fetched.sha.slice(0, 12)}` });
   // The project, environment and tracking issue come from the newest campaign the owner registered for this repository.
@@ -291,6 +318,9 @@ function programWave(controller, row) {
   try {
     store.db.exec(WAVES_DDL);
     store.tx(() => {
+      // Checked again inside the registering transaction, so no revocation, replacement, stop or wave lands between.
+      const moved = authorityChanged(controller, row, record, wave);
+      if (moved) throw new WaveDeferred(moved);
       store.insert('program_waves', { program_id: record.programId, wave, campaign_id: declaration.campaignId, record_version: record.authorization.version,
         record_digest: row.digest, declaration_digest: digest, plan_revision: fetched.sha, registered_at: now });
       campaignStart(store, declaration, now);
@@ -302,6 +332,7 @@ function programWave(controller, row) {
         { registered: declaration.campaignId }, now, now, misfitFingerprint(record));
     });
   } catch (error) {
+    if (error instanceof WaveDeferred) return { programId: record.programId, waiting: error.message };
     if (error instanceof CampaignError) return recordMisfit(controller, row, record, { wave, reason: `${error.code}: ${error.message}`, proposal });
     throw error;
   }
@@ -318,7 +349,7 @@ function programWave(controller, row) {
  * is a registered project. A wave that does not fit registers nothing and becomes one Needs you item. Returns one entry
  * per program checked (empty when off).
  */
-export function programPass(controller) {
+export async function programPass(controller) {
   if (!programEnabled(controller.config)) return [];
   const { store } = controller;
   if (!hasPrograms(store)) return [];
@@ -331,7 +362,7 @@ export function programPass(controller) {
     if ((controller.programCheckedAt.get(row.program_id) ?? -Infinity) + PROGRAM_PASS_MS > now) continue;
     controller.programCheckedAt.set(row.program_id, now);
     try {
-      const result = programWave(controller, row);
+      const result = await programWave(controller, row);
       if (result) results.push(result);
       if (result?.waiting) controller.log(`program ${row.program_id}: no wave registered: ${result.waiting}`);
     } catch (error) {

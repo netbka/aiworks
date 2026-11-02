@@ -72,7 +72,7 @@ function localMain(controller, repoPath, repository) {
  * Returns true when the group handled the repository this pass (it acted or waits), false when they go one at a time
  * instead.
  */
-export function batchStep(controller, items, settings, repoPath, baseSha) {
+export async function batchStep(controller, items, settings, repoPath, baseSha) {
   if (!items.length) return false;
   const repository = items[0].decl.target.repository.toLowerCase();
   const note = (kind, detail) => controller.store.tx(() => controller.store.journal(null, kind, { repository, ...detail }, controller.now()));
@@ -140,7 +140,7 @@ function startGroup(controller, all, items, settings, repoPath, baseSha, note) {
   return true;
 }
 
-function continueGroup(controller, open, items, settings, repoPath, baseSha, note) {
+async function continueGroup(controller, open, items, settings, repoPath, baseSha, note) {
   const { store } = controller, git = controller.cmd.git, { detail } = open.started, local = Boolean(items[0].local);
   const matchesStep = (commit, member, parent) => {
     const actual = gitA.exec(git, ['show', '-s', '--format=%T %P', commit], { cwd: repoPath });
@@ -254,7 +254,7 @@ function continueGroup(controller, open, items, settings, repoPath, baseSha, not
       if (refused) { end('merge-batch-stopped', `${member.campaignId}/${member.task} was not merged: ${refused.detail}`); return false; }
       return true;
     }
-    base = local ? localMain(controller, repoPath, items[0].decl.target.repository)?.main ?? null : controller.fetchBase(repoPath, detail.branch).sha;
+    base = local ? localMain(controller, repoPath, items[0].decl.target.repository)?.main ?? null : (await controller.fetchBase(repoPath, detail.branch)).sha;
     if (base !== done.mergeCommit || !matchesStep(done.mergeCommit, member, parent)) {
       end('merge-batch-stopped', `the merge of ${member.url} left the base at ${base}, not at the checked tree ${member.tree}`);
       return true;
