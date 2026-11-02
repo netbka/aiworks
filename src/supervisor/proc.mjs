@@ -104,3 +104,9 @@ export function stopOwnedRun(runner) {
       !/^\d+$/.test(runner.creationTime ?? '')) return 'ownership-unavailable';
   return jobCommand('Stop', runner.jobName, { pid: runner.pid, creationTime: runner.creationTime });
 }
+
+/** stopOwnedRun without blocking the event loop (the controller's bounded reads, aiworks#140). Same answers. */
+export async function stopOwnedRunAsync(runner) {
+  if (!runnerIdentified(runner) || !POWERSHELL) return 'ownership-unavailable';
+  return await runPowerShell(windowsHelperArgs('Stop', runner.jobName, { pid: runner.pid, creationTime: runner.creationTime }), 30_000) ?? 'stop-failed';
+}
