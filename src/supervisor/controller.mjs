@@ -1836,6 +1836,8 @@ export class Controller {
     // origin/<base> follows in the same fetch: a worktree branch started from the read base tracks it (dispatch).
     const fetched = await gitA.execBounded(this.cmd.git, ['fetch', 'origin', `+refs/heads/${base}:${ref}`, `+refs/heads/${base}:refs/remotes/origin/${base}`],
       { cwd: repoPath, timeoutMs: this.config.baseReadMs });
+    // A fetch whose helpers could not be shown stopped is named apart, in fixed words: it may still move the ref.
+    if (fetched.contained === false) this.log('base read helpers not shown stopped');
     if (!fetched.ok) return failed(fetched.error === 'ETIMEDOUT' ? 'fetch-timeout' : 'fetch-failed');
     const read = await gitA.execBounded(this.cmd.git, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: repoPath, timeoutMs: this.config.baseReadMs });
     if (read.error === 'ETIMEDOUT') return failed('read-timeout');
@@ -1886,6 +1888,7 @@ export class Controller {
     const repo = this.repo(c.declaration), base = c.declaration.target.baseBranch;
     const fetched = await this.fetchBase(repo.path, base, c.declaration.target.repository);
     this.fenced(ctx, () => {
+      if (!this.authorityHolds(ctx.id, c, specs)) return;
       const fetchedSha = fetched.sha;
       for (const task of due) {
         const missing = !fetched.ok ? specs.get(task.task_id).dependsOn
@@ -1897,6 +1900,18 @@ export class Controller {
         if (reason !== task.last_error) this.store.journal(ctx.id, reason ? 'integration-wait' : 'integration-ready', { task: task.task_id }, this.now());
       }
     });
+  }
+
+  /**
+   * Inside fenced(), after an awaited read (aiworks#140): whether the campaign is still under the authority `before` was
+   * read with, the same authorization version, scope and declaration and, given `specs`, the same task specs. A change
+   * defers the decision to the next pass, which reads it all again; nothing is decided from the older authority.
+   */
+  authorityHolds(id, before, specs = null) {
+    const now = this.store.campaign(id);
+    if (!now || now.authorization_version !== before.authorization_version || now.scope_digest !== before.scope_digest ||
+      canonicalJson(now.declaration) !== canonicalJson(before.declaration)) return false;
+    return !specs || canonicalJson([...specsOf(this.store, id, now.declaration)]) === canonicalJson([...specs]);
   }
 
   integrationDue(id, now = this.now()) {
@@ -1913,7 +1928,8 @@ export class Controller {
     if (!this.integrationDue(ctx.id)) return;
     const c = this.store.campaign(ctx.id);
     if (c.blocker) return;
-    const decl = c.declaration, specs = specsOf(this.store, ctx.id, decl);
+    const decl = c.declaration;
+    let specs = specsOf(this.store, ctx.id, decl);
     // A head recorded as merged is integrated even when the base holds only its squash or rebase (aiworks#207).
     const merged = new Set(this.store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'merged'", ctx.id)
       .map((row) => `${row.detail?.task}:${row.detail?.sha}`));
@@ -1933,6 +1949,9 @@ export class Controller {
     const heads = /^[0-9a-f]{40}$/.test(baseSha ?? '') ? await branches({ git, repoPath: repo.path, pattern: `refs/heads/campaign/${ctx.id}/*` }) : null;
     if (!heads) { this.log(`integration check of ${ctx.id} skipped: remote refresh unavailable`); return; }
     this.fenced(ctx, () => {
+      // A newer authorization during the read (a lower maxRepairRounds, say) is not judged by the old one: next pass.
+      if (!this.authorityHolds(ctx.id, c)) { this.integrationCheckedAt.delete(ctx.id); return; }
+      specs = specsOf(this.store, ctx.id, decl);
       const limits = campaignLimits(decl);
       let open = 0;
       for (const task of published(this.store.tasks(ctx.id))) {
@@ -2028,7 +2047,7 @@ export class Controller {
    */
   async endMergedRepairs(ctx) {
     if ((this.repairCheckedAt.get(ctx.id) ?? -Infinity) + this.config.integrationPollMs > this.now()) return;
-    const decl = this.store.campaign(ctx.id).declaration;
+    const c = this.store.campaign(ctx.id), decl = c.declaration;
     const running = new Set(this.store.openOperations(ctx.id).map((op) => op.task_id));
     const open = this.store.tasks(ctx.id).filter((t) => this.integrationFinding(t) && t.state !== 'done' && !t.blocked && !running.has(t.task_id));
     if (!open.length) return;
@@ -2037,6 +2056,7 @@ export class Controller {
     // Read before the fence (aiworks#140); endMergedRepair ends nothing on a failed read and writes at the task's version.
     const repo = this.repo(decl), baseSha = (await this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository)).sha;
     this.fenced(ctx, () => {
+      if (!this.authorityHolds(ctx.id, c)) { this.repairCheckedAt.delete(ctx.id); return; }
       for (const task of open) this.endMergedRepair(ctx, decl, task, repo.path, baseSha);
     });
   }
