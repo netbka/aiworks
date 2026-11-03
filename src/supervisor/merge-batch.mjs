@@ -245,7 +245,7 @@ async function continueGroup(controller, open, items, settings, repoPath, baseSh
     if (result.stop) { end('merge-batch-stopped', result.stop); return false; }
     // A merge that did not happen (a lost lease, a changed task) is judged again next pass.
     if (local) mergeLocal(controller, item, settings, repoPath, { group: open.id, base: parent, tree: member.tree });
-    else mergeNow(controller, item, base);
+    else mergeNow(controller, item, base, null, member.tree);
     controller.mergePassReads = new Map();
     const done = memberRow(store, member, 'merged', since);
     if (!done) {
