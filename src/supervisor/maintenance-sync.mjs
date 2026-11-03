@@ -46,9 +46,10 @@ export function syncSettings(config) {
 function activity(store, path, now) {
   if (!store) return 'unknown';
   let ops, coordinators, leases;
+  const same = (row) => comparable(row.workspace) === comparable(path);
   try {
-    ops = store.all('SELECT campaign_id, state FROM operations WHERE lower(workspace) = lower(?) OR workspace = ?', path, path);
-    coordinators = store.all('SELECT state FROM coordinator_runs WHERE lower(workspace) = lower(?) OR workspace = ?', path, path);
+    ops = store.all('SELECT campaign_id, state, workspace FROM operations').filter(same);
+    coordinators = store.all('SELECT state, workspace FROM coordinator_runs').filter(same);
     leases = store.all('SELECT campaign_id, expires_at FROM leases');
   } catch { return 'unknown'; }
   const open = (state) => ['recorded', 'dispatched'].includes(state);

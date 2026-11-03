@@ -52,11 +52,11 @@ const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--go
   status <campaignId>
   maintenance audit --repo <path>       read-only Git/worktree inventory; --root <dir> also discovers immediate repos
     --root <dir>                       bounds linked-worktree inspection; optional --repo selects a nested repository
+                                        JSON includes ownership when the data store exists; never fetches or removes
   maintenance sync --repo <path> [--apply]
                                         fast-forward one clean, inactive checkout to its own upstream as locally observed
                                         (never fetches). A dry run without --apply; --apply moves it only when config.json
                                         maintenance.sync lists that path (SYNC_NOT_AUTHORIZED otherwise)
-                                        JSON includes ownership when the data store exists; never fetches or removes
   pause <campaignId> [reason]
   cancel <campaignId> [reason]
   recheck <campaignId> [--task <taskId>] [note]
@@ -189,7 +189,7 @@ try {
       // The store is read only, for recorded activity; the one write is the fast-forward of the named checkout itself.
       const settings = syncSettings(dataConfig());
       const report = safeSync({ checkouts: [resolve(maintenanceRepo)], store, git: dataConfig().commands?.git ?? ['git'], dataDir, settings, apply: applyImport });
-      store?.close();
+      store?.close(); store = null;
       if (ownershipUnreadable) report.problem = [report.problem, 'ownership-unreadable'].filter(Boolean).join('; ');
       await new Promise((done) => process.stdout.write(JSON.stringify(report, null, 2) + '\n', done));
       const refused = report.checkouts.find((entry) => entry.reason === 'not-authorized');
