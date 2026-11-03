@@ -68,7 +68,7 @@ An unregistered branch is inventory, not a merge assignment. Maintenance must no
 3. Two concurrent jobs targeting one repository are serialized; crash/restart resumes safely without double merge.
 4. Fast-forward-only path succeeds and divergent/dirty/no-upstream path skips without data loss.
 5. Synthetic conflicting branches: conflict captured, candidate patch validated; failure leaves main and source refs untouched.
-6. Build/test failure blocks promotion. Branch protections and PR checks are respected; unknown Actions-disabled state blocks publication.
+6. Build/test failure blocks promotion. Branch protections and PR checks are respected. GitHub Actions stay prohibited, and publication does not depend on reading Actions permissions.
 7. Logs are sufficient to reconstruct decisions and include no credentials.
 8. Cleanup dry-run and actual cleanup have separate opt-in permissions; no destructive action is enabled by deployment.
 
@@ -95,7 +95,7 @@ P0 (merged) added the read-only `maintenance audit` command. P1 (this change) ad
 Left for later stages: durable merge job records with their own IDs (the journal's `<campaign>:<task>:<sha>` key stays the identity), conflict artifacts beyond paths and sibling commits (P2), ownership records for refresh and group worktrees so cleanup can remove them (P3), and the `plan`, `merge --job` and `cleanup` commands.
 
 ## P0 command
-P0 adds the read-only `maintenance audit` command. It reports local Git state, recorded activity and verification; external process activity remains explicitly unknown. It does not infer cleanup eligibility from the audit or claim that local `main` is the ledger's trusted tip. P1-P3 remain planned extensions of the existing supervisor. No new mutation or scheduled task is enabled.
+P0 adds the read-only `maintenance audit` command. It reports local Git state, recorded activity and verification; external process activity remains explicitly unknown. It does not infer cleanup eligibility from the audit or claim that local `main` is the ledger's trusted tip. P1 is delivered in the scope above. P2 and P3 remain planned. No mutation beyond that delivered sync is enabled.
 
 ```sh
 node src/supervisor/cli.mjs maintenance audit --repo <checkout> --root <allowed-root> --data <private-data-directory>
