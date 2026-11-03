@@ -128,7 +128,10 @@ export function integratedPullRequest({ gh, repository, url, headSha, baseBranch
  */
 export function pullRequest({ gh, repository, number }) {
   const pr = rest(gh, 'GET pull', ['--method', 'GET', `repos/${repository}/pulls/${number}`], { timeoutMs: 30_000 });
+  // mergeable_state carries what branch protection says (blocked: required checks or reviews are missing; behind, dirty,
+  // draft); it is read, never changed, and a protected branch holds a merge back as a wait instead of a refused call.
   return { url: pr?.html_url ?? null, state: pr?.state ?? null, merged: pr?.merged === true, mergeable: pr?.mergeable ?? null,
+    mergeableState: typeof pr?.mergeable_state === 'string' ? pr.mergeable_state : null, draft: pr?.draft === true,
     headRef: pr?.head?.ref ?? null, headSha: pr?.head?.sha ?? null, baseRef: pr?.base?.ref ?? null, mergeCommit: pr?.merge_commit_sha ?? null };
 }
 

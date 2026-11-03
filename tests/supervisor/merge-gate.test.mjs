@@ -466,3 +466,42 @@ test('where the owner accepts results, no head merges without their acceptance o
   r.advance(); await r.tick();
   assert.deepEqual(r.mergeCalls().map((call) => call.fields.sha), [verified], 'the accepted head merges once');
 });
+
+test('P1 serialization: a second instance never merges onto a base that an AIWorks merge moved after that instance fetched it', async (t) => {
+  const r = rig(t, { [A]: [task('A1', 501, 'a.txt')], [B]: [task('B1', 502, 'b.txt')] });
+  const heads = await publish(r, [A, B]);
+  const before = r.main();
+  r.start({ merges: ON });
+  await r.tick();
+  assert.deepEqual(r.mergeCalls().map((call) => call.fields.sha), [heads[A]], 'the first instance merges one pull request per pass');
+  const movedTo = r.main();
+  assert.notEqual(movedTo, before);
+
+  // A second instance whose base read answered before that merge: its judgement of B is stale. It takes over the
+  // campaigns once the first instance let go of them.
+  r.controller.release();
+  r.advance(r.controller.config.leaseMs + 1);
+  const other = new Controller({ store: r.store, config: { ...r.env.config, merges: ON }, dataDir: r.env.dataDir, now: r.controller.now, fault: null });
+  other.launch = async () => {};
+  t.after(() => { try { other.release(); } catch { /* the rig closed the store first */ } });
+  const fresh = other.fetchBase.bind(other);
+  other.fetchBase = async () => ({ ok: true, sha: before, failure: null });
+  await other.tick();
+  assert.equal(r.mergeCalls().length, 1, 'no merge call onto the stale base');
+  assert.equal(r.main(), movedTo, 'the base did not move');
+  assert.equal(r.journal(B, 'merged').length, 0);
+  assert.match(r.journal(B, 'merge-waiting').at(-1).reason, /moved under a merge AIWorks recorded/);
+
+  // Read afresh, the moved base is judged as such: an integration repair, never a merge whose tree no verifier ran. The
+  // merge the first instance made is checked for the shape it requested.
+  other.fetchBase = fresh;
+  r.advance();
+  await other.tick();
+  assert.equal(r.mergeCalls().length, 1);
+  assert.equal(r.main(), movedTo);
+  assert.equal(r.journal(B, 'merge-base-moved').length, 1);
+  const [shape] = r.journal(A, 'merge-shape');
+  assert.equal(shape?.ok, true, `the first merge has the requested shape: ${JSON.stringify(shape)}`);
+  assert.deepEqual(shape.parents, [before, heads[A]]);
+  other.release();
+});
