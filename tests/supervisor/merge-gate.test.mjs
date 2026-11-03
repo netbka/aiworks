@@ -490,7 +490,7 @@ test('P1 serialization: a second instance never merges onto a base that an AIWor
   assert.equal(r.mergeCalls().length, 1, 'no merge call onto the stale base');
   assert.equal(r.main(), movedTo, 'the base did not move');
   assert.equal(r.journal(B, 'merged').length, 0);
-  assert.match(r.journal(B, 'merge-waiting').at(-1).reason, /moved under a merge AIWorks recorded/);
+  assert.match(r.journal(B, 'merge-waiting').at(-1).reason, /moved under the merge [0-9a-f]{40} AIWorks recorded/);
 
   // Read afresh, the moved base is judged as such: an integration repair, never a merge whose tree no verifier ran. The
   // merge the first instance made is checked for the shape it requested.

@@ -15,7 +15,7 @@
 // P1 of the Git maintenance and merge orchestrator plan (docs/plans/git-maintenance-merge-orchestrator.md): inside the
 // fenced merge request the fetched base is checked against the newest merge AIWorks recorded on it (baseFresh), a
 // refused call backs off (refusalWait), GitHub's mergeable_state holds a protected head back (mergeBlocker), and each
-// requested merge is checked once for the shape it asked for (checkMergeShape).
+// requested merge is checked once for the shape it asked for (checkMergeShape), recorded as information, never a hold.
 import { realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -169,23 +169,22 @@ export async function mergePass(controller) {
     const bases = new Map(), shapeChecked = new Set(), repository = decl.target.repository;
     controller.mergePassReads = new Map();
     // After the base is fetched, the newest merge AIWorks requested on it is checked once for the shape it asked for (P1
-    // safe promotion); a base whose newest merge failed that check takes no further merge until it is settled.
-    const defective = (branch) => {
-      if (SHA.test(bases.get(branch) ?? '') && !shapeChecked.has(branch)) {
-        shapeChecked.add(branch);
-        try { checkMergeShape(controller, repository, branch, repoPath); } catch (error) {
-          if (!(error instanceof FencedError || error instanceof ConflictError)) throw error;
-          controller.log(`merge shape check for ${repository} retried later: ${error.message}`);
-        }
+    // safe promotion): recorded and logged, never a hold, since condition 3 already sends the next head onto that base
+    // through a verifier when it does not contain it.
+    const checkShape = (branch) => {
+      if (!SHA.test(bases.get(branch) ?? '') || shapeChecked.has(branch)) return;
+      shapeChecked.add(branch);
+      try { checkMergeShape(controller, repository, branch, repoPath); } catch (error) {
+        if (!(error instanceof FencedError || error instanceof ConflictError)) throw error;
+        controller.log(`merge shape check for ${repository} retried later: ${error.message}`);
       }
-      return unexpectedShape(controller.store, repository, branch);
     };
     if (settings.batch) {
       const branch = decl.target.baseBranch;
       bases.set(branch, (await controller.fetchBase(repoPath, branch)).sha);
-      const defect = defective(branch);
+      checkShape(branch);
       try {
-        if (!defect && SHA.test(bases.get(branch) ?? '') && await batchStep(controller, items.filter((item) => item.decl.target.baseBranch === branch &&
+        if (SHA.test(bases.get(branch) ?? '') && await batchStep(controller, items.filter((item) => item.decl.target.baseBranch === branch &&
           !authorityBlocked(controller, item, repoPath, bases.get(branch))), settings, repoPath, bases.get(branch))) continue;
       } catch (error) {
         if (error instanceof FencedError || error instanceof ConflictError) { controller.log(`group merge for ${decl.target.repository} retried later: ${error.message}`); continue; }
@@ -197,8 +196,7 @@ export async function mergePass(controller) {
       const branch = item.decl.target.baseBranch;
       if (!bases.has(branch)) bases.set(branch, (await controller.fetchBase(repoPath, branch)).sha);
       if (!SHA.test(bases.get(branch) ?? '')) { controller.log(`merge of ${item.campaignId}/${item.task.task_id} waits: ${branch} could not be fetched`); continue; }
-      const defect = defective(branch);
-      if (defect) { wait(controller, item, defect); continue; }
+      checkShape(branch);
       try {
         if (mergeOne(controller, item, settings, repoPath, bases.get(branch))) break;
       } catch (error) {
@@ -390,7 +388,7 @@ export function mergeBlocker(controller, { campaignId, task }, pr) {
       : 'CI has not passed at the verified head yet';
   }
   if (pr.draft) return PROTECTION_WAITS.draft;
-  if (PROTECTION_WAITS[pr.mergeableState]) return PROTECTION_WAITS[pr.mergeableState];
+  if (typeof pr.mergeableState === 'string' && Object.hasOwn(PROTECTION_WAITS, pr.mergeableState)) return PROTECTION_WAITS[pr.mergeableState];
   if (pr.mergeable !== true) return pr.mergeable === false ? 'GitHub reports it not mergeable' : 'GitHub has not computed mergeability yet';
   return null;
 }
@@ -413,7 +411,7 @@ export function refusalWait(controller, { campaignId, task }) {
   const delay = Math.min(MAX_REFUSAL_WAIT_MS, controller.config.integrationPollMs * 2 ** (refusals.length - 2));
   const until = refusals[0].at + delay;
   if (until <= controller.now()) return null;
-  return { until, reason: `the merge call was refused ${refusals.length} time${refusals.length === 1 ? '' : 's'}; it is tried again after ${new Date(until).toISOString()}` };
+  return { until, reason: `the merge call was refused ${refusals.length} times; it is tried again after ${new Date(until).toISOString()}` };
 }
 
 /**
@@ -446,9 +444,10 @@ export const MERGE_SHAPE = 'merge-shape';
  * Check, once, the shape of the newest GitHub merge AIWorks requested in a repository, after its base was fetched: the
  * merge commit's parents must be the base the request named and the verified head, and its tree the verified tree, or the
  * gated tree a refresh or group named. Journals `merge-shape` ({ ok, parents, tree, expected }) under the campaign's
- * lease; a merge whose commit is not readable locally yet is checked on a later pass. A failed check is logged as a
- * defect of the base: nothing on the base is rewritten, and the next merge in that repository waits until the owner or
- * an integration repair settles it. Returns the detail recorded, or null when nothing was due.
+ * lease; a merge whose commit is not readable locally yet is checked on a later pass. A failed check is recorded and
+ * logged as information about the base, never a hold: nothing on the base is rewritten, and the next head onto that base
+ * is judged by condition 3 as always (an integration repair, through a verifier, when it does not contain the base).
+ * Returns the detail recorded, or null when nothing was due.
  */
 export function checkMergeShape(controller, repository, branch, repoPath) {
   const { store } = controller, git = controller.cmd.git;
@@ -471,17 +470,8 @@ export function checkMergeShape(controller, repository, branch, repoPath) {
   if (!ctx) return null;
   const detail = { task: taskId, sha: merged.sha, mergeCommit, ok, parents, tree, expected };
   controller.fenced(ctx, () => store.journal(campaignId, MERGE_SHAPE, detail, controller.now()));
-  if (!ok) controller.log(`merge ${mergeCommit} of ${campaignId}/${taskId} on ${repository} does not have the requested shape: parents ${parents.join(' ')}, tree ${tree}; expected ${expected.parents.join(' ')} with tree ${expected.tree}`);
+  if (!ok) controller.log(`merge ${mergeCommit} of ${campaignId}/${taskId} on ${repository} does not have the requested shape: parents ${parents.join(' ')}, tree ${tree}; expected ${expected.parents.join(' ')} with tree ${expected.tree}. The base carries it as it is; the next head onto it is judged against that base.`);
   return detail;
-}
-
-/** Whether the newest checked GitHub merge of a repository's base failed its shape check: nothing merges onto it. */
-export function unexpectedShape(store, repository, branch) {
-  const newest = newestRecordedMerge(store, repository, branch);
-  if (!newest) return null;
-  const shape = store.get(`SELECT detail FROM journal WHERE campaign_id = ? AND kind = ? AND json_extract(detail, '$.mergeCommit') = ? ORDER BY seq DESC LIMIT 1`,
-    newest.campaignId, MERGE_SHAPE, newest.mergeCommit)?.detail;
-  return shape && shape.ok !== true ? `the merge ${newest.mergeCommit} on ${branch} does not have the shape AIWorks requested; the base needs a look before anything merges onto it` : null;
 }
 
 const commitTree = (git, repoPath, sha) => {
@@ -502,18 +492,21 @@ function mergeOne(controller, item, settings, repoPath, baseSha) {
   // The verified head must contain the current base, or the merge result is a tree no verifier ran: integration repair,
   // unless the refresh (merges.refresh) ran the gate on that exact merge result itself. While its gate runs, the
   // repository waits, so the next pull request is judged against the base this one leaves.
+  let gated = null;
   if (!gitA.isAncestor({ git, path: repoPath, ancestor: baseSha, descendant: sha })) {
     const ctx = lease(controller, item.campaignId);
     if (!ctx) return false;
     const step = settings.refresh ? refreshStep(controller, ctx, item, repoPath, baseSha, settings.refresh) : { next: 'repair' };
     if (step.next === 'wait') { wait(controller, item, step.reason); return true; }
     if (step.next === 'repair') return controller.fenced(ctx, () => repair(controller, ctx, item, repoPath, baseSha, step.detail));
+    // The merge carries the gated merge result, which the shape check expects (checkMergeShape).
+    if (SHA.test(step.tree ?? '')) gated = step.tree;
   }
   const blocker = mergeBlocker(controller, item, pr);
   if (blocker) return wait(controller, item, blocker);
   const owed = refusalWait(controller, item);
   if (owed) return wait(controller, item, owed.reason);
-  return mergeNow(controller, item, baseSha, repoPath);
+  return mergeNow(controller, item, baseSha, repoPath, gated);
 }
 
 function authorityBlocked(controller, item, repoPath, baseSha) {
@@ -534,7 +527,7 @@ function authorityBlocked(controller, item, repoPath, baseSha) {
  * verified SHA with a merge commit, record it. Returns false when the campaign lease or the task changed, true otherwise
  * (merged, or refused or unknown, which the next pass settles by reading the pull request first).
  */
-export function mergeNow(controller, item, baseSha, repoPath = null) {
+export function mergeNow(controller, item, baseSha, repoPath = null, tree = null) {
   const { store } = controller, { campaignId, decl, task, number } = item;
   const gh = controller.cmd.gh, sha = task.verified_sha, url = task.pr_url, repository = decl.target.repository, branch = decl.target.baseBranch;
   const ctx = lease(controller, campaignId);
@@ -551,10 +544,13 @@ export function mergeNow(controller, item, baseSha, repoPath = null) {
   const requested = controller.fenced(ctx, () => {
     if (!still()) return false;
     if (!baseFresh(controller, repository, branch, repoPath ?? controller.repo(decl).path, baseSha)) return 'stale';
-    store.journal(campaignId, 'merge-requested', { task: task.task_id, sha, url, base: baseSha }, controller.now());
+    store.journal(campaignId, 'merge-requested', { task: task.task_id, sha, url, base: baseSha, ...(tree ? { tree } : {}) }, controller.now());
     return true;
   });
-  if (requested === 'stale') return wait(controller, item, `${branch} moved under a merge AIWorks recorded after it was fetched; it is fetched again next pass`);
+  if (requested === 'stale') {
+    const moved = newestRecordedMerge(store, repository, branch)?.mergeCommit;
+    return wait(controller, item, `${branch} moved under the merge ${moved} AIWorks recorded: the fetched ${baseSha} does not contain it; it is fetched again next pass`);
+  }
   if (!requested) return false;
   controller.injectFault('before-merge');
   try {

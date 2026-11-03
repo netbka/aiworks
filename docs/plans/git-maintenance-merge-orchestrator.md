@@ -89,7 +89,7 @@ P0 (merged) added the read-only `maintenance audit` command. P1 (this change) ad
 - the base a pass fetched is checked, inside the fenced merge request, against the newest merge AIWorks recorded on that base across campaigns, so a second instance never merges onto a base another instance moved after the fetch (acceptance 3; the merge call itself already runs under the store's write lock);
 - a refused merge call backs off from the second refusal on, up to an hour, instead of every poll;
 - GitHub's `mergeable_state` (branch protection, required checks and reviews, drafts) holds a head back as a wait;
-- each requested GitHub merge is checked once for the shape it asked for (`merge-shape`), and a base whose newest merge fails that check takes no further merge until settled;
+- each requested GitHub merge is checked once for the shape it asked for (`merge-shape`: the requested base and verified head as parents, the verified or gated tree), recorded as information; the next head onto that base is judged by the existing condition 3;
 - `maintenance sync --repo <checkout> [--apply]`: fast-forward of one clean, inactive checkout to its locally observed upstream, dry run by default, applied only for a path listed under `maintenance.sync` (acceptance 4).
 
 Left for later stages: durable merge job records with their own IDs (the journal's `<campaign>:<task>:<sha>` key stays the identity), conflict artifacts beyond paths and sibling commits (P2), ownership records for refresh and group worktrees so cleanup can remove them (P3), and the `plan`, `merge --job` and `cleanup` commands.
