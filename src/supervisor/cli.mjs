@@ -23,6 +23,7 @@ import { approvalFromFile, CODE_ROOT, declarationFromFile, revisionNotMerged, ru
 import { recordAnchor, selfHostingSettings, trustedTip } from './self-hosting.mjs';
 import { Store } from './store.mjs';
 import { maintenanceAudit } from './maintenance.mjs';
+import { safeSync, syncSettings } from './maintenance-sync.mjs';
 import { comments as workItemComments, item as workItem, items as workItems } from './work-list.mjs';
 import { importIssues } from './work-list-import.mjs';
 import { approveProgram, programFromFile, programStatus, stopPrograms } from './program.mjs';
@@ -52,6 +53,10 @@ const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--go
   maintenance audit --repo <path>       read-only Git/worktree inventory; --root <dir> also discovers immediate repos
     --root <dir>                       bounds linked-worktree inspection; optional --repo selects a nested repository
                                         JSON includes ownership when the data store exists; never fetches or removes
+  maintenance sync --repo <path> [--apply]
+                                        fast-forward one clean, inactive checkout to its own upstream as locally observed
+                                        (never fetches). A dry run without --apply; --apply moves it only when config.json
+                                        maintenance.sync lists that path (SYNC_NOT_AUTHORIZED otherwise)
   pause <campaignId> [reason]
   cancel <campaignId> [reason]
   recheck <campaignId> [--task <taskId>] [note]
@@ -172,13 +177,24 @@ const trustHere = () => runtimeTrust(dataConfig(), store);
 
 try {
   if (command === 'maintenance') {
-    if (rest.length !== 1 || rest[0] !== 'audit' || (!maintenanceRepo && !maintenanceRoot)) {
-      throw new CampaignError('MAINTENANCE_USAGE', 'maintenance audit requires --repo <path> or --root <dir>; no mutation command is enabled');
+    if (rest.length !== 1 || !['audit', 'sync'].includes(rest[0]) || (!maintenanceRepo && !maintenanceRoot) || (rest[0] === 'sync' && !maintenanceRepo)) {
+      throw new CampaignError('MAINTENANCE_USAGE', 'maintenance audit requires --repo <path> or --root <dir>; maintenance sync requires --repo <path>; no other mutation command is enabled');
     }
     let ownershipUnreadable = false;
     if (existsSync(join(dataDir, 'supervisor.db'))) {
       try { store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true }); }
       catch { ownershipUnreadable = true; }
+    }
+    if (rest[0] === 'sync') {
+      // The store is read only, for recorded activity; the one write is the fast-forward of the named checkout itself.
+      const settings = syncSettings(dataConfig());
+      const report = safeSync({ checkouts: [resolve(maintenanceRepo)], store, git: dataConfig().commands?.git ?? ['git'], dataDir, settings, apply: applyImport });
+      store?.close(); store = null;
+      if (ownershipUnreadable) report.problem = [report.problem, 'ownership-unreadable'].filter(Boolean).join('; ');
+      await new Promise((done) => process.stdout.write(JSON.stringify(report, null, 2) + '\n', done));
+      const refused = report.checkouts.find((entry) => entry.reason === 'not-authorized');
+      if (refused) throw new CampaignError('SYNC_NOT_AUTHORIZED', `${refused.path} is not listed under config.json maintenance.sync.checkouts with enabled true; nothing moved`);
+      process.exit(report.checkouts.some((entry) => entry.reason === 'unreadable') ? 1 : 0);
     }
     const report = maintenanceAudit({ repositories: maintenanceRepo ? [resolve(maintenanceRepo)] : [], root: maintenanceRoot ? resolve(maintenanceRoot) : undefined,
       store, git: dataConfig().commands?.git ?? ['git'] });

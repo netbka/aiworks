@@ -38,7 +38,7 @@ An unregistered branch is inventory, not a merge assignment. Maintenance must no
 - Preserve the existing merge-commit policy (AW-001): no squash or rebase. A separately authorized safe checkout sync may fast-forward a clean, inactive checkout with an upstream; dirty, divergent, unknown-activity and missing-upstream cases remain unchanged. Simulate integration in isolation and capture conflict artifacts.
 - Preserve source refs and pre-merge SHAs; never force-push, hard-reset, delete unpushed commits, or silently change main.
 - Promote only after configured build, lint, tests and policy checks succeed. Use GitHub PR merge APIs when branch protection requires it.
-- Before each GitHub publication, freshly verify Actions permissions are disabled. Never dispatch workflows, invent check results or weaken protection. Respect local trusted-main policy for self-hosted work.
+- Never create, enable, dispatch or rerun workflows, invent check results or weaken protection (owner directive of 2 November 2026: GitHub Actions stay prohibited; the former Actions-permissions check before each publication is removed). Respect local trusted-main policy for self-hosted work.
 
 ### C. AI conflict resolution (opt-in, later phase)
 - Three-way context (base/ours/theirs), minimal relevant diff and repository policy.
@@ -83,7 +83,18 @@ An unregistered branch is inventory, not a merge assignment. Maintenance must no
 - No unattended merge of arbitrary branches or automatic deletion of existing worktrees based only on this plan.
 - No promise that textual merge success guarantees semantic correctness.
 
-## Current PR scope
+## Delivered scope
+
+P0 (merged) added the read-only `maintenance audit` command. P1 (this change) adds to the existing merge gate what it lacked for serialized, checked promotion, and the separately authorized safe checkout sync; it creates no second queue:
+- the base a pass fetched is checked, inside the fenced merge request, against the newest merge AIWorks recorded on that base across campaigns, so a second instance never merges onto a base another instance moved after the fetch (acceptance 3; the merge call itself already runs under the store's write lock);
+- a refused merge call backs off from the second refusal on, up to an hour, instead of every poll;
+- GitHub's `mergeable_state` (branch protection, required checks and reviews, drafts) holds a head back as a wait;
+- each requested GitHub merge is checked once for the shape it asked for (`merge-shape`: the requested base and verified head as parents, the verified or gated tree), recorded as information; the next head onto that base is judged by the existing condition 3;
+- `maintenance sync --repo <checkout> [--apply]`: fast-forward of one clean, inactive checkout to its locally observed upstream, dry run by default, applied only for a path listed under `maintenance.sync` (acceptance 4).
+
+Left for later stages: durable merge job records with their own IDs (the journal's `<campaign>:<task>:<sha>` key stays the identity), conflict artifacts beyond paths and sibling commits (P2), ownership records for refresh and group worktrees so cleanup can remove them (P3), and the `plan`, `merge --job` and `cleanup` commands.
+
+## P0 command
 P0 adds the read-only `maintenance audit` command. It reports local Git state, recorded activity and verification; external process activity remains explicitly unknown. It does not infer cleanup eligibility from the audit or claim that local `main` is the ledger's trusted tip. P1-P3 remain planned extensions of the existing supervisor. No new mutation or scheduled task is enabled.
 
 ```sh
