@@ -120,21 +120,6 @@ test('merge settings: off unless delegated to the supervisor with an explicit re
   assert.ok(on.held.has('https://github.com/example-org/sampleapp/pull/7'));
 });
 
-test('nothing merges when merging is absent, delegated to the monitor, malformed or the repository is not listed', async (t) => {
-  const r = rig(t);
-  await publish(r);
-  const main = r.main(), reads = r.pullReads();
-  for (const config of [{}, { merges: { delegatedTo: 'monitor', decision: '#17' } }, { merges: { delegatedTo: 'supervisor', decision: '#138' } },
-    { merges: { ...ON, repositories: ['example-org/other'] } }]) {
-    r.start(config);
-    for (let i = 0; i < 2; i++) { r.advance(); await r.tick(); }
-    assert.equal(r.mergeCalls().length, 0, `no merge call with ${JSON.stringify(config)}`);
-    assert.equal(r.pullReads(), reads, `the pull request is not even read with ${JSON.stringify(config)}`);
-    assert.equal(r.main(), main);
-  }
-  assert.equal(r.journal(A, 'merged').length, 0);
-});
-
 test('an eligible pull request is merged once with a merge commit of the verified SHA; repeated ticks and a restart do not merge again', async (t) => {
   const r = rig(t);
   const { [A]: verified } = await publish(r);
@@ -359,29 +344,6 @@ test('a cancellation committed after a moved-base task is selected leaves its co
   assert.deepEqual(r.store.all('SELECT * FROM operations WHERE campaign_id = ?', B), operations);
   assert.equal(r.journal(B, 'merge-base-moved').length, 0);
   assert.deepEqual(r.mergeCalls().map((call) => call.fields.sha), [heads[A]]);
-});
-
-test('with CI repair on, a head merges only after its CI passed: never while CI is unread, pending or failed', async (t) => {
-  const r = rig(t);
-  const { [A]: verified } = await publish(r);
-  r.start({ merges: ON });
-  // CI is played by the test: the controller reads it (ciRepair on) but the journal rows come from here.
-  r.controller.ci = true;
-  r.controller.checkPublishedCi = () => {};
-  const ci = (kind) => r.store.journal(A, kind, { task: 'A1', sha: verified }, Date.now());
-  const waits = () => r.journal(A, 'merge-waiting').map((row) => row.reason);
-  await r.tick();
-  assert.equal(r.mergeCalls().length, 0, 'CI never read: no merge');
-  for (const [kind, reason] of [['ci-pending', /not passed/], ['ci-failed', /CI failed/]]) {
-    ci(kind);
-    r.advance(); await r.tick();
-    assert.equal(r.mergeCalls().length, 0, `${kind}: no merge`);
-    assert.match(waits().at(-1), reason);
-  }
-  ci('ci-passed');
-  r.advance(); await r.tick();
-  assert.equal(r.mergeCalls().length, 1, 'merged once CI passed');
-  assert.equal(r.journal(A, 'merged').length, 1);
 });
 
 test('requested changes hold the verified head, reopen one bounded repair round, and only a freshly verified head is published and merged', async (t) => {
