@@ -17,7 +17,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as gitA from './adapters/git.mjs';
-import { GATE_FILES, gateFailure, readGateRun } from './gate.mjs';
+import { GATE_FILES, gateFailure, readGateRun, retireGate } from './gate.mjs';
 
 const GATE = fileURLToPath(new URL('./gate.mjs', import.meta.url));
 const KINDS = ['merge-refresh-started', 'merge-refresh-passed', 'merge-refresh-failed'];
@@ -140,8 +140,12 @@ export function refreshStep(controller, ctx, item, repoPath, baseSha, settings) 
   if (run?.exit === null || run === null) {
     const pid = gatePid(path);
     // Never killed: after a reboot the recorded process id can belong to another process, and the gate's own children
-    // run outside any Job Object. A gate past its bound fails the refresh, and the repair takes over.
-    if (now - started.at > settings.timeoutMs) return fail(`the gate did not finish within ${Math.round(settings.timeoutMs / 60_000)} minutes`);
+    // run outside any Job Object. A gate past its bound fails the refresh, and the repair takes over. Its slot is given
+    // back (gate.mjs retireGate, only a lock that still names its process): a hung gate must not pause the repair's admission.
+    if (now - started.at > settings.timeoutMs) {
+      retireGate(pid);
+      return fail(`the gate did not finish within ${Math.round(settings.timeoutMs / 60_000)} minutes`);
+    }
     // A gate that ended without an exit code (a supervisor restart, a reboot) starts again in the same worktree. A reused
     // process id reads as alive, so that gate waits out its bound instead, which is slow but safe.
     if (pid === null || !alive(pid)) {
