@@ -77,6 +77,63 @@ test('an acceptance with no gate run, or one that never finished, is refused; th
   assert.equal(store.tasks(id)[0].state, 'done');
 });
 
+test('base compare: a failed gate keeps its acceptance only when every failed test it names fails on the base too', { skip: skipWithoutSqlite }, async (t) => {
+  const { failedTests } = await import('../../src/supervisor/gate.mjs');
+  const { sharedBaseFailures } = await import('../../src/supervisor/base-check.mjs');
+  const { mergeRefusal } = await import('../../src/supervisor/result-review.mjs');
+  const { complete, failedOf, settle } = await import('../../scripts/lib/test-retry.mjs');
+  const block = (...ids) => `${FAILED.split('\n')[0]}\n${ids.map((id) => `# failed: ${id}`).join('\n')}\n${FAILED.split('\n').slice(1).join('\n')}`;
+  const A = 'tests/a.test.mjs :: a', B = 'tests/b.test.mjs :: b', C = 'tests/c.test.mjs';
+  // A list the runner cut short, a summary from another runner, or one naming no failed test never lets an acceptance stand.
+  const base = { state: 'failed', failed: [A, B] };
+  assert.deepEqual(sharedBaseFailures(base, block(A)), [A]);
+  assert.equal(sharedBaseFailures(base, `${block(A)}\n# failed: not listed: 3 more`), null);
+  assert.equal(failedTests(`# tests 7\n# fail 1\n# failed: ${A}`), null);
+  assert.equal(sharedBaseFailures(base, block()), null);
+  assert.equal(sharedBaseFailures({ state: 'failed', failed: null }, block(A)), null);
+  assert.equal(sharedBaseFailures({ state: 'passed', failed: [] }, block(A)), null);
+  // A file killed at its limit, or one that crashed before its summary, may hide failures: the whole list is then unknown.
+  const killed = 'not ok 1 - a\n# tests/a.test.mjs still running after 15 minutes; stopping it and its child processes\n';
+  const summary = (run) => `${FAILED.split('\n')[0]}\n${settle([run], []).lines.join('\n')}\n${FAILED.split('\n').slice(1).join('\n')}`;
+  const run = (text, code = 1) => ({ file: 'tests/a.test.mjs', code, counts: {}, failed: failedOf(text), complete: complete(text) });
+  assert.equal(failedTests(summary(run(killed))), null);
+  assert.deepEqual(failedTests(summary(run('not ok 1 - a\n# tests 1\n# fail 1\n'))), [A]);
+  // A failing subtest is named on its own, so a new one is not hidden by a parent that already fails on the base.
+  const nested = '# Subtest: a\n    # Subtest: inner\n    not ok 1 - inner\nnot ok 1 - a\n# tests 2\n# fail 2\n';
+  assert.deepEqual(failedTests(summary(run(nested))), [A, `${A} > inner`]);
+
+  // The synthetic base gate takes no machine-wide gate slot.
+  const held = process.env.AIWORKS_GATE_SLOT_HELD;
+  process.env.AIWORKS_GATE_SLOT_HELD = '1';
+  t.after(() => { if (held === undefined) delete process.env.AIWORKS_GATE_SLOT_HELD; else process.env.AIWORKS_GATE_SLOT_HELD = held; });
+  for (const { name, head, baseExit, baseIds, stands } of [
+    { name: 'shared', head: [A], baseExit: 1, baseIds: [A, B], stands: true },
+    { name: 'adds a failure', head: [A, C], baseExit: 1, baseIds: [A, B], stands: false },
+    { name: 'base passed', head: [A], baseExit: 0, baseIds: [], stands: false },
+  ]) {
+    const { env, store, controller, id } = await setup(t, { scenario: { gate: [{ log: `${block(...head)}\n`, exit: '1' }, { log: `${PASSED}\n`, exit: '0' }] } });
+    const script = join(env.tmp, 'base-gate.mjs');
+    writeFileSync(script, `console.log(${JSON.stringify(baseExit ? block(...baseIds) : PASSED)}); process.exit(${baseExit});\n`);
+    controller.baseCompare = { command: [`"${process.execPath}"`, `"${script}"`], timeoutMs: 60_000 };
+    await runUntil(controller, store, id, (c) => c.control === 'finished', { timeoutMs: 120_000 });
+    const [task] = store.tasks(id);
+    const [base] = store.all('SELECT state, failed FROM base_checks');
+    assert.equal(base.state, baseExit ? 'failed' : 'passed', name);
+    const [first] = verifications(store, id);
+    assert.equal(first.outcome.class, stands ? 'result' : 'invalid-result', name);
+    assert.equal(task.state, 'done', name);
+    if (stands) {
+      assert.deepEqual(task.verification.baseFailures, { sha: task.base_sha, failed: [A] }, name);
+      assert.equal(verifications(store, id).length, 1, 'no second verifier for a failure the base already has');
+      assert.equal(mergeRefusal(task), null, 'the kept acceptance can merge');
+      const added = { ...task, verification: { ...task.verification, gate: { ...task.verification.gate, summary: block(A, C) } } };
+      assert.equal(mergeRefusal(added), 'its full check did not pass', 'a failure the base does not have never merges');
+    } else {
+      assert.equal(task.verification.baseFailures, null, name);
+    }
+  }
+});
+
 test('a report task keeps its verification as before, even when its verifier leaves a failed gate', { skip: skipWithoutSqlite }, async (t) => {
   const decl = declaration({ tasks: [{ id: 'R1', issue: 437, title: 'research', deliverable: 'report', goal: 'Research only.', dependsOn: [], acceptance: ['findings posted'], references: ['AGENTS.md'] }] });
   const { env, store, controller, id } = await setup(t, { decl, scenario: { implement: ['report'], gate: { log: `${FAILED}\n`, exit: '1' } } });
