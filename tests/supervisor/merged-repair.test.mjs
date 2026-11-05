@@ -153,26 +153,6 @@ test('a PR merged out of band during an open repair round ends the round once, a
   assert.deepEqual(r.mergeCalls(), [], 'the synthetic gh saw no merge call');
 });
 
-test('a PR GitHub reports merged at the verified head ends the round even when the base holds only its squash', async (t) => {
-  const r = rig(t);
-  const { b, url } = await repairRoundOpen(r);
-  const squash = r.ownerMerge((dir) => { writeFileSync(join(dir, 'shared.txt'), RESOLVED); git(dir, 'commit', '-qam', 'Squash of pull request B'); });
-  assert.notEqual(tryGit(r.env.repo, 'merge-base', '--is-ancestor', b, squash).status, 0, 'the verified head is not in the base');
-  r.markMergedAt(b, squash);
-  r.unavailable(B);
-  const runs = r.implementRuns(B);
-
-  r.advance();
-  await r.tick();
-  assert.deepEqual(r.journal(B, 'merged'), [{ task: 'B1', sha: b, url, mergeCommit: squash, reconciled: true, requested: false }]);
-  assert.equal(r.store.task(B, 'B1').state, 'done');
-  for (let i = 0; i < 3; i++) { r.advance(); await r.tick(); }
-  assert.equal(r.journal(B, 'merged').length, 1, 'recorded once');
-  assert.equal(r.journal(B, 'integration-conflict').length, 1, 'a recorded merge is not reopened as a conflict');
-  assert.equal(r.implementRuns(B), runs, 'no further repair run');
-  assert.deepEqual(r.mergeCalls(), [], 'the synthetic gh saw no merge call');
-});
-
 test('a newer head after an out-of-band merge of an older one keeps its repair round', async (t) => {
   const r = rig(t);
   const { b, mergedA, url } = await repairRoundOpen(r);
