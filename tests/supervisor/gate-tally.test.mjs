@@ -112,12 +112,14 @@ test('base compare: a failed gate keeps its acceptance only when every failed te
   const held = process.env.AIWORKS_GATE_SLOT_HELD;
   process.env.AIWORKS_GATE_SLOT_HELD = '1';
   t.after(() => { if (held === undefined) delete process.env.AIWORKS_GATE_SLOT_HELD; else process.env.AIWORKS_GATE_SLOT_HELD = held; });
-  for (const { name, head, baseExit, baseIds, stands } of [
+  for (const { name, head, baseExit, baseIds, stands, gateHead } of [
     { name: 'shared', head: [A], baseExit: 1, baseIds: [A, B], stands: true },
     { name: 'adds a failure', head: [A, C], baseExit: 1, baseIds: [A, B], stands: false },
     { name: 'base passed', head: [A], baseExit: 0, baseIds: [], stands: false },
+    // A gate run on another commit is no run of this head, whatever the base fails.
+    { name: 'shared, but the gate ran on another commit', head: [A], baseExit: 1, baseIds: [A, B], stands: false, gateHead: OTHER },
   ]) {
-    const { env, store, controller, id } = await setup(t, { scenario: { gate: [{ log: `${block(...head)}\n`, exit: '1' }, { log: `${PASSED}\n`, exit: '0' }] } });
+    const { env, store, controller, id } = await setup(t, { scenario: { gate: [{ log: `${block(...head)}\n`, exit: '1', head: gateHead }, { log: `${PASSED}\n`, exit: '0' }] } });
     const script = join(env.tmp, 'base-gate.mjs');
     writeFileSync(script, `console.log(${JSON.stringify(baseExit ? block(...baseIds) : PASSED)}); process.exit(${baseExit});\n`);
     controller.baseCompare = { command: [`"${process.execPath}"`, `"${script}"`], timeoutMs: 60_000 };

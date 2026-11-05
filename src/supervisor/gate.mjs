@@ -67,11 +67,11 @@ export function exitedFiles(text) {
   return last.size ? [...last].filter(([, code]) => code !== '0').map(([file]) => file).sort() : null;
 }
 
-// gate-head.log as start writes it: { sha, clean }. sha is null when git could not read the commit; clean is true only
-// when start recorded a clean checkout.
+// gate-head.log as start writes it: { sha, clean }. sha is null when git could not read the commit; clean is true for a
+// clean checkout, false for a changed one and null when git status could not be read.
 const headOf = (text) => {
   const [sha, state] = text.trim().split(/\s+/);
-  return { sha: /^[0-9a-f]{40}$/.test(sha ?? '') ? sha : null, clean: state === 'clean' };
+  return { sha: /^[0-9a-f]{40}$/.test(sha ?? '') ? sha : null, clean: state === 'clean' ? true : state === 'changed' ? false : null };
 };
 
 /**
@@ -90,13 +90,17 @@ export function readGateRun(dir) {
 }
 
 /**
- * Why a gate run is not a run of exactly `targetSha`, or null when start recorded that commit on a clean checkout. Every
- * verifier gate is started by this helper (FULL_GATE_RULE, for every project), so a run without gate-head.log was not
- * started by its start (an older helper, or files written by hand) and the commit it tested is unknown.
+ * Why a gate run is not a run of exactly `targetSha`, or null when its gate-head.log records that commit on a clean
+ * checkout. Every verifier gate is to be started by this helper (FULL_GATE_RULE, for every project), whose start writes
+ * that record, so a run without one tested an unknown commit (an older helper, or gate files written another way). The
+ * record guards against honest mistakes, a gate run on another commit or a changed checkout; it proves nothing against
+ * a verifier that writes the file itself, as it could write gate.log.
  */
 export function gateHeadProblem(run, targetSha) {
-  if (!run?.head) return `has no ${GATE_FILES.head}: it was not started by the gate helper's start, so the commit it tested is unknown`;
-  if (run.head.sha !== targetSha) return `ran on ${run.head.sha ?? 'a commit git could not read'}, not the verified ${targetSha}`;
+  if (!run?.head) return `has no ${GATE_FILES.head}, which the gate helper's start writes, so the commit it tested is unknown`;
+  if (run.head.sha === null) return `recorded no commit: git could not read the checkout's HEAD when the gate started`;
+  if (run.head.sha !== targetSha) return `ran on ${run.head.sha}, not the verified ${targetSha}`;
+  if (run.head.clean === null) return `cannot show a clean checkout: git status could not be read when the gate started`;
   if (!run.head.clean) return `started on a checkout with changes git does not ignore, so it did not test ${targetSha} as committed`;
   return null;
 }
@@ -157,12 +161,13 @@ const alive = (pid) => {
 const minutesSinceOutput = () => (existsSync(GATE_FILES.log) ? Math.floor((Date.now() - statSync(GATE_FILES.log).mtimeMs) / 60_000) : null);
 
 // The commit this checkout is at and whether it is clean (every git status entry is one of the helper's own untracked files),
-// as gate-head.log records it when a gate starts; "unknown" when git cannot read them.
+// as gate-head.log records it when a gate starts; "unknown" when git cannot read them. Short bounds, so start stays well
+// inside the supervisor's own 60-second bound on it (merge-refresh.mjs startGate) on a slow checkout.
 function checkoutState() {
-  const git = (...args) => spawnSync('git', args, { encoding: 'utf8', windowsHide: true, timeout: 60_000 });
-  const sha = git('rev-parse', 'HEAD').stdout?.trim() ?? '';
+  const git = (timeout, ...args) => spawnSync('git', args, { encoding: 'utf8', windowsHide: true, timeout });
+  const sha = git(10_000, 'rev-parse', 'HEAD').stdout?.trim() ?? '';
   if (!/^[0-9a-f]{40}$/.test(sha)) return 'unknown';
-  const status = git('status', '--porcelain=v1', '-z', '--untracked-files=all');
+  const status = git(30_000, 'status', '--porcelain=v1', '-z', '--untracked-files=all');
   if (status.status !== 0) return `${sha} unknown`;
   const own = new Set(Object.values(GATE_FILES));
   const clean = status.stdout.split('\0').filter(Boolean).every((entry) => entry.startsWith('?? ') && own.has(entry.slice(3)));
