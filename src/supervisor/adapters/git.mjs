@@ -7,7 +7,6 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, wri
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GATE_FILES } from '../gate.mjs';
-import { assertActionsDisabled } from './github.mjs';
 import { DEVELOPMENT_ENV } from '../development-policy.mjs';
 import { githubRemote } from '../project-preflight.mjs';
 import { environmentExamplePath, safeEnvironmentExample } from '../environment-example.mjs';
@@ -357,7 +356,8 @@ export function checkVerification({ git, path, targetSha }) {
   return null;
 }
 
-export function assertPushActionsDisabled({ git, gh, repoPath, remote, expectedRepository = null }) {
+/** A push goes only to a GitHub remote or an offline local folder. The destination's Actions setting is not read (it never blocks publication). */
+export function assertPushDestination({ git, repoPath, remote, expectedRepository = null }) {
   const out = exec(git, ['remote', 'get-url', '--push', '--all', remote], { cwd: repoPath });
   const refuse = () => { throw Object.assign(new Error('LOCAL_DEVELOPMENT_ONLY: push destination could not be verified'), { code: 'LOCAL_DEVELOPMENT_ONLY' }); };
   if (!out.ok || !out.stdout) refuse();
@@ -368,17 +368,15 @@ export function assertPushActionsDisabled({ git, gh, repoPath, remote, expectedR
       if (expectedRepository && repository.toLowerCase() !== expectedRepository.toLowerCase()) refuse();
       repositories.add(repository);
     } else {
-      // Offline local repositories cannot run GitHub Actions; helper and network transports stay refused.
+      // Helper and network transports stay refused; an offline local folder is allowed.
       if (!isAbsolute(url) || /^[\\/]{2}/.test(url) || url.includes('://') || !existsSync(url) || !lstatSync(url).isDirectory()) refuse();
     }
   }
-  for (const repository of repositories) assertActionsDisabled({ gh, repository });
 }
 
 /** Push exactly the verified SHA (not a moving HEAD) to the campaign branch. */
-export function pushVerified({ git, gh, repository, repoPath, branch, sha }) {
-  assertActionsDisabled({ gh, repository });
-  assertPushActionsDisabled({ git, gh, repoPath, remote: 'origin', expectedRepository: repository });
+export function pushVerified({ git, repository, repoPath, branch, sha }) {
+  assertPushDestination({ git, repoPath, remote: 'origin', expectedRepository: repository });
   must(exec(git, ['push', 'origin', `${sha}:refs/heads/${branch}`], { cwd: repoPath }), 'push verified commit');
   const remote = must(exec(git, ['ls-remote', 'origin', `refs/heads/${branch}`], { cwd: repoPath }), 'read remote branch');
   if (!remote.startsWith(sha)) throw new Error(`remote ${branch} is not at verified ${sha}`);
