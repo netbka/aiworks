@@ -97,7 +97,7 @@ test('readGateRun: the exit code and the final node:test summary the controller 
   const dir = workdir(t);
   assert.equal(readGateRun(dir), null, 'no gate ran here');
   writeFileSync(join(dir, 'gate.log'), 'noise\r\n# all test files: 1 unit (of 1)\r\n# tests 3\r\n# pass 3\r\n# fail 0\r\n');
-  assert.deepEqual(readGateRun(dir), { exit: null, summary: '# all test files: 1 unit (of 1)\n# tests 3\n# pass 3\n# fail 0' }, 'an unfinished gate has no exit code');
+  assert.deepEqual(readGateRun(dir), { exit: null, summary: '# all test files: 1 unit (of 1)\n# tests 3\n# pass 3\n# fail 0', exited: null }, 'an unfinished gate has no exit code');
   writeFileSync(join(dir, 'gate-exit.log'), '0\n');
   assert.equal(readGateRun(dir).exit, '0');
   // A plain node --test run has no "# all test files" line: its last run of count lines is the summary, never other output.
@@ -106,8 +106,18 @@ test('readGateRun: the exit code and the final node:test summary the controller 
   assert.equal(gateFailure(null), null);
   assert.equal(gateFailure({ exit: '0', summary: '# tests 2\n# pass 2\n# fail 0' }), null);
   assert.equal(gateFailure({ exit: null, summary: null }), null, 'an unfinished gate is shown, not refused');
-  assert.equal(gateFailure({ exit: '1', summary: '# fail 0' }), 'exited 1');
   assert.equal(gateFailure({ exit: '0', summary: '# tests 4\n# fail 2' }), 'reports 2 failed tests');
+  // 2026-11-05: a file stopped at its time limit printed no summary of its own, so the gate exited 1 with `# fail 0`.
+  // That run is still a failure, and the files that exited non-zero come from gate.log itself (the last run of a file
+  // retried alone counts), never from the verifier's result.
+  writeFileSync(join(dir, 'gate.log'), ['# start tests/a.test.mjs', 'not ok 1 - a', '# end tests/a.test.mjs 900000 ms, exit 1',
+    '# end tests/b.test.mjs 5 ms, exit 1', '# end tests/c.test.mjs 7 ms, exit 0', '# retry alone tests/b.test.mjs',
+    '# end tests/b.test.mjs 6 ms, exit 0', '# all test files: 3 unit (of 3)', '# tests 4', '# pass 4', '# fail 0', ''].join('\r\n'));
+  writeFileSync(join(dir, 'gate-exit.log'), '1\n');
+  const uncounted = readGateRun(dir);
+  assert.deepEqual(uncounted.exited, ['tests/a.test.mjs']);
+  assert.ok(gateFailure(uncounted), 'a non-zero exit fails the gate whatever the summary counts');
+  assert.ok(gateFailure({ exit: '1', summary: null }));
 });
 
 // One isolated retry per failed file (scripts/lib/test-retry.mjs): a file that fails again alone must still fail the
