@@ -18,7 +18,7 @@ import { join } from 'node:path';
 import * as gitA from './adapters/git.mjs';
 import { gateFailure, readGateRun } from './gate.mjs';
 import { IDENTITY, alive, checkout, gatePid, startGate } from './merge-refresh.mjs';
-import { recordGatePasses } from './test-cache.mjs';
+import { recordGateResults } from './test-cache.mjs';
 import { inspect, localBlocker, mergeBlocker, mergeLocal, mergeNow, wait } from './merge.mjs';
 import { trustedTip } from './self-hosting.mjs';
 
@@ -167,11 +167,12 @@ async function continueGroup(controller, open, items, settings, repoPath, baseSh
       return true;
     }
     const failure = gateFailure(run);
-    if (failure) { end('merge-batch-failed', `the gate on the combined result ${failure}`, { summary: run.summary }); return false; }
+    const results = (green) => recordGateResults(controller, null, { repository: items[0].decl.target.repository, repoPath, sha: open.id, dir: detail.path, green });
+    if (failure) { results(false); end('merge-batch-failed', `the gate on the combined result ${failure}`, { summary: run.summary }); return false; }
     const head = gitA.exec(git, ['rev-parse', 'HEAD'], { cwd: detail.path });
     if (!head.ok || head.stdout !== open.id) { end('merge-batch-failed', `the gate passed, but its checkout is no longer at ${open.id}`); return false; }
     note('merge-batch-passed', { id: open.id, summary: run.summary });
-    recordGatePasses(controller, null, { repository: items[0].decl.target.repository, repoPath, sha: open.id, dir: detail.path, source: 'supervisor-gate' });
+    results(true);
   }
 
   // Only this group's requests and merges count: an older refused attempt of the same head does not stop it.

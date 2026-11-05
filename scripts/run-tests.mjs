@@ -27,14 +27,17 @@
 //
 // AIWORKS_TEST_CACHE, set only by the supervisor for a verifier (src/supervisor/test-cache.mjs), names a JSON file of
 // test files whose result the supervisor recorded for exactly the same inputs. Each such file does not run: it prints
-// `# cached <file> digest <digest>` and counts with its recorded tally. The list only saves time and is never evidence:
-// the supervisor accepts a cached line only after computing that file's digest again from git and finding its row.
+// `# cached <file> digest <digest>` and counts with its recorded tally, when the entry was recorded on this Node major
+// version. The list only saves time and is never evidence: the supervisor accepts a cached line only after computing
+// that file's digest again from git and finding its row. The summary names this run's Node version (`# node v...`).
+// A test file's own output never starts a line like one of these markers (scripts/lib/test-markers.mjs).
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { availableParallelism } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { affectedTests, referenceGraph, repositoryFiles } from './lib/affected-tests.mjs';
+import { escapeMarkers } from './lib/test-markers.mjs';
 import { COUNTS, complete, countsOf, failedOf, retryPlan, settle } from './lib/test-retry.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -135,7 +138,8 @@ function cachedPasses(path) {
   if (!path) return new Map();
   try {
     const { files } = JSON.parse(readFileSync(path, 'utf8'));
-    return new Map(files.filter((entry) => typeof entry?.file === 'string' && /^[0-9a-f]{64}$/.test(entry.digest ?? ''))
+    const major = Number(process.versions.node.split('.')[0]);
+    return new Map(files.filter((entry) => typeof entry?.file === 'string' && /^[0-9a-f]{64}$/.test(entry.digest ?? '') && entry.nodeMajor === major)
       .map((entry) => [entry.file, { digest: entry.digest, counts: Object.fromEntries(COUNTS.map((key) => [key, Math.max(0, Number(entry.counts?.[key]) || 0)])) }]));
   } catch (error) {
     console.log(`# test cache not used: ${path} could not be read (${error.code ?? error.message})`);
@@ -165,7 +169,7 @@ function runFile(file, tier, testArgs, into = times) {
       finished = true;
       clearTimeout(limit);
       const ms = Date.now() - started;
-      const text = Buffer.concat(output).toString('utf8');
+      const text = escapeMarkers(Buffer.concat(output).toString('utf8'));
       process.stdout.write(text.endsWith('\n') || !text ? text : `${text}\n`);
       into.push({ file, tier, ms, code, counts: countsOf(text), failed: code === 0 ? [] : failedOf(text), complete: !killed && complete(text) });
       console.log(`# end ${file} ${ms} ms, exit ${code}`);
@@ -232,6 +236,7 @@ for (const { file, tier, ms, code } of times.filter((run) => !run.cached).sort((
 }
 const counts = TIERS.map((tier) => `${selected(tier).length} ${tier}`).join(', ');
 console.log(`# all test files: ${counts} (of ${files.length}); unit and service ${concurrency} at a time, rehearsal ${heavyConcurrency} at a time`);
+console.log(`# node ${process.version}`);
 if (cachedCount) console.log(`# cached: ${cachedCount} files not run, their results recorded by the supervisor for identical inputs`);
 for (const line of [...result.lines, ...notRetried]) console.log(line);
 for (const key of COUNTS) console.log(`# ${key} ${result.total[key]}`);
