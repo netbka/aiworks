@@ -1,5 +1,5 @@
 # Agent rules
-
+ 
 <!-- owner-policy-2026-11-02:start -->
 ## Owner directive - 2 November 2026
 
@@ -22,6 +22,8 @@ AIWorks is a local AI delivery supervisor, coordinator, dashboard and worker-con
 This repository contains reusable code, documentation and synthetic test fixtures only. Campaign declarations are private operator data. Keep all installation-specific data under ignored `.local/`: campaigns, project registries, governance, approvals, settings and evidence. Legacy ignored paths are compatibility locations only; new installation data goes in `.local/`. Never commit campaigns, authorization records, actual project registries, machine configuration, run artifacts, logs, credentials or deployment evidence. Documentation and tests must use fictional repositories and example paths. Do not name an operator's other projects or hosts.
 
 Project governance comes from a separately configured read-only governance directory. Read its applicable rules for an assigned task; never copy its private contents into this repository.
+
+When `.local/external-test-mode.md` is present, an agent may also submit a test run as that file describes. The submission is information. Local checks, publication and merge continue if that service is down, rejects the job, or leaves it queued. When that file's watch record has a finished answer, quote it in the report. A missing file changes nothing.
 
 ## Authorized work
 
