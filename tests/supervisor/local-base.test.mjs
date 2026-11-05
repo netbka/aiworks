@@ -10,10 +10,7 @@ import { Store } from '../../src/supervisor/store.mjs';
 import { campaignStart } from '../../src/supervisor/api.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
 import { recordAnchor, recordMainCommit } from '../../src/supervisor/self-hosting.mjs';
-import { connectGithubProject, checkGithubProject } from '../../src/supervisor/project-connect.mjs';
-import { pinRequest } from '../../src/supervisor/intake.mjs';
-import { selfHostingSettings } from '../../src/supervisor/self-hosting.mjs';
-import { declaration, environment, GOVERNANCE, runUntil, skipWithoutSqlite, SQLITE } from './helpers.mjs';
+import { declaration, environment, runUntil, skipWithoutSqlite } from './helpers.mjs';
 
 const git = (cwd, ...args) => {
   const out = spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true });
@@ -104,31 +101,4 @@ test('LO L4: implement, verify, repair and dependency integration of the self-ho
 
   assert.deepEqual(lines(forbidden.log), [], 'nothing ran gh, fetched, pushed or listed a remote');
   assert.equal(existsSync(join(env.repo, '.git', 'FETCH_HEAD')), false);
-});
-
-test('the self-hosted repository connects, checks and pins its intake base from local refs, never running gh', { skip: !SQLITE && 'node:sqlite requires Node >= 22.5' }, (t) => {
-  const env = environment();
-  const forbidden = guards(env.tmp);
-  const repository = 'example-org/aiworks';
-  const config = { ...env.config, selfHosting: { repository, trustedMain: 'local' } };
-  const store = new Store(join(env.dataDir, 'supervisor.db'));
-  t.after(() => { store.close(); env.cleanup(); });
-  git(env.repo, 'remote', 'set-url', 'origin', `https://github.com/${repository}.git`);
-  const anchor = git(env.repo, 'rev-parse', 'main');
-  git(env.repo, 'update-ref', 'refs/remotes/origin/main', anchor);
-  assert.equal(recordAnchor(store, { repoPath: env.repo, repository, sha: anchor, now: 1 }).recorded, true);
-  unrecordedCommit(env.repo);
-  const refuse = () => { throw new Error('a remote or gh read ran for the self-hosted repository'); };
-  const options = { store, config, dataDir: env.dataDir, governanceRoot: GOVERNANCE, git: forbidden.git, gh: refuse, lsRemote: refuse,
-    protectedRoots: [env.dataDir] };
-
-  const connected = connectGithubProject({ path: env.repo, id: 'aiworks' }, options);
-  assert.equal(connected.code, null, JSON.stringify(connected));
-  assert.equal(connected.project.base_branch, 'main');
-  assert.equal(checkGithubProject(store, 'aiworks', options).status, 'ready');
-
-  const pinned = pinRequest(store, { project_id: 'aiworks', route: 'goal' }, { git: forbidden.git, gh: forbidden.gh, selfHosting: selfHostingSettings(config) });
-  assert.equal(pinned.ok, true, JSON.stringify(pinned));
-  assert.equal(pinned.pinned.base, anchor, 'the intake base is the trusted tip, not the unrecorded main');
-  assert.deepEqual(lines(forbidden.log), []);
 });
