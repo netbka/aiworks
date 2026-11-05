@@ -52,8 +52,9 @@ export function testSummary(text) {
 /**
  * The test files whose last run in a gate log exited non-zero, from scripts/run-tests.mjs's `# end <file> <ms> ms, exit
  * <code>` lines (a file retried alone counts with its retry), sorted. Null when the log has no such line (another runner).
- * A file stopped at its time limit, or that crashed before its own summary, adds nothing to the summary's `# fail` count
- * (2026-11-05: `# fail 0` with exit 1), so these lines are where such a file is named.
+ * In a run-tests.mjs older than its minimum-one-failure rule (test-retry.mjs settle), a file stopped at its time limit, or
+ * that crashed before its own summary, added nothing to the `# fail` count (2026-11-05: `# fail 0` with exit 1), so these
+ * lines are where such a file is named.
  */
 export function exitedFiles(text) {
   const last = new Map();

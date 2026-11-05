@@ -69,6 +69,9 @@ export function settle(runs, retries) {
     for (const key of COUNTS) total[key] += counted.counts?.[key] ?? 0;
     if (counted.code !== 0) {
       status = 1;
+      // A file killed at its limit or crashed before its own summary counts no failed test, yet it failed: one at least,
+      // so the total never reads `# fail 0` beside a failed file (2026-11-05, exit 1 with `# fail 0`).
+      if (!((counted.counts?.fail ?? 0) > 0)) total.fail += 1;
       const names = counted.failed ?? [];
       // Fewer names than the run's own fail count means a `not ok` line was lost or mangled in the output: unknown.
       if (counted.complete !== true || !names.length || names.length < (counted.counts?.fail ?? 0)) unlisted.push(counted.file);
