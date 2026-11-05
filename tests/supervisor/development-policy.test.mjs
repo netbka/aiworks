@@ -33,24 +33,27 @@ if (kind === 'gh') {
   if (args.some(a => a.endsWith('/actions/permissions'))) { process.stderr.write('synthetic policy read failure'); process.exit(1); }
   process.stdout.write('{}');
 } else if (args.includes('get-url')) process.stdout.write(process.env.SYNTHETIC_URLS ?? 'https://github.com/example-org/sampleapp.git');
+else if (args.includes('ls-tree')) process.stdout.write(process.env.SYNTHETIC_WORKFLOW ? '.github/workflows/x.yml\\n' : '');
 else if (args.includes('ls-remote')) process.stdout.write('${'a'.repeat(40)}\\trefs/heads/campaign/example/T1\\n');
 `);
   const gh = [process.execPath, fake, 'gh', calls];
   const git = [process.execPath, fake, 'git', calls];
   const repository = 'example-org/sampleapp';
   const push = { git, gh, repository, repoPath: dir, branch: 'campaign/example/T1', sha: 'a'.repeat(40) };
+  const local = { git, repoPath: dir, revs: [push.sha, 'b'.repeat(40)] };
   const seen = () => readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
   for (const args of [
     ['--method', 'POST', `repos/${repository}/pulls`],
     ['--method', 'POST', `repos/${repository}/issues/1/comments`],
     ['--method', 'PATCH', `repos/${repository}/issues/1`],
     ['--method', 'PUT', `repos/${repository}/pulls/1/merge`],
-  ]) rest(gh, 'write', args);
+  ]) rest(gh, 'write', args, { local });
   pushVerified(push);
   assert.equal(pushTrustedTip({ ...push, remote: 'origin', tip: push.sha }).kind, 'backup-pushed');
   assert.ok(!seen().some(({ args }) => args.some(a => a.endsWith('/actions/permissions'))), 'the Actions setting is never read');
   assert.equal(seen().filter(({ kind, args }) => kind === 'git' && args.includes('push')).length, 2);
   const before = seen().length;
+  assert.throws(() => rest(gh, 'write', ['--method', 'POST', `repos/${repository}/pulls`]), { code: 'LOCAL_DEVELOPMENT_ONLY' }, 'a write whose local tree is unknown is refused');
   for (const route of ['actions/workflows/check.yml/dispatches', 'actions/runs/1/rerun', 'actions/permissions', 'codespaces', 'packages']) {
     assert.throws(() => rest(gh, 'workflow', ['--method', 'POST', `repos/${repository}/${route}`]), { code: 'LOCAL_DEVELOPMENT_ONLY' });
   }
@@ -65,6 +68,17 @@ else if (args.includes('ls-remote')) process.stdout.write('${'a'.repeat(40)}\\tr
     ['--method', 'POST', `repos/${repository}/pulls`, '--hostname', 'example.invalid'],
   ]) assert.throws(() => rest(gh, 'ambiguous request', args), { code: 'LOCAL_DEVELOPMENT_ONLY' });
   assert.equal(seen().length, before, 'workflow and resource writes never reach the CLI');
+  // A tree with a workflow file could start a hosted run: no push, backup or write reaches GitHub, and the same ones without it do.
+  process.env.SYNTHETIC_WORKFLOW = '1';
+  t.after(() => { delete process.env.SYNTHETIC_WORKFLOW; });
+  writeFileSync(calls, '');
+  assert.throws(() => pushVerified(push), { code: 'LOCAL_DEVELOPMENT_ONLY' });
+  assert.equal(pushTrustedTip({ ...push, remote: 'origin', tip: push.sha }).kind, 'backup-refused');
+  for (const args of [['--method', 'POST', `repos/${repository}/issues/1/comments`], ['--method', 'PUT', `repos/${repository}/pulls/1/merge`]]) {
+    assert.throws(() => rest(gh, 'write', args, { local }), { code: 'LOCAL_DEVELOPMENT_ONLY' });
+  }
+  assert.ok(!seen().some(({ kind, args }) => (kind === 'git' && args.includes('push')) || (kind === 'gh' && args.includes('POST'))), 'nothing reached GitHub');
+  delete process.env.SYNTHETIC_WORKFLOW;
   const backup = { ...push, remote: 'backup', tip: push.sha };
   for (const urls of ['ext::untrusted helper', 'https://example.invalid/repo', '//server/share/repo', '']) {
     process.env.SYNTHETIC_URLS = urls;

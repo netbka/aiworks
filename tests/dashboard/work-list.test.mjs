@@ -42,7 +42,7 @@ function rig(t) {
     rmSync(dataDir, { recursive: true, force: true });
   });
   const serve = async (callerCheck, workList = {}) => {
-    const server = createDashboardServer({ dataDir, roadmap, callerCheck, workList: { gh: GH, ...workList } });
+    const server = createDashboardServer({ dataDir, roadmap, callerCheck, workList: { gh: GH, local: { git: [process.execPath, '-e', ''], repoPath: process.cwd(), revs: ['a'.repeat(40)] }, ...workList } });
     servers.push(server);
     server.listen(0, '127.0.0.1'); await once(server, 'listening');
     const base = `http://127.0.0.1:${server.address().port}`;
