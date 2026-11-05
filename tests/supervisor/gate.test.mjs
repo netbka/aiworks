@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 const GATE = fileURLToPath(new URL('../../src/supervisor/gate.mjs', import.meta.url));
@@ -95,7 +96,7 @@ test('a gate process that ends without an exit code is reported as died at once,
 });
 
 test('a web task run holding the browser session holds back other gates, never its own, and a lapsed lock never blocks', async (t) => {
-  const { browserLockPath, heldBrowserRuns } = await import('../../src/supervisor/gate.mjs');
+  const { browserLockPath, heldBrowserRuns, heldSlotCount } = await import('../../src/supervisor/gate.mjs');
   const dir = workdir(t), slots = join(dir, 'slots');
   mkdirSync(slots, { recursive: true });
   const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore', windowsHide: true });
@@ -109,9 +110,34 @@ test('a web task run holding the browser session holds back other gates, never i
   assert.equal(waitFast(dir).code, 0, 'its own gate finished');
   assert.equal(gate(dir, 'start', `"${process.execPath}"`, 'pass.mjs').code, 0);
   assert.equal(waitFast(dir, '--minutes', '0.05').code, 2, 'another gate waits while the run holds the session');
+  // A loaded PC may start the waiting gate late: poll briefly for its line.
+  for (let i = 0; i < 100 && !/web task run\(s\) use the browser session/.test(readFileSync(join(dir, 'gate.log'), 'utf8')); i += 1) await sleep(100);
   assert.match(readFileSync(join(dir, 'gate.log'), 'utf8'), /web task run\(s\) use the browser session/);
+  // The waiting gate holds no slot, yet admission counts it, or a wave of web task runs would starve it.
+  assert.equal(heldSlotCount({ dir: slots }), 1, 'a gate waiting for the browser session pauses admission');
   holder.kill();
   assert.equal(waitFast(dir, '--minutes', '1').code, 0, 'and runs once the run ended');
+  assert.equal(heldSlotCount({ dir: slots }), 0, 'a finished gate counts no more');
+});
+
+test('a lock whose holder stopped beating is not held, even while another process has its id', async (t) => {
+  const { browserLockPath, heldBrowserRuns, heldSlotCount, takeSlot } = await import('../../src/supervisor/gate.mjs');
+  const dir = workdir(t), slots = join(dir, 'slots'), heartbeat = join(dir, 'heartbeat');
+  mkdirSync(slots, { recursive: true });
+  // A live process stands in for one Windows gave a dead gate's or run's id to.
+  const reused = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore', windowsHide: true });
+  t.after(() => reused.kill());
+  const old = Date.now() - 10 * 60_000;
+  writeFileSync(join(slots, 'slot-1.lock'), JSON.stringify({ pid: reused.pid, at: old }));
+  writeFileSync(join(slots, 'waiting-1.lock'), JSON.stringify({ pid: reused.pid, at: old }));
+  writeFileSync(browserLockPath(slots, 'op-stale'), JSON.stringify({ pid: reused.pid, at: old, heartbeat }));
+  assert.equal(heldSlotCount({ dir: slots }), 0, 'stale slot and waiting locks do not pause admission');
+  assert.deepEqual(heldBrowserRuns({ dir: slots }, Date.now(), null), [], 'a stale browser lock does not hold gates back');
+  assert.equal(takeSlot({ count: 1, dir: slots }), join(slots, 'slot-1.lock'), 'a stale slot is taken over');
+  // A run that still beats keeps its browser lock however old the lock is.
+  writeFileSync(heartbeat, String(Date.now()));
+  writeFileSync(browserLockPath(slots, 'op-beating'), JSON.stringify({ pid: reused.pid, at: old, heartbeat }));
+  assert.deepEqual(heldBrowserRuns({ dir: slots }, Date.now(), null), ['op-beating']);
 });
 
 test('readGateRun: the exit code and the final node:test summary the controller keeps with a verification (#43)', async (t) => {

@@ -22,7 +22,7 @@ export const PRESSURE_DEFAULTS = Object.freeze({
   maxPortShare: 0.5,                                      // more than half of the TCP or UDP ephemeral ports in use
   maxContainers: 12,                                      // more running Docker containers than this
   probeStaleMs: 180_000,                                  // a probe result older than this says nothing
-  pauseAtGates: 1,                                        // this many full gates running (gate.mjs slots); 99 turns it off
+  pauseAtGates: 1,                                        // this many gate helper runs holding or awaiting a slot; 99 turns it off
 });
 
 /** The signals, in the order they are checked. A sample under pressure names the first that applies. */
@@ -53,9 +53,9 @@ const cpuTimes = (cpus) => cpus.reduce((acc, cpu) => {
  * CPU is judged only over a complete window of os.cpus() time deltas (os.loadavg is always zero on Windows); a window
  * that ran much longer than cpuWindowMs (no sample while the host was idle) says nothing about the last minute, so it
  * starts again. A volume that cannot be read gives no signal. `probe.latest()` (createHostProbe) gives the last port and
- * Docker reading; none, or one older than probeStaleMs, gives no signal. `gates()` gives the number of full gates running
- * now; none gives no signal. Every dependency is injectable for tests; the
- * defaults read the real host.
+ * Docker reading; none, or one older than probeStaleMs, gives no signal. `gates()` gives the number of gate helper runs
+ * that hold a slot or wait for the browser session now; none gives no signal. Every dependency is injectable for tests;
+ * the defaults read the real host.
  */
 export function createHostSampler({ os = nodeOs, fs = nodeFs, volumes = [], heartbeatMs = RUNNER_DEFAULTS.heartbeatMs,
   staleMs = RUNNER_DEFAULTS.staleMs, thresholds = {}, probe = null, gates = null } = {}) {
@@ -100,9 +100,12 @@ export function createHostSampler({ os = nodeOs, fs = nodeFs, volumes = [], hear
         }
       }
 
-      // A full gate running (owner decision 2026-11-05: pause new work during heavy tests). On 2026-11-05 about half of
-      // 49 saved gate failures were browser, preview and timing tests that failed under load from other workers. `gates`
-      // counts the held gate slots (gate.mjs heldSlotCount); cli.mjs serve supplies it, tests and other callers do not.
+      // A gate running (owner decision 2026-11-05: pause new work during heavy tests). On 2026-11-05 about half of 49
+      // saved gate failures were browser, preview and timing tests that failed under load from other workers. `gates`
+      // (gate.mjs heldSlotCount) counts every run of the gate helper that holds a slot, a verifier's full gate, an
+      // implementer's affected tests or the supervisor's own base-check and refresh gates, and every gate waiting for the
+      // browser session, so a wave of web task runs cannot starve it. A lock counts only while its holder beats.
+      // cli.mjs serve supplies it, tests and other callers do not.
       let running = 0;
       try { running = gates?.() ?? 0; } catch { running = 0; }
       if (running >= limits.pauseAtGates) return { signal: 'gates', detail: { running, pauseAt: limits.pauseAtGates } };
