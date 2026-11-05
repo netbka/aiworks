@@ -70,7 +70,8 @@ export const fullCheckPassed = (gate) => Boolean(gate) && gate.exit === '0' && !
 /**
  * Whether an acceptance kept by base compare (base-check.mjs) is explained by its base: its finished gate failed, and
  * every failed test it lists, at least one and the list complete, is among the base failures the verification recorded.
- * Merging such a head adds no failure to the base it merges into. Read from the stored record again, never trusted as a flag.
+ * Merging such a head adds no failure to the base it merges into. It re-checks the stored gate summary against the list the
+ * supervisor recorded with the verification (a worker can set neither); it does not read base_checks again.
  */
 export function baseExplained(v) {
   if (!v?.gate || v.gate.exit === null || !Array.isArray(v.baseFailures?.failed)) return false;
