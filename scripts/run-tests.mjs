@@ -30,7 +30,7 @@ import { availableParallelism } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { affectedTests, referenceGraph, repositoryFiles } from './lib/affected-tests.mjs';
-import { COUNTS, countsOf, failedOf, retryPlan, settle } from './lib/test-retry.mjs';
+import { COUNTS, complete, countsOf, failedOf, retryPlan, settle } from './lib/test-retry.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const TIERS = ['unit', 'service', 'rehearsal'];
@@ -135,8 +135,9 @@ function runFile(file, tier, testArgs, into = times) {
     const output = [];
     child.stdout.on('data', (chunk) => output.push(chunk));
     child.stderr.on('data', (chunk) => output.push(chunk));
-    let finished = false;
+    let finished = false, killed = false;
     const limit = setTimeout(() => {
+      killed = true;
       output.push(Buffer.from(`# ${file} still running after ${fileLimitMs / 60_000} minutes; stopping it and its child processes\n`));
       if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
       else child.kill('SIGKILL');
@@ -148,7 +149,7 @@ function runFile(file, tier, testArgs, into = times) {
       const ms = Date.now() - started;
       const text = Buffer.concat(output).toString('utf8');
       process.stdout.write(text.endsWith('\n') || !text ? text : `${text}\n`);
-      into.push({ file, tier, ms, code, counts: countsOf(text), failed: code === 0 ? [] : failedOf(text) });
+      into.push({ file, tier, ms, code, counts: countsOf(text), failed: code === 0 ? [] : failedOf(text), complete: !killed && complete(text) });
       console.log(`# end ${file} ${ms} ms, exit ${code}`);
       done(code === 0 ? 0 : 1);
     };

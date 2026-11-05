@@ -1274,7 +1274,8 @@ export class Controller {
   }
 
   applyOutcome(ctx, op, outcome) {
-    this.runEnded(this.store.campaign(ctx.id)?.declaration);
+    // A result waiting for its base check (base-check.mjs) ended its run once already; it does not prompt a sweep each poll.
+    if (!this.baseWaits.has(op.id)) this.runEnded(this.store.campaign(ctx.id)?.declaration);
     if (op.kind === 'plan') return this.settlePlan(ctx, op, outcome);
     let verdict = outcome;
     const before = this.store.task(ctx.id, op.task_id);
