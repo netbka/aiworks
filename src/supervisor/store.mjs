@@ -227,11 +227,13 @@ CREATE TRIGGER IF NOT EXISTS work_item_comments_no_update BEFORE UPDATE ON work_
 CREATE TRIGGER IF NOT EXISTS work_item_comments_no_delete BEFORE DELETE ON work_item_comments
   BEGIN SELECT RAISE(ABORT, 'work_item_comments is append-only'); END;
 -- Base compare (base-check.mjs): one gate run of a base commit per repository, base SHA and gate command (JSON array).
--- state running, then passed or failed once; failed is the JSON list of failed test ids, NULL when unknown.
+-- state running, then passed or failed once; failed is the JSON list of failed test ids, NULL when unknown. red is 1
+-- when the base gate itself finished and failed (not a start failure or a timeout); item is where its one repair item
+-- was recorded, set once (controller.mjs recordBaseRed).
 CREATE TABLE IF NOT EXISTS base_checks (
   repository TEXT NOT NULL, base_sha TEXT NOT NULL, command TEXT NOT NULL, path TEXT NOT NULL,
   started_at INTEGER NOT NULL, state TEXT NOT NULL CHECK (state IN ('running', 'passed', 'failed')),
-  failed TEXT, summary TEXT, reason TEXT, updated_at INTEGER NOT NULL,
+  failed TEXT, summary TEXT, reason TEXT, updated_at INTEGER NOT NULL, red INTEGER NOT NULL DEFAULT 0, item TEXT,
   PRIMARY KEY (repository, base_sha, command));
 `;
 // Test result cache (test-cache.mjs): a test file passed or failed with exactly the inputs its digest names, on one Node
@@ -321,6 +323,11 @@ export class Store {
         // reads health_check as null, "not checked by the owner", and the store version does not change.
         const releaseColumns = this.db.prepare('PRAGMA table_info(releases)').all().map((column) => column.name);
         if (!releaseColumns.includes('health_check')) this.db.exec('ALTER TABLE releases ADD COLUMN health_check TEXT');
+        // The repair item of a red base (controller.mjs recordBaseRed) is additive: a base check recorded before it reads
+        // red as 0 and gets no item, and the store version does not change.
+        const baseColumns = this.db.prepare('PRAGMA table_info(base_checks)').all().map((column) => column.name);
+        if (!baseColumns.includes('red')) this.db.exec('ALTER TABLE base_checks ADD COLUMN red INTEGER NOT NULL DEFAULT 0');
+        if (!baseColumns.includes('item')) this.db.exec('ALTER TABLE base_checks ADD COLUMN item TEXT');
       });
     } catch (error) {
       this.db.close();
