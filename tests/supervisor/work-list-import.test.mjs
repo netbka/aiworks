@@ -43,8 +43,6 @@ function rig(t) {
   return { open, serve, calls };
 }
 
-// A checkout with no workflow files, so the GitHub writes are allowed (a write without one is refused).
-const NO_WORKFLOWS = { git: [process.execPath, '-e', ''], repoPath: process.cwd(), revs: ['a'.repeat(40)] };
 test('the import sends only GET, pages through every list, and a dry run changes neither the store nor GitHub', (t) => {
   const { open, serve, calls } = rig(t);
   const data = fixture(105);
@@ -139,7 +137,7 @@ function imported(t, count) {
 test('only the confirmed, unchanged imported issues are closed, and only for the owner', async (t) => {
   const { store, serve, calls, data, remote } = imported(t, 9);
   const close = (selection, options = {}) => closeConfirmedIssues({ store, gh: GH, repository: REPOSITORY, selection,
-    caller: ownerCaller, now: NOW, available: true, local: NO_WORKFLOWS, ...options });
+    caller: ownerCaller, now: NOW, available: true, ...options });
   const all = closeCandidates(store, REPOSITORY);
   assert.deepEqual(all.map((entry) => entry.number), [1, 2, 4, 5, 6, 7, 8, 9]);
   const selection = all.filter((entry) => [2, 4, 5].includes(entry.number));
@@ -180,7 +178,7 @@ test('only the confirmed, unchanged imported issues are closed, and only for the
 test('a crash after the pointer or after the close neither comments twice nor writes again', async (t) => {
   const { store, serve, calls, data, remote } = imported(t, 4);
   const close = (selection) => closeConfirmedIssues({ store, gh: GH, repository: REPOSITORY, selection, caller: ownerCaller,
-    now: NOW, available: true, local: NO_WORKFLOWS });
+    now: NOW, available: true });
   const selection = closeCandidates(store, REPOSITORY).filter((entry) => [1, 2].includes(entry.number));
 
   serve({ ...data, crashAfter: 'comment' });

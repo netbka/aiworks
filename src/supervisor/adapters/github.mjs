@@ -4,7 +4,7 @@
 // Every call is REST (gh api), never GraphQL: the account's GraphQL quota is shared with the
 // dashboard and other tools, and a spent quota must not stall publication (AIWorks).
 import { writeFileSync } from 'node:fs';
-import { assertNoWorkflowFiles, exec } from './git.mjs';
+import { assertNoWorkflowChange, exec } from './git.mjs';
 import { assertPublishable } from '../../shared/public-text.mjs';
 
 /** GitHub refused a call for a rate limit. `resetAt` (epoch ms) is when it allows calls again, or null if it did not say. */
@@ -40,15 +40,14 @@ export function rateLimitReset({ status, headers, body }, stderr = '', now = Dat
 
 /**
  * One REST call; returns the parsed JSON body or throws (RateLimitError for a rate-limit refusal). A write also needs
- * `local` ({ git, repoPath, revs }): the local trees it acts on, which must hold no .github/workflows file.
+ * `local` ({ git, repoPath, base, head }) when it publishes code (a pull request or a merge): the change must not touch
+ * .github/workflows. Comments and issue updates change no code and need none.
  */
 export function rest(gh, what, args, { timeoutMs, local } = {}) {
   const { method, route } = requestScope(args);
   if (!['GET', 'HEAD'].includes(method)) {
     const repository = /^repos\/([^/]+\/[^/]+)\//.exec(route ?? '')?.[1];
     // The Actions setting is not read and never blocks a write (owner directive 2 November 2026); the ban is this allow-list.
-    // Comments and merges can start workflows from the default branch too, so the local trees must be free of them.
-    assertNoWorkflowFiles(local ?? {});
     // Only existing delivery operations may write. No Actions, Codespaces,
     // packages, billing, plan changes, repository settings or resource provisioning.
     const deliveryWrite = method === 'POST' && /^repos\/[^/]+\/[^/]+\/(?:pulls|issues\/[1-9]\d*\/comments)$/.test(route ?? '') ||
@@ -57,6 +56,8 @@ export function rest(gh, what, args, { timeoutMs, local } = {}) {
     if (!repository || !deliveryWrite) {
       throw developmentRefusal('only pull requests, issue comments, issue updates and authorized merges may write to GitHub');
     }
+    // A pull request or merge publishes code: it must not add or change a workflow file (comments and issue updates need no check).
+    if (method === 'PUT' || method === 'POST' && /\/pulls$/.test(route)) assertNoWorkflowChange(local ?? {});
   }
   const out = exec(gh, ['api', '--include', ...args], { timeoutMs });
   const response = parseResponse(out.stdout);
@@ -197,10 +198,10 @@ export function findMarkedComment({ gh, repository, issue, key }) {
   return out.stdout.split('\n').filter(Boolean)[0] ?? null;
 }
 
-export function postComment({ gh, repository, issue, body, bodyFile, terms = [], local }) {
+export function postComment({ gh, repository, issue, body, bodyFile, terms = [] }) {
   assertPublishable('comment', body, { repository, terms });
   writeFileSync(bodyFile, body, 'utf8');
-  const created = rest(gh, 'POST comment', ['--method', 'POST', `repos/${repository}/issues/${issue}/comments`, '-F', `body=@${bodyFile}`], { local });
+  const created = rest(gh, 'POST comment', ['--method', 'POST', `repos/${repository}/issues/${issue}/comments`, '-F', `body=@${bodyFile}`]);
   if (!created?.html_url) throw new Error('POST comment returned no html_url');
   return created.html_url;
 }
@@ -209,9 +210,9 @@ export function postComment({ gh, repository, issue, body, bodyFile, terms = [],
  * Close an issue as not planned (SELF11): one REST PATCH of its state and state reason, never its labels or anything
  * else. Returns the issue GitHub answers with; throws when GitHub does not report it closed.
  */
-export function closeIssue({ gh, repository, issue, local }) {
+export function closeIssue({ gh, repository, issue }) {
   const closed = rest(gh, 'PATCH issue', ['--method', 'PATCH', `repos/${repository}/issues/${issue}`,
-    '-f', 'state=closed', '-f', 'state_reason=not_planned'], { local });
+    '-f', 'state=closed', '-f', 'state_reason=not_planned']);
   if (closed?.state !== 'closed') throw new Error('PATCH issue did not report the issue closed');
   return closed;
 }

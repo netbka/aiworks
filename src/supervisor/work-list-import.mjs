@@ -186,11 +186,9 @@ function checkSelection(store, repo, selection) {
  * reported; otherwise its closure is recorded, one marked pointer comment is posted, and the issue is closed as
  * `not_planned`. Labels and every issue outside the list are never touched. A retry after a crash finds the recorded
  * closure and the marked comment and closes without commenting again, unless the issue changed after the pointer.
- * `local` ({ git, repoPath, revs }) is the checkout the writes act on; without it they are refused (rest() checks it for
- * .github/workflows files).
  */
 export async function closeConfirmedIssues({ store, gh = ['gh'], repository, selection, caller, terms = [], now = Date.now(),
-  available = CLOSE_IMPORTED_ON, local }) {
+  available = CLOSE_IMPORTED_ON }) {
   if (!available) throw new WorkListImportError('WORK_CLOSE_OFF', 'closing imported issues on GitHub is not switched on');
   if (!REPOSITORY.test(String(repository ?? ''))) throw new WorkListImportError('WORK_IMPORT_INVALID', 'the repository must be owner/name');
   if (!store) throw new WorkListImportError('WORK_IMPORT_INVALID', 'closing imported issues needs the store');
@@ -235,10 +233,10 @@ export async function closeConfirmedIssues({ store, gh = ['gh'], repository, sel
         if (!unchanged) { skip('the issue changed on GitHub since the import'); continue; }
         const date = new Date(now).toISOString().slice(0, 10);
         const url = postComment({ gh, repository: repo, issue: number, bodyFile: join(dir, `pointer-${number}.md`), terms,
-          local, body: `${marker(pointerKey(number))}\nMoved to the AIWorks local work list as #${number} on ${date}. Continue there.` });
+          body: `${marker(pointerKey(number))}\nMoved to the AIWorks local work list as #${number} on ${date}. Continue there.` });
         setClosure(store, repo, number, { state: 'pointed', comment_url: url }, now);
       }
-      closeIssue({ gh, repository: repo, issue: number, local });
+      closeIssue({ gh, repository: repo, issue: number });
       setClosure(store, repo, number, { state: 'closed' }, now);
       report.closed.push(number);
     }
