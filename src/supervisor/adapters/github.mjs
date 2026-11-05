@@ -4,7 +4,7 @@
 // Every call is REST (gh api), never GraphQL: the account's GraphQL quota is shared with the
 // dashboard and other tools, and a spent quota must not stall publication (AIWorks).
 import { writeFileSync } from 'node:fs';
-import { exec } from './git.mjs';
+import { assertNoWorkflowChange, exec } from './git.mjs';
 import { assertPublishable } from '../../shared/public-text.mjs';
 
 /** GitHub refused a call for a rate limit. `resetAt` (epoch ms) is when it allows calls again, or null if it did not say. */
@@ -38,11 +38,16 @@ export function rateLimitReset({ status, headers, body }, stderr = '', now = Dat
   return Number.isFinite(reset) && reset > 0 ? reset * 1000 : null;
 }
 
-/** One REST call; returns the parsed JSON body or throws (RateLimitError for a rate-limit refusal). */
-export function rest(gh, what, args, { timeoutMs } = {}) {
+/**
+ * One REST call; returns the parsed JSON body or throws (RateLimitError for a rate-limit refusal). A write also needs
+ * `local` ({ git, repoPath, base, head }) when it publishes code (a pull request or a merge): the change must not touch
+ * .github/workflows. Comments and issue updates change no code and need none.
+ */
+export function rest(gh, what, args, { timeoutMs, local } = {}) {
   const { method, route } = requestScope(args);
   if (!['GET', 'HEAD'].includes(method)) {
     const repository = /^repos\/([^/]+\/[^/]+)\//.exec(route ?? '')?.[1];
+    // The Actions setting is not read and never blocks a write (owner directive 2 November 2026); the ban is this allow-list.
     // Only existing delivery operations may write. No Actions, Codespaces,
     // packages, billing, plan changes, repository settings or resource provisioning.
     const deliveryWrite = method === 'POST' && /^repos\/[^/]+\/[^/]+\/(?:pulls|issues\/[1-9]\d*\/comments)$/.test(route ?? '') ||
@@ -51,9 +56,8 @@ export function rest(gh, what, args, { timeoutMs } = {}) {
     if (!repository || !deliveryWrite) {
       throw developmentRefusal('only pull requests, issue comments, issue updates and authorized merges may write to GitHub');
     }
-    // Comments, issue updates and merges can trigger workflows too. Check every write,
-    // without a cache; a read failure must not become permission to publish.
-    assertActionsDisabled({ gh, repository });
+    // A pull request or merge publishes code: it must not add or change a workflow file (comments and issue updates need no check).
+    if (method === 'PUT' || method === 'POST' && /\/pulls$/.test(route)) assertNoWorkflowChange(local ?? {});
   }
   const out = exec(gh, ['api', '--include', ...args], { timeoutMs });
   const response = parseResponse(out.stdout);
@@ -92,15 +96,6 @@ function requestScope(args) {
   }
   if (!route) throw developmentRefusal('a GitHub request needs one repository endpoint');
   return { method: method ?? (fields ? 'POST' : 'GET'), route };
-}
-
-/** No write or push may trigger repository automation. This only reads policy, never changes it. */
-export function assertActionsDisabled({ gh, repository }) {
-  if (!Array.isArray(gh) || !gh.length || !/^[\w.-]+\/[\w.-]+$/.test(repository ?? '')) {
-    throw developmentRefusal('a GitHub destination and CLI are required to check Actions policy');
-  }
-  const policy = rest(gh, 'GET Actions permissions', ['--method', 'GET', `repos/${repository}/actions/permissions`], { timeoutMs: 30_000 });
-  if (policy?.enabled !== false) throw developmentRefusal('GitHub Actions must be disabled for the destination repository before publication');
 }
 
 export function findOpenPullRequest({ gh, repository, branch }) {
@@ -167,7 +162,7 @@ export const declarationBranch = (branch) => /^declare\//i.test(String(branch ??
 
 // Every PR and comment text passes the shared publication check (aiworks#8) before any GitHub call or body file write.
 // `terms` are the installation's private terms; the refusal names categories only.
-export function openPullRequest({ gh, repository, baseBranch, branch, title, body, bodyFile, terms = [] }) {
+export function openPullRequest({ gh, repository, baseBranch, branch, title, body, bodyFile, terms = [], local }) {
   if (declarationBranch(branch)) {
     throw Object.assign(new Error(`DECLARATION_PUBLISH_REFUSED: ${branch} is a declaration branch; approved declarations stay private and are never opened as a pull request`), { code: 'DECLARATION_PUBLISH_REFUSED' });
   }
@@ -180,7 +175,7 @@ ${body}`, { repository, terms });
   let created;
   try {
     created = rest(gh, 'POST pulls', ['--method', 'POST', `repos/${repository}/pulls`,
-      '-f', `title=${title}`, '-f', `head=${branch}`, '-f', `base=${baseBranch}`, '-F', `body=@${bodyFile}`]);
+      '-f', `title=${title}`, '-f', `head=${branch}`, '-f', `base=${baseBranch}`, '-F', `body=@${bodyFile}`], { local });
   } catch (error) {
     // The create may have landed before the failure was reported: reconcile instead of duplicating.
     // A rate-limit refusal is reported as is, so the caller waits for its reset.
