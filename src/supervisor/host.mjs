@@ -25,6 +25,14 @@ export const PRESSURE_DEFAULTS = Object.freeze({
   pauseAtGates: 1,                                        // this many gate helper runs holding or awaiting a slot; 99 turns it off
 });
 
+/**
+ * Whether gates pause admission and keep away from web task runs (owner decision 2026-11-05): only with the scheduler on
+ * and scheduler.pressure.pauseAtGates under 99. Off, the supervisor writes no browser-session lock and sets no
+ * AIWORKS_BROWSER_RUN, so gates run exactly as before (gate.mjs).
+ */
+export const gatePauseOn = (config = {}) => config?.scheduler?.enabled === true
+  && pressureThresholds(config.scheduler.pressure ?? {}).pauseAtGates < 99;
+
 /** The signals, in the order they are checked. A sample under pressure names the first that applies. */
 export const PRESSURE_SIGNALS = Object.freeze(['memory', 'cpu', 'disk', 'ports', 'docker', 'gates', 'heartbeats']);
 
