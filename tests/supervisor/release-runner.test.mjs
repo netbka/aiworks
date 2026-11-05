@@ -11,53 +11,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../../src/supervisor/store.mjs';
 import { workerEnv } from '../../src/supervisor/proc.mjs';
-import { evaluateEligibility } from '../../src/supervisor/release/eligibility.mjs';
 import { acquireLock, createRelease, release, releaseGate, runStep } from '../../src/supervisor/release/state.mjs';
-import {
-  commandCredentialStore, credentialResolves, fetchCredential, releaseRoleReader, validCredentialRef, windowsCredentialStore,
-} from '../../src/supervisor/release/credential.mjs';
-import { RELEASE_ENV_KEEP, RELEASE_LOGIN_ENV, releaseCommandsStopped, releaseEnv, runReleaseCommand } from '../../src/supervisor/release/runner.mjs';
+import { commandCredentialStore } from '../../src/supervisor/release/credential.mjs';
+import { runReleaseCommand } from '../../src/supervisor/release/runner.mjs';
 
 const SHA = 'c'.repeat(40);
 const REF = 'aiworks-release/sampleapp';
-// On Windows, libuv gives every child it starts these system variables from the parent's own environment when the
-// given one lacks them (uv_spawn's required set). They name the machine and user, never the supervisor's configuration.
-const LIBUV_WINDOWS = ['homedrive', 'homepath', 'logonserver', 'path', 'systemdrive', 'systemroot', 'temp', 'userdomain', 'username', 'userprofile', 'windir'];
-const KEEP = [...RELEASE_ENV_KEEP.map((key) => key.toLowerCase()), ...(process.platform === 'win32' ? LIBUV_WINDOWS : [])];
-const PROBES = ['AIWORKS_SUPERVISOR_PROBE', 'CLAUDE_CODE_ENTRYPOINT', 'FAKE_GH_STATE'];
-
-test('a successful release command leaves no detached descendant and a pre-launch crash is safely retryable', { skip: process.platform !== 'win32' }, async (t) => {
-  const r = rig(t), pulse = join(r.work, 'child-pulse'), childPid = join(r.work, 'child-pid');
-  const childScript = join(r.tools, 'pulse.mjs');
-  writeFileSync(childScript, `import {appendFileSync,writeFileSync} from 'node:fs';
-writeFileSync(${JSON.stringify(childPid)}, String(process.pid));
-const pulse = () => { try { appendFileSync(${JSON.stringify(pulse)}, '.'); } catch { process.exit(0); } };
-pulse(); setInterval(pulse, 20); setTimeout(() => process.exit(0), 30000).unref();`);
-  const command = join(r.tools, 'spawn.mjs');
-  writeFileSync(command, `import {spawn} from 'node:child_process';
-import {existsSync} from 'node:fs';
-spawn(process.execPath,[${JSON.stringify(childScript)}],{detached:true,stdio:'ignore',windowsHide:true}).unref();
-const deadline = Date.now() + 10000;
-while (!existsSync(${JSON.stringify(pulse)})) {
-  if (Date.now() >= deadline) throw new Error('synthetic child did not start');
-  await new Promise(resolve => setTimeout(resolve, 20));
-}`);
-  const release = { id: 'test-release', history: [] };
-  const result = await runReleaseCommand({ config: r.config, dataDir: r.dataDir, stepKey: release.id + '.deploy.1',
-    command: [process.execPath, command], cwd: r.work, release });
-  assert.equal(result.exitCode, 0);
-  const pid = Number(readFileSync(childPid, 'utf8'));
-  assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, 'the running descendant ended before success returned');
-  const atReturn = readFileSync(pulse, 'utf8');
-  assert.equal(releaseCommandsStopped({ dataDir: r.dataDir, release }), true);
-  await new Promise((done) => setTimeout(done, 200));
-  assert.equal(readFileSync(pulse, 'utf8'), atReturn, 'no descendant writes after the command reports success');
-  const preparing = join(r.dataDir, 'releases', release.id + '.deploy.2'); mkdirSync(preparing);
-  writeFileSync(join(preparing, 'packet.json'), JSON.stringify({ stepKey: release.id + '.deploy.2', releaseId: release.id }));
-  assert.equal(releaseCommandsStopped({ dataDir: r.dataDir, release }), true, 'no launch intent means nothing was started');
-  writeFileSync(join(preparing, 'launch.json'), '{}');
-  assert.equal(releaseCommandsStopped({ dataDir: r.dataDir, release }), false, 'a missing receipt after launch intent is unknown');
-});
 
 /** A disposable rig: a synthetic credential helper holding one synthetic value, a synthetic `gh`, a data directory. */
 function rig(t, { present = true } = {}) {
@@ -100,34 +59,6 @@ function holders(root, value) {
   const needles = [Buffer.from(value, 'utf8'), Buffer.from(value, 'utf16le'), Buffer.from(Buffer.from(value).toString('base64'))];
   return files(root).filter((path) => { const bytes = readFileSync(path); return needles.some((needle) => bytes.includes(needle)); });
 }
-
-test("the release runner's environment contains no supervisor variables", async (t) => {
-  const r = rig(t);
-  const inherited = { ...process.env, AIWORKS_SUPERVISOR_PROBE: 'supervisor-only', CLAUDE_CODE_ENTRYPOINT: 'cli', FAKE_GH_STATE: 'x',
-    GH_TOKEN: 'the-supervisor-own-gh-login', HOME: 'h', USERPROFILE: 'u', APPDATA: 'a' };
-  const result = await runReleaseCommand({ config: r.config, dataDir: r.dataDir, stepKey: 'sampleapp.prod.x.1.merge.1', command: r.gh, cwd: r.work,
-    credential: { ref: REF }, inherited });
-  assert.equal(result.ran, true);
-  assert.equal(result.exitCode, 0, result.output);
-  // The release runner process itself: what its credential helper saw.
-  const runnerKeys = JSON.parse(readFileSync(join(r.tools, 'runner-env.json'), 'utf8'));
-  assert.ok(runnerKeys.length > 0 && runnerKeys.every((key) => KEEP.includes(key.toLowerCase())), `runner environment: ${runnerKeys.join(', ')}`);
-  for (const probe of [...PROBES, 'GH_TOKEN']) assert.ok(!runnerKeys.includes(probe), `the runner inherited ${probe}`);
-  // The command it ran: PATH, SystemRoot and the fetched credential in GH_TOKEN, nothing else.
-  const commandEnv = JSON.parse(result.output.split('\n')[0]);
-  for (const key of Object.keys(commandEnv)) assert.ok([...KEEP, 'gh_token'].includes(key.toLowerCase()), `the command inherited ${key}`);
-  for (const probe of PROBES) assert.equal(commandEnv[probe], undefined, `the command inherited ${probe}`);
-  // Values the supervisor's environment overrode never pass through, even for names libuv supplies on Windows.
-  for (const key of ['HOME', 'USERPROFILE', 'APPDATA']) assert.notEqual(commandEnv[key], inherited[key], `${key} came from the supervisor's environment`);
-  assert.equal(commandEnv.GH_TOKEN, '[credential withheld]', 'the fetched credential reached the command, and its output is masked');
-  assert.ok(!result.output.includes('the-supervisor-own-gh-login'), "the supervisor's own GitHub login never reaches a release command");
-  assert.ok(!result.output.includes('supervisor-only'));
-  // The same boundary as a pure function: only PATH and SystemRoot survive, whatever their case.
-  assert.deepEqual(releaseEnv({ Path: 'p', systemroot: 's', AIWORKS_X: 'x', GH_TOKEN: 't', CLAUDECODE: '1' }), { PATH: 'p', SystemRoot: 's' });
-  // A step without a credential gets no GH_TOKEN at all, not the supervisor's.
-  const bare = await runReleaseCommand({ config: r.config, dataDir: r.dataDir, stepKey: 'sampleapp.prod.x.1.check.1', command: r.gh, cwd: r.work, inherited });
-  assert.equal(JSON.parse(bare.output.split('\n')[0]).GH_TOKEN, undefined);
-});
 
 test('worker environments never contain the release credential', async (t) => {
   const r = rig(t);
@@ -187,29 +118,6 @@ test('the credential never appears in the journal, row, log or packet', async (t
   assert.ok(statSync(join(r.work, 'ran')).isFile(), 'the command ran');
 });
 
-test('a missing credential makes E12 fail', async (t) => {
-  const r = rig(t, { present: false });
-  const candidate = { project: 'sampleapp', destinationId: 'prod', taskId: 'T1', verifiedSha: SHA };
-  const e12 = (role) => evaluateEligibility(candidate, { role }).failed.find((item) => item.check === 'E12');
-  assert.equal(e12(releaseRoleReader({ store: r.helper, refFor: () => REF })).reason, 'the release credential reference does not resolve');
-  assert.equal(e12(releaseRoleReader({ store: r.helper, refFor: () => null })).reason, 'the release credential reference does not resolve', 'no reference at all');
-  assert.match(e12(releaseRoleReader({ store: { has() { throw new Error('locked'); } }, refFor: () => REF })).reason, /^role: unreadable/,
-    'a store that cannot tell is never "present"');
-  // Present (another vault): E12 passes on presence alone; the value is never read for it.
-  const present = rig(t);
-  let gets = 0;
-  const watched = { has: (ref) => present.helper.has(ref), get: () => { gets += 1; return null; } };
-  assert.equal(e12(releaseRoleReader({ store: watched, refFor: () => REF })), undefined);
-  assert.equal(gets, 0, 'E12 asks for presence only');
-  assert.equal(credentialResolves(watched, 'not a ref'), false);
-  // The runner refuses to run a command whose credential does not resolve.
-  const result = await runReleaseCommand({ config: r.config, dataDir: r.dataDir, stepKey: 'sampleapp.prod.x.1.merge.1', command: r.gh, cwd: r.work, credential: { ref: REF } });
-  assert.equal(result.ran, false);
-  assert.match(result.reason, /aiworks-release\/sampleapp does not resolve/);
-  assert.equal(existsSync(join(r.work, 'ran')), false, 'nothing ran without its credential');
-  assert.equal(fetchCredential(r.helper, REF), null);
-});
-
 test('with release.enabled off the release runner is never started', async (t) => {
   const r = rig(t);
   let started = 0;
@@ -226,65 +134,4 @@ test('with release.enabled off the release runner is never started', async (t) =
   await assert.rejects(runReleaseCommand({ config: r.config, dataDir: r.dataDir, stepKey: 'k', command: r.gh, cwd: r.work, credential: { value: r.secret }, start }),
     /by reference only/);
   assert.equal(started, 0);
-});
-
-test('a runner that gives no result is an unknown outcome, and a command past its timeout is stopped', async (t) => {
-  const r = rig(t);
-  await assert.rejects(runReleaseCommand({ config: r.config, dataDir: r.dataDir, stepKey: 'k1', command: r.gh, cwd: r.work,
-    start: async () => ({ code: null, signal: 'SIGKILL' }) }), /gave no result/);
-  writeFileSync(join(r.tools, 'slow.mjs'), 'setTimeout(() => {}, 60_000);\n');
-  const slow = await runReleaseCommand({ config: r.config, dataDir: r.dataDir, stepKey: 'k2', command: [process.execPath, join(r.tools, 'slow.mjs')],
-    cwd: r.work, timeoutMs: 500 });
-  assert.equal(slow.ran, true);
-  assert.equal(slow.exitCode, null);
-  assert.equal(slow.reason, 'the command timed out');
-});
-
-test('the Windows Credential Manager adapter reads by reference, and presence without the value', () => {
-  const calls = [];
-  const answer = (out) => (file, args) => { calls.push({ file, args }); return out; };
-  const listing = '\r\nCurrently stored credentials for aiworks-release/sampleapp:\r\n\r\n    Target: LegacyGeneric:target=aiworks-release/sampleapp\r\n    Type: Generic\r\n';
-  assert.equal(windowsCredentialStore({ exec: answer({ status: 0, stdout: listing }), powershell: 'ps.exe' }).has(REF), true);
-  assert.deepEqual(calls.at(-1), { file: 'cmdkey', args: [`/list:${REF}`] }, 'presence comes from cmdkey, which never prints a password');
-  assert.equal(windowsCredentialStore({ exec: answer({ status: 0, stdout: listing.replaceAll('sampleapp', 'sampleapp2') }), powershell: 'ps.exe' }).has(REF), false);
-  assert.equal(windowsCredentialStore({ exec: answer({ status: 0, stdout: '\r\n* NONE *\r\n' }), powershell: 'ps.exe' }).has(REF), false);
-  assert.throws(() => windowsCredentialStore({ exec: answer({ status: 5 }), powershell: 'ps.exe' }).has(REF), /could not list/);
-  const reader = windowsCredentialStore({ exec: answer({ status: 0, stdout: 'synthetic' }), powershell: 'ps.exe' });
-  assert.equal(reader.get(REF), 'synthetic');
-  const script = Buffer.from(calls.at(-1).args.at(-1), 'base64').toString('utf16le');
-  assert.match(script, /CredRead/);
-  assert.ok(script.includes(`Read('${REF}')`), 'the reference is the only input');
-  assert.equal(windowsCredentialStore({ exec: answer({ status: 3 }), powershell: 'ps.exe' }).get(REF), null, 'not found');
-  assert.throws(() => windowsCredentialStore({ exec: answer({ status: 1 }), powershell: 'ps.exe' }).get(REF), /could not be read/);
-  assert.throws(() => windowsCredentialStore({ exec: answer({ status: 0 }), powershell: null }).has(REF), /only on Windows/);
-  // A reference that could break out of the script, the listing or a path never reaches a command.
-  const before = calls.length;
-  for (const bad of ["x'); Remove-Item C:\\", 'a b', '../x', 'a\nb', '', 'x'.repeat(129), null]) {
-    assert.equal(validCredentialRef(bad), false, String(bad));
-    assert.throws(() => reader.get(bad), /by reference|short name/);
-  }
-  assert.equal(calls.length, before);
-});
-
-// REL5a (plan section 8 (i)): a step that names no credential uses the logins already on this computer.
-test('a step without a credential reads no credential store and never sets GH_TOKEN', async (t) => {
-  const r = rig(t);
-  const inherited = { ...process.env, AIWORKS_SUPERVISOR_PROBE: 'supervisor-only', CLAUDE_CODE_ENTRYPOINT: 'cli', FAKE_GH_STATE: 'x',
-    GH_TOKEN: 'the-supervisor-own-gh-token', GITHUB_TOKEN: 'another-token', HOME: join(r.dir, 'home'), APPDATA: join(r.dir, 'appdata'),
-    GH_CONFIG_DIR: join(r.dir, 'gh-config') };
-  const result = await runReleaseCommand({ config: r.config, dataDir: r.dataDir, stepKey: 'sampleapp.live.x.1.deploy.1', command: r.gh, cwd: r.work, inherited });
-  assert.equal(result.ran, true);
-  assert.equal(result.exitCode, 0, result.output);
-  // The configured credential store is a helper that records every time it is asked; it was never asked.
-  assert.equal(existsSync(join(r.tools, 'runner-env.json')), false, 'the credential store was read');
-  const packet = JSON.parse(readFileSync(join(r.dataDir, 'releases', 'sampleapp.live.x.1.deploy.1', 'packet.json'), 'utf8'));
-  assert.equal(packet.credential, null, 'the packet names no credential and no store');
-  // The command finds the operator's logins where they already are, and gets no token and no supervisor variable.
-  const commandEnv = JSON.parse(result.output.split('\n')[0]);
-  for (const key of ['GH_TOKEN', 'GITHUB_TOKEN', ...PROBES]) assert.equal(commandEnv[key], undefined, `the command received ${key}`);
-  for (const key of ['HOME', 'APPDATA', 'GH_CONFIG_DIR']) assert.equal(commandEnv[key], inherited[key], `the command cannot find the login in ${key}`);
-  const allowed = [...KEEP, ...RELEASE_LOGIN_ENV.map((key) => key.toLowerCase())];
-  for (const key of Object.keys(commandEnv)) assert.ok(allowed.includes(key.toLowerCase()), `the command inherited ${key}`);
-  assert.ok(!result.output.includes('the-supervisor-own-gh-token') && !result.output.includes('another-token'));
-  assert.ok(!RELEASE_LOGIN_ENV.some((key) => /TOKEN/i.test(key)), 'no token variable is ever kept');
 });

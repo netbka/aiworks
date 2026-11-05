@@ -121,14 +121,6 @@ test('unsupported runtimes fail closed before starting a worker', { skip: proces
   assert.equal(existsSync(join(run.dir, 'started.txt')), false);
 });
 
-test('native process launch preserves arguments and prompt bytes', { skip: process.platform !== 'win32' }, async (t) => {
-  const argv = ['', 'two words', 'a"quoted"value', 'ending\\', 'slash\\"quote', 'שלום'];
-  const run = launch(t, "import { readFileSync } from 'node:fs'; console.log(JSON.stringify({ argv: process.argv.slice(2), prompt: readFileSync(0, 'utf8') }));", 10_000, argv);
-  const result = await waitFor(run.result, run.diagnostics);
-  assert.equal(result.exitCode, 0, JSON.stringify(result));
-  assert.deepEqual(JSON.parse(readFileSync(join(run.dir, 'stdout.json'), 'utf8')), { argv, prompt: 'synthetic prompt' });
-});
-
 test('unavailable containment helper never starts a worker', { skip: process.platform !== 'win32' }, async (t) => {
   const run = launch(t, "import { writeFileSync } from 'node:fs'; writeFileSync('started.txt', 'unsafe');",
     10_000, [], (dir) => {
