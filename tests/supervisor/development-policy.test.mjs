@@ -1,11 +1,12 @@
 // AIWorks never creates, enables, dispatches or reruns GitHub Actions. Publication does not depend on the Actions setting.
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { rest } from '../../src/supervisor/adapters/github.mjs';
-import { exec, pushVerified } from '../../src/supervisor/adapters/git.mjs';
+import { assertNoWorkflowChange, exec, pushVerified } from '../../src/supervisor/adapters/git.mjs';
 import { pushTrustedTip } from '../../src/supervisor/github-backup.mjs';
 import { workerEnv } from '../../src/supervisor/proc.mjs';
 
@@ -100,4 +101,37 @@ else if (args.includes('ls-remote')) process.stdout.write('${'a'.repeat(40)}\\tr
   process.env.SYNTHETIC_URLS = dir;
   pushVerified(push);
   assert.equal(pushTrustedTip(backup).kind, 'backup-pushed', 'offline local directory transports remain available');
+});
+
+test('a base that gained a workflow after the fork does not block the head, and the head changing a workflow still does', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'aiworks-workflow-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (...args) => {
+    const out = spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', ...args], { cwd: dir, encoding: 'utf8' });
+    assert.equal(out.status, 0, out.stderr);
+    return out.stdout.trim();
+  };
+  const commit = (path, text) => { mkdirSync(dirname(join(dir, path)), { recursive: true }); writeFileSync(join(dir, path), text); git('add', '-A'); git('commit', '-q', '-m', path); return git('rev-parse', 'HEAD'); };
+  git('init', '-q', '-b', 'main');
+  commit('README.md', 'one');
+  const fork = git('rev-parse', 'HEAD');
+  git('checkout', '-q', '-b', 'feature');
+  const clean = commit('src/app.mjs', 'change');
+  git('checkout', '-q', 'main');
+  const base = commit('.github/workflows/ci.yml', 'name: ci');
+  git('checkout', '-q', '-b', 'edits', fork);
+  const editing = commit('.github/Workflows/other.yml', 'name: x');
+  const check = (args) => assertNoWorkflowChange({ git: ['git'], repoPath: dir, ...args });
+  // The head does not contain the base's new workflow; a two-dot comparison would call that the head's own change.
+  check({ base, head: clean });
+  assert.throws(() => check({ base, head: editing }), { code: 'LOCAL_DEVELOPMENT_ONLY' });
+  // A merge through the refresh path carries a gated merge result: the base's workflow plus the head's source change is fine.
+  git('checkout', '-q', 'main');
+  git('merge', '-q', '--no-ff', '-m', 'merge', 'feature');
+  check({ base, head: clean, tree: git('rev-parse', 'HEAD^{tree}') });
+  assert.throws(() => check({ base, head: clean, tree: git('rev-parse', `${editing}^{tree}`) }), { code: 'LOCAL_DEVELOPMENT_ONLY' }, 'a gated result that changes workflows is refused');
+  const gh = [process.execPath, '-e', "process.stdout.write('{}')"];
+  const merge = ['--method', 'PUT', 'repos/example-org/sampleapp/pulls/1/merge'];
+  rest(gh, 'merge', merge, { local: { git: ['git'], repoPath: dir, base, head: clean } });
+  assert.throws(() => rest(gh, 'merge', merge, { local: { git: ['git'], repoPath: dir, base, head: editing } }), { code: 'LOCAL_DEVELOPMENT_ONLY' });
 });
