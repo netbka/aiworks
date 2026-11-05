@@ -120,6 +120,21 @@ test('merge settings: off unless delegated to the supervisor with an explicit re
   assert.ok(on.held.has('https://github.com/example-org/sampleapp/pull/7'));
 });
 
+test('nothing merges when merging is absent, delegated to the monitor, malformed or the repository is not listed', async (t) => {
+  const r = rig(t);
+  await publish(r);
+  const main = r.main(), reads = r.pullReads();
+  for (const config of [{}, { merges: { delegatedTo: 'monitor', decision: '#17' } }, { merges: { delegatedTo: 'supervisor', decision: '#138' } },
+    { merges: { ...ON, repositories: ['example-org/other'] } }]) {
+    r.start(config);
+    for (let i = 0; i < 2; i++) { r.advance(); await r.tick(); }
+    assert.equal(r.mergeCalls().length, 0, `no merge call with ${JSON.stringify(config)}`);
+    assert.equal(r.pullReads(), reads, `the pull request is not even read with ${JSON.stringify(config)}`);
+    assert.equal(r.main(), main);
+  }
+  assert.equal(r.journal(A, 'merged').length, 0);
+});
+
 test('an eligible pull request is merged once with a merge commit of the verified SHA; repeated ticks and a restart do not merge again', async (t) => {
   const r = rig(t);
   const { [A]: verified } = await publish(r);
