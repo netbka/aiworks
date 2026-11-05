@@ -28,7 +28,7 @@ export function pushTrustedTip({ git = ['git'], gh = ['gh'], repository, repoPat
     return { kind: 'backup-failed', reason: 'a backup needs a full commit SHA and plain remote and branch names' };
   }
   try {
-    assertPushDestination({ git, repoPath, remote });
+    assertPushDestination({ git, repoPath, remote, revs: [tip] });
   }
   catch (error) {
     if (/push destination could not be verified/.test(error.message) && missingLocalDestination(git, repoPath, remote)) return { kind: 'backup-failed', reason: 'the backup folder does not exist on this computer' };
