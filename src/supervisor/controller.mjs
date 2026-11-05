@@ -3307,18 +3307,13 @@ export class Controller {
     this.log(`dispatched ${op.id} (session ${op.session_id})${confirmed ? '' : ' - runner not yet confirmed'}`);
   }
 
-  /** The checkout a supervisor note's GitHub comment acts on; undefined (so the comment is refused) when the campaign or its checkout is unknown. */
-  outboxLocal(decl) {
-    try { return decl ? { git: this.cmd.git, repoPath: this.repo(decl).path, revs: ['HEAD'] } : undefined; } catch { return undefined; }
-  }
-
   async publish(ctx, campaign, task) {
     const decl = campaign.declaration;
     const spec = specOf(this.store, ctx.id, task.task_id, decl);
     if (isLocalTarget(decl)) return this.recordLocalCandidate(ctx, decl, spec, task);
     const repo = this.repo(decl);
-    // The verified head holds the base's files too, so its tree is what a comment, PR or push here could run workflows from.
-    const gitLocal = { git: this.cmd.git, repoPath: repo.path, revs: [task.verified_sha] };
+    // What the PR and the push publish is the change from the commit the task started from to the verified head.
+    const gitLocal = { git: this.cmd.git, repoPath: repo.path, base: task.base_sha, head: task.verified_sha };
     const branch = gitA.branchName(ctx.id, task.task_id);
     const bodyFile = join(this.dataDir, 'runs', `${ctx.id}.${task.task_id}.publish.md`);
     try {
@@ -3357,13 +3352,13 @@ export class Controller {
             this.store.journal(ctx.id, `${repairKind}-repair-unpublished`, { task: task.task_id, sha: task.verified_sha }, now);
             return;
           }
-          gitA.pushVerified({ git: this.cmd.git, gh: this.cmd.gh, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha });
+          gitA.pushVerified({ git: this.cmd.git, gh: this.cmd.gh, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha, base: task.base_sha });
           this.injectFault('after-push');
           url = existing.url;
           const prefix = `https://github.com/${decl.target.repository}/pull/`;
           const number = String(url).startsWith(prefix) ? /^(\d+)/.exec(String(url).slice(prefix.length))?.[1] : null;
           if (!number) throw new Error(`cannot post the ${repairKind} repair comment: no PR number in ${url}`);
-          const target = { gh: this.cmd.gh, repository: decl.target.repository, issue: Number(number), key, local: gitLocal };
+          const target = { gh: this.cmd.gh, repository: decl.target.repository, issue: Number(number), key };
           if (!github.findMarkedComment(target)) github.postComment({ ...target, body: comment, bodyFile, terms });
         } else if (spec.deliverable === 'commit') {
           // Over GitHub's body limit, the verification moves to its own marked PR comment: nothing is truncated.
@@ -3380,7 +3375,7 @@ export class Controller {
             { identity: task.task_id });
             return;
           }
-          gitA.pushVerified({ git: this.cmd.git, gh: this.cmd.gh, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha });
+          gitA.pushVerified({ git: this.cmd.git, gh: this.cmd.gh, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha, base: task.base_sha });
           this.injectFault('after-push');
           url = github.openPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, baseBranch: decl.target.baseBranch, branch,
             title, body, bodyFile, terms, local: gitLocal });
@@ -3388,7 +3383,7 @@ export class Controller {
             const prefix = `https://github.com/${decl.target.repository}/pull/`;
             const number = String(url).startsWith(prefix) ? /^(\d+)/.exec(String(url).slice(prefix.length))?.[1] : null;
             if (!number) throw new Error(`cannot post the verification comment: no PR number in ${url}`);
-            const target = { gh: this.cmd.gh, repository: decl.target.repository, issue: Number(number), key: vKey, local: gitLocal };
+            const target = { gh: this.cmd.gh, repository: decl.target.repository, issue: Number(number), key: vKey };
             if (!github.findMarkedComment(target)) github.postComment({ ...target, body: `${verification}\n\n${github.marker(vKey)}`, bodyFile, terms });
           }
         } else if (decl.reportPublication === 'local') {
@@ -3399,7 +3394,7 @@ export class Controller {
           // Reconcile before posting: a crash after an accepted post must not post twice.
           const digest = createHash('sha256').update(String(task.result?.report ?? ''), 'utf8').digest('hex');
           const key = `${ctx.id}:${task.task_id}:report:${digest}`;
-          const target = { gh: this.cmd.gh, repository: decl.target.repository, issue: spec.issue, key, local: gitLocal };
+          const target = { gh: this.cmd.gh, repository: decl.target.repository, issue: spec.issue, key };
           // Over GitHub's comment limit, the verification goes in a second marked comment: nothing is truncated.
           const split = `${this.reportBody(decl, spec, task, digest)}\n\n${github.marker(key)}`.length > BODY_LIMIT;
           const body = `${this.reportBody(decl, spec, task, digest, { verificationElsewhere: split })}\n\n${github.marker(key)}`;
@@ -4200,7 +4195,7 @@ export class Controller {
             return;
           }
           this.store.run('UPDATE outbox SET attempts = attempts + 1, updated_at = ? WHERE key = ?', now, item.key);
-          const url = github.postComment({ gh: this.cmd.gh, repository, issue, body, terms, local: this.outboxLocal(decl),
+          const url = github.postComment({ gh: this.cmd.gh, repository, issue, body, terms,
             bodyFile: join(this.dataDir, 'runs', 'outbox.md') });
           this.store.run("UPDATE outbox SET state = 'posted', posted = ?, updated_at = ? WHERE key = ?", url ?? 'posted', this.now(), item.key);
         });

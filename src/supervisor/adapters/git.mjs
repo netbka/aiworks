@@ -356,25 +356,28 @@ export function checkVerification({ git, path, targetSha }) {
   return null;
 }
 
+/** Git's empty tree: the base when nothing was published before, so every workflow file counts as added. */
+export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+
 /**
- * AIWorks never uses GitHub Actions (owner directive, 2 November 2026). It does not read the repository's Actions setting
- * from GitHub; it reads the local tree instead. A tree with a file under .github/workflows can start a hosted run (on
- * push, and on issue_comment or merge events from the default branch), so AIWorks refuses to publish where one exists.
- * Fails closed: an unreadable tree, or no revision to check, is a refusal.
+ * AIWorks never uses GitHub Actions (owner directive, 2 November 2026) and does not read the repository's Actions setting
+ * from GitHub. A push, backup push, pull request or merge that adds, changes, deletes or renames a path under
+ * .github/workflows could start a hosted run, so it is refused. Workflow files the base already holds are the owner's
+ * repository matter and do not stop publication. Compares `head` with the `base` it is published onto, locally (no
+ * rename detection, so both sides of a rename show; paths match case-insensitively, as a Windows checkout would). Fails
+ * closed: an unreadable diff, or no base or head, is a refusal.
  */
-export function assertNoWorkflowFiles({ git, repoPath, revs }) {
+export function assertNoWorkflowChange({ git, repoPath, base, head }) {
   const refuse = (why) => { throw Object.assign(new Error(`LOCAL_DEVELOPMENT_ONLY: ${why}`), { code: 'LOCAL_DEVELOPMENT_ONLY' }); };
-  const list = [...new Set((revs ?? []).filter(Boolean))];
-  if (!git || !repoPath || !list.length) refuse('the local tree this GitHub push or write acts on is not known, so it cannot be checked for GitHub Actions workflow files; AIWorks never publishes where its push or write could start a hosted run');
-  for (const rev of list) {
-    const out = exec(git, ['ls-tree', '-r', '--name-only', rev, '--', '.github/workflows'], { cwd: repoPath });
-    if (!out.ok) refuse(`the tree ${rev} could not be read to check it for GitHub Actions workflow files; nothing was published`);
-    if (out.stdout.trim()) refuse(`the repository holds GitHub Actions workflow files (${rev}); AIWorks never publishes where its push or write could start a hosted run: remove the workflows or keep the project local`);
-  }
+  if (!git || !repoPath || !base || !head) refuse('the base and head of this GitHub push or merge are not known, so it cannot be checked for GitHub Actions workflow changes; AIWorks never publishes workflow changes');
+  const out = exec(git, ['diff', '--name-only', '--no-renames', '-z', base, head], { cwd: repoPath });
+  if (!out.ok) refuse(`the change from ${base} to ${head} could not be read to check it for GitHub Actions workflow changes; nothing was published`);
+  const changed = out.stdout.split('\0').find((path) => /^\.github\/workflows(\/|$)/i.test(path));
+  if (changed) refuse(`the change adds or edits a GitHub Actions workflow file (${changed}); AIWorks never publishes workflow changes: remove the change from .github/workflows`);
 }
 
-/** A push goes only to a GitHub remote or an offline local folder. A push to a GitHub remote also needs `revs` free of workflow files; an offline folder cannot run Actions. */
-export function assertPushDestination({ git, repoPath, remote, expectedRepository = null, revs }) {
+/** A push goes only to a GitHub remote or an offline local folder. A push to a GitHub remote also must not change workflow files between `base` and `head`; an offline folder cannot run Actions. */
+export function assertPushDestination({ git, repoPath, remote, expectedRepository = null, base, head }) {
   const out = exec(git, ['remote', 'get-url', '--push', '--all', remote], { cwd: repoPath });
   const refuse = () => { throw Object.assign(new Error('LOCAL_DEVELOPMENT_ONLY: push destination could not be verified'), { code: 'LOCAL_DEVELOPMENT_ONLY' }); };
   if (!out.ok || !out.stdout) refuse();
@@ -389,12 +392,12 @@ export function assertPushDestination({ git, repoPath, remote, expectedRepositor
       if (!isAbsolute(url) || /^[\\/]{2}/.test(url) || url.includes('://') || !existsSync(url) || !lstatSync(url).isDirectory()) refuse();
     }
   }
-  if (repositories.size) assertNoWorkflowFiles({ git, repoPath, revs });
+  if (repositories.size) assertNoWorkflowChange({ git, repoPath, base, head });
 }
 
-/** Push exactly the verified SHA (not a moving HEAD) to the campaign branch. */
-export function pushVerified({ git, repository, repoPath, branch, sha }) {
-  assertPushDestination({ git, repoPath, remote: 'origin', expectedRepository: repository, revs: [sha] });
+/** Push exactly the verified SHA (not a moving HEAD) to the campaign branch. `base` is the commit the task started from. */
+export function pushVerified({ git, repository, repoPath, branch, sha, base }) {
+  assertPushDestination({ git, repoPath, remote: 'origin', expectedRepository: repository, base, head: sha });
   must(exec(git, ['push', 'origin', `${sha}:refs/heads/${branch}`], { cwd: repoPath }), 'push verified commit');
   const remote = must(exec(git, ['ls-remote', 'origin', `refs/heads/${branch}`], { cwd: repoPath }), 'read remote branch');
   if (!remote.startsWith(sha)) throw new Error(`remote ${branch} is not at verified ${sha}`);

@@ -12,7 +12,6 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
 import { OWNER_CALLER } from '../supervisor/local-admission.mjs';
-import { resolveCheckout } from '../supervisor/project-connect.mjs';
 import { recordOwnerMain, selfHostingSettings } from '../supervisor/self-hosting.mjs';
 import { addComment, comments, createItem, item, items, setItemState } from '../supervisor/work-list.mjs';
 import { CLOSE_IMPORTED_ON, closeCandidates, closeConfirmedIssues, itemVersion } from '../supervisor/work-list-import.mjs';
@@ -255,14 +254,6 @@ const CLOSE_REFUSALS = Object.freeze({
   WORK_CLOSE_UNCHECKED: [403, 'AIWorks could not check that this request came from you, so nothing was sent to GitHub.'],
 });
 
-/** The local checkout of the repository the close acts on, as rest() checks it; undefined when none is known. */
-function ownCheckout(store, config, repository) {
-  try {
-    const path = resolveCheckout(store, config, repository)?.path;
-    return path ? { git: config.commands?.git ?? ['git'], repoPath: path, revs: ['HEAD'] } : undefined;
-  } catch { return undefined; }
-}
-
 /**
  * POST /api/work-list/close-imported: close on GitHub exactly the imported issues the owner confirmed, typing the
  * repository's name (LOCAL_OPERATION section 5.4, SELF11). input: { requestId, typed, selection: [{ number, version }] },
@@ -271,7 +262,7 @@ function ownCheckout(store, config, repository) {
  * Off until CLOSE_IMPORTED_ON; `available` and the GitHub command are for tests only. A retry with the same request id is
  * answered from its receipt, and an issue already closed by this flow is never commented on or closed again.
  */
-export async function closeImportedIssues(dataDir, input, { caller, available = CLOSE_IMPORTED_ON, gh = null, local = null, now = Date.now() } = {}) {
+export async function closeImportedIssues(dataDir, input, { caller, available = CLOSE_IMPORTED_ON, gh = null, now = Date.now() } = {}) {
   readInput(input, ['requestId', 'typed', 'selection'], { typed: words(200),
     selection: (value) => Array.isArray(value) && value.length > 0 && value.length <= MAX_CONFIRM && value.every((entry) => entry && typeof entry === 'object'
       && !Array.isArray(entry) && Object.keys(entry).every((key) => ['number', 'version'].includes(key)) && number(entry.number) && version(entry.version)) });
@@ -290,9 +281,7 @@ export async function closeImportedIssues(dataDir, input, { caller, available = 
     const selection = input.selection.map((entry) => ({ repository, number: entry.number, updatedAt: item(store, entry.number)?.source_updated_at ?? null, version: entry.version }));
     let report;
     try {
-      report = await closeConfirmedIssues({ store, gh: gh ?? config.commands?.gh ?? ['gh'], repository, selection, caller, available, now,
-        // The writes act on AIWorks's own checkout, which must hold no .github/workflows file; without one they are refused.
-        local: local ?? ownCheckout(store, config, repository) });
+      report = await closeConfirmedIssues({ store, gh: gh ?? config.commands?.gh ?? ['gh'], repository, selection, caller, available, now });
     } catch (error) {
       const known = CLOSE_REFUSALS[error?.code];
       if (known) throw fail(known[0], known[1], error.code, error.code === 'WORK_CLOSE_STALE' ? safeText(error.message, 300) : null);
