@@ -102,7 +102,7 @@ Only `script` (a repository-relative `.mjs`, `.cjs` or `.js` path) and optional 
 
 ### Test result cache
 
-`testCache` is off unless `testCache.enabled` is exactly `true`. When on, a verifier's gate skips each test file whose inputs are unchanged since a recorded pass, and the supervisor checks every skipped file again from git before it accepts the result. `testCache.maxAgeDays` (default 7) bounds how old a recorded pass may be to be offered. A malformed block turns the cache off and is logged. Supervisor gates and releases always run every file. See [the runbook](../SUPERVISOR.md) (test result cache).
+`testCache` is off unless `testCache.enabled` is exactly `true`; off, verifier gates and prompts are exactly as before. When on, a verifier's gate skips each test file whose inputs are unchanged since a recorded pass, and the supervisor checks every skipped file again from git before it accepts the result. `testCache.maxAgeDays` (default 7) bounds how old a recorded pass may be. A malformed block turns the cache off and is logged. Supervisor gates (merge refresh, group merge, base check) always run every file. A project with a standing release grant is never offered the cache, and a release refuses a verification that counted cached files. See [the runbook](../SUPERVISOR.md) (test result cache).
 
 ### Notifications
 

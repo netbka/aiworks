@@ -91,7 +91,8 @@ export function deliverableWithDefects(task, deliverable) {
   const v = task?.verification, head = task?.head_sha;
   if (deliverable !== 'commit' || !SHA.test(head ?? '') || v?.verdict !== 'rejected' || v.targetSha !== head) return false;
   if (!/^verifier still rejects/.test(String(task.blocked?.reason ?? '')) || v.reportDigest !== reportDigestOf(task)) return false;
-  return (task.findings ?? []).every((finding) => (v.findings ?? []).some((own) => own.id === finding.id)) && fullCheckPassed(v.gate);
+  // A delivery as it is needs a gate that ran every file: one that counted cached files (test-cache.mjs) is not one.
+  return (task.findings ?? []).every((finding) => (v.findings ?? []).some((own) => own.id === finding.id)) && fullCheckPassed(v.gate) && !v.gate.cached;
 }
 
 /**
