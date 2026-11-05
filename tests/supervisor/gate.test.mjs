@@ -144,4 +144,7 @@ test('a failed file retried alone passes the gate only when its retry passes; to
   assert.equal(again.status, 1);
   assert.equal(again.total.fail, 1);
   assert.equal(settle(runs, []).status, 1, 'no retry: the first failures stand');
+  // A file stopped before its own summary counts no failed test, yet the total must not read `# fail 0` beside it.
+  assert.equal(settle(runs, []).total.fail, 2);
+  assert.equal(settle(runs, [{ file: 'tests/b.test.mjs', code: 0, counts: counts(2, 0) }, { file: 'tests/c.test.mjs', code: 1, counts: counts(0, 0) }]).total.fail, 1);
 });
