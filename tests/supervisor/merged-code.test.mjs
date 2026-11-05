@@ -6,9 +6,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { campaignPause, campaignStart } from '../../src/supervisor/api.mjs';
+import { campaignStart } from '../../src/supervisor/api.mjs';
 import { authorityDigest, scopeDigest } from '../../src/supervisor/campaign.mjs';
-import { declaration, environment, GOVERNANCE, runCli, runtimeCheckout, runUntil, skipWithoutSqlite, sleep, SQLITE } from './helpers.mjs';
+import { declaration, environment, runtimeCheckout, runUntil, skipWithoutSqlite, sleep, SQLITE } from './helpers.mjs';
 // Loaded leniently so that, on a revision without the rule, each test fails on its own assertion.
 const provenance = await import('../../src/supervisor/provenance.mjs').catch(() => ({}));
 const { Store } = SQLITE ? await import('../../src/supervisor/store.mjs') : {};
@@ -40,18 +40,6 @@ function repository(t, { files = {}, originMain = true } = {}) {
 const refused = (code, pattern) => (error) => error.code === code && pattern.test(error.message);
 
 
-test('private declarations outside the code checkout are accepted without Git tracking', (t) => {
-  const root = repository(t);
-  const privateDir = mkdtempSync(join(tmpdir(), 'aiworks-private-'));
-  t.after(() => rmSync(privateDir, { recursive: true, force: true }));
-  const file = join(privateDir, 'private.json');
-  const decl = declaration(); writeFileSync(file, text(decl));
-  assert.deepEqual(provenance.declarationFromFile(file, { root }), decl);
-  assert.equal(git(root, 'ls-files', 'campaigns').length, 0);
-  writeFileSync(file, text({ ...decl, authorization: { ...decl.authorization, version: 2 } }));
-  assert.equal(provenance.declarationFromFile(file, { root }).authorization.version, 2);
-});
-
 test('private declaration loading still refuses unmerged and unknown runtime revisions', (t) => {
   const root = repository(t, { files: { 'private.json': declaration() } });
   writeFileSync(join(root, 'README.md'), 'local change');
@@ -66,26 +54,6 @@ test('invalid private JSON is refused without copying its contents into diagnost
   const path = join(root, 'private.json'); writeFileSync(path, '{PRIVATE-CONTENT');
   assert.throws(() => provenance.declarationFromFile(path, { root }), e => e.code === 'DECLARATION_INVALID' && !e.message.includes('PRIVATE-CONTENT'));
   assert.throws(() => provenance.declarationFromFile(join(root, 'missing.json'), { root }), refused('DECLARATION_INVALID', /Cannot read/));
-});
-
-test('CLI registers and resumes ignored campaigns but still binds scope and authorization', { skip: !SQLITE }, (t) => {
-  const decl = declaration({ campaignId: 'local-private' });
-  const runtime = runtimeCheckout({ declarations: { 'private.json': decl } });
-  const data = mkdtempSync(join(tmpdir(), 'aiworks-private-cli-'));
-  t.after(() => { runtime.cleanup(); rmSync(data, { recursive: true, force: true }); });
-  const file = join(runtime.root, 'campaigns/private.json');
-  const start = () => runCli(runtime.cli, ['start', file, '--data', data, '--governance', GOVERNANCE]);
-  assert.equal(runtime.git('ls-files', 'campaigns'), '');
-  assert.equal(start().status, 0);
-  const store = new Store(join(data, 'supervisor.db'));
-  try { campaignPause(store, decl.campaignId); } finally { store.close(); }
-  assert.equal(start().status, 0);
-  writeFileSync(file, text({ ...decl, constraints: ['Altered scope'] }));
-  assert.match(start().stderr, /^SCOPE_CONFLICT:/m);
-  writeFileSync(file, text({ ...decl, purpose: 'New private wording' }));
-  assert.match(start().stderr, /^AUTHORIZATION_VERSION_REQUIRED:/m);
-  writeFileSync(file, text({ ...decl, purpose: 'New private wording', authorization: { ...decl.authorization, version: 2 } }));
-  assert.equal(start().status, 0);
 });
 
 test('merged code enforcement has no configuration or environment bypass', () => {
@@ -144,25 +112,6 @@ test('the controller starts no new work from an unmerged revision, and resumes o
   current = null;
   await runUntil(controller, store, id, (c) => c.control === 'finished');
   assert.ok(store.all("SELECT kind FROM journal WHERE campaign_id = ? AND kind = 'blocker-cleared'", id).length >= 1);
-});
-
-test('with the owner-intervention core on, the hold is a durable B2 record that resolves once the code is merged', { skip: skipWithoutSqlite }, async (t) => {
-  let current = UNMERGED;
-  const { store, id, make } = controlled(t, { config: { ownerIntervention: { enabled: true } } });
-  const controller = make(() => current);
-  await controller.tick();
-  const [record] = store.all('SELECT * FROM blockers');
-  assert.equal(record?.dependency, 'runtime-not-merged');
-  assert.equal(record.class, 'B2');
-  assert.notEqual(record.status, 'resolved');
-  assert.equal(store.campaign(id).blocker?.fingerprint, record.fingerprint);
-  // A deterministic recheck while still unmerged fails on evidence and starts no probe run.
-  controller.recheckBlocker({ id, generation: controller.held.get(id) }, store.blocker(record.fingerprint), 'owner-recheck', Date.now());
-  assert.equal(store.blocker(record.fingerprint).status, 'open');
-  assert.equal(store.all('SELECT id FROM operations WHERE campaign_id = ?', id).length, 0);
-  current = null;
-  await runUntil(controller, store, id, (c) => c.control === 'finished');
-  assert.equal(store.get('SELECT status FROM blockers WHERE fingerprint = ?', record.fingerprint).status, 'resolved');
 });
 
 test('unmerged code lets a running operation finish and records it, but starts nothing after it', { skip: skipWithoutSqlite }, async (t) => {

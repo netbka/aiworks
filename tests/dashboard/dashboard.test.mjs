@@ -287,4 +287,3 @@ test('the address router is served like the other page files and refused cross-s
   // The page loads it as a module from its own origin.
   assert.match(readFileSync(resolve(import.meta.dirname, '../../src/dashboard/public/dashboard.js'), 'utf8'), /^import \{[^}]+\} from '\/router\.mjs';$/m);
 });
-

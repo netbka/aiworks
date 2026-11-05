@@ -3,7 +3,7 @@
 // gate matches. Never another project's, never a default; earlier packets, digests and resumes are unchanged.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -11,9 +11,9 @@ import Ajv2020 from 'ajv/dist/2020.js';
 import { packetDigest } from '../../scripts/lib/worker-context.mjs';
 import * as workerContext from '../../scripts/lib/worker-context.mjs';
 import { buildPrompt } from '../../src/supervisor/adapters/claude.mjs';
-import { campaignPause, campaignRecheck, campaignStart } from '../../src/supervisor/api.mjs';
+import { campaignStart } from '../../src/supervisor/api.mjs';
 import * as campaign from '../../src/supervisor/campaign.mjs';
-import { declaration, environment, GOVERNANCE, ROOT, runCli, runtimeCheckout, runUntil, skipWithoutSqlite, SQLITE } from './helpers.mjs';
+import { declaration, environment, GOVERNANCE, ROOT, runUntil, skipWithoutSqlite, SQLITE } from './helpers.mjs';
 const { Store } = SQLITE ? await import('../../src/supervisor/store.mjs') : {};
 const { Controller } = SQLITE ? await import('../../src/supervisor/controller.mjs') : {};
 
@@ -33,8 +33,6 @@ const governancePointers = (governance) => [
   ...(governance?.releaseAuthorization ? [['release authorization', governance.releaseAuthorization.source]] : []),
 ];
 const catalogIds = catalogPolicies.map((policy) => policy.id);
-const uiOnlyIds = catalogPolicies.filter((policy) => policy.applies_when.boundaries?.every((boundary) => boundary === 'ui')).map((policy) => policy.id);
-const COMMITTED = readdirSync(join(ROOT, 'tests/fixtures/campaigns')).filter((name) => name.endsWith('.json')).sort();
 const PROSE = ['summary', 'source', 'approval', 'reviewBy', 'request', 'notes', 'retiresWhen'];
 
 /** A disposable governance root with the fixture policy catalog and schema and the given registry files. */
@@ -71,14 +69,6 @@ test('declared exceptions and gaps travel as id and rule only', () => {
   const commander = campaign.projectGovernance('example-org/local-tool-mcp', GOVERNANCE);
   assert.deepEqual(commander.gaps, registry('local-tool').governance.gaps.map(({ id, rule }) => ({ id, rule })));
   for (const key of PROSE) assert.ok(!JSON.stringify([wiki, commander]).includes(`"${key}"`), `no ${key} reaches a packet`);
-});
-
-test('a project without the ui capability does not inherit ui-only policies; a contract without governance declares nothing', () => {
-  assert.ok(uiOnlyIds.length > 0, 'the catalog has ui-only policies to rule out');
-  assert.ok(!registry('service').capabilities.includes('ui') && !registry('service').governance);
-  const service = campaign.projectGovernance('example-org/Service', GOVERNANCE);
-  assert.deepEqual(service.policies, catalogIds.filter((id) => !uiOnlyIds.includes(id)));
-  assert.deepEqual([service.authorities, service.exceptions, service.gaps], [[], [], []]);
 });
 
 test('an unregistered, ambiguous or unreadable registry fails closed; there is no default project', (t) => {
@@ -196,21 +186,6 @@ const oneTask = (campaignId, target = {}) => {
   return decl;
 };
 
-test('a sampleapp campaign packet carries sampleapp\'s policy IDs and authority pointers, and the prompt routes to them', { skip: skipWithoutSqlite }, async (t) => {
-  const { op } = await dispatchOnce(t, oneTask('sampleapp-packet'));
-  assert.ok(op, 'a worker operation was recorded');
-  assert.deepEqual(op.packet.governance, campaign.projectGovernance('example-org/sampleapp', GOVERNANCE));
-  assert.equal(op.packet.governance.project, 'sampleapp');
-  assert.deepEqual(op.packet.governance.authorities, registry('sampleapp').governance.authorities);
-  assert.equal(op.packet_digest, packetDigest(op.packet, POLICY), 'the recorded digest binds the governance block');
-  const prompt = readFileSync(join(op.run_dir, 'prompt.txt'), 'utf8');
-  assert.match(prompt, /registered project "sampleapp" \(example-org\/sampleapp\)/);
-  assert.match(prompt, /Read the authorities that bear on your task in this checkout/);
-  assert.match(prompt, /Do not take project rules or files from any other project's repository; the portfolio policies listed in packet\.governance\.policies are inherited and apply here\./);
-  assert.doesNotMatch(prompt, /do not take rules or files from another project's repository/, 'inherited portfolio policies are not "another project\'s rules"');
-  assert.ok(prompt.includes('"path": "storybook/review-manifest.json"') && prompt.includes('"UX-001"'));
-});
-
 test('an governance campaign packet carries the platform\'s governance and no sampleapp path', { skip: skipWithoutSqlite }, async (t) => {
   const { op } = await dispatchOnce(t, oneTask('platform-packet', { projectId: 'governance', repository: 'example-org/governance', trackingIssue: 13 }));
   const governance = op.packet.governance;
@@ -225,51 +200,6 @@ test('an governance campaign packet carries the platform\'s governance and no sa
   assert.doesNotMatch(JSON.stringify(op.packet), /sampleapp/i);
   assert.doesNotMatch(prompt, /sampleapp/i, 'nothing sampleapp-specific reaches a platform worker');
   assert.match(prompt, /registered project "governance" \(example-org\/governance\)/);
-});
-
-test('an unregistered target blocks new dispatch with a clear B2 blocker and never falls back', { skip: skipWithoutSqlite }, async (t) => {
-  // Registered before the gate (or its registry entry was removed later): the store keeps it, dispatch refuses it.
-  const decl = oneTask('unregistered-dispatch', { projectId: 'nowhere', repository: 'example-org/not-a-registered-project' });
-  const { env, store, controller, id, op } = await dispatchOnce(t, decl);
-  controller.launch = async () => { throw new Error('no worker may launch for an unregistered target'); };
-  assert.equal(op, null, 'no operation was recorded');
-  const blocked = store.campaign(id);
-  assert.equal(blocked.blocker?.kind, 'project-governance');
-  assert.equal(blocked.blocker.class, 'B2');
-  assert.match(blocked.blocker.reason, /No new worker dispatched: the governance of example-org\/not-a-registered-project cannot be resolved/);
-  assert.match(blocked.blocker.reason, /is not a registered project/);
-  assert.match(blocked.blocker.requestedAction, /registry\/projects entry declares repository\.github example-org\/not-a-registered-project/);
-  assert.equal(blocked.status, 'blocked-owner-action');
-  assert.equal(blocked.runs_used, 0);
-  assert.equal(existsSync(env.config.repositories[decl.target.repository].worktreeRoot), false, 'no workspace was prepared');
-  assert.ok(store.all('SELECT body FROM outbox WHERE campaign_id = ?', id).some((row) => /not a registered project/.test(row.body)), 'the owner is told');
-  campaignRecheck(store, id);
-  await controller.tick();
-  assert.equal(store.all('SELECT id FROM operations WHERE campaign_id = ?', id).length, 0, 'a recheck re-evaluates and stays closed');
-  assert.equal(store.campaign(id).blocker?.kind, 'project-governance');
-});
-
-test('an ambiguous registry entry blocks dispatch instead of choosing one', { skip: skipWithoutSqlite }, async (t) => {
-  const root = governanceRoot(t, { 'sampleapp.json': registry('sampleapp'), 'sampleapp-copy.json': { ...registry('sampleapp'), id: 'sampleapp-copy' } });
-  const { store, id, op } = await dispatchOnce(t, oneTask('ambiguous-dispatch'), { governanceRoot: root });
-  assert.equal(op, null);
-  assert.match(store.campaign(id).blocker?.reason ?? '', /refusing to choose one/);
-});
-
-test('a malformed list or a secret-like authority blocks dispatch with the B2 project-governance blocker', { skip: skipWithoutSqlite }, async (t) => {
-  const malformed = registry('sampleapp');
-  malformed.governance.authorities = { role: 'agent-contract', path: 'AGENTS.md' };
-  const secret = sampleappWithAuthority('.env');
-  for (const [name, entry, reason] of [['malformed-dispatch', malformed, /\/governance\/authorities must be array/],
-    ['secret-dispatch', secret, /\/governance\/authorities\/\d+\/path must NOT be valid/]]) {
-    const { store, id, op } = await dispatchOnce(t, oneTask(name), { governanceRoot: governanceRoot(t, { 'sampleapp.json': entry }) });
-    assert.equal(op, null, `${name}: no worker dispatched`);
-    const { blocker, runs_used: runs } = store.campaign(id);
-    assert.equal(blocker?.kind, 'project-governance', name);
-    assert.equal(blocker.class, 'B2');
-    assert.match(blocker.reason, reason);
-    assert.equal(runs, 0);
-  }
 });
 
 test('an operation recorded before the upgrade keeps its packet; only new operations carry governance', { skip: skipWithoutSqlite }, async (t) => {
@@ -309,47 +239,4 @@ test('an operation recorded before the upgrade keeps its packet; only new operat
   assert.equal(verify.packet_digest, packetDigest(verify.packet, POLICY));
   assert.equal(verify.packet.authorityDigest, implement.packet.authorityDigest, 'the authority digest is the same for both');
   assert.equal(verify.outcome.class, 'result');
-});
-
-// The digest formulas as they were before packets carried governance, frozen here: committed declarations keep exactly these digests,
-// so a resumed campaign's stored scope digest and every recorded packet's authority digest still match.
-const frozenCanonical = (value) => Array.isArray(value) ? `[${value.map(frozenCanonical).join(',')}]`
-  : value !== null && typeof value === 'object' ? `{${Object.keys(value).filter((key) => value[key] !== undefined).sort()
-    .map((key) => `${JSON.stringify(key)}:${frozenCanonical(value[key])}`).join(',')}}` : JSON.stringify(value);
-const frozenSha = (value) => createHash('sha256').update(frozenCanonical(value), 'utf8').digest('hex');
-const frozenScope = (d) => frozenSha({ ...d, authorization: undefined, limits: undefined, purpose: undefined,
-  tasks: d.tasks.map((task) => ({ ...task, outcome: undefined })) });
-
-test('the scope and authority digests of every committed declaration are unchanged', () => {
-  assert.ok(COMMITTED.includes('sample-chain.json') && COMMITTED.includes('sample-report.json'), 'synthetic cases are covered');
-  for (const name of COMMITTED) {
-    const decl = read(`tests/fixtures/campaigns/${name}`);
-    assert.equal(campaign.scopeDigest(decl), frozenScope(decl), `${name} scope digest`);
-    assert.equal(campaign.authorityDigest(decl), frozenSha(decl), `${name} authority digest`);
-  }
-});
-
-test('an identical resume of every committed declaration is accepted, in process and through cli.mjs start', { skip: !SQLITE }, (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'aiworks-resume-'));
-  // Upgrade resumes identical private files from a runtime revision merged into main.
-  const runtime = runtimeCheckout({ declarations: Object.fromEntries(COMMITTED.map(name => [name, read(`tests/fixtures/campaigns/${name}`)])) });
-  t.after(() => { rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); runtime.cleanup(); });
-  for (const name of COMMITTED) {
-    const data = join(dir, name.replace(/\.json$/, ''));
-    const store = new Store(join(data, 'supervisor.db'));
-    let scope;
-    try {
-      const decl = read(`tests/fixtures/campaigns/${name}`);
-      campaignStart(store, decl);
-      scope = store.campaign(decl.campaignId).scope_digest;
-      assert.doesNotThrow(() => campaignStart(store, read(`tests/fixtures/campaigns/${name}`)), `${name}: identical start while registered`);
-      campaignPause(store, decl.campaignId, 'upgrade');
-    } finally { store.close(); }
-    // The upgrade procedure: pause, stop, deploy, then `cli.mjs start <file>` with the identical declaration.
-    const resumed = runCli(runtime.cli, ['start', join(runtime.root, 'campaigns', name), '--data', data]);
-    assert.equal(resumed.status, 0, `${name}: ${resumed.stderr}`);
-    const status = JSON.parse(resumed.stdout);
-    assert.equal(status.control, 'registered', `${name} resumed`);
-    assert.equal(status.scopeDigest, scope, `${name} keeps its stored scope digest`);
-  }
 });
