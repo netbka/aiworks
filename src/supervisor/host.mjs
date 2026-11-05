@@ -22,10 +22,19 @@ export const PRESSURE_DEFAULTS = Object.freeze({
   maxPortShare: 0.5,                                      // more than half of the TCP or UDP ephemeral ports in use
   maxContainers: 12,                                      // more running Docker containers than this
   probeStaleMs: 180_000,                                  // a probe result older than this says nothing
+  pauseAtGates: 1,                                        // this many gate helper runs holding or awaiting a slot; 99 turns it off
 });
 
+/**
+ * Whether gates pause admission and keep away from web task runs (owner decision 2026-11-05): only with the scheduler on
+ * and scheduler.pressure.pauseAtGates under 99. Off, the supervisor writes no browser-session lock and sets no
+ * AIWORKS_BROWSER_RUN, so gates run exactly as before (gate.mjs).
+ */
+export const gatePauseOn = (config = {}) => config?.scheduler?.enabled === true
+  && pressureThresholds(config.scheduler.pressure ?? {}).pauseAtGates < 99;
+
 /** The signals, in the order they are checked. A sample under pressure names the first that applies. */
-export const PRESSURE_SIGNALS = Object.freeze(['memory', 'cpu', 'disk', 'ports', 'docker', 'heartbeats']);
+export const PRESSURE_SIGNALS = Object.freeze(['memory', 'cpu', 'disk', 'ports', 'docker', 'gates', 'heartbeats']);
 
 // The controller's defaults (controller.mjs DEFAULTS), for a config that does not set them.
 const RUNNER_DEFAULTS = { heartbeatMs: 10_000, staleMs: 90_000 };
@@ -52,11 +61,12 @@ const cpuTimes = (cpus) => cpus.reduce((acc, cpu) => {
  * CPU is judged only over a complete window of os.cpus() time deltas (os.loadavg is always zero on Windows); a window
  * that ran much longer than cpuWindowMs (no sample while the host was idle) says nothing about the last minute, so it
  * starts again. A volume that cannot be read gives no signal. `probe.latest()` (createHostProbe) gives the last port and
- * Docker reading; none, or one older than probeStaleMs, gives no signal. Every dependency is injectable for tests; the
- * defaults read the real host.
+ * Docker reading; none, or one older than probeStaleMs, gives no signal. `gates()` gives the number of gate helper runs
+ * that hold a slot or wait for the browser session now; none gives no signal. Every dependency is injectable for tests;
+ * the defaults read the real host.
  */
 export function createHostSampler({ os = nodeOs, fs = nodeFs, volumes = [], heartbeatMs = RUNNER_DEFAULTS.heartbeatMs,
-  staleMs = RUNNER_DEFAULTS.staleMs, thresholds = {}, probe = null } = {}) {
+  staleMs = RUNNER_DEFAULTS.staleMs, thresholds = {}, probe = null, gates = null } = {}) {
   const limits = pressureThresholds(thresholds);
   let window = null; // { at, busy, total }: CPU times at the start of the current window
   let cpuBusy = null; // the busy share over the last complete window
@@ -98,6 +108,16 @@ export function createHostSampler({ os = nodeOs, fs = nodeFs, volumes = [], hear
         }
       }
 
+      // A gate running (owner decision 2026-11-05: pause new work during heavy tests). On 2026-11-05 about half of 49
+      // saved gate failures were browser, preview and timing tests that failed under load from other workers. `gates`
+      // (gate.mjs heldSlotCount) counts every run of the gate helper that holds a slot, a verifier's full gate, an
+      // implementer's affected tests or the supervisor's own base-check and refresh gates, and every gate waiting for the
+      // browser session, so a wave of web task runs cannot starve it. A lock counts only while its holder beats.
+      // cli.mjs serve supplies it, tests and other callers do not.
+      let running = 0;
+      try { running = gates?.() ?? 0; } catch { running = 0; }
+      if (running >= limits.pauseAtGates) return { signal: 'gates', detail: { running, pauseAt: limits.pauseAtGates } };
+
       // Late but not stale: the host is starving its runners (tests/supervisor/measure-liveness.mjs). A stale run is the
       // controller's to reconcile as lost, not pressure.
       const late = beats.filter((beat) => Number.isFinite(beat) && beat > 0
@@ -112,10 +132,10 @@ export function createHostSampler({ os = nodeOs, fs = nodeFs, volumes = [], hear
  * The sampler for a controller config: the worktree volume of every configured repository, the runner heartbeat and
  * stale intervals, and config.scheduler.pressure thresholds.
  */
-export function hostSamplerFor(config = {}, { os, fs, probe = null } = {}) {
+export function hostSamplerFor(config = {}, { os, fs, probe = null, gates = null } = {}) {
   const volumes = [...new Set(Object.values(config.repositories ?? {}).map((repo) => repo?.worktreeRoot).filter(Boolean))];
   return createHostSampler({ os, fs, volumes, heartbeatMs: config.heartbeatMs ?? RUNNER_DEFAULTS.heartbeatMs,
-    staleMs: config.staleMs ?? RUNNER_DEFAULTS.staleMs, thresholds: config.scheduler?.pressure ?? {}, probe });
+    staleMs: config.staleMs ?? RUNNER_DEFAULTS.staleMs, thresholds: config.scheduler?.pressure ?? {}, probe, gates });
 }
 
 // ---- The probe: ports and Docker, read outside the admission pass ----
