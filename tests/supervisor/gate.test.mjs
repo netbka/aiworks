@@ -59,7 +59,7 @@ test('a gate that passes: wait returns its exit code and the final summary block
   const done = waitFast(dir);
   assert.equal(done.code, 0, done.out);
   assert.match(done.out, /^finished: exit 0\. Final summary from gate\.log:\n# all test files\n# tests 3\n# pass 3\n# fail 0\n$/);
-  assert.deepEqual(readdirSync(dir).filter((name) => !(name in SCRIPTS)).sort(), ['gate-exit.log', 'gate-pid.log', 'gate.log', 'slots']);
+  assert.deepEqual(readdirSync(dir).filter((name) => !(name in SCRIPTS)).sort(), ['gate-exit.log', 'gate-head.log', 'gate-pid.log', 'gate.log', 'slots']);
   assert.deepEqual(readdirSync(join(dir, 'slots')), [], 'the slot is given back when the gate ends');
 });
 
@@ -97,7 +97,7 @@ test('readGateRun: the exit code and the final node:test summary the controller 
   const dir = workdir(t);
   assert.equal(readGateRun(dir), null, 'no gate ran here');
   writeFileSync(join(dir, 'gate.log'), 'noise\r\n# all test files: 1 unit (of 1)\r\n# tests 3\r\n# pass 3\r\n# fail 0\r\n');
-  assert.deepEqual(readGateRun(dir), { exit: null, summary: '# all test files: 1 unit (of 1)\n# tests 3\n# pass 3\n# fail 0', exited: null }, 'an unfinished gate has no exit code');
+  assert.deepEqual(readGateRun(dir), { exit: null, summary: '# all test files: 1 unit (of 1)\n# tests 3\n# pass 3\n# fail 0', exited: null, head: null }, 'an unfinished gate has no exit code');
   writeFileSync(join(dir, 'gate-exit.log'), '0\n');
   assert.equal(readGateRun(dir).exit, '0');
   // A plain node --test run has no "# all test files" line: its last run of count lines is the summary, never other output.
@@ -108,16 +108,41 @@ test('readGateRun: the exit code and the final node:test summary the controller 
   assert.equal(gateFailure({ exit: null, summary: null }), null, 'an unfinished gate is shown, not refused');
   assert.equal(gateFailure({ exit: '0', summary: '# tests 4\n# fail 2' }), 'reports 2 failed tests');
   // 2026-11-05: a file stopped at its time limit printed no summary of its own, so the gate exited 1 with `# fail 0`.
-  // That run is still a failure, and the files that exited non-zero come from gate.log itself (the last run of a file
-  // retried alone counts), never from the verifier's result.
+  // That run is still a failure.
   writeFileSync(join(dir, 'gate.log'), ['# start tests/a.test.mjs', 'not ok 1 - a', '# end tests/a.test.mjs 900000 ms, exit 1',
-    '# end tests/b.test.mjs 5 ms, exit 1', '# end tests/c.test.mjs 7 ms, exit 0', '# retry alone tests/b.test.mjs',
-    '# end tests/b.test.mjs 6 ms, exit 0', '# all test files: 3 unit (of 3)', '# tests 4', '# pass 4', '# fail 0', ''].join('\r\n'));
+    '# all test files: 1 unit (of 1)', '# tests 0', '# pass 0', '# fail 0', ''].join('\r\n'));
   writeFileSync(join(dir, 'gate-exit.log'), '1\n');
-  const uncounted = readGateRun(dir);
-  assert.deepEqual(uncounted.exited, ['tests/a.test.mjs']);
-  assert.ok(gateFailure(uncounted), 'a non-zero exit fails the gate whatever the summary counts');
+  assert.ok(gateFailure(readGateRun(dir)), 'a non-zero exit fails the gate whatever the summary counts');
   assert.ok(gateFailure({ exit: '1', summary: null }));
+});
+
+// The controller trusts a verifier's gate only as a run of the exact head it verifies: start records the commit and
+// whether the checkout was clean, and a run of another commit, of a changed checkout or without that record is refused.
+test('a gate run is a run of the verified head only when start recorded that commit on a clean checkout', async (t) => {
+  const { gateFailure, gateHeadProblem, readGateRun } = await import('../../src/supervisor/gate.mjs');
+  const dir = workdir(t);
+  const git = (...args) => {
+    const out = spawnSync('git', args, { cwd: dir, encoding: 'utf8', windowsHide: true });
+    assert.equal(out.status, 0, out.stderr);
+    return out.stdout.trim();
+  };
+  git('init', '-q');
+  writeFileSync(join(dir, '.gitignore'), 'slots/\n');
+  git('add', '-A');
+  git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-q', '-m', 'target');
+  const target = git('rev-parse', 'HEAD');
+  assert.equal(gate(dir, 'start', 'node', 'pass.mjs').code, 0);
+  assert.equal(waitFast(dir).code, 0);
+  const run = readGateRun(dir);
+  assert.equal(gateHeadProblem(run, target), null, 'started on the target, its own gate files only');
+  assert.ok(gateHeadProblem(run, '0'.repeat(40)), 'a run of another commit');
+  assert.ok(gateFailure({ ...run, headProblem: gateHeadProblem(run, '0'.repeat(40)) }), 'kept with its reason, it never counts as passed');
+  writeFileSync(join(dir, 'pass.mjs'), "console.log('# all test files'); console.log('# tests 0'); console.log('# fail 0');");
+  assert.equal(gate(dir, 'start', 'node', 'pass.mjs').code, 0);
+  assert.equal(waitFast(dir).code, 0);
+  assert.ok(gateHeadProblem(readGateRun(dir), target), 'started on a checkout with a changed file');
+  rmSync(join(dir, 'gate-head.log'));
+  assert.ok(gateHeadProblem(readGateRun(dir), target), 'no record of the commit it ran on');
 });
 
 // One isolated retry per failed file (scripts/lib/test-retry.mjs): a file that fails again alone must still fail the

@@ -8,23 +8,25 @@
 //   node gate.mjs wait [--minutes 25] [--poll-seconds 10]
 //
 // Every file is a git-ignored .log in the working directory (#135): gate.log (output), gate-exit.log (exit code),
-// gate-pid.log (process id) and gate-previous.log (the log of the run before). wait exits 0 when the gate passed, 1 when
+// gate-pid.log (process id), gate-head.log (the commit it ran on and whether the checkout was clean when it started) and
+// gate-previous.log (the log of the run before). wait exits 0 when the gate passed, 1 when
 // it failed, 2 while it still runs, 3 when it died and 4 when no gate was started here. When a verification of a commit
-// task ends, the controller reads gate.log and gate-exit.log through readGateRun (#43).
+// task ends, the controller reads gate.log, gate-exit.log and gate-head.log through readGateRun (#43).
 //
 // Gate slots: on 2026-10-17 four full gates ran at once on one PC and failed with "git init: not enough memory" and timing
 // tests, and the supervisor refused the verifications (12 since 16 Oct). The gate command now runs only while it holds one
 // of AIWORKS_GATE_SLOTS (default 2) machine-wide slots, lock files under AIWORKS_GATE_SLOTS_DIR (default <tmp>/aiworks-gate-
 // slots); until then gate.log says it waits, and wait keeps reporting running. A gate started inside a gate (the suite's
 // own gate tests) takes no slot. A slot whose process is gone, or older than SLOT_MAX_AGE_MS, is taken over.
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
-export const GATE_FILES = Object.freeze({ log: 'gate.log', exit: 'gate-exit.log', pid: 'gate-pid.log', previous: 'gate-previous.log' });
+export const GATE_FILES = Object.freeze({ log: 'gate.log', exit: 'gate-exit.log', pid: 'gate-pid.log', previous: 'gate-previous.log',
+  head: 'gate-head.log' });
 const SELF = fileURLToPath(import.meta.url);
 const again = (action) => `node "${SELF.replaceAll('\\', '/')}" ${action}`;
 
@@ -65,16 +67,38 @@ export function exitedFiles(text) {
   return last.size ? [...last].filter(([, code]) => code !== '0').map(([file]) => file).sort() : null;
 }
 
+// gate-head.log as start writes it: { sha, clean }. sha is null when git could not read the commit; clean is true only
+// when start recorded a clean checkout.
+const headOf = (text) => {
+  const [sha, state] = text.trim().split(/\s+/);
+  return { sha: /^[0-9a-f]{40}$/.test(sha ?? '') ? sha : null, clean: state === 'clean' };
+};
+
 /**
  * The gate run the helper left in `dir` (#43), as the controller reads it when a verification ends: the exit code it
- * recorded (null when the gate never finished), its final node:test summary (null when the log has none) and the test
- * files that exited non-zero (exitedFiles). Null when no gate ran in `dir`. gate.log holds only the last run; the run
- * before is gate-previous.log, which is not read. Nothing here comes from the verifier's result.
+ * recorded (null when the gate never finished), its final node:test summary (null when the log has none), the test files
+ * that exited non-zero (exitedFiles) and the commit it started on (gate-head.log; null when there is none). Null when no
+ * gate ran in `dir`. gate.log holds only the last run; the run before is gate-previous.log, which is not read. Nothing
+ * here comes from the verifier's result.
  */
 export function readGateRun(dir) {
   const log = read(join(dir, GATE_FILES.log));
   if (log === null) return null;
-  return { exit: read(join(dir, GATE_FILES.exit))?.trim() || null, summary: testSummary(log), exited: exitedFiles(log) };
+  const head = read(join(dir, GATE_FILES.head));
+  return { exit: read(join(dir, GATE_FILES.exit))?.trim() || null, summary: testSummary(log), exited: exitedFiles(log),
+    head: head === null ? null : headOf(head) };
+}
+
+/**
+ * Why a gate run is not a run of exactly `targetSha`, or null when start recorded that commit on a clean checkout. Every
+ * verifier gate is started by this helper (FULL_GATE_RULE, for every project), so a run without gate-head.log was not
+ * started by its start (an older helper, or files written by hand) and the commit it tested is unknown.
+ */
+export function gateHeadProblem(run, targetSha) {
+  if (!run?.head) return `has no ${GATE_FILES.head}: it was not started by the gate helper's start, so the commit it tested is unknown`;
+  if (run.head.sha !== targetSha) return `ran on ${run.head.sha ?? 'a commit git could not read'}, not the verified ${targetSha}`;
+  if (!run.head.clean) return `started on a checkout with changes git does not ignore, so it did not test ${targetSha} as committed`;
+  return null;
 }
 
 /**
@@ -109,11 +133,13 @@ function uncountedCause(run) {
 }
 
 /**
- * Why a recorded gate run failed: a non-zero exit code or a failed test in its summary. Null when it did not. A non-zero
- * exit whose summary counts no failed test says why (uncountedCause); it is a failure all the same.
+ * Why a recorded gate run failed: not a run of the verified head (the headProblem the controller keeps with it, from
+ * gateHeadProblem), a non-zero exit code or a failed test in its summary. Null when it did not. A non-zero exit whose
+ * summary counts no failed test says why (uncountedCause); it is a failure all the same.
  */
 export function gateFailure(run) {
   if (!run) return null;
+  if (run.headProblem) return run.headProblem;
   const failed = Number(/^# fail (\d+)$/m.exec(run.summary ?? '')?.[1] ?? 0);
   if (run.exit !== null && run.exit !== '0') return `exited ${run.exit}${failed > 0 || !/^\d+$/.test(run.exit) ? '' : uncountedCause(run)}`;
   return failed > 0 ? `reports ${failed} failed test${failed === 1 ? '' : 's'}` : null;
@@ -129,6 +155,19 @@ const alive = (pid) => {
   try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; }
 };
 const minutesSinceOutput = () => (existsSync(GATE_FILES.log) ? Math.floor((Date.now() - statSync(GATE_FILES.log).mtimeMs) / 60_000) : null);
+
+// The commit this checkout is at and whether it is clean (every git status entry is one of the helper's own untracked files),
+// as gate-head.log records it when a gate starts; "unknown" when git cannot read them.
+function checkoutState() {
+  const git = (...args) => spawnSync('git', args, { encoding: 'utf8', windowsHide: true, timeout: 60_000 });
+  const sha = git('rev-parse', 'HEAD').stdout?.trim() ?? '';
+  if (!/^[0-9a-f]{40}$/.test(sha)) return 'unknown';
+  const status = git('status', '--porcelain=v1', '-z', '--untracked-files=all');
+  if (status.status !== 0) return `${sha} unknown`;
+  const own = new Set(Object.values(GATE_FILES));
+  const clean = status.stdout.split('\0').filter(Boolean).every((entry) => entry.startsWith('?? ') && own.has(entry.slice(3)));
+  return `${sha} ${clean ? 'clean' : 'changed'}`;
+}
 
 function start(command) {
   const pid = recordedPid();
@@ -156,6 +195,7 @@ function start(command) {
     return 1;
   }
   rmSync(GATE_FILES.exit, { force: true });
+  writeFileSync(GATE_FILES.head, `${checkoutState()}\n`);
   const out = openSync(GATE_FILES.log, 'w');
   if (commandError) {
     // A failed attempt must replace a previous pass, never leave stale green evidence.
