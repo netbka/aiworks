@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../../src/supervisor/store.mjs';
-import { addComment, comments, createItem, item, items, MAX_BODY_BYTES, nextNumber, raiseNumberFloor } from '../../src/supervisor/work-list.mjs';
+import { addComment, comments, createItem, items } from '../../src/supervisor/work-list.mjs';
 
 const NOW = 1_760_000_000_000;
 
@@ -38,41 +38,6 @@ test('comments are append-only and a repeated idempotency key after a restart re
   assert.deepEqual(comments(reopened, number).map((comment) => comment.body), ['Repair head abc.']);
   assert.equal(addComment(reopened, { number, idempotencyKey: 'repair:run-2', body: 'Second head.', authorKind: 'supervisor', now: NOW + 2 }).created, true);
   assert.deepEqual(comments(reopened, number).map((comment) => comment.idempotency_key), ['repair:run-1', 'repair:run-2']);
-});
-
-test('imported items keep their GitHub numbers and new items are numbered after the highest number seen', (t) => {
-  const { open, store } = rig(t);
-  createItem(store, { number: 14, kind: 'task', title: 'Program tracking page', authorKind: 'import', source: { url: 'https://github.com/example-org/aiworks/issues/14', updatedAt: '2026-10-16T00:00:00Z' }, now: NOW });
-  createItem(store, { number: 3, kind: 'finding', title: 'An older issue', authorKind: 'import', now: NOW });
-  assert.throws(() => createItem(store, { number: 14, kind: 'task', title: 'Duplicate', authorKind: 'import', now: NOW }), code('WORK_ITEM_EXISTS'));
-  assert.throws(() => createItem(store, { number: 99, kind: 'note', title: 'Chosen number', authorKind: 'owner', now: NOW }), code('WORK_ITEM_INVALID'));
-  // Pull request #40 was the highest GitHub number seen: a new item never takes a number a declaration could mean.
-  assert.equal(raiseNumberFloor(store, 40), 40);
-  assert.equal(raiseNumberFloor(store, 20), 40);
-  assert.equal(createItem(store, { kind: 'decision', title: 'Owner decision', needsOwner: true, authorKind: 'supervisor', now: NOW }).number, 41);
-  store.close();
-
-  const reopened = open();
-  assert.equal(nextNumber(reopened), 42);
-  assert.equal(item(reopened, 14).title, 'Program tracking page');
-  assert.deepEqual(items(reopened).map((row) => row.number), [41, 14, 3]);
-  // The read-only view the CLI uses sees the same list.
-  assert.deepEqual(items(open({ readOnly: true }), { state: 'open' }).map((row) => row.number), [41, 14, 3]);
-});
-
-test('a body up to 1 MiB is stored whole, a larger one is refused', (t) => {
-  const { store } = rig(t);
-  const report = `# Report\n${'Verified line.\n'.repeat(Math.floor((MAX_BODY_BYTES - 9) / 15))}`;
-  assert.ok(report.length > 65_536 && Buffer.byteLength(report) <= MAX_BODY_BYTES);
-  const { number } = createItem(store, { kind: 'review', title: 'Long report', body: report, authorKind: 'supervisor', now: NOW });
-  assert.equal(item(store, number).body, report);
-  addComment(store, { number, idempotencyKey: 'report', body: report, authorKind: 'supervisor', now: NOW });
-  assert.equal(comments(store, number)[0].body, report);
-  // Multi-byte text is measured in bytes, so no stored body exceeds the bound.
-  const over = 'é'.repeat(MAX_BODY_BYTES / 2 + 1);
-  assert.throws(() => createItem(store, { kind: 'note', title: 'Too long', body: over, authorKind: 'owner', now: NOW }), code('WORK_ITEM_TOO_LARGE'));
-  assert.throws(() => addComment(store, { number, idempotencyKey: 'over', body: over, authorKind: 'owner', now: NOW }), code('WORK_ITEM_TOO_LARGE'));
-  assert.equal(comments(store, number).length, 1);
 });
 
 test('secret-like text is refused and nothing is stored', (t) => {

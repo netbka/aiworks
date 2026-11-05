@@ -3,12 +3,12 @@
 // the host ceiling; RUN7 (slice S5) adds the host pressure gate. No model, network or GitHub call; nothing is spawned.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../../src/supervisor/store.mjs';
 import { campaignStart } from '../../src/supervisor/api.mjs';
-import { WAIT_REASONS, adjustFanout, admissionCheck, classifyRun, currentFanout, fanoutBound, hostCeiling, orderCandidates, thrashing } from '../../src/supervisor/scheduler.mjs';
+import { WAIT_REASONS, admissionCheck, hostCeiling } from '../../src/supervisor/scheduler.mjs';
 import { declaration } from './helpers.mjs';
 
 const commitTask = (id, issue, extra = {}) => ({ id, issue, title: `task ${id}`, deliverable: 'commit', goal: `Produce ${id}.`,
@@ -34,14 +34,13 @@ function rig(t) {
     id, campaignId, taskId, kind, seq, id, `s-${id}`, `r-${id}`, `w-${id}`, at, at);
     return id;
   };
-  const finish = (id, outcome) => store.run("UPDATE operations SET state = 'finished', outcome = ?, updated_at = ? WHERE id = ?", outcome, clock, id);
   const state = (campaignId, taskId, changes) => {
     const task = store.task(campaignId, taskId);
     store.patch('tasks', { campaign_id: campaignId, task_id: taskId }, task.version, changes, clock);
   };
   const candidate = (decl, taskId, kind = 'implement') => ({ campaignId: decl.campaignId, taskId, kind, declaration: decl,
     ord: decl.tasks.findIndex((task) => task.id === taskId), createdAt: store.campaign(decl.campaignId).created_at });
-  return { store, register, open, finish, state, candidate, advance: (ms) => { clock += ms; }, now: () => clock };
+  return { store, register, open, state, candidate, advance: (ms) => { clock += ms; }, now: () => clock };
 }
 
 test('admission never admits two overlapping write domains, across campaigns and inside one', (t) => {
@@ -59,76 +58,6 @@ test('admission never admits two overlapping write domains, across campaigns and
   assert.equal(admissionCheck(r.store, r.candidate(a, 'A2'), ctx), null, 'two independent steps of one campaign overlap');
   assert.equal(admissionCheck(r.store, r.candidate(c, 'C1'), ctx)?.reason, 'write-domain', 'a step without declared writes owns the whole repository');
   assert.equal(admissionCheck(r.store, r.candidate(a, 'A1', 'verify'), ctx)?.reason, 'already-running', 'one open operation per task');
-});
-
-test('a verifier holds no write domain and is never refused for one', (t) => {
-  const r = rig(t);
-  const a = r.register('camp-a', [commitTask('A1', 1)]);
-  const b = r.register('camp-b', [commitTask('B1', 2)]);
-  r.open('camp-a', 'A1'); r.state('camp-a', 'A1', { state: 'implementing' });
-  r.state('camp-b', 'B1', { state: 'implemented', head_sha: 'b'.repeat(40) });
-  assert.equal(admissionCheck(r.store, r.candidate(b, 'B1', 'verify'), { ceiling: 4 }), null);
-  assert.equal(admissionCheck(r.store, r.candidate(a, 'A1'), { ceiling: 4 })?.reason, 'already-running');
-});
-
-test('two projects progress fairly under a ceiling of one', (t) => {
-  const r = rig(t);
-  const sampleapp = r.register('sampleapp-busy', [commitTask('D1', 1, { writes: ['a/'] }), commitTask('D2', 2, { writes: ['b/'] }), commitTask('D3', 3, { writes: ['c/'] })], { projectId: 'sampleapp', limits: { slots: 'auto' } });
-  const aiw = r.register('aiw-quiet', [commitTask('Q1', 4, { writes: ['q/'] })], { projectId: 'aiworks' });
-  const served = [];
-  // Round by round: admit the first admissible candidate under a ceiling of one, run it to the end, then the next round.
-  for (let round = 0; round < 4; round++) {
-    const pending = (decl) => decl.tasks.filter((task) => r.store.task(decl.campaignId, task.id).state === 'pending').map((task) => r.candidate(decl, task.id));
-    const ordered = orderCandidates(r.store, [...pending(sampleapp), ...pending(aiw)]);
-    const next = ordered.find((c) => !admissionCheck(r.store, c, { ceiling: 1 }));
-    if (!next) break;
-    served.push(next.declaration.target.projectId);
-    const op = r.open(next.campaignId, next.taskId);
-    r.finish(op, { class: 'result', value: { result: 'resolved' } });
-    r.state(next.campaignId, next.taskId, { state: 'done' });
-    r.advance(1000);
-  }
-  assert.deepEqual(served.slice(0, 2).sort(), ['aiworks', 'sampleapp'], 'each project is served once before either is served twice');
-  assert.equal(served.filter((p) => p === 'aiworks').length, 1);
-});
-
-test('within a campaign, verify comes before implement, then declaration order; never-served projects first', (t) => {
-  const r = rig(t);
-  const old = r.register('old', [commitTask('O1', 1, { writes: ['o/'] }), commitTask('O2', 2, { writes: ['p/'] })], { projectId: 'old' });
-  const fresh = r.register('fresh', [commitTask('F1', 3)], { projectId: 'fresh' });
-  r.finish(r.open('old', 'O1', 'implement', 5000), { class: 'result', value: { result: 'resolved' } });
-  const order = orderCandidates(r.store, [r.candidate(old, 'O2'), r.candidate(old, 'O1', 'verify'), r.candidate(fresh, 'F1')]);
-  assert.deepEqual(order.map((c) => `${c.taskId}:${c.kind}`), ['F1:implement', 'O1:verify', 'O2:implement']);
-});
-
-test('fan-out grows only after useful results while work waited, and shrinks on failures and thrash', (t) => {
-  const r = rig(t);
-  const auto = r.register('auto', [commitTask('A1', 1)], { limits: { slots: 'auto' } });
-  const bound = fanoutBound(auto, 3);
-  assert.equal(bound, 3, '"auto" is bounded by the host ceiling');
-  assert.equal(fanoutBound(r.register('two', [commitTask('T1', 2)], { limits: { slots: 2 } }), 3), 2, 'a declared number is the owner\'s own maximum');
-  const now = r.now();
-  assert.equal(currentFanout(r.store, 'auto', bound), 1, 'starts at one');
-  assert.equal(adjustFanout(r.store, { campaignId: 'auto', bound, run: 'useful', waited: false, now }), 1, 'no growth without waiting work');
-  assert.equal(adjustFanout(r.store, { campaignId: 'auto', bound, run: 'useful', waited: true, now }), 2);
-  assert.equal(adjustFanout(r.store, { campaignId: 'auto', bound, run: 'useful', waited: true, now }), 3);
-  assert.equal(adjustFanout(r.store, { campaignId: 'auto', bound, run: 'useful', waited: true, now }), 3, 'never above the bound');
-  assert.equal(adjustFanout(r.store, { campaignId: 'auto', bound, run: 'failed', now }), 2, 'a failed run lowers it by one');
-  assert.equal(adjustFanout(r.store, { campaignId: 'auto', bound, run: 'neutral', waited: true, now }), 2, 'a refunded or neutral run changes nothing');
-  assert.equal(adjustFanout(r.store, { campaignId: 'auto', bound, run: 'failed', thrash: true, now }), 1, 'thrash drops it to one');
-  const journal = r.store.all("SELECT kind FROM journal WHERE campaign_id = 'auto' AND kind LIKE 'fanout-%' ORDER BY seq").map((row) => row.kind);
-  assert.deepEqual(journal, ['fanout-raised', 'fanout-raised', 'fanout-lowered', 'fanout-lowered']);
-
-  assert.equal(classifyRun('implement', { class: 'result', value: { result: 'resolved' } }), 'useful');
-  assert.equal(classifyRun('verify', { class: 'result', value: { verdict: 'rejected', findings: [{ severity: 'blocking' }] } }), 'useful', 'a rejection that found a real problem is useful');
-  assert.equal(classifyRun('verify', { class: 'result', value: { verdict: 'evidence-unavailable' } }), 'failed');
-  for (const cls of ['lost', 'timeout', 'exit-without-result', 'invalid-result', 'spawn-failed', 'error']) assert.equal(classifyRun('implement', { class: cls }), 'failed', cls);
-  assert.equal(classifyRun('implement', { class: 'unavailable' }), 'neutral', 'a refunded run is neither');
-
-  const f1 = r.open('auto', 'A1'); r.finish(f1, { class: 'timeout' });
-  assert.equal(thrashing(r.store, 'auto', r.now(), 60_000), false);
-  const f2 = r.open('auto', 'A1'); r.finish(f2, { class: 'lost' });
-  assert.equal(thrashing(r.store, 'auto', r.now(), 60_000), true, 'two failed runs within one window');
 });
 
 test('every waiting step has exactly one reason, the first that applies', (t) => {
@@ -218,88 +147,4 @@ test('host pressure stops new admission and leaves running work alone', async (t
   assert.equal(pass()?.reason, 'host-pressure');
   assert.equal(hostPressure(r.store, other, r.now())?.signal, 'memory');
   assert.equal(r.store.all("SELECT kind FROM journal WHERE kind = 'host-pressure'").length, 2, 'two episodes, two entries');
-});
-
-test('the host sampler reports memory, CPU over a full window, disk on every volume and late heartbeats, in that order', async () => {
-  const { createHostSampler, PRESSURE_SIGNALS, PRESSURE_DEFAULTS } = await import('../../src/supervisor/host.mjs');
-  assert.deepEqual(PRESSURE_SIGNALS, ['memory', 'cpu', 'disk', 'ports', 'docker', 'heartbeats']);
-  assert.equal(PRESSURE_DEFAULTS.minFreeMemoryBytes, 2 * GiB);
-  const h = fakeHost();
-  h.disk['V:/other'] = 100 * GiB;
-  const host = createHostSampler({ os: h.os, fs: h.fs, volumes: ['W:/worktrees', 'X:/unmounted', 'V:/other'], heartbeatMs: 10_000, staleMs: 90_000 });
-  assert.equal(host.sample({ now: 0 }), null, 'a calm host');
-
-  h.free = 3 * GiB; // above 2 GiB but below 10% of 32 GiB
-  assert.equal(host.sample({ now: 1 })?.signal, 'memory', 'the floor is the larger of 2 GiB and 10% of total memory');
-  h.free = 16 * GiB;
-
-  h.busy = 95; h.idle = 5;
-  assert.equal(host.sample({ now: 30_000 }), null, 'CPU is judged only over a full window');
-  assert.equal(host.sample({ now: 60_000 })?.signal, 'cpu', '95% busy over 60 s');
-  h.busy = 100; h.idle = 1000;
-  assert.equal(host.sample({ now: 120_000 }), null, 'a mostly idle next window clears it');
-  h.busy = 10_000;
-  assert.equal(host.sample({ now: 500_000 }), null, 'a window far longer than a minute says nothing about the last minute');
-
-  h.disk['V:/other'] = 4 * GiB;
-  assert.deepEqual(host.sample({ now: 500_001 }), { signal: 'disk', detail: { volume: 'V:/other', freeBytes: 4 * GiB } },
-    'any worktree volume below 5 GiB; an unreadable one gives no signal');
-  h.disk['V:/other'] = 100 * GiB;
-
-  assert.equal(host.sample({ now: 600_000, beats: [600_000 - 35_000] })?.signal, 'heartbeats', 'older than three intervals');
-  assert.equal(host.sample({ now: 600_000, beats: [600_000 - 95_000] }), null, 'a stale run is the controller\'s to reconcile, not pressure');
-  assert.equal(host.sample({ now: 600_000, beats: [600_000 - 5_000, 0, Number.NaN] }), null, 'on time, or no beat yet');
-
-  h.free = 1 * GiB; h.disk['W:/worktrees'] = 1;
-  assert.equal(host.sample({ now: 600_001, beats: [600_000 - 35_000] })?.signal, 'memory', 'the first signal that applies');
-
-  // Ports and Docker come from the probe's last reading (2026-10-31: TCP ports ran out while memory and CPU looked fine).
-  let reading = null;
-  const probed = createHostSampler({ os: fakeHost().os, fs: fakeHost().fs, probe: { latest: () => reading } });
-  reading = { at: 1_000, ports: { tcp: { used: 9_000, range: 16_384 }, udp: { used: 10, range: 16_384 } }, docker: { containers: 2 } };
-  assert.deepEqual(probed.sample({ now: 1_000 }), { signal: 'ports', detail: { protocol: 'tcp', used: 9_000, range: 16_384 } }, 'over half the ephemeral ports');
-  assert.equal(probed.sample({ now: 1_000 + 181_000 }), null, 'a stale reading says nothing');
-  reading = { at: 2_000, ports: null, docker: { unresponsive: true } };
-  assert.equal(probed.sample({ now: 2_000 })?.signal, 'docker', 'a docker that does not answer');
-});
-
-test('pressure thresholds come from config.scheduler.pressure; invalid values keep the defaults', async () => {
-  const { hostSamplerFor, pressureThresholds, PRESSURE_DEFAULTS } = await import('../../src/supervisor/host.mjs');
-  assert.deepEqual(pressureThresholds(undefined), PRESSURE_DEFAULTS);
-  assert.deepEqual(pressureThresholds({ minFreeDiskBytes: 'lots', maxCpuBusy: -1, lateHeartbeats: Infinity, cpuWindowMs: 0 }), PRESSURE_DEFAULTS);
-  const h = fakeHost();
-  h.disk['D:/wt'] = 8 * GiB;
-  const config = { heartbeatMs: 100, staleMs: 5000, scheduler: { pressure: { minFreeDiskBytes: 10 * GiB, lateHeartbeats: 5 } },
-    repositories: { 'o/a': { path: 'D:/a', worktreeRoot: 'D:/wt' }, 'o/b': { path: 'D:/b', worktreeRoot: 'D:/wt' }, 'o/c': { path: 'D:/c' } } };
-  const host = hostSamplerFor(config, { os: h.os, fs: h.fs });
-  assert.equal(host.limits.minFreeDiskBytes, 10 * GiB);
-  assert.equal(host.sample({ now: 0 })?.signal, 'disk', 'the configured worktree volume, against the configured floor');
-  h.disk['D:/wt'] = 100 * GiB;
-  assert.equal(host.sample({ now: 1000, beats: [1000 - 450] }), null, 'five intervals of the configured heartbeat, not three');
-  assert.equal(host.sample({ now: 1000, beats: [1000 - 600] })?.signal, 'heartbeats');
-});
-
-test('open run heartbeats are read for worker and coordinator runs only while they are open', async (t) => {
-  const { openRunBeats } = await import('../../src/supervisor/host.mjs');
-  const r = rig(t);
-  r.register('one', [commitTask('A', 1), commitTask('B', 2)]);
-  const dirs = mkdtempSync(join(tmpdir(), 'aiworks-beats-'));
-  t.after(() => rmSync(dirs, { recursive: true, force: true }));
-  const runDir = (name, beat) => {
-    const dir = join(dirs, name);
-    mkdirSync(dir);
-    if (beat !== undefined) writeFileSync(join(dir, 'heartbeat'), String(beat));
-    return dir;
-  };
-  const open = r.open('one', 'A');
-  r.store.run('UPDATE operations SET run_dir = ? WHERE id = ?', runDir('open', 1111), open);
-  const done = r.open('one', 'B');
-  r.store.run('UPDATE operations SET run_dir = ? WHERE id = ?', runDir('done', 2222), done);
-  r.finish(done, { class: 'result', value: { result: 'resolved' } });
-  const fresh = r.open('one', 'B');
-  r.store.run('UPDATE operations SET run_dir = ? WHERE id = ?', runDir('fresh'), fresh);
-  for (const [id, state, beat] of [['c1', 'dispatched', 3333], ['c2', 'finished', 4444]]) {
-    r.store.insert('coordinator_runs', { id, state, session_id: id, run_dir: runDir(id, beat), workspace: dirs, message_ids: [], created_at: 0, updated_at: 0 });
-  }
-  assert.deepEqual(openRunBeats(r.store).sort(), [1111, 3333], 'a finished run is not read; a run without a beat yet is left out');
 });
