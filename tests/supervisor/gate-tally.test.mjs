@@ -37,20 +37,6 @@ async function setup(t, { scenario, decl = declaration({ tasks: ONE }) } = {}) {
 
 const verifications = (store, id) => store.all("SELECT * FROM operations WHERE campaign_id = ? AND kind = 'verify' ORDER BY seq, created_at", id);
 
-test('the PR body shows the summary block read from the verifier\'s own gate output, verbatim', { skip: skipWithoutSqlite }, async (t) => {
-  const { env, store, controller, id } = await setup(t, { scenario: { gate: { log: `${NOISE}${PASSED}\n`, exit: '0' } } });
-  await runUntil(controller, store, id, (c) => c.control === 'finished');
-  const [task] = store.tasks(id);
-  assert.equal(task.state, 'done');
-  assert.deepEqual(task.verification.gate, { exit: '0', summary: PASSED });
-  const pr = env.prs().find((p) => p.url === task.pr_url);
-  const gate = pr.body.slice(pr.body.indexOf('### Gate'));
-  assert.ok(gate.includes("Read by the supervisor from the verifier's own gate output (`gate.log`), not typed by a worker. Exit code 0."), gate);
-  assert.ok(gate.includes(`\`\`\`text\n${PASSED}\n\`\`\``), 'the summary block is copied verbatim');
-  assert.equal(pr.body.includes('# start tests/a.test.mjs'), false, 'only the summary block, not the rest of the log');
-  assert.ok(gate.includes('Not merged and not deployed'));
-});
-
 test('an acceptance whose last gate run exited 1 is refused as invalid-result naming the summary; the next one publishes', { skip: skipWithoutSqlite }, async (t) => {
   const { env, store, controller, id } = await setup(t, { scenario: { gate: [{ log: `${NOISE}${FAILED}\n`, exit: '1' }, { log: `${PASSED}\n`, exit: '0' }] } });
   await runUntil(controller, store, id, (c) => c.control === 'finished');

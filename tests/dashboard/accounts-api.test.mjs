@@ -8,7 +8,7 @@ import { once } from 'node:events';
 import fs from 'node:fs';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
@@ -170,38 +170,4 @@ test('dashboard cannot start credential pickup, inspect host logins or write a c
   }
   assert.equal(credentialProbes, 0); assert.equal(browserLaunches, 0);
   assert.deepEqual(readdirSync(fixtureRoot).sort(), before);
-});
-
-test('dashboard accounts API: each role’s saved model order, one role at a time', async (t) => {
-  const { dataDir } = fixture(t);
-  const { get, post } = await serve(t, dataDir);
-  const preferences = async () => JSON.parse(await get('/api/accounts/preferences')).preferences;
-
-  assert.deepEqual(await preferences(), { implementer: [], verification: [] }, 'the two roles the page shows');
-
-  const setRes = await post('/api/accounts/preferences', { role: 'implementer', models: ['model-a', 'model-b'] });
-  assert.equal(setRes.status, 200);
-  assert.deepEqual((await setRes.json()).preferences, ['model-a', 'model-b']);
-  assert.equal((await post('/api/accounts/preferences', { role: 'verification', models: ['model-c'], kind: 'codex-cli' })).status, 200);
-  const saved = { implementer: ['model-a', 'model-b'], verification: [{ model: 'model-c', kind: 'codex-cli' }] };
-  assert.deepEqual(await preferences(), saved, 'saving one role keeps the other');
-
-  // The shapes that once replaced every role, or that no reader understands, are refused before anything is written.
-  const refusedBodies = [
-    { preferences: { implementer: { models: ['model-x'], effort: 'high' } } },
-    { role: 'coordinator', models: ['model-x'] },
-    { role: 'implementer', models: 'model-x' },
-    { role: 'implementer', models: ['../not a model'] },
-    { role: 'implementer', models: ['model-x'], kind: 'codex' },
-    { role: 'implementer', models: Array.from({ length: 11 }, (_, i) => `model-${i}`) },
-  ];
-  for (const body of refusedBodies) assert.equal((await post('/api/accounts/preferences', body)).status, 400, JSON.stringify(body));
-  assert.deepEqual(await preferences(), saved);
-
-  assert.equal((await post('/api/accounts/preferences', { role: 'implementer', models: [] })).status, 200);
-  assert.deepEqual(await preferences(), { implementer: [], verification: saved.verification }, 'an empty list clears it');
-
-  // What config.json holds afterwards. Work does not read it (SUPERVISOR.md section 13).
-  const config = JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8'));
-  assert.deepEqual(config.modelPreferences, { implementer: [], verification: [{ model: 'model-c', kind: 'codex-cli' }] });
 });

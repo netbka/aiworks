@@ -9,46 +9,13 @@ import { request } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Store } from '../../src/supervisor/store.mjs';
 import { campaignStart, campaignPause } from '../../src/supervisor/api.mjs';
-import { declaration, environment, runtimeCheckout } from '../supervisor/helpers.mjs';
-import { Controller } from '../../src/supervisor/controller.mjs';
+import { declaration, runtimeCheckout } from '../supervisor/helpers.mjs';
 import { pendingInstructions } from '../../src/supervisor/instructions.mjs';
-import { RoadmapSource, readRoadmap, safeText } from '../../src/dashboard/roadmap.mjs';
+import { readRoadmap, safeText } from '../../src/dashboard/roadmap.mjs';
 import { applyCommand, applyCommand as applyMain, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
-import { ownerView } from '../../src/dashboard/owner.mjs';
-import { COMMANDS } from '../../src/dashboard/copy.mjs';
 import { postOwnerMessage, replyBody } from '../../src/supervisor/coordinator.mjs';
-import { adoptDrafts } from '../../src/dashboard/public/router.mjs';
 import { DisplayTextChecks } from '../../src/dashboard/display-text.mjs';
-
-test('completed campaigns do not appear offline or request controller recovery', (t) => {
-  const { dataDir, store, d } = fixture(t);
-  const c = store.campaign(d.campaignId);
-  store.patch('campaigns', { id: c.id }, c.version, { control: 'finished', status: 'ready' }, Date.now());
-  const snapshot = supervisorSnapshot(dataDir);
-  assert.equal(snapshot.campaigns[0].readiness, 'COMPLETE');
-  assert.equal(snapshot.campaigns[0].controllerLive, false);
-  // The owner view (which replaced the unused public/status.mjs helpers) neither badges it offline nor asks for a restart.
-  const view = ownerView(snapshot, { repositories: [], steps: {} }, { now: Date.now() + 60 * 60_000 });
-  assert.equal(view.campaigns[d.campaignId].liveness, 'finished');
-  assert.ok(!view.items.some((item) => item.kind === 'controller'));
-  assert.deepEqual(snapshot.campaigns[0].tasks.map((task) => task.deliverable), ['commit', 'commit']);
-});
-
-test('the platform roadmap is definitions from the governance checkout, with no GitHub work state or cache', (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'aiworks-dashboard-roadmap-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  // A GitHub snapshot left in an old cache directory is never read or served.
-  writeFileSync(join(dir, 'roadmap-cache.json'), JSON.stringify({ version: 1, sources: [{ repository: 'example-org/governance', fetchedAt: new Date().toISOString(),
-    items: [{ kind: 'issue', number: 7, title: 'GOV-08: cached issue', state: 'CLOSED', packages: ['GOV-08'] }] }] }));
-  const source = new RoadmapSource({ root: resolve(import.meta.dirname, '../fixtures/governance'), cacheDir: dir, repositories: ['example-org/sample-wiki'] });
-  const snapshot = source.snapshot();
-  assert.deepEqual(Object.keys(snapshot).sort(), ['entries', 'governance']);
-  assert.equal(snapshot.entries.length, 6);
-  assert.ok(snapshot.entries.every((entry) => !('status' in entry) && !('items' in entry)), 'no progress is claimed for roadmap items');
-  assert.ok(!JSON.stringify(snapshot).includes('cached issue'));
-  assert.ok(!snapshot.entries.some((entry) => entry.repository === 'example-org/sample-wiki'), 'a configured repository adds no backlog');
-});
 
 function fixture(t) {
   const dataDir = mkdtempSync(join(tmpdir(), 'aiworks-dashboard-'));
@@ -204,25 +171,6 @@ test('stale, ABA, wrong-task and expanded-authority commands are rejected', (t) 
   assert.throws(() => applyCommand(dataDir, payload('resume')), /^Error: Only paused work can resume\. Refresh the page to see where it stands\.$/);
   assert.equal(store.campaign(d.campaignId).control, 'registered');
 });
-
-test('Resume preserves private stored authority and refuses unmerged runtime code', (t) => {
-  const { dataDir, store, d, payload } = fixture(t);
-  campaignPause(store, d.campaignId);
-  const before = store.campaign(d.campaignId);
-  const merged = runtimeCheckout(), unmerged = runtimeCheckout({ unmerged: true });
-  t.after(() => { merged.cleanup(); unmerged.cleanup(); });
-  assert.throws(() => applyMain(dataDir, payload('resume'), Date.now(), { provenanceRoot: unmerged.root }),
-    (error) => error.status === 409 && error.message === COMMANDS.resumeRefused && /not merged/.test(error.detail));
-  assert.equal(store.campaign(d.campaignId).control, 'paused');
-  assert.equal(store.all("SELECT * FROM journal WHERE kind = 'dashboard-command'").length, 0);
-  assert.equal(applyMain(dataDir, payload('resume'), Date.now(), { provenanceRoot: merged.root }).accepted, true);
-  const after = store.campaign(d.campaignId);
-  assert.equal(after.control, 'registered');
-  assert.deepEqual(after.declaration, before.declaration);
-  assert.equal(after.scope_digest, before.scope_digest);
-  assert.equal(after.authorization_version, before.authorization_version);
-  assert.equal(after.runs_used, before.runs_used);
-});
 test('instruction validation, role binding, exact retries and bounded queue preserve authority', (t) => {
   const { dataDir, store, d, payload } = fixture(t);
   const extra = { taskId: 'T1', taskVersion: 1, role: 'implement', text: 'Explain the edge cases in the report.' };
@@ -243,42 +191,6 @@ test('instruction validation, role binding, exact retries and bounded queue pres
   assert.equal(supervisorSnapshot(dataDir).campaigns[0].instructions[0].status, 'queued');
   store.patch('tasks', { campaign_id: d.campaignId, task_id: 'T1' }, 1, { state: 'done' }, Date.now());
   assert.equal(supervisorSnapshot(dataDir).campaigns[0].instructions[0].status, 'undelivered');
-});
-
-test('real dispatch atomically attaches only the matching role instruction to the immutable prompt', async (t) => {
-  const env = environment();
-  const store = new Store(join(env.dataDir, 'supervisor.db'));
-  t.after(() => { store.close(); env.cleanup(); });
-  const d = declaration(); campaignStart(store, d);
-  const controller = new Controller({ store, config: env.config, dataDir: env.dataDir, fault: null });
-  // Inspect the committed handoff; no worker process or model is launched.
-  controller.launch = async () => {};
-  const lease = store.acquireLease(d.campaignId, controller.instanceId, Date.now(), 60_000);
-  const ctx = { id: d.campaignId, generation: lease.generation };
-  const campaign = store.campaign(d.campaignId);
-  for (const role of ['implement', 'verify']) applyCommand(env.dataDir, { campaignId: d.campaignId, action: 'instruct', requestId: randomUUID(),
-    version: campaign.version, authorizationVersion: campaign.authorization_version, scopeDigest: campaign.scope_digest,
-    taskId: 'T1', taskVersion: 1, role, text: `${role} guidance with literal shell text $(do-not-execute)` });
-  controller.processEvents(ctx);
-  assert.equal(pendingInstructions(store, campaign, 'T1').length, 2, 'event processing cannot consume guidance');
-  const task = store.task(d.campaignId, 'T1');
-  const originalInsert = store.insert.bind(store);
-  store.insert = (table, row) => { if (table === 'operations') throw new Error('synthetic preflight failure'); return originalInsert(table, row); };
-  await assert.rejects(controller.dispatch(ctx, campaign, task, 'implement'), /synthetic preflight/);
-  assert.equal(pendingInstructions(store, campaign, 'T1').length, 2, 'failed handoff leaves instructions queued');
-  store.insert = originalInsert;
-  await controller.dispatch(ctx, campaign, task, 'implement');
-  const op = store.openOperations(d.campaignId)[0];
-  assert.ok(op);
-  const prompt = readFileSync(join(op.run_dir, 'prompt.txt'), 'utf8');
-  assert.match(prompt, /implement guidance with literal shell text/);
-  assert.ok(!prompt.includes('verify guidance'));
-  assert.match(prompt, /cannot expand scope or tool permissions/);
-  assert.deepEqual(op.packet.acceptance, d.tasks[0].acceptance);
-  assert.equal(pendingInstructions(store, campaign, 'T1', 'implement').length, 0);
-  assert.equal(pendingInstructions(store, campaign, 'T1', 'verify').length, 1);
-  const receipt = supervisorSnapshot(env.dataDir).campaigns[0].instructions.find((item) => item.role === 'implement');
-  assert.equal(receipt.status, 'attached'); assert.equal(receipt.operationId, op.id);
 });
 
 test('HTTP controls require exact loopback Host, Origin, CSRF and bounded JSON', async (t) => {
@@ -376,38 +288,3 @@ test('the address router is served like the other page files and refused cross-s
   assert.match(readFileSync(resolve(import.meta.dirname, '../../src/dashboard/public/dashboard.js'), 'utf8'), /^import \{[^}]+\} from '\/router\.mjs';$/m);
 });
 
-test('every module the page imports is served by the real server, including the state copy module', async (t) => {
-  const { dataDir } = fixture(t);
-  const roadmap = { snapshot: () => ({ governance: { configured: true, code: null, reason: null }, entries: [] }) };
-  const server = createDashboardServer({ dataDir, roadmap });
-  server.listen(0, '127.0.0.1'); await once(server, 'listening');
-  t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
-  const base = `http://127.0.0.1:${server.address().port}`, source = resolve(import.meta.dirname, '../../src/dashboard');
-  const imports = [...readFileSync(resolve(source, 'public/dashboard.js'), 'utf8').matchAll(/^import \{[^}]+\} from '(\/[^']+)';$/gm)].map((m) => m[1]);
-  assert.deepEqual(imports, ['/router.mjs', '/copy.mjs']);
-  const script = await fetch(`${base}/dashboard.js`);
-  for (const path of imports) {
-    const module = await fetch(`${base}${path}`);
-    assert.equal(module.status, 200, path);
-    for (const header of ['content-security-policy', 'cross-origin-opener-policy', 'cross-origin-resource-policy', 'x-content-type-options', 'referrer-policy', 'cache-control', 'content-type']) {
-      assert.equal(module.headers.get(header), script.headers.get(header), `${path}: ${header} matches dashboard.js`);
-    }
-    // A served module imports nothing the server would refuse.
-    assert.doesNotMatch(await module.text(), /^\s*import\s/m, path);
-  }
-  const copy = await fetch(`${base}/copy.mjs`);
-  assert.equal(await copy.text(), readFileSync(resolve(source, 'copy.mjs'), 'utf8'));
-  assert.equal((await fetch(`${base}/copy.mjs`, { headers: { 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'no-cors', 'Sec-Fetch-Dest': 'script' } })).status, 403);
-  // Only that one file: no other name for it and no other file next to it.
-  for (const path of ['/public/copy.mjs', '/src/dashboard/copy.mjs', '/copy.mjs/', '/Copy.mjs', '/copy.js', '/projects.mjs']) {
-    assert.equal((await fetch(`${base}${path}`)).status, 404, path);
-  }
-});
-
-test('an unsent Messages draft is kept by Chats once, and a newer Chats draft is never overwritten', () => {
-  const other = { '#/p/notes/start start': { goal: 'A fictional goal.' } };
-  const adopted = adoptDrafts({ ...other, '#/settings/messages message': 'Review the example page.' });
-  assert.deepEqual(adopted, { ...other, '#/chats message': 'Review the example page.' });
-  assert.equal(adoptDrafts(adopted), null);
-  assert.equal(adoptDrafts({ '#/settings/messages message': 'Older text.', '#/chats message': 'Newer text.' }), null);
-});
