@@ -50,14 +50,30 @@ export function testSummary(text) {
 }
 
 /**
+ * The test files whose last run in a gate log exited non-zero, from scripts/run-tests.mjs's `# end <file> <ms> ms, exit
+ * <code>` lines (a file retried alone counts with its retry), sorted. Null when the log has no such line (another runner).
+ * A file stopped at its time limit, or that crashed before its own summary, adds nothing to the summary's `# fail` count
+ * (2026-11-05: `# fail 0` with exit 1), so these lines are where such a file is named.
+ */
+export function exitedFiles(text) {
+  const last = new Map();
+  for (const line of (text ?? '').replaceAll('\r\n', '\n').split('\n')) {
+    const match = /^# end (\S+) \d+ ms, exit (\S+)$/.exec(line);
+    if (match) last.set(match[1], match[2]);
+  }
+  return last.size ? [...last].filter(([, code]) => code !== '0').map(([file]) => file).sort() : null;
+}
+
+/**
  * The gate run the helper left in `dir` (#43), as the controller reads it when a verification ends: the exit code it
- * recorded (null when the gate never finished) and its final node:test summary (null when the log has none). Null when no
- * gate ran in `dir`. gate.log holds only the last run; the run before is gate-previous.log, which is not read.
+ * recorded (null when the gate never finished), its final node:test summary (null when the log has none) and the test
+ * files that exited non-zero (exitedFiles). Null when no gate ran in `dir`. gate.log holds only the last run; the run
+ * before is gate-previous.log, which is not read. Nothing here comes from the verifier's result.
  */
 export function readGateRun(dir) {
   const log = read(join(dir, GATE_FILES.log));
   if (log === null) return null;
-  return { exit: read(join(dir, GATE_FILES.exit))?.trim() || null, summary: testSummary(log) };
+  return { exit: read(join(dir, GATE_FILES.exit))?.trim() || null, summary: testSummary(log), exited: exitedFiles(log) };
 }
 
 /**
@@ -77,11 +93,28 @@ export function failedTests(summary) {
   return [...ids].sort();
 }
 
-/** Why a recorded gate run failed: a non-zero exit code or a failed test in its summary. Null when it did not. */
+// Why a gate exited with a numeric non-zero code while its summary counts no failed test, from its own log only. Comes
+// first in a refusal, so the next verifier's note (cut at 300 characters) names the cause instead of `# fail 0`.
+function uncountedCause(run) {
+  const files = Array.isArray(run.exited) ? run.exited : null;
+  if (files?.length) {
+    return ` with no failed test counted, because ${files.slice(0, 5).join(', ')}${files.length > 5 ? ` and ${files.length - 5} more` : ''} exited ` +
+      'non-zero (a file stopped at its time limit or crashed before its own summary adds no failed test to the count)';
+  }
+  if (run.summary === null) return ` before any test summary: a step before the tests, or the test command itself, failed (see ${GATE_FILES.log})`;
+  const cancelled = Number(/^# cancelled (\d+)$/m.exec(run.summary)?.[1] ?? 0);
+  if (cancelled > 0) return ` with no failed test counted but ${cancelled} cancelled test${cancelled === 1 ? '' : 's'}`;
+  return files ? ` with no failed test counted, and every test file exited 0: a step after the tests failed` : ' with no failed test counted';
+}
+
+/**
+ * Why a recorded gate run failed: a non-zero exit code or a failed test in its summary. Null when it did not. A non-zero
+ * exit whose summary counts no failed test says why (uncountedCause); it is a failure all the same.
+ */
 export function gateFailure(run) {
   if (!run) return null;
-  if (run.exit !== null && run.exit !== '0') return `exited ${run.exit}`;
   const failed = Number(/^# fail (\d+)$/m.exec(run.summary ?? '')?.[1] ?? 0);
+  if (run.exit !== null && run.exit !== '0') return `exited ${run.exit}${failed > 0 || !/^\d+$/.test(run.exit) ? '' : uncountedCause(run)}`;
   return failed > 0 ? `reports ${failed} failed test${failed === 1 ? '' : 's'}` : null;
 }
 
