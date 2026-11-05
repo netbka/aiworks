@@ -580,7 +580,7 @@ The switch is a `config.json` change made through the upgrade procedure. It adds
 
 The scheduler (section 7) is built and off. Switching it on is one `config.json` change on an installation, made by its operator through the upgrade procedure after an independent review accepts the exact commit to be deployed. Merging this runbook switches nothing, and no installation is evidenced here.
 
-- **Covered by synthetic tests (`tests/supervisor`):** admission rules, fair order, fan-out and the host ceiling (`scheduler.test.mjs`); write domains and their holders (`write-domain.test.mjs`); several open operations and cost reservation (`multi-op.test.mjs`); takeover, two controllers and cancellation with parallel work (`restart-parallel.test.mjs`, `restart-publish.test.mjs`). The activation cohort test, which ran actual `serve` controllers over four disposable campaigns, was removed in the second test cut (2026-11-05); its admission rules are in `scheduler.test.mjs`, and the kill with no second dispatch or charge is in `restart-parallel.test.mjs`.
+- **Covered by synthetic tests (`tests/supervisor`):** admission rules, the declared slot limit, host pressure and the host ceiling (`scheduler.test.mjs`; its fair-order, fan-out growth and host-sampler tests were removed in the second test cut (2026-11-05) as throughput and reporting); write domains and their holders (`write-domain.test.mjs`); several open operations and cost reservation (`multi-op.test.mjs`); takeover, two controllers and cancellation with parallel work (`restart-parallel.test.mjs`, `restart-publish.test.mjs`). The activation cohort test, which ran actual `serve` controllers over four disposable campaigns, was removed in the second test cut (2026-11-05); its admission rules are in `scheduler.test.mjs`, and the kill with no second dispatch or charge is in `restart-parallel.test.mjs`.
 - **Not covered by an automated test:** a real host's memory, CPU and disk, a real provider's limits, `deploy.ps1`, and the procedure below.
 
 **Configuration.** Only the `scheduler` key of the data directory's `config.json` changes; every other key, budget, provider setting and declaration stays as it is.
@@ -707,7 +707,7 @@ Any other checkout answers `SYNC_NOT_AUTHORIZED` and nothing moves. This authori
 
 `tests/supervisor/` cover the following with synthetic `claude`/`gh` executables and disposable git repositories:
 - validation and immutable scope;
-- `BOOTSTRAP_REQUIRED` versus `ACTIVE`;
+- `BOOTSTRAP_REQUIRED` versus `ACTIVE` (its test was removed in the second test cut, 2026-11-05, as reporting);
 - lease fencing;
 - the serial DAG, repair rounds, retry/stall, auth, budget, owner-reserved, stale target, pause and cancel cases;
 - real-process crash rehearsals: after checkpoint, after launch, during the worker, whole-tree loss, between push and PR, after a report post, and two concurrent controllers;
