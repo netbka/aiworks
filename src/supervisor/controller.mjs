@@ -42,6 +42,7 @@ import { mainLedger, selfHostingSettings, trustedTip, trustsLocalMain } from './
 import { programPass } from './program.mjs';
 import { cleanupPass } from './cleanup.mjs';
 import { GATE_FILES, gateFailure, readGateRun } from './gate.mjs';
+import { baseCheckStep, baseCompareSettings, baseRecord, sharedBaseFailures } from './base-check.mjs';
 import { isLocalTarget, recordCandidate } from './local-candidates.mjs';
 import { checkLocalDispatch, LOCAL_ADMISSION_ON } from './local-admission.mjs';
 import { addComment, createItem, followUp, reviewItem, WorkListError, workAuthorization, workLink } from './work-list.mjs';
@@ -500,6 +501,11 @@ export class Controller {
     // Check times and wait reasons are memory only: after a restart every published PR is judged once more, and a merge
     // whose outcome was unknown is settled by reading the PR first (merge.mjs).
     this.merges = mergeSettings(this.config);
+    // Base compare (base-check.mjs): off unless config.json `baseCompare` names the gate command. Malformed is off, logged.
+    const baseCompare = baseCompareSettings(this.config.baseCompare);
+    if (baseCompare?.problem) this.log(`base compare is off: ${baseCompare.problem}`);
+    this.baseCompare = baseCompare?.problem ? null : baseCompare;
+    this.baseWaits = new Map();
     // AW-005: where the trusted main lives, for the texts of the runtime-not-merged hold. cli.mjs serve checks the same setting.
     // LOCAL_OPERATION.md section 4 (slice SELF4): with local main trusted, the self-hosted repository's bases, worktrees,
     // dependency receipts and campaign branches are read from local refs and the main ledger, and CI repair is refused.
@@ -1173,7 +1179,14 @@ export class Controller {
       this.runEnded(campaign.declaration);
       return;
     }
-    if (result) { this.consume(ctx, op, result); return; }
+    if (op.kind === 'verify' && this.baseCompare) this.stepBaseCheck(ctx, campaign, op);
+    if (result) {
+      // An accepted result whose gate failed waits here while its base gate still runs (base-check.mjs), read again a
+      // poll later; applyOutcome decides, and the base check's own bound ends the wait.
+      if ((this.baseWaits.get(op.id) ?? -Infinity) > this.now()) return;
+      this.consume(ctx, op, result);
+      return;
+    }
     const now = this.now();
     if (op.state === 'recorded') {
       if (runner || existsSync(join(op.run_dir, 'run.lock'))) {
@@ -1201,6 +1214,24 @@ export class Controller {
     if (readJsonIfExists(join(op.run_dir, 'result.json'))) return; // finished meanwhile; consume next tick
     this.applyOutcome(ctx, op, { class: 'lost', detail: `runner heartbeat stale; ${stopped}`, receipt: { measured: false } });
   }
+
+  /** The base check of a commit task's base for its verify operation (base-check.mjs): started once, read while it runs. */
+  stepBaseCheck(ctx, campaign, op) {
+    if (op.task_id === PLAN_TASK || this.deliverable(ctx, op.task_id) !== 'commit') return;
+    const task = this.store.task(ctx.id, op.task_id), decl = campaign.declaration;
+    if (!task?.base_sha) return;
+    let repo;
+    try { repo = this.repo(decl); } catch { return; }
+    try {
+      baseCheckStep(this, ctx, { repository: this.baseRepository(decl, repo), repoPath: repo.path, worktreeRoot: repo.worktreeRoot, baseSha: task.base_sha }, this.baseCompare);
+    } catch (error) {
+      if (error instanceof FencedError) throw error;
+      this.log(`base check of ${this.baseRepository(decl, repo)} ${task.base_sha} failed: ${error.message}`);
+    }
+  }
+
+  /** The repository a base check is keyed by: the declared repository, or the local checkout of a local target. */
+  baseRepository(decl, repo) { return decl.target.repository ?? `local:${repo.path}`; }
 
   deliverable(ctx, taskId) {
     // A planning step is read-only report work (WORK_ENVELOPE 6.2); it has no spec of its own.
@@ -1318,13 +1349,32 @@ export class Controller {
     // verifier's gate is the one full run a head gets.
     if (verdict.class === 'result' && op.kind === 'verify' && this.deliverable(ctx, op.task_id) === 'commit') {
       const gate = readGateRun(op.workspace);
-      verdict = { ...verdict, value: { ...verdict.value, gate } };
+      verdict = { ...verdict, value: { ...verdict.value, gate, baseFailures: null } };
       const failure = verdict.value.verdict !== 'accepted' ? null
         : !gate ? `is missing: its checkout has no ${GATE_FILES.log} from the gate helper`
           : gate.exit === null ? `never finished: there is no ${GATE_FILES.exit}` : gateFailure(gate);
       // A missing or unfinished run carries no summary, so its detail is the same every time and four in a row stop the task
       // (the identical-failure guard) instead of retrying a verifier that never finishes its gate.
-      if (failure) {
+      // Base compare (base-check.mjs): a finished gate whose failed tests all fail on the task's base too does not refuse
+      // the acceptance, and the verification records them. While the base gate still runs, nothing is applied yet.
+      let base = null;
+      if (failure && gate && gate.exit !== null && this.baseCompare && before.base_sha) {
+        const campaign = this.store.campaign(ctx.id);
+        let repo = null;
+        try { repo = this.repo(campaign.declaration); } catch { /* no checkout: no base record, refused as before */ }
+        const record = repo ? baseRecord(this.store, this.baseRepository(campaign.declaration, repo), before.base_sha, this.baseCompare) : null;
+        if (record?.state === 'running' && this.now() - record.started_at <= this.baseCompare.timeoutMs && campaign.control !== 'cancel-requested') {
+          this.baseWaits.set(op.id, this.now() + this.config.pollMs);
+          return null;
+        }
+        const shared = sharedBaseFailures(record, gate.summary);
+        if (shared) base = { sha: before.base_sha, failed: shared };
+      }
+      this.baseWaits.delete(op.id);
+      if (base) {
+        verdict = { ...verdict, value: { ...verdict.value, baseFailures: base } };
+        this.log(`${ctx.id}/${op.task_id}: acceptance of ${op.target_sha} stands; its ${base.failed.length} failed test(s) fail on the base ${base.sha} too`);
+      } else if (failure) {
         verdict = { ...verdict, class: 'invalid-result', detail: !gate || gate.exit === null ? `accepted, but the verifier's last gate run ${failure}`
           : `accepted, but the verifier's last gate run ${failure}:\n${gate.summary ?? `no node:test summary in ${GATE_FILES.log}`}` };
       }
@@ -3649,6 +3699,8 @@ export class Controller {
         (gate.exit === null ? `No exit code was recorded in \`${GATE_FILES.exit}\`: the gate did not finish.` : `Exit code ${gate.exit}.`),
       '',
       ...(gate.summary === null ? [`\`${GATE_FILES.log}\` has no node:test summary block.`] : ['```text', gate.summary, '```']),
+      ...(task.verification?.baseFailures ? ['', `The acceptance stands although this gate failed: each of its ${task.verification.baseFailures.failed.length} failed test(s) ` +
+        `fails on the base \`${task.verification.baseFailures.sha}\` too, in the supervisor's own gate run of that base. This change did not cause them; they need their own fix.`] : []),
     ];
   }
 
