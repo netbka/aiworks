@@ -30,7 +30,8 @@ export const FAST = {
   // controllers renewed their 1.5 s lease up to 3.5 s late (historical regression), so it is 2 x dispatchWaitMs, as production's 90 s exceeds 15 s.
   // staleMs and startGraceMs stay 5 s: under 24 busy processes on 20 cores, runners beat at most 1.9 s apart and wrote
   // their first beat within 1.5 s of spawn (tests/supervisor/measure-liveness.mjs), so a healthy runner is never stale.
-  tickMs: 50, leaseMs: 10_000, pollMs: 500, heartbeatMs: 100, staleMs: 5000, startGraceMs: 5000,
+  // 30 s: host load stalled a controller for ~17 s, its 10 s lease expired mid-test and generation 2 took over (timeouts, FencedError).
+  tickMs: 50, leaseMs: 30_000, pollMs: 500, heartbeatMs: 100, staleMs: 5000, startGraceMs: 5000,
   dispatchWaitMs: 5000, publishRetryMs: 200, outboxRetryMs: 100, retryBackoffMs: [50, 50, 50],
   codexSandboxProbe: false, // synthetic executors: never spawn the real Codex sandbox helper
 };
