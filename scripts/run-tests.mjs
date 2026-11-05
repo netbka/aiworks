@@ -22,7 +22,8 @@
 // 15) is stopped with its process tree and fails, so one stuck file never holds the gate for an hour. A file that fails
 // runs once more on its own after every tier has finished (scripts/lib/test-retry.mjs): the gate passes only if each
 // retried file passes alone, and the final summary names every retry. AIWORKS_TEST_RETRY_FILES (default 10) caps how
-// many failed files are retried; 0 turns the retry off.
+// many failed files are retried (0 turns the retry off), and AIWORKS_TEST_RETRY_MINUTES (default 20) how long all
+// retries together may start for.
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { availableParallelism } from 'node:os';
@@ -102,6 +103,8 @@ const concurrency = setting('AIWORKS_TEST_CONCURRENCY', Math.min(4, Math.max(1, 
 const heavyConcurrency = setting('AIWORKS_HEAVY_CONCURRENCY', 2);
 const fileLimitMs = setting('AIWORKS_TEST_FILE_MINUTES', 15) * 60_000;
 const retryLimit = process.env.AIWORKS_TEST_RETRY_FILES === '0' ? 0 : setting('AIWORKS_TEST_RETRY_FILES', 10);
+// All retries together get at most this long; a file not retried in time keeps its first failure.
+const retryBudgetMs = setting('AIWORKS_TEST_RETRY_MINUTES', 20) * 60_000;
 
 // An inherited test-worker marker makes a nested node --test silently skip its files.
 const env = { ...process.env };
@@ -189,8 +192,12 @@ const lanesMs = Date.now() - lanesStarted;
 // Failed files run again one at a time, alone, once every tier has finished.
 const plan = retryPlan(times, retryLimit);
 const retries = [];
-if (plan.skipped) console.log(`# no retry: ${plan.skipped}`);
-for (const file of plan.files) await runFile(file, times.find((run) => run.file === file).tier, rest, retries);
+const notRetried = plan.skipped ? [`# not retried: ${plan.skipped}`] : [];
+const retryStarted = Date.now();
+for (const file of plan.files) {
+  if (Date.now() - retryStarted >= retryBudgetMs) { notRetried.push(`# not retried: ${file}, the ${retryBudgetMs / 60_000}-minute retry budget is spent`); continue; }
+  await runFile(file, times.find((run) => run.file === file).tier, rest, retries);
+}
 const result = settle(times, retries);
 if (unitStatus || serviceStatus || rehearsalStatus) console.log(`# first run failed: ${times.filter((run) => run.code !== 0).map((run) => run.file).join(', ')}`);
 console.log(`# file times, slowest first (service and rehearsal lanes ${lanesMs} ms)`);
@@ -199,7 +206,7 @@ for (const { file, tier, ms, code } of times.sort((a, b) => b.ms - a.ms)) {
 }
 const counts = TIERS.map((tier) => `${selected(tier).length} ${tier}`).join(', ');
 console.log(`# all test files: ${counts} (of ${files.length}); unit and service ${concurrency} at a time, rehearsal ${heavyConcurrency} at a time`);
-for (const line of result.lines) console.log(line);
+for (const line of [...result.lines, ...notRetried]) console.log(line);
 for (const key of COUNTS) console.log(`# ${key} ${result.total[key]}`);
 console.log(`# duration_ms ${Date.now() - started}`);
 process.exit(result.status);
