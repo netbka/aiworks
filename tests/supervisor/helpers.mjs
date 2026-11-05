@@ -116,6 +116,8 @@ export const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 export function passedGate(dir) {
   writeFileSync(join(dir, 'gate.log'), '# all test files: 1 unit, 0 service, 0 rehearsal (of 1)\n# tests 1\n# pass 1\n# fail 0\n');
   writeFileSync(join(dir, 'gate-exit.log'), '0\n');
+  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8', windowsHide: true }).stdout.trim();
+  writeFileSync(join(dir, 'gate-head.log'), `${head} clean\n`);
 }
 
 /**

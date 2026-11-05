@@ -41,7 +41,7 @@ import { mergePass, mergeSettings } from './merge.mjs';
 import { mainLedger, selfHostingSettings, trustedTip, trustsLocalMain } from './self-hosting.mjs';
 import { programPass } from './program.mjs';
 import { cleanupPass } from './cleanup.mjs';
-import { GATE_FILES, gateFailure, readGateRun } from './gate.mjs';
+import { GATE_FILES, gateFailure, gateHeadProblem, readGateRun } from './gate.mjs';
 import { baseCheckStep, baseCompareSettings, baseRecord, sharedBaseFailures } from './base-check.mjs';
 import { isLocalTarget, recordCandidate } from './local-candidates.mjs';
 import { checkLocalDispatch, LOCAL_ADMISSION_ON } from './local-admission.mjs';
@@ -1349,7 +1349,12 @@ export class Controller {
     // run failed, never finished or never ran is refused: implementers run only the tests their change reaches, so the
     // verifier's gate is the one full run a head gets.
     if (verdict.class === 'result' && op.kind === 'verify' && this.deliverable(ctx, op.task_id) === 'commit') {
-      const gate = readGateRun(op.workspace);
+      const run = readGateRun(op.workspace);
+      // A gate started on another commit, on a checkout with changes, or not by the helper's start is no full run of this
+      // head. It is kept with its reason, which gateFailure returns, so no reader (merge gate, AW-017 delivery, release)
+      // counts it as passed, and base compare never keeps it.
+      const headProblem = run ? gateHeadProblem(run, op.target_sha) : null;
+      const gate = headProblem ? { ...run, headProblem } : run;
       verdict = { ...verdict, value: { ...verdict.value, gate, baseFailures: null } };
       const failure = verdict.value.verdict !== 'accepted' ? null
         : !gate ? `is missing: its checkout has no ${GATE_FILES.log} from the gate helper`
@@ -1359,7 +1364,7 @@ export class Controller {
       // Base compare (base-check.mjs): a finished gate whose failed tests all fail on the task's base too does not refuse
       // the acceptance, and the verification records them. While the base gate still runs, nothing is applied yet.
       let base = null;
-      if (failure && gate && gate.exit !== null && this.baseCompare && before.base_sha) {
+      if (failure && gate && gate.exit !== null && !headProblem && this.baseCompare && before.base_sha) {
         const campaign = this.store.campaign(ctx.id);
         let repo = null;
         try { repo = this.repo(campaign.declaration); } catch { /* no checkout: no base record, refused as before */ }
@@ -1376,7 +1381,7 @@ export class Controller {
         verdict = { ...verdict, value: { ...verdict.value, baseFailures: base } };
         this.log(`${ctx.id}/${op.task_id}: acceptance of ${op.target_sha} stands; its ${base.failed.length} failed test(s) fail on the base ${base.sha} too`);
       } else if (failure) {
-        verdict = { ...verdict, class: 'invalid-result', detail: !gate || gate.exit === null ? `accepted, but the verifier's last gate run ${failure}`
+        verdict = { ...verdict, class: 'invalid-result', detail: !gate || gate.exit === null || headProblem ? `accepted, but the verifier's last gate run ${failure}`
           : `accepted, but the verifier's last gate run ${failure}:\n${gate.summary ?? `no node:test summary in ${GATE_FILES.log}`}` };
       }
     }

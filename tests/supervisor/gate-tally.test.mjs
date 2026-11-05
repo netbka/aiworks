@@ -35,6 +35,7 @@ async function setup(t, { scenario, decl = declaration({ tasks: ONE }) } = {}) {
   return { env, store, controller, id: decl.campaignId };
 }
 
+const OTHER = 'f'.repeat(40);
 const verifications = (store, id) => store.all("SELECT * FROM operations WHERE campaign_id = ? AND kind = 'verify' ORDER BY seq, created_at", id);
 
 test('an acceptance whose last gate run exited 1 is refused as invalid-result naming the summary; the next one publishes', { skip: skipWithoutSqlite }, async (t) => {
@@ -60,14 +61,17 @@ test('an acceptance whose gate exited 0 but reports a failed test is refused too
   assert.equal(refused.outcome.detail, `accepted, but the verifier's last gate run reports 1 failed test:\n${FAILED}`);
 });
 
-test('an acceptance with no gate run, or one that never finished, is refused; the next with a finished gate publishes', { skip: skipWithoutSqlite }, async (t) => {
+test('an acceptance with no gate run, one that never finished or one of another commit is refused; the next with a finished gate publishes', { skip: skipWithoutSqlite }, async (t) => {
   // Implementers run only the tests their change reaches, so the verifier's gate is the one full run a head gets.
   const decl = declaration({ tasks: ONE, limits: { maxRetriesPerTask: 4 } });
   const { store, controller, id } = await setup(t, { decl, scenario: { gate: [false, { log: `${PASSED}
 `, exit: null }, { log: `${PASSED}
+`, exit: '0', head: OTHER }, { log: `${PASSED}
 `, exit: '0' }] } });
   await runUntil(controller, store, id, (c) => c.control === 'finished');
-  const [missing, unfinished, accepted] = verifications(store, id);
+  const [missing, unfinished, elsewhere, accepted] = verifications(store, id);
+  // A passing gate the helper started on another commit is no run of this head (gate-head.log).
+  assert.equal(elsewhere.outcome.class, 'invalid-result');
   assert.equal(missing.outcome.class, 'invalid-result');
   assert.equal(missing.outcome.detail, "accepted, but the verifier's last gate run is missing: its checkout has no gate.log from the gate helper");
   assert.equal(unfinished.outcome.class, 'invalid-result');
