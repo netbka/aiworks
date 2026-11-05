@@ -362,15 +362,19 @@ export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 /**
  * AIWorks never uses GitHub Actions (owner directive, 2 November 2026) and does not read the repository's Actions setting
  * from GitHub. A push, backup push, pull request or merge that adds, changes, deletes or renames a path under
- * .github/workflows could start a hosted run, so it is refused. Workflow files the base already holds are the owner's
- * repository matter and do not stop publication. Compares `head` with the `base` it is published onto, locally (no
- * rename detection, so both sides of a rename show; paths match case-insensitively, as a Windows checkout would). Fails
- * closed: an unreadable diff, or no base or head, is a refusal.
+ * .github/workflows could start a hosted run, so it is refused. Workflow files already in the base do not block (they are
+ * the owner's repository matter). It judges the head's own change, locally: `base...head`, the head's changes since its
+ * merge-base with the base, so a workflow change the base gained after the head forked is not counted against the head.
+ * With `tree` (the gated merge result of a refresh, a tree and not a commit) it compares the base with that result
+ * instead, which is exactly what the merge puts on the base. The empty tree as `base` (a first backup to a repository
+ * with no tip) is compared directly, so any workflow file counts. No rename detection, so both sides of a rename show;
+ * paths match case-insensitively, as a Windows checkout would. Fails closed: an unreadable diff, or no base or head, is
+ * a refusal.
  */
-export function assertNoWorkflowChange({ git, repoPath, base, head }) {
+export function assertNoWorkflowChange({ git, repoPath, base, head, tree = null }) {
   const refuse = (why) => { throw Object.assign(new Error(`LOCAL_DEVELOPMENT_ONLY: ${why}`), { code: 'LOCAL_DEVELOPMENT_ONLY' }); };
   if (!git || !repoPath || !base || !head) refuse('the base and head of this GitHub push or merge are not known, so it cannot be checked for GitHub Actions workflow changes; AIWorks never publishes workflow changes');
-  const out = exec(git, ['diff', '--name-only', '--no-renames', '-z', base, head], { cwd: repoPath });
+  const out = exec(git, ['diff', '--name-only', '--no-renames', '-z', ...(tree ? [base, tree] : base === EMPTY_TREE ? [base, head] : [`${base}...${head}`])], { cwd: repoPath });
   if (!out.ok) refuse(`the change from ${base} to ${head} could not be read to check it for GitHub Actions workflow changes; nothing was published`);
   const changed = out.stdout.split('\0').find((path) => /^\.github\/workflows(\/|$)/i.test(path));
   if (changed) refuse(`the change adds or edits a GitHub Actions workflow file (${changed}); AIWorks never publishes workflow changes: remove the change from .github/workflows`);

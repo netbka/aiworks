@@ -17,20 +17,34 @@ export const BACKUP_INTERVAL_MS = 10 * 60_000;
 const KINDS = ['backup-requested', 'backup-pushed', 'backup-refused', 'backup-failed'];
 
 /**
+ * What a backup push is compared with: the remote's current tip when this checkout has it (the remote's own answer, else the
+ * remote-tracking ref, else the tip last accepted), so workflow files the remote already holds do not block it. Only when
+ * the remote has no tip at all (a brand-new repository) it is the empty tree: then any workflow file in the pushed history
+ * refuses the backup, because everything in it would be new there.
+ */
+function backupBase({ git, repoPath, remote, branch, pushedTip }) {
+  const remoteAnswer = exec(git, ['ls-remote', remote, `refs/heads/${branch}`], { cwd: repoPath, timeoutMs: 30_000 });
+  const answered = remoteAnswer.ok ? SHA.exec(remoteAnswer.stdout.trim().split(/s+/)[0]) : null;
+  const tracking = exec(git, ['rev-parse', '--verify', '--quiet', `refs/remotes/${remote}/${branch}`], { cwd: repoPath });
+  const candidates = [answered?.[0], tracking.ok ? tracking.stdout.trim() : null, pushedTip];
+  if (remoteAnswer.ok && !remoteAnswer.stdout.trim()) return EMPTY_TREE;
+  return candidates.find((sha) => SHA.test(sha ?? '') && exec(git, ['cat-file', '-e', `${sha}^{commit}`], { cwd: repoPath }).ok) ?? EMPTY_TREE;
+}
+
+/**
  * Push `tip` to `<remote>` as `refs/heads/<branch>`. The arguments are fixed: no force, no `+`, no mirror (even when the
  * remote is configured as one), no tags. Returns { kind: 'backup-pushed' }, { kind: 'backup-refused', reason } when the
  * remote rejected the update (it is not a fast-forward there, or the remote's rules decline it), or
  * { kind: 'backup-failed', reason } when the remote could not be reached in time or the push could not run, as when its
  * local folder does not exist (yet): that is tried again after the interval, while a refusal waits for the next merge.
- * A push that adds or changes a workflow file relative to `base` (the tip last accepted; with none, the empty tree, so
- * any workflow file counts) is refused before the push.
+ * A push that adds or changes a workflow file relative to the remote's current tip (backupBase) is refused before the push.
  */
-export function pushTrustedTip({ git = ['git'], gh = ['gh'], repository, repoPath, remote, branch, tip, base = EMPTY_TREE }) {
+export function pushTrustedTip({ git = ['git'], gh = ['gh'], repository, repoPath, remote, branch, tip, pushedTip = null }) {
   if (!SHA.test(tip ?? '') || !REF_NAME.test(remote ?? '') || !REF_NAME.test(branch ?? '')) {
     return { kind: 'backup-failed', reason: 'a backup needs a full commit SHA and plain remote and branch names' };
   }
   try {
-    assertPushDestination({ git, repoPath, remote, base, head: tip });
+    assertPushDestination({ git, repoPath, remote, base: backupBase({ git, repoPath, remote, branch, pushedTip }), head: tip });
   }
   catch (error) {
     if (/push destination could not be verified/.test(error.message) && missingLocalDestination(git, repoPath, remote)) return { kind: 'backup-failed', reason: 'the backup folder does not exist on this computer' };
@@ -95,7 +109,7 @@ export function backupStep({ store, settings, git = ['git'], gh = ['gh'], repoPa
   const detail = { repository: String(repository).toLowerCase(), tip: tip.tip, remote, branch };
   // The request is committed before the push, so a crash or a restart still waits the full interval.
   if (!write(merge.campaign_id, () => store.journal(merge.campaign_id, 'backup-requested', detail, now))) return null;
-  const result = pushTrustedTip({ git, gh, repository, repoPath, remote, branch, tip: tip.tip, base: history.pushedTip ?? EMPTY_TREE });
+  const result = pushTrustedTip({ git, gh, repository, repoPath, remote, branch, tip: tip.tip, pushedTip: history.pushedTip });
   write(merge.campaign_id, () => store.journal(merge.campaign_id, result.kind, { ...detail, ...(result.reason ? { reason: result.reason } : {}) }, now));
   log(result.kind === 'backup-pushed' ? `backed up ${tip.tip} to ${remote} ${branch}` : `backup of ${tip.tip} to ${remote} ${branch}: ${result.kind}: ${result.reason}`);
   return result.kind;
