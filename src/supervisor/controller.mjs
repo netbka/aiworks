@@ -688,9 +688,11 @@ export class Controller {
         .filter((lease) => lease?.instance_id === this.instanceId && held.get(lease.campaign_id) === lease.generation && lease.expires_at > enteredAt);
       const value = fn();
       // Slow synchronous effects block the renewal timer; the write lock protects every unchanged, previously live lease.
-      const expiresAt = this.now() + this.config.leaseMs;
+      // A lease taken for longer than leaseMs keeps its later end: shortening it made the next fenced write fail with
+      // "no longer held" whenever it came more than leaseMs later (2026-11-05).
+      const renewedTo = this.now() + this.config.leaseMs;
       for (const lease of leases) this.store.run('UPDATE leases SET expires_at = ? WHERE campaign_id = ? AND instance_id = ? AND generation = ? AND expires_at = ?',
-        expiresAt, lease.campaign_id, this.instanceId, lease.generation, lease.expires_at);
+        Math.max(renewedTo, lease.expires_at), lease.campaign_id, this.instanceId, lease.generation, lease.expires_at);
       return value;
     });
   }
