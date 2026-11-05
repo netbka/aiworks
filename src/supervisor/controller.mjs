@@ -352,6 +352,8 @@ const CI_SETTLED = ['ci-passed', 'ci-failed', 'ci-inconclusive', 'ci-none'];
 const RATE_LIMIT_MAX_WAIT_MS = 60 * 60_000;
 // AW-005: how often a controller re-reads whether its own revision is merged. A constant, not a config.json key.
 const REVISION_CHECK_MS = 60_000;
+// inBase (work item 160): a base history longer than this is not listed once per tick; each commit is then asked about on its own.
+const ANCESTOR_LIST_LIMIT = 200_000;
 // How often stray Docker stacks of docker.cleanup repositories are looked for (host-safety.mjs), besides after one of their runs ends.
 const SWEEP_MS = 10 * 60_000;
 // routing-policy/1 history window (MODEL_ROUTING 5.3): the most recent attempts of one candidate and class, at most 90 days old.
@@ -581,6 +583,7 @@ export class Controller {
     }
     this.candidates = [];
     this.baseFetches = new Map();
+    this.tickCache = new Map();
     try {
       for (const id of ids) {
         // One long step must not let the other campaigns' leases lapse: every held lease is extended before each step.
@@ -599,7 +602,7 @@ export class Controller {
           }
         }
       }
-    } finally { this.baseFetches = null; }
+    } finally { this.baseFetches = null; this.tickCache = null; }
     if (this.sweeper && this.now() - this.sweptAt >= SWEEP_MS) { this.sweptAt = this.now(); this.sweeper.sweep(); }
     if (this.cpuMonitor && this.now() - this.cpuCheckedAt >= this.cpuMonitor.settings.intervalMs) {
       this.cpuCheckedAt = this.now();
@@ -1847,6 +1850,8 @@ export class Controller {
     const fetched = await gitA.execContained(this.cmd.git, ['fetch', 'origin', `+refs/heads/${base}:${ref}`, `+refs/heads/${base}:refs/remotes/origin/${base}`],
       { cwd: repoPath, runRoot, timeoutMs: baseReadMs, overheadMs: baseReadOverheadMs, active: this.baseReadRuns });
     if (fetched.contained === false) return failed('uncontained');
+    // Whether it succeeded or not, the ref may have moved: what this tick read about this checkout's bases is dropped.
+    this.dropTickCache(repoPath);
     if (!fetched.ok) return failed(fetched.error === 'ETIMEDOUT' ? 'fetch-timeout' : 'fetch-failed');
     const read = await gitA.execBounded(this.cmd.git, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: repoPath, timeoutMs: this.config.baseReadMs });
     if (read.error === 'ETIMEDOUT') return failed('read-timeout');
@@ -2357,9 +2362,42 @@ export class Controller {
     if (!/^[0-9a-f]{40}$/.test(sha ?? '')) return false;
     const repo = this.checkout(decl);
     if (!repo?.path) return false;
-    const base = this.selfHosted(decl.target.repository)
-      ? this.localBase(repo.path, decl.target.baseBranch, decl.target.repository).sha : `refs/aiworks/base/${decl.target.baseBranch}`;
-    return Boolean(base) && gitA.exec(this.cmd.git, ['merge-base', '--is-ancestor', sha, base], { cwd: repo.path }).ok;
+    // The base is read once per tick and checkout (work item 160): every published task of a repository is asked about on
+    // every admission and status pass, and with hundreds of them each `git` process of its own made a tick take hours.
+    const baseSha = this.tickCached(`base:${repo.path}|${decl.target.baseBranch}`, () => this.selfHosted(decl.target.repository)
+      ? this.localBase(repo.path, decl.target.baseBranch, decl.target.repository).sha
+      : gitA.exec(this.cmd.git, ['rev-parse', '--verify', '--quiet', `refs/aiworks/base/${decl.target.baseBranch}^{commit}`], { cwd: repo.path }).stdout);
+    if (!/^[0-9a-f]{40}$/.test(baseSha ?? '')) return false;
+    // Ancestry of two fixed commits never changes: one `rev-list` of the base per tick answers every commit of it. A
+    // history too long to list, or an unreadable one, falls back to one ancestry read per commit.
+    const ancestors = this.tickCached(`ancestors:${repo.path}|${baseSha}`, () => {
+      const listed = gitA.exec(this.cmd.git, ['rev-list', `--max-count=${ANCESTOR_LIST_LIMIT + 1}`, baseSha], { cwd: repo.path });
+      if (!listed.ok) return null;
+      const shas = listed.stdout.split('\n').filter(Boolean);
+      return shas.length > ANCESTOR_LIST_LIMIT ? null : new Set(shas);
+    });
+    if (ancestors) return ancestors.has(sha);
+    return gitA.exec(this.cmd.git, ['merge-base', '--is-ancestor', sha, baseSha], { cwd: repo.path }).ok;
+  }
+
+  /**
+   * One read per tick (work item 160): `compute` runs once for `key` within the tick that is running and its answer is
+   * kept until the tick ends (tickOnce); a base fetch drops the keys of its checkout (readBase). Outside a tick the
+   * answer is computed every time.
+   */
+  tickCached(key, compute) {
+    const cache = this.tickCache;
+    if (!cache) return compute();
+    if (cache.has(key)) return cache.get(key);
+    const value = compute();
+    cache.set(key, value);
+    return value;
+  }
+
+  /** A fetch moved this checkout's base refs: nothing read about them in this tick stands any more (tickCached). */
+  dropTickCache(repoPath) {
+    if (!this.tickCache) return;
+    for (const key of [...this.tickCache.keys()]) if (key.includes(`:${repoPath}|`)) this.tickCache.delete(key);
   }
 
   /**
@@ -2368,9 +2406,11 @@ export class Controller {
    * its next useful result may raise the fan-out. Every other candidate keeps exactly one reason (status shows it, RUN9).
    */
   async admit() {
-    // One base fetch per checkout and base for the whole admission (fetchBase); it opens after the merge pass.
+    // One base fetch per checkout and base for the whole admission (fetchBase); it opens after the merge pass, which may
+    // have moved bases, so the tick's base reads (tickCached) start afresh too.
     this.baseFetches = new Map();
-    try { await this.admitCandidates(); } finally { this.baseFetches = null; }
+    this.tickCache = new Map();
+    try { await this.admitCandidates(); } finally { this.baseFetches = null; this.tickCache = null; }
   }
 
   async admitCandidates() {
