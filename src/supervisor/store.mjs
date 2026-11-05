@@ -226,6 +226,13 @@ CREATE TRIGGER IF NOT EXISTS work_item_comments_no_update BEFORE UPDATE ON work_
   BEGIN SELECT RAISE(ABORT, 'work_item_comments is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS work_item_comments_no_delete BEFORE DELETE ON work_item_comments
   BEGIN SELECT RAISE(ABORT, 'work_item_comments is append-only'); END;
+-- Base compare (base-check.mjs): one gate run of a base commit per repository, base SHA and gate command (JSON array).
+-- state running, then passed or failed once; failed is the JSON list of failed test ids, NULL when unknown.
+CREATE TABLE IF NOT EXISTS base_checks (
+  repository TEXT NOT NULL, base_sha TEXT NOT NULL, command TEXT NOT NULL, path TEXT NOT NULL,
+  started_at INTEGER NOT NULL, state TEXT NOT NULL CHECK (state IN ('running', 'passed', 'failed')),
+  failed TEXT, summary TEXT, reason TEXT, updated_at INTEGER NOT NULL,
+  PRIMARY KEY (repository, base_sha, command));
 `;
 
 const JSON_COLUMNS = new Set(['declaration', 'blocker', 'failures', 'findings', 'result', 'verification',
