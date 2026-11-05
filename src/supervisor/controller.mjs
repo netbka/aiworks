@@ -23,7 +23,7 @@ import { autoApplyPass } from './release/owner-apply.mjs';
 import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountFull, accountOf, accountWait, buildTaskSignature, clearAccountWait, formatSignatureLines, formatTokensUsage, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
 import { BEYOND_RULE, beyondConstraint, domainOf, outsideWrites, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, hostPressure, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
-import { hostSamplerFor } from './host.mjs';
+import { gatePauseOn, hostSamplerFor, pressureThresholds } from './host.mjs';
 import { tmpdir, totalmem } from 'node:os';
 import { cleans, cleanupSettings, createStackSweeper, inside, openOperations, runningBatches, runningRefreshes, workerJobLimits } from './host-safety.mjs';
 import { containsSecret, coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
@@ -482,6 +482,11 @@ export class Controller {
     // the last wait reasons are per-tick memory only; every admission input is a store row or a local git ref. The base
     // check times and the PRs found merged at their exact head are caches: a restart reads them again.
     this.sched = schedulerEnabled(this.config);
+    // Gates and web task runs keep apart only with the gate pause on (host.mjs gatePauseOn); `gates` (cli.mjs serve) counts
+    // the gates running now, and the web runs held back for one are logged once each.
+    this.browserGuard = gatePauseOn(this.config);
+    this.gates = gates;
+    this.gateHeldWeb = new Set();
     this.candidates = [];
     this.fanoutWaited = new Set();
     // CAAM profiles that a dispatch found at their learned limit while no profile could run (CAAM5): per-tick memory, as
@@ -1201,7 +1206,7 @@ export class Controller {
         // same operation. The runner's exclusive lock prevents a second agent for it.
         // Unmerged code does not start it (AW-005); it stays recorded until merged code runs.
         if (this.unmergedRevision()) return;
-        this.log(`resuming recorded operation ${op.id}`);
+        if (!this.gateHeldWeb.has(op.id)) this.log(`resuming recorded operation ${op.id}`);
         await this.launch(ctx, op);
       }
       return;
@@ -2481,6 +2486,8 @@ export class Controller {
   runEnded(decl) { if (this.sweeper && cleans(this.cleanup, decl)) this.sweptAt = -Infinity; }
   /** A settled operation's run no longer uses the browser session: its lock (launch, gate.mjs) goes at once. */
   browserRunSettled(op) {
+    this.gateHeldWeb.delete(op.id);
+    if (!this.browserGuard) return;
     try { rmSync(browserLockPath(slotSettings().dir, op.id), { force: true }); }
     catch (error) { this.log(`browser-session lock for ${op.id} not removed (it lapses with the run): ${error.message}`); }
   }
@@ -3288,9 +3295,20 @@ export class Controller {
   }
 
   async launch(ctx, op) {
+    // `web`: a web task's run that keeps apart from gates; with the gate pause off it launches as any other run.
     let web = false;
-    try { web = op.task_id !== PLAN_TASK && Boolean(executors.webFlag(specOf(this.store, ctx.id, op.task_id, this.store.campaign(ctx.id).declaration)?.web)); }
+    try { web = this.browserGuard && op.task_id !== PLAN_TASK && Boolean(executors.webFlag(specOf(this.store, ctx.id, op.task_id, this.store.campaign(ctx.id).declaration)?.web)); }
     catch { web = false; }
+    // Admission saw no gate, but one may have started since: the run waits in `recorded`, and a later pass launches it
+    // (reconcile). No run starts and none fails.
+    let running = 0;
+    try { running = web ? this.gates?.() ?? 0 : 0; } catch { running = 0; }
+    if (web && running >= pressureThresholds(this.config.scheduler?.pressure ?? {}).pauseAtGates) {
+      if (!this.gateHeldWeb.has(op.id)) this.log(`web task run ${op.id} waits: ${running} gate(s) run on this PC`);
+      this.gateHeldWeb.add(op.id);
+      return;
+    }
+    this.gateHeldWeb.delete(op.id);
     const child = this.fenced(ctx, () => {
       const current = this.store.get('SELECT * FROM operations WHERE id = ?', op.id);
       if (this.store.campaign(ctx.id).control !== 'registered' || current?.state !== 'recorded') return null;

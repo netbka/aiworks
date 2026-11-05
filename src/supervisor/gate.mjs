@@ -15,12 +15,13 @@
 // Gate slots: on 2026-10-17 four full gates ran at once on one PC and failed with "git init: not enough memory" and timing
 // tests, and the supervisor refused the verifications (12 since 16 Oct). The gate command now runs only while it holds one
 // of AIWORKS_GATE_SLOTS (default 2) machine-wide slots, lock files under AIWORKS_GATE_SLOTS_DIR (default <tmp>/aiworks-gate-
-// slots); until then gate.log says it waits, and wait keeps reporting running. It also waits while a web task's run holds
-// the browser session (browser-<operation>.lock in the same folder). A gate started inside a gate (the suite's
-// own gate tests) takes no slot. A running gate rewrites its slot lock every BEAT_MS; a slot whose process is gone, or
-// whose lock has not been rewritten for STALE_MS, is taken over.
+// slots); until then gate.log says it waits, and wait keeps reporting running. It also waits, for at most BROWSER_WAIT_MS,
+// while a web task's run holds the browser session (browser-<operation>.lock in the same folder). A gate started inside a
+// gate (the suite's own gate tests) takes no slot. A running gate rewrites its slot lock every BEAT_MS; a slot whose process
+// is gone, whose lock has not been rewritten for STALE_MS, or whose gate started MAX_LIFE_MS ago, is taken over.
 import { spawn } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, ftruncateSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync,
+  writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -149,6 +150,15 @@ const NESTED = 'AIWORKS_GATE_SLOT_HELD';
 // last beat is STALE_MS old is not held, whatever process now has its id.
 const BEAT_MS = 30_000;
 const STALE_MS = 2 * 60_000;
+// A live gate can hang and beat for ever. Refresh and base gates are never killed (merge-refresh.mjs), so a hung one would
+// pause admission and keep its slot for good, and the repair it waits for would never start. So no lock counts once its
+// gate started more than MAX_LIFE_MS ago: the default bound of a verifier's run (executor.verifierTimeoutMinutes 120)
+// and of refresh and base gates (timeoutMinutes 120). Past it the slot may be taken over and admission goes on.
+const MAX_LIFE_MS = 120 * 60_000;
+// A time more than this far ahead (the clock was set back) proves nothing: the lock is not held.
+const FUTURE_MS = 60_000;
+// The longest a gate waits for web task runs to leave the browser session; then it goes on and says so in gate.log.
+const BROWSER_WAIT_MS = 30 * 60_000;
 export function slotSettings(env = process.env) {
   const count = Number(env.AIWORKS_GATE_SLOTS ?? 2);
   return { count: Number.isSafeInteger(count) && count >= 1 && count <= 8 ? count : 2,
@@ -159,18 +169,22 @@ export function slotSettings(env = process.env) {
 const mtime = (file) => {
   try { return statSync(file).mtimeMs; } catch { return 0; }
 };
+// Whether time `at` lies within the last `limit` ms, and not more than FUTURE_MS ahead.
+const within = (at, now, limit) => Number.isFinite(at) && now - at < limit && at - now < FUTURE_MS;
 /**
- * Whether the lock file is held: its process runs and its last beat is younger than STALE_MS. The beat is the lock's `at`,
- * or for a browser lock the later write of the run's `heartbeat` file. Unreadable for a minute: no.
+ * Whether the lock file is held: its process runs, its last beat is younger than STALE_MS and its gate started less than
+ * MAX_LIFE_MS ago. The beat is the lock's `at`, or for a browser lock the later write of the run's `heartbeat` file; the
+ * start is `startedAt`, or `at` in a lock that has none. Unreadable for a minute: no.
  */
 function held(file, now) {
   let holder = null;
   try { holder = JSON.parse(readFileSync(file, 'utf8')); } catch { /* being written, or left empty */ }
   if (holder) {
     const beat = Math.max(Number(holder.at) || 0, typeof holder.heartbeat === 'string' ? mtime(holder.heartbeat) : 0);
-    return Number.isSafeInteger(holder.pid) && alive(holder.pid) && now - beat < STALE_MS;
+    return Number.isSafeInteger(holder.pid) && within(beat, now, STALE_MS)
+      && within(Number(holder.startedAt ?? holder.at), now, MAX_LIFE_MS) && alive(holder.pid);
   }
-  return now - mtime(file) < 60_000;
+  return within(mtime(file), now, 60_000);
 }
 /**
  * How many runs of the gate helper hold this PC now: the held slot locks in `dir`, whatever the slot count, and the gates
@@ -197,7 +211,7 @@ export function takeSlot({ count, dir }, now = Date.now()) {
       rmSync(file, { force: true });
     }
     try {
-      writeFileSync(file, JSON.stringify({ pid: process.pid, at: now, cwd: process.cwd() }), { flag: 'wx' });
+      writeFileSync(file, JSON.stringify({ pid: process.pid, at: now, startedAt: now, cwd: process.cwd() }), { flag: 'wx' });
       return file;
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
@@ -206,11 +220,35 @@ export function takeSlot({ count, dir }, now = Date.now()) {
   return null;
 }
 
+// The pid a lock file names, or null.
+const lockPid = (file) => {
+  try { return JSON.parse(readFileSync(file, 'utf8')).pid ?? null; } catch { return null; }
+};
+/**
+ * Gives back the slot and the waiting lock of the gate helper process `pid` (its gate-pid.log), when the supervisor stops
+ * waiting for that gate at its bound (merge-refresh.mjs, base-check.mjs): such a gate is never killed, and a hung one
+ * would otherwise hold its slot and pause admission until MAX_LIFE_MS. Only a lock that still names `pid` is removed.
+ */
+export function retireGate(pid, { dir } = slotSettings()) {
+  if (!Number.isSafeInteger(pid)) return 0;
+  let names;
+  try { names = readdirSync(dir); } catch { return 0; }
+  let retired = 0;
+  for (const name of names.filter((item) => /^(slot|waiting)-\d+\.lock$/.test(item))) {
+    const file = join(dir, name);
+    if (lockPid(file) !== pid) continue;
+    try { rmSync(file, { force: true }); retired += 1; } catch { /* it lapses by itself */ }
+  }
+  return retired;
+}
+
 // Browser-session locks (owner decision 2026-11-05): a web task's run may drive the owner's own Chrome session, and full
-// gates and those runs never overlap. The supervisor writes browser-<operation>.lock in the slot folder, holding the
-// run's runner process id and the path of its heartbeat file, when it launches a web task, removes it when the operation
-// settles, and marks that run's environment with BROWSER_RUN, so a gate the same run starts does not wait for itself. A
-// lock whose runner ended, or whose run has not beaten for STALE_MS, is removed by the next gate that reads it.
+// gates and those runs never overlap. With the gate pause on (host.mjs gatePauseOn: the scheduler on and pauseAtGates
+// under 99) the supervisor writes browser-<operation>.lock in the slot folder, holding the run's runner process id and the
+// path of its heartbeat file, when it launches a web task, removes it when the operation settles, and marks that run's
+// environment with BROWSER_RUN, so a gate the same run starts does not wait for itself. With it off no lock is written, so
+// no gate waits. A lock whose runner ended, or whose run has not beaten for STALE_MS, is removed by the next gate that
+// reads it.
 export const BROWSER_RUN = 'AIWORKS_BROWSER_RUN';
 export const browserLockPath = (dir, operationId) => join(dir, `browser-${operationId}.lock`);
 /** The web task runs that hold the owner's browser session now, other than `own`; locks no longer held are removed. */
@@ -232,15 +270,20 @@ export function heldBrowserRuns({ dir }, now = Date.now(), own = process.env[BRO
 }
 
 async function slot(settings) {
-  let said = false, browserSaid = false;
+  let said = false, browserSaid = false, browserSince = null, browserDone = false;
   const waiting = join(settings.dir, `waiting-${process.pid}.lock`);
   for (;;) {
-    const browser = heldBrowserRuns(settings);
-    if (browser.length) {
+    const browser = browserDone ? [] : heldBrowserRuns(settings);
+    browserSince = browser.length ? browserSince ?? Date.now() : browserSince;
+    if (browser.length && Date.now() - browserSince >= BROWSER_WAIT_MS) {
+      // Bounded: overlapping web task runs could otherwise hold this gate until its verifier's time bound.
+      console.log(`# stopped waiting for the browser session after ${BROWSER_WAIT_MS / 60_000} minutes; the gate goes on beside the web task run(s)`);
+      browserDone = true;
+    } else if (browser.length) {
       // Rewritten on every poll, so it beats while this gate waits and lapses once the gate is killed (heldSlotCount).
       try {
         mkdirSync(settings.dir, { recursive: true });
-        writeFileSync(waiting, JSON.stringify({ pid: process.pid, at: Date.now(), cwd: process.cwd() }));
+        writeFileSync(waiting, JSON.stringify({ pid: process.pid, at: Date.now(), startedAt: browserSince, cwd: process.cwd() }));
       } catch { /* missed beat */ }
       if (!browserSaid) console.log(`# waiting: ${browser.length} web task run(s) use the browser session, and a full gate never runs beside them`);
       browserSaid = true;
@@ -269,17 +312,29 @@ async function run(command) {
     if (recorded) return;
     recorded = true;
     clearInterval(beat);
-    if (lock) rmSync(lock, { force: true });
+    // A slot taken over or given back (retireGate) may name another gate by now: only this gate's own lock goes.
+    if (lock && lockPid(lock) === process.pid) {
+      try { rmSync(lock, { force: true }); } catch { /* it lapses after STALE_MS */ }
+    }
     writeFileSync(GATE_FILES.exit, `${value}\n`);
   };
   try { lock = process.env[NESTED] ? null : await slot(slotSettings()); }
   catch (error) { console.log(`# gate slots unavailable (${error.code ?? error.message}); the gate runs without one`); }
-  // The slot's beat (held): the lock stays fresh while this gate runs. Once another gate took the slot over, it stops.
+  // The slot's beat (held): the lock stays fresh while this gate runs. It stops once the slot was taken over or given
+  // back, and it opens the existing file only ('r+'), so it never brings back a lock that was removed.
+  const startedAt = Date.now();
   if (lock) beat = setInterval(() => {
+    let fd = null;
     try {
-      if (JSON.parse(readFileSync(lock, 'utf8')).pid !== process.pid) { clearInterval(beat); return; }
-      writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now(), cwd: process.cwd() }));
-    } catch { /* missed beat: the next follows within BEAT_MS */ }
+      // A lock that cannot be read just now (a scanner holds it) is beaten next time; one gone or naming another gate stops it.
+      const holder = JSON.parse(readFileSync(lock, 'utf8'));
+      if (holder.pid !== process.pid) { clearInterval(beat); return; }
+      fd = openSync(lock, 'r+');
+      ftruncateSync(fd, 0);
+      writeSync(fd, JSON.stringify({ pid: process.pid, at: Date.now(), startedAt, cwd: process.cwd() }), 0);
+    } catch (error) {
+      if (error.code === 'ENOENT') clearInterval(beat); // given back (retireGate) or taken over and removed
+    } finally { if (fd !== null) closeSync(fd); }
   }, BEAT_MS);
   const child = spawn(command.join(' '), { shell: true, stdio: 'inherit', windowsHide: true, env: { ...process.env, [NESTED]: '1' } });
   child.on('error', (error) => record(`spawn-error ${error.code ?? error.message}`));

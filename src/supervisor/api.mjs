@@ -369,7 +369,10 @@ function admissionReason(store, refusal) {
   switch (refusal.reason) {
     case 'campaign-fanout': return reason('campaign-fanout', 'Waiting for a free worker in this work program', 'Starts when a running step finishes');
     case 'host-capacity': return reason('host-capacity', 'This computer is running its maximum number of workers', 'Starts when one finishes');
-    case 'host-pressure': return reason('host-pressure', `This computer is low on ${PRESSURE_TEXT[refusal.detail?.signal] ?? 'memory'}`, 'Starts when the computer has room again');
+    // A test run is not a shortage: the owner would otherwise read "low on memory" during every gate (host.mjs, gates).
+    case 'host-pressure': return refusal.detail?.signal === 'gates'
+      ? reason('host-pressure', 'Waiting: a full test run is in progress on this computer', 'Starts when the test run ends')
+      : reason('host-pressure', `This computer is low on ${PRESSURE_TEXT[refusal.detail?.signal] ?? 'memory'}`, 'Starts when the computer has room again');
     case 'provider-concurrency': return reason('provider-concurrency', 'The AI provider asked to slow down', 'Starts when a run on that provider account finishes');
     case 'write-domain': {
       // A step still writing or not yet published is the live wait; a published one is named only when nothing else holds.

@@ -97,6 +97,12 @@ test('a gate process that ends without an exit code is reported as died at once,
 
 test('a web task run holding the browser session holds back other gates, never its own, and a lapsed lock never blocks', async (t) => {
   const { browserLockPath, heldBrowserRuns, heldSlotCount } = await import('../../src/supervisor/gate.mjs');
+  const { gatePauseOn } = await import('../../src/supervisor/host.mjs');
+  // Off (the scheduler off, its default, or pauseAtGates 99), the supervisor writes no browser lock, so no gate waits.
+  for (const config of [{}, { scheduler: { enabled: false } }, { scheduler: { enabled: true, pressure: { pauseAtGates: 99 } } }]) {
+    assert.equal(gatePauseOn(config), false, JSON.stringify(config));
+  }
+  assert.equal(gatePauseOn({ scheduler: { enabled: true } }), true);
   const dir = workdir(t), slots = join(dir, 'slots');
   mkdirSync(slots, { recursive: true });
   const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore', windowsHide: true });
@@ -120,7 +126,7 @@ test('a web task run holding the browser session holds back other gates, never i
   assert.equal(heldSlotCount({ dir: slots }), 0, 'a finished gate counts no more');
 });
 
-test('a lock whose holder stopped beating is not held, even while another process has its id', async (t) => {
+test('a lock whose holder stopped beating, or that outlived the longest gate, is not held while another process has its id', async (t) => {
   const { browserLockPath, heldBrowserRuns, heldSlotCount, takeSlot } = await import('../../src/supervisor/gate.mjs');
   const dir = workdir(t), slots = join(dir, 'slots'), heartbeat = join(dir, 'heartbeat');
   mkdirSync(slots, { recursive: true });
@@ -134,7 +140,14 @@ test('a lock whose holder stopped beating is not held, even while another proces
   assert.equal(heldSlotCount({ dir: slots }), 0, 'stale slot and waiting locks do not pause admission');
   assert.deepEqual(heldBrowserRuns({ dir: slots }, Date.now(), null), [], 'a stale browser lock does not hold gates back');
   assert.equal(takeSlot({ count: 1, dir: slots }), join(slots, 'slot-1.lock'), 'a stale slot is taken over');
-  // A run that still beats keeps its browser lock however old the lock is.
+  // A hung gate beats for ever: past the longest gate's bound it stops pausing admission and its slot is taken over.
+  writeFileSync(join(slots, 'slot-1.lock'), JSON.stringify({ pid: reused.pid, at: Date.now(), startedAt: Date.now() - 3 * 60 * 60_000 }));
+  assert.equal(heldSlotCount({ dir: slots }), 0, 'a gate past its lifetime does not pause admission');
+  assert.equal(takeSlot({ count: 1, dir: slots }), join(slots, 'slot-1.lock'), 'and its slot is taken over');
+  // A beat ahead of the clock (the clock was set back) proves nothing.
+  writeFileSync(join(slots, 'slot-1.lock'), JSON.stringify({ pid: reused.pid, at: Date.now() + 60 * 60_000 }));
+  assert.equal(heldSlotCount({ dir: slots }), 0, 'a beat from the future does not hold');
+  // A run that still beats keeps its browser lock, though the lock was written long ago.
   writeFileSync(heartbeat, String(Date.now()));
   writeFileSync(browserLockPath(slots, 'op-beating'), JSON.stringify({ pid: reused.pid, at: old, heartbeat }));
   assert.deepEqual(heldBrowserRuns({ dir: slots }, Date.now(), null), ['op-beating']);
