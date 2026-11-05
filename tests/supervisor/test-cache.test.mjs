@@ -83,7 +83,7 @@ test('a cached line counts only for a file whose inputs at the exact commit matc
   assert.deepEqual(claims(repair, cached(B, oldB) + summary(), 2 * DAY).refused, [`${A}: neither ran nor was cached`], 'a test file that neither ran nor was cached is refused');
 
   // The pass must be current when the run was dispatched, and on the gate's own Node major version.
-  assert.deepEqual(refused(claims(repair, ran(A) + cached(B, oldB) + summary(), DAY + WEEK + 1)), [B], 'a pass older than maxAgeDays is refused');
+  assert.deepEqual(refused(claims(repair, ran(A) + cached(B, oldB) + summary(), 2 * DAY + WEEK)), [B], 'a pass older than maxAgeDays is refused');
   const major = Number(process.versions.node.split('.')[0]);
   assert.deepEqual(refused(claims(repair, ran(A) + cached(B, oldB) + summary(`v${major + 1}.0.0`), 2 * DAY)), [B], 'a pass on another Node major is refused');
 
@@ -122,4 +122,35 @@ test('a test that prints runner markers can neither record another file nor clai
   // Both ran: the printed `# cached` line is no claim, so it cannot refuse the acceptance.
   assert.deepEqual(cache.checkClaims({ store, git: ['git'], repoPath: repo.dir, repository: REPOSITORY, sha: first,
     log: ran(A, 0, forged) + ran(B) + summary(), maxAgeMs: WEEK, offeredAt: DAY }), { claimed: 0, refused: [] });
+});
+
+// The controller's own steps, run on a stand-in that carries only what they read: no controller is started.
+async function controllerSteps(t, testCache) {
+  const s = await setup(t);
+  const { Controller } = await import('../../src/supervisor/controller.mjs');
+  const decl = { target: { repository: REPOSITORY, projectId: 'example-project' } };
+  const self = { testCache, store: s.store, cmd: { git: ['git'] }, now: () => 2 * DAY, log: () => {},
+    repo: () => ({ path: s.repo.dir }), baseRepository: Controller.prototype.baseRepository };
+  self.store.campaign = () => ({ declaration: decl });
+  return { ...s, Controller, decl, self };
+}
+
+test('a project with a recorded release grant is never offered the cache', { skip: skipWithoutSqlite }, async (t) => {
+  const { Controller, decl, self, store, repo, first, record } = await controllerSteps(t, { maxAgeMs: WEEK });
+  record(first, ran(A) + ran(B) + summary(), { now: DAY });
+  const runDir = mkdtempSync(join(tmpdir(), 'aiworks-test-cache-run-'));
+  t.after(() => rmSync(runDir, { recursive: true, force: true }));
+  const offer = () => Controller.prototype.offerTestCache.call(self, decl, { path: repo.dir }, first, runDir);
+  assert.ok(offer()?.AIWORKS_TEST_CACHE, 'without a grant the recorded passes are offered');
+  store.run("INSERT INTO release_grants (project, version, digest, revoked, source, approval, updated_at) VALUES ('example-project', 1, 'd', 0, 's', 'a', 1)");
+  assert.equal(offer(), null);
+});
+
+test('with the cache off, a cached line in the gate output refuses the acceptance', { skip: skipWithoutSqlite }, async (t) => {
+  const { Controller, self, repo, first, digest, record } = await controllerSteps(t, null);
+  record(first, ran(A) + ran(B) + summary(), { now: DAY });
+  // A verifier that set AIWORKS_TEST_CACHE itself: the runner skipped tests/b.test.mjs with a made-up tally.
+  writeFileSync(join(repo.dir, 'gate.log'), ran(A) + cached(B, digest(first, B)) + summary());
+  const claims = Controller.prototype.testClaims.call(self, { id: 'c1' }, { workspace: repo.dir, target_sha: first, created_at: DAY });
+  assert.deepEqual(claims?.refused.map((reason) => reason.split(':')[0]), [B]);
 });

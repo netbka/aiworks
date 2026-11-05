@@ -43,7 +43,7 @@ import { programPass } from './program.mjs';
 import { cleanupPass } from './cleanup.mjs';
 import { GATE_FILES, gateFailure, readGateRun } from './gate.mjs';
 import { baseCheckStep, baseCompareSettings, baseRecord, sharedBaseFailures } from './base-check.mjs';
-import { CACHE_RULE, checkClaims, hasRunner, insertResults, offerCache, resultsOf, testCacheSettings } from './test-cache.mjs';
+import { CACHE_RULE, checkClaims, hasRunner, insertResults, offerCache, otherNodeMajor, resultsOf, testCacheSettings } from './test-cache.mjs';
 import { isLocalTarget, recordCandidate } from './local-candidates.mjs';
 import { checkLocalDispatch, LOCAL_ADMISSION_ON } from './local-admission.mjs';
 import { addComment, createItem, followUp, reviewItem, WorkListError, workAuthorization, workLink } from './work-list.mjs';
@@ -1240,13 +1240,18 @@ export class Controller {
 
   /**
    * The environment that offers recorded test passes to a verify run of `sha` (test-cache.mjs), or null. Never throws.
-   * A project with a standing release grant (AW-010) is never offered it: a release needs a gate that ran every file.
+   * A project with a recorded release grant (AW-010) is never offered it: a release needs a gate that ran every file.
    */
   offerTestCache(decl, repo, sha, runDir) {
     if (!this.testCache || !repo || !sha) return null;
     try {
-      if (this.store.get('SELECT project FROM release_grants WHERE project = ? AND revoked = 0', projectOf(decl))) return null;
-      return offerCache({ store: this.store, git: this.cmd.git, repoPath: repo.path, repository: this.baseRepository(decl, repo), sha, runDir, settings: this.testCache, now: this.now() });
+      const repository = this.baseRepository(decl, repo), other = otherNodeMajor(this.store, repository);
+      if (other !== null && !(this.testCacheNodeNoted ??= new Set()).has(repository)) {
+        this.testCacheNodeNoted.add(repository);
+        this.log(`test cache of ${repository} is idle: its newest results ran on Node ${other}, the supervisor on Node ${process.versions.node}`);
+      }
+      return offerCache({ store: this.store, git: this.cmd.git, repoPath: repo.path, repository, project: decl.target.projectId ?? null,
+        sha, runDir, settings: this.testCache, now: this.now() });
     } catch (error) {
       this.log(`test cache not offered for ${sha}: ${error.message}`);
       return null;
@@ -1255,10 +1260,10 @@ export class Controller {
 
   /**
    * The `# cached` lines of a verify run's gate log, checked against the git objects of its target in the main checkout.
-   * Null, so nothing changes, while the cache is off or when the target has no scripts/run-tests.mjs.
+   * Null, so nothing changes, when the log has none or the target has no scripts/run-tests.mjs. With the cache off every
+   * such line is refused: nothing was offered, so the worker set AIWORKS_TEST_CACHE itself.
    */
   testClaims(ctx, op) {
-    if (!this.testCache) return null;
     let log;
     try { log = readFileSync(join(op.workspace, GATE_FILES.log), 'utf8'); } catch { return null; }
     if (!/^# cached /m.test(log)) return null;
@@ -1267,7 +1272,7 @@ export class Controller {
       const repo = this.repo(decl);
       if (!hasRunner(this.cmd.git, repo.path, op.target_sha)) return null;
       return checkClaims({ store: this.store, git: this.cmd.git, repoPath: repo.path, repository: this.baseRepository(decl, repo),
-        sha: op.target_sha, log, maxAgeMs: this.testCache.maxAgeMs, offeredAt: op.created_at });
+        sha: op.target_sha, log, enabled: Boolean(this.testCache), maxAgeMs: this.testCache?.maxAgeMs ?? 0, offeredAt: op.created_at });
     } catch (error) {
       return { claimed: 1, refused: [`the target ${op.target_sha} cannot be read: ${error.message}`.slice(0, 300)] };
     }
