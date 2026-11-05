@@ -43,6 +43,7 @@ import { programPass } from './program.mjs';
 import { cleanupPass } from './cleanup.mjs';
 import { GATE_FILES, gateFailure, readGateRun } from './gate.mjs';
 import { baseCheckStep, baseCompareSettings, baseRecord, sharedBaseFailures } from './base-check.mjs';
+import { checkClaims, insertPasses, offerCache, passesOf, testCacheSettings } from './test-cache.mjs';
 import { isLocalTarget, recordCandidate } from './local-candidates.mjs';
 import { checkLocalDispatch, LOCAL_ADMISSION_ON } from './local-admission.mjs';
 import { addComment, createItem, followUp, reviewItem, WorkListError, workAuthorization, workLink } from './work-list.mjs';
@@ -506,6 +507,10 @@ export class Controller {
     if (baseCompare?.problem) this.log(`base compare is off: ${baseCompare.problem}`);
     this.baseCompare = baseCompare?.problem ? null : baseCompare;
     this.baseWaits = new Map();
+    // Test result cache (test-cache.mjs): off unless config.json `testCache.enabled` is true. Malformed is off, logged.
+    const testCache = testCacheSettings(this.config.testCache);
+    if (testCache?.problem) this.log(`test cache is off: ${testCache.problem}`);
+    this.testCache = testCache?.problem ? null : testCache;
     // AW-005: where the trusted main lives, for the texts of the runtime-not-merged hold. cli.mjs serve checks the same setting.
     // LOCAL_OPERATION.md section 4 (slice SELF4): with local main trusted, the self-hosted repository's bases, worktrees,
     // dependency receipts and campaign branches are read from local refs and the main ledger, and CI repair is refused.
@@ -1233,6 +1238,42 @@ export class Controller {
   /** The repository a base check is keyed by: the declared repository, or the local checkout of a local target. */
   baseRepository(decl, repo) { return decl.target.repository ?? `local:${repo.path}`; }
 
+  /** The environment that offers recorded test passes to a verify run of `sha` (test-cache.mjs), or null. Never throws. */
+  offerTestCache(decl, repo, sha, runDir) {
+    if (!this.testCache || !repo || !sha) return null;
+    try {
+      return offerCache({ store: this.store, git: this.cmd.git, repoPath: repo.path, repository: this.baseRepository(decl, repo), sha, runDir, settings: this.testCache, now: this.now() });
+    } catch (error) {
+      this.log(`test cache not offered for ${sha}: ${error.message}`);
+      return null;
+    }
+  }
+
+  /** The `# cached` lines of a verify run's gate log, checked against the git objects of its target in the main checkout. */
+  testClaims(ctx, op) {
+    let log;
+    try { log = readFileSync(join(op.workspace, GATE_FILES.log), 'utf8'); } catch { return null; }
+    if (!/^# cached /m.test(log)) return null;
+    const decl = this.store.campaign(ctx.id).declaration;
+    let repo = null;
+    try { repo = this.repo(decl); } catch { return { claimed: 1, refused: ['the target checkout cannot be read'] }; }
+    return checkClaims({ store: this.store, git: this.cmd.git, repoPath: repo.path, repository: this.baseRepository(decl, repo),
+      sha: op.target_sha, log, enabled: Boolean(this.testCache) });
+  }
+
+  /** The test passes an accepted verify run's gate log gives, with digests computed from git, or null. Never throws. */
+  testPasses(op) {
+    if (!this.testCache) return null;
+    try {
+      const decl = this.store.campaign(op.campaign_id).declaration, repo = this.repo(decl);
+      const log = readFileSync(join(op.workspace, GATE_FILES.log), 'utf8');
+      return { repository: this.baseRepository(decl, repo), rows: passesOf({ git: this.cmd.git, repoPath: repo.path, sha: op.target_sha, log }) };
+    } catch (error) {
+      this.log(`test cache: passes of ${op.target_sha} not recorded: ${error.message}`);
+      return null;
+    }
+  }
+
   deliverable(ctx, taskId) {
     // A planning step is read-only report work (WORK_ENVELOPE 6.2); it has no spec of its own.
     return taskId === PLAN_TASK ? 'report' : specOf(this.store, ctx.id, taskId).deliverable;
@@ -1348,8 +1389,12 @@ export class Controller {
     // verification for the PR body; the key is always set, so a worker cannot supply it. An acceptance whose last gate
     // run failed, never finished or never ran is refused: implementers run only the tests their change reaches, so the
     // verifier's gate is the one full run a head gets.
+    let testPasses = null;
     if (verdict.class === 'result' && op.kind === 'verify' && this.deliverable(ctx, op.task_id) === 'commit') {
-      const gate = readGateRun(op.workspace);
+      let gate = readGateRun(op.workspace);
+      // Cached test files (test-cache.mjs) count only when the supervisor matches each one again from git.
+      const claims = gate ? this.testClaims(ctx, op) : null;
+      if (claims?.claimed) gate = { ...gate, cached: claims.claimed, ...(claims.refused.length ? { cacheRefused: claims.refused.slice(0, 20) } : {}) };
       verdict = { ...verdict, value: { ...verdict.value, gate, baseFailures: null } };
       const failure = verdict.value.verdict !== 'accepted' ? null
         : !gate ? `is missing: its checkout has no ${GATE_FILES.log} from the gate helper`
@@ -1379,6 +1424,11 @@ export class Controller {
         verdict = { ...verdict, class: 'invalid-result', detail: !gate || gate.exit === null ? `accepted, but the verifier's last gate run ${failure}`
           : `accepted, but the verifier's last gate run ${failure}:\n${gate.summary ?? `no node:test summary in ${GATE_FILES.log}`}` };
       }
+      if (verdict.class === 'result' && verdict.value.verdict === 'accepted' && gate?.cacheRefused) {
+        verdict = { ...verdict, class: 'invalid-result', detail: `accepted, but the verifier's gate counts test files the supervisor cannot match to a recorded pass: ${gate.cacheRefused.join('; ')}` };
+      }
+      // Only a fully green acceptance records passes; their digests are computed from git, never read from the log.
+      if (verdict.class === 'result' && verdict.value.verdict === 'accepted' && !base && !failure && !gate?.cacheRefused) testPasses = this.testPasses(op);
     }
     // Verifier cites are settled at the target revision in the main checkout (SCOPED_READING section 6); a result without
     // cites is applied exactly as before, and no cite can change the verdict.
@@ -1402,6 +1452,7 @@ export class Controller {
       }
       if (executors.runNotCounted(verdict)) verdict = { ...verdict, refunded: true };
       this.store.updateOperation(op.id, { state: 'finished', outcome: verdict }, now);
+      if (testPasses && verdict.class === 'result') insertPasses(this.store, testPasses.repository, testPasses.rows, { source: 'verified-head', ref: op.target_sha, now });
       for (const [kind, detail] of citeEvents) this.store.journal(ctx.id, kind, detail, now);
       // A run bound to a CAAM profile is attributed to that profile from its durable row, also after a restart: never to
       // the profile selection would choose now, nor to the executor kind's static account (ACCOUNT_ADAPTER_CAAM 3.5).
@@ -3223,8 +3274,9 @@ export class Controller {
         browserLogin: browserLoginSettings(spec.web, this.config.browserLogin),
         timeoutMs, profileHome, stage: this.stageOf(decl, task.task_id, kind) });
       writeFileSync(join(runDir, 'prompt.txt'), invocation.prompt, 'utf8');
+      const cacheEnv = this.offerTestCache(decl, local ? null : repo, kind === 'verify' && spec.deliverable === 'commit' ? targetSha : null, runDir);
       writeAtomic(join(runDir, 'spec.json'), JSON.stringify({
-        argv: invocation.argv, ...(invocation.env ? { env: invocation.env } : {}),
+        argv: invocation.argv, ...(invocation.env || cacheEnv ? { env: { ...invocation.env, ...cacheEnv } } : {}),
         cwd: invocation.cwd ?? workspace, timeoutMs, heartbeatMs: this.config.heartbeatMs, ...this.workerJob,
       }));
 

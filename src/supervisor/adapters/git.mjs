@@ -15,10 +15,10 @@ import { POWERSHELL, readJsonIfExists, runnerIdentified, stopOwnedRunAsync } fro
 
 const SHA = /^[0-9a-f]{40}$/;
 
-export function exec(command, args, { cwd, input, timeoutMs = 180_000 } = {}) {
+export function exec(command, args, { cwd, input, timeoutMs = 180_000, env = {} } = {}) {
   const result = spawnSync(command[0], [...command.slice(1), ...args], {
     cwd, input, encoding: 'utf8', windowsHide: true, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024,
-    env: { ...process.env, ...DEVELOPMENT_ENV },
+    env: { ...process.env, ...env, ...DEVELOPMENT_ENV },
   });
   return { ok: !result.error && result.status === 0, status: result.status, stdout: (result.stdout || '').trim(), stderr: (result.stderr || '').trim(), error: result.error?.code };
 }

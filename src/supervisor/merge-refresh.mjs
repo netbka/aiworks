@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as gitA from './adapters/git.mjs';
 import { GATE_FILES, gateFailure, readGateRun } from './gate.mjs';
+import { CACHE_ENV, recordGatePasses } from './test-cache.mjs';
 
 const GATE = fileURLToPath(new URL('./gate.mjs', import.meta.url));
 const KINDS = ['merge-refresh-started', 'merge-refresh-passed', 'merge-refresh-failed'];
@@ -56,9 +57,9 @@ export const gatePid = (path) => {
   return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
 };
 
-/** Starts the gate helper in `path` as a separate process; it returns at once. */
+/** Starts the gate helper in `path` as a separate process; it returns at once. A supervisor gate runs every test file. */
 export function startGate(path, command) {
-  const started = gitA.exec([process.execPath], [GATE, 'start', ...command], { cwd: path, timeoutMs: 60_000 });
+  const started = gitA.exec([process.execPath], [GATE, 'start', ...command], { cwd: path, timeoutMs: 60_000, env: { [CACHE_ENV]: '' } });
   if (!started.ok) throw new Error(`gate start failed: ${started.stderr || started.stdout || `exit ${started.status}`}`.slice(0, 500));
 }
 
@@ -158,6 +159,7 @@ export function refreshStep(controller, ctx, item, repoPath, baseSha, settings) 
     return fail(`the gate passed, but its checkout is no longer at the merge result ${started.detail.commit}`);
   }
   journal('merge-refresh-passed', { tree: started.detail.tree, summary: run.summary });
+  if (controller.testCache) recordGatePasses(controller, ctx, { repository: controller.baseRepository(decl, controller.repo(decl)), repoPath, sha: started.detail.commit, dir: path, source: 'supervisor-gate' });
   controller.log(`refresh of ${campaignId}/${task.task_id}: the merge with ${baseSha} passed the gate`);
   return { tree: started.detail.tree, next: 'merge' };
 }

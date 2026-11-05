@@ -148,7 +148,8 @@ function evaluate(c, ctx, row, grant, repo, wayBack) {
     // A verified successor releases its included dependencies in one artifact.
     return Boolean(mergedEventReader(c.store, ctx.id)({ taskId: dep, verifiedSha: t.verified_sha })) && ancestor(c, repo, t.verified_sha, row.verified_sha);
   };
-  const gatePassed = task.verification?.gate?.exit === '0' && !gateFailure(task.verification.gate) && passedCheck(task, spec.acceptance);
+  // A release needs a gate that ran every test file: a verification that counted cached files (test-cache.mjs) is not one.
+  const gatePassed = task.verification?.gate?.exit === '0' && !gateFailure(task.verification.gate) && !task.verification.gate.cached && passedCheck(task, spec.acceptance);
   const result = evaluateEligibility(candidate, {
     switches: () => releaseSwitches({ dataDir: c.dataDir, config: c.config, store: c.store, project: row.project, destination: row.destination, grant }),
     grant: () => grant.reason ? null : grant.loaded,
@@ -306,7 +307,7 @@ function publishGate(c, ctx, row, repo) {
   const task = c.store.task(ctx.id, row.task_id), spec = specsOf(c.store, ctx.id, campaign.declaration).get(row.task_id);
   const evidence = task && spec ? taskEvidence(c, campaign, task, spec) : null;
   if (!evidence || evidence.verdict !== 'accepted' || evidence.targetSha !== row.verified_sha || task.state !== 'done' || task.verified_sha !== row.verified_sha ||
-      task.verification?.gate?.exit !== '0' || gateFailure(task.verification.gate)) return 'The exact merged and checked result is no longer current';
+      task.verification?.gate?.exit !== '0' || gateFailure(task.verification.gate) || task.verification.gate.cached) return 'The exact merged and checked result is no longer current';
   if (!ancestor(c, repo, row.verified_sha, row.merge_commit)) return 'The exact merged and checked result is no longer current';
   return instructionsSwitch(c, row.project);
 }

@@ -64,8 +64,11 @@ export function passedCheck(task, acceptance) {
   return !unresolved.failed && !unresolved.notChecked && !unresolved.blocking;
 }
 
-/** Whether the verifier's own recorded run of the full check (gate.mjs) finished with exit 0 and no failed test. */
-export const fullCheckPassed = (gate) => Boolean(gate) && gate.exit === '0' && !gateFailure(gate);
+/**
+ * Whether the verifier's own recorded run of the full check (gate.mjs) finished with exit 0 and no failed test, and
+ * counted no cached test file the supervisor could not match to a recorded pass (test-cache.mjs).
+ */
+export const fullCheckPassed = (gate) => Boolean(gate) && gate.exit === '0' && !gateFailure(gate) && !gate.cacheRefused;
 
 /**
  * Whether an acceptance kept by base compare (base-check.mjs) is explained by its base: its finished gate failed, and
