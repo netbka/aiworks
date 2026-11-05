@@ -1350,8 +1350,8 @@ export class Controller {
     // verifier's gate is the one full run a head gets.
     if (verdict.class === 'result' && op.kind === 'verify' && this.deliverable(ctx, op.task_id) === 'commit') {
       const run = readGateRun(op.workspace);
-      // A gate started on another commit, on a checkout with changes, or not by the helper's start is no full run of this
-      // head. It is kept with its reason, which gateFailure returns, so no reader (merge gate, AW-017 delivery, release)
+      // A gate started on another commit, on a checkout with changes, or without the helper's record of both is no full
+      // run of this head. It is kept with its reason, which gateFailure returns, so no reader (merge gate, AW-017 delivery, release)
       // counts it as passed, and base compare never keeps it.
       const headProblem = run ? gateHeadProblem(run, op.target_sha) : null;
       const gate = headProblem ? { ...run, headProblem } : run;
