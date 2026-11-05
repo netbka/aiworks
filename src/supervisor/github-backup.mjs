@@ -17,17 +17,15 @@ export const BACKUP_INTERVAL_MS = 10 * 60_000;
 const KINDS = ['backup-requested', 'backup-pushed', 'backup-refused', 'backup-failed'];
 
 /**
- * What a backup push is compared with: the remote's current tip when this checkout has it (the remote's own answer, else the
- * remote-tracking ref, else the tip last accepted), so workflow files the remote already holds do not block it. Only when
- * the remote has no tip at all (a brand-new repository) it is the empty tree: then any workflow file in the pushed history
- * refuses the backup, because everything in it would be new there.
+ * What a backup push is compared with, from local facts only (no network contact, so nothing is read from a destination
+ * before assertPushDestination has vetted it): the remote-tracking ref of the backup remote's branch when this checkout
+ * has it, else the tip last accepted (the journaled pushedTip), so workflow files the remote already holds do not block
+ * it. Only when neither exists (a brand-new remote that was never pushed to) it is the empty tree: then any workflow
+ * file in the pushed history refuses the backup, because everything in it would be new there.
  */
-function backupBase({ git, repoPath, remote, branch, pushedTip }) {
-  const remoteAnswer = exec(git, ['ls-remote', remote, `refs/heads/${branch}`], { cwd: repoPath, timeoutMs: 30_000 });
-  const answered = remoteAnswer.ok ? SHA.exec(remoteAnswer.stdout.trim().split(/s+/)[0]) : null;
+export function backupBase({ git, repoPath, remote, branch, pushedTip }) {
   const tracking = exec(git, ['rev-parse', '--verify', '--quiet', `refs/remotes/${remote}/${branch}`], { cwd: repoPath });
-  const candidates = [answered?.[0], tracking.ok ? tracking.stdout.trim() : null, pushedTip];
-  if (remoteAnswer.ok && !remoteAnswer.stdout.trim()) return EMPTY_TREE;
+  const candidates = [tracking.ok ? tracking.stdout.trim() : null, pushedTip];
   return candidates.find((sha) => SHA.test(sha ?? '') && exec(git, ['cat-file', '-e', `${sha}^{commit}`], { cwd: repoPath }).ok) ?? EMPTY_TREE;
 }
 
@@ -37,7 +35,7 @@ function backupBase({ git, repoPath, remote, branch, pushedTip }) {
  * remote rejected the update (it is not a fast-forward there, or the remote's rules decline it), or
  * { kind: 'backup-failed', reason } when the remote could not be reached in time or the push could not run, as when its
  * local folder does not exist (yet): that is tried again after the interval, while a refusal waits for the next merge.
- * A push that adds or changes a workflow file relative to the remote's current tip (backupBase) is refused before the push.
+ * A push that adds or changes a workflow file relative to the remote's last known tip (backupBase, local facts only) is refused before the push.
  */
 export function pushTrustedTip({ git = ['git'], gh = ['gh'], repository, repoPath, remote, branch, tip, pushedTip = null }) {
   if (!SHA.test(tip ?? '') || !REF_NAME.test(remote ?? '') || !REF_NAME.test(branch ?? '')) {
