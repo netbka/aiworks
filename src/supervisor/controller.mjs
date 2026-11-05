@@ -42,7 +42,7 @@ import { mainLedger, selfHostingSettings, trustedTip, trustsLocalMain } from './
 import { programPass } from './program.mjs';
 import { cleanupPass } from './cleanup.mjs';
 import { GATE_FILES, gateFailure, readGateRun } from './gate.mjs';
-import { baseCheckStep, baseCompareSettings, baseRecord, sharedBaseFailures } from './base-check.mjs';
+import { baseCheckStep, baseCompareSettings, baseRecord, claimBaseRed, settleBaseRed, sharedBaseFailures } from './base-check.mjs';
 import { isLocalTarget, recordCandidate } from './local-candidates.mjs';
 import { checkLocalDispatch, LOCAL_ADMISSION_ON } from './local-admission.mjs';
 import { addComment, createItem, followUp, reviewItem, WorkListError, workAuthorization, workLink } from './work-list.mjs';
@@ -1223,11 +1223,54 @@ export class Controller {
     let repo;
     try { repo = this.repo(decl); } catch { return; }
     try {
-      baseCheckStep(this, ctx, { repository: this.baseRepository(decl, repo), repoPath: repo.path, worktreeRoot: repo.worktreeRoot, baseSha: task.base_sha }, this.baseCompare);
+      const record = baseCheckStep(this, ctx, { repository: this.baseRepository(decl, repo), repoPath: repo.path, worktreeRoot: repo.worktreeRoot, baseSha: task.base_sha }, this.baseCompare);
+      if (record?.red) this.recordBaseRed(ctx, decl, task, record);
     } catch (error) {
       if (error instanceof FencedError) throw error;
       this.log(`base check of ${this.baseRepository(decl, repo)} ${task.base_sha} failed: ${error.message}`);
     }
+  }
+
+  /**
+   * The one repair item of a red base (owner decision 2026-11-05: base compare plus one base-red repair task): recorded
+   * once per repository, base SHA and gate command, by the first campaign step that sees the base red, whatever the
+   * tasks, campaigns and restarts that share it (claimBaseRed in the same fenced write). It is information for planning,
+   * never a gate: no task waits for it, and a failure to record it is kept as the item's place and never retried.
+   * AIWorks's own repository with local main trusted gets a follow-up item in the work list; a GitHub repository a
+   * comment on the tracking issue of that campaign (no issue is opened); a project without GitHub a local note.
+   */
+  recordBaseRed(ctx, decl, task, record) {
+    const now = this.now(), sha = record.base_sha;
+    const digest = createHash('sha256').update(record.command, 'utf8').digest('hex').slice(0, 8);
+    const title = `Repair the red base ${sha.slice(0, 12)} of ${record.repository}`.slice(0, 256);
+    const failed = Array.isArray(record.failed) && record.failed.length ? record.failed : null;
+    const body = [`Base compare ran \`${JSON.parse(record.command).join(' ')}\` on base \`${sha}\` of ${record.repository} and ${String(record.reason ?? 'it failed').replace(/^the base gate /, 'it ')}.`,
+      'Tasks on this base keep their acceptance only for failures the base already has; the base itself needs its own fix.', '',
+      ...(failed ? ['Failed on the base:', ...failed.map((id) => `- \`${id}\``)]
+        : ['The failed test list is unknown: the gate summary names no test, was cut short, or comes from another test runner.'])].join('\n');
+    const fallback = `Base compare found base \`${sha}\` of ${record.repository} red. ${failed ? `${failed.length} tests failed on it` : 'Its failed test list is unknown'}; the list is kept in the base check record.`;
+    const item = this.fenced(ctx, () => {
+      // The guard: only the step that claims the record records the item; every other one finds it claimed.
+      if (!claimBaseRed(this.store, record, 'recording', now)) return null;
+      let where;
+      try {
+        if (this.selfHosted(decl.target.repository)) {
+          where = workLink(followUp(this.store, { campaignId: ctx.id, taskId: task.task_id, key: `base-${sha.slice(0, 12)}-${digest}`, title, body, fallback, now }).number);
+        } else if (!isLocalTarget(decl) && this.config.github?.comments === false) {
+          where = 'not recorded: GitHub comments are off';
+        } else {
+          const key = `${ctx.id}:base-red:${sha}:${digest}`;
+          this.enqueue(ctx.id, key, decl, `**${title}**\n\n${body}`, now);
+          where = `outbox:${key}`;
+        }
+      } catch (error) {
+        where = `not recorded: ${error.message}`.slice(0, 500);
+      }
+      settleBaseRed(this.store, record, where, now);
+      this.store.journal(ctx.id, 'base-red', { repository: record.repository, sha, failed, item: where }, now);
+      return where;
+    });
+    if (item) this.log(`base check of ${record.repository} ${sha}: red; repair item ${item}`);
   }
 
   /** The repository a base check is keyed by: the declared repository, or the local checkout of a local target. */
