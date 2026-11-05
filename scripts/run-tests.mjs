@@ -24,6 +24,11 @@
 // retried file passes alone, and the final summary names every retry. AIWORKS_TEST_RETRY_FILES (default 10) caps how
 // many failed files are retried (0 turns the retry off), and AIWORKS_TEST_RETRY_MINUTES (default 20) how long all
 // retries together may start for.
+//
+// AIWORKS_TEST_CACHE, set only by the supervisor for a verifier (src/supervisor/test-cache.mjs), names a JSON file of
+// test files whose result the supervisor recorded for exactly the same inputs. Each such file does not run: it prints
+// `# cached <file> digest <digest>` and counts with its recorded tally. The list only saves time and is never evidence:
+// the supervisor accepts a cached line only after computing that file's digest again from git and finding its row.
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { availableParallelism } from 'node:os';
@@ -125,6 +130,19 @@ try {
 } catch (error) { console.log(`# temporary directories stay in the system default: ${scratch} could not be created (${error.code ?? error.message})`); }
 const times = [];
 
+/** The recorded passes AIWORKS_TEST_CACHE names: file -> { digest, counts }. Empty when unset or unreadable. */
+function cachedPasses(path) {
+  if (!path) return new Map();
+  try {
+    const { files } = JSON.parse(readFileSync(path, 'utf8'));
+    return new Map(files.filter((entry) => typeof entry?.file === 'string' && /^[0-9a-f]{64}$/.test(entry.digest ?? ''))
+      .map((entry) => [entry.file, { digest: entry.digest, counts: Object.fromEntries(COUNTS.map((key) => [key, Math.max(0, Number(entry.counts?.[key]) || 0)])) }]));
+  } catch (error) {
+    console.log(`# test cache not used: ${path} could not be read (${error.code ?? error.message})`);
+    return new Map();
+  }
+}
+
 /** Runs one test file in its own node --test process and records its run in `into`; resolves its exit status. */
 function runFile(file, tier, testArgs, into = times) {
   return new Promise((done) => {
@@ -179,7 +197,14 @@ if (affected) {
   reachable = result.tests;
   console.log(`# affected: ${changed.length} changed files since ${affected} (merge base ${mergeBase.slice(0, 12)}) reach ${reachable.length} of ${files.length} test files${result.everything.length ? `; every file runs because ${result.everything.join(', ')} changed` : ''}`);
 }
-for (const file of reachable) byTier[tierOf(readFileSync(join(root, file), 'utf8'))].push(file);
+const cache = cachedPasses(process.env.AIWORKS_TEST_CACHE);
+for (const file of reachable) {
+  const tier = tierOf(readFileSync(join(root, file), 'utf8')), hit = cache.get(file);
+  if (!hit || !tiers.includes(tier)) { byTier[tier].push(file); continue; }
+  console.log(`# cached ${file} digest ${hit.digest}`);
+  times.push({ file, tier, ms: 0, code: 0, counts: hit.counts, failed: [], complete: true, cached: true });
+}
+const cachedCount = times.length;
 const selected = (tier) => (tiers.includes(tier) ? (heavyConcurrency > 1 || tier !== 'rehearsal' ? ordered(tier, byTier[tier]) : byTier[tier]) : []);
 
 const started = Date.now();
@@ -202,11 +227,12 @@ for (const file of plan.files) {
 const result = settle(times, retries);
 if (unitStatus || serviceStatus || rehearsalStatus) console.log(`# first run failed: ${times.filter((run) => run.code !== 0).map((run) => run.file).join(', ')}`);
 console.log(`# file times, slowest first (service and rehearsal lanes ${lanesMs} ms)`);
-for (const { file, tier, ms, code } of times.sort((a, b) => b.ms - a.ms)) {
+for (const { file, tier, ms, code } of times.filter((run) => !run.cached).sort((a, b) => b.ms - a.ms)) {
   console.log(`# ${String(ms).padStart(8)} ms ${tier.padEnd(9)} ${file}${code === 0 ? '' : ` exit ${code}`}`);
 }
 const counts = TIERS.map((tier) => `${selected(tier).length} ${tier}`).join(', ');
 console.log(`# all test files: ${counts} (of ${files.length}); unit and service ${concurrency} at a time, rehearsal ${heavyConcurrency} at a time`);
+if (cachedCount) console.log(`# cached: ${cachedCount} files not run, their results recorded by the supervisor for identical inputs`);
 for (const line of [...result.lines, ...notRetried]) console.log(line);
 for (const key of COUNTS) console.log(`# ${key} ${result.total[key]}`);
 console.log(`# duration_ms ${Date.now() - started}`);
