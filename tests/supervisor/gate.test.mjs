@@ -179,3 +179,29 @@ test('readGateRun: the exit code and the final node:test summary the controller 
   assert.equal(gateFailure({ exit: '1', summary: '# fail 0' }), 'exited 1');
   assert.equal(gateFailure({ exit: '0', summary: '# tests 4\n# fail 2' }), 'reports 2 failed tests');
 });
+
+// One isolated retry per failed file (scripts/lib/test-retry.mjs): a file that fails again alone must still fail the
+// gate, or a verifier could accept a broken head on a passing tally.
+test('a failed file retried alone passes the gate only when its retry passes; too many failures are not retried', async () => {
+  const { retryPlan, settle } = await import('../../scripts/lib/test-retry.mjs');
+  const counts = (pass, fail) => ({ tests: pass + fail, pass, fail });
+  const runs = [
+    { file: 'tests/a.test.mjs', code: 0, counts: counts(3, 0) },
+    { file: 'tests/b.test.mjs', code: 1, counts: counts(1, 1) },
+    { file: 'tests/c.test.mjs', code: 1, counts: counts(0, 0) }, // stopped at the file limit before its summary
+  ];
+  assert.deepEqual(retryPlan(runs, 10).files, ['tests/b.test.mjs', 'tests/c.test.mjs']);
+  assert.deepEqual(retryPlan(runs, 1).files, [], 'more failures than the limit: none is retried');
+  assert.deepEqual(retryPlan(runs, 0).files, []);
+
+  const passed = settle(runs, [{ file: 'tests/b.test.mjs', code: 0, counts: counts(2, 0) }, { file: 'tests/c.test.mjs', code: 0, counts: counts(4, 0) }]);
+  assert.equal(passed.status, 0);
+  assert.equal(passed.total.fail, 0);
+  assert.equal(passed.total.pass, 9);
+  assert.equal(passed.lines.length, 2, 'every retry is named in the summary');
+
+  const again = settle(runs, [{ file: 'tests/b.test.mjs', code: 0, counts: counts(2, 0) }, { file: 'tests/c.test.mjs', code: 1, counts: counts(3, 1) }]);
+  assert.equal(again.status, 1);
+  assert.equal(again.total.fail, 1);
+  assert.equal(settle(runs, []).status, 1, 'no retry: the first failures stand');
+});
