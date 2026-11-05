@@ -18,12 +18,13 @@
 // - Before a verify run of a commit task, the controller writes the matching passes to skip.json in the run directory,
 //   which the supervisor owns, names it in AIWORKS_TEST_CACHE and tells the verifier what a cached line is (CACHE_RULE).
 //   scripts/run-tests.mjs then prints `# cached <file> digest <digest>` instead of running that file. The list only
-//   saves time: it is never evidence. A task of a project with a standing release grant is never offered the cache.
+//   saves time: it is never evidence. A task of a project with a recorded release grant is never offered the cache.
 // - When the result is consumed, every `# cached` line counts only when the supervisor recomputes that file's digest at
 //   the target commit, finds it equal to the line's, and the newest row for it on the gate's Node major is a pass no older
 //   than maxAgeDays when the run was dispatched (checkClaims). Every test file of the target must also have run or be such
-//   a cached file. Otherwise an acceptance is refused as invalid-result naming the file. With the cache off, or for a
-//   target without scripts/run-tests.mjs, `# cached` lines are not read at all, exactly as before.
+//   a cached file. Otherwise an acceptance is refused as invalid-result naming the file. With the cache off, every
+//   `# cached` line of a target that has scripts/run-tests.mjs is refused: only a worker that set AIWORKS_TEST_CACHE
+//   itself can make that runner print one. A target without scripts/run-tests.mjs is not read at all, as before.
 // - Supervisor gates never use the cache (merge-refresh.mjs startGate clears AIWORKS_TEST_CACHE). A release (AW-010) and
 //   a delivery with known defects (AW-017) need a verification that counted no cached file.
 import { spawnSync } from 'node:child_process';
@@ -46,6 +47,9 @@ const DEFAULT_MAX_AGE_DAYS = 7;
 // A pass of a file already recorded as passing within this time is not recorded again, so the table grows by at most
 // one row per file, digest and Node major a day while it is in use.
 const REFRESH_MS = 24 * 60 * 60_000;
+// A run is dispatched moments after its offer is written; a pass that was current at the offer stays usable this long
+// past the bound, so a borderline row offered at dispatch is not refused when the result is consumed.
+const OFFER_SLACK_MS = 15 * 60_000;
 // Inputs of every test file: the dependencies and the test runner with its libraries (.gitattributes are added too).
 const SHARED = ['package.json', 'package-lock.json', RUNNER, 'scripts/lib/'];
 const CODE = /\.(?:mjs|cjs|js)$/;
@@ -179,10 +183,12 @@ const usable = (row, at, maxAgeMs) => row?.state === 'passed' && at - row.at <= 
  * then every test file of `sha` must have an `# end` line or an honoured `# cached` line. Returns { claimed, refused }:
  * claimed is the number of files the log claims, refused names each file that cannot count (empty when all do).
  */
-export function checkClaims({ store, git: command, repoPath, repository, sha, log, maxAgeMs, offeredAt }) {
+export function checkClaims({ store, git: command, repoPath, repository, sha, log, enabled = true, maxAgeMs, offeredAt }) {
   const { ends, claims, nodeMajor } = parseGateLog(log);
   if (!claims.length) return { claimed: 0, refused: [] };
   const files = [...new Set(claims.map((claim) => claim.file))];
+  // Nothing was offered: the worker set AIWORKS_TEST_CACHE itself, and every file it skipped never ran.
+  if (!enabled) return { claimed: files.length, refused: files.map((file) => `${file}: the test cache is off, so nothing was offered`) };
   if (nodeMajor === null) return { claimed: files.length, refused: ['the gate output names no single Node version'] };
   let tree;
   try { tree = treeAt(command, repoPath, sha); } catch (error) { return { claimed: files.length, refused: [`the commit ${sha} cannot be read: ${error.message}`] }; }
@@ -191,7 +197,7 @@ export function checkClaims({ store, git: command, repoPath, repository, sha, lo
     if (!tests.has(file)) { refused.push(`${file}: not a test file of ${sha}`); continue; }
     const actual = fileDigest(tree, file);
     if (actual === null || digest !== actual) refused.push(`${file}: its inputs at ${sha} are not the ones the line names`);
-    else if (!usable(latest(store, repository, file, actual, nodeMajor), offeredAt, maxAgeMs)) refused.push(`${file}: no current recorded pass for its inputs at ${sha} on Node ${nodeMajor}`);
+    else if (!usable(latest(store, repository, file, actual, nodeMajor), offeredAt, maxAgeMs + OFFER_SLACK_MS)) refused.push(`${file}: no current recorded pass for its inputs at ${sha} on Node ${nodeMajor}`);
     else honoured.add(file);
   }
   for (const file of tests) if (!ends.has(file) && !honoured.has(file) && !refused.some((reason) => reason.startsWith(`${file}:`))) refused.push(`${file}: neither ran nor was cached`);
@@ -260,7 +266,9 @@ export function recordGateResults(controller, ctx, { repository, repoPath, sha, 
  * skip.json in `runDir` and returns the environment that names it, or null when nothing matches or the target has no
  * scripts/run-tests.mjs.
  */
-export function offerCache({ store, git: command, repoPath, repository, sha, runDir, settings, now }) {
+export function offerCache({ store, git: command, repoPath, repository, project, sha, runDir, settings, now }) {
+  // A release (AW-010) needs a gate that ran every file: a project with a recorded, unrevoked grant is never offered.
+  if (project && store.get('SELECT project FROM release_grants WHERE project = ? AND revoked = 0', project)) return null;
   if (!hasRunner(command, repoPath, sha)) return null;
   const tree = treeAt(command, repoPath, sha);
   const files = testFiles(tree).flatMap((file) => {
@@ -274,4 +282,13 @@ export function offerCache({ store, git: command, repoPath, repository, sha, run
   // Written before the run starts and owned by the supervisor; a changed copy changes nothing, since checkClaims decides.
   writeAtomic(path, JSON.stringify({ version: SCHEMA, sha, files }));
   return { [CACHE_ENV]: path };
+}
+
+/**
+ * The Node major of the newest row recorded for `repository` when it differs from the supervisor's own, else null:
+ * every offer then finds nothing, so the cache is idle until a gate runs on the supervisor's Node version.
+ */
+export function otherNodeMajor(store, repository) {
+  const row = store.get('SELECT node_major FROM test_results WHERE repository = ? ORDER BY at DESC, seq DESC LIMIT 1', key(repository));
+  return row && row.node_major !== NODE_MAJOR ? row.node_major : null;
 }
