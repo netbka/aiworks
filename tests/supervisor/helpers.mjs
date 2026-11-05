@@ -12,6 +12,16 @@ export const CLI = join(ROOT, 'src', 'supervisor', 'cli.mjs');
 // A small stand-in for the governance provider checkout AIWorks reads governance from; tests never need a real one.
 export const GOVERNANCE = join(ROOT, 'tests', 'fixtures', 'governance');
 
+// Tests never use this PC's gate slot folder (src/supervisor/gate.mjs): a browser lock a test's web task run wrote there,
+// or a slot a test's gate took, would hold back the real verifiers' gates while the suite runs beside them. Every process
+// that loads this harness gets its own folder, set before any controller exists and inherited by the controllers, runners
+// and gate helpers it starts; an operator's own setting is replaced too.
+const GATE_SLOTS = mkdtempSync(join(tmpdir(), 'aiworks-test-gate-slots-'));
+process.env.AIWORKS_GATE_SLOTS_DIR = GATE_SLOTS;
+process.on('exit', () => {
+  try { rmSync(GATE_SLOTS, { recursive: true, force: true }); } catch { /* a temporary folder */ }
+});
+
 let sqliteAvailable = true;
 try { await import('node:sqlite'); } catch { sqliteAvailable = false; }
 export const SQLITE = sqliteAvailable;
