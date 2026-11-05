@@ -233,6 +233,17 @@ CREATE TABLE IF NOT EXISTS base_checks (
   started_at INTEGER NOT NULL, state TEXT NOT NULL CHECK (state IN ('running', 'passed', 'failed')),
   failed TEXT, summary TEXT, reason TEXT, updated_at INTEGER NOT NULL,
   PRIMARY KEY (repository, base_sha, command));
+-- Test result cache (test-cache.mjs): one test file passed with exactly the inputs its digest names. Only the controller
+-- writes rows, from a gate it trusts; insert-only, so no later write can turn a recorded pass into another one.
+CREATE TABLE IF NOT EXISTS test_results (
+  repository TEXT NOT NULL, file TEXT NOT NULL, digest TEXT NOT NULL, node_major INTEGER NOT NULL,
+  state TEXT NOT NULL CHECK (state = 'passed'), counts TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('verified-head', 'supervisor-gate')), ref TEXT NOT NULL, at INTEGER NOT NULL,
+  PRIMARY KEY (repository, file, digest));
+CREATE TRIGGER IF NOT EXISTS test_results_no_update BEFORE UPDATE ON test_results
+  BEGIN SELECT RAISE(ABORT, 'test_results is insert-only'); END;
+CREATE TRIGGER IF NOT EXISTS test_results_no_delete BEFORE DELETE ON test_results
+  BEGIN SELECT RAISE(ABORT, 'test_results is insert-only'); END;
 `;
 
 const JSON_COLUMNS = new Set(['declaration', 'blocker', 'failures', 'findings', 'result', 'verification',
