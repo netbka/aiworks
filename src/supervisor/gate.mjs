@@ -60,6 +60,23 @@ export function readGateRun(dir) {
   return { exit: read(join(dir, GATE_FILES.exit))?.trim() || null, summary: testSummary(log) };
 }
 
+/**
+ * The failed tests a gate summary lists (scripts/run-tests.mjs `# failed: <file> :: <test>` or `# failed: <file>` lines),
+ * sorted and unique. Null when they are unknown: no run-tests summary block (another runner, or the gate stopped before
+ * the tests), or a list the runner cut short. An empty array means the summary names no failed test.
+ */
+export function failedTests(summary) {
+  if (typeof summary !== 'string' || !summary.startsWith('# all test files')) return null;
+  const ids = new Set();
+  for (const line of summary.split('\n')) {
+    if (!line.startsWith('# failed: ')) continue;
+    const id = line.slice('# failed: '.length).trim();
+    if (id.startsWith('not listed')) return null;
+    if (id) ids.add(id);
+  }
+  return [...ids].sort();
+}
+
 /** Why a recorded gate run failed: a non-zero exit code or a failed test in its summary. Null when it did not. */
 export function gateFailure(run) {
   if (!run) return null;
