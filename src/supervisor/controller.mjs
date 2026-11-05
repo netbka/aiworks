@@ -41,7 +41,7 @@ import { mergePass, mergeSettings } from './merge.mjs';
 import { mainLedger, selfHostingSettings, trustedTip, trustsLocalMain } from './self-hosting.mjs';
 import { programPass } from './program.mjs';
 import { cleanupPass } from './cleanup.mjs';
-import { GATE_FILES, gateFailure, readGateRun } from './gate.mjs';
+import { BROWSER_RUN, browserLockPath, GATE_FILES, gateFailure, readGateRun, slotSettings } from './gate.mjs';
 import { baseCheckStep, baseCompareSettings, baseRecord, sharedBaseFailures } from './base-check.mjs';
 import { isLocalTarget, recordCandidate } from './local-candidates.mjs';
 import { checkLocalDispatch, LOCAL_ADMISSION_ON } from './local-admission.mjs';
@@ -445,7 +445,7 @@ export class Controller {
   constructor({ store, config, dataDir, log = () => {}, now = () => Date.now(), instanceId = randomUUID(),
     codeRevision = null, fault = process.env.AIWORKS_FAULT ?? null, notifier = noopTransport, probes = {},
     governanceRoot = undefined, revisionCheck = null, revisionCheckMs = REVISION_CHECK_MS, profiles = null, profileHomes = null,
-    alertDeps = {}, sampler = null, probe = null, cpuMonitor = null }) {
+    alertDeps = {}, sampler = null, probe = null, gates = null, cpuMonitor = null }) {
     Object.assign(this, { store, dataDir, log, now, instanceId, codeRevision, fault, notifier, probes, governanceRoot,
       revisionCheck, revisionCheckMs, profiles, profileHomes });
     this.config = { ...DEFAULTS, ...config };
@@ -491,7 +491,7 @@ export class Controller {
     // an injected sampler replaces the host in tests), and the static accounts a pass found at their learned limit
     // (per-tick memory, as profileWaited; the next useful result on one of them raises its limit by one).
     // `probe` (host.mjs createHostProbe) adds ports and Docker; cli.mjs serve supplies it, tests and other callers do not.
-    this.sampler = this.sched ? sampler ?? hostSamplerFor(this.config, { probe }) : null;
+    this.sampler = this.sched ? sampler ?? hostSamplerFor(this.config, { probe, gates }) : null;
     this.accountWaited = new Set();
     this.waitReasons = new Map();
     this.domainWaits = [];
@@ -3280,15 +3280,28 @@ export class Controller {
   }
 
   async launch(ctx, op) {
+    let web = false;
+    try { web = op.task_id !== PLAN_TASK && Boolean(executors.webFlag(specOf(this.store, ctx.id, op.task_id, this.store.campaign(ctx.id).declaration)?.web)); }
+    catch { web = false; }
     const child = this.fenced(ctx, () => {
       const current = this.store.get('SELECT * FROM operations WHERE id = ?', op.id);
       if (this.store.campaign(ctx.id).control !== 'registered' || current?.state !== 'recorded') return null;
       if (existsSync(join(op.run_dir, 'launch.json'))) return null;
       // shortcut: unknown spawn acceptance blocks recovery until an executor provides durable process acknowledgement.
       writeAtomic(join(op.run_dir, 'launch.json'), JSON.stringify({ operationId: op.id, at: this.now() }));
-      return spawn(process.execPath, [RUNNER, op.run_dir], { detached: true, stdio: 'ignore', windowsHide: true });
+      return spawn(process.execPath, [RUNNER, op.run_dir], { detached: true, stdio: 'ignore', windowsHide: true,
+        ...(web ? { env: { ...process.env, [BROWSER_RUN]: op.id } } : {}) });
     });
     if (!child) return;
+    // A web task's run may use the owner's browser session: no full gate starts beside it (gate.mjs heldBrowserRuns).
+    // The lock holds the runner's process id, so it lapses by itself when the run ends.
+    if (web && child.pid) {
+      try {
+        const { dir } = slotSettings();
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(browserLockPath(dir, op.id), JSON.stringify({ pid: child.pid, at: Date.now(), operation: op.id }));
+      } catch (error) { this.log(`browser-session lock for ${op.id} not written: ${error.message}`); }
+    }
     child.on('error', (error) => {
       this.log(`runner spawn for ${op.id} failed: ${error.message}`);
       if (!child.pid) writeAtomic(join(op.run_dir, 'result.json'), JSON.stringify({
