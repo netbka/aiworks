@@ -43,6 +43,7 @@ export function rest(gh, what, args, { timeoutMs } = {}) {
   const { method, route } = requestScope(args);
   if (!['GET', 'HEAD'].includes(method)) {
     const repository = /^repos\/([^/]+\/[^/]+)\//.exec(route ?? '')?.[1];
+    // The Actions setting is not read and never blocks a write (owner directive 2 November 2026); the ban is this allow-list.
     // Only existing delivery operations may write. No Actions, Codespaces,
     // packages, billing, plan changes, repository settings or resource provisioning.
     const deliveryWrite = method === 'POST' && /^repos\/[^/]+\/[^/]+\/(?:pulls|issues\/[1-9]\d*\/comments)$/.test(route ?? '') ||
@@ -51,9 +52,6 @@ export function rest(gh, what, args, { timeoutMs } = {}) {
     if (!repository || !deliveryWrite) {
       throw developmentRefusal('only pull requests, issue comments, issue updates and authorized merges may write to GitHub');
     }
-    // Comments, issue updates and merges can trigger workflows too. Check every write,
-    // without a cache; a read failure must not become permission to publish.
-    assertActionsDisabled({ gh, repository });
   }
   const out = exec(gh, ['api', '--include', ...args], { timeoutMs });
   const response = parseResponse(out.stdout);
@@ -92,15 +90,6 @@ function requestScope(args) {
   }
   if (!route) throw developmentRefusal('a GitHub request needs one repository endpoint');
   return { method: method ?? (fields ? 'POST' : 'GET'), route };
-}
-
-/** No write or push may trigger repository automation. This only reads policy, never changes it. */
-export function assertActionsDisabled({ gh, repository }) {
-  if (!Array.isArray(gh) || !gh.length || !/^[\w.-]+\/[\w.-]+$/.test(repository ?? '')) {
-    throw developmentRefusal('a GitHub destination and CLI are required to check Actions policy');
-  }
-  const policy = rest(gh, 'GET Actions permissions', ['--method', 'GET', `repos/${repository}/actions/permissions`], { timeoutMs: 30_000 });
-  if (policy?.enabled !== false) throw developmentRefusal('GitHub Actions must be disabled for the destination repository before publication');
 }
 
 export function findOpenPullRequest({ gh, repository, branch }) {

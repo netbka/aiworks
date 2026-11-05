@@ -5,8 +5,7 @@
 // waits on it: a refused or unreachable remote is journaled and shown in status, and the next local merge goes ahead.
 import { existsSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
-import { assertPushActionsDisabled, exec } from './adapters/git.mjs';
-import { assertActionsDisabled } from './adapters/github.mjs';
+import { assertPushDestination, exec } from './adapters/git.mjs';
 import { redact } from './owner-intervention.mjs';
 import { mainLedger, trustedTip, trustsLocalMain } from './self-hosting.mjs';
 
@@ -29,8 +28,7 @@ export function pushTrustedTip({ git = ['git'], gh = ['gh'], repository, repoPat
     return { kind: 'backup-failed', reason: 'a backup needs a full commit SHA and plain remote and branch names' };
   }
   try {
-    assertActionsDisabled({ gh, repository });
-    assertPushActionsDisabled({ git, gh, repoPath, remote });
+    assertPushDestination({ git, repoPath, remote });
   }
   catch (error) {
     if (/push destination could not be verified/.test(error.message) && missingLocalDestination(git, repoPath, remote)) return { kind: 'backup-failed', reason: 'the backup folder does not exist on this computer' };
