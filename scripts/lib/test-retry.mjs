@@ -70,7 +70,8 @@ export function settle(runs, retries) {
     if (counted.code !== 0) {
       status = 1;
       const names = counted.failed ?? [];
-      if (counted.complete !== true || !names.length) unlisted.push(counted.file);
+      // Fewer names than the run's own fail count means a `not ok` line was lost or mangled in the output: unknown.
+      if (counted.complete !== true || !names.length || names.length < (counted.counts?.fail ?? 0)) unlisted.push(counted.file);
       failed.push(...names.map((name) => `${counted.file} :: ${name}`));
     }
   }

@@ -98,6 +98,8 @@ test('base compare: a failed gate keeps its acceptance only when every failed te
   const run = (text, code = 1) => ({ file: 'tests/a.test.mjs', code, counts: {}, failed: failedOf(text), complete: complete(text) });
   assert.equal(failedTests(summary(run(killed))), null);
   assert.deepEqual(failedTests(summary(run('not ok 1 - a\n# tests 1\n# fail 1\n'))), [A]);
+  // Fewer failed names than the run's own fail count: a `not ok` line was lost, so the list is unknown.
+  assert.equal(failedTests(summary({ ...run('not ok 1 - a\n# tests 2\n# fail 2\n'), counts: { fail: 2 } })), null);
   // A failing subtest is named on its own, so a new one is not hidden by a parent that already fails on the base.
   const nested = '# Subtest: a\n    # Subtest: inner\n    not ok 1 - inner\nnot ok 1 - a\n# tests 2\n# fail 2\n';
   assert.deepEqual(failedTests(summary(run(nested))), [A, `${A} > inner`]);
