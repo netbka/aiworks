@@ -52,9 +52,11 @@ else if (args.includes('ls-remote')) process.stdout.write('${'a'.repeat(40)}\\tr
   // Comments and issue updates change no code: they need no tree.
   for (const args of [['--method', 'POST', `repos/${repository}/issues/1/comments`], ['--method', 'PATCH', `repos/${repository}/issues/1`]]) rest(gh, 'write', args);
   pushVerified(push);
+  writeFileSync(calls, '');
   assert.equal(pushTrustedTip({ ...push, remote: 'origin', tip: push.sha }).kind, 'backup-pushed');
+  assert.ok(!seen().some(({ args }) => ['ls-remote', 'fetch', 'pull'].some((verb) => args.includes(verb))), 'the guard reads no destination before the push');
   assert.ok(!seen().some(({ args }) => args.some(a => a.endsWith('/actions/permissions'))), 'the Actions setting is never read');
-  assert.equal(seen().filter(({ kind, args }) => kind === 'git' && args.includes('push')).length, 2);
+  assert.equal(seen().filter(({ kind, args }) => kind === 'git' && args.includes('push')).length, 1);
   const before = seen().length;
   assert.throws(() => rest(gh, 'write', ['--method', 'POST', `repos/${repository}/pulls`]), { code: 'LOCAL_DEVELOPMENT_ONLY' }, 'a code write whose change is unknown is refused');
   for (const route of ['actions/workflows/check.yml/dispatches', 'actions/runs/1/rerun', 'actions/permissions', 'codespaces', 'packages']) {
