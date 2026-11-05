@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import * as gitA from './adapters/git.mjs';
 import { failedTests, gateFailure, readGateRun } from './gate.mjs';
 import { alive, checkout, gatePid, startGate } from './merge-refresh.mjs';
+import { recordGatePasses } from './test-cache.mjs';
 
 const DEFAULT_TIMEOUT_MINUTES = 120;
 
@@ -103,6 +104,7 @@ export function baseCheckStep(controller, ctx, { repository, repoPath, worktreeR
     write({ state: 'failed', failed: failedTests(run.summary), summary: run.summary, reason: `the base gate ${gateFailure(run)}` });
   } else {
     write({ state: 'passed', failed: [], summary: run.summary, reason: null });
+    recordGatePasses(controller, ctx, { repository, repoPath, sha: baseSha, dir: record.path, source: 'supervisor-gate' });
   }
   record = row(store, repository, baseSha, settings.command);
   controller.log(`base check of ${repository} ${baseSha}: ${record.state}`);

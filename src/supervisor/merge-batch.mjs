@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import * as gitA from './adapters/git.mjs';
 import { gateFailure, readGateRun } from './gate.mjs';
 import { IDENTITY, alive, checkout, gatePid, startGate } from './merge-refresh.mjs';
+import { recordGatePasses } from './test-cache.mjs';
 import { inspect, localBlocker, mergeBlocker, mergeLocal, mergeNow, wait } from './merge.mjs';
 import { trustedTip } from './self-hosting.mjs';
 
@@ -170,6 +171,7 @@ async function continueGroup(controller, open, items, settings, repoPath, baseSh
     const head = gitA.exec(git, ['rev-parse', 'HEAD'], { cwd: detail.path });
     if (!head.ok || head.stdout !== open.id) { end('merge-batch-failed', `the gate passed, but its checkout is no longer at ${open.id}`); return false; }
     note('merge-batch-passed', { id: open.id, summary: run.summary });
+    recordGatePasses(controller, null, { repository: items[0].decl.target.repository, repoPath, sha: open.id, dir: detail.path, source: 'supervisor-gate' });
   }
 
   // Only this group's requests and merges count: an older refused attempt of the same head does not stop it.
