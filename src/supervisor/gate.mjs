@@ -15,10 +15,11 @@
 // Gate slots: on 2026-10-17 four full gates ran at once on one PC and failed with "git init: not enough memory" and timing
 // tests, and the supervisor refused the verifications (12 since 16 Oct). The gate command now runs only while it holds one
 // of AIWORKS_GATE_SLOTS (default 2) machine-wide slots, lock files under AIWORKS_GATE_SLOTS_DIR (default <tmp>/aiworks-gate-
-// slots); until then gate.log says it waits, and wait keeps reporting running. A gate started inside a gate (the suite's
+// slots); until then gate.log says it waits, and wait keeps reporting running. It also waits while a web task's run holds
+// the browser session (browser-<operation>.lock in the same folder). A gate started inside a gate (the suite's
 // own gate tests) takes no slot. A slot whose process is gone, or older than SLOT_MAX_AGE_MS, is taken over.
 import { spawn } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -155,6 +156,17 @@ function held(file, now) {
   if (holder) return Number.isSafeInteger(holder.pid) && alive(holder.pid) && now - holder.at < SLOT_MAX_AGE_MS;
   try { return now - statSync(file).mtimeMs < 60_000; } catch { return false; }
 }
+/**
+ * How many full gates run on this PC now: the held slot lock files in `dir`, whatever the slot count. The supervisor's
+ * admission reads it (host.mjs, the `gates` pressure signal) so no new worker starts while a full gate runs. A missing or
+ * unreadable folder counts none.
+ */
+export function heldSlotCount({ dir } = slotSettings(), now = Date.now()) {
+  let names;
+  try { names = readdirSync(dir); } catch { return 0; }
+  return names.filter((name) => /^slot-\d+\.lock$/.test(name) && held(join(dir, name), now)).length;
+}
+
 /** Takes a free or abandoned slot for this process: its lock file path, or null when every slot is held. */
 export function takeSlot({ count, dir }, now = Date.now()) {
   mkdirSync(dir, { recursive: true });
@@ -175,9 +187,37 @@ export function takeSlot({ count, dir }, now = Date.now()) {
   return null;
 }
 
+// Browser-session locks (owner decision 2026-11-05): a web task's run may drive the owner's own Chrome session, and full
+// gates and those runs never overlap. The supervisor writes browser-<operation>.lock in the slot folder, holding the
+// run's runner process id, when it launches a web task, and marks that run's environment with BROWSER_RUN, so a gate the
+// same run starts does not wait for itself. A lock whose process ended, or older than SLOT_MAX_AGE_MS, is removed.
+export const BROWSER_RUN = 'AIWORKS_BROWSER_RUN';
+export const browserLockPath = (dir, operationId) => join(dir, `browser-${operationId}.lock`);
+/** The web task runs that hold the owner's browser session now, other than `own`; locks no longer held are removed. */
+export function heldBrowserRuns({ dir }, now = Date.now(), own = process.env[BROWSER_RUN] ?? null) {
+  let names;
+  try { names = readdirSync(dir); } catch { return []; }
+  const runs = [];
+  for (const name of names) {
+    const match = /^browser-(.+).lock$/.exec(name);
+    if (!match || match[1] === own) continue;
+    const file = join(dir, name);
+    if (held(file, now)) runs.push(match[1]);
+    else rmSync(file, { force: true });
+  }
+  return runs;
+}
+
 async function slot(settings) {
-  let said = false;
+  let said = false, browserSaid = false;
   for (;;) {
+    const browser = heldBrowserRuns(settings);
+    if (browser.length) {
+      if (!browserSaid) console.log(`# waiting: ${browser.length} web task run(s) use the browser session, and a full gate never runs beside them`);
+      browserSaid = true;
+      await sleep(5_000);
+      continue;
+    }
     const file = takeSlot(settings);
     if (file) {
       if (said) console.log(`# gate slot ${file} taken; the gate starts now`);

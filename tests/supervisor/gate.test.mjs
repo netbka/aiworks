@@ -2,8 +2,8 @@
 // code and the verifier waited on a summary line until its two-hour bound ended the run. These tests run the helper on
 // small synthetic gate scripts in a temporary directory: no model, network or GitHub calls.
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -50,6 +50,8 @@ test('a project without check uses its explicit gate; a missing command cannot l
   assert.equal(gate(dir, 'wait', '--minutes', '0.2', '--poll-seconds', '0.1').code, 1);
 });
 const waitFast = (dir, ...more) => gate(dir, 'wait', '--poll-seconds', '0.1', ...more);
+// A process id whose process has ended.
+const ended = () => spawnSync(process.execPath, ['-e', '']).pid;
 
 test('a gate that passes: wait returns its exit code and the final summary block, and every file it wrote is a .log', (t) => {
   const dir = workdir(t);
@@ -90,6 +92,26 @@ test('a gate process that ends without an exit code is reported as died at once,
   assert.match(restarted.out, /^started:/, restarted.out);
   assert.equal(waitFast(dir).code, 0);
   assert.match(readFileSync(join(dir, 'gate-previous.log'), 'utf8'), /# start tests\/unlimited\.test\.mjs/);
+});
+
+test('a web task run holding the browser session holds back other gates, never its own, and a lapsed lock never blocks', async (t) => {
+  const { browserLockPath, heldBrowserRuns } = await import('../../src/supervisor/gate.mjs');
+  const dir = workdir(t), slots = join(dir, 'slots');
+  mkdirSync(slots, { recursive: true });
+  const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore', windowsHide: true });
+  t.after(() => holder.kill());
+  writeFileSync(browserLockPath(slots, 'op-web'), JSON.stringify({ pid: holder.pid, at: Date.now(), operation: 'op-web' }));
+  writeFileSync(browserLockPath(slots, 'op-gone'), JSON.stringify({ pid: ended(), at: Date.now(), operation: 'op-gone' }));
+  assert.deepEqual(heldBrowserRuns({ dir: slots }, Date.now(), null), ['op-web']);
+  assert.equal(existsSync(browserLockPath(slots, 'op-gone')), false, 'a lock whose run ended is removed');
+  // The run's own gate (its environment names the operation) starts at once; another waits until the run ends.
+  assert.equal(gateIn(dir, { AIWORKS_BROWSER_RUN: 'op-web' }, 'start', `"${process.execPath}"`, 'pass.mjs').code, 0);
+  assert.equal(waitFast(dir).code, 0, 'its own gate finished');
+  assert.equal(gate(dir, 'start', `"${process.execPath}"`, 'pass.mjs').code, 0);
+  assert.equal(waitFast(dir, '--minutes', '0.05').code, 2, 'another gate waits while the run holds the session');
+  assert.match(readFileSync(join(dir, 'gate.log'), 'utf8'), /web task run\(s\) use the browser session/);
+  holder.kill();
+  assert.equal(waitFast(dir, '--minutes', '1').code, 0, 'and runs once the run ended');
 });
 
 test('readGateRun: the exit code and the final node:test summary the controller keeps with a verification (#43)', async (t) => {
