@@ -449,7 +449,8 @@ async function serve() {
   const cpuMonitor = cpu.enabled && process.platform === 'win32'
     ? createCpuMonitor({ settings: cpu, basePriority: config.workerJob?.priority === 'normal' ? 'normal' : 'belownormal', log }) : null;
   const controller = new Controller({ store, config, dataDir, log, codeRevision, governanceRoot, revisionCheck, probe, cpuMonitor,
-    // Full gates running on this PC (gate.mjs slots): while one runs, no new worker starts (host.mjs, the gates signal).
+    // Gate helper runs on this PC that hold a slot or wait for the browser session (gate.mjs): meanwhile no new worker
+    // starts (host.mjs, the gates signal).
     gates: () => heldSlotCount() });
   log(`supervisor instance ${controller.instanceId} started (pid ${process.pid}, code ${codeRevision ?? 'unknown'}, data ${dataDir}, ${governanceNote})`);
   const unmerged = controller.unmergedRevision();

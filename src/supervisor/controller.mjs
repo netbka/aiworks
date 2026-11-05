@@ -1177,6 +1177,7 @@ export class Controller {
         this.store.journal(ctx.id, 'operation-abandoned', { op: op.id, reason: 'cancel' }, this.now());
       });
       this.runEnded(campaign.declaration);
+      this.browserRunSettled(op);
       return;
     }
     if (op.kind === 'verify' && this.baseCompare) this.stepBaseCheck(ctx, campaign, op);
@@ -1276,6 +1277,8 @@ export class Controller {
   applyOutcome(ctx, op, outcome) {
     // A result waiting for its base check (base-check.mjs) ended its run once already; it does not prompt a sweep each poll.
     if (!this.baseWaits.has(op.id)) this.runEnded(this.store.campaign(ctx.id)?.declaration);
+    // Every result, lost run and refused containment reaches here: the run has ended (consume, reconcile).
+    this.browserRunSettled(op);
     if (op.kind === 'plan') return this.settlePlan(ctx, op, outcome);
     let verdict = outcome;
     const before = this.store.task(ctx.id, op.task_id);
@@ -2476,6 +2479,11 @@ export class Controller {
 
   /** A run of a docker.cleanup repository ended: the next tick looks for its stack. */
   runEnded(decl) { if (this.sweeper && cleans(this.cleanup, decl)) this.sweptAt = -Infinity; }
+  /** A settled operation's run no longer uses the browser session: its lock (launch, gate.mjs) goes at once. */
+  browserRunSettled(op) {
+    try { rmSync(browserLockPath(slotSettings().dir, op.id), { force: true }); }
+    catch (error) { this.log(`browser-session lock for ${op.id} not removed (it lapses with the run): ${error.message}`); }
+  }
 
   /** The worktree roots of docker.cleanup repositories, never one that holds the repository's own checkout. */
   cleanupRoots() {
@@ -3294,12 +3302,14 @@ export class Controller {
     });
     if (!child) return;
     // A web task's run may use the owner's browser session: no full gate starts beside it (gate.mjs heldBrowserRuns).
-    // The lock holds the runner's process id, so it lapses by itself when the run ends.
+    // The lock holds the runner's process id and its heartbeat file, so it lapses by itself when the run ends or stops
+    // beating, even after Windows gives the id to another process; browserRunSettled removes it when the operation settles.
     if (web && child.pid) {
       try {
         const { dir } = slotSettings();
         mkdirSync(dir, { recursive: true });
-        writeFileSync(browserLockPath(dir, op.id), JSON.stringify({ pid: child.pid, at: Date.now(), operation: op.id }));
+        writeFileSync(browserLockPath(dir, op.id), JSON.stringify({ pid: child.pid, at: Date.now(), operation: op.id,
+          heartbeat: join(op.run_dir, 'heartbeat') }));
       } catch (error) { this.log(`browser-session lock for ${op.id} not written: ${error.message}`); }
     }
     child.on('error', (error) => {

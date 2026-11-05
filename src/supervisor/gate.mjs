@@ -17,7 +17,8 @@
 // of AIWORKS_GATE_SLOTS (default 2) machine-wide slots, lock files under AIWORKS_GATE_SLOTS_DIR (default <tmp>/aiworks-gate-
 // slots); until then gate.log says it waits, and wait keeps reporting running. It also waits while a web task's run holds
 // the browser session (browser-<operation>.lock in the same folder). A gate started inside a gate (the suite's
-// own gate tests) takes no slot. A slot whose process is gone, or older than SLOT_MAX_AGE_MS, is taken over.
+// own gate tests) takes no slot. A running gate rewrites its slot lock every BEAT_MS; a slot whose process is gone, or
+// whose lock has not been rewritten for STALE_MS, is taken over.
 import { spawn } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -142,29 +143,47 @@ function start(command) {
 }
 
 const NESTED = 'AIWORKS_GATE_SLOT_HELD';
-const SLOT_MAX_AGE_MS = 4 * 60 * 60_000;
+// A lock's process id alone proves little: a gate killed with its worker's job never removes its lock, and once Windows
+// gives that id to another process the dead lock held for up to four hours. So a holder beats: a running gate rewrites
+// its lock every BEAT_MS, a waiting gate on every poll, and a web task's run through its runner heartbeat. A lock whose
+// last beat is STALE_MS old is not held, whatever process now has its id.
+const BEAT_MS = 30_000;
+const STALE_MS = 2 * 60_000;
 export function slotSettings(env = process.env) {
   const count = Number(env.AIWORKS_GATE_SLOTS ?? 2);
   return { count: Number.isSafeInteger(count) && count >= 1 && count <= 8 ? count : 2,
     dir: env.AIWORKS_GATE_SLOTS_DIR || join(tmpdir(), 'aiworks-gate-slots') };
 }
 
-/** Whether the lock file is held: its process runs and it is younger than SLOT_MAX_AGE_MS. Unreadable for a minute: no. */
+// When a file was last written, or 0 when it cannot be read.
+const mtime = (file) => {
+  try { return statSync(file).mtimeMs; } catch { return 0; }
+};
+/**
+ * Whether the lock file is held: its process runs and its last beat is younger than STALE_MS. The beat is the lock's `at`,
+ * or for a browser lock the later write of the run's `heartbeat` file. Unreadable for a minute: no.
+ */
 function held(file, now) {
   let holder = null;
   try { holder = JSON.parse(readFileSync(file, 'utf8')); } catch { /* being written, or left empty */ }
-  if (holder) return Number.isSafeInteger(holder.pid) && alive(holder.pid) && now - holder.at < SLOT_MAX_AGE_MS;
-  try { return now - statSync(file).mtimeMs < 60_000; } catch { return false; }
+  if (holder) {
+    const beat = Math.max(Number(holder.at) || 0, typeof holder.heartbeat === 'string' ? mtime(holder.heartbeat) : 0);
+    return Number.isSafeInteger(holder.pid) && alive(holder.pid) && now - beat < STALE_MS;
+  }
+  return now - mtime(file) < 60_000;
 }
 /**
- * How many full gates run on this PC now: the held slot lock files in `dir`, whatever the slot count. The supervisor's
- * admission reads it (host.mjs, the `gates` pressure signal) so no new worker starts while a full gate runs. A missing or
- * unreadable folder counts none.
+ * How many runs of the gate helper hold this PC now: the held slot locks in `dir`, whatever the slot count, and the gates
+ * waiting for the browser session (waiting-<pid>.lock). Every run counts: a verifier's full gate, an implementer's
+ * affected tests, and the supervisor's own base-check and refresh gates. The supervisor's admission reads it (host.mjs,
+ * the `gates` pressure signal) so no new worker starts meanwhile. A waiting gate holds no slot but counts too: otherwise
+ * admission keeps starting web task runs, and a wave of them starves every gate for hours. A missing or unreadable folder
+ * counts none.
  */
 export function heldSlotCount({ dir } = slotSettings(), now = Date.now()) {
   let names;
   try { names = readdirSync(dir); } catch { return 0; }
-  return names.filter((name) => /^slot-\d+\.lock$/.test(name) && held(join(dir, name), now)).length;
+  return names.filter((name) => /^(slot|waiting)-\d+\.lock$/.test(name) && held(join(dir, name), now)).length;
 }
 
 /** Takes a free or abandoned slot for this process: its lock file path, or null when every slot is held. */
@@ -189,8 +208,9 @@ export function takeSlot({ count, dir }, now = Date.now()) {
 
 // Browser-session locks (owner decision 2026-11-05): a web task's run may drive the owner's own Chrome session, and full
 // gates and those runs never overlap. The supervisor writes browser-<operation>.lock in the slot folder, holding the
-// run's runner process id, when it launches a web task, and marks that run's environment with BROWSER_RUN, so a gate the
-// same run starts does not wait for itself. A lock whose process ended, or older than SLOT_MAX_AGE_MS, is removed.
+// run's runner process id and the path of its heartbeat file, when it launches a web task, removes it when the operation
+// settles, and marks that run's environment with BROWSER_RUN, so a gate the same run starts does not wait for itself. A
+// lock whose runner ended, or whose run has not beaten for STALE_MS, is removed by the next gate that reads it.
 export const BROWSER_RUN = 'AIWORKS_BROWSER_RUN';
 export const browserLockPath = (dir, operationId) => join(dir, `browser-${operationId}.lock`);
 /** The web task runs that hold the owner's browser session now, other than `own`; locks no longer held are removed. */
@@ -199,24 +219,37 @@ export function heldBrowserRuns({ dir }, now = Date.now(), own = process.env[BRO
   try { names = readdirSync(dir); } catch { return []; }
   const runs = [];
   for (const name of names) {
-    const match = /^browser-(.+).lock$/.exec(name);
+    const match = /^browser-(.+)\.lock$/.exec(name);
     if (!match || match[1] === own) continue;
     const file = join(dir, name);
     if (held(file, now)) runs.push(match[1]);
-    else rmSync(file, { force: true });
+    else {
+      // Another account's file, or one being read, may refuse removal; it is not held either way.
+      try { rmSync(file, { force: true }); } catch { /* a later gate removes it */ }
+    }
   }
   return runs;
 }
 
 async function slot(settings) {
   let said = false, browserSaid = false;
+  const waiting = join(settings.dir, `waiting-${process.pid}.lock`);
   for (;;) {
     const browser = heldBrowserRuns(settings);
     if (browser.length) {
+      // Rewritten on every poll, so it beats while this gate waits and lapses once the gate is killed (heldSlotCount).
+      try {
+        mkdirSync(settings.dir, { recursive: true });
+        writeFileSync(waiting, JSON.stringify({ pid: process.pid, at: Date.now(), cwd: process.cwd() }));
+      } catch { /* missed beat */ }
       if (!browserSaid) console.log(`# waiting: ${browser.length} web task run(s) use the browser session, and a full gate never runs beside them`);
       browserSaid = true;
       await sleep(5_000);
       continue;
+    }
+    if (browserSaid) {
+      try { rmSync(waiting, { force: true }); } catch { /* lapses after STALE_MS */ }
+      browserSaid = false;
     }
     const file = takeSlot(settings);
     if (file) {
@@ -231,15 +264,23 @@ async function slot(settings) {
 
 // The detached process: runs the command through the shell (npm is npm.cmd on Windows) and records how it ended.
 async function run(command) {
-  let recorded = false, lock = null;
+  let recorded = false, lock = null, beat = null;
   const record = (value) => {
     if (recorded) return;
     recorded = true;
+    clearInterval(beat);
     if (lock) rmSync(lock, { force: true });
     writeFileSync(GATE_FILES.exit, `${value}\n`);
   };
   try { lock = process.env[NESTED] ? null : await slot(slotSettings()); }
   catch (error) { console.log(`# gate slots unavailable (${error.code ?? error.message}); the gate runs without one`); }
+  // The slot's beat (held): the lock stays fresh while this gate runs. Once another gate took the slot over, it stops.
+  if (lock) beat = setInterval(() => {
+    try {
+      if (JSON.parse(readFileSync(lock, 'utf8')).pid !== process.pid) { clearInterval(beat); return; }
+      writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now(), cwd: process.cwd() }));
+    } catch { /* missed beat: the next follows within BEAT_MS */ }
+  }, BEAT_MS);
   const child = spawn(command.join(' '), { shell: true, stdio: 'inherit', windowsHide: true, env: { ...process.env, [NESTED]: '1' } });
   child.on('error', (error) => record(`spawn-error ${error.code ?? error.message}`));
   child.on('close', (code, signal) => record(code ?? signal));
