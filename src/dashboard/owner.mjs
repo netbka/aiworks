@@ -378,7 +378,7 @@ export function releaseLadder(task, d, recorded = null, { github = true } = {}) 
   const sha = String(recorded?.verifiedSha ?? task.verifiedSha ?? '').toLowerCase().slice(0, 7) || null;
   const note = !recorded ? 'Review only: AIWorks does not deploy this result. Whether it is live is not recorded here.'
     : recorded.state === 'rolled-back' ? 'Rolled back: the checks after release failed.'
-      : recorded.state === 'rollback-failed' ? 'The rollback failed. See Needs you.'
+      : recorded.state === 'rollback-failed' ? 'The rollback failed. See Settings, AIWorks itself.'
         : recorded.state === 'unknown' ? 'Outcome unknown: AIWorks is checking the destination and will not release there again until it knows.' : null;
   return { sha, steps, note, destination: recorded?.destination ?? null };
 }
