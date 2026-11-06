@@ -18,7 +18,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { POWERSHELL, readJsonIfExists, runnerIdentified, stopOwnedRun } from './proc.mjs';
+import { ASYNC_STOP_MS, POWERSHELL, readJsonIfExists, runnerIdentified, stopOwnedRunAsync } from './proc.mjs';
 import { PREVIEW_POLICY } from './preview.mjs';
 
 const RUNNER = fileURLToPath(new URL('./runner.mjs', import.meta.url));
@@ -136,13 +136,14 @@ const exits = (child, ms) => child.exitCode !== null || child.signalCode !== nul
  */
 export async function reclaim(child, workDir, hurry) {
   const result = () => readJsonIfExists(join(workDir, 'result.json'));
-  if (!hurry && await exits(child, 15_000)) return result()?.containmentStopped === true ? 'stopped' : 'unproved';
+  // The runner drains its own job first, which may take that drain's whole bound on a loaded host.
+  if (!hurry && await exits(child, ASYNC_STOP_MS + 15_000)) return result()?.containmentStopped === true ? 'stopped' : 'unproved';
   // The runner records its job only after the helper reports it ready; wait briefly for that identity.
   for (let i = 0; i < 50 && child.exitCode === null && !runnerIdentified(readJsonIfExists(join(workDir, 'runner.json'))); i++) await new Promise((resolve) => setTimeout(resolve, 100));
   if (child.exitCode !== null) return result()?.containmentStopped === true || result()?.attached === false ? 'stopped' : 'unproved';
   const identity = readJsonIfExists(join(workDir, 'runner.json'));
   if (runnerIdentified(identity)) {
-    const stopped = stopOwnedRun(identity);
+    const stopped = await stopOwnedRunAsync(identity);
     await exits(child, 10_000);
     if (stopped === 'stopped') return 'stopped';
   }

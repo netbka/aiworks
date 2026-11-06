@@ -139,7 +139,7 @@ const removeRun = (runDir) => { try { rmSync(runDir, { recursive: true, force: t
  * started was not shown, the result is a failure with `contained: false` and its folder stays: settleContained shows that
  * end later, and the caller reads nothing more there until it does. Never throws.
  */
-export async function execContained(command, args, { cwd, runRoot, timeoutMs = 30_000, overheadMs = 60_000, killMs = 10_000, active = new Set() } = {}) {
+export async function execContained(command, args, { cwd, runRoot, timeoutMs = 30_000, overheadMs = 120_000, killMs = 10_000, active = new Set() } = {}) {
   const failed = (error, contained = true) => ({ ok: false, status: null, stdout: '', stderr: '', error, ...(contained ? {} : { contained: false }) });
   let runDir;
   try { mkdirSync(runRoot, { recursive: true }); runDir = mkdtempSync(join(runRoot, 'read-')); } catch { return failed('ESPAWN'); }
