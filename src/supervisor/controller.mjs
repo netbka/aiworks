@@ -2166,7 +2166,7 @@ export class Controller {
           id: 'integration-conflict', severity: 'blocking', base: baseSha, verified: sha, paths, commits,
           description: `Integration conflict: the verified commit ${sha} (${task.pr_url}) no longer merges into ${base} at ${baseSha}. ` +
             `Conflicting paths: ${paths.join(', ')}. Sibling commits on ${base}: ${commits.map((item) => `${item.sha.slice(0, 12)} ${item.subject}`).join('; ') || 'unknown'}. ` +
-            `Merge ${baseSha} into this branch (git merge ${baseSha}), resolve the conflicts, run the full gate and commit the merge. Never rebase, reset or amend: ${sha} must stay an ancestor of the new head.`,
+            `Merge ${baseSha} into this branch (git merge -m "Merge ${base} at ${baseSha.slice(0, 12)} into this branch" ${baseSha}: always this message, never Git's default, which can name a local path), resolve the conflicts, run the full gate and commit the merge. Never rebase, reset or amend: ${sha} must stay an ancestor of the new head.`,
         };
         const stalled = this.reopenPublished(ctx, task, finding, { limits, now,
           lastError: `integration-conflict: ${paths.join(', ')} conflict with ${base} at ${baseSha}`,
