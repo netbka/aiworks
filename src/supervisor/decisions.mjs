@@ -56,13 +56,12 @@ export function autoOption(decision) {
 export const answersItself = (task) => isDecision(task) && task.blocked.class === 'B3' &&
   autoOption(task.blocked.decision) !== null;
 
-/** AW-017: a worker's owner-reserved stop without a usable suggestion. It goes back to its step once, to decide within the packet. */
-export const sendsBack = (task) => isDecision(task) && task.blocked.class === 'B3' && /^owner-reserved:/.test(String(task.blocked.reason ?? '')) &&
-  !(task.blocked.decision?.suggestion && task.blocked.decision.options?.some((o) => o.id === task.blocked.decision.suggestion.option));
+/** AW-017: a worker's owner-reserved stop AIWorks cannot answer: no usable suggestion, or one neither marked reversible nor backed by a safeOption. It goes back to its step once, to decide within the packet. */
+export const sendsBack = (task) => isDecision(task) && task.blocked.class === 'B3' && /^owner-reserved:/.test(String(task.blocked.reason ?? '')) && !answersItself(task);
 
 /** The guidance for a step sent back to decide by itself (sendsBack). */
 export function decideGuidance(blocked) {
-  return ['AIWorks does not wait for the owner: this step stopped for a decision without options and a suggestion, so it comes back to you once to decide within the packet.',
+  return ['AIWorks does not wait for the owner: this step stopped for a decision that AIWorks cannot answer (no options and suggestion, or a suggestion neither marked reversible nor backed by a safeOption), so it comes back to you once to decide within the packet. If you stop for a decision again, mark reversible honestly (true only when nothing is published, disclosed or spent) or name a safeOption, the option that publishes and discloses nothing new.',
     blocked?.decision?.question ? `Question: ${blocked.decision.question}` : null, blocked?.reason ? `The stop: ${String(blocked.reason).slice(0, 1000)}` : null,
     'Choose what keeps to the packet, its acceptance and its permissions, and publishes or discloses nothing new, record the choice and why in your report, and finish the work. If the outcome cannot be reached within the packet, return evidence-unavailable and say exactly what is missing: AIWorks then ends the step as not done and records a follow-up. Never widen the packet.']
     .filter(Boolean).join(' ');
