@@ -4,7 +4,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SECRET_LIKE_PATH_PATTERN, acceptsLease, packetDigest, planContext, validatePacket } from '../../scripts/lib/worker-context.mjs';
 import * as executors from './adapters/executors.mjs';
@@ -46,7 +46,7 @@ import { baseCheckStep, baseCompareSettings, baseRecord, claimBaseRed, settleBas
 import { CACHE_RULE, checkClaims, hasRunner, insertResults, offerCache, otherNodeMajor, resultsOf, testCacheSettings } from './test-cache.mjs';
 import { isLocalTarget, recordCandidate } from './local-candidates.mjs';
 import { checkLocalDispatch, LOCAL_ADMISSION_ON } from './local-admission.mjs';
-import { addComment, createItem, followUp, reviewItem, WorkListError, workAuthorization, workLink } from './work-list.mjs';
+import { addComment, createItem, followUp, standingFollowUp, reviewItem, WorkListError, workAuthorization, workLink } from './work-list.mjs';
 import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
 import { alertDecision, configuredTransport, currentAlertRules, renderAlert } from './alerts.mjs';
 import { PUBLICATION_REFUSED, privateTerms, publicationFindings } from '../shared/public-text.mjs';
@@ -2025,7 +2025,29 @@ export class Controller {
       // What this tick read about this checkout's bases is dropped.
       onFetched: () => this.dropTickCache(repoPath) });
     if (!result.ok) this.log(`base read unavailable: ${result.failure}`);
+    if (result.failure === 'uncontained') this.trackBaseHold(repoPath, base);
     return result;
+  }
+
+  /**
+   * A checkout whose base read is refused as uncontained (#144) is shown on the dashboard from its marker (readBaseContained).
+   * One holding a receipt whose start was never recorded has no proof AIWorks may take: after config.baseHoldFollowUpMs a
+   * follow-up item for AIWorks's own work list names it. Nothing is cleared here, whatever the age. Never throws.
+   */
+  trackBaseHold(repoPath, base) {
+    try {
+      const root = this.baseReadRoot(repoPath), runs = gitA.heldContained(root, this.baseReadRuns).filter((run) => !run.identified);
+      if (!runs.length) return;
+      const since = Math.min(...runs.map((run) => run.since)), now = this.now();
+      if (now - since < (this.config.baseHoldFollowUpMs ?? 600_000)) return;
+      const key = `bh-${createHash('sha256').update(`${root}|${since}`).digest('hex').slice(0, 12)}`;
+      standingFollowUp(this.store, { key, now,
+        title: `Settle the unresolved base-read custody of checkout ${basename(repoPath)}`,
+        body: [`Base reads of ${base} in the checkout ${repoPath} have been refused as uncontained since ${new Date(since).toISOString()}.`,
+          `${runs.length} receipt(s) under ${root} never recorded a runner or process identity, so AIWorks has no proof their processes ended and clears nothing by age, lock absence or approval.`,
+          'A receipt that recorded an identity is checked again on every read and clears by itself once the process is shown gone.',
+          'Needed: an evidence source for unknown-start receipts (for example the runner pid with its creation time recorded at spawn, or a host start later than the receipt). Until then the checkout stays held and the dashboard says so.'].join('\n\n') });
+    } catch { /* a missing work list or a refused text never changes the read's refusal */ }
   }
 
   /** The folder of a checkout's base fetches and their receipts (execContained): installation data, one per checkout. */
