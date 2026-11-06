@@ -88,6 +88,8 @@ Home is one centred column, at most 1040 px wide. Top to bottom:
 
 The header carries the logo, the navigation, one word for the work (Working, Paused or Stopped) and Pause all. It shows no version, computer name, connection or refresh text; while the page cannot reach the dashboard that word is "Offline" and the controls are off.
 
+Navigation is Home, Projects and Settings. Needs you is not a screen: its address opens Home, and the count on the Home item is `needs.count`, with "checking" beside it while a result's merge is still being checked. When nothing needs the owner but such a check is unresolved, the headline says "Nothing needs you, but a result is still being checked." rather than claiming calm; the count stays the owner's own actions. AIWorks's own problems, work stopped until restarted and routine work are in Settings, in one folded section "AIWorks itself"; Home shows one grey line "AIWorks has N problems of its own" linking there only when such a problem stops work, and it is never in the count.
+
 Words come from the data above as text, never as markup; the screen adds no codes, numbers or explanations of how AIWorks works. Not built yet: Undo after an answer (no command reverses an answer), and the goal link goes to the goal's project because the data names no goal address.
 
 Acceptance: the screen reads only the fields of part one, the headline and the badge show the same number, and every visible word is plain English for a person.

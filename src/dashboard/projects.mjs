@@ -65,7 +65,7 @@ const lastActivity = (campaigns) => Math.max(0, ...campaigns.map((c) => Date.par
  * card inside AIWorks. A GitHub pull request or issue is never the primary action (owner.mjs keeps it as reference).
  */
 function needsAction(count) {
-  return { label: count === 1 ? 'Resolve in Needs you' : `Resolve all ${count} in Needs you`, route: { screen: 'needs' } };
+  return { label: count === 1 ? 'Resolve on Home' : `Resolve all ${count} on Home`, route: { screen: 'home' } };
 }
 
 /**

@@ -7,16 +7,21 @@ const TONES = { done: 'merged', now: 'building', asks: 'you', todo: 'todo', drop
 const PILLS = { 'Asks you': 'attention', Building: 'in_progress', Checking: 'review', Queued: 'pending', Paused: 'pending' };
 const LANDED_SHOWN = 5;
 
-export const heroWords = (count) => count === 0 ? 'Nothing needs you.' : count === 1 ? 'One question for you.' : `${count} things need you.`;
+// While AIWorks is still finding out whether a result merged, the headline never claims calm: the count stays the
+// owner's own actions, and the words say that something is still being checked.
+export const heroWords = (count, checking = 0) => count === 0
+  ? checking > 0 ? 'Nothing needs you, but a result is still being checked.' : 'Nothing needs you.'
+  : count === 1 ? 'One question for you.' : `${count} things need you.`;
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /** The one grey line under the headline: what is moving and what landed. */
-export function summaryLine(goals, landed) {
+export function summaryLine(goals, landed, checking = 0, count = 0) {
   const moving = goals.filter((goal) => goal.state !== 'Paused');
   const projects = [...new Set(moving.map((goal) => goal.project).filter(Boolean))];
   const where = projects.length === 1 ? ` in ${projects[0]}` : projects.length > 1 ? ` across ${plural(projects.length, 'project')}` : '';
   return [moving.length ? `${plural(moving.length, 'goal')} ${moving.length === 1 ? 'is' : 'are'} moving${where}.` : 'Nothing is moving right now.',
-    landed.total ? `${plural(landed.total, 'change')} landed since yesterday.` : null].filter(Boolean).join(' ');
+    landed.total ? `${plural(landed.total, 'change')} landed since yesterday.` : null,
+    checking > 0 && count > 0 ? 'A result is also still being checked.' : null].filter(Boolean).join(' ');
 }
 
 /**

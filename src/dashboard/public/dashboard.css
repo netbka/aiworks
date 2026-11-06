@@ -567,6 +567,10 @@ html{scrollbar-gutter:stable;scroll-padding-top:88px}
 .home h1:focus{outline:none}
 .home h2{font-size:16px;font-weight:650;margin:0}
 .home-summary{margin:8px 0 0;font-size:15px;color:var(--muted)}
+.home-own{margin:6px 0 0;font-size:13px;color:var(--muted)}.home-own a{color:var(--muted);text-decoration:underline}
+.home-resolve{margin-top:12px}
+.itself-line{display:flex;gap:6px 12px;flex-wrap:wrap;align-items:center;padding:10px 14px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);min-width:0}
+.itself-text{flex:1 1 220px;min-width:0;font-size:14px;overflow-wrap:anywhere}
 .home-confirm{margin:12px 0 0;font-size:14px;color:var(--green);font-weight:600}
 .home-note{font-size:13px;color:var(--muted)}
 .home-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:0 0 10px;min-height:32px}

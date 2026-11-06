@@ -151,8 +151,8 @@ const routeLink = (text, route, cls = '') => el('a', { href: typeof route === 's
 // A connected project without GitHub is addressed by its project id and named by its own name.
 const projectName = (project) => state?.projects?.projects?.find((item) => !item.repository && item.id === project)?.name ?? (shortRepo(project) || project);
 // Each screen's heading and the one question it answers (OWNER_WORKSPACE §3.1).
-const screenText = { home: ['Home', 'What needs me, and what changed?'], projects: ['Projects', 'Which project should I open?'], needs: ['Needs you', 'What is waiting for me, across projects?'],
-  settings: ['Settings', 'What can AIWorks use on this computer?'], accounts: ['Worker accounts', 'Which AI worker logins and accounts are on this computer?'],
+const screenText = { home: ['Home', 'What needs me, and what changed?'], projects: ['Projects', 'Which project should I open?'],
+  settings: ['Settings', 'What can AIWorks use on this computer?'], itself: ['Settings', 'What is AIWorks handling by itself?'], accounts: ['Worker accounts', 'Which AI worker logins and accounts are on this computer?'],
   version: ['Version and roadmap', 'Which capabilities are turned on in this version?'],
   instructions: ['Model instructions', 'Which AI models should handle what kind of work?'],
   chats: ['Chats', 'What did I ask AIWorks, and what did it answer?'],
@@ -249,7 +249,7 @@ function renderMetrics(campaigns = state.supervisor.campaigns, shown = []) {
   $('#metrics').classList.toggle('metrics-inline', shown.includes('AI workers working'));
   // The Needs you count in the global bar: never zero while the supervisor state is unknown, and never final while a merge
   // check runs: "7 + checking" until it ends (OWNER_WORKSPACE §1 rule 3, §7.4; aiworks#11 review 4 F3).
-  $('#needs-count').textContent = !state.supervisor.available ? '?' : attention ? `${attention}${unknown ? ' + checking' : ''}` : unknown ? 'checking' : '';
+  $('#home-count').textContent = !state.supervisor.available ? '?' : attention ? `${attention}${unknown ? ' + checking' : ''}` : unknown ? 'checking' : '';
 }
 
 // governance provider's own roadmap (read from the governance checkout), kept apart from project campaigns; display names replace internal track labels.
@@ -1577,140 +1577,54 @@ function moreBox(key, nodes) {
 }
 
 /**
- * One Needs you card (aiworks#39): the work it belongs to, what the owner decides in one sentence and the one action that
- * resolves it on the card itself. The rest of why, what follows, opening the step or its full Review, the pull request
- * and planning different work are under its one More. Identifiers, commits and recorded machine detail stay out of it.
+ * What AIWorks keeps for itself (the owner's Home never lists it): its own problems, work stopped until it is checked
+ * again or resumed, and routine work it continues alone. None of it is counted for the owner; each entry is one line.
  */
-function needsItem(item) {
-  const c = item.campaignId ? campaignById(item.campaignId) : null, task = c && item.taskId ? c.tasks.find((t) => t.id === item.taskId) : null;
-  const project = item.repository ?? item.project ?? null;
-  const when = `${item.at ? ` at about ${timeOnly(item.at)}` : ''}${item.since ? ` since ${timeOnly(item.since)}` : ''}`;
-  const [why, rest] = splitSentence(item.why), more = [];
-  const resolution = itemResolution(item, c, task, more);
-  // Without an action on the card, opening its step or Review is its one action; otherwise that is a secondary link.
-  const route = item.route ? routeLink(item.route.label, item.route.address, resolution ? 'needs-link' : 'button') : null;
-  const secondary = [resolution ? route : null, item.reference ? link(`${item.reference.label} ↗`, item.reference.url, 'needs-link subtext') : null,
-    item.system || !item.taskId || item.plan ? null : planFromItem(item, project)].filter(Boolean);
-  return el('li', { class: `needs-item ${item.kind}`, 'data-focus-scope': `needs-item/${itemKey(item)}` },
-    el('div', { class: 'needs-body' },
-      el('div', { class: 'needs-context' }, [item.about ? `Project ${projectName(item.about)}` : null, c ? workName(c) : null].filter(Boolean).join(' · ')),
-      item.action ? el('div', { class: 'needs-action' }, item.action) : null,
-      el('div', { class: 'needs-text' }, el('span', {}, `${item.text}${when}`)),
-      why ? el('p', { class: 'needs-why' }, why) : null),
-    resolution ?? (route ? el('div', { class: 'needs-actions' }, route) : null),
-    moreBox(`needs-more/${itemKey(item)}`, [
-      rest ? el('p', { class: 'needs-why' }, rest) : null,
-      item.evidence && !['review', 'accept', 'unchecked'].includes(item.kind) ? el('div', { class: 'evidence' }, item.evidence) : null,
-      item.mergeCheck ? el('div', { class: 'needs-stale' }, mergeAsOf(item.mergeCheck)) : null,
-      item.points.map((point) => el('div', { class: 'needs-point' },
-        point.link ? link(`${point.link.label} ↗`, point.link.url, 'needs-link') : null, el('span', {}, point.text))),
-      more,
-      secondary.length ? el('div', { class: 'needs-actions needs-secondary' }, ...secondary) : null]));
-}
-
-/**
- * One Needs you group (OWNER_WORKSPACE S3): a project, named and linked to its own screen, or "AIWorks itself" (always
- * last), with its count and its items in today's order.
- */
-const needsGroup = (group) => el('section', { class: 'needs-group', 'aria-labelledby': `needs-group-${group.key}`, 'data-focus-scope': `needs/${group.key}` },
-  el('h3', { id: `needs-group-${group.key}`, class: 'section-title' }, group.project ? routeLink(group.name, { screen: 'project', project: group.project }) : group.name, NEEDS.groupCount(group.count, group.notCounted)),
-  el('ul', { class: 'needs-list' }, ...group.items.map(needsItem)));
-
-/**
- * What AIWorks is handling itself (owner.mjs `handling`): routine merge waits its gate or a repair round settles within
- * the authority already given, and answers or requested changes the owner already sent that AIWorks has yet to apply,
- * each with the recorded reason, or that none is recorded, and what happens next. Listed
- * so nothing stalled is hidden; never counted, because none needs the owner.
- */
-function handlingList(handling) {
-  if (!handling.length) return null;
-  return el('section', { class: 'needs-group needs-handling', 'aria-labelledby': 'needs-handling-title', 'data-focus-scope': 'needs/handling' },
-    el('h3', { id: 'needs-handling-title', class: 'section-title' }, `AIWorks is handling (${handling.length}) · not counted`),
-    el('p', { class: 'subtext' }, 'What you already settled and routine waits, continued by AIWorks inside the authority you already gave it. Nothing here needs you.'),
-    el('ul', { class: 'needs-list' }, ...handling.map((entry) => handlingEntry(entry, 'needs-handling'))));
-}
-
-/** One entry AIWorks listed with its recorded reason and what happens next (owner.mjs `handling` and `stalled`). */
-const handlingEntry = (entry, scope) => el('li', { class: 'needs-item handling', 'data-focus-scope': `${scope}/${entry.campaignId}/${entry.taskId}` },
-  el('div', { class: 'needs-body' },
-    el('div', { class: 'needs-context' }, [`Project ${projectName(entry.repository)}`, campaignById(entry.campaignId) ? workName(campaignById(entry.campaignId)) : null].filter(Boolean).join(' · ')),
-    el('div', { class: 'needs-text' }, el('span', {}, entry.text)),
-    el('p', { class: 'needs-why' }, `${entry.reason}. ${entry.next}`),
-    entry.since ? el('div', { class: 'subtext' }, `${entry.sinceWords ?? 'Passed the check'} ${dateTime(entry.since)}`) : null),
-  el('div', { class: 'needs-actions needs-secondary' }, routeLink('Open the step', { screen: 'step', project: entry.repository, work: entry.campaignId, step: entry.taskId }, 'needs-link')));
-
-/**
- * AW-016: work that does not continue by itself until it is checked again, resumes or is planned again (owner.mjs
- * `stalled` and the `stalled` group). Not counted, because AW-016 leaves none of it to the owner alone, and never under
- * "AIWorks is handling", because nothing here moves by itself. Each says what restarts it.
- */
-function stalledList(group, stalled) {
-  const items = group?.items ?? [], total = items.length + stalled.length;
-  if (!total) return null;
-  return el('section', { class: 'needs-own', 'data-focus-scope': 'needs/stalled' }, disclosure('needs/stalled',
-    `${plural(total, 'thing')} stopped until restarted · not counted`,
-    el('div', {}, el('p', { class: 'subtext' }, 'These do not move by themselves. Each says what restarts it: Check again, resuming its work, or planning it again.'),
-      items.length ? el('ul', { class: 'needs-list' }, ...items.map(needsItem)) : null,
-      stalled.length ? el('ul', { class: 'needs-list' }, ...stalled.map((entry) => handlingEntry(entry, 'needs-stalled'))) : null)));
-}
-
-/**
- * AW-016: the decisions AIWorks answered itself with the worker's reversible suggestion. One line each: what it chose
- * and why, with the step, where Send guidance changes it. Never counted: nothing waits for the owner here.
- */
-function decidedList(decided) {
-  if (!decided.length) return null;
-  return el('section', { class: 'needs-group needs-decided', 'aria-labelledby': 'needs-decided-title', 'data-focus-scope': 'needs/decided' },
-    el('h3', { id: 'needs-decided-title', class: 'section-title' }, `AIWorks decided for you (${decided.length})`),
-    el('p', { class: 'subtext' }, 'Reversible choices, made with the suggested option so work kept going. You can change each one while its step is still being made.'),
-    el('ul', { class: 'needs-list' }, ...decided.slice(0, 8).map((d) => el('li', { class: 'needs-item decided', 'data-focus-scope': `needs-decided/${d.campaignId}/${d.taskId}` },
-      el('div', { class: 'needs-body' },
-        el('div', { class: 'needs-context' }, [`Project ${projectName(d.project)}`, d.step].filter(Boolean).join(' · ')),
-        el('div', { class: 'needs-text' }, el('span', {}, `${d.question} `), el('strong', {}, d.chosen)),
-        d.reason ? el('p', { class: 'needs-why' }, d.reason) : null,
-        d.others.length ? el('div', { class: 'subtext' }, `Other options: ${d.others.join(' · ')}`) : null),
-      el('div', { class: 'needs-actions needs-secondary' }, routeLink('Change it', { screen: 'step', project: d.project, work: d.campaignId, step: d.taskId }, 'needs-link'))))));
-}
-
-/**
- * AW-016: AIWorks's own state, apart from what needs the owner and folded away: its problems with their Check again,
- * and the routine work it is continuing. Listed so nothing stalled is hidden; never counted.
- */
-function ownStateList(group, handling) {
-  const problems = group?.items ?? [], total = problems.length + handling.length;
-  if (!total) return null;
-  return el('section', { class: 'needs-own', 'data-focus-scope': 'needs/own' }, disclosure('needs/own',
-    `AIWorks is handling ${plural(total, 'thing')} itself${problems.length ? ` · ${plural(problems.length, 'problem')} of its own` : ''}`,
-    el('div', {}, problems.length ? el('ul', { class: 'needs-list' }, ...problems.map(needsItem)) : null, handlingList(handling))));
-}
-
-/** Needs you: what is waiting for the owner, grouped by project, in plain words, each resolved on its own card. */
-function needsYou() {
+function itselfEntries() {
   const owner = state.owner;
-  if (!owner?.available) return null;
-  const { headline, count, groups = [], handling = [], held = [], unknownResults: unknown, reply } = owner;
-  // aiworks#18: a stopped supervisor leads, with the time it last renewed its leases, unless the one item for AIWorks
-  // stopped already says it with its time (one fact, once; review 4 F2).
+  if (!owner?.available) return { problems: [], stopped: [], handling: [], banner: false };
+  const group = (key) => owner.groups.find((entry) => entry.key === key)?.items ?? [];
   const controller = state.supervisor.controller;
-  const said = owner.items.some((item) => item.kind === 'controller' && !item.system);
-  return el('section', { class: `needs${count || held.length ? '' : unknown ? ' checking' : ' calm'}`, 'aria-labelledby': 'needs-title' },
-    controller?.stopped && !said ? el('p', { class: 'needs-stopped' }, NEEDS.banner(controller.lastLeaseRenewalAt, { dateTime }, controller.stopRequested)) : null,
-    el('div', { class: 'needs-head' }, el('h2', { id: 'needs-title' }, headline),
-      unknown ? el('span', { class: 'needs-unknown' }, `Merge of ${unknown} published step${unknown === 1 ? '' : 's'} being checked`) : null),
-    // Only owner actions here (owner, 2026-10-13; AW-016): posted reports and merged work ready for release are on Results.
-    ...groups.filter((group) => !['aiworks-itself', 'stalled'].includes(group.key)).map(needsGroup),
-    decidedList(owner.decided ?? []),
-    stalledList(groups.find((group) => group.key === 'stalled'), owner.stalled ?? []),
-    ownStateList(groups.find((group) => group.key === 'aiworks-itself'), handling),
-    // Projects held up by the owner's decisions: no work is blocked, so they are not counted, but each is named with a
-    // link to its Now, which says which decisions (aiworks#11 review 5 G7).
-    held.length ? el('ul', { class: 'needs-list', 'data-focus-scope': 'needs/held' }, ...held.map((project) => el('li', {},
-      el('strong', {}, project.name), ` · ${project.text} `, routeLink(`Open ${project.name}`, { screen: 'project', project: project.id })))) : null,
-    reply && isRecent(reply.answeredAt) ? el('div', { class: 'needs-reply' }, `AIWorks answered your message (${dateTime(reply.answeredAt)}). `,
-      reply.url ? link('Read its “What needs you” ↗', reply.url) : routeLink('Open the chat', { screen: 'chats', chat: reply.threadId ?? reply.messageId })) : null,
-    // The local work list (UI20): its open decisions are counted above; the list itself is one link away.
-    worklist()?.available ? el('p', { class: 'needs-reply' }, `AIWorks’s own work list: ${plural(worklistUnfinished().length, 'unfinished item')}. `,
-      routeLink('Open the work list', WORKLIST_ADDRESS)) : null);
+  return { problems: group('aiworks-itself'), stopped: [...group('stalled'), ...(owner.stalled ?? [])], handling: owner.handling ?? [],
+    banner: Boolean(controller?.stopped) && !owner.items.some((item) => item.kind === 'controller') };
+}
+
+/** How many problems of its own stop AIWorks's work: the one grey line on Home, never part of the owner's count. */
+function ownProblemCount() {
+  const { problems, stopped, banner } = itselfEntries();
+  return problems.length + stopped.length + (banner ? 1 : 0);
+}
+
+/** One entry of "AIWorks itself": what it is, its one Check again where it has one, and where to open it. */
+function itselfLine(entry, word, tone, scope) {
+  const project = entry.about ?? entry.repository ?? null;
+  const open = entry.route ? routeLink(entry.route.label, entry.route.address, 'needs-link')
+    : entry.campaignId && entry.taskId && entry.repository ? routeLink('Open the step', { screen: 'step', project: entry.repository, work: entry.campaignId, step: entry.taskId }, 'needs-link') : null;
+  const why = entry.reason ? `${entry.reason}. ${entry.next ?? ''}`.trim() : entry.action ?? '';
+  return el('li', { class: 'itself-line', 'data-focus-scope': `itself/${scope}/${entry.campaignId ?? ''}/${entry.taskId ?? ''}/${entry.kind ?? ''}` },
+    el('span', { class: `badge ${tone}` }, word),
+    el('span', { class: 'itself-text' }, [project ? `${projectName(project)}: ` : '', entry.text ?? '', why ? ` ${why}` : ''].join('')),
+    entry.command ? primaryAction(entry.command, 'button secondary small') : null, open);
+}
+
+/** The Settings section "AIWorks itself": folded, one line per entry. Null when there is nothing to list. */
+function itselfSection() {
+  const { problems, stopped, handling, banner } = itselfEntries(), owner = state.owner;
+  const held = owner?.held ?? [], list = worklist()?.available ? worklistUnfinished() : null;
+  const total = problems.length + stopped.length + handling.length + held.length + (banner ? 1 : 0);
+  if (!total && !list) return null;
+  const own = ownProblemCount();
+  const summary = own ? `AIWorks itself · ${plural(own, 'problem')} of its own` : total ? `AIWorks itself · handling ${plural(total, 'thing')}` : 'AIWorks itself';
+  return panel('AIWorks itself', 'Its own problems and routine work. None of it needs you.', el('div', { class: 'panel-body' }, disclosure('settings/itself', summary, el('div', {},
+    banner ? el('p', { class: 'needs-stopped' }, NEEDS.banner(state.supervisor.controller.lastLeaseRenewalAt, { dateTime }, state.supervisor.controller.stopRequested)) : null,
+    total ? el('ul', { class: 'needs-list itself-list' },
+      ...problems.map((entry) => itselfLine(entry, 'Problem', 'attention', 'problem')),
+      ...stopped.map((entry) => itselfLine(entry, 'Stopped', 'stale', 'stopped')),
+      ...handling.map((entry) => itselfLine(entry, 'Handling', 'in_progress', 'handling')),
+      ...held.map((project) => el('li', { class: 'itself-line' }, el('span', { class: 'badge stale' }, 'Held'),
+        el('span', { class: 'itself-text' }, `${project.name} · ${project.text}`), routeLink(`Open ${project.name}`, { screen: 'project', project: project.id }, 'needs-link')))) : null,
+    list ? el('p', { class: 'needs-reply' }, `AIWorks’s own work list: ${plural(list.length, 'unfinished item')}. `, routeLink('Open the work list', WORKLIST_ADDRESS)) : null,
+  ), current.route.section === 'itself')));
 }
 
 /**
@@ -1772,7 +1686,7 @@ function attentionSummary() {
   const waiting = owner.count > 0, checking = owner.unknownResults > 0;
   return el('section', { class: `attention-summary${waiting ? '' : checking ? ' checking' : ' calm'}`, 'aria-label': 'What needs you' },
     el('div', {}, el('h2', {}, owner.headline), checking ? el('p', {}, `Merge of ${plural(owner.unknownResults, 'published step')} being checked.`) : null),
-    waiting || checking ? routeLink('Open Needs you →', { screen: 'needs' }, waiting ? 'button' : 'button secondary') : null);
+    waiting || checking ? routeLink('Open Home →', { screen: 'home' }, waiting ? 'button' : 'button secondary') : null);
 }
 
 function projectsScreen() {
@@ -2658,16 +2572,21 @@ function homeDecisionCard(c, task) {
 }
 
 /**
- * A waiting item that is not a choice: its question, what it means and what to do (its points, as on Needs you), and a
- * link to where it is settled; an item with no route of its own opens Needs you, so a card is never a dead end.
+ * A waiting item that is not a choice: its question, what it means, the one action that settles it on the card (the same
+ * bound requests as its step and Review) and a link to where it is settled, so a card is never a dead end.
  */
 function homeOtherCard(item) {
+  const c = item.campaignId ? campaignById(item.campaignId) : null, task = c && item.taskId ? c.tasks.find((t) => t.id === item.taskId) : null;
+  const project = item.about ?? item.repository ?? item.project ?? null;
+  const fallback = item.route?.address ?? (c && task ? { screen: 'step', project: item.repository ?? c.repository, work: c.id, step: task.id }
+    : project ? { screen: 'project', project, tab: 'overview' } : '#/settings');
+  const resolution = itemResolution(item, c, task, []);
   return el('div', { class: 'home-card', 'data-focus-scope': `home/item/${itemKey(item)}` },
     el('h2', { class: 'home-question' }, splitSentence(item.text ?? 'Something needs you.')[0]),
     ...(item.points ?? []).map((point) => el('p', { class: 'home-point' }, point.text,
       point.link ? [' ', link(`${point.link.label} ↗`, point.link.url)] : null)),
-    el('div', { class: 'home-answer' }, item.route ? routeLink('Open', item.route.address, 'button')
-      : routeLink('Open in Needs you', { screen: 'needs' }, 'button')));
+    resolution ? el('div', { class: 'home-resolve' }, resolution) : null,
+    el('div', { class: 'home-answer' }, routeLink(resolution ? 'Open details' : 'Open', fallback, resolution ? 'needs-link' : 'button')));
 }
 
 function homeScreen() {
@@ -2685,7 +2604,8 @@ function homeScreen() {
   const decided = (state.owner?.decided ?? []).slice(0, 3).map((d) => ({ question: d.question, chosen: d.chosen,
     address: formatRoute({ screen: 'step', project: d.project, work: d.campaignId, step: d.taskId }) }));
   const confirmation = homeConfirm && homeConfirm.until > Date.now() ? homeConfirm.text : null;
-  const blocks = homeBlocks({ ...home, needCards, decided, confirmation, address: projectAddress, showAll: landedAll,
+  const blocks = homeBlocks({ ...home, needCards, decided, confirmation, checking: state.owner?.unknownResults ?? 0,
+    ownProblems: { count: ownProblemCount(), address: formatRoute({ screen: 'settings', section: 'itself' }) }, address: projectAddress, showAll: landedAll,
     onShowAll: () => { landedAll = !landedAll; render(); } }, { el, timeAgo });
   return [el('div', { class: 'home' }, ...blocks)];
 }
@@ -2855,7 +2775,7 @@ function settingsScreen() {
       : empty('No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository.'), removedList()));
   // A project removed from Projects has no release mode to show.
   const removed = (repository) => (state.projects?.removed ?? []).some((item) => sameProject(item.repository, repository ?? ''));
-  return [computer, workers, connections, releasePanel(settings.releases.filter((r) => !removed(r.repository)), settings.releaseStop), settingsLinks()];
+  return [computer, itselfSection(), workers, connections, releasePanel(settings.releases.filter((r) => !removed(r.repository)), settings.releaseStop), settingsLinks()].filter(Boolean);
 }
 
 const settingsEmpty = ({ title, text, primary }) => el('div', { class: 'empty-state' }, el('strong', {}, title), ` ${text} `, routeLink(primary.label, primary.route));
@@ -4695,7 +4615,6 @@ function render() {
   const diagnostics = route.screen === 'settings' && route.section === 'diagnostics';
   renderMetrics(route.project ? projectCampaigns(route.project) : state.supervisor.campaigns, diagnostics ? ['Platform roadmap items'] : []);
   if (route.screen === 'home') patch(content, homeScreen());
-  else if (route.screen === 'needs') patch(content, [needsYou() ?? unavailable()]);
   else if (route.screen === 'settings' && route.section === 'connections') patch(content, connectionsScreen());
   else if (route.screen === 'settings' && route.section === 'alerts' && refreshAlerts(content)) { /* the form stays as the owner typed it */ }
   else if (route.screen === 'settings' && route.section === 'alerts') patch(content, alertsScreen());
