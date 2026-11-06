@@ -103,10 +103,19 @@ export function originRepository(cwd = process.cwd()) {
   return match ? `${match[1]}/${match[2]}`.toLowerCase() : null;
 }
 
-/** Whether a branch of origin, as this checkout last fetched it, contains `sha`: the only commits a service can fetch. */
+/**
+ * Whether origin has `sha`, the only commits a service can fetch: a branch of origin as this checkout last fetched it
+ * contains it, or origin lists it as the tip of a branch now. The second covers a repository that fetches only some
+ * branches (a pushed task branch then has no remote-tracking ref here).
+ */
 export function onOrigin(sha, cwd = process.cwd()) {
-  const result = spawnSync('git', ['branch', '-r', '--contains', sha], { cwd, encoding: 'utf8', windowsHide: true, timeout: 30_000 });
-  return result.status === 0 && result.stdout.split('\n').some((line) => line.trim().startsWith('origin/'));
+  // Never a sign-in prompt: a gate helper runs unattended, and an origin that needs one simply does not count.
+  const git = (args, timeout) => spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true, timeout,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' } });
+  const tracked = git(['branch', '-r', '--contains', sha], 30_000);
+  if (tracked.status === 0 && tracked.stdout.split('\n').some((line) => line.trim().startsWith('origin/'))) return true;
+  const listed = git(['ls-remote', '--heads', 'origin'], 30_000);
+  return listed.status === 0 && listed.stdout.split('\n').some((line) => line.split('\t')[0] === sha);
 }
 
 /**
