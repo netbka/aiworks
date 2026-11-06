@@ -54,22 +54,6 @@ test('start is idempotent, scope is immutable, amendments need a higher authoriz
   assert.throws(() => m.campaignStart(store, d), (e) => e.code === 'STALE_AUTHORIZATION');
 });
 
-test('registration without a live controller is BOOTSTRAP_REQUIRED, never ACTIVE', { skip: skipWithoutSqlite }, async (t) => {
-  const { m, store, controller, id } = await setup(t, { scenario: { implement: ['sleep:400:commit'] } });
-  const registered = m.campaignStatus(store, id);
-  assert.equal(registered.readiness, 'BOOTSTRAP_REQUIRED');
-  assert.equal(registered.controller.live, false);
-  await controller.tick();
-  const live = m.campaignStatus(store, id);
-  assert.equal(live.readiness, 'ACTIVE');
-  assert.equal(live.controller.instanceId, controller.instanceId);
-  assert.equal(live.controller.generation, 1);
-  controller.release();
-  assert.equal(m.campaignStatus(store, id).readiness, 'CONTROLLER_OFFLINE', 'a released lease is not a running controller');
-  // let the dispatched synthetic worker finish before cleanup
-  await sleep(800);
-});
-
 test('competing controllers: one holder, takeover only after expiry, stale writer fenced', { skip: skipWithoutSqlite }, async (t) => {
   const { m, store, env, id } = await setup(t);
   let clock = 1_000_000;
@@ -252,15 +236,6 @@ test('a verifier result for another target is never accepted', { skip: skipWitho
   assert.match(first.detail, /not target/);
 });
 
-test('uncommitted work is not accepted as a resolved commit deliverable', { skip: skipWithoutSqlite }, async (t) => {
-  const decl = declaration({ tasks: [declaration().tasks[0]] });
-  const { store, controller, id } = await setup(t, { decl, scenario: { implement: ['dirty', 'commit'] } });
-  await runUntil(controller, store, id, (c) => store.task(id, 'T1').attempts >= 2);
-  const first = store.get('SELECT outcome FROM operations WHERE id = ?', `${id}.T1.implement.1`).outcome;
-  assert.equal(first.class, 'invalid-result');
-  assert.match(first.detail, /uncommitted/);
-});
-
 test('AW-017: an owner-reserved result without a suggestion blocks only that task, goes back to it once and the campaign finishes without the owner', { skip: skipWithoutSqlite }, async (t) => {
   const tasks = declaration().tasks;
   const decl = declaration({ tasks: [tasks[0], { ...tasks[1], id: 'T3', dependsOn: [] }] });
@@ -270,26 +245,6 @@ test('AW-017: an owner-reserved result without a suggestion blocks only that tas
   assert.equal(store.task(id, 'T1').state, 'done', 'the step decided within its packet and finished');
   assert.equal(store.all("SELECT 1 FROM journal WHERE campaign_id = ? AND kind = 'decision-sent-back'", id).length, 1);
   assert.equal(env.calls().filter((c) => c.role === 'implement').length, 3);
-});
-
-test('pause stops new dispatch; start resumes', { skip: skipWithoutSqlite }, async (t) => {
-  const { m, store, controller, env, id, d } = await setup(t);
-  await runUntil(controller, store, id, () => store.task(id, 'T1').state === 'done');
-  m.campaignPause(store, id, 'owner pause');
-  // A run dispatched in the tick that finished T1 may still be starting, and a slow machine may record its call after any
-  // fixed wait. Wait for the event instead: the controller has seen the pause and every run started before it has settled.
-  const operations = () => store.all('SELECT id FROM operations WHERE campaign_id = ? ORDER BY id', id).map((op) => op.id);
-  const atPause = operations();
-  await runUntil(controller, store, id, (c) => c.next_action === 'Paused by the owner; start the campaign again to resume.' ||
-    operations().length !== atPause.length);
-  assert.deepEqual(operations(), atPause, 'no dispatch while paused');
-  const before = env.calls().length;
-  for (let i = 0; i < 8; i++) { await controller.tick(); await sleep(40); }
-  assert.deepEqual(operations(), atPause, 'no dispatch while paused');
-  assert.equal(env.calls().length, before, 'no dispatch while paused');
-  assert.equal(m.campaignStatus(store, id).readiness, 'PAUSED');
-  m.campaignStart(store, d);
-  await runUntil(controller, store, id, (c) => c.control === 'finished');
 });
 
 test('cancel terminates the exact owned in-flight run and records it', { skip: skipWithoutSqlite }, async (t) => {

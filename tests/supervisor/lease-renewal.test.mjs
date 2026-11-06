@@ -22,6 +22,8 @@ test('a slow fenced effect preserves live held leases without reviving expired, 
     controller.held.set(id, store.acquireLease(id, controller.instanceId, time, ttl).generation);
   }
   controller.held.set('expired', store.acquireLease('expired', controller.instanceId, time - 2 * ttl, ttl).generation);
+  controller.held.set('long', store.acquireLease('long', controller.instanceId, time, 100 * ttl).generation);
+  const longEnd = store.lease('long').expires_at;
   store.releaseLease('taken', controller.instanceId, controller.held.get('taken'), time);
   store.acquireLease('taken', 'other-controller', time, ttl);
   const ctx = { id: 'first', generation: first.generation }; // The fenced context need not be in held.
@@ -42,6 +44,7 @@ test('a slow fenced effect preserves live held leases without reviving expired, 
   assert.equal(store.lease('replaced').generation, replaced.generation);
   assert.equal(store.lease('replaced').expires_at, time, 'a replacement generation is not renewed through stale held state');
   assert.equal(store.lease('taken').instance_id, 'other-controller');
+  assert.equal(store.lease('long').expires_at, longEnd, 'a fenced effect never shortens a lease taken for longer');
   for (const id of ['expired', 'released', 'replaced']) assert.ok(competitor.acquireLease(id, 'other-controller', time, ttl));
   const before = store.lease('second');
   assert.throws(() => controller.fenced(ctx, () => { time += 2 * ttl; throw new Error('effect failed'); }), /effect failed/);
