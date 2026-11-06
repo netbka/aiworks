@@ -7,18 +7,21 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, wri
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GATE_FILES } from '../gate.mjs';
-import { assertActionsDisabled } from './github.mjs';
 import { DEVELOPMENT_ENV } from '../development-policy.mjs';
 import { githubRemote } from '../project-preflight.mjs';
 import { environmentExamplePath, safeEnvironmentExample } from '../environment-example.mjs';
 import { POWERSHELL, readJsonIfExists, runnerIdentified, stopOwnedRunAsync } from '../proc.mjs';
 
 const SHA = /^[0-9a-f]{40}$/;
+// The supervisor's own git reads and checkouts see the real objects of a commit, never local replace refs: the
+// worktree a worker gets and the digests of the test result cache (test-cache.mjs) both come from them. Workers' own
+// environment (proc.mjs workerEnv) is not changed.
+const SUPERVISOR_GIT_ENV = Object.freeze({ GIT_NO_REPLACE_OBJECTS: '1' });
 
-export function exec(command, args, { cwd, input, timeoutMs = 180_000 } = {}) {
+export function exec(command, args, { cwd, input, timeoutMs = 180_000, env = {} } = {}) {
   const result = spawnSync(command[0], [...command.slice(1), ...args], {
     cwd, input, encoding: 'utf8', windowsHide: true, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024,
-    env: { ...process.env, ...DEVELOPMENT_ENV },
+    env: { ...process.env, ...env, ...DEVELOPMENT_ENV, ...SUPERVISOR_GIT_ENV },
   });
   return { ok: !result.error && result.status === 0, status: result.status, stdout: (result.stdout || '').trim(), stderr: (result.stderr || '').trim(), error: result.error?.code };
 }
@@ -55,7 +58,7 @@ export function execBounded(command, args, { cwd, timeoutMs = 30_000, killMs = 1
     };
     try {
       child = spawn(command[0], [...command.slice(1), ...args], { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
-        detached: process.platform !== 'win32', env: { ...process.env, ...DEVELOPMENT_ENV } });
+        detached: process.platform !== 'win32', env: { ...process.env, ...DEVELOPMENT_ENV, ...SUPERVISOR_GIT_ENV } });
     } catch (error) { finish(failed(error?.code ?? 'ESPAWN')); return; }
     if (child.pid) { try { onSpawn?.(child.pid); } catch { /* the caller's record of the start is its own */ } }
     timer = setTimeout(() => stop('ETIMEDOUT'), timeoutMs);
@@ -357,7 +360,32 @@ export function checkVerification({ git, path, targetSha }) {
   return null;
 }
 
-export function assertPushActionsDisabled({ git, gh, repoPath, remote, expectedRepository = null }) {
+/** Git's empty tree: the base when nothing was published before, so every workflow file counts as added. */
+export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+
+/**
+ * AIWorks never uses GitHub Actions (owner directive, 2 November 2026) and does not read the repository's Actions setting
+ * from GitHub. A push, backup push, pull request or merge that adds, changes, deletes or renames a path under
+ * .github/workflows could start a hosted run, so it is refused. Workflow files already in the base do not block (they are
+ * the owner's repository matter). It judges the head's own change, locally: `base...head`, the head's changes since its
+ * merge-base with the base, so a workflow change the base gained after the head forked is not counted against the head.
+ * With `tree` (the gated merge result of a refresh, a tree and not a commit) it compares the base with that result
+ * instead, which is exactly what the merge puts on the base. The empty tree as `base` (a first backup to a repository
+ * with no tip) is compared directly, so any workflow file counts. No rename detection, so both sides of a rename show;
+ * paths match case-insensitively, as a Windows checkout would. Fails closed: an unreadable diff, or no base or head, is
+ * a refusal.
+ */
+export function assertNoWorkflowChange({ git, repoPath, base, head, tree = null }) {
+  const refuse = (why) => { throw Object.assign(new Error(`LOCAL_DEVELOPMENT_ONLY: ${why}`), { code: 'LOCAL_DEVELOPMENT_ONLY' }); };
+  if (!git || !repoPath || !base || !head) refuse('the base and head of this GitHub push or merge are not known, so it cannot be checked for GitHub Actions workflow changes; AIWorks never publishes workflow changes');
+  const out = exec(git, ['diff', '--name-only', '--no-renames', '-z', ...(tree ? [base, tree] : base === EMPTY_TREE ? [base, head] : [`${base}...${head}`])], { cwd: repoPath });
+  if (!out.ok) refuse(`the change from ${base} to ${head} could not be read to check it for GitHub Actions workflow changes; nothing was published`);
+  const changed = out.stdout.split('\0').find((path) => /^\.github\/workflows(\/|$)/i.test(path));
+  if (changed) refuse(`the change adds or edits a GitHub Actions workflow file (${changed}); AIWorks never publishes workflow changes: remove the change from .github/workflows`);
+}
+
+/** A push goes only to a GitHub remote or an offline local folder. A push to a GitHub remote also must not change workflow files between `base` and `head`; an offline folder cannot run Actions. */
+export function assertPushDestination({ git, repoPath, remote, expectedRepository = null, base, head }) {
   const out = exec(git, ['remote', 'get-url', '--push', '--all', remote], { cwd: repoPath });
   const refuse = () => { throw Object.assign(new Error('LOCAL_DEVELOPMENT_ONLY: push destination could not be verified'), { code: 'LOCAL_DEVELOPMENT_ONLY' }); };
   if (!out.ok || !out.stdout) refuse();
@@ -368,17 +396,16 @@ export function assertPushActionsDisabled({ git, gh, repoPath, remote, expectedR
       if (expectedRepository && repository.toLowerCase() !== expectedRepository.toLowerCase()) refuse();
       repositories.add(repository);
     } else {
-      // Offline local repositories cannot run GitHub Actions; helper and network transports stay refused.
+      // Helper and network transports stay refused; an offline local folder is allowed.
       if (!isAbsolute(url) || /^[\\/]{2}/.test(url) || url.includes('://') || !existsSync(url) || !lstatSync(url).isDirectory()) refuse();
     }
   }
-  for (const repository of repositories) assertActionsDisabled({ gh, repository });
+  if (repositories.size) assertNoWorkflowChange({ git, repoPath, base, head });
 }
 
-/** Push exactly the verified SHA (not a moving HEAD) to the campaign branch. */
-export function pushVerified({ git, gh, repository, repoPath, branch, sha }) {
-  assertActionsDisabled({ gh, repository });
-  assertPushActionsDisabled({ git, gh, repoPath, remote: 'origin', expectedRepository: repository });
+/** Push exactly the verified SHA (not a moving HEAD) to the campaign branch. `base` is the commit the task started from. */
+export function pushVerified({ git, repository, repoPath, branch, sha, base }) {
+  assertPushDestination({ git, repoPath, remote: 'origin', expectedRepository: repository, base, head: sha });
   must(exec(git, ['push', 'origin', `${sha}:refs/heads/${branch}`], { cwd: repoPath }), 'push verified commit');
   const remote = must(exec(git, ['ls-remote', 'origin', `refs/heads/${branch}`], { cwd: repoPath }), 'read remote branch');
   if (!remote.startsWith(sha)) throw new Error(`remote ${branch} is not at verified ${sha}`);

@@ -15,8 +15,9 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import * as gitA from './adapters/git.mjs';
-import { failedTests, gateFailure, readGateRun } from './gate.mjs';
+import { failedTests, gateFailure, readGateRun, retireGate } from './gate.mjs';
 import { alive, checkout, gatePid, startGate } from './merge-refresh.mjs';
+import { recordGateResults } from './test-cache.mjs';
 
 const DEFAULT_TIMEOUT_MINUTES = 120;
 
@@ -39,7 +40,7 @@ export function baseCompareSettings(value) {
 const key = (command) => JSON.stringify(command);
 const row = (store, repository, baseSha, command) => {
   const found = store.get('SELECT * FROM base_checks WHERE repository = ? AND base_sha = ? AND command = ?', repository.toLowerCase(), baseSha, key(command));
-  return found ? { ...found, failed: found.failed === null ? null : JSON.parse(found.failed) } : null;
+  return found ? { ...found, failed: found.failed === null ? null : JSON.parse(found.failed), red: found.red === 1 } : null;
 };
 
 /** The base check record of `baseSha` under `settings`, read-only; null when none was started. */
@@ -55,9 +56,9 @@ export function baseRecord(store, repository, baseSha, settings) {
 export function baseCheckStep(controller, ctx, { repository, repoPath, worktreeRoot, baseSha }, settings) {
   const { store } = controller, git = controller.cmd.git, now = controller.now();
   const repo = repository.toLowerCase(), command = key(settings.command);
-  const write = (fields) => controller.fenced(ctx, () => store.run(`UPDATE base_checks SET state = ?, failed = ?, summary = ?, reason = ?, updated_at = ?
+  const write = (fields) => controller.fenced(ctx, () => store.run(`UPDATE base_checks SET state = ?, failed = ?, summary = ?, reason = ?, red = ?, updated_at = ?
     WHERE repository = ? AND base_sha = ? AND command = ? AND state = 'running'`,
-  fields.state, fields.failed === null ? null : JSON.stringify(fields.failed), fields.summary ?? null, fields.reason ?? null, now, repo, baseSha, command));
+  fields.state, fields.failed === null ? null : JSON.stringify(fields.failed), fields.summary ?? null, fields.reason ?? null, fields.red ? 1 : 0, now, repo, baseSha, command));
   let record = row(store, repository, baseSha, settings.command);
   if (!record) {
     const digest = createHash('sha256').update(command, 'utf8').digest('hex').slice(0, 8);
@@ -82,6 +83,8 @@ export function baseCheckStep(controller, ctx, { repository, repoPath, worktreeR
   const run = readGateRun(record.path);
   if (run === null || run.exit === null) {
     if (now - record.started_at > settings.timeoutMs) {
+      // Never killed, so a hung base gate gives back its slot here, as a refresh gate does (gate.mjs retireGate).
+      retireGate(gatePid(record.path));
       write({ state: 'failed', failed: null, reason: `the base gate did not finish within ${Math.round(settings.timeoutMs / 60_000)} minutes` });
       return row(store, repository, baseSha, settings.command);
     }
@@ -100,13 +103,33 @@ export function baseCheckStep(controller, ctx, { repository, repoPath, worktreeR
   if (!head.ok || head.stdout !== baseSha) {
     write({ state: 'failed', failed: null, reason: `the base gate finished, but its checkout is no longer at ${baseSha}` });
   } else if (gateFailure(run)) {
-    write({ state: 'failed', failed: failedTests(run.summary), summary: run.summary, reason: `the base gate ${gateFailure(run)}` });
+    // Only here is the base itself red: its own gate finished on its checkout and failed. It gets one repair item
+    // (controller.mjs recordBaseRed); a start failure, a timeout or a moved checkout says nothing about the base.
+    write({ state: 'failed', failed: failedTests(run.summary), summary: run.summary, reason: `the base gate ${gateFailure(run)}`, red: true });
+    recordGateResults(controller, ctx, { repository, repoPath, sha: baseSha, dir: record.path, green: false });
   } else {
     write({ state: 'passed', failed: [], summary: run.summary, reason: null });
+    recordGateResults(controller, ctx, { repository, repoPath, sha: baseSha, dir: record.path, green: true });
   }
   record = row(store, repository, baseSha, settings.command);
   controller.log(`base check of ${repository} ${baseSha}: ${record.state}`);
   return record;
+}
+
+/**
+ * Claim the one repair item of a red base, inside the caller's fenced write: true for exactly one caller per
+ * (repository, base SHA, command), whatever the tasks, campaigns and restarts that share the base; `item` says where
+ * the item went. A base that is not red, or whose item is already recorded, is never claimed.
+ */
+export function claimBaseRed(store, record, item, now) {
+  return store.run('UPDATE base_checks SET item = ?, updated_at = ? WHERE repository = ? AND base_sha = ? AND command = ? AND red = 1 AND item IS NULL',
+    item, now, record.repository, record.base_sha, record.command).changes === 1;
+}
+
+/** Record where the claimed repair item of a red base went, once it is known. */
+export function settleBaseRed(store, record, item, now) {
+  store.run('UPDATE base_checks SET item = ?, updated_at = ? WHERE repository = ? AND base_sha = ? AND command = ?',
+    item, now, record.repository, record.base_sha, record.command);
 }
 
 /**

@@ -16,6 +16,7 @@ import { issueCampaignToken } from './campaign-token.mjs';
 import { Controller, DEFAULTS } from './controller.mjs';
 import { createHostProbe } from './host.mjs';
 import { GATE_PIPE, gateListening, gateSettings, pipeHost, serveGate } from './docker-gate.mjs';
+import { heldSlotCount } from './gate.mjs';
 import { cpuSettings, createCpuMonitor } from './worker-cpu.mjs';
 import { configuredGovernanceRoot, requireGovernanceRoot } from './governance.mjs';
 import { clearCoordinatorViolation, coordinatorView, postOwnerMessage } from './coordinator.mjs';
@@ -447,7 +448,10 @@ async function serve() {
   const cpu = cpuSettings(config);
   const cpuMonitor = cpu.enabled && process.platform === 'win32'
     ? createCpuMonitor({ settings: cpu, basePriority: config.workerJob?.priority === 'normal' ? 'normal' : 'belownormal', log }) : null;
-  const controller = new Controller({ store, config, dataDir, log, codeRevision, governanceRoot, revisionCheck, probe, cpuMonitor });
+  const controller = new Controller({ store, config, dataDir, log, codeRevision, governanceRoot, revisionCheck, probe, cpuMonitor,
+    // Gate helper runs on this PC that hold a slot or wait for the browser session (gate.mjs): meanwhile no new worker
+    // starts (host.mjs, the gates signal).
+    gates: () => heldSlotCount() });
   log(`supervisor instance ${controller.instanceId} started (pid ${process.pid}, code ${codeRevision ?? 'unknown'}, data ${dataDir}, ${governanceNote})`);
   const unmerged = controller.unmergedRevision();
   if (unmerged) log(`no new work will start: ${unmerged} (AW-005)`);

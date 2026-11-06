@@ -51,7 +51,8 @@ const out = spawnSync(process.execPath, [${JSON.stringify(FAKE_GH)}, ...args], {
 if (args.includes('POST') && args.includes('repos/example-org/sampleapp/pulls')) { process.stderr.write('gh: HTTP 502 Bad Gateway'); process.exit(1); }
 process.stdout.write(out.stdout); process.stderr.write(out.stderr); process.exit(out.status);`);
   const gh = [process.execPath, lossy];
-  const input = { gh, repository: 'example-org/sampleapp', baseBranch: 'main', branch: 'campaign/c/T1', title: 'T1', body: 'body', bodyFile: join(env.tmp, 'body.md') };
+  const local = { git: [process.execPath, '-e', ''], repoPath: env.tmp, base: 'a'.repeat(40), head: 'b'.repeat(40) };
+  const input = { gh, repository: 'example-org/sampleapp', baseBranch: 'main', branch: 'campaign/c/T1', title: 'T1', body: 'body', bodyFile: join(env.tmp, 'body.md'), local };
   const url = openPullRequest(input);
   assert.equal(env.prs().length, 1);
   assert.equal(url, env.prs()[0].url);
