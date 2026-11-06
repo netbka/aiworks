@@ -210,6 +210,9 @@ export function checkClaims({ store, git: command, repoPath, repository, sha, lo
  * retried alone. Never a row for a cached file, a file without a digest, or a log that names no single Node version.
  */
 export function resultsOf({ git: command, repoPath, sha, log, passes }) {
+  // A gate run by a check service ran on another computer and toolchain: its passes say nothing about this one. Every
+  // caller (a verifier's gate, the supervisor's own gates) reads results through here.
+  if (/^# gate ran on check service /m.test(log)) return [];
   const { ends, retried, claims, nodeMajor } = parseGateLog(log);
   if (nodeMajor === null) return [];
   const tree = treeAt(command, repoPath, sha), cached = new Set(claims.map((claim) => claim.file));
@@ -251,8 +254,6 @@ export function recordGateResults(controller, ctx, { repository, repoPath, sha, 
     if (!hasRunner(controller.cmd.git, repoPath, sha)) return;
     const log = readFileSync(join(dir, GATE_FILES.log), 'utf8');
     if (parseGateLog(log).claims.length) return;
-    // A gate run by a check service ran on another computer and toolchain: its passes say nothing about this one.
-    if (/^# gate ran on check service /m.test(log)) return;
     rows = resultsOf({ git: controller.cmd.git, repoPath, sha, log, passes: green });
   } catch (error) {
     controller.log(`test cache: results of ${repository} ${sha} not recorded: ${error.message}`);
