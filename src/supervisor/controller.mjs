@@ -24,7 +24,7 @@ import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountFull, accou
 import { BEYOND_RULE, beyondConstraint, domainOf, outsideWrites, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, hostPressure, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
 import { gatePauseOn, hostSamplerFor, pressureThresholds } from './host.mjs';
-import { tmpdir, totalmem } from 'node:os';
+import { totalmem } from 'node:os';
 import { cleans, cleanupSettings, createStackSweeper, inside, openOperations, runningBatches, runningRefreshes, workerJobLimits } from './host-safety.mjs';
 import { containsSecret, coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
 import { ANCHOR, MAX_DOCUMENT_BYTES, parseReference, resolveSection } from './reading.mjs';
@@ -2018,33 +2018,19 @@ export class Controller {
 
   /** One bounded fetch of `base` into refs/aiworks/base/<base> and its read (fetchBase). Never throws. */
   async readBase(repoPath, base) {
-    const ref = `refs/aiworks/base/${base}`;
-    const failed = (failure) => {
-      this.log(`base read unavailable: ${failure}`);
-      return { ok: false, sha: null, failure };
-    };
     // A fetch whose processes were not all shown ended may still move this checkout's refs: until they are (its receipt
     // under runRoot), nothing more is fetched or read there, so no step decides from or builds on such a ref.
-    const runRoot = this.baseReadRoot(repoPath);
-    const { baseReadMs, baseReadOverheadMs } = this.config;
-    if (await gitA.settleContained(runRoot, this.baseReadRuns) > 0) return failed('uncontained');
-    // origin/<base> follows in the same fetch: a worktree branch started from the read base tracks it (dispatch).
-    const fetched = await gitA.execContained(this.cmd.git, ['fetch', 'origin', `+refs/heads/${base}:${ref}`, `+refs/heads/${base}:refs/remotes/origin/${base}`],
-      { cwd: repoPath, runRoot, timeoutMs: baseReadMs, overheadMs: baseReadOverheadMs, active: this.baseReadRuns });
-    if (fetched.contained === false) return failed('uncontained');
-    // Whether it succeeded or not, the ref may have moved: what this tick read about this checkout's bases is dropped.
-    this.dropTickCache(repoPath);
-    if (!fetched.ok) return failed(fetched.error === 'ETIMEDOUT' ? 'fetch-timeout' : 'fetch-failed');
-    const read = await gitA.execBounded(this.cmd.git, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: repoPath, timeoutMs: this.config.baseReadMs });
-    if (read.error === 'ETIMEDOUT') return failed('read-timeout');
-    return /^[0-9a-f]{40}$/.test(read.ok ? read.stdout : '') ? { ok: true, sha: read.stdout } : failed('unreadable');
+    const result = await gitA.readBaseContained(this.cmd.git, repoPath, base, { runRoot: this.baseReadRoot(repoPath), active: this.baseReadRuns,
+      readMs: this.config.baseReadMs, overheadMs: this.config.baseReadOverheadMs,
+      // What this tick read about this checkout's bases is dropped.
+      onFetched: () => this.dropTickCache(repoPath) });
+    if (!result.ok) this.log(`base read unavailable: ${result.failure}`);
+    return result;
   }
 
   /** The folder of a checkout's base fetches and their receipts (execContained): installation data, one per checkout. */
   baseReadRoot(repoPath) {
-    const key = resolve(repoPath);
-    const id = createHash('sha256').update(process.platform === 'win32' ? key.toLowerCase() : key).digest('hex').slice(0, 24);
-    return join(this.dataDir ?? join(tmpdir(), 'aiworks-supervisor'), 'base-reads', id);
+    return gitA.baseReadRoot(this.dataDir, repoPath);
   }
 
   /** Whether `repository` is AIWorks's own repository with local main trusted (config.json `selfHosting`). */

@@ -164,11 +164,13 @@ export function sourceRepository(found) {
  * The evidence code gathers before the coordinator runs (WORK_ENVELOPE 3.2 step 2): the base revision, and the issue,
  * PR or plan file pinned at it. Issue, PR and file text is untrusted data for the prompt. A project without GitHub is
  * never read through gh. Returns { ok, pinned, evidence, repository } or { ok: false, code, retry, detail }.
- * `git` and `gh` are command lines (arrays).
+ * `git` and `gh` are command lines (arrays). `readBase(repoPath, base)` is the bounded asynchronous base read with custody
+ * receipts (aiworks#140, #143): it resolves { ok, sha } and never blocks the event loop. A GitHub project's base is read only
+ * through it, so a checkout with an unresolved receipt is not pinned (BASE_UNKNOWN, retried); without one that base is unknown.
  * `selfHosting` is the config.json setting (self-hosting.mjs selfHostingSettings); absent, every base and issue is read
  * as today. With local main trusted, the self-hosted repository's issue route reads its item from the local work list.
  */
-export function pinRequest(store, request, { git = ['git'], gh = ['gh'], selfHosting = null } = {}) {
+export async function pinRequest(store, request, { git = ['git'], gh = ['gh'], selfHosting = null, readBase = null } = {}) {
   const found = readProject(store, request.project_id);
   if (!found || found.disconnected_at != null) return { ok: false, code: 'PROJECT_NOT_FOUND', retry: false };
   const repository = sourceRepository(found);
@@ -180,9 +182,8 @@ export function pinRequest(store, request, { git = ['git'], gh = ['gh'], selfHos
     base = tip ? (tip.state === 'TRUSTED' ? tip.tip : null)
       : run(git, ['rev-parse', '--verify', '--quiet', `refs/heads/${found.base_branch}^{commit}`], { cwd: repository }).stdout;
   } else if (found.source_kind === 'github') {
-    const ref = `refs/aiworks/base/${found.base_branch}`;
-    const fetched = run(git, ['fetch', '--quiet', 'origin', `+refs/heads/${found.base_branch}:${ref}`], { cwd: repository });
-    base = fetched.ok ? run(git, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: repository }).stdout : null;
+    const read = readBase ? await readBase(repository, found.base_branch) : null;
+    base = read?.ok ? read.sha : null;
   } else {
     const baseline = found.current_baseline;
     base = baseline?.commit ?? null;
@@ -241,11 +242,11 @@ export function staleWhat(pinned, current) {
  * Pin the request again and mark its newest draft stale when any pinned version moved. A stale draft cannot be approved;
  * the owner gets Plan again. Returns { stale, what } or { stale: null, code } when the current versions are unknown.
  */
-export function checkDraftFreshness(store, requestId, options = {}, now = Date.now()) {
+export async function checkDraftFreshness(store, requestId, options = {}, now = Date.now()) {
   const draft = latestDraft(store, requestId);
   if (!draft) return { stale: null, code: 'NO_DRAFT' };
   if (draft.state === 'stale') return { stale: true, what: draft.stale_what };
-  const current = pinRequest(store, workRequest(store, requestId), options);
+  const current = await pinRequest(store, workRequest(store, requestId), options);
   // A fork, a closed PR or a removed plan file is a change too; an unreachable GitHub is unknown, never fresh.
   if (!current.ok && current.retry) return { stale: null, code: current.code };
   const what = current.ok ? staleWhat(draft.pinned, current.pinned) : [GONE[current.code] ?? 'the source is no longer available'];

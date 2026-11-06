@@ -4,7 +4,8 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GATE_FILES } from '../gate.mjs';
 import { DEVELOPMENT_ENV } from '../development-policy.mjs';
@@ -222,6 +223,35 @@ export async function settleContained(runRoot, active = new Set()) {
     if (ended) removeRun(runDir); else open += 1;
   }
   return open;
+}
+
+/** The folder of a checkout's base fetches and their receipts (execContained): installation data, one per checkout. */
+export function baseReadRoot(dataDir, repoPath, name = 'base-reads') {
+  const key = resolve(repoPath);
+  const id = createHash('sha256').update(process.platform === 'win32' ? key.toLowerCase() : key).digest('hex').slice(0, 24);
+  return join(dataDir ?? join(tmpdir(), 'aiworks-supervisor'), name, id);
+}
+
+/**
+ * One bounded fetch of `base` into refs/aiworks/base/<base> and its read (aiworks#140, #143), shared by the supervisor's
+ * base reads and the intake pin. A fetch whose processes were not all shown ended may still move this checkout's refs:
+ * until they are (its receipt under `runRoot`), nothing more is fetched or read there. Resolves { ok, sha } or
+ * { ok: false, sha: null, failure }, the failure being the stage that failed. `onFetched` runs once the fetch ended.
+ */
+export async function readBaseContained(git, repoPath, base, { runRoot, active, readMs, overheadMs, onFetched } = {}) {
+  const ref = `refs/aiworks/base/${base}`;
+  const failed = (failure) => ({ ok: false, sha: null, failure });
+  if (await settleContained(runRoot, active) > 0) return failed('uncontained');
+  // origin/<base> follows in the same fetch: a worktree branch started from the read base tracks it (dispatch).
+  const fetched = await execContained(git, ['fetch', 'origin', `+refs/heads/${base}:${ref}`, `+refs/heads/${base}:refs/remotes/origin/${base}`],
+    { cwd: repoPath, runRoot, timeoutMs: readMs, overheadMs, active });
+  if (fetched.contained === false) return failed('uncontained');
+  // Whether it succeeded or not, the ref may have moved.
+  onFetched?.();
+  if (!fetched.ok) return failed(fetched.error === 'ETIMEDOUT' ? 'fetch-timeout' : 'fetch-failed');
+  const read = await execBounded(git, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: repoPath, timeoutMs: readMs });
+  if (read.error === 'ETIMEDOUT') return failed('read-timeout');
+  return /^[0-9a-f]{40}$/.test(read.ok ? read.stdout : '') ? { ok: true, sha: read.stdout } : failed('unreadable');
 }
 
 function must(result, what) {
