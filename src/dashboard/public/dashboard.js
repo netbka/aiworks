@@ -222,14 +222,14 @@ function showTabs() {
 }
 
 // Today's summary cards, each on the screen that now answers it (OWNER_WORKSPACE §9): roadmap items on Diagnostics,
-// Needs you on Needs you, agents working on a project's Work. Cost so far is the headline of a project's Cost tab (S7).
+// the owner's count on Home, agents working on a project's Work. Cost so far is the headline of a project's Cost tab (S7).
 function renderMetrics(campaigns = state.supervisor.campaigns, shown = []) {
   const entries = state.roadmap.entries;
   const agents = campaigns.flatMap((c) => c.agents);
-  // The owner actions under "Needs you": reviews, decisions, stopped work and a stopped supervisor. A supervisor fault and an
+  // The owner actions on Home: sign-ins, payments and results to accept. A supervisor fault, follow-ups and stopped work and an
   // unreadable inbox are listed but not counted: they are not the owner's to do. A pause by itself is not listed.
   // A published step whose merge is still being checked is never counted as nothing.
-  // Needs you counts and names only what the owner must do (owner, 2026-10-13: "only notifications where I am really
+  // Home counts and names only what the owner must do (owner, 2026-10-13: "only notifications where I am really
   // needed"); reports to read and work ready for release are on Results, not here.
   const owner = state.owner ?? { count: 0, unknownResults: 0, also: null }, attention = owner.count, unknown = owner.unknownResults;
   const available = state.supervisor.available;
@@ -563,7 +563,7 @@ function receiptSteps(m, coordinator, aiworks) {
     steps.push(m.failure === 'project-budget' ? receiptStep(false, 'Waiting for budget', 'the project budget cannot cover reading it. Raise or remove the budget in the project’s settings, or wait for next month if the monthly budget ran out; AIWorks reads it by itself when it fits', 'failed')
       : m.failure ? receiptStep(false, 'Retrying', `the last read ended without an answer (${outcomeLabels[m.failure] ?? m.failure}); next attempt ${dateTime(m.retryAt)}`, 'failed')
       : !coordinator.configured ? receiptStep(false, 'Not read', NOT_READ.receipt, 'failed')
-        : coordinator.blocked ? receiptStep(false, 'Not read yet', 'AIWorks cannot read requests right now; why is under Needs you', 'failed')
+        : coordinator.blocked ? receiptStep(false, 'Not read yet', 'AIWorks cannot read requests right now; why is in AIWorks itself under Settings', 'failed')
         : coordinator.maxRunsPerDay !== null && coordinator.runsToday >= coordinator.maxRunsPerDay ? receiptStep(false, 'Waiting', `AIWorks has read today's ${coordinator.maxRunsPerDay} requests; it reads this one when the 24 hours free up`)
           : receiptStep(false, 'Waiting', waitingWords(coordinator, aiworks)));
   } else if (m.readAt) {
@@ -625,7 +625,7 @@ function chatsScreen(chatId) {
   const chats = chatList(), open = chatId ? chats.find((chat) => chat.id === chatId) ?? null : null;
   // Starting a chat is offered only while something reads messages; otherwise the panel says so and what to do instead.
   const list = panel('All chats', coordinator.configured
-    ? `AIWorks reads them and changes nothing · replies stay in this dashboard · ${coordinator.runsToday}${coordinator.maxRunsPerDay === null ? '' : `/${coordinator.maxRunsPerDay}`} read in the last 24h${coordinator.blocked ? ' · not reading now; why is under Needs you' : ''}`
+    ? `AIWorks reads them and changes nothing · replies stay in this dashboard · ${coordinator.runsToday}${coordinator.maxRunsPerDay === null ? '' : `/${coordinator.maxRunsPerDay}`} read in the last 24h${coordinator.blocked ? ' · not reading now; why is in AIWorks itself under Settings' : ''}`
     : null,
   el('div', {}, notRead(coordinator), chats.length ? el('ul', { class: 'chat-list', 'data-focus-scope': 'chats/list' }, ...chats.map((chat) => el('li', { class: `chat-row${chat.id === open?.id ? ' active' : ''}` },
     routeLink(chatTitle(chat.turns[0]), { screen: 'chats', chat: chat.id }),
@@ -1589,22 +1589,49 @@ function itselfEntries() {
     banner: Boolean(controller?.stopped) && !owner.items.some((item) => item.kind === 'controller') };
 }
 
-/** How many problems of its own stop AIWorks's work: the one grey line on Home, never part of the owner's count. */
+// The kinds that are a fault of AIWorks itself; every other entry of "AIWorks itself" is a follow-up with its own action.
+const FAULT_KINDS = new Set(['merge-problem', 'unrecorded', 'unattended', 'controller', 'coordinator', 'release-failed', 'release-unknown']);
+
+/** How many real faults of its own stop AIWorks's work: the one grey line on Home, never part of the owner's count. */
 function ownProblemCount() {
   const { problems, stopped, banner } = itselfEntries();
-  return problems.length + stopped.length + (banner ? 1 : 0);
+  return problems.filter((entry) => FAULT_KINDS.has(entry.kind)).length + stopped.length + (banner ? 1 : 0);
 }
 
-/** One entry of "AIWorks itself": what it is, its one Check again where it has one, and where to open it. */
+/**
+ * What resolves an item and explains it, as its old Needs you card did: the one action through the same bound requests as
+ * its step and Review, and its explanations, criterion choice and secondary links under one More.
+ */
+function itemActions(item, { points = true } = {}) {
+  const c = item.campaignId ? campaignById(item.campaignId) : null, task = c && item.taskId ? c.tasks.find((t) => t.id === item.taskId) : null;
+  const project = item.repository ?? item.project ?? null;
+  const more = [], resolution = itemResolution(item, c, task, more);
+  const [, rest] = splitSentence(item.why);
+  const route = item.route && resolution ? routeLink(item.route.label, item.route.address, 'needs-link') : null;
+  const secondary = [route, item.reference ? link(`${item.reference.label} ↗`, item.reference.url, 'needs-link subtext') : null,
+    item.system || !item.taskId || item.plan ? null : planFromItem(item, project)].filter(Boolean);
+  const box = moreBox(`needs-more/${itemKey(item)}`, [
+    rest ? el('p', { class: 'needs-why' }, rest) : null,
+    item.evidence && !['review', 'accept', 'unchecked'].includes(item.kind) ? el('div', { class: 'evidence' }, item.evidence) : null,
+    item.mergeCheck ? el('div', { class: 'needs-stale' }, mergeAsOf(item.mergeCheck)) : null,
+    points ? (item.points ?? []).map((point) => el('div', { class: 'needs-point' },
+      point.link ? link(`${point.link.label} ↗`, point.link.url, 'needs-link') : null, el('span', {}, point.text))) : null,
+    more, secondary.length ? el('div', { class: 'needs-actions needs-secondary' }, ...secondary) : null]);
+  return { c, task, resolution, box };
+}
+
+/** One entry of "AIWorks itself": what it is, its action where it has one (Check again, Accept, guidance), and where to open it. */
 function itselfLine(entry, word, tone, scope) {
   const project = entry.about ?? entry.repository ?? null;
-  const open = entry.route ? routeLink(entry.route.label, entry.route.address, 'needs-link')
+  const { resolution, box } = entry.kind ? itemActions(entry) : { resolution: null, box: null };
+  const open = entry.route && !resolution ? routeLink(entry.route.label, entry.route.address, 'needs-link')
     : entry.campaignId && entry.taskId && entry.repository ? routeLink('Open the step', { screen: 'step', project: entry.repository, work: entry.campaignId, step: entry.taskId }, 'needs-link') : null;
   const why = entry.reason ? `${entry.reason}. ${entry.next ?? ''}`.trim() : entry.action ?? '';
   return el('li', { class: 'itself-line', 'data-focus-scope': `itself/${scope}/${entry.campaignId ?? ''}/${entry.taskId ?? ''}/${entry.kind ?? ''}` },
     el('span', { class: `badge ${tone}` }, word),
     el('span', { class: 'itself-text' }, [project ? `${projectName(project)}: ` : '', entry.text ?? '', why ? ` ${why}` : ''].join('')),
-    entry.command ? primaryAction(entry.command, 'button secondary small') : null, open);
+    !resolution && entry.command ? primaryAction(entry.command, 'button secondary small') : null, open,
+    resolution ? el('div', { class: 'itself-resolve' }, resolution) : null, box);
 }
 
 /** The Settings section "AIWorks itself": folded, one line per entry. Null when there is nothing to list. */
@@ -1618,7 +1645,7 @@ function itselfSection() {
   return panel('AIWorks itself', 'Its own problems and routine work. None of it needs you.', el('div', { class: 'panel-body' }, disclosure('settings/itself', summary, el('div', {},
     banner ? el('p', { class: 'needs-stopped' }, NEEDS.banner(state.supervisor.controller.lastLeaseRenewalAt, { dateTime }, state.supervisor.controller.stopRequested)) : null,
     total ? el('ul', { class: 'needs-list itself-list' },
-      ...problems.map((entry) => itselfLine(entry, 'Problem', 'attention', 'problem')),
+      ...problems.map((entry) => FAULT_KINDS.has(entry.kind) ? itselfLine(entry, 'Problem', 'stale', 'problem') : itselfLine(entry, entry.action ?? 'Follow-up', 'pending', 'followup')),
       ...stopped.map((entry) => itselfLine(entry, 'Stopped', 'stale', 'stopped')),
       ...handling.map((entry) => itselfLine(entry, 'Handling', 'in_progress', 'handling')),
       ...held.map((project) => el('li', { class: 'itself-line' }, el('span', { class: 'badge stale' }, 'Held'),
@@ -2576,16 +2603,15 @@ function homeDecisionCard(c, task) {
  * bound requests as its step and Review) and a link to where it is settled, so a card is never a dead end.
  */
 function homeOtherCard(item) {
-  const c = item.campaignId ? campaignById(item.campaignId) : null, task = c && item.taskId ? c.tasks.find((t) => t.id === item.taskId) : null;
+  const { c, task, resolution, box } = itemActions(item, { points: false });
   const project = item.about ?? item.repository ?? item.project ?? null;
   const fallback = item.route?.address ?? (c && task ? { screen: 'step', project: item.repository ?? c.repository, work: c.id, step: task.id }
     : project ? { screen: 'project', project, tab: 'overview' } : '#/settings');
-  const resolution = itemResolution(item, c, task, []);
   return el('div', { class: 'home-card', 'data-focus-scope': `home/item/${itemKey(item)}` },
     el('h2', { class: 'home-question' }, splitSentence(item.text ?? 'Something needs you.')[0]),
     ...(item.points ?? []).map((point) => el('p', { class: 'home-point' }, point.text,
       point.link ? [' ', link(`${point.link.label} ↗`, point.link.url)] : null)),
-    resolution ? el('div', { class: 'home-resolve' }, resolution) : null,
+    resolution ? el('div', { class: 'home-resolve' }, resolution) : null, box,
     el('div', { class: 'home-answer' }, routeLink(resolution ? 'Open details' : 'Open', fallback, resolution ? 'needs-link' : 'button')));
 }
 
@@ -2607,6 +2633,10 @@ function homeScreen() {
   const blocks = homeBlocks({ ...home, needCards, decided, confirmation, checking: state.owner?.unknownResults ?? 0,
     ownProblems: { count: ownProblemCount(), address: formatRoute({ screen: 'settings', section: 'itself' }) }, address: projectAddress, showAll: landedAll,
     onShowAll: () => { landedAll = !landedAll; render(); } }, { el, timeAgo });
+  // AIWorks's answer to the owner's last message, as one line with its link.
+  const reply = state.owner?.reply;
+  if (reply && isRecent(reply.answeredAt)) blocks.splice(1, 0, el('p', { class: 'home-reply' }, `AIWorks answered your message (${dateTime(reply.answeredAt)}). `,
+    reply.url ? link('Read its “What needs you” ↗', reply.url) : routeLink('Open the chat', { screen: 'chats', chat: reply.threadId ?? reply.messageId })));
   return [el('div', { class: 'home' }, ...blocks)];
 }
 
@@ -3654,7 +3684,7 @@ function projectSettingsScreen(project) {
   const price = amount('settings-price', draft.unknownRunCostUsd, limits.unknownRun);
   // Who accepts results (AW-015): automatic, or the owner, in which case nothing merges before they accept that version.
   const modes = [['automatic', 'Automatic', 'A result that passed the independent check is merged under the merge gate without waiting for you.'],
-    ['owner', 'I accept results myself', 'A checked result is merged only after you accept exactly that version. It waits in Needs you with Accept and Request changes.']];
+    ['owner', 'I accept results myself', 'A checked result is merged only after you accept exactly that version. It waits on Home with Accept and Request changes.']];
   const choices = modes.map(([value]) => el('input', { type: 'radio', name: `settings-acceptance-${project}`, value, checked: (draft.acceptance ?? 'automatic') === value, onchange: () => save() }));
   const acceptance = () => choices.find((input) => input.checked)?.value ?? draft.acceptance ?? 'automatic';
   const fields = () => ({ areas: areas.value, notes: notes.value, totalUsd: total.value, monthlyUsd: monthly.value, unknownRunCostUsd: price.value, acceptance: acceptance() });
@@ -3773,12 +3803,12 @@ const ALERTS_ADDRESS = '#/settings/alerts';
 const ALERT_CLASS_WORDS = { B2: ['Action required', 'Something only you can do, such as signing in again.'], B3: ['Decision required', 'A step waits for your choice.'],
   B4: ['External wait', 'A provider or service is unavailable; AIWorks rechecks by itself.'], B5: ['Incident', 'Something went wrong that AIWorks will not retry on its own.'] };
 const TRANSPORT_WORDS = {
-  unconfigured: 'Delivery unavailable: no alert transport is set up on this computer. Alerts wait in Needs you; nothing is sent.',
+  unconfigured: 'Delivery unavailable: no alert transport is set up on this computer. Alerts wait on Home; nothing is sent.',
   rehearsal: 'Rehearsal only: alerts are recorded on this computer as they would be sent. Nothing leaves this computer, and nothing is reported as delivered.',
   unavailable: 'Delivery unavailable: this version of AIWorks has no adapter for the transport in the configuration file, so nothing is sent.',
   incomplete: 'Delivery unavailable: Telegram needs both a credential reference and a recipient reference, each in a secret store AIWorks can read. Nothing is sent.',
   ready: 'Telegram is set up, but sending is switched off in the configuration file. Nothing is sent.',
-  sending: 'Alerts are sent to Telegram. A reply there does nothing: answer in Needs you on this computer. An alert whose arrival is unknown is not sent again.',
+  sending: 'Alerts are sent to Telegram. A reply there does nothing: answer on Home on this computer. An alert whose arrival is unknown is not sent again.',
   invalid: 'Delivery unavailable: the transport setting in the configuration file is not valid (it must name secret store references, never a credential). Nothing is sent.' };
 const DECISION_WORDS = { send: 'would be sent now', hold: 'would wait until quiet hours end', mute: 'would not be sent: its kind is off' };
 async function loadAlerts() {
@@ -3812,7 +3842,7 @@ function alertsParts() {
   return [
     el('p', { class: d.transport === 'rehearsal' || d.sending ? 'notice' : 'notice warning', role: 'status' },
       TRANSPORT_WORDS[d.sending ? 'sending' : d.transport] ?? TRANSPORT_WORDS.unconfigured),
-    d.recording ? null : el('p', { class: 'subtext' }, 'Owner alerts are not recorded on this computer yet: the owner-intervention setting is off. What needs you still shows in Needs you.'),
+    d.recording ? null : el('p', { class: 'subtext' }, 'Owner alerts are not recorded on this computer yet: the owner-intervention setting is off. What needs you still shows on Home.'),
     el('p', { class: 'subtext', role: 'status' }, v.version ? `Applied: version ${v.version}, saved ${clock(v.savedAt)}.${v.quietNow ? ' Quiet hours now.' : ''}` : 'Nothing saved yet: the default rules apply.'),
     alertsEntry.error || offline ? el('p', { class: 'needs-stale', role: 'status' }, `Shown as read at ${clock(alertsEntry.readAt)}. ${offline
       ? 'The page is disconnected; it reads these settings again when it reconnects.' : alertsEntry.error.message}`) : null,
@@ -3861,7 +3891,7 @@ function alertsScreen() {
       el('label', { class: 'field' }, el('strong', {}, 'Until'), end),
       el('label', { class: 'field' }, el('strong', {}, 'Time zone'), zone, el('span', { class: 'subtext' }, 'Such as Europe/Berlin or UTC.')),
       el('label', { class: 'choice' }, incidents, 'Incidents may still alert me during quiet hours')),
-    el('p', { class: 'subtext' }, 'An alert held by quiet hours is sent when they end. An alert whose kind is off is not sent later. Needs you always shows everything.'),
+    el('p', { class: 'subtext' }, 'An alert held by quiet hours is sent when they end. An alert whose kind is off is not sent later. Home always shows everything.'),
     el('button', { class: 'button', type: 'submit', disabled: alertsOff() }, 'Save alert rules'));
   return [el('section', { class: 'panel', 'aria-labelledby': 'alerts-title' },
     el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'alerts-title' }, 'Alerts'), el('p', {}, 'When AIWorks tells you that something needs you.'))),
@@ -4358,7 +4388,7 @@ function worklistParts() {
     waiting ? el('p', { class: 'notice' }, `${plural(waiting, 'imported issue')} still open on GitHub. `, routeLink('Review the imported issues', IMPORT_ADDRESS)) : null,
     owner.length ? el('section', { class: 'panel', 'aria-labelledby': 'worklist-owner-title', 'data-focus-scope': 'worklist/owner' },
       el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'worklist-owner-title' }, `Decisions for you (${owner.length})`),
-        el('p', {}, 'Also on Needs you.'))),
+        el('p', {}, 'Also on Home.'))),
       el('ul', { class: 'needs-list' }, ...owner.map(worklistRow))) : null,
     el('section', { class: 'panel', 'aria-labelledby': 'worklist-open-title', 'data-focus-scope': 'worklist/open' },
       el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'worklist-open-title' }, `Not finished (${open.length})`),
