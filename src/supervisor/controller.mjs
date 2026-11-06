@@ -3477,7 +3477,10 @@ export class Controller {
     if (isLocalTarget(decl)) return this.recordLocalCandidate(ctx, decl, spec, task);
     const repo = this.repo(decl);
     // What the PR and the push publish is the change from the commit the task started from to the verified head.
-    const gitLocal = { git: this.cmd.git, repoPath: repo.path, base: task.base_sha, head: task.verified_sha };
+    // A task that never recorded the commit it started from is compared with its merge-base with the remote base; when
+    // that cannot be read either, the guard refuses (fail closed).
+    const forkPoint = task.base_sha ?? gitA.exec(this.cmd.git, ['merge-base', task.verified_sha, `origin/${decl.target.baseBranch}`], { cwd: repo.path }).stdout?.trim();
+    const gitLocal = { git: this.cmd.git, repoPath: repo.path, base: forkPoint, head: task.verified_sha };
     const branch = gitA.branchName(ctx.id, task.task_id);
     const bodyFile = join(this.dataDir, 'runs', `${ctx.id}.${task.task_id}.publish.md`);
     try {
@@ -3516,7 +3519,7 @@ export class Controller {
             this.store.journal(ctx.id, `${repairKind}-repair-unpublished`, { task: task.task_id, sha: task.verified_sha }, now);
             return;
           }
-          gitA.pushVerified({ git: this.cmd.git, gh: this.cmd.gh, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha, base: task.base_sha });
+          gitA.pushVerified({ git: this.cmd.git, gh: this.cmd.gh, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha, base: forkPoint });
           this.injectFault('after-push');
           url = existing.url;
           const prefix = `https://github.com/${decl.target.repository}/pull/`;
@@ -3539,7 +3542,7 @@ export class Controller {
             { identity: task.task_id });
             return;
           }
-          gitA.pushVerified({ git: this.cmd.git, gh: this.cmd.gh, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha, base: task.base_sha });
+          gitA.pushVerified({ git: this.cmd.git, gh: this.cmd.gh, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha, base: forkPoint });
           this.injectFault('after-push');
           url = github.openPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, baseBranch: decl.target.baseBranch, branch,
             title, body, bodyFile, terms, local: gitLocal });
