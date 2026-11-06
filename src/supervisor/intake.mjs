@@ -262,7 +262,7 @@ const ROOTLIKE = /^(?:\.|\.\/|\/|)$/;
 const WILDCARD = /[*?[\]{}]/;
 const TASK_FIELDS = ['id', 'title', 'outcome', 'goal', 'acceptance', 'references', 'deliverable', 'writes', 'dependsOn',
   'requiresMergedDependencies', 'constraints', 'workKey'];
-const PROPOSAL_FIELDS = ['purpose', 'outcome', 'acceptance', 'writes', 'denyWrites', 'deliverables', 'planning', 'constraints', 'tasks'];
+const PROPOSAL_FIELDS = ['purpose', 'title', 'outcome', 'acceptance', 'writes', 'denyWrites', 'deliverables', 'planning', 'constraints', 'tasks'];
 
 /** Write entries a draft may hold: never the whole repository or a pattern, which issue text could ask for. */
 function scopedWrites(list, where, notes) {
@@ -319,6 +319,8 @@ export function draftDeclaration({ request, project: found, pinned, proposal, ex
     version: 2,
     campaignId: `${found.id}-intake-${request.request_id.slice(0, 8).toLowerCase()}`,
     ...(p.purpose !== undefined ? { purpose: p.purpose } : {}),
+    // A short goal title for Home; one that is not a plain line of at most 60 characters is left out, never refused.
+    ...(typeof p.title === 'string' && p.title.trim() && p.title.trim().length <= 60 && !/[\r\n]/.test(p.title) ? { title: p.title.trim() } : {}),
     authorization: { version: 1, grantedBy: 'owner', grantedAt: new Date(now).toISOString().slice(0, 10),
       reference: reference ?? `aiworks-local:${request.request_id}`,
       text: `Approved in the AIWorks dashboard: ${typeof outcome === 'string' ? outcome : ''}`.slice(0, 2000) },

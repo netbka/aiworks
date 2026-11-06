@@ -21,7 +21,6 @@ The owner acts at three points in the life of every goal: **set the goal, approv
 ```
 Home                        What changed, and what needs me?
 Projects                    Which product?
-Needs you                   Which decisions are mine?
   Project ▸ <name>
     Overview   (tab)        Where is the current goal?
     Plan       (tab)        What will be true when this is done?
@@ -29,10 +28,10 @@ Needs you                   Which decisions are mine?
     Releases   (tab)        What reaches users, and what can be undone?
     Knowledge  (tab)        What does AIWorks know about this product?
     Project settings        Under which rules does work run?
-Help · Settings             Connections, usage, alerts
+Help · Settings             Connections, usage, alerts, and AIWorks itself
 ```
 
-On a phone, Home, Projects and Needs you sit in a bottom bar. Technical detail (branches, commits, logs, run records) opens in place under "Details" on the screen that needs it; there is no global technical mode.
+On a phone, Home, Projects and Settings sit in a bottom bar. What waits for the owner is answered on Home; the old Needs you address opens Home. The Home item in the bar carries the count of what needs the owner, and "checking" while a result's merge is still being checked. AIWorks's own matters (its problems, work stopped until it is checked again, routine work it continues alone, and its work list) are in one folded Settings section, "AIWorks itself", one line per entry with its Check again where it has one; none of them is counted for the owner. Home shows one grey line, "AIWorks has N problems of its own", linking there, only when such a problem stops work. Technical detail (branches, commits, logs, run records) opens in place under "Details" on the screen that needs it; there is no global technical mode.
 
 Built in source (owner decision 2026-10-21): the project tabs are Overview, Plan, Review, Releases and Knowledge, and Releases is shown only where a release is configured, that is once a release is recorded for the project. Overview carries the budget with what was spent and a link to Settings › Usage, and running work with its steps under Details; Plan holds the Now, Next and Later board with versions and drafts; Review holds the results grouped by state. The earlier addresses `#/p/<project>/work`, `/results`, `/cost` and `/now` open the matching tab, with unsent drafts kept ([OPERATIONS_DASHBOARD.md](../OPERATIONS_DASHBOARD.md#project-tabs-owner-ui-v2-navigation)).
 
@@ -190,5 +189,5 @@ WP1 to WP8 can start without these answers.
 - **Remote access (WP10).** No channel that leaves the computer for now: no notification transport, no remote dashboard access and no phone push. WP10 stays deferred; alert rules and the rehearsal transport remain as built.
 - **Release (WP9).** As AW-010 is written: a disposable rehearsal first, then one standing grant for one owner project's production destination. The grant is private installation data; this document grants nothing.
 - **Navigation.** As section 2 designs it: project tabs Overview, Plan, Review and Knowledge, Releases only where a release is configured, with the Now, Next and Later board on Plan. Old addresses keep working. Built in source.
-- **Resolving in Needs you (owner directive, 2026-10-23).** The owner steers from Needs you: each card carries its own resolution through the existing guarded requests (decision answer, Accept result, Request changes, guidance with Check again, Check again on a stopped goal) and *Plan different work* for new scope. Routine merge waits are AIWorks's (*AIWorks is handling*), never an owner chore; GitHub links are secondary reference. Hashes, internal identifiers and raw records stay out of owner screens and their normal disclosures (OWNER_WORKSPACE §4.2, DESIGN.md).
+- **Resolving on Home (owner directive, 2026-10-23).** The owner steers from Home: each card carries its own resolution through the existing guarded requests (decision answer, Accept result, Request changes, guidance with Check again, Check again on a stopped goal) and *Plan different work* for new scope. Routine merge waits are AIWorks's (*AIWorks is handling*), never an owner chore; GitHub links are secondary reference. Hashes, internal identifiers and raw records stay out of owner screens and their normal disclosures (OWNER_WORKSPACE §4.2, DESIGN.md).
 - **Words.** "Needs you" replaces "Needs me". The other OWNER_WORKSPACE state words stay, and "Accepted" stays reserved for recorded acceptance. Built in source: the dashboard and owner documents say "Needs you"; the route stays `#/needs`.
