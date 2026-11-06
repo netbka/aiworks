@@ -246,6 +246,30 @@ test('LO L8 refresh: a trusted tip moved under a verified review merges only the
   assert.deepEqual(lines(passing.forbidden.log), []);
 });
 
+test('the local merge gate never puts on main a commit whose message a push of main would refuse (#125)', { skip: skipWithoutSqlite }, async (t) => {
+  const { env, forbidden, sha, anchor, pass, journal, gateRows } = await delivered(t);
+  const main = () => git(env.repo, 'rev-parse', 'main');
+  // The installation's private terms name the session id in the verified commit's own message (`work <session id>`).
+  const term = git(env.repo, 'log', '-1', '--format=%B', sha).trim().split(/\s+/)[1];
+  assert.ok(term?.length >= 8, 'the verified commit message has a word to mark private');
+  writeFileSync(join(env.repo, '.git', 'info', 'exclude'), '.local/\n');
+  mkdirSync(join(env.repo, '.local'), { recursive: true });
+  writeFileSync(join(env.repo, '.local', 'publication.json'), JSON.stringify({ privateTerms: [term] }));
+  await pass();
+  assert.equal(main(), anchor, 'main did not move');
+  assert.equal(gateRows().length, 0);
+  assert.equal(journal('merged').length, 0);
+  assert.equal(journal('merge-requested').length, 0, 'refused before any request or object');
+  const refused = journal('merge-refused').at(-1);
+  assert.match(refused.detail, /private information/);
+  assert.ok(!JSON.stringify(refused).toLowerCase().includes(term.toLowerCase()), 'the refusal names no matched value');
+  // Without the term the same verified head merges.
+  writeFileSync(join(env.repo, '.local', 'publication.json'), JSON.stringify({ privateTerms: [] }));
+  await pass();
+  assert.deepEqual(git(env.repo, 'rev-list', '--parents', '-n', '1', main()).split(' ').slice(1), [anchor, sha]);
+  assert.deepEqual(lines(forbidden.log), []);
+});
+
 test('a maximal legal campaign and task id records its whole verified review and merges that exact head', { skip: skipWithoutSqlite }, async (t) => {
   // Both IDs at their 64-character limit: the branch is longer than a work-list label may be, and worktree folders named
   // after the whole pair would leave Git too little of a Windows path.

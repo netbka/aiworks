@@ -382,7 +382,7 @@ function admissionReason(store, refusal) {
       const prUrl = store.task(first.campaignId, first.taskId)?.pr_url ?? null;
       const pr = first.reason === 'published-unmerged' && /\/pull\/(\d+)$/.exec(prUrl ?? '');
       const where = Array.isArray(spec?.writes) ? spec.writes.join(', ') : 'the same repository';
-      return reason('write-domain', `Another step ("${spec?.title ?? first.taskId}") is changing ${where}${pr ? ` (PR #${pr[1]} not merged yet)` : ''}`,
+      return reason('write-domain', `Another step ("${spec?.title ?? first.taskId}") is changing ${where}, in work program ${first.campaignId}${pr ? ` (PR #${pr[1]} not merged yet)` : ''}`,
         'Starts when that change is merged or dropped', null, { campaignId: first.campaignId, taskId: first.taskId, reason: first.reason, prUrl });
     }
     default: return reason('ready', 'Ready to start', 'Starts on the next turn');
@@ -469,7 +469,18 @@ export function waitReason(task, { store, campaign: c, tasks, open, held = new M
     { ceiling: hostCeiling(config), pressure: pressure ? { signal: pressure.reason } : null, accountFull: () => (kind ? accountFull(store, config, kind) : null),
       integrated: (campaignId, row, declaration) => isLocalTarget(declaration) || merged(campaignId, row),
       gateOnly: (declaration) => trustsLocalMain(selfHostingSettings(config), declaration.target.repository) });
+  if (!refusal) {
+    // The controller also reads the fetched base, which status does not: its last write-domain refusal for this step
+    // (controller.recordDomainRefusals) says who holds the area when status's own rows see no holder.
+    const recorded = store.get("SELECT reason FROM capacity WHERE scope = 'domain-refusal' AND id = ?", `${c.id}/${task.task_id}`);
+    const holders = recorded ? parseHolders(recorded.reason) : null;
+    if (holders?.length) return admissionReason(store, { reason: 'write-domain', detail: { holders } });
+  }
   return admissionReason(store, refusal ?? { reason: null });
+}
+
+function parseHolders(text) {
+  try { const list = JSON.parse(text); return Array.isArray(list) ? list.filter((h) => h && typeof h.campaignId === 'string' && typeof h.taskId === 'string') : null; } catch { return null; }
 }
 
 // ---- Model, tier, cost by unit and the reason a step moved up (MODEL_ROUTING section 9 "What the owner sees", slice R6

@@ -38,9 +38,14 @@ export function addRepository(env, repository) {
 
 export async function harness(t, { scenario, decl, config = {}, repositories = [] }) {
   const { Store } = await import('../../src/supervisor/store.mjs');
-  const { campaignStart } = await import('../../src/supervisor/api.mjs');
+  const { campaignStart, campaignStatus } = await import('../../src/supervisor/api.mjs');
   const { stopOwnedRun } = await import('../../src/supervisor/proc.mjs');
-  const env = environment({ scenario, config });
+  // A real `serve` samples the real host, so a computer short of memory or busy would hold every dispatch and these
+  // rehearsals would time out. They are about takeover, publication and domains, not host pressure (scheduler.test.mjs
+  // injects that), so the memory and CPU limits are set where no host reaches them; the other signals keep their defaults.
+  const quiet = { minFreeMemoryBytes: 1, minFreeMemoryShare: 1e-12, maxCpuBusy: 1 };
+  const env = environment({ scenario, config: config.scheduler
+    ? { ...config, scheduler: { ...config.scheduler, pressure: { ...quiet, ...config.scheduler.pressure } } } : config });
   const origins = { 'example-org/sampleapp': env.origin };
   for (const repository of repositories) origins[repository] = addRepository(env, repository);
   const store = new Store(join(env.dataDir, 'supervisor.db'));
@@ -66,7 +71,10 @@ export async function harness(t, { scenario, decl, config = {}, repositories = [
       if (value) return value;
       await sleep(50);
     }
-    throw new Error(`timed out: ${JSON.stringify(store.campaign(d.campaignId))} ${JSON.stringify(store.tasks(d.campaignId))}`);
+    // Why each step still waits, as the status reads it (a host-pressure or write-domain wait names itself), then the rows.
+    let waits;
+    try { waits = campaignStatus(store, d.campaignId, Date.now(), { config: env.config }).tasks.map((task) => ({ id: task.id, state: task.state, wait: task.wait })); } catch (error) { waits = `status unreadable: ${error.message}`; }
+    throw new Error(`timed out; waits ${JSON.stringify(waits)}: ${JSON.stringify(store.campaign(d.campaignId))} ${JSON.stringify(store.tasks(d.campaignId))}`);
   };
   const finished = () => waitFor(() => store.campaign(d.campaignId).control === 'finished');
   t.after(async () => {

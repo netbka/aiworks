@@ -19,7 +19,7 @@ import * as gitA from './adapters/git.mjs';
 import { gateFailure, readGateRun } from './gate.mjs';
 import { IDENTITY, alive, checkout, gatePid, startGate } from './merge-refresh.mjs';
 import { recordGateResults } from './test-cache.mjs';
-import { inspect, localBlocker, mergeBlocker, mergeLocal, mergeNow, wait } from './merge.mjs';
+import { inspect, localBlocker, mergeBlocker, mergeLocal, mergeNow, privateMessages, wait } from './merge.mjs';
 import { trustedTip } from './self-hosting.mjs';
 
 const KINDS = ['merge-batch-started', 'merge-batch-passed', 'merge-batch-failed', 'merge-batch-stopped', 'merge-batch-done'];
@@ -94,7 +94,10 @@ function startGroup(controller, all, items, settings, repoPath, baseSha, note) {
     if (local) {
       const blocker = localBlocker(controller, item, settings, repoPath);
       if (blocker) { wait(controller, item, blocker); continue; }
-      if (!gitA.isAncestor({ git, path: repoPath, ancestor: item.task.verified_sha, descendant: baseSha })) ready.push(item);
+      // A head whose commit messages main may not take (#125) is left out, so no group gate is spent on it; its own merge
+      // pass refuses it.
+      if (!gitA.isAncestor({ git, path: repoPath, ancestor: item.task.verified_sha, descendant: baseSha })
+        && privateMessages({ git, repoPath, trusted: baseSha, sha: item.task.verified_sha }) === 0) ready.push(item);
       continue;
     }
     const { pr, acted } = inspect(controller, item, settings, repoPath, baseSha);

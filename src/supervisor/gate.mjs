@@ -24,9 +24,10 @@ import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, existsSync, ftruncateSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync,
   writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { onOrigin, originRepository, readCheckServices, runOnService } from './check-services.mjs';
 
 export const GATE_FILES = Object.freeze({ log: 'gate.log', exit: 'gate-exit.log', pid: 'gate-pid.log', previous: 'gate-previous.log',
   head: 'gate-head.log' });
@@ -384,8 +385,38 @@ async function slot(settings) {
   }
 }
 
+// External check services (check-services.mjs, docs/guides/check-services.md): the default full gate of a clean checkout
+// is first offered to the services serve put in this process's environment for this repository (never to services named
+// in a file: see check-services.mjs). An answer that counts ends the gate here
+// with the service's output and exit code; otherwise the gate runs on this computer as before. A gate inside a gate, an
+// explicit command or a changed checkout is never offered.
+async function offload(command) {
+  if (process.env[NESTED] || command.join(' ') !== 'npm run check') return null;
+  const head = headOf(read(GATE_FILES.head) ?? '');
+  if (!head.sha || head.clean !== true) return null;
+  const services = readCheckServices();
+  if (!services.length) return null;
+  try {
+    return await runOnService({ services, repository: originRepository(), sha: head.sha, available: (sha) => onOrigin(sha),
+      say: (line) => console.log(line), reference: `gate-${basename(process.cwd())}`,
+      // A project run by scripts/run-tests.mjs ends with its summary; a pass without one is not taken.
+      summaryRequired: existsSync(join('scripts', 'run-tests.mjs')) });
+  } catch (error) {
+    console.log(`# check services failed (${error.message}); the gate runs on this computer`);
+    return null;
+  }
+}
+
 // The detached process: runs the command through the shell (npm is npm.cmd on Windows) and records how it ended.
 async function run(command) {
+  const remote = await offload(command);
+  if (remote) {
+    // The decision line first: the summary a PR body quotes is the block after the output's own "# all test files".
+    console.log(`# gate ran on check service ${remote.service} (job ${remote.jobId}): exit ${remote.exit}; its output follows`);
+    process.stdout.write(!remote.text || remote.text.endsWith('\n') ? remote.text : `${remote.text}\n`);
+    writeFileSync(GATE_FILES.exit, `${remote.exit}\n`);
+    return;
+  }
   let recorded = false, lock = null, beat = null;
   const record = (value) => {
     if (recorded) return;

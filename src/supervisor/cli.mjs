@@ -17,6 +17,7 @@ import { Controller, DEFAULTS } from './controller.mjs';
 import { createHostProbe } from './host.mjs';
 import { GATE_PIPE, gateListening, gateSettings, pipeHost, serveGate } from './docker-gate.mjs';
 import { heldSlotCount } from './gate.mjs';
+import { checkServicesEnvironment, SERVICES_ENV } from './check-services.mjs';
 import { cpuSettings, createCpuMonitor } from './worker-cpu.mjs';
 import { configuredGovernanceRoot, requireGovernanceRoot } from './governance.mjs';
 import { clearCoordinatorViolation, coordinatorView, postOwnerMessage } from './coordinator.mjs';
@@ -448,6 +449,11 @@ async function serve() {
   const cpu = cpuSettings(config);
   const cpuMonitor = cpu.enabled && process.platform === 'win32'
     ? createCpuMonitor({ settings: cpu, basePriority: config.workerJob?.priority === 'normal' ? 'normal' : 'belownormal', log }) : null;
+  // External check services (check-services.mjs): every worker and supervisor gate started from here inherits them.
+  const offered = checkServicesEnvironment(config, dataDir);
+  for (const problem of offered.problems) log(`check service left out: ${problem}`);
+  if (offered.value) process.env[SERVICES_ENV] = offered.value; else delete process.env[SERVICES_ENV];
+  if (offered.services.length) log(`full gates are offered first to check service(s) ${offered.services.map((s) => s.name).join(', ')}; busy or down, they run here`);
   const controller = new Controller({ store, config, dataDir, log, codeRevision, governanceRoot, revisionCheck, probe, cpuMonitor,
     // Gate helper runs on this PC that hold a slot or wait for the browser session (gate.mjs): meanwhile no new worker
     // starts (host.mjs, the gates signal).

@@ -128,7 +128,7 @@ export const DEFAULTS = {
   // aiworks#140: each step of a base read (the fetch, then the read of its ref) and each remote branch read ends by this.
   baseReadMs: 30_000,
   // Beside it, the start and drain of the Windows job a base fetch runs in (execContained).
-  baseReadOverheadMs: 60_000,
+  baseReadOverheadMs: 120_000,
 };
 // The fixed failures of a base read (fetchBase): the stage that failed, never the command's own output. `unread`: a
 // dispatch needed a base that was not read before its fence (dispatchBase). `uncontained`: a fetch in that checkout
@@ -354,6 +354,8 @@ const CI_SETTLED = ['ci-passed', 'ci-failed', 'ci-inconclusive', 'ci-none'];
 const RATE_LIMIT_MAX_WAIT_MS = 60 * 60_000;
 // AW-005: how often a controller re-reads whether its own revision is merged. A constant, not a config.json key.
 const REVISION_CHECK_MS = 60_000;
+// inBase (work item 160): a base history longer than this is not listed once per tick; each commit is then asked about on its own.
+const ANCESTOR_LIST_LIMIT = 200_000;
 // How often stray Docker stacks of docker.cleanup repositories are looked for (host-safety.mjs), besides after one of their runs ends.
 const SWEEP_MS = 10 * 60_000;
 // routing-policy/1 history window (MODEL_ROUTING 5.3): the most recent attempts of one candidate and class, at most 90 days old.
@@ -597,6 +599,7 @@ export class Controller {
     }
     this.candidates = [];
     this.baseFetches = new Map();
+    this.tickCache = new Map();
     try {
       for (const id of ids) {
         // One long step must not let the other campaigns' leases lapse: every held lease is extended before each step.
@@ -615,7 +618,7 @@ export class Controller {
           }
         }
       }
-    } finally { this.baseFetches = null; }
+    } finally { this.baseFetches = null; this.tickCache = null; }
     if (this.sweeper && this.now() - this.sweptAt >= SWEEP_MS) { this.sweptAt = this.now(); this.sweeper.sweep(); }
     if (this.cpuMonitor && this.now() - this.cpuCheckedAt >= this.cpuMonitor.settings.intervalMs) {
       this.cpuCheckedAt = this.now();
@@ -2029,6 +2032,8 @@ export class Controller {
     const fetched = await gitA.execContained(this.cmd.git, ['fetch', 'origin', `+refs/heads/${base}:${ref}`, `+refs/heads/${base}:refs/remotes/origin/${base}`],
       { cwd: repoPath, runRoot, timeoutMs: baseReadMs, overheadMs: baseReadOverheadMs, active: this.baseReadRuns });
     if (fetched.contained === false) return failed('uncontained');
+    // Whether it succeeded or not, the ref may have moved: what this tick read about this checkout's bases is dropped.
+    this.dropTickCache(repoPath);
     if (!fetched.ok) return failed(fetched.error === 'ETIMEDOUT' ? 'fetch-timeout' : 'fetch-failed');
     const read = await gitA.execBounded(this.cmd.git, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: repoPath, timeoutMs: this.config.baseReadMs });
     if (read.error === 'ETIMEDOUT') return failed('read-timeout');
@@ -2166,7 +2171,7 @@ export class Controller {
           id: 'integration-conflict', severity: 'blocking', base: baseSha, verified: sha, paths, commits,
           description: `Integration conflict: the verified commit ${sha} (${task.pr_url}) no longer merges into ${base} at ${baseSha}. ` +
             `Conflicting paths: ${paths.join(', ')}. Sibling commits on ${base}: ${commits.map((item) => `${item.sha.slice(0, 12)} ${item.subject}`).join('; ') || 'unknown'}. ` +
-            `Merge ${baseSha} into this branch (git merge ${baseSha}), resolve the conflicts, run the full gate and commit the merge. Never rebase, reset or amend: ${sha} must stay an ancestor of the new head.`,
+            `Merge ${baseSha} into this branch (git merge -m "Merge ${base} at ${baseSha.slice(0, 12)} into this branch" ${baseSha}: always this message, never Git's default, which can name a local path), resolve the conflicts, run the full gate and commit the merge. Never rebase, reset or amend: ${sha} must stay an ancestor of the new head.`,
         };
         const stalled = this.reopenPublished(ctx, task, finding, { limits, now,
           lastError: `integration-conflict: ${paths.join(', ')} conflict with ${base} at ${baseSha}`,
@@ -2478,7 +2483,13 @@ export class Controller {
         return accountFull(this.store, this.config, kind, this.accountWaited);
       },
       // A local candidate is published nowhere and holds no base: the owner's Apply checks the folder again (WORK_ENVELOPE 8.6).
-      integrated: (campaignId, row, decl) => isLocalTarget(decl) || this.inBase(decl, row.verified_sha) || this.mergedHeads.has(`${row.pr_url}#${row.verified_sha}`),
+      // In the self-hosted repository a gate-merge ledger row for exactly this verified head is proof on its own: the gate
+      // writes it only after main moved to its merge commit (merge.mjs recordLocal). A main re-rooted after that merge
+      // leaves the head and its merge commit out of the base, yet the head was integrated; holding it would make every
+      // overlapping task wait forever (aiworks-work:163). Never by age or campaign state: a head published but never
+      // recorded as merged still holds its domain.
+      integrated: (campaignId, row, decl) => isLocalTarget(decl) || this.inBase(decl, row.verified_sha) || this.mergedHeads.has(`${row.pr_url}#${row.verified_sha}`) ||
+        (this.selfHosted(decl.target.repository) && Boolean(this.ledgerMerge(decl.target.repository, row.verified_sha))),
       // Only the merge gate moves a trusted local main, and it never merges a cancelled campaign's head (domainHolders).
       gateOnly: (decl) => this.selfHosted(decl.target.repository),
     };
@@ -2519,11 +2530,8 @@ export class Controller {
       for (const holder of holders.values()) {
         const row = this.store.task(holder.campaignId, holder.taskId);
         if (!row?.pr_url || !row.verified_sha || this.inBase(decl, row.verified_sha)) continue;
-        if (this.selfHosted(decl.target.repository)) {
-          const recorded = this.ledgerMerge(decl.target.repository, row.verified_sha);
-          if (recorded && this.inBase(decl, recorded)) this.mergedHeads.add(`${row.pr_url}#${row.verified_sha}`);
-          continue;
-        }
+        // The self-hosted repository has no PR to read: admissionInputs already counts its recorded gate merges.
+        if (this.selfHosted(decl.target.repository)) continue;
         const merged = github.integratedPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, url: row.pr_url,
           headSha: row.verified_sha, baseBranch: decl.target.baseBranch });
         if (merged && this.inBase(decl, merged)) this.mergedHeads.add(`${row.pr_url}#${row.verified_sha}`);
@@ -2539,9 +2547,42 @@ export class Controller {
     if (!/^[0-9a-f]{40}$/.test(sha ?? '')) return false;
     const repo = this.checkout(decl);
     if (!repo?.path) return false;
-    const base = this.selfHosted(decl.target.repository)
-      ? this.localBase(repo.path, decl.target.baseBranch, decl.target.repository).sha : `refs/aiworks/base/${decl.target.baseBranch}`;
-    return Boolean(base) && gitA.exec(this.cmd.git, ['merge-base', '--is-ancestor', sha, base], { cwd: repo.path }).ok;
+    // The base is read once per tick and checkout (work item 160): every published task of a repository is asked about on
+    // every admission and status pass, and with hundreds of them each `git` process of its own made a tick take hours.
+    const baseSha = this.tickCached(`base:${repo.path}|${decl.target.baseBranch}`, () => this.selfHosted(decl.target.repository)
+      ? this.localBase(repo.path, decl.target.baseBranch, decl.target.repository).sha
+      : gitA.exec(this.cmd.git, ['rev-parse', '--verify', '--quiet', `refs/aiworks/base/${decl.target.baseBranch}^{commit}`], { cwd: repo.path }).stdout);
+    if (!/^[0-9a-f]{40}$/.test(baseSha ?? '')) return false;
+    // Ancestry of two fixed commits never changes: one `rev-list` of the base per tick answers every commit of it. A
+    // history too long to list, or an unreadable one, falls back to one ancestry read per commit.
+    const ancestors = this.tickCached(`ancestors:${repo.path}|${baseSha}`, () => {
+      const listed = gitA.exec(this.cmd.git, ['rev-list', `--max-count=${ANCESTOR_LIST_LIMIT + 1}`, baseSha], { cwd: repo.path });
+      if (!listed.ok) return null;
+      const shas = listed.stdout.split('\n').filter(Boolean);
+      return shas.length > ANCESTOR_LIST_LIMIT ? null : new Set(shas);
+    });
+    if (ancestors) return ancestors.has(sha);
+    return gitA.exec(this.cmd.git, ['merge-base', '--is-ancestor', sha, baseSha], { cwd: repo.path }).ok;
+  }
+
+  /**
+   * One read per tick (work item 160): `compute` runs once for `key` within the tick that is running and its answer is
+   * kept until the tick ends (tickOnce); a base fetch drops the keys of its checkout (readBase). Outside a tick the
+   * answer is computed every time.
+   */
+  tickCached(key, compute) {
+    const cache = this.tickCache;
+    if (!cache) return compute();
+    if (cache.has(key)) return cache.get(key);
+    const value = compute();
+    cache.set(key, value);
+    return value;
+  }
+
+  /** A fetch moved this checkout's base refs: nothing read about them in this tick stands any more (tickCached). */
+  dropTickCache(repoPath) {
+    if (!this.tickCache) return;
+    for (const key of [...this.tickCache.keys()]) if (key.includes(`:${repoPath}|`)) this.tickCache.delete(key);
   }
 
   /**
@@ -2550,9 +2591,11 @@ export class Controller {
    * its next useful result may raise the fan-out. Every other candidate keeps exactly one reason (status shows it, RUN9).
    */
   async admit() {
-    // One base fetch per checkout and base for the whole admission (fetchBase); it opens after the merge pass.
+    // One base fetch per checkout and base for the whole admission (fetchBase); it opens after the merge pass, which may
+    // have moved bases, so the tick's base reads (tickCached) start afresh too.
     this.baseFetches = new Map();
-    try { await this.admitCandidates(); } finally { this.baseFetches = null; }
+    this.tickCache = new Map();
+    try { await this.admitCandidates(); } finally { this.baseFetches = null; this.tickCache = null; }
   }
 
   async admitCandidates() {
@@ -2579,6 +2622,35 @@ export class Controller {
     }
     this.waitReasons = reasons;
     this.domainWaits = domainWaits;
+    this.recordDomainRefusals(domainWaits);
+  }
+
+  /**
+   * Status and the dashboard read admission from rows and cannot see the base checks of this pass, so the last write-domain
+   * refusal of each waiting step is kept in capacity rows ('domain-refusal', campaign/task): who holds the area, as
+   * admissionCheck found it. Written only when the holders change, removed when the step is no longer refused. Display only.
+   */
+  recordDomainRefusals(waits) {
+    try {
+      const now = this.now();
+      const keep = new Set();
+      // One transaction per pass. Only rows of campaigns this instance holds are removed: another instance's are its own.
+      this.store.tx(() => {
+        for (const { candidate, refusal } of waits) {
+          const id = `${candidate.campaignId}/${candidate.taskId}`;
+          const holders = JSON.stringify(refusal.detail.holders.slice(0, 5));
+          keep.add(id);
+          const row = this.store.get("SELECT reason FROM capacity WHERE scope = 'domain-refusal' AND id = ?", id);
+          if (row?.reason === holders) continue;
+          this.store.run(`INSERT INTO capacity (scope, id, value, reason, updated_at) VALUES ('domain-refusal', ?, 1, ?, ?)
+            ON CONFLICT(scope, id) DO UPDATE SET reason = excluded.reason, updated_at = excluded.updated_at`, id, holders, now);
+        }
+        for (const row of this.store.all("SELECT id FROM capacity WHERE scope = 'domain-refusal'")) {
+          const campaignId = row.id.slice(0, row.id.lastIndexOf('/'));
+          if (!keep.has(row.id) && this.held.has(campaignId)) this.store.run("DELETE FROM capacity WHERE scope = 'domain-refusal' AND id = ?", row.id);
+        }
+      });
+    } catch (error) { this.log(`write-domain refusals not recorded: ${error.message}`); }
   }
 
   /** One CPU check over the open runs whose runner has its job; each priority change is journalled on the run's campaign. */
