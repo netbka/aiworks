@@ -123,6 +123,11 @@ export function declaration({ tasks, limits = {}, version = 1, campaignId = 'tes
 
 export const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
+// A slower host needs longer waits, never weaker assertions: AIWORKS_TEST_TIME_FACTOR (default 1) multiplies every
+// deadline a test waits for (waitFor, runUntil, Chrome launch). scripts/run-tests.mjs scales its per-file limit by it.
+const requestedFactor = Number(process.env.AIWORKS_TEST_TIME_FACTOR);
+export const TIME_FACTOR = Number.isFinite(requestedFactor) && requestedFactor >= 1 ? requestedFactor : 1;
+
 /** The gate helper's files of a passing full gate in `dir`, as a verifier that ran it leaves them (src/supervisor/gate.mjs). */
 export function passedGate(dir) {
   writeFileSync(join(dir, 'gate.log'), '# all test files: 1 unit, 0 service, 0 rehearsal (of 1)\n# tests 1\n# pass 1\n# fail 0\n');
@@ -180,7 +185,7 @@ export function runCli(cli, args) {
 /** Tick a controller until the predicate holds, asserting the liveness invariant on every tick. The generous
  * deadline only matters when a run is slow under machine load (historical regression); a passing test returns as soon as it holds. */
 export async function runUntil(controller, store, campaignId, predicate, { timeoutMs = 60_000 } = {}) {
-  const deadline = Date.now() + timeoutMs;
+  const deadline = Date.now() + timeoutMs * TIME_FACTOR;
   while (Date.now() < deadline) {
     await controller.tick();
     const campaign = store.campaign(campaignId);

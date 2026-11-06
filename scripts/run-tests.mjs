@@ -109,7 +109,9 @@ const setting = (name, fallback) => {
 };
 const concurrency = setting('AIWORKS_TEST_CONCURRENCY', Math.min(4, Math.max(1, Math.floor(availableParallelism() / 4))));
 const heavyConcurrency = setting('AIWORKS_HEAVY_CONCURRENCY', 2);
-const fileLimitMs = setting('AIWORKS_TEST_FILE_MINUTES', 15) * 60_000;
+// AIWORKS_TEST_TIME_FACTOR (>= 1) also stretches the in-test deadlines (tests/supervisor/helpers.mjs) for a slower host.
+const timeFactor = Math.max(1, Number(process.env.AIWORKS_TEST_TIME_FACTOR) || 1);
+const fileLimitMs = setting('AIWORKS_TEST_FILE_MINUTES', 15) * 60_000 * timeFactor;
 const retryLimit = process.env.AIWORKS_TEST_RETRY_FILES === '0' ? 0 : setting('AIWORKS_TEST_RETRY_FILES', 10);
 // All retries together get at most this long; a file not retried in time keeps its first failure.
 const retryBudgetMs = setting('AIWORKS_TEST_RETRY_MINUTES', 20) * 60_000;
