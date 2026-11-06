@@ -402,9 +402,9 @@ function envelopeConstraint(envelope) {
 }
 /** Where a task's work belongs in owner-facing text: `owner/name#issue`, or the project id of a project without GitHub. */
 const whereOf = (decl, issue) => (isLocalTarget(decl) ? decl.target.projectId : `${decl.target.repository}#${issue}`);
-// A project without GitHub has no task issue and its owner runs no CLI: a decision there is answered on Home and
+// A project without GitHub has no task issue and its owner runs no CLI: a decision there is answered in Settings, AIWorks itself and
 // its work is checked again with Check again on the dashboard, so its owner texts name those actions instead.
-const LOCAL_DECISION_RECHECK = 'Answer it on Home in AIWorks; the step then runs again and is checked again.';
+const LOCAL_DECISION_RECHECK = 'Answer it in Settings, AIWorks itself; the step then runs again and is checked again.';
 const recheckWords = (decl, id) => (isLocalTarget(decl) ? 'then choose Check again on this work in AIWorks' : `then run: supervisor recheck ${id}`);
 
 /**
@@ -1573,7 +1573,7 @@ export class Controller {
         const reason = redact(change.blocked.reason);
         const record = this.openBlocker(ctx, campaign.declaration, { dependency: 'owner-decision', cls: change.blocked.class,
           identity: `${task.task_id}:${/^no progress:/.test(reason) ? 'no-progress' : reason}`, summary: `${task.task_id}: ${reason}`,
-          requestedAction: isLocalTarget(campaign.declaration) ? `Decide on Home in AIWorks (${this.projectWords(campaign.declaration)}): ${reason}`
+          requestedAction: isLocalTarget(campaign.declaration) ? `Decide in Settings, AIWorks itself (${this.projectWords(campaign.declaration)}): ${reason}`
             : `Decide on ${whereOf(campaign.declaration, specOf(this.store, ctx.id, task.task_id, campaign.declaration).issue)}: ${reason}`,
           parents: [{ ...task, state: change.state ?? task.state }], scope: 'task' }, now);
         change.blocked = { ...change.blocked, reason, fingerprint: record.fingerprint };

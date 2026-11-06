@@ -3246,7 +3246,7 @@ function reviewActions(review, binding, { more } = {}) {
       ? 'You asked for changes to this checked version, but this step has used all its repair rounds, so it stopped. Nothing of it was published or merged.'
       : `You asked for changes to this checked version${review.requestedAt ? ` at ${clock(review.requestedAt)}` : ''}. AIWorks repairs this step within the approved plan; a fresh independent check comes before anything is published or merged. The earlier check stays on record.`)];
   }
-  if (review.state === 'no-evidence') return [el('p', {}, 'No independent check of this version is on record, so it can be neither accepted nor sent back here. Its card on Home offers to plan this work again; nothing starts until you approve the plan.')];
+  if (review.state === 'no-evidence') return [el('p', {}, 'No independent check of this version is on record, so it can be neither accepted nor sent back here. Its card in Settings, AIWorks itself, offers to plan this work again; nothing starts until you approve the plan.')];
   const off = reviewBusy || commandsOff(), address = current.address, key = `review:${binding.campaignId}/${binding.taskId}/${review.verifiedSha}`;
   const ids = `${binding.campaignId}-${binding.taskId}`;
   const u = review.unresolved, open = u.failed + u.notChecked + u.blocking;
