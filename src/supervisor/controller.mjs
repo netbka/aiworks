@@ -2591,18 +2591,22 @@ export class Controller {
     try {
       const now = this.now();
       const keep = new Set();
-      for (const { candidate, refusal } of waits) {
-        const id = `${candidate.campaignId}/${candidate.taskId}`;
-        const holders = JSON.stringify(refusal.detail.holders.slice(0, 5));
-        keep.add(id);
-        const row = this.store.get("SELECT reason FROM capacity WHERE scope = 'domain-refusal' AND id = ?", id);
-        if (row?.reason === holders) continue;
-        this.store.run(`INSERT INTO capacity (scope, id, value, reason, updated_at) VALUES ('domain-refusal', ?, 1, ?, ?)
-          ON CONFLICT(scope, id) DO UPDATE SET reason = excluded.reason, updated_at = excluded.updated_at`, id, holders, now);
-      }
-      for (const row of this.store.all("SELECT id FROM capacity WHERE scope = 'domain-refusal'")) {
-        if (!keep.has(row.id)) this.store.run("DELETE FROM capacity WHERE scope = 'domain-refusal' AND id = ?", row.id);
-      }
+      // One transaction per pass. Only rows of campaigns this instance holds are removed: another instance's are its own.
+      this.store.tx(() => {
+        for (const { candidate, refusal } of waits) {
+          const id = `${candidate.campaignId}/${candidate.taskId}`;
+          const holders = JSON.stringify(refusal.detail.holders.slice(0, 5));
+          keep.add(id);
+          const row = this.store.get("SELECT reason FROM capacity WHERE scope = 'domain-refusal' AND id = ?", id);
+          if (row?.reason === holders) continue;
+          this.store.run(`INSERT INTO capacity (scope, id, value, reason, updated_at) VALUES ('domain-refusal', ?, 1, ?, ?)
+            ON CONFLICT(scope, id) DO UPDATE SET reason = excluded.reason, updated_at = excluded.updated_at`, id, holders, now);
+        }
+        for (const row of this.store.all("SELECT id FROM capacity WHERE scope = 'domain-refusal'")) {
+          const campaignId = row.id.slice(0, row.id.lastIndexOf('/'));
+          if (!keep.has(row.id) && this.held.has(campaignId)) this.store.run("DELETE FROM capacity WHERE scope = 'domain-refusal' AND id = ?", row.id);
+        }
+      });
     } catch (error) { this.log(`write-domain refusals not recorded: ${error.message}`); }
   }
 
