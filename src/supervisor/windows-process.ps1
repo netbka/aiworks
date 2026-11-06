@@ -1,6 +1,6 @@
 param(
   [ValidateSet('Run', 'Drain', 'Stop', 'Usage', 'Priority')][string]$Mode,
-  [string]$RunDir, [string]$JobName, [int]$RunnerPid, [string]$CreationTime, [string]$PriorityClass
+  [string]$RunDir, [string]$JobName, [int]$RunnerPid, [string]$CreationTime, [string]$PriorityClass, [int]$WaitMs = 10000
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
@@ -37,6 +37,8 @@ public static class SupervisorProcess {
   [DllImport("kernel32.dll")] static extern void DeleteProcThreadAttributeList(IntPtr list);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr process, out uint code);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool SetPriorityClass(IntPtr process, uint priority);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool SetProcessInformation(IntPtr process, int type, ref Throttling state, uint size);
+  [StructLayout(LayoutKind.Sequential)] struct Throttling { public uint version, control, state; }
   [StructLayout(LayoutKind.Sequential)] struct BasicLimits { public long processTime, jobTime; public uint flags; public UIntPtr minWorking, maxWorking; public uint activeLimit; public UIntPtr affinity; public uint priority, scheduling; }
   [StructLayout(LayoutKind.Sequential)] struct Limits { public BasicLimits basic; public ulong readOps, writeOps, otherOps, readBytes, writeBytes, otherBytes; public UIntPtr processMemory, jobMemory, peakProcess, peakJob; }
   [StructLayout(LayoutKind.Sequential)] struct Accounting { public long userTime, kernelTime, periodUser, periodKernel; public uint faults, total, active, terminated; }
@@ -91,16 +93,41 @@ public static class SupervisorProcess {
       } finally { Marshal.FreeHGlobal(list); }
     }
   }
+  // A terminated process is signaled only when its threads have run down. On an oversubscribed host a low-priority,
+  // power-throttled browser took from seconds to minutes for that (2026-11-06), so each member still running is raised
+  // to above normal and unthrottled before it is terminated. Best effort: it never changes the stop's answer. The PID
+  // cannot be reused while `owned` holds its handle, and job membership and creation time are checked again anyway.
+  static void Hurry(IntPtr job, string identity) {
+    IntPtr process = IntPtr.Zero;
+    try {
+      int pid = Int32.Parse(identity.Substring(0, identity.IndexOf(':')));
+      process = OpenProcess(0x0200 | QUERY, false, pid); // PROCESS_SET_INFORMATION
+      if (process == IntPtr.Zero) return;
+      bool member;
+      if (!IsProcessInJob(process, job, out member) || !member) return;
+      if (pid.ToString() + ":" + Created(process).ToString() != identity) return;
+      SetPriorityClass(process, 0x8000); // ABOVE_NORMAL_PRIORITY_CLASS
+      Throttling state = new Throttling { version = 1, control = 1, state = 0 }; // execution speed: not throttled
+      SetProcessInformation(process, 4, ref state, (uint)Marshal.SizeOf(typeof(Throttling))); // ProcessPowerThrottling
+    } catch (Exception) { /* best effort */ }
+    finally { if (process != IntPtr.Zero) CloseHandle(process); }
+  }
+  // How long Empty waits for its terminated members to be signaled (the script's -WaitMs).
+  public static int WaitMs = 10000;
   static void Empty(IntPtr job) {
     Dictionary<string, IntPtr> owned = new Dictionary<string, IntPtr>();
+    HashSet<string> hurried = new HashSet<string>();
     Stopwatch deadline = Stopwatch.StartNew();
     bool proven = false;
     try {
-      while (deadline.ElapsedMilliseconds < 10000) {
+      while (deadline.ElapsedMilliseconds < WaitMs) {
         // Terminate only through retained, membership-checked handles. A child
         // born during discovery stays discoverable on the next pass; killing
         // the entire job first would hide it before its handle could be kept.
         Members(job, owned);
+        // Hurry the whole tree before the first termination of this pass.
+        foreach (KeyValuePair<string, IntPtr> entry in owned)
+          if (!hurried.Contains(entry.Key) && WaitForSingleObject(entry.Value, 0) == 258 && hurried.Add(entry.Key)) Hurry(job, entry.Key);
         bool exited = true;
         foreach (IntPtr process in owned.Values) {
           uint waited = WaitForSingleObject(process, 0);
@@ -261,6 +288,7 @@ public static class SupervisorProcess {
 }
 '@
 try {
+  [SupervisorProcess]::WaitMs = $WaitMs
   switch ($Mode) {
     'Run' {
       $spec = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $RunDir 'spec.json') | ConvertFrom-Json
