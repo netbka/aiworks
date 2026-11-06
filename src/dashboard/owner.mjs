@@ -64,6 +64,7 @@ const NOTES = { published: 'Your review and merge', 'report-posted': 'For you to
   'fetch-failed': 'The last check of the base branch failed; showing the last known state',
   'no-checkout': 'This computer has no checkout of the repository configured, so AIWorks cannot see the merge here',
   'no-verified-sha': 'No independent check is recorded, so AIWorks cannot see the merge here',
+  'gate-off': 'AIWorks does not merge in this repository: it is not in the merge settings, so this result waits for your merge',
   'no-link': 'AIWorks did not record where this result went' };
 
 /**
@@ -123,7 +124,9 @@ export function delivery(task, merges = NO_MERGES, now = Date.now(), campaignId 
     return { state: 'delegated', ...base, reason, pending: false, held, stalled, by: delegation.delegatedTo, merger, wait,
       note: held ? DELEGATED.held[held] : stalled ? mergeWaitWords(merger, wait).reason : DELEGATED.note(delegation.delegatedTo) };
   }
-  return { state: 'published', ...base, reason, pending: reason === 'checking', note: NOTES[reason ?? 'published'] };
+  // Merging delegated to AIWorks in a repository the merge settings leave out: say so instead of a silent wait.
+  const shown = reason === null && delegation && merger === 'aiworks' && task.review?.mergeGate === 'off' ? 'gate-off' : reason;
+  return { state: 'published', ...base, reason: shown, pending: shown === 'checking', note: NOTES[shown ?? 'published'] };
 }
 
 /** Why a delegated merge waits and what happens next, in owner words; unknown stays unknown (DELEGATED.unknown). */
@@ -148,7 +151,8 @@ function ownerSettled(base, task) {
 
 const LOCAL_NOTES = { published: 'Checked on this computer and recorded in the work list; not merged into local main yet',
   checking: NOTES.checking, 'no-verified-sha': 'No verified commit is recorded, so the merge cannot be checked here',
-  'not-checked': 'The merge into local main cannot be seen on this computer; open the work list' };
+  'not-checked': 'The merge into local main cannot be seen on this computer; open the work list',
+  'gate-off': 'AIWorks does not merge into local main here: this repository is not in the merge settings' };
 
 /**
  * A checked local review of AIWorks's own repository, read in the work list (UI20). Merged only from the local merge
@@ -168,7 +172,8 @@ function localDelivery(task, number, merges, now, campaignId, repository) {
   // A merge check that cannot come (no checkout configured here, or a failed read) is not seen, never pending.
   const check = repository ? mergeCheck(merges, repository, now) : null;
   const unseen = !step || check?.reason === 'no-checkout' || (check?.reason === 'fetch-failed' && !check.fresh);
-  const reason = !task.verifiedSha ? 'no-verified-sha' : result !== null ? null : unseen ? 'not-checked' : 'checking';
+  const seen = !task.verifiedSha ? 'no-verified-sha' : result !== null ? null : unseen ? 'not-checked' : 'checking';
+  const reason = seen === null && task.review?.mergeGate === 'off' ? 'gate-off' : seen;
   return { state: 'published', ...base, reason, pending: reason === 'checking', note: LOCAL_NOTES[reason ?? 'published'] };
 }
 
@@ -737,7 +742,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
         evidence: evidence.short, detail: evidence.text, mergeCheck: d.asOf,
         points: [
           // Why the merge cannot be seen at all on this computer, when that is the case.
-          ['no-checkout', 'no-verified-sha'].includes(d.reason) ? `${d.note}.` : null,
+          ['no-checkout', 'no-verified-sha', 'gate-off'].includes(d.reason) ? `${d.note}.` : null,
           churn ? NEEDS.churn(task.attempts, task.verifierRejections) : null,
           gated.length ? NEEDS.gated(named(gated)) : pending.length ? NEEDS.buildsOn(named(pending))
             : started.length ? NEEDS.startedWithout(named(started), started.length) : null,
