@@ -43,7 +43,8 @@ function longName(path) {
   for (const part of parts) {
     let next = join(out, part);
     if (part.includes('~')) {
-      try { if (!lstatSync(next).isSymbolicLink()) next = join(out, basename(realpathSync.native(next))); } catch { /* absent: keep the name */ }
+      // A volume mounted into the folder resolves to a drive root, whose name is empty: keep the folder's own name then.
+      try { const name = lstatSync(next).isSymbolicLink() ? '' : basename(realpathSync.native(next)); if (name) next = join(out, name); } catch { /* absent: keep the name */ }
     }
     out = next;
   }
