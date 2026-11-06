@@ -146,7 +146,7 @@ const readableReference = (value, config) => {
 
 /**
  * The operator's transport setting (config.json `alerts.transport`), as states only; never a reference or its value.
- *   unconfigured  no transport: notifications stay in the outbox on this computer and are shown in Needs you;
+ *   unconfigured  no transport: notifications stay in the outbox on this computer and are shown on Home;
  *   rehearsal     the synthetic transport: alerts are recorded on this computer, nothing is sent;
  *   ready         Telegram with a credential and a recipient reference in a store AIWorks can read; it sends only while
  *                 `ownerIntervention.enabled` and `ownerIntervention.deliver` are both true;
@@ -213,7 +213,7 @@ export function renderAlert(message) {
     title: line(`${cls ? LABEL[cls] : 'Notice'}: ${message?.project ?? 'AIWorks'}${reminder}`, 120),
     lines: [line(message?.blocked), line(message?.impact), message?.nextAction ? line(`Next: ${message.nextAction}`) : null,
       line(message?.safeState)].filter(Boolean),
-    buttons: [{ label: cls === 'B3' ? 'Decide in AIWorks' : 'Open in AIWorks', address: '#/needs' },
+    buttons: [{ label: cls === 'B3' ? 'Decide in AIWorks' : 'Open in AIWorks', address: cls === 'B5' ? '#/settings/itself' : '#/home' },
       ...(link ? [{ label: 'Tracking item', address: link }] : [])],
   };
 }

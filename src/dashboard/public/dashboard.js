@@ -3246,7 +3246,7 @@ function reviewActions(review, binding, { more } = {}) {
       ? 'You asked for changes to this checked version, but this step has used all its repair rounds, so it stopped. Nothing of it was published or merged.'
       : `You asked for changes to this checked version${review.requestedAt ? ` at ${clock(review.requestedAt)}` : ''}. AIWorks repairs this step within the approved plan; a fresh independent check comes before anything is published or merged. The earlier check stays on record.`)];
   }
-  if (review.state === 'no-evidence') return [el('p', {}, 'No independent check of this version is on record, so it can be neither accepted nor sent back here. Its Needs you card offers to plan this work again; nothing starts until you approve the plan.')];
+  if (review.state === 'no-evidence') return [el('p', {}, 'No independent check of this version is on record, so it can be neither accepted nor sent back here. Its card on Home offers to plan this work again; nothing starts until you approve the plan.')];
   const off = reviewBusy || commandsOff(), address = current.address, key = `review:${binding.campaignId}/${binding.taskId}/${review.verifiedSha}`;
   const ids = `${binding.campaignId}-${binding.taskId}`;
   const u = review.unresolved, open = u.failed + u.notChecked + u.blocking;
@@ -3286,7 +3286,7 @@ function reviewActions(review, binding, { more } = {}) {
     aside(review.awaitsAcceptance ? el('p', { role: 'status' }, 'Waiting for you: you accept results yourself in this project, so this version is not merged until you accept it.') : null),
     aside(!review.local && review.state === 'ready' && !review.canAccept && (u.failed || u.blocking) ? el('p', { class: 'subtext' }, COMMANDS.result.unresolved) : null),
     review.canAccept ? el('div', { class: 'campaign-controls' }, button('Accept result', () => sendReview('accept', binding, review, {}, { address }), '', off),
-      aside(el('span', { class: 'subtext' }, review.mergeGate === 'on' ? 'Approves exactly this version; AIWorks merges it when its merge conditions hold.' : 'Approves exactly this version and takes it off Needs you. Merging follows this project’s own rules: AIWorks merges only in projects where you allowed it.'))) : null,
+      aside(el('span', { class: 'subtext' }, review.mergeGate === 'on' ? 'Approves exactly this version; AIWorks merges it when its merge conditions hold.' : 'Approves exactly this version and takes it off Home. Merging follows this project’s own rules: AIWorks merges only in projects where you allowed it.'))) : null,
     form].filter(Boolean);
 }
 
@@ -3430,7 +3430,7 @@ function resultsScreen(project) {
     el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'results-title' }, waiting ? `${plural(waiting, 'result')} for you` : 'Nothing here needs you')),
       results.primary?.route ? routeLink(results.primary.label, results.primary.route, 'button')
         : results.primary ? link(`${results.primary.label} ↗`, results.primary.url, 'button') : null),
-    waiting ? null : el('p', { class: 'subtext' }, `${merges === 'aiworks' ? 'AIWorks checks and merges results itself in this project.' : 'AIWorks checks results itself; merging follows this project’s own rules.'} A result for your review appears here and in Needs you.`),
+    waiting ? null : el('p', { class: 'subtext' }, `${merges === 'aiworks' ? 'AIWorks checks and merges results itself in this project.' : 'AIWorks checks results itself; merging follows this project’s own rules.'} A result for your review appears here and on Home.`),
     ...open.map(groupList),
     history ? disclosure(`results/${project}/history`, `History (${history}): merged, read and untraced results`, el('div', {}, ...past.map(groupList))) : null,
     // Stop all releases is reachable from every project's Review (AUTO_RELEASE.md section 9).

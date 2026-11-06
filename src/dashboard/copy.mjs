@@ -719,7 +719,7 @@ export const COMMANDS = {
   // Review of a result (OWNER_UI_V2 WP4): accept and request changes are bound to one verified head and its report.
   result: {
     accept: (gate) => gate === 'on' ? 'Accepted. AIWorks recorded your acceptance of this checked version; the merge gate merges it when its own conditions hold.'
-      : 'Accepted. AIWorks recorded your approval of this checked version and took it off Needs you. Merging follows this project’s own rules: AIWorks merges only in projects where you allowed it.',
+      : 'Accepted. AIWorks recorded your approval of this checked version and took it off Home. Merging follows this project’s own rules: AIWorks merges only in projects where you allowed it.',
     'request-changes': 'Changes requested. AIWorks reopens this step as a repair round within the approved plan; nothing of it is published or merged until a fresh independent check passes.',
     changed: 'This result changed since you opened it, or it is not the version that passed the check. Nothing was recorded. Refresh the page and review it again.',
     closed: 'This work is paused, cancelled or not finished, so its result takes no review now. Refresh the page to see where it stands.',
