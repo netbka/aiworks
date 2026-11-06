@@ -74,8 +74,8 @@ export function windowsHelperArgs(mode, jobName, { runDir, pid, creationTime, pr
 
 /**
  * How long an asynchronous drain or stop waits for its job's terminated processes to be signaled, and the helper's whole
- * bound beside its own start. On an oversubscribed host a browser's rundown took up to 90 s at low priority and under 10 s
- * once raised (2026-11-06). The blocking stopOwnedRun keeps the helper's 10 s wait so it never holds an event loop longer.
+ * bound beside its own start. On an oversubscribed host a terminated browser's rundown took from seconds to several minutes
+ * at low priority, and mostly under 10 s once its processes were raised (2026-11-06). The blocking stopOwnedRun keeps the helper's 10 s wait so it never holds an event loop longer.
  */
 const ASYNC_STOP_WAIT_MS = 60_000;
 export const ASYNC_STOP_MS = ASYNC_STOP_WAIT_MS + 30_000;

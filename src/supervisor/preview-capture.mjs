@@ -56,14 +56,17 @@ const delay = (ms, signal) => new Promise((resolve, reject) => {
 /**
  * The preview's own server on 127.0.0.1 and a random port: GET of the preview's files by their path, nothing else. As the
  * browser's proxy it also receives every request for another address, with that address as its Host, and refuses it.
- * `page` may answer with a promise (a server preview relays the request to the checked version's own server).
+ * `page` may answer with a promise (a server preview relays the request to the checked version's own server). Once the
+ * capture is cancelled or out of time (`stopped`), `page` is never asked again: a request still queued by the dying browser
+ * gets 410 while the browser is stopped.
  */
-async function previewServer(page) {
+async function previewServer(page, stopped) {
   const server = createServer(async (req, res) => {
     const origin = `http://127.0.0.1:${server.address().port}`;
     let url = null;
     try { url = new URL(req.url, origin); } catch { /* refused below */ }
-    const answer = req.headers.host !== new URL(origin).host || url?.origin !== origin ? { status: 403, body: 'Not this preview.', type: 'text/plain; charset=utf-8' }
+    const answer = stopped.aborted ? { status: 410, body: 'The capture has stopped.', type: 'text/plain; charset=utf-8' }
+      : req.headers.host !== new URL(origin).host || url?.origin !== origin ? { status: 403, body: 'Not this preview.', type: 'text/plain; charset=utf-8' }
       : req.method !== 'GET' ? { status: 405, body: 'Method not allowed.', type: 'text/plain; charset=utf-8' }
         : await Promise.resolve().then(() => page(url.pathname.slice(1))).catch(() => ({ status: 502, body: 'The preview could not answer.', type: 'text/plain; charset=utf-8' }));
     if (res.destroyed) return;
@@ -170,7 +173,7 @@ export async function capturePreview({ chrome, workDir, page, entry, sha, signal
   let server = null, runner = null, client = null, shots = null, failure = null;
   try {
     if (bounded.aborted) throw bounded.reason;
-    server = await previewServer(page);
+    server = await previewServer(page, bounded);
     const origin = `http://127.0.0.1:${server.address().port}`;
     const dirs = { profile: join(workDir, 'profile'), home: join(workDir, 'home'), temp: join(workDir, 'temp') };
     for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true });
