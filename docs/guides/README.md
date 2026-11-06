@@ -33,6 +33,7 @@ You describe the result, review the plan and approve the work. Your assistant ha
 These are optional reading for someone using an AI client:
 
 - [Manual installation](MANUAL_INSTALLATION.md) and [settings](CONFIGURATION.md) for the technical setup.
+- [External check services](check-services.md), to let another computer run the full checks when it has room.
 - [Running a task from the command line](CLI_REFERENCE.md), the command-line route to the same first task.
 - [Instructions for the setup assistant](ASSISTANT_SETUP.md), which hold the technical checks, so the person getting started does not need to fill in internal paths or task identifiers.
 
