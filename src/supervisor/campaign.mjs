@@ -76,10 +76,10 @@ export function canonicalJson(value) {
 const sha256 = (value) => createHash('sha256').update(canonicalJson(value), 'utf8').digest('hex');
 
 /**
- * Digest of the immutable scope (everything except authorization, limits and the owner-facing `purpose`/task
+ * Digest of the immutable scope (everything except authorization, limits and the owner-facing `purpose`, `title`/task
  * `outcome` wording, which never reaches a worker packet). Changing that wording needs a higher authorization version.
  */
-export const scopeDigest = (declaration) => sha256({ ...declaration, authorization: undefined, limits: undefined, purpose: undefined,
+export const scopeDigest = (declaration) => sha256({ ...declaration, authorization: undefined, limits: undefined, purpose: undefined, title: undefined,
   tasks: Array.isArray(declaration?.tasks) ? declaration.tasks.map((task) => task && typeof task === 'object' ? { ...task, outcome: undefined } : task) : declaration?.tasks });
 /** Digest of the whole current authority; bound into every worker packet. */
 export const authorityDigest = (declaration) => sha256(declaration);
@@ -109,13 +109,15 @@ export function validateDeclaration(declaration) {
   const d = declaration;
   if (!d || typeof d !== 'object' || Array.isArray(d)) throw new TypeError('campaign declaration must be an object');
   // Only a version 2 declaration may carry `envelope`; on version 1 it stays an unknown key, as before.
-  const allowed = ['version', 'campaignId', 'purpose', 'authorization', 'target', 'limits', 'executor', 'routing', 'constraints', 'tasks',
+  const allowed = ['version', 'campaignId', 'purpose', 'title', 'authorization', 'target', 'limits', 'executor', 'routing', 'constraints', 'tasks',
     'reportPublication', ...(d.version === 2 ? ['envelope'] : [])];
   for (const key of Object.keys(d)) if (!allowed.includes(key)) bad(`unknown key ${key}`);
   if (d.version !== 1 && d.version !== 2) bad('version must be 1, or 2 with an envelope');
   if (!ID.test(d.campaignId ?? '')) bad('campaignId must match [A-Za-z0-9._-], max 64');
   // Optional plain-language wording for the owner's dashboard; never part of a worker packet.
   if (d.purpose !== undefined && !text(d.purpose, 300)) bad('purpose must be a non-empty string (max 300)');
+  // Optional short goal title for Home (docs/design/HOME_V2.md): one plain line of at most 60 characters; never in a worker packet.
+  if (d.title !== undefined && (!text(d.title, 60) || /[\r\n]/.test(d.title))) bad('title must be one plain line (max 60)');
   // Optional "local": every verified report of the campaign stays in this installation's store and is read through the
   // campaign API's report route (remote-campaigns.mjs campaignReports), never posted to the task issue. Part of the scope.
   if (d.reportPublication !== undefined && d.reportPublication !== 'local') bad('reportPublication must be "local" when present');

@@ -76,6 +76,8 @@ export function reminderDue(record, now) {
   return now - record.last_notified_at >= wait ? record.reminders + 1 : null;
 }
 
+const OWNER_ROUTED = new Set(['auth', 'budget']);
+
 /** §8 message content. Every free-text field is redacted; no secret, token or private content is carried. */
 export function ownerMessage({ record, kind, parents, repository, trackingIssue, tried, workList = false, projectName = null }) {
   const cls = record.class;
@@ -97,6 +99,9 @@ export function ownerMessage({ record, kind, parents, repository, trackingIssue,
     afterAction: redact(record.recheck_procedure),
     fingerprint: record.fingerprint,
     actions: ACTIONS[cls],
+    // Where the alert's button leads: a sign-in or payment stop is the owner's own and is listed on Home; every other
+    // blocker is listed in Settings, AIWorks itself. Chosen from the dependency kind only, never from text.
+    route: OWNER_ROUTED.has(record.dependency) ? 'home' : 'itself',
   };
 }
 

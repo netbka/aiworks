@@ -378,7 +378,7 @@ export function releaseLadder(task, d, recorded = null, { github = true } = {}) 
   const sha = String(recorded?.verifiedSha ?? task.verifiedSha ?? '').toLowerCase().slice(0, 7) || null;
   const note = !recorded ? 'Review only: AIWorks does not deploy this result. Whether it is live is not recorded here.'
     : recorded.state === 'rolled-back' ? 'Rolled back: the checks after release failed.'
-      : recorded.state === 'rollback-failed' ? 'The rollback failed. See Needs you.'
+      : recorded.state === 'rollback-failed' ? 'The rollback failed. See Settings, AIWorks itself.'
         : recorded.state === 'unknown' ? 'Outcome unknown: AIWorks is checking the destination and will not release there again until it knows.' : null;
   return { sha, steps, note, destination: recorded?.destination ?? null };
 }
@@ -847,6 +847,16 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       : { campaignId: c ? r.campaignId : null, repository: c?.repository ?? null, kind: 'release-failed', action: 'Rollback failed',
         text: `Release of ${where}: the rollback failed`, at: r.updatedAt,
         points: [{ link: null, text: 'The destination may not be working. AIWorks will not release there again until you check it.' }] });
+  }
+  // A checkout whose base read is refused as uncontained (AIWorks's own fault, #144): not for the owner to fix. Every read
+  // there checks the recorded end of the earlier fetch again by itself, so a held one with a recorded identity clears alone;
+  // one whose start was never recorded has no proof AIWorks may take, and is said so.
+  for (const hold of supervisor.baseHolds ?? []) {
+    items.push({ campaignId: null, repository: null, kind: 'base-read-held', system: true, action: 'Work in this checkout is held', since: hold.since,
+      text: `Checkout ${hold.checkout}: AIWorks cannot show that an earlier fetch of ${hold.base || 'its base'} ended, so it refuses to read or build on that base`,
+      points: [{ link: null, text: hold.unidentified
+        ? `${plural(hold.unidentified, 'fetch')} never recorded how it started, so AIWorks has no proof it ended and will not clear it by age. It is tracked as an AIWorks follow-up.`
+        : 'AIWorks checks again on every read and clears this once the recorded process is shown gone.' }] });
   }
   // The open decisions of the local work list (UI20), each opened on its own work list screen.
   for (const decision of workList?.decisions ?? []) {
