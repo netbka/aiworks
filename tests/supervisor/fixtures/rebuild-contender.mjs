@@ -25,8 +25,10 @@ try {
     },
     exec() {
       if (!announced) { announced = true; process.send({ event: 'entered' }); }
-      // Hold the acquired lock until the parent terminates this disposable process.
-      return new Promise(() => {});
+      // Hold the acquired lock until the parent terminates this disposable process. The resolver is kept on the global, so
+      // the pending rebuild frame (and with it the SQLite guard) stays reachable: an unreferenced promise can be collected,
+      // and collecting it closes the guard connection and drops its write lock while the process still runs.
+      return new Promise((resolve) => { globalThis.holdRebuildLock = resolve; });
     },
   });
 } catch (error) {

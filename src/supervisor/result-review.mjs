@@ -64,8 +64,11 @@ export function passedCheck(task, acceptance) {
   return !unresolved.failed && !unresolved.notChecked && !unresolved.blocking;
 }
 
-/** Whether the verifier's own recorded run of the full check (gate.mjs) finished with exit 0 and no failed test. */
-export const fullCheckPassed = (gate) => Boolean(gate) && gate.exit === '0' && !gateFailure(gate);
+/**
+ * Whether the verifier's own recorded run of the full check (gate.mjs) finished with exit 0 and no failed test, and
+ * counted no cached test file the supervisor could not match to a recorded pass (test-cache.mjs).
+ */
+export const fullCheckPassed = (gate) => Boolean(gate) && gate.exit === '0' && !gateFailure(gate) && !gate.cacheRefused;
 
 /**
  * Whether an acceptance kept by base compare (base-check.mjs) is explained by its base: its finished gate failed, and
@@ -88,7 +91,8 @@ export function deliverableWithDefects(task, deliverable) {
   const v = task?.verification, head = task?.head_sha;
   if (deliverable !== 'commit' || !SHA.test(head ?? '') || v?.verdict !== 'rejected' || v.targetSha !== head) return false;
   if (!/^verifier still rejects/.test(String(task.blocked?.reason ?? '')) || v.reportDigest !== reportDigestOf(task)) return false;
-  return (task.findings ?? []).every((finding) => (v.findings ?? []).some((own) => own.id === finding.id)) && fullCheckPassed(v.gate);
+  // A delivery as it is needs a gate that ran every file: one that counted cached files (test-cache.mjs) is not one.
+  return (task.findings ?? []).every((finding) => (v.findings ?? []).some((own) => own.id === finding.id)) && fullCheckPassed(v.gate) && !v.gate.cached;
 }
 
 /**
