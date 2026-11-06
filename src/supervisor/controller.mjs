@@ -2579,6 +2579,31 @@ export class Controller {
     }
     this.waitReasons = reasons;
     this.domainWaits = domainWaits;
+    this.recordDomainRefusals(domainWaits);
+  }
+
+  /**
+   * Status and the dashboard read admission from rows and cannot see the base checks of this pass, so the last write-domain
+   * refusal of each waiting step is kept in capacity rows ('domain-refusal', campaign/task): who holds the area, as
+   * admissionCheck found it. Written only when the holders change, removed when the step is no longer refused. Display only.
+   */
+  recordDomainRefusals(waits) {
+    try {
+      const now = this.now();
+      const keep = new Set();
+      for (const { candidate, refusal } of waits) {
+        const id = `${candidate.campaignId}/${candidate.taskId}`;
+        const holders = JSON.stringify(refusal.detail.holders.slice(0, 5));
+        keep.add(id);
+        const row = this.store.get("SELECT reason FROM capacity WHERE scope = 'domain-refusal' AND id = ?", id);
+        if (row?.reason === holders) continue;
+        this.store.run(`INSERT INTO capacity (scope, id, value, reason, updated_at) VALUES ('domain-refusal', ?, 1, ?, ?)
+          ON CONFLICT(scope, id) DO UPDATE SET reason = excluded.reason, updated_at = excluded.updated_at`, id, holders, now);
+      }
+      for (const row of this.store.all("SELECT id FROM capacity WHERE scope = 'domain-refusal'")) {
+        if (!keep.has(row.id)) this.store.run("DELETE FROM capacity WHERE scope = 'domain-refusal' AND id = ?", row.id);
+      }
+    } catch (error) { this.log(`write-domain refusals not recorded: ${error.message}`); }
   }
 
   /** One CPU check over the open runs whose runner has its job; each priority change is journalled on the run's campaign. */
