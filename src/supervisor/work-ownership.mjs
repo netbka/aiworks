@@ -126,7 +126,8 @@ const ACTIVE = new Set(['implementing', 'implemented', 'verifying', 'verified'])
  *   its domain until it is settled, because suspicion is not proof it stopped;
  * - a task implemented, verifying or verified, not yet integrated ('unintegrated');
  * - a done commit task whose verified head is not in its base yet, in any campaign, finished or cancelled included
- *   ('published-unmerged'). `integrated(campaignId, taskRow, declaration)` answers that from the fetched base.
+ *   ('published-unmerged'). `integrated(campaignId, taskRow, declaration)` answers that from the fetched base,
+ *   or, in the self-hosted repository, from a gate-merge ledger row for exactly that head (it survives a re-rooted main).
  *   One exception: a cancelled campaign in a target whose base only the merge gate moves (`gateOnly(declaration)`: the
  *   self-hosted repository with local main trusted). Cancellation is terminal and drained, and the gate never merges a
  *   cancelled campaign's head, so that head can never reach its base; holding it would make every overlapping task wait
