@@ -91,9 +91,9 @@ const NOISE = [
   /\bhttps?:\/\/\S+/g, // links
   /(?:\b[\w.-]+(?:\/[\w.-]+)?)?#\d+\b/g, // "#123", "repo#123", "owner/repo#123"
   /\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,64}\b/gi, // commit hashes
-  /\b(?=[\w.-]*\d)[a-z0-9]+(?:[._-][a-z0-9]+){1,}\b/gi, // ids with a digit: aw-home-v2-20261031, v1.2.3
+  /\b(?=[\w.-]*\d)[a-z0-9]+(?:[._-][a-z0-9]+){1,}\b/gi, // ids with a digit: bakery-orders-20261031, v1.2.3
   new RegExp(NAMED.source, 'gi'), // wave, step and version names: wave 2, step 3, v2
-  new RegExp(CODE.source, 'g'), // codes like AW-016, WP3, T1, HOME-V2-DATA
+  new RegExp(CODE.source, 'g'), // codes like AW-016, WP3, T1, ORDER-FORM
   /\b\d{3,}\b/g, // bare long numbers
 ];
 
