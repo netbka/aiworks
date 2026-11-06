@@ -544,7 +544,9 @@ async function dispatch(ctl, ctx, cfg, messages, { path: workspace, revision }) 
 async function dispatchIntake(ctl, ctx, cfg, request) {
   const now = ctl.now();
   const found = readProject(ctl.store, request.project_id);
-  const pin = pinRequest(ctl.store, request, { git: ctl.cmd.git, gh: ctl.cmd.gh, selfHosting: ctl.selfHosting });
+  // The base is read through the controller's bounded read, which keeps custody receipts and never blocks the event loop.
+  const pin = await pinRequest(ctl.store, request, { git: ctl.cmd.git, gh: ctl.cmd.gh, selfHosting: ctl.selfHosting,
+    readBase: (repoPath, base) => ctl.fetchBase(repoPath, base, found?.github_repository ?? null, { fresh: true }) });
   const checkout = pin.ok ? prepareTargetCheckout(ctl, cfg, request, pin.repository, pin.pinned.base) : null;
   setBlocked(ctl, null);
   if (!pin.ok || checkout.error) {
