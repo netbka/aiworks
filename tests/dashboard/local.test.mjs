@@ -99,7 +99,7 @@ async function planned(r) {
     declaration: { outcome: 'People can search their notes.', acceptance: ['Searching a word finds the note'], writes: ['src/', 'README.md', 'old.txt'],
       deliverables: ['commit'], constraints: githubDeclaration().constraints,
       tasks: [{ id: 'T1', title: 'search', deliverable: 'commit', goal: 'Add search.', dependsOn: [], acceptance: ['search works'], references: ['AGENTS.md'], writes: ['src/', 'README.md', 'old.txt'] }] } };
-  const draft = recordDraft(r.store, { request, proposal, pinned: pinRequest(r.store, request).pinned });
+  const draft = recordDraft(r.store, { request, proposal, pinned: (await pinRequest(r.store, request)).pinned });
   const plan = (await r.owner.state()).work.plans.find((item) => item.id === request.request_id);
   assert.equal(plan.startable, true);
   return { plan, campaignId: draft.declaration.campaignId,

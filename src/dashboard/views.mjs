@@ -9,6 +9,7 @@ import { Store } from '../supervisor/store.mjs';
 import { selfHostingSettings, trustedTip } from '../supervisor/self-hosting.mjs';
 import { backupStatus } from '../supervisor/github-backup.mjs';
 import { projectOf } from '../supervisor/project-settings.mjs';
+import { plainTitle } from './display-text.mjs';
 
 const identifier = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const id = (value) => identifier.test(value ?? '') ? value : null;
@@ -182,8 +183,8 @@ const projectRow = (row) => ({ id: row.id, name: row.name, kind: row.kind, repos
  * and the pause of all work. `events` is typedEvents after the marker and no older than `window` (ms), so history the
  * owner never marked as seen does not stay "new" forever.
  */
-export function homeView({ supervisor, owner, projects, events, lastSeen, newest, window = null }) {
-  if (!supervisor?.available) return { available: false, lastSeen, needsYou: null, projects: [], since: null, pause: null };
+export function homeView({ supervisor, owner, projects, events, lastSeen, newest, window = null, now = Date.now() }) {
+  if (!supervisor?.available) return { available: false, lastSeen, needsYou: null, needs: null, goals: [], landed: null, quiet: [], spentToday: null, projects: [], since: null, pause: null };
   const counts = {};
   for (const event of events.events) counts[event.type] = (counts[event.type] ?? 0) + 1;
   return { available: true, lastSeen, newest,
@@ -192,7 +193,85 @@ export function homeView({ supervisor, owner, projects, events, lastSeen, newest
     needsYou: { count: owner?.attention?.count ?? owner?.count ?? 0, items: (owner?.items ?? []).filter((item) => !item.system).slice(0, 3).map((item) => ({ kind: item.kind, campaignId: id(item.campaignId),
       repository: item.repository ?? null, text: item.text ?? null, at: item.at ?? null })) },
     projects: (projects?.projects ?? []).map(projectRow),
-    pause: pauseSummary(supervisor.goals ?? [], { kind: 'all' }) };
+    pause: pauseSummary(supervisor.goals ?? [], { kind: 'all' }),
+    ...homeV2({ supervisor, owner, projects, now }) };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Home v2 (docs/design/HOME_V2.md): each running or paused goal with a short title, what it does now and one segment per
+// step; one landed line per step merged in the last day; the one Needs you count; the quiet projects; today's spend.
+
+const LANDED_WINDOW_MS = 24 * 60 * 60 * 1000;
+const GOAL_ORDER = { 'Asks you': 0, Building: 1, Checking: 1, Queued: 2, Paused: 3 };
+const ACTIVE = new Set(['implementing', 'implemented', 'verifying', 'verified']);
+const DROPPED = new Set(['cancelled', 'abandoned']);
+const OPEN = new Set(['registered', 'paused']);
+const stepTitle = (task) => plainTitle(task.outcome) ?? plainTitle(task.title) ?? 'A step';
+
+/** A goal's title: its declared title, else one made from its purpose, outcome or first step; never a code or id. */
+function goalTitle(c) {
+  for (const text of [c.shortTitle, c.purpose, c.goalOutcome, c.title]) {
+    const title = plainTitle(text);
+    if (title) return title;
+  }
+  return c.tasks?.length ? stepTitle(c.tasks[0]) : 'A goal';
+}
+
+/** One segment per step: done, now, asks, todo or dropped. */
+function segmentOf(task, asks, running) {
+  if (task.state === 'done') return 'done';
+  if (DROPPED.has(task.state)) return 'dropped';
+  if (asks.has(task.id)) return 'asks';
+  return ACTIVE.has(task.state) || running.has(task.id) ? 'now' : 'todo';
+}
+
+function homeV2({ supervisor, owner, projects, now }) {
+  const rows = projects?.projects ?? [];
+  const nameOf = (project) => rows.find((row) => sameProject(row.repository, project) || sameProject(row.id, project))?.name ?? project ?? null;
+  const campaigns = new Map([...(supervisor.campaigns ?? []), ...(supervisor.local ?? [])].map((c) => [c.id, c]));
+  // The one owner-action set (owner.mjs `attention`): what the owner must answer, by goal and by step.
+  const actions = (owner?.items ?? []).filter((item) => !item.system);
+  const open = (supervisor.goals ?? []).filter((goal) => OPEN.has(goal.control));
+  const goals = open.map((goal, index) => {
+    const c = campaigns.get(goal.id) ?? { tasks: [] }, tasks = c.tasks ?? [], agents = c.agents ?? [];
+    const mine = actions.filter((item) => item.campaignId === goal.id || item.local?.campaignId === goal.id);
+    const asks = new Set(mine.map((item) => item.taskId ?? item.local?.taskId).filter(Boolean));
+    const segments = tasks.map((task) => segmentOf(task, asks, new Set(agents.map((agent) => agent.taskId))));
+    const checking = tasks.some((task, i) => segments[i] === 'now' && (['verifying', 'verified'].includes(task.state)
+      || agents.some((agent) => agent.taskId === task.id && agent.role === 'Verifier')));
+    const state = goal.control === 'paused' ? 'Paused' : mine.length ? 'Asks you' : checking ? 'Checking' : segments.includes('now') ? 'Building' : 'Queued';
+    const done = new Set(tasks.filter((task) => task.state === 'done').map((task) => task.id));
+    const current = tasks.find((task, i) => segments[i] === 'now');
+    const next = tasks.find((task, i) => segments[i] === 'todo' && (task.dependsOn ?? []).every((dep) => done.has(dep))) ?? tasks.find((task, i) => segments[i] === 'todo');
+    // Work in a project without GitHub carries its project's name; GitHub work is named by its project row.
+    const project = c.projectName !== undefined ? c.projectName ?? null : nameOf(goal.project);
+    return { index, cost: c.costToday ?? null, item: { project, title: goalTitle(c),
+      now: state === 'Asks you' ? 'Waiting for your answer' : current ? `Now: ${stepTitle(current)}` : next ? `Next: ${stepTitle(next)}` : null,
+      done: done.size, total: tasks.length, dropped: segments.filter((segment) => segment === 'dropped').length, segments, state } };
+  }).sort((a, b) => GOAL_ORDER[a.item.state] - GOAL_ORDER[b.item.state] || a.index - b.index);
+  // Landed: one line per step whose checked version was merged in the last day, never one per event.
+  const since = now - LANDED_WINDOW_MS;
+  const landed = (supervisor.campaigns ?? []).flatMap((c) => (c.tasks ?? []).filter((task) => task.mergeReceipt?.mergedAt >= since && task.mergeReceipt.mergedAt <= now)
+    .map((task) => ({ title: stepTitle(task), project: nameOf(c.repository), at: task.mergeReceipt.mergedAt }))).sort((a, b) => b.at - a.at);
+  // Quiet: a project with no running or paused goal, Done or Stopped after its latest goal.
+  const busy = new Set(open.map((goal) => String(campaigns.get(goal.id)?.project ?? goal.project ?? '').toLowerCase()));
+  const quiet = rows.flatMap((row) => {
+    const keys = [row.id, row.repository].filter(Boolean).map((key) => key.toLowerCase());
+    if (keys.some((key) => busy.has(key))) return [];
+    const latest = [...campaigns.values()].filter((c) => keys.includes(String(c.repository ?? c.project ?? '').toLowerCase()))
+      .sort((a, b) => (b.registeredAt ?? 0) - (a.registeredAt ?? 0))[0];
+    return latest ? [{ name: row.name, state: latest.control === 'cancelled' ? 'Stopped' : 'Done' }] : [];
+  });
+  // Spent today: what the runs of the running goals that finished today reported; unknown stays null, never $0.
+  const costs = goals.map((goal) => goal.cost).filter(Boolean);
+  const usd = costs.reduce((sum, cost) => sum + (cost.reportedUsd ?? 0), 0);
+  return {
+    // The one owner-action set: the same number for the nav badge and the hero. A result AIWorks merged is landed, never counted.
+    needs: { count: owner?.attention?.count ?? actions.length },
+    goals: goals.map((goal) => goal.item),
+    landed: { total: landed.length, entries: landed.slice(0, 20) },
+    quiet,
+    spentToday: { usd: usd > 0 ? Math.round(usd * 100) / 100 : null, unreportedRuns: costs.reduce((sum, cost) => sum + (cost.unreportedRuns ?? 0), 0) } };
 }
 
 /** Built, Checked and Available to users of one goal's steps: three separate counts, the third unknown unless a release says so. */
