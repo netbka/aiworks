@@ -398,7 +398,7 @@ async function offload(command) {
   if (!services.length) return null;
   try {
     return await runOnService({ services, repository: originRepository(), sha: head.sha, available: (sha) => onOrigin(sha),
-      say: (line) => console.log(line), reference: `gate ${basename(process.cwd())}`,
+      say: (line) => console.log(line), reference: `gate-${basename(process.cwd())}`,
       // A project run by scripts/run-tests.mjs ends with its summary; a pass without one is not taken.
       summaryRequired: existsSync(join('scripts', 'run-tests.mjs')) });
   } catch (error) {

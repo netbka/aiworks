@@ -135,7 +135,7 @@ function httpsTransport(service) {
       const chunks = [];
       let size = 0;
       response.on('data', (chunk) => { size += chunk.length; if (size > 64 * 1024 * 1024) response.destroy(new Error('response over 64 MiB')); else chunks.push(chunk); });
-      response.on('error', (error) => reject(error));
+      response.on('error', (error) => { clearTimeout(timer); reject(error); });
       response.on('end', () => {
         clearTimeout(timer);
         const data = Buffer.concat(chunks);
@@ -214,7 +214,7 @@ export async function runOnService({ services, repository, sha, available = () =
       const health = await api.health();
       if (health?.status !== 'ok') { say(`# ${name} skipped: health is ${JSON.stringify(health?.status ?? null)}`); continue; }
       const spec = { idempotencyKey: `aiworks-gate-${sha.slice(0, 12)}-${now().toString(36)}`, projectId: project.projectId, commitSha: sha,
-        profile: project.profile, timeoutSeconds, aiworksTaskId: String(reference).slice(0, 120) };
+        profile: project.profile, timeoutSeconds, aiworksTaskId: String(reference).replace(/[^\w.-]+/g, '-').slice(0, 120) };
       const submitted = await api.submit(spec);
       if (!JOB_ID.test(submitted?.jobId ?? '') || submitted.spec?.commitSha !== sha || submitted.spec?.projectId !== project.projectId
         || submitted.spec?.profile !== project.profile) { say(`# ${name} skipped: it answered the submission for another job`); continue; }

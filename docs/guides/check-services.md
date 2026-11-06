@@ -19,7 +19,7 @@ Code: `src/supervisor/check-services.mjs` (settings, the service client and resu
    - polls `GET /v1/jobs/<id>` every 10 seconds;
    - cancels its own job and moves on when the job is still queued after `queueSeconds` (the service is busy), when the run takes longer than `timeoutMinutes`, when the service answers a state the contract does not name twice in a row, or when it stops answering.
 
-   All services together get one time budget: the largest `timeoutMinutes` of those listed for the repository, at most 75 minutes. The gate on this computer then still fits a verifier's 120-minute bound.
+   All services together get one time budget: the largest `timeoutMinutes` of those listed for the repository, at most 75 minutes. A gate that then runs on this computer after a long wait may not fit a verifier's 120-minute bound (`executor.verifierTimeoutMinutes`); that verification is then started again. Keep `timeoutMinutes` near the service's real run time, or raise the verifier bound.
 4. A finished job counts only as described in [Which answers count](#which-answers-count). When one counts, `gate.log` gets one line naming the service and job, then the service's own `stdout.log`, and `gate-exit.log` gets `0` (passed) or `1` (test failure). The gate holds no slot on this computer meanwhile, and the test result cache records nothing from it, because it ran on another computer and toolchain.
 5. When no service gave an answer that counts, the gate takes a slot here and runs as before. Every decision appears in `gate.log` as a line starting with `# check service`.
 
@@ -69,7 +69,7 @@ A service of kind `remote-gate-http` must provide the following.
 | Route | Answer |
 | --- | --- |
 | `GET /health` | `{"status":"ok"}` when it accepts jobs |
-| `POST /v1/jobs` with `{ idempotencyKey, projectId, commitSha, profile, timeoutSeconds, aiworksTaskId }` | `{ jobId, state, spec }`, where `jobId` is a UUID and `spec` repeats `commitSha`, `projectId` and `profile`. The same `idempotencyKey` with the same body returns the same job. |
+| `POST /v1/jobs` with `{ idempotencyKey, projectId, commitSha, profile, timeoutSeconds, aiworksTaskId }` | `{ jobId, state, spec }`, where `jobId` is a UUID and `spec` repeats `commitSha`, `projectId` and `profile`. The same `idempotencyKey` with the same body returns the same job. AIWorks sends `aiworksTaskId` as `gate-<worktree folder>`: letters, digits, dot, dash and underscore only. |
 | `GET /v1/jobs/<jobId>` | `{ jobId, state, waiting? }` |
 | `GET /v1/jobs/<jobId>/result` | the result described below, once the state is terminal |
 | `GET /v1/jobs/<jobId>/artifacts/stdout.log` | the gate's output as text |
@@ -134,7 +134,7 @@ When `serve` starts it checks the entries and puts the accepted ones in its own 
 
 ## Security notes
 
-- Only the commit identifier, the project and profile names and a short gate reference (`gate <worktree folder name>`) are sent. No source, secrets or credentials leave the computer.
+- Only the commit identifier, the project and profile names and a short gate reference (`gate-<worktree folder name>`) are sent. No source, secrets or credentials leave the computer.
 - The services come only from the environment `serve` gives each run, never from a shared file. Every contained worker can write to the gate slot folder. Had the list been a file there, one run could have chosen who answers the gates of other runs and of the supervisor. A worker can change only its own gate's environment, just as it could write its own `gate-exit.log`. The exact-head check (`gateHeadProblem`) and the verifier's independence cover that case.
 - Keep `caFile` in a folder workers cannot write, such as the supervisor data folder.
 - The service's own words (states, commit ids, errors) are reduced to plain single-line text before they reach `gate.log`. They cannot add lines the log readers take for a test summary.
