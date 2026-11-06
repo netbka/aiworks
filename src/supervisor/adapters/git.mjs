@@ -13,11 +13,15 @@ import { environmentExamplePath, safeEnvironmentExample } from '../environment-e
 import { POWERSHELL, readJsonIfExists, runnerIdentified, stopOwnedRunAsync } from '../proc.mjs';
 
 const SHA = /^[0-9a-f]{40}$/;
+// The supervisor's own git reads and checkouts see the real objects of a commit, never local replace refs: the
+// worktree a worker gets and the digests of the test result cache (test-cache.mjs) both come from them. Workers' own
+// environment (proc.mjs workerEnv) is not changed.
+const SUPERVISOR_GIT_ENV = Object.freeze({ GIT_NO_REPLACE_OBJECTS: '1' });
 
-export function exec(command, args, { cwd, input, timeoutMs = 180_000 } = {}) {
+export function exec(command, args, { cwd, input, timeoutMs = 180_000, env = {} } = {}) {
   const result = spawnSync(command[0], [...command.slice(1), ...args], {
     cwd, input, encoding: 'utf8', windowsHide: true, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024,
-    env: { ...process.env, ...DEVELOPMENT_ENV },
+    env: { ...process.env, ...env, ...DEVELOPMENT_ENV, ...SUPERVISOR_GIT_ENV },
   });
   return { ok: !result.error && result.status === 0, status: result.status, stdout: (result.stdout || '').trim(), stderr: (result.stderr || '').trim(), error: result.error?.code };
 }
@@ -54,7 +58,7 @@ export function execBounded(command, args, { cwd, timeoutMs = 30_000, killMs = 1
     };
     try {
       child = spawn(command[0], [...command.slice(1), ...args], { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
-        detached: process.platform !== 'win32', env: { ...process.env, ...DEVELOPMENT_ENV } });
+        detached: process.platform !== 'win32', env: { ...process.env, ...DEVELOPMENT_ENV, ...SUPERVISOR_GIT_ENV } });
     } catch (error) { finish(failed(error?.code ?? 'ESPAWN')); return; }
     if (child.pid) { try { onSpawn?.(child.pid); } catch { /* the caller's record of the start is its own */ } }
     timer = setTimeout(() => stop('ETIMEDOUT'), timeoutMs);

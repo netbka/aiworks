@@ -100,6 +100,10 @@ A checked version's preview of a page runs under existing containment. A project
 
 Only `script` (a repository-relative `.mjs`, `.cjs` or `.js` path) and optional `ready` (the page to open) are accepted; any other field makes the entry invalid and nothing starts. Without an entry the server preview stays unavailable. `previews.packageCache` is an optional absolute folder holding npm's cache, from which locked packages are prepared and hash-checked; if unset, npm's own cache location is used, and a relative path means nothing is prepared.
 
+### Test result cache
+
+`testCache` is off unless `testCache.enabled` is exactly `true`; off, verifier gates and prompts are as before, and a verifier gate that skipped files itself is refused. When on, a verifier's gate skips each test file whose inputs are unchanged since a recorded pass, and the supervisor checks every skipped file again from git before it accepts the result. `testCache.maxAgeDays` (default 7) bounds how old a recorded pass may be. A malformed block turns the cache off and is logged. Supervisor gates (merge refresh, group merge, base check) always run every file. A project whose release grant the supervisor has recorded is never offered the cache, and a release refuses a verification that counted cached files. See [the runbook](../SUPERVISOR.md) (test result cache).
+
 ### Notifications
 
 Telegram alerts take only references into your own secret store for the bot credential and the chat, never their values ([runbook section 10](../SUPERVISOR.md#10-owner-intervention-core)). Recording needs `ownerIntervention.enabled`; sending also needs `ownerIntervention.deliver` and a ready transport.

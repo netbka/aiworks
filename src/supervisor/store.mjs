@@ -236,6 +236,20 @@ CREATE TABLE IF NOT EXISTS base_checks (
   failed TEXT, summary TEXT, reason TEXT, updated_at INTEGER NOT NULL, red INTEGER NOT NULL DEFAULT 0, item TEXT,
   PRIMARY KEY (repository, base_sha, command));
 `;
+// Test result cache (test-cache.mjs): a test file passed or failed with exactly the inputs its digest names, on one Node
+// major version. Only the controller writes rows, from gates it trusts; insert-only, so no later write changes a
+// recorded result: the newest row for a file, digest and Node major decides. Created by a writer after DDL (Store).
+const TEST_RESULTS_DDL = `
+CREATE TABLE IF NOT EXISTS test_results (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, repository TEXT NOT NULL, file TEXT NOT NULL, digest TEXT NOT NULL,
+  node_major INTEGER NOT NULL, state TEXT NOT NULL CHECK (state IN ('passed', 'failed')), counts TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('verified-head', 'verifier-gate', 'supervisor-gate')), ref TEXT NOT NULL, at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS test_results_lookup ON test_results (repository, file, digest, node_major, at);
+CREATE TRIGGER IF NOT EXISTS test_results_no_update BEFORE UPDATE ON test_results
+  BEGIN SELECT RAISE(ABORT, 'test_results is insert-only'); END;
+CREATE TRIGGER IF NOT EXISTS test_results_no_delete BEFORE DELETE ON test_results
+  BEGIN SELECT RAISE(ABORT, 'test_results is insert-only'); END;
+`;
 
 const JSON_COLUMNS = new Set(['declaration', 'blocker', 'failures', 'findings', 'result', 'verification',
   'blocked', 'packet', 'outcome', 'payload', 'detail', 'message_ids', 'probe', 'last_evidence', 'resolution', 'message',
@@ -278,6 +292,11 @@ export class Store {
       this.depth = 0;
       // Only a writer upgrades legacy operations; status/dashboard reads never migrate stores.
       if (!readOnly) this.tx(() => {
+        // An unmerged branch once created test_results with one row per digest and no seq. Its rows were never trusted
+        // by a merged runtime, so that shape is dropped and created again.
+        const resultColumns = this.db.prepare('PRAGMA table_info(test_results)').all().map((column) => column.name);
+        if (resultColumns.length && !resultColumns.includes('seq')) this.db.exec('DROP TABLE test_results');
+        this.db.exec(TEST_RESULTS_DDL);
         const messageColumns = this.db.prepare('PRAGMA table_info(owner_messages)').all().map((column) => column.name);
         if (!messageColumns.includes('repository')) this.db.exec('ALTER TABLE owner_messages ADD COLUMN repository TEXT');
         // A chat is its first message's id; a message stored before chats reads thread_id as null and starts its own.
