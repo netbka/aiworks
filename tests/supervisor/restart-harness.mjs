@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { declaration, environment, sleep, runtimeCheckout } from './helpers.mjs';
+import { declaration, environment, sleep, runtimeCheckout, TIME_FACTOR } from './helpers.mjs';
 
 export const git = (cwd, ...args) => {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true });
@@ -60,7 +60,7 @@ export async function harness(t, { scenario, decl, config = {}, repositories = [
   // Up to three contained runs (20-30 s each under heavy load, measure-liveness.mjs), a lease takeover and a stale
   // heartbeat must fit; a passing case returns as soon as the predicate holds (historical regression).
   const waitFor = async (predicate, timeoutMs = 120_000) => {
-    const deadline = Date.now() + timeoutMs;
+    const deadline = Date.now() + timeoutMs * TIME_FACTOR;
     while (Date.now() < deadline) {
       const value = predicate();
       if (value) return value;
