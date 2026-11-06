@@ -19,7 +19,8 @@ export function structuredDecision(value) {
     ? { option: d.suggestion.option, reason: d.suggestion.reason } : null;
   return { question: d.question, options, ...(suggestion ? { suggestion } : {}),
     ...(text(d.continues, 500) ? { continues: d.continues } : {}), ...(text(d.unanswered, 500) ? { unanswered: d.unanswered } : {}),
-    ...(d.reversible === true ? { reversible: true } : {}) };
+    ...(d.reversible === true ? { reversible: true } : {}),
+    ...(typeof d.safeOption === 'string' && options.some((o) => o.id === d.safeOption) ? { safeOption: d.safeOption } : {}) };
 }
 
 /** Whether a task's stop is an owner decision the dashboard may answer (the same rule as the "needs-decision" copy). */
@@ -39,26 +40,38 @@ export function decisionId(campaignId, taskId, blocked) {
  * AW-017: whether AIWorks answers a decision itself, with its suggestion: every owner-reserved stop (B3) whose decision
  * names a suggested option. The answer goes the same way as the owner's (answerDecision), so it never widens the packet.
  */
+/**
+ * The option AIWorks answers with on its own, or null. An owner-reserved decision may be about disclosing or publishing, so
+ * the worker's suggestion is taken only when the worker marked it reversible (nothing published, disclosed or spent);
+ * otherwise only the option the worker marked as the safe one (safeOption: publishes or discloses nothing new). Never a guess.
+ */
+export function autoOption(decision) {
+  const ids = new Set((decision?.options ?? []).map((o) => o.id));
+  if (decision?.reversible === true && decision.suggestion && ids.has(decision.suggestion.option)) return decision.suggestion.option;
+  return decision?.safeOption && ids.has(decision.safeOption) ? decision.safeOption : null;
+}
+
 // A "verifier still rejects" stall at the repair limit is not answered: answering it would raise the repair limit, so the
 // controller settles it instead (settleStopped: delivered with known defects, or ended as not done).
 export const answersItself = (task) => isDecision(task) && task.blocked.class === 'B3' &&
-  Boolean(task.blocked.decision?.suggestion && task.blocked.decision.options?.some((o) => o.id === task.blocked.decision.suggestion.option));
+  autoOption(task.blocked.decision) !== null;
 
 /** AW-017: a worker's owner-reserved stop without a usable suggestion. It goes back to its step once, to decide within the packet. */
-export const sendsBack = (task) => isDecision(task) && task.blocked.class === 'B3' && /^owner-reserved:/.test(String(task.blocked.reason ?? '')) && !answersItself(task);
+export const sendsBack = (task) => isDecision(task) && task.blocked.class === 'B3' && /^owner-reserved:/.test(String(task.blocked.reason ?? '')) &&
+  !(task.blocked.decision?.suggestion && task.blocked.decision.options?.some((o) => o.id === task.blocked.decision.suggestion.option));
 
 /** The guidance for a step sent back to decide by itself (sendsBack). */
 export function decideGuidance(blocked) {
   return ['AIWorks does not wait for the owner: this step stopped for a decision without options and a suggestion, so it comes back to you once to decide within the packet.',
     blocked?.decision?.question ? `Question: ${blocked.decision.question}` : null, blocked?.reason ? `The stop: ${String(blocked.reason).slice(0, 1000)}` : null,
-    'Choose what keeps to the packet, its acceptance and its permissions, record the choice and why in your report, and finish the work. If the outcome cannot be reached within the packet, return evidence-unavailable and say exactly what is missing: AIWorks then ends the step as not done and records a follow-up. Never widen the packet.']
+    'Choose what keeps to the packet, its acceptance and its permissions, and publishes or discloses nothing new, record the choice and why in your report, and finish the work. If the outcome cannot be reached within the packet, return evidence-unavailable and say exactly what is missing: AIWorks then ends the step as not done and records a follow-up. Never widen the packet.']
     .filter(Boolean).join(' ');
 }
 
 /** Durable decision context for the step's builders and verifiers, within its bound authority. */
 export function answerGuidance(decision, { option = null, text: words = null, auto = false }) {
   const chosen = option ? decision?.options?.find((o) => o.id === option) : null;
-  return [auto ? 'AIWorks answered the decision this step stopped for with the suggested option, as the owner decided (AW-017).'
+  return [auto ? 'AIWorks answered the decision this step stopped for with the option that publishes or discloses nothing new, as the owner decided (AW-017). The owner can change the answer later.'
     : 'The owner answered the decision this step stopped for.',
     decision?.question ? `Question: ${decision.question}` : null,
     chosen ? `Chosen option: ${chosen.label} (${chosen.id}). Consequence: ${chosen.consequence}` : null, words ? `The owner's words: ${words}` : null,

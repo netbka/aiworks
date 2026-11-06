@@ -934,7 +934,7 @@ function autoAnswer(row) {
   const chosen = d?.options.find((o) => o.id === detail.option);
   if (!chosen) return null;
   return { taskId: detail.task, at: row.at, question: safeText(d.question, 500), chosen: safeText(chosen.label, 120),
-    reason: d.suggestion ? safeText(d.suggestion.reason, 500) : null,
+    reason: d.suggestion && d.suggestion.option === chosen.id ? safeText(d.suggestion.reason, 500) : null,
     others: d.options.filter((o) => o.id !== chosen.id).map((o) => safeText(o.label, 120)) };
 }
 
