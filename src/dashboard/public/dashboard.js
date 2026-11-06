@@ -1590,7 +1590,7 @@ function itselfEntries() {
 }
 
 // The kinds that are a fault of AIWorks itself; every other entry of "AIWorks itself" is a follow-up with its own action.
-const FAULT_KINDS = new Set(['merge-problem', 'unrecorded', 'unattended', 'controller', 'coordinator', 'release-failed', 'release-unknown']);
+const FAULT_KINDS = new Set(['merge-problem', 'unrecorded', 'unattended', 'controller', 'coordinator', 'release-failed', 'release-unknown', 'base-read-held']);
 
 /** How many real faults of its own stop AIWorks's work: the one grey line on Home, never part of the owner's count. */
 function ownProblemCount() {
@@ -1626,7 +1626,8 @@ function itselfLine(entry, word, tone, scope) {
   const { resolution, box } = entry.kind ? itemActions(entry) : { resolution: null, box: null };
   const open = entry.route && !resolution ? routeLink(entry.route.label, entry.route.address, 'needs-link')
     : entry.campaignId && entry.taskId && entry.repository ? routeLink('Open the step', { screen: 'step', project: entry.repository, work: entry.campaignId, step: entry.taskId }, 'needs-link') : null;
-  const why = entry.reason ? `${entry.reason}. ${entry.next ?? ''}`.trim() : entry.action ?? '';
+  const why = (entry.reason ? `${entry.reason}. ${entry.next ?? ''}`.trim() : entry.action ?? '')
+    + (entry.kind === 'base-read-held' ? `. Since ${dateTime(entry.since)}. ${entry.points?.[0]?.text ?? ''}` : '');
   return el('li', { class: 'itself-line', 'data-focus-scope': `itself/${scope}/${entry.campaignId ?? ''}/${entry.taskId ?? ''}/${entry.kind ?? ''}` },
     el('span', { class: `badge ${tone}` }, word),
     el('span', { class: 'itself-text' }, [project ? `${projectName(project)}: ` : '', entry.text ?? '', why ? ` ${why}` : ''].join('')),

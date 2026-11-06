@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, relative, isAbsolute } from 'node:path';
+import { basename, join, relative, isAbsolute } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
+import { heldBaseReads } from '../supervisor/adapters/git.mjs';
 import { campaignStatus, campaignPause, campaignCancel, campaignRecheck, campaignStart, supervisorLiveness } from '../supervisor/api.mjs';
 import { DEFAULTS } from '../supervisor/controller.mjs';
 import { safeText } from './roadmap.mjs';
@@ -1343,7 +1344,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
       connected: projectConnectionEnabled(dataDir) ? connectedProjects(dataDir) : [],
       accounts: dashboardAccounts(store, readConfig(dataDir), { now, dataDir }), releaseStop: releaseStopState(dataDir) });
     return { available: true, observedAt: new Date(now).toISOString(), controller, campaigns, costs: projectCosts(campaigns), local, localCosts: projectCosts(local, 'project'),
-      activity, coordinator, recent, settings, releases, goals,
+      activity, coordinator, recent, settings, releases, goals, baseHolds: heldBaseReads(dataDir).map((hold) => ({ checkout: basename(hold.repo), base: safeText(hold.base, 80), since: hold.since, runs: hold.runs, unidentified: hold.unidentified })),
       newestEvent: store.get('SELECT MAX(seq) AS seq FROM journal')?.seq ?? 0 };
   } catch { return { available: false, message: "AIWorks can't read its work records right now. What you see may be out of date. Buttons are off until it can read them again.", campaigns: [], costs: [], local: [], localCosts: [], activity: [] }; }
   finally { store?.close(); }
