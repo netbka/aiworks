@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import * as gitA from './adapters/git.mjs';
 import { failedTests, gateFailure, readGateRun, retireGate } from './gate.mjs';
 import { alive, checkout, gatePid, startGate } from './merge-refresh.mjs';
+import { recordGateResults } from './test-cache.mjs';
 
 const DEFAULT_TIMEOUT_MINUTES = 120;
 
@@ -105,8 +106,10 @@ export function baseCheckStep(controller, ctx, { repository, repoPath, worktreeR
     // Only here is the base itself red: its own gate finished on its checkout and failed. It gets one repair item
     // (controller.mjs recordBaseRed); a start failure, a timeout or a moved checkout says nothing about the base.
     write({ state: 'failed', failed: failedTests(run.summary), summary: run.summary, reason: `the base gate ${gateFailure(run)}`, red: true });
+    recordGateResults(controller, ctx, { repository, repoPath, sha: baseSha, dir: record.path, green: false });
   } else {
     write({ state: 'passed', failed: [], summary: run.summary, reason: null });
+    recordGateResults(controller, ctx, { repository, repoPath, sha: baseSha, dir: record.path, green: true });
   }
   record = row(store, repository, baseSha, settings.command);
   controller.log(`base check of ${repository} ${baseSha}: ${record.state}`);
