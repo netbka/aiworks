@@ -12,16 +12,27 @@ Code: `src/supervisor/check-services.mjs` (settings, the service client and resu
    - the checkout is clean at a known commit;
    - it is not a gate inside a gate (the suite's own gate tests);
    - the supervisor published at least one service for the checkout's `origin` repository (see [Settings](#settings-in-configjson));
-   - a branch of `origin`, as this checkout last fetched it, contains the commit. A service fetches from `origin` and accepts no uploaded source, and workers never push, so a commit that exists only on this computer runs here.
+   - a branch of `origin`, as this checkout last fetched it, contains the commit. A service fetches from `origin` and accepts no uploaded source, so a commit that exists only on this computer runs here.
 3. The services listed for the repository are tried in order. For each one the helper:
    - reads `GET /health` and skips the service unless it answers `{"status":"ok"}`;
    - submits the exact commit with `POST /v1/jobs`;
    - polls `GET /v1/jobs/<id>` every 10 seconds;
-   - cancels its own job and moves on when the job is still `pending` after `queueSeconds` (the service is busy), when the run takes longer than `timeoutMinutes`, or when the service stops answering.
-4. A finished job counts only as described in [Which answers count](#which-answers-count). When one counts, `gate.log` gets one line naming the service and job, then the service's own `stdout.log`, and `gate-exit.log` gets `0` (passed) or `1` (test failure). The gate holds no slot on this computer meanwhile.
+   - cancels its own job and moves on when the job is still queued after `queueSeconds` (the service is busy), when the run takes longer than `timeoutMinutes`, when the service answers a state the contract does not name twice in a row, or when it stops answering.
+
+   All services together get one time budget: the largest `timeoutMinutes` of those listed for the repository, at most 75 minutes. The gate on this computer then still fits a verifier's 120-minute bound.
+4. A finished job counts only as described in [Which answers count](#which-answers-count). When one counts, `gate.log` gets one line naming the service and job, then the service's own `stdout.log`, and `gate-exit.log` gets `0` (passed) or `1` (test failure). The gate holds no slot on this computer meanwhile, and the test result cache records nothing from it, because it ran on another computer and toolchain.
 5. When no service gave an answer that counts, the gate takes a slot here and runs as before. Every decision appears in `gate.log` as a line starting with `# check service`.
 
 The controller reads the run as it reads any gate run (`readGateRun`, `gateHeadProblem`): the recorded commit must be the verified head on a clean checkout.
+
+### Which gates can go to a service today
+
+Only commits already on `origin` can go to a service. A verifier checks a new head before anything is pushed: the supervisor publishes only verified work, and workers never push. So a verifier's gate of a new commit runs on this computer, as do merge-refresh gates, which test a local merge commit. What goes to a service today:
+
+- base checks of a base branch that is on `origin`;
+- re-checks of a head that was already pushed, such as a new verification after a moved base or a retry.
+
+Verifier gates of new commits can go to a service only once the service accepts the source from AIWorks, not just from `origin`. A proposed addition to the contract is `POST /v1/sources` taking a git bundle of the commit. AIWorks does not have it yet.
 
 ## Which answers count
 
@@ -35,7 +46,7 @@ Then:
 
 | Service state | In AIWorks |
 | --- | --- |
-| `passed` with `exitCode` 0, `commitSha` the exact commit, and a step whose `phase` ends in `-check`, whose `argv` ends in `run check` and whose `exitCode` is 0 | gate passed (exit 0) |
+| `passed` with `exitCode` 0, `commitSha` the exact commit, a step whose `phase` ends in `-check`, whose `argv` ends in `run check` and whose `exitCode` is 0, and a non-empty `stdout.log` (for a project tested by `scripts/run-tests.mjs`, one with its `# all test files` summary) | gate passed (exit 0) |
 | `test_failure` | gate failed (exit 1) |
 | `environment_failure`, `cancelled`, `interrupted` | does not count: next service, else this computer |
 | a pass missing any of the conditions above | does not count: next service, else this computer |
@@ -51,7 +62,7 @@ A service of kind `remote-gate-http` must provide the following.
 - HTTPS on a fixed address that the AIWorks computer can reach, normally on the local network. Reserve the address (for example a DHCP reservation), because the certificate names it.
 - A certificate for that address, signed by a CA certificate that you copy to the AIWorks computer (`caFile`). AIWorks trusts only that certificate for the service, never the system store, and never disables verification.
 - Access control without secrets in AIWorks's configuration: the reference service admits callers by their network address and lets a caller read and cancel only its own jobs. A service that needs a token is not supported yet, because `config.json` holds no secret values.
-- Requests and answers are small JSON, except `stdout.log`. AIWorks reads at most 64 MiB of any answer and waits at most 15 seconds for each response.
+- Requests and answers are small JSON, except `stdout.log`. AIWorks reads at most 64 MiB of any answer. It ends a request that has not completed within 30 seconds in total (5 minutes for `stdout.log`).
 
 ### Routes
 
@@ -89,10 +100,10 @@ Add `checkServices` to the supervisor's `config.json` in its data folder (instal
       "baseUrl": "https://192.0.2.10:4319",
       "caFile": "check-services/lab-laptop-ca.crt",
       "projects": {
-        "example-org/sampleapp": { "projectId": "sampleapp", "profile": "windows-full-node22" }
+        "example-org/sampleapp": { "projectId": "sampleapp", "profile": "full" }
       },
       "queueSeconds": 120,
-      "timeoutMinutes": 90
+      "timeoutMinutes": 60
     }
   ]
 }
@@ -106,12 +117,12 @@ Add `checkServices` to the supervisor's `config.json` in its data folder (instal
 | `caFile` | The CA certificate that signed the service certificate. A relative path is read from the supervisor data folder. |
 | `projects` | Which repositories may go to this service: `"<owner>/<repository>"` as in the checkout's `origin`, mapped to the service's own `projectId` and `profile`. Other repositories never go to it. |
 | `queueSeconds` | How long a job may stay queued before AIWorks cancels it and runs the gate itself. 10 to 3600, default 120. |
-| `timeoutMinutes` | The longest run AIWorks waits for. 5 to 600, default 90. Keep it under the verifier bound (`executor.verifierTimeoutMinutes`, default 120), because a run that ends without an answer that counts is then run here too. |
+| `timeoutMinutes` | The longest run AIWorks waits for. 5 to 75, default 60. The service is told to stop a minute earlier (`timeoutSeconds`). A run that ends without an answer that counts is then run here too, inside the verifier bound (`executor.verifierTimeoutMinutes`, default 120). |
 | `enabled` | `false` leaves the service out without deleting it. |
 
 Several services may be listed. They are tried in order, and for each repository only the services that list it are tried.
 
-When `serve` starts it checks the entries and writes the accepted ones to `check-services.json` in the gate slot folder (`AIWORKS_GATE_SLOTS_DIR`, default `aiworks-gate-slots` in the system temporary folder), where the gate helpers read them. An entry with a problem is left out and named in the supervisor log (`check service left out: ...`). Without accepted entries the file is removed and every gate runs here. Restart `serve` after changing the settings.
+When `serve` starts it checks the entries and puts the accepted ones in its own environment as `AIWORKS_CHECK_SERVICES`. Every worker and supervisor gate it starts inherits that variable, and the gate helper reads only it. An entry with a problem is left out and named in the supervisor log (`check service left out: ...`). Without accepted entries no gate is offered. Restart `serve` after changing the settings.
 
 ## Setting one up
 
@@ -124,5 +135,8 @@ When `serve` starts it checks the entries and writes the accepted ones to `check
 ## Security notes
 
 - Only the commit identifier, the project and profile names and a short gate reference (`gate <worktree folder name>`) are sent. No source, secrets or credentials leave the computer.
-- The gate helper runs inside the worker's containment and reads only `check-services.json`. A worker could rewrite that file, just as it could write `gate-exit.log` itself; what protects verification is the exact-head check (`gateHeadProblem`) and the verifier's independence, not the file.
+- The services come only from the environment `serve` gives each run, never from a shared file. Every contained worker can write to the gate slot folder. Had the list been a file there, one run could have chosen who answers the gates of other runs and of the supervisor. A worker can change only its own gate's environment, just as it could write its own `gate-exit.log`. The exact-head check (`gateHeadProblem`) and the verifier's independence cover that case.
+- Keep `caFile` in a folder workers cannot write, such as the supervisor data folder.
+- The service's own words (states, commit ids, errors) are reduced to plain single-line text before they reach `gate.log`. They cannot add lines the log readers take for a test summary.
+- A gate helper ended by its containment (a verifier past its time bound) cannot cancel its job, so the job finishes on the service. Each new gate submits a new job.
 - The service's output is copied into `gate.log` and may reach a pull request body only through the final test summary, as with a gate run here.
