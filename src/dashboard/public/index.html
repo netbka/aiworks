@@ -12,8 +12,7 @@
   <a class="skip-link" href="#main">Skip to content</a>
     <header class="topbar">
       <a class="brand" href="#/home"><span class="brand-mark" aria-hidden="true">aw<span>↗</span></span><span>AI<strong>Works</strong></span></a>
-      <div class="host"><span class="local-dot" aria-hidden="true"></span><div><strong id="host-name" aria-busy="true">…</strong><small id="host-detail">&nbsp;</small></div></div>
-      <div class="topbar-actions"><span id="connection" role="status" class="connection">Connecting…</span><a id="messages-link" class="messages-link" href="#/chats">✉ Chats <span id="message-count" class="nav-count"></span></a></div>
+            <div class="topbar-actions"><span id="connection" role="status" class="connection">Working</span><button id="header-pause" type="button" class="button secondary small" hidden>Pause all</button><a id="messages-link" class="messages-link" href="#/chats">✉ Chats <span id="message-count" class="nav-count"></span></a></div>
     </header>
   <aside class="sidebar">
     <nav class="global-nav" aria-label="Main navigation">
@@ -38,7 +37,6 @@
         <label><span class="sr-only">Filter by status</span><select id="status"><option value="">All steps</option><option value="done">Merged or report posted</option><option value="review">Published, merge not seen yet</option><option value="in_progress">In progress</option><option value="blocked">Stopped</option><option value="unknown">Result not known</option></select></label>
       </div>
       <div id="content"><div class="empty-state">Connecting to roadmap and supervisor sources…</div></div>
-      <footer class="page-footer"><span id="updated"></span></footer>
     </main>
   </div>
   <dialog id="cancel-dialog" aria-labelledby="cancel-title"><form method="dialog" novalidate><div class="dialog-icon" aria-hidden="true">!</div><h2 id="cancel-title"></h2><p id="cancel-description"></p><p id="cancel-text"></p><div class="dialog-actions"><button id="keep-work" class="button secondary" value="close" autofocus></button><button id="confirm-cancel" type="button" class="button danger"></button></div></form></dialog>
