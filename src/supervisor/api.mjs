@@ -327,7 +327,7 @@ const withCandidate = (store, campaignId, taskId) => {
 // ---- "Why is this step waiting?" (ADAPTIVE_SCHEDULER section 6, slice S8 supervisor half: RUN9). ----
 
 const RUNNABLE = ['pending', 'implemented', 'verified'];
-const OWNER_NEXT = 'None; listed on Home';
+const OWNER_NEXT = 'None; listed in Settings, AIWorks itself';
 const BLOCKER_TEXT = {
   budget: 'Needs your decision: this work program used its budget',
   auth: 'Needs you: an AI provider login failed',
