@@ -35,8 +35,24 @@ import { batchStep, groupTree } from './merge-batch.mjs';
 import { ConflictError, FencedError } from './store.mjs';
 import { awaitingAcceptance, mergeRefusal, pendingChanges } from './result-review.mjs';
 import { authorityChange } from './release/authority-path.mjs';
+import { contentFindings, privateTerms } from '../shared/public-text.mjs';
 
 const SHA = /^[0-9a-f]{40}$/;
+
+/**
+ * How many of the commits a local merge would add to main (`trusted..sha`) have a message the public-history check of
+ * a push refuses (scripts/check-public-scope.mjs: credentials, a personal path, another owner's project, an installation's
+ * private terms), or null when git cannot list them. On 2026-10-30 a worker's default merge message named a local
+ * repository path; once on trusted main, every later main contained it and GitHub main could never take it (#125).
+ * Unreadable private terms (.local/publication.json) count as none: they never block a local review.
+ */
+export function privateMessages({ git, repoPath, trusted, sha }) {
+  let terms = [];
+  try { terms = privateTerms(repoPath); } catch { /* malformed settings: the built-in checks still apply */ }
+  const listed = gitA.exec(git, ['log', '--format=%B%x00', `${trusted}..${sha}`], { cwd: repoPath });
+  if (!listed.ok) return null;
+  return listed.stdout.split('\0').filter((message) => message.trim() && contentFindings(message, terms).length).length;
+}
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
 const MISSING_RECHECK_MS = 60 * 60_000;
 const OFF = Object.freeze({ enabled: false, repositories: new Set(), held: new Set(), refresh: null, problem: null });
@@ -697,6 +713,16 @@ export function mergeLocal(controller, item, settings, repoPath, step = null) {
 
   const ctx = lease(controller, campaignId);
   if (!ctx) return false;
+  // Main never takes a commit whose message a push of main would refuse (#125). Refused before the request, so main and
+  // the ledger stay as they are; refusals back off (refusalWait). No matched value is written anywhere.
+  const leaks = privateMessages({ git, repoPath, trusted: tip.tip, sha });
+  if (leaks !== 0) {
+    const detail = leaks === null ? 'the commit messages it would add to main cannot be read'
+      : `${leaks} commit message(s) it would add to main contain private information (a personal path, a credential or a private name), which a push of main refuses; the branch needs those commits rewritten`;
+    controller.fenced(ctx, () => store.journal(campaignId, 'merge-refused', { task: task.task_id, sha, url, local: true, detail }, controller.now()));
+    controller.log(`merge of ${campaignId}/${task.task_id} refused: ${detail}`);
+    return true;
+  }
   // The request names the trusted tip before any object is written, so a restart recognizes the planned commit.
   if (!controller.fenced(ctx, () => {
     if (!still() || !accepted()) return false;
@@ -752,7 +778,7 @@ function repair(controller, ctx, item, repoPath, baseSha, refreshed) {
       `${paths.length ? `Conflicting paths: ${paths.join(', ')}. ` : 'It merges without a textual conflict; a semantic conflict is still possible. '}` +
       `${refreshed ? `The supervisor's refresh did not merge it: ${refreshed}. ` : ''}` +
       `Sibling commits on ${base}: ${commits.map((entry) => `${entry.sha.slice(0, 12)} ${entry.subject}`).join('; ') || 'unknown'}. ` +
-      `Merge ${baseSha} into this branch (git merge ${baseSha}), resolve any conflicts, run the full gate and commit the merge. Never rebase, reset or amend: ${sha} must stay an ancestor of the new head.`,
+      `Merge ${baseSha} into this branch (git merge -m "Merge ${base} at ${baseSha.slice(0, 12)} into this branch" ${baseSha}: always this message, never Git's default, which can name a local path), resolve any conflicts, run the full gate and commit the merge. Never rebase, reset or amend: ${sha} must stay an ancestor of the new head.`,
   };
   const stalled = controller.reopenPublished(ctx, fresh, finding, { limits: campaignLimits(decl), now,
     lastError: `merge-base-moved: ${sha} does not contain ${base} at ${baseSha}`,
