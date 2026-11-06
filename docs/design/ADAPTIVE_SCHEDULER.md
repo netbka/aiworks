@@ -150,7 +150,7 @@ A **write domain** is the part of a project one implement step may change.
 | --- | --- | --- |
 | Open implement operation (`recorded`, `dispatched`) | Yes | Active writer. Includes a run whose launch is unknown or whose process ownership is unresolved: suspicion is not proof it stopped. |
 | `implemented`, `verifying`, `verified` | Yes | Its commit is not yet integrated; a second writer would branch from a base without it. |
-| `done` with a commit deliverable, not yet in the fetched base branch | Yes | Published but unmerged. Released when the verified SHA (or its exact-head merge) is in the base, using the existing check `missingIntegratedDependencies` (`controller.mjs:463-477`). |
+| `done` with a commit deliverable, not yet in the fetched base branch | Yes | Published but unmerged. Released when the verified SHA (or its exact-head merge) is in the base, using the existing check `missingIntegratedDependencies` (`controller.mjs:463-477`). In the self-hosted repository with local main trusted, also released when the main ledger has a `gate-merge` row for that exact verified head, even after main was re-rooted (#163). |
 | `pending` after a cancelled or abandoned attempt, nothing pushed | No | Nothing was published. Its worktree stays and is reused by the same task only. |
 | Campaign `paused` | Yes, for the rows above | Pausing does not release ownership (scope A rule). |
 | Campaign `cancelled` or `finished` | Only for published-but-unmerged commits | Scope A releases registration ownership; the unmerged PR still changes those files. Released when merged or closed. A cancelled campaign of the self-hosted repository with local main trusted holds none: only the merge gate moves that main and it never merges a cancelled campaign. |
