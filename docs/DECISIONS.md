@@ -165,7 +165,8 @@ Owner decision 2026-10-30, in the owner's words (translated): "AIWorks decides a
 
 | Situation | What AIWorks does |
 | --- | --- |
-| A worker stopped a step for a decision with a suggestion | Answers it with the suggestion, as an owner answer: same authority, never a wider packet. The record keeps the question, options and reason |
+| A worker stopped a step for a decision with a suggestion the worker marked reversible, or that names a safe option | Answers it as an owner answer: same authority, never a wider packet. With the suggestion when it is marked reversible (nothing published, disclosed or spent); otherwise with the option the worker named as safe, the one that publishes and discloses nothing new. The record keeps the question, options and reason, and the owner can change the answer later |
+| A worker stopped a step for a decision whose suggestion is not marked reversible and that names no safe option (for example a disclosure the project's rules reserve to the owner) | Never guesses the publishing option: ends the step as not done and records a follow-up |
 | A worker stopped a step for a decision without options or a suggestion | Sends it back once to decide within the packet |
 | A step stopped at the repair limit whose last head passed the full check, with only the verifier's findings open | Delivers it as it is through the normal publication and merge path, with the findings recorded as known defects. It is never shown or counted as passed |
 | Any other stalled or stopped step, a second decision without a suggestion, or a step past the limit of automatic answers | Ends it as not done, with the steps that depend on it. Nothing of it is merged |

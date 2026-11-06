@@ -31,7 +31,7 @@ import { ANCHOR, MAX_DOCUMENT_BYTES, parseReference, resolveSection } from './re
 import { MAX_CITES } from './adapters/claude.mjs';
 import { runnerIdentified, stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions, decisionInstructions } from './instructions.mjs';
-import { answerGuidance, answersItself, decideGuidance, decisionId, isDecision, sendsBack, structuredDecision } from './decisions.mjs';
+import { answerGuidance, answersItself, autoOption, decideGuidance, decisionId, isDecision, sendsBack, structuredDecision } from './decisions.mjs';
 import { deliverableWithDefects, mergedHead, OWNER_CHANGES, ownerChangesFinding } from './result-review.mjs';
 import { POLICY as ROUTING_POLICY, autoReceipt, indicators, policyInputs, priorAttempt, receiptInputs, staticReceipt } from './router.mjs';
 import { roleCatalog } from './governance.mjs';
@@ -1032,7 +1032,7 @@ export class Controller {
           const key = `auto-decision:${ctx.id}:${fresh.task_id}:${campaign.authorization_version}:${answers.length}`;
           if (!this.store.addEvent(ctx.id, 'auto-decision', { taskId: fresh.task_id, authorizationVersion: campaign.authorization_version }, key, now)) return;
           this.store.run('UPDATE events SET processed_at = ? WHERE dedup_key = ?', now, key);
-          this.answerDecision(ctx, { taskId: fresh.task_id, decision: decisionId(ctx.id, fresh.task_id, fresh.blocked), option: fresh.blocked.decision.suggestion.option,
+          this.answerDecision(ctx, { taskId: fresh.task_id, decision: decisionId(ctx.id, fresh.task_id, fresh.blocked), option: autoOption(fresh.blocked.decision),
             authorizationVersion: campaign.authorization_version, scopeDigest: campaign.scope_digest, auto: true }, now);
           return;
         }
