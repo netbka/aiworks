@@ -386,18 +386,21 @@ async function slot(settings) {
 }
 
 // External check services (check-services.mjs, docs/guides/check-services.md): the default full gate of a clean checkout
-// is first offered to the services the supervisor listed for this repository. An answer that counts ends the gate here
+// is first offered to the services serve put in this process's environment for this repository (never to services named
+// in a file: see check-services.mjs). An answer that counts ends the gate here
 // with the service's output and exit code; otherwise the gate runs on this computer as before. A gate inside a gate, an
 // explicit command or a changed checkout is never offered.
 async function offload(command) {
   if (process.env[NESTED] || command.join(' ') !== 'npm run check') return null;
   const head = headOf(read(GATE_FILES.head) ?? '');
   if (!head.sha || head.clean !== true) return null;
-  const services = readCheckServices(slotSettings().dir);
+  const services = readCheckServices();
   if (!services.length) return null;
   try {
     return await runOnService({ services, repository: originRepository(), sha: head.sha, available: (sha) => onOrigin(sha),
-      say: (line) => console.log(line), reference: `gate ${basename(process.cwd())}` });
+      say: (line) => console.log(line), reference: `gate ${basename(process.cwd())}`,
+      // A project run by scripts/run-tests.mjs ends with its summary; a pass without one is not taken.
+      summaryRequired: existsSync(join('scripts', 'run-tests.mjs')) });
   } catch (error) {
     console.log(`# check services failed (${error.message}); the gate runs on this computer`);
     return null;
