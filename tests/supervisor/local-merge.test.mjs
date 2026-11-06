@@ -249,9 +249,9 @@ test('LO L8 refresh: a trusted tip moved under a verified review merges only the
 test('the local merge gate never puts on main a commit whose message a push of main would refuse (#125)', { skip: skipWithoutSqlite }, async (t) => {
   const { env, forbidden, sha, anchor, pass, journal, gateRows } = await delivered(t);
   const main = () => git(env.repo, 'rev-parse', 'main');
-  // The installation's private terms name a word of the verified commit's own message.
-  const term = git(env.repo, 'log', '-1', '--format=%B', sha).split(/[^A-Za-z]+/).find((word) => word.length >= 5);
-  assert.ok(term, 'the verified commit message has a word to mark private');
+  // The installation's private terms name the session id in the verified commit's own message (`work <session id>`).
+  const term = git(env.repo, 'log', '-1', '--format=%B', sha).trim().split(/\s+/)[1];
+  assert.ok(term?.length >= 8, 'the verified commit message has a word to mark private');
   writeFileSync(join(env.repo, '.git', 'info', 'exclude'), '.local/\n');
   mkdirSync(join(env.repo, '.local'), { recursive: true });
   writeFileSync(join(env.repo, '.local', 'publication.json'), JSON.stringify({ privateTerms: [term] }));
