@@ -213,7 +213,7 @@ export function renderAlert(message) {
     title: line(`${cls ? LABEL[cls] : 'Notice'}: ${message?.project ?? 'AIWorks'}${reminder}`, 120),
     lines: [line(message?.blocked), line(message?.impact), message?.nextAction ? line(`Next: ${message.nextAction}`) : null,
       line(message?.safeState)].filter(Boolean),
-    buttons: [{ label: cls === 'B3' ? 'Decide in AIWorks' : 'Open in AIWorks', address: '#/settings/itself' },
+    buttons: [{ label: cls === 'B3' ? 'Decide in AIWorks' : 'Open in AIWorks', address: message?.route === 'home' ? '#/home' : '#/settings/itself' },
       ...(link ? [{ label: 'Tracking item', address: link }] : [])],
   };
 }
