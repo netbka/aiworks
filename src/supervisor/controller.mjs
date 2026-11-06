@@ -128,7 +128,7 @@ export const DEFAULTS = {
   // aiworks#140: each step of a base read (the fetch, then the read of its ref) and each remote branch read ends by this.
   baseReadMs: 30_000,
   // Beside it, the start and drain of the Windows job a base fetch runs in (execContained).
-  baseReadOverheadMs: 60_000,
+  baseReadOverheadMs: 120_000,
 };
 // The fixed failures of a base read (fetchBase): the stage that failed, never the command's own output. `unread`: a
 // dispatch needed a base that was not read before its fence (dispatchBase). `uncontained`: a fetch in that checkout
