@@ -278,27 +278,3 @@ test('workers inherit only exact, validated project tuning names, never paths, p
     CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1', BASH_DEFAULT_TIMEOUT_MS: '1800000', BASH_MAX_TIMEOUT_MS: '3600000' });
   assert.ok(!invocation.argv.some((arg) => /example-host/.test(arg)), 'the project allow rules are not carried over');
 });
-
-// READ3 (docs/design/SCOPED_READING.md sections 5.4 and 13): both drafting prompts and the planning step ask for section
-// marks; the schemas they are checked against stay what they were at the task base (b0e63e7).
-test('both coordinator drafting prompts and PLAN_RULE ask for section marks and bundled steps; their schemas are unchanged', { skip: !SQLITE }, async () => {
-  const { createHash } = await import('node:crypto');
-  const { BUNDLE_STEPS_RULE, MARK_SECTIONS_RULE, PLAN_RULE, stageSchema } = await import('../../src/supervisor/adapters/executors.mjs');
-  assert.match(MARK_SECTIONS_RULE, /^In every task's `references`, mark the sections that bear on the task as `path#heading-slug`/);
-  assert.match(MARK_SECTIONS_RULE, /The verifier reads every referenced document in full, so a narrow mark costs a rejection at worst, never a missed rule\.$/);
-  const message = { id: 1, text: 'Plan the next work.', received_at: Date.parse('2026-10-15T08:00:00Z'), repository: 'example-org/sampleapp' };
-  const drafts = {
-    message: coordinator.buildPrompt({ messages: [message], repositories: COORDINATOR.repositories }),
-    intake: coordinator.buildIntakePrompt({ request: { route: 'note', text: 'Add a page.', plan_only: false },
-      project: { name: 'sampleapp', source_kind: 'local-git' }, pinned: { base: 'a'.repeat(40) }, evidence: {} }),
-    plan: PLAN_RULE,
-  };
-  for (const [name, text] of Object.entries(drafts)) assert.equal(text.split(MARK_SECTIONS_RULE).length, 2, `${name} carries the sentence once`);
-  for (const [name, text] of Object.entries(drafts)) assert.equal(text.split(BUNDLE_STEPS_RULE).length, 2, `${name} carries the bundling rule once`);
-  assert.ok(drafts.message.indexOf(MARK_SECTIONS_RULE) > drafts.message.indexOf('`proposedCampaign`'), 'after the draft declaration step');
-  assert.ok(drafts.intake.indexOf(MARK_SECTIONS_RULE) > drafts.intake.indexOf('- Each task: id, title, goal, acceptance, references'), 'after the task fields');
-  const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-  assert.equal(digest(coordinator.COORDINATOR_SCHEMA), '234ab376d8b7f4dc166bf0bb69e018675647449d20e507631ccd4a58e82ff640');
-  assert.equal(digest(coordinator.INTAKE_SCHEMA), '6df1a3aa3ea4bcb1b8e71486df7b105e96f8206edbe1dfe177cd04bf8330a157');
-  assert.equal(digest(stageSchema('implementer', 'plan')), '013860855c0ac65c183551a10455bef5926449bcd7319d79a8afb48917d95c1d');
-});

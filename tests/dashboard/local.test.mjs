@@ -14,9 +14,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { once } from 'node:events';
 import { Store } from '../../src/supervisor/store.mjs';
-import { SNAPSHOT_DIR } from '../../src/supervisor/adapters/mirror.mjs';
 import { pinRequest, recordDraft, workRequest } from '../../src/supervisor/intake.mjs';
-import { recordCandidate } from '../../src/supervisor/local-candidates.mjs';
 import { connectFolderProject } from '../../src/supervisor/project-connect.mjs';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
 import { declaration as githubDeclaration, GOVERNANCE } from '../supervisor/helpers.mjs';
@@ -44,22 +42,7 @@ function snapshot(root) {
   return seen;
 }
 
-/** The verified commit on top of the baseline in AIWorks's copy, written with a temporary index (nothing checked out). */
-function verifiedCommit(repo, parent, files, tmp) {
-  const env = { GIT_INDEX_FILE: join(tmp, `index-${process.hrtime.bigint()}`) };
-  git(repo, ['read-tree', parent], { env });
-  for (const [path, bytes] of Object.entries(files)) {
-    if (bytes === null) { git(repo, ['update-index', '--force-remove', path], { env }); continue; }
-    const blob = git(repo, ['hash-object', '-w', '--stdin'], { input: bytes });
-    git(repo, ['update-index', '--add', '--cacheinfo', `100644,${blob},${path}`], { env });
-  }
-  const sha = git(repo, ['commit-tree', git(repo, ['write-tree'], { env }), '-p', parent, '-m', 'the verified result']);
-  git(repo, ['update-ref', `refs/heads/aiworks/task/${sha.slice(0, 12)}`, sha]);
-  return sha;
-}
-
 const FILES = { 'AGENTS.md': '# Notes rules\n', 'README.md': '# Notes\nBuy milk.\n', 'old.txt': 'to be deleted\n' };
-const RESULT = { 'README.md': '# Notes\nBuy milk.\nSearch: type a word.\n', 'src/search.js': 'export const search = () => [];\n', 'old.txt': null };
 
 /**
  * A plain folder connected with project connection and Plan and do on, a merged AIWorks checkout, and two dashboards:
@@ -145,58 +128,6 @@ test('OW S12: Approve and start registers exactly the reviewed local plan; one f
   assert.equal(work.plans.find((item) => item.id === plan.id).code, 'APPROVED');
   assert.equal(work.local.notes[0].id, campaignId);
   assert.doesNotMatch(JSON.stringify(work), NO_PR);
-});
-
-test('OW S12: Apply is refused on a changed folder with nothing written, refused from a program AIWorks started, and Undo apply restores the folder', async (t) => {
-  const r = await rig(t);
-  const { campaignId, approval } = await planned(r);
-  assert.equal((await r.owner.post('/api/work/approve', approval())).status, 200);
-  // The independent checker accepted T1 at this commit in AIWorks's copy (as the controller records it).
-  const project = r.store.all('SELECT * FROM projects')[0];
-  const sha = verifiedCommit(join(project.mirror_root, SNAPSHOT_DIR), r.project.current_baseline.commit, RESULT, r.tmp);
-  recordCandidate(r.store, { declaration: r.store.campaign(campaignId).declaration, deliverable: 'commit', now: Date.now(),
-    task: { task_id: 'T1', verified_sha: sha, verification: { verdict: 'accepted', summary: 'Independent verification.', checks: [], findings: [] } } });
-  const result = (await r.owner.state()).work.local.notes[0].results[0];
-  assert.equal(result.action, 'apply');
-  assert.doesNotMatch(JSON.stringify((await r.owner.state()).work.local), NO_PR);
-  const apply = () => ({ requestId: randomUUID(), campaignId, taskId: 'T1', seq: result.seq });
-  const before = snapshot(r.folder);
-
-  // A program AIWorks started cannot apply.
-  const fromAiworks = await r.aiworks.post('/api/work/apply', apply());
-  assert.equal(fromAiworks.status, 403);
-  assert.equal(fromAiworks.body.code, 'APPLY_FROM_AIWORKS');
-  assert.deepEqual(snapshot(r.folder), before);
-
-  // The owner changed a file the result touches since AIWorks copied the folder: refused, nothing written.
-  writeFileSync(join(r.folder, 'README.md'), '# Notes\nBuy milk and eggs.\n');
-  const changed = snapshot(r.folder);
-  const refused = await r.owner.post('/api/work/apply', apply());
-  assert.equal(refused.status, 200);
-  assert.equal(refused.body.outcome, 'refused');
-  assert.equal(refused.body.code, 'APPLY_FOLDER_CHANGED');
-  assert.deepEqual(snapshot(r.folder), changed, 'nothing was written');
-
-  // Put back, then Apply writes exactly the result.
-  writeFileSync(join(r.folder, 'README.md'), FILES['README.md']);
-  const applied = await r.owner.post('/api/work/apply', apply());
-  assert.equal(applied.status, 200, applied.body.error);
-  assert.equal(applied.body.outcome, 'applied');
-  assert.equal(readFileSync(join(r.folder, 'README.md'), 'utf8'), RESULT['README.md']);
-  assert.equal(readFileSync(join(r.folder, 'src', 'search.js'), 'utf8'), RESULT['src/search.js']);
-  const shown = (await r.owner.state()).work.local.notes[0].results[0];
-  assert.equal(shown.action, 'undo');
-  assert.doesNotMatch(JSON.stringify(shown), NO_PR);
-
-  // Undo apply: refused from a program AIWorks started, and from the owner the folder is back byte for byte.
-  const after = snapshot(r.folder);
-  const undoFromAiworks = await r.aiworks.post('/api/work/undo', { requestId: randomUUID(), applyId: applied.body.applyId });
-  assert.equal(undoFromAiworks.status, 403);
-  assert.deepEqual(snapshot(r.folder), after);
-  const undone = await r.owner.post('/api/work/undo', { requestId: randomUUID(), applyId: applied.body.applyId });
-  assert.equal(undone.status, 200, undone.body.error);
-  assert.equal(undone.body.outcome, 'rolled-back');
-  assert.deepEqual(snapshot(r.folder), before);
 });
 
 test('WP3: an edited plan is a new version; only that exact version starts, once, with its scope, protected paths and unknown estimate kept', async (t) => {

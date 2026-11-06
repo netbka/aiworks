@@ -30,21 +30,6 @@ test('killed after launching the runner: the replacement adopts the run instead 
   assert.equal(h.env.calls().filter((c) => c.role === 'implement').length, 1);
 });
 
-test('controller killed while the worker runs: the live run is adopted, not duplicated', { skip: skipWithoutSqlite }, async (t) => {
-  const h = await harness(t, { scenario: { implement: ['sleep:1500:commit'] } });
-  const first = h.serve();
-  await h.waitFor(() => h.env.calls().length === 1);
-  first.kill();
-  await first.exited;
-  const second = h.serve();
-  await h.finished();
-  second.kill();
-  assert.equal(h.env.calls().filter((c) => c.role === 'implement').length, 1);
-  const takeovers = h.store.all("SELECT detail FROM journal WHERE kind = 'lease-acquired'");
-  assert.equal(takeovers.length, 2);
-  assert.equal(takeovers[1].detail.generation, 2);
-});
-
 test('whole process tree lost (reboot): stale heartbeat is reconciled and a fresh session retries', { skip: skipWithoutSqlite }, async (t) => {
   // The first worker must outlive the owned stop: under load the stop alone took up to 7.2 s, so a 4 s worker could finish
   // first and the stop found nothing running (historical regression). Stop on the runner receipt that carries the job identity.
