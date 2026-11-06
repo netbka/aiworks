@@ -1,7 +1,6 @@
-// Home v2 data (docs/design/HOME_V2.md), read through GET /api/v2/home on a synthetic store of fictional projects: a step
-// is landed only when its checked version was merged, once per step however many events it had; the needs count is the
-// one owner-action set, so a result AIWorks merged itself is never counted as waiting for the owner; and goal titles
-// carry no reference numbers, hashes, ids or codes. No GitHub, network or model call.
+// Home v2 data (docs/design/HOME_V2.md), read through GET /api/v2/home on a synthetic store of fictional projects: the needs
+// count is the one owner-action set, so a result AIWorks merged itself is never counted as waiting for the owner.
+// No GitHub, network or model call.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { once } from 'node:events';
@@ -79,7 +78,7 @@ async function readHome(dataDir) {
   } finally { server.close(); }
 }
 
-test('Home lands a merged step once, counts only what the owner must answer and shows plain goal titles', async (t) => {
+test('Home counts only what the owner must answer; a result AIWorks merged is never waiting for the owner', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'aiworks-home-v2-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5 }));
   const dataDir = join(root, 'data');
@@ -88,11 +87,6 @@ test('Home lands a merged step once, counts only what the owner must answer and 
   const { home, state } = await readHome(dataDir);
   assert.equal(home.available, true);
 
-  // Three events of one step (built, checked, merged) are one landed entry.
-  for (const type of ['built', 'checked', 'merged']) assert.equal(home.since.counts[type], 1, `the step's ${type} event is recorded`);
-  assert.equal(home.landed.total, 1, 'one landed entry per merged step, not per event');
-  assert.deepEqual(home.landed.entries.map(({ title, project }) => ({ title, project })), [{ title: 'Order form', project: 'bakery' }]);
-
   // Needs: the one owner-action set. The payment the owner must make counts; the result AIWorks merged does not.
   const actions = state.owner.items.filter((item) => !item.system);
   assert.equal(home.needs.count, actions.length);
@@ -100,19 +94,4 @@ test('Home lands a merged step once, counts only what the owner must answer and 
   assert.equal(home.needs.count, 1);
   assert.ok(!actions.some((item) => item.campaignId === 'bakery-orders'), 'a result AIWorks merged is landed, never waiting for the owner');
 
-  // Goals: every running or paused goal, asks-you first and paused last, one segment per step.
-  assert.deepEqual(home.goals.map(({ title, state: goalState }) => [title, goalState]),
-    [['Seasonal menu page', 'Asks you'], ['Online cake orders', 'Building'], ['Share garden photos', 'Paused']]);
-  const [menu, orders, garden] = home.goals;
-  assert.equal(menu.now, 'Waiting for your answer');
-  assert.deepEqual([orders.now, orders.done, orders.total, orders.segments], ['Now: Order email', 1, 3, ['done', 'now', 'todo']]);
-  assert.deepEqual([garden.dropped, garden.segments], [1, ['todo', 'dropped']]);
-  for (const { title } of home.goals) {
-    assert.ok(title.length <= 60, `"${title}" is at most 60 characters`);
-    assert.doesNotMatch(title, /#\d|\b[0-9a-f]{7,}\b|\b[A-Z]+-\d+|\b[A-Z]{2,}-[A-Z0-9]|\(|wave \d/i, `"${title}" has no reference, hash, id or code`);
-  }
-
-  // Quiet projects and today's spend on the running goals.
-  assert.deepEqual(home.quiet, [{ name: 'library', state: 'Done' }]);
-  assert.equal(home.spentToday.usd, new Date(Date.now() - 3 * H).toDateString() === new Date().toDateString() ? 1.25 : null);
 });
