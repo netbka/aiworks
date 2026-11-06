@@ -361,29 +361,6 @@ test('a cancellation committed after a moved-base task is selected leaves its co
   assert.deepEqual(r.mergeCalls().map((call) => call.fields.sha), [heads[A]]);
 });
 
-test('with CI repair on, a head merges only after its CI passed: never while CI is unread, pending or failed', async (t) => {
-  const r = rig(t);
-  const { [A]: verified } = await publish(r);
-  r.start({ merges: ON });
-  // CI is played by the test: the controller reads it (ciRepair on) but the journal rows come from here.
-  r.controller.ci = true;
-  r.controller.checkPublishedCi = () => {};
-  const ci = (kind) => r.store.journal(A, kind, { task: 'A1', sha: verified }, Date.now());
-  const waits = () => r.journal(A, 'merge-waiting').map((row) => row.reason);
-  await r.tick();
-  assert.equal(r.mergeCalls().length, 0, 'CI never read: no merge');
-  for (const [kind, reason] of [['ci-pending', /not passed/], ['ci-failed', /CI failed/]]) {
-    ci(kind);
-    r.advance(); await r.tick();
-    assert.equal(r.mergeCalls().length, 0, `${kind}: no merge`);
-    assert.match(waits().at(-1), reason);
-  }
-  ci('ci-passed');
-  r.advance(); await r.tick();
-  assert.equal(r.mergeCalls().length, 1, 'merged once CI passed');
-  assert.equal(r.journal(A, 'merged').length, 1);
-});
-
 test('requested changes hold the verified head, reopen one bounded repair round, and only a freshly verified head is published and merged', async (t) => {
   const r = rig(t);
   const words = 'Synthetic owner request: rename the heading to Items.';

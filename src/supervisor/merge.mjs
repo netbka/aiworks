@@ -555,7 +555,7 @@ export function mergeNow(controller, item, baseSha, repoPath = null, tree = null
   controller.injectFault('before-merge');
   try {
     controller.fenced(ctx, () => {
-      const { mergeCommit } = mergeWithMergeCommit({ gh, repository, number, sha });
+      const { mergeCommit } = mergeWithMergeCommit({ gh, repository, number, sha, local: { git: controller.cmd.git, repoPath: repoPath ?? controller.repo(decl).path, base: baseSha, head: sha, tree } });
       controller.injectFault('after-merge');
       record(controller, ctx, item, mergeCommit, { reconciled: false, requested: true });
     });

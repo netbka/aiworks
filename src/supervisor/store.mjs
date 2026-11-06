@@ -226,6 +226,29 @@ CREATE TRIGGER IF NOT EXISTS work_item_comments_no_update BEFORE UPDATE ON work_
   BEGIN SELECT RAISE(ABORT, 'work_item_comments is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS work_item_comments_no_delete BEFORE DELETE ON work_item_comments
   BEGIN SELECT RAISE(ABORT, 'work_item_comments is append-only'); END;
+-- Base compare (base-check.mjs): one gate run of a base commit per repository, base SHA and gate command (JSON array).
+-- state running, then passed or failed once; failed is the JSON list of failed test ids, NULL when unknown. red is 1
+-- when the base gate itself finished and failed (not a start failure or a timeout); item is where its one repair item
+-- was recorded, set once (controller.mjs recordBaseRed).
+CREATE TABLE IF NOT EXISTS base_checks (
+  repository TEXT NOT NULL, base_sha TEXT NOT NULL, command TEXT NOT NULL, path TEXT NOT NULL,
+  started_at INTEGER NOT NULL, state TEXT NOT NULL CHECK (state IN ('running', 'passed', 'failed')),
+  failed TEXT, summary TEXT, reason TEXT, updated_at INTEGER NOT NULL, red INTEGER NOT NULL DEFAULT 0, item TEXT,
+  PRIMARY KEY (repository, base_sha, command));
+`;
+// Test result cache (test-cache.mjs): a test file passed or failed with exactly the inputs its digest names, on one Node
+// major version. Only the controller writes rows, from gates it trusts; insert-only, so no later write changes a
+// recorded result: the newest row for a file, digest and Node major decides. Created by a writer after DDL (Store).
+const TEST_RESULTS_DDL = `
+CREATE TABLE IF NOT EXISTS test_results (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, repository TEXT NOT NULL, file TEXT NOT NULL, digest TEXT NOT NULL,
+  node_major INTEGER NOT NULL, state TEXT NOT NULL CHECK (state IN ('passed', 'failed')), counts TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('verified-head', 'verifier-gate', 'supervisor-gate')), ref TEXT NOT NULL, at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS test_results_lookup ON test_results (repository, file, digest, node_major, at);
+CREATE TRIGGER IF NOT EXISTS test_results_no_update BEFORE UPDATE ON test_results
+  BEGIN SELECT RAISE(ABORT, 'test_results is insert-only'); END;
+CREATE TRIGGER IF NOT EXISTS test_results_no_delete BEFORE DELETE ON test_results
+  BEGIN SELECT RAISE(ABORT, 'test_results is insert-only'); END;
 `;
 
 const JSON_COLUMNS = new Set(['declaration', 'blocker', 'failures', 'findings', 'result', 'verification',
@@ -269,6 +292,11 @@ export class Store {
       this.depth = 0;
       // Only a writer upgrades legacy operations; status/dashboard reads never migrate stores.
       if (!readOnly) this.tx(() => {
+        // An unmerged branch once created test_results with one row per digest and no seq. Its rows were never trusted
+        // by a merged runtime, so that shape is dropped and created again.
+        const resultColumns = this.db.prepare('PRAGMA table_info(test_results)').all().map((column) => column.name);
+        if (resultColumns.length && !resultColumns.includes('seq')) this.db.exec('DROP TABLE test_results');
+        this.db.exec(TEST_RESULTS_DDL);
         const messageColumns = this.db.prepare('PRAGMA table_info(owner_messages)').all().map((column) => column.name);
         if (!messageColumns.includes('repository')) this.db.exec('ALTER TABLE owner_messages ADD COLUMN repository TEXT');
         // A chat is its first message's id; a message stored before chats reads thread_id as null and starts its own.
@@ -295,6 +323,11 @@ export class Store {
         // reads health_check as null, "not checked by the owner", and the store version does not change.
         const releaseColumns = this.db.prepare('PRAGMA table_info(releases)').all().map((column) => column.name);
         if (!releaseColumns.includes('health_check')) this.db.exec('ALTER TABLE releases ADD COLUMN health_check TEXT');
+        // The repair item of a red base (controller.mjs recordBaseRed) is additive: a base check recorded before it reads
+        // red as 0 and gets no item, and the store version does not change.
+        const baseColumns = this.db.prepare('PRAGMA table_info(base_checks)').all().map((column) => column.name);
+        if (!baseColumns.includes('red')) this.db.exec('ALTER TABLE base_checks ADD COLUMN red INTEGER NOT NULL DEFAULT 0');
+        if (!baseColumns.includes('item')) this.db.exec('ALTER TABLE base_checks ADD COLUMN item TEXT');
       });
     } catch (error) {
       this.db.close();
