@@ -23,7 +23,7 @@ import { autoApplyPass } from './release/owner-apply.mjs';
 import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountFull, accountOf, accountWait, buildTaskSignature, clearAccountWait, formatSignatureLines, formatTokensUsage, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
 import { BEYOND_RULE, beyondConstraint, domainOf, outsideWrites, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, hostPressure, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
-import { hostSamplerFor } from './host.mjs';
+import { gatePauseOn, hostSamplerFor, pressureThresholds } from './host.mjs';
 import { tmpdir, totalmem } from 'node:os';
 import { cleans, cleanupSettings, createStackSweeper, inside, openOperations, runningBatches, runningRefreshes, workerJobLimits } from './host-safety.mjs';
 import { containsSecret, coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
@@ -41,8 +41,9 @@ import { mergePass, mergeSettings } from './merge.mjs';
 import { mainLedger, selfHostingSettings, trustedTip, trustsLocalMain } from './self-hosting.mjs';
 import { programPass } from './program.mjs';
 import { cleanupPass } from './cleanup.mjs';
-import { GATE_FILES, gateFailure, readGateRun } from './gate.mjs';
-import { baseCheckStep, baseCompareSettings, baseRecord, sharedBaseFailures } from './base-check.mjs';
+import { BROWSER_RUN, browserLockPath, GATE_FILES, gateFailure, gateHeadProblem, readGateRun, slotSettings } from './gate.mjs';
+import { baseCheckStep, baseCompareSettings, baseRecord, claimBaseRed, settleBaseRed, sharedBaseFailures } from './base-check.mjs';
+import { CACHE_RULE, checkClaims, hasRunner, insertResults, offerCache, otherNodeMajor, resultsOf, testCacheSettings } from './test-cache.mjs';
 import { isLocalTarget, recordCandidate } from './local-candidates.mjs';
 import { checkLocalDispatch, LOCAL_ADMISSION_ON } from './local-admission.mjs';
 import { addComment, createItem, followUp, reviewItem, WorkListError, workAuthorization, workLink } from './work-list.mjs';
@@ -445,7 +446,7 @@ export class Controller {
   constructor({ store, config, dataDir, log = () => {}, now = () => Date.now(), instanceId = randomUUID(),
     codeRevision = null, fault = process.env.AIWORKS_FAULT ?? null, notifier = noopTransport, probes = {},
     governanceRoot = undefined, revisionCheck = null, revisionCheckMs = REVISION_CHECK_MS, profiles = null, profileHomes = null,
-    alertDeps = {}, sampler = null, probe = null, cpuMonitor = null }) {
+    alertDeps = {}, sampler = null, probe = null, gates = null, cpuMonitor = null }) {
     Object.assign(this, { store, dataDir, log, now, instanceId, codeRevision, fault, notifier, probes, governanceRoot,
       revisionCheck, revisionCheckMs, profiles, profileHomes });
     this.config = { ...DEFAULTS, ...config };
@@ -482,6 +483,11 @@ export class Controller {
     // the last wait reasons are per-tick memory only; every admission input is a store row or a local git ref. The base
     // check times and the PRs found merged at their exact head are caches: a restart reads them again.
     this.sched = schedulerEnabled(this.config);
+    // Gates and web task runs keep apart only with the gate pause on (host.mjs gatePauseOn); `gates` (cli.mjs serve) counts
+    // the gates running now, and the web runs held back for one are logged once each.
+    this.browserGuard = gatePauseOn(this.config);
+    this.gates = gates;
+    this.gateHeldWeb = new Set();
     this.candidates = [];
     this.fanoutWaited = new Set();
     // CAAM profiles that a dispatch found at their learned limit while no profile could run (CAAM5): per-tick memory, as
@@ -491,7 +497,7 @@ export class Controller {
     // an injected sampler replaces the host in tests), and the static accounts a pass found at their learned limit
     // (per-tick memory, as profileWaited; the next useful result on one of them raises its limit by one).
     // `probe` (host.mjs createHostProbe) adds ports and Docker; cli.mjs serve supplies it, tests and other callers do not.
-    this.sampler = this.sched ? sampler ?? hostSamplerFor(this.config, { probe }) : null;
+    this.sampler = this.sched ? sampler ?? hostSamplerFor(this.config, { probe, gates }) : null;
     this.accountWaited = new Set();
     this.waitReasons = new Map();
     this.domainWaits = [];
@@ -506,6 +512,10 @@ export class Controller {
     if (baseCompare?.problem) this.log(`base compare is off: ${baseCompare.problem}`);
     this.baseCompare = baseCompare?.problem ? null : baseCompare;
     this.baseWaits = new Map();
+    // Test result cache (test-cache.mjs): off unless config.json `testCache.enabled` is true. Malformed is off, logged.
+    const testCache = testCacheSettings(this.config.testCache);
+    if (testCache?.problem) this.log(`test cache is off: ${testCache.problem}`);
+    this.testCache = testCache?.problem ? null : testCache;
     // AW-005: where the trusted main lives, for the texts of the runtime-not-merged hold. cli.mjs serve checks the same setting.
     // LOCAL_OPERATION.md section 4 (slice SELF4): with local main trusted, the self-hosted repository's bases, worktrees,
     // dependency receipts and campaign branches are read from local refs and the main ledger, and CI repair is refused.
@@ -1177,6 +1187,7 @@ export class Controller {
         this.store.journal(ctx.id, 'operation-abandoned', { op: op.id, reason: 'cancel' }, this.now());
       });
       this.runEnded(campaign.declaration);
+      this.browserRunSettled(op);
       return;
     }
     if (op.kind === 'verify' && this.baseCompare) this.stepBaseCheck(ctx, campaign, op);
@@ -1200,7 +1211,7 @@ export class Controller {
         // same operation. The runner's exclusive lock prevents a second agent for it.
         // Unmerged code does not start it (AW-005); it stays recorded until merged code runs.
         if (this.unmergedRevision()) return;
-        this.log(`resuming recorded operation ${op.id}`);
+        if (!this.gateHeldWeb.has(op.id)) this.log(`resuming recorded operation ${op.id}`);
         await this.launch(ctx, op);
       }
       return;
@@ -1223,15 +1234,115 @@ export class Controller {
     let repo;
     try { repo = this.repo(decl); } catch { return; }
     try {
-      baseCheckStep(this, ctx, { repository: this.baseRepository(decl, repo), repoPath: repo.path, worktreeRoot: repo.worktreeRoot, baseSha: task.base_sha }, this.baseCompare);
+      const record = baseCheckStep(this, ctx, { repository: this.baseRepository(decl, repo), repoPath: repo.path, worktreeRoot: repo.worktreeRoot, baseSha: task.base_sha }, this.baseCompare);
+      if (record?.red) this.recordBaseRed(ctx, decl, task, record);
     } catch (error) {
       if (error instanceof FencedError) throw error;
       this.log(`base check of ${this.baseRepository(decl, repo)} ${task.base_sha} failed: ${error.message}`);
     }
   }
 
+  /**
+   * The one repair item of a red base (owner decision 2026-11-05: base compare plus one base-red repair task): recorded
+   * once per repository, base SHA and gate command, by the first campaign step that sees the base red, whatever the
+   * tasks, campaigns and restarts that share it (claimBaseRed in the same fenced write). It is information for planning,
+   * never a gate: no task waits for it, and a failure to record it is kept as the item's place and never retried.
+   * AIWorks's own repository with local main trusted gets a follow-up item in the work list; a GitHub repository a
+   * comment on the tracking issue of that campaign (no issue is opened); a project without GitHub a local note.
+   */
+  recordBaseRed(ctx, decl, task, record) {
+    const now = this.now(), sha = record.base_sha;
+    const digest = createHash('sha256').update(record.command, 'utf8').digest('hex').slice(0, 8);
+    const title = `Repair the red base ${sha.slice(0, 12)} of ${record.repository}`.slice(0, 256);
+    const failed = Array.isArray(record.failed) && record.failed.length ? record.failed : null;
+    const body = [`Base compare ran \`${JSON.parse(record.command).join(' ')}\` on base \`${sha}\` of ${record.repository} and ${String(record.reason ?? 'it failed').replace(/^the base gate /, 'it ')}.`,
+      'Tasks on this base keep their acceptance only for failures the base already has; the base itself needs its own fix.', '',
+      ...(failed ? ['Failed on the base:', ...failed.map((id) => `- \`${id}\``)]
+        : ['The failed test list is unknown: the gate summary names no test, was cut short, or comes from another test runner.'])].join('\n');
+    const fallback = `Base compare found base \`${sha}\` of ${record.repository} red. ${failed ? `${failed.length} tests failed on it` : 'Its failed test list is unknown'}; the list is kept in the base check record.`;
+    const item = this.fenced(ctx, () => {
+      // The guard: only the step that claims the record records the item; every other one finds it claimed.
+      if (!claimBaseRed(this.store, record, 'recording', now)) return null;
+      let where;
+      try {
+        if (this.selfHosted(decl.target.repository)) {
+          where = workLink(followUp(this.store, { campaignId: ctx.id, taskId: task.task_id, key: `base-${sha.slice(0, 12)}-${digest}`, title, body, fallback, now }).number);
+        } else if (!isLocalTarget(decl) && this.config.github?.comments === false) {
+          where = 'not recorded: GitHub comments are off';
+        } else {
+          const key = `${ctx.id}:base-red:${sha}:${digest}`;
+          this.enqueue(ctx.id, key, decl, `**${title}**\n\n${body}`, now);
+          where = `outbox:${key}`;
+        }
+      } catch (error) {
+        where = `not recorded: ${error.message}`.slice(0, 500);
+      }
+      settleBaseRed(this.store, record, where, now);
+      this.store.journal(ctx.id, 'base-red', { repository: record.repository, sha, failed, item: where }, now);
+      return where;
+    });
+    if (item) this.log(`base check of ${record.repository} ${sha}: red; repair item ${item}`);
+  }
+
   /** The repository a base check is keyed by: the declared repository, or the local checkout of a local target. */
   baseRepository(decl, repo) { return decl.target.repository ?? `local:${repo.path}`; }
+
+  /**
+   * The environment that offers recorded test passes to a verify run of `sha` (test-cache.mjs), or null. Never throws.
+   * A project with a recorded release grant (AW-010) is never offered it: a release needs a gate that ran every file.
+   */
+  offerTestCache(decl, repo, sha, runDir) {
+    if (!this.testCache || !repo || !sha) return null;
+    try {
+      const repository = this.baseRepository(decl, repo), other = otherNodeMajor(this.store, repository);
+      if (other !== null && !(this.testCacheNodeNoted ??= new Set()).has(repository)) {
+        this.testCacheNodeNoted.add(repository);
+        this.log(`test cache of ${repository} is idle: its newest results ran on Node ${other}, the supervisor on Node ${process.versions.node}`);
+      }
+      return offerCache({ store: this.store, git: this.cmd.git, repoPath: repo.path, repository, project: decl.target.projectId ?? null,
+        sha, runDir, settings: this.testCache, now: this.now() });
+    } catch (error) {
+      this.log(`test cache not offered for ${sha}: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * The `# cached` lines of a verify run's gate log, checked against the git objects of its target in the main checkout.
+   * Null, so nothing changes, when the log has none or the target has no scripts/run-tests.mjs. With the cache off every
+   * such line is refused: nothing was offered, so the worker set AIWORKS_TEST_CACHE itself.
+   */
+  testClaims(ctx, op) {
+    let log;
+    try { log = readFileSync(join(op.workspace, GATE_FILES.log), 'utf8'); } catch { return null; }
+    if (!/^# cached /m.test(log)) return null;
+    const decl = this.store.campaign(ctx.id).declaration;
+    try {
+      const repo = this.repo(decl);
+      if (!hasRunner(this.cmd.git, repo.path, op.target_sha)) return null;
+      return checkClaims({ store: this.store, git: this.cmd.git, repoPath: repo.path, repository: this.baseRepository(decl, repo),
+        sha: op.target_sha, log, enabled: Boolean(this.testCache), maxAgeMs: this.testCache?.maxAgeMs ?? 0, offeredAt: op.created_at });
+    } catch (error) {
+      return { claimed: 1, refused: [`the target ${op.target_sha} cannot be read: ${error.message}`.slice(0, 300)] };
+    }
+  }
+
+  /**
+   * The test results a verify run's gate log gives, with digests computed from git: its failures, and its passes only
+   * when `passes` (a fully green acceptance). Null while the cache is off or on a failure to read. Never throws.
+   */
+  testResults(op, passes) {
+    if (!this.testCache) return null;
+    try {
+      const decl = this.store.campaign(op.campaign_id).declaration, repo = this.repo(decl);
+      if (!hasRunner(this.cmd.git, repo.path, op.target_sha)) return null;
+      const log = readFileSync(join(op.workspace, GATE_FILES.log), 'utf8');
+      return { repository: this.baseRepository(decl, repo), rows: resultsOf({ git: this.cmd.git, repoPath: repo.path, sha: op.target_sha, log, passes }) };
+    } catch (error) {
+      this.log(`test cache: results of ${op.target_sha} not recorded: ${error.message}`);
+      return null;
+    }
+  }
 
   deliverable(ctx, taskId) {
     // A planning step is read-only report work (WORK_ENVELOPE 6.2); it has no spec of its own.
@@ -1276,6 +1387,8 @@ export class Controller {
   applyOutcome(ctx, op, outcome) {
     // A result waiting for its base check (base-check.mjs) ended its run once already; it does not prompt a sweep each poll.
     if (!this.baseWaits.has(op.id)) this.runEnded(this.store.campaign(ctx.id)?.declaration);
+    // Every result, lost run and refused containment reaches here: the run has ended (consume, reconcile).
+    this.browserRunSettled(op);
     if (op.kind === 'plan') return this.settlePlan(ctx, op, outcome);
     let verdict = outcome;
     const before = this.store.task(ctx.id, op.task_id);
@@ -1348,8 +1461,18 @@ export class Controller {
     // verification for the PR body; the key is always set, so a worker cannot supply it. An acceptance whose last gate
     // run failed, never finished or never ran is refused: implementers run only the tests their change reaches, so the
     // verifier's gate is the one full run a head gets.
+    let testRows = null;
     if (verdict.class === 'result' && op.kind === 'verify' && this.deliverable(ctx, op.task_id) === 'commit') {
-      const gate = readGateRun(op.workspace);
+      const run = readGateRun(op.workspace);
+      // A gate started on another commit, on a checkout with changes, or without the helper's record of both is no full
+      // run of this head. It is kept with its reason, which gateFailure returns first, so no reader (merge gate, AW-017
+      // delivery, release) counts it as passed; no cached claim is matched for it, base compare never keeps it, and it
+      // records no test result.
+      const headProblem = run ? gateHeadProblem(run, op.target_sha) : null;
+      let gate = headProblem ? { ...run, headProblem } : run;
+      // Cached test files (test-cache.mjs) count only when the supervisor matches each one again from git.
+      const claims = gate && !headProblem ? this.testClaims(ctx, op) : null;
+      if (claims?.claimed) gate = { ...gate, cached: claims.claimed, ...(claims.refused.length ? { cacheRefused: claims.refused.slice(0, 20) } : {}) };
       verdict = { ...verdict, value: { ...verdict.value, gate, baseFailures: null } };
       const failure = verdict.value.verdict !== 'accepted' ? null
         : !gate ? `is missing: its checkout has no ${GATE_FILES.log} from the gate helper`
@@ -1359,7 +1482,7 @@ export class Controller {
       // Base compare (base-check.mjs): a finished gate whose failed tests all fail on the task's base too does not refuse
       // the acceptance, and the verification records them. While the base gate still runs, nothing is applied yet.
       let base = null;
-      if (failure && gate && gate.exit !== null && this.baseCompare && before.base_sha) {
+      if (failure && gate && gate.exit !== null && !headProblem && this.baseCompare && before.base_sha) {
         const campaign = this.store.campaign(ctx.id);
         let repo = null;
         try { repo = this.repo(campaign.declaration); } catch { /* no checkout: no base record, refused as before */ }
@@ -1376,9 +1499,14 @@ export class Controller {
         verdict = { ...verdict, value: { ...verdict.value, baseFailures: base } };
         this.log(`${ctx.id}/${op.task_id}: acceptance of ${op.target_sha} stands; its ${base.failed.length} failed test(s) fail on the base ${base.sha} too`);
       } else if (failure) {
-        verdict = { ...verdict, class: 'invalid-result', detail: !gate || gate.exit === null ? `accepted, but the verifier's last gate run ${failure}`
+        verdict = { ...verdict, class: 'invalid-result', detail: !gate || gate.exit === null || headProblem ? `accepted, but the verifier's last gate run ${failure}`
           : `accepted, but the verifier's last gate run ${failure}:\n${gate.summary ?? `no node:test summary in ${GATE_FILES.log}`}` };
       }
+      if (verdict.class === 'result' && verdict.value.verdict === 'accepted' && gate?.cacheRefused) {
+        verdict = { ...verdict, class: 'invalid-result', detail: `accepted, but the verifier's gate counts test files the supervisor cannot match to a recorded pass: ${gate.cacheRefused.join('; ')}` };
+      }
+      // Only a fully green acceptance records passes; failures count from any verdict. Digests come from git, never the log.
+      if (verdict.class === 'result' && gate && !gate.cacheRefused && !headProblem) testRows = this.testResults(op, verdict.value.verdict === 'accepted' && !base && !failure);
     }
     // Verifier cites are settled at the target revision in the main checkout (SCOPED_READING section 6); a result without
     // cites is applied exactly as before, and no cite can change the verdict.
@@ -1402,6 +1530,7 @@ export class Controller {
       }
       if (executors.runNotCounted(verdict)) verdict = { ...verdict, refunded: true };
       this.store.updateOperation(op.id, { state: 'finished', outcome: verdict }, now);
+      if (testRows && verdict.class === 'result') insertResults(this.store, testRows.repository, testRows.rows, { source: 'verifier', ref: op.target_sha, now });
       for (const [kind, detail] of citeEvents) this.store.journal(ctx.id, kind, detail, now);
       // A run bound to a CAAM profile is attributed to that profile from its durable row, also after a restart: never to
       // the profile selection would choose now, nor to the executor kind's static account (ACCOUNT_ADAPTER_CAAM 3.5).
@@ -2476,6 +2605,13 @@ export class Controller {
 
   /** A run of a docker.cleanup repository ended: the next tick looks for its stack. */
   runEnded(decl) { if (this.sweeper && cleans(this.cleanup, decl)) this.sweptAt = -Infinity; }
+  /** A settled operation's run no longer uses the browser session: its lock (launch, gate.mjs) goes at once. */
+  browserRunSettled(op) {
+    this.gateHeldWeb.delete(op.id);
+    if (!this.browserGuard) return;
+    try { rmSync(browserLockPath(slotSettings().dir, op.id), { force: true }); }
+    catch (error) { this.log(`browser-session lock for ${op.id} not removed (it lapses with the run): ${error.message}`); }
+  }
 
   /** The worktree roots of docker.cleanup repositories, never one that holds the repository's own checkout. */
   cleanupRoots() {
@@ -3214,6 +3350,8 @@ export class Controller {
         this.recordUnavailable(ctx, executor.kind, unavailable);
         return null;
       }
+      const cacheEnv = this.offerTestCache(decl, local ? null : repo, kind === 'verify' && spec.deliverable === 'commit' ? targetSha : null, runDir);
+      if (cacheEnv) prompt += `\n${CACHE_RULE}\n`;
       // Project Claude tuning comes from the task base commit in the main checkout, never the worker-writable worktree.
       const settings = gitA.exec(this.cmd.git, ['show', `${baseSha}:.claude/settings.json`], { cwd: repo.path });
       const invocation = executors.prepare({ executor, command: this.cmd[executor.kind.replace('-cli', '')], role,
@@ -3224,7 +3362,7 @@ export class Controller {
         timeoutMs, profileHome, stage: this.stageOf(decl, task.task_id, kind) });
       writeFileSync(join(runDir, 'prompt.txt'), invocation.prompt, 'utf8');
       writeAtomic(join(runDir, 'spec.json'), JSON.stringify({
-        argv: invocation.argv, ...(invocation.env ? { env: invocation.env } : {}),
+        argv: invocation.argv, ...(invocation.env || cacheEnv ? { env: { ...invocation.env, ...cacheEnv } } : {}),
         cwd: invocation.cwd ?? workspace, timeoutMs, heartbeatMs: this.config.heartbeatMs, ...this.workerJob,
       }));
 
@@ -3280,15 +3418,41 @@ export class Controller {
   }
 
   async launch(ctx, op) {
+    // `web`: a web task's run that keeps apart from gates; with the gate pause off it launches as any other run.
+    let web = false;
+    try { web = this.browserGuard && op.task_id !== PLAN_TASK && Boolean(executors.webFlag(specOf(this.store, ctx.id, op.task_id, this.store.campaign(ctx.id).declaration)?.web)); }
+    catch { web = false; }
+    // Admission saw no gate, but one may have started since: the run waits in `recorded`, and a later pass launches it
+    // (reconcile). No run starts and none fails.
+    let running = 0;
+    try { running = web ? this.gates?.() ?? 0 : 0; } catch { running = 0; }
+    if (web && running >= pressureThresholds(this.config.scheduler?.pressure ?? {}).pauseAtGates) {
+      if (!this.gateHeldWeb.has(op.id)) this.log(`web task run ${op.id} waits: ${running} gate(s) run on this PC`);
+      this.gateHeldWeb.add(op.id);
+      return;
+    }
+    this.gateHeldWeb.delete(op.id);
     const child = this.fenced(ctx, () => {
       const current = this.store.get('SELECT * FROM operations WHERE id = ?', op.id);
       if (this.store.campaign(ctx.id).control !== 'registered' || current?.state !== 'recorded') return null;
       if (existsSync(join(op.run_dir, 'launch.json'))) return null;
       // shortcut: unknown spawn acceptance blocks recovery until an executor provides durable process acknowledgement.
       writeAtomic(join(op.run_dir, 'launch.json'), JSON.stringify({ operationId: op.id, at: this.now() }));
-      return spawn(process.execPath, [RUNNER, op.run_dir], { detached: true, stdio: 'ignore', windowsHide: true });
+      return spawn(process.execPath, [RUNNER, op.run_dir], { detached: true, stdio: 'ignore', windowsHide: true,
+        ...(web ? { env: { ...process.env, [BROWSER_RUN]: op.id } } : {}) });
     });
     if (!child) return;
+    // A web task's run may use the owner's browser session: no full gate starts beside it (gate.mjs heldBrowserRuns).
+    // The lock holds the runner's process id and its heartbeat file, so it lapses by itself when the run ends or stops
+    // beating, even after Windows gives the id to another process; browserRunSettled removes it when the operation settles.
+    if (web && child.pid) {
+      try {
+        const { dir } = slotSettings();
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(browserLockPath(dir, op.id), JSON.stringify({ pid: child.pid, at: Date.now(), operation: op.id,
+          heartbeat: join(op.run_dir, 'heartbeat') }));
+      } catch (error) { this.log(`browser-session lock for ${op.id} not written: ${error.message}`); }
+    }
     child.on('error', (error) => {
       this.log(`runner spawn for ${op.id} failed: ${error.message}`);
       if (!child.pid) writeAtomic(join(op.run_dir, 'result.json'), JSON.stringify({
@@ -3312,6 +3476,11 @@ export class Controller {
     const spec = specOf(this.store, ctx.id, task.task_id, decl);
     if (isLocalTarget(decl)) return this.recordLocalCandidate(ctx, decl, spec, task);
     const repo = this.repo(decl);
+    // What the PR and the push publish is the change from the commit the task started from to the verified head.
+    // A task that never recorded the commit it started from is compared with its merge-base with the remote base; when
+    // that cannot be read either, the guard refuses (fail closed).
+    const forkPoint = task.base_sha ?? gitA.exec(this.cmd.git, ['merge-base', task.verified_sha, `origin/${decl.target.baseBranch}`], { cwd: repo.path }).stdout?.trim();
+    const gitLocal = { git: this.cmd.git, repoPath: repo.path, base: forkPoint, head: task.verified_sha };
     const branch = gitA.branchName(ctx.id, task.task_id);
     const bodyFile = join(this.dataDir, 'runs', `${ctx.id}.${task.task_id}.publish.md`);
     try {
@@ -3350,7 +3519,7 @@ export class Controller {
             this.store.journal(ctx.id, `${repairKind}-repair-unpublished`, { task: task.task_id, sha: task.verified_sha }, now);
             return;
           }
-          gitA.pushVerified({ git: this.cmd.git, gh: this.cmd.gh, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha });
+          gitA.pushVerified({ git: this.cmd.git, gh: this.cmd.gh, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha, base: forkPoint });
           this.injectFault('after-push');
           url = existing.url;
           const prefix = `https://github.com/${decl.target.repository}/pull/`;
@@ -3373,10 +3542,10 @@ export class Controller {
             { identity: task.task_id });
             return;
           }
-          gitA.pushVerified({ git: this.cmd.git, gh: this.cmd.gh, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha });
+          gitA.pushVerified({ git: this.cmd.git, gh: this.cmd.gh, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha, base: forkPoint });
           this.injectFault('after-push');
           url = github.openPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, baseBranch: decl.target.baseBranch, branch,
-            title, body, bodyFile, terms });
+            title, body, bodyFile, terms, local: gitLocal });
           if (verification) {
             const prefix = `https://github.com/${decl.target.repository}/pull/`;
             const number = String(url).startsWith(prefix) ? /^(\d+)/.exec(String(url).slice(prefix.length))?.[1] : null;

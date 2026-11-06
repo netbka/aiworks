@@ -12,6 +12,16 @@ export const CLI = join(ROOT, 'src', 'supervisor', 'cli.mjs');
 // A small stand-in for the governance provider checkout AIWorks reads governance from; tests never need a real one.
 export const GOVERNANCE = join(ROOT, 'tests', 'fixtures', 'governance');
 
+// Tests never use this PC's gate slot folder (src/supervisor/gate.mjs): a browser lock a test's web task run wrote there,
+// or a slot a test's gate took, would hold back the real verifiers' gates while the suite runs beside them. Every process
+// that loads this harness gets its own folder, set before any controller exists and inherited by the controllers, runners
+// and gate helpers it starts; an operator's own setting is replaced too.
+const GATE_SLOTS = mkdtempSync(join(tmpdir(), 'aiworks-test-gate-slots-'));
+process.env.AIWORKS_GATE_SLOTS_DIR = GATE_SLOTS;
+process.on('exit', () => {
+  try { rmSync(GATE_SLOTS, { recursive: true, force: true }); } catch { /* a temporary folder */ }
+});
+
 let sqliteAvailable = true;
 try { await import('node:sqlite'); } catch { sqliteAvailable = false; }
 export const SQLITE = sqliteAvailable;
@@ -30,7 +40,8 @@ export const FAST = {
   // controllers renewed their 1.5 s lease up to 3.5 s late (historical regression), so it is 2 x dispatchWaitMs, as production's 90 s exceeds 15 s.
   // staleMs and startGraceMs stay 5 s: under 24 busy processes on 20 cores, runners beat at most 1.9 s apart and wrote
   // their first beat within 1.5 s of spawn (tests/supervisor/measure-liveness.mjs), so a healthy runner is never stale.
-  tickMs: 50, leaseMs: 10_000, pollMs: 500, heartbeatMs: 100, staleMs: 5000, startGraceMs: 5000,
+  // 30 s: host load stalled a controller for ~17 s, its 10 s lease expired mid-test and generation 2 took over (timeouts, FencedError).
+  tickMs: 50, leaseMs: 30_000, pollMs: 500, heartbeatMs: 100, staleMs: 5000, startGraceMs: 5000,
   dispatchWaitMs: 5000, publishRetryMs: 200, outboxRetryMs: 100, retryBackoffMs: [50, 50, 50],
   codexSandboxProbe: false, // synthetic executors: never spawn the real Codex sandbox helper
 };
@@ -116,6 +127,8 @@ export const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 export function passedGate(dir) {
   writeFileSync(join(dir, 'gate.log'), '# all test files: 1 unit, 0 service, 0 rehearsal (of 1)\n# tests 1\n# pass 1\n# fail 0\n');
   writeFileSync(join(dir, 'gate-exit.log'), '0\n');
+  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8', windowsHide: true }).stdout.trim();
+  writeFileSync(join(dir, 'gate-head.log'), `${head} clean\n`);
 }
 
 /**
