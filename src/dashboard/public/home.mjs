@@ -32,12 +32,15 @@ export function summaryLine(goals, landed, checking = 0, count = 0) {
 export function homeBlocks(data, h) {
   const { el, timeAgo } = h;
   const goals = data.goals ?? [], landed = data.landed ?? { total: 0, entries: [] }, quiet = data.quiet ?? [];
-  const count = data.needs?.count ?? 0;
+  const count = data.needs?.count ?? 0, checking = data.checking ?? 0, own = data.ownProblems ?? { count: 0, address: null };
   const out = [];
 
+  // AIWorks's own problems are one grey line linking to Settings, never part of the owner's count (HOME_V2.md).
+  const ownWords = own.count > 0 ? `AIWorks has ${plural(own.count, 'problem')} of its own.` : null;
   out.push(el('section', { class: 'home-hero', 'aria-labelledby': 'home-title' },
-    el('h1', { id: 'home-title', tabindex: '-1' }, heroWords(count)),
-    el('p', { class: 'home-summary' }, summaryLine(goals, landed)),
+    el('h1', { id: 'home-title', tabindex: '-1' }, heroWords(count, checking)),
+    el('p', { class: 'home-summary' }, summaryLine(goals, landed, checking, count)),
+    ownWords ? el('p', { class: 'home-summary home-own' }, own.address ? el('a', { href: own.address }, ownWords) : ownWords) : null,
     data.confirmation ? el('p', { class: 'home-confirm', role: 'status' }, data.confirmation) : null));
 
   if (count > 0 && data.needCards?.length) out.push(el('section', { class: 'home-block home-needs', 'aria-label': 'Needs you' },
