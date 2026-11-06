@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { maintenanceAudit } from '../../src/supervisor/maintenance.mjs';
 
 test('maintenance cannot mutate repositories or expose file contents, and unknown ownership never authorizes cleanup', (t) => {
-  const root = mkdtempSync(join(tmpdir(), 'aiworks-maintenance-'));
+  // The audit reports long resolved paths; a temp folder named by a Windows short name (AIWORK~1) is compared by its long one.
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'aiworks-maintenance-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const repo = join(root, 'repo'), linked = join(root, 'linked');
   mkdirSync(repo);
