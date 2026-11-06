@@ -165,7 +165,7 @@ test('AW-017: an owner-reserved publication decision is never auto-answered with
   const block = (taskId, blocked) => { const task = store.task(d.campaignId, taskId); store.patch('tasks', { campaign_id: d.campaignId, task_id: taskId }, task.version, { blocked }, Date.now()); };
   const PUBLISH = { question: 'Where does the notice point?', options: [{ id: 'site-section', label: 'Site section', consequence: 'Publishes technical text on the public site.' },
     { id: 'no-change', label: 'No site change', consequence: 'Nothing is published.' }], suggestion: { option: 'site-section', reason: 'Most helpful.' } };
-  // The worker's suggestion publishes and is not marked reversible, and no safe option is named: never guessed, the step ends.
+  // The worker's suggestion publishes and is not marked reversible, and no safe option is named: never answered with it.
   block('T2', { class: 'B3', reason: 'owner-reserved: disclosure', at: 1000, decision: PUBLISH });
   // The same decision with a named safe option is answered with that option, never with the suggestion.
   block('T1', { class: 'B3', reason: 'owner-reserved: disclosure', at: 2000, decision: { ...PUBLISH, safeOption: 'no-change' } });
@@ -174,8 +174,11 @@ test('AW-017: an owner-reserved publication decision is never auto-answered with
   const ctx = { id: d.campaignId, generation: lease.generation };
   controller.answerSuggested(ctx);
   controller.answerSuggested(ctx);
-  assert.equal(store.task(d.campaignId, 'T2').state, 'cancelled', 'an unmarked publishing decision ends as not done');
-  assert.equal(pendingInstructions(store, store.campaign(d.campaignId), 'T2', 'implement').length, 0, 'nothing was answered for it');
+  assert.equal(store.task(d.campaignId, 'T2').blocked, null, 'the first time the unmarked decision goes back to its step');
+  assert.notEqual(store.task(d.campaignId, 'T2').state, 'cancelled');
+  block('T2', { class: 'B3', reason: 'owner-reserved: disclosure again', at: 3000, decision: PUBLISH });
+  controller.answerSuggested(ctx);
+  assert.equal(store.task(d.campaignId, 'T2').state, 'cancelled', 'the second time it ends as not done');
   const answered = store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'decision-answered'", d.campaignId);
   assert.deepEqual(answered.map((row) => [row.detail.task, row.detail.option]), [['T1', 'no-change']]);
 });
