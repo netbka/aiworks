@@ -46,12 +46,23 @@ const SHA = /^[0-9a-f]{40}$/;
  * repository path; once on trusted main, every later main contained it and GitHub main could never take it (#125).
  * Unreadable private terms (.local/publication.json) count as none: they never block a local review.
  */
-export function privateMessages({ git, repoPath, trusted, sha }) {
+export function privateMessages({ git, repoPath, trusted, sha, also = [] }) {
   let terms = [];
   try { terms = privateTerms(repoPath); } catch { /* malformed settings: the built-in checks still apply */ }
-  const listed = gitA.exec(git, ['log', '--format=%B%x00', `${trusted}..${sha}`], { cwd: repoPath });
+  const listed = gitA.exec(git, ['-c', 'log.showSignature=false', 'log', '--format=%B%x00', `${trusted}..${sha}`], { cwd: repoPath });
   if (!listed.ok) return null;
-  return listed.stdout.split('\0').filter((message) => message.trim() && contentFindings(message, terms).length).length;
+  return [...listed.stdout.split('\0'), ...also].filter((message) => message.trim() && refusedMessage(message, terms)).length;
+}
+
+// As checkPublicHistory reads a message: GitHub's own pull request merge header names a branch of this repository's
+// owner, not another project, so only that finding is set aside for it.
+const GITHUB_MERGE = /^(Merge pull request #[1-9]\d* from )netbka\//;
+function refusedMessage(message, terms) {
+  let findings = contentFindings(message, terms);
+  if (GITHUB_MERGE.test(message) && !contentFindings(message.replace(GITHUB_MERGE, '$1')).includes('another upstream-owner project')) {
+    findings = findings.filter((finding) => finding !== 'another upstream-owner project');
+  }
+  return findings.length > 0;
 }
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
 const MISSING_RECHECK_MS = 60 * 60_000;
@@ -663,6 +674,9 @@ export function mergeLocal(controller, item, settings, repoPath, step = null) {
   if (blocked) return wait(controller, item, blocked);
   const branch = gitA.branchName(campaignId, task.task_id);
   const tip = trustedTip(store, { git, repoPath, repository });
+  // The message of the merge commit the gate writes; `gated` is the refresh gate's tree, if any.
+  const mergeMessage = (gated) => `Merge ${task.task_id} of campaign ${campaignId} (${url})\n\nVerified ${sha} on ${branch}, merged under the local merge gate` +
+    `${step ? `; its group passed one gate on the combined result ${step.group}` : gated ? `; its merge with ${tip.tip} passed the refresh gate` : ''}.`;
   if (tip.state !== 'TRUSTED') return wait(controller, item, `local main is not trusted (${tip.state}): ${tip.reason}`);
   if (authorityBlocked(controller, item, repoPath, tip.tip)) return false;
   const stillDone = (t) => t.state === 'done' && !t.blocked && t.verified_sha === sha && t.pr_url === url && !mergeRefusal(t);
@@ -689,6 +703,22 @@ export function mergeLocal(controller, item, settings, repoPath, step = null) {
     return true;
   }
 
+  const owed = refusalWait(controller, item);
+  if (owed) return wait(controller, item, owed.reason);
+  // Main never takes a commit whose message a push of main would refuse (#125): neither one the merge adds nor its own
+  // merge commit. Checked before any refresh gate runs and before the request, so main and the ledger stay as they are
+  // and no gate is spent; refusals back off (refusalWait). No matched value is written anywhere.
+  const leaks = privateMessages({ git, repoPath, trusted: tip.tip, sha, also: [mergeMessage(null)] });
+  if (leaks !== 0) {
+    const ctx = lease(controller, campaignId);
+    if (!ctx) return false;
+    const detail = leaks === null ? 'the commit messages it would add to main cannot be read'
+      : `${leaks} commit message(s) it would add to main contain private information (a personal path, a credential or a private name), which a push of main refuses; the branch needs those commits rewritten`;
+    controller.fenced(ctx, () => { if (still()) store.journal(campaignId, 'merge-refused', { task: task.task_id, sha, url, local: true, detail }, controller.now()); });
+    controller.log(`merge of ${campaignId}/${task.task_id} refused: ${detail}`);
+    return true;
+  }
+
   // The verified head must contain the trusted tip, or the merge result is a tree no verifier ran: integration repair,
   // unless the refresh (merges.refresh, merge-refresh.mjs) ran the gate on that exact merge result itself. Then the merge
   // commit carries that gated tree. While its gate runs, the repository waits.
@@ -708,21 +738,9 @@ export function mergeLocal(controller, item, settings, repoPath, step = null) {
   const checkout = mainCheckout(git, repoPath);
   if (checkout?.unreadable) return wait(controller, item, 'the checkout that has main checked out cannot be read');
   if (checkout?.dirty) return wait(controller, item, 'your checkout has unsaved changes');
-  const owed = refusalWait(controller, item);
-  if (owed) return wait(controller, item, owed.reason);
 
   const ctx = lease(controller, campaignId);
   if (!ctx) return false;
-  // Main never takes a commit whose message a push of main would refuse (#125). Refused before the request, so main and
-  // the ledger stay as they are; refusals back off (refusalWait). No matched value is written anywhere.
-  const leaks = privateMessages({ git, repoPath, trusted: tip.tip, sha });
-  if (leaks !== 0) {
-    const detail = leaks === null ? 'the commit messages it would add to main cannot be read'
-      : `${leaks} commit message(s) it would add to main contain private information (a personal path, a credential or a private name), which a push of main refuses; the branch needs those commits rewritten`;
-    controller.fenced(ctx, () => store.journal(campaignId, 'merge-refused', { task: task.task_id, sha, url, local: true, detail }, controller.now()));
-    controller.log(`merge of ${campaignId}/${task.task_id} refused: ${detail}`);
-    return true;
-  }
   // The request names the trusted tip before any object is written, so a restart recognizes the planned commit.
   if (!controller.fenced(ctx, () => {
     if (!still() || !accepted()) return false;
@@ -737,8 +755,7 @@ export function mergeLocal(controller, item, settings, repoPath, step = null) {
     return true;
   };
   const planned = writeMergeCommit({ git, repoPath, trusted: tip.tip, verified: sha, tree: gated,
-    message: `Merge ${task.task_id} of campaign ${campaignId} (${url})\n\nVerified ${sha} on ${branch}, merged under the local merge gate` +
-      `${step ? `; its group passed one gate on the combined result ${step.group}` : gated ? `; its merge with ${tip.tip} passed the refresh gate` : ''}.` });
+    message: mergeMessage(gated) });
   if (!planned.ok) return refuse(planned.reason);
   controller.injectFault('after-commit-tree');
   try {
