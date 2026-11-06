@@ -45,8 +45,8 @@ const same = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLower
 const route = (project, tab) => ({ screen: 'project', project, tab });
 const openWork = (project) => ({ label: 'Open current work', route: route(project, 'overview') });
 const seeResults = (project) => ({ label: 'See results', route: route(project, 'review') });
-// What the owner resolves is resolved in Needs you, inside AIWorks: never a GitHub page as the primary action.
-const resolve = { label: 'Resolve in Needs you', route: { screen: 'needs' } };
+// What the owner resolves is resolved on Home, inside AIWorks: never a GitHub page as the primary action.
+const resolve = { label: 'Resolve on Home', route: { screen: 'home' } };
 const stepIssue = () => resolve;
 const review = () => resolve;
 // Locale-neutral English times, whatever the computer's own locale: "12:31" and "10 Oct 22:58".
@@ -135,7 +135,7 @@ const STATES = {
   'one-thing': { section: '4.4', needsYou: true, copy: (d) => ['One thing needs you.',
     sentence([d.action, d.text].filter(Boolean).join(': ')), resolve] },
   'several': { section: '4.4', needsYou: true, copy: (d) => [`${capital(plural(d.count, 'thing'))} need you.`,
-    'Each one says what to do in Needs you.', { label: `See the ${d.count} things that need you`, route: { screen: 'needs' } }] },
+    'Each one says what to do on Home.', { label: `See the ${d.count} things that need you`, route: { screen: 'home' } }] },
   // Not an owner action, so not one of the project's Needs you items (review F17).
   'supervisor-fault': { section: '7.7', needsYou: false, copy: () => ['AIWorks has a problem of its own with this work.',
     'It is not yours to fix: it is tracked for AIWorks’ maintainers. This work may not move until it is fixed.', null] },
