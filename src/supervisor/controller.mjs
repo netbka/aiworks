@@ -2478,7 +2478,13 @@ export class Controller {
         return accountFull(this.store, this.config, kind, this.accountWaited);
       },
       // A local candidate is published nowhere and holds no base: the owner's Apply checks the folder again (WORK_ENVELOPE 8.6).
-      integrated: (campaignId, row, decl) => isLocalTarget(decl) || this.inBase(decl, row.verified_sha) || this.mergedHeads.has(`${row.pr_url}#${row.verified_sha}`),
+      // In the self-hosted repository a gate-merge ledger row for exactly this verified head is proof on its own: the gate
+      // writes it only after main moved to its merge commit (merge.mjs recordLocal). A main re-rooted after that merge
+      // leaves the head and its merge commit out of the base, yet the head was integrated; holding it would make every
+      // overlapping task wait forever (aiworks-work:163). Never by age or campaign state: a head published but never
+      // recorded as merged still holds its domain.
+      integrated: (campaignId, row, decl) => isLocalTarget(decl) || this.inBase(decl, row.verified_sha) || this.mergedHeads.has(`${row.pr_url}#${row.verified_sha}`) ||
+        (this.selfHosted(decl.target.repository) && Boolean(this.ledgerMerge(decl.target.repository, row.verified_sha))),
       // Only the merge gate moves a trusted local main, and it never merges a cancelled campaign's head (domainHolders).
       gateOnly: (decl) => this.selfHosted(decl.target.repository),
     };
@@ -2519,11 +2525,8 @@ export class Controller {
       for (const holder of holders.values()) {
         const row = this.store.task(holder.campaignId, holder.taskId);
         if (!row?.pr_url || !row.verified_sha || this.inBase(decl, row.verified_sha)) continue;
-        if (this.selfHosted(decl.target.repository)) {
-          const recorded = this.ledgerMerge(decl.target.repository, row.verified_sha);
-          if (recorded && this.inBase(decl, recorded)) this.mergedHeads.add(`${row.pr_url}#${row.verified_sha}`);
-          continue;
-        }
+        // The self-hosted repository has no PR to read: admissionInputs already counts its recorded gate merges.
+        if (this.selfHosted(decl.target.repository)) continue;
         const merged = github.integratedPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, url: row.pr_url,
           headSha: row.verified_sha, baseBranch: decl.target.baseBranch });
         if (merged && this.inBase(decl, merged)) this.mergedHeads.add(`${row.pr_url}#${row.verified_sha}`);
