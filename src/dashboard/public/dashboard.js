@@ -1,3 +1,4 @@
+import { homeBlocks } from '/home.mjs';
 import { MOVED_DRAFTS, adoptDrafts, formatRoute, globalOf, resolveRoute, tabOf, tabRoute, TABS } from '/router.mjs';
 // The state copy of OWNER_WORKSPACE §7 and the Now screen (slice S4); the server serves src/dashboard/copy.mjs here.
 import { COMMANDS, DELEGATED, DIALOGS, NEEDS, NOT_READ, busyOnCommand, costRunsLine, nowView, readingLines, resultMeaning, stateCopy, workLine, DASHBOARD_VERSION, DASHBOARD_VERSION_NAME, DASHBOARD_VERSIONS } from '/copy.mjs';
@@ -182,6 +183,8 @@ function showRoute() {
   $('#view-eyebrow').textContent = project ? `PROJECT · ${projectName(project).toUpperCase()}` : route.screen === 'settings' && route.section ? 'SETTINGS' : 'AIWORKS';
   $('#view-title').textContent = project && route.screen === 'project' && route.tab === 'overview' ? projectName(project) : route.screen === 'worklist-item' ? `${title} #${route.number}` : title;
   $('#view-description').textContent = question;
+  // Home has no page heading of its own: its headline is the page's one h1.
+  $('.page-heading').hidden = route.screen === 'home';
   $('#project-back').hidden = !project;
   document.title = [title, project ? projectName(project) : null, 'AIWorks'].filter(Boolean).join(' · ');
   const place = globalOf(route);
@@ -2546,14 +2549,8 @@ const EVENT_WORDS = { 'goal-started': 'Work started', paused: 'Paused', resumed:
   'limit-wait': 'Waiting for an AI worker limit', 'wait-ended': 'An AI worker can take work again', 'needs-you': 'Needs you',
   'decision-cleared': 'A question for you was cleared', 'aiworks-problem': 'AIWorks had a problem of its own' };
 // The order of the one-line summary: what the owner acts on first.
-const EVENT_ORDER = ['needs-you', 'result-ready', 'accepted', 'merged', 'checked', 'check-rejected', 'paused', 'resumed', 'goal-started', 'cancelled',
-  'limit-wait', 'wait-ended', 'run-failed', 'aiworks-problem', 'built', 'decision-cleared'];
-const SUMMARY_WORDS = { 'needs-you': 'new for you', 'result-ready': 'ready for review', accepted: 'accepted by you', merged: 'recorded as merged by AIWorks', checked: 'checked by the independent checker',
-  'check-rejected': 'sent back by the checker', paused: 'paused', resumed: 'resumed', 'goal-started': 'started', cancelled: 'cancelled',
-  'limit-wait': 'limit waits', 'wait-ended': 'waits ended', 'run-failed': 'runs retried', 'aiworks-problem': 'AIWorks problems', built: 'builder runs',
-  'decision-cleared': 'questions cleared' };
 
-let scopedBusy = null, seenBusy = false;
+let scopedBusy = null;
 const goalName = (id) => { const c = campaignById(id); return c ? campaignTitle(c, { inProject: true }) : 'work no longer listed'; };
 
 /** Pause or resume all, a project or a goal: exactly the goals the view showed, at their versions (views.mjs pauseSummary). */
@@ -2591,15 +2588,6 @@ function eventList(events) {
     el('time', { class: 'timeline-time', datetime: new Date(event.at).toISOString(), title: dateTime(event.at) }, timeAgo(event.at)))));
 }
 
-async function markSeen() {
-  const newest = state.home?.newest;
-  if (!Number.isSafeInteger(newest)) return;
-  seenBusy = true; render();
-  try { await post('/api/v2/events/seen', { seq: newest, requestId: crypto.randomUUID() }); }
-  catch (error) { notice(error.known ? error.message : 'Marking as seen could not be confirmed. Try again.', error.known ? null : markSeen); }
-  finally { seenBusy = false; await poll(); }
-}
-
 /**
  * Results waiting for the owner's review (OWNER_UI_V2 WP4), read from the same Results rows as each project's Results
  * tab, so the result, its project and its Review are the same everywhere. Only rows in the owner-action set
@@ -2610,11 +2598,6 @@ const resultsToReview = (project = null) => Object.values(state.owner?.results ?
 // Home and Needs you show only what is recent: older results, projects and replies stay on their own screens.
 const RECENT_MS = 7 * 24 * 60 * 60 * 1000;
 const isRecent = (at) => { const time = at === null || at === undefined ? NaN : new Date(at).getTime(); return !Number.isFinite(time) || time >= Date.now() - RECENT_MS; };
-/** When a result was finished: its step's verification, else its goal's last progress; unknown counts as recent. */
-const recentResult = (row) => {
-  const campaign = campaignById(row.campaignId), task = campaign?.tasks?.find((entry) => entry.id === row.taskId);
-  return isRecent(task?.verifiedAt ?? campaign?.lastProgressAt ?? null);
-};
 function reviewList(rows, { scope, withProject = false }) {
   if (!rows.length) return null;
   // "Each passed" only when every listed result passed every criterion (owner.mjs row checkPassed); each row says what is missing.
@@ -2634,142 +2617,74 @@ function itemDecision(item) {
 }
 
 /*
- * Home at a glance (live control room): what AIWorks is doing right now as a row of tiles, and each project as one dense
- * row with its steps as a strip. Everything is counted from the same state the rest of the page reads; a number that is
- * not known is said to be not known, never shown as zero.
+ * Home (docs/design/HOME_V2.md part 2): a headline that says whether anything needs the owner, each waiting question
+ * answered on its own card, what is in progress, what was decided for the owner, what landed and which projects are
+ * quiet. The blocks are built in home.mjs from the Home data (`state.home`); this part adds the cards that act.
  */
-const isBuilderRole = (role) => /implement/i.test(String(role ?? ''));
-const DAY_MS = 24 * 60 * 60 * 1000;
-// What a step is doing now, in the colour language of OWNER_UI_V2 §5: amber for the owner, blue and violet while AIWorks
-// works, grey while it waits under control, green once merged.
-function stepTone(c, task) {
-  const delivery = deliveryOf(c, task), agent = c.agents.find((item) => item.taskId === task.id);
-  if (delivery?.state === 'merged') return ['merged', 'Merged'];
-  // As in stepBadge: a delegated result reads as passed only when every criterion passed, and cancelled work never runs.
-  if (delivery) return ['delivered', delivery.state === 'delegated' ? DELEGATED.word(task.checkPassed === true) : deliveryNames[delivery.state]?.[1] ?? 'Delivered'];
-  if (c.control === 'cancelled' && task.state !== 'done') return ['todo', 'Cancelled'];
-  if (task.blocked) return ['you', 'Waiting for you'];
-  if (agent) return isBuilderRole(agent.role) ? ['building', 'Being built'] : ['checking', 'Being checked'];
-  if (task.state === 'done') return ['merged', 'Done'];
-  if (task.waitingReason || task.retryAt) return ['waiting', 'Waiting, nothing for you to do'];
-  return ['todo', 'Not started'];
-}
-const openCampaigns = (list) => list.filter((c) => !['finished', 'cancelled'].includes(c.control));
+let homeConfirm = null, landedAll = false;
 
-function homeTiles(home) {
-  const campaigns = state.supervisor.campaigns, open = openCampaigns(campaigns), now = Date.now();
-  const agents = open.flatMap((c) => c.agents), builders = agents.filter((a) => isBuilderRole(a.role)).length;
-  const waiting = open.flatMap((c) => c.tasks.filter((task) => stepTone(c, task)[0] === 'waiting')).length;
-  // Merges the merge check finds in Git, by hand ones too; the change summary below counts only AIWorks's own merge
-  // records, so each says where its number comes from.
-  const merged = campaigns.flatMap((c) => c.tasks.filter((task) => {
-    const delivery = deliveryOf(c, task);
-    return delivery?.state === 'merged' && delivery.mergedAt && now - new Date(delivery.mergedAt).getTime() < DAY_MS;
-  })).length;
-  const reported = open.filter((c) => c.cost?.reportedUsd !== null && c.cost?.reportedUsd !== undefined);
-  const unreported = open.reduce((n, c) => n + (c.cost?.unreportedRuns ?? 0), 0);
-  const spent = reported.length ? usd(reported.reduce((n, c) => n + c.cost.reportedUsd, 0)) : '—';
-  // Needs you reads the same count as the global bar and the Needs you page: never zero or calm while a merge check runs
-  // (OPERATIONS_DASHBOARD: a step whose merge check is running is shown as "?", never as nothing).
-  const attention = state.owner?.count ?? home.needsYou.count, unknown = state.owner?.unknownResults ?? 0;
-  const needsValue = attention || (unknown ? '?' : 0), needsMore = attention && unknown ? '+ checking' : null;
-  const needsFoot = `${attention ? 'Settle each one in Needs you' : unknown ? 'Nothing confirmed yet' : 'Nothing is blocked on you'}${unknown ? ` · merge of ${plural(unknown, 'published step')} being checked` : ''}`;
-  const tiles = [
-    ['building', 'Building', builders, builders ? `${plural(builders, 'builder')} working` : 'No builder running'],
-    ['checking', 'Checking', agents.length - builders, 'A fresh session that did not write the code'],
-    ['waiting', 'Waiting', waiting, 'Limits and order: AIWorks resumes by itself'],
-    ['you', 'Needs you', needsValue, needsFoot, needsMore],
-    ['merged', 'Merged in 24 h', merged, 'Found in Git, however it was merged · each checked first'],
-    ['cost', 'Reported cost', spent, unreported ? `Running work · ${plural(unreported, 'run')} not reported yet` : 'Running work, as the AI workers reported it']
-  ];
-  return el('section', { class: 'live-tiles', 'aria-label': 'Right now' }, ...tiles.map(([tone, title, value, foot, more]) => {
-    const body = [el('div', { class: 'live-tile-title' }, el('span', { class: `tone-dot ${tone}`, 'aria-hidden': 'true' }), title),
-      el('div', { class: 'live-tile-value number' }, String(value), more ? el('small', {}, ` ${more}`) : null), el('div', { class: 'live-tile-foot' }, foot)];
-    return tone === 'you' && (attention || unknown) ? el('a', { class: `live-tile ${tone}`, href: '#/needs' }, ...body) : el('div', { class: `live-tile ${tone}` }, ...body);
-  }));
+/** One waiting decision with two to four options as selectable cards and one Answer button. */
+function homeDecisionCard(c, task) {
+  const d = task.decision, address = current.address, key = `decision:${d.id}`, off = decisionBusy || commandsOff();
+  const deferred = task.risk?.level === 'high' && onPhone();
+  const draft = drafts.get(address, key) ?? { option: null, text: '', feedback: '' };
+  const radios = `home-option-${d.id}`, heading = `home-question-${d.id}`;
+  const pick = () => drafts.set(address, key, { ...(drafts.get(address, key) ?? draft), option: form.querySelector(`input[name="${radios}"]:checked`)?.value ?? null });
+  const error = el('p', { class: 'validation-error', role: 'alert', hidden: true }, COMMANDS.decision.notOption);
+  const options = d.options.map((o) => {
+    const input = el('input', { type: 'radio', name: radios, value: o.id, onchange: pick, disabled: deferred });
+    input.checked = draft.option === o.id;
+    return el('label', { class: 'home-option' }, input, el('span', { class: 'home-option-body' },
+      el('strong', {}, o.label, d.suggestion?.option === o.id ? el('span', { class: 'badge done' }, 'Suggested') : null),
+      el('span', { class: 'home-note' }, o.consequence)));
+  });
+  const form = el('form', { novalidate: true, class: 'home-card', 'data-decision': d.id, 'data-focus-scope': `home/decision/${d.id}`,
+    onsubmit: (event) => {
+      event.preventDefault();
+      if (off || deferred) return;
+      const option = form.querySelector(`input[name="${radios}"]:checked`)?.value;
+      error.hidden = Boolean(option);
+      if (!option) { form.querySelector(`input[name="${radios}"]`)?.focus(); return; }
+      void sendDecision('answer', c, task, { option }, { address, done: () => {
+        drafts.delete(address, key); homeConfirm = { text: 'Answered. AIWorks carries on.', until: Date.now() + 15_000 };
+      } });
+    } },
+    el('h2', { id: heading, class: 'home-question' }, d.question),
+    el('fieldset', { class: 'home-options', 'aria-labelledby': heading }, ...options), error,
+    deferred ? el('p', { class: 'home-note' }, 'Answer this on a computer.')
+      : el('div', { class: 'home-answer' }, el('button', { class: 'button', type: 'submit', disabled: off }, 'Answer')),
+    d.unanswered ? el('p', { class: 'home-note' }, `If you do not answer: ${d.unanswered}`) : null);
+  return form;
 }
 
-function homeProjectRow(project, badge) {
-  const campaigns = projectCampaigns(project.id), open = openCampaigns(campaigns);
-  const shown = open.length ? open : campaigns.slice(-1);
-  const steps = shown.flatMap((c) => c.tasks.map((task) => [c, task]));
-  const tones = steps.map(([c, task]) => stepTone(c, task));
-  const merged = tones.filter(([tone]) => tone === 'merged').length, delivered = merged + tones.filter(([tone]) => tone === 'delivered').length;
-  const agents = open.flatMap((c) => c.agents), builders = agents.filter((a) => isBuilderRole(a.role)).length, checkers = agents.length - builders;
-  const goal = shown.length ? campaignTitle(shown[shown.length - 1], { inProject: true }) : null;
-  return el('li', { class: 'live-row', 'data-focus-scope': `home/project/${project.id}`, 'data-state': project.state.key },
-    el('div', { class: 'live-cell live-name' }, routeLink(project.name, { screen: 'project', project: project.id, tab: 'overview' }, 'task-name'),
-      el('span', { class: 'subtext' }, goal ?? project.state.text ?? 'No work yet')),
-    el('div', { class: 'live-cell live-progress' }, ...(steps.length
-      ? [el('div', { class: 'step-strip', role: 'img', 'aria-label': `${delivered} of ${steps.length} steps delivered, ${merged} merged` },
-        ...tones.map(([tone, words], index) => el('span', { class: `step-seg ${tone}`, title: `${stepLabels(steps[index][1]).lead}: ${words}` }))),
-      el('span', { class: 'subtext number' }, `${delivered} of ${plural(steps.length, 'step')} delivered${delivered > merged ? ` · ${merged} merged` : ''}`)]
-      : [el('span', { class: 'subtext' }, 'No steps yet')])),
-    el('div', { class: 'live-cell live-agents' }, builders ? el('span', { class: 'role-chip building' }, el('span', { class: 'tone-dot building', 'aria-hidden': 'true' }), builders > 1 ? `${builders} builders` : 'Builder') : null,
-      checkers ? el('span', { class: 'role-chip checking' }, el('span', { class: 'tone-dot checking', 'aria-hidden': 'true' }), checkers > 1 ? `${checkers} checkers` : 'Checker') : null,
-      agents.length ? null : el('span', { class: 'subtext' }, 'No AI worker on it')),
-    el('div', { class: 'live-cell live-state' }, badge ? el('span', { class: `badge ${badge[0]}` }, badge[1]) : el('span', { class: 'subtext' }, project.state.text ?? 'Calm')),
-    el('div', { class: 'live-cell live-when subtext number' }, project.lastActivityAt
-      ? el('time', { datetime: new Date(project.lastActivityAt).toISOString(), title: dateTime(project.lastActivityAt) }, timeAgo(project.lastActivityAt)) : '—'));
+/** A waiting item that is not a choice: its question and a link to where it is settled. */
+function homeOtherCard(item) {
+  return el('div', { class: 'home-card', 'data-focus-scope': `home/item/${itemKey(item)}` },
+    el('h2', { class: 'home-question' }, splitSentence(item.text ?? 'Something needs you.')[0]),
+    item.route ? el('div', { class: 'home-answer' }, routeLink('Open', item.route.address, 'button')) : null);
 }
 
-/**
- * Home (docs/design/OWNER_UI_V2.md §6 screen 2, previews/owner-ui-v2/02-home.html): one headline sentence states
- * whether anything needs you, the decision itself follows as one card, then what changed, then every project in one
- * sentence with a status badge. Results to review are not a separate panel: a project with one ready carries the
- * badge on its own row, exactly as the approved preview folds it in (02-home.html, "Client portal" row).
- */
 function homeScreen() {
   const home = state.home;
   if (!state.supervisor.available || !home?.available) return [unavailable()];
-  const { since, lastSeen } = home;
-  // Only results finished in the last week are "new"; older ones wait on each project's Review.
-  const reviews = resultsToReview().filter(recentResult);
-  // The first item is resolved here on the same card as in Needs you: a decision with its options, a result with Accept
-  // and Request changes, a stopped step with guidance and Check again.
-  const first = state.owner?.items?.find((item) => !item.system);
-  // Results to review are Needs you items (owner.mjs `attention`), so they are in this count, never added to it.
-  const heroText = home.needsYou.count ? `${plural(home.needsYou.count, 'thing')} need${home.needsYou.count === 1 ? 's' : ''} you.` : null;
-  // h2, not h1: index.html already carries the page's one h1 (#view-title) outside #content (showRoute()).
-  const hero = el('div', { class: 'home-hero' },
-    el('div', {}, el('h2', {}, 'Your work, at a glance'), heroText && el('p', { class: 'subtext' }, heroText)),
-    pauseControls(home.pause, 'all', {}, { label: 'all work' }));
-  // This count matches the nav badge and the Needs you screen exactly (owner.count): results to review carry their
-  // own badge on the project row below, never folded into this number (owner, 2026-10-13).
-  const decision = home.needsYou.count && first ? el('ul', { class: 'needs-list home-decision', 'data-focus-scope': 'home/needs' }, needsItem(first)) : null;
-  const moreDecisions = home.needsYou.count > 1 ? routeLink(`All ${home.needsYou.count} in Needs you`, '#/needs', 'button secondary small') : null;
-  const counts = EVENT_ORDER.filter((type) => since.counts[type]).map((type) => `${since.counts[type]} ${SUMMARY_WORDS[type]}`);
-  const windowHours = since.window ? Math.round(since.window / 3600000) : null;
-  const when = lastSeen.at && (!since.window || lastSeen.at >= Date.now() - since.window) ? `Since your last visit (${dateTime(lastSeen.at)})`
-    : windowHours ? `In the last ${windowHours} hours` : 'Everything AIWorks recorded so far';
-  const changed = el('section', { class: 'since', 'aria-labelledby': 'home-since-title', 'data-focus-scope': 'home/since' },
-    el('h2', { id: 'home-since-title' }, when),
-    el('p', { role: 'status', 'aria-live': 'polite' }, counts.length ? `${counts.join(' · ')}${since.more ? ', and more' : ''}.` : 'Nothing changed.'),
-    since.events.length ? disclosure('home/events', `What changed (${since.more || since.count > since.events.length ? `latest ${since.events.length}` : since.events.length})`, eventList(since.events)) : null,
-    since.count ? button(seenBusy ? 'Marking…' : 'Mark as seen', markSeen, 'secondary small', seenBusy || offline) : null);
-  // Working reuses the same liveness codes Now already shows for this project (copy.mjs). A project with none of
-  // these badges is calm, never "Live": OWNER_WORKSPACE §2.3 keeps "Live" for recorded release evidence only, which
-  // this view does not have per project, so showing it here would be a false claim the approved preview's fictional
-  // sample data does not have to respect.
-  const WORKING = ['builder-working', 'checker-working', 'possibly-stuck', 'cancelling'];
-  const badgeOf = (project) => project.needsYou ? ['attention', 'Needs you']
-    : reviews.some((row) => sameProject(row.project, project.id)) ? ['done', 'Review ready']
-      : WORKING.includes(project.state.key) ? ['in_progress', 'Working'] : null;
-  // A project with nothing waiting and no activity in the last week is quiet: folded under the active ones.
-  const quiet = (project) => !badgeOf(project) && project.lastActivityAt && !isRecent(project.lastActivityAt);
-  const active = home.projects.filter((project) => !quiet(project)), quietOnes = home.projects.filter(quiet);
-  const projectTable = (rows) => el('div', { class: 'live-table' },
-    el('div', { class: 'live-head', 'aria-hidden': 'true' }, el('span', {}, 'Project · current goal'), el('span', {}, 'Steps'), el('span', {}, 'AI workers'), el('span', {}, 'State'), el('span', {}, 'Last activity')),
-    el('ul', { class: 'live-rows home-projects' }, ...rows.map((project) => homeProjectRow(project, badgeOf(project)))));
-  const projects = home.projects.length
-    ? el('div', {}, active.length ? projectTable(active) : el('p', { class: 'panel-body subtext' }, 'No project had activity in the last week.'),
-      quietOnes.length ? disclosure('home/quiet-projects', `Quiet projects (${quietOnes.length}): no activity in the last week`, projectTable(quietOnes)) : null)
-    : state.projects?.addProject ? el('div', { class: 'empty-state' }, el('strong', {}, 'No projects yet.'), ' Start from an idea or a folder on this computer. ',
-      routeLink('Add project', { screen: 'add-project' }))
-      : empty('No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository.');
-  return [hero, homeTiles(home), decision, moreDecisions, changed,
-    panel('Projects', 'Needs you first, then running. Each step of the current goal is one segment.', home.projects.length ? projects : el('div', { class: 'panel-body' }, projects))].filter(Boolean);
+  const items = (state.owner?.items ?? []).filter((item) => !item.system);
+  const needCards = items.map((item) => {
+    const found = itemDecision(item);
+    return found?.task.decision?.structured ? homeDecisionCard(found.c, found.task) : homeOtherCard(item);
+  });
+  const projectAddress = (name) => {
+    const row = (home.projects ?? []).find((project) => sameProject(project.name, name));
+    return row ? formatRoute({ screen: 'project', project: row.id, tab: 'overview' }) : null;
+  };
+  const decided = (state.owner?.decided ?? []).slice(0, 3).map((d) => ({ question: d.question, chosen: d.chosen,
+    address: formatRoute({ screen: 'step', project: d.project, work: d.campaignId, step: d.taskId }) }));
+  const confirmation = homeConfirm && homeConfirm.until > Date.now() ? homeConfirm.text : null;
+  const blocks = homeBlocks({ ...home, needCards, decided, confirmation, address: projectAddress, showAll: landedAll,
+    onShowAll: () => { landedAll = !landedAll; render(); } }, { el, timeAgo });
+  return [el('div', { class: 'home' }, ...blocks)];
 }
+
+
 
 const AVAILABLE_WORDS = { 'not-published': 'Not published: release is off', unknown: 'Not known', recorded: 'Recorded' };
 /** One goal on Overview: its state with stopping or stopped, Built, Checked and Available to users apart, its budget and pause. */
@@ -4767,6 +4682,7 @@ function reuse(old, node) {
 function render() {
   if (!state) return;
   showTabs();
+  showHeader();
   const content = $('#content'), route = current.route;
   const focusKey = (node) => JSON.stringify([node.closest('[data-focus-scope]')?.dataset.focusScope, node.tagName, node.getAttribute('href'), node.textContent]);
   const focused = content.contains(document.activeElement) ? focusKey(document.activeElement) : null;
@@ -4807,19 +4723,6 @@ function render() {
   const warning = $('#source-warning');
   warning.hidden = state.supervisor.available;
   warning.textContent = state.supervisor.available ? '' : state.supervisor.message ?? '';
-  $('#updated').textContent = `${state.host?.name ? `${state.host.name} · ` : ''}Checked ${timeOnly(state.observedAt)}`;
-  // Which machine this is: each computer runs its own supervisor and campaigns.
-  if (state.host) {
-    // The page starts with a neutral "…" so it never names the wrong computer before the first answer.
-    $('#host-name').textContent = `${state.host.name ?? 'Unknown computer'} · this computer`;
-    $('#host-name').removeAttribute('aria-busy');
-    const ver = state.host.version ?? DASHBOARD_VERSION;
-    const verName = state.host.versionName ?? DASHBOARD_VERSION_NAME;
-    const versionLabel = `v${ver} · ${verName}`;
-    $('#host-detail').replaceChildren(routeLink(versionLabel, '#/settings/version', 'host-version-link'));
-    // The revision stays in the host state for version checks, never in this human-facing tooltip.
-    $('#host-detail').title = `Dashboard v${ver} "${verName}"`;
-  }
   fitPreviewFrames();
 }
 
@@ -4861,27 +4764,23 @@ function command(c, action, task, extra = {}, draftAddress = null) {
     ...(task ? { taskId: task.id, taskVersion: task.version } : {}), ...extra }, draftAddress);
 }
 
-// How fresh this page's picture is: "Page connected · updated 4s ago", ticking every second, so a running AIWorks reads
-// as running. It stays about this page (OWNER_WORKSPACE §3.4): a refresh that has not arrived for a while says so
-// rather than going on looking current. "Live" stays reserved for release evidence (§2.3).
-const STALE_MS = 20_000;
-let freshAt = null;
-function showFreshness() {
-  const node = $('#connection');
-  if (offline || freshAt === null) return;
-  const seconds = Math.max(0, Math.round((Date.now() - freshAt) / 1000)), stale = Date.now() - freshAt > STALE_MS;
-  const ago = seconds < 60 ? `${seconds}s ago` : timeAgo(freshAt);
-  // The node is a status region: its words change only when the meaning does; the ticking age is hidden from it.
-  const words = stale ? 'Page connected, but no update for a while' : 'Page connected';
-  if (node.dataset.words !== words) {
-    node.dataset.words = words;
-    node.replaceChildren(el('span', {}, stale ? 'Page connected' : words), el('span', { class: 'fresh-age', 'aria-hidden': 'true' }));
-    if (stale) node.firstChild.append(el('span', { class: 'sr-only' }, ', but no update for a while'));
-  }
-  node.querySelector('.fresh-age').textContent = ` · ${stale ? 'last update' : 'updated'} ${ago}`;
-  node.className = `connection online${stale ? ' stale' : ' fresh'}`;
+// The header says one word about the work (Working, Paused, Stopped; Offline while this page cannot reach the dashboard)
+// and carries Pause all or Resume all, bound to the goals the Home data lists.
+const HEADER_TONES = { Working: 'online', Paused: 'stale', Stopped: 'offline', Offline: 'offline' };
+function showHeader() {
+  const node = $('#connection'), summary = state?.home?.pause ?? null, button = $('#header-pause');
+  const word = offline ? 'Offline' : !state || !state.supervisor.available || state.supervisor.controller?.stopped ? 'Stopped'
+    : summary && !summary.running && (summary.stopped || summary.stopping) ? 'Paused' : 'Working';
+  if (node.textContent !== word) node.textContent = word;
+  node.className = `connection ${HEADER_TONES[word]}`;
+  const action = summary?.pause?.length ? 'pause' : summary?.resume?.length ? 'resume' : null;
+  button.hidden = !action;
+  if (!action) return;
+  const busy = scopedBusy === `${action}:all:`;
+  button.textContent = busy ? (action === 'pause' ? 'Pausing…' : 'Resuming…') : action === 'pause' ? 'Pause all' : 'Resume all';
+  button.disabled = offline || commandsOff();
+  button.onclick = () => scopedControl(action, 'all', summary[action], {});
 }
-setInterval(showFreshness, 1000);
 
 async function poll() {
   try {
@@ -4890,9 +4789,6 @@ async function poll() {
     // A dashboard that restarted while this page was offline has a new command session: take it before any command.
     if (offline) await refreshSession();
     state = await response.json(); offline = false;
-    // The header keeps only "Page connected" or the disconnected text (OWNER_WORKSPACE §3.4, §7.4; aiworks#11 review F8):
-    // it is about this page, never read as "AIWorks is running" (review 4 F6).
-    freshAt = Date.now(); showFreshness();
     trackReceipts();
     // An open work list item is read again with every refresh, so a change shows and a stale draft says so.
     if (current.route.screen === 'worklist-item') void loadItem(current.route.number);
@@ -4905,7 +4801,7 @@ async function poll() {
     if (!document.querySelector('dialog[open]')) render();
     $('#confirm-cancel').disabled = $('#send-instruction').disabled = $('#send-message').disabled = sending;
   } catch {
-    offline = true; delete $('#connection').dataset.words; $('#connection').textContent = 'Disconnected · retrying · controls off'; $('#connection').className = 'connection offline';
+    offline = true; showHeader();
     $('#confirm-cancel').disabled = $('#send-instruction').disabled = $('#send-message').disabled = true;
     checkCloseStale();
     if (state && !document.querySelector('dialog[open]')) render();
@@ -4932,7 +4828,7 @@ function go(address, { restore = false } = {}) {
   showRoute();
   window.scrollTo(0, scrollMemory.get(current.address) ?? 0);
   // Focus moves to the new screen's heading, so a screen reader starts there.
-  $('#view-title').focus({ preventScroll: true });
+  (current.route.screen === 'home' ? document.getElementById('home-title') ?? $('#main') : $('#view-title')).focus({ preventScroll: true });
 }
 // At narrow widths navigation is a bar fixed to the bottom of the window. Keyboard focus is kept above it, never under it
 // (OWNER_WORKSPACE §6.2; aiworks#11 review F4); the stylesheet's scroll-padding does the same where the browser applies it.

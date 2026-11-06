@@ -2,7 +2,7 @@
 
 **Privacy boundary:** this is a design, not an installation record. Every project, goal, step, amount and time below is fictional.
 
-**Status:** the data (part 1) is built in source: `GET /api/v2/home` and the `home` part of `/api/state` carry it. The screen (part 2) and its check (part 3) are planned.
+**Status:** the data (part 1) is built in source: `GET /api/v2/home` and the `home` part of `/api/state` carry it. The screen (part 2) is built in source: `public/home.mjs` and `homeScreen()`. Its check (part 3) is planned.
 
 Home answers three questions in the owner's words, in this order: does anything need me, what is being made right now, and what was finished today. It never shows reference numbers, commit hashes, decision codes, step ids, file names, version names or internal state names, and it does not explain how AIWorks works.
 
@@ -75,11 +75,22 @@ What the runs of the running and paused goals that finished today (from local mi
 - The needs count equals the items Needs you lists for the owner; a result AIWorks merged is not counted.
 - This document uses fictional examples only.
 
-## 2. Part two: the Home screen (planned)
+## 2. Part two: the Home screen
 
-Home shows, top to bottom: the needs count as one sentence with a link to Needs you; one card per goal with its project, title, `now` line and step strip; the landed lines with their total; the quiet projects in one line; and what was spent today. Words come from the data above; the screen adds no codes, numbers or explanations of how AIWorks works.
+Home is one centred column, at most 1040 px wide. Top to bottom:
 
-Acceptance: the screen reads only the fields of part one, the badge and the headline show the same number, and every visible word is plain English for a person.
+1. A headline: "Nothing needs you.", "One question for you." or "N things need you.", with one grey line such as "3 goals are moving in bakery. 14 changes landed since yesterday." (`needs.count`, `goals`, `landed.total`).
+2. Only when something waits: one card per item, the question as its heading. A choice shows its two to four options as selectable cards with their effect and "Suggested" on the suggestion, one Answer button and what happens without an answer. Anything else shows its question and a link to where it is settled.
+3. In progress: one row per goal (`goals`) with its title, the `now` line, a strip of its segments, "1 of 3 done" and its state; the spend of `spentToday.usd` in the block head when known.
+4. Decided for you: one line per decision with the chosen answer in bold and a Change link; hidden when empty.
+5. Landed since yesterday: at most five lines from `landed.entries`, the rest behind "All N".
+6. Quiet: one line of project links from `quiet`.
+
+The header carries the logo, the navigation, one word for the work (Working, Paused or Stopped) and Pause all. It shows no version, computer name, connection or refresh text; while the page cannot reach the dashboard that word is "Offline" and the controls are off.
+
+Words come from the data above as text, never as markup; the screen adds no codes, numbers or explanations of how AIWorks works. Not built yet: Undo after an answer (no command reverses an answer), and the goal link goes to the goal's project because the data names no goal address.
+
+Acceptance: the screen reads only the fields of part one, the headline and the badge show the same number, and every visible word is plain English for a person.
 
 ## 3. Part three: the check of the whole (planned)
 
