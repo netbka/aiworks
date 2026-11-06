@@ -2657,11 +2657,17 @@ function homeDecisionCard(c, task) {
   return form;
 }
 
-/** A waiting item that is not a choice: its question and a link to where it is settled. */
+/**
+ * A waiting item that is not a choice: its question, what it means and what to do (its points, as on Needs you), and a
+ * link to where it is settled; an item with no route of its own opens Needs you, so a card is never a dead end.
+ */
 function homeOtherCard(item) {
   return el('div', { class: 'home-card', 'data-focus-scope': `home/item/${itemKey(item)}` },
     el('h2', { class: 'home-question' }, splitSentence(item.text ?? 'Something needs you.')[0]),
-    item.route ? el('div', { class: 'home-answer' }, routeLink('Open', item.route.address, 'button')) : null);
+    ...(item.points ?? []).map((point) => el('p', { class: 'home-point' }, point.text,
+      point.link ? [' ', link(`${point.link.label} ↗`, point.link.url)] : null)),
+    el('div', { class: 'home-answer' }, item.route ? routeLink('Open', item.route.address, 'button')
+      : routeLink('Open in Needs you', { screen: 'needs' }, 'button')));
 }
 
 function homeScreen() {
