@@ -2,11 +2,12 @@
 // code and the verifier waited on a summary line until its two-hour bound ended the run. These tests run the helper on
 // small synthetic gate scripts in a temporary directory: no model, network or GitHub calls.
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 const GATE = fileURLToPath(new URL('../../src/supervisor/gate.mjs', import.meta.url));
@@ -50,6 +51,8 @@ test('a project without check uses its explicit gate; a missing command cannot l
   assert.equal(gate(dir, 'wait', '--minutes', '0.2', '--poll-seconds', '0.1').code, 1);
 });
 const waitFast = (dir, ...more) => gate(dir, 'wait', '--poll-seconds', '0.1', ...more);
+// A process id whose process has ended.
+const ended = () => spawnSync(process.execPath, ['-e', '']).pid;
 
 test('a gate that passes: wait returns its exit code and the final summary block, and every file it wrote is a .log', (t) => {
   const dir = workdir(t);
@@ -59,7 +62,7 @@ test('a gate that passes: wait returns its exit code and the final summary block
   const done = waitFast(dir);
   assert.equal(done.code, 0, done.out);
   assert.match(done.out, /^finished: exit 0\. Final summary from gate\.log:\n# all test files\n# tests 3\n# pass 3\n# fail 0\n$/);
-  assert.deepEqual(readdirSync(dir).filter((name) => !(name in SCRIPTS)).sort(), ['gate-exit.log', 'gate-pid.log', 'gate.log', 'slots']);
+  assert.deepEqual(readdirSync(dir).filter((name) => !(name in SCRIPTS)).sort(), ['gate-exit.log', 'gate-head.log', 'gate-pid.log', 'gate.log', 'slots']);
   assert.deepEqual(readdirSync(join(dir, 'slots')), [], 'the slot is given back when the gate ends');
 });
 
@@ -92,12 +95,70 @@ test('a gate process that ends without an exit code is reported as died at once,
   assert.match(readFileSync(join(dir, 'gate-previous.log'), 'utf8'), /# start tests\/unlimited\.test\.mjs/);
 });
 
+test('a web task run holding the browser session holds back other gates, never its own, and a lapsed lock never blocks', async (t) => {
+  const { browserLockPath, heldBrowserRuns, heldSlotCount } = await import('../../src/supervisor/gate.mjs');
+  const { gatePauseOn } = await import('../../src/supervisor/host.mjs');
+  // Off (the scheduler off, its default, or pauseAtGates 99), the supervisor writes no browser lock, so no gate waits.
+  for (const config of [{}, { scheduler: { enabled: false } }, { scheduler: { enabled: true, pressure: { pauseAtGates: 99 } } }]) {
+    assert.equal(gatePauseOn(config), false, JSON.stringify(config));
+  }
+  assert.equal(gatePauseOn({ scheduler: { enabled: true } }), true);
+  const dir = workdir(t), slots = join(dir, 'slots');
+  mkdirSync(slots, { recursive: true });
+  const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore', windowsHide: true });
+  t.after(() => holder.kill());
+  writeFileSync(browserLockPath(slots, 'op-web'), JSON.stringify({ pid: holder.pid, at: Date.now(), operation: 'op-web' }));
+  writeFileSync(browserLockPath(slots, 'op-gone'), JSON.stringify({ pid: ended(), at: Date.now(), operation: 'op-gone' }));
+  assert.deepEqual(heldBrowserRuns({ dir: slots }, Date.now(), null), ['op-web']);
+  assert.equal(existsSync(browserLockPath(slots, 'op-gone')), false, 'a lock whose run ended is removed');
+  // The run's own gate (its environment names the operation) starts at once; another waits until the run ends.
+  assert.equal(gateIn(dir, { AIWORKS_BROWSER_RUN: 'op-web' }, 'start', `"${process.execPath}"`, 'pass.mjs').code, 0);
+  assert.equal(waitFast(dir).code, 0, 'its own gate finished');
+  assert.equal(gate(dir, 'start', `"${process.execPath}"`, 'pass.mjs').code, 0);
+  assert.equal(waitFast(dir, '--minutes', '0.05').code, 2, 'another gate waits while the run holds the session');
+  // A loaded PC may start the waiting gate late: poll briefly for its line.
+  for (let i = 0; i < 100 && !/web task run\(s\) use the browser session/.test(readFileSync(join(dir, 'gate.log'), 'utf8')); i += 1) await sleep(100);
+  assert.match(readFileSync(join(dir, 'gate.log'), 'utf8'), /web task run\(s\) use the browser session/);
+  // The waiting gate holds no slot, yet admission counts it, or a wave of web task runs would starve it.
+  assert.equal(heldSlotCount({ dir: slots }), 1, 'a gate waiting for the browser session pauses admission');
+  holder.kill();
+  assert.equal(waitFast(dir, '--minutes', '1').code, 0, 'and runs once the run ended');
+  assert.equal(heldSlotCount({ dir: slots }), 0, 'a finished gate counts no more');
+});
+
+test('a lock whose holder stopped beating, or that outlived the longest gate, is not held while another process has its id', async (t) => {
+  const { browserLockPath, heldBrowserRuns, heldSlotCount, takeSlot } = await import('../../src/supervisor/gate.mjs');
+  const dir = workdir(t), slots = join(dir, 'slots'), heartbeat = join(dir, 'heartbeat');
+  mkdirSync(slots, { recursive: true });
+  // A live process stands in for one Windows gave a dead gate's or run's id to.
+  const reused = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore', windowsHide: true });
+  t.after(() => reused.kill());
+  const old = Date.now() - 10 * 60_000;
+  writeFileSync(join(slots, 'slot-1.lock'), JSON.stringify({ pid: reused.pid, at: old }));
+  writeFileSync(join(slots, 'waiting-1.lock'), JSON.stringify({ pid: reused.pid, at: old }));
+  writeFileSync(browserLockPath(slots, 'op-stale'), JSON.stringify({ pid: reused.pid, at: old, heartbeat }));
+  assert.equal(heldSlotCount({ dir: slots }), 0, 'stale slot and waiting locks do not pause admission');
+  assert.deepEqual(heldBrowserRuns({ dir: slots }, Date.now(), null), [], 'a stale browser lock does not hold gates back');
+  assert.equal(takeSlot({ count: 1, dir: slots }), join(slots, 'slot-1.lock'), 'a stale slot is taken over');
+  // A hung gate beats for ever: past the longest gate's bound it stops pausing admission and its slot is taken over.
+  writeFileSync(join(slots, 'slot-1.lock'), JSON.stringify({ pid: reused.pid, at: Date.now(), startedAt: Date.now() - 3 * 60 * 60_000 }));
+  assert.equal(heldSlotCount({ dir: slots }), 0, 'a gate past its lifetime does not pause admission');
+  assert.equal(takeSlot({ count: 1, dir: slots }), join(slots, 'slot-1.lock'), 'and its slot is taken over');
+  // A beat ahead of the clock (the clock was set back) proves nothing.
+  writeFileSync(join(slots, 'slot-1.lock'), JSON.stringify({ pid: reused.pid, at: Date.now() + 60 * 60_000 }));
+  assert.equal(heldSlotCount({ dir: slots }), 0, 'a beat from the future does not hold');
+  // A run that still beats keeps its browser lock, though the lock was written long ago.
+  writeFileSync(heartbeat, String(Date.now()));
+  writeFileSync(browserLockPath(slots, 'op-beating'), JSON.stringify({ pid: reused.pid, at: old, heartbeat }));
+  assert.deepEqual(heldBrowserRuns({ dir: slots }, Date.now(), null), ['op-beating']);
+});
+
 test('readGateRun: the exit code and the final node:test summary the controller keeps with a verification (#43)', async (t) => {
   const { gateFailure, readGateRun, testSummary } = await import('../../src/supervisor/gate.mjs');
   const dir = workdir(t);
   assert.equal(readGateRun(dir), null, 'no gate ran here');
   writeFileSync(join(dir, 'gate.log'), 'noise\r\n# all test files: 1 unit (of 1)\r\n# tests 3\r\n# pass 3\r\n# fail 0\r\n');
-  assert.deepEqual(readGateRun(dir), { exit: null, summary: '# all test files: 1 unit (of 1)\n# tests 3\n# pass 3\n# fail 0' }, 'an unfinished gate has no exit code');
+  assert.deepEqual(readGateRun(dir), { exit: null, summary: '# all test files: 1 unit (of 1)\n# tests 3\n# pass 3\n# fail 0', exited: null, head: null }, 'an unfinished gate has no exit code');
   writeFileSync(join(dir, 'gate-exit.log'), '0\n');
   assert.equal(readGateRun(dir).exit, '0');
   // A plain node --test run has no "# all test files" line: its last run of count lines is the summary, never other output.
@@ -106,8 +167,43 @@ test('readGateRun: the exit code and the final node:test summary the controller 
   assert.equal(gateFailure(null), null);
   assert.equal(gateFailure({ exit: '0', summary: '# tests 2\n# pass 2\n# fail 0' }), null);
   assert.equal(gateFailure({ exit: null, summary: null }), null, 'an unfinished gate is shown, not refused');
-  assert.equal(gateFailure({ exit: '1', summary: '# fail 0' }), 'exited 1');
   assert.equal(gateFailure({ exit: '0', summary: '# tests 4\n# fail 2' }), 'reports 2 failed tests');
+  // 2026-11-05: a file stopped at its time limit printed no summary of its own, so the gate exited 1 with `# fail 0`.
+  // That run is still a failure.
+  writeFileSync(join(dir, 'gate.log'), ['# start tests/a.test.mjs', 'not ok 1 - a', '# end tests/a.test.mjs 900000 ms, exit 1',
+    '# all test files: 1 unit (of 1)', '# tests 0', '# pass 0', '# fail 0', ''].join('\r\n'));
+  writeFileSync(join(dir, 'gate-exit.log'), '1\n');
+  assert.ok(gateFailure(readGateRun(dir)), 'a non-zero exit fails the gate whatever the summary counts');
+  assert.ok(gateFailure({ exit: '1', summary: null }));
+});
+
+// The controller trusts a verifier's gate only as a run of the exact head it verifies: start records the commit and
+// whether the checkout was clean, and a run of another commit, of a changed checkout or without that record is refused.
+test('a gate run is a run of the verified head only when start recorded that commit on a clean checkout', async (t) => {
+  const { gateFailure, gateHeadProblem, readGateRun } = await import('../../src/supervisor/gate.mjs');
+  const dir = workdir(t);
+  const git = (...args) => {
+    const out = spawnSync('git', args, { cwd: dir, encoding: 'utf8', windowsHide: true });
+    assert.equal(out.status, 0, out.stderr);
+    return out.stdout.trim();
+  };
+  git('init', '-q');
+  writeFileSync(join(dir, '.gitignore'), 'slots/\n');
+  git('add', '-A');
+  git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-q', '-m', 'target');
+  const target = git('rev-parse', 'HEAD');
+  assert.equal(gate(dir, 'start', 'node', 'pass.mjs').code, 0);
+  assert.equal(waitFast(dir).code, 0);
+  const run = readGateRun(dir);
+  assert.equal(gateHeadProblem(run, target), null, 'started on the target, its own gate files only');
+  assert.ok(gateHeadProblem(run, '0'.repeat(40)), 'a run of another commit');
+  assert.ok(gateFailure({ ...run, headProblem: gateHeadProblem(run, '0'.repeat(40)) }), 'kept with its reason, it never counts as passed');
+  writeFileSync(join(dir, 'pass.mjs'), "console.log('# all test files'); console.log('# tests 0'); console.log('# fail 0');");
+  assert.equal(gate(dir, 'start', 'node', 'pass.mjs').code, 0);
+  assert.equal(waitFast(dir).code, 0);
+  assert.ok(gateHeadProblem(readGateRun(dir), target), 'started on a checkout with a changed file');
+  rmSync(join(dir, 'gate-head.log'));
+  assert.ok(gateHeadProblem(readGateRun(dir), target), 'no record of the commit it ran on');
 });
 
 // One isolated retry per failed file (scripts/lib/test-retry.mjs): a file that fails again alone must still fail the
@@ -134,4 +230,7 @@ test('a failed file retried alone passes the gate only when its retry passes; to
   assert.equal(again.status, 1);
   assert.equal(again.total.fail, 1);
   assert.equal(settle(runs, []).status, 1, 'no retry: the first failures stand');
+  // A file stopped before its own summary counts no failed test, yet the total must not read `# fail 0` beside it.
+  assert.equal(settle(runs, []).total.fail, 2);
+  assert.equal(settle(runs, [{ file: 'tests/b.test.mjs', code: 0, counts: counts(2, 0) }, { file: 'tests/c.test.mjs', code: 1, counts: counts(0, 0) }]).total.fail, 1);
 });

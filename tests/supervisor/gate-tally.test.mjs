@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { checkVerification } from '../../src/supervisor/adapters/git.mjs';
 import { GATE_FILES } from '../../src/supervisor/gate.mjs';
-import { declaration, environment, runUntil, skipWithoutSqlite } from './helpers.mjs';
+import { declaration, environment, runUntil, skipWithoutSqlite, sleep } from './helpers.mjs';
 
 const load = async () => ({
   ...(await import('../../src/supervisor/api.mjs')),
@@ -35,6 +35,7 @@ async function setup(t, { scenario, decl = declaration({ tasks: ONE }) } = {}) {
   return { env, store, controller, id: decl.campaignId };
 }
 
+const OTHER = 'f'.repeat(40);
 const verifications = (store, id) => store.all("SELECT * FROM operations WHERE campaign_id = ? AND kind = 'verify' ORDER BY seq, created_at", id);
 
 test('an acceptance whose last gate run exited 1 is refused as invalid-result naming the summary; the next one publishes', { skip: skipWithoutSqlite }, async (t) => {
@@ -60,14 +61,17 @@ test('an acceptance whose gate exited 0 but reports a failed test is refused too
   assert.equal(refused.outcome.detail, `accepted, but the verifier's last gate run reports 1 failed test:\n${FAILED}`);
 });
 
-test('an acceptance with no gate run, or one that never finished, is refused; the next with a finished gate publishes', { skip: skipWithoutSqlite }, async (t) => {
+test('an acceptance with no gate run, one that never finished or one of another commit is refused; the next with a finished gate publishes', { skip: skipWithoutSqlite }, async (t) => {
   // Implementers run only the tests their change reaches, so the verifier's gate is the one full run a head gets.
   const decl = declaration({ tasks: ONE, limits: { maxRetriesPerTask: 4 } });
   const { store, controller, id } = await setup(t, { decl, scenario: { gate: [false, { log: `${PASSED}
 `, exit: null }, { log: `${PASSED}
+`, exit: '0', head: OTHER }, { log: `${PASSED}
 `, exit: '0' }] } });
   await runUntil(controller, store, id, (c) => c.control === 'finished');
-  const [missing, unfinished, accepted] = verifications(store, id);
+  const [missing, unfinished, elsewhere, accepted] = verifications(store, id);
+  // A passing gate the helper started on another commit is no run of this head (gate-head.log).
+  assert.equal(elsewhere.outcome.class, 'invalid-result');
   assert.equal(missing.outcome.class, 'invalid-result');
   assert.equal(missing.outcome.detail, "accepted, but the verifier's last gate run is missing: its checkout has no gate.log from the gate helper");
   assert.equal(unfinished.outcome.class, 'invalid-result');
@@ -108,12 +112,14 @@ test('base compare: a failed gate keeps its acceptance only when every failed te
   const held = process.env.AIWORKS_GATE_SLOT_HELD;
   process.env.AIWORKS_GATE_SLOT_HELD = '1';
   t.after(() => { if (held === undefined) delete process.env.AIWORKS_GATE_SLOT_HELD; else process.env.AIWORKS_GATE_SLOT_HELD = held; });
-  for (const { name, head, baseExit, baseIds, stands } of [
+  for (const { name, head, baseExit, baseIds, stands, gateHead } of [
     { name: 'shared', head: [A], baseExit: 1, baseIds: [A, B], stands: true },
     { name: 'adds a failure', head: [A, C], baseExit: 1, baseIds: [A, B], stands: false },
     { name: 'base passed', head: [A], baseExit: 0, baseIds: [], stands: false },
+    // A gate run on another commit is no run of this head, whatever the base fails.
+    { name: 'shared, but the gate ran on another commit', head: [A], baseExit: 1, baseIds: [A, B], stands: false, gateHead: OTHER },
   ]) {
-    const { env, store, controller, id } = await setup(t, { scenario: { gate: [{ log: `${block(...head)}\n`, exit: '1' }, { log: `${PASSED}\n`, exit: '0' }] } });
+    const { env, store, controller, id } = await setup(t, { scenario: { gate: [{ log: `${block(...head)}\n`, exit: '1', head: gateHead }, { log: `${PASSED}\n`, exit: '0' }] } });
     const script = join(env.tmp, 'base-gate.mjs');
     writeFileSync(script, `console.log(${JSON.stringify(baseExit ? block(...baseIds) : PASSED)}); process.exit(${baseExit});\n`);
     controller.baseCompare = { command: [`"${process.execPath}"`, `"${script}"`], timeoutMs: 60_000 };
@@ -134,6 +140,41 @@ test('base compare: a failed gate keeps its acceptance only when every failed te
       assert.equal(task.verification.baseFailures, null, name);
     }
   }
+});
+
+test('base compare: a red base gets exactly one repair item, whatever the tasks, campaigns and restarts that share it', { skip: skipWithoutSqlite }, async (t) => {
+  const m = await load();
+  const { env, store, controller, id } = await setup(t);
+  const other = declaration({ tasks: [{ ...ONE[0], id: 'T2', issue: 438 }], campaignId: 'other-campaign' });
+  m.campaignStart(store, other);
+  const sha = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: env.repo, encoding: 'utf8', windowsHide: true }).stdout.trim();
+  store.run('UPDATE tasks SET base_sha = ?', sha);
+  const A = 'tests/a.test.mjs :: a';
+  const script = join(env.tmp, 'base-gate.mjs');
+  writeFileSync(script, `console.log(${JSON.stringify(`${FAILED.split('\n')[0]}\n# failed: ${A}\n${FAILED.split('\n').slice(1).join('\n')}`)}); process.exit(1);\n`);
+  const held = process.env.AIWORKS_GATE_SLOT_HELD;
+  process.env.AIWORKS_GATE_SLOT_HELD = '1';
+  t.after(() => { if (held === undefined) delete process.env.AIWORKS_GATE_SLOT_HELD; else process.env.AIWORKS_GATE_SLOT_HELD = held; });
+  const settings = { command: [`"${process.execPath}"`, `"${script}"`], timeoutMs: 60_000 };
+  // One verify step of the task of `campaignId` under `c`, holding that campaign's lease as a running controller does.
+  const step = (c, campaignId) => {
+    c.baseCompare = settings;
+    const { generation } = store.acquireLease(campaignId, c.instanceId, c.now(), 60_000);
+    c.held.set(campaignId, generation);
+    c.stepBaseCheck({ id: campaignId, generation }, store.campaign(campaignId), { kind: 'verify', task_id: store.tasks(campaignId)[0].task_id });
+  };
+  const deadline = Date.now() + 60_000;
+  do { step(controller, id); step(controller, other.campaignId); await sleep(100); }
+  while (store.get('SELECT state FROM base_checks').state === 'running' && Date.now() < deadline);
+  // A restart: a new controller over the same store, both campaigns stepping the red base again.
+  const restarted = new m.Controller({ store, config: env.config, dataDir: env.dataDir, fault: null, instanceId: controller.instanceId });
+  for (const c of [controller, restarted, restarted]) { step(c, id); step(c, other.campaignId); }
+  const [base] = store.all('SELECT * FROM base_checks');
+  assert.equal(base.state, 'failed');
+  const items = store.all("SELECT * FROM outbox WHERE key LIKE '%:base-red:%'");
+  assert.equal(items.length, 1, 'one repair item per red base, never one per task, campaign, tick or restart');
+  assert.equal(base.item, `outbox:${items[0].key}`);
+  assert.ok(items[0].body.includes(sha) && items[0].body.includes(A), 'the item names the base and its failed tests');
 });
 
 test('a report task keeps its verification as before, even when its verifier leaves a failed gate', { skip: skipWithoutSqlite }, async (t) => {
