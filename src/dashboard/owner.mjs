@@ -882,7 +882,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       for (const result of c.results.filter((row) => row.action === 'apply')) {
         items.push({ campaignId: null, repository: null, project: record.id, projectName: record.name, kind: 'local-result', action: 'Review this result',
           text: result.title, local: { project: record.id, campaignId: result.campaignId, taskId: result.taskId },
-          why: 'It passed the independent check. Nothing in your folder changes until you press Apply on it.',
+          why: 'It passed the independent check and is ready to apply. Review shows the latest status.',
           route: { label: 'Open the project', address: { screen: 'project', project: record.id, tab: 'overview' } }, points: [] });
       }
     }

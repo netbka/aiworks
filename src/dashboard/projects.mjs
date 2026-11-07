@@ -312,18 +312,18 @@ export const UNREGISTERED = `This project is not listed in your project rules ye
  * rules are confirmed, no planning or start is claimed (review 5 G2, G3); once they are, the owner plans, approves and
  * applies here (slice UI17). The decision codes and issue numbers are said only in Diagnostics (LOCAL_START_DIAGNOSTIC).
  */
-const LOCAL_HOW = 'You ask for a plan and approve it here; AIWorks then works on its own copy, and an independent checker checks each result. Nothing in your folder changes until you press Apply on a checked result, and Undo apply puts it back.';
+const LOCAL_HOW = 'You approve a plan here. AIWorks builds in its own copy, then independently checks each result. Checked results can be applied to your folder automatically. Review shows their status, with Apply when your acceptance is needed and Undo apply when it can safely restore the previous version.';
 export const LOCAL_START = Object.freeze(["Connected. Confirm this project's rules on this page before AIWorks plans or starts work here.",
   `The rules say which rules AIWorks follows in this folder; you confirm them once, for up to 12 months. ${LOCAL_HOW}`]);
 /** OWNER_WORKSPACE §5.3, step 2: what comes after connecting, said before the owner connects. */
 const LOCAL_AFTER_CONNECT = "After you connect it, confirm its rules on its Overview. Then you can plan work here and approve it.";
-export const LOCAL_READY = Object.freeze(["Ready. Plan work here: nothing in your folder changes until you press Apply.", LOCAL_HOW]);
+export const LOCAL_READY = Object.freeze(["Ready. Plan work here; nothing starts until you approve the plan.", LOCAL_HOW]);
 /** The state word of a project that is connected but where work cannot start: never a green Ready (review 5 G9). */
 export const CANNOT_START = "Can't start work yet";
 /** Settings › Diagnostics: what a connected project waits for, in machine words (OWNER_WORKSPACE §2.2). */
 export const LOCAL_START_DIAGNOSTIC = 'starting work waits for the project rules (D2, AIWorks issue #24), confirmed on the project’s Overview; each plan then starts on the owner’s approval in the dashboard (D4, AIWorks issue #32).';
 /** OWNER_WORKSPACE §5.3, step 2: what AIWorks promises before a project without GitHub is connected. */
-export const OWN_COPY = 'AIWorks will never change this folder directly. It works on its own copy and asks you before applying a checked result.';
+export const OWN_COPY = 'AIWorks builds in its own copy of this folder. After you approve a plan, independently checked results can be applied to your folder automatically. Review shows what changed and offers Undo apply when safe.';
 
 /** The sentence for `code`, or null when the code has no copy or the detail it needs is missing. */
 export function projectMessage(code, detail = {}) {

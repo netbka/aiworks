@@ -7,11 +7,14 @@
 // keeps the screenshots and journey.json afterwards; nothing is written into this checkout. Protected owner actions pass
 // the production Windows caller check unchanged: the browser is a process AIWorks did not start, in no AIWorks job.
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { hostname, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
+import { gateTestEnv, useGateTestHost } from '../../tests/supervisor/fixtures/gate-host-bootstrap.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const CHROME = ['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe']
@@ -68,6 +71,9 @@ createServer((req, res) => {
   writeFileSync(join(site, 'AGENTS.md'), '# Site rules\n\nKeep the page small.\n');
   writeFileSync(join(site, 'index.html'), page.replaceAll('Notes', 'Site'));
   git(site, 'init', '-q', '-b', 'main');
+  // Keep the synthetic owner's baseline bytes stable when Apply and Undo check files out on Windows.
+  git(site, 'config', 'core.autocrlf', 'false');
+  git(site, 'config', 'core.eol', 'lf');
   git(site, 'add', '-A');
   git(site, 'commit', '-q', '-m', 'first page');
 
@@ -115,13 +121,16 @@ export async function switchOnSelfHosting(root) {
   const config = JSON.parse(readFileSync(file, 'utf8'));
   writeFileSync(file, JSON.stringify({ ...config, selfHosting: { repository: SELF, trustedMain: 'local' }, repositories: { [SELF]: { path: runtime } } }, null, 2));
   const anchor = spawnSync(process.execPath, [join(runtime, 'src', 'supervisor', 'cli.mjs'), 'trusted-main', 'anchor', '--data', data],
-    { cwd: runtime, encoding: 'utf8', windowsHide: true, env: { ...process.env, AIWORKS_DATA: '' } });
+    { cwd: runtime, encoding: 'utf8', windowsHide: true, env: gateTestEnv(join(root, 'gate-host'), { AIWORKS_DATA: '' }) });
   if (anchor.status !== 0) throw new Error(`trusted-main anchor: ${anchor.stderr}`);
   return start(root);
 }
 
 /** Start serve, the dashboard and Chrome, each detached and hidden; their pids go to <root>/pids.json for stop(). */
 export async function start(root) {
+  // Explicit fixture injection configures both this module's gate and each copied-runtime entrypoint. The rehearsal
+  // must never inspect or contend for the real machine's gate registry, including after a dashboard restart.
+  useGateTestHost(join(root, 'gate-host'));
   const dirs = Object.fromEntries(['runtime', 'data', 'fake', 'chrome'].map((name) => [name, join(root, name)]));
   const env = { ...process.env, AIWORKS_DATA: '', FAKE_CLAUDE_STATE: dirs.fake,
     GIT_AUTHOR_NAME: 'Fake Worker', GIT_AUTHOR_EMAIL: 'worker@example.invalid', GIT_COMMITTER_NAME: 'Fake Worker', GIT_COMMITTER_EMAIL: 'worker@example.invalid' };
@@ -213,7 +222,7 @@ export async function restartDashboard(root) {
   spawnSync('taskkill', ['/PID', String(state.pids.dashboard), '/T', '/F'], { windowsHide: true });
   await sleep(8000);
   state.pids.dashboard = detached(process.execPath, [join(root, 'runtime', 'src', 'dashboard', 'main.mjs'), '--data', join(root, 'data'), '--port', String(state.port)],
-    { cwd: join(root, 'runtime') });
+    { cwd: join(root, 'runtime'), env: gateTestEnv(join(root, 'gate-host'), { AIWORKS_DATA: '' }) });
   writeFileSync(file, JSON.stringify(state, null, 2));
   for (let i = 0; i < 100; i++) { if (await fetch(state.url).then((r) => r.ok, () => false)) break; await sleep(100); }
 }
@@ -221,19 +230,58 @@ export async function restartDashboard(root) {
 // Page helpers: sleep, the first visible control whose text is `label` (waited for), the main region's text, the notice,
 // a field set as typing would, a JSON read.
 const PRELUDE = "const sleep = (ms) => new Promise((r) => setTimeout(r, ms));" +
+  // hashchange is asynchronous: a same-labelled control on the old screen must not receive the next press.
+  "const routeReady = () => JSON.parse(document.getElementById('project-tabs').dataset.shown || '[]')[0] === location.hash;" +
+  "const waitRoute = async () => { for (let i = 0; i < 40 && !routeReady(); i++) await sleep(250); if (!routeReady()) throw new Error('route did not settle: ' + location.hash); };" +
   "const byText = (label, sel = 'a,button,summary,label') => [...document.querySelectorAll(sel)].find((e) => (e.textContent.trim() === label || e.getAttribute('aria-label') === label) && e.offsetParent);" +
-  "const click = async (label, sel) => { let e; for (let i = 0; i < 40 && !(e = byText(label, sel)); i++) await sleep(250); if (!e) throw new Error('no control ' + label); e.click(); await sleep(1500); };" +
+  "const click = async (label, sel) => { await waitRoute(); let e; for (let i = 0; i < 40 && !(e = byText(label, sel)); i++) await sleep(250); if (!e) throw new Error('no control ' + label); e.click(); await sleep(1500); };" +
   "const main = () => document.querySelector('main').innerText;" +
   "const notice = () => document.getElementById('notice').hidden ? '' : document.getElementById('notice').textContent;" +
   "const type = (id, value) => { const e = document.getElementById(id); e.focus(); e.value = value; e.dispatchEvent(new Event('input', { bubbles: true })); };" +
   "const api = async (path) => (await fetch(path)).json();" +
   // A press whose answer is a notice: protected actions run the caller check first, so the answer can take seconds.
-  "const press = async (label) => { const before = notice(); await click(label); for (let i = 0; i < 80 && notice() === before; i++) await sleep(250); return notice(); };";
+  "const press = async (label) => { await waitRoute(); const before = notice(); await click(label); for (let i = 0; i < 80 && (!notice() || notice() === before); i++) await sleep(250); return notice(); };";
 
-/**
- * The whole owner journey on a fresh runtime, step by step; each step's outcome goes to <root>/evidence/journey.json and
- * a failed step stops the run. Synthetic data only: two fictional projects and the synthetic worker.
- */
+/** File contents outside Git metadata, for proving that protected Undo restores each synthetic owner's baseline. */
+const fingerprint = (folder, relative = '') => Object.fromEntries(readdirSync(join(folder, relative))
+  .filter((name) => name !== '.git').flatMap((name) => {
+    const path = relative ? `${relative}/${name}` : name;
+    return statSync(join(folder, path)).isDirectory() ? Object.entries(fingerprint(folder, path))
+      : [[path, createHash('sha256').update(readFileSync(join(folder, path))).digest('hex')]];
+  }));
+const sameFiles = (a, b) => JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort());
+const readRows = (root, sql, ...params) => {
+  const db = new DatabaseSync(join(root, 'data', 'supervisor.db'), { readOnly: true });
+  try { return db.prepare(sql).all(...params); } finally { db.close(); }
+};
+const journal = (root, campaign) => readRows(root, 'SELECT campaign_id, kind, detail FROM journal WHERE campaign_id = ? ORDER BY seq', campaign)
+  .map((row) => ({ ...row, detail: JSON.parse(row.detail) }));
+
+/** Bind the observed automatic apply to its exact independent verification, durable attempt and local receipt. */
+function autoApplyProof(root, result, project) {
+  if (!result || !['notes', 'site'].includes(project) || !/^apply-[0-9]+-[a-f0-9]+$/.test(result.applyId ?? '')) return { valid: false };
+  const candidate = readRows(root, 'SELECT * FROM local_candidates WHERE campaign_id = ? AND task_id = ? AND seq = ?', result.campaignId, result.taskId, result.seq)[0];
+  const task = readRows(root, 'SELECT state, verified_sha FROM tasks WHERE campaign_id = ? AND task_id = ?', result.campaignId, result.taskId)[0];
+  const apply = readRows(root, 'SELECT * FROM local_applies WHERE apply_id = ?', result.applyId)[0];
+  const verification = JSON.parse(candidate?.verification ?? 'null'), events = journal(root, result.campaignId);
+  const started = events.find((row) => row.kind === 'auto-apply-started' && row.detail.applyId === result.applyId);
+  const ended = events.find((row) => row.kind === 'auto-apply-finished' && row.detail.applyId === result.applyId);
+  const backup = join(root, 'data', 'applies', project, result.applyId), target = join(root, 'owner', project);
+  const bound = Boolean(candidate && apply && candidate.project_id === `lp-${project}` && apply.project_id === project &&
+    apply.campaign_id === result.campaignId && apply.task_id === result.taskId && apply.seq === result.seq && resolve(apply.backup_dir) === resolve(backup));
+  const receipt = bound ? JSON.parse(readFileSync(join(backup, 'apply.json'), 'utf8')) : null;
+  const valid = Boolean(bound && task?.state === 'done' && task.verified_sha === candidate.sha &&
+    verification?.verdict === 'accepted' && verification.targetSha === candidate.sha && verification.gate?.exit === '0' &&
+    verification.gate.head?.sha === candidate.sha && verification.gate.head.clean === true && apply.sha === candidate.sha &&
+    started?.detail.task === result.taskId && ended?.detail.task === result.taskId && started?.detail.seq === result.seq &&
+    ended?.detail.seq === result.seq && started?.detail.sha === candidate.sha && ended?.detail.outcome === 'applied' && apply.last_outcome === 'applied' &&
+    receipt?.state === 'applied' && receipt.id === result.applyId && receipt.kind === apply.kind &&
+    resolve(receipt.targetRoot ?? receipt.repoRoot ?? '') === resolve(target) && resolve(receipt.backupDir) === resolve(backup) &&
+    (!('verifiedSha' in receipt) || receipt.verifiedSha === candidate.sha) && (!('baseline' in receipt) || receipt.baseline === apply.baseline_commit));
+  return { valid, candidate, apply, receipt, started, ended, verification };
+}
+
+/** The whole journey on a fresh runtime. Retain every outcome and stop at the first failed assertion. */
 export async function journey(root) {
   const { notes, site, revision, source } = setup(root);
   const steps = [], evidence = join(root, 'evidence');
@@ -243,7 +291,7 @@ export async function journey(root) {
     if (!ok) throw new Error(`${step}: ${JSON.stringify(detail)}`);
   };
   const state = await start(root);
-  // Builder runs in order: the first goal, a goal that stops for a decision and continues after the answer, a goal whose
+  // Builder runs in order: the first goal, a no-options stop that AIWorks sends back once, a goal whose
   // worker tries the owner's Apply from inside its job, then ordinary runs.
   writeFileSync(join(root, 'fake', 'scenario.json'), JSON.stringify({ intake: true, probe: state.url,
     implement: ['commit-page', 'owner', 'commit-page', 'probe-commit-page', 'commit-page', 'commit-page'] }));
@@ -259,7 +307,12 @@ export async function journey(root) {
   try {
     await p.viewport(1366, 900);
     await p.navigate(state.url);
-    record('home-empty', Boolean(await waitFor('return /No projects yet/.test(main());', 30_000)), null);
+    const emptyHome = await waitFor(`const s = await api('/api/state');
+      const headline = document.getElementById('home-title')?.textContent.trim(), summary = document.querySelector('.home-summary')?.textContent.trim();
+      return s.supervisor?.available && s.home?.available && s.projects?.projects?.length === 0 && s.home.goals?.length === 0 &&
+        s.home.needs?.count === 0 && s.owner?.attention?.count === 0 && headline === 'Nothing needs you.' && summary === 'Nothing is moving right now.' &&
+        document.querySelectorAll('.home-goal, .home-needs li').length === 0 ? { headline, summary, projects: 0, goals: 0, needs: 0 } : null;`, 30_000);
+    record('home-empty', Boolean(emptyHome), emptyHome);
     await shot('01-home-empty');
 
     // Idea first, connect a folder, confirm its rules (a protected owner action through the Windows caller check).
@@ -279,6 +332,7 @@ export async function journey(root) {
       await ui(`location.hash = '#/p/${project}/start'; await sleep(1200); ${goal ? `type('start-goal', ${JSON.stringify(goal)});` : ''} await click('Ask for a plan');`);
       return waitFor(`const s = await api('/api/state'); return s.work.plans.find((x) => x.project === '${project}' && x.code === 'DRAFT_READY')?.id ?? null;`);
     };
+    const notesBaseline = fingerprint(notes);
     const first = await plan('notes', null);
     record('plan-drafted', Boolean(first), null);
     const edit = await ui(`location.hash = '#/p/notes/review/${first}'; await click('Edit plan');
@@ -288,8 +342,11 @@ export async function journey(root) {
     record('plan-edited-v2', edit.kept === 'high' && /Priority: Normal → High/.test(edit.text), { kept: edit.kept });
     await shot('03-review-v2');
     await ui(`await click('Approve and start');`);
-    const ready = await waitFor(`const s = await api('/api/state'); return s.work.local.notes?.flatMap((c) => c.results).find((r) => r.action === 'apply') ?? null;`);
-    record('implemented-verified-candidate', Boolean(ready), ready && { sha7: ready.sha7, state: ready.state });
+    const ready = await waitFor(`const s = await api('/api/state'); return s.work.local.notes?.flatMap((c) => c.results).find((r) => r.action === 'undo') ?? null;`);
+    const firstProof = autoApplyProof(root, ready, 'notes');
+    record('implemented-verified-auto-apply', firstProof.valid, firstProof);
+    const firstUndo = await ui(`location.hash = '#/p/notes/review'; return press('Undo apply');`);
+    record('auto-apply-undo-restores-folder', /^Undone/.test(firstUndo) && sameFiles(fingerprint(notes), notesBaseline), { notice: firstUndo });
 
     // Review: the checked version in its sealed frame, and desktop and phone screenshots taken under job containment.
     const preview = await ui(`location.hash = '#/p/notes/review'; await click('Open preview'); await sleep(1500);
@@ -321,30 +378,26 @@ export async function journey(root) {
     record('undo-restores-folder', /^Undone/.test(undone) && read(join(notes, 'index.html')) === original && !existsSync(greeting) &&
       read(join(notes, 'README.md')).includes('An owner note'), { notice: undone });
 
-    // A step stops for the owner: Needs you and Home list it under its project; it is answered on its Needs you card with a
-    // draft kept across navigation; the answer reaches the next try; the alert is recorded by the rehearsal transport only.
-    // Each decision's controls are named for that decision (decision-text-<id>), so two decisions on one page stay apart.
+    // AW-017: a no-options stop goes back once with instructions to decide, then is independently checked. The old
+    // manual-answer scenario is no longer current policy; observe the actual events instead of disabling automation.
+    const beforeSecond = fingerprint(notes);
     const second = await plan('notes', 'Add a footer.');
     await ui(`location.hash = '#/p/notes/review/${second}'; await click('Approve and start');`);
-    const needs = await waitFor(`const s = await api('/api/state'); return s.owner.count ? s.owner.groups.map((g) => g.name + ':' + g.items.map((i) => i.kind).join(',')).join(' ') : null;`);
-    record('decision-in-needs-you', needs === 'notes:decision', { groups: needs });
-    // Settings › AI workers counts the local goal that waits: every unfinished goal that allows the worker, GitHub or not.
-    const workers = await ui(`const s = await api('/api/state'); return { usedBy: s.supervisor.settings.workers.find((w) => w.kind === 'claude-cli')?.usedBy ?? 0,
+    const secondApplied = await waitFor(`const s = await api('/api/state'); return s.work.local.notes?.find((c) => c.id.includes('${second.slice(0, 8).toLowerCase()}'))?.results.find((r) => r.action === 'undo') ?? null;`);
+    const secondProof = autoApplyProof(root, secondApplied, 'notes');
+    const events = secondApplied ? journal(root, secondApplied.campaignId) : [];
+    const instructions = secondApplied ? readRows(root, "SELECT dedup_key FROM events WHERE campaign_id = ? AND kind = 'agent-instruction'", secondApplied.campaignId) : [];
+    const workers = await ui(`const s = await api('/api/state'); return { pendingDecisions: s.owner.groups.flatMap((g) => g.items).filter((i) => i.kind === 'decision').length,
+      usedBy: s.supervisor.settings.workers.find((w) => w.kind === 'claude-cli')?.usedBy ?? 0,
       open: s.supervisor.local.filter((c) => !['finished', 'cancelled'].includes(c.control) && c.executors.includes('claude-cli')).length };`);
-    record('ai-workers-count-local', workers.open >= 1 && workers.usedBy === workers.open, workers);
+    record('no-options-sent-back-once-and-verified', secondProof.valid && events.filter((event) => event.kind === 'decision-sent-back').length === 1 &&
+      instructions.some((row) => row.dedup_key === `instruction:decide-alone:${secondApplied.campaignId}:${secondApplied.taskId}`) &&
+      workers.pendingDecisions === 0 && !events.some((event) => event.kind === 'decision-answered'), { proof: secondProof, events, instructions, workers });
+    record('ai-workers-count-local', workers.usedBy === workers.open, workers);
     await ui(`location.hash = '#/'; return 1;`);
-    const home = await waitFor(`return document.querySelector('textarea[id^="decision-text-"]') && main().includes('A step waits for your decision.') ? { card: true, project: true } : null;`, 30_000);
-    record('decision-on-home', Boolean(home), home);
-    await shot('05-home-decision');
-    const answer = await ui(`location.hash = '#/home'; await sleep(1500); const id = () => document.querySelector('textarea[id^="decision-text-"]').id;
-      type(id(), 'Stay on the free plan.'); location.hash = '#/p/notes'; await sleep(1200);
-      location.hash = '#/home'; await sleep(1500); const kept = document.getElementById(id()).value; return { kept, notice: await press('Send answer') };`);
-    record('decision-answered', answer.kept === 'Stay on the free plan.' && /Answer received/.test(answer.notice), answer);
-    const resumed = await waitFor(`const s = await api('/api/state'); return s.work.local.notes.find((c) => c.id.includes('${second.slice(0, 8).toLowerCase()}'))?.results.length ? true : null;`);
-    const runs = join(root, 'data', 'runs');
-    const guided = readdirSync(runs).some((run) => run.includes(second.slice(0, 8).toLowerCase()) && run.includes('.implement.') &&
-      existsSync(join(runs, run, 'prompt.txt')) && read(join(runs, run, 'prompt.txt')).includes('Stay on the free plan.'));
-    record('decision-guides-next-try', Boolean(resumed) && guided, { resumed: Boolean(resumed), guided });
+    await shot('05-home-decided');
+    const secondUndo = await ui(`location.hash = '#/p/notes/review'; return press('Undo apply');`);
+    record('second-auto-apply-undo-restores-folder', /^Undone/.test(secondUndo) && sameFiles(fingerprint(notes), beforeSecond), { notice: secondUndo });
     const alerts = await ui(`const a = await api('/api/v2/settings/alerts'); return { transport: a.delivery.transport, rehearsed: a.outbox.rehearsed, delivered: a.outbox.delivered,
       text: JSON.stringify(a.rehearsals.map((r) => r.alert)) };`);
     // The alert names the project as the owner named it and the dashboard's own actions: no lp- id, task issue or CLI command.
@@ -355,8 +408,15 @@ export async function journey(root) {
     // Local Git: connect, plan; its builder tries the owner's Apply from inside its job and is refused (production lookup).
     const siteRules = await connect(site, 'site', 'Greet visitors on the site.');
     record('site-connected-rules-confirmed', /Confirmed the rules/.test(siteRules), { notice: siteRules });
+    const siteBaseline = { head: head(), files: fingerprint(site) };
     const third = await plan('site', null);
     await ui(`location.hash = '#/p/site/review/${third}'; await click('Approve and start');`);
+    const siteApplied = await waitFor(`const s = await api('/api/state'); return s.work.local.site?.flatMap((c) => c.results).find((r) => r.action === 'undo') ?? null;`);
+    const siteProof = autoApplyProof(root, siteApplied, 'site');
+    record('site-verified-auto-apply', siteProof.valid, siteProof);
+    const siteUndo = await ui(`location.hash = '#/p/site/review'; return press('Undo apply');`);
+    record('site-auto-apply-undo-restores-head', /^Undone/.test(siteUndo) && head() === siteBaseline.head &&
+      sameFiles(fingerprint(site), siteBaseline.files) && git(site, 'status', '--porcelain') === '', { notice: siteUndo, head: head() });
     const siteReady = await waitFor(`const s = await api('/api/state'); return s.work.local.site?.flatMap((c) => c.results).find((r) => r.action === 'apply') ?? null;`);
     const probeFile = join(root, 'fake', 'probe.jsonl');
     const probe = existsSync(probeFile) ? JSON.parse(read(probeFile).trim().split('\n').at(-1)) : null;

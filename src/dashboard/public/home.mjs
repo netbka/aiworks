@@ -73,9 +73,12 @@ export function homeBlocks(data, h) {
 
   if (landed.entries.length) {
     const rows = data.showAll ? landed.entries : landed.entries.slice(0, LANDED_SHOWN);
+    const capped = landed.total > landed.entries.length;
     out.push(el('section', { class: 'home-block', 'aria-labelledby': 'home-landed' },
       el('div', { class: 'home-head' }, el('h2', { id: 'home-landed' }, 'Landed since yesterday'),
-        landed.total > LANDED_SHOWN && data.onShowAll ? el('button', { class: 'home-all', type: 'button', onclick: data.onShowAll }, data.showAll ? 'Fewer' : `All ${landed.total}`) : null),
+        landed.entries.length > LANDED_SHOWN && data.onShowAll ? el('button', { class: 'home-all', type: 'button', onclick: data.onShowAll },
+          data.showAll ? 'Fewer' : capped ? `Latest ${landed.entries.length}` : `All ${landed.entries.length}`) : null),
+      capped ? el('p', { class: 'home-note' }, `Showing the latest ${rows.length} of ${landed.total} changes.`) : null,
       el('ul', { class: 'home-lines home-landed' }, ...rows.map((entry) => el('li', {},
         el('span', { class: 'home-check', 'aria-hidden': 'true' }, '✓'),
         el('span', { class: 'home-landed-title' }, entry.title),

@@ -530,7 +530,7 @@ const RELEASE_MISSING = {
   stopped: { code: 'release-stop', text: 'Stop all releases is on.' },
   stopUnknown: { code: 'release-stop-unknown', text: 'Whether Stop all releases is on cannot be read.' },
 };
-const RELEASE_LOCAL = 'Release does not apply to a project without GitHub: a checked result changes your folder only when you press Apply on it, under Review only.';
+const RELEASE_LOCAL = 'Release does not apply to a project without GitHub. Independently checked results can be applied to your folder automatically; Review shows what happened.';
 
 /** Settings (slice S8): configured command names, the AI workers once for this computer, accounts, and release mode per project. */
 export function computerSettings(campaigns, config, { platform = process.platform, now = Date.now(), local = [], repositories = [], connected = [], accounts = [],

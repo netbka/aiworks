@@ -83,7 +83,7 @@ Home is one centred column, at most 1040 px wide. Top to bottom:
 2. Only when something waits: one card per item, the question as its heading. A choice shows its two to four options as selectable cards with their effect and "Suggested" on the suggestion, one Answer button and what happens without an answer. Anything else shows its question and a link to where it is settled.
 3. In progress: one row per goal (`goals`) with its title, the `now` line, a strip of its segments, "1 of 3 done" and its state; the spend of `spentToday.usd` in the block head when known.
 4. Decided for you: one line per decision with the chosen answer in bold and a Change link; hidden when empty.
-5. Landed since yesterday: at most five lines from `landed.entries`, the rest behind "All N".
+5. Landed since yesterday: at most five lines from `landed.entries`, the rest behind "All N" when all entries are available. When `total` exceeds the available entries, the button says "Latest N" and a note states how many of the total changes are shown. Expanding keeps the data's 20-entry bound; "Fewer" returns to five.
 6. Quiet: one line of project links from `quiet`.
 
 The header carries the logo, the navigation, one word for the work (Working, Paused or Stopped) and Pause all. It shows no version, computer name, connection or refresh text; while the page cannot reach the dashboard that word is "Offline" and the controls are off.
