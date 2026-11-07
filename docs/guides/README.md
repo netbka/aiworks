@@ -20,7 +20,7 @@ Your own work is the same few steps, in the dashboard, in this order. Nothing he
 | Try the checked version, then accept, apply, request changes or undo | [Your first task](FIRST_PROJECT.md#review-the-result) |
 | Understand something that stopped working | [Troubleshooting](TROUBLESHOOTING.md) |
 
-You describe the result, review the plan and approve the work. Your assistant handles the setup and startup steps that it is allowed to perform, but it cannot press **Approve and start** for you. AIWorks then keeps the assigned work moving and checks the results. The dashboard's [Needs you](../OPERATIONS_DASHBOARD.md#what-the-owner-sees) list carries the decisions and result actions that are yours.
+You describe the result, review the plan and approve the work. Your assistant handles the setup and startup steps that it is allowed to perform, but it cannot press **Approve and start** for you. AIWorks then keeps the assigned work moving and checks the results. Home carries the decisions and result actions that are yours; the old Needs you address opens Home ([HOME_V2](../design/HOME_V2.md)).
 
 ## What is checked, and what is not
 

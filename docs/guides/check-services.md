@@ -140,3 +140,8 @@ When `serve` starts it checks the entries and puts the accepted ones in its own 
 - The service's own words (states, commit ids, errors) are reduced to plain single-line text before they reach `gate.log`. They cannot add lines the log readers take for a test summary.
 - A gate helper ended by its containment (a verifier past its time bound) cannot cancel its job, so the job finishes on the service. Each new gate submits a new job.
 - The service's output is copied into `gate.log` and may reach a pull request body only through the final test summary, as with a gate run here.
+
+## Still open
+
+- A verifier gate of a commit that is not yet on origin, and a merge-refresh gate, cannot be offered. The service fetches only from origin. `POST /v1/sources` (a git bundle of the commit) is a proposed addition to the contract and is not built.
+- A service that needs a token is not supported. Configuration holds no secret values.
