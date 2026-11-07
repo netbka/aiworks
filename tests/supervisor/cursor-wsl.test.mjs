@@ -20,6 +20,16 @@ test('WSL research cannot spend on another model or mount outside its authorized
     model: 'included-model', timeoutMs: 60_000 };
   assert.throws(() => cursorWslInvocation(command, { ...args, model: 'other-model' }), /not authorized/);
   assert.throws(() => cursorWslInvocation(command, { ...args, cwd: env.repo }), /mount escapes/);
+  const config = JSON.parse(readFileSync(configFile));
+  for (const invalid of [{ packageRoot: args.cwd }, { packageRoot: env.tmp },
+    { credentialFile: join(args.dataDir, 'login.fixture') }]) {
+    if (invalid.credentialFile) writeFileSync(invalid.credentialFile, 'synthetic');
+    writeFileSync(configFile, JSON.stringify({ ...config, ...invalid }));
+    assert.throws(() => cursorWslInvocation(command, args), /mounts overlap/, 'read-only sources cannot alias writable mounts');
+  }
+  writeFileSync(configFile, JSON.stringify(config));
+  const nested = join(args.cwd, 'nested'); mkdirSync(nested);
+  assert.throws(() => cursorWslInvocation(command, { ...args, configDir: nested }), /mounts overlap/);
   const invocation = cursorWslInvocation(command, args);
   const request = JSON.parse(readFileSync(invocation.externalContainment.requestFile));
   assert.equal(request.argv[request.argv.indexOf('--model') + 1], 'included-model');

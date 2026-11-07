@@ -46,6 +46,12 @@ export function cursorWslInvocation(command, { runDir, cwd, configDir, dataDir, 
   if (!inside(root, run) || !inside(root, paths.package) ||
       !['scratch', 'config', 'data'].every((key) => inside(run, paths[key]) && paths[key] !== run) ||
       new Set([paths.scratch, paths.config, paths.data]).size !== 3) throw new Error('Cursor WSL mount escapes its assigned root');
+  const overlaps = (a, b) => inside(a, b) || inside(b, a);
+  const writable = [paths.scratch, paths.config, paths.data];
+  if (overlaps(run, paths.package) || inside(run, paths.credential) ||
+      writable.some((path, i) => writable.slice(i + 1).some((other) => overlaps(path, other)))) {
+    throw new Error('Cursor WSL mounts overlap');
+  }
   for (const file of ['node', 'index.js']) if (!inside(paths.package, canonical(join(paths.package, file), false))) throw new Error('Cursor executable escapes its package');
   const boundedMs = Math.min(timeoutMs ?? 900_000, 900_000);
   if (!Number.isSafeInteger(boundedMs) || boundedMs < 30_000) throw new Error('Invalid Cursor WSL time bound');
