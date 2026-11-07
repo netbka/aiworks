@@ -108,10 +108,7 @@ test('base compare: a failed gate keeps its acceptance only when every failed te
   const nested = '# Subtest: a\n    # Subtest: inner\n    not ok 1 - inner\nnot ok 1 - a\n# tests 2\n# fail 2\n';
   assert.deepEqual(failedTests(summary(run(nested))), [A, `${A} > inner`]);
 
-  // The synthetic base gate takes no machine-wide gate slot.
-  const held = process.env.AIWORKS_GATE_SLOT_HELD;
-  process.env.AIWORKS_GATE_SLOT_HELD = '1';
-  t.after(() => { if (held === undefined) delete process.env.AIWORKS_GATE_SLOT_HELD; else process.env.AIWORKS_GATE_SLOT_HELD = held; });
+  // The harness injects an isolated host namespace; base gates use real custody there, never a fake nested token.
   for (const { name, head, baseExit, baseIds, stands, gateHead } of [
     { name: 'shared', head: [A], baseExit: 1, baseIds: [A, B], stands: true },
     { name: 'adds a failure', head: [A, C], baseExit: 1, baseIds: [A, B], stands: false },
@@ -152,9 +149,6 @@ test('base compare: a red base gets exactly one repair item, whatever the tasks,
   const A = 'tests/a.test.mjs :: a';
   const script = join(env.tmp, 'base-gate.mjs');
   writeFileSync(script, `console.log(${JSON.stringify(`${FAILED.split('\n')[0]}\n# failed: ${A}\n${FAILED.split('\n').slice(1).join('\n')}`)}); process.exit(1);\n`);
-  const held = process.env.AIWORKS_GATE_SLOT_HELD;
-  process.env.AIWORKS_GATE_SLOT_HELD = '1';
-  t.after(() => { if (held === undefined) delete process.env.AIWORKS_GATE_SLOT_HELD; else process.env.AIWORKS_GATE_SLOT_HELD = held; });
   const settings = { command: [`"${process.execPath}"`, `"${script}"`], timeoutMs: 60_000 };
   // One verify step of the task of `campaignId` under `c`, holding that campaign's lease as a running controller does.
   const step = (c, campaignId) => {

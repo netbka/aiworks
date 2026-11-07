@@ -81,7 +81,19 @@ const ASYNC_STOP_WAIT_MS = 60_000;
 export const ASYNC_STOP_MS = ASYNC_STOP_WAIT_MS + 30_000;
 
 /** The name runner.mjs gives its Windows job: `Local\aiworks-supervisor-<uuid>`. */
-export const JOB_NAME = /^Local\\aiworks-supervisor-[0-9a-f-]{36}$/;
+export const JOB_NAME = /^(?:Local\\aiworks-supervisor-[0-9a-f-]{36}|Global\\aiworks-gate-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+
+/** An exact process-handle query: inability to inspect is never proof of death. */
+export async function gateProcessIdentity(identity) {
+  if (!POWERSHELL || !Number.isSafeInteger(identity?.pid) || !/^[1-9]\d*$/.test(identity?.creationTime ?? '')) return 'ownership-unavailable';
+  return await runPowerShell(windowsHelperArgs('Identity', '', identity), 30_000) ?? 'ownership-unavailable';
+}
+
+/** A copied environment context is insufficient: the caller must belong to the exact live owning job. */
+export async function gateJobMember(identity, jobName) {
+  if (!POWERSHELL || !JOB_NAME.test(jobName ?? '')) return false;
+  return await runPowerShell(windowsHelperArgs('Member', jobName, identity), 30_000) === 'member';
+}
 
 /**
  * Whether a run's runner.json names its complete custody identity: the runner's pid, its Windows creation time and its

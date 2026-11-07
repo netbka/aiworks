@@ -115,7 +115,7 @@ export function createHostSampler({ os = nodeOs, fs = nodeFs, volumes = [], hear
       // browser session, so a wave of web task runs cannot starve it. A lock counts only while its holder beats.
       // cli.mjs serve supplies it, tests and other callers do not.
       let running = 0;
-      try { running = gates?.() ?? 0; } catch { running = 0; }
+      try { running = gates?.() ?? 0; } catch { return { signal: 'gates-unavailable', detail: { unavailable: true } }; }
       if (running >= limits.pauseAtGates) return { signal: 'gates', detail: { running, pauseAt: limits.pauseAtGates } };
 
       // Late but not stale: the host is starving its runners (tests/supervisor/measure-liveness.mjs). A stale run is the

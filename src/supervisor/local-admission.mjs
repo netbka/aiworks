@@ -9,8 +9,8 @@
 //
 // Switched on by slice STA17 (owner decision D4, docs/DECISIONS.md AW-012). registerLocalPlan registers exactly the plan
 // an approval admits, in the same transaction that uses its nonce; the controller runs checkLocalDispatch before every
-// dispatch of a local campaign. This module never dispatches work, runs a process, calls git or GitHub, or opens a
-// network connection.
+// dispatch of a local campaign. This module never dispatches work, calls git or GitHub, or opens a
+// network connection. Its caller check uses native process-identity proofs.
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -19,7 +19,8 @@ import { campaignStart } from './api.mjs';
 import { authorityDigest, canonicalJson, validateDeclaration } from './campaign.mjs';
 import { isLocalTarget } from './local-candidates.mjs';
 import { OverlayError, overlayDigest, validateOverlayEntry } from './local-overlay.mjs';
-import { runnerIdentified } from './proc.mjs';
+import { gateProcessIdentity, runnerIdentified } from './proc.mjs';
+import { gateActivity } from './gate-slot.mjs';
 import { resolveLocalProject } from './project-connect.mjs';
 
 /** Local admission is on since slice STA17 (owner decision D4, #32, answered 2026-10-16). */
@@ -86,12 +87,12 @@ export function validateLocalApproval(record) {
  * (proc.mjs runnerIdentified): its first `{ pid, startedAt }`, or any missing or malformed field, leaves processes that
  * cannot be named, so the caller check cannot tell. A run that was never launched has no processes.
  */
-export function aiworksRuns(store) {
+export function aiworksRuns(store, gates = gateActivity()) {
   const rows = [
     ...store.all("SELECT 'operation' AS kind, id, run_dir FROM operations WHERE state IN ('recorded', 'dispatched')"),
     ...store.all("SELECT 'coordinator' AS kind, id, run_dir FROM coordinator_runs WHERE state IN ('recorded', 'dispatched')"),
   ];
-  return rows.map(({ kind, id, run_dir: runDir }) => {
+  const runs = rows.map(({ kind, id, run_dir: runDir }) => {
     const metadata = join(runDir, 'runner.json');
     let runner = null;
     try { runner = JSON.parse(readFileSync(metadata, 'utf8')); } catch { runner = null; }
@@ -99,6 +100,16 @@ export function aiworksRuns(store) {
     if (!runnerIdentified(runner)) return { kind, id, pid: null, jobName: null, creationTime: null, known: !launched };
     return { kind, id, pid: runner.pid, jobName: runner.jobName, creationTime: runner.creationTime, known: true };
   });
+  // Standalone base/refresh gates have no operation row. Their host-wide Global job is an AIWorks process too.
+  if (!gates.available) runs.push({ kind: 'gate', id: null, pid: null, jobName: null, creationTime: null, known: false });
+  else if (gates.owner) {
+    const owner = gates.owner;
+    const known = owner.attached === true && ['attached', 'running'].includes(owner.phase) &&
+      typeof owner.jobName === 'string' && owner.jobName.startsWith('Global\\aiworks-gate-') &&
+      runnerIdentified({ ...owner, containment: 'windows-job-v1' });
+    runs.push({ kind: 'gate', id: owner.requestId, pid: owner.pid, jobName: owner.jobName, creationTime: owner.creationTime, known });
+  }
+  return runs;
 }
 
 /**
@@ -117,12 +128,22 @@ export async function checkCaller(store, { lookup, connection = null, aiworksPid
   const unchecked = (why) => refuse('APPROVAL_UNCHECKED', `AIWorks could not check that this request came from you, so it was refused (${why}). Try again from your browser`);
   if (platform !== 'win32') unchecked('the caller check runs on Windows only');
   if (typeof lookup !== 'function') unchecked('no process lookup is available');
-  const runs = aiworksRuns(store);
+  const gates = gateActivity();
+  const runs = aiworksRuns(store, gates);
   if (runs.some((run) => !run.known)) unchecked('an AIWorks run is starting or cannot be identified');
+  if (gates.owner && await gateProcessIdentity(gates.owner) !== 'running') unchecked('full-check custody is not settled');
   const jobNames = runs.map((run) => run.jobName).filter(Boolean);
   let found;
   const runners = runs.filter((run) => run.jobName).map(({ jobName, pid, creationTime }) => ({ jobName, pid, creationTime }));
   try { found = await lookup(connection, { jobNames, runners }); } catch (error) { unchecked(`the process lookup failed: ${error?.code ?? error?.name ?? 'error'}`); }
+  // A new gate may have attached while native lookup was pending. Never approve against the earlier job list.
+  const after = gateActivity();
+  const custody = (value) => JSON.stringify({ generation: value.generation, owner: value.owner && {
+    id: value.owner.requestId, pid: value.owner.pid, creationTime: value.owner.creationTime, jobName: value.owner.jobName,
+    phase: value.owner.phase, attached: value.owner.attached } });
+  if (!after.available || custody(after) !== custody(gates) || after.owner && await gateProcessIdentity(after.owner) !== 'running') {
+    unchecked('full-check custody changed during caller lookup');
+  }
   const pidOk = (value) => Number.isSafeInteger(value) && value > 0;
   if (!found || !pidOk(found.pid) || !Array.isArray(found.ancestors) || !found.ancestors.every(pidOk)
       || !Array.isArray(found.jobs) || !found.jobs.every((name) => typeof name === 'string')) {
