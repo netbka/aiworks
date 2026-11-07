@@ -111,7 +111,7 @@ test('the GitHub adapter refuses unsafe text before any gh call and never echoes
 });
 
 test('repeatedly unsafe reports stall within the bound and nothing is published', { skip: skipWithoutSqlite }, async (t) => {
-  const { env, store, controller, id } = await leakSetup(t, { implement: ['commit-leak', 'commit-leak', 'commit-leak', 'commit-leak'], verify: ['accept', 'accept', 'accept', 'accept'] });
+  const { env, store, controller, id } = await leakSetup(t, { implement: ['commit-leak', 'commit-same-leak', 'commit-same-leak', 'commit-same-leak'], verify: ['accept', 'accept', 'accept', 'accept'] });
   await runUntil(controller, store, id, () => store.task(id, 'T1').blocked?.class === 'stalled');
   for (let i = 0; i < 10; i += 1) await controller.tick();
   assert.ok(env.calls().filter((call) => call.role === 'implement').length <= 3, 'bounded correction rounds');

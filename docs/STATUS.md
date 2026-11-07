@@ -11,6 +11,11 @@ Four kinds of evidence are kept apart below, and none is promoted into another:
 
 A design document in `docs/design/` is not proof that its feature is built, enabled or deployed. [PROJECT_WORKSPACE_PLAN.md](PROJECT_WORKSPACE_PLAN.md) and the designs are kept as written for their history; this page says what the source does now.
 
+Publication-text recovery (VERDICT-ONCE) retains a settled independent full code verdict while a bounded read-only
+rewrite and separate text verifier check the corrected report. Exact head, base, authority and durable evidence
+must still match before publication; otherwise ordinary verification resumes. `tests/supervisor/verdict-once.test.mjs`
+checks recovery and refusal of stale evidence with synthetic workers. This is source capability, not deployment or UI acceptance evidence.
+
 ## The core loop (on by default)
 
 The code includes a persistent SQLite-backed supervisor, bounded worker sessions in Windows job containment, independent verification of the exact head, ordered provider fallback, restart recovery, a coordinator inbox and a loopback dashboard (`src/supervisor/controller.mjs`, `store.mjs`, `campaign.mjs`; `src/dashboard/`). Executable runtime code must be merged before new work starts ([AW-005](DECISIONS.md#aw-005---runtime-code-must-be-merged-declarations-remain-private)). Campaign declarations are private local data. Synthetic checks: `tests/supervisor/supervisor.test.mjs`, `restart.test.mjs`, `restart-publish.test.mjs`, `restart-parallel.test.mjs`, `merged-code.test.mjs`, `process.test.mjs`.
