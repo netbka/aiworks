@@ -21,7 +21,7 @@ import { authorityChange, authorityPaths } from './release/authority-path.mjs';
 import { drainReleases, releasePass } from './release/controller.mjs';
 import { autoApplyPass } from './release/owner-apply.mjs';
 import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountFull, accountOf, accountWait, buildTaskSignature, clearAccountWait, formatSignatureLines, formatTokensUsage, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
-import { BEYOND_RULE, beyondConstraint, domainOf, outsideWrites, writeDomainConstraint } from './work-ownership.mjs';
+import { BEYOND_RULE, beyondConstraint, domainOf, outsideWrites, recordedRemoteMerge, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, hostPressure, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
 import { gatePauseOn, hostSamplerFor, pressureThresholds } from './host.mjs';
 import { totalmem } from 'node:os';
@@ -2495,8 +2495,10 @@ export class Controller {
       // writes it only after main moved to its merge commit (merge.mjs recordLocal). A main re-rooted after that merge
       // leaves the head and its merge commit out of the base, yet the head was integrated; holding it would make every
       // overlapping task wait forever (aiworks-work:163). Never by age or campaign state: a head published but never
-      // recorded as merged still holds its domain.
+      // recorded as merged still holds its domain. A remote merge's exact durable receipt releases the same historical
+      // hold when its PR or old base is no longer readable; it does not prove ancestry for dependencies or future merges.
       integrated: (campaignId, row, decl) => isLocalTarget(decl) || this.inBase(decl, row.verified_sha) || this.mergedHeads.has(`${row.pr_url}#${row.verified_sha}`) ||
+        recordedRemoteMerge(this.store, campaignId, row, decl) ||
         (this.selfHosted(decl.target.repository) && Boolean(this.ledgerMerge(decl.target.repository, row.verified_sha))),
       // Only the merge gate moves a trusted local main, and it never merges a cancelled campaign's head (domainHolders).
       gateOnly: (decl) => this.selfHosted(decl.target.repository),
