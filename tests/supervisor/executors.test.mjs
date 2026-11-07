@@ -238,6 +238,28 @@ test('extension preflight stops at checkout boundary and rejects local/global ex
   assert.match(unavailableReason(chain.providers[2], env.repo), /global Cursor/);
 });
 
+test('scheduler records an unsupported executor role without buying a worker run, and a supported task can still launch', { skip: skipWithoutSqlite }, async (t) => {
+  const env = environment(); const store = new Store(join(env.dataDir, 'supervisor.db'));
+  const d = declaration({ tasks: [declaration().tasks[0]] });
+  d.executor = { ...structuredClone(chain), providers: [{ kind: 'cursor-cli', model: 'sample-model' }] };
+  campaignStart(store, d);
+  const config = { ...env.config, scheduler: { enabled: true, maxWorkers: 2 },
+    commands: { ...env.config.commands, cursor: ['synthetic-cursor'] } };
+  const controller = new Controller({ store, config, dataDir: env.dataDir, sampler: { sample: () => null } });
+  controller.launch = async () => {};
+  t.after(() => { controller.release(); store.close(); env.cleanup(); });
+  await controller.tick();
+  assert.equal(store.campaign(d.campaignId).blocker?.kind, 'executors');
+  assert.equal(store.campaign(d.campaignId).runs_used, 0);
+  assert.equal(store.openOperations(d.campaignId).length, 0);
+  const report = declaration({ campaignId: 'sample-report', tasks: [{ ...d.tasks[0], deliverable: 'report' }] });
+  report.executor = { ...structuredClone(chain), providers: [chain.providers[1]] };
+  campaignStart(store, report);
+  await controller.tick();
+  assert.equal(store.openOperations(report.campaignId).length, 1, 'another eligible task is not starved');
+  assert.equal(store.campaign(d.campaignId).runs_used, 0);
+});
+
 test('exhausted budget prevents fallback from launching the second provider', { skip: skipWithoutSqlite }, async (t) => {
   const { store, controller, id } = fixture(t, 1);
   await controller.tick();
@@ -337,7 +359,8 @@ test('prepared invocations preserve read-only verifier mode and never resume or 
 test('research providers restrict capabilities, isolate scratch space and cannot implement commit tasks', { skip: skipWithoutSqlite }, (t) => {
   const { env } = fixture(t);
   for (const kind of ['codex-cli', 'claude-cli', 'cursor-cli']) {
-    const executor = { ...chain.providers.find((p) => p.kind === kind), researchOnly: true };
+    const executor = { ...chain.providers.find((p) => p.kind === kind), researchOnly: true,
+      ...(kind === 'cursor-cli' ? { model: 'sample-model' } : {}) };
     const runDir = join(env.tmp, kind); mkdirSync(runDir);
     const args = { executor, command: ['synthetic'], role: 'implementer', deliverable: 'report', sessionId: expect.sessionId,
       digest, runDir, workspace: env.repo, prompt: 'brokered evidence only' };
@@ -351,13 +374,42 @@ test('research providers restrict capabilities, isolate scratch space and cannot
       assert.ok(invocation.argv.includes('--safe-mode')); assert.ok(invocation.argv.includes('{"disableAllHooks":true}'));
       assert.equal(invocation.argv[invocation.argv.indexOf('--setting-sources') + 1], '');
     }
-    if (kind === 'cursor-cli') assert.deepEqual(JSON.parse(readFileSync(join(invocation.cwd, '.cursor', 'cli.json'))).permissions.deny,
-      ['Shell(*)', 'Write(**)', 'Read(**)', 'WebFetch(*)', 'Mcp(*:*)']);
+    if (kind === 'cursor-cli') {
+      const config = JSON.parse(readFileSync(join(invocation.env.CURSOR_CONFIG_DIR, 'cli-config.json')));
+      assert.deepEqual(config.permissions, { allow: [], deny: ['Shell(*)', 'Write(**)', 'Read(**)', 'WebFetch(*)', 'Mcp(*:*)'] });
+      assert.ok(invocation.argv.includes('--disable-project-configs'));
+      assert.equal(invocation.argv[invocation.argv.indexOf('--output-format') + 1], 'stream-json');
+      assert.notEqual(invocation.env.CURSOR_CONFIG_DIR, invocation.cwd);
+      assert.notEqual(invocation.env.CURSOR_DATA_DIR, invocation.env.CURSOR_CONFIG_DIR);
+      assert.equal(invocation.env.CURSOR_API_KEY, '');
+      assert.equal(invocation.env.CURSOR_AUTH_TOKEN, '');
+      assert.equal(invocation.env.CURSOR_AUTH_TOKEN_FILE, '');
+      const poison = join(env.repo, '.cursor'); mkdirSync(poison, { recursive: true });
+      const hooks = JSON.stringify({ hooks: { beforeShellExecution: [{ command: 'not-authorized' }] } });
+      writeFileSync(join(poison, 'hooks.json'), hooks);
+      assert.equal(unavailableReason(executor, env.repo), null, 'fresh config and disabled project loading admit only research');
+      assert.match(unavailableReason({ ...executor, researchOnly: false }, env.repo), /scoped adapter/);
+      assert.equal(readFileSync(join(poison, 'hooks.json'), 'utf8'), hooks);
+      assert.match(unavailableReason({ ...executor, model: 'auto' }, env.repo), /explicit model/);
+      assert.throws(() => prepare({ ...args, executor: { ...executor, model: undefined } }), /explicit model/);
+    }
     assert.throws(() => prepare({ ...args, deliverable: 'commit' }), /report deliverable/);
   }
 });
 
 test('research terminal output cannot hide an unexpected native tool invocation', () => {
+  const init = { type: 'system', subtype: 'init', apiKeySource: 'login', session_id: 'native-cursor' };
+  const stream = (events = [], initial = init) => [JSON.stringify(initial), ...events.map(JSON.stringify), cursor(envelope())].join('\n');
+  assert.equal(classifyRun('cursor-cli', stream(), { researchOnly: true }).class, 'result');
+  for (const event of [{ type: 'tool_call', subtype: 'started' }, { type: 'future_tool_event' },
+    { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'read_file' }] } }]) {
+    const outcome = classifyRun('cursor-cli', stream([event]), { researchOnly: true });
+    assert.equal(outcome.class, 'error'); assert.match(outcome.detail, /unexpected tool; no provider fallback/);
+  }
+  for (const change of [{ apiKeySource: 'env' }, { session_id: 'different-session' }]) {
+    assert.notEqual(classifyRun('cursor-cli', stream([], { ...init, ...change }), { researchOnly: true }).class, 'result');
+  }
+  assert.notEqual(classifyRun('cursor-cli', cursor(envelope()), { researchOnly: true }).class, 'result');
   for (const type of ['mcp_tool_call', 'command_execution', 'file_change', 'web_search', 'collab_tool_call', 'custom_tool_call', 'future_tool_call']) {
     const stdout = JSON.stringify({ type: 'item.completed', item: { type, server: 'codex_apps', status: 'completed' } }) + '\n' + codex(envelope());
     const outcome = classifyRun('codex-cli', stdout, { researchOnly: true });

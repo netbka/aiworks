@@ -304,6 +304,13 @@ executable rather than a `.cmd` shim. Changing executors requires a paused, drai
 campaign and a higher authorization version. Target, tasks and acceptance remain immutable.
 The amendment preserves operations, results and spent runs. `status` and the dashboard
 show the selected executor and durable `executorWaits`; `recheck` clears those waits.
+Cursor research reports require an explicit model and a CLI supporting `--disable-project-configs`.
+Each run uses fresh configuration and data directories, denies shell/file/fetch/MCP tools, and records
+streamed events; tool use, non-login authentication or an unbound terminal result is refused. Existing
+user and project configuration is preserved. The native sandbox remains enabled, so an unavailable
+sandbox still prevents launch. This does not enable Cursor commit roles or prove included billing.
+With adaptive scheduling enabled, unavailable providers now persist the same retry or role blocker
+as ordinary dispatch; a campaign with no supported worker does not remain silently ready.
 The dashboard uses `commands.gh` from the selected data directory, so a newly installed
 or hidden login process does not depend on an interactive shell's GitHub CLI PATH.
 An explicit owner-authorized `limits.maxWorkerRuns: null` removes the run cap while
