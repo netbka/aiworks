@@ -230,14 +230,17 @@ export async function restartDashboard(root) {
 // Page helpers: sleep, the first visible control whose text is `label` (waited for), the main region's text, the notice,
 // a field set as typing would, a JSON read.
 const PRELUDE = "const sleep = (ms) => new Promise((r) => setTimeout(r, ms));" +
+  // hashchange is asynchronous: a same-labelled control on the old screen must not receive the next press.
+  "const routeReady = () => JSON.parse(document.getElementById('project-tabs').dataset.shown || '[]')[0] === location.hash;" +
+  "const waitRoute = async () => { for (let i = 0; i < 40 && !routeReady(); i++) await sleep(250); if (!routeReady()) throw new Error('route did not settle: ' + location.hash); };" +
   "const byText = (label, sel = 'a,button,summary,label') => [...document.querySelectorAll(sel)].find((e) => (e.textContent.trim() === label || e.getAttribute('aria-label') === label) && e.offsetParent);" +
-  "const click = async (label, sel) => { let e; for (let i = 0; i < 40 && !(e = byText(label, sel)); i++) await sleep(250); if (!e) throw new Error('no control ' + label); e.click(); await sleep(1500); };" +
+  "const click = async (label, sel) => { await waitRoute(); let e; for (let i = 0; i < 40 && !(e = byText(label, sel)); i++) await sleep(250); if (!e) throw new Error('no control ' + label); e.click(); await sleep(1500); };" +
   "const main = () => document.querySelector('main').innerText;" +
   "const notice = () => document.getElementById('notice').hidden ? '' : document.getElementById('notice').textContent;" +
   "const type = (id, value) => { const e = document.getElementById(id); e.focus(); e.value = value; e.dispatchEvent(new Event('input', { bubbles: true })); };" +
   "const api = async (path) => (await fetch(path)).json();" +
   // A press whose answer is a notice: protected actions run the caller check first, so the answer can take seconds.
-  "const press = async (label) => { const before = notice(); await click(label); for (let i = 0; i < 80 && notice() === before; i++) await sleep(250); return notice(); };";
+  "const press = async (label) => { await waitRoute(); const before = notice(); await click(label); for (let i = 0; i < 80 && (!notice() || notice() === before); i++) await sleep(250); return notice(); };";
 
 /** File contents outside Git metadata, for proving that protected Undo restores each synthetic owner's baseline. */
 const fingerprint = (folder, relative = '') => Object.fromEntries(readdirSync(join(folder, relative))
