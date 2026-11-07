@@ -25,7 +25,7 @@ Each goal is one entry:
 
 Order: goals that ask the owner something first, then those being built or checked, then queued, then paused. Within a group, the order they were started.
 
-A goal asks the owner something only when Needs you lists it (1.3). It is `Checking` when one of its current steps is with the independent checker, `Building` when a step is being made, and `Queued` otherwise.
+A goal asks the owner something only when the owner-action list counts it (1.3). It is `Checking` when one of its current steps is with the independent checker, `Building` when a step is being made, and `Queued` otherwise.
 
 Example (fictional):
 
@@ -48,7 +48,7 @@ Step titles in `now` and `landed` are cleaned the same way.
 
 ### 1.3 `needs`: one count
 
-`needs.count` is the number of items in Needs you: what only the owner can answer. It is the same number on the navigation badge, in the Home headline and in Needs you, because all of them read the same list. A result AIWorks merged itself is landed (1.4), never "to review". Decisions AIWorks answers itself and steps it finishes or ends itself are listed apart and not counted.
+`needs.count` is the number of items only the owner can answer. It is the same number on the Home navigation badge and in the Home headline, because both read the same list. Needs you is not a separate screen: its address opens Home. A result AIWorks merged itself is landed (1.4), never "to review". Decisions AIWorks answers itself and steps it finishes or ends itself are listed apart and not counted.
 
 ### 1.4 `landed`: one line per finished step
 
@@ -72,7 +72,7 @@ What the runs of the running and paused goals that finished today (from local mi
 
 - The Home data, read on a store with three goals, carries `goals`, `landed`, `needs`, `quiet` and `spentToday` as above; no goal title has a reference number, hash, id or code, and none is longer than 60 characters.
 - Three events of one step (built, checked, merged) are one landed entry.
-- The needs count equals the items Needs you lists for the owner; a result AIWorks merged is not counted.
+- The needs count equals the owner-action items Home lists; a result AIWorks merged is not counted.
 - This document uses fictional examples only.
 
 ## 2. Part two: the Home screen
