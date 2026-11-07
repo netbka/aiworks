@@ -487,8 +487,12 @@ function classifyRun({ executorKind, strip = null, ...args }) {
         const events = stdoutText.split(/\r?\n/).filter((line) => line.trim()).map((line) => JSON.parse(line));
         const init = events.filter((event) => event.type === 'system' && event.subtype === 'init');
         const results = events.filter((event) => event.type === 'result');
-        researchToolUsed = events.some((event) => !['system', 'user', 'assistant', 'result'].includes(event.type)
-          || event.message?.content?.some((part) => part.type !== 'text'));
+        researchToolUsed = events.some((event) => event.type === 'thinking'
+          ? event.session_id !== init[0]?.session_id || !Number.isFinite(event.timestamp_ms) ||
+            (event.subtype === 'delta' ? typeof event.text !== 'string' : event.subtype !== 'completed') ||
+            Object.keys(event).some((key) => !['type', 'subtype', 'session_id', 'timestamp_ms', ...(event.subtype === 'delta' ? ['text'] : [])].includes(key))
+          : !['system', 'user', 'assistant', 'result'].includes(event.type) ||
+            event.message?.content?.some((part) => part.type !== 'text'));
         output = results.at(-1) ?? {};
         if (init.length !== 1 || results.length !== 1 || events.at(-1) !== output
           || init[0]?.session_id !== output.session_id || init[0]?.apiKeySource !== 'login') {

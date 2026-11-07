@@ -30,7 +30,7 @@ def identity(pid):
         namespace_pid = next(int(line.split()[-1]) for line in status.splitlines() if line.startswith('NSpid:'))
         return {'pid': pid, 'start': tail[19], 'boot': BOOT,
                 'namespace': os.readlink('/proc/' + str(pid) + '/ns/pid'), 'namespacePid': namespace_pid}
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return None
 
 
@@ -55,22 +55,26 @@ def terminate_namespace(record):
         os.close(handle)
 
 
-def namespace_init(child_pid):
-    child = identity(child_pid)
-    if not child:
-        raise ValueError('namespace child disappeared')
-    if child['namespacePid'] == 1:
-        return child
-    for entry in pathlib.Path('/proc').iterdir():
-        if not entry.name.isdecimal():
-            continue
-        try:
-            if os.readlink(entry / 'ns/pid') == child['namespace']:
-                candidate = identity(int(entry.name))
-                if candidate and candidate['namespacePid'] == 1:
-                    return candidate
-        except (FileNotFoundError, PermissionError):
-            pass
+def namespace_init(child_pid, host_namespace):
+    # Bubblewrap can announce its child before that child enters the new namespace.
+    # It is still waiting for our startup grant, so waiting here cannot start model work.
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        child = identity(child_pid)
+        if child and child['namespace'] != host_namespace:
+            if child['namespacePid'] == 1:
+                return child
+            for entry in pathlib.Path('/proc').iterdir():
+                if not entry.name.isdecimal():
+                    continue
+                try:
+                    if os.readlink(entry / 'ns/pid') == child['namespace']:
+                        candidate = identity(int(entry.name))
+                        if candidate and candidate['namespacePid'] == 1:
+                            return candidate
+                except (FileNotFoundError, ProcessLookupError, PermissionError):
+                    pass
+        time.sleep(.02)
     raise ValueError('namespace init identity unavailable')
 
 
@@ -210,31 +214,37 @@ def start(request_path, request):
 
     threading.Thread(target=receive, daemon=True).start()
     if not ready.wait(10) or control['error']:
-        atomic(state_path, {**state, 'phase': 'finished', 'exitCode': 1})
+        atomic(state_path, {**state, 'phase': 'finished', 'exitCode': 1, 'reason': 'startup-control'})
         return 1
     read_fd, write_fd = os.pipe()
     child = None
     code = 1
+    stage = 'sandbox-prepare'
+    failure = None
     try:
         child = subprocess.Popen(sandbox(request, write_fd), stdin=subprocess.PIPE,
                                  stdout=sys.stdout.buffer, stderr=sys.stderr.buffer,
                                  pass_fds=(write_fd,), start_new_session=True)
         os.close(write_fd)
         write_fd = None
+        stage = 'namespace-handshake'
         if not select.select([read_fd], [], [], 10)[0]:
             raise ValueError('namespace identity unavailable')
         info = json.loads(os.read(read_fd, 4096))
-        owned = namespace_init(info['child-pid'])
+        stage = 'namespace-identity'
+        owned = namespace_init(info['child-pid'], state['guard']['namespace'])
         if not owned or owned['namespace'] == state['guard']['namespace']:
             raise ValueError('PID namespace was not established')
         state.update(phase='running', namespace=owned)
         atomic(state_path, state)
+        stage = 'startup-grant'
         if cancel.exists() or control['error'] or time.monotonic() - control['at'] > 5:
             raise ValueError('launch cancelled')
         grant = {'argv': ['/agent/node', '/agent/index.js', *request['argv']],
                  'prompt': control['start']['prompt']}
         child.stdin.write((json.dumps(grant) + '\n').encode())
         child.stdin.close()
+        stage = 'worker'
         deadline = time.monotonic() + request['timeoutMs'] / 1000
         while child.poll() is None:
             if cancel.exists() or control['error'] or time.monotonic() - control['at'] > 5:
@@ -245,6 +255,7 @@ def start(request_path, request):
         code = child.returncode
     except BaseException:
         code = 1
+        failure = stage
     finally:
         os.close(read_fd)
         if write_fd is not None:
@@ -267,7 +278,8 @@ def start(request_path, request):
                 if time.monotonic() >= deadline:
                     raise ValueError('namespace cleanup not proved')
                 time.sleep(.05)
-        atomic(state_path, {**state, 'phase': 'finished', 'exitCode': code})
+        atomic(state_path, {**state, 'phase': 'finished', 'exitCode': code,
+                            **({'reason': failure} if failure else {})})
     return code
 
 

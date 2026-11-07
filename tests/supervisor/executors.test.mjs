@@ -423,7 +423,11 @@ test('research terminal output cannot hide an unexpected native tool invocation'
   const init = { type: 'system', subtype: 'init', apiKeySource: 'login', session_id: 'native-cursor' };
   const stream = (events = [], initial = init) => [JSON.stringify(initial), ...events.map(JSON.stringify), cursor(envelope())].join('\n');
   assert.equal(classifyRun('cursor-cli', stream(), { researchOnly: true }).class, 'result');
+  const thinking = { type: 'thinking', subtype: 'delta', text: 'synthetic reasoning fixture', session_id: init.session_id, timestamp_ms: 1 };
+  assert.equal(classifyRun('cursor-cli', stream([thinking,
+    { type: 'thinking', subtype: 'completed', session_id: init.session_id, timestamp_ms: 2 }]), { researchOnly: true }).class, 'result');
   for (const event of [{ type: 'tool_call', subtype: 'started' }, { type: 'future_tool_event' },
+    { ...thinking, tool_call: {} }, { ...thinking, subtype: 'tool' }, { ...thinking, session_id: 'another-session' },
     { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'read_file' }] } }]) {
     const outcome = classifyRun('cursor-cli', stream([event]), { researchOnly: true });
     assert.equal(outcome.class, 'error'); assert.match(outcome.detail, /unexpected tool; no provider fallback/);
