@@ -144,6 +144,35 @@ function candidates(controller, repositories) {
   return out.filter((item) => Number.isSafeInteger(item.number) && item.number > 0);
 }
 
+/** A durable passed refresh for this exact verified head and current base; ordering only, never merge authority. */
+export function refreshedOnBase(store, { campaignId, task }, baseSha) {
+  return SHA.test(baseSha ?? '') && SHA.test(task.verified_sha ?? '')
+    && SHA.test(passedTree(store, campaignId, task.task_id, task.verified_sha, baseSha) ?? '');
+}
+
+/** Promote checked results within each branch's existing positions, keeping age/plan order among equal ranks. */
+function prioritizeRefreshed(store, items, bases) {
+  const branches = new Map();
+  for (const item of items) {
+    const branch = item.decl.target.baseBranch;
+    if (!branches.has(branch)) branches.set(branch, []);
+    branches.get(branch).push({ item, ready: refreshedOnBase(store, item, bases.get(branch)) });
+  }
+  for (const entries of branches.values()) entries.sort((a, b) => Number(b.ready) - Number(a.ready));
+  return items.map((item) => branches.get(item.decl.target.baseBranch).shift().item);
+}
+
+const PRIORITY_BUSY = Symbol('checked merge waiting for campaign lease');
+function priorityBusy(controller, item) {
+  const key = `${item.campaignId}:${item.task.task_id}:${item.task.verified_sha}`;
+  const reason = 'the checked merge result waits for its campaign lease; siblings on this base wait until the next merge pass';
+  if (controller.mergeWaits.get(key) !== reason) {
+    controller.mergeWaits.set(key, reason);
+    controller.log(`merge of ${item.campaignId}/${item.task.task_id} waits: ${reason}`);
+  }
+  return PRIORITY_BUSY;
+}
+
 /**
  * One merge pass, after the campaign steps of a tick. Each listed repository is visited at most once per
  * integrationPollMs; its base is fetched first, and at most one of its pull requests is merged or sent back for an
@@ -182,9 +211,17 @@ export async function mergePass(controller) {
           controller.log(`group merge for ${decl.target.repository} failed, merging one at a time: ${error.stack || error}`);
         }
       }
-      for (const item of items) {
+      // Re-read after a group step: a stopped group may have advanced trusted main.
+      const tip = trustedTip(controller.store, { git: controller.cmd.git, repoPath, repository: decl.target.repository });
+      const ordered = settings.refresh && tip.state === 'TRUSTED'
+        ? prioritizeRefreshed(controller.store, items, new Map([['main', tip.tip]])) : items;
+      const busy = new Set();
+      for (const item of ordered) {
+        if (busy.has(item.decl.target.baseBranch)) continue;
         try {
-          if (mergeLocal(controller, item, settings, repoPath)) break;
+          const result = mergeLocal(controller, item, settings, repoPath, null, true);
+          if (result === PRIORITY_BUSY) { busy.add(item.decl.target.baseBranch); continue; }
+          if (result) break;
         } catch (error) {
           if (error instanceof FencedError || error instanceof ConflictError) { controller.log(`merge of ${item.campaignId}/${item.task.task_id} retried later: ${error.message}`); break; }
           controller.log(`merge of ${item.campaignId}/${item.task.task_id} failed: ${error.stack || error}`);
@@ -219,13 +256,22 @@ export async function mergePass(controller) {
       }
       bases.set(branch, (await controller.fetchBase(repoPath, branch)).sha);
     }
-    for (const item of items) {
-      const branch = item.decl.target.baseBranch;
+    // Rank against freshly fetched bases, including the re-fetch after a group step. Other branches retain their slots.
+    for (const branch of new Set(items.map((item) => item.decl.target.baseBranch))) {
       if (!bases.has(branch)) bases.set(branch, (await controller.fetchBase(repoPath, branch)).sha);
+      checkShape(branch);
+    }
+    const ordered = settings.refresh ? prioritizeRefreshed(controller.store, items, bases) : items;
+    const busy = new Set();
+    for (const item of ordered) {
+      const branch = item.decl.target.baseBranch;
+      if (busy.has(branch)) continue;
       if (!SHA.test(bases.get(branch) ?? '')) { controller.log(`merge of ${item.campaignId}/${item.task.task_id} waits: ${branch} could not be fetched`); continue; }
       checkShape(branch);
       try {
-        if (mergeOne(controller, item, settings, repoPath, bases.get(branch))) break;
+        const result = mergeOne(controller, item, settings, repoPath, bases.get(branch));
+        if (result === PRIORITY_BUSY) { busy.add(branch); continue; }
+        if (result) break;
       } catch (error) {
         if (error instanceof FencedError || error instanceof ConflictError) { controller.log(`merge of ${item.campaignId}/${item.task.task_id} retried later: ${error.message}`); break; }
         controller.log(`merge of ${item.campaignId}/${item.task.task_id} failed: ${error.stack || error}`);
@@ -515,6 +561,13 @@ function mergeOne(controller, item, settings, repoPath, baseSha) {
   const git = controller.cmd.git, sha = item.task.verified_sha;
   const { pr, acted } = inspect(controller, item, settings, repoPath, baseSha);
   if (!pr) return acted;
+  const priority = Boolean(settings.refresh) && refreshedOnBase(controller.store, item, baseSha);
+  // Only an otherwise eligible checked result holds siblings when its actual lease acquisition loses a race.
+  if (priority) {
+    const blocker = mergeBlocker(controller, item, pr), owed = refusalWait(controller, item);
+    if (blocker || owed) return wait(controller, item, blocker ?? owed.reason);
+    if (!stillMergeable(controller, item) || !baseFresh(controller, item.decl.target.repository, item.decl.target.baseBranch, repoPath, baseSha)) return false;
+  }
 
   // The verified head must contain the current base, or the merge result is a tree no verifier ran: integration repair,
   // unless the refresh (merges.refresh) ran the gate on that exact merge result itself. While its gate runs, the
@@ -522,7 +575,7 @@ function mergeOne(controller, item, settings, repoPath, baseSha) {
   let gated = null;
   if (!gitA.isAncestor({ git, path: repoPath, ancestor: baseSha, descendant: sha })) {
     const ctx = lease(controller, item.campaignId);
-    if (!ctx) return false;
+    if (!ctx) return priority ? priorityBusy(controller, item) : false;
     const step = settings.refresh ? refreshStep(controller, ctx, item, repoPath, baseSha, settings.refresh) : { next: 'repair' };
     if (step.next === 'wait') { wait(controller, item, step.reason); return true; }
     if (step.next === 'repair') return controller.fenced(ctx, () => repair(controller, ctx, item, repoPath, baseSha, step.detail));
@@ -533,7 +586,7 @@ function mergeOne(controller, item, settings, repoPath, baseSha) {
   if (blocker) return wait(controller, item, blocker);
   const owed = refusalWait(controller, item);
   if (owed) return wait(controller, item, owed.reason);
-  return mergeNow(controller, item, baseSha, repoPath, gated);
+  return mergeNow(controller, item, baseSha, repoPath, gated, priority);
 }
 
 function authorityBlocked(controller, item, repoPath, baseSha) {
@@ -549,23 +602,28 @@ function authorityBlocked(controller, item, repoPath, baseSha) {
   return Boolean(problem);
 }
 
+/** Current task eligibility, rechecked inside the fenced merge request and before a priority lease wait. */
+function stillMergeable(controller, { campaignId, task }) {
+  const { store } = controller, c = store.campaign(campaignId), t = store.task(campaignId, task.task_id);
+  return ['registered', 'finished'].includes(c.control) && t.state === 'done' && !t.blocked && t.verified_sha === task.verified_sha && t.pr_url === task.pr_url && !mergeRefusal(t)
+    && !pendingChanges(store, campaignId, task.task_id, task.verified_sha) && !awaitingAcceptance(store, c, t)
+    && (!controller.ci || ciMergeable(store, campaignId, task.task_id, task.verified_sha));
+}
+
 /**
  * The merge call for a pull request already judged mergeable onto a checked tree: journal the request, merge the exact
  * verified SHA with a merge commit, record it. Returns false when the campaign lease or the task changed, true otherwise
- * (merged, or refused or unknown, which the next pass settles by reading the pull request first).
+ * (merged, or refused or unknown, which the next pass settles by reading the pull request first). Priority singles return
+ * PRIORITY_BUSY only when an otherwise eligible checked result could not acquire its lease; group callers stay boolean.
  */
-export function mergeNow(controller, item, baseSha, repoPath = null, tree = null) {
+export function mergeNow(controller, item, baseSha, repoPath = null, tree = null, priority = false) {
   const { store } = controller, { campaignId, decl, task, number } = item;
   const gh = controller.cmd.gh, sha = task.verified_sha, url = task.pr_url, repository = decl.target.repository, branch = decl.target.baseBranch;
+  if (priority && (!stillMergeable(controller, item) || !baseFresh(controller, repository, branch, repoPath ?? controller.repo(decl).path, baseSha))) return false;
   const ctx = lease(controller, campaignId);
-  if (!ctx) return false;
+  if (!ctx) return priority ? priorityBusy(controller, item) : false;
   // The request is committed before the call: after a crash the next pass reads the pull request before any retry.
-  const still = () => {
-    const c = store.campaign(campaignId), t = store.task(campaignId, task.task_id);
-    return ['registered', 'finished'].includes(c.control) && t.state === 'done' && !t.blocked && t.verified_sha === sha && t.pr_url === url && !mergeRefusal(t)
-      && !pendingChanges(store, campaignId, task.task_id, sha) && !awaitingAcceptance(store, c, t)
-      && (!controller.ci || ciMergeable(store, campaignId, task.task_id, sha));
-  };
+  const still = () => stillMergeable(controller, item);
   // Under the store's write lock, so a merge another instance recorded since this pass fetched the base is seen: a base
   // that moved under such a merge is judged again from a fresh fetch, never merged onto from this one (P1 serialization).
   const requested = controller.fenced(ctx, () => {
@@ -665,9 +723,10 @@ export function localBlocker(controller, item, settings, repoPath) {
  * has main checked out is clean, the task's branch and review item are bound to the verified head, the campaign is
  * neither paused nor cancelled and this instance holds the campaign's lease. With `step` ({ group, base, tree }, from the
  * group merge, merge-batch.mjs) it merges one checked step of a group: only from the trusted tip `base`, with exactly the
- * tree `tree` that step predicted.
+ * tree `tree` that step predicted. Priority singles may return PRIORITY_BUSY on a lost lease acquisition; group steps
+ * keep their boolean result and recorded order.
  */
-export function mergeLocal(controller, item, settings, repoPath, step = null) {
+export function mergeLocal(controller, item, settings, repoPath, step = null, prioritize = false) {
   const { store } = controller, { campaignId, decl, task } = item;
   const git = controller.cmd.git, sha = task.verified_sha, url = task.pr_url, repository = decl.target.repository;
   const blocked = localBlocker(controller, item, settings, repoPath);
@@ -719,6 +778,16 @@ export function mergeLocal(controller, item, settings, repoPath, step = null) {
     return true;
   }
 
+  const priority = prioritize && !step && Boolean(settings.refresh) && refreshedOnBase(store, item, tip.tip);
+  let checkout;
+  if (priority) {
+    if (!still() || !accepted()) return false;
+    if (tip.unrecordedCount) return wait(controller, item, `main has ${tip.unrecordedCount} commits AIWorks did not put there`);
+    checkout = mainCheckout(git, repoPath);
+    if (checkout?.unreadable) return wait(controller, item, 'the checkout that has main checked out cannot be read');
+    if (checkout?.dirty) return wait(controller, item, 'your checkout has unsaved changes');
+  }
+
   // The verified head must contain the trusted tip, or the merge result is a tree no verifier ran: integration repair,
   // unless the refresh (merges.refresh, merge-refresh.mjs) ran the gate on that exact merge result itself. Then the merge
   // commit carries that gated tree. While its gate runs, the repository waits.
@@ -728,19 +797,19 @@ export function mergeLocal(controller, item, settings, repoPath, step = null) {
     gated = step.tree;
   } else if (!gitA.isAncestor({ git, path: repoPath, ancestor: tip.tip, descendant: sha })) {
     const ctx = lease(controller, campaignId);
-    if (!ctx) return false;
+    if (!ctx) return priority ? priorityBusy(controller, item) : false;
     const step = settings.refresh ? refreshStep(controller, ctx, item, repoPath, tip.tip, settings.refresh) : { next: 'repair' };
     if (step.next === 'wait') { wait(controller, item, step.reason); return true; }
     if (step.next !== 'merge' || !SHA.test(step.tree ?? '')) return controller.fenced(ctx, () => repair(controller, ctx, item, repoPath, tip.tip, step.detail ?? null));
     gated = step.tree;
   }
   if (tip.unrecordedCount) return wait(controller, item, `main has ${tip.unrecordedCount} commits AIWorks did not put there`);
-  const checkout = mainCheckout(git, repoPath);
+  checkout = mainCheckout(git, repoPath);
   if (checkout?.unreadable) return wait(controller, item, 'the checkout that has main checked out cannot be read');
   if (checkout?.dirty) return wait(controller, item, 'your checkout has unsaved changes');
 
   const ctx = lease(controller, campaignId);
-  if (!ctx) return false;
+  if (!ctx) return priority ? priorityBusy(controller, item) : false;
   // The request names the trusted tip before any object is written, so a restart recognizes the planned commit.
   if (!controller.fenced(ctx, () => {
     if (!still() || !accepted()) return false;
