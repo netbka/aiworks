@@ -68,9 +68,17 @@ export function helperArgs(script, params) {
   return ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')];
 }
 
-export function windowsHelperArgs(mode, jobName, { runDir, pid, creationTime, priorityClass } = {}) {
-  return helperArgs(WINDOWS_PROCESS_HELPER, { Mode: mode, JobName: jobName, RunDir: runDir, RunnerPid: pid, CreationTime: creationTime, PriorityClass: priorityClass });
+export function windowsHelperArgs(mode, jobName, { runDir, pid, creationTime, priorityClass, waitMs } = {}) {
+  return helperArgs(WINDOWS_PROCESS_HELPER, { Mode: mode, JobName: jobName, RunDir: runDir, RunnerPid: pid, CreationTime: creationTime, PriorityClass: priorityClass, WaitMs: waitMs });
 }
+
+/**
+ * How long an asynchronous drain or stop waits for its job's terminated processes to be signaled, and the helper's whole
+ * bound beside its own start. On an oversubscribed host a terminated browser's rundown took from seconds to several minutes
+ * at low priority, and mostly under 10 s once its processes were raised (2026-11-06). The blocking stopOwnedRun keeps the helper's 10 s wait so it never holds an event loop longer.
+ */
+const ASYNC_STOP_WAIT_MS = 60_000;
+export const ASYNC_STOP_MS = ASYNC_STOP_WAIT_MS + 30_000;
 
 /** The name runner.mjs gives its Windows job: `Local\aiworks-supervisor-<uuid>`. */
 export const JOB_NAME = /^Local\\aiworks-supervisor-[0-9a-f-]{36}$/;
@@ -95,7 +103,7 @@ function jobCommand(mode, jobName, identity) {
 /** Wait for the entire job to stop before publishing output or replacing its workspace. */
 export async function drainJob(jobName) {
   if (!POWERSHELL || !JOB_NAME.test(jobName ?? '')) return 'ownership-unavailable';
-  return await runPowerShell(windowsHelperArgs('Drain', jobName), 30_000) ?? 'stop-failed';
+  return await runPowerShell(windowsHelperArgs('Drain', jobName, { waitMs: ASYNC_STOP_WAIT_MS }), ASYNC_STOP_MS) ?? 'stop-failed';
 }
 
 /** Compare the creation time on an open process handle, never a PID/image guess. */
@@ -108,5 +116,6 @@ export function stopOwnedRun(runner) {
 /** stopOwnedRun without blocking the event loop (the controller's bounded reads, aiworks#140). Same answers. */
 export async function stopOwnedRunAsync(runner) {
   if (!runnerIdentified(runner) || !POWERSHELL) return 'ownership-unavailable';
-  return await runPowerShell(windowsHelperArgs('Stop', runner.jobName, { pid: runner.pid, creationTime: runner.creationTime }), 30_000) ?? 'stop-failed';
+  return await runPowerShell(windowsHelperArgs('Stop', runner.jobName, { pid: runner.pid, creationTime: runner.creationTime, waitMs: ASYNC_STOP_WAIT_MS }),
+    ASYNC_STOP_MS) ?? 'stop-failed';
 }
