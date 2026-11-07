@@ -377,6 +377,13 @@ test('research providers restrict capabilities, isolate scratch space and cannot
     if (kind === 'cursor-cli') {
       const config = JSON.parse(readFileSync(join(invocation.env.CURSOR_CONFIG_DIR, 'cli-config.json')));
       assert.deepEqual(config.permissions, { allow: [], deny: ['Shell(*)', 'Write(**)', 'Read(**)', 'WebFetch(*)', 'Mcp(*:*)'] });
+      assert.equal(config.approvalMode, 'allowlist');
+      assert.equal(config.autoAcceptWebSearch, false);
+      assert.deepEqual(config.subagentModels, { explore: 'disabled' }, 'no implicit subagent/model spending');
+      assert.equal(invocation.argv[invocation.argv.indexOf('--sandbox') + 1], 'disabled');
+      const ordinary = prepare({ ...args, executor: { ...executor, researchOnly: false } });
+      assert.equal(ordinary.argv[ordinary.argv.indexOf('--sandbox') + 1], 'enabled');
+      assert.ok(!invocation.argv.some((arg) => ['--force', '--yolo', '--approve-mcps'].includes(arg)));
       assert.ok(invocation.argv.includes('--disable-project-configs'));
       assert.equal(invocation.argv[invocation.argv.indexOf('--output-format') + 1], 'stream-json');
       assert.notEqual(invocation.env.CURSOR_CONFIG_DIR, invocation.cwd);

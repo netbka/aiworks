@@ -315,6 +315,7 @@ export function prepare({ executor, command, role, deliverable, sessionId, diges
       const config = mkdtempSync(join(runDir, 'cursor-config-'));
       const data = mkdtempSync(join(runDir, 'cursor-data-'));
       writeFileSync(join(config, 'cli-config.json'), JSON.stringify({ version: 1, 'editor.vimMode': false,
+        approvalMode: 'allowlist', autoAcceptWebSearch: false, subagentModels: { explore: 'disabled' },
         permissions: { allow: [], deny: ['Shell(*)', 'Write(**)', 'Read(**)', 'WebFetch(*)', 'Mcp(*:*)'] } }));
       cursorEnv = { CURSOR_CONFIG_DIR: config, CURSOR_DATA_DIR: data,
         CURSOR_API_KEY: '', CURSOR_AUTH_TOKEN: '', CURSOR_AUTH_TOKEN_FILE: '', CURSOR_AUTH_TOKEN_EXPIRES_AT: '',
@@ -370,8 +371,9 @@ export function prepare({ executor, command, role, deliverable, sessionId, diges
     ...(profileHome == null ? {} : { env: profile }),
   };
   // shortcut: Cursor commit roles wait for a scoped publication-denial adapter; use the next executor meanwhile.
-  // Workspace trust is limited to the controller-created checkout; tool permissions stay unchanged.
-  return { argv: [...command, '--print', '--trust', '--mode', 'ask', '--sandbox', 'enabled',
+  // Research uses a fresh deny-all allowlist with no subagents, in an empty scratch directory.
+  // Native Windows Cursor cannot provide a filesystem sandbox; ordinary roles still require one.
+  return { argv: [...command, '--print', '--trust', '--mode', 'ask', '--sandbox', cursorEnv ? 'disabled' : 'enabled',
     ...(cursorEnv ? ['--disable-project-configs'] : []), '--output-format', cursorEnv ? 'stream-json' : 'json', ...model],
     prompt: boundPrompt, cwd, ...(cursorEnv ? { env: cursorEnv } : {}) };
 }
