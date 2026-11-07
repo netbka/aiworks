@@ -244,19 +244,19 @@ const fingerprint = (folder, relative = '') => Object.fromEntries(readdirSync(jo
       : [[path, createHash('sha256').update(readFileSync(join(folder, path))).digest('hex')]];
   }));
 const sameFiles = (a, b) => JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort());
-const rows = (root, sql, ...params) => {
+const readRows = (root, sql, ...params) => {
   const db = new DatabaseSync(join(root, 'data', 'supervisor.db'), { readOnly: true });
   try { return db.prepare(sql).all(...params); } finally { db.close(); }
 };
-const journal = (root, campaign) => rows(root, 'SELECT campaign_id, kind, detail FROM journal WHERE campaign_id = ? ORDER BY seq', campaign)
+const journal = (root, campaign) => readRows(root, 'SELECT campaign_id, kind, detail FROM journal WHERE campaign_id = ? ORDER BY seq', campaign)
   .map((row) => ({ ...row, detail: JSON.parse(row.detail) }));
 
 /** Bind the observed automatic apply to its exact independent verification, durable attempt and local receipt. */
 function autoApplyProof(root, result, project) {
   if (!result || !['notes', 'site'].includes(project) || !/^apply-[0-9]+-[a-f0-9]+$/.test(result.applyId ?? '')) return { valid: false };
-  const candidate = rows(root, 'SELECT * FROM local_candidates WHERE campaign_id = ? AND task_id = ? AND seq = ?', result.campaignId, result.taskId, result.seq)[0];
-  const task = rows(root, 'SELECT state, verified_sha FROM tasks WHERE campaign_id = ? AND task_id = ?', result.campaignId, result.taskId)[0];
-  const apply = rows(root, 'SELECT * FROM local_applies WHERE apply_id = ?', result.applyId)[0];
+  const candidate = readRows(root, 'SELECT * FROM local_candidates WHERE campaign_id = ? AND task_id = ? AND seq = ?', result.campaignId, result.taskId, result.seq)[0];
+  const task = readRows(root, 'SELECT state, verified_sha FROM tasks WHERE campaign_id = ? AND task_id = ?', result.campaignId, result.taskId)[0];
+  const apply = readRows(root, 'SELECT * FROM local_applies WHERE apply_id = ?', result.applyId)[0];
   const verification = JSON.parse(candidate?.verification ?? 'null'), events = journal(root, result.campaignId);
   const started = events.find((row) => row.kind === 'auto-apply-started' && row.detail.applyId === result.applyId);
   const ended = events.find((row) => row.kind === 'auto-apply-finished' && row.detail.applyId === result.applyId);
@@ -380,7 +380,7 @@ export async function journey(root) {
     const secondApplied = await waitFor(`const s = await api('/api/state'); return s.work.local.notes?.find((c) => c.id.includes('${second.slice(0, 8).toLowerCase()}'))?.results.find((r) => r.action === 'undo') ?? null;`);
     const secondProof = autoApplyProof(root, secondApplied, 'notes');
     const events = secondApplied ? journal(root, secondApplied.campaignId) : [];
-    const instructions = secondApplied ? rows(root, "SELECT dedup_key FROM events WHERE campaign_id = ? AND kind = 'agent-instruction'", secondApplied.campaignId) : [];
+    const instructions = secondApplied ? readRows(root, "SELECT dedup_key FROM events WHERE campaign_id = ? AND kind = 'agent-instruction'", secondApplied.campaignId) : [];
     const workers = await ui(`const s = await api('/api/state'); return { pendingDecisions: s.owner.groups.flatMap((g) => g.items).filter((i) => i.kind === 'decision').length,
       usedBy: s.supervisor.settings.workers.find((w) => w.kind === 'claude-cli')?.usedBy ?? 0,
       open: s.supervisor.local.filter((c) => !['finished', 'cancelled'].includes(c.control) && c.executors.includes('claude-cli')).length };`);

@@ -4129,7 +4129,7 @@ function restoreWords(restore) {
 }
 const PUBLISH_MISSING = { 'no-grant': 'No valid release grant is recorded for this project.', 'switched-off': 'Auto Release is switched off on this computer.',
   'release-stop': 'Stop all releases is on.', 'release-stop-unknown': 'Whether Stop all releases is on cannot be read.',
-  'no-github': 'Release does not apply to a project without GitHub: you apply a checked result yourself.',
+  'no-github': 'Release does not apply to a project without GitHub. Review shows which checked results have been applied to your folder.',
   'publish-not-built': 'A manual Publish button is not built: which destinations it may reach is your decision, and it could only use a destination an existing valid grant names.' };
 const STEP_KEYS = [['checked', 'Checked'], ['merged', 'Merged'], ['deployed', 'Live'], ['release-checked', 'Release checked']];
 
@@ -4176,7 +4176,7 @@ function releasesScreen(project) {
         : el('p', { class: 'subtext' }, 'No release is recorded for this project. In Review only, AIWorks deploys nothing; whether a merged result is live is not known here.'),
       // Not "Checked results": a result here may have failed its check, and its release may not be checked at all.
       el('h3', {}, `${applied ? 'Checked results' : 'Results'} (${applied ?? v.results.length})`),
-      applied ? el('p', { class: 'subtext' }, 'They are never released: you apply each one to your folder, and undo it, on ',
+      applied ? el('p', { class: 'subtext' }, 'They are never released here. See automatic and manual applies, and Undo apply when safe, on ',
         routeLink('Review', { screen: 'project', project, tab: 'review' }), '.')
       : v.results.length ? el('ul', { class: 'settings-links' }, ...v.results.map((item) => el('li', {}, el('strong', {}, item.text),
         el('div', { class: 'subtext' }, [...STEP_KEYS.map(([key, word]) => [word, item.steps.find((step) => step.key === key)?.answer]).filter(([, answer]) => answer)

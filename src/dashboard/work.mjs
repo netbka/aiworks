@@ -7,8 +7,8 @@
 // A project without GitHub (OWNER_WORKSPACE S12 and §5.3; plan slice UI17) follows the same Plan and do and Review, once
 // the owner has confirmed its rules. Approve and start runs the caller check, records the owner's approval of exactly the
 // reviewed plan and registers it (local-admission.mjs, decision D4). Its checked results are applied to the owner's folder
-// only when the owner presses Apply, and Undo apply is the way back (release/owner-apply.mjs, under Review only, never
-// Auto Release). No pull request exists for such a project, and nothing here reaches GitHub or a network service.
+// automatically under AW-018, or through Apply when owner acceptance is required. Undo apply restores the prior folder
+// when safe (release/owner-apply.mjs). No pull request exists here, and this view reaches no GitHub or network service.
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -194,7 +194,7 @@ function localResult(candidate, attempt, title, textChecks) {
   if (outcome === 'unknown') return { ...row, state: 'Not known yet', text: 'AIWorks has not settled what happened to your folder yet. It reads the folder again before anything else is written.' };
   const before = outcome === 'rolled-back' ? 'Undone: your folder is back as it was. '
     : outcome === 'refused' ? `Not applied: ${safeText(attempt.reason ?? 'your folder changed', 300)}. ` : '';
-  return { ...row, state: 'Ready for your review', text: `${before}Checked at ${sha7}. Nothing in your folder changes until you press Apply.`, action: 'apply' };
+  return { ...row, state: 'Ready for your review', text: `${before}Checked at ${sha7}. The result is ready to apply.`, action: 'apply' };
 }
 
 /**
