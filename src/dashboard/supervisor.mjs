@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, relative, isAbsolute } from 'node:path';
+import { basename, join, relative, isAbsolute } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
+import { heldBaseReads } from '../supervisor/adapters/git.mjs';
 import { campaignStatus, campaignPause, campaignCancel, campaignRecheck, campaignStart, supervisorLiveness } from '../supervisor/api.mjs';
 import { DEFAULTS } from '../supervisor/controller.mjs';
 import { safeText } from './roadmap.mjs';
@@ -295,6 +296,18 @@ function stepCosts(operations) {
   }
   return costs;
 }
+
+/** What a goal's runs that finished at or after `since` reported (HOME_V2.md): null, never 0, when none reported a cost. */
+function costSince(operations, since) {
+  let usd = 0, unreportedRuns = 0;
+  for (const op of operations.filter((item) => item.state === 'finished' && item.updated_at >= since)) {
+    usd = cents(usd + reportedCost(op.outcome));
+    if (!runNotCounted(op.outcome) && !reportedCost(op.outcome)) unreportedRuns++;
+  }
+  return { reportedUsd: usd > 0 ? usd : null, unreportedRuns };
+}
+/** Local midnight of the day `now` falls on. */
+const startOfDay = (now) => new Date(now).setHours(0, 0, 0, 0);
 
 /**
  * Cost per project (OWNER_WORKSPACE §4.10, slice S7): today's per-campaign totals added up by repository, so a project's
@@ -921,7 +934,7 @@ function autoAnswer(row) {
   const chosen = d?.options.find((o) => o.id === detail.option);
   if (!chosen) return null;
   return { taskId: detail.task, at: row.at, question: safeText(d.question, 500), chosen: safeText(chosen.label, 120),
-    reason: d.suggestion ? safeText(d.suggestion.reason, 500) : null,
+    reason: d.suggestion && d.suggestion.option === chosen.id ? safeText(d.suggestion.reason, 500) : null,
     others: d.options.filter((o) => o.id !== chosen.id).map((o) => safeText(o.label, 120)) };
 }
 
@@ -1104,10 +1117,11 @@ function localRuns(store, c, now, config, projectOf) {
   const specs = new Map(c.declaration.tasks.map((task) => [task.id, task]));
   const owner = projectOf(c.declaration.target.projectId);
   return { id, project: owner?.id ?? null, projectName: owner?.name ? safeText(owner.name, 120) : null,
-    title: safeText(c.declaration.envelope?.outcome ?? c.declaration.purpose ?? id, 300), control: c.control,
+    title: safeText(c.declaration.envelope?.outcome ?? c.declaration.purpose ?? id, 300), shortTitle: c.declaration.title ? safeText(c.declaration.title, 60) : null, control: c.control,
     controllerRevision: status.controller.codeRevision, budget: status.budget,
     runsUsed: status.runsUsed, maxWorkerRuns: status.maxWorkerRuns, recordedCostUsd: status.costUsd,
     cost: { reportedUsd: status.costUsd > 0 ? status.costUsd : null, unreportedRuns: status.budget.unknownCostRuns, runningRuns: operations.length },
+    costToday: costSince(ops, startOfDay(now)),
     costByUnit: costByUnit(status.costByUnit),
     executors: (c.declaration.executor.providers ?? [c.declaration.executor]).map((item) => code(item.kind)),
     providers: workProviders(status, taskRows, operations, now),
@@ -1189,6 +1203,8 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
       return { id, version: c.version, authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest,
         repository: c.declaration.target.repository, trackingUrl: `https://github.com/${c.declaration.target.repository}/issues/${c.declaration.target.trackingIssue}`,
         trackingIssue: c.declaration.target.trackingIssue, purpose: c.declaration.purpose ? safeText(c.declaration.purpose) : null,
+        // The goal's short title for Home (HOME_V2.md), when the declaration has one; Home words a fallback otherwise.
+        shortTitle: c.declaration.title ? safeText(c.declaration.title, 60) : null, goalOutcome: c.declaration.envelope?.outcome ? safeText(c.declaration.envelope.outcome) : null,
         // Who paused it and when: the pause reason is owner/operator command text, never worker output.
         pausedAt: paused?.at ?? null, pausedReason: paused ? ownerPauseReason(pauseText(paused.detail?.reason), new Map([...workNames, [id, 'this work']])) : null,
         control: c.control, status: status.status, readiness: status.readiness, controllerLive: status.controller.live,
@@ -1217,6 +1233,8 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
         runsUsed: status.runsUsed, maxWorkerRuns: status.maxWorkerRuns, recordedCostUsd: status.costUsd,
         // OWNER_WORKSPACE S7: today's totals, with unreported and running runs apart; null, never 0, when nothing reported a cost.
         cost: { reportedUsd: status.costUsd > 0 ? status.costUsd : null, unreportedRuns: status.budget.unknownCostRuns, runningRuns: operations.length },
+        // What its runs that finished today reported (Home's spent today).
+        costToday: costSince(ops, startOfDay(now)),
         // MODEL_ROUTING R6 (UI12): the same work's cost in each unit apart, from status.
         costByUnit: costByUnit(status.costByUnit),
         executors: (c.declaration.executor.providers ?? [c.declaration.executor]).map((item) => code(item.kind)),
@@ -1326,7 +1344,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
       connected: projectConnectionEnabled(dataDir) ? connectedProjects(dataDir) : [],
       accounts: dashboardAccounts(store, readConfig(dataDir), { now, dataDir }), releaseStop: releaseStopState(dataDir) });
     return { available: true, observedAt: new Date(now).toISOString(), controller, campaigns, costs: projectCosts(campaigns), local, localCosts: projectCosts(local, 'project'),
-      activity, coordinator, recent, settings, releases, goals,
+      activity, coordinator, recent, settings, releases, goals, baseHolds: heldBaseReads(dataDir).map((hold) => ({ checkout: basename(hold.repo), base: safeText(hold.base, 80), since: hold.since, runs: hold.runs, unidentified: hold.unidentified })),
       newestEvent: store.get('SELECT MAX(seq) AS seq FROM journal')?.seq ?? 0 };
   } catch { return { available: false, message: "AIWorks can't read its work records right now. What you see may be out of date. Buttons are off until it can read them again.", campaigns: [], costs: [], local: [], localCosts: [], activity: [] }; }
   finally { store?.close(); }

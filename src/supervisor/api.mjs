@@ -327,7 +327,9 @@ const withCandidate = (store, campaignId, taskId) => {
 // ---- "Why is this step waiting?" (ADAPTIVE_SCHEDULER section 6, slice S8 supervisor half: RUN9). ----
 
 const RUNNABLE = ['pending', 'implemented', 'verified'];
-const OWNER_NEXT = 'None; listed in Needs you';
+const OWNER_NEXT = 'None; listed in Settings, AIWorks itself';
+// A sign-in or payment stop is the owner's own and is listed on Home (dashboard owner.mjs OWNER_STOPS).
+const OWNER_HOME = 'None; listed on Home';
 const BLOCKER_TEXT = {
   budget: 'Needs your decision: this work program used its budget',
   auth: 'Needs you: an AI provider login failed',
@@ -411,7 +413,8 @@ export function waitReason(task, { store, campaign: c, tasks, open, held = new M
     return hold.class === 'B3' ? reason('owner', 'Needs your decision', OWNER_NEXT)
       : reason('recheck', 'Held until a recorded problem clears', hold.next_recheck_at ? `Checked again at ${iso(hold.next_recheck_at)}` : 'Checked again automatically', hold.next_recheck_at);
   }
-  if (c.blocker) return reason('owner', BLOCKER_TEXT[c.blocker.kind] ?? 'Needs you: this work program is stopped', OWNER_NEXT);
+  if (c.blocker) return reason('owner', BLOCKER_TEXT[c.blocker.kind] ?? 'Needs you: this work program is stopped',
+    c.blocker.kind === 'auth' || c.blocker.kind === 'budget' ? OWNER_HOME : OWNER_NEXT);
   const decl = c.declaration;
   const specs = specsOf(store, c.id, decl);
   const spec = specs.get(task.task_id) ?? { dependsOn: [] };
@@ -444,7 +447,7 @@ export function waitReason(task, { store, campaign: c, tasks, open, held = new M
       : reason('provider-cooldown', 'The AI provider is unavailable', 'Tries again after a recheck succeeds');
   }
   const budget = admissionBudget(store, c, now);
-  if (budget.exhausted && !open.length) return reason('owner', BLOCKER_TEXT.budget, OWNER_NEXT);
+  if (budget.exhausted && !open.length) return reason('owner', BLOCKER_TEXT.budget, OWNER_HOME);
   if (!schedulerEnabled(config) || !hasTable(store, 'capacity')) {
     // Scheduler off: one worker at a time per campaign, the first runnable task in declaration order first.
     const first = tasks.find((row) => RUNNABLE.includes(row.state) && row.state !== 'verified' && !row.blocked && !held.has(row.task_id) &&

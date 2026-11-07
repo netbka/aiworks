@@ -4,7 +4,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SECRET_LIKE_PATH_PATTERN, acceptsLease, packetDigest, planContext, validatePacket } from '../../scripts/lib/worker-context.mjs';
 import * as executors from './adapters/executors.mjs';
@@ -24,14 +24,14 @@ import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountFull, accou
 import { BEYOND_RULE, beyondConstraint, domainOf, outsideWrites, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, hostPressure, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
 import { gatePauseOn, hostSamplerFor, pressureThresholds } from './host.mjs';
-import { tmpdir, totalmem } from 'node:os';
+import { totalmem } from 'node:os';
 import { cleans, cleanupSettings, createStackSweeper, inside, openOperations, runningBatches, runningRefreshes, workerJobLimits } from './host-safety.mjs';
 import { containsSecret, coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
 import { ANCHOR, MAX_DOCUMENT_BYTES, parseReference, resolveSection } from './reading.mjs';
 import { MAX_CITES } from './adapters/claude.mjs';
 import { runnerIdentified, stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions, decisionInstructions } from './instructions.mjs';
-import { answerGuidance, answersItself, decideGuidance, decisionId, isDecision, sendsBack, structuredDecision } from './decisions.mjs';
+import { answerGuidance, answersItself, autoOption, decideGuidance, decisionId, isDecision, sendsBack, structuredDecision } from './decisions.mjs';
 import { deliverableWithDefects, mergedHead, OWNER_CHANGES, ownerChangesFinding } from './result-review.mjs';
 import { POLICY as ROUTING_POLICY, autoReceipt, indicators, policyInputs, priorAttempt, receiptInputs, staticReceipt } from './router.mjs';
 import { roleCatalog } from './governance.mjs';
@@ -46,7 +46,7 @@ import { baseCheckStep, baseCompareSettings, baseRecord, claimBaseRed, settleBas
 import { CACHE_RULE, checkClaims, hasRunner, insertResults, offerCache, otherNodeMajor, resultsOf, testCacheSettings } from './test-cache.mjs';
 import { isLocalTarget, recordCandidate } from './local-candidates.mjs';
 import { checkLocalDispatch, LOCAL_ADMISSION_ON } from './local-admission.mjs';
-import { addComment, createItem, followUp, reviewItem, WorkListError, workAuthorization, workLink } from './work-list.mjs';
+import { addComment, createItem, followUp, standingFollowUp, reviewItem, WorkListError, workAuthorization, workLink } from './work-list.mjs';
 import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
 import { alertDecision, configuredTransport, currentAlertRules, renderAlert } from './alerts.mjs';
 import { PUBLICATION_REFUSED, privateTerms, publicationFindings } from '../shared/public-text.mjs';
@@ -402,9 +402,9 @@ function envelopeConstraint(envelope) {
 }
 /** Where a task's work belongs in owner-facing text: `owner/name#issue`, or the project id of a project without GitHub. */
 const whereOf = (decl, issue) => (isLocalTarget(decl) ? decl.target.projectId : `${decl.target.repository}#${issue}`);
-// A project without GitHub has no task issue and its owner runs no CLI: a decision there is answered under Needs you and
+// A project without GitHub has no task issue and its owner runs no CLI: a decision there is answered in Settings, AIWorks itself and
 // its work is checked again with Check again on the dashboard, so its owner texts name those actions instead.
-const LOCAL_DECISION_RECHECK = 'Answer it under Needs you in AIWorks; the step then runs again and is checked again.';
+const LOCAL_DECISION_RECHECK = 'Answer it in Settings, AIWorks itself; the step then runs again and is checked again.';
 const recheckWords = (decl, id) => (isLocalTarget(decl) ? 'then choose Check again on this work in AIWorks' : `then run: supervisor recheck ${id}`);
 
 /**
@@ -1032,7 +1032,7 @@ export class Controller {
           const key = `auto-decision:${ctx.id}:${fresh.task_id}:${campaign.authorization_version}:${answers.length}`;
           if (!this.store.addEvent(ctx.id, 'auto-decision', { taskId: fresh.task_id, authorizationVersion: campaign.authorization_version }, key, now)) return;
           this.store.run('UPDATE events SET processed_at = ? WHERE dedup_key = ?', now, key);
-          this.answerDecision(ctx, { taskId: fresh.task_id, decision: decisionId(ctx.id, fresh.task_id, fresh.blocked), option: fresh.blocked.decision.suggestion.option,
+          this.answerDecision(ctx, { taskId: fresh.task_id, decision: decisionId(ctx.id, fresh.task_id, fresh.blocked), option: autoOption(fresh.blocked.decision),
             authorizationVersion: campaign.authorization_version, scopeDigest: campaign.scope_digest, auto: true }, now);
           return;
         }
@@ -1573,7 +1573,7 @@ export class Controller {
         const reason = redact(change.blocked.reason);
         const record = this.openBlocker(ctx, campaign.declaration, { dependency: 'owner-decision', cls: change.blocked.class,
           identity: `${task.task_id}:${/^no progress:/.test(reason) ? 'no-progress' : reason}`, summary: `${task.task_id}: ${reason}`,
-          requestedAction: isLocalTarget(campaign.declaration) ? `Decide under Needs you in AIWorks (${this.projectWords(campaign.declaration)}): ${reason}`
+          requestedAction: isLocalTarget(campaign.declaration) ? `Decide in Settings, AIWorks itself (${this.projectWords(campaign.declaration)}): ${reason}`
             : `Decide on ${whereOf(campaign.declaration, specOf(this.store, ctx.id, task.task_id, campaign.declaration).issue)}: ${reason}`,
           parents: [{ ...task, state: change.state ?? task.state }], scope: 'task' }, now);
         change.blocked = { ...change.blocked, reason, fingerprint: record.fingerprint };
@@ -2018,33 +2018,41 @@ export class Controller {
 
   /** One bounded fetch of `base` into refs/aiworks/base/<base> and its read (fetchBase). Never throws. */
   async readBase(repoPath, base) {
-    const ref = `refs/aiworks/base/${base}`;
-    const failed = (failure) => {
-      this.log(`base read unavailable: ${failure}`);
-      return { ok: false, sha: null, failure };
-    };
     // A fetch whose processes were not all shown ended may still move this checkout's refs: until they are (its receipt
     // under runRoot), nothing more is fetched or read there, so no step decides from or builds on such a ref.
-    const runRoot = this.baseReadRoot(repoPath);
-    const { baseReadMs, baseReadOverheadMs } = this.config;
-    if (await gitA.settleContained(runRoot, this.baseReadRuns) > 0) return failed('uncontained');
-    // origin/<base> follows in the same fetch: a worktree branch started from the read base tracks it (dispatch).
-    const fetched = await gitA.execContained(this.cmd.git, ['fetch', 'origin', `+refs/heads/${base}:${ref}`, `+refs/heads/${base}:refs/remotes/origin/${base}`],
-      { cwd: repoPath, runRoot, timeoutMs: baseReadMs, overheadMs: baseReadOverheadMs, active: this.baseReadRuns });
-    if (fetched.contained === false) return failed('uncontained');
-    // Whether it succeeded or not, the ref may have moved: what this tick read about this checkout's bases is dropped.
-    this.dropTickCache(repoPath);
-    if (!fetched.ok) return failed(fetched.error === 'ETIMEDOUT' ? 'fetch-timeout' : 'fetch-failed');
-    const read = await gitA.execBounded(this.cmd.git, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: repoPath, timeoutMs: this.config.baseReadMs });
-    if (read.error === 'ETIMEDOUT') return failed('read-timeout');
-    return /^[0-9a-f]{40}$/.test(read.ok ? read.stdout : '') ? { ok: true, sha: read.stdout } : failed('unreadable');
+    const result = await gitA.readBaseContained(this.cmd.git, repoPath, base, { runRoot: this.baseReadRoot(repoPath), active: this.baseReadRuns,
+      readMs: this.config.baseReadMs, overheadMs: this.config.baseReadOverheadMs,
+      // What this tick read about this checkout's bases is dropped.
+      onFetched: () => this.dropTickCache(repoPath) });
+    if (!result.ok) this.log(`base read unavailable: ${result.failure}`);
+    if (result.failure === 'uncontained') this.trackBaseHold(repoPath, base);
+    return result;
+  }
+
+  /**
+   * A checkout whose base read is refused as uncontained (#144) is shown on the dashboard from its marker (readBaseContained).
+   * One holding a receipt whose start was never recorded has no proof AIWorks may take: after config.baseHoldFollowUpMs a
+   * follow-up item for AIWorks's own work list names it. Nothing is cleared here, whatever the age. Never throws.
+   */
+  trackBaseHold(repoPath, base) {
+    try {
+      const root = this.baseReadRoot(repoPath), runs = gitA.heldContained(root, this.baseReadRuns).filter((run) => !run.identified);
+      if (!runs.length) return;
+      const since = Math.min(...runs.map((run) => run.since)), now = this.now();
+      if (now - since < (this.config.baseHoldFollowUpMs ?? 600_000)) return;
+      const key = `bh-${createHash('sha256').update(`${root}|${since}`).digest('hex').slice(0, 12)}`;
+      standingFollowUp(this.store, { key, now,
+        title: `Settle the unresolved base-read custody of checkout ${basename(repoPath)}`,
+        body: [`Base reads of ${base} in the checkout ${repoPath} have been refused as uncontained since ${new Date(since).toISOString()}.`,
+          `${runs.length} receipt(s) under ${root} never recorded a runner or process identity, so AIWorks has no proof their processes ended and clears nothing by age, lock absence or approval.`,
+          'A receipt that recorded an identity is checked again on every read and clears by itself once the process is shown gone.',
+          'Needed: an evidence source for unknown-start receipts (for example the runner pid with its creation time recorded at spawn, or a host start later than the receipt). Until then the checkout stays held and the dashboard says so.'].join('\n\n') });
+    } catch { /* a missing work list or a refused text never changes the read's refusal */ }
   }
 
   /** The folder of a checkout's base fetches and their receipts (execContained): installation data, one per checkout. */
   baseReadRoot(repoPath) {
-    const key = resolve(repoPath);
-    const id = createHash('sha256').update(process.platform === 'win32' ? key.toLowerCase() : key).digest('hex').slice(0, 24);
-    return join(this.dataDir ?? join(tmpdir(), 'aiworks-supervisor'), 'base-reads', id);
+    return gitA.baseReadRoot(this.dataDir, repoPath);
   }
 
   /** Whether `repository` is AIWorks's own repository with local main trusted (config.json `selfHosting`). */

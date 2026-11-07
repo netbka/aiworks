@@ -14,7 +14,7 @@ import { createDashboardServer, SCOPED_CONTROL_BYTES } from '../../src/dashboard
 import { declaration, environment } from '../supervisor/helpers.mjs';
 
 const DECISION = { question: 'Which palette?', options: [{ id: 'brand', label: 'Brand', consequence: 'Two contrast fixes.' },
-  { id: 'neutral', label: 'Neutral', consequence: 'Plainer.' }], suggestion: { option: 'neutral', reason: 'Passes contrast.' } };
+  { id: 'neutral', label: 'Neutral', consequence: 'Plainer.' }], suggestion: { option: 'neutral', reason: 'Passes contrast.' }, reversible: true };
 
 test('only the owner answers a decision, once; a program AIWorks started, stale, wrong-step and replayed answers change nothing', async (t) => {
   const env = environment();
@@ -157,6 +157,32 @@ test('scoped pause accepts its largest valid selection and refuses a larger body
   assert.equal(store.get("SELECT COUNT(*) AS n FROM events WHERE kind = 'dashboard-command'").n, 0);
 });
 
+test('AW-017: an owner-reserved publication decision is never auto-answered with a publishing option, so nothing is published without authorization', (t) => {
+  const env = environment();
+  const store = new Store(join(env.dataDir, 'supervisor.db'));
+  t.after(() => { store.close(); env.cleanup(); });
+  const d = declaration(); campaignStart(store, d);
+  const block = (taskId, blocked) => { const task = store.task(d.campaignId, taskId); store.patch('tasks', { campaign_id: d.campaignId, task_id: taskId }, task.version, { blocked }, Date.now()); };
+  const PUBLISH = { question: 'Where does the notice point?', options: [{ id: 'site-section', label: 'Site section', consequence: 'Publishes technical text on the public site.' },
+    { id: 'no-change', label: 'No site change', consequence: 'Nothing is published.' }], suggestion: { option: 'site-section', reason: 'Most helpful.' } };
+  // The worker's suggestion publishes and is not marked reversible, and no safe option is named: never answered with it.
+  block('T2', { class: 'B3', reason: 'owner-reserved: disclosure', at: 1000, decision: PUBLISH });
+  // The same decision with a named safe option is answered with that option, never with the suggestion.
+  block('T1', { class: 'B3', reason: 'owner-reserved: disclosure', at: 2000, decision: { ...PUBLISH, safeOption: 'no-change' } });
+  const controller = new Controller({ store, config: env.config, dataDir: env.dataDir, fault: null });
+  const lease = store.acquireLease(d.campaignId, controller.instanceId, Date.now(), 60_000);
+  const ctx = { id: d.campaignId, generation: lease.generation };
+  controller.answerSuggested(ctx);
+  controller.answerSuggested(ctx);
+  assert.equal(store.task(d.campaignId, 'T2').blocked, null, 'the first time the unmarked decision goes back to its step');
+  assert.notEqual(store.task(d.campaignId, 'T2').state, 'cancelled');
+  block('T2', { class: 'B3', reason: 'owner-reserved: disclosure again', at: 3000, decision: PUBLISH });
+  controller.answerSuggested(ctx);
+  assert.equal(store.task(d.campaignId, 'T2').state, 'cancelled', 'the second time it ends as not done');
+  const answered = store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'decision-answered'", d.campaignId);
+  assert.deepEqual(answered.map((row) => [row.detail.task, row.detail.option]), [['T1', 'no-change']]);
+});
+
 test('AW-017: AIWorks answers a running step\'s decisions itself, sends one without a suggestion back once, and stops answering at the no-progress limit', (t) => {
   const env = environment();
   const store = new Store(join(env.dataDir, 'supervisor.db'));
@@ -178,7 +204,7 @@ test('AW-017: AIWorks answers a running step\'s decisions itself, sends one with
 
   controller.answerSuggested(ctx);
   controller.answerSuggested(ctx);
-  assert.equal(store.task(d.campaignId, 'T1').blocked, null, 'the suggestion was taken, reversible or not');
+  assert.equal(store.task(d.campaignId, 'T1').blocked, null, 'the reversible suggestion was taken');
   assert.equal(store.task(d.campaignId, 'T2').blocked, null, 'a decision without a suggestion goes back to its step');
   const guidance = pendingInstructions(store, campaign(), 'T1', 'implement');
   assert.equal(guidance.length, 1, 'answered once, as guidance to the next run');
