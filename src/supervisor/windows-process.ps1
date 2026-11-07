@@ -1,5 +1,5 @@
 param(
-  [ValidateSet('Run', 'Drain', 'Stop', 'Usage', 'Priority')][string]$Mode,
+  [ValidateSet('Run', 'Gate', 'Identity', 'Member', 'Drain', 'Stop', 'Usage', 'Priority')][string]$Mode,
   [string]$RunDir, [string]$JobName, [int]$RunnerPid, [string]$CreationTime, [string]$PriorityClass, [int]$WaitMs = 10000
 )
 $ErrorActionPreference = 'Stop'
@@ -208,6 +208,25 @@ public static class SupervisorProcess {
       return process == IntPtr.Zero ? "not-running" : "stopped";
     } finally { if (job != IntPtr.Zero) CloseHandle(job); if (process != IntPtr.Zero) CloseHandle(process); }
   }
+  public static string Identity(int pid, string expected) {
+    IntPtr process = OpenProcess(QUERY | SYNCHRONIZE, false, pid);
+    if (process == IntPtr.Zero) return Marshal.GetLastWin32Error() == 87 ? "not-running" : "ownership-unavailable";
+    try {
+      if (Created(process).ToString() != expected) return "identity-mismatch";
+      return WaitForSingleObject(process, 0) == 0 ? "not-running" : "running";
+    } finally { CloseHandle(process); }
+  }
+  public static string Member(string name, int pid, string expected) {
+    IntPtr process = OpenProcess(QUERY | SYNCHRONIZE, false, pid), job = IntPtr.Zero;
+    if (process == IntPtr.Zero) return "ownership-unavailable";
+    try {
+      if (Created(process).ToString() != expected || WaitForSingleObject(process, 0) != 258) return "identity-mismatch";
+      job = OpenJobObject(0x0004, false, name);
+      if (job == IntPtr.Zero) return "ownership-unavailable";
+      bool member; Check(IsProcessInJob(process, job, out member));
+      return member ? "member" : "not-member";
+    } finally { if (job != IntPtr.Zero) CloseHandle(job); CloseHandle(process); }
+  }
   static void Attach(string name, int parentPid, string expected, ulong jobMemory, uint processes) {
     IntPtr parent = OpenProcess(QUERY | DUP_HANDLE, false, parentPid);
     if (parent == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
@@ -246,15 +265,29 @@ public static class SupervisorProcess {
     if (handle == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error());
     return handle;
   }
-  public static void Run(string name, int parentPid, string expected, string directory, string cwd, string[] argv, uint timeout, ulong jobMemory, uint processes, uint priority) {
-    Attach(name, parentPid, expected, jobMemory, processes);
+  public static void Gate(string name, int parentPid, string expected, string directory, string cwd, string[] argv, uint timeout, string permit, string outputPath) {
+    Attach(name, parentPid, expected, 0, 0);
+    // No command can start before the parent durably acknowledges this exact attached generation.
+    var input = Console.In.ReadLineAsync();
+    if (!input.Wait(30000) || input.Result != permit) throw new InvalidOperationException("Gate permit unavailable");
+    if (Identity(parentPid, expected) != "running") throw new InvalidOperationException("Gate owner ended before permit");
+    Run(name, parentPid, expected, directory, cwd, argv, timeout, 0, 0, 0, true, outputPath);
+  }
+  static IntPtr AppendHandle(string path) {
+    Security attributes = new Security { size = Marshal.SizeOf(typeof(Security)), inherit = 1 };
+    IntPtr handle = CreateFile(path, 4, 7, ref attributes, 4, 0x80, IntPtr.Zero); // FILE_APPEND_DATA, OPEN_ALWAYS
+    if (handle == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error());
+    return handle;
+  }
+  public static void Run(string name, int parentPid, string expected, string directory, string cwd, string[] argv, uint timeout, ulong jobMemory, uint processes, uint priority, bool attached = false, string outputPath = null) {
+    if (!attached) Attach(name, parentPid, expected, jobMemory, processes);
     IntPtr input = IntPtr.Zero, output = IntPtr.Zero, error = IntPtr.Zero;
     IntPtr attributes = IntPtr.Zero, handles = IntPtr.Zero;
     ProcessInfo child = new ProcessInfo();
     try {
-      input = FileHandle(Path.Combine(directory, "prompt.txt"), true);
-      output = FileHandle(Path.Combine(directory, "stdout.json"), false);
-      error = FileHandle(Path.Combine(directory, "stderr.log"), false);
+      input = FileHandle(outputPath == null ? Path.Combine(directory, "prompt.txt") : "NUL", true);
+      output = outputPath == null ? FileHandle(Path.Combine(directory, "stdout.json"), false) : AppendHandle(outputPath);
+      error = outputPath == null ? FileHandle(Path.Combine(directory, "stderr.log"), false) : output;
       IntPtr size = IntPtr.Zero;
       InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
       attributes = Marshal.AllocHGlobal(size);
@@ -263,7 +296,7 @@ public static class SupervisorProcess {
       Marshal.WriteIntPtr(handles, 0, input);
       Marshal.WriteIntPtr(handles, IntPtr.Size, output);
       Marshal.WriteIntPtr(handles, IntPtr.Size * 2, error);
-      Check(UpdateProcThreadAttribute(attributes, 0, new IntPtr(0x20002), handles, new IntPtr(IntPtr.Size * 3), IntPtr.Zero, IntPtr.Zero));
+      Check(UpdateProcThreadAttribute(attributes, 0, new IntPtr(0x20002), handles, new IntPtr(IntPtr.Size * (outputPath == null ? 3 : 2)), IntPtr.Zero, IntPtr.Zero));
       StartupEx startup = new StartupEx { startup = new Startup { size = Marshal.SizeOf(typeof(StartupEx)),
         flags = 0x100, input = input, output = output, error = error }, attributes = attributes };
       StringBuilder command = new StringBuilder();
@@ -282,7 +315,7 @@ public static class SupervisorProcess {
       if (child.process != IntPtr.Zero) CloseHandle(child.process);
       if (input != IntPtr.Zero) CloseHandle(input);
       if (output != IntPtr.Zero) CloseHandle(output);
-      if (error != IntPtr.Zero) CloseHandle(error);
+      if (error != IntPtr.Zero && error != output) CloseHandle(error);
     }
   }
 }
@@ -290,6 +323,12 @@ public static class SupervisorProcess {
 try {
   [SupervisorProcess]::WaitMs = $WaitMs
   switch ($Mode) {
+    'Identity' { [SupervisorProcess]::Identity($RunnerPid, $CreationTime) }
+    'Member' { [SupervisorProcess]::Member($JobName, $RunnerPid, $CreationTime) }
+    'Gate' {
+      $spec = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $RunDir 'gate-spec.log') | ConvertFrom-Json
+      [SupervisorProcess]::Gate($JobName, $RunnerPid, $CreationTime, $RunDir, $spec.cwd, [string[]]$spec.argv, [uint32]$spec.timeoutMs, $spec.permit, $spec.output)
+    }
     'Run' {
       $spec = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $RunDir 'spec.json') | ConvertFrom-Json
       $jobMemory = if ($spec.jobMemoryBytes) { [uint64]$spec.jobMemoryBytes } else { [uint64]0 }
