@@ -191,9 +191,9 @@ const REPORT_DENIED = ['Bash(git commit:*)'];
 
 export const AGENT_IMAGES = ['claude', 'node'];
 
-export function buildArgv({ command, executor, role, deliverable, sessionId }) {
+export function buildArgv({ command, executor, role, deliverable, sessionId, publicationRewrite = false }) {
   const schema = role === 'verification' ? VERIFIER_SCHEMA : IMPLEMENTER_SCHEMA;
-  const extra = role === 'verification' ? VERIFIER_DENIED : deliverable === 'report' ? REPORT_DENIED : [];
+  const extra = publicationRewrite || role === 'verification' ? VERIFIER_DENIED : deliverable === 'report' ? REPORT_DENIED : [];
   return [...command, '-p', '--output-format', 'json', '--model', executor.model, '--session-id', sessionId,
     ...ISOLATION_ARGS, '--permission-mode', executor.permissionMode, '--permission-prompts', 'none',
     '--json-schema', JSON.stringify(schema),
@@ -208,7 +208,7 @@ export const VERIFIER_READING_RULE = 'packet.references name the documents that 
 // reference marks a section; without one the prompt is exactly as before.
 // workList (LOCAL_OPERATION.md section 5.3, slice SELF6): set only for the self-hosted repository with local main trusted;
 // its task issue is an item of the local work list, read with the scoped reader. Null: the prompt is exactly as before.
-export function buildPrompt({ role, deliverable, packet, packetDigest, repository, issue, branch, baseSha, targetSha, report, reportDigest, note, instructions = [], guide = null, workList = null }) {
+export function buildPrompt({ role, deliverable, packet, packetDigest, repository, issue, branch, baseSha, targetSha, report, reportDigest, note, instructions = [], guide = null, workList = null, publicationRewrite = false }) {
   // A project without GitHub (WORK_ENVELOPE 8.3) has no issue: the packet is the whole task, and its report stays in AIWorks.
   const local = issue === undefined;
   const readIssue = local ? 'This project has no GitHub issue: the packet is the whole task. Do not use the GitHub CLI.'
@@ -238,9 +238,9 @@ export function buildPrompt({ role, deliverable, packet, packetDigest, repositor
       : `The deliverable is the REPORT below, produced against repository revision ${targetSha} (your working directory is a detached checkout of it). ${local ? 'AIWorks keeps it for the owner to review' : `The supervisor will post it to ${repository}#${issue}`} only if you accept it.`,
     readIssue ??
       `Read the task issue (gh issue view ${issue} --repo ${repository}) unless a packet constraint restricts what you may read; packet constraints bind you too.`,
-    'Check the deliverable against EVERY acceptance criterion in the packet, at the layer each criterion names. Re-run enough of the stated commands to falsify headline claims. Do not edit files, commit, push or comment.',
+    publicationRewrite ? 'Check the corrected report against the preserved independent code verdict and EVERY acceptance criterion. Do not rerun code checks or edit files, commit, push or comment.' : 'Check the deliverable against EVERY acceptance criterion in the packet, at the layer each criterion names. Re-run enough of the stated commands to falsify headline claims. Do not edit files, commit, push or comment.',
     'Return verdict "accepted" only if every criterion holds with evidence and no blocking finding remains. Otherwise return "rejected" with findings (severity blocking or non-blocking). Return "evidence-unavailable" if required evidence cannot be acquired, saying what you tried in summary.',
-    `Run the full check through the gate helper even when you reject: at the repair limit AIWorks delivers a rejected version as it is only when that recorded run passed. If a rejection needs a choice rather than another repair: ${DECISION_RULE}`,
+    publicationRewrite ? 'This pass verifies publication text only; the supervisor validates and retains the original full code check separately. A rejection returns to ordinary verification.' : `Run the full check through the gate helper even when you reject: at the repair limit AIWorks delivers a rejected version as it is only when that recorded run passed. If a rejection needs a choice rather than another repair: ${DECISION_RULE}`,
     CRITERIA_RULE,
     `Your result MUST carry targetSha ${targetSha} and reportDigest ${reportDigest}.`,
     '',
@@ -251,11 +251,11 @@ export function buildPrompt({ role, deliverable, packet, packetDigest, repositor
   ];
   const implement = deliverable === 'commit'
     ? [
-      `Your working directory is an isolated git worktree on branch ${branch}. Current HEAD: ${baseSha}.`,
+      publicationRewrite ? `Your working directory is a read-only detached checkout of accepted ${baseSha}. Rewrite only the publication report.` : `Your working directory is an isolated git worktree on branch ${branch}. Current HEAD: ${baseSha}.`,
       readIssue ??
         `Read the full task issue first: gh issue view ${issue} --repo ${repository} (and its parent plan when referenced), unless a packet constraint restricts what you may read.`,
       'Follow the repository AGENTS.md and the nearest nested AGENTS.md for every file you touch.',
-      'Commit every deliverable on this branch and leave the worktree clean (git status --porcelain empty). Do not push, open PRs, comment, merge or deploy: the supervisor publishes only verified commits.',
+      publicationRewrite ? 'Do not change files or commit. Leave the checkout clean and return its unchanged headSha. Do not push, open PRs, comment, merge or deploy.' : 'Commit every deliverable on this branch and leave the worktree clean (git status --porcelain empty). Do not push, open PRs, comment, merge or deploy: the supervisor publishes only verified commits.',
       'Return exactly one terminal result:',
       '- resolved: headSha = output of git rev-parse HEAD after your final commit; report = Markdown summary of what you produced, evidence, commands run with results, and remaining gaps (it becomes the PR description).',
     ]
