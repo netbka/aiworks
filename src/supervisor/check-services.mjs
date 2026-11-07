@@ -1,21 +1,9 @@
-// External check services: plug-ins that run a project's full gate on another computer (docs/guides/check-services.md).
-// Switched off unless config.json lists `checkServices`. When one is listed for the checkout's repository, the gate helper
-// (gate.mjs run) first offers it the exact commit: a service that is down, does not have the commit, or leaves the job
-// queued longer than its `queueSeconds` is skipped (its own queued job cancelled), and the gate runs on this computer as
-// before. Nothing waits on a service and no service is required.
-//
-// A service's answer counts only for the exact commit the gate helper recorded on a clean checkout, with the service's
-// own record of the full gate command having exited 0 (acceptRemoteResult). A test failure there is a failed gate here; an
-// environment failure, a cancel or an interruption says nothing about the code and the gate runs here instead.
-//
-// Where a gate helper learns the services: only from SERVICES_ENV, which serve sets in its own environment from its own
-// config.json (no secret: an address, the certificate file to trust and the project mapping), so every worker and
-// supervisor gate it starts inherits it. Never from a file in the shared gate slot folder: every contained worker can
-// write there, and one run must not be able to choose who answers the gates of other runs (review of the first version).
-// A worker can change only its own gate's environment, as it could write its own gate-exit.log.
-//
-// Time: one budget for the whole offer (the largest timeoutMinutes of the services tried, at most MAX_TIMEOUT_MINUTES),
-// so the gate on this computer still fits a verifier's 120-minute bound after a service gave no answer that counts.
+// Additional check-service client and exact-revision receipt validation (docs/guides/check-services.md).
+// The managed gate helper always runs its required local contained command; it no longer submits service jobs or
+// substitutes a service result for local evidence. Separate authorized callers can still use this bounded client.
+// Service configuration comes only from SERVICES_ENV, populated from the installation config by serve, never from
+// the shared gate registry. It contains addresses, certificate paths and project mappings, never secret values.
+// Each offer has one bounded budget. An unsuitable or unavailable additional service never blocks local work.
 import https from 'node:https';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';

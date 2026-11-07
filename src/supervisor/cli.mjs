@@ -17,6 +17,7 @@ import { Controller, DEFAULTS } from './controller.mjs';
 import { createHostProbe } from './host.mjs';
 import { GATE_PIPE, gateListening, gateSettings, pipeHost, serveGate } from './docker-gate.mjs';
 import { heldSlotCount } from './gate.mjs';
+import { startGateRecovery } from './gate-slot.mjs';
 import { checkServicesEnvironment, SERVICES_ENV } from './check-services.mjs';
 import { cpuSettings, createCpuMonitor } from './worker-cpu.mjs';
 import { configuredGovernanceRoot, requireGovernanceRoot } from './governance.mjs';
@@ -453,11 +454,13 @@ async function serve() {
   const offered = checkServicesEnvironment(config, dataDir);
   for (const problem of offered.problems) log(`check service left out: ${problem}`);
   if (offered.value) process.env[SERVICES_ENV] = offered.value; else delete process.env[SERVICES_ENV];
-  if (offered.services.length) log(`full gates are offered first to check service(s) ${offered.services.map((s) => s.name).join(', ')}; busy or down, they run here`);
+  if (offered.services.length) log('additional check-service settings are available; required full gates run locally');
   const controller = new Controller({ store, config, dataDir, log, codeRevision, governanceRoot, revisionCheck, probe, cpuMonitor,
     // Gate helper runs on this PC that hold a slot or wait for the browser session (gate.mjs): meanwhile no new worker
     // starts (host.mjs, the gates signal).
     gates: () => heldSlotCount() });
+  // Recovery must run even when gate pressure prevents every new worker from being admitted.
+  const gateRecovery = startGateRecovery({ log });
   log(`supervisor instance ${controller.instanceId} started (pid ${process.pid}, code ${codeRevision ?? 'unknown'}, data ${dataDir}, ${governanceNote})`);
   const unmerged = controller.unmergedRevision();
   if (unmerged) log(`no new work will start: ${unmerged} (AW-005)`);
@@ -485,6 +488,7 @@ async function serve() {
     for (let waited = 0; waited < controller.config.tickMs && !stopping; waited += 100) await new Promise((done) => setTimeout(done, 100));
   }
   clearInterval(leaseTimer);
+  await gateRecovery.stop();
   await controller.drainReleases();
   probe.stop();
   controller.release();

@@ -17,7 +17,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as gitA from './adapters/git.mjs';
-import { GATE_FILES, gateFailure, readGateRun, retireGate } from './gate.mjs';
+import { GATE_FILES, gateFailure, readGateRun } from './gate.mjs';
 import { CACHE_ENV, recordGateResults } from './test-cache.mjs';
 
 const GATE = fileURLToPath(new URL('./gate.mjs', import.meta.url));
@@ -140,11 +140,9 @@ export function refreshStep(controller, ctx, item, repoPath, baseSha, settings) 
   const run = readGateRun(path);
   if (run?.exit === null || run === null) {
     const pid = gatePid(path);
-    // Never killed: after a reboot the recorded process id can belong to another process, and the gate's own children
-    // run outside any Job Object. A gate past its bound fails the refresh, and the repair takes over. Its slot is given
-    // back (gate.mjs retireGate, only a lock that still names its process): a hung gate must not pause the repair's admission.
+    // The caller can stop waiting without freeing custody. The helper bounds and drains its own command job;
+    // only its exact process identity and a completed drain can release the shared host slot.
     if (now - started.at > settings.timeoutMs) {
-      retireGate(pid);
       return fail(`the gate did not finish within ${Math.round(settings.timeoutMs / 60_000)} minutes`);
     }
     // A gate that ended without an exit code (a supervisor restart, a reboot) starts again in the same worktree. A reused

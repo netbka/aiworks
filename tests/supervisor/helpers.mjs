@@ -5,6 +5,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symli
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { useGateTestHost } from './fixtures/gate-host-bootstrap.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const ROOT = resolve(here, '..', '..');
@@ -17,7 +18,7 @@ export const GOVERNANCE = join(ROOT, 'tests', 'fixtures', 'governance');
 // that loads this harness gets its own folder, set before any controller exists and inherited by the controllers, runners
 // and gate helpers it starts; an operator's own setting is replaced too.
 const GATE_SLOTS = mkdtempSync(join(tmpdir(), 'aiworks-test-gate-slots-'));
-process.env.AIWORKS_GATE_SLOTS_DIR = GATE_SLOTS;
+useGateTestHost(GATE_SLOTS);
 process.on('exit', () => {
   try { rmSync(GATE_SLOTS, { recursive: true, force: true }); } catch { /* a temporary folder */ }
 });

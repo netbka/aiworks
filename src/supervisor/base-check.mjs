@@ -15,7 +15,7 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import * as gitA from './adapters/git.mjs';
-import { failedTests, gateFailure, readGateRun, retireGate } from './gate.mjs';
+import { failedTests, gateFailure, readGateRun } from './gate.mjs';
 import { alive, checkout, gatePid, startGate } from './merge-refresh.mjs';
 import { recordGateResults } from './test-cache.mjs';
 
@@ -83,8 +83,7 @@ export function baseCheckStep(controller, ctx, { repository, repoPath, worktreeR
   const run = readGateRun(record.path);
   if (run === null || run.exit === null) {
     if (now - record.started_at > settings.timeoutMs) {
-      // Never killed, so a hung base gate gives back its slot here, as a refresh gate does (gate.mjs retireGate).
-      retireGate(gatePid(record.path));
+      // The caller may stop waiting, but live or uncertain gate custody retains the host slot.
       write({ state: 'failed', failed: null, reason: `the base gate did not finish within ${Math.round(settings.timeoutMs / 60_000)} minutes` });
       return row(store, repository, baseSha, settings.command);
     }

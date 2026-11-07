@@ -15,6 +15,7 @@ import { selfHostingSettings, trustedTip, trustsLocalMain } from './self-hosting
 import { resolveCheckout } from './project-connect.mjs';
 import { backupStatus } from './github-backup.mjs';
 import { projectBudget, projectOf, protectedWriteConflicts } from './project-settings.mjs';
+import { operationGateWait } from './gate-slot.mjs';
 
 export class CampaignError extends Error {
   constructor(code, message) { super(message); this.name = 'CampaignError'; this.code = code; }
@@ -372,7 +373,9 @@ function admissionReason(store, refusal) {
     case 'campaign-fanout': return reason('campaign-fanout', 'Waiting for a free worker in this work program', 'Starts when a running step finishes');
     case 'host-capacity': return reason('host-capacity', 'This computer is running its maximum number of workers', 'Starts when one finishes');
     // A test run is not a shortage: the owner would otherwise read "low on memory" during every gate (host.mjs, gates).
-    case 'host-pressure': return refusal.detail?.signal === 'gates'
+    case 'host-pressure': return refusal.detail?.signal === 'gates-unavailable'
+      ? reason('gate-unavailable', 'Full-check process ownership is unavailable', 'Checks ownership again; no full check starts without proof')
+      : refusal.detail?.signal === 'gates'
       ? reason('host-pressure', 'Waiting: a full test run is in progress on this computer', 'Starts when the test run ends')
       : reason('host-pressure', `This computer is low on ${PRESSURE_TEXT[refusal.detail?.signal] ?? 'memory'}`, 'Starts when the computer has room again');
     case 'provider-concurrency': return reason('provider-concurrency', 'The AI provider asked to slow down', 'Starts when a run on that provider account finishes');
@@ -402,6 +405,10 @@ function admissionReason(store, refusal) {
 export function waitReason(task, { store, campaign: c, tasks, open, held = new Map(), now, config = null }) {
   if (task.state === 'done') return null;
   const running = open.find((op) => op.task_id === task.task_id);
+  const gateWait = running ? operationGateWait(running) : null;
+  if (gateWait) return reason(gateWait.code,
+    gateWait.code === 'gate-slot' ? 'Waiting for the full-check slot on this computer' : 'Full-check process ownership is being checked',
+    gateWait.code === 'gate-slot' ? 'The queued command starts after the current check has stopped' : 'No further check starts until process ownership is proved');
   if (running) return reason('running', running.kind === 'verify' ? 'Being checked' : 'Being implemented', 'The result is recorded when the run ends');
   if (c.control === 'paused') return reason('paused', 'Paused by you', 'None until you resume it');
   if (c.control === 'cancel-requested' || c.control === 'cancelled') return reason('cancelled', 'Cancelled by you', 'None');
