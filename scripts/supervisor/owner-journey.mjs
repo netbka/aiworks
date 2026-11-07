@@ -71,6 +71,9 @@ createServer((req, res) => {
   writeFileSync(join(site, 'AGENTS.md'), '# Site rules\n\nKeep the page small.\n');
   writeFileSync(join(site, 'index.html'), page.replaceAll('Notes', 'Site'));
   git(site, 'init', '-q', '-b', 'main');
+  // Keep the synthetic owner's baseline bytes stable when Apply and Undo check files out on Windows.
+  git(site, 'config', 'core.autocrlf', 'false');
+  git(site, 'config', 'core.eol', 'lf');
   git(site, 'add', '-A');
   git(site, 'commit', '-q', '-m', 'first page');
 
