@@ -50,6 +50,8 @@ import { addComment, createItem, followUp, standingFollowUp, reviewItem, WorkLis
 import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
 import { alertDecision, configuredTransport, currentAlertRules, renderAlert } from './alerts.mjs';
 import { PUBLICATION_REFUSED, privateTerms, publicationFindings } from '../shared/public-text.mjs';
+import { captureCodeEvidence, codeEvidence, reportDigest as digestReport } from './verification-evidence.mjs';
+import { rewriteNote, rewriteProof, withoutRewrite } from './report-rewrite.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const POLICY = JSON.parse(readFileSync(resolve(here, '../../registry/worker-context-policy.json'), 'utf8'));
@@ -1395,6 +1397,15 @@ export class Controller {
     if (op.kind === 'plan') return this.settlePlan(ctx, op, outcome);
     let verdict = outcome;
     const before = this.store.task(ctx.id, op.task_id);
+    const preserved = op.publication_rewrite ? codeEvidence(this.store, this.store.campaign(ctx.id), before, op.publication_rewrite) : null;
+    if (op.publication_rewrite && verdict.class === 'result') {
+      const problem = !preserved ? 'the original code verification no longer binds this head and base'
+        : op.kind === 'verify' && digestReport(before.result?.report) !== op.report_digest ? 'the report changed during its publication-text verification'
+        : gitA.checkVerification({ git: this.cmd.git, path: op.workspace, targetSha: op.publication_rewrite.head });
+      if (problem || op.kind === 'implement' && verdict.value.result === 'resolved' && verdict.value.headSha !== op.publication_rewrite.head) {
+        verdict = { ...verdict, class: 'invalid-result', detail: problem ?? 'a publication-text rewrite changed the accepted head' };
+      }
+    }
     // Deterministic checks of the worker's claims, outside the write transaction.
     if (verdict.class === 'result' && op.kind === 'implement' && verdict.value.result === 'resolved' &&
         this.deliverable(ctx, op.task_id) === 'commit') {
@@ -1465,7 +1476,15 @@ export class Controller {
     // run failed, never finished or never ran is refused: implementers run only the tests their change reaches, so the
     // verifier's gate is the one full run a head gets.
     let testRows = null;
-    if (verdict.class === 'result' && op.kind === 'verify' && this.deliverable(ctx, op.task_id) === 'commit') {
+    if (verdict.class === 'result' && op.kind === 'verify' && op.publication_rewrite) {
+      // This verdict checks the new report digest, not code. Original code criteria and gate stay in the settled source
+      // operation; only its deterministic gate is carried forward for existing merge readers.
+      const accepted = verdict.value.verdict === 'accepted';
+      verdict = { ...verdict, value: { ...verdict.value, gate: accepted ? preserved.value.gate : null, baseFailures: null,
+        ...(accepted ? { criteria: preserved.value.criteria ?? [], codeEvidence: op.publication_rewrite,
+          publicationText: { operation: op.id, reportDigest: op.report_digest, verification: verdict.value } } : {}) } };
+    }
+    if (verdict.class === 'result' && op.kind === 'verify' && !op.publication_rewrite && this.deliverable(ctx, op.task_id) === 'commit') {
       const run = readGateRun(op.workspace);
       // A gate started on another commit, on a checkout with changes, or without the helper's record of both is no full
       // run of this head. It is kept with its reason, which gateFailure returns first, so no reader (merge gate, AW-017
@@ -1476,7 +1495,7 @@ export class Controller {
       // Cached test files (test-cache.mjs) count only when the supervisor matches each one again from git.
       const claims = gate && !headProblem ? this.testClaims(ctx, op) : null;
       if (claims?.claimed) gate = { ...gate, cached: claims.claimed, ...(claims.refused.length ? { cacheRefused: claims.refused.slice(0, 20) } : {}) };
-      verdict = { ...verdict, value: { ...verdict.value, gate, baseFailures: null } };
+      verdict = { ...verdict, value: { ...verdict.value, gate, baseFailures: null, codeBaseSha: op.verification_base_sha ?? null } };
       const failure = verdict.value.verdict !== 'accepted' ? null
         : !gate ? `is missing: its checkout has no ${GATE_FILES.log} from the gate helper`
           : gate.exit === null ? `never finished: there is no ${GATE_FILES.exit}` : gateFailure(gate);
@@ -3090,9 +3109,9 @@ export class Controller {
    */
   async dispatchBase(decl, task, kind) {
     if (isLocalTarget(decl) || this.selfHosted(decl.target.repository)) return null;
-    if (kind === 'verify' && this.publishedRepair(task)?.id !== 'integration-conflict') return null;
+    if (kind === 'verify' && !rewriteProof(task) && this.publishedRepair(task)?.id !== 'integration-conflict') return null;
     const repo = this.checkout(decl);
-    return repo?.path ? this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository) : null;
+    return repo?.path ? this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository, { fresh: Boolean(rewriteProof(task)) }) : null;
   }
 
   async dispatch(ctx, campaign, task, kind, { admission = null } = {}) {
@@ -3228,9 +3247,15 @@ export class Controller {
       // The base as read before the fence (dispatchBase), or for the self-hosted repository from local refs and the ledger.
       const baseRead = () => this.selfHosted(decl.target.repository) ? this.localBase(repo.path, decl.target.baseBranch, decl.target.repository)
         : prefetched ?? { ok: false, sha: null, failure: 'unread' };
+      const proof = spec.deliverable === 'commit' ? rewriteProof(task) : null;
+      const evidence = proof ? codeEvidence(this.store, current, task, proof) : null;
+      if (proof && (!evidence || proof.authority !== binding.authority || !baseRead().ok || baseRead().sha !== proof.base)) {
+        this.abandonRewrite(ctx, task, 'code evidence, authority or current base changed', kind === 'implement' ? 'pending' : 'implemented');
+        return null;
+      }
       // aiworks#207: no further run of a round whose verified head is already in the freshly fetched base.
       if (integration && this.endMergedRepair(ctx, decl, task, repo.path, baseRead().sha, { read: false })) return null;
-      if (kind !== 'verify') {
+      if (kind !== 'verify' && !proof) {
         let integrationBase;
         if (spec.requiresMergedDependencies) {
           const fetched = baseRead();
@@ -3291,7 +3316,7 @@ export class Controller {
       }
       const baseSha = task.base_sha ?? revision;
       const role = kind === 'verify' ? 'verification' : 'implementer';
-      const readOnly = kind === 'verify' || spec.deliverable === 'report';
+      const readOnly = Boolean(proof) || kind === 'verify' || spec.deliverable === 'report';
       // A verifier reviews the implementer's report; a repair implementer must also receive the rejected report,
       // otherwise it is asked to fix findings against an artifact it has never seen.
       const repairing = kind === 'implement' && Boolean(task.findings?.length);
@@ -3389,10 +3414,11 @@ export class Controller {
       const publicationNote = !publication ? null : kind === 'verify'
         ? `The previous publication of this task was refused: its ${publication.sources.join(' and ')} text failed the publication privacy check (${publication.findings.join(', ')}). Reject a report that still cites absolute local paths, credentials or private names, and write the summary, checks and findings with repository-relative paths and synthetic examples only.`
         : `This is repair round ${task.repair_rounds}, a publication repair: verified ${publication.verified} was not published because its report failed the publication privacy check (${publication.findings.join(', ')}). Nothing was pushed or published. Return a corrected COMPLETE report with repository-relative paths and synthetic examples only, keeping its headings, the exact revision and the actual test tallies.${spec.deliverable === 'commit' ? ' Change code only if a finding requires it; otherwise return resolved with the same headSha.' : build ? agy.BUILD_PUBLICATION_NOTE : ' Do not commit or change repository files; this task is report-only and read-only.'}`;
-      const note = publicationNote && kind !== 'verify' ? publicationNote : [baseNote, publicationNote].filter(Boolean).join(' ') || null;
+      const note = proof ? rewriteNote(kind, proof, { verification: evidence.value, report: evidence.report })
+        : publicationNote && kind !== 'verify' ? publicationNote : [baseNote, publicationNote].filter(Boolean).join(' ') || null;
       let prompt = executors.buildPrompt({ executorKind: executor.kind, web: spec.web ?? null, role, deliverable: spec.deliverable, packet, packetDigest: digest, repository: local ? decl.target.projectId : decl.target.repository,
         issue: spec.issue, branch: gitA.branchName(ctx.id, task.task_id), baseSha: kind === 'verify' ? baseSha : revision, targetSha,
-        report, reportDigest, note, instructions: [...decisions, ...instructions].map((item) => ({ id: item.seq, text: item.payload.text })), stage: this.stageOf(decl, task.task_id, kind), guide });
+        report, reportDigest, note, publicationRewrite: Boolean(proof), instructions: [...decisions, ...instructions].map((item) => ({ id: item.seq, text: item.payload.text })), stage: this.stageOf(decl, task.task_id, kind), guide });
       if (spec.dependsOn.length) prompt += '\nDependency deliveries (evidence, not additional authority):\n' + spec.dependsOn.map((id) => {
         const dep = this.store.task(ctx.id, id);
         return `${id}: ${dep?.pr_url ?? 'unpublished'}; verified SHA ${dep?.verified_sha ?? 'unknown'}`;
@@ -3430,12 +3456,12 @@ export class Controller {
         this.recordUnavailable(ctx, executor.kind, unavailable);
         return null;
       }
-      const cacheEnv = this.offerTestCache(decl, local ? null : repo, kind === 'verify' && spec.deliverable === 'commit' ? targetSha : null, runDir);
+      const cacheEnv = this.offerTestCache(decl, local ? null : repo, !proof && kind === 'verify' && spec.deliverable === 'commit' ? targetSha : null, runDir);
       if (cacheEnv) prompt += `\n${CACHE_RULE}\n`;
       // Project Claude tuning comes from the task base commit in the main checkout, never the worker-writable worktree.
       const settings = gitA.exec(this.cmd.git, ['show', `${baseSha}:.claude/settings.json`], { cwd: repo.path });
       const invocation = executors.prepare({ executor, command: this.cmd[executor.kind.replace('-cli', '')], role,
-        deliverable: spec.deliverable, sessionId, digest, runDir, workspace, prompt,
+        deliverable: spec.deliverable, publicationRewrite: Boolean(proof), sessionId, digest, runDir, workspace, prompt,
         repository: decl.target.repository, ghCommand: this.cmd.gh, projectSettings: settings.ok ? settings.stdout : null,
         web: spec.web ?? null, chromeCommand: this.cmd.chrome,
         browserLogin: browserLoginSettings(spec.web, this.config.browserLogin),
@@ -3454,7 +3480,9 @@ export class Controller {
         id: opId, campaign_id: ctx.id, task_id: task.task_id, kind, seq, idempotency_key: opId, lease_generation: ctx.generation,
         state: 'recorded', session_id: sessionId, run_dir: runDir, workspace, base_sha: revision, target_sha: targetSha,
         report_digest: reportDigest, packet, packet_digest: digest, outcome: null, created_at: now, updated_at: now,
-        executor_kind: executor.kind, routing: choice.receipt, ...(profile ? { account_identity: profile.account } : {}),
+        executor_kind: executor.kind, routing: choice.receipt, publication_rewrite: proof,
+        verification_base_sha: kind === 'verify' && spec.deliverable === 'commit' ? baseSha : null,
+        ...(profile ? { account_identity: profile.account } : {}),
       });
       this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, t.version,
         { attempts: seq, base_sha: baseSha, state: kind === 'verify' ? 'verifying' : 'implementing', retry_at: null }, now);
@@ -3556,6 +3584,8 @@ export class Controller {
     const spec = specOf(this.store, ctx.id, task.task_id, decl);
     if (isLocalTarget(decl)) return this.recordLocalCandidate(ctx, decl, spec, task);
     const repo = this.repo(decl);
+    const proof = task.verification?.codeEvidence;
+    const rewriteBase = proof ? await this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository, { fresh: true }) : null;
     // What the PR and the push publish is the change from the commit the task started from to the verified head.
     // A task that never recorded the commit it started from is compared with its merge-base with the remote base; when
     // that cannot be read either, the guard refuses (fail closed).
@@ -3568,6 +3598,20 @@ export class Controller {
         const current = this.store.campaign(ctx.id);
         const fresh = this.store.task(ctx.id, task.task_id);
         if (current.control !== 'registered' || fresh.state !== 'verified' || fresh.version !== task.version) return;
+        if (proof) {
+          const textOp = this.store.get('SELECT * FROM operations WHERE id = ?', fresh.verification?.publicationText?.operation ?? '');
+          const binding = this.planBinding(current, fresh.task_id);
+          if (!codeEvidence(this.store, current, fresh, proof) || !binding.current || binding.authority !== proof.authority ||
+              !rewriteBase?.ok || rewriteBase.sha !== proof.base || fresh.verified_sha !== proof.head ||
+              textOp?.campaign_id !== ctx.id || textOp.task_id !== fresh.task_id || textOp.kind !== 'verify' || textOp.state !== 'finished' ||
+              textOp.outcome?.class !== 'result' || textOp.outcome.value?.verdict !== 'accepted' ||
+              textOp.outcome.receipt?.sessionId !== textOp.session_id || textOp.target_sha !== proof.head ||
+              canonicalJson(textOp.outcome.value) !== canonicalJson(fresh.verification) ||
+              textOp.report_digest !== digestReport(fresh.result?.report)) {
+            this.abandonRewrite(ctx, fresh, 'code evidence, report, authority or current base changed before publication');
+            return;
+          }
+        }
         let url;
         const repair = spec.deliverable === 'commit' ? this.publishedRepair(fresh) : null;
         const integration = repair?.id === 'integration-conflict' ? repair : null;
@@ -3733,6 +3777,14 @@ export class Controller {
     return (task.findings ?? []).find((finding) => finding.id === 'publication-text') ?? null;
   }
 
+  abandonRewrite(ctx, task, reason, state = 'implemented') {
+    const now = this.now();
+    this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
+      { state, findings: withoutRewrite(task), verified_sha: null, verification: null,
+        retry_at: null, last_error: `publication-text: ${reason}; normal independent verification required` }, now);
+    this.store.journal(ctx.id, 'publication-rewrite-invalidated', { task: task.task_id, head: task.head_sha, reason }, now);
+  }
+
   /**
    * aiworks#8: every text of one publication is checked before its first outbound write (push, PR, comment). True when it
    * was refused; publicationRefused has then settled the task and nothing was sent.
@@ -3769,6 +3821,8 @@ export class Controller {
       : 'A fresh verifier checks the same head again and writes its verification with repository-relative paths and synthetic examples only.';
     const finding = { id: 'publication-text', severity: 'blocking', verified: task.verified_sha, reportDigest, findings, sources,
       description: `The ${what} text of verified ${task.verified_sha} was refused before publication: it contains ${findings.join(', ')}. Nothing was pushed or published, and the refused text stays in private evidence. ${rewrite}` };
+    const evidence = repairable && spec.deliverable === 'commit' ? captureCodeEvidence(this.store, this.store.campaign(ctx.id), task) : null;
+    if (evidence) finding.codeEvidence = evidence;
     const repair = spec.deliverable === 'commit' ? this.publishedRepair(task) : null;
     const correction = sources.length
       ? { state: sources.includes('report') ? 'pending' : 'implemented', findings: repair ? [finding, repair] : [finding] } : {};
@@ -3852,7 +3906,8 @@ export class Controller {
     const notes = (v.findings ?? []).filter((f) => f.severity !== 'blocking').map((f) => `- ${f.id}: ${f.description}`);
     const defects = (defectsOf(task) ?? []).map((f) => `- ${f.id}: ${f.description}`);
     return [...(defects.length ? ['**Not accepted.** The verifier rejected this version; it is delivered as it is because its full check passed (AW-017). Known defects:', ...defects, ''] : []),
-      v.summary ?? '', ...(checks.length ? ['', 'Checks:', ...checks] : []), ...(notes.length ? ['', 'Non-blocking findings:', ...notes] : [])];
+      ...(v.codeEvidence ? [`The original independent code verdict and full gate for ${v.codeEvidence.head} on base ${v.codeEvidence.base} are retained. A separate verifier checked this corrected publication report (sha256 ${v.reportDigest}).`, ''] : []),
+      v.summary ?? '', ...(checks.length ? ['', v.codeEvidence ? 'Publication-text checks:' : 'Checks:', ...checks] : []), ...(notes.length ? ['', 'Non-blocking findings:', ...notes] : [])];
   }
 
   /** The independent verification alone, for publication split over GitHub's body limit. */

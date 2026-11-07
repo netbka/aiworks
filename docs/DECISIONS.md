@@ -200,3 +200,19 @@ This amends [AW-012](#aw-012---local-projects-start-from-an-owner-approval-in-th
 - A result whose own change alters the publishing steps is not published by itself: a worker cannot write its own grant.
 
 The runbook section is [Publishing by the project's instructions](SUPERVISOR.md#publishing-by-the-projects-instructions).
+
+## AW-019 - A publication-text repair retains the exact accepted code verdict
+
+A privacy refusal of generated publication text does not require a second code implementation or full gate when
+its commit and base are unchanged. A read-only worker corrects the report and a separate independent verifier
+checks the new report digest and faithful wording. A refusal confined to verifier text goes directly to that text
+verification. The original accepted code verdict, its criteria and gate evidence remain identifiable separately;
+a text verdict cannot claim a new code check.
+
+Reuse requires the original settled verifier operation, clean exact-head gate, original report digest, task base,
+immutable outcome digest, campaign scope and authorization version, and packet authority. Recheck that proof and
+the current base before every text dispatch and publication. A changed head, base, authority or report, missing
+proof, non-text failure, report deliverable, known-defect delivery or base-explained red gate uses the normal
+independent verification path. Existing privacy guards, session fences, retry limits and run/cost budgets remain
+binding. Private reports and proof records remain in private run evidence and the store. See
+[publication safety](SUPERVISOR.md#3-lifecycle-of-one-task).
