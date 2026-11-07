@@ -119,6 +119,9 @@ const retryBudgetMs = setting('AIWORKS_TEST_RETRY_MINUTES', 20) * 60_000;
 // An inherited test-worker marker makes a nested node --test silently skip its files.
 const env = { ...process.env };
 delete env.NODE_TEST_CONTEXT;
+// Counts and failure extraction consume TAP. Node combines reporter selections, so preserve an inherited choice.
+const inheritedReporter = (env.NODE_OPTIONS?.match(/(?:[^\s"]|"[^"]*")+/g) ?? [])
+  .some((arg) => /^--test-reporter(?:=|$)/.test(arg.replaceAll('"', '')));
 // Never inside a checkout: a test folder there is part of AIWorks itself to the folder check, and git would find the outer
 // repository from a test directory that has none of its own. Beside the outermost repository holding this one instead.
 const outermost = (dir) => {
@@ -154,7 +157,8 @@ function runFile(file, tier, testArgs, into = times) {
   return new Promise((done) => {
     const started = Date.now();
     console.log(`# ${into === times ? 'start' : 'retry alone'} ${file}`);
-    const child = spawn(process.execPath, ['--test', '--test-concurrency=1', ...testArgs, file],
+    const reporter = inheritedReporter || testArgs.some((arg) => /^--test-reporter(?:=|$)/.test(arg)) ? [] : ['--test-reporter=tap'];
+    const child = spawn(process.execPath, ['--test', '--test-concurrency=1', ...reporter, ...testArgs, file],
       { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     const output = [];
     child.stdout.on('data', (chunk) => output.push(chunk));

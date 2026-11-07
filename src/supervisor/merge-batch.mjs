@@ -19,7 +19,7 @@ import * as gitA from './adapters/git.mjs';
 import { gateFailure, readGateRun } from './gate.mjs';
 import { IDENTITY, alive, checkout, gatePid, startGate } from './merge-refresh.mjs';
 import { recordGateResults } from './test-cache.mjs';
-import { inspect, localBlocker, mergeBlocker, mergeLocal, mergeNow, privateMessages, wait } from './merge.mjs';
+import { inspect, localBlocker, mergeBlocker, mergeLocal, mergeNow, privateMessages, refreshedOnBase, refusalWait, wait } from './merge.mjs';
 import { trustedTip } from './self-hosting.mjs';
 
 const KINDS = ['merge-batch-started', 'merge-batch-passed', 'merge-batch-failed', 'merge-batch-stopped', 'merge-batch-done'];
@@ -94,6 +94,8 @@ function startGroup(controller, all, items, settings, repoPath, baseSha, note) {
     if (local) {
       const blocker = localBlocker(controller, item, settings, repoPath);
       if (blocker) { wait(controller, item, blocker); continue; }
+      const owed = refusalWait(controller, item);
+      if (owed) { wait(controller, item, owed.reason); continue; }
       // A head whose commit messages main may not take (#125) is left out, so no group gate is spent on it; its own merge
       // pass refuses it.
       if (!gitA.isAncestor({ git, path: repoPath, ancestor: item.task.verified_sha, descendant: baseSha })
@@ -105,10 +107,14 @@ function startGroup(controller, all, items, settings, repoPath, baseSha, note) {
     if (!pr) continue;
     const blocker = mergeBlocker(controller, item, pr);
     if (blocker) { wait(controller, item, blocker); continue; }
+    const owed = refusalWait(controller, item);
+    if (owed) { wait(controller, item, owed.reason); continue; }
     ready.push(item);
   }
   // A pull request whose own refresh already runs on this base finishes that first.
   if (ready.length < 2 || ready.some((item) => refreshRunning(controller.store, item, baseSha))) return false;
+  // Spend an already passed check before changing its base with a new group. Existing groups continue above unchanged.
+  if (ready.some((item) => refreshedOnBase(controller.store, item, baseSha))) return false;
   // The same candidates on the same base are combined once: after a failure they go one at a time.
   const candidates = ready.map((item) => `${item.campaignId}:${item.task.task_id}:${item.task.verified_sha}`).join(' ');
   if (all.some((group) => group.started.detail.base === baseSha && group.started.detail.candidates === candidates)) return false;

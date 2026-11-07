@@ -11,6 +11,7 @@ import { Store } from '../../src/supervisor/store.mjs';
 import { campaignStart } from '../../src/supervisor/api.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
 import { mergePass, mergeSettings } from '../../src/supervisor/merge.mjs';
+import { refreshStep } from '../../src/supervisor/merge-refresh.mjs';
 import { mainLedger, recordAnchor, recordMainCommit } from '../../src/supervisor/self-hosting.mjs';
 import { createItem, item, items, reviewItem } from '../../src/supervisor/work-list.mjs';
 import { declaration, environment, runUntil, skipWithoutSqlite } from './helpers.mjs';
@@ -203,12 +204,13 @@ test('LO L8 refresh: a trusted tip moved under a verified review merges only the
     assert.equal(recordMainCommit(r.store, { repository: REPOSITORY, kind: 'owner', oldTip: r.anchor, newTip: owner, now: 2 }).recorded, true);
     r.controller.merges = mergeSettings({ merges: { delegatedTo: 'supervisor', repositories: [REPOSITORY], refresh: { command: GATE } } });
     // Starts the gate, waits until it recorded its exit code, then runs the pass that reads it.
-    const gated = async () => {
+    const gated = async (beforeMerge = async () => {}) => {
       await r.pass();
       const [started] = r.journal('merge-refresh-started');
       assert.equal(started.base, owner);
       assert.equal(git(r.env.repo, 'rev-parse', 'main'), owner, 'main waits while the gate runs');
       for (let i = 0; i < 600 && !existsSync(join(started.path, 'gate-exit.log')); i++) await new Promise((done) => setTimeout(done, 50));
+      await beforeMerge(started);
       await r.pass();
       return started;
     };
@@ -228,7 +230,30 @@ test('LO L8 refresh: a trusted tip moved under a verified review merges only the
   const passing = await moved('pass');
   let crashed = 0;
   passing.controller.injectFault = (name) => { if (name === 'after-merge' && !crashed++) throw new Error('synthetic crash after the ref move'); };
-  const started = await passing.gated();
+  const started = await passing.gated(async (checked) => {
+    const { controller, store, id } = passing, task = store.task(id, 'T1');
+    const ctx = { id, generation: controller.held.get(id) };
+    assert.deepEqual(refreshStep(controller, ctx, { campaignId: id, decl: store.campaign(id).declaration, task },
+      passing.env.repo, passing.owner, controller.merges.refresh), { tree: checked.tree, next: 'merge' });
+    store.releaseLease(id, controller.instanceId, ctx.generation, controller.now());
+    const competitor = store.acquireLease(id, 'another-local-supervisor', controller.now(), 60_000, controller.codeRevision);
+    assert.ok(competitor);
+    const acquire = store.acquireLease.bind(store); let refused = false;
+    store.acquireLease = (...args) => {
+      const result = acquire(...args);
+      if (args[0] === id && args[1] === controller.instanceId && result === null) refused = true;
+      return result;
+    };
+    try {
+      await passing.pass();
+      assert.equal(refused, true, 'the local priority path respects an actual competing campaign lease');
+      assert.equal(git(passing.env.repo, 'rev-parse', 'main'), passing.owner);
+      assert.equal(passing.journal('merge-requested').length, 0);
+    } finally {
+      store.acquireLease = acquire;
+      store.releaseLease(id, 'another-local-supervisor', competitor.generation, controller.now());
+    }
+  });
   assert.equal(crashed, 1);
   const main = () => git(passing.env.repo, 'rev-parse', 'main');
   const merge = main();
