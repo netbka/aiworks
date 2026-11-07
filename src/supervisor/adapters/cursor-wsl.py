@@ -38,6 +38,23 @@ def same(record):
     return isinstance(record, dict) and identity(record.get('pid', 0)) == record
 
 
+def terminate_namespace(record):
+    if record.get('namespacePid') != 1 or record.get('namespace') == os.readlink('/proc/self/ns/pid'):
+        raise ValueError('not an owned namespace init')
+    try:
+        handle = os.pidfd_open(record['pid'])
+    except ProcessLookupError:
+        return
+    try:
+        # Pin the process before comparing its identity: PID reuse cannot redirect this signal.
+        if same(record):
+            signal.pidfd_send_signal(handle, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    finally:
+        os.close(handle)
+
+
 def namespace_init(child_pid):
     child = identity(child_pid)
     if not child:
@@ -90,7 +107,7 @@ def drain(request_path, request):
                 return True  # The exact namespace init exited; never signal a reused PID.
             if owned.get('namespace') == os.readlink('/proc/self/ns/pid'):
                 return False
-            os.kill(owned['pid'], signal.SIGKILL)
+            terminate_namespace(owned)
         elif not same(state.get('guard')):
             return False
         time.sleep(.05)
@@ -234,8 +251,8 @@ def start(request_path, request):
             os.close(write_fd)
         if child:
             owned = state.get('namespace')
-            if owned and same(owned):
-                os.kill(owned['pid'], signal.SIGKILL)
+            if owned:
+                terminate_namespace(owned)
             if child.poll() is None:
                 # Before a startup grant there can be no model work.
                 if not owned:
@@ -245,8 +262,11 @@ def start(request_path, request):
                 except subprocess.TimeoutExpired:
                     os.killpg(child.pid, signal.SIGKILL)
                     child.wait(timeout=3)
-            if owned and same(owned):
-                raise ValueError('namespace cleanup not proved')
+            deadline = time.monotonic() + 12
+            while owned and same(owned):
+                if time.monotonic() >= deadline:
+                    raise ValueError('namespace cleanup not proved')
+                time.sleep(.05)
         atomic(state_path, {**state, 'phase': 'finished', 'exitCode': code})
     return code
 
