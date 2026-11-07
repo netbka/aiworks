@@ -3,6 +3,7 @@ import { execFile, spawnSync } from 'node:child_process';
 import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DEVELOPMENT_ENV } from './development-policy.mjs';
+import { stopCursorWsl, stopCursorWslAsync } from './adapters/cursor-wsl.mjs';
 
 export const WINDOWS_PROCESS_HELPER = fileURLToPath(new URL('./windows-process.ps1', import.meta.url));
 export const POWERSHELL = process.platform === 'win32'
@@ -122,12 +123,16 @@ export async function drainJob(jobName) {
 export function stopOwnedRun(runner) {
   if (runner?.containment !== 'windows-job-v1' || !Number.isSafeInteger(runner.pid) || runner.pid <= 0 ||
       !/^\d+$/.test(runner.creationTime ?? '')) return 'ownership-unavailable';
-  return jobCommand('Stop', runner.jobName, { pid: runner.pid, creationTime: runner.creationTime });
+  const stopped = jobCommand('Stop', runner.jobName, { pid: runner.pid, creationTime: runner.creationTime });
+  return runner.externalContainment && ['stopped', 'not-running'].includes(stopped)
+    ? stopCursorWsl(runner.externalContainment) : stopped;
 }
 
 /** stopOwnedRun without blocking the event loop (the controller's bounded reads, aiworks#140). Same answers. */
 export async function stopOwnedRunAsync(runner) {
   if (!runnerIdentified(runner) || !POWERSHELL) return 'ownership-unavailable';
-  return await runPowerShell(windowsHelperArgs('Stop', runner.jobName, { pid: runner.pid, creationTime: runner.creationTime, waitMs: ASYNC_STOP_WAIT_MS }),
+  const stopped = await runPowerShell(windowsHelperArgs('Stop', runner.jobName, { pid: runner.pid, creationTime: runner.creationTime, waitMs: ASYNC_STOP_WAIT_MS }),
     ASYNC_STOP_MS) ?? 'stop-failed';
+  return runner.externalContainment && ['stopped', 'not-running'].includes(stopped)
+    ? await stopCursorWslAsync(runner.externalContainment) : stopped;
 }

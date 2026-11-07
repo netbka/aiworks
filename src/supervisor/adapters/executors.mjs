@@ -9,6 +9,7 @@ import { POWERSHELL } from '../proc.mjs';
 import * as agy from './agy.mjs';
 import { caamProfileEnv, caamProvider } from './caam.mjs';
 import * as claude from './claude.mjs';
+import { isCursorWsl, cursorWslInvocation } from './cursor-wsl.mjs';
 import { DEVELOPMENT_RESOURCE_RULE } from '../development-policy.mjs';
 import { readerServer as workListServer, SERVER as WORK_LIST_SERVER, TOOL as WORK_LIST_TOOL } from '../work-list-reader.mjs';
 
@@ -316,6 +317,7 @@ export function prepare({ executor, command, role, deliverable, sessionId, diges
       const data = mkdtempSync(join(runDir, 'cursor-data-'));
       writeFileSync(join(config, 'cli-config.json'), JSON.stringify({ version: 1, 'editor.vimMode': false,
         approvalMode: 'allowlist', autoAcceptWebSearch: false, subagentModels: { explore: 'disabled' },
+        sandbox: { mode: 'enabled', readBoundary: 'workspace', networkAccess: 'user_config_only' },
         permissions: { allow: [], deny: ['Shell(*)', 'Write(**)', 'Read(**)', 'WebFetch(*)', 'Mcp(*:*)'] } }));
       cursorEnv = { CURSOR_CONFIG_DIR: config, CURSOR_DATA_DIR: data,
         CURSOR_API_KEY: '', CURSOR_AUTH_TOKEN: '', CURSOR_AUTH_TOKEN_FILE: '', CURSOR_AUTH_TOKEN_EXPIRES_AT: '',
@@ -371,9 +373,14 @@ export function prepare({ executor, command, role, deliverable, sessionId, diges
     ...(profileHome == null ? {} : { env: profile }),
   };
   // shortcut: Cursor commit roles wait for a scoped publication-denial adapter; use the next executor meanwhile.
-  // Research uses a fresh deny-all allowlist with no subagents, in an empty scratch directory.
-  // Native Windows Cursor cannot provide a filesystem sandbox; ordinary roles still require one.
-  return { argv: [...command, '--print', '--trust', '--mode', 'ask', '--sandbox', cursorEnv ? 'disabled' : 'enabled',
+  if (isCursorWsl(command)) {
+    if (!cursorEnv) throw new Error('Cursor WSL supports only isolated research reports');
+    return { ...cursorWslInvocation(command, { runDir, cwd, configDir: cursorEnv.CURSOR_CONFIG_DIR,
+      dataDir: cursorEnv.CURSOR_DATA_DIR, model: executor.model, timeoutMs }), prompt: boundPrompt, cwd, env: cursorEnv };
+  }
+  // Native Windows Cursor cannot provide a filesystem sandbox. It remains unavailable;
+  // the optional WSL transport supplies a separate supported OS boundary and cleanup proof.
+  return { argv: [...command, '--print', '--trust', '--mode', 'ask', '--sandbox', 'enabled',
     ...(cursorEnv ? ['--disable-project-configs'] : []), '--output-format', cursorEnv ? 'stream-json' : 'json', ...model],
     prompt: boundPrompt, cwd, ...(cursorEnv ? { env: cursorEnv } : {}) };
 }

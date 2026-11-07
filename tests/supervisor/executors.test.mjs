@@ -203,6 +203,20 @@ function fixture(t, maxWorkerRuns = 12, tasks, repository = 'example-org/samplea
   return { env, store, d, controller, id: d.campaignId };
 }
 
+test('a Windows receipt alone cannot accept a run with unconfirmed Linux custody', { skip: skipWithoutSqlite }, async (t) => {
+  const { store, controller, id } = fixture(t);
+  await controller.tick();
+  const op = store.openOperations(id)[0];
+  const path = join(op.run_dir, 'spec.json'), spec = JSON.parse(readFileSync(path));
+  spec.externalContainment = { kind: 'cursor-wsl-v1', nonce: '10000000-0000-4000-8000-000000000000' };
+  writeFileSync(path, JSON.stringify(spec));
+  controller.consume({ id, generation: controller.held.get(id) }, op,
+    { exitCode: 0, containment: 'windows-job-v1', containmentStopped: true });
+  assert.equal(store.campaign(id).blocker.kind, 'process-ownership');
+  assert.equal(store.campaign(id).blocker.class, 'B4');
+  assert.equal(store.openOperations(id).length, 1, 'the operation cannot be accepted or replaced');
+});
+
 test('fallback is ordered, durable across restart and charges each recorded operation', { skip: skipWithoutSqlite }, async (t) => {
   const { env, store, d, controller, id } = fixture(t);
   await controller.tick();
@@ -380,7 +394,8 @@ test('research providers restrict capabilities, isolate scratch space and cannot
       assert.equal(config.approvalMode, 'allowlist');
       assert.equal(config.autoAcceptWebSearch, false);
       assert.deepEqual(config.subagentModels, { explore: 'disabled' }, 'no implicit subagent/model spending');
-      assert.equal(invocation.argv[invocation.argv.indexOf('--sandbox') + 1], 'disabled');
+      assert.equal(invocation.argv[invocation.argv.indexOf('--sandbox') + 1], 'enabled');
+      assert.equal(config.sandbox.readBoundary, 'workspace');
       const ordinary = prepare({ ...args, executor: { ...executor, researchOnly: false } });
       assert.equal(ordinary.argv[ordinary.argv.indexOf('--sandbox') + 1], 'enabled');
       assert.ok(!invocation.argv.some((arg) => ['--force', '--yolo', '--approve-mcps'].includes(arg)));

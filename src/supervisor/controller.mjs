@@ -1178,7 +1178,9 @@ export class Controller {
   }
 
   async reconcile(ctx, op) {
-    const runner = readJsonIfExists(join(op.run_dir, 'runner.json'));
+    const recordedRunner = readJsonIfExists(join(op.run_dir, 'runner.json'));
+    const external = readJsonIfExists(join(op.run_dir, 'spec.json'))?.externalContainment;
+    const runner = recordedRunner && { ...recordedRunner, ...(external ? { externalContainment: external } : {}) };
     const result = readJsonIfExists(join(op.run_dir, 'result.json'));
     const campaign = this.store.campaign(ctx.id);
     if (campaign.control === 'cancel-requested' && !result) {
@@ -1359,8 +1361,11 @@ export class Controller {
   }
 
   consume(ctx, op, run) {
-    if (run.containment !== 'windows-job-v1' || run.containmentStopped !== true) {
-      const runner = readJsonIfExists(join(op.run_dir, 'runner.json'));
+    const external = readJsonIfExists(join(op.run_dir, 'spec.json'))?.externalContainment;
+    if (run.containment !== 'windows-job-v1' || run.containmentStopped !== true ||
+        external && (run.externalContainmentStopped !== true || run.externalNonce !== external.nonce)) {
+      const recordedRunner = readJsonIfExists(join(op.run_dir, 'runner.json'));
+      const runner = recordedRunner && { ...recordedRunner, ...(external ? { externalContainment: external } : {}) };
       const stopped = this.fenced(ctx, () => runner ? stopOwnedRun(runner) : 'ownership-unavailable');
       if (!['stopped', 'not-running'].includes(stopped)) {
         this.blockOwnership(ctx, op, stopped);
@@ -3483,6 +3488,7 @@ export class Controller {
       writeFileSync(join(runDir, 'prompt.txt'), invocation.prompt, 'utf8');
       writeAtomic(join(runDir, 'spec.json'), JSON.stringify({
         argv: invocation.argv, ...(invocation.env || cacheEnv ? { env: { ...invocation.env, ...cacheEnv } } : {}),
+        ...(invocation.externalContainment ? { externalContainment: invocation.externalContainment } : {}),
         cwd: invocation.cwd ?? workspace, timeoutMs, heartbeatMs: this.config.heartbeatMs, ...this.workerJob,
       }));
 
