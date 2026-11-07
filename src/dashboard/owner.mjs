@@ -64,6 +64,7 @@ const NOTES = { published: 'Your review and merge', 'report-posted': 'For you to
   'fetch-failed': 'The last check of the base branch failed; showing the last known state',
   'no-checkout': 'This computer has no checkout of the repository configured, so AIWorks cannot see the merge here',
   'no-verified-sha': 'No independent check is recorded, so AIWorks cannot see the merge here',
+  'gate-off': 'AIWorks does not merge in this repository: it is not in the merge settings, so this result waits for your merge',
   'no-link': 'AIWorks did not record where this result went' };
 
 /**
@@ -123,7 +124,9 @@ export function delivery(task, merges = NO_MERGES, now = Date.now(), campaignId 
     return { state: 'delegated', ...base, reason, pending: false, held, stalled, by: delegation.delegatedTo, merger, wait,
       note: held ? DELEGATED.held[held] : stalled ? mergeWaitWords(merger, wait).reason : DELEGATED.note(delegation.delegatedTo) };
   }
-  return { state: 'published', ...base, reason, pending: reason === 'checking', note: NOTES[reason ?? 'published'] };
+  // Merging delegated to AIWorks in a repository the merge settings leave out: say so instead of a silent wait.
+  const shown = reason === null && delegation && merger === 'aiworks' && task.review?.mergeGate === 'off' ? 'gate-off' : reason;
+  return { state: 'published', ...base, reason: shown, pending: shown === 'checking', note: NOTES[shown ?? 'published'] };
 }
 
 /** Why a delegated merge waits and what happens next, in owner words; unknown stays unknown (DELEGATED.unknown). */
@@ -148,7 +151,8 @@ function ownerSettled(base, task) {
 
 const LOCAL_NOTES = { published: 'Checked on this computer and recorded in the work list; not merged into local main yet',
   checking: NOTES.checking, 'no-verified-sha': 'No verified commit is recorded, so the merge cannot be checked here',
-  'not-checked': 'The merge into local main cannot be seen on this computer; open the work list' };
+  'not-checked': 'The merge into local main cannot be seen on this computer; open the work list',
+  'gate-off': 'AIWorks does not merge into local main here: this repository is not in the merge settings' };
 
 /**
  * A checked local review of AIWorks's own repository, read in the work list (UI20). Merged only from the local merge
@@ -168,7 +172,8 @@ function localDelivery(task, number, merges, now, campaignId, repository) {
   // A merge check that cannot come (no checkout configured here, or a failed read) is not seen, never pending.
   const check = repository ? mergeCheck(merges, repository, now) : null;
   const unseen = !step || check?.reason === 'no-checkout' || (check?.reason === 'fetch-failed' && !check.fresh);
-  const reason = !task.verifiedSha ? 'no-verified-sha' : result !== null ? null : unseen ? 'not-checked' : 'checking';
+  const seen = !task.verifiedSha ? 'no-verified-sha' : result !== null ? null : unseen ? 'not-checked' : 'checking';
+  const reason = seen === null && task.review?.mergeGate === 'off' ? 'gate-off' : seen;
   return { state: 'published', ...base, reason, pending: reason === 'checking', note: LOCAL_NOTES[reason ?? 'published'] };
 }
 
@@ -373,7 +378,7 @@ export function releaseLadder(task, d, recorded = null, { github = true } = {}) 
   const sha = String(recorded?.verifiedSha ?? task.verifiedSha ?? '').toLowerCase().slice(0, 7) || null;
   const note = !recorded ? 'Review only: AIWorks does not deploy this result. Whether it is live is not recorded here.'
     : recorded.state === 'rolled-back' ? 'Rolled back: the checks after release failed.'
-      : recorded.state === 'rollback-failed' ? 'The rollback failed. See Needs you.'
+      : recorded.state === 'rollback-failed' ? 'The rollback failed. See Settings, AIWorks itself.'
         : recorded.state === 'unknown' ? 'Outcome unknown: AIWorks is checking the destination and will not release there again until it knows.' : null;
   return { sha, steps, note, destination: recorded?.destination ?? null };
 }
@@ -737,7 +742,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
         evidence: evidence.short, detail: evidence.text, mergeCheck: d.asOf,
         points: [
           // Why the merge cannot be seen at all on this computer, when that is the case.
-          ['no-checkout', 'no-verified-sha'].includes(d.reason) ? `${d.note}.` : null,
+          ['no-checkout', 'no-verified-sha', 'gate-off'].includes(d.reason) ? `${d.note}.` : null,
           churn ? NEEDS.churn(task.attempts, task.verifierRejections) : null,
           gated.length ? NEEDS.gated(named(gated)) : pending.length ? NEEDS.buildsOn(named(pending))
             : started.length ? NEEDS.startedWithout(named(started), started.length) : null,
@@ -842,6 +847,16 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       : { campaignId: c ? r.campaignId : null, repository: c?.repository ?? null, kind: 'release-failed', action: 'Rollback failed',
         text: `Release of ${where}: the rollback failed`, at: r.updatedAt,
         points: [{ link: null, text: 'The destination may not be working. AIWorks will not release there again until you check it.' }] });
+  }
+  // A checkout whose base read is refused as uncontained (AIWorks's own fault, #144): not for the owner to fix. Every read
+  // there checks the recorded end of the earlier fetch again by itself, so a held one with a recorded identity clears alone;
+  // one whose start was never recorded has no proof AIWorks may take, and is said so.
+  for (const hold of supervisor.baseHolds ?? []) {
+    items.push({ campaignId: null, repository: null, kind: 'base-read-held', system: true, action: 'Work in this checkout is held', since: hold.since,
+      text: `Checkout ${hold.checkout}: AIWorks cannot show that an earlier fetch of ${hold.base || 'its base'} ended, so it refuses to read or build on that base`,
+      points: [{ link: null, text: hold.unidentified
+        ? `${plural(hold.unidentified, 'fetch')} never recorded how it started, so AIWorks has no proof it ended and will not clear it by age. It is tracked as an AIWorks follow-up.`
+        : 'AIWorks checks again on every read and clears this once the recorded process is shown gone.' }] });
   }
   // The open decisions of the local work list (UI20), each opened on its own work list screen.
   for (const decision of workList?.decisions ?? []) {

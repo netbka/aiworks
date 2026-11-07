@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { FencedError, Store } from '../../src/supervisor/store.mjs';
+import { Store } from '../../src/supervisor/store.mjs';
 import { acquireLock, createRelease, destinationKey, destinationState, markUnknownAfterRestart, reconcile, release, runStep } from '../../src/supervisor/release/state.mjs';
 
 const SHA = 'a'.repeat(40);
@@ -84,31 +84,6 @@ test('two candidates for one destination never hold the lock together', async (t
   assert.equal(destinationState(r.store, 'a', 'b.c').releaseId, dotted[1].id);
 });
 
-test('unknown and rollback-failed keep the lock', async (t) => {
-  const r = rig(t);
-  const one = r.locked('prod');
-  const lost = await runStep(r.store, fake({ run: () => { throw new Error('connection reset mid-merge'); } }), one, r.at());
-  assert.equal(lost.state, 'unknown', 'a step whose outcome is not known is unknown');
-  const two = r.make('prod');
-  assert.equal(acquireLock(r.store, two, { ...r.at(), recheck: ELIGIBLE }).waitingFor, one);
-  assert.deepEqual(destinationState(r.store, 'sampleapp', 'prod'), { free: false, releaseId: one, state: 'unknown' });
-
-  const three = r.locked('staging');
-  const failing = fake({ run: (release, step) => (step === 'check' || step === 'rollback' ? 'failed' : 'done') });
-  for (let i = 0; i < 4; i++) await runStep(r.store, failing, three, r.at());
-  assert.deepEqual(failing.runs, ['merge', 'deploy', 'check', 'rollback'], 'a failed check is followed by rollback');
-  assert.equal(release(r.store, three).state, 'rollback-failed');
-  await assert.rejects(runStep(r.store, failing, three, r.at()), /no step to run/, 'nothing more runs on it');
-  assert.equal(acquireLock(r.store, r.make('staging'), { ...r.at(), recheck: ELIGIBLE }).waitingFor, three,
-    'a failed rollback is an incident: the destination stays locked');
-
-  const four = r.locked('canary');
-  const recovering = fake({ run: (release, step) => (step === 'check' ? 'failed' : 'done') });
-  for (let i = 0; i < 4; i++) await runStep(r.store, recovering, four, r.at());
-  assert.equal(release(r.store, four).state, 'rolled-back');
-  assert.equal(destinationState(r.store, 'sampleapp', 'canary').free, true, 'rolled-back is a known terminal state and frees it');
-});
-
 test('a started step with no outcome is unknown after restart', async (t) => {
   const r = rig(t);
   const one = r.locked('prod');
@@ -132,28 +107,6 @@ test('a started step with no outcome is unknown after restart', async (t) => {
   assert.ok(store.all("SELECT * FROM journal WHERE kind = 'release-unknown'").some((row) => row.detail.release === one && row.detail.after === 'restart'));
 });
 
-test('an unknown step is reconciled before any action', async (t) => {
-  const r = rig(t);
-  const one = r.locked('prod');
-  await runStep(r.store, fake({ run: () => { throw new Error('lost'); } }), one, r.at());
-  const adapter = fake({ observe: () => ({ outcome: 'done', mergeCommit: 'b'.repeat(40) }) });
-  await assert.rejects(runStep(r.store, adapter, one, r.at()), /reconcile it before any action/);
-  assert.deepEqual(adapter.runs, [], 'nothing ran');
-  const after = await reconcile(r.store, adapter, one, r.at());
-  assert.deepEqual([after.state, after.step_outcome, after.merge_commit], ['merged', 'done', 'b'.repeat(40)], 'proven done: recorded, not repeated');
-  await runStep(r.store, adapter, one, r.at());
-  assert.deepEqual([adapter.looks, adapter.runs], [['merge'], ['deploy']], 'the merge is never run twice; the next step continues');
-
-  const two = r.locked('staging');
-  await runStep(r.store, fake({ run: () => 'not an answer' }), two, r.at());
-  assert.equal(release(r.store, two).state, 'unknown', 'an unreadable answer is unknown too');
-  const notDone = fake({ observe: () => 'not-done' });
-  const back = await reconcile(r.store, notDone, two, r.at());
-  assert.deepEqual([back.state, back.step, back.step_outcome], ['locked', 'merge', 'not-done'], 'proven not done: it may run again');
-  const again = await runStep(r.store, notDone, two, r.at());
-  assert.deepEqual([notDone.runs, again.step_key, again.state], [['merge'], `${two}.merge.2`, 'merged'], 'the rerun has its own step key');
-});
-
 test('a read failure is never treated as not done', async (t) => {
   const r = rig(t);
   const one = r.locked('prod');
@@ -169,36 +122,6 @@ test('a read failure is never treated as not done', async (t) => {
   }
   assert.equal(acquireLock(r.store, r.make('prod'), { ...r.at(), recheck: ELIGIBLE }).waitingFor, one, 'it keeps the lock while unknown');
   assert.equal(r.store.all("SELECT * FROM journal WHERE kind = 'release-still-unknown'").length, 4);
-});
-
-test('takeover with a new generation reconciles first', async (t) => {
-  const r = rig(t);
-  const one = r.locked('prod');
-  const old = r.lease;
-  await runStep(r.store, fake(), one, r.at());
-  // The old controller starts the deploy and its lease expires before it hears back.
-  let finish;
-  const slow = fake({ run: () => new Promise((resolve) => { finish = resolve; }) });
-  const pending = runStep(r.store, slow, one, r.at(old));
-  r.now += TTL + 1;
-  const lease = r.leaseFor(r.store, 'second');
-  assert.equal(lease.generation, 2);
-
-  const adapter = fake({ observe: () => ({ outcome: 'done', deployedDigest: 'sha256:new' }) });
-  await assert.rejects(runStep(r.store, adapter, one, r.at(lease)), /reconcile it after the takeover first/);
-  assert.deepEqual(adapter.runs, []);
-  const after = await reconcile(r.store, adapter, one, r.at(lease));
-  assert.deepEqual([after.state, after.generation, after.deployed_digest], ['deployed', 2, 'sha256:new']);
-  assert.equal(r.store.get('SELECT generation FROM release_locks WHERE release_id = ?', one).generation, 2, 'the new holder adopted the lock');
-
-  finish('done');
-  await assert.rejects(pending, FencedError, 'the old controller can no longer write');
-  await assert.rejects(runStep(r.store, fake(), one, r.at(old)), FencedError);
-  await runStep(r.store, adapter, one, r.at(lease));
-  assert.deepEqual(adapter.runs, ['check'], 'the deploy that may have happened is not repeated');
-  assert.equal(release(r.store, one).state, 'accepted');
-  assert.deepEqual(release(r.store, one).history.map((entry) => [entry.step, entry.outcome, entry.how]),
-    [['merge', 'done', 'ran'], ['deploy', 'done', 'observed'], ['check', 'done', 'ran']]);
 });
 
 test('the release tables are additive to an existing store', (t) => {

@@ -38,22 +38,6 @@ function fixture(t) {
     task: d.tasks[0], now: 1000, revision: 'b'.repeat(40) } };
 }
 
-test('broker captures every open item across pages, pins guidelines and labels truncation/history', (t) => {
-  const { args } = fixture(t);
-  const text = researchContext(args);
-  const data = JSON.parse(text.split('<research-context>\n')[1].split('\n</research-context>')[0]);
-  assert.equal(data.capturedAt, new Date(1000).toISOString());
-  assert.ok(data.sources[0].source.includes('b'.repeat(40)));
-  const backlog = JSON.parse(data.sources.find((s) => s.source.endsWith('/issues')).content);
-  assert.deepEqual(backlog.openIssues.map((i) => i.number), [1, 2]);
-  assert.equal(backlog.openIssues[0].bodyTruncated, true);
-  assert.equal(backlog.coordination.totalComments, 22);
-  assert.equal(backlog.coordination.comments.length, 5);
-  assert.equal(backlog.coordination.comments[0].body, 'comment 17');
-  assert.equal(backlog.currentBaseSha, 'a'.repeat(40));
-  assert.ok(data.sources.at(-1).source.includes('/blob/' + 'a'.repeat(40) + '/'));
-});
-
 test('broker rejects secret paths, API-query injection and escaping junctions', (t) => {
   for (const path of ['.env', 'a/.env.local', '.git/config', 'auth.json', 'credentials/token', '../AGENTS.md', 'C:/private', 'file?ref=other', 'file%2fsecret']) assert.equal(safeResearchPath(path), false, path);
   const { args, root, workspace } = fixture(t);

@@ -273,3 +273,25 @@ test('switched off (the default), a conflicting published PR is left as today', 
   assert.equal(r.store.openOperations(B).length, 0);
   assert.equal(r.env.remoteHead(branchName(B, 'B1')), b);
 });
+
+test('an authorization that lowers maxRepairRounds while the base read runs is not judged by the older one', async (t) => {
+  const r = rig(t);
+  await siblingsPublishedThenAMerged(r);
+  const read = r.controller.fetchBase.bind(r.controller);
+  let narrow = () => campaignStart(r.store, declaration({ campaignId: B, tasks: [task('B1', 502, 'sibling B')], version: 2, limits: { maxRepairRounds: 0 } }));
+  // The owner narrows B's authority after the check read B's declaration, while its base read is still awaited.
+  r.controller.fetchBase = async (...args) => { const result = await read(...args); narrow?.(); narrow = null; return result; };
+  r.advance(r.controller.config.integrationPollMs + 1);
+  const lease = r.store.acquireLease(B, r.controller.instanceId, r.controller.now(), 60_000);
+  await r.controller.checkPublishedIntegration({ id: B, generation: lease.generation });
+  assert.equal(narrow, null, 'the authority changed during the read');
+  assert.equal(r.store.campaign(B).authorization_version, 2);
+  assert.deepEqual(r.journal(B, 'integration-conflict'), [], 'nothing is reopened under the older authority');
+  assert.equal(r.store.task(B, 'B1').repair_rounds, 0);
+  // The next pass reads the current authority: no repair round is allowed, so the step ends as not done.
+  r.advance(r.controller.config.integrationPollMs + 1);
+  await r.tick();
+  assert.equal(r.journal(B, 'integration-conflict')[0]?.stalled, true);
+  assert.equal(r.store.task(B, 'B1').repair_rounds, 0);
+  assert.equal(r.store.openOperations(B).length, 0, 'no repair worker under the narrowed authority');
+});

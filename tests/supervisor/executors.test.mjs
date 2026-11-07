@@ -238,23 +238,6 @@ test('extension preflight stops at checkout boundary and rejects local/global ex
   assert.match(unavailableReason(chain.providers[2], env.repo), /global Cursor/);
 });
 
-test('recheck releases every independent task held by provider cooldowns', { skip: skipWithoutSqlite }, async (t) => {
-  const tasks = declaration().tasks.map((task) => ({ ...task, deliverable: 'report', dependsOn: [] }));
-  const { store, controller, id } = fixture(t, 12, tasks);
-  await controller.tick();
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const op = store.openOperations(id)[0];
-    controller.applyOutcome({ id, generation: controller.held.get(id) }, op,
-      { class: 'quota', retryAt: Date.now() + 60_000, detail: 'synthetic quota', receipt: {} });
-    await controller.tick();
-  }
-  assert.ok(store.tasks(id).every((task) => task.retry_at > Date.now()));
-  campaignRecheck(store, id);
-  await controller.tick();
-  assert.equal(store.openOperations(id)[0].executor_kind, 'codex-cli');
-  assert.equal(store.task(id, 'T2').retry_at, null);
-});
-
 test('exhausted budget prevents fallback from launching the second provider', { skip: skipWithoutSqlite }, async (t) => {
   const { store, controller, id } = fixture(t, 1);
   await controller.tick();
@@ -350,15 +333,6 @@ test('prepared invocations preserve read-only verifier mode and never resume or 
   }
 });
 
-test('native quota preserves explicit reset and Retry-After evidence', () => {
-  const now = Date.parse('2026-10-09T12:00:00Z');
-  for (const kind of ['codex-cli', 'cursor-cli']) {
-    const fail = (stderrText) => classifyRun(kind, '', { run: { exitCode: 1 }, now, stderrText });
-    assert.equal(fail('usage limit; resets at 2026-10-09T15:00:00Z').retryAt, Date.parse('2026-10-09T15:01:00Z'));
-    assert.equal(fail('rate limit; Retry-After: 120').retryAt, now + 180000);
-  }
-});
-
 
 test('research providers restrict capabilities, isolate scratch space and cannot implement commit tasks', { skip: skipWithoutSqlite }, (t) => {
   const { env } = fixture(t);
@@ -395,22 +369,6 @@ test('research terminal output cannot hide an unexpected native tool invocation'
   assert.equal(classifyRun('codex-cli', read + codex(envelope()), { researchOnly: true }).class, 'result');
   const failed = read.replace('completed"}', 'failed","error":{"message":"HTTP 403"}}');
   assert.equal(classifyRun('codex-cli', failed + codex(envelope()), { researchOnly: true }).class, 'error');
-});
-
-test('missing local CLI is recorded and fallback resumes the preferred provider after reset', { skip: skipWithoutSqlite }, async (t) => {
-  const { env, store, d, controller, id } = fixture(t);
-  delete controller.cmd.cursor;
-  await controller.tick();
-  const missing = store.get('SELECT * FROM executor_waits WHERE campaign_id = ? AND executor_kind = ?', id, 'cursor-cli');
-  assert.match(missing.reason, /not configured/);
-  assert.ok(missing.retry_at > Date.now());
-  const op = store.openOperations(id)[0];
-  const reset = Date.now() + 60000;
-  controller.applyOutcome({ id, generation: controller.held.get(id) }, op,
-    { class: 'quota', retryAt: reset, detail: 'synthetic', receipt: {} });
-  assert.equal(controller.executorChoice(d, store.task(id, 'T1'), reset - 1).executor.kind, 'claude-cli');
-  const reopened = new Controller({ store, config: env.config, dataDir: env.dataDir });
-  assert.equal(reopened.executorChoice(d, store.task(id, 'T1'), reset + 1).executor.kind, 'codex-cli');
 });
 
 

@@ -1,7 +1,7 @@
 // Credentials must stay bound to the task's destination and out of the browser tool's form/network history.
 // The browser fixture uses only loopback, synthetic values and a fresh disposable profile.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -12,6 +12,7 @@ import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { browserLoginSettings, loginBrowser, loginTransport } from '../../src/supervisor/browser-login.mjs';
 import { browserServers } from '../../src/supervisor/adapters/agy.mjs';
+import { TIME_FACTOR } from './helpers.mjs';
 
 const profile = (origin, prefix) => ({ origin, loginUrl: `${origin}/login`, usernameRef: `${prefix}-user`,
   passwordRef: `${prefix}-password`, usernameSelector: 'input[name=user]', passwordSelector: 'input[type=password]',
@@ -38,12 +39,29 @@ async function closeWithin(browser, ms = 10_000) {
   if (!closed) browser.process()?.kill('SIGKILL');
 }
 
+// On 2026-11-05 this file hung until the gate's 15-minute file limit: child.kill() on Windows stops only the browser MCP's
+// node process, and the Chrome it started kept the test's pipes open. The whole tree is stopped while the child still
+// runs, and last of all any Chrome left with this test's own temporary folder on its command line. The owner's Chrome
+// session never carries that folder, so it is never touched.
+function stopTree(child) {
+  if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 30_000 });
+  else child.kill('SIGKILL');
+}
+const OWN_DIR = /[\\/]aiworks-browser-login-[A-Za-z0-9]{6}$/;
+function stopStrayChrome(dir) {
+  // An empty or foreign folder would match every Chrome, the owner's session included: refuse anything but this test's own.
+  if (process.platform !== 'win32' || typeof dir !== 'string' || !OWN_DIR.test(dir)) return;
+  spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    "$d = $env:AIWORKS_TEST_OWN_DIR; if (-not $d -or $d -notmatch 'aiworks-browser-login-[A-Za-z0-9]{6}$') { exit 1 }; Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($d) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"],
+  { windowsHide: true, stdio: 'ignore', timeout: 30_000, env: { ...process.env, AIWORKS_TEST_OWN_DIR: dir } });
+}
+
 const chrome = [process.env.AIWORKS_TEST_CHROME,
   process.env.PROGRAMFILES && join(process.env.PROGRAMFILES, 'Google/Chrome/Application/chrome.exe'),
   process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'Google/Chrome/Application/chrome.exe')].find((path) => path && existsSync(path));
 
 test('pre-login keeps credentials on the selected origin and closes its private page before browser tools attach',
-  { skip: !chrome && 'set AIWORKS_TEST_CHROME to run the synthetic browser credential boundary', timeout: 60_000 }, async (t) => {
+  { skip: !chrome && 'set AIWORKS_TEST_CHROME to run the synthetic browser credential boundary', timeout: 300_000 }, async (t) => {
     const { puppeteer } = await import(pathToFileURL(createRequire(import.meta.url)
       .resolve('chrome-devtools-mcp/build/src/third_party/index.js')).href);
     const dir = mkdtempSync(join(tmpdir(), 'aiworks-browser-login-'));
@@ -65,15 +83,22 @@ test('pre-login keeps credentials on the selected origin and closes its private 
         handedOver = await puppeteer.connect({ browserURL: `http://127.0.0.1:${port}`, protocolTimeout: 5000 }).catch(() => null);
       }
       await closeWithin(handedOver);
-      if (child && child.exitCode === null && child.signalCode === null) {
-        child.stdin.end();
-        if (!await waitForChild(3000)) {
-          child.kill();
-          assert.ok(await waitForChild(5000), 'browser MCP exits during bounded cleanup');
+      let exited = true;
+      try {
+        if (child && child.exitCode === null && child.signalCode === null) {
+          child.stdin.end();
+          if (!await waitForChild(3000)) {
+            stopTree(child);
+            exited = await waitForChild(5000);
+          }
         }
+      } finally {
+        for (const stream of [child?.stdin, child?.stdout, child?.stderr]) stream?.destroy();
+        stopStrayChrome(dir);
+        // A file Chrome still holds stays behind in the run's scratch directory; it is not a result of this test.
+        try { rmSync(dir, { recursive: true, force: true, maxRetries: 5 }); } catch (error) { if (error.code !== 'EBUSY' && error.code !== 'EPERM') throw error; }
       }
-      // A file Chrome still holds stays behind in the run's scratch directory; it is not a result of this test.
-      try { rmSync(dir, { recursive: true, force: true, maxRetries: 5 }); } catch (error) { if (error.code !== 'EBUSY' && error.code !== 'EPERM') throw error; }
+      assert.ok(exited, 'browser MCP exits during bounded cleanup');
     });
     const user = 'synthetic-account', password = 'fake-password';
     const received = [];
@@ -147,13 +172,24 @@ test('pre-login keeps credentials on the selected origin and closes its private 
     const servers = browserServers({ runDir: dir, web: { urls: [`${origin}/home`] }, chromeCommand: [chrome], browserLogin: settings });
     const runConfig = readFileSync(servers.mcpServers.browser.args[1], 'utf8');
     for (const value of [user, password]) assert.ok(!runConfig.includes(value));
-    browser = await puppeteer.launch({ executablePath: chrome, headless: true, userDataDir: join(dir, 'profile'),
-      args: ['--disable-background-networking', '--disable-extensions'] });
+    // On a slow host Chrome can miss puppeteer's launch deadline; puppeteer then reports its leftover lockfile as 'The
+    // browser is already running for <profile>'. The launch deadline scales with the host and, if it still fails, one retry
+    // runs in a fresh profile of this test's own folder after stopping only the Chrome that carries that folder.
+    for (let attempt = 1; !browser; attempt += 1) {
+      try {
+        browser = await puppeteer.launch({ executablePath: chrome, headless: true, timeout: 60_000 * TIME_FACTOR,
+          userDataDir: join(dir, attempt === 1 ? 'profile' : `profile-${attempt}`),
+          args: ['--disable-background-networking', '--disable-extensions', '--no-first-run'] });
+      } catch (error) {
+        if (attempt >= 2) throw error;
+        stopStrayChrome(dir);
+      }
+    }
     const transport = await loginTransport(browser.wsEndpoint());
     login = await puppeteer.connect({ transport });
     const reads = [];
     const store = { get(ref) { reads.push(ref); return ref === 'browser:dev-user' ? user : password; } };
-    await loginBrowser(login, settings, { store, timeoutMs: 5000, transport });
+    await loginBrowser(login, settings, { store, transport });
     assert.deepEqual(reads, ['browser:dev-user', 'browser:dev-password']);
     assert.deepEqual(received, [{ body: `user=${user}&password=${password}` }]);
     assert.ok((await browser.cookies()).some((cookie) => cookie.name === 'session'));
@@ -179,7 +215,7 @@ test('pre-login keeps credentials on the selected origin and closes its private 
     child.stderr.resume();
     await new Promise((resolve, reject) => {
       let output = '';
-      const timer = setTimeout(() => reject(new Error('browser MCP did not finish synthetic pre-login')), 20_000);
+      const timer = setTimeout(() => reject(new Error('browser MCP did not finish synthetic pre-login')), 120_000);
       child.once('error', (error) => { clearTimeout(timer); reject(error); });
       child.once('exit', () => { clearTimeout(timer); reject(new Error('browser MCP exited before handoff')); });
       child.stdout.on('data', chunk => {

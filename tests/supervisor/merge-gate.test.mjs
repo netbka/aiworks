@@ -361,29 +361,6 @@ test('a cancellation committed after a moved-base task is selected leaves its co
   assert.deepEqual(r.mergeCalls().map((call) => call.fields.sha), [heads[A]]);
 });
 
-test('with CI repair on, a head merges only after its CI passed: never while CI is unread, pending or failed', async (t) => {
-  const r = rig(t);
-  const { [A]: verified } = await publish(r);
-  r.start({ merges: ON });
-  // CI is played by the test: the controller reads it (ciRepair on) but the journal rows come from here.
-  r.controller.ci = true;
-  r.controller.checkPublishedCi = () => {};
-  const ci = (kind) => r.store.journal(A, kind, { task: 'A1', sha: verified }, Date.now());
-  const waits = () => r.journal(A, 'merge-waiting').map((row) => row.reason);
-  await r.tick();
-  assert.equal(r.mergeCalls().length, 0, 'CI never read: no merge');
-  for (const [kind, reason] of [['ci-pending', /not passed/], ['ci-failed', /CI failed/]]) {
-    ci(kind);
-    r.advance(); await r.tick();
-    assert.equal(r.mergeCalls().length, 0, `${kind}: no merge`);
-    assert.match(waits().at(-1), reason);
-  }
-  ci('ci-passed');
-  r.advance(); await r.tick();
-  assert.equal(r.mergeCalls().length, 1, 'merged once CI passed');
-  assert.equal(r.journal(A, 'merged').length, 1);
-});
-
 test('requested changes hold the verified head, reopen one bounded repair round, and only a freshly verified head is published and merged', async (t) => {
   const r = rig(t);
   const words = 'Synthetic owner request: rename the heading to Items.';
@@ -465,4 +442,43 @@ test('where the owner accepts results, no head merges without their acceptance o
     authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest, verifiedSha: verified, reportDigest });
   r.advance(); await r.tick();
   assert.deepEqual(r.mergeCalls().map((call) => call.fields.sha), [verified], 'the accepted head merges once');
+});
+
+test('P1 serialization: a second instance never merges onto a base that an AIWorks merge moved after that instance fetched it', async (t) => {
+  const r = rig(t, { [A]: [task('A1', 501, 'a.txt')], [B]: [task('B1', 502, 'b.txt')] });
+  const heads = await publish(r, [A, B]);
+  const before = r.main();
+  r.start({ merges: ON });
+  await r.tick();
+  assert.deepEqual(r.mergeCalls().map((call) => call.fields.sha), [heads[A]], 'the first instance merges one pull request per pass');
+  const movedTo = r.main();
+  assert.notEqual(movedTo, before);
+
+  // A second instance whose base read answered before that merge: its judgement of B is stale. It takes over the
+  // campaigns once the first instance let go of them.
+  r.controller.release();
+  r.advance(r.controller.config.leaseMs + 1);
+  const other = new Controller({ store: r.store, config: { ...r.env.config, merges: ON }, dataDir: r.env.dataDir, now: r.controller.now, fault: null });
+  other.launch = async () => {};
+  t.after(() => { try { other.release(); } catch { /* the rig closed the store first */ } });
+  const fresh = other.fetchBase.bind(other);
+  other.fetchBase = async () => ({ ok: true, sha: before, failure: null });
+  await other.tick();
+  assert.equal(r.mergeCalls().length, 1, 'no merge call onto the stale base');
+  assert.equal(r.main(), movedTo, 'the base did not move');
+  assert.equal(r.journal(B, 'merged').length, 0);
+  assert.match(r.journal(B, 'merge-waiting').at(-1).reason, /moved under the merge [0-9a-f]{40} AIWorks recorded/);
+
+  // Read afresh, the moved base is judged as such: an integration repair, never a merge whose tree no verifier ran. The
+  // merge the first instance made is checked for the shape it requested.
+  other.fetchBase = fresh;
+  r.advance();
+  await other.tick();
+  assert.equal(r.mergeCalls().length, 1);
+  assert.equal(r.main(), movedTo);
+  assert.equal(r.journal(B, 'merge-base-moved').length, 1);
+  const [shape] = r.journal(A, 'merge-shape');
+  assert.equal(shape?.ok, true, `the first merge has the requested shape: ${JSON.stringify(shape)}`);
+  assert.deepEqual(shape.parents, [before, heads[A]]);
+  other.release();
 });

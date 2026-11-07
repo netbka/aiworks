@@ -12,6 +12,10 @@
 // awaitingAcceptance), checked when candidates are chosen and again inside the fenced write that requests the merge.
 // After a recorded GitHub merge, the project's own folder is fast-forwarded to the merged base when it is clean on that
 // branch (updateFolder, AW-018); otherwise it is left as it is with the reason journaled.
+// P1 of the Git maintenance and merge orchestrator plan (docs/plans/git-maintenance-merge-orchestrator.md): inside the
+// fenced merge request the fetched base is checked against the newest merge AIWorks recorded on it (baseFresh), a
+// refused call backs off (refusalWait), GitHub's mergeable_state holds a protected head back (mergeBlocker), and each
+// requested merge is checked once for the shape it asked for (checkMergeShape), recorded as information, never a hold.
 import { realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,8 +35,35 @@ import { batchStep, groupTree } from './merge-batch.mjs';
 import { ConflictError, FencedError } from './store.mjs';
 import { awaitingAcceptance, mergeRefusal, pendingChanges } from './result-review.mjs';
 import { authorityChange } from './release/authority-path.mjs';
+import { contentFindings, privateTerms } from '../shared/public-text.mjs';
 
 const SHA = /^[0-9a-f]{40}$/;
+
+/**
+ * How many of the commits a local merge would add to main (`trusted..sha`) have a message the public-history check of
+ * a push refuses (scripts/check-public-scope.mjs: credentials, a personal path, another owner's project, an installation's
+ * private terms), or null when git cannot list them. On 2026-10-30 a worker's default merge message named a local
+ * repository path; once on trusted main, every later main contained it and GitHub main could never take it (#125).
+ * Unreadable private terms (.local/publication.json) count as none: they never block a local review.
+ */
+export function privateMessages({ git, repoPath, trusted, sha, also = [] }) {
+  let terms = [];
+  try { terms = privateTerms(repoPath); } catch { /* malformed settings: the built-in checks still apply */ }
+  const listed = gitA.exec(git, ['-c', 'log.showSignature=false', 'log', '--format=%B%x00', `${trusted}..${sha}`], { cwd: repoPath });
+  if (!listed.ok) return null;
+  return [...listed.stdout.split('\0'), ...also].filter((message) => message.trim() && refusedMessage(message, terms)).length;
+}
+
+// As checkPublicHistory reads a message: GitHub's own pull request merge header names a branch of this repository's
+// owner, not another project, so only that finding is set aside for it.
+const GITHUB_MERGE = /^(Merge pull request #[1-9]\d* from )netbka\//;
+function refusedMessage(message, terms) {
+  let findings = contentFindings(message, terms);
+  if (GITHUB_MERGE.test(message) && !contentFindings(message.replace(GITHUB_MERGE, '$1')).includes('another upstream-owner project')) {
+    findings = findings.filter((finding) => finding !== 'another upstream-owner project');
+  }
+  return findings.length > 0;
+}
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
 const MISSING_RECHECK_MS = 60 * 60_000;
 const OFF = Object.freeze({ enabled: false, repositories: new Set(), held: new Set(), refresh: null, problem: null });
@@ -144,7 +175,7 @@ export async function mergePass(controller) {
       if (settings.batch) {
         try {
           const tip = trustedTip(controller.store, { git: controller.cmd.git, repoPath, repository: decl.target.repository });
-          if (tip.state === 'TRUSTED' && batchStep(controller, items.filter((item) => item.decl.target.baseBranch === 'main' &&
+          if (tip.state === 'TRUSTED' && await batchStep(controller, items.filter((item) => item.decl.target.baseBranch === 'main' &&
             !authorityBlocked(controller, item, repoPath, tip.tip)), settings, repoPath, tip.main)) continue;
         } catch (error) {
           if (error instanceof FencedError || error instanceof ConflictError) { controller.log(`group merge for ${decl.target.repository} retried later: ${error.message}`); continue; }
@@ -162,24 +193,37 @@ export async function mergePass(controller) {
       }
       continue;
     }
-    const bases = new Map();
+    const bases = new Map(), shapeChecked = new Set(), repository = decl.target.repository;
     controller.mergePassReads = new Map();
+    // After the base is fetched, the newest merge AIWorks requested on it is checked once for the shape it asked for (P1
+    // safe promotion): recorded and logged, never a hold, since condition 3 already sends the next head onto that base
+    // through a verifier when it does not contain it.
+    const checkShape = (branch) => {
+      if (!SHA.test(bases.get(branch) ?? '') || shapeChecked.has(branch)) return;
+      shapeChecked.add(branch);
+      try { checkMergeShape(controller, repository, branch, repoPath); } catch (error) {
+        if (!(error instanceof FencedError || error instanceof ConflictError)) throw error;
+        controller.log(`merge shape check for ${repository} retried later: ${error.message}`);
+      }
+    };
     if (settings.batch) {
       const branch = decl.target.baseBranch;
-      bases.set(branch, controller.fetchBase(repoPath, branch).sha);
+      bases.set(branch, (await controller.fetchBase(repoPath, branch)).sha);
+      checkShape(branch);
       try {
-        if (SHA.test(bases.get(branch) ?? '') && batchStep(controller, items.filter((item) => item.decl.target.baseBranch === branch &&
+        if (SHA.test(bases.get(branch) ?? '') && await batchStep(controller, items.filter((item) => item.decl.target.baseBranch === branch &&
           !authorityBlocked(controller, item, repoPath, bases.get(branch))), settings, repoPath, bases.get(branch))) continue;
       } catch (error) {
         if (error instanceof FencedError || error instanceof ConflictError) { controller.log(`group merge for ${decl.target.repository} retried later: ${error.message}`); continue; }
         controller.log(`group merge for ${decl.target.repository} failed, merging one at a time: ${error.stack || error}`);
       }
-      bases.set(branch, controller.fetchBase(repoPath, branch).sha);
+      bases.set(branch, (await controller.fetchBase(repoPath, branch)).sha);
     }
     for (const item of items) {
       const branch = item.decl.target.baseBranch;
-      if (!bases.has(branch)) bases.set(branch, controller.fetchBase(repoPath, branch).sha);
+      if (!bases.has(branch)) bases.set(branch, (await controller.fetchBase(repoPath, branch)).sha);
       if (!SHA.test(bases.get(branch) ?? '')) { controller.log(`merge of ${item.campaignId}/${item.task.task_id} waits: ${branch} could not be fetched`); continue; }
+      checkShape(branch);
       try {
         if (mergeOne(controller, item, settings, repoPath, bases.get(branch))) break;
       } catch (error) {
@@ -194,7 +238,7 @@ export async function mergePass(controller) {
   for (const key of due) {
     if (controller.selfHosted(key)) backup(controller, key);
     else {
-      try { updateFolder(controller, key); } catch (error) {
+      try { await updateFolder(controller, key); } catch (error) {
         if (error instanceof FencedError || error instanceof ConflictError) controller.log(`folder update for ${key} retried later: ${error.message}`);
         else controller.log(`folder update for ${key} failed: ${error.message}`);
       }
@@ -222,7 +266,7 @@ const overlap = (a, b) => { const [x, y] = [comparable(a), comparable(b)]; retur
  * itself runs from or keeps its data in, and never AIWorks's own repository (its main moves through the local merge
  * gate). No hook of the folder runs. Returns the journal kind recorded, or null when nothing was due.
  */
-export function updateFolder(controller, key) {
+export async function updateFolder(controller, key) {
   const { store } = controller, git = controller.cmd.git;
   let newest = null;
   for (const { id } of store.all("SELECT id FROM campaigns WHERE control IN ('registered', 'finished') ORDER BY created_at")) {
@@ -248,7 +292,7 @@ export function updateFolder(controller, key) {
   };
   const left = (reason) => note(FOLDER_LEFT, { reason });
   if (overlap(path, controller.runtimeRoot ?? RUNTIME_ROOT) || (controller.dataDir && overlap(path, controller.dataDir))) return left('aiworks-runtime');
-  const fetched = controller.fetchBase(path, base, decl.target.repository);
+  const fetched = await controller.fetchBase(path, base, decl.target.repository);
   // The merged base could not be read: nothing is recorded, so the next pass tries the same merge again.
   if (!fetched.ok) return null;
   if (!gitA.isAncestor({ git, path, ancestor: mergeCommit, descendant: fetched.sha })) return left('unreadable');
@@ -351,6 +395,18 @@ export function inspect(controller, item, settings, repoPath, baseSha) {
   return { pr, acted: false };
 }
 
+/**
+ * What GitHub's mergeable_state says holds a pull request back (P1 pre-integration check): branch protection with
+ * required checks or reviews still missing (`blocked`), a head behind a protected base (`behind`), conflicts (`dirty`)
+ * or a draft. Read only; the gate never changes protection and never bypasses it. Any other state, or none, decides nothing.
+ */
+const PROTECTION_WAITS = Object.freeze({
+  blocked: 'GitHub reports the pull request blocked: branch protection still requires checks or reviews at this head',
+  behind: 'GitHub reports the head behind a protected base',
+  dirty: 'GitHub reports the pull request in conflict with its base',
+  draft: 'the pull request is a draft',
+});
+
 /** Why CI or GitHub holds a pull request back right now, or null. With CI repair on, only a passed or absent CI merges. */
 export function mergeBlocker(controller, { campaignId, task }, pr) {
   const sha = task.verified_sha;
@@ -358,9 +414,97 @@ export function mergeBlocker(controller, { campaignId, task }, pr) {
     return ciAt(controller.store, campaignId, task.task_id, sha) === 'ci-failed' ? 'CI failed at the verified head; CI repair runs first'
       : 'CI has not passed at the verified head yet';
   }
+  if (pr.draft) return PROTECTION_WAITS.draft;
+  if (typeof pr.mergeableState === 'string' && Object.hasOwn(PROTECTION_WAITS, pr.mergeableState)) return PROTECTION_WAITS[pr.mergeableState];
   if (pr.mergeable !== true) return pr.mergeable === false ? 'GitHub reports it not mergeable' : 'GitHub has not computed mergeability yet';
   return null;
 }
+
+// A refused merge call is tried once more at the next poll; from the second refusal of the same head on, the wait
+// doubles, from one poll interval up to an hour, and the head is never given up by itself (AW-017: a refusal that
+// does not clear stays visible as its wait, and an integration repair or the owner's change settles it). A refusal
+// whose outcome the next read settles (a merge whose response was lost) is reconciled before this wait is judged,
+// since inspect() reads the pull request first.
+const MAX_REFUSAL_WAIT_MS = 60 * 60_000;
+
+/**
+ * The wait a refused head still owes, or null when it may be tried now: { reason, until }. Counts every `merge-refused`
+ * of this head in the journal, so a restart keeps the count.
+ */
+export function refusalWait(controller, { campaignId, task }) {
+  const refusals = controller.store.all(`SELECT at FROM journal WHERE campaign_id = ? AND kind = 'merge-refused'
+    AND json_extract(detail, '$.task') = ? AND json_extract(detail, '$.sha') = ? ORDER BY seq DESC`, campaignId, task.task_id, task.verified_sha);
+  if (refusals.length < 2) return null;
+  const delay = Math.min(MAX_REFUSAL_WAIT_MS, controller.config.integrationPollMs * 2 ** (refusals.length - 2));
+  const until = refusals[0].at + delay;
+  if (until <= controller.now()) return null;
+  return { until, reason: `the merge call was refused ${refusals.length} times; it is tried again after ${new Date(until).toISOString()}` };
+}
+
+/**
+ * The newest merge AIWorks recorded on a repository's base branch, across campaigns: { mergeCommit, campaignId, task },
+ * or null. A GitHub merge only (a local merge moves main itself, which the trusted tip reads).
+ */
+export function newestRecordedMerge(store, repository, branch) {
+  const row = store.get(`SELECT j.campaign_id, j.detail FROM journal j JOIN campaigns c ON c.id = j.campaign_id
+    WHERE j.kind = 'merged' AND lower(json_extract(c.declaration, '$.target.repository')) = ? AND json_extract(c.declaration, '$.target.baseBranch') = ?
+    AND json_extract(j.detail, '$.local') IS NULL ORDER BY j.seq DESC LIMIT 1`, String(repository).toLowerCase(), branch);
+  return row && SHA.test(row.detail?.mergeCommit ?? '') ? { mergeCommit: row.detail.mergeCommit, campaignId: row.campaign_id, task: row.detail.task } : null;
+}
+
+/**
+ * Whether `baseSha`, the base this pass fetched, is at or after every merge AIWorks itself recorded on that base: the
+ * repository's own merges serialize across supervisor instances through the store's write lock, so a merge recorded by
+ * another instance after this fetch shows here before any call. False when that merge commit is not an ancestor of the
+ * fetched base, or is not readable locally yet (a merge just made elsewhere): the base is fetched again next pass.
+ */
+export function baseFresh(controller, repository, branch, repoPath, baseSha) {
+  const newest = newestRecordedMerge(controller.store, repository, branch);
+  if (!newest || newest.mergeCommit === baseSha) return true;
+  return gitA.isAncestor({ git: controller.cmd.git, path: repoPath, ancestor: newest.mergeCommit, descendant: baseSha });
+}
+
+/** The journal kind of the post-merge check of a GitHub merge commit's shape (P1 safe promotion). */
+export const MERGE_SHAPE = 'merge-shape';
+
+/**
+ * Check, once, the shape of the newest GitHub merge AIWorks requested in a repository, after its base was fetched: the
+ * merge commit's parents must be the base the request named and the verified head, and its tree the verified tree, or the
+ * gated tree a refresh or group named. Journals `merge-shape` ({ ok, parents, tree, expected }) under the campaign's
+ * lease; a merge whose commit is not readable locally yet is checked on a later pass. A failed check is recorded and
+ * logged as information about the base, never a hold: nothing on the base is rewritten, and the next head onto that base
+ * is judged by condition 3 as always (an integration repair, through a verifier, when it does not contain the base).
+ * Returns the detail recorded, or null when nothing was due.
+ */
+export function checkMergeShape(controller, repository, branch, repoPath) {
+  const { store } = controller, git = controller.cmd.git;
+  const newest = newestRecordedMerge(store, repository, branch);
+  if (!newest) return null;
+  const { mergeCommit, campaignId, task: taskId } = newest;
+  const merged = store.get(`SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'merged' AND json_extract(detail, '$.mergeCommit') = ? ORDER BY seq DESC LIMIT 1`,
+    campaignId, mergeCommit)?.detail;
+  if (!merged?.requested) return null; // merged elsewhere, or reconciled from a merge nobody here requested: not AIWorks's shape to check
+  if (store.get(`SELECT 1 AS present FROM journal WHERE campaign_id = ? AND kind = ? AND json_extract(detail, '$.mergeCommit') = ?`, campaignId, MERGE_SHAPE, mergeCommit)) return null;
+  const request = lastRequest(store, campaignId, taskId, merged.sha);
+  if (!request || !SHA.test(request.base ?? '')) return null;
+  const shown = gitA.exec(git, ['show', '-s', '--format=%T %P', mergeCommit], { cwd: repoPath, timeoutMs: 30_000 });
+  if (!shown.ok) return null;
+  const [tree, ...parents] = shown.stdout.split(/\s+/);
+  const verifiedTree = commitTree(git, repoPath, merged.sha);
+  const expected = { parents: [request.base, merged.sha], tree: typeof request.tree === 'string' ? request.tree : verifiedTree };
+  const ok = Boolean(expected.tree) && tree === expected.tree && parents.length === 2 && parents[0] === expected.parents[0] && parents[1] === expected.parents[1];
+  const ctx = lease(controller, campaignId);
+  if (!ctx) return null;
+  const detail = { task: taskId, sha: merged.sha, mergeCommit, ok, parents, tree, expected };
+  controller.fenced(ctx, () => store.journal(campaignId, MERGE_SHAPE, detail, controller.now()));
+  if (!ok) controller.log(`merge ${mergeCommit} of ${campaignId}/${taskId} on ${repository} does not have the requested shape: parents ${parents.join(' ')}, tree ${tree}; expected ${expected.parents.join(' ')} with tree ${expected.tree}. The base carries it as it is; the next head onto it is judged against that base.`);
+  return detail;
+}
+
+const commitTree = (git, repoPath, sha) => {
+  const out = gitA.exec(git, ['rev-parse', '--verify', '--quiet', `${sha}^{tree}`], { cwd: repoPath, timeoutMs: 30_000 });
+  return out.ok && SHA.test(out.stdout) ? out.stdout : null;
+};
 
 /**
  * Judge one published pull request against the gate and act on it. Returns true when it acted on the repository (a
@@ -375,16 +519,21 @@ function mergeOne(controller, item, settings, repoPath, baseSha) {
   // The verified head must contain the current base, or the merge result is a tree no verifier ran: integration repair,
   // unless the refresh (merges.refresh) ran the gate on that exact merge result itself. While its gate runs, the
   // repository waits, so the next pull request is judged against the base this one leaves.
+  let gated = null;
   if (!gitA.isAncestor({ git, path: repoPath, ancestor: baseSha, descendant: sha })) {
     const ctx = lease(controller, item.campaignId);
     if (!ctx) return false;
     const step = settings.refresh ? refreshStep(controller, ctx, item, repoPath, baseSha, settings.refresh) : { next: 'repair' };
     if (step.next === 'wait') { wait(controller, item, step.reason); return true; }
     if (step.next === 'repair') return controller.fenced(ctx, () => repair(controller, ctx, item, repoPath, baseSha, step.detail));
+    // The merge carries the gated merge result, which the shape check expects (checkMergeShape).
+    if (SHA.test(step.tree ?? '')) gated = step.tree;
   }
   const blocker = mergeBlocker(controller, item, pr);
   if (blocker) return wait(controller, item, blocker);
-  return mergeNow(controller, item, baseSha);
+  const owed = refusalWait(controller, item);
+  if (owed) return wait(controller, item, owed.reason);
+  return mergeNow(controller, item, baseSha, repoPath, gated);
 }
 
 function authorityBlocked(controller, item, repoPath, baseSha) {
@@ -405,9 +554,9 @@ function authorityBlocked(controller, item, repoPath, baseSha) {
  * verified SHA with a merge commit, record it. Returns false when the campaign lease or the task changed, true otherwise
  * (merged, or refused or unknown, which the next pass settles by reading the pull request first).
  */
-export function mergeNow(controller, item, baseSha) {
+export function mergeNow(controller, item, baseSha, repoPath = null, tree = null) {
   const { store } = controller, { campaignId, decl, task, number } = item;
-  const gh = controller.cmd.gh, sha = task.verified_sha, url = task.pr_url, repository = decl.target.repository;
+  const gh = controller.cmd.gh, sha = task.verified_sha, url = task.pr_url, repository = decl.target.repository, branch = decl.target.baseBranch;
   const ctx = lease(controller, campaignId);
   if (!ctx) return false;
   // The request is committed before the call: after a crash the next pass reads the pull request before any retry.
@@ -417,15 +566,23 @@ export function mergeNow(controller, item, baseSha) {
       && !pendingChanges(store, campaignId, task.task_id, sha) && !awaitingAcceptance(store, c, t)
       && (!controller.ci || ciMergeable(store, campaignId, task.task_id, sha));
   };
-  if (!controller.fenced(ctx, () => {
+  // Under the store's write lock, so a merge another instance recorded since this pass fetched the base is seen: a base
+  // that moved under such a merge is judged again from a fresh fetch, never merged onto from this one (P1 serialization).
+  const requested = controller.fenced(ctx, () => {
     if (!still()) return false;
-    store.journal(campaignId, 'merge-requested', { task: task.task_id, sha, url, base: baseSha }, controller.now());
+    if (!baseFresh(controller, repository, branch, repoPath ?? controller.repo(decl).path, baseSha)) return 'stale';
+    store.journal(campaignId, 'merge-requested', { task: task.task_id, sha, url, base: baseSha, ...(tree ? { tree } : {}) }, controller.now());
     return true;
-  })) return false;
+  });
+  if (requested === 'stale') {
+    const moved = newestRecordedMerge(store, repository, branch)?.mergeCommit;
+    return wait(controller, item, `${branch} moved under the merge ${moved} AIWorks recorded: the fetched ${baseSha} does not contain it; it is fetched again next pass`);
+  }
+  if (!requested) return false;
   controller.injectFault('before-merge');
   try {
     controller.fenced(ctx, () => {
-      const { mergeCommit } = mergeWithMergeCommit({ gh, repository, number, sha });
+      const { mergeCommit } = mergeWithMergeCommit({ gh, repository, number, sha, local: { git: controller.cmd.git, repoPath: repoPath ?? controller.repo(decl).path, base: baseSha, head: sha, tree } });
       controller.injectFault('after-merge');
       record(controller, ctx, item, mergeCommit, { reconciled: false, requested: true });
     });
@@ -517,6 +674,9 @@ export function mergeLocal(controller, item, settings, repoPath, step = null) {
   if (blocked) return wait(controller, item, blocked);
   const branch = gitA.branchName(campaignId, task.task_id);
   const tip = trustedTip(store, { git, repoPath, repository });
+  // The message of the merge commit the gate writes; `gated` is the refresh gate's tree, if any.
+  const mergeMessage = (gated) => `Merge ${task.task_id} of campaign ${campaignId} (${url})\n\nVerified ${sha} on ${branch}, merged under the local merge gate` +
+    `${step ? `; its group passed one gate on the combined result ${step.group}` : gated ? `; its merge with ${tip.tip} passed the refresh gate` : ''}.`;
   if (tip.state !== 'TRUSTED') return wait(controller, item, `local main is not trusted (${tip.state}): ${tip.reason}`);
   if (authorityBlocked(controller, item, repoPath, tip.tip)) return false;
   const stillDone = (t) => t.state === 'done' && !t.blocked && t.verified_sha === sha && t.pr_url === url && !mergeRefusal(t);
@@ -540,6 +700,22 @@ export function mergeLocal(controller, item, settings, repoPath, step = null) {
     controller.fenced(ctx, () => {
       if (still()) recordLocal(controller, ctx, item, { trusted: tip.tip, mergeCommit: tip.main, reconciled: true, requested: true, group });
     });
+    return true;
+  }
+
+  const owed = refusalWait(controller, item);
+  if (owed) return wait(controller, item, owed.reason);
+  // Main never takes a commit whose message a push of main would refuse (#125): neither one the merge adds nor its own
+  // merge commit. Checked before any refresh gate runs and before the request, so main and the ledger stay as they are
+  // and no gate is spent; refusals back off (refusalWait). No matched value is written anywhere.
+  const leaks = privateMessages({ git, repoPath, trusted: tip.tip, sha, also: [mergeMessage(null)] });
+  if (leaks !== 0) {
+    const ctx = lease(controller, campaignId);
+    if (!ctx) return false;
+    const detail = leaks === null ? 'the commit messages it would add to main cannot be read'
+      : `${leaks} commit message(s) it would add to main contain private information (a personal path, a credential or a private name), which a push of main refuses; the branch needs those commits rewritten`;
+    controller.fenced(ctx, () => { if (still()) store.journal(campaignId, 'merge-refused', { task: task.task_id, sha, url, local: true, detail }, controller.now()); });
+    controller.log(`merge of ${campaignId}/${task.task_id} refused: ${detail}`);
     return true;
   }
 
@@ -579,8 +755,7 @@ export function mergeLocal(controller, item, settings, repoPath, step = null) {
     return true;
   };
   const planned = writeMergeCommit({ git, repoPath, trusted: tip.tip, verified: sha, tree: gated,
-    message: `Merge ${task.task_id} of campaign ${campaignId} (${url})\n\nVerified ${sha} on ${branch}, merged under the local merge gate` +
-      `${step ? `; its group passed one gate on the combined result ${step.group}` : gated ? `; its merge with ${tip.tip} passed the refresh gate` : ''}.` });
+    message: mergeMessage(gated) });
   if (!planned.ok) return refuse(planned.reason);
   controller.injectFault('after-commit-tree');
   try {
@@ -620,7 +795,7 @@ function repair(controller, ctx, item, repoPath, baseSha, refreshed) {
       `${paths.length ? `Conflicting paths: ${paths.join(', ')}. ` : 'It merges without a textual conflict; a semantic conflict is still possible. '}` +
       `${refreshed ? `The supervisor's refresh did not merge it: ${refreshed}. ` : ''}` +
       `Sibling commits on ${base}: ${commits.map((entry) => `${entry.sha.slice(0, 12)} ${entry.subject}`).join('; ') || 'unknown'}. ` +
-      `Merge ${baseSha} into this branch (git merge ${baseSha}), resolve any conflicts, run the full gate and commit the merge. Never rebase, reset or amend: ${sha} must stay an ancestor of the new head.`,
+      `Merge ${baseSha} into this branch (git merge -m "Merge ${base} at ${baseSha.slice(0, 12)} into this branch" ${baseSha}: always this message, never Git's default, which can name a local path), resolve any conflicts, run the full gate and commit the merge. Never rebase, reset or amend: ${sha} must stay an ancestor of the new head.`,
   };
   const stalled = controller.reopenPublished(ctx, fresh, finding, { limits: campaignLimits(decl), now,
     lastError: `merge-base-moved: ${sha} does not contain ${base} at ${baseSha}`,

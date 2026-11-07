@@ -1,3 +1,4 @@
+import { homeBlocks } from '/home.mjs';
 import { MOVED_DRAFTS, adoptDrafts, formatRoute, globalOf, resolveRoute, tabOf, tabRoute, TABS } from '/router.mjs';
 // The state copy of OWNER_WORKSPACE §7 and the Now screen (slice S4); the server serves src/dashboard/copy.mjs here.
 import { COMMANDS, DELEGATED, DIALOGS, NEEDS, NOT_READ, busyOnCommand, costRunsLine, nowView, readingLines, resultMeaning, stateCopy, workLine, DASHBOARD_VERSION, DASHBOARD_VERSION_NAME, DASHBOARD_VERSIONS } from '/copy.mjs';
@@ -150,8 +151,8 @@ const routeLink = (text, route, cls = '') => el('a', { href: typeof route === 's
 // A connected project without GitHub is addressed by its project id and named by its own name.
 const projectName = (project) => state?.projects?.projects?.find((item) => !item.repository && item.id === project)?.name ?? (shortRepo(project) || project);
 // Each screen's heading and the one question it answers (OWNER_WORKSPACE §3.1).
-const screenText = { home: ['Home', 'What needs me, and what changed?'], projects: ['Projects', 'Which project should I open?'], needs: ['Needs you', 'What is waiting for me, across projects?'],
-  settings: ['Settings', 'What can AIWorks use on this computer?'], accounts: ['Worker accounts', 'Which AI worker logins and accounts are on this computer?'],
+const screenText = { home: ['Home', 'What needs me, and what changed?'], projects: ['Projects', 'Which project should I open?'],
+  settings: ['Settings', 'What can AIWorks use on this computer?'], itself: ['Settings', 'What is AIWorks handling by itself?'], accounts: ['Worker accounts', 'Which AI worker logins and accounts are on this computer?'],
   version: ['Version and roadmap', 'Which capabilities are turned on in this version?'],
   instructions: ['Model instructions', 'Which AI models should handle what kind of work?'],
   chats: ['Chats', 'What did I ask AIWorks, and what did it answer?'],
@@ -182,6 +183,8 @@ function showRoute() {
   $('#view-eyebrow').textContent = project ? `PROJECT · ${projectName(project).toUpperCase()}` : route.screen === 'settings' && route.section ? 'SETTINGS' : 'AIWORKS';
   $('#view-title').textContent = project && route.screen === 'project' && route.tab === 'overview' ? projectName(project) : route.screen === 'worklist-item' ? `${title} #${route.number}` : title;
   $('#view-description').textContent = question;
+  // Home has no page heading of its own: its headline is the page's one h1.
+  $('.page-heading').hidden = route.screen === 'home';
   $('#project-back').hidden = !project;
   document.title = [title, project ? projectName(project) : null, 'AIWorks'].filter(Boolean).join(' · ');
   const place = globalOf(route);
@@ -219,14 +222,14 @@ function showTabs() {
 }
 
 // Today's summary cards, each on the screen that now answers it (OWNER_WORKSPACE §9): roadmap items on Diagnostics,
-// Needs you on Needs you, agents working on a project's Work. Cost so far is the headline of a project's Cost tab (S7).
+// the owner's count on Home, agents working on a project's Work. Cost so far is the headline of a project's Cost tab (S7).
 function renderMetrics(campaigns = state.supervisor.campaigns, shown = []) {
   const entries = state.roadmap.entries;
   const agents = campaigns.flatMap((c) => c.agents);
-  // The owner actions under "Needs you": reviews, decisions, stopped work and a stopped supervisor. A supervisor fault and an
+  // The owner actions on Home: sign-ins, payments and results to accept. A supervisor fault, follow-ups and stopped work and an
   // unreadable inbox are listed but not counted: they are not the owner's to do. A pause by itself is not listed.
   // A published step whose merge is still being checked is never counted as nothing.
-  // Needs you counts and names only what the owner must do (owner, 2026-10-13: "only notifications where I am really
+  // Home counts and names only what the owner must do (owner, 2026-10-13: "only notifications where I am really
   // needed"); reports to read and work ready for release are on Results, not here.
   const owner = state.owner ?? { count: 0, unknownResults: 0, also: null }, attention = owner.count, unknown = owner.unknownResults;
   const available = state.supervisor.available;
@@ -246,7 +249,7 @@ function renderMetrics(campaigns = state.supervisor.campaigns, shown = []) {
   $('#metrics').classList.toggle('metrics-inline', shown.includes('AI workers working'));
   // The Needs you count in the global bar: never zero while the supervisor state is unknown, and never final while a merge
   // check runs: "7 + checking" until it ends (OWNER_WORKSPACE §1 rule 3, §7.4; aiworks#11 review 4 F3).
-  $('#needs-count').textContent = !state.supervisor.available ? '?' : attention ? `${attention}${unknown ? ' + checking' : ''}` : unknown ? 'checking' : '';
+  $('#home-count').textContent = !state.supervisor.available ? '?' : attention ? `${attention}${unknown ? ' + checking' : ''}` : unknown ? 'checking' : '';
 }
 
 // governance provider's own roadmap (read from the governance checkout), kept apart from project campaigns; display names replace internal track labels.
@@ -560,7 +563,7 @@ function receiptSteps(m, coordinator, aiworks) {
     steps.push(m.failure === 'project-budget' ? receiptStep(false, 'Waiting for budget', 'the project budget cannot cover reading it. Raise or remove the budget in the project’s settings, or wait for next month if the monthly budget ran out; AIWorks reads it by itself when it fits', 'failed')
       : m.failure ? receiptStep(false, 'Retrying', `the last read ended without an answer (${outcomeLabels[m.failure] ?? m.failure}); next attempt ${dateTime(m.retryAt)}`, 'failed')
       : !coordinator.configured ? receiptStep(false, 'Not read', NOT_READ.receipt, 'failed')
-        : coordinator.blocked ? receiptStep(false, 'Not read yet', 'AIWorks cannot read requests right now; why is under Needs you', 'failed')
+        : coordinator.blocked ? receiptStep(false, 'Not read yet', 'AIWorks cannot read requests right now; why is in AIWorks itself under Settings', 'failed')
         : coordinator.maxRunsPerDay !== null && coordinator.runsToday >= coordinator.maxRunsPerDay ? receiptStep(false, 'Waiting', `AIWorks has read today's ${coordinator.maxRunsPerDay} requests; it reads this one when the 24 hours free up`)
           : receiptStep(false, 'Waiting', waitingWords(coordinator, aiworks)));
   } else if (m.readAt) {
@@ -622,7 +625,7 @@ function chatsScreen(chatId) {
   const chats = chatList(), open = chatId ? chats.find((chat) => chat.id === chatId) ?? null : null;
   // Starting a chat is offered only while something reads messages; otherwise the panel says so and what to do instead.
   const list = panel('All chats', coordinator.configured
-    ? `AIWorks reads them and changes nothing · replies stay in this dashboard · ${coordinator.runsToday}${coordinator.maxRunsPerDay === null ? '' : `/${coordinator.maxRunsPerDay}`} read in the last 24h${coordinator.blocked ? ' · not reading now; why is under Needs you' : ''}`
+    ? `AIWorks reads them and changes nothing · replies stay in this dashboard · ${coordinator.runsToday}${coordinator.maxRunsPerDay === null ? '' : `/${coordinator.maxRunsPerDay}`} read in the last 24h${coordinator.blocked ? ' · not reading now; why is in AIWorks itself under Settings' : ''}`
     : null,
   el('div', {}, notRead(coordinator), chats.length ? el('ul', { class: 'chat-list', 'data-focus-scope': 'chats/list' }, ...chats.map((chat) => el('li', { class: `chat-row${chat.id === open?.id ? ' active' : ''}` },
     routeLink(chatTitle(chat.turns[0]), { screen: 'chats', chat: chat.id }),
@@ -1574,140 +1577,82 @@ function moreBox(key, nodes) {
 }
 
 /**
- * One Needs you card (aiworks#39): the work it belongs to, what the owner decides in one sentence and the one action that
- * resolves it on the card itself. The rest of why, what follows, opening the step or its full Review, the pull request
- * and planning different work are under its one More. Identifiers, commits and recorded machine detail stay out of it.
+ * What AIWorks keeps for itself (the owner's Home never lists it): its own problems, work stopped until it is checked
+ * again or resumed, and routine work it continues alone. None of it is counted for the owner; each entry is one line.
  */
-function needsItem(item) {
+function itselfEntries() {
+  const owner = state.owner;
+  if (!owner?.available) return { problems: [], stopped: [], handling: [], banner: false };
+  const group = (key) => owner.groups.find((entry) => entry.key === key)?.items ?? [];
+  const controller = state.supervisor.controller;
+  return { problems: group('aiworks-itself'), stopped: [...group('stalled'), ...(owner.stalled ?? [])], handling: owner.handling ?? [],
+    banner: Boolean(controller?.stopped) && !owner.items.some((item) => item.kind === 'controller') };
+}
+
+// The kinds that are a fault of AIWorks itself; every other entry of "AIWorks itself" is a follow-up with its own action.
+const FAULT_KINDS = new Set(['merge-problem', 'unrecorded', 'unattended', 'controller', 'coordinator', 'release-failed', 'release-unknown', 'base-read-held']);
+
+/** How many real faults of its own stop AIWorks's work: the one grey line on Home, never part of the owner's count. */
+function ownProblemCount() {
+  const { problems, stopped, banner } = itselfEntries();
+  return problems.filter((entry) => FAULT_KINDS.has(entry.kind)).length + stopped.length + (banner ? 1 : 0);
+}
+
+/**
+ * What resolves an item and explains it, as its old Needs you card did: the one action through the same bound requests as
+ * its step and Review, and its explanations, criterion choice and secondary links under one More.
+ */
+function itemActions(item, { points = true } = {}) {
   const c = item.campaignId ? campaignById(item.campaignId) : null, task = c && item.taskId ? c.tasks.find((t) => t.id === item.taskId) : null;
   const project = item.repository ?? item.project ?? null;
-  const when = `${item.at ? ` at about ${timeOnly(item.at)}` : ''}${item.since ? ` since ${timeOnly(item.since)}` : ''}`;
-  const [why, rest] = splitSentence(item.why), more = [];
-  const resolution = itemResolution(item, c, task, more);
-  // Without an action on the card, opening its step or Review is its one action; otherwise that is a secondary link.
-  const route = item.route ? routeLink(item.route.label, item.route.address, resolution ? 'needs-link' : 'button') : null;
-  const secondary = [resolution ? route : null, item.reference ? link(`${item.reference.label} ↗`, item.reference.url, 'needs-link subtext') : null,
+  const more = [], resolution = itemResolution(item, c, task, more);
+  const [, rest] = splitSentence(item.why);
+  const route = item.route && resolution ? routeLink(item.route.label, item.route.address, 'needs-link') : null;
+  const secondary = [route, item.reference ? link(`${item.reference.label} ↗`, item.reference.url, 'needs-link subtext') : null,
     item.system || !item.taskId || item.plan ? null : planFromItem(item, project)].filter(Boolean);
-  return el('li', { class: `needs-item ${item.kind}`, 'data-focus-scope': `needs-item/${itemKey(item)}` },
-    el('div', { class: 'needs-body' },
-      el('div', { class: 'needs-context' }, [item.about ? `Project ${projectName(item.about)}` : null, c ? workName(c) : null].filter(Boolean).join(' · ')),
-      item.action ? el('div', { class: 'needs-action' }, item.action) : null,
-      el('div', { class: 'needs-text' }, el('span', {}, `${item.text}${when}`)),
-      why ? el('p', { class: 'needs-why' }, why) : null),
-    resolution ?? (route ? el('div', { class: 'needs-actions' }, route) : null),
-    moreBox(`needs-more/${itemKey(item)}`, [
-      rest ? el('p', { class: 'needs-why' }, rest) : null,
-      item.evidence && !['review', 'accept', 'unchecked'].includes(item.kind) ? el('div', { class: 'evidence' }, item.evidence) : null,
-      item.mergeCheck ? el('div', { class: 'needs-stale' }, mergeAsOf(item.mergeCheck)) : null,
-      item.points.map((point) => el('div', { class: 'needs-point' },
-        point.link ? link(`${point.link.label} ↗`, point.link.url, 'needs-link') : null, el('span', {}, point.text))),
-      more,
-      secondary.length ? el('div', { class: 'needs-actions needs-secondary' }, ...secondary) : null]));
+  const box = moreBox(`needs-more/${itemKey(item)}`, [
+    rest ? el('p', { class: 'needs-why' }, rest) : null,
+    item.evidence && !['review', 'accept', 'unchecked'].includes(item.kind) ? el('div', { class: 'evidence' }, item.evidence) : null,
+    item.mergeCheck ? el('div', { class: 'needs-stale' }, mergeAsOf(item.mergeCheck)) : null,
+    points ? (item.points ?? []).map((point) => el('div', { class: 'needs-point' },
+      point.link ? link(`${point.link.label} ↗`, point.link.url, 'needs-link') : null, el('span', {}, point.text))) : null,
+    more, secondary.length ? el('div', { class: 'needs-actions needs-secondary' }, ...secondary) : null]);
+  return { c, task, resolution, box };
 }
 
-/**
- * One Needs you group (OWNER_WORKSPACE S3): a project, named and linked to its own screen, or "AIWorks itself" (always
- * last), with its count and its items in today's order.
- */
-const needsGroup = (group) => el('section', { class: 'needs-group', 'aria-labelledby': `needs-group-${group.key}`, 'data-focus-scope': `needs/${group.key}` },
-  el('h3', { id: `needs-group-${group.key}`, class: 'section-title' }, group.project ? routeLink(group.name, { screen: 'project', project: group.project }) : group.name, NEEDS.groupCount(group.count, group.notCounted)),
-  el('ul', { class: 'needs-list' }, ...group.items.map(needsItem)));
-
-/**
- * What AIWorks is handling itself (owner.mjs `handling`): routine merge waits its gate or a repair round settles within
- * the authority already given, and answers or requested changes the owner already sent that AIWorks has yet to apply,
- * each with the recorded reason, or that none is recorded, and what happens next. Listed
- * so nothing stalled is hidden; never counted, because none needs the owner.
- */
-function handlingList(handling) {
-  if (!handling.length) return null;
-  return el('section', { class: 'needs-group needs-handling', 'aria-labelledby': 'needs-handling-title', 'data-focus-scope': 'needs/handling' },
-    el('h3', { id: 'needs-handling-title', class: 'section-title' }, `AIWorks is handling (${handling.length}) · not counted`),
-    el('p', { class: 'subtext' }, 'What you already settled and routine waits, continued by AIWorks inside the authority you already gave it. Nothing here needs you.'),
-    el('ul', { class: 'needs-list' }, ...handling.map((entry) => handlingEntry(entry, 'needs-handling'))));
+/** One entry of "AIWorks itself": what it is, its action where it has one (Check again, Accept, guidance), and where to open it. */
+function itselfLine(entry, word, tone, scope) {
+  const project = entry.about ?? entry.repository ?? null;
+  const { resolution, box } = entry.kind ? itemActions(entry) : { resolution: null, box: null };
+  const open = entry.route && !resolution ? routeLink(entry.route.label, entry.route.address, 'needs-link')
+    : entry.campaignId && entry.taskId && entry.repository ? routeLink('Open the step', { screen: 'step', project: entry.repository, work: entry.campaignId, step: entry.taskId }, 'needs-link') : null;
+  const why = (entry.reason ? `${entry.reason}. ${entry.next ?? ''}`.trim() : entry.action ?? '')
+    + (entry.kind === 'base-read-held' ? `. Since ${dateTime(entry.since)}. ${entry.points?.[0]?.text ?? ''}` : '');
+  return el('li', { class: 'itself-line', 'data-focus-scope': `itself/${scope}/${entry.campaignId ?? ''}/${entry.taskId ?? ''}/${entry.kind ?? ''}` },
+    el('span', { class: `badge ${tone}` }, word),
+    el('span', { class: 'itself-text' }, [project ? `${projectName(project)}: ` : '', entry.text ?? '', why ? ` ${why}` : ''].join('')),
+    !resolution && entry.command ? primaryAction(entry.command, 'button secondary small') : null, open,
+    resolution ? el('div', { class: 'itself-resolve' }, resolution) : null, box);
 }
 
-/** One entry AIWorks listed with its recorded reason and what happens next (owner.mjs `handling` and `stalled`). */
-const handlingEntry = (entry, scope) => el('li', { class: 'needs-item handling', 'data-focus-scope': `${scope}/${entry.campaignId}/${entry.taskId}` },
-  el('div', { class: 'needs-body' },
-    el('div', { class: 'needs-context' }, [`Project ${projectName(entry.repository)}`, campaignById(entry.campaignId) ? workName(campaignById(entry.campaignId)) : null].filter(Boolean).join(' · ')),
-    el('div', { class: 'needs-text' }, el('span', {}, entry.text)),
-    el('p', { class: 'needs-why' }, `${entry.reason}. ${entry.next}`),
-    entry.since ? el('div', { class: 'subtext' }, `${entry.sinceWords ?? 'Passed the check'} ${dateTime(entry.since)}`) : null),
-  el('div', { class: 'needs-actions needs-secondary' }, routeLink('Open the step', { screen: 'step', project: entry.repository, work: entry.campaignId, step: entry.taskId }, 'needs-link')));
-
-/**
- * AW-016: work that does not continue by itself until it is checked again, resumes or is planned again (owner.mjs
- * `stalled` and the `stalled` group). Not counted, because AW-016 leaves none of it to the owner alone, and never under
- * "AIWorks is handling", because nothing here moves by itself. Each says what restarts it.
- */
-function stalledList(group, stalled) {
-  const items = group?.items ?? [], total = items.length + stalled.length;
-  if (!total) return null;
-  return el('section', { class: 'needs-own', 'data-focus-scope': 'needs/stalled' }, disclosure('needs/stalled',
-    `${plural(total, 'thing')} stopped until restarted · not counted`,
-    el('div', {}, el('p', { class: 'subtext' }, 'These do not move by themselves. Each says what restarts it: Check again, resuming its work, or planning it again.'),
-      items.length ? el('ul', { class: 'needs-list' }, ...items.map(needsItem)) : null,
-      stalled.length ? el('ul', { class: 'needs-list' }, ...stalled.map((entry) => handlingEntry(entry, 'needs-stalled'))) : null)));
-}
-
-/**
- * AW-016: the decisions AIWorks answered itself with the worker's reversible suggestion. One line each: what it chose
- * and why, with the step, where Send guidance changes it. Never counted: nothing waits for the owner here.
- */
-function decidedList(decided) {
-  if (!decided.length) return null;
-  return el('section', { class: 'needs-group needs-decided', 'aria-labelledby': 'needs-decided-title', 'data-focus-scope': 'needs/decided' },
-    el('h3', { id: 'needs-decided-title', class: 'section-title' }, `AIWorks decided for you (${decided.length})`),
-    el('p', { class: 'subtext' }, 'Reversible choices, made with the suggested option so work kept going. You can change each one while its step is still being made.'),
-    el('ul', { class: 'needs-list' }, ...decided.slice(0, 8).map((d) => el('li', { class: 'needs-item decided', 'data-focus-scope': `needs-decided/${d.campaignId}/${d.taskId}` },
-      el('div', { class: 'needs-body' },
-        el('div', { class: 'needs-context' }, [`Project ${projectName(d.project)}`, d.step].filter(Boolean).join(' · ')),
-        el('div', { class: 'needs-text' }, el('span', {}, `${d.question} `), el('strong', {}, d.chosen)),
-        d.reason ? el('p', { class: 'needs-why' }, d.reason) : null,
-        d.others.length ? el('div', { class: 'subtext' }, `Other options: ${d.others.join(' · ')}`) : null),
-      el('div', { class: 'needs-actions needs-secondary' }, routeLink('Change it', { screen: 'step', project: d.project, work: d.campaignId, step: d.taskId }, 'needs-link'))))));
-}
-
-/**
- * AW-016: AIWorks's own state, apart from what needs the owner and folded away: its problems with their Check again,
- * and the routine work it is continuing. Listed so nothing stalled is hidden; never counted.
- */
-function ownStateList(group, handling) {
-  const problems = group?.items ?? [], total = problems.length + handling.length;
-  if (!total) return null;
-  return el('section', { class: 'needs-own', 'data-focus-scope': 'needs/own' }, disclosure('needs/own',
-    `AIWorks is handling ${plural(total, 'thing')} itself${problems.length ? ` · ${plural(problems.length, 'problem')} of its own` : ''}`,
-    el('div', {}, problems.length ? el('ul', { class: 'needs-list' }, ...problems.map(needsItem)) : null, handlingList(handling))));
-}
-
-/** Needs you: what is waiting for the owner, grouped by project, in plain words, each resolved on its own card. */
-function needsYou() {
-  const owner = state.owner;
-  if (!owner?.available) return null;
-  const { headline, count, groups = [], handling = [], held = [], unknownResults: unknown, reply } = owner;
-  // aiworks#18: a stopped supervisor leads, with the time it last renewed its leases, unless the one item for AIWorks
-  // stopped already says it with its time (one fact, once; review 4 F2).
-  const controller = state.supervisor.controller;
-  const said = owner.items.some((item) => item.kind === 'controller' && !item.system);
-  return el('section', { class: `needs${count || held.length ? '' : unknown ? ' checking' : ' calm'}`, 'aria-labelledby': 'needs-title' },
-    controller?.stopped && !said ? el('p', { class: 'needs-stopped' }, NEEDS.banner(controller.lastLeaseRenewalAt, { dateTime }, controller.stopRequested)) : null,
-    el('div', { class: 'needs-head' }, el('h2', { id: 'needs-title' }, headline),
-      unknown ? el('span', { class: 'needs-unknown' }, `Merge of ${unknown} published step${unknown === 1 ? '' : 's'} being checked`) : null),
-    // Only owner actions here (owner, 2026-10-13; AW-016): posted reports and merged work ready for release are on Results.
-    ...groups.filter((group) => !['aiworks-itself', 'stalled'].includes(group.key)).map(needsGroup),
-    decidedList(owner.decided ?? []),
-    stalledList(groups.find((group) => group.key === 'stalled'), owner.stalled ?? []),
-    ownStateList(groups.find((group) => group.key === 'aiworks-itself'), handling),
-    // Projects held up by the owner's decisions: no work is blocked, so they are not counted, but each is named with a
-    // link to its Now, which says which decisions (aiworks#11 review 5 G7).
-    held.length ? el('ul', { class: 'needs-list', 'data-focus-scope': 'needs/held' }, ...held.map((project) => el('li', {},
-      el('strong', {}, project.name), ` · ${project.text} `, routeLink(`Open ${project.name}`, { screen: 'project', project: project.id })))) : null,
-    reply && isRecent(reply.answeredAt) ? el('div', { class: 'needs-reply' }, `AIWorks answered your message (${dateTime(reply.answeredAt)}). `,
-      reply.url ? link('Read its “What needs you” ↗', reply.url) : routeLink('Open the chat', { screen: 'chats', chat: reply.threadId ?? reply.messageId })) : null,
-    // The local work list (UI20): its open decisions are counted above; the list itself is one link away.
-    worklist()?.available ? el('p', { class: 'needs-reply' }, `AIWorks’s own work list: ${plural(worklistUnfinished().length, 'unfinished item')}. `,
-      routeLink('Open the work list', WORKLIST_ADDRESS)) : null);
+/** The Settings section "AIWorks itself": folded, one line per entry. Null when there is nothing to list. */
+function itselfSection() {
+  const { problems, stopped, handling, banner } = itselfEntries(), owner = state.owner;
+  const held = owner?.held ?? [], list = worklist()?.available ? worklistUnfinished() : null;
+  const total = problems.length + stopped.length + handling.length + held.length + (banner ? 1 : 0);
+  if (!total && !list) return null;
+  const own = ownProblemCount();
+  const summary = own ? `AIWorks itself · ${plural(own, 'problem')} of its own` : total ? `AIWorks itself · handling ${plural(total, 'thing')}` : 'AIWorks itself';
+  return panel('AIWorks itself', 'Its own problems and routine work. None of it needs you.', el('div', { class: 'panel-body' }, disclosure('settings/itself', summary, el('div', {},
+    banner ? el('p', { class: 'needs-stopped' }, NEEDS.banner(state.supervisor.controller.lastLeaseRenewalAt, { dateTime }, state.supervisor.controller.stopRequested)) : null,
+    total ? el('ul', { class: 'needs-list itself-list' },
+      ...problems.map((entry) => FAULT_KINDS.has(entry.kind) ? itselfLine(entry, 'Problem', 'stale', 'problem') : itselfLine(entry, entry.action ?? 'Follow-up', 'pending', 'followup')),
+      ...stopped.map((entry) => itselfLine(entry, 'Stopped', 'stale', 'stopped')),
+      ...handling.map((entry) => itselfLine(entry, 'Handling', 'in_progress', 'handling')),
+      ...held.map((project) => el('li', { class: 'itself-line' }, el('span', { class: 'badge stale' }, 'Held'),
+        el('span', { class: 'itself-text' }, `${project.name} · ${project.text}`), routeLink(`Open ${project.name}`, { screen: 'project', project: project.id }, 'needs-link')))) : null,
+    list ? el('p', { class: 'needs-reply' }, `AIWorks’s own work list: ${plural(list.length, 'unfinished item')}. `, routeLink('Open the work list', WORKLIST_ADDRESS)) : null,
+  ), current.route.section === 'itself')));
 }
 
 /**
@@ -1769,7 +1714,7 @@ function attentionSummary() {
   const waiting = owner.count > 0, checking = owner.unknownResults > 0;
   return el('section', { class: `attention-summary${waiting ? '' : checking ? ' checking' : ' calm'}`, 'aria-label': 'What needs you' },
     el('div', {}, el('h2', {}, owner.headline), checking ? el('p', {}, `Merge of ${plural(owner.unknownResults, 'published step')} being checked.`) : null),
-    waiting || checking ? routeLink('Open Needs you →', { screen: 'needs' }, waiting ? 'button' : 'button secondary') : null);
+    waiting || checking ? routeLink('Open Home →', { screen: 'home' }, waiting ? 'button' : 'button secondary') : null);
 }
 
 function projectsScreen() {
@@ -2546,14 +2491,8 @@ const EVENT_WORDS = { 'goal-started': 'Work started', paused: 'Paused', resumed:
   'limit-wait': 'Waiting for an AI worker limit', 'wait-ended': 'An AI worker can take work again', 'needs-you': 'Needs you',
   'decision-cleared': 'A question for you was cleared', 'aiworks-problem': 'AIWorks had a problem of its own' };
 // The order of the one-line summary: what the owner acts on first.
-const EVENT_ORDER = ['needs-you', 'result-ready', 'accepted', 'merged', 'checked', 'check-rejected', 'paused', 'resumed', 'goal-started', 'cancelled',
-  'limit-wait', 'wait-ended', 'run-failed', 'aiworks-problem', 'built', 'decision-cleared'];
-const SUMMARY_WORDS = { 'needs-you': 'new for you', 'result-ready': 'ready for review', accepted: 'accepted by you', merged: 'recorded as merged by AIWorks', checked: 'checked by the independent checker',
-  'check-rejected': 'sent back by the checker', paused: 'paused', resumed: 'resumed', 'goal-started': 'started', cancelled: 'cancelled',
-  'limit-wait': 'limit waits', 'wait-ended': 'waits ended', 'run-failed': 'runs retried', 'aiworks-problem': 'AIWorks problems', built: 'builder runs',
-  'decision-cleared': 'questions cleared' };
 
-let scopedBusy = null, seenBusy = false;
+let scopedBusy = null;
 const goalName = (id) => { const c = campaignById(id); return c ? campaignTitle(c, { inProject: true }) : 'work no longer listed'; };
 
 /** Pause or resume all, a project or a goal: exactly the goals the view showed, at their versions (views.mjs pauseSummary). */
@@ -2591,15 +2530,6 @@ function eventList(events) {
     el('time', { class: 'timeline-time', datetime: new Date(event.at).toISOString(), title: dateTime(event.at) }, timeAgo(event.at)))));
 }
 
-async function markSeen() {
-  const newest = state.home?.newest;
-  if (!Number.isSafeInteger(newest)) return;
-  seenBusy = true; render();
-  try { await post('/api/v2/events/seen', { seq: newest, requestId: crypto.randomUUID() }); }
-  catch (error) { notice(error.known ? error.message : 'Marking as seen could not be confirmed. Try again.', error.known ? null : markSeen); }
-  finally { seenBusy = false; await poll(); }
-}
-
 /**
  * Results waiting for the owner's review (OWNER_UI_V2 WP4), read from the same Results rows as each project's Results
  * tab, so the result, its project and its Review are the same everywhere. Only rows in the owner-action set
@@ -2610,11 +2540,6 @@ const resultsToReview = (project = null) => Object.values(state.owner?.results ?
 // Home and Needs you show only what is recent: older results, projects and replies stay on their own screens.
 const RECENT_MS = 7 * 24 * 60 * 60 * 1000;
 const isRecent = (at) => { const time = at === null || at === undefined ? NaN : new Date(at).getTime(); return !Number.isFinite(time) || time >= Date.now() - RECENT_MS; };
-/** When a result was finished: its step's verification, else its goal's last progress; unknown counts as recent. */
-const recentResult = (row) => {
-  const campaign = campaignById(row.campaignId), task = campaign?.tasks?.find((entry) => entry.id === row.taskId);
-  return isRecent(task?.verifiedAt ?? campaign?.lastProgressAt ?? null);
-};
 function reviewList(rows, { scope, withProject = false }) {
   if (!rows.length) return null;
   // "Each passed" only when every listed result passed every criterion (owner.mjs row checkPassed); each row says what is missing.
@@ -2634,142 +2559,89 @@ function itemDecision(item) {
 }
 
 /*
- * Home at a glance (live control room): what AIWorks is doing right now as a row of tiles, and each project as one dense
- * row with its steps as a strip. Everything is counted from the same state the rest of the page reads; a number that is
- * not known is said to be not known, never shown as zero.
+ * Home (docs/design/HOME_V2.md part 2): a headline that says whether anything needs the owner, each waiting question
+ * answered on its own card, what is in progress, what was decided for the owner, what landed and which projects are
+ * quiet. The blocks are built in home.mjs from the Home data (`state.home`); this part adds the cards that act.
  */
-const isBuilderRole = (role) => /implement/i.test(String(role ?? ''));
-const DAY_MS = 24 * 60 * 60 * 1000;
-// What a step is doing now, in the colour language of OWNER_UI_V2 §5: amber for the owner, blue and violet while AIWorks
-// works, grey while it waits under control, green once merged.
-function stepTone(c, task) {
-  const delivery = deliveryOf(c, task), agent = c.agents.find((item) => item.taskId === task.id);
-  if (delivery?.state === 'merged') return ['merged', 'Merged'];
-  // As in stepBadge: a delegated result reads as passed only when every criterion passed, and cancelled work never runs.
-  if (delivery) return ['delivered', delivery.state === 'delegated' ? DELEGATED.word(task.checkPassed === true) : deliveryNames[delivery.state]?.[1] ?? 'Delivered'];
-  if (c.control === 'cancelled' && task.state !== 'done') return ['todo', 'Cancelled'];
-  if (task.blocked) return ['you', 'Waiting for you'];
-  if (agent) return isBuilderRole(agent.role) ? ['building', 'Being built'] : ['checking', 'Being checked'];
-  if (task.state === 'done') return ['merged', 'Done'];
-  if (task.waitingReason || task.retryAt) return ['waiting', 'Waiting, nothing for you to do'];
-  return ['todo', 'Not started'];
-}
-const openCampaigns = (list) => list.filter((c) => !['finished', 'cancelled'].includes(c.control));
+let homeConfirm = null, landedAll = false;
 
-function homeTiles(home) {
-  const campaigns = state.supervisor.campaigns, open = openCampaigns(campaigns), now = Date.now();
-  const agents = open.flatMap((c) => c.agents), builders = agents.filter((a) => isBuilderRole(a.role)).length;
-  const waiting = open.flatMap((c) => c.tasks.filter((task) => stepTone(c, task)[0] === 'waiting')).length;
-  // Merges the merge check finds in Git, by hand ones too; the change summary below counts only AIWorks's own merge
-  // records, so each says where its number comes from.
-  const merged = campaigns.flatMap((c) => c.tasks.filter((task) => {
-    const delivery = deliveryOf(c, task);
-    return delivery?.state === 'merged' && delivery.mergedAt && now - new Date(delivery.mergedAt).getTime() < DAY_MS;
-  })).length;
-  const reported = open.filter((c) => c.cost?.reportedUsd !== null && c.cost?.reportedUsd !== undefined);
-  const unreported = open.reduce((n, c) => n + (c.cost?.unreportedRuns ?? 0), 0);
-  const spent = reported.length ? usd(reported.reduce((n, c) => n + c.cost.reportedUsd, 0)) : '—';
-  // Needs you reads the same count as the global bar and the Needs you page: never zero or calm while a merge check runs
-  // (OPERATIONS_DASHBOARD: a step whose merge check is running is shown as "?", never as nothing).
-  const attention = state.owner?.count ?? home.needsYou.count, unknown = state.owner?.unknownResults ?? 0;
-  const needsValue = attention || (unknown ? '?' : 0), needsMore = attention && unknown ? '+ checking' : null;
-  const needsFoot = `${attention ? 'Settle each one in Needs you' : unknown ? 'Nothing confirmed yet' : 'Nothing is blocked on you'}${unknown ? ` · merge of ${plural(unknown, 'published step')} being checked` : ''}`;
-  const tiles = [
-    ['building', 'Building', builders, builders ? `${plural(builders, 'builder')} working` : 'No builder running'],
-    ['checking', 'Checking', agents.length - builders, 'A fresh session that did not write the code'],
-    ['waiting', 'Waiting', waiting, 'Limits and order: AIWorks resumes by itself'],
-    ['you', 'Needs you', needsValue, needsFoot, needsMore],
-    ['merged', 'Merged in 24 h', merged, 'Found in Git, however it was merged · each checked first'],
-    ['cost', 'Reported cost', spent, unreported ? `Running work · ${plural(unreported, 'run')} not reported yet` : 'Running work, as the AI workers reported it']
-  ];
-  return el('section', { class: 'live-tiles', 'aria-label': 'Right now' }, ...tiles.map(([tone, title, value, foot, more]) => {
-    const body = [el('div', { class: 'live-tile-title' }, el('span', { class: `tone-dot ${tone}`, 'aria-hidden': 'true' }), title),
-      el('div', { class: 'live-tile-value number' }, String(value), more ? el('small', {}, ` ${more}`) : null), el('div', { class: 'live-tile-foot' }, foot)];
-    return tone === 'you' && (attention || unknown) ? el('a', { class: `live-tile ${tone}`, href: '#/needs' }, ...body) : el('div', { class: `live-tile ${tone}` }, ...body);
-  }));
-}
-
-function homeProjectRow(project, badge) {
-  const campaigns = projectCampaigns(project.id), open = openCampaigns(campaigns);
-  const shown = open.length ? open : campaigns.slice(-1);
-  const steps = shown.flatMap((c) => c.tasks.map((task) => [c, task]));
-  const tones = steps.map(([c, task]) => stepTone(c, task));
-  const merged = tones.filter(([tone]) => tone === 'merged').length, delivered = merged + tones.filter(([tone]) => tone === 'delivered').length;
-  const agents = open.flatMap((c) => c.agents), builders = agents.filter((a) => isBuilderRole(a.role)).length, checkers = agents.length - builders;
-  const goal = shown.length ? campaignTitle(shown[shown.length - 1], { inProject: true }) : null;
-  return el('li', { class: 'live-row', 'data-focus-scope': `home/project/${project.id}`, 'data-state': project.state.key },
-    el('div', { class: 'live-cell live-name' }, routeLink(project.name, { screen: 'project', project: project.id, tab: 'overview' }, 'task-name'),
-      el('span', { class: 'subtext' }, goal ?? project.state.text ?? 'No work yet')),
-    el('div', { class: 'live-cell live-progress' }, ...(steps.length
-      ? [el('div', { class: 'step-strip', role: 'img', 'aria-label': `${delivered} of ${steps.length} steps delivered, ${merged} merged` },
-        ...tones.map(([tone, words], index) => el('span', { class: `step-seg ${tone}`, title: `${stepLabels(steps[index][1]).lead}: ${words}` }))),
-      el('span', { class: 'subtext number' }, `${delivered} of ${plural(steps.length, 'step')} delivered${delivered > merged ? ` · ${merged} merged` : ''}`)]
-      : [el('span', { class: 'subtext' }, 'No steps yet')])),
-    el('div', { class: 'live-cell live-agents' }, builders ? el('span', { class: 'role-chip building' }, el('span', { class: 'tone-dot building', 'aria-hidden': 'true' }), builders > 1 ? `${builders} builders` : 'Builder') : null,
-      checkers ? el('span', { class: 'role-chip checking' }, el('span', { class: 'tone-dot checking', 'aria-hidden': 'true' }), checkers > 1 ? `${checkers} checkers` : 'Checker') : null,
-      agents.length ? null : el('span', { class: 'subtext' }, 'No AI worker on it')),
-    el('div', { class: 'live-cell live-state' }, badge ? el('span', { class: `badge ${badge[0]}` }, badge[1]) : el('span', { class: 'subtext' }, project.state.text ?? 'Calm')),
-    el('div', { class: 'live-cell live-when subtext number' }, project.lastActivityAt
-      ? el('time', { datetime: new Date(project.lastActivityAt).toISOString(), title: dateTime(project.lastActivityAt) }, timeAgo(project.lastActivityAt)) : '—'));
+/** One waiting decision with two to four options as selectable cards and one Answer button. */
+function homeDecisionCard(c, task) {
+  const d = task.decision, address = current.address, key = `decision:${d.id}`, off = decisionBusy || commandsOff();
+  const deferred = task.risk?.level === 'high' && onPhone();
+  const draft = drafts.get(address, key) ?? { option: null, text: '', feedback: '' };
+  const radios = `home-option-${d.id}`, heading = `home-question-${d.id}`;
+  const pick = () => drafts.set(address, key, { ...(drafts.get(address, key) ?? draft), option: form.querySelector(`input[name="${radios}"]:checked`)?.value ?? null });
+  const error = el('p', { class: 'validation-error', role: 'alert', hidden: true }, COMMANDS.decision.notOption);
+  const options = d.options.map((o) => {
+    const input = el('input', { type: 'radio', name: radios, value: o.id, onchange: pick, disabled: deferred });
+    input.checked = draft.option === o.id;
+    return el('label', { class: 'home-option' }, input, el('span', { class: 'home-option-body' },
+      el('strong', {}, o.label, d.suggestion?.option === o.id ? el('span', { class: 'badge done' }, 'Suggested') : null),
+      el('span', { class: 'home-note' }, o.consequence)));
+  });
+  const form = el('form', { novalidate: true, class: 'home-card', 'data-decision': d.id, 'data-focus-scope': `home/decision/${d.id}`,
+    onsubmit: (event) => {
+      event.preventDefault();
+      if (off || deferred) return;
+      const option = form.querySelector(`input[name="${radios}"]:checked`)?.value;
+      error.hidden = Boolean(option);
+      if (!option) { form.querySelector(`input[name="${radios}"]`)?.focus(); return; }
+      void sendDecision('answer', c, task, { option }, { address, done: () => {
+        drafts.delete(address, key); homeConfirm = { text: 'Answered. AIWorks carries on.', until: Date.now() + 15_000 };
+      } });
+    } },
+    el('h2', { id: heading, class: 'home-question' }, d.question),
+    el('fieldset', { class: 'home-options', 'aria-labelledby': heading }, ...options), error,
+    deferred ? el('p', { class: 'home-note' }, 'Answer this on a computer.')
+      : el('div', { class: 'home-answer' }, el('button', { class: 'button', type: 'submit', disabled: off }, 'Answer')),
+    d.unanswered ? el('p', { class: 'home-note' }, `If you do not answer: ${d.unanswered}`) : null);
+  return form;
 }
 
 /**
- * Home (docs/design/OWNER_UI_V2.md §6 screen 2, previews/owner-ui-v2/02-home.html): one headline sentence states
- * whether anything needs you, the decision itself follows as one card, then what changed, then every project in one
- * sentence with a status badge. Results to review are not a separate panel: a project with one ready carries the
- * badge on its own row, exactly as the approved preview folds it in (02-home.html, "Client portal" row).
+ * A waiting item that is not a choice: its question, what it means, the one action that settles it on the card (the same
+ * bound requests as its step and Review) and a link to where it is settled, so a card is never a dead end.
  */
+function homeOtherCard(item) {
+  const { c, task, resolution, box } = itemActions(item, { points: false });
+  const project = item.about ?? item.repository ?? item.project ?? null;
+  const fallback = item.route?.address ?? (c && task ? { screen: 'step', project: item.repository ?? c.repository, work: c.id, step: task.id }
+    : project ? { screen: 'project', project, tab: 'overview' } : '#/settings');
+  return el('div', { class: 'home-card', 'data-focus-scope': `home/item/${itemKey(item)}` },
+    el('h2', { class: 'home-question' }, splitSentence(item.text ?? 'Something needs you.')[0]),
+    ...(item.points ?? []).map((point) => el('p', { class: 'home-point' }, point.text,
+      point.link ? [' ', link(`${point.link.label} ↗`, point.link.url)] : null)),
+    resolution ? el('div', { class: 'home-resolve' }, resolution) : null, box,
+    el('div', { class: 'home-answer' }, routeLink(resolution ? 'Open details' : 'Open', fallback, resolution ? 'needs-link' : 'button')));
+}
+
 function homeScreen() {
   const home = state.home;
   if (!state.supervisor.available || !home?.available) return [unavailable()];
-  const { since, lastSeen } = home;
-  // Only results finished in the last week are "new"; older ones wait on each project's Review.
-  const reviews = resultsToReview().filter(recentResult);
-  // The first item is resolved here on the same card as in Needs you: a decision with its options, a result with Accept
-  // and Request changes, a stopped step with guidance and Check again.
-  const first = state.owner?.items?.find((item) => !item.system);
-  // Results to review are Needs you items (owner.mjs `attention`), so they are in this count, never added to it.
-  const heroText = home.needsYou.count ? `${plural(home.needsYou.count, 'thing')} need${home.needsYou.count === 1 ? 's' : ''} you.` : null;
-  // h2, not h1: index.html already carries the page's one h1 (#view-title) outside #content (showRoute()).
-  const hero = el('div', { class: 'home-hero' },
-    el('div', {}, el('h2', {}, 'Your work, at a glance'), heroText && el('p', { class: 'subtext' }, heroText)),
-    pauseControls(home.pause, 'all', {}, { label: 'all work' }));
-  // This count matches the nav badge and the Needs you screen exactly (owner.count): results to review carry their
-  // own badge on the project row below, never folded into this number (owner, 2026-10-13).
-  const decision = home.needsYou.count && first ? el('ul', { class: 'needs-list home-decision', 'data-focus-scope': 'home/needs' }, needsItem(first)) : null;
-  const moreDecisions = home.needsYou.count > 1 ? routeLink(`All ${home.needsYou.count} in Needs you`, '#/needs', 'button secondary small') : null;
-  const counts = EVENT_ORDER.filter((type) => since.counts[type]).map((type) => `${since.counts[type]} ${SUMMARY_WORDS[type]}`);
-  const windowHours = since.window ? Math.round(since.window / 3600000) : null;
-  const when = lastSeen.at && (!since.window || lastSeen.at >= Date.now() - since.window) ? `Since your last visit (${dateTime(lastSeen.at)})`
-    : windowHours ? `In the last ${windowHours} hours` : 'Everything AIWorks recorded so far';
-  const changed = el('section', { class: 'since', 'aria-labelledby': 'home-since-title', 'data-focus-scope': 'home/since' },
-    el('h2', { id: 'home-since-title' }, when),
-    el('p', { role: 'status', 'aria-live': 'polite' }, counts.length ? `${counts.join(' · ')}${since.more ? ', and more' : ''}.` : 'Nothing changed.'),
-    since.events.length ? disclosure('home/events', `What changed (${since.more || since.count > since.events.length ? `latest ${since.events.length}` : since.events.length})`, eventList(since.events)) : null,
-    since.count ? button(seenBusy ? 'Marking…' : 'Mark as seen', markSeen, 'secondary small', seenBusy || offline) : null);
-  // Working reuses the same liveness codes Now already shows for this project (copy.mjs). A project with none of
-  // these badges is calm, never "Live": OWNER_WORKSPACE §2.3 keeps "Live" for recorded release evidence only, which
-  // this view does not have per project, so showing it here would be a false claim the approved preview's fictional
-  // sample data does not have to respect.
-  const WORKING = ['builder-working', 'checker-working', 'possibly-stuck', 'cancelling'];
-  const badgeOf = (project) => project.needsYou ? ['attention', 'Needs you']
-    : reviews.some((row) => sameProject(row.project, project.id)) ? ['done', 'Review ready']
-      : WORKING.includes(project.state.key) ? ['in_progress', 'Working'] : null;
-  // A project with nothing waiting and no activity in the last week is quiet: folded under the active ones.
-  const quiet = (project) => !badgeOf(project) && project.lastActivityAt && !isRecent(project.lastActivityAt);
-  const active = home.projects.filter((project) => !quiet(project)), quietOnes = home.projects.filter(quiet);
-  const projectTable = (rows) => el('div', { class: 'live-table' },
-    el('div', { class: 'live-head', 'aria-hidden': 'true' }, el('span', {}, 'Project · current goal'), el('span', {}, 'Steps'), el('span', {}, 'AI workers'), el('span', {}, 'State'), el('span', {}, 'Last activity')),
-    el('ul', { class: 'live-rows home-projects' }, ...rows.map((project) => homeProjectRow(project, badgeOf(project)))));
-  const projects = home.projects.length
-    ? el('div', {}, active.length ? projectTable(active) : el('p', { class: 'panel-body subtext' }, 'No project had activity in the last week.'),
-      quietOnes.length ? disclosure('home/quiet-projects', `Quiet projects (${quietOnes.length}): no activity in the last week`, projectTable(quietOnes)) : null)
-    : state.projects?.addProject ? el('div', { class: 'empty-state' }, el('strong', {}, 'No projects yet.'), ' Start from an idea or a folder on this computer. ',
-      routeLink('Add project', { screen: 'add-project' }))
-      : empty('No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository.');
-  return [hero, homeTiles(home), decision, moreDecisions, changed,
-    panel('Projects', 'Needs you first, then running. Each step of the current goal is one segment.', home.projects.length ? projects : el('div', { class: 'panel-body' }, projects))].filter(Boolean);
+  const items = (state.owner?.items ?? []).filter((item) => !item.system);
+  const needCards = items.map((item) => {
+    const found = itemDecision(item);
+    return found?.task.decision?.structured ? homeDecisionCard(found.c, found.task) : homeOtherCard(item);
+  });
+  const projectAddress = (name) => {
+    const row = (home.projects ?? []).find((project) => sameProject(project.name, name));
+    return row ? formatRoute({ screen: 'project', project: row.id, tab: 'overview' }) : null;
+  };
+  const decided = (state.owner?.decided ?? []).slice(0, 3).map((d) => ({ question: d.question, chosen: d.chosen,
+    address: formatRoute({ screen: 'step', project: d.project, work: d.campaignId, step: d.taskId }) }));
+  const confirmation = homeConfirm && homeConfirm.until > Date.now() ? homeConfirm.text : null;
+  const blocks = homeBlocks({ ...home, needCards, decided, confirmation, checking: state.owner?.unknownResults ?? 0,
+    ownProblems: { count: ownProblemCount(), address: formatRoute({ screen: 'settings', section: 'itself' }) }, address: projectAddress, showAll: landedAll,
+    onShowAll: () => { landedAll = !landedAll; render(); } }, { el, timeAgo });
+  // AIWorks's answer to the owner's last message, as one line with its link.
+  const reply = state.owner?.reply;
+  if (reply && isRecent(reply.answeredAt)) blocks.splice(1, 0, el('p', { class: 'home-reply' }, `AIWorks answered your message (${dateTime(reply.answeredAt)}). `,
+    reply.url ? link('Read its “What needs you” ↗', reply.url) : routeLink('Open the chat', { screen: 'chats', chat: reply.threadId ?? reply.messageId })));
+  return [el('div', { class: 'home' }, ...blocks)];
 }
+
+
 
 const AVAILABLE_WORDS = { 'not-published': 'Not published: release is off', unknown: 'Not known', recorded: 'Recorded' };
 /** One goal on Overview: its state with stopping or stopped, Built, Checked and Available to users apart, its budget and pause. */
@@ -2934,7 +2806,7 @@ function settingsScreen() {
       : empty('No projects yet.', 'Projects appear here when the AIWorks configuration file on this computer lists a repository.'), removedList()));
   // A project removed from Projects has no release mode to show.
   const removed = (repository) => (state.projects?.removed ?? []).some((item) => sameProject(item.repository, repository ?? ''));
-  return [computer, workers, connections, releasePanel(settings.releases.filter((r) => !removed(r.repository)), settings.releaseStop), settingsLinks()];
+  return [computer, itselfSection(), workers, connections, releasePanel(settings.releases.filter((r) => !removed(r.repository)), settings.releaseStop), settingsLinks()].filter(Boolean);
 }
 
 const settingsEmpty = ({ title, text, primary }) => el('div', { class: 'empty-state' }, el('strong', {}, title), ` ${text} `, routeLink(primary.label, primary.route));
@@ -3375,7 +3247,7 @@ function reviewActions(review, binding, { more } = {}) {
       ? 'You asked for changes to this checked version, but this step has used all its repair rounds, so it stopped. Nothing of it was published or merged.'
       : `You asked for changes to this checked version${review.requestedAt ? ` at ${clock(review.requestedAt)}` : ''}. AIWorks repairs this step within the approved plan; a fresh independent check comes before anything is published or merged. The earlier check stays on record.`)];
   }
-  if (review.state === 'no-evidence') return [el('p', {}, 'No independent check of this version is on record, so it can be neither accepted nor sent back here. Its Needs you card offers to plan this work again; nothing starts until you approve the plan.')];
+  if (review.state === 'no-evidence') return [el('p', {}, 'No independent check of this version is on record, so it can be neither accepted nor sent back here. Its card in Settings, AIWorks itself, offers to plan this work again; nothing starts until you approve the plan.')];
   const off = reviewBusy || commandsOff(), address = current.address, key = `review:${binding.campaignId}/${binding.taskId}/${review.verifiedSha}`;
   const ids = `${binding.campaignId}-${binding.taskId}`;
   const u = review.unresolved, open = u.failed + u.notChecked + u.blocking;
@@ -3415,7 +3287,7 @@ function reviewActions(review, binding, { more } = {}) {
     aside(review.awaitsAcceptance ? el('p', { role: 'status' }, 'Waiting for you: you accept results yourself in this project, so this version is not merged until you accept it.') : null),
     aside(!review.local && review.state === 'ready' && !review.canAccept && (u.failed || u.blocking) ? el('p', { class: 'subtext' }, COMMANDS.result.unresolved) : null),
     review.canAccept ? el('div', { class: 'campaign-controls' }, button('Accept result', () => sendReview('accept', binding, review, {}, { address }), '', off),
-      aside(el('span', { class: 'subtext' }, review.mergeGate === 'on' ? 'Approves exactly this version; AIWorks merges it when its merge conditions hold.' : 'Approves exactly this version and takes it off Needs you. Merging follows this project’s own rules: AIWorks merges only in projects where you allowed it.'))) : null,
+      aside(el('span', { class: 'subtext' }, review.mergeGate === 'on' ? 'Approves exactly this version; AIWorks merges it when its merge conditions hold.' : 'Approves exactly this version and takes it off Home. Merging follows this project’s own rules: AIWorks merges only in projects where you allowed it.'))) : null,
     form].filter(Boolean);
 }
 
@@ -3559,7 +3431,7 @@ function resultsScreen(project) {
     el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'results-title' }, waiting ? `${plural(waiting, 'result')} for you` : 'Nothing here needs you')),
       results.primary?.route ? routeLink(results.primary.label, results.primary.route, 'button')
         : results.primary ? link(`${results.primary.label} ↗`, results.primary.url, 'button') : null),
-    waiting ? null : el('p', { class: 'subtext' }, `${merges === 'aiworks' ? 'AIWorks checks and merges results itself in this project.' : 'AIWorks checks results itself; merging follows this project’s own rules.'} A result for your review appears here and in Needs you.`),
+    waiting ? null : el('p', { class: 'subtext' }, `${merges === 'aiworks' ? 'AIWorks checks and merges results itself in this project.' : 'AIWorks checks results itself; merging follows this project’s own rules.'} A result for your review appears here and on Home.`),
     ...open.map(groupList),
     history ? disclosure(`results/${project}/history`, `History (${history}): merged, read and untraced results`, el('div', {}, ...past.map(groupList))) : null,
     // Stop all releases is reachable from every project's Review (AUTO_RELEASE.md section 9).
@@ -3813,7 +3685,7 @@ function projectSettingsScreen(project) {
   const price = amount('settings-price', draft.unknownRunCostUsd, limits.unknownRun);
   // Who accepts results (AW-015): automatic, or the owner, in which case nothing merges before they accept that version.
   const modes = [['automatic', 'Automatic', 'A result that passed the independent check is merged under the merge gate without waiting for you.'],
-    ['owner', 'I accept results myself', 'A checked result is merged only after you accept exactly that version. It waits in Needs you with Accept and Request changes.']];
+    ['owner', 'I accept results myself', 'A checked result is merged only after you accept exactly that version. It waits on Home with Accept and Request changes.']];
   const choices = modes.map(([value]) => el('input', { type: 'radio', name: `settings-acceptance-${project}`, value, checked: (draft.acceptance ?? 'automatic') === value, onchange: () => save() }));
   const acceptance = () => choices.find((input) => input.checked)?.value ?? draft.acceptance ?? 'automatic';
   const fields = () => ({ areas: areas.value, notes: notes.value, totalUsd: total.value, monthlyUsd: monthly.value, unknownRunCostUsd: price.value, acceptance: acceptance() });
@@ -3932,12 +3804,12 @@ const ALERTS_ADDRESS = '#/settings/alerts';
 const ALERT_CLASS_WORDS = { B2: ['Action required', 'Something only you can do, such as signing in again.'], B3: ['Decision required', 'A step waits for your choice.'],
   B4: ['External wait', 'A provider or service is unavailable; AIWorks rechecks by itself.'], B5: ['Incident', 'Something went wrong that AIWorks will not retry on its own.'] };
 const TRANSPORT_WORDS = {
-  unconfigured: 'Delivery unavailable: no alert transport is set up on this computer. Alerts wait in Needs you; nothing is sent.',
+  unconfigured: 'Delivery unavailable: no alert transport is set up on this computer. Alerts wait on Home; nothing is sent.',
   rehearsal: 'Rehearsal only: alerts are recorded on this computer as they would be sent. Nothing leaves this computer, and nothing is reported as delivered.',
   unavailable: 'Delivery unavailable: this version of AIWorks has no adapter for the transport in the configuration file, so nothing is sent.',
   incomplete: 'Delivery unavailable: Telegram needs both a credential reference and a recipient reference, each in a secret store AIWorks can read. Nothing is sent.',
   ready: 'Telegram is set up, but sending is switched off in the configuration file. Nothing is sent.',
-  sending: 'Alerts are sent to Telegram. A reply there does nothing: answer in Needs you on this computer. An alert whose arrival is unknown is not sent again.',
+  sending: 'Alerts are sent to Telegram. A reply there does nothing: answer on Home on this computer. An alert whose arrival is unknown is not sent again.',
   invalid: 'Delivery unavailable: the transport setting in the configuration file is not valid (it must name secret store references, never a credential). Nothing is sent.' };
 const DECISION_WORDS = { send: 'would be sent now', hold: 'would wait until quiet hours end', mute: 'would not be sent: its kind is off' };
 async function loadAlerts() {
@@ -3971,7 +3843,7 @@ function alertsParts() {
   return [
     el('p', { class: d.transport === 'rehearsal' || d.sending ? 'notice' : 'notice warning', role: 'status' },
       TRANSPORT_WORDS[d.sending ? 'sending' : d.transport] ?? TRANSPORT_WORDS.unconfigured),
-    d.recording ? null : el('p', { class: 'subtext' }, 'Owner alerts are not recorded on this computer yet: the owner-intervention setting is off. What needs you still shows in Needs you.'),
+    d.recording ? null : el('p', { class: 'subtext' }, 'Owner alerts are not recorded on this computer yet: the owner-intervention setting is off. What needs you still shows on Home.'),
     el('p', { class: 'subtext', role: 'status' }, v.version ? `Applied: version ${v.version}, saved ${clock(v.savedAt)}.${v.quietNow ? ' Quiet hours now.' : ''}` : 'Nothing saved yet: the default rules apply.'),
     alertsEntry.error || offline ? el('p', { class: 'needs-stale', role: 'status' }, `Shown as read at ${clock(alertsEntry.readAt)}. ${offline
       ? 'The page is disconnected; it reads these settings again when it reconnects.' : alertsEntry.error.message}`) : null,
@@ -4020,7 +3892,7 @@ function alertsScreen() {
       el('label', { class: 'field' }, el('strong', {}, 'Until'), end),
       el('label', { class: 'field' }, el('strong', {}, 'Time zone'), zone, el('span', { class: 'subtext' }, 'Such as Europe/Berlin or UTC.')),
       el('label', { class: 'choice' }, incidents, 'Incidents may still alert me during quiet hours')),
-    el('p', { class: 'subtext' }, 'An alert held by quiet hours is sent when they end. An alert whose kind is off is not sent later. Needs you always shows everything.'),
+    el('p', { class: 'subtext' }, 'An alert held by quiet hours is sent when they end. An alert whose kind is off is not sent later. Home always shows everything.'),
     el('button', { class: 'button', type: 'submit', disabled: alertsOff() }, 'Save alert rules'));
   return [el('section', { class: 'panel', 'aria-labelledby': 'alerts-title' },
     el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'alerts-title' }, 'Alerts'), el('p', {}, 'When AIWorks tells you that something needs you.'))),
@@ -4517,7 +4389,7 @@ function worklistParts() {
     waiting ? el('p', { class: 'notice' }, `${plural(waiting, 'imported issue')} still open on GitHub. `, routeLink('Review the imported issues', IMPORT_ADDRESS)) : null,
     owner.length ? el('section', { class: 'panel', 'aria-labelledby': 'worklist-owner-title', 'data-focus-scope': 'worklist/owner' },
       el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'worklist-owner-title' }, `Decisions for you (${owner.length})`),
-        el('p', {}, 'Also on Needs you.'))),
+        el('p', {}, 'Also on Home.'))),
       el('ul', { class: 'needs-list' }, ...owner.map(worklistRow))) : null,
     el('section', { class: 'panel', 'aria-labelledby': 'worklist-open-title', 'data-focus-scope': 'worklist/open' },
       el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'worklist-open-title' }, `Not finished (${open.length})`),
@@ -4767,13 +4639,13 @@ function reuse(old, node) {
 function render() {
   if (!state) return;
   showTabs();
+  showHeader();
   const content = $('#content'), route = current.route;
   const focusKey = (node) => JSON.stringify([node.closest('[data-focus-scope]')?.dataset.focusScope, node.tagName, node.getAttribute('href'), node.textContent]);
   const focused = content.contains(document.activeElement) ? focusKey(document.activeElement) : null;
   const diagnostics = route.screen === 'settings' && route.section === 'diagnostics';
   renderMetrics(route.project ? projectCampaigns(route.project) : state.supervisor.campaigns, diagnostics ? ['Platform roadmap items'] : []);
   if (route.screen === 'home') patch(content, homeScreen());
-  else if (route.screen === 'needs') patch(content, [needsYou() ?? unavailable()]);
   else if (route.screen === 'settings' && route.section === 'connections') patch(content, connectionsScreen());
   else if (route.screen === 'settings' && route.section === 'alerts' && refreshAlerts(content)) { /* the form stays as the owner typed it */ }
   else if (route.screen === 'settings' && route.section === 'alerts') patch(content, alertsScreen());
@@ -4807,19 +4679,6 @@ function render() {
   const warning = $('#source-warning');
   warning.hidden = state.supervisor.available;
   warning.textContent = state.supervisor.available ? '' : state.supervisor.message ?? '';
-  $('#updated').textContent = `${state.host?.name ? `${state.host.name} · ` : ''}Checked ${timeOnly(state.observedAt)}`;
-  // Which machine this is: each computer runs its own supervisor and campaigns.
-  if (state.host) {
-    // The page starts with a neutral "…" so it never names the wrong computer before the first answer.
-    $('#host-name').textContent = `${state.host.name ?? 'Unknown computer'} · this computer`;
-    $('#host-name').removeAttribute('aria-busy');
-    const ver = state.host.version ?? DASHBOARD_VERSION;
-    const verName = state.host.versionName ?? DASHBOARD_VERSION_NAME;
-    const versionLabel = `v${ver} · ${verName}`;
-    $('#host-detail').replaceChildren(routeLink(versionLabel, '#/settings/version', 'host-version-link'));
-    // The revision stays in the host state for version checks, never in this human-facing tooltip.
-    $('#host-detail').title = `Dashboard v${ver} "${verName}"`;
-  }
   fitPreviewFrames();
 }
 
@@ -4861,27 +4720,23 @@ function command(c, action, task, extra = {}, draftAddress = null) {
     ...(task ? { taskId: task.id, taskVersion: task.version } : {}), ...extra }, draftAddress);
 }
 
-// How fresh this page's picture is: "Page connected · updated 4s ago", ticking every second, so a running AIWorks reads
-// as running. It stays about this page (OWNER_WORKSPACE §3.4): a refresh that has not arrived for a while says so
-// rather than going on looking current. "Live" stays reserved for release evidence (§2.3).
-const STALE_MS = 20_000;
-let freshAt = null;
-function showFreshness() {
-  const node = $('#connection');
-  if (offline || freshAt === null) return;
-  const seconds = Math.max(0, Math.round((Date.now() - freshAt) / 1000)), stale = Date.now() - freshAt > STALE_MS;
-  const ago = seconds < 60 ? `${seconds}s ago` : timeAgo(freshAt);
-  // The node is a status region: its words change only when the meaning does; the ticking age is hidden from it.
-  const words = stale ? 'Page connected, but no update for a while' : 'Page connected';
-  if (node.dataset.words !== words) {
-    node.dataset.words = words;
-    node.replaceChildren(el('span', {}, stale ? 'Page connected' : words), el('span', { class: 'fresh-age', 'aria-hidden': 'true' }));
-    if (stale) node.firstChild.append(el('span', { class: 'sr-only' }, ', but no update for a while'));
-  }
-  node.querySelector('.fresh-age').textContent = ` · ${stale ? 'last update' : 'updated'} ${ago}`;
-  node.className = `connection online${stale ? ' stale' : ' fresh'}`;
+// The header says one word about the work (Working, Paused, Stopped; Offline while this page cannot reach the dashboard)
+// and carries Pause all or Resume all, bound to the goals the Home data lists.
+const HEADER_TONES = { Working: 'online', Paused: 'stale', Stopped: 'offline', Offline: 'offline' };
+function showHeader() {
+  const node = $('#connection'), summary = state?.home?.pause ?? null, button = $('#header-pause');
+  const word = offline ? 'Offline' : !state || !state.supervisor.available || state.supervisor.controller?.stopped ? 'Stopped'
+    : summary && !summary.running && (summary.stopped || summary.stopping) ? 'Paused' : 'Working';
+  if (node.textContent !== word) node.textContent = word;
+  node.className = `connection ${HEADER_TONES[word]}`;
+  const action = summary?.pause?.length ? 'pause' : summary?.resume?.length ? 'resume' : null;
+  button.hidden = !action;
+  if (!action) return;
+  const busy = scopedBusy === `${action}:all:`;
+  button.textContent = busy ? (action === 'pause' ? 'Pausing…' : 'Resuming…') : action === 'pause' ? 'Pause all' : 'Resume all';
+  button.disabled = offline || commandsOff();
+  button.onclick = () => scopedControl(action, 'all', summary[action], {});
 }
-setInterval(showFreshness, 1000);
 
 async function poll() {
   try {
@@ -4890,9 +4745,6 @@ async function poll() {
     // A dashboard that restarted while this page was offline has a new command session: take it before any command.
     if (offline) await refreshSession();
     state = await response.json(); offline = false;
-    // The header keeps only "Page connected" or the disconnected text (OWNER_WORKSPACE §3.4, §7.4; aiworks#11 review F8):
-    // it is about this page, never read as "AIWorks is running" (review 4 F6).
-    freshAt = Date.now(); showFreshness();
     trackReceipts();
     // An open work list item is read again with every refresh, so a change shows and a stale draft says so.
     if (current.route.screen === 'worklist-item') void loadItem(current.route.number);
@@ -4905,7 +4757,7 @@ async function poll() {
     if (!document.querySelector('dialog[open]')) render();
     $('#confirm-cancel').disabled = $('#send-instruction').disabled = $('#send-message').disabled = sending;
   } catch {
-    offline = true; delete $('#connection').dataset.words; $('#connection').textContent = 'Disconnected · retrying · controls off'; $('#connection').className = 'connection offline';
+    offline = true; showHeader();
     $('#confirm-cancel').disabled = $('#send-instruction').disabled = $('#send-message').disabled = true;
     checkCloseStale();
     if (state && !document.querySelector('dialog[open]')) render();
@@ -4932,7 +4784,7 @@ function go(address, { restore = false } = {}) {
   showRoute();
   window.scrollTo(0, scrollMemory.get(current.address) ?? 0);
   // Focus moves to the new screen's heading, so a screen reader starts there.
-  $('#view-title').focus({ preventScroll: true });
+  (current.route.screen === 'home' ? document.getElementById('home-title') ?? $('#main') : $('#view-title')).focus({ preventScroll: true });
 }
 // At narrow widths navigation is a bar fixed to the bottom of the window. Keyboard focus is kept above it, never under it
 // (OWNER_WORKSPACE §6.2; aiworks#11 review F4); the stylesheet's scroll-padding does the same where the browser applies it.

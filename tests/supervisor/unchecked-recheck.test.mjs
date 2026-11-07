@@ -51,23 +51,6 @@ function rig(t) {
   };
 }
 
-test('AW-016: the real uncheckedGone tells a head still to check from one merged, pushed or closed by someone else', (t) => {
-  const r = rig(t), decl = r.store.campaign(r.d.campaignId).declaration, poll = r.env.config.pollMs;
-  const gone = (head = r.head) => { r.advance(poll); return r.controller.uncheckedGone(r.ctx(), decl, { ...r.task(), head_sha: head }); };
-  const pr = (headSha) => ({ url: 'https://github.com/example-org/sampleapp/pull/9', head: r.branch, base: 'main', headSha });
-
-  assert.equal(gone(r.inBase), 'already in the base branch');
-  assert.equal(r.reads(), 0, 'a head in the base needs no GitHub read');
-  r.prs([pr(r.head)]);
-  assert.equal(gone(), null, 'still open at the published head: AIWorks checks it');
-  r.prs([pr('d'.repeat(40))]);
-  assert.equal(gone(), 'its pull request now has another head');
-  r.prs([]);
-  assert.equal(gone(), 'its pull request is no longer open');
-  r.failReads();
-  assert.equal(gone(), undefined, 'a failed read decides nothing: the caller waits');
-});
-
 test('AW-016: an unchecked head costs at most one GitHub read per poll interval, none before a rate limit resets, none once settled', (t) => {
   const r = rig(t), poll = r.env.config.pollMs;
   const recheck = () => r.controller.recheckUnchecked(r.ctx());

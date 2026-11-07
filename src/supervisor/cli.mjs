@@ -16,12 +16,16 @@ import { issueCampaignToken } from './campaign-token.mjs';
 import { Controller, DEFAULTS } from './controller.mjs';
 import { createHostProbe } from './host.mjs';
 import { GATE_PIPE, gateListening, gateSettings, pipeHost, serveGate } from './docker-gate.mjs';
+import { heldSlotCount } from './gate.mjs';
+import { checkServicesEnvironment, SERVICES_ENV } from './check-services.mjs';
 import { cpuSettings, createCpuMonitor } from './worker-cpu.mjs';
 import { configuredGovernanceRoot, requireGovernanceRoot } from './governance.mjs';
 import { clearCoordinatorViolation, coordinatorView, postOwnerMessage } from './coordinator.mjs';
 import { approvalFromFile, CODE_ROOT, declarationFromFile, revisionNotMerged, runtimeTrust } from './provenance.mjs';
 import { recordAnchor, selfHostingSettings, trustedTip } from './self-hosting.mjs';
 import { Store } from './store.mjs';
+import { maintenanceAudit } from './maintenance.mjs';
+import { safeSync, syncSettings } from './maintenance-sync.mjs';
 import { comments as workItemComments, item as workItem, items as workItems } from './work-list.mjs';
 import { importIssues } from './work-list-import.mjs';
 import { approveProgram, programFromFile, programStatus, stopPrograms } from './program.mjs';
@@ -48,6 +52,13 @@ const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--go
   approval-revoke <campaignId> [reason] revoke the campaign's recorded private approvals and cancel the campaign:
                                         nothing starts under them again
   status <campaignId>
+  maintenance audit --repo <path>       read-only Git/worktree inventory; --root <dir> also discovers immediate repos
+    --root <dir>                       bounds linked-worktree inspection; optional --repo selects a nested repository
+                                        JSON includes ownership when the data store exists; never fetches or removes
+  maintenance sync --repo <path> [--apply]
+                                        fast-forward one clean, inactive checkout to its own upstream as locally observed
+                                        (never fetches). A dry run without --apply; --apply moves it only when config.json
+                                        maintenance.sync lists that path (SYNC_NOT_AUTHORIZED otherwise)
   pause <campaignId> [reason]
   cancel <campaignId> [reason]
   recheck <campaignId> [--task <taskId>] [note]
@@ -120,6 +131,8 @@ const apiKeyFlag = take('--api-key');
 const passphraseFlag = take('--passphrase');
 const kindFlag = take('--kind');
 const effortFlag = take('--effort');
+const maintenanceRepo = take('--repo');
+const maintenanceRoot = take('--root');
 const applyImport = args.includes('--apply') ? Boolean(args.splice(args.indexOf('--apply'), 1)) : false;
 const jsonOnly = args.includes('--json') ? Boolean(args.splice(args.indexOf('--json'), 1)) : false;
 const rotateFlag = args.includes('--rotate') ? Boolean(args.splice(args.indexOf('--rotate'), 1)) : false;
@@ -165,6 +178,33 @@ const dataConfig = () => { try { return JSON.parse(readFileSync(join(dataDir, 'c
 const trustHere = () => runtimeTrust(dataConfig(), store);
 
 try {
+  if (command === 'maintenance') {
+    if (rest.length !== 1 || !['audit', 'sync'].includes(rest[0]) || (!maintenanceRepo && !maintenanceRoot) || (rest[0] === 'sync' && !maintenanceRepo)) {
+      throw new CampaignError('MAINTENANCE_USAGE', 'maintenance audit requires --repo <path> or --root <dir>; maintenance sync requires --repo <path>; no other mutation command is enabled');
+    }
+    let ownershipUnreadable = false;
+    if (existsSync(join(dataDir, 'supervisor.db'))) {
+      try { store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true }); }
+      catch { ownershipUnreadable = true; }
+    }
+    if (rest[0] === 'sync') {
+      // The store is read only, for recorded activity; the one write is the fast-forward of the named checkout itself.
+      const settings = syncSettings(dataConfig());
+      const report = safeSync({ checkouts: [resolve(maintenanceRepo)], store, git: dataConfig().commands?.git ?? ['git'], dataDir, settings, apply: applyImport });
+      store?.close(); store = null;
+      if (ownershipUnreadable) report.problem = [report.problem, 'ownership-unreadable'].filter(Boolean).join('; ');
+      await new Promise((done) => process.stdout.write(JSON.stringify(report, null, 2) + '\n', done));
+      const refused = report.checkouts.find((entry) => entry.reason === 'not-authorized');
+      if (refused) throw new CampaignError('SYNC_NOT_AUTHORIZED', `${refused.path} is not listed under config.json maintenance.sync.checkouts with enabled true; nothing moved`);
+      process.exit(report.checkouts.some((entry) => entry.reason === 'unreadable') ? 1 : 0);
+    }
+    const report = maintenanceAudit({ repositories: maintenanceRepo ? [resolve(maintenanceRepo)] : [], root: maintenanceRoot ? resolve(maintenanceRoot) : undefined,
+      store, git: dataConfig().commands?.git ?? ['git'] });
+    store?.close();
+    if (ownershipUnreadable) report.errors.push({ reason: 'ownership-unreadable' });
+    await new Promise((done) => process.stdout.write(JSON.stringify(report, null, 2) + '\n', done));
+    process.exit(report.errors.length ? 1 : 0);
+  }
   // A conflicting shell default is evidence of an ambiguous status target, never a reason to create a store.
   const environmentData = process.env.AIWORKS_DATA;
   const canonical = (path) => existsSync(path) ? realpathSync(path) : resolve(path);
@@ -409,7 +449,15 @@ async function serve() {
   const cpu = cpuSettings(config);
   const cpuMonitor = cpu.enabled && process.platform === 'win32'
     ? createCpuMonitor({ settings: cpu, basePriority: config.workerJob?.priority === 'normal' ? 'normal' : 'belownormal', log }) : null;
-  const controller = new Controller({ store, config, dataDir, log, codeRevision, governanceRoot, revisionCheck, probe, cpuMonitor });
+  // External check services (check-services.mjs): every worker and supervisor gate started from here inherits them.
+  const offered = checkServicesEnvironment(config, dataDir);
+  for (const problem of offered.problems) log(`check service left out: ${problem}`);
+  if (offered.value) process.env[SERVICES_ENV] = offered.value; else delete process.env[SERVICES_ENV];
+  if (offered.services.length) log(`full gates are offered first to check service(s) ${offered.services.map((s) => s.name).join(', ')}; busy or down, they run here`);
+  const controller = new Controller({ store, config, dataDir, log, codeRevision, governanceRoot, revisionCheck, probe, cpuMonitor,
+    // Gate helper runs on this PC that hold a slot or wait for the browser session (gate.mjs): meanwhile no new worker
+    // starts (host.mjs, the gates signal).
+    gates: () => heldSlotCount() });
   log(`supervisor instance ${controller.instanceId} started (pid ${process.pid}, code ${codeRevision ?? 'unknown'}, data ${dataDir}, ${governanceNote})`);
   const unmerged = controller.unmergedRevision();
   if (unmerged) log(`no new work will start: ${unmerged} (AW-005)`);
