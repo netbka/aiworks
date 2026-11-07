@@ -143,6 +143,9 @@ Ran ${LEAK_PATH}` });
 
 Ran src/work.mjs (session ${sessionId})` });
     break;
+  case 'commit-same-leak': // a read-only publication repair that still returns unsafe text
+    ok({ result: 'resolved', summary: 'report still unsafe', headSha: git('rev-parse', 'HEAD'), report: `# Report\n\nRan ${LEAK_PATH}` });
+    break;
   case 'report':
     ok({ result: 'resolved', summary: 'researched', report: `# Findings\n\nsession ${sessionId}` });
     break;

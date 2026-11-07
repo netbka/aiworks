@@ -253,7 +253,7 @@ CREATE TRIGGER IF NOT EXISTS test_results_no_delete BEFORE DELETE ON test_result
 
 const JSON_COLUMNS = new Set(['declaration', 'blocker', 'failures', 'findings', 'result', 'verification',
   'blocked', 'packet', 'outcome', 'payload', 'detail', 'message_ids', 'probe', 'last_evidence', 'resolution', 'message',
-  'eligibility', 'steps', 'history', 'routing', 'ops', 'spec', 'pinned', 'questions', 'conflicts', 'notes', 'stale_what', 'signature', 'outline', 'settings', 'rules', 'alert', 'basis', 'health_check']);
+  'eligibility', 'steps', 'history', 'routing', 'ops', 'spec', 'pinned', 'questions', 'conflicts', 'notes', 'stale_what', 'signature', 'outline', 'settings', 'rules', 'alert', 'basis', 'health_check', 'publication_rewrite']);
 
 function decode(row) {
   if (!row) return null;
@@ -311,6 +311,9 @@ export class Store {
         // The provider account an operation ran under (docs/design/ACCOUNT_ADAPTER_CAAM.md section 3.1) is additive too:
         // a legacy operation reads account_identity as null, and the store version does not change.
         if (!columns.includes('account_identity')) this.db.exec('ALTER TABLE operations ADD COLUMN account_identity TEXT');
+        // A text-only pass names the original independent code verdict; old runs remain ordinary verification.
+        if (!columns.includes('publication_rewrite')) this.db.exec('ALTER TABLE operations ADD COLUMN publication_rewrite TEXT');
+        if (!columns.includes('verification_base_sha')) this.db.exec('ALTER TABLE operations ADD COLUMN verification_base_sha TEXT');
         const taskColumns = this.db.prepare('PRAGMA table_info(tasks)').all().map((column) => column.name);
         if (!taskColumns.includes('signature')) this.db.exec('ALTER TABLE tasks ADD COLUMN signature TEXT');
         // A draft's plan outline and the owner's edit that made it (intake.mjs reviseDraft, OWNER_UI_V2 WP3) are additive:

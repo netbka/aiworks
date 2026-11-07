@@ -138,9 +138,18 @@ and the GitHub adapter checks again at each call. A refusal names categories onl
 - The verified report, its digest and the verification stay in the task row and the run evidence; the journal records
   `publication-refused` with the categories, sources and report digest. Nothing is redacted or truncated.
 - A refused report reopens the task as a publication repair round (a `publication-text` finding): the implementer
-  rewrites the report, keeping the same head when the code needs no change, and a fresh verifier checks it. A refused
-  verification alone goes to a fresh verifier of the same head. At most two such rounds, within `maxRepairRounds`;
+  rewrites the report, and a fresh verifier checks its new digest. For a commit with a settled accepted full gate,
+  both passes use detached read-only checkouts of the same head; they correct and verify text without rerunning the
+  code gate. The original code verdict, criteria and deterministic gate stay separate from the new text verdict.
+  Reuse binds the original operation and outcome digest, original report digest, exact clean head, task base,
+  scope, authorization version and packet authority. The current base is read again before dispatch and publication.
+  Changed head, base, authority or report, missing evidence, report-only work, a rejected code verdict or a
+  base-explained failing gate requires ordinary independent verification. A refused verification alone goes directly
+  to the independent text verifier when that same proof holds. At most two such rounds, within `maxRepairRounds`;
   then, or when the supervisor's own text is refused, the task stalls. No new owner decision is needed for wording.
+- Text passes use the existing durable operation records, session fencing, run/cost limits and bounded retries.
+  A restart resumes their recorded operation. A refused or changed report never inherits the original report's
+  acceptance: the separate text verifier must check its exact new digest. Every outbound privacy check still runs.
 - A refused outbox note is marked `refused` and never sent or retried; one note without its text says it was withheld.
 
 Completion guidance names the actual target and
