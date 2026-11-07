@@ -63,9 +63,6 @@ nav{display:grid;gap:6px}
 .local-dot{flex:none;width:7px;height:7px;background:#2caa80;border-radius:50%}
 .shell{margin-left:var(--sidebar-width)}
 .topbar{position:sticky;top:0;z-index:4;min-height:var(--header-height);display:flex;align-items:center;flex-wrap:wrap;padding:10px 24px;background:var(--surface);border-bottom:1px solid var(--line);gap:10px 24px}
-.host{display:flex;gap:10px;align-items:center;min-width:0;overflow-wrap:anywhere}
-.host strong{font-size:12px;font-weight:600}
-.host small{display:block;color:var(--muted);font-size:12px;margin-top:2px}
 .topbar-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px 20px;margin-left:auto;min-width:0}
 .messages-link{display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:0 12px;border:1px solid #dfe5ee;border-radius:7px;font-size:12px;font-weight:600;color:#536078;white-space:nowrap}
 .messages-link:hover{background:#f3f6fb;text-decoration:none}
@@ -499,8 +496,6 @@ html{scrollbar-gutter:stable;scroll-padding-top:88px}
 .accounts-section h3{margin:0;font-size:14px;font-weight:600;color:#24324a}
 .breadcrumb{margin:0 0 8px}
 .breadcrumb a{display:inline-flex;align-items:center;min-height:44px}
-.host-version-link{color:var(--muted);text-decoration:none;transition:color .15s ease}
-.host-version-link:hover{color:#335ed8;text-decoration:underline}
 .version-card{margin-top:12px;padding:12px 14px;background:#f8fafc;border:1px solid var(--line);border-radius:8px}
 .version-card-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px;flex-wrap:wrap}
 .version-features-list{list-style:none;padding:0;margin:8px 0 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:6px;font-size:12px;color:#2c3a4e}
@@ -540,15 +535,8 @@ html{scrollbar-gutter:stable;scroll-padding-top:88px}
 /* owner-ui-v2 03-overview: the goal is the headline on this panel, not a small label. */
 .now-goal{font-size:21px;font-weight:700;color:var(--ink);line-height:1.3;margin:0 0 4px}
 .pause-controls{margin-top:12px}
-.home-projects .task-name{font-weight:600}
-.home-projects .row-line{display:flex;align-items:center;justify-content:space-between;gap:12px}
 /* owner-ui-v2 02-home: the headline leads Home, with Pause/Resume beside it rather than in a panel below the fold. */
-.home-hero{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:22px}
-.home-hero h2{margin:0;font-size:26px;line-height:1.25}
-.home-hero .subtext{font-size:15px;margin-top:6px}
-.home-hero .pause-controls{margin-top:0}
 /* The one decision Home answers directly, set apart from the ordinary Needs you card list (owner-ui-v2 02-home). */
-.home-decision .needs-item{background:var(--warning-soft);border-color:var(--warning)}
 /* The local work list (UI20): user text keeps its lines and wraps at 320px; checkboxes and controls stay 44px tall. */
 .work-text{white-space:pre-wrap;overflow-wrap:anywhere}.work-comments{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:12px}
 .work-comment{border-top:1px solid var(--line);padding-top:10px}.worklist-row .needs-text a{overflow-wrap:anywhere}
@@ -559,44 +547,64 @@ html{scrollbar-gutter:stable;scroll-padding-top:88px}
 .tone-dot{flex:none;width:8px;height:8px;border-radius:50%;display:inline-block;background:var(--tone-todo)}
 .tone-dot.you{background:var(--tone-you)}.tone-dot.building{background:var(--tone-building)}.tone-dot.checking{background:var(--tone-checking)}
 .tone-dot.waiting{background:var(--tone-waiting)}.tone-dot.merged{background:var(--tone-merged)}.tone-dot.cost{background:var(--tone-cost)}
-.live-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:0 0 18px}
-.live-tile{display:flex;flex-direction:column;gap:6px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px;color:var(--ink);min-height:44px}
-a.live-tile:hover{text-decoration:none;border-color:#e8c88f;background:#fffcf6}
-.live-tile.you{border-color:#f0dcb4}
-.live-tile-title{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:550;color:var(--muted)}
-.live-tile-value{font-size:26px;font-weight:650;letter-spacing:-.5px;line-height:1.1}
-.live-tile-value small{font-size:13px;font-weight:550;letter-spacing:0;color:var(--muted)}
-.live-tile.you .live-tile-value{color:#8a5a14}.live-tile.merged .live-tile-value{color:var(--tone-merged)}
-.live-tile-foot{font-size:12px;color:var(--muted);line-height:1.4}
-.live-table{overflow-x:auto}
-.live-head,.live-row{display:grid;grid-template-columns:minmax(200px,1.6fr) minmax(170px,1.4fr) minmax(120px,1fr) minmax(110px,.8fr) minmax(90px,.6fr);gap:14px;align-items:center;padding:0 24px;min-width:760px}
-.live-head{font-size:12px;color:var(--muted);background:#fafbfd;border-bottom:1px solid var(--line);padding-top:8px;padding-bottom:8px}
-.live-head span:last-child,.live-when{text-align:right}
-.live-rows{list-style:none;margin:0;padding:0}
-.live-row{padding-top:12px;padding-bottom:12px;border-bottom:1px solid #eff2f6}
-.live-row:last-child{border-bottom:0}
-.live-row:hover{background:#fafbfd}
-.live-cell{min-width:0;display:flex;flex-direction:column;gap:5px}
-.live-name .subtext{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.live-agents{flex-direction:row;flex-wrap:wrap;align-items:center;gap:6px}
-.live-state{align-items:flex-start}
 .step-strip{display:flex;gap:3px}
 .step-seg{flex:1 1 0;min-width:4px;max-width:28px;height:8px;border-radius:2px;background:var(--tone-todo)}
 .step-seg.you{background:var(--tone-you)}.step-seg.building{background:var(--tone-building)}.step-seg.checking{background:var(--tone-checking)}
 .step-seg.waiting{background:var(--tone-waiting)}.step-seg.merged{background:var(--tone-merged)}.step-seg.delivered{background:var(--tone-delivered)}
-.role-chip{display:inline-flex;align-items:center;gap:6px;border-radius:5px;padding:3px 7px;font-size:12px;font-weight:550;white-space:nowrap}
-.role-chip.building{background:#edf2ff;color:#2f4fb8}.role-chip.checking{background:#f3effc;color:#5a3cb5}
-/* The page's freshness: a calm pulse while updates arrive, amber once they stop. */
-.connection.fresh:before{background:#2caa80;animation:fresh-pulse 2s infinite}
 .connection.stale{color:#805114}.connection.stale:before{background:#d19038}
-.fresh-age{font-variant-numeric:tabular-nums}
-@keyframes fresh-pulse{0%{box-shadow:0 0 0 0 rgba(44,170,128,.5)}70%{box-shadow:0 0 0 6px rgba(44,170,128,0)}100%{box-shadow:0 0 0 0 rgba(44,170,128,0)}}
-@media(prefers-reduced-motion:reduce){.connection.fresh:before{animation:none}}
-@media(max-width:599px){.live-tiles{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.live-tile{padding:12px}.live-tile-value{font-size:22px}
-  .live-head{display:none}.live-row{min-width:0;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"name state" "progress progress" "agents when";padding:12px 16px}
-  .live-name{grid-area:name}.live-state{grid-area:state;align-items:flex-end}.live-progress{grid-area:progress}.live-agents{grid-area:agents}.live-when{grid-area:when}}
 /* AW-016: what AIWorks decided itself, and its own state folded away below what needs the owner. */
 .needs-decided .needs-item{border-left:0}
 .needs-decided .needs-text strong{font-weight:650}
 .needs-own{margin-top:18px}
 .needs-own>details>summary{font-size:13px;font-weight:600;color:var(--muted);cursor:pointer;min-height:44px;display:flex;align-items:center}
+
+/* Home (docs/design/HOME_V2.md part 2): one centred column of five blocks. */
+.page-heading[hidden],#header-pause[hidden],.home [hidden]{display:none}
+#header-pause{min-height:44px}
+.connection{min-height:44px}
+.home{max-width:1040px;margin:0 auto;display:flex;flex-direction:column;gap:28px}
+.home h1{font-size:34px;line-height:1.15;letter-spacing:-.6px;font-weight:650;margin:0}
+.home h1:focus{outline:none}
+.home h2{font-size:16px;font-weight:650;margin:0}
+.home-summary{margin:8px 0 0;font-size:15px;color:var(--muted)}
+.home-own{margin:6px 0 0;font-size:13px;color:var(--muted)}.home-own a{color:var(--muted);text-decoration:underline}
+.home-resolve{margin-top:12px}.home-reply{margin:6px 0 0;font-size:13px;color:var(--muted)}
+.itself-resolve,.itself-line .card-more{flex:1 1 100%;min-width:0}
+.itself-line{display:flex;gap:6px 12px;flex-wrap:wrap;align-items:center;padding:10px 14px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);min-width:0}
+.itself-text{flex:1 1 220px;min-width:0;font-size:14px;overflow-wrap:anywhere}
+.home-confirm{margin:12px 0 0;font-size:14px;color:var(--green);font-weight:600}
+.home-note{font-size:13px;color:var(--muted)}
+.home-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:0 0 10px;min-height:32px}
+.home-block>h2{margin:0 0 10px}
+.home-cards,.home-goals,.home-lines,.home-quiet{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:12px}
+.home-card{display:flex;flex-direction:column;gap:12px;padding:18px 20px;background:var(--warning-soft);border:1px solid var(--warning);border-radius:var(--radius)}
+.home-question{font-size:18px!important}
+.home-point{margin:0;color:var(--ink);line-height:1.5}
+.home-options{border:0;margin:0;padding:0;min-width:0;display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+.home-option{position:relative;display:flex;gap:10px;align-items:flex-start;min-height:44px;padding:12px 14px;background:var(--surface);border:1px solid var(--line);border-radius:10px;cursor:pointer}
+.home-option input{position:absolute;opacity:0;inset:0;width:100%;height:100%;margin:0;cursor:pointer}
+.home-option:before{content:"";flex:none;width:16px;height:16px;margin-top:2px;border:2px solid var(--muted);border-radius:50%;background:var(--surface)}
+.home-option:has(input:checked){border-color:var(--blue);background:var(--blue-soft)}
+.home-option:has(input:checked):before{border-color:var(--blue);background:radial-gradient(var(--blue) 45%,var(--surface) 50%)}
+.home-option:has(input:focus-visible){outline:3px solid var(--blue);outline-offset:2px}
+.home-option-body{display:flex;flex-direction:column;gap:4px;min-width:0;overflow-wrap:anywhere}
+.home-option-body strong{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:14px}
+.home-answer{display:flex}
+.home-answer .button{min-height:44px;min-width:44px}
+.home-goal{display:flex;flex-direction:column;gap:6px;padding:14px 16px;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+.home-goal-top{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.home-goal-title{font-weight:600;font-size:15px;min-width:0;overflow-wrap:anywhere}
+a.home-goal-title{display:inline-flex;align-items:center;min-height:44px}
+.home-now{font-size:13px;color:var(--muted);overflow-wrap:anywhere}
+.home-progress-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.home-progress-row .step-strip{flex:1 1 120px;min-width:0}
+.home-progress-row .step-seg{max-width:none}
+.home-lines li{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-height:44px;padding:4px 2px;border-bottom:1px solid var(--line)}
+.home-lines li>a{margin-left:auto;display:inline-flex;align-items:center;min-height:44px;padding:0 4px}
+.home-landed li .home-note{margin-left:auto}
+.home-landed-title{min-width:0;overflow-wrap:anywhere}
+.home-check{color:var(--green);font-weight:700}
+.home-all{min-height:44px;min-width:44px;padding:0 10px;border:0;background:none;color:var(--blue);font-size:13px;font-weight:600;cursor:pointer;text-decoration:underline}
+.home-quiet{flex-direction:row;flex-wrap:wrap;gap:4px 16px}
+.home-quiet a,.home-quiet li{display:inline-flex;align-items:center;min-height:44px}
+@media(max-width:599px){.home h1{font-size:28px}.home-card{padding:16px}.home-options{grid-template-columns:minmax(0,1fr)}.home-goal-top{align-items:flex-start}.home-answer .button{width:100%}.home-landed li .home-note{margin-left:0;flex-basis:100%}}

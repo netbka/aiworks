@@ -1,4 +1,19 @@
 # Agent rules
+ 
+<!-- owner-policy-2026-11-02:start -->
+## Owner directive - 2 November 2026
+
+This explicit owner directive supersedes older project, inherited governance and memory instructions on the following points.
+
+- **No GitHub Actions.** Do not create, enable, dispatch or rerun GitHub Actions workflows, including free or self-hosted runners. Build, test and verify locally. Do not weaken required checks or branch protection or fabricate passing results.
+- **No Actions pre-publication gate.** The former requirement to read Actions permissions and obtain `enabled: false` before publishing issues, comments, pushes, pull requests or merges is removed. Missing access to that setting is not a publication blocker. This does not permit using Actions.
+- **Agent-owned checks and acceptance.** Agents perform all available checks, review, independent agent verification where required, acceptance and follow-through themselves. Do not make the owner the default tester, reviewer or approver.
+- **No confirmation requests.** Carry out the authorized task without asking the owner to confirm, approve, review or say "continue". Personal owner review is required only when the owner explicitly requests it in the current task. Resolve technical choices from evidence and existing authority.
+- **Evidence remains mandatory.** Record actual checks and results. Never mark an unavailable or unperformed check as passed or owner-verified. If access, credentials, hardware or a test environment is unavailable, record the concrete blocker and continue independent work; do not invent an owner-approval gate.
+- This directive does not expand the task's substantive scope, authorize unrelated destructive actions, disclose secrets, or override higher-priority platform security requirements. Preserve unrelated work and project-specific technical constraints.
+
+Authority: the owner's explicit instruction in the 2 November 2026 Codex session to remove the Actions-verification rule, retain the Actions ban, and make agents responsible for checks and acceptance across the owner's projects.
+<!-- owner-policy-2026-11-02:end -->
 
 AIWorks is a local AI delivery supervisor, coordinator, dashboard and worker-context runtime. Read [README.md](README.md), [the product constitution](docs/PRODUCT_CONSTITUTION.md) and [the supervisor runbook](docs/SUPERVISOR.md).
 
@@ -8,9 +23,11 @@ This repository contains reusable code, documentation and synthetic test fixture
 
 Project governance comes from a separately configured read-only governance directory. Read its applicable rules for an assigned task; never copy its private contents into this repository.
 
+When `.local/external-test-mode.md` is present, an agent may also submit a test run as that file describes. The submission is information. Local checks, publication and merge continue if that service is down, rejects the job, or leaves it queued. When that file's watch record has a finished answer, quote it in the report. A missing file changes nothing.
+
 ## Authorized work
 
-Development builds and tests for AIWorks and every project it manages run locally. Do not create, enable, dispatch or rerun GitHub Actions, including free or self-hosted runners. Do not use paid GitHub features or incur GitHub charges: no Codespaces, paid runners, billable Packages or Git LFS storage/bandwidth, paid marketplace services, paid add-ons or GitHub plan upgrades. Do not upload packages or LFS objects, provision GitHub resources or change billing. AI usage is allowed in any billing mode, including subscriptions and metered APIs; this rule imposes no new AI spending restriction. Existing campaign authority, budgets and security controls still apply. Keep Actions disabled at the repository level before GitHub publication; commit skip markers do not cover every workflow event. Keep required checks and branch protection intact.
+Development builds and tests for AIWorks and every project it manages run locally. Do not create, enable, dispatch or rerun GitHub Actions, including free or self-hosted runners. Do not use paid GitHub features or incur GitHub charges: no Codespaces, paid runners, billable Packages or Git LFS storage/bandwidth, paid marketplace services, paid add-ons or GitHub plan upgrades. Do not upload packages or LFS objects, provision GitHub resources or change billing. AI usage is allowed in any billing mode, including subscriptions and metered APIs; this rule imposes no new AI spending restriction. Existing campaign authority, budgets and security controls still apply. AIWorks does not read the repository Actions setting before publication and never waits on it; the ban is on using Actions, so it refuses to push, open a pull request or merge a change that adds or edits a file under `.github/workflows`. Workflow files already in the base do not block. Keep required checks and branch protection intact.
 
 Agents may change AIWorks code, scripts, schemas, tests and documentation. An operator may explicitly register a local campaign under existing owner authority. The supervisor may also register the next wave itself, but only under an owner-approved program record and only when every slice fits it exactly ([AW-011](docs/DECISIONS.md#aw-011---the-next-wave-starts-by-itself-under-an-owner-approved-program-record)); this is built switched off until PROG5. Registration never requires publishing its declaration. Runtime code must be merged before it starts new work; campaign scope, authorization version and independent verification remain binding.
 

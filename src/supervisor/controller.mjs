@@ -4,7 +4,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SECRET_LIKE_PATH_PATTERN, acceptsLease, packetDigest, planContext, validatePacket } from '../../scripts/lib/worker-context.mjs';
 import * as executors from './adapters/executors.mjs';
@@ -23,7 +23,7 @@ import { autoApplyPass } from './release/owner-apply.mjs';
 import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountFull, accountOf, accountWait, buildTaskSignature, clearAccountWait, formatSignatureLines, formatTokensUsage, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
 import { BEYOND_RULE, beyondConstraint, domainOf, outsideWrites, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, hostPressure, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
-import { hostSamplerFor } from './host.mjs';
+import { gatePauseOn, hostSamplerFor, pressureThresholds } from './host.mjs';
 import { totalmem } from 'node:os';
 import { cleans, cleanupSettings, createStackSweeper, inside, openOperations, runningBatches, runningRefreshes, workerJobLimits } from './host-safety.mjs';
 import { containsSecret, coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
@@ -31,7 +31,7 @@ import { ANCHOR, MAX_DOCUMENT_BYTES, parseReference, resolveSection } from './re
 import { MAX_CITES } from './adapters/claude.mjs';
 import { runnerIdentified, stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions, decisionInstructions } from './instructions.mjs';
-import { answerGuidance, answersItself, decideGuidance, decisionId, isDecision, sendsBack, structuredDecision } from './decisions.mjs';
+import { answerGuidance, answersItself, autoOption, decideGuidance, decisionId, isDecision, sendsBack, structuredDecision } from './decisions.mjs';
 import { deliverableWithDefects, mergedHead, OWNER_CHANGES, ownerChangesFinding } from './result-review.mjs';
 import { POLICY as ROUTING_POLICY, autoReceipt, indicators, policyInputs, priorAttempt, receiptInputs, staticReceipt } from './router.mjs';
 import { roleCatalog } from './governance.mjs';
@@ -41,10 +41,12 @@ import { mergePass, mergeSettings } from './merge.mjs';
 import { mainLedger, selfHostingSettings, trustedTip, trustsLocalMain } from './self-hosting.mjs';
 import { programPass } from './program.mjs';
 import { cleanupPass } from './cleanup.mjs';
-import { GATE_FILES, gateFailure, readGateRun } from './gate.mjs';
+import { BROWSER_RUN, browserLockPath, GATE_FILES, gateFailure, gateHeadProblem, readGateRun, slotSettings } from './gate.mjs';
+import { baseCheckStep, baseCompareSettings, baseRecord, claimBaseRed, settleBaseRed, sharedBaseFailures } from './base-check.mjs';
+import { CACHE_RULE, checkClaims, hasRunner, insertResults, offerCache, otherNodeMajor, resultsOf, testCacheSettings } from './test-cache.mjs';
 import { isLocalTarget, recordCandidate } from './local-candidates.mjs';
 import { checkLocalDispatch, LOCAL_ADMISSION_ON } from './local-admission.mjs';
-import { addComment, createItem, followUp, reviewItem, WorkListError, workAuthorization, workLink } from './work-list.mjs';
+import { addComment, createItem, followUp, standingFollowUp, reviewItem, WorkListError, workAuthorization, workLink } from './work-list.mjs';
 import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
 import { alertDecision, configuredTransport, currentAlertRules, renderAlert } from './alerts.mjs';
 import { PUBLICATION_REFUSED, privateTerms, publicationFindings } from '../shared/public-text.mjs';
@@ -123,7 +125,15 @@ export const DEFAULTS = {
   ciPollMs: 60_000, ciNoChecksMs: 30 * 60_000,
   // A GitHub rate-limit refusal waits for its reported reset plus this margin, instead of publishRetryMs (aiworks#21).
   rateLimitMarginMs: 5_000,
+  // aiworks#140: each step of a base read (the fetch, then the read of its ref) and each remote branch read ends by this.
+  baseReadMs: 30_000,
+  // Beside it, the start and drain of the Windows job a base fetch runs in (execContained).
+  baseReadOverheadMs: 120_000,
 };
+// The fixed failures of a base read (fetchBase): the stage that failed, never the command's own output. `unread`: a
+// dispatch needed a base that was not read before its fence (dispatchBase). `uncontained`: a fetch in that checkout
+// started processes not yet shown ended (readBase).
+export const BASE_READ_FAILURES = Object.freeze(['fetch-timeout', 'fetch-failed', 'read-timeout', 'unreadable', 'unread', 'uncontained']);
 // Findings that reopen a published task as a repair round on its own branch and PR (aiworks#27, aiworks#42), and the
 // owner's request for changes to a finished result (OWNER_UI_V2 WP4).
 const REPAIR_FINDINGS = new Set(['integration-conflict', 'ci-failure', OWNER_CHANGES]);
@@ -344,6 +354,8 @@ const CI_SETTLED = ['ci-passed', 'ci-failed', 'ci-inconclusive', 'ci-none'];
 const RATE_LIMIT_MAX_WAIT_MS = 60 * 60_000;
 // AW-005: how often a controller re-reads whether its own revision is merged. A constant, not a config.json key.
 const REVISION_CHECK_MS = 60_000;
+// inBase (work item 160): a base history longer than this is not listed once per tick; each commit is then asked about on its own.
+const ANCESTOR_LIST_LIMIT = 200_000;
 // How often stray Docker stacks of docker.cleanup repositories are looked for (host-safety.mjs), besides after one of their runs ends.
 const SWEEP_MS = 10 * 60_000;
 // routing-policy/1 history window (MODEL_ROUTING 5.3): the most recent attempts of one candidate and class, at most 90 days old.
@@ -390,9 +402,9 @@ function envelopeConstraint(envelope) {
 }
 /** Where a task's work belongs in owner-facing text: `owner/name#issue`, or the project id of a project without GitHub. */
 const whereOf = (decl, issue) => (isLocalTarget(decl) ? decl.target.projectId : `${decl.target.repository}#${issue}`);
-// A project without GitHub has no task issue and its owner runs no CLI: a decision there is answered under Needs you and
+// A project without GitHub has no task issue and its owner runs no CLI: a decision there is answered in Settings, AIWorks itself and
 // its work is checked again with Check again on the dashboard, so its owner texts name those actions instead.
-const LOCAL_DECISION_RECHECK = 'Answer it under Needs you in AIWorks; the step then runs again and is checked again.';
+const LOCAL_DECISION_RECHECK = 'Answer it in Settings, AIWorks itself; the step then runs again and is checked again.';
 const recheckWords = (decl, id) => (isLocalTarget(decl) ? 'then choose Check again on this work in AIWorks' : `then run: supervisor recheck ${id}`);
 
 /**
@@ -436,7 +448,7 @@ export class Controller {
   constructor({ store, config, dataDir, log = () => {}, now = () => Date.now(), instanceId = randomUUID(),
     codeRevision = null, fault = process.env.AIWORKS_FAULT ?? null, notifier = noopTransport, probes = {},
     governanceRoot = undefined, revisionCheck = null, revisionCheckMs = REVISION_CHECK_MS, profiles = null, profileHomes = null,
-    alertDeps = {}, sampler = null, probe = null, cpuMonitor = null }) {
+    alertDeps = {}, sampler = null, probe = null, gates = null, cpuMonitor = null }) {
     Object.assign(this, { store, dataDir, log, now, instanceId, codeRevision, fault, notifier, probes, governanceRoot,
       revisionCheck, revisionCheckMs, profiles, profileHomes });
     this.config = { ...DEFAULTS, ...config };
@@ -473,6 +485,11 @@ export class Controller {
     // the last wait reasons are per-tick memory only; every admission input is a store row or a local git ref. The base
     // check times and the PRs found merged at their exact head are caches: a restart reads them again.
     this.sched = schedulerEnabled(this.config);
+    // Gates and web task runs keep apart only with the gate pause on (host.mjs gatePauseOn); `gates` (cli.mjs serve) counts
+    // the gates running now, and the web runs held back for one are logged once each.
+    this.browserGuard = gatePauseOn(this.config);
+    this.gates = gates;
+    this.gateHeldWeb = new Set();
     this.candidates = [];
     this.fanoutWaited = new Set();
     // CAAM profiles that a dispatch found at their learned limit while no profile could run (CAAM5): per-tick memory, as
@@ -482,7 +499,7 @@ export class Controller {
     // an injected sampler replaces the host in tests), and the static accounts a pass found at their learned limit
     // (per-tick memory, as profileWaited; the next useful result on one of them raises its limit by one).
     // `probe` (host.mjs createHostProbe) adds ports and Docker; cli.mjs serve supplies it, tests and other callers do not.
-    this.sampler = this.sched ? sampler ?? hostSamplerFor(this.config, { probe }) : null;
+    this.sampler = this.sched ? sampler ?? hostSamplerFor(this.config, { probe, gates }) : null;
     this.accountWaited = new Set();
     this.waitReasons = new Map();
     this.domainWaits = [];
@@ -492,6 +509,15 @@ export class Controller {
     // Check times and wait reasons are memory only: after a restart every published PR is judged once more, and a merge
     // whose outcome was unknown is settled by reading the PR first (merge.mjs).
     this.merges = mergeSettings(this.config);
+    // Base compare (base-check.mjs): off unless config.json `baseCompare` names the gate command. Malformed is off, logged.
+    const baseCompare = baseCompareSettings(this.config.baseCompare);
+    if (baseCompare?.problem) this.log(`base compare is off: ${baseCompare.problem}`);
+    this.baseCompare = baseCompare?.problem ? null : baseCompare;
+    this.baseWaits = new Map();
+    // Test result cache (test-cache.mjs): off unless config.json `testCache.enabled` is true. Malformed is off, logged.
+    const testCache = testCacheSettings(this.config.testCache);
+    if (testCache?.problem) this.log(`test cache is off: ${testCache.problem}`);
+    this.testCache = testCache?.problem ? null : testCache;
     // AW-005: where the trusted main lives, for the texts of the runtime-not-merged hold. cli.mjs serve checks the same setting.
     // LOCAL_OPERATION.md section 4 (slice SELF4): with local main trusted, the self-hosted repository's bases, worktrees,
     // dependency receipts and campaign branches are read from local refs and the main ledger, and CI repair is refused.
@@ -521,8 +547,13 @@ export class Controller {
     // computer stays busy and restores it afterwards. Its checks run beside the tick, never inside admission.
     this.cpuMonitor = cpuMonitor;
     this.cpuCheckedAt = -Infinity;
-    // Base fetches of the campaign steps of the current pass (fetchBase): checkout and base -> { ok, sha }; null outside them.
+    // Base fetches shared within one stretch of a pass (fetchBase): the campaign steps, then admission, each with its own
+    // map of checkout and base -> { ok, sha }; null outside them.
     this.baseFetches = null;
+    // Base reads still running, by checkout and base: a second read of one ref waits for the first (fetchBase).
+    this.baseReads = new Map();
+    // The folders of base fetches running in this process (execContained), which a receipt check leaves alone.
+    this.baseReadRuns = new Set();
   }
 
   /** Crash rehearsal hook: terminate abruptly at a named point (AIWORKS_FAULT). */
@@ -568,6 +599,7 @@ export class Controller {
     }
     this.candidates = [];
     this.baseFetches = new Map();
+    this.tickCache = new Map();
     try {
       for (const id of ids) {
         // One long step must not let the other campaigns' leases lapse: every held lease is extended before each step.
@@ -586,7 +618,7 @@ export class Controller {
           }
         }
       }
-    } finally { this.baseFetches = null; }
+    } finally { this.baseFetches = null; this.tickCache = null; }
     if (this.sweeper && this.now() - this.sweptAt >= SWEEP_MS) { this.sweptAt = this.now(); this.sweeper.sweep(); }
     if (this.cpuMonitor && this.now() - this.cpuCheckedAt >= this.cpuMonitor.settings.intervalMs) {
       this.cpuCheckedAt = this.now();
@@ -600,15 +632,15 @@ export class Controller {
       autoApplyPass(this.store, { dataDir: this.dataDir, runtimeRoot: this.runtimeRoot ?? resolve(here, '..', '..'), git: this.cmd.git,
         now: this.now(), log: (line) => this.log(line), refused: (this.applyRefused ??= new Set()) });
     } catch (error) { this.log(`apply pass failed: ${error.stack || error}`); }
-    try { releasePass(this); }
+    try { await releasePass(this); }
     catch (error) { this.log(`release pass failed: ${error.stack || error}`); }
     // Program waves (PROJECT_WORKSPACE_PLAN 6.8d, PROG3): off unless config.json `program.enabled`; registers at most the
     // next wave of each approved program, at most once an hour. The new campaign is stepped from the next tick.
-    try { programPass(this); }
+    try { await programPass(this); }
     catch (error) { this.log(`program pass failed: ${error.stack || error}`); }
     // Cleanup after finished work (PROJECT_WORKSPACE_PLAN 6.8c, CLN1): off unless config.json `cleanup.enabled` is true;
     // removes only finished, owned, clean worktrees and the local task branches the trusted main contains.
-    try { cleanupPass(this); }
+    try { await cleanupPass(this); }
     catch (error) { this.log(`cleanup pass failed: ${error.stack || error}`); }
     // Admission: at most one launch per tick across every campaign this instance holds (ADAPTIVE_SCHEDULER 4.1).
     if (this.sched) {
@@ -668,11 +700,18 @@ export class Controller {
 
   fenced(ctx, fn) {
     return this.store.tx(() => {
-      this.store.assertLease(ctx.id, this.instanceId, ctx.generation, this.now());
+      const enteredAt = this.now();
+      this.store.assertLease(ctx.id, this.instanceId, ctx.generation, enteredAt);
+      const held = new Map(this.held).set(ctx.id, ctx.generation);
+      const leases = [...held].map(([id]) => this.store.lease(id))
+        .filter((lease) => lease?.instance_id === this.instanceId && held.get(lease.campaign_id) === lease.generation && lease.expires_at > enteredAt);
       const value = fn();
-      // Hold the write lock across external effects so expiry cannot admit a second writer.
-      this.store.run('UPDATE leases SET expires_at = ? WHERE campaign_id = ? AND instance_id = ? AND generation = ?',
-        this.now() + this.config.leaseMs, ctx.id, this.instanceId, ctx.generation);
+      // Slow synchronous effects block the renewal timer; the write lock protects every unchanged, previously live lease.
+      // A lease taken for longer than leaseMs keeps its later end: shortening it made the next fenced write fail with
+      // "no longer held" whenever it came more than leaseMs later (2026-11-05).
+      const renewedTo = this.now() + this.config.leaseMs;
+      for (const lease of leases) this.store.run('UPDATE leases SET expires_at = ? WHERE campaign_id = ? AND instance_id = ? AND generation = ? AND expires_at = ?',
+        Math.max(renewedTo, lease.expires_at), lease.campaign_id, this.instanceId, lease.generation, lease.expires_at);
       return value;
     });
   }
@@ -685,9 +724,9 @@ export class Controller {
     const ctx = { id, generation: lease.generation };
     // An open integration repair round whose PR was merged by someone else ends (aiworks#207). Checked before a finished
     // campaign's rounds reopen below, so a round opened by this pass is dispatched without a GitHub read.
-    if (this.store.campaign(id).control === 'registered' && !this.unmergedRevision()) this.endMergedRepairs(ctx);
+    if (this.store.campaign(id).control === 'registered' && !this.unmergedRevision()) await this.endMergedRepairs(ctx);
     // A conflicting published PR reopens its task and with it the finished campaign (aiworks#27).
-    if (this.ir && this.store.campaign(id).control === 'finished') this.checkPublishedIntegration(ctx);
+    if (this.ir && this.store.campaign(id).control === 'finished') await this.checkPublishedIntegration(ctx);
     // A published head whose CI fails reopens its task the same way (aiworks#42).
     if (this.ci && this.store.campaign(id).control === 'finished') this.checkPublishedCi(ctx);
     // The owner's request for changes reopens its finished step the same way (OWNER_UI_V2 WP4).
@@ -718,9 +757,9 @@ export class Controller {
       else {
         this.releaseUnmergedHold(ctx);
         this.recoverExecutorAvailability(ctx);
-        if (this.ir) this.checkPublishedIntegration(ctx);
+        if (this.ir) await this.checkPublishedIntegration(ctx);
         if (this.ci) this.checkPublishedCi(ctx);
-        this.reconcileIntegration(ctx);
+        await this.reconcileIntegration(ctx);
         if (this.ap) this.ensureClosingCheck(ctx);
         await this.schedule(ctx);
       }
@@ -993,7 +1032,7 @@ export class Controller {
           const key = `auto-decision:${ctx.id}:${fresh.task_id}:${campaign.authorization_version}:${answers.length}`;
           if (!this.store.addEvent(ctx.id, 'auto-decision', { taskId: fresh.task_id, authorizationVersion: campaign.authorization_version }, key, now)) return;
           this.store.run('UPDATE events SET processed_at = ? WHERE dedup_key = ?', now, key);
-          this.answerDecision(ctx, { taskId: fresh.task_id, decision: decisionId(ctx.id, fresh.task_id, fresh.blocked), option: fresh.blocked.decision.suggestion.option,
+          this.answerDecision(ctx, { taskId: fresh.task_id, decision: decisionId(ctx.id, fresh.task_id, fresh.blocked), option: autoOption(fresh.blocked.decision),
             authorizationVersion: campaign.authorization_version, scopeDigest: campaign.scope_digest, auto: true }, now);
           return;
         }
@@ -1151,9 +1190,17 @@ export class Controller {
         this.store.journal(ctx.id, 'operation-abandoned', { op: op.id, reason: 'cancel' }, this.now());
       });
       this.runEnded(campaign.declaration);
+      this.browserRunSettled(op);
       return;
     }
-    if (result) { this.consume(ctx, op, result); return; }
+    if (op.kind === 'verify' && this.baseCompare) this.stepBaseCheck(ctx, campaign, op);
+    if (result) {
+      // An accepted result whose gate failed waits here while its base gate still runs (base-check.mjs), read again a
+      // poll later; applyOutcome decides, and the base check's own bound ends the wait.
+      if ((this.baseWaits.get(op.id) ?? -Infinity) > this.now()) return;
+      this.consume(ctx, op, result);
+      return;
+    }
     const now = this.now();
     if (op.state === 'recorded') {
       if (runner || existsSync(join(op.run_dir, 'run.lock'))) {
@@ -1167,7 +1214,7 @@ export class Controller {
         // same operation. The runner's exclusive lock prevents a second agent for it.
         // Unmerged code does not start it (AW-005); it stays recorded until merged code runs.
         if (this.unmergedRevision()) return;
-        this.log(`resuming recorded operation ${op.id}`);
+        if (!this.gateHeldWeb.has(op.id)) this.log(`resuming recorded operation ${op.id}`);
         await this.launch(ctx, op);
       }
       return;
@@ -1180,6 +1227,124 @@ export class Controller {
     if (!['stopped', 'not-running'].includes(stopped)) { this.blockOwnership(ctx, op, stopped); return; }
     if (readJsonIfExists(join(op.run_dir, 'result.json'))) return; // finished meanwhile; consume next tick
     this.applyOutcome(ctx, op, { class: 'lost', detail: `runner heartbeat stale; ${stopped}`, receipt: { measured: false } });
+  }
+
+  /** The base check of a commit task's base for its verify operation (base-check.mjs): started once, read while it runs. */
+  stepBaseCheck(ctx, campaign, op) {
+    if (op.task_id === PLAN_TASK || this.deliverable(ctx, op.task_id) !== 'commit') return;
+    const task = this.store.task(ctx.id, op.task_id), decl = campaign.declaration;
+    if (!task?.base_sha) return;
+    let repo;
+    try { repo = this.repo(decl); } catch { return; }
+    try {
+      const record = baseCheckStep(this, ctx, { repository: this.baseRepository(decl, repo), repoPath: repo.path, worktreeRoot: repo.worktreeRoot, baseSha: task.base_sha }, this.baseCompare);
+      if (record?.red) this.recordBaseRed(ctx, decl, task, record);
+    } catch (error) {
+      if (error instanceof FencedError) throw error;
+      this.log(`base check of ${this.baseRepository(decl, repo)} ${task.base_sha} failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * The one repair item of a red base (owner decision 2026-11-05: base compare plus one base-red repair task): recorded
+   * once per repository, base SHA and gate command, by the first campaign step that sees the base red, whatever the
+   * tasks, campaigns and restarts that share it (claimBaseRed in the same fenced write). It is information for planning,
+   * never a gate: no task waits for it, and a failure to record it is kept as the item's place and never retried.
+   * AIWorks's own repository with local main trusted gets a follow-up item in the work list; a GitHub repository a
+   * comment on the tracking issue of that campaign (no issue is opened); a project without GitHub a local note.
+   */
+  recordBaseRed(ctx, decl, task, record) {
+    const now = this.now(), sha = record.base_sha;
+    const digest = createHash('sha256').update(record.command, 'utf8').digest('hex').slice(0, 8);
+    const title = `Repair the red base ${sha.slice(0, 12)} of ${record.repository}`.slice(0, 256);
+    const failed = Array.isArray(record.failed) && record.failed.length ? record.failed : null;
+    const body = [`Base compare ran \`${JSON.parse(record.command).join(' ')}\` on base \`${sha}\` of ${record.repository} and ${String(record.reason ?? 'it failed').replace(/^the base gate /, 'it ')}.`,
+      'Tasks on this base keep their acceptance only for failures the base already has; the base itself needs its own fix.', '',
+      ...(failed ? ['Failed on the base:', ...failed.map((id) => `- \`${id}\``)]
+        : ['The failed test list is unknown: the gate summary names no test, was cut short, or comes from another test runner.'])].join('\n');
+    const fallback = `Base compare found base \`${sha}\` of ${record.repository} red. ${failed ? `${failed.length} tests failed on it` : 'Its failed test list is unknown'}; the list is kept in the base check record.`;
+    const item = this.fenced(ctx, () => {
+      // The guard: only the step that claims the record records the item; every other one finds it claimed.
+      if (!claimBaseRed(this.store, record, 'recording', now)) return null;
+      let where;
+      try {
+        if (this.selfHosted(decl.target.repository)) {
+          where = workLink(followUp(this.store, { campaignId: ctx.id, taskId: task.task_id, key: `base-${sha.slice(0, 12)}-${digest}`, title, body, fallback, now }).number);
+        } else if (!isLocalTarget(decl) && this.config.github?.comments === false) {
+          where = 'not recorded: GitHub comments are off';
+        } else {
+          const key = `${ctx.id}:base-red:${sha}:${digest}`;
+          this.enqueue(ctx.id, key, decl, `**${title}**\n\n${body}`, now);
+          where = `outbox:${key}`;
+        }
+      } catch (error) {
+        where = `not recorded: ${error.message}`.slice(0, 500);
+      }
+      settleBaseRed(this.store, record, where, now);
+      this.store.journal(ctx.id, 'base-red', { repository: record.repository, sha, failed, item: where }, now);
+      return where;
+    });
+    if (item) this.log(`base check of ${record.repository} ${sha}: red; repair item ${item}`);
+  }
+
+  /** The repository a base check is keyed by: the declared repository, or the local checkout of a local target. */
+  baseRepository(decl, repo) { return decl.target.repository ?? `local:${repo.path}`; }
+
+  /**
+   * The environment that offers recorded test passes to a verify run of `sha` (test-cache.mjs), or null. Never throws.
+   * A project with a recorded release grant (AW-010) is never offered it: a release needs a gate that ran every file.
+   */
+  offerTestCache(decl, repo, sha, runDir) {
+    if (!this.testCache || !repo || !sha) return null;
+    try {
+      const repository = this.baseRepository(decl, repo), other = otherNodeMajor(this.store, repository);
+      if (other !== null && !(this.testCacheNodeNoted ??= new Set()).has(repository)) {
+        this.testCacheNodeNoted.add(repository);
+        this.log(`test cache of ${repository} is idle: its newest results ran on Node ${other}, the supervisor on Node ${process.versions.node}`);
+      }
+      return offerCache({ store: this.store, git: this.cmd.git, repoPath: repo.path, repository, project: decl.target.projectId ?? null,
+        sha, runDir, settings: this.testCache, now: this.now() });
+    } catch (error) {
+      this.log(`test cache not offered for ${sha}: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * The `# cached` lines of a verify run's gate log, checked against the git objects of its target in the main checkout.
+   * Null, so nothing changes, when the log has none or the target has no scripts/run-tests.mjs. With the cache off every
+   * such line is refused: nothing was offered, so the worker set AIWORKS_TEST_CACHE itself.
+   */
+  testClaims(ctx, op) {
+    let log;
+    try { log = readFileSync(join(op.workspace, GATE_FILES.log), 'utf8'); } catch { return null; }
+    if (!/^# cached /m.test(log)) return null;
+    const decl = this.store.campaign(ctx.id).declaration;
+    try {
+      const repo = this.repo(decl);
+      if (!hasRunner(this.cmd.git, repo.path, op.target_sha)) return null;
+      return checkClaims({ store: this.store, git: this.cmd.git, repoPath: repo.path, repository: this.baseRepository(decl, repo),
+        sha: op.target_sha, log, enabled: Boolean(this.testCache), maxAgeMs: this.testCache?.maxAgeMs ?? 0, offeredAt: op.created_at });
+    } catch (error) {
+      return { claimed: 1, refused: [`the target ${op.target_sha} cannot be read: ${error.message}`.slice(0, 300)] };
+    }
+  }
+
+  /**
+   * The test results a verify run's gate log gives, with digests computed from git: its failures, and its passes only
+   * when `passes` (a fully green acceptance). Null while the cache is off or on a failure to read. Never throws.
+   */
+  testResults(op, passes) {
+    if (!this.testCache) return null;
+    try {
+      const decl = this.store.campaign(op.campaign_id).declaration, repo = this.repo(decl);
+      if (!hasRunner(this.cmd.git, repo.path, op.target_sha)) return null;
+      const log = readFileSync(join(op.workspace, GATE_FILES.log), 'utf8');
+      return { repository: this.baseRepository(decl, repo), rows: resultsOf({ git: this.cmd.git, repoPath: repo.path, sha: op.target_sha, log, passes }) };
+    } catch (error) {
+      this.log(`test cache: results of ${op.target_sha} not recorded: ${error.message}`);
+      return null;
+    }
   }
 
   deliverable(ctx, taskId) {
@@ -1223,7 +1388,10 @@ export class Controller {
   }
 
   applyOutcome(ctx, op, outcome) {
-    this.runEnded(this.store.campaign(ctx.id)?.declaration);
+    // A result waiting for its base check (base-check.mjs) ended its run once already; it does not prompt a sweep each poll.
+    if (!this.baseWaits.has(op.id)) this.runEnded(this.store.campaign(ctx.id)?.declaration);
+    // Every result, lost run and refused containment reaches here: the run has ended (consume, reconcile).
+    this.browserRunSettled(op);
     if (op.kind === 'plan') return this.settlePlan(ctx, op, outcome);
     let verdict = outcome;
     const before = this.store.task(ctx.id, op.task_id);
@@ -1296,18 +1464,52 @@ export class Controller {
     // verification for the PR body; the key is always set, so a worker cannot supply it. An acceptance whose last gate
     // run failed, never finished or never ran is refused: implementers run only the tests their change reaches, so the
     // verifier's gate is the one full run a head gets.
+    let testRows = null;
     if (verdict.class === 'result' && op.kind === 'verify' && this.deliverable(ctx, op.task_id) === 'commit') {
-      const gate = readGateRun(op.workspace);
-      verdict = { ...verdict, value: { ...verdict.value, gate } };
+      const run = readGateRun(op.workspace);
+      // A gate started on another commit, on a checkout with changes, or without the helper's record of both is no full
+      // run of this head. It is kept with its reason, which gateFailure returns first, so no reader (merge gate, AW-017
+      // delivery, release) counts it as passed; no cached claim is matched for it, base compare never keeps it, and it
+      // records no test result.
+      const headProblem = run ? gateHeadProblem(run, op.target_sha) : null;
+      let gate = headProblem ? { ...run, headProblem } : run;
+      // Cached test files (test-cache.mjs) count only when the supervisor matches each one again from git.
+      const claims = gate && !headProblem ? this.testClaims(ctx, op) : null;
+      if (claims?.claimed) gate = { ...gate, cached: claims.claimed, ...(claims.refused.length ? { cacheRefused: claims.refused.slice(0, 20) } : {}) };
+      verdict = { ...verdict, value: { ...verdict.value, gate, baseFailures: null } };
       const failure = verdict.value.verdict !== 'accepted' ? null
         : !gate ? `is missing: its checkout has no ${GATE_FILES.log} from the gate helper`
           : gate.exit === null ? `never finished: there is no ${GATE_FILES.exit}` : gateFailure(gate);
       // A missing or unfinished run carries no summary, so its detail is the same every time and four in a row stop the task
       // (the identical-failure guard) instead of retrying a verifier that never finishes its gate.
-      if (failure) {
-        verdict = { ...verdict, class: 'invalid-result', detail: !gate || gate.exit === null ? `accepted, but the verifier's last gate run ${failure}`
+      // Base compare (base-check.mjs): a finished gate whose failed tests all fail on the task's base too does not refuse
+      // the acceptance, and the verification records them. While the base gate still runs, nothing is applied yet.
+      let base = null;
+      if (failure && gate && gate.exit !== null && !headProblem && this.baseCompare && before.base_sha) {
+        const campaign = this.store.campaign(ctx.id);
+        let repo = null;
+        try { repo = this.repo(campaign.declaration); } catch { /* no checkout: no base record, refused as before */ }
+        const record = repo ? baseRecord(this.store, this.baseRepository(campaign.declaration, repo), before.base_sha, this.baseCompare) : null;
+        if (record?.state === 'running' && this.now() - record.started_at <= this.baseCompare.timeoutMs && campaign.control !== 'cancel-requested') {
+          this.baseWaits.set(op.id, this.now() + this.config.pollMs);
+          return null;
+        }
+        const shared = sharedBaseFailures(record, gate.summary);
+        if (shared) base = { sha: before.base_sha, failed: shared };
+      }
+      this.baseWaits.delete(op.id);
+      if (base) {
+        verdict = { ...verdict, value: { ...verdict.value, baseFailures: base } };
+        this.log(`${ctx.id}/${op.task_id}: acceptance of ${op.target_sha} stands; its ${base.failed.length} failed test(s) fail on the base ${base.sha} too`);
+      } else if (failure) {
+        verdict = { ...verdict, class: 'invalid-result', detail: !gate || gate.exit === null || headProblem ? `accepted, but the verifier's last gate run ${failure}`
           : `accepted, but the verifier's last gate run ${failure}:\n${gate.summary ?? `no node:test summary in ${GATE_FILES.log}`}` };
       }
+      if (verdict.class === 'result' && verdict.value.verdict === 'accepted' && gate?.cacheRefused) {
+        verdict = { ...verdict, class: 'invalid-result', detail: `accepted, but the verifier's gate counts test files the supervisor cannot match to a recorded pass: ${gate.cacheRefused.join('; ')}` };
+      }
+      // Only a fully green acceptance records passes; failures count from any verdict. Digests come from git, never the log.
+      if (verdict.class === 'result' && gate && !gate.cacheRefused && !headProblem) testRows = this.testResults(op, verdict.value.verdict === 'accepted' && !base && !failure);
     }
     // Verifier cites are settled at the target revision in the main checkout (SCOPED_READING section 6); a result without
     // cites is applied exactly as before, and no cite can change the verdict.
@@ -1331,6 +1533,7 @@ export class Controller {
       }
       if (executors.runNotCounted(verdict)) verdict = { ...verdict, refunded: true };
       this.store.updateOperation(op.id, { state: 'finished', outcome: verdict }, now);
+      if (testRows && verdict.class === 'result') insertResults(this.store, testRows.repository, testRows.rows, { source: 'verifier', ref: op.target_sha, now });
       for (const [kind, detail] of citeEvents) this.store.journal(ctx.id, kind, detail, now);
       // A run bound to a CAAM profile is attributed to that profile from its durable row, also after a restart: never to
       // the profile selection would choose now, nor to the executor kind's static account (ACCOUNT_ADAPTER_CAAM 3.5).
@@ -1370,7 +1573,7 @@ export class Controller {
         const reason = redact(change.blocked.reason);
         const record = this.openBlocker(ctx, campaign.declaration, { dependency: 'owner-decision', cls: change.blocked.class,
           identity: `${task.task_id}:${/^no progress:/.test(reason) ? 'no-progress' : reason}`, summary: `${task.task_id}: ${reason}`,
-          requestedAction: isLocalTarget(campaign.declaration) ? `Decide under Needs you in AIWorks (${this.projectWords(campaign.declaration)}): ${reason}`
+          requestedAction: isLocalTarget(campaign.declaration) ? `Decide in Settings, AIWorks itself (${this.projectWords(campaign.declaration)}): ${reason}`
             : `Decide on ${whereOf(campaign.declaration, specOf(this.store, ctx.id, task.task_id, campaign.declaration).issue)}: ${reason}`,
           parents: [{ ...task, state: change.state ?? task.state }], scope: 'task' }, now);
         change.blocked = { ...change.blocked, reason, fingerprint: record.fingerprint };
@@ -1783,22 +1986,73 @@ export class Controller {
   /**
    * Fetch the base branch into this supervisor's own ref and read it there. FETCH_HEAD is shared by every fetch in the
    * checkout (another campaign, the dashboard, the owner), so a base read from it can be another branch's tip.
+   *
+   * Asynchronous and bounded (aiworks#140): the fetch and the read of the ref each end by config baseReadMs, so a hung remote
+   * costs a pass at most that long and never blocks the event loop meanwhile. Await it before fenced(), never inside:
+   * the fence then decides from the result, and acts on nothing when it failed. Resolves to { ok: true, sha }, or to
+   * { ok: false, sha: null, failure } where failure is one of BASE_READ_FAILURES, never Git's own words.
    */
-  fetchBase(repoPath, base, repository = null, { fresh = false } = {}) {
-    const ref = `refs/aiworks/base/${base}`;
+  async fetchBase(repoPath, base, repository = null, { fresh = false } = {}) {
     if (this.selfHosted(repository)) return this.localBase(repoPath, base, repository);
     // One network fetch per checkout and base for all campaign steps of a pass: each campaign fetching for itself made one
-    // pass take minutes (2026-10-31). Only the step loop shares it; the merge pass, which moves the base, and everything
-    // after it fetch afresh, as does a caller passing `fresh` (the release job's grant read, which runs beside the pass).
-    // A failed fetch is not kept.
+    // pass take minutes (2026-10-31). Admission shares one too, opened after the merge pass so it sees every merge of the
+    // pass: each candidate needing merged dependencies fetched for itself (aiworks#39, 2026-11-01). The merge pass, which
+    // moves the base, and the passes between it and admission fetch afresh, as does a caller passing `fresh` (the release
+    // job's grant read, which runs beside the pass). A failed fetch is not kept.
     const key = JSON.stringify([repoPath, base]);
-    const kept = fresh ? null : this.baseFetches?.get(key);
+    const stretch = this.baseFetches;
+    const kept = fresh ? null : stretch?.get(key);
     if (kept) return kept;
-    const fetched = gitA.exec(this.cmd.git, ['fetch', 'origin', `+refs/heads/${base}:${ref}`], { cwd: repoPath, timeoutMs: 30_000 });
-    const sha = fetched.ok ? gitA.exec(this.cmd.git, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: repoPath }).stdout : '';
-    const result = /^[0-9a-f]{40}$/.test(sha ?? '') ? { ok: true, sha } : { ok: false, sha: null };
-    if (result.ok) this.baseFetches?.set(key, result);
+    // Two fetches into one ref contend for its lock. A caller that accepts a shared read takes the one running; a fresh
+    // one waits for it and reads again.
+    const running = this.baseReads.get(key);
+    if (running && !fresh) return running;
+    const read = (running ?? Promise.resolve()).catch(() => null).then(() => this.readBase(repoPath, base));
+    this.baseReads.set(key, read);
+    let result;
+    try { result = await read; } finally { if (this.baseReads.get(key) === read) this.baseReads.delete(key); }
+    // Kept only in the stretch it started in: a read that outlived its stretch is no base for the next one.
+    if (result.ok && stretch && this.baseFetches === stretch) stretch.set(key, result);
     return result;
+  }
+
+  /** One bounded fetch of `base` into refs/aiworks/base/<base> and its read (fetchBase). Never throws. */
+  async readBase(repoPath, base) {
+    // A fetch whose processes were not all shown ended may still move this checkout's refs: until they are (its receipt
+    // under runRoot), nothing more is fetched or read there, so no step decides from or builds on such a ref.
+    const result = await gitA.readBaseContained(this.cmd.git, repoPath, base, { runRoot: this.baseReadRoot(repoPath), active: this.baseReadRuns,
+      readMs: this.config.baseReadMs, overheadMs: this.config.baseReadOverheadMs,
+      // What this tick read about this checkout's bases is dropped.
+      onFetched: () => this.dropTickCache(repoPath) });
+    if (!result.ok) this.log(`base read unavailable: ${result.failure}`);
+    if (result.failure === 'uncontained') this.trackBaseHold(repoPath, base);
+    return result;
+  }
+
+  /**
+   * A checkout whose base read is refused as uncontained (#144) is shown on the dashboard from its marker (readBaseContained).
+   * One holding a receipt whose start was never recorded has no proof AIWorks may take: after config.baseHoldFollowUpMs a
+   * follow-up item for AIWorks's own work list names it. Nothing is cleared here, whatever the age. Never throws.
+   */
+  trackBaseHold(repoPath, base) {
+    try {
+      const root = this.baseReadRoot(repoPath), runs = gitA.heldContained(root, this.baseReadRuns).filter((run) => !run.identified);
+      if (!runs.length) return;
+      const since = Math.min(...runs.map((run) => run.since)), now = this.now();
+      if (now - since < (this.config.baseHoldFollowUpMs ?? 600_000)) return;
+      const key = `bh-${createHash('sha256').update(`${root}|${since}`).digest('hex').slice(0, 12)}`;
+      standingFollowUp(this.store, { key, now,
+        title: `Settle the unresolved base-read custody of checkout ${basename(repoPath)}`,
+        body: [`Base reads of ${base} in the checkout ${repoPath} have been refused as uncontained since ${new Date(since).toISOString()}.`,
+          `${runs.length} receipt(s) under ${root} never recorded a runner or process identity, so AIWorks has no proof their processes ended and clears nothing by age, lock absence or approval.`,
+          'A receipt that recorded an identity is checked again on every read and clears by itself once the process is shown gone.',
+          'Needed: an evidence source for unknown-start receipts (for example the runner pid with its creation time recorded at spawn, or a host start later than the receipt). Until then the checkout stays held and the dashboard says so.'].join('\n\n') });
+    } catch { /* a missing work list or a refused text never changes the read's refusal */ }
+  }
+
+  /** The folder of a checkout's base fetches and their receipts (execContained): installation data, one per checkout. */
+  baseReadRoot(repoPath) {
+    return gitA.baseReadRoot(this.dataDir, repoPath);
   }
 
   /** Whether `repository` is AIWorks's own repository with local main trusted (config.json `selfHosting`). */
@@ -1831,7 +2085,7 @@ export class Controller {
   }
 
   /** Publication is not integration. Refresh only when an explicitly gated task is due, whatever else is running. */
-  reconcileIntegration(ctx) {
+  async reconcileIntegration(ctx) {
     const c = this.store.campaign(ctx.id);
     if (c.blocker) return;
     const tasks = this.store.tasks(ctx.id), specs = specsOf(this.store, ctx.id, c.declaration);
@@ -1840,9 +2094,12 @@ export class Controller {
     if (!due.length) return;
     // A project and config.json that disagree: refresh nothing, so dispatch raises the CONFIG_CONFLICT blocker.
     if (resolveCheckout(this.store, this.config, c.declaration.target.repository)?.conflict) return;
+    // The bounded base read runs before the fence (aiworks#140). Each task is then written at the version read with `due`,
+    // so a task that changed while the read ran is left to the next pass (ConflictError), never judged on the old read.
+    const repo = this.repo(c.declaration), base = c.declaration.target.baseBranch;
+    const fetched = await this.fetchBase(repo.path, base, c.declaration.target.repository);
     this.fenced(ctx, () => {
-      const repo = this.repo(c.declaration), base = c.declaration.target.baseBranch;
-      const fetched = this.fetchBase(repo.path, base, c.declaration.target.repository);
+      if (!this.authorityHolds(ctx.id, c, specs)) return;
       const fetchedSha = fetched.sha;
       for (const task of due) {
         const missing = !fetched.ok ? specs.get(task.task_id).dependsOn
@@ -1856,6 +2113,18 @@ export class Controller {
     });
   }
 
+  /**
+   * Inside fenced(), after an awaited read (aiworks#140): whether the campaign is still under the authority `before` was
+   * read with, the same authorization version, scope and declaration and, given `specs`, the same task specs. A change
+   * defers the decision to the next pass, which reads it all again; nothing is decided from the older authority.
+   */
+  authorityHolds(id, before, specs = null) {
+    const now = this.store.campaign(id);
+    if (!now || now.authorization_version !== before.authorization_version || now.scope_digest !== before.scope_digest ||
+      canonicalJson(now.declaration) !== canonicalJson(before.declaration)) return false;
+    return !specs || canonicalJson([...specsOf(this.store, id, now.declaration)]) === canonicalJson([...specs]);
+  }
+
   integrationDue(id, now = this.now()) {
     return (this.integrationCheckedAt.get(id) ?? -Infinity) + this.config.integrationPollMs <= now;
   }
@@ -1866,11 +2135,12 @@ export class Controller {
    * reconcileIntegration, and never calls GitHub. A task is left alone once its remote branch no longer points at its
    * verified head (merged and deleted, or changed by someone else), or once the base contains it.
    */
-  checkPublishedIntegration(ctx) {
+  async checkPublishedIntegration(ctx) {
     if (!this.integrationDue(ctx.id)) return;
     const c = this.store.campaign(ctx.id);
     if (c.blocker) return;
-    const decl = c.declaration, specs = specsOf(this.store, ctx.id, decl);
+    const decl = c.declaration;
+    let specs = specsOf(this.store, ctx.id, decl);
     // A head recorded as merged is integrated even when the base holds only its squash or rebase (aiworks#207).
     const merged = new Set(this.store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'merged'", ctx.id)
       .map((row) => `${row.detail?.task}:${row.detail?.sha}`));
@@ -1881,12 +2151,18 @@ export class Controller {
     this.integrationCheckedAt.set(ctx.id, !candidates && c.control === 'finished' ? Infinity : this.now());
     if (!candidates) return;
     if (resolveCheckout(this.store, this.config, decl.target.repository)?.conflict) { this.log(`integration check of ${ctx.id} skipped: CONFIG_CONFLICT`); return; }
+    // The slow reads, the base fetch and the remote branch heads, are bounded and run before the fence (aiworks#140); a
+    // failed or timed-out one reopens nothing. Inside the fence the tasks are read again and written at their versions.
+    const repo = this.repo(decl), base = decl.target.baseBranch, git = this.cmd.git;
+    const baseSha = (await this.fetchBase(repo.path, base, decl.target.repository)).sha;
+    const branches = this.selfHosted(decl.target.repository) ? gitA.localBranches
+      : (options) => gitA.remoteBranches({ ...options, timeoutMs: this.config.baseReadMs });
+    const heads = /^[0-9a-f]{40}$/.test(baseSha ?? '') ? await branches({ git, repoPath: repo.path, pattern: `refs/heads/campaign/${ctx.id}/*` }) : null;
+    if (!heads) { this.log(`integration check of ${ctx.id} skipped: remote refresh unavailable`); return; }
     this.fenced(ctx, () => {
-      const repo = this.repo(decl), base = decl.target.baseBranch, git = this.cmd.git;
-      const baseSha = this.fetchBase(repo.path, base, decl.target.repository).sha;
-      const branches = this.selfHosted(decl.target.repository) ? gitA.localBranches : gitA.remoteBranches;
-      const heads = /^[0-9a-f]{40}$/.test(baseSha ?? '') ? branches({ git, repoPath: repo.path, pattern: `refs/heads/campaign/${ctx.id}/*` }) : null;
-      if (!heads) { this.log(`integration check of ${ctx.id} skipped: remote refresh unavailable`); return; }
+      // A newer authorization during the read (a lower maxRepairRounds, say) is not judged by the old one: next pass.
+      if (!this.authorityHolds(ctx.id, c)) { this.integrationCheckedAt.delete(ctx.id); return; }
+      specs = specsOf(this.store, ctx.id, decl);
       const limits = campaignLimits(decl);
       let open = 0;
       for (const task of published(this.store.tasks(ctx.id))) {
@@ -1903,7 +2179,7 @@ export class Controller {
           id: 'integration-conflict', severity: 'blocking', base: baseSha, verified: sha, paths, commits,
           description: `Integration conflict: the verified commit ${sha} (${task.pr_url}) no longer merges into ${base} at ${baseSha}. ` +
             `Conflicting paths: ${paths.join(', ')}. Sibling commits on ${base}: ${commits.map((item) => `${item.sha.slice(0, 12)} ${item.subject}`).join('; ') || 'unknown'}. ` +
-            `Merge ${baseSha} into this branch (git merge ${baseSha}), resolve the conflicts, run the full gate and commit the merge. Never rebase, reset or amend: ${sha} must stay an ancestor of the new head.`,
+            `Merge ${baseSha} into this branch (git merge -m "Merge ${base} at ${baseSha.slice(0, 12)} into this branch" ${baseSha}: always this message, never Git's default, which can name a local path), resolve the conflicts, run the full gate and commit the merge. Never rebase, reset or amend: ${sha} must stay an ancestor of the new head.`,
         };
         const stalled = this.reopenPublished(ctx, task, finding, { limits, now,
           lastError: `integration-conflict: ${paths.join(', ')} conflict with ${base} at ${baseSha}`,
@@ -1980,16 +2256,18 @@ export class Controller {
    * integrationPollMs while a round is open and no run of its task is open, the base is fetched and each such task is
    * checked by endMergedRepair. A task whose run is open is checked when the run settles, before it is dispatched again.
    */
-  endMergedRepairs(ctx) {
+  async endMergedRepairs(ctx) {
     if ((this.repairCheckedAt.get(ctx.id) ?? -Infinity) + this.config.integrationPollMs > this.now()) return;
-    const decl = this.store.campaign(ctx.id).declaration;
+    const c = this.store.campaign(ctx.id), decl = c.declaration;
     const running = new Set(this.store.openOperations(ctx.id).map((op) => op.task_id));
     const open = this.store.tasks(ctx.id).filter((t) => this.integrationFinding(t) && t.state !== 'done' && !t.blocked && !running.has(t.task_id));
     if (!open.length) return;
     this.repairCheckedAt.set(ctx.id, this.now());
     if (resolveCheckout(this.store, this.config, decl.target.repository)?.conflict) return;
+    // Read before the fence (aiworks#140); endMergedRepair ends nothing on a failed read and writes at the task's version.
+    const repo = this.repo(decl), baseSha = (await this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository)).sha;
     this.fenced(ctx, () => {
-      const repo = this.repo(decl), baseSha = this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository).sha;
+      if (!this.authorityHolds(ctx.id, c)) { this.repairCheckedAt.delete(ctx.id); return; }
       for (const task of open) this.endMergedRepair(ctx, decl, task, repo.path, baseSha);
     });
   }
@@ -2148,7 +2426,7 @@ export class Controller {
           detail: `budget available under authorization v${c.authorization_version}`, at: this.now() }, this.now());
       });
       campaign = this.store.campaign(ctx.id);
-      this.reconcileIntegration(ctx);
+      await this.reconcileIntegration(ctx);
     }
     const tasks = this.store.tasks(ctx.id);
     const done = new Set(tasks.filter((task) => task.state === 'done').map((task) => task.task_id));
@@ -2213,7 +2491,13 @@ export class Controller {
         return accountFull(this.store, this.config, kind, this.accountWaited);
       },
       // A local candidate is published nowhere and holds no base: the owner's Apply checks the folder again (WORK_ENVELOPE 8.6).
-      integrated: (campaignId, row, decl) => isLocalTarget(decl) || this.inBase(decl, row.verified_sha) || this.mergedHeads.has(`${row.pr_url}#${row.verified_sha}`),
+      // In the self-hosted repository a gate-merge ledger row for exactly this verified head is proof on its own: the gate
+      // writes it only after main moved to its merge commit (merge.mjs recordLocal). A main re-rooted after that merge
+      // leaves the head and its merge commit out of the base, yet the head was integrated; holding it would make every
+      // overlapping task wait forever (aiworks-work:163). Never by age or campaign state: a head published but never
+      // recorded as merged still holds its domain.
+      integrated: (campaignId, row, decl) => isLocalTarget(decl) || this.inBase(decl, row.verified_sha) || this.mergedHeads.has(`${row.pr_url}#${row.verified_sha}`) ||
+        (this.selfHosted(decl.target.repository) && Boolean(this.ledgerMerge(decl.target.repository, row.verified_sha))),
       // Only the merge gate moves a trusted local main, and it never merges a cancelled campaign's head (domainHolders).
       gateOnly: (decl) => this.selfHosted(decl.target.repository),
     };
@@ -2222,11 +2506,11 @@ export class Controller {
   /**
    * Published but unmerged work holds its write domain until it is in its base (ADAPTIVE_SCHEDULER 4.3). For each base
    * where the last pass refused a step because of such a holder, refresh the base ref at most every integrationPollMs
-   * (inside the fenced transaction, like every fetch) and, for a holder whose verified head is not in it, read its PR
+   * (a bounded read under a lease this instance holds before and after it, aiworks#140) and, for a holder whose verified head is not in it, read its PR
    * once (REST): a merge at that exact head whose merge commit is in the base releases the domain too (squash or rebase
    * merges leave the head itself out of the base). Without such a refusal nothing is fetched or read.
    */
-  refreshPublished(refusals) {
+  async refreshPublished(refusals) {
     const now = this.now();
     const due = new Map();
     for (const { candidate, refusal } of refusals) {
@@ -2246,16 +2530,16 @@ export class Controller {
       this.baseCheckedAt.set(key, now);
       const repo = this.checkout(decl);
       if (!repo?.path) continue;
-      const fetched = this.fenced(ctx, () => this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository));
+      // The lease is checked before the read and again after it: a lease lost meanwhile ends admission (FencedError).
+      this.fenced(ctx, () => null);
+      const fetched = await this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository);
+      this.fenced(ctx, () => null);
       if (!fetched?.ok) continue;
       for (const holder of holders.values()) {
         const row = this.store.task(holder.campaignId, holder.taskId);
         if (!row?.pr_url || !row.verified_sha || this.inBase(decl, row.verified_sha)) continue;
-        if (this.selfHosted(decl.target.repository)) {
-          const recorded = this.ledgerMerge(decl.target.repository, row.verified_sha);
-          if (recorded && this.inBase(decl, recorded)) this.mergedHeads.add(`${row.pr_url}#${row.verified_sha}`);
-          continue;
-        }
+        // The self-hosted repository has no PR to read: admissionInputs already counts its recorded gate merges.
+        if (this.selfHosted(decl.target.repository)) continue;
         const merged = github.integratedPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, url: row.pr_url,
           headSha: row.verified_sha, baseBranch: decl.target.baseBranch });
         if (merged && this.inBase(decl, merged)) this.mergedHeads.add(`${row.pr_url}#${row.verified_sha}`);
@@ -2271,9 +2555,42 @@ export class Controller {
     if (!/^[0-9a-f]{40}$/.test(sha ?? '')) return false;
     const repo = this.checkout(decl);
     if (!repo?.path) return false;
-    const base = this.selfHosted(decl.target.repository)
-      ? this.localBase(repo.path, decl.target.baseBranch, decl.target.repository).sha : `refs/aiworks/base/${decl.target.baseBranch}`;
-    return Boolean(base) && gitA.exec(this.cmd.git, ['merge-base', '--is-ancestor', sha, base], { cwd: repo.path }).ok;
+    // The base is read once per tick and checkout (work item 160): every published task of a repository is asked about on
+    // every admission and status pass, and with hundreds of them each `git` process of its own made a tick take hours.
+    const baseSha = this.tickCached(`base:${repo.path}|${decl.target.baseBranch}`, () => this.selfHosted(decl.target.repository)
+      ? this.localBase(repo.path, decl.target.baseBranch, decl.target.repository).sha
+      : gitA.exec(this.cmd.git, ['rev-parse', '--verify', '--quiet', `refs/aiworks/base/${decl.target.baseBranch}^{commit}`], { cwd: repo.path }).stdout);
+    if (!/^[0-9a-f]{40}$/.test(baseSha ?? '')) return false;
+    // Ancestry of two fixed commits never changes: one `rev-list` of the base per tick answers every commit of it. A
+    // history too long to list, or an unreadable one, falls back to one ancestry read per commit.
+    const ancestors = this.tickCached(`ancestors:${repo.path}|${baseSha}`, () => {
+      const listed = gitA.exec(this.cmd.git, ['rev-list', `--max-count=${ANCESTOR_LIST_LIMIT + 1}`, baseSha], { cwd: repo.path });
+      if (!listed.ok) return null;
+      const shas = listed.stdout.split('\n').filter(Boolean);
+      return shas.length > ANCESTOR_LIST_LIMIT ? null : new Set(shas);
+    });
+    if (ancestors) return ancestors.has(sha);
+    return gitA.exec(this.cmd.git, ['merge-base', '--is-ancestor', sha, baseSha], { cwd: repo.path }).ok;
+  }
+
+  /**
+   * One read per tick (work item 160): `compute` runs once for `key` within the tick that is running and its answer is
+   * kept until the tick ends (tickOnce); a base fetch drops the keys of its checkout (readBase). Outside a tick the
+   * answer is computed every time.
+   */
+  tickCached(key, compute) {
+    const cache = this.tickCache;
+    if (!cache) return compute();
+    if (cache.has(key)) return cache.get(key);
+    const value = compute();
+    cache.set(key, value);
+    return value;
+  }
+
+  /** A fetch moved this checkout's base refs: nothing read about them in this tick stands any more (tickCached). */
+  dropTickCache(repoPath) {
+    if (!this.tickCache) return;
+    for (const key of [...this.tickCache.keys()]) if (key.includes(`:${repoPath}|`)) this.tickCache.delete(key);
   }
 
   /**
@@ -2282,7 +2599,15 @@ export class Controller {
    * its next useful result may raise the fan-out. Every other candidate keeps exactly one reason (status shows it, RUN9).
    */
   async admit() {
-    this.refreshPublished(this.domainWaits);
+    // One base fetch per checkout and base for the whole admission (fetchBase); it opens after the merge pass, which may
+    // have moved bases, so the tick's base reads (tickCached) start afresh too.
+    this.baseFetches = new Map();
+    this.tickCache = new Map();
+    try { await this.admitCandidates(); } finally { this.baseFetches = null; this.tickCache = null; }
+  }
+
+  async admitCandidates() {
+    await this.refreshPublished(this.domainWaits);
     const inputs = this.admissionInputs();
     const reasons = new Map();
     const domainWaits = [];
@@ -2305,6 +2630,35 @@ export class Controller {
     }
     this.waitReasons = reasons;
     this.domainWaits = domainWaits;
+    this.recordDomainRefusals(domainWaits);
+  }
+
+  /**
+   * Status and the dashboard read admission from rows and cannot see the base checks of this pass, so the last write-domain
+   * refusal of each waiting step is kept in capacity rows ('domain-refusal', campaign/task): who holds the area, as
+   * admissionCheck found it. Written only when the holders change, removed when the step is no longer refused. Display only.
+   */
+  recordDomainRefusals(waits) {
+    try {
+      const now = this.now();
+      const keep = new Set();
+      // One transaction per pass. Only rows of campaigns this instance holds are removed: another instance's are its own.
+      this.store.tx(() => {
+        for (const { candidate, refusal } of waits) {
+          const id = `${candidate.campaignId}/${candidate.taskId}`;
+          const holders = JSON.stringify(refusal.detail.holders.slice(0, 5));
+          keep.add(id);
+          const row = this.store.get("SELECT reason FROM capacity WHERE scope = 'domain-refusal' AND id = ?", id);
+          if (row?.reason === holders) continue;
+          this.store.run(`INSERT INTO capacity (scope, id, value, reason, updated_at) VALUES ('domain-refusal', ?, 1, ?, ?)
+            ON CONFLICT(scope, id) DO UPDATE SET reason = excluded.reason, updated_at = excluded.updated_at`, id, holders, now);
+        }
+        for (const row of this.store.all("SELECT id FROM capacity WHERE scope = 'domain-refusal'")) {
+          const campaignId = row.id.slice(0, row.id.lastIndexOf('/'));
+          if (!keep.has(row.id) && this.held.has(campaignId)) this.store.run("DELETE FROM capacity WHERE scope = 'domain-refusal' AND id = ?", row.id);
+        }
+      });
+    } catch (error) { this.log(`write-domain refusals not recorded: ${error.message}`); }
   }
 
   /** One CPU check over the open runs whose runner has its job; each priority change is journalled on the run's campaign. */
@@ -2331,6 +2685,13 @@ export class Controller {
 
   /** A run of a docker.cleanup repository ended: the next tick looks for its stack. */
   runEnded(decl) { if (this.sweeper && cleans(this.cleanup, decl)) this.sweptAt = -Infinity; }
+  /** A settled operation's run no longer uses the browser session: its lock (launch, gate.mjs) goes at once. */
+  browserRunSettled(op) {
+    this.gateHeldWeb.delete(op.id);
+    if (!this.browserGuard) return;
+    try { rmSync(browserLockPath(slotSettings().dir, op.id), { force: true }); }
+    catch (error) { this.log(`browser-session lock for ${op.id} not removed (it lapses with the run): ${error.message}`); }
+  }
 
   /** The worktree roots of docker.cleanup repositories, never one that holds the repository's own checkout. */
   cleanupRoots() {
@@ -2721,7 +3082,21 @@ export class Controller {
     };
   }
 
+  /**
+   * The base a dispatch may decide from, read before its fence (aiworks#140): bounded, so a hung remote delays the
+   * dispatch, never the fence. Null when the dispatch needs no fetched base (a local plan, the self-hosted repository,
+   * a verification outside an integration repair) or the checkout is unresolved; the fence then reads nothing over the
+   * network and dispatches nothing that needed a base.
+   */
+  async dispatchBase(decl, task, kind) {
+    if (isLocalTarget(decl) || this.selfHosted(decl.target.repository)) return null;
+    if (kind === 'verify' && this.publishedRepair(task)?.id !== 'integration-conflict') return null;
+    const repo = this.checkout(decl);
+    return repo?.path ? this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository) : null;
+  }
+
   async dispatch(ctx, campaign, task, kind, { admission = null } = {}) {
+    const prefetched = await this.dispatchBase(campaign.declaration, task, kind);
     const op = this.fenced(ctx, () => {
       const current = this.store.campaign(ctx.id);
       // The one-slot check, or with the scheduler the full admission predicate again, inside the transaction that
@@ -2850,12 +3225,15 @@ export class Controller {
       const integration = repair?.id === 'integration-conflict' ? repair : null;
       const ci = repair?.id === 'ci-failure' ? repair : null;
       const owner = repair?.id === OWNER_CHANGES ? repair : null;
+      // The base as read before the fence (dispatchBase), or for the self-hosted repository from local refs and the ledger.
+      const baseRead = () => this.selfHosted(decl.target.repository) ? this.localBase(repo.path, decl.target.baseBranch, decl.target.repository)
+        : prefetched ?? { ok: false, sha: null, failure: 'unread' };
       // aiworks#207: no further run of a round whose verified head is already in the freshly fetched base.
-      if (integration && this.endMergedRepair(ctx, decl, task, repo.path, this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository).sha, { read: false })) return null;
+      if (integration && this.endMergedRepair(ctx, decl, task, repo.path, baseRead().sha, { read: false })) return null;
       if (kind !== 'verify') {
         let integrationBase;
         if (spec.requiresMergedDependencies) {
-          const fetched = this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository);
+          const fetched = baseRead();
           integrationBase = fetched.sha;
           const missing = !fetched.ok ? spec.dependsOn : this.missingIntegratedDependencies(decl, spec, this.store.tasks(ctx.id), integrationBase, repo.path);
           if (!/^[0-9a-f]{40}$/.test(integrationBase ?? '') || missing.length) {
@@ -2866,18 +3244,29 @@ export class Controller {
         }
         // The self-hosted repository starts each worktree from its base as read from local refs and the ledger, never fetched.
         if (!repair && !local && !integrationBase && this.selfHosted(decl.target.repository)) {
-          integrationBase = this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository).sha;
+          integrationBase = baseRead().sha;
           if (!integrationBase) {
             this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
               { retry_at: this.now() + this.config.integrationPollMs, last_error: `base-unavailable: ${decl.target.baseBranch} has no trusted commit in the local checkout` }, this.now());
             return null;
           }
         }
+        // Any other repository starts it from the base fetched before the fence: no fetch runs inside it (aiworks#140).
+        if (!repair && !local && !integrationBase) {
+          const fetched = baseRead();
+          if (!fetched.ok) {
+            this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
+              { retry_at: this.now() + this.config.integrationPollMs, last_error: `base-unavailable: ${decl.target.baseBranch} could not be read (${fetched.failure})` }, this.now());
+            return null;
+          }
+          integrationBase = fetched.sha;
+        }
         // An integration or CI repair continues the published branch: a missing worktree and branch are recreated at the verified head.
         // A local plan starts from the baseline of AIWorks's copy it names, so nothing is fetched.
         const ws = gitA.prepareImplementWorkspace({ git: this.cmd.git, repoPath: repo.path, worktreeRoot: repo.worktreeRoot,
           campaignId: ctx.id, taskId: task.task_id, baseBranch: decl.target.baseBranch,
-          baseSha: repair ? repair.verified : local ? decl.target.baseline.commit : integrationBase });
+          baseSha: repair ? repair.verified : local ? decl.target.baseline.commit : integrationBase,
+          track: !repair && !local && !this.selfHosted(decl.target.repository) });
         if (repair && !gitA.isAncestor({ git: this.cmd.git, path: ws.path, ancestor: repair.verified, descendant: ws.head })) {
           const prefix = ci ? 'ci' : owner ? 'owner-changes' : 'integration';
           this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
@@ -3041,6 +3430,8 @@ export class Controller {
         this.recordUnavailable(ctx, executor.kind, unavailable);
         return null;
       }
+      const cacheEnv = this.offerTestCache(decl, local ? null : repo, kind === 'verify' && spec.deliverable === 'commit' ? targetSha : null, runDir);
+      if (cacheEnv) prompt += `\n${CACHE_RULE}\n`;
       // Project Claude tuning comes from the task base commit in the main checkout, never the worker-writable worktree.
       const settings = gitA.exec(this.cmd.git, ['show', `${baseSha}:.claude/settings.json`], { cwd: repo.path });
       const invocation = executors.prepare({ executor, command: this.cmd[executor.kind.replace('-cli', '')], role,
@@ -3051,7 +3442,7 @@ export class Controller {
         timeoutMs, profileHome, stage: this.stageOf(decl, task.task_id, kind) });
       writeFileSync(join(runDir, 'prompt.txt'), invocation.prompt, 'utf8');
       writeAtomic(join(runDir, 'spec.json'), JSON.stringify({
-        argv: invocation.argv, ...(invocation.env ? { env: invocation.env } : {}),
+        argv: invocation.argv, ...(invocation.env || cacheEnv ? { env: { ...invocation.env, ...cacheEnv } } : {}),
         cwd: invocation.cwd ?? workspace, timeoutMs, heartbeatMs: this.config.heartbeatMs, ...this.workerJob,
       }));
 
@@ -3107,15 +3498,41 @@ export class Controller {
   }
 
   async launch(ctx, op) {
+    // `web`: a web task's run that keeps apart from gates; with the gate pause off it launches as any other run.
+    let web = false;
+    try { web = this.browserGuard && op.task_id !== PLAN_TASK && Boolean(executors.webFlag(specOf(this.store, ctx.id, op.task_id, this.store.campaign(ctx.id).declaration)?.web)); }
+    catch { web = false; }
+    // Admission saw no gate, but one may have started since: the run waits in `recorded`, and a later pass launches it
+    // (reconcile). No run starts and none fails.
+    let running = 0;
+    try { running = web ? this.gates?.() ?? 0 : 0; } catch { running = 0; }
+    if (web && running >= pressureThresholds(this.config.scheduler?.pressure ?? {}).pauseAtGates) {
+      if (!this.gateHeldWeb.has(op.id)) this.log(`web task run ${op.id} waits: ${running} gate(s) run on this PC`);
+      this.gateHeldWeb.add(op.id);
+      return;
+    }
+    this.gateHeldWeb.delete(op.id);
     const child = this.fenced(ctx, () => {
       const current = this.store.get('SELECT * FROM operations WHERE id = ?', op.id);
       if (this.store.campaign(ctx.id).control !== 'registered' || current?.state !== 'recorded') return null;
       if (existsSync(join(op.run_dir, 'launch.json'))) return null;
       // shortcut: unknown spawn acceptance blocks recovery until an executor provides durable process acknowledgement.
       writeAtomic(join(op.run_dir, 'launch.json'), JSON.stringify({ operationId: op.id, at: this.now() }));
-      return spawn(process.execPath, [RUNNER, op.run_dir], { detached: true, stdio: 'ignore', windowsHide: true });
+      return spawn(process.execPath, [RUNNER, op.run_dir], { detached: true, stdio: 'ignore', windowsHide: true,
+        ...(web ? { env: { ...process.env, [BROWSER_RUN]: op.id } } : {}) });
     });
     if (!child) return;
+    // A web task's run may use the owner's browser session: no full gate starts beside it (gate.mjs heldBrowserRuns).
+    // The lock holds the runner's process id and its heartbeat file, so it lapses by itself when the run ends or stops
+    // beating, even after Windows gives the id to another process; browserRunSettled removes it when the operation settles.
+    if (web && child.pid) {
+      try {
+        const { dir } = slotSettings();
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(browserLockPath(dir, op.id), JSON.stringify({ pid: child.pid, at: Date.now(), operation: op.id,
+          heartbeat: join(op.run_dir, 'heartbeat') }));
+      } catch (error) { this.log(`browser-session lock for ${op.id} not written: ${error.message}`); }
+    }
     child.on('error', (error) => {
       this.log(`runner spawn for ${op.id} failed: ${error.message}`);
       if (!child.pid) writeAtomic(join(op.run_dir, 'result.json'), JSON.stringify({
@@ -3139,6 +3556,11 @@ export class Controller {
     const spec = specOf(this.store, ctx.id, task.task_id, decl);
     if (isLocalTarget(decl)) return this.recordLocalCandidate(ctx, decl, spec, task);
     const repo = this.repo(decl);
+    // What the PR and the push publish is the change from the commit the task started from to the verified head.
+    // A task that never recorded the commit it started from is compared with its merge-base with the remote base; when
+    // that cannot be read either, the guard refuses (fail closed).
+    const forkPoint = task.base_sha ?? gitA.exec(this.cmd.git, ['merge-base', task.verified_sha, `origin/${decl.target.baseBranch}`], { cwd: repo.path }).stdout?.trim();
+    const gitLocal = { git: this.cmd.git, repoPath: repo.path, base: forkPoint, head: task.verified_sha };
     const branch = gitA.branchName(ctx.id, task.task_id);
     const bodyFile = join(this.dataDir, 'runs', `${ctx.id}.${task.task_id}.publish.md`);
     try {
@@ -3177,7 +3599,7 @@ export class Controller {
             this.store.journal(ctx.id, `${repairKind}-repair-unpublished`, { task: task.task_id, sha: task.verified_sha }, now);
             return;
           }
-          gitA.pushVerified({ git: this.cmd.git, gh: this.cmd.gh, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha });
+          gitA.pushVerified({ git: this.cmd.git, gh: this.cmd.gh, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha, base: forkPoint });
           this.injectFault('after-push');
           url = existing.url;
           const prefix = `https://github.com/${decl.target.repository}/pull/`;
@@ -3200,10 +3622,10 @@ export class Controller {
             { identity: task.task_id });
             return;
           }
-          gitA.pushVerified({ git: this.cmd.git, gh: this.cmd.gh, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha });
+          gitA.pushVerified({ git: this.cmd.git, gh: this.cmd.gh, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha, base: forkPoint });
           this.injectFault('after-push');
           url = github.openPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, baseBranch: decl.target.baseBranch, branch,
-            title, body, bodyFile, terms });
+            title, body, bodyFile, terms, local: gitLocal });
           if (verification) {
             const prefix = `https://github.com/${decl.target.repository}/pull/`;
             const number = String(url).startsWith(prefix) ? /^(\d+)/.exec(String(url).slice(prefix.length))?.[1] : null;
@@ -3527,6 +3949,8 @@ export class Controller {
         (gate.exit === null ? `No exit code was recorded in \`${GATE_FILES.exit}\`: the gate did not finish.` : `Exit code ${gate.exit}.`),
       '',
       ...(gate.summary === null ? [`\`${GATE_FILES.log}\` has no node:test summary block.`] : ['```text', gate.summary, '```']),
+      ...(task.verification?.baseFailures ? ['', `The acceptance stands although this gate failed: each of its ${task.verification.baseFailures.failed.length} failed test(s) ` +
+        `fails on the base \`${task.verification.baseFailures.sha}\` too, in the supervisor's own gate run of that base. This change did not cause them; they need their own fix.`] : []),
     ];
   }
 

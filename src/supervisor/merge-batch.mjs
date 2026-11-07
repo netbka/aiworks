@@ -18,7 +18,8 @@ import { join } from 'node:path';
 import * as gitA from './adapters/git.mjs';
 import { gateFailure, readGateRun } from './gate.mjs';
 import { IDENTITY, alive, checkout, gatePid, startGate } from './merge-refresh.mjs';
-import { inspect, localBlocker, mergeBlocker, mergeLocal, mergeNow, wait } from './merge.mjs';
+import { recordGateResults } from './test-cache.mjs';
+import { inspect, localBlocker, mergeBlocker, mergeLocal, mergeNow, privateMessages, wait } from './merge.mjs';
 import { trustedTip } from './self-hosting.mjs';
 
 const KINDS = ['merge-batch-started', 'merge-batch-passed', 'merge-batch-failed', 'merge-batch-stopped', 'merge-batch-done'];
@@ -72,7 +73,7 @@ function localMain(controller, repoPath, repository) {
  * Returns true when the group handled the repository this pass (it acted or waits), false when they go one at a time
  * instead.
  */
-export function batchStep(controller, items, settings, repoPath, baseSha) {
+export async function batchStep(controller, items, settings, repoPath, baseSha) {
   if (!items.length) return false;
   const repository = items[0].decl.target.repository.toLowerCase();
   const note = (kind, detail) => controller.store.tx(() => controller.store.journal(null, kind, { repository, ...detail }, controller.now()));
@@ -93,7 +94,10 @@ function startGroup(controller, all, items, settings, repoPath, baseSha, note) {
     if (local) {
       const blocker = localBlocker(controller, item, settings, repoPath);
       if (blocker) { wait(controller, item, blocker); continue; }
-      if (!gitA.isAncestor({ git, path: repoPath, ancestor: item.task.verified_sha, descendant: baseSha })) ready.push(item);
+      // A head whose commit messages main may not take (#125) is left out, so no group gate is spent on it; its own merge
+      // pass refuses it.
+      if (!gitA.isAncestor({ git, path: repoPath, ancestor: item.task.verified_sha, descendant: baseSha })
+        && privateMessages({ git, repoPath, trusted: baseSha, sha: item.task.verified_sha }) === 0) ready.push(item);
       continue;
     }
     const { pr, acted } = inspect(controller, item, settings, repoPath, baseSha);
@@ -140,7 +144,7 @@ function startGroup(controller, all, items, settings, repoPath, baseSha, note) {
   return true;
 }
 
-function continueGroup(controller, open, items, settings, repoPath, baseSha, note) {
+async function continueGroup(controller, open, items, settings, repoPath, baseSha, note) {
   const { store } = controller, git = controller.cmd.git, { detail } = open.started, local = Boolean(items[0].local);
   const matchesStep = (commit, member, parent) => {
     const actual = gitA.exec(git, ['show', '-s', '--format=%T %P', commit], { cwd: repoPath });
@@ -166,10 +170,12 @@ function continueGroup(controller, open, items, settings, repoPath, baseSha, not
       return true;
     }
     const failure = gateFailure(run);
-    if (failure) { end('merge-batch-failed', `the gate on the combined result ${failure}`, { summary: run.summary }); return false; }
+    const results = (green) => recordGateResults(controller, null, { repository: items[0].decl.target.repository, repoPath, sha: open.id, dir: detail.path, green });
+    if (failure) { results(false); end('merge-batch-failed', `the gate on the combined result ${failure}`, { summary: run.summary }); return false; }
     const head = gitA.exec(git, ['rev-parse', 'HEAD'], { cwd: detail.path });
     if (!head.ok || head.stdout !== open.id) { end('merge-batch-failed', `the gate passed, but its checkout is no longer at ${open.id}`); return false; }
     note('merge-batch-passed', { id: open.id, summary: run.summary });
+    results(true);
   }
 
   // Only this group's requests and merges count: an older refused attempt of the same head does not stop it.
@@ -245,7 +251,7 @@ function continueGroup(controller, open, items, settings, repoPath, baseSha, not
     if (result.stop) { end('merge-batch-stopped', result.stop); return false; }
     // A merge that did not happen (a lost lease, a changed task) is judged again next pass.
     if (local) mergeLocal(controller, item, settings, repoPath, { group: open.id, base: parent, tree: member.tree });
-    else mergeNow(controller, item, base);
+    else mergeNow(controller, item, base, null, member.tree);
     controller.mergePassReads = new Map();
     const done = memberRow(store, member, 'merged', since);
     if (!done) {
@@ -254,7 +260,7 @@ function continueGroup(controller, open, items, settings, repoPath, baseSha, not
       if (refused) { end('merge-batch-stopped', `${member.campaignId}/${member.task} was not merged: ${refused.detail}`); return false; }
       return true;
     }
-    base = local ? localMain(controller, repoPath, items[0].decl.target.repository)?.main ?? null : controller.fetchBase(repoPath, detail.branch).sha;
+    base = local ? localMain(controller, repoPath, items[0].decl.target.repository)?.main ?? null : (await controller.fetchBase(repoPath, detail.branch)).sha;
     if (base !== done.mergeCommit || !matchesStep(done.mergeCommit, member, parent)) {
       end('merge-batch-stopped', `the merge of ${member.url} left the base at ${base}, not at the checked tree ${member.tree}`);
       return true;

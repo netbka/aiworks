@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { checkVerification } from '../../src/supervisor/adapters/git.mjs';
 import { GATE_FILES } from '../../src/supervisor/gate.mjs';
-import { declaration, environment, runUntil, skipWithoutSqlite } from './helpers.mjs';
+import { declaration, environment, runUntil, skipWithoutSqlite, sleep } from './helpers.mjs';
 
 const load = async () => ({
   ...(await import('../../src/supervisor/api.mjs')),
@@ -35,21 +35,8 @@ async function setup(t, { scenario, decl = declaration({ tasks: ONE }) } = {}) {
   return { env, store, controller, id: decl.campaignId };
 }
 
+const OTHER = 'f'.repeat(40);
 const verifications = (store, id) => store.all("SELECT * FROM operations WHERE campaign_id = ? AND kind = 'verify' ORDER BY seq, created_at", id);
-
-test('the PR body shows the summary block read from the verifier\'s own gate output, verbatim', { skip: skipWithoutSqlite }, async (t) => {
-  const { env, store, controller, id } = await setup(t, { scenario: { gate: { log: `${NOISE}${PASSED}\n`, exit: '0' } } });
-  await runUntil(controller, store, id, (c) => c.control === 'finished');
-  const [task] = store.tasks(id);
-  assert.equal(task.state, 'done');
-  assert.deepEqual(task.verification.gate, { exit: '0', summary: PASSED });
-  const pr = env.prs().find((p) => p.url === task.pr_url);
-  const gate = pr.body.slice(pr.body.indexOf('### Gate'));
-  assert.ok(gate.includes("Read by the supervisor from the verifier's own gate output (`gate.log`), not typed by a worker. Exit code 0."), gate);
-  assert.ok(gate.includes(`\`\`\`text\n${PASSED}\n\`\`\``), 'the summary block is copied verbatim');
-  assert.equal(pr.body.includes('# start tests/a.test.mjs'), false, 'only the summary block, not the rest of the log');
-  assert.ok(gate.includes('Not merged and not deployed'));
-});
 
 test('an acceptance whose last gate run exited 1 is refused as invalid-result naming the summary; the next one publishes', { skip: skipWithoutSqlite }, async (t) => {
   const { env, store, controller, id } = await setup(t, { scenario: { gate: [{ log: `${NOISE}${FAILED}\n`, exit: '1' }, { log: `${PASSED}\n`, exit: '0' }] } });
@@ -74,14 +61,17 @@ test('an acceptance whose gate exited 0 but reports a failed test is refused too
   assert.equal(refused.outcome.detail, `accepted, but the verifier's last gate run reports 1 failed test:\n${FAILED}`);
 });
 
-test('an acceptance with no gate run, or one that never finished, is refused; the next with a finished gate publishes', { skip: skipWithoutSqlite }, async (t) => {
+test('an acceptance with no gate run, one that never finished or one of another commit is refused; the next with a finished gate publishes', { skip: skipWithoutSqlite }, async (t) => {
   // Implementers run only the tests their change reaches, so the verifier's gate is the one full run a head gets.
   const decl = declaration({ tasks: ONE, limits: { maxRetriesPerTask: 4 } });
   const { store, controller, id } = await setup(t, { decl, scenario: { gate: [false, { log: `${PASSED}
 `, exit: null }, { log: `${PASSED}
+`, exit: '0', head: OTHER }, { log: `${PASSED}
 `, exit: '0' }] } });
   await runUntil(controller, store, id, (c) => c.control === 'finished');
-  const [missing, unfinished, accepted] = verifications(store, id);
+  const [missing, unfinished, elsewhere, accepted] = verifications(store, id);
+  // A passing gate the helper started on another commit is no run of this head (gate-head.log).
+  assert.equal(elsewhere.outcome.class, 'invalid-result');
   assert.equal(missing.outcome.class, 'invalid-result');
   assert.equal(missing.outcome.detail, "accepted, but the verifier's last gate run is missing: its checkout has no gate.log from the gate helper");
   assert.equal(unfinished.outcome.class, 'invalid-result');
@@ -89,6 +79,102 @@ test('an acceptance with no gate run, or one that never finished, is refused; th
   assert.equal(unfinished.outcome.detail, "accepted, but the verifier's last gate run never finished: there is no gate-exit.log");
   assert.equal(accepted.outcome.class, 'result');
   assert.equal(store.tasks(id)[0].state, 'done');
+});
+
+test('base compare: a failed gate keeps its acceptance only when every failed test it names fails on the base too', { skip: skipWithoutSqlite }, async (t) => {
+  const { failedTests } = await import('../../src/supervisor/gate.mjs');
+  const { sharedBaseFailures } = await import('../../src/supervisor/base-check.mjs');
+  const { mergeRefusal } = await import('../../src/supervisor/result-review.mjs');
+  const { complete, failedOf, settle } = await import('../../scripts/lib/test-retry.mjs');
+  const block = (...ids) => `${FAILED.split('\n')[0]}\n${ids.map((id) => `# failed: ${id}`).join('\n')}\n${FAILED.split('\n').slice(1).join('\n')}`;
+  const A = 'tests/a.test.mjs :: a', B = 'tests/b.test.mjs :: b', C = 'tests/c.test.mjs';
+  // A list the runner cut short, a summary from another runner, or one naming no failed test never lets an acceptance stand.
+  const base = { state: 'failed', failed: [A, B] };
+  assert.deepEqual(sharedBaseFailures(base, block(A)), [A]);
+  assert.equal(sharedBaseFailures(base, `${block(A)}\n# failed: not listed: 3 more`), null);
+  assert.equal(failedTests(`# tests 7\n# fail 1\n# failed: ${A}`), null);
+  assert.equal(sharedBaseFailures(base, block()), null);
+  assert.equal(sharedBaseFailures({ state: 'failed', failed: null }, block(A)), null);
+  assert.equal(sharedBaseFailures({ state: 'passed', failed: [] }, block(A)), null);
+  // A file killed at its limit, or one that crashed before its summary, may hide failures: the whole list is then unknown.
+  const killed = 'not ok 1 - a\n# tests/a.test.mjs still running after 15 minutes; stopping it and its child processes\n';
+  const summary = (run) => `${FAILED.split('\n')[0]}\n${settle([run], []).lines.join('\n')}\n${FAILED.split('\n').slice(1).join('\n')}`;
+  const run = (text, code = 1) => ({ file: 'tests/a.test.mjs', code, counts: {}, failed: failedOf(text), complete: complete(text) });
+  assert.equal(failedTests(summary(run(killed))), null);
+  assert.deepEqual(failedTests(summary(run('not ok 1 - a\n# tests 1\n# fail 1\n'))), [A]);
+  // Fewer failed names than the run's own fail count: a `not ok` line was lost, so the list is unknown.
+  assert.equal(failedTests(summary({ ...run('not ok 1 - a\n# tests 2\n# fail 2\n'), counts: { fail: 2 } })), null);
+  // A failing subtest is named on its own, so a new one is not hidden by a parent that already fails on the base.
+  const nested = '# Subtest: a\n    # Subtest: inner\n    not ok 1 - inner\nnot ok 1 - a\n# tests 2\n# fail 2\n';
+  assert.deepEqual(failedTests(summary(run(nested))), [A, `${A} > inner`]);
+
+  // The synthetic base gate takes no machine-wide gate slot.
+  const held = process.env.AIWORKS_GATE_SLOT_HELD;
+  process.env.AIWORKS_GATE_SLOT_HELD = '1';
+  t.after(() => { if (held === undefined) delete process.env.AIWORKS_GATE_SLOT_HELD; else process.env.AIWORKS_GATE_SLOT_HELD = held; });
+  for (const { name, head, baseExit, baseIds, stands, gateHead } of [
+    { name: 'shared', head: [A], baseExit: 1, baseIds: [A, B], stands: true },
+    { name: 'adds a failure', head: [A, C], baseExit: 1, baseIds: [A, B], stands: false },
+    { name: 'base passed', head: [A], baseExit: 0, baseIds: [], stands: false },
+    // A gate run on another commit is no run of this head, whatever the base fails.
+    { name: 'shared, but the gate ran on another commit', head: [A], baseExit: 1, baseIds: [A, B], stands: false, gateHead: OTHER },
+  ]) {
+    const { env, store, controller, id } = await setup(t, { scenario: { gate: [{ log: `${block(...head)}\n`, exit: '1', head: gateHead }, { log: `${PASSED}\n`, exit: '0' }] } });
+    const script = join(env.tmp, 'base-gate.mjs');
+    writeFileSync(script, `console.log(${JSON.stringify(baseExit ? block(...baseIds) : PASSED)}); process.exit(${baseExit});\n`);
+    controller.baseCompare = { command: [`"${process.execPath}"`, `"${script}"`], timeoutMs: 60_000 };
+    await runUntil(controller, store, id, (c) => c.control === 'finished', { timeoutMs: 120_000 });
+    const [task] = store.tasks(id);
+    const [base] = store.all('SELECT state, failed FROM base_checks');
+    assert.equal(base.state, baseExit ? 'failed' : 'passed', name);
+    const [first] = verifications(store, id);
+    assert.equal(first.outcome.class, stands ? 'result' : 'invalid-result', name);
+    assert.equal(task.state, 'done', name);
+    if (stands) {
+      assert.deepEqual(task.verification.baseFailures, { sha: task.base_sha, failed: [A] }, name);
+      assert.equal(verifications(store, id).length, 1, 'no second verifier for a failure the base already has');
+      assert.equal(mergeRefusal(task), null, 'the kept acceptance can merge');
+      const added = { ...task, verification: { ...task.verification, gate: { ...task.verification.gate, summary: block(A, C) } } };
+      assert.equal(mergeRefusal(added), 'its full check did not pass', 'a failure the base does not have never merges');
+    } else {
+      assert.equal(task.verification.baseFailures, null, name);
+    }
+  }
+});
+
+test('base compare: a red base gets exactly one repair item, whatever the tasks, campaigns and restarts that share it', { skip: skipWithoutSqlite }, async (t) => {
+  const m = await load();
+  const { env, store, controller, id } = await setup(t);
+  const other = declaration({ tasks: [{ ...ONE[0], id: 'T2', issue: 438 }], campaignId: 'other-campaign' });
+  m.campaignStart(store, other);
+  const sha = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: env.repo, encoding: 'utf8', windowsHide: true }).stdout.trim();
+  store.run('UPDATE tasks SET base_sha = ?', sha);
+  const A = 'tests/a.test.mjs :: a';
+  const script = join(env.tmp, 'base-gate.mjs');
+  writeFileSync(script, `console.log(${JSON.stringify(`${FAILED.split('\n')[0]}\n# failed: ${A}\n${FAILED.split('\n').slice(1).join('\n')}`)}); process.exit(1);\n`);
+  const held = process.env.AIWORKS_GATE_SLOT_HELD;
+  process.env.AIWORKS_GATE_SLOT_HELD = '1';
+  t.after(() => { if (held === undefined) delete process.env.AIWORKS_GATE_SLOT_HELD; else process.env.AIWORKS_GATE_SLOT_HELD = held; });
+  const settings = { command: [`"${process.execPath}"`, `"${script}"`], timeoutMs: 60_000 };
+  // One verify step of the task of `campaignId` under `c`, holding that campaign's lease as a running controller does.
+  const step = (c, campaignId) => {
+    c.baseCompare = settings;
+    const { generation } = store.acquireLease(campaignId, c.instanceId, c.now(), 60_000);
+    c.held.set(campaignId, generation);
+    c.stepBaseCheck({ id: campaignId, generation }, store.campaign(campaignId), { kind: 'verify', task_id: store.tasks(campaignId)[0].task_id });
+  };
+  const deadline = Date.now() + 60_000;
+  do { step(controller, id); step(controller, other.campaignId); await sleep(100); }
+  while (store.get('SELECT state FROM base_checks').state === 'running' && Date.now() < deadline);
+  // A restart: a new controller over the same store, both campaigns stepping the red base again.
+  const restarted = new m.Controller({ store, config: env.config, dataDir: env.dataDir, fault: null, instanceId: controller.instanceId });
+  for (const c of [controller, restarted, restarted]) { step(c, id); step(c, other.campaignId); }
+  const [base] = store.all('SELECT * FROM base_checks');
+  assert.equal(base.state, 'failed');
+  const items = store.all("SELECT * FROM outbox WHERE key LIKE '%:base-red:%'");
+  assert.equal(items.length, 1, 'one repair item per red base, never one per task, campaign, tick or restart');
+  assert.equal(base.item, `outbox:${items[0].key}`);
+  assert.ok(items[0].body.includes(sha) && items[0].body.includes(A), 'the item names the base and its failed tests');
 });
 
 test('a report task keeps its verification as before, even when its verifier leaves a failed gate', { skip: skipWithoutSqlite }, async (t) => {

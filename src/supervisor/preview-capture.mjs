@@ -18,7 +18,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { POWERSHELL, readJsonIfExists, runnerIdentified, stopOwnedRun } from './proc.mjs';
+import { ASYNC_STOP_MS, POWERSHELL, readJsonIfExists, runnerIdentified, stopOwnedRunAsync } from './proc.mjs';
 import { PREVIEW_POLICY } from './preview.mjs';
 
 const RUNNER = fileURLToPath(new URL('./runner.mjs', import.meta.url));
@@ -56,14 +56,17 @@ const delay = (ms, signal) => new Promise((resolve, reject) => {
 /**
  * The preview's own server on 127.0.0.1 and a random port: GET of the preview's files by their path, nothing else. As the
  * browser's proxy it also receives every request for another address, with that address as its Host, and refuses it.
- * `page` may answer with a promise (a server preview relays the request to the checked version's own server).
+ * `page` may answer with a promise (a server preview relays the request to the checked version's own server). Once the
+ * capture is cancelled or out of time (`stopped`), `page` is never asked again: a request still queued by the dying browser
+ * gets 410 while the browser is stopped.
  */
-async function previewServer(page) {
+async function previewServer(page, stopped) {
   const server = createServer(async (req, res) => {
     const origin = `http://127.0.0.1:${server.address().port}`;
     let url = null;
     try { url = new URL(req.url, origin); } catch { /* refused below */ }
-    const answer = req.headers.host !== new URL(origin).host || url?.origin !== origin ? { status: 403, body: 'Not this preview.', type: 'text/plain; charset=utf-8' }
+    const answer = stopped.aborted ? { status: 410, body: 'The capture has stopped.', type: 'text/plain; charset=utf-8' }
+      : req.headers.host !== new URL(origin).host || url?.origin !== origin ? { status: 403, body: 'Not this preview.', type: 'text/plain; charset=utf-8' }
       : req.method !== 'GET' ? { status: 405, body: 'Method not allowed.', type: 'text/plain; charset=utf-8' }
         : await Promise.resolve().then(() => page(url.pathname.slice(1))).catch(() => ({ status: 502, body: 'The preview could not answer.', type: 'text/plain; charset=utf-8' }));
     if (res.destroyed) return;
@@ -136,13 +139,14 @@ const exits = (child, ms) => child.exitCode !== null || child.signalCode !== nul
  */
 export async function reclaim(child, workDir, hurry) {
   const result = () => readJsonIfExists(join(workDir, 'result.json'));
-  if (!hurry && await exits(child, 15_000)) return result()?.containmentStopped === true ? 'stopped' : 'unproved';
+  // The runner drains its own job first, which may take that drain's whole bound on a loaded host.
+  if (!hurry && await exits(child, ASYNC_STOP_MS + 15_000)) return result()?.containmentStopped === true ? 'stopped' : 'unproved';
   // The runner records its job only after the helper reports it ready; wait briefly for that identity.
   for (let i = 0; i < 50 && child.exitCode === null && !runnerIdentified(readJsonIfExists(join(workDir, 'runner.json'))); i++) await new Promise((resolve) => setTimeout(resolve, 100));
   if (child.exitCode !== null) return result()?.containmentStopped === true || result()?.attached === false ? 'stopped' : 'unproved';
   const identity = readJsonIfExists(join(workDir, 'runner.json'));
   if (runnerIdentified(identity)) {
-    const stopped = stopOwnedRun(identity);
+    const stopped = await stopOwnedRunAsync(identity);
     await exits(child, 10_000);
     if (stopped === 'stopped') return 'stopped';
   }
@@ -169,7 +173,7 @@ export async function capturePreview({ chrome, workDir, page, entry, sha, signal
   let server = null, runner = null, client = null, shots = null, failure = null;
   try {
     if (bounded.aborted) throw bounded.reason;
-    server = await previewServer(page);
+    server = await previewServer(page, bounded);
     const origin = `http://127.0.0.1:${server.address().port}`;
     const dirs = { profile: join(workDir, 'profile'), home: join(workDir, 'home'), temp: join(workDir, 'temp') };
     for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true });

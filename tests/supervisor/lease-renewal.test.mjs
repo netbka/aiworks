@@ -8,6 +8,50 @@ import { environment, skipWithoutSqlite, SQLITE } from './helpers.mjs';
 const { Store } = SQLITE ? await import('../../src/supervisor/store.mjs') : {};
 const { Controller } = SQLITE ? await import('../../src/supervisor/controller.mjs') : {};
 
+test('a slow fenced effect preserves live held leases without reviving expired, released or replaced leases', { skip: skipWithoutSqlite }, (t) => {
+  const env = environment();
+  const file = join(env.dataDir, 'supervisor.db');
+  const store = new Store(file), competitor = new Store(file);
+  competitor.db.exec('PRAGMA busy_timeout = 0');
+  let time = 1_000_000;
+  const ttl = 10_000;
+  const controller = new Controller({ store, config: { ...env.config, leaseMs: ttl }, dataDir: env.dataDir, now: () => time });
+  t.after(() => { competitor.close(); store.close(); env.cleanup(); });
+  const first = store.acquireLease('first', controller.instanceId, time, ttl);
+  for (const id of ['second', 'released', 'replaced', 'taken']) {
+    controller.held.set(id, store.acquireLease(id, controller.instanceId, time, ttl).generation);
+  }
+  controller.held.set('expired', store.acquireLease('expired', controller.instanceId, time - 2 * ttl, ttl).generation);
+  controller.held.set('long', store.acquireLease('long', controller.instanceId, time, 100 * ttl).generation);
+  const longEnd = store.lease('long').expires_at;
+  store.releaseLease('taken', controller.instanceId, controller.held.get('taken'), time);
+  store.acquireLease('taken', 'other-controller', time, ttl);
+  const ctx = { id: 'first', generation: first.generation }; // The fenced context need not be in held.
+  let releasedAt, replaced;
+  assert.equal(controller.fenced(ctx, () => {
+    time += 2 * ttl;
+    assert.throws(() => competitor.acquireLease('second', 'other-controller', time, ttl), /locked|busy/i,
+      'the database fence prevents takeover throughout the effect');
+    releasedAt = time;
+    store.releaseLease('released', controller.instanceId, controller.held.get('released'), time);
+    replaced = store.acquireLease('replaced', controller.instanceId, time, ttl);
+    time += ttl;
+    return 'done';
+  }), 'done');
+  for (const id of ['first', 'second']) assert.equal(competitor.acquireLease(id, 'other-controller', time, ttl), null,
+    'the lease remains owned when the write lock is released');
+  assert.equal(store.lease('released').expires_at, releasedAt);
+  assert.equal(store.lease('replaced').generation, replaced.generation);
+  assert.equal(store.lease('replaced').expires_at, time, 'a replacement generation is not renewed through stale held state');
+  assert.equal(store.lease('taken').instance_id, 'other-controller');
+  assert.equal(store.lease('long').expires_at, longEnd, 'a fenced effect never shortens a lease taken for longer');
+  for (const id of ['expired', 'released', 'replaced']) assert.ok(competitor.acquireLease(id, 'other-controller', time, ttl));
+  const before = store.lease('second');
+  assert.throws(() => controller.fenced(ctx, () => { time += 2 * ttl; throw new Error('effect failed'); }), /effect failed/);
+  assert.deepEqual(store.lease('second'), before, 'failure rolls back without renewing leases');
+  assert.ok(competitor.acquireLease('second', 'other-controller', time, ttl));
+});
+
 test('held leases are renewed past one long step; a lapsed lease stays with its new holder', { skip: skipWithoutSqlite }, (t) => {
   const env = environment();
   const store = new Store(join(env.dataDir, 'supervisor.db'));

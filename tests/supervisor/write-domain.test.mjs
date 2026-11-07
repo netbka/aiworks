@@ -14,6 +14,7 @@ import { campaignPause, campaignStart } from '../../src/supervisor/api.mjs';
 import { scopeDigest, validateDeclaration } from '../../src/supervisor/campaign.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
 import { domainHolders, domainOf, domainsOverlap, outsideWrites, pathsOutside } from '../../src/supervisor/work-ownership.mjs';
+import { recordMainCommit } from '../../src/supervisor/self-hosting.mjs';
 import { ROOT, declaration, environment } from './helpers.mjs';
 
 const git = (cwd, ...args) => {
@@ -158,6 +159,29 @@ test('published but unmerged work keeps its domain until merged', (t) => {
   git(env.repo, 'merge', '-q', '--no-ff', '-m', 'Merge first X', 'campaign/first/X');
   git(env.repo, 'push', '-q', 'origin', 'main');
   assert.deepEqual(domainHolders(store, candidate, { integrated }), [], 'released once the verified SHA is in origin main');
+});
+
+test('a head the local merge gate recorded as merged releases its domain after main is re-rooted; an unrecorded head stays held', (t) => {
+  const env = environment();
+  const store = new Store(join(env.dataDir, 'supervisor.db'));
+  t.after(() => { store.close(); env.cleanup(); });
+  const config = { ...env.config, scheduler: { enabled: true }, selfHosting: { repository: 'example-org/sampleapp', trustedMain: 'local' } };
+  const inputs = new Controller({ store, config, dataDir: env.dataDir, fault: null, sampler: { sample: () => null } }).admissionInputs();
+  const mine = declaration({ campaignId: 'mine', tasks: [commitTask('M', 950, { writes: ['src/a/'] })] });
+  campaignStart(store, mine);
+  const candidate = { campaignId: 'mine', taskId: 'M', domain: domainOf(mine, mine.tasks[0]) };
+  for (const [id, sha] of [['merged', 'd'.repeat(40)], ['unrecorded', 'f'.repeat(40)]]) {
+    campaignStart(store, declaration({ campaignId: id, tasks: [commitTask('X', 951, { writes: ['src/'], goal: `Produce X in ${id}.` })] }));
+    store.patch('tasks', { campaign_id: id, task_id: 'X' }, store.task(id, 'X').version, { state: 'done', verified_sha: sha, pr_url: `aiworks-work:${id}` }, Date.now());
+    store.patch('campaigns', { id }, store.campaign(id).version, { control: 'finished' }, Date.now());
+  }
+  // Main re-rooted: the ledger is anchored on today's main, and the gate's merge commit of 'merged' is not on it any more.
+  const main = git(env.repo, 'rev-parse', 'main');
+  store.run(`INSERT INTO main_ledger (repository, old_tip, new_tip, kind, recorded_at) VALUES ('example-org/sampleapp', NULL, ?, 'anchor', ?)`, main, Date.now());
+  assert.equal(recordMainCommit(store, { repository: 'example-org/sampleapp', kind: 'gate-merge', oldTip: main, newTip: 'e'.repeat(40),
+    campaignId: 'merged', taskId: 'X', verifiedSha: 'd'.repeat(40), now: Date.now() }).recorded, true);
+  assert.deepEqual(domainHolders(store, candidate, inputs).map((h) => `${h.campaignId}:${h.reason}`), ['unrecorded:published-unmerged'],
+    'the recorded gate merge counts as integrated; a published head never recorded as merged keeps its domain');
 });
 
 /** One registered campaign; the test plays the implementer. */

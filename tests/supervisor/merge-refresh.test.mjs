@@ -154,6 +154,9 @@ test('a moved base that shares no file with the pull request is gated on the exa
   await r.pass();
   const [startedC] = r.journal(C, 'merge-refresh-started');
   assert.equal(startedC.base, mergedB);
+  // The refreshed merge of B was checked for the shape it requested: the gated tree, on the base it named (P1).
+  const shapeB = r.journal(B, 'merge-shape').at(-1);
+  assert.deepEqual([shapeB?.ok, shapeB?.tree, shapeB?.parents], [true, run.tree, [mergedA, heads[B]]], JSON.stringify(shapeB));
   await r.gateEnds(startedC.path);
   await r.pass();
   assert.equal(r.mergeCalls().length, 3);

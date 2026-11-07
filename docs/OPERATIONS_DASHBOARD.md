@@ -208,7 +208,7 @@ A project opens on its tabs, as [Owner UI v2 section 2](design/OWNER_UI_V2.md#2-
 | Releases | `#/p/<project>/releases` | Shown only where a release is configured: once a release is recorded for the project. Its address opens for every project. |
 | Knowledge | `#/p/<project>/knowledge` | What AIWorks knows about the product. |
 
-Old addresses keep working: `#/p/<project>/work`, `/cost` and `/now` open Overview, `/results` opens Review, each rewritten once with `history.replaceState`. An unsent draft kept at an old address (step guidance, for example) moves with it to the new one. The owner's word for what waits on them is **Needs you**; the route stays `#/needs`.
+Old addresses keep working: `#/p/<project>/work`, `/cost` and `/now` open Overview, `/results` opens Review, each rewritten once with `history.replaceState`. An unsent draft kept at an old address (step guidance, for example) moves with it to the new one. The owner's word for what waits on them is still **Needs you**. That list is answered on Home: `#/needs` opens Home, and the count sits on the Home item. AIWorks's own problems are in Settings, under AIWorks itself, and are not counted ([HOME_V2](design/HOME_V2.md)).
 
 ## Home, Overview and Connections (owner UI v2, WP1)
 

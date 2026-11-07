@@ -11,8 +11,8 @@
 // `git branch -d` (never -D) only when the trusted main contains its tip. Nothing deletes a remote branch, a run
 // directory or a folder recursively. Each removal is journaled `cleanup-started` before and `cleanup-finished` after,
 // so a restart settles an interrupted one from what git shows and never repeats it.
-import { constants, copyFileSync, existsSync, readFileSync, realpathSync, unlinkSync } from 'node:fs';
-import { basename, isAbsolute, join, relative, resolve } from 'node:path';
+import { constants, copyFileSync, existsSync, lstatSync, readFileSync, realpathSync, unlinkSync } from 'node:fs';
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import * as gitA from './adapters/git.mjs';
 import { GATE_FILES } from './gate.mjs';
 import { LANE as COORDINATOR_LANE, coordinatorWorktreeRoot } from './coordinator.mjs';
@@ -30,14 +30,34 @@ const allowed = (ctl, repository) => ctl.config.cleanup.repositories === undefin
 // Per controller: when the last pass ran, whether interrupted removals were settled, and what was already reported kept.
 const memory = new WeakMap();
 
-const key = (path) => (process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path));
+/**
+ * A path by name with each Windows short (8.3) component, such as AIWORK~1, written by its long name: git lists a
+ * worktree by the name it was added with, while a workspace or temp folder may carry the short one. Links and junctions
+ * are never followed here; insideRoot still checks where they lead.
+ */
+function longName(path) {
+  const full = resolve(path);
+  if (process.platform !== 'win32' || !full.includes('~') || full.startsWith('\\')) return full;
+  const [head, ...parts] = full.split(sep);
+  let out = head + sep;
+  for (const part of parts) {
+    let next = join(out, part);
+    if (part.includes('~')) {
+      // A volume mounted into the folder resolves to a drive root, whose name is empty: keep the folder's own name then.
+      try { const name = lstatSync(next).isSymbolicLink() ? '' : basename(realpathSync.native(next)); if (name) next = join(out, name); } catch { /* absent: keep the name */ }
+    }
+    out = next;
+  }
+  return out;
+}
+const key = (path) => (process.platform === 'win32' ? longName(path).toLowerCase() : resolve(path));
 const within = (root, path) => {
   const rel = relative(root, path);
   return Boolean(rel) && !rel.startsWith('..') && !isAbsolute(rel);
 };
 /** Inside the registered folder by name and, when it exists, after links are resolved. */
 function insideRoot(root, path) {
-  if (!root || !within(resolve(root), resolve(path))) return false;
+  if (!root || !within(longName(root), longName(path))) return false;
   if (!existsSync(path)) return true;
   try { return within(realpathSync.native(root), realpathSync.native(path)); } catch { return false; }
 }
@@ -46,7 +66,7 @@ function insideRoot(root, path) {
  * One cleanup pass, at most once per integrationPollMs. Returns { removed, deleted, kept } (paths and branches), or null
  * when it did not run: switched off, unmerged runtime code (AW-005), or not yet due.
  */
-export function cleanupPass(ctl) {
+export async function cleanupPass(ctl) {
   if (!cleanupEnabled(ctl.config) || ctl.unmergedRevision()) return null;
   const state = memory.get(ctl) ?? { checkedAt: -Infinity, reconciled: false, reported: new Set() };
   memory.set(ctl, state);
@@ -62,10 +82,10 @@ export function cleanupPass(ctl) {
     state.reported.add(seen);
     ctl.store.journal(campaignId, 'cleanup-kept', item, ctl.now());
   };
-  const coordinator = coordinatorOwners(ctl);
-  for (const repo of repositories(ctl)) cleanRepository(ctl, repo, coordinator, report, keep);
-  // Shared planning checkouts have no repository scope; a scoped cleanup leaves them alone.
-  if (ctl.config.cleanup.repositories === undefined) cleanCoordinator(ctl, coordinator, report, keep);
+  for (const repo of repositories(ctl)) await cleanRepository(ctl, repo, report, keep);
+  // Shared planning checkouts have no repository scope; a scoped cleanup leaves them alone. Their owners are read after
+  // every await of the repositories above (aiworks#140): a coordinator run recorded meanwhile keeps its checkout.
+  if (ctl.config.cleanup.repositories === undefined) cleanCoordinator(ctl, report, keep);
   if (report.removed.length || report.deleted.length) ctl.log(`cleanup removed ${report.removed.length} worktrees and ${report.deleted.length} branches`);
   return report;
 }
@@ -91,14 +111,15 @@ function repositories(ctl) {
   return [...byPath.values()];
 }
 
-function cleanRepository(ctl, repo, coordinator, report, keep) {
+async function cleanRepository(ctl, repo, report, keep) {
   const git = ctl.cmd.git;
   const list = gitA.worktreeList({ git, repoPath: repo.path });
   if (!list) { keep(null, { path: repo.path, reason: 'worktree-list-unreadable' }); return; }
   const registered = new Map(list.slice(1).map((wt) => [key(wt.path), wt]));
   // The trusted main: origin/main as the supervisor fetches it, or the trusted tip of local main when self-hosted.
-  const main = repo.local || !repo.repository ? null : ctl.fetchBase(repo.path, 'main', repo.repository).sha;
+  const main = repo.local || !repo.repository ? null : (await ctl.fetchBase(repo.path, 'main', repo.repository)).sha;
   const contained = (sha) => SHA.test(sha ?? '') && SHA.test(main ?? '') && gitA.isAncestor({ git, path: repo.path, ancestor: sha, descendant: main });
+  const coordinator = coordinatorOwners(ctl);
   const owners = new Map(), finishedTasks = [];
   for (const c of repo.campaigns) {
     const terminal = ['finished', 'cancelled'].includes(c.control), foreign = foreignLease(ctl, c.id);
@@ -111,7 +132,7 @@ function cleanRepository(ctl, repo, coordinator, report, keep) {
   }
   for (const [path, wt] of registered) {
     if (owners.has(path) || coordinator.has(path)) continue;
-    if (within(resolve(repo.root), resolve(wt.path))) keep(null, { path: wt.path, reason: 'unowned' });
+    if (within(longName(repo.root), longName(wt.path))) keep(null, { path: wt.path, reason: 'unowned' });
   }
   for (const [path, owner] of owners) {
     const wt = registered.get(path);
@@ -192,9 +213,15 @@ function coordinatorOwners(ctl) {
   return owners;
 }
 
-function cleanCoordinator(ctl, owners, report, keep) {
+/** Whether the coordinator lane may lose a checkout now: no other instance holds it and no boundary violation is open. */
+function coordinatorFree(ctl) {
   // A boundary violation keeps every coordinator checkout until the owner has inspected it and cleared the lane.
-  if (!owners.size || foreignLease(ctl, COORDINATOR_LANE) || ctl.store.get("SELECT 1 AS v FROM meta WHERE key = 'coordinator_violation'")) return;
+  return !foreignLease(ctl, COORDINATOR_LANE) && !ctl.store.get("SELECT 1 AS v FROM meta WHERE key = 'coordinator_violation'");
+}
+
+function cleanCoordinator(ctl, report, keep) {
+  const owners = coordinatorOwners(ctl);
+  if (!owners.size || !coordinatorFree(ctl)) return;
   const root = coordinatorWorktreeRoot(ctl);
   for (const owner of owners.values()) {
     if (!owner.finished || !existsSync(owner.path)) continue;
@@ -203,7 +230,13 @@ function cleanCoordinator(ctl, owners, report, keep) {
     const wt = list?.slice(1).find((entry) => key(entry.path) === key(owner.path));
     if (!wt) continue;
     if (!insideRoot(root, wt.path)) { keep(COORDINATOR_LANE, { path: wt.path, run: owner.run, reason: 'outside-root' }); continue; }
-    removeWorktree(ctl, list[0].path, wt, owner, report, keep);
+    // Checkouts are reused across runs, and a run is recorded inside an IMMEDIATE transaction (coordinator.mjs). The last
+    // check of its runs and the removal share one, so no run is recorded for this checkout between them.
+    ctl.store.tx(() => {
+      const current = coordinatorOwners(ctl).get(key(owner.path));
+      if (current?.finished !== true || !coordinatorFree(ctl)) return;
+      removeWorktree(ctl, list[0].path, wt, current, report, keep);
+    });
   }
 }
 

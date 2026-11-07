@@ -19,13 +19,26 @@
 //
 // Every file's temporary directories go to .aiworks-test-tmp beside the outermost repository (TMP, TEMP and TMPDIR; or
 // AIWORKS_TEST_TMP), not the system Temp directory, and a file still running after AIWORKS_TEST_FILE_MINUTES (default
-// 15) is stopped with its process tree and fails, so one stuck file never holds the gate for an hour.
+// 15) is stopped with its process tree and fails, so one stuck file never holds the gate for an hour. A file that fails
+// runs once more on its own after every tier has finished (scripts/lib/test-retry.mjs): the gate passes only if each
+// retried file passes alone, and the final summary names every retry. AIWORKS_TEST_RETRY_FILES (default 10) caps how
+// many failed files are retried (0 turns the retry off), and AIWORKS_TEST_RETRY_MINUTES (default 20) how long all
+// retries together may start for.
+//
+// AIWORKS_TEST_CACHE, set only by the supervisor for a verifier (src/supervisor/test-cache.mjs), names a JSON file of
+// test files whose result the supervisor recorded for exactly the same inputs. Each such file does not run: it prints
+// `# cached <file> digest <digest>` and counts with its recorded tally, when the entry was recorded on this Node major
+// version. The list only saves time and is never evidence: the supervisor accepts a cached line only after computing
+// that file's digest again from git and finding its row. The summary names this run's Node version (`# node v...`).
+// A test file's own output never starts a line like one of these markers (scripts/lib/test-markers.mjs).
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { availableParallelism } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { affectedTests, referenceGraph, repositoryFiles } from './lib/affected-tests.mjs';
+import { escapeMarkers } from './lib/test-markers.mjs';
+import { COUNTS, complete, countsOf, failedOf, retryPlan, settle } from './lib/test-retry.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const TIERS = ['unit', 'service', 'rehearsal'];
@@ -35,11 +48,11 @@ const discover = (directory) => readdirSync(directory, { withFileTypes: true }).
   return entry.isFile() && entry.name.endsWith('.test.mjs') ? [relative(root, path).replaceAll(sep, '/')] : [];
 });
 
-// A file that starts a supervisor controller, a contained worker run, the CLI or a containment helper is a rehearsal:
+// A file that starts a supervisor controller, Chrome, a contained worker run, the CLI or a containment helper is a rehearsal:
 // it imports the supervisor harness's process-starting exports, or names a fault, a fixture executable or containment.
 // Every import from ./helpers.mjs except the pure ones (declaration, GOVERNANCE, ROOT, SQLITE, skipWithoutSqlite, sleep)
 // starts processes.
-const REHEARSAL = /\b(environment|runUntil|runtimeCheckout|runCli|CLI)\b[^;]*from '\.\/helpers\.mjs'|from '\.\/[a-z-]+-harness\.mjs'|new Controller|keep-preload|stopOwnedRun|containment|POWERSHELL|AIWORKS_FAULT|fake-(claude|gh|agy)|browser-mcp/;
+const REHEARSAL = /\b(environment|runUntil|runtimeCheckout|runCli|CLI)\b[^;]*from '\.\/helpers\.mjs'|from '\.\/[a-z-]+-harness\.mjs'|new Controller|keep-preload|stopOwnedRun|containment|POWERSHELL|AIWORKS_FAULT|fake-(claude|gh|agy)|browser-mcp|puppeteer\.launch/;
 // A file that starts a server, builds the review fixture, spawns git or runs any other child process (a synthetic
 // executable started through process.execPath) is a service file. Only a file that matches neither pattern is a unit.
 const SERVICE = /child_process|process\.execPath|\.listen\(|createServer|review-store|startDashboard|main\.mjs/;
@@ -96,7 +109,12 @@ const setting = (name, fallback) => {
 };
 const concurrency = setting('AIWORKS_TEST_CONCURRENCY', Math.min(4, Math.max(1, Math.floor(availableParallelism() / 4))));
 const heavyConcurrency = setting('AIWORKS_HEAVY_CONCURRENCY', 2);
-const fileLimitMs = setting('AIWORKS_TEST_FILE_MINUTES', 15) * 60_000;
+// AIWORKS_TEST_TIME_FACTOR (>= 1) also stretches the in-test deadlines (tests/supervisor/helpers.mjs) for a slower host.
+const timeFactor = Math.max(1, Number(process.env.AIWORKS_TEST_TIME_FACTOR) || 1);
+const fileLimitMs = setting('AIWORKS_TEST_FILE_MINUTES', 15) * 60_000 * timeFactor;
+const retryLimit = process.env.AIWORKS_TEST_RETRY_FILES === '0' ? 0 : setting('AIWORKS_TEST_RETRY_FILES', 10);
+// All retries together get at most this long; a file not retried in time keeps its first failure.
+const retryBudgetMs = setting('AIWORKS_TEST_RETRY_MINUTES', 20) * 60_000;
 
 // An inherited test-worker marker makes a nested node --test silently skip its files.
 const env = { ...process.env };
@@ -115,22 +133,35 @@ try {
   mkdirSync(scratch, { recursive: true });
   Object.assign(env, { TMP: scratch, TEMP: scratch, TMPDIR: scratch });
 } catch (error) { console.log(`# temporary directories stay in the system default: ${scratch} could not be created (${error.code ?? error.message})`); }
-const COUNTS = ['tests', 'suites', 'pass', 'fail', 'cancelled', 'skipped', 'todo'];
-const total = Object.fromEntries(COUNTS.map((key) => [key, 0]));
 const times = [];
 
-/** Runs one test file in its own node --test process; resolves its exit status. */
-function runFile(file, tier, testArgs) {
+/** The recorded passes AIWORKS_TEST_CACHE names: file -> { digest, counts }. Empty when unset or unreadable. */
+function cachedPasses(path) {
+  if (!path) return new Map();
+  try {
+    const { files } = JSON.parse(readFileSync(path, 'utf8'));
+    const major = Number(process.versions.node.split('.')[0]);
+    return new Map(files.filter((entry) => typeof entry?.file === 'string' && /^[0-9a-f]{64}$/.test(entry.digest ?? '') && entry.nodeMajor === major)
+      .map((entry) => [entry.file, { digest: entry.digest, counts: Object.fromEntries(COUNTS.map((key) => [key, Math.max(0, Number(entry.counts?.[key]) || 0)])) }]));
+  } catch (error) {
+    console.log(`# test cache not used: ${path} could not be read (${error.code ?? error.message})`);
+    return new Map();
+  }
+}
+
+/** Runs one test file in its own node --test process and records its run in `into`; resolves its exit status. */
+function runFile(file, tier, testArgs, into = times) {
   return new Promise((done) => {
     const started = Date.now();
-    console.log(`# start ${file}`);
+    console.log(`# ${into === times ? 'start' : 'retry alone'} ${file}`);
     const child = spawn(process.execPath, ['--test', '--test-concurrency=1', ...testArgs, file],
       { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     const output = [];
     child.stdout.on('data', (chunk) => output.push(chunk));
     child.stderr.on('data', (chunk) => output.push(chunk));
-    let finished = false;
+    let finished = false, killed = false;
     const limit = setTimeout(() => {
+      killed = true;
       output.push(Buffer.from(`# ${file} still running after ${fileLimitMs / 60_000} minutes; stopping it and its child processes\n`));
       if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
       else child.kill('SIGKILL');
@@ -140,13 +171,9 @@ function runFile(file, tier, testArgs) {
       finished = true;
       clearTimeout(limit);
       const ms = Date.now() - started;
-      const text = Buffer.concat(output).toString('utf8');
+      const text = escapeMarkers(Buffer.concat(output).toString('utf8'));
       process.stdout.write(text.endsWith('\n') || !text ? text : `${text}\n`);
-      for (const line of text.split(/\r?\n/)) {
-        const match = /^# (tests|suites|pass|fail|cancelled|skipped|todo) (\d+)$/.exec(line);
-        if (match) total[match[1]] += Number(match[2]);
-      }
-      times.push({ file, tier, ms, code });
+      into.push({ file, tier, ms, code, counts: countsOf(text), failed: code === 0 ? [] : failedOf(text), complete: !killed && complete(text) });
       console.log(`# end ${file} ${ms} ms, exit ${code}`);
       done(code === 0 ? 0 : 1);
     };
@@ -176,7 +203,14 @@ if (affected) {
   reachable = result.tests;
   console.log(`# affected: ${changed.length} changed files since ${affected} (merge base ${mergeBase.slice(0, 12)}) reach ${reachable.length} of ${files.length} test files${result.everything.length ? `; every file runs because ${result.everything.join(', ')} changed` : ''}`);
 }
-for (const file of reachable) byTier[tierOf(readFileSync(join(root, file), 'utf8'))].push(file);
+const cache = cachedPasses(process.env.AIWORKS_TEST_CACHE);
+for (const file of reachable) {
+  const tier = tierOf(readFileSync(join(root, file), 'utf8')), hit = cache.get(file);
+  if (!hit || !tiers.includes(tier)) { byTier[tier].push(file); continue; }
+  console.log(`# cached ${file} digest ${hit.digest}`);
+  times.push({ file, tier, ms: 0, code: 0, counts: hit.counts, failed: [], complete: true, cached: true });
+}
+const cachedCount = times.length;
 const selected = (tier) => (tiers.includes(tier) ? (heavyConcurrency > 1 || tier !== 'rehearsal' ? ordered(tier, byTier[tier]) : byTier[tier]) : []);
 
 const started = Date.now();
@@ -187,12 +221,26 @@ const [serviceStatus, rehearsalStatus] = await Promise.all([
   run(selected('rehearsal'), 'rehearsal', heavyConcurrency, rest),
 ]);
 const lanesMs = Date.now() - lanesStarted;
+// Failed files run again one at a time, alone, once every tier has finished.
+const plan = retryPlan(times, retryLimit);
+const retries = [];
+const notRetried = plan.skipped ? [`# not retried: ${plan.skipped}`] : [];
+const retryStarted = Date.now();
+for (const file of plan.files) {
+  if (Date.now() - retryStarted >= retryBudgetMs) { notRetried.push(`# not retried: ${file}, the ${retryBudgetMs / 60_000}-minute retry budget is spent`); continue; }
+  await runFile(file, times.find((run) => run.file === file).tier, rest, retries);
+}
+const result = settle(times, retries);
+if (unitStatus || serviceStatus || rehearsalStatus) console.log(`# first run failed: ${times.filter((run) => run.code !== 0).map((run) => run.file).join(', ')}`);
 console.log(`# file times, slowest first (service and rehearsal lanes ${lanesMs} ms)`);
-for (const { file, tier, ms, code } of times.sort((a, b) => b.ms - a.ms)) {
+for (const { file, tier, ms, code } of times.filter((run) => !run.cached).sort((a, b) => b.ms - a.ms)) {
   console.log(`# ${String(ms).padStart(8)} ms ${tier.padEnd(9)} ${file}${code === 0 ? '' : ` exit ${code}`}`);
 }
 const counts = TIERS.map((tier) => `${selected(tier).length} ${tier}`).join(', ');
 console.log(`# all test files: ${counts} (of ${files.length}); unit and service ${concurrency} at a time, rehearsal ${heavyConcurrency} at a time`);
-for (const key of COUNTS) console.log(`# ${key} ${total[key]}`);
+console.log(`# node ${process.version}`);
+if (cachedCount) console.log(`# cached: ${cachedCount} files not run, their results recorded by the supervisor for identical inputs`);
+for (const line of [...result.lines, ...notRetried]) console.log(line);
+for (const key of COUNTS) console.log(`# ${key} ${result.total[key]}`);
 console.log(`# duration_ms ${Date.now() - started}`);
-process.exit(unitStatus || serviceStatus || rehearsalStatus);
+process.exit(result.status);

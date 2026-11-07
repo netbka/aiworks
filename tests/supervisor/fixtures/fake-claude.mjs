@@ -39,13 +39,15 @@ const reportDigest = /reportDigest ([0-9a-f]{64})/.exec(prompt)?.[1];
 
 // scenario.gate leaves the gate helper's files in a verifier's checkout, as src/supervisor/gate.mjs does: one { log, exit }
 // for every verification, or a list with one per verification call. exit null leaves no gate-exit.log (an unfinished gate),
-// and false leaves no gate files at all. Without one, a verifier leaves a passing gate, as the full-gate rule requires.
+// and false leaves no gate files at all; head names the commit gate-head.log records (false: none). Without one, a verifier leaves a passing gate, as the full-gate rule requires.
 const PASSING = { log: '# all test files: 1 unit, 0 service, 0 rehearsal (of 1)\n# tests 1\n# pass 1\n# fail 0\n', exit: '0' };
 const gate = role === 'verify' ? ((Array.isArray(scenario.gate) ? scenario.gate[previous] : scenario.gate) ?? PASSING) : null;
 if (gate) {
   writeFileSync(join(process.cwd(), 'gate.log'), gate.log);
   if (gate.exit !== null) writeFileSync(join(process.cwd(), 'gate-exit.log'), `${gate.exit}
 `);
+  // gate-head.log as the helper's start writes it: the target on a clean checkout, unless the scenario names another head.
+  if (gate.head !== false) writeFileSync(join(process.cwd(), 'gate-head.log'), `${gate.head ?? target} clean\n`);
 }
 
 // Assembled at run time so the fixture source itself passes the public-scope check.
