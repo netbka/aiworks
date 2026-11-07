@@ -16,6 +16,8 @@ rewrite and separate text verifier check the corrected report. Exact head, base,
 must still match before publication; otherwise ordinary verification resumes. `tests/supervisor/verdict-once.test.mjs`
 checks recovery and refusal of stale evidence with synthetic workers. This is source capability, not deployment or UI acceptance evidence.
 
+Passed refreshes (BASE-HOLD) take priority over unrefreshed siblings on the same current base. Existing merge groups keep their recorded order, and an eligible refreshed head waiting for its campaign lease defers only that branch for one pass. The exact-head, tree, authority and merge gates remain in force. `tests/supervisor/merge-refresh.test.mjs` exercises the ordering, stale-proof refusal and lease contention with disposable repositories. This describes source behavior, not deployment or UI acceptance.
+
 ## The core loop (on by default)
 
 The code includes a persistent SQLite-backed supervisor, bounded worker sessions in Windows job containment, independent verification of the exact head, ordered provider fallback, restart recovery, a coordinator inbox and a loopback dashboard (`src/supervisor/controller.mjs`, `store.mjs`, `campaign.mjs`; `src/dashboard/`). Executable runtime code must be merged before new work starts ([AW-005](DECISIONS.md#aw-005---runtime-code-must-be-merged-declarations-remain-private)). Campaign declarations are private local data. Synthetic checks: `tests/supervisor/supervisor.test.mjs`, `restart.test.mjs`, `restart-publish.test.mjs`, `restart-parallel.test.mjs`, `merged-code.test.mjs`, `process.test.mjs`.
