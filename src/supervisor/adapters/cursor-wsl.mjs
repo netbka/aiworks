@@ -58,7 +58,7 @@ export function cursorWslInvocation(command, { runDir, cwd, configDir, dataDir, 
   mkdirSync(join(paths.scratch, 'home'), { recursive: true });
   const nonce = randomUUID(), requestFile = join(run, 'wsl-request.json');
   const argv = ['--print', '--trust', '--mode', 'ask', '--sandbox', 'enabled', '--disable-project-configs',
-    '--exclude-workspace-context', '--disable-auto-update', '--single-turn',
+    '--disable-auto-update', '--single-turn',
     '--allowed-tools', 'read_todos_tool_call', '--output-format', 'stream-json', '--model', model];
   const request = { version: 1, nonce, distribution: config.distribution,
     paths: Object.fromEntries(Object.entries(paths).map(([key, value]) => [key, linuxPath(value)])),

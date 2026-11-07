@@ -861,7 +861,7 @@ Every run gets a Linux PID namespace with a minimal filesystem: system tools and
 the client package, its credential reference, and the run's scratch/config/data directories.
 Host drives, other checkouts and Windows interop are absent. Only the three run directories and
 private temporary storage are writable. Python ignores inherited environment and user startup code.
-Cursor keeps its own sandbox enabled, excludes workspace context and project configuration, disables
+Cursor keeps its own sandbox enabled, uses the empty scratch workspace, ignores project configuration, disables
 updates and continuation, and requests only the current session's read-todos capability from the service.
 The research event audit still rejects tool use. Windows Job Object resource caps do not measure or
 limit Linux processes; this route has one per-run time bound of at most 15 minutes.
