@@ -819,7 +819,7 @@ function startScreen(project) {
     el('label', { class: 'field' }, el('strong', {}, 'What should be true when this is finished?'), goal),
     el('fieldset', {}, el('legend', {}, 'Start from'), ...START_FROM.slice(0, local ? 1 : undefined).map(from), numberLabel, reportLabel),
     local ? el('div', { class: 'planning-mode' }, el('strong', {}, 'Plan and do'),
-      el('p', {}, 'AIWorks drafts a plan and shows it to you on Review. Nothing starts until you press Approve and start, and nothing in your folder changes until you press Apply on a checked result.'))
+      el('p', {}, 'AIWorks drafts a plan and shows it to you on Review. Nothing starts until you press Approve and start. Checked results can then be applied to your folder automatically; a result that needs your acceptance offers Apply.'))
     : doable ? el('fieldset', { class: 'planning-mode' }, el('legend', {}, 'How far'), mode(['plan-only', 'Plan only']), mode(['plan-and-do', 'Plan and do']), modeText)
       : el('div', { class: 'planning-mode' }, el('strong', {}, 'Plan only'),
         el('p', {}, 'AIWorks looks and proposes a plan. Nothing in your project changes.'),
@@ -1052,7 +1052,7 @@ function reviewScreen(project, id) {
     part('AI workers and limits', el('p', {}, plan.providers.length ? `Uses ${plan.providers.join(', ')}.` : 'AI workers: not stated.'),
       plan.routing?.models.length > 1 ? el('p', { class: 'subtext' }, `AIWorks uses the cheaper of ${plan.routing.models.join(', ')} where a step is simple. Checks use the strongest.`) : null,
       el('p', {}, limits)),
-    part('Release', el('p', {}, plan.local ? 'Release: Review only. AIWorks stops when a result passes the check. Nothing in your folder changes until you press Apply on it, and Undo apply puts it back.'
+    part('Release', el('p', {}, plan.local ? 'After independent checks, AIWorks can apply a result to your folder automatically. A result that needs your acceptance offers Apply. Review shows what happened and offers Undo apply when it can safely restore the previous version.'
       : projectList().find((row) => sameProject(row.id, project))?.details?.merges === 'aiworks'
         ? 'Release: Review only. AIWorks merges a result that passes the check when its merge conditions hold; release follows this project’s own rules.'
         : 'Release: Review only. AIWorks stops when a result passes the check and is published. Merging and release follow this project’s own rules.')),
@@ -1245,12 +1245,12 @@ async function approvePlan(project, plan) {
 
 /*
  * A project without GitHub (OWNER_WORKSPACE S12 and §5.3; slice UI17). Its approved plans, their steps and their checked
- * results come from the work view (state.work.local), never from GitHub. A checked result changes the owner's folder
- * only when they press Apply, and Undo apply puts the folder back. No pull request is ever shown.
+ * results come from the work view (state.work.local), never from GitHub. Verified results may be applied automatically
+ * or through Apply when owner acceptance is required. Undo apply restores the folder when safe. No pull request is shown.
  */
 const localProject = (project) => projectList().find((item) => !item.repository && item.id === project) ?? null;
 const localWork = (project) => state.work?.local?.[project] ?? [];
-const LOCAL_CONTROL = { registered: 'Approved. AIWorks works on its own copy of your folder; nothing in your folder changes until you press Apply.',
+const LOCAL_CONTROL = { registered: 'Approved. AIWorks builds in its own copy, then independently checks the result. Checked results can be applied to your folder automatically; Review shows their status.',
   paused: 'Paused. Nothing new starts until it is resumed.', finished: 'All steps are finished. The checked results are under Review.', cancelled: 'Cancelled.' };
 let applying = null;
 const sentenceOf = (text) => /[.!?…]$/.test(text) ? text : `${text}.`;
@@ -1285,7 +1285,7 @@ function localResultRow(row, c = null) {
 /** Results of a project without GitHub: each step's checked result, with Apply or Undo apply. */
 function localResultsScreen(project) {
   const rows = localWork(project).flatMap((c) => c.results.map((row) => [row, c]));
-  if (!rows.length) return [el('section', { class: 'panel' }, empty('No results yet.', 'Checked results appear here. Nothing in your folder changes until you press Apply on one.'))];
+  if (!rows.length) return [el('section', { class: 'panel' }, empty('No results yet.', 'Checked results appear here with their status: applied, ready to apply, or unable to apply.'))];
   return [el('section', { class: 'panel', 'aria-labelledby': 'results-title', 'data-focus-scope': `results/${project}` },
     el('div', { class: 'panel-header' }, el('h2', { id: 'results-title' }, plural(rows.length, 'result'))),
     el('div', { class: 'panel-body' }, el('ul', { class: 'needs-list' }, ...rows.map(([row, c]) => localResultRow(row, c)))))];
@@ -3750,7 +3750,7 @@ function howWorkRuns(project) {
     el('div', { class: 'panel-body' },
       el('p', {}, 'After you approve a plan, AIWorks splits it into steps and gives each to an AI worker in its own copy of the project. A different AI worker then checks exactly that version on its own. AIWorks repairs what the check finds, within the goal’s repair rounds, and continues after crashes, restarts and usage limits.'),
       el('p', {}, 'When a step needs you, it stops and asks with a decision on that step. Your answer guides the next try under the same plan. Anything wider is a new plan version, shown with its differences, that you approve before it runs.'),
-      el('p', {}, localProject(project) ? 'Release: review only. A checked result changes your folder only when you press Apply on it, and Undo apply puts it back; nothing is published or merged.'
+      el('p', {}, localProject(project) ? 'After independent checks, a result can be applied to your folder automatically. Review shows what happened, with Apply when your acceptance is needed and Undo apply when it can safely restore the previous version.'
         : 'Release: review only. A checked result is published for your review; merging follows the merge gate you set.'),
       el('h3', {}, 'Limits of the goals here'),
       goals.length ? el('ul', { class: 'settings-links' }, ...goals.map((c) => el('li', {}, el('strong', {}, campaignTitle(c, { inProject: true })),

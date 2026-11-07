@@ -17,7 +17,7 @@ Windows with Chrome, a checkout at the revision under test, `npm install` done. 
 node scripts/supervisor/owner-journey.mjs setup <new-folder>
 ```
 
-Before starting, overwrite `<new-folder>/fake/scenario.json` with the synthetic worker's script for the session: planner on, then a first goal that builds, a second that stops for the owner and builds once answered.
+Before starting, overwrite `<new-folder>/fake/scenario.json` with the synthetic worker's script for the session: planner on, then a first goal that builds, a second whose no-options stop AIWorks sends back once before the next build. Current default policy applies independently checked results automatically.
 
 ```
 { "intake": true, "implement": ["commit-page", "owner", "commit-page", "commit-page", "commit-page"] }
@@ -27,7 +27,7 @@ Before starting, overwrite `<new-folder>/fake/scenario.json` with the synthetic 
 node scripts/supervisor/owner-journey.mjs start <new-folder>
 ```
 
-It prints the dashboard's `url` on a free loopback port. Open that address in an ordinary browser window at desktop size. Write the two project folders, `<new-folder>/owner/notes` and `<new-folder>/owner/site`, on a card for the participant. Check that Home says *No projects yet*. Everything is synthetic: fictional projects, a synthetic AI worker that makes no model or network call, no account, no recipient. Never point a session at a live installation's data folder or dashboard.
+It prints the dashboard's `url` on a free loopback port. Open that address in an ordinary browser window at desktop size. Write the two project folders, `<new-folder>/owner/notes` and `<new-folder>/owner/site`, on a card for the participant. Check that Home says *Nothing needs you.* and *Nothing is moving right now.* Everything is synthetic: fictional projects, a synthetic AI worker that makes no model or network call, no account, no recipient. Never point a session at a live installation's data folder or dashboard.
 
 Afterwards: `node scripts/supervisor/owner-journey.mjs stop <new-folder>`, then delete the folder once the notes are copied out.
 
@@ -42,18 +42,18 @@ Then give each task as written, one at a time. Do not name a screen, button or t
 | # | Task as read to the participant | Hidden success check |
 | --- | --- | --- |
 | U1 | "You just installed this. Connect your notes project so the tool can work on it." (the card) | Adds the folder and confirms its rules, without a dead end. |
-| U2 | "Ask it to make the notes page greet visitors. Nothing should change in your own folder until you say so." | Gets a plan, starts exactly it, and can say the folder is unchanged so far. |
-| U3 | "Before you accept anything, see how the result looks on a phone." | Finds Try this version and the phone view (or screenshots). |
-| U4 | "Put the result into your folder. Then change your mind and take it back." | Apply, then Undo apply; can say the folder is back as it was. |
-| U5 | "Ask for one more change: a footer on the page." Wait until the dashboard shows something waiting. | Starts the second plan. |
-| U6 | "Without help: what is going on, and does anything need you?" Timed from this sentence to the answer. | Names the waiting decision and its project in under a minute, in business words, without reading an identifier, hash or command. |
-| U7 | "Deal with it. You want to stay on the free plan." | Answers from the decision card itself (Send answer), without hunting through other screens; can say the work continues and that the answer was theirs. |
-| U8 | "The footer is not what you wanted: say what to change and have it redone." Once the result is checked again, ask: "Is it in your folder yet?" | Uses Request changes with their own words on the result; can say a repair round runs and is checked again, and that the folder is unchanged until Apply. |
+| U2 | "Ask it to make the notes page greet visitors. Look at what it plans before starting." | Gets a plan, starts exactly it, and understands that independently checked results can then be applied automatically. |
+| U3 | "See how the result looks on a phone." | Finds Try this version and the phone view (or screenshots). |
+| U4 | "Find out whether the result is in your folder. Then take it back." | Recognizes the applied status, uses Undo apply and can say the folder is back as it was. |
+| U5 | "Ask for one more change: a footer on the page." | Starts the second plan. |
+| U6 | "Without help: what is going on, and does anything need you?" Timed from this sentence to the answer. | Describes the current work or finished result and correctly says whether anything needs them in under a minute, without reading an identifier, hash or command. |
+| U7 | "Find out how it handled the worker's question." | Distinguishes AIWorks's automatic handling from an answer they personally gave; does not invent a pending decision. |
+| U8 | "The footer is not what you wanted: say what to change and have it redone." Once the result is checked again, ask: "Is it in your folder yet?" | Uses Request changes with their own words on the result, understands that a repair is independently checked again, and reads the actual apply status. |
 | U9 | "Is the greeting live for visitors on the internet?" Then: "What is the difference between accepted, merged and live?" | Says it is not released or live and nothing was published; keeps three things apart in their own words: accepted (their own recorded decision), merged or applied (the result is in the project), live (visitors can see it, only with release evidence). Does not treat one as another. |
 | U10 | "Roughly what has this cost so far?" | Finds a cost and that it covers only reported runs. |
 | U11 | Narrow the window to phone width (or use a phone on the same computer) and repeat U6. | Same answer, no sideways scrolling. |
 
-Keep decisions and stopped work apart when you listen. A *decision* is a question the owner answers so work continues (U7). *Stopped work* (a step that used its repair rounds, left its plan or hit a protected area) is resolved with guidance and Check again, or with Plan different work for a wider change; there is no "allow once". The disposable runtime's scenario produces only a decision, and the Accept result path applies to GitHub results behind the merge gate and to projects set to accept results themselves, which the local fixture does not offer. The facilitator therefore does not stage stopped work or Accept result with this script, and does not claim they were observed; they stay open for a later session with its own prepared fixture. Routine merge waits appear under *AIWorks is handling* and are not the participant's job: a participant who treats one as their task is a finding. The work list separates *Not finished* from *Merged results* ("Merged is not accepted") and *Standing decisions*; a change request on paused or stopped work stays on Needs you and says nobody is making the changes until the owner resumes or plans it again. That is not staged either, so it is not claimed as observed.
+Keep the owner's own actions apart from work AIWorks handles. This fixture's no-options stop is sent back once under AW-017; it does not stage a manual decision. Sign-in, credentials and payment remain the owner's. Manual decision controls, stopped work and Accept result need separate prepared fixtures and are not claimed as observed here. Accept result applies to GitHub results behind the merge gate and to projects set to accept results themselves; this local fixture uses automatic apply. Routine merge waits are not the participant's job: treating one as their task is a finding. The work list distinguishes unfinished work, merged results and standing decisions; merging or applying a result is not evidence of release.
 
 After each task, ask: "On a scale of 1 (very hard) to 7 (very easy), how easy was that?" After the last task, ask three open questions: What was most confusing? What did you expect to find and did not? Would you trust it with a real project, and why or why not?
 
