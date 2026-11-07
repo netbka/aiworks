@@ -11,7 +11,9 @@ export function setupLocal(root = source) {
   const destination = join(local, 'governance');
   // Exclusive creation preserves existing authority and installation data, including partial previous setups.
   mkdirSync(destination);
-  cpSync(join(source, 'resources/governance'), destination, { recursive: true, errorOnExist: true, force: false });
+  // The exclusive directory above is what refuses an existing installation. errorOnExist would also
+  // refuse that new directory, so the copy only refuses a file that is already inside it.
+  cpSync(join(source, 'resources/governance'), destination, { recursive: true, force: false });
   mkdirSync(join(destination, 'registry/projects'));
   return destination;
 }
