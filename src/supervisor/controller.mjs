@@ -1178,7 +1178,9 @@ export class Controller {
   }
 
   async reconcile(ctx, op) {
-    const runner = readJsonIfExists(join(op.run_dir, 'runner.json'));
+    const recordedRunner = readJsonIfExists(join(op.run_dir, 'runner.json'));
+    const external = readJsonIfExists(join(op.run_dir, 'spec.json'))?.externalContainment;
+    const runner = recordedRunner && { ...recordedRunner, ...(external ? { externalContainment: external } : {}) };
     const result = readJsonIfExists(join(op.run_dir, 'result.json'));
     const campaign = this.store.campaign(ctx.id);
     if (campaign.control === 'cancel-requested' && !result) {
@@ -1359,8 +1361,11 @@ export class Controller {
   }
 
   consume(ctx, op, run) {
-    if (run.containment !== 'windows-job-v1' || run.containmentStopped !== true) {
-      const runner = readJsonIfExists(join(op.run_dir, 'runner.json'));
+    const external = readJsonIfExists(join(op.run_dir, 'spec.json'))?.externalContainment;
+    if (run.containment !== 'windows-job-v1' || run.containmentStopped !== true ||
+        external && (run.externalContainmentStopped !== true || run.externalNonce !== external.nonce)) {
+      const recordedRunner = readJsonIfExists(join(op.run_dir, 'runner.json'));
+      const runner = recordedRunner && { ...recordedRunner, ...(external ? { externalContainment: external } : {}) };
       const stopped = this.fenced(ctx, () => runner ? stopOwnedRun(runner) : 'ownership-unavailable');
       if (!['stopped', 'not-running'].includes(stopped)) {
         this.blockOwnership(ctx, op, stopped);
@@ -2638,6 +2643,15 @@ export class Controller {
       const refusal = admissionCheck(this.store, candidate, inputs);
       if (refusal) {
         reasons.set(key, refusal);
+        // Scheduler admission can reject the candidate before dispatch records its provider wait.
+        // Persist that same wait under the lease, so an unsupported role cannot stay "ready" forever.
+        if (refusal.reason === 'provider-cooldown' && this.held.has(candidate.campaignId)) this.fenced(candidate.ctx, () => {
+          const campaign = this.store.campaign(candidate.campaignId);
+          const task = this.store.task(candidate.campaignId, candidate.taskId);
+          if (campaign.control !== 'registered' || campaign.blocker || !RUNNABLE.includes(task.state) || task.state === 'verified') return;
+          const choice = this.executorChoice(campaign.declaration, task);
+          if (!choice.executor) this.waitForExecutor(candidate.ctx, campaign.declaration, task, choice);
+        });
         if (refusal.reason === 'campaign-fanout') this.fanoutWaited.add(candidate.campaignId);
         if (refusal.reason === 'write-domain') domainWaits.push({ candidate, refusal });
         continue;
@@ -2858,6 +2872,18 @@ export class Controller {
     const matched = chosen ? providers.find((provider) => provider.kind === chosen.kind) : null;
     return { executor: matched ? { ...matched } : null,
       retryAt: receipt.decision.retryAt, receipt };
+  }
+
+  // Both callers hold the campaign lease and transaction. This records no operation and spends no run.
+  waitForExecutor(ctx, decl, task, choice) {
+    const account = choice.retryAt ? null : this.untimedAccountWait(decl);
+    if (choice.retryAt) this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
+      { retry_at: choice.retryAt, last_error: 'waiting for executor availability: an authorized provider is unavailable or cooling down' }, this.now());
+    else if (account) this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
+      { retry_at: this.now() + 15 * 60_000, last_error: `waiting for executor availability: the ${account.account} account waits for a recheck (${account.reason})` }, this.now());
+    else this.raiseBlocker(ctx, decl, { kind: 'executors', class: 'B2', reason: 'No configured executor supports this task role',
+      requestedAction: 'Configure an authorized native CLI command and scoped role support, then recheck the campaign.' }, this.now(),
+    { identity: 'no-role-support' });
   }
 
   /** The routing-policy/1 choice of executorChoice: the facts observed here once, routeAuto deciding from them alone. */
@@ -3204,16 +3230,7 @@ export class Controller {
         ? this.routedHostChecks(ctx, decl, checkout.path, Boolean(specOf(this.store, ctx.id, task.task_id, decl).web), probe) : null } : {};
       const choice = this.executorChoice(decl, task, this.now(), routed);
       if (!choice.executor) {
-        const account = choice.retryAt ? null : this.untimedAccountWait(decl);
-        if (choice.retryAt) this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
-          { retry_at: choice.retryAt, last_error: 'waiting for executor availability: all eligible providers are cooling down' }, this.now());
-        // The account already waits for the owner; the campaign that found it raised the blocker. This one waits silently
-        // and is due again as soon as a recheck or success ends the account's wait; the timer only bounds a re-read.
-        else if (account) this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
-          { retry_at: this.now() + 15 * 60_000, last_error: `waiting for executor availability: the ${account.account} account waits for a recheck (${account.reason})` }, this.now());
-        else this.raiseBlocker(ctx, decl, { kind: 'executors', class: 'B2', reason: 'No configured executor supports this task role',
-          requestedAction: 'Configure an authorized native CLI command and scoped role support, then recheck the campaign.' }, this.now(),
-        { identity: 'no-role-support' });
+        this.waitForExecutor(ctx, decl, task, choice);
         return null;
       }
       const executor = choice.executor;
@@ -3471,6 +3488,7 @@ export class Controller {
       writeFileSync(join(runDir, 'prompt.txt'), invocation.prompt, 'utf8');
       writeAtomic(join(runDir, 'spec.json'), JSON.stringify({
         argv: invocation.argv, ...(invocation.env || cacheEnv ? { env: { ...invocation.env, ...cacheEnv } } : {}),
+        ...(invocation.externalContainment ? { externalContainment: invocation.externalContainment } : {}),
         cwd: invocation.cwd ?? workspace, timeoutMs, heartbeatMs: this.config.heartbeatMs, ...this.workerJob,
       }));
 

@@ -304,6 +304,16 @@ executable rather than a `.cmd` shim. Changing executors requires a paused, drai
 campaign and a higher authorization version. Target, tasks and acceptance remain immutable.
 The amendment preserves operations, results and spent runs. `status` and the dashboard
 show the selected executor and durable `executorWaits`; `recheck` clears those waits.
+Cursor research reports require an explicit model and a CLI supporting `--disable-project-configs`.
+Each run uses fresh configuration and data directories, denies shell/file/fetch/MCP tools, and records
+streamed events; tool use, non-login authentication or an unbound terminal result is refused. Existing
+user and project configuration is preserved. This report-only route disables web-search auto-accept
+and Explore subagents and keeps the native filesystem sandbox enabled with workspace read access.
+The model reasons over the supplied packet; it cannot use this route for repository work.
+The optional WSL transport below supplies a supported Linux sandbox on Windows. This does not
+enable Cursor commit roles or prove included billing; establish the permitted account and billing route separately.
+With adaptive scheduling enabled, unavailable providers now persist the same retry or role blocker
+as ordinary dispatch; a campaign with no supported worker does not remain silently ready.
 The dashboard uses `commands.gh` from the selected data directory, so a newly installed
 or hidden login process does not depend on an interactive shell's GitHub CLI PATH.
 An explicit owner-authorized `limits.maxWorkerRuns: null` removes the run cap while
@@ -762,7 +772,7 @@ The `claude -p` output shape was checked against Claude Code 2.1.295; the first 
 `executor.kind: "cli-chain"` declares a `providers` array in priority order ([AW-008](DECISIONS.md#aw-008---workers-run-on-claude-then-codex-then-cursor) sets Claude, then Codex, then Cursor), with kinds `codex-cli`, `cursor-cli`, and `claude-cli`. Model names are optional for Codex/Cursor and explicit for Claude; Claude also declares its existing `permissionMode`. Configure absolute native command arrays under `config.json.commands.codex`, `.cursor`, and `.claude`. PowerShell/npm launch scripts must be resolved to their native executable and script arguments on Windows. No credentials are copied into the declaration or service config.
 
 - **Codex:** `--no-daemon`, a fresh `exec`, `--ignore-user-config`, approval policy `never`, and the `read-only` or `workspace-write` sandbox. `--ignore-user-config` does **not** remove account-level connectors: a worker without `--disable apps` sees every `mcp__codex_apps__*` tool, including the owner's local control service connector (evidence: archived [PR #65](https://github.com/example-org/governance-archive/pull/65)). Every worker therefore runs with `--disable apps`, `multi_agent`, `multi_agent_v2`, `computer_use`, `browser_use`, `browser_use_external` and `image_generation`; `aiworks_repository` is the only MCP server. Windows explicitly selects the provisioned `windows.sandbox="elevated"` backend: ignoring user config must not disable native enforcement. Sandbox commands still run without administrator privileges; managed requirements and command rules remain enforced. The controller supplies a per-command Git trust reset plus the exact assigned checkout's canonical path with forward slashes, needed by Git 2.38.1 for the separate sandbox account; no global Git trust is written. No sandbox bypass, resumed conversation, or ignored denial rules. JSONL must contain one native thread and a successful terminal event; the final schema binds the supervisor nonce and packet digest. Unreported cost stays unknown. Its cached-input count is marked as a subset of total input rather than added twice.
-- **Cursor:** sandboxed `ask` mode for report/verification roles. `--trust` applies only to the controller-created checkout of the explicitly authorized repository; it does not enable force/yolo or MCP auto-approval. Commit implementation is skipped until a scoped publication-denial adapter is available. Detected project/global extensions that cannot be scoped per invocation make the provider unavailable.
+- **Cursor:** sandboxed `ask` mode for report/verification roles. The separate `researchOnly` report route uses isolated deny-all configuration and no Explore subagents, as described above. `--trust` applies only to the controller-created checkout or research scratch directory; it does not enable force/yolo or MCP auto-approval. Commit implementation is skipped until a scoped publication-denial adapter is available. Detected project/global extensions that cannot be scoped per invocation make an ordinary provider unavailable.
 - **Claude:** the existing fresh `--session-id`, scoped permission mode, denied approval prompts, JSON schema, and publication/deployment deny list remain. Verifiers also deny edit/write/commit tools. Every Claude worker runs isolated from the host and the target project's Claude setup:
 
   - `--setting-sources ""`: no user, project or local settings, so none of their allow rules (SampleApp's include `ssh example-host:*`, `git push origin main` and issue comments) or hooks apply. Admin-managed policy settings still apply by design.
@@ -817,11 +827,52 @@ Headless Codex with the elevated Windows sandbox cannot be relied on while the o
 
 The sandbox shell's `gh api repos/example-org/sampleapp --jq .full_name` check returned HTTP 404 while the owner-context command succeeded; the precise authentication/access cause remains unknown. Codex now receives an explicit read-only repository MCP capability backed by the trusted host GitHub CLI. The controller fixes the repository, run nonce, packet digest and absolute executable before dispatch. Only repository/issue/PR/comment metadata GET routes, PR reviews, and the commit status and check runs of a commit that heads a PR in the assigned repository are exposed, with bounded pagination. PR responses include draft, mergeable and mergeable_state; there are no model-supplied commands, URLs, credentials or mutations. Repository identity must succeed first, canonical response URLs must match, and upstream failures stop the reader without retry. Failed reader tools and denied native commands cannot turn into quota fallback. The reader and its CLI descendants remain inside the owned run containment. A contained workstation probe successfully read SampleApp identity and issue #438 through this capability. This verifies the explicit reader, not shell `gh` access.
 
-A contained Windows commit probe failed creating the linked worktree's shared Git `index.lock` with permission denied. Codex commit implementation is therefore unavailable before admission on Windows. Codex also never verifies a commit task on Windows: its read-only sandbox cannot create `node_modules` or temp files, so it cannot run the repository's tests, and the chain skips it instead of spending a round ([#113](https://github.com/example-org/aiworks/issues/113)). Report tasks remain eligible in both roles. No Git-directory ACLs or sandbox write roots are broadened. Cursor commit roles also remain unavailable pending a scoped publication-denial adapter. Cursor Agent 2026.10.01 explicitly rejects enabled native sandbox mode on Windows, requiring macOS or Linux; the adapter records unavailability and never disables the sandbox. Its current global configuration also needs scoped review before use. Configured priority does not assert that all three providers support every role or host. These probes do not consume campaign worker runs.
+A contained Windows commit probe failed creating the linked worktree's shared Git `index.lock` with permission denied. Codex commit implementation is therefore unavailable before admission on Windows. Codex also never verifies a commit task on Windows: its read-only sandbox cannot create `node_modules` or temp files, so it cannot run the repository's tests, and the chain skips it instead of spending a round ([#113](https://github.com/example-org/aiworks/issues/113)). Report tasks remain eligible in both roles. No Git-directory ACLs or sandbox write roots are broadened. Cursor commit roles also remain unavailable pending a scoped publication-denial adapter. Cursor Agent 2026.10.01 rejects enabled native sandbox mode on Windows, and the 2026.11.05 Windows helper still provides no filesystem isolation. The direct native route remains unavailable there; the optional research transport below uses a supported Linux sandbox. Configured priority does not assert that all three providers support every role or host. Metadata probes do not consume campaign worker runs or prove a model task succeeded.
 
 Runner heartbeat and terminal receipts use atomic replacement. Windows readers can briefly lock a destination against rename, so replacement retries sharing/permission errors for at most one second. Exhaustion remains an error and preserves the previous complete receipt; no delete-and-rewrite fallback is used.
 
 CLI references: [Codex non-interactive execution](https://learn.chatgpt.com/docs/non-interactive-mode), [Cursor parameters](https://cursor.com/docs/cli/reference/parameters), and [Cursor permissions](https://cursor.com/docs/cli/reference/permissions).
+
+### Optional Cursor research through WSL
+
+An installation can configure `commands.cursor` as the native Windows Node executable, the deployed
+`src/supervisor/adapters/cursor-wsl.mjs`, `--config`, and an absolute private configuration path.
+This route accepts only `researchOnly` reports. It requires WSL's standard `/mnt/<drive>` mapping,
+an installed Linux distribution with Python 3 and Bubblewrap, and a reviewed Linux Cursor package.
+The private configuration is:
+
+```json
+{
+  "version": 1,
+  "distribution": "ExampleLinux",
+  "allowedRoot": "C:/work/example-aiworks",
+  "packageRoot": "C:/work/example-aiworks/.local/tools/cursor-linux",
+  "credentialFile": "C:/example-profile/AppData/Roaming/Cursor/auth.json",
+  "allowedModels": ["example-included-model"]
+}
+```
+
+The credential path is an operator-managed reference. Only the native client opens it; the bridge
+mounts it read-only and never copies or prints its contents. Missing or expired login remains unavailable.
+The allowed model list is an additional limit on the campaign's declared model, not proof of subscription eligibility.
+The bridge never chooses another model, enables overages, or changes billing.
+
+Every run gets a Linux PID namespace with a minimal filesystem: system tools and certificates,
+the client package, its credential reference, and the run's scratch/config/data directories.
+Host drives, other checkouts and Windows interop are absent. Only the three run directories and
+private temporary storage are writable. Python ignores inherited environment and user startup code.
+Cursor keeps its own sandbox enabled, uses the empty scratch workspace, ignores project configuration, disables
+updates and continuation, and requests only the current session's read-todos capability from the service.
+The research event audit still rejects tool use. Windows Job Object resource caps do not measure or
+limit Linux processes; this route has one per-run time bound of at most 15 minutes.
+
+A private control pipe supplies heartbeats. EOF, missed heartbeats and timeout stop the PID namespace,
+including descendants that create another process session. Before any model starts, the bridge saves
+the namespace init's PID, start time, boot identity and namespace identity. Cleanup first fences late
+launches, then confirms that exact namespace stopped; it never signals a reused PID. Normal receipts,
+cancellation and recovery require this Linux proof as well as Windows Job Object cleanup. An unavailable
+cleanup probe remains an ownership blocker. Activation requires local lifecycle probes of normal exit,
+timeout and abrupt parent death, followed by a real bounded model canary; metadata alone is insufficient.
 
 ## 9. Owner messages and the coordinator
 

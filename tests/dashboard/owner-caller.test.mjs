@@ -14,6 +14,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { readJsonIfExists, stopOwnedRun } from '../../src/supervisor/proc.mjs';
 import { Store } from '../../src/supervisor/store.mjs';
+import { useGateTestHost } from '../supervisor/fixtures/gate-host-bootstrap.mjs';
 
 const main = fileURLToPath(new URL('../../src/dashboard/main.mjs', import.meta.url));
 const runnerPath = fileURLToPath(new URL('../../src/supervisor/runner.mjs', import.meta.url));
@@ -42,6 +43,8 @@ async function freePort() {
 
 test('the production dashboard saves a protected setting from an independent process and refuses a contained worker', { skip: process.platform !== 'win32' }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'aiworks-owner-caller-'));
+  // Synthetic callers belong to this fixture's jobs; the enclosing full-check job is tested separately.
+  useGateTestHost(join(dir, 'gate-host'));
   const dataDir = join(dir, 'data'), runDir = join(dir, 'run');
   for (const path of [dataDir, runDir]) mkdirSync(path);
   writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerIntervention: { enabled: true } }));

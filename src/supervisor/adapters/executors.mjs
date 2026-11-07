@@ -1,5 +1,5 @@
 // Native CLI adapters share the terminal contract and the existing contained runner.
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +9,7 @@ import { POWERSHELL } from '../proc.mjs';
 import * as agy from './agy.mjs';
 import { caamProfileEnv, caamProvider } from './caam.mjs';
 import * as claude from './claude.mjs';
+import { isCursorWsl, cursorWslInvocation } from './cursor-wsl.mjs';
 import { DEVELOPMENT_RESOURCE_RULE } from '../development-policy.mjs';
 import { readerServer as workListServer, SERVER as WORK_LIST_SERVER, TOOL as WORK_LIST_TOOL } from '../work-list-reader.mjs';
 
@@ -230,6 +231,11 @@ export function unavailableReason(executor, workspace, ghCommand, { probe = null
     const broken = probe();
     if (broken) return `unavailable: ${broken}`;
   }
+  // This report-only route supplies fresh global config and disables project config loading.
+  // Existing user/project extensions are neither loaded nor edited. Older CLIs that do not
+  // support --disable-project-configs fail before work; ordinary Cursor roles retain the guards.
+  if (executor.kind === 'cursor-cli' && executor.researchOnly) return executor.model?.trim() && !/^auto$/i.test(executor.model.trim())
+    ? null : 'Cursor research requires an explicit model; Auto is not a bounded model choice';
   // Per-run flags do not disable arbitrary project extensions. Never silently inherit them.
   const files = executor.kind === 'codex-cli' ? ['.codex/config.toml', '.codex/hooks.json']
     : ['.cursor/mcp.json', '.cursor/hooks.json', '.cursor/cli.json', '.cursor/sandbox.json'];
@@ -302,11 +308,20 @@ export function prepare({ executor, command, role, deliverable, sessionId, diges
   }
   if (executor.researchOnly && deliverable !== 'report') throw new Error('Research-only executor requires a report deliverable');
   let cwd = workspace;
+  let cursorEnv = null;
   if (executor.researchOnly) {
     cwd = join(runDir, 'research-scratch'); mkdirSync(cwd, { recursive: true });
     if (executor.kind === 'cursor-cli') {
-      mkdirSync(join(cwd, '.cursor'), { recursive: true });
-      writeFileSync(join(cwd, '.cursor', 'cli.json'), JSON.stringify({ permissions: { allow: [], deny: ['Shell(*)', 'Write(**)', 'Read(**)', 'WebFetch(*)', 'Mcp(*:*)'] } }));
+      if (!executor.model?.trim() || /^auto$/i.test(executor.model.trim())) throw new Error('Cursor research requires an explicit model');
+      const config = mkdtempSync(join(runDir, 'cursor-config-'));
+      const data = mkdtempSync(join(runDir, 'cursor-data-'));
+      writeFileSync(join(config, 'cli-config.json'), JSON.stringify({ version: 1, 'editor.vimMode': false,
+        approvalMode: 'allowlist', autoAcceptWebSearch: false, subagentModels: { explore: 'disabled' },
+        sandbox: { mode: 'enabled', readBoundary: 'workspace', networkAccess: 'user_config_only' },
+        permissions: { allow: [], deny: ['Shell(*)', 'Write(**)', 'Read(**)', 'WebFetch(*)', 'Mcp(*:*)'] } }));
+      cursorEnv = { CURSOR_CONFIG_DIR: config, CURSOR_DATA_DIR: data,
+        CURSOR_API_KEY: '', CURSOR_AUTH_TOKEN: '', CURSOR_AUTH_TOKEN_FILE: '', CURSOR_AUTH_TOKEN_EXPIRES_AT: '',
+        CURSOR_API_ENDPOINT: 'https://api2.cursor.sh', CURSOR_API_BASE_URL: '', CURSOR_API_URL: '' };
     }
   }
   const listServer = workList ? workListServer(workList, { runId: sessionId, packetDigest: digest }) : null;
@@ -358,8 +373,16 @@ export function prepare({ executor, command, role, deliverable, sessionId, diges
     ...(profileHome == null ? {} : { env: profile }),
   };
   // shortcut: Cursor commit roles wait for a scoped publication-denial adapter; use the next executor meanwhile.
-  // Workspace trust is limited to the controller-created checkout; tool permissions stay unchanged.
-  return { argv: [...command, '--print', '--trust', '--mode', 'ask', '--sandbox', 'enabled', '--output-format', 'json', ...model], prompt: boundPrompt, cwd };
+  if (isCursorWsl(command)) {
+    if (!cursorEnv) throw new Error('Cursor WSL supports only isolated research reports');
+    return { ...cursorWslInvocation(command, { runDir, cwd, configDir: cursorEnv.CURSOR_CONFIG_DIR,
+      dataDir: cursorEnv.CURSOR_DATA_DIR, model: executor.model, timeoutMs }), prompt: boundPrompt, cwd, env: cursorEnv };
+  }
+  // Native Windows Cursor cannot provide a filesystem sandbox. It remains unavailable;
+  // the optional WSL transport supplies a separate supported OS boundary and cleanup proof.
+  return { argv: [...command, '--print', '--trust', '--mode', 'ask', '--sandbox', 'enabled',
+    ...(cursorEnv ? ['--disable-project-configs'] : []), '--output-format', cursorEnv ? 'stream-json' : 'json', ...model],
+    prompt: boundPrompt, cwd, ...(cursorEnv ? { env: cursorEnv } : {}) };
 }
 
 /** Claude's argv with the stage's terminal schema; unchanged without a stage. */
@@ -459,7 +482,23 @@ function classifyRun({ executorKind, strip = null, ...args }) {
       if (nativeUsage) usage = { input: nativeUsage.input_tokens ?? null, output: nativeUsage.output_tokens ?? null,
         cacheRead: nativeUsage.cached_input_tokens ?? null, cacheCreation: null, inputIncludesCacheRead: true };
     } else {
-      const output = JSON.parse(stdoutText);
+      let output;
+      if (args.researchOnly) {
+        const events = stdoutText.split(/\r?\n/).filter((line) => line.trim()).map((line) => JSON.parse(line));
+        const init = events.filter((event) => event.type === 'system' && event.subtype === 'init');
+        const results = events.filter((event) => event.type === 'result');
+        researchToolUsed = events.some((event) => event.type === 'thinking'
+          ? event.session_id !== init[0]?.session_id || !Number.isFinite(event.timestamp_ms) ||
+            (event.subtype === 'delta' ? typeof event.text !== 'string' : event.subtype !== 'completed') ||
+            Object.keys(event).some((key) => !['type', 'subtype', 'session_id', 'timestamp_ms', ...(event.subtype === 'delta' ? ['text'] : [])].includes(key))
+          : !['system', 'user', 'assistant', 'result'].includes(event.type) ||
+            event.message?.content?.some((part) => part.type !== 'text'));
+        output = results.at(-1) ?? {};
+        if (init.length !== 1 || results.length !== 1 || events.at(-1) !== output
+          || init[0]?.session_id !== output.session_id || init[0]?.apiKeySource !== 'login') {
+          malformed = true; output = {};
+        }
+      } else output = JSON.parse(stdoutText);
       nativeSessionId = output.session_id;
       completed = output.type === 'result' && output.subtype === 'success' && output.is_error === false;
       if (output.is_error) failure = String(output.result ?? '');

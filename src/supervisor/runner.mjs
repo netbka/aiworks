@@ -6,6 +6,7 @@ import { appendFileSync, openSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { drainJob, processCreationTime, POWERSHELL, windowsHelperArgs, workerEnv, writeAtomic } from './proc.mjs';
+import { stopCursorWslAsync } from './adapters/cursor-wsl.mjs';
 
 const runDir = process.argv[2];
 if (!runDir) process.exit(2);
@@ -18,7 +19,8 @@ process.on('uncaughtException', (error) => {
 try { openSync(file('run.lock'), 'wx'); } catch { process.exit(3); }
 const spec = JSON.parse(readFileSync(file('spec.json'), 'utf8'));
 const startedAt = Date.now();
-writeAtomic(file('runner.json'), JSON.stringify({ pid: process.pid, startedAt }));
+const external = spec.externalContainment ? { externalContainment: spec.externalContainment } : {};
+writeAtomic(file('runner.json'), JSON.stringify({ pid: process.pid, startedAt, ...external }));
 // A reader, scanner or indexer holding `heartbeat` makes the Windows rename fail (EPERM). Skip that beat
 // without retrying: the next one follows within heartbeatMs, and the controller only declares a run lost
 // after staleMs without any beat. Throwing here killed the runner, its job and the worker (historical regression).
@@ -37,10 +39,12 @@ async function finish(failure) {
   finished = true;
   // A failed drain leaves no consumable result. Exiting closes our handle as a final kill safeguard.
   if (attached && await drainJob(jobName) !== 'stopped') process.exit(4);
+  if (spec.externalContainment && await stopCursorWslAsync(spec.externalContainment) !== 'stopped') process.exit(4);
   clearInterval(heartbeat);
   // `attached: false` is the durable proof that no worker started: the helper creates it only after reporting ready.
   writeAtomic(file('result.json'), JSON.stringify({ ...(failure ?? outcome ?? { spawnError: 'containment-helper-failed' }),
-    containment: 'windows-job-v1', containmentStopped: true, attached, startedAt, endedAt: Date.now() }));
+    containment: 'windows-job-v1', containmentStopped: true, attached, startedAt, endedAt: Date.now(),
+    ...(spec.externalContainment ? { externalContainmentStopped: true, externalNonce: spec.externalContainment.nonce } : {}) }));
   process.exit(0);
 }
 
@@ -56,7 +60,7 @@ createInterface({ input: helper.stdout }).on('line', (line) => {
   if (message.ready === true && message.creationTime === creationTime) {
     attached = true;
     writeAtomic(file('runner.json'), JSON.stringify({ pid: process.pid, startedAt, creationTime: message.creationTime,
-      jobName, containment: 'windows-job-v1' }));
+      jobName, containment: 'windows-job-v1', ...external }));
   } else if (message.outcome) outcome = message.outcome;
 });
 helper.on('close', (code) => finish(code === 0 && attached ? null : { spawnError: 'containment-helper-failed' }));
