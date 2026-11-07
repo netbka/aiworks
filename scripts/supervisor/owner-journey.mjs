@@ -336,9 +336,9 @@ export async function journey(root) {
     const home = await waitFor(`return document.querySelector('textarea[id^="decision-text-"]') && main().includes('A step waits for your decision.') ? { card: true, project: true } : null;`, 30_000);
     record('decision-on-home', Boolean(home), home);
     await shot('05-home-decision');
-    const answer = await ui(`location.hash = '#/needs'; await sleep(1500); const id = () => document.querySelector('textarea[id^="decision-text-"]').id;
+    const answer = await ui(`location.hash = '#/home'; await sleep(1500); const id = () => document.querySelector('textarea[id^="decision-text-"]').id;
       type(id(), 'Stay on the free plan.'); location.hash = '#/p/notes'; await sleep(1200);
-      location.hash = '#/needs'; await sleep(1500); const kept = document.getElementById(id()).value; return { kept, notice: await press('Send answer') };`);
+      location.hash = '#/home'; await sleep(1500); const kept = document.getElementById(id()).value; return { kept, notice: await press('Send answer') };`);
     record('decision-answered', answer.kept === 'Stay on the free plan.' && /Answer received/.test(answer.notice), answer);
     const resumed = await waitFor(`const s = await api('/api/state'); return s.work.local.notes.find((c) => c.id.includes('${second.slice(0, 8).toLowerCase()}'))?.results.length ? true : null;`);
     const runs = join(root, 'data', 'runs');
@@ -476,7 +476,7 @@ export async function journey(root) {
       { notice: unreviewed });
 
     // A 320 px window and a phone: no screen scrolls sideways.
-    const routes = ['#/', '#/needs', '#/projects', '#/projects/add', '#/p/notes', '#/p/notes/plan', '#/p/notes/review', '#/p/notes/knowledge',
+    const routes = ['#/', '#/settings/itself', '#/projects', '#/projects/add', '#/p/notes', '#/p/notes/plan', '#/p/notes/review', '#/p/notes/knowledge',
       '#/p/notes/settings', '#/p/site/releases', '#/settings', '#/settings/alerts', '#/settings/usage', '#/settings/connections'];
     const wide = [];
     for (const [width, height, mobile] of [[320, 640, false], [390, 844, true]]) {

@@ -75,3 +75,44 @@ export class DisplayTextChecks {
 if (!isMainThread) {
   parentPort.postMessage(safeText(workerData, workerData.length) !== workerData);
 }
+
+// Short goal and step titles for Home (docs/design/HOME_V2.md): plain words for the owner, never a code, number, hash or
+// id. A leading label before ":" goes when it holds a code, wave or step name; references, parentheses, hashes and ids
+// go everywhere; the rest is cut at 60 characters on a word.
+const TITLE_MAX = 60;
+const CODE = /\b[A-Z][A-Z0-9]*(?:-[A-Za-z0-9]+)+\b|\b[A-Z]{1,6}\d+[a-z]?\b/;
+const NAMED = /\b(?:wave|step|phase|slice|stage|part|task|wp)[\s-]*[A-Za-z]?\d+[a-z]?\b|\bv\d+(?:\.\d+)*\b/i;
+// Small words a cut or a removed reference can leave dangling: "fixed in #12" is "Fixed", never "Fixed in".
+const SMALL = '(?:a|an|and|as|at|by|for|from|in|into|of|on|or|the|to|with)';
+const DANGLING = new RegExp(`\\s+${SMALL}$`, 'i');
+const GONE = '\u0000', BEFORE_GONE = new RegExp(`(?:\\s*\\b${SMALL}\\b)*\\s*${GONE}`, 'gi');
+const NOISE = [
+  /\([^()]*\)|\[[^[\]]*\]/g, // parentheses and brackets, with what they hold
+  /\bhttps?:\/\/\S+/g, // links
+  /(?:\b[\w.-]+(?:\/[\w.-]+)?)?#\d+\b/g, // "#123", "repo#123", "owner/repo#123"
+  /\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,64}\b/gi, // commit hashes
+  /\b(?=[\w.-]*\d)[a-z0-9]+(?:[._-][a-z0-9]+){1,}\b/gi, // ids with a digit: bakery-orders-20261031, v1.2.3
+  new RegExp(NAMED.source, 'gi'), // wave, step and version names: wave 2, step 3, v2
+  new RegExp(CODE.source, 'g'), // codes like AW-016, WP3, T1, ORDER-FORM
+  /\b\d{3,}\b/g, // bare long numbers
+];
+
+/** The owner's title from `text`, or null when nothing plain is left. */
+export function plainTitle(text) {
+  let value = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (!value) return null;
+  const label = /^([^:]{1,60}):\s+(.+)$/.exec(value);
+  if (label && (CODE.test(label[1]) || NAMED.test(label[1]))) value = label[2];
+  for (const pattern of NOISE) value = value.replace(pattern, ` ${GONE} `);
+  value = value.replace(BEFORE_GONE, ' ').replace(/[`*_#<>{}|\\]/g, ' ').replace(/\s+([,.;:!?])/g, '$1').replace(/\s+/g, ' ')
+    .replace(/^[\s,.;:–—-]+|[\s,;:–—-]+$/g, '').replace(/\(\s*\)/g, '').trim();
+  // A sentence's full stop is not part of a title.
+  value = value.replace(/\.$/, '');
+  if (!/[A-Za-z]/.test(value)) return null;
+  if (value.length > TITLE_MAX) {
+    const cut = value.slice(0, TITLE_MAX + 1), space = cut.lastIndexOf(' ');
+    value = (space > 0 ? cut.slice(0, space) : value.slice(0, TITLE_MAX)).replace(/[\s,;:–—-]+$/, '');
+  }
+  while (DANGLING.test(value)) value = value.replace(DANGLING, '');
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}

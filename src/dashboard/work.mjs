@@ -27,6 +27,7 @@ import { localStartWork, resolveLocalProject } from '../supervisor/project-conne
 import { project as readProject, projects as readProjects } from '../supervisor/projects.mjs';
 import { ownerApplies, ownerApply, undoOwnerApply } from '../supervisor/release/owner-apply.mjs';
 import { CODE_ROOT, revisionNotMerged } from '../supervisor/provenance.mjs';
+import { baseReadRoot, readBaseContained } from '../supervisor/adapters/git.mjs';
 import { configuredGitCommand } from './merges.mjs';
 import { safeText } from './roadmap.mjs';
 import { decisionFeedback, decisionView, resultReview } from './supervisor.mjs';
@@ -340,6 +341,12 @@ export function editPlan(dataDir, input, now = Date.now()) {
   });
 }
 
+// Base reads running in this process (readBaseContained). The dashboard keeps its own receipt folders, apart from the
+// supervisor's: a receipt check stops the job of a run it does not own, which must never reach a run the supervisor started.
+const dashboardReads = new Set();
+const dashboardBaseRead = (dataDir, git) => (repoPath, base) => readBaseContained(git, repoPath, base,
+  { runRoot: baseReadRoot(dataDir, repoPath, 'base-reads-dashboard'), active: dashboardReads, readMs: 30_000, overheadMs: 120_000 });
+
 /**
  * Approve and start (OWNER_WORKSPACE 5.5, WORK_ENVELOPE E8). input: { requestId, plan, version, authorityDigest }: the
  * command's own request id, the work request the plan answers, and the draft version and authority digest the owner
@@ -363,7 +370,7 @@ export async function approvePlan(dataDir, input, now = Date.now(), options = {}
     const request = workRequest(store, input.plan), draft = request ? latestDraft(store, input.plan) : null;
     const record = request ? readProject(store, request.project_id) : null;
     if (!draft || !record) throw fail(404, WORK_COPY.NOT_FOUND);
-    if (isLocal(record)) return approveLocal(store, { input, request, draft, record, now, provenanceRoot, governanceRoot, git, caller });
+    if (isLocal(record)) return approveLocal(store, { input, request, draft, record, now, provenanceRoot, governanceRoot, git, caller, dataDir });
     const declaration = draft.declaration, campaignId = declaration?.campaignId;
     const approvalId = `dashboard-${input.requestId.toLowerCase()}`;
     // A repeat of an approval already kept: acknowledged once, never registered twice.
@@ -379,7 +386,7 @@ export async function approvePlan(dataDir, input, now = Date.now(), options = {}
     // The project must still be at the revision the plan was drafted from (WORK_ENVELOPE 3.2 step 8); unknown is never
     // fresh. The dashboard runs git only, never gh: the base branch is fetched again, and an edited issue or a moved pull
     // request head is not re-read here (docs/OPERATIONS_DASHBOARD.md, Review and Approve and start).
-    const current = git ? pinRequest(store, { ...request, route: 'goal', reference: null }, { git }) : { ok: false, code: 'GIT_COMMAND_INVALID' };
+    const current = git ? await pinRequest(store, { ...request, route: 'goal', reference: null }, { git, readBase: dashboardBaseRead(dataDir, git) }) : { ok: false, code: 'GIT_COMMAND_INVALID' };
     if (!current.ok) throw fail(503, WORK_COPY.BASE_UNKNOWN.replace('{project}', record.name ?? record.github_repository), { detail: safeText(current.code, 40), code: 'BASE_UNKNOWN' });
     if (current.pinned.base !== draft.pinned?.base) throw stale(record, ['a new version of the project']);
     try { assertRegisteredTarget(declaration, governanceRoot); }
@@ -452,7 +459,7 @@ function localReceipt(store, requestId) {
  * this plan is recorded in the local ledger, and registerLocalPlan admits it once and registers the plan in one
  * transaction; a refused registration starts nothing. No signing key, and no GitHub or network call.
  */
-async function approveLocal(store, { input, request, draft, record, now, provenanceRoot, governanceRoot, git, caller }) {
+async function approveLocal(store, { input, request, draft, record, now, provenanceRoot, governanceRoot, git, caller, dataDir }) {
   const declaration = draft.declaration, campaignId = declaration?.campaignId;
   // A repeat of a press that already started this plan: acknowledged once, never registered twice.
   const earlier = localReceipt(store, input.requestId);
@@ -464,7 +471,8 @@ async function approveLocal(store, { input, request, draft, record, now, provena
   assertReviewed(store, input, record, draft);
   const notMerged = revisionNotMerged({ root: provenanceRoot });
   if (notMerged) throw refused('RUNTIME_NOT_MERGED', notMerged);
-  const current = pinRequest(store, { ...request, route: 'goal', reference: null }, { git: git ?? ['git'] });
+  const git0 = git ?? ['git'];
+  const current = await pinRequest(store, { ...request, route: 'goal', reference: null }, { git: git0, readBase: dashboardBaseRead(dataDir, git0) });
   if (!current.ok) throw fail(503, WORK_COPY.BASE_UNKNOWN.replace('{project}', record.name ?? record.id), { detail: safeText(current.code, 40), code: 'BASE_UNKNOWN' });
   if (current.pinned.base !== draft.pinned?.base || current.pinned.baselineSeq !== draft.pinned?.baselineSeq) throw stale(record, ['a new copy of the project']);
   const codeRevision = headRevision(provenanceRoot);

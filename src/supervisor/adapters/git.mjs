@@ -3,8 +3,9 @@
 // it again. Removal is only the non-forced worktree remove and branch -d below; which ones may go is cleanup.mjs's rule.
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GATE_FILES } from '../gate.mjs';
 import { DEVELOPMENT_ENV } from '../development-policy.mjs';
@@ -222,6 +223,86 @@ export async function settleContained(runRoot, active = new Set()) {
     if (ended) removeRun(runDir); else open += 1;
   }
   return open;
+}
+
+/**
+ * The receipts under `runRoot` that settleContained left, as { since, identified }: when each was made, and whether a group or
+ * runner identity was ever recorded for it (one that was not has no automatic proof: only a recorded identity or a result
+ * can show its end). Read-only; the proof itself stays in runEnded. Never throws.
+ */
+export function heldContained(runRoot, active = new Set()) {
+  try {
+    return readdirSync(runRoot).map((name) => join(runRoot, name)).filter((dir) => !active.has(dir)).map((dir) => {
+      const receipt = readJsonIfExists(join(dir, 'receipt.json'));
+      const stat = statSync(dir);
+      return { since: Math.round(stat.birthtimeMs || stat.mtimeMs),
+        identified: Number.isSafeInteger(receipt?.group) && receipt.group > 0 || runnerIdentified(readJsonIfExists(join(dir, 'runner.json'))) };
+    });
+  } catch { return []; }
+}
+
+/** Where a checkout's unresolved base-read custody is recorded for the dashboard: beside its receipt folder, never inside it. */
+export const heldMarkerPath = (runRoot) => join(dirname(runRoot), `${basename(runRoot)}.held.json`);
+
+/** Records, or with `runs` empty removes, the marker of a checkout whose base read is refused as uncontained. The first time is kept. Never throws. */
+function markHeld(runRoot, repoPath, base, runs) {
+  const path = heldMarkerPath(runRoot);
+  try {
+    if (!runs.length) { rmSync(path, { force: true }); return; }
+    const kept = readJsonIfExists(path);
+    const since = Math.min(Number.isFinite(kept?.since) ? kept.since : Infinity, ...runs.map((run) => run.since));
+    writeFileSync(path, JSON.stringify({ repo: resolve(repoPath), base, since, runs: runs.length, unidentified: runs.filter((run) => !run.identified).length, at: Date.now() }));
+  } catch { /* the refusal itself stands; the marker only shows it */ }
+}
+
+/**
+ * The checkouts whose base reads are refused as uncontained now, from the markers under `<dataDir>/base-reads*`: one is
+ * listed only while its receipt folder still holds a receipt, so a marker left after the receipts settled shows nothing.
+ * Resolves [{ repo, base, since, runs, unidentified }]; never throws.
+ */
+export function heldBaseReads(dataDir) {
+  const held = [];
+  for (const folder of ['base-reads', 'base-reads-dashboard']) {
+    let names = [];
+    try { names = readdirSync(join(dataDir, folder)).filter((name) => name.endsWith('.held.json')); } catch { continue; }
+    for (const name of names) {
+      const mark = readJsonIfExists(join(dataDir, folder, name));
+      if (!mark || typeof mark.repo !== 'string' || !Number.isFinite(mark.since)) continue;
+      const runs = heldContained(join(dataDir, folder, name.slice(0, -'.held.json'.length)));
+      if (runs.length) held.push({ repo: mark.repo, base: String(mark.base ?? ''), since: mark.since, runs: runs.length, unidentified: runs.filter((run) => !run.identified).length });
+    }
+  }
+  return held;
+}
+
+/** The folder of a checkout's base fetches and their receipts (execContained): installation data, one per checkout. */
+export function baseReadRoot(dataDir, repoPath, name = 'base-reads') {
+  const key = resolve(repoPath);
+  const id = createHash('sha256').update(process.platform === 'win32' ? key.toLowerCase() : key).digest('hex').slice(0, 24);
+  return join(dataDir ?? join(tmpdir(), 'aiworks-supervisor'), name, id);
+}
+
+/**
+ * One bounded fetch of `base` into refs/aiworks/base/<base> and its read (aiworks#140, #143), shared by the supervisor's
+ * base reads and the intake pin. A fetch whose processes were not all shown ended may still move this checkout's refs:
+ * until they are (its receipt under `runRoot`), nothing more is fetched or read there. Resolves { ok, sha } or
+ * { ok: false, sha: null, failure }, the failure being the stage that failed. `onFetched` runs once the fetch ended.
+ */
+export async function readBaseContained(git, repoPath, base, { runRoot, active, readMs, overheadMs, onFetched } = {}) {
+  const ref = `refs/aiworks/base/${base}`;
+  const failed = (failure) => ({ ok: false, sha: null, failure });
+  if (await settleContained(runRoot, active) > 0) { markHeld(runRoot, repoPath, base, heldContained(runRoot, active)); return failed('uncontained'); }
+  markHeld(runRoot, repoPath, base, []);
+  // origin/<base> follows in the same fetch: a worktree branch started from the read base tracks it (dispatch).
+  const fetched = await execContained(git, ['fetch', 'origin', `+refs/heads/${base}:${ref}`, `+refs/heads/${base}:refs/remotes/origin/${base}`],
+    { cwd: repoPath, runRoot, timeoutMs: readMs, overheadMs, active });
+  if (fetched.contained === false) { markHeld(runRoot, repoPath, base, heldContained(runRoot, active)); return failed('uncontained'); }
+  // Whether it succeeded or not, the ref may have moved.
+  onFetched?.();
+  if (!fetched.ok) return failed(fetched.error === 'ETIMEDOUT' ? 'fetch-timeout' : 'fetch-failed');
+  const read = await execBounded(git, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: repoPath, timeoutMs: readMs });
+  if (read.error === 'ETIMEDOUT') return failed('read-timeout');
+  return /^[0-9a-f]{40}$/.test(read.ok ? read.stdout : '') ? { ok: true, sha: read.stdout } : failed('unreadable');
 }
 
 function must(result, what) {
