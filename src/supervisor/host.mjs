@@ -15,7 +15,7 @@ const GiB = 1024 ** 3;
 
 /** Thresholds, each overridable in the data directory's config.json under scheduler.pressure. */
 export const PRESSURE_DEFAULTS = Object.freeze({
-  minFreeMemoryBytes: 2 * GiB, minFreeMemoryShare: 0.10, // free memory below max(2 GiB, 10% of total)
+  minFreeMemoryBytes: 0, minFreeMemoryShare: 0,           // free memory floor: off unless one is set (owner decision 2026-11-07)
   maxCpuBusy: 0.90, cpuWindowMs: 60_000,                  // CPU busy above 90% over the last 60 s
   minFreeDiskBytes: 5 * GiB,                              // free disk on a worktree volume below 5 GiB
   lateHeartbeats: 3,                                      // a heartbeat older than three intervals but not yet stale
