@@ -13,24 +13,21 @@
 // it failed, 2 while it still runs, 3 when it died and 4 when no gate was started here. When a verification of a commit
 // task ends, the controller reads gate.log, gate-exit.log and gate-head.log through readGateRun (#43).
 //
-// Gate slots: on 2026-10-17 four full gates ran at once on one PC and failed with "git init: not enough memory" and timing
-// tests, and the supervisor refused the verifications (12 since 16 Oct). The gate command now runs only while it holds one
-// of AIWORKS_GATE_SLOTS (default 2) machine-wide slots, lock files under AIWORKS_GATE_SLOTS_DIR (default <tmp>/aiworks-gate-
-// slots); until then gate.log says it waits, and wait keeps reporting running. It also waits, for at most BROWSER_WAIT_MS,
-// while a web task's run holds the browser session (browser-<operation>.lock in the same folder). A gate started inside a
-// gate (the suite's own gate tests) takes no slot. A running gate rewrites its slot lock every BEAT_MS; a slot whose process
-// is gone, whose lock has not been rewritten for STALE_MS, or whose gate started MAX_LIFE_MS ago, is taken over.
+// Full checks share one durable host slot (gate-slot.mjs), independent of checkout, account profile and TEMP.
+// A slot is released only after its contained command has stopped. Nested components must prove membership in
+// the owning job and use their own contained subjob. Browser-session guards below remain advisory and separate.
 import { spawn, spawnSync } from 'node:child_process';
-import { closeSync, existsSync, ftruncateSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync,
-  writeSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { createInterface } from 'node:readline';
+import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { onOrigin, originRepository, readCheckServices, runOnService } from './check-services.mjs';
+import { GATE_CONTEXT, GateSlotStore, gateActivity, gateCheckoutKey, gateHost, gateHostKey, recoverGateOwner, recoverQueuedRequests } from './gate-slot.mjs';
+import { drainJob, gateJobMember, gateProcessIdentity, processCreationTime, POWERSHELL, windowsHelperArgs, writeAtomic } from './proc.mjs';
 
 export const GATE_FILES = Object.freeze({ log: 'gate.log', exit: 'gate-exit.log', pid: 'gate-pid.log', previous: 'gate-previous.log',
-  head: 'gate-head.log' });
+  head: 'gate-head.log', request: 'gate-request.log', spec: 'gate-spec.log' });
 const SELF = fileURLToPath(import.meta.url);
 const again = (action) => `node "${SELF.replaceAll('\\', '/')}" ${action}`;
 
@@ -85,11 +82,26 @@ const headOf = (text) => {
  * gate ran in `dir`. gate.log holds only the last run; the run before is gate-previous.log, which is not read. Nothing
  * here comes from the verifier's result.
  */
-export function readGateRun(dir) {
+export function readGateRun(dir, expectedRequest = null) {
   const log = read(join(dir, GATE_FILES.log));
   if (log === null) return null;
   const head = read(join(dir, GATE_FILES.head));
-  return { exit: read(join(dir, GATE_FILES.exit))?.trim() || null, summary: testSummary(log), exited: exitedFiles(log),
+  let exit = read(join(dir, GATE_FILES.exit))?.trim() || null;
+  if (existsSync(join(dir, GATE_FILES.request))) {
+    let store;
+    try {
+      const receipt = JSON.parse(read(join(dir, GATE_FILES.request)));
+      if (expectedRequest && receipt.id !== expectedRequest) throw new Error('gate request changed');
+      store = new GateSlotStore(gateHost().root, { readOnly: true });
+      const request = store.request(receipt.id);
+      const recorded = head === null ? { sha: null, clean: null } : headOf(head);
+      if (!request || request.generation !== receipt.generation || request.createdAt !== receipt.createdAt ||
+          request.checkoutKey !== gateCheckoutKey(dir) || request.head !== (recorded.sha ?? 'unknown') ||
+          request.clean !== (recorded.clean === true) || !['finished','failed'].includes(request.state) || request.exit !== exit) exit = null;
+    } catch { exit = null; }
+    finally { store?.close(); }
+  } else if (expectedRequest) exit = null;
+  return { exit, summary: testSummary(log), exited: exitedFiles(log),
     head: head === null ? null : headOf(head) };
 }
 
@@ -178,12 +190,7 @@ function checkoutState() {
   return `${sha} ${clean ? 'clean' : 'changed'}`;
 }
 
-function start(command) {
-  const pid = recordedPid();
-  if (pid !== null && exitCode() === null && alive(pid)) {
-    console.log(`already running: process ${pid}. Wait for it with: ${again('wait')}`);
-    return 0;
-  }
+async function start(command, requestSelected = () => {}) {
   let commandError = null;
   if (!command.length) {
     // Keep the existing convenience only where this project actually defines it.
@@ -196,54 +203,76 @@ function start(command) {
     }
     command = ['npm', 'run', 'check'];
   }
+  const state = checkoutState(), parsed = headOf(state), identity = { pid: process.pid, creationTime: await processCreationTime(process.pid) };
+  if (!identity.creationTime) { console.log('not started: exact process identity unavailable'); return 1; }
+  let store, queued;
+  try {
+    store = new GateSlotStore();
+    await recoverGateOwner(store);
+    await recoverQueuedRequests(store);
+    queued = store.enqueue({ cwd: process.cwd(), head: parsed.sha ?? 'unknown', clean: parsed.clean === true, launcher: identity,
+      commandDigest: createHash('sha256').update(JSON.stringify(command)).digest('hex') });
+    requestSelected(queued.request.id);
+    if (!queued.created) {
+      const expected = createHash('sha256').update(JSON.stringify(command)).digest('hex');
+      if (queued.request.commandDigest !== expected || queued.request.head !== (parsed.sha ?? 'unknown')) {
+        console.log('not started: this checkout already has a different gate request; its evidence cannot be reused'); return 1;
+      }
+      console.log(`already running: request ${queued.request.id}. Wait for it with: ${again('wait')}`); return 0;
+    }
+  } catch (error) { console.log(`not started: host gate ownership unavailable (${error.code ?? error.message})`); return 1; }
+  finally { store?.close(); }
+  const failStart = (reason) => {
+    const current = new GateSlotStore();
+    try { current.failQueued(queued.request.id, identity, reason); } finally { current.close(); }
+  };
   try {
     if (existsSync(GATE_FILES.log)) renameSync(GATE_FILES.log, GATE_FILES.previous);
   } catch (error) {
     // Windows refuses to move a file another process still writes: part of the last gate may still run.
     console.log(`not started: ${GATE_FILES.log} is still in use (${error.code}), so part of the last gate may still run. Wait a minute and start again.`);
+    failStart('evidence-unavailable');
     return 1;
   }
   rmSync(GATE_FILES.exit, { force: true });
-  writeFileSync(GATE_FILES.head, `${checkoutState()}\n`);
-  const out = openSync(GATE_FILES.log, 'w');
+  writeFileSync(GATE_FILES.head, `${state}\n`);
+  writeAtomic(GATE_FILES.request, JSON.stringify({ id: queued.request.id, generation: null, createdAt: queued.request.createdAt }));
+  const out = openSync(GATE_FILES.log, 'a');
   if (commandError) {
     // A failed attempt must replace a previous pass, never leave stale green evidence.
     writeFileSync(out, `${commandError}\n`);
     closeSync(out);
     writeFileSync(GATE_FILES.exit, 'command-required\n');
+    failStart('command-required');
     console.log(commandError);
     return 1;
   }
   // Detached, so the worker's shell returns at once; it stays in the worker's containment, which ends it with the run.
-  const child = spawn(process.execPath, [SELF, 'run', ...command], { detached: true, stdio: ['ignore', out, out], windowsHide: true });
+  const child = spawn(process.execPath, [SELF, 'run', queued.request.id, ...command], { detached: true, stdio: ['ignore', out, out], windowsHide: true });
+  child.on('error', () => { failStart('spawn-failed'); });
   closeSync(out);
   writeFileSync(GATE_FILES.pid, `${child.pid}\n`);
+  if (child.pid) {
+    const creationTime = await processCreationTime(child.pid);
+    if (creationTime) {
+      const current = new GateSlotStore();
+      try { current.bind(queued.request.id, { pid: child.pid, creationTime }); } finally { current.close(); }
+    }
+  }
   child.unref();
   console.log(`started: process ${child.pid} runs ${command.join(' ')} with its output in ${GATE_FILES.log}. Wait for it with: ${again('wait')}`);
   return 0;
 }
 
-const NESTED = 'AIWORKS_GATE_SLOT_HELD';
-// A lock's process id alone proves little: a gate killed with its worker's job never removes its lock, and once Windows
-// gives that id to another process the dead lock held for up to four hours. So a holder beats: a running gate rewrites
-// its lock every BEAT_MS, a waiting gate on every poll, and a web task's run through its runner heartbeat. A lock whose
-// last beat is STALE_MS old is not held, whatever process now has its id.
-const BEAT_MS = 30_000;
+const NESTED = GATE_CONTEXT;
+// Browser-session guards retain their advisory heartbeat/lifetime policy. These clocks never release a gate slot.
 const STALE_MS = 2 * 60_000;
-// A live gate can hang and beat for ever. Refresh and base gates are never killed (merge-refresh.mjs), so a hung one would
-// pause admission and keep its slot for good, and the repair it waits for would never start. So no lock counts once its
-// gate started more than MAX_LIFE_MS ago: the default bound of a verifier's run (executor.verifierTimeoutMinutes 120)
-// and of refresh and base gates (timeoutMinutes 120). Past it the slot may be taken over and admission goes on.
 const MAX_LIFE_MS = 120 * 60_000;
 // A time more than this far ahead (the clock was set back) proves nothing: the lock is not held.
 const FUTURE_MS = 60_000;
 // The longest a gate waits for web task runs to leave the browser session; then it goes on and says so in gate.log.
 const BROWSER_WAIT_MS = 30 * 60_000;
-export function slotSettings(env = process.env) {
-  const count = Number(env.AIWORKS_GATE_SLOTS ?? 2);
-  return { count: Number.isSafeInteger(count) && count >= 1 && count <= 8 ? count : 2,
-    dir: env.AIWORKS_GATE_SLOTS_DIR || join(tmpdir(), 'aiworks-gate-slots') };
-}
+export function slotSettings() { return { count: 1, dir: gateHost().root }; }
 
 // When a file was last written, or 0 when it cannot be read.
 const mtime = (file) => {
@@ -266,61 +295,17 @@ function held(file, now) {
   }
   return within(mtime(file), now, 60_000);
 }
-/**
- * How many runs of the gate helper hold this PC now: the held slot locks in `dir`, whatever the slot count, and the gates
- * waiting for the browser session (waiting-<pid>.lock). Every run counts: a verifier's full gate, an implementer's
- * affected tests, and the supervisor's own base-check and refresh gates. The supervisor's admission reads it (host.mjs,
- * the `gates` pressure signal) so no new worker starts meanwhile. A waiting gate holds no slot but counts too: otherwise
- * admission keeps starting web task runs, and a wave of them starves every gate for hours. A missing or unreadable folder
- * counts none.
- */
+/** Durable active gates and queued requests pause admission; unreadable ownership is never free capacity. */
 export function heldSlotCount({ dir } = slotSettings(), now = Date.now()) {
-  let names;
-  try { names = readdirSync(dir); } catch { return 0; }
-  return names.filter((name) => /^(slot|waiting)-\d+\.lock$/.test(name) && held(join(dir, name), now)).length;
+  const state = gateActivity();
+  if (!state.available) throw new Error('host gate ownership unavailable');
+  let waiting = 0;
+  try { waiting = readdirSync(dir).filter((name) => /^waiting-\d+\.lock$/.test(name) && held(join(dir,name),now)).length; }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  return state.count + waiting;
 }
-
-/** Takes a free or abandoned slot for this process: its lock file path, or null when every slot is held. */
-export function takeSlot({ count, dir }, now = Date.now()) {
-  mkdirSync(dir, { recursive: true });
-  for (let i = 1; i <= count; i += 1) {
-    const file = join(dir, `slot-${i}.lock`);
-    if (existsSync(file)) {
-      if (held(file, now)) continue;
-      // Two gates taking over the same abandoned slot at once can both run: the limit is a throttle, not a lock.
-      rmSync(file, { force: true });
-    }
-    try {
-      writeFileSync(file, JSON.stringify({ pid: process.pid, at: now, startedAt: now, cwd: process.cwd() }), { flag: 'wx' });
-      return file;
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-    }
-  }
-  return null;
-}
-
-// The pid a lock file names, or null.
-const lockPid = (file) => {
-  try { return JSON.parse(readFileSync(file, 'utf8')).pid ?? null; } catch { return null; }
-};
-/**
- * Gives back the slot and the waiting lock of the gate helper process `pid` (its gate-pid.log), when the supervisor stops
- * waiting for that gate at its bound (merge-refresh.mjs, base-check.mjs): such a gate is never killed, and a hung one
- * would otherwise hold its slot and pause admission until MAX_LIFE_MS. Only a lock that still names `pid` is removed.
- */
-export function retireGate(pid, { dir } = slotSettings()) {
-  if (!Number.isSafeInteger(pid)) return 0;
-  let names;
-  try { names = readdirSync(dir); } catch { return 0; }
-  let retired = 0;
-  for (const name of names.filter((item) => /^(slot|waiting)-\d+\.lock$/.test(item))) {
-    const file = join(dir, name);
-    if (lockPid(file) !== pid) continue;
-    try { rmSync(file, { force: true }); retired += 1; } catch { /* it lapses by itself */ }
-  }
-  return retired;
-}
+/** A caller's timeout never releases possibly live command custody. */
+export function retireGate() { return 0; }
 
 // Browser-session locks (owner decision 2026-11-05): a web task's run may drive the owner's own Chrome session, and full
 // gates and those runs never overlap. With the gate pause on (host.mjs gatePauseOn: the scheduler on and pauseAtGates
@@ -349,124 +334,142 @@ export function heldBrowserRuns({ dir }, now = Date.now(), own = process.env[BRO
   return runs;
 }
 
-async function slot(settings) {
-  let said = false, browserSaid = false, browserSince = null, browserDone = false;
-  const waiting = join(settings.dir, `waiting-${process.pid}.lock`);
-  for (;;) {
-    const browser = browserDone ? [] : heldBrowserRuns(settings);
-    browserSince = browser.length ? browserSince ?? Date.now() : browserSince;
-    if (browser.length && Date.now() - browserSince >= BROWSER_WAIT_MS) {
-      // Bounded: overlapping web task runs could otherwise hold this gate until its verifier's time bound.
-      console.log(`# stopped waiting for the browser session after ${BROWSER_WAIT_MS / 60_000} minutes; the gate goes on beside the web task run(s)`);
-      browserDone = true;
-    } else if (browser.length) {
-      // Rewritten on every poll, so it beats while this gate waits and lapses once the gate is killed (heldSlotCount).
-      try {
-        mkdirSync(settings.dir, { recursive: true });
-        writeFileSync(waiting, JSON.stringify({ pid: process.pid, at: Date.now(), startedAt: browserSince, cwd: process.cwd() }));
-      } catch { /* missed beat */ }
-      if (!browserSaid) console.log(`# waiting: ${browser.length} web task run(s) use the browser session, and a full gate never runs beside them`);
-      browserSaid = true;
-      await sleep(5_000);
-      continue;
-    }
-    if (browserSaid) {
-      try { rmSync(waiting, { force: true }); } catch { /* lapses after STALE_MS */ }
-      browserSaid = false;
-    }
-    const file = takeSlot(settings);
-    if (file) {
-      if (said) console.log(`# gate slot ${file} taken; the gate starts now`);
-      return file;
-    }
-    if (!said) console.log(`# waiting for a free gate slot: ${settings.count} full gate(s) already run on this PC (${settings.dir})`);
+async function browserWait(settings, deadline) {
+  const since = Date.now(); let said = false;
+  while (heldBrowserRuns(settings).length && Date.now() - since < BROWSER_WAIT_MS) {
+    if (Date.now() >= deadline) return false;
+    if (!said) console.log('# waiting: another web task uses the browser session');
     said = true;
-    await sleep(5_000);
+    await sleep(1000);
   }
+  if (said && Date.now() - since >= BROWSER_WAIT_MS) console.log('# browser-session wait bound reached; the gate continues under its own exclusive slot');
+  return Date.now() < deadline;
 }
 
-// External check services (check-services.mjs, docs/guides/check-services.md): the default full gate of a clean checkout
-// is first offered to the services serve put in this process's environment for this repository (never to services named
-// in a file: see check-services.mjs). An answer that counts ends the gate here
-// with the service's output and exit code; otherwise the gate runs on this computer as before. A gate inside a gate, an
-// explicit command or a changed checkout is never offered.
-async function offload(command) {
-  if (process.env[NESTED] || command.join(' ') !== 'npm run check') return null;
-  const head = headOf(read(GATE_FILES.head) ?? '');
-  if (!head.sha || head.clean !== true) return null;
-  const services = readCheckServices();
-  if (!services.length) return null;
+// A gate owns its noninheritable job handle. It acknowledges native attachment durably before permitting execution.
+async function run(id, command) {
+  let store, lease = null, attached = false;
+  const identity = { pid: process.pid, creationTime: await processCreationTime(process.pid) };
+  const deadline = Date.now() + 120 * 60_000;
   try {
-    return await runOnService({ services, repository: originRepository(), sha: head.sha, available: (sha) => onOrigin(sha),
-      say: (line) => console.log(line), reference: `gate-${basename(process.cwd())}`,
-      // A project run by scripts/run-tests.mjs ends with its summary; a pass without one is not taken.
-      summaryRequired: existsSync(join('scripts', 'run-tests.mjs')) });
-  } catch (error) {
-    console.log(`# check services failed (${error.message}); the gate runs on this computer`);
-    return null;
-  }
-}
-
-// The detached process: runs the command through the shell (npm is npm.cmd on Windows) and records how it ended.
-async function run(command) {
-  const remote = await offload(command);
-  if (remote) {
-    // The decision line first: the summary a PR body quotes is the block after the output's own "# all test files".
-    console.log(`# gate ran on check service ${remote.service} (job ${remote.jobId}): exit ${remote.exit}; its output follows`);
-    process.stdout.write(!remote.text || remote.text.endsWith('\n') ? remote.text : `${remote.text}\n`);
-    writeFileSync(GATE_FILES.exit, `${remote.exit}\n`);
-    return;
-  }
-  let recorded = false, lock = null, beat = null;
-  const record = (value) => {
-    if (recorded) return;
-    recorded = true;
-    clearInterval(beat);
-    // A slot taken over or given back (retireGate) may name another gate by now: only this gate's own lock goes.
-    if (lock && lockPid(lock) === process.pid) {
-      try { rmSync(lock, { force: true }); } catch { /* it lapses after STALE_MS */ }
+    if (!identity.creationTime || !POWERSHELL) throw new Error('gate custody unavailable');
+    store = new GateSlotStore();
+    if (!store.bind(id, identity)) throw new Error('gate request already belongs to another process');
+    writeFileSync(GATE_FILES.pid, String(process.pid) + '\n');
+    const request = store.request(id);
+    if (request.commandDigest !== createHash('sha256').update(JSON.stringify(command)).digest('hex')) throw new Error('gate command differs from queued request');
+    let context = null;
+    try { context = JSON.parse(process.env[NESTED] ?? 'null'); } catch { /* never a nesting proof */ }
+    let parent = null;
+    if (context) {
+      const owner = store.owner();
+      if (context.host !== gateHostKey() || !owner || owner.attached !== true ||
+          owner.requestId !== context.requestId || owner.generation !== context.generation || owner.token !== context.token ||
+          await gateProcessIdentity(owner) !== 'running' || !await gateJobMember(identity, owner.jobName)) {
+        throw new Error('nested gate ownership is not proven');
+      }
+      parent = owner;
     }
-    writeFileSync(GATE_FILES.exit, `${value}\n`);
-  };
-  try { lock = process.env[NESTED] ? null : await slot(slotSettings()); }
-  catch (error) { console.log(`# gate slots unavailable (${error.code ?? error.message}); the gate runs without one`); }
-  // The slot's beat (held): the lock stays fresh while this gate runs. It stops once the slot was taken over or given
-  // back, and it opens the existing file only ('r+'), so it never brings back a lock that was removed.
-  const startedAt = Date.now();
-  if (lock) beat = setInterval(() => {
-    let fd = null;
-    try {
-      // A lock that cannot be read just now (a scanner holds it) is beaten next time; one gone or naming another gate stops it.
-      const holder = JSON.parse(readFileSync(lock, 'utf8'));
-      if (holder.pid !== process.pid) { clearInterval(beat); return; }
-      fd = openSync(lock, 'r+');
-      ftruncateSync(fd, 0);
-      writeSync(fd, JSON.stringify({ pid: process.pid, at: Date.now(), startedAt, cwd: process.cwd() }), 0);
-    } catch (error) {
-      if (error.code === 'ENOENT') clearInterval(beat); // given back (retireGate) or taken over and removed
-    } finally { if (fd !== null) closeSync(fd); }
-  }, BEAT_MS);
-  const child = spawn(command.join(' '), { shell: true, stdio: 'inherit', windowsHide: true, env: { ...process.env, [NESTED]: '1' } });
-  child.on('error', (error) => record(`spawn-error ${error.code ?? error.message}`));
-  child.on('close', (code, signal) => record(code ?? signal));
+    if (!parent && !await browserWait(slotSettings(), deadline)) throw new Error('gate wait expired');
+    let said = false;
+    for (;;) {
+      lease = store.claim(id, identity, 'Global\\aiworks-gate-' + randomUUID(), parent);
+      if (lease) break;
+      if (Date.now() >= deadline) throw new Error('gate wait expired');
+      if (!said) console.log('# waiting: the host full-check slot is occupied; command has not started');
+      said = true;
+      await recoverGateOwner(store);
+      await sleep(1000);
+    }
+    writeAtomic(GATE_FILES.request, JSON.stringify({ id, generation: lease.generation, createdAt: request.createdAt }));
+    const current = headOf(checkoutState());
+    if (request.head !== 'unknown' && (current.sha !== request.head || current.clean !== request.clean)) {
+      store.finish(lease, 'checkout-changed', 'checkout-changed', () => writeFileSync(GATE_FILES.exit, 'checkout-changed\n')); return;
+    }
+    const permit = JSON.stringify({ requestId: id, generation: lease.generation, jobName: lease.jobName,
+      pid: identity.pid, creationTime: identity.creationTime, token: lease.token });
+    const wrapper = "const c=require('node:child_process').spawn(process.argv[1],{shell:true,stdio:'inherit',windowsHide:true});c.on('error',()=>process.exit(1));c.on('close',c=>process.exit(c===null?1:c));";
+    writeAtomic(GATE_FILES.spec, JSON.stringify({ cwd: process.cwd(), argv: [process.execPath, '-e', wrapper, command.join(' ')],
+      timeoutMs: Math.max(1, deadline-Date.now()), permit, output: resolve(GATE_FILES.log) }));
+    const outer = parent ?? lease;
+    const child = spawn(POWERSHELL, windowsHelperArgs('Gate', lease.jobName, { runDir: process.cwd(), ...identity }),
+      { windowsHide: true, stdio: ['pipe','pipe','pipe'], env: { ...process.env,
+        [NESTED]: JSON.stringify({ host: gateHostKey(), requestId: outer.requestId, generation: outer.generation, token: outer.token }) } });
+    let outcome = null, failed = null;
+    child.stderr.on('data', (chunk) => process.stderr.write(chunk));
+    child.stdin.on('error', () => { failed = 'native-permit-unavailable'; });
+    createInterface({ input: child.stdout }).on('line', (line) => {
+      let value; try { value = JSON.parse(line); } catch { return; }
+      if (value.ready === true && value.creationTime === identity.creationTime && !attached) {
+        // Only a successful native Attach can produce this private pipe acknowledgement. A reserved job name is not custody.
+        attached = true;
+        try {
+          if (!store.attached(lease)) { failed = 'gate-generation-changed'; child.stdin.end(); return; }
+          child.stdin.end(permit+'\n');
+        } catch { failed = 'gate-attachment-record-unavailable'; child.stdin.end(); }
+      } else if (value.outcome) outcome = value.outcome;
+    });
+    const code = await new Promise((done) => { child.on('error', () => done(-1)); child.on('close', done); });
+    if (!attached) {
+      store.finish(lease, 'not-permitted', 'native-attach-failed', () => writeFileSync(GATE_FILES.exit, 'not-permitted\n')); return;
+    }
+    if (await drainJob(lease.jobName) !== 'stopped') {
+      store.hold(lease, 'custody-unproven'); console.log('# held: command custody could not be proved stopped'); return;
+    }
+    const exit = failed || code !== 0 || !outcome ? 'native-gate-failed' : outcome.timedOut ? 'timeout' : outcome.exitCode;
+    store.finish(lease, exit, null, () => writeFileSync(GATE_FILES.exit, String(exit)+'\n'));
+  } catch (error) {
+    console.log('# gate refused: '+(error.code ?? error.message));
+    if (lease) {
+      if (attached) store?.hold(lease, 'custody-unproven');
+      else store?.finish(lease, 'not-permitted', 'not-permitted', () => writeFileSync(GATE_FILES.exit, 'not-permitted\n'));
+    } else store?.failQueued(id, identity, 'gate-unavailable', () => writeFileSync(GATE_FILES.exit, 'gate-unavailable\n'));
+  } finally { store?.close(); }
 }
 
-async function wait({ minutes, pollSeconds }) {
-  const pid = recordedPid();
-  if (pid === null && exitCode() === null) {
+async function wait({ minutes, pollSeconds, requestId = null }) {
+  let pid = recordedPid();
+  if (pid === null && exitCode() === null && !requestId) {
     console.log(`no gate was started in this directory. Start it with: ${again('start')}`);
     return 4;
   }
   const deadline = Date.now() + minutes * 60_000;
+  let expected = requestId;
+  if (!expected) { try { expected = JSON.parse(read(GATE_FILES.request)).id; } catch { /* older helper output */ } }
   for (;;) {
-    const code = exitCode();
-    if (code !== null) {
+    let receipt = null;
+    try { receipt = JSON.parse(read(GATE_FILES.request)); } catch { /* unavailable evidence */ }
+    if (expected && receipt?.id !== expected) {
+      let store, current;
+      try { store = new GateSlotStore(gateHost().root, { readOnly: true }); current = store.request(expected); }
+      catch { console.log('incomplete: gate request ownership is unavailable'); return 1; }
+      finally { store?.close(); }
+      if (!current || !['queued','running','held'].includes(current.state)) {
+        console.log('incomplete: this checkout no longer holds this request evidence'); return 1;
+      }
+      if (Date.now() >= deadline) { console.log('incomplete: the selected gate request did not finish within its wait bound'); return 2; }
+      await sleep(Math.max(1, Math.min(pollSeconds * 1000, deadline - Date.now())));
+      continue;
+    }
+    if (expected) {
+      let store, current;
+      try { store = new GateSlotStore(gateHost().root, { readOnly: true }); current = store.request(expected); }
+      catch { console.log('incomplete: gate request ownership is unavailable'); return 1; }
+      finally { store?.close(); }
+      if (current?.state === 'queued' && !current.identity) {
+        if (Date.now() >= deadline) { console.log('incomplete: the selected gate request was not acknowledged'); return 2; }
+        await sleep(Math.max(1, Math.min(pollSeconds * 1000, deadline - Date.now()))); continue;
+      }
+      pid = current?.identity?.pid ?? recordedPid();
+    }
+    const code = readGateRun(process.cwd(), expected)?.exit;
+    if (code !== null && code !== undefined) {
       console.log(`finished: exit ${code}. Final summary from ${GATE_FILES.log}:\n${summary(read(GATE_FILES.log))}`);
       return code === '0' ? 0 : 1;
     }
     if (pid === null || !alive(pid)) {
       // The exit code is written before the process ends: read it once more before calling the gate dead.
-      if (exitCode() !== null) continue;
+      if (readGateRun(process.cwd(), expected)?.exit != null) continue;
       console.log(`died: process ${pid} ended without an exit code, so the gate never finished. ${GATE_FILES.log} ends with:\n` +
         `${tail(read(GATE_FILES.log), 5)}\nStart it again with: ${again('start')} (this log is kept as ${GATE_FILES.previous}).`);
       return 3;
@@ -492,8 +495,13 @@ function option(args, name, fallback) {
 const samePath = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
 if (process.argv[1] && samePath(resolve(process.argv[1]), SELF)) {
   const [action, ...args] = process.argv.slice(2);
-  if (action === 'start') process.exitCode = start(args);
-  else if (action === 'run') await run(args);
+  if (action === 'start') process.exitCode = await start(args);
+  else if (action === 'start-wait') {
+    let requestId = null;
+    const started = await start(args, (id) => { requestId = id; });
+    process.exitCode = started || await wait({ minutes: 120, pollSeconds: 1, requestId });
+  }
+  else if (action === 'run') await run(args[0], args.slice(1));
   else if (action === 'wait') process.exitCode = await wait({ minutes: option(args, '--minutes', 25), pollSeconds: option(args, '--poll-seconds', 10) });
   else {
     console.error('usage: node gate.mjs start [command...] | wait [--minutes 25] [--poll-seconds 10]');

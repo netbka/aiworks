@@ -1,42 +1,14 @@
-# External check services
+# Additional check services
 
-A check service is another computer that runs a project's full gate (`npm run check`) for AIWorks. You connect it as a plug-in in `config.json`. When a service is listed for a repository, every full gate of the gate helper on that repository is offered to it first. If the service is busy, down or cannot run that commit, the gate runs on this computer exactly as it does without a service. Nothing waits on a service and no service is required.
+A check service can run an additional check of an exact published commit on another computer. Its result is information; it does not replace the required local gate. The managed gate helper always runs its local command inside the exclusive host slot and proves that command's complete process tree has stopped before publishing its exit.
 
-Code: `src/supervisor/check-services.mjs` (settings, the service client and result acceptance) and `src/supervisor/gate.mjs` (`offload`, called by the gate helper's `run`).
+Code: src/supervisor/check-services.mjs retains the settings, client and exact-revision result validation. The gate helper no longer offers jobs automatically, accepts a remote result as its local exit, or cancels service jobs. Existing configuration and historical receipts remain intact. Separate authorized callers can use the client for additional checks, with its bounded queue/run waits and exact-source validation.
 
-## What happens on a gate
-
-1. A worker, or the supervisor's own refresh or base gate, starts the gate helper (`node src/supervisor/gate.mjs start`). The helper records the commit and whether the checkout is clean in `gate-head.log`, as before.
-2. The helper offers the gate to a service only when all of these hold:
-   - the command is the default full gate, `npm run check` (an explicit command always runs here);
-   - the checkout is clean at a known commit;
-   - it is not a gate inside a gate (the suite's own gate tests);
-   - the supervisor published at least one service for the checkout's `origin` repository (see [Settings](#settings-in-configjson));
-   - a branch of `origin`, as this checkout last fetched it, contains the commit. A service fetches from `origin` and accepts no uploaded source, so a commit that exists only on this computer runs here.
-3. The services listed for the repository are tried in order. For each one the helper:
-   - reads `GET /health` and skips the service unless it answers `{"status":"ok"}`;
-   - submits the exact commit with `POST /v1/jobs`;
-   - polls `GET /v1/jobs/<id>` every 10 seconds;
-   - cancels its own job and moves on when the job is still queued after `queueSeconds` (the service is busy), when the run takes longer than `timeoutMinutes`, when the service answers a state the contract does not name twice in a row, or when it stops answering.
-
-   All services together get one time budget: the largest `timeoutMinutes` of those listed for the repository, at most 75 minutes. A gate that then runs on this computer after a long wait may not fit a verifier's 120-minute bound (`executor.verifierTimeoutMinutes`); that verification is then started again. Keep `timeoutMinutes` near the service's real run time, or raise the verifier bound.
-4. A finished job counts only as described in [Which answers count](#which-answers-count). When one counts, `gate.log` gets one line naming the service and job, then the service's own `stdout.log`, and `gate-exit.log` gets `0` (passed) or `1` (test failure). The gate holds no slot on this computer meanwhile, and the test result cache records nothing from it, because it ran on another computer and toolchain.
-5. When no service gave an answer that counts, the gate takes a slot here and runs as before. Every decision appears in `gate.log` as a line starting with `# check service`.
-
-The controller reads the run as it reads any gate run (`readGateRun`, `gateHeadProblem`): the recorded commit must be the verified head on a clean checkout.
-
-### Which gates can go to a service today
-
-Only commits already on `origin` can go to a service. A verifier checks a new head before anything is pushed: the supervisor publishes only verified work, and workers never push. So a verifier's gate of a new commit runs on this computer, as do merge-refresh gates, which test a local merge commit. What goes to a service today:
-
-- base checks of a base branch that is on `origin`;
-- re-checks of a head that was already pushed, such as a new verification after a moved base or a retry.
-
-Verifier gates of new commits can go to a service only once the service accepts the source from AIWorks, not just from `origin`. A proposed addition to the contract is `POST /v1/sources` taking a git bundle of the commit. AIWorks does not have it yet.
+Callers must submit only an exact published commit that the configured origin makes available. The client checks service health, polls its own job and bounds its waits; it accepts no uploaded source. A missing, busy, unreachable or unsuitable service is no barrier to the local checks, publication or merge. Do not duplicate an already submitted service job merely because a local gate starts.
 
 ## Which answers count
 
-`acceptRemoteResult` decides. A result counts only when:
+`acceptRemoteResult` validates an additional result. It counts as a service result only when:
 
 - it names the job, project and profile that were submitted, and `requestedSha` is the exact commit;
 - `commitSha` (the commit the service actually checked out) is that commit, or empty for a run that never reached checkout;
@@ -44,14 +16,14 @@ Verifier gates of new commits can go to a service only once the service accepts 
 
 Then:
 
-| Service state | In AIWorks |
+| Service state | Additional result |
 | --- | --- |
-| `passed` with `exitCode` 0, `commitSha` the exact commit, a step whose `phase` ends in `-check`, whose `argv` ends in `run check` and whose `exitCode` is 0, and a non-empty `stdout.log` (for a project tested by `scripts/run-tests.mjs`, one with its `# all test files` summary) | gate passed (exit 0) |
-| `test_failure` | gate failed (exit 1) |
-| `environment_failure`, `cancelled`, `interrupted` | does not count: next service, else this computer |
-| a pass missing any of the conditions above | does not count: next service, else this computer |
+| `passed` with `exitCode` 0, `commitSha` the exact commit, a step whose `phase` ends in `-check`, whose `argv` ends in `run check` and whose `exitCode` is 0, and a non-empty `stdout.log` (for a project tested by `scripts/run-tests.mjs`, one with its `# all test files` summary) | service check passed (exit 0), with the local gate still required |
+| `test_failure` | service check failed (exit 1) |
+| `environment_failure`, `cancelled`, `interrupted` | no accepted additional result; the separate client may try its next configured service |
+| a pass missing any of the conditions above | no accepted additional result; the separate client may try its next configured service |
 
-A service never makes a failing commit pass by being down: no answer means the gate runs here.
+A service result never makes a failing local gate pass. The local contained gate remains mandatory even when the additional result passed.
 
 ## Requirements for a service
 
