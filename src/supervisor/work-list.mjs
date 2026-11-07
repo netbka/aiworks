@@ -175,6 +175,17 @@ export function followUp(store, { campaignId, taskId, key, title, body, fallback
 }
 
 /**
+ * A follow-up item not tied to a campaign step (#144): one per `key`, so a repeated report records nothing twice. Null
+ * when this installation has no work list. Not for the owner: AIWorks plans it like any other work item.
+ */
+export function standingFollowUp(store, { key, title, body, now }) {
+  if (!present(store)) return null;
+  const label = `${FOLLOW_UP}:${String(key).slice(0, MAX_LABEL - FOLLOW_UP.length - 1)}`;
+  const found = store.get("SELECT number FROM work_items WHERE kind = 'task' AND author_kind = 'supervisor' AND EXISTS (SELECT 1 FROM json_each(labels) WHERE value = ?) LIMIT 1", label);
+  return found ? item(store, found.number) : createItem(store, { kind: 'task', title, body, labels: [FOLLOW_UP, label], authorKind: 'supervisor', now });
+}
+
+/**
  * The work item a declaration names as its owner authorization (`aiworks-work:<n>`), checked: null when the reference
  * is another form. It admits only AIWorks's own repository with local main trusted, and only an open item the owner wrote
  * (never the supervisor or the import) that is linked to this very campaign, so it cannot admit unrelated work.

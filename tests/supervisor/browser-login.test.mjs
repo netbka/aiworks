@@ -12,6 +12,7 @@ import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { browserLoginSettings, loginBrowser, loginTransport } from '../../src/supervisor/browser-login.mjs';
 import { browserServers } from '../../src/supervisor/adapters/agy.mjs';
+import { TIME_FACTOR } from './helpers.mjs';
 
 const profile = (origin, prefix) => ({ origin, loginUrl: `${origin}/login`, usernameRef: `${prefix}-user`,
   passwordRef: `${prefix}-password`, usernameSelector: 'input[name=user]', passwordSelector: 'input[type=password]',
@@ -171,8 +172,19 @@ test('pre-login keeps credentials on the selected origin and closes its private 
     const servers = browserServers({ runDir: dir, web: { urls: [`${origin}/home`] }, chromeCommand: [chrome], browserLogin: settings });
     const runConfig = readFileSync(servers.mcpServers.browser.args[1], 'utf8');
     for (const value of [user, password]) assert.ok(!runConfig.includes(value));
-    browser = await puppeteer.launch({ executablePath: chrome, headless: true, userDataDir: join(dir, 'profile'),
-      args: ['--disable-background-networking', '--disable-extensions'] });
+    // On a slow host Chrome can miss puppeteer's launch deadline; puppeteer then reports its leftover lockfile as 'The
+    // browser is already running for <profile>'. The launch deadline scales with the host and, if it still fails, one retry
+    // runs in a fresh profile of this test's own folder after stopping only the Chrome that carries that folder.
+    for (let attempt = 1; !browser; attempt += 1) {
+      try {
+        browser = await puppeteer.launch({ executablePath: chrome, headless: true, timeout: 60_000 * TIME_FACTOR,
+          userDataDir: join(dir, attempt === 1 ? 'profile' : `profile-${attempt}`),
+          args: ['--disable-background-networking', '--disable-extensions', '--no-first-run'] });
+      } catch (error) {
+        if (attempt >= 2) throw error;
+        stopStrayChrome(dir);
+      }
+    }
     const transport = await loginTransport(browser.wsEndpoint());
     login = await puppeteer.connect({ transport });
     const reads = [];

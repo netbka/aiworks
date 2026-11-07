@@ -327,7 +327,9 @@ const withCandidate = (store, campaignId, taskId) => {
 // ---- "Why is this step waiting?" (ADAPTIVE_SCHEDULER section 6, slice S8 supervisor half: RUN9). ----
 
 const RUNNABLE = ['pending', 'implemented', 'verified'];
-const OWNER_NEXT = 'None; listed in Needs you';
+const OWNER_NEXT = 'None; listed in Settings, AIWorks itself';
+// A sign-in or payment stop is the owner's own and is listed on Home (dashboard owner.mjs OWNER_STOPS).
+const OWNER_HOME = 'None; listed on Home';
 const BLOCKER_TEXT = {
   budget: 'Needs your decision: this work program used its budget',
   auth: 'Needs you: an AI provider login failed',
@@ -382,7 +384,7 @@ function admissionReason(store, refusal) {
       const prUrl = store.task(first.campaignId, first.taskId)?.pr_url ?? null;
       const pr = first.reason === 'published-unmerged' && /\/pull\/(\d+)$/.exec(prUrl ?? '');
       const where = Array.isArray(spec?.writes) ? spec.writes.join(', ') : 'the same repository';
-      return reason('write-domain', `Another step ("${spec?.title ?? first.taskId}") is changing ${where}${pr ? ` (PR #${pr[1]} not merged yet)` : ''}`,
+      return reason('write-domain', `Another step ("${spec?.title ?? first.taskId}") is changing ${where}, in work program ${first.campaignId}${pr ? ` (PR #${pr[1]} not merged yet)` : ''}`,
         'Starts when that change is merged or dropped', null, { campaignId: first.campaignId, taskId: first.taskId, reason: first.reason, prUrl });
     }
     default: return reason('ready', 'Ready to start', 'Starts on the next turn');
@@ -411,7 +413,8 @@ export function waitReason(task, { store, campaign: c, tasks, open, held = new M
     return hold.class === 'B3' ? reason('owner', 'Needs your decision', OWNER_NEXT)
       : reason('recheck', 'Held until a recorded problem clears', hold.next_recheck_at ? `Checked again at ${iso(hold.next_recheck_at)}` : 'Checked again automatically', hold.next_recheck_at);
   }
-  if (c.blocker) return reason('owner', BLOCKER_TEXT[c.blocker.kind] ?? 'Needs you: this work program is stopped', OWNER_NEXT);
+  if (c.blocker) return reason('owner', BLOCKER_TEXT[c.blocker.kind] ?? 'Needs you: this work program is stopped',
+    c.blocker.kind === 'auth' || c.blocker.kind === 'budget' ? OWNER_HOME : OWNER_NEXT);
   const decl = c.declaration;
   const specs = specsOf(store, c.id, decl);
   const spec = specs.get(task.task_id) ?? { dependsOn: [] };
@@ -444,7 +447,7 @@ export function waitReason(task, { store, campaign: c, tasks, open, held = new M
       : reason('provider-cooldown', 'The AI provider is unavailable', 'Tries again after a recheck succeeds');
   }
   const budget = admissionBudget(store, c, now);
-  if (budget.exhausted && !open.length) return reason('owner', BLOCKER_TEXT.budget, OWNER_NEXT);
+  if (budget.exhausted && !open.length) return reason('owner', BLOCKER_TEXT.budget, OWNER_HOME);
   if (!schedulerEnabled(config) || !hasTable(store, 'capacity')) {
     // Scheduler off: one worker at a time per campaign, the first runnable task in declaration order first.
     const first = tasks.find((row) => RUNNABLE.includes(row.state) && row.state !== 'verified' && !row.blocked && !held.has(row.task_id) &&
@@ -469,7 +472,18 @@ export function waitReason(task, { store, campaign: c, tasks, open, held = new M
     { ceiling: hostCeiling(config), pressure: pressure ? { signal: pressure.reason } : null, accountFull: () => (kind ? accountFull(store, config, kind) : null),
       integrated: (campaignId, row, declaration) => isLocalTarget(declaration) || merged(campaignId, row),
       gateOnly: (declaration) => trustsLocalMain(selfHostingSettings(config), declaration.target.repository) });
+  if (!refusal) {
+    // The controller also reads the fetched base, which status does not: its last write-domain refusal for this step
+    // (controller.recordDomainRefusals) says who holds the area when status's own rows see no holder.
+    const recorded = store.get("SELECT reason FROM capacity WHERE scope = 'domain-refusal' AND id = ?", `${c.id}/${task.task_id}`);
+    const holders = recorded ? parseHolders(recorded.reason) : null;
+    if (holders?.length) return admissionReason(store, { reason: 'write-domain', detail: { holders } });
+  }
   return admissionReason(store, refusal ?? { reason: null });
+}
+
+function parseHolders(text) {
+  try { const list = JSON.parse(text); return Array.isArray(list) ? list.filter((h) => h && typeof h.campaignId === 'string' && typeof h.taskId === 'string') : null; } catch { return null; }
 }
 
 // ---- Model, tier, cost by unit and the reason a step moved up (MODEL_ROUTING section 9 "What the owner sees", slice R6

@@ -11,8 +11,8 @@
 // `git branch -d` (never -D) only when the trusted main contains its tip. Nothing deletes a remote branch, a run
 // directory or a folder recursively. Each removal is journaled `cleanup-started` before and `cleanup-finished` after,
 // so a restart settles an interrupted one from what git shows and never repeats it.
-import { constants, copyFileSync, existsSync, readFileSync, realpathSync, unlinkSync } from 'node:fs';
-import { basename, isAbsolute, join, relative, resolve } from 'node:path';
+import { constants, copyFileSync, existsSync, lstatSync, readFileSync, realpathSync, unlinkSync } from 'node:fs';
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import * as gitA from './adapters/git.mjs';
 import { GATE_FILES } from './gate.mjs';
 import { LANE as COORDINATOR_LANE, coordinatorWorktreeRoot } from './coordinator.mjs';
@@ -30,14 +30,34 @@ const allowed = (ctl, repository) => ctl.config.cleanup.repositories === undefin
 // Per controller: when the last pass ran, whether interrupted removals were settled, and what was already reported kept.
 const memory = new WeakMap();
 
-const key = (path) => (process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path));
+/**
+ * A path by name with each Windows short (8.3) component, such as AIWORK~1, written by its long name: git lists a
+ * worktree by the name it was added with, while a workspace or temp folder may carry the short one. Links and junctions
+ * are never followed here; insideRoot still checks where they lead.
+ */
+function longName(path) {
+  const full = resolve(path);
+  if (process.platform !== 'win32' || !full.includes('~') || full.startsWith('\\')) return full;
+  const [head, ...parts] = full.split(sep);
+  let out = head + sep;
+  for (const part of parts) {
+    let next = join(out, part);
+    if (part.includes('~')) {
+      // A volume mounted into the folder resolves to a drive root, whose name is empty: keep the folder's own name then.
+      try { const name = lstatSync(next).isSymbolicLink() ? '' : basename(realpathSync.native(next)); if (name) next = join(out, name); } catch { /* absent: keep the name */ }
+    }
+    out = next;
+  }
+  return out;
+}
+const key = (path) => (process.platform === 'win32' ? longName(path).toLowerCase() : resolve(path));
 const within = (root, path) => {
   const rel = relative(root, path);
   return Boolean(rel) && !rel.startsWith('..') && !isAbsolute(rel);
 };
 /** Inside the registered folder by name and, when it exists, after links are resolved. */
 function insideRoot(root, path) {
-  if (!root || !within(resolve(root), resolve(path))) return false;
+  if (!root || !within(longName(root), longName(path))) return false;
   if (!existsSync(path)) return true;
   try { return within(realpathSync.native(root), realpathSync.native(path)); } catch { return false; }
 }
@@ -112,7 +132,7 @@ async function cleanRepository(ctl, repo, report, keep) {
   }
   for (const [path, wt] of registered) {
     if (owners.has(path) || coordinator.has(path)) continue;
-    if (within(resolve(repo.root), resolve(wt.path))) keep(null, { path: wt.path, reason: 'unowned' });
+    if (within(longName(repo.root), longName(wt.path))) keep(null, { path: wt.path, reason: 'unowned' });
   }
   for (const [path, owner] of owners) {
     const wt = registered.get(path);

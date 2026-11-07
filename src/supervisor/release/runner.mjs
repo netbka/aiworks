@@ -24,7 +24,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readJsonIfExists, runnerIdentified, stopOwnedRun, writeAtomic } from '../proc.mjs';
+import { ASYNC_STOP_MS, readJsonIfExists, runnerIdentified, stopOwnedRun, writeAtomic } from '../proc.mjs';
 import { credentialStoreFrom, fetchCredential, validCredentialRef } from './credential.mjs';
 import { releasePath } from './paths.mjs';
 
@@ -107,7 +107,7 @@ export async function runReleaseCommand({ config, dataDir, stepKey, command, cwd
   const startedAt = new Date(now()).toISOString();
   const env = credential ? releaseEnv(inherited) : releaseLoginEnv(inherited);
   writeAtomic(join(dir, 'launch.json'), JSON.stringify({ stepKey, releaseId: release?.id ?? null, startedAt }));
-  const exit = await start(packet, { cwd: resolve(cwd), env, timeoutMs: timeoutMs + 30_000 });
+  const exit = await start(packet, { cwd: resolve(cwd), env, timeoutMs: timeoutMs + ASYNC_STOP_MS + 30_000 });
   const custody = readJsonIfExists(join(dir, 'result.json'));
   const stopped = custody?.containment === 'windows-job-v1' && custody.containmentStopped === true;
   const result = stopped ? readJsonIfExists(join(dir, 'command-result.json')) : null;
