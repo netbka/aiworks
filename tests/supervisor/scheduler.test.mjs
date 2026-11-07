@@ -114,7 +114,8 @@ test('host pressure stops new admission and leaves running work alone', async (t
   const running = r.open('one', 'A'); r.state('one', 'A', { state: 'implementing' });
   const before = r.store.get('SELECT * FROM operations WHERE id = ?', running);
   const h = fakeHost();
-  const sampler = createHostSampler({ os: h.os, fs: h.fs, volumes: ['W:/worktrees'] });
+  const floor = { minFreeMemoryBytes: 3 * GiB }; // the memory floor is off by default, so this host sets one
+  const sampler = createHostSampler({ os: h.os, fs: h.fs, volumes: ['W:/worktrees'], thresholds: floor });
   const pass = () => {
     const pressure = hostPressure(r.store, sampler, r.now());
     r.advance(5000);
@@ -122,7 +123,7 @@ test('host pressure stops new admission and leaves running work alone', async (t
   };
   assert.equal(pass(), null, 'a calm host admits B');
 
-  h.free = 2 * GiB; // below max(2 GiB, 10% of 32 GiB)
+  h.free = 2 * GiB; // below the 3 GiB floor
   const refused = pass();
   assert.equal(refused?.reason, 'host-pressure', 'an injected low-memory sample refuses new admission');
   assert.equal(refused.detail.signal, 'memory');
@@ -143,7 +144,7 @@ test('host pressure stops new admission and leaves running work alone', async (t
 
   // A second episode, seen by two controllers on one store: each samples, the episode is journalled once.
   h.free = 1 * GiB;
-  const other = createHostSampler({ os: h.os, fs: h.fs, volumes: ['W:/worktrees'] });
+  const other = createHostSampler({ os: h.os, fs: h.fs, volumes: ['W:/worktrees'], thresholds: floor });
   assert.equal(pass()?.reason, 'host-pressure');
   assert.equal(hostPressure(r.store, other, r.now())?.signal, 'memory');
   assert.equal(r.store.all("SELECT kind FROM journal WHERE kind = 'host-pressure'").length, 2, 'two episodes, two entries');
