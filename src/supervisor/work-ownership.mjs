@@ -121,13 +121,30 @@ export function outsideWrites(declaration, domain, paths, { safeTemplates = [] }
 const ACTIVE = new Set(['implementing', 'implemented', 'verifying', 'verified']);
 
 /**
+ * A successful remote merge already recorded for this exact campaign, task, verified head and pull request. The URL
+ * must belong to the declaration's repository; a local receipt is handled by the main ledger instead. This releases
+ * only the old write domain after a restart or a replaced base history. It proves no ancestry in today's base and is
+ * never evidence for a merged dependency, another merge or a release.
+ */
+export function recordedRemoteMerge(store, campaignId, row, declaration) {
+  const pull = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/[1-9]\d*$/.exec(row?.pr_url ?? '');
+  if (!pull || pull[1].toLowerCase() !== targetOf(declaration) || declaration.campaignId !== campaignId ||
+      row.campaign_id !== campaignId || !/^[a-f0-9]{40}$/.test(row.verified_sha ?? '')) return false;
+  return store.all(`SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'merged'
+    AND json_extract(detail, '$.task') = ? AND json_extract(detail, '$.sha') = ? AND json_extract(detail, '$.url') = ?`,
+  campaignId, row.task_id, row.verified_sha, row.pr_url)
+    .some(({ detail }) => (detail.local === undefined || detail.local === false) && /^[a-f0-9]{40}$/.test(detail.mergeCommit ?? ''));
+}
+
+/**
  * Who holds a domain that overlaps `domain`, computed from existing rows, never from a lock table (ADAPTIVE_SCHEDULER 4.3):
  * - an open implement operation, in any campaign: it is writing ('writing'). A cancelled or finished campaign's run holds
  *   its domain until it is settled, because suspicion is not proof it stopped;
  * - a task implemented, verifying or verified, not yet integrated ('unintegrated');
  * - a done commit task whose verified head is not in its base yet, in any campaign, finished or cancelled included
  *   ('published-unmerged'). `integrated(campaignId, taskRow, declaration)` answers that from the fetched base,
- *   or, in the self-hosted repository, from a gate-merge ledger row for exactly that head (it survives a re-rooted main).
+ *   a successful remote merge receipt for that exact campaign/task/head/PR, or, in the self-hosted repository, a
+ *   gate-merge ledger row for exactly that head. Both records survive a re-rooted main and release only ownership.
  *   One exception: a cancelled campaign in a target whose base only the merge gate moves (`gateOnly(declaration)`: the
  *   self-hosted repository with local main trusted). Cancellation is terminal and drained, and the gate never merges a
  *   cancelled campaign's head, so that head can never reach its base; holding it would make every overlapping task wait

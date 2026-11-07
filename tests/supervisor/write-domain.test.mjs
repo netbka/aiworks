@@ -184,6 +184,55 @@ test('a head the local merge gate recorded as merged releases its domain after m
     'the recorded gate merge counts as integrated; a published head never recorded as merged keeps its domain');
 });
 
+test('an exact recorded remote merge releases only its historical write hold after restart', (t) => {
+  const env = environment(), dbPath = join(env.dataDir, 'supervisor.db');
+  let store = new Store(dbPath);
+  t.after(() => { store.close(); env.cleanup(); });
+  const mine = declaration({ campaignId: 'mine', tasks: [commitTask('M', 960, { writes: ['src/a/'] })] });
+  campaignStart(store, mine);
+  const candidate = { campaignId: 'mine', taskId: 'M', domain: domainOf(mine, mine.tasks[0]) };
+  const head = 'd'.repeat(40), merged = 'e'.repeat(40);
+  const cases = ['recorded', 'missing', 'stale-head', 'wrong-task', 'wrong-campaign', 'wrong-pr', 'wrong-repository',
+    'local-receipt', 'invalid-merge', 'invalid-head', 'requested-only', 'writing'];
+  for (const [index, id] of cases.entries()) {
+    const decl = declaration({ campaignId: id, tasks: [commitTask('X', 961 + index, { writes: ['src/'], goal: `Produce X in ${id}.` })] });
+    campaignStart(store, decl);
+    const url = `https://github.com/example-org/${id === 'wrong-repository' ? 'sample-wiki' : 'sampleapp'}/pull/${index + 1}`;
+    const sha = id === 'invalid-head' ? 'unknown' : head;
+    store.patch('tasks', { campaign_id: id, task_id: 'X' }, store.task(id, 'X').version,
+      { state: 'done', head_sha: sha, verified_sha: sha, pr_url: url }, Date.now());
+    store.patch('campaigns', { id }, store.campaign(id).version, { control: 'finished' }, Date.now());
+    if (id === 'missing') continue;
+    const receipt = { task: id === 'wrong-task' ? 'Y' : 'X', sha: id === 'stale-head' ? 'f'.repeat(40) : sha,
+      url: id === 'wrong-pr' ? 'https://github.com/example-org/sampleapp/pull/999' : url,
+      mergeCommit: id === 'invalid-merge' ? 'unknown' : merged, requested: true, reconciled: false,
+      ...(id === 'local-receipt' ? { local: true } : {}) };
+    store.journal(id === 'wrong-campaign' ? 'elsewhere' : id, id === 'requested-only' ? 'merge-requested' : 'merged', receipt, Date.now());
+  }
+  // Neither the old head nor merge commit is in today's history. No remote response or in-memory merge cache survives.
+  git(env.repo, 'update-ref', 'refs/aiworks/base/main', 'main');
+  const base = git(env.repo, 'rev-parse', 'refs/aiworks/base/main');
+  const now = Date.now();
+  store.run(`INSERT INTO operations (id, campaign_id, task_id, kind, seq, idempotency_key, lease_generation, state, session_id, run_dir,
+    workspace, packet, packet_digest, created_at, updated_at) VALUES ('writing.X.implement.1', 'writing', 'X', 'implement', 1,
+    'writing.X.implement.1', 1, 'dispatched', 's', 'r', 'w', '{}', 'd', ?, ?)`, now, now);
+  store.close();
+  store = new Store(dbPath);
+  const controller = new Controller({ store, config: { ...env.config, scheduler: { enabled: true } }, dataDir: env.dataDir,
+    fault: null, sampler: { sample: () => null } });
+  const original = store.campaign('recorded').declaration;
+  assert.equal(controller.inBase(original, head), false);
+  assert.equal(controller.inBase(original, merged), false);
+  assert.equal(controller.mergedHeads.size, 0);
+  const journalCount = store.get('SELECT COUNT(*) AS n FROM journal').n;
+  assert.deepEqual(domainHolders(store, candidate, controller.admissionInputs()).map((holder) => `${holder.campaignId}:${holder.reason}`).sort(),
+    cases.filter((id) => id !== 'recorded').map((id) => `${id}:${id === 'writing' ? 'writing' : 'published-unmerged'}`).sort(),
+    'only the exact successful remote receipt releases a finished hold; absent, mismatched or requested-only records and open writers keep it');
+  assert.equal(controller.inBase(original, head), false, 'releasing ownership does not make the old head an ancestor');
+  assert.equal(git(env.repo, 'rev-parse', 'refs/aiworks/base/main'), base, 'the current base never moved');
+  assert.equal(store.get('SELECT COUNT(*) AS n FROM journal').n, journalCount, 'reading proof creates no merge or other receipt');
+});
+
 /** One registered campaign; the test plays the implementer. */
 test('a cancelled campaign whose head only the merge gate could integrate releases its domain; open, unresolved and finished work stay held', (t) => {
   const env = environment();
