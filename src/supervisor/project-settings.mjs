@@ -22,9 +22,13 @@
 //   myself", AW-015) a verified head merges only after the owner accepted exactly that head and report. The newest
 //   settings decide at every check, so switching to "owner" holds every unmerged head without acceptance, and switching
 //   back lets the gate go on. "automatic", the default and the mode of every project without the field, changes nothing.
+// - repair rounds (effectiveLimits, AW-002 amended 2026-11-06): `limits.maxRepairRounds` (0..5, or null for no limit)
+//   applies to every campaign of the project whose declaration does not name the limit itself; without it the default
+//   is campaign.mjs DEFAULT_MAX_REPAIR_ROUNDS. The newest settings decide at every check. Reaching the limit never waits
+//   for the owner: the step is finished (controller.mjs settleStopped, AW-017).
 import { createHash } from 'node:crypto';
 import { runNotCounted } from './adapters/executors.mjs';
-import { canonicalJson } from './campaign.mjs';
+import { campaignLimits, canonicalJson } from './campaign.mjs';
 import { containsKnownSecretValue } from '../shared/credential-metadata.mjs';
 
 export class ProjectSettingsError extends Error {
@@ -38,7 +42,9 @@ export const MAX_NOTES = 2000;
 export const BUDGET_RANGE = Object.freeze({ min: 1, max: 100000 });
 export const UNKNOWN_RUN_RANGE = Object.freeze({ min: 0.5, max: 100 });
 export const ACCEPTANCE_MODES = Object.freeze(['automatic', 'owner']);
-export const EMPTY_SETTINGS = Object.freeze({ protectedAreas: [], notes: '', budget: { totalUsd: null, monthlyUsd: null, unknownRunCostUsd: null }, acceptance: 'automatic' });
+export const REPAIR_ROUNDS_RANGE = Object.freeze({ min: 0, max: 5 });
+// `limits` is empty unless the owner set repair rounds: then { maxRepairRounds: 0..5 or null (no limit) }.
+export const EMPTY_SETTINGS = Object.freeze({ protectedAreas: [], notes: '', budget: { totalUsd: null, monthlyUsd: null, unknownRunCostUsd: null }, acceptance: 'automatic', limits: {} });
 
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
 const LOCAL_PROJECT = /^lp-[a-z0-9][a-z0-9-]{0,38}$/;
@@ -69,11 +75,13 @@ const money = (value, { min, max }) => value === null || (typeof value === 'numb
  *   SETTINGS_BUDGET      a budget outside 1..100,000 dollars, or an unknown-run price outside 0.5..100 dollars;
  *   SETTINGS_UNKNOWN_COST a budget without the price a run with no reported cost is charged at (never zero), or a price
  *                        without a budget;
- *   SETTINGS_ACCEPTANCE  an acceptance mode other than "automatic" (the default) or "owner".
+ *   SETTINGS_ACCEPTANCE  an acceptance mode other than "automatic" (the default) or "owner";
+ *   SETTINGS_LIMITS      limits other than `maxRepairRounds` 0..5 or null (no limit). Omitted means not set: the default.
+ * `limits` is kept only when it sets repair rounds, so settings saved without it keep their digest.
  */
 export function normalizeSettings(input) {
   if (!plainObject(input)) refuse('SETTINGS_FIELD', 'project settings must be an object');
-  const extra = Object.keys(input).filter((key) => !['protectedAreas', 'notes', 'budget', 'acceptance'].includes(key));
+  const extra = Object.keys(input).filter((key) => !['protectedAreas', 'notes', 'budget', 'acceptance', 'limits'].includes(key));
   if (extra.length) refuse('SETTINGS_FIELD', `project settings cannot set ${extra.join(', ')}: they only add protection, notes, limits and the acceptance mode`);
   const areas = input.protectedAreas ?? [];
   if (!Array.isArray(areas) || areas.length > MAX_PROTECTED || !areas.every(safeArea) || new Set(areas.map(folded)).size !== areas.length) {
@@ -94,14 +102,22 @@ export function normalizeSettings(input) {
   if (!capped && unknownRunCostUsd !== null) refuse('SETTINGS_UNKNOWN_COST', 'a price for runs with no reported cost needs a project budget');
   const acceptance = input.acceptance ?? 'automatic';
   if (!ACCEPTANCE_MODES.includes(acceptance)) refuse('SETTINGS_ACCEPTANCE', 'the acceptance mode is "automatic" or "owner"');
-  return { protectedAreas: areas.map((entry) => entry.replace(/\\/g, '/').replace(/\/+$/, '')), notes: notes.trim(), budget: { totalUsd, monthlyUsd, unknownRunCostUsd }, acceptance };
+  const limits = input.limits ?? {};
+  const rounds = limits.maxRepairRounds;
+  if (!plainObject(limits) || Object.keys(limits).some((key) => key !== 'maxRepairRounds') ||
+      !(rounds === undefined || rounds === null || (Number.isSafeInteger(rounds) && rounds >= REPAIR_ROUNDS_RANGE.min && rounds <= REPAIR_ROUNDS_RANGE.max))) {
+    refuse('SETTINGS_LIMITS', `repair rounds per step are ${REPAIR_ROUNDS_RANGE.min} to ${REPAIR_ROUNDS_RANGE.max}, no limit (null), or not set`);
+  }
+  return { protectedAreas: areas.map((entry) => entry.replace(/\\/g, '/').replace(/\/+$/, '')), notes: notes.trim(), budget: { totalUsd, monthlyUsd, unknownRunCostUsd }, acceptance,
+    ...(rounds === undefined ? {} : { limits: { maxRepairRounds: rounds } }) };
 }
 
 export const settingsDigest = (settings) => `sha256:${createHash('sha256').update(canonicalJson(settings), 'utf8').digest('hex')}`;
 
 const hasTable = (store) => Boolean(store.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'project_settings'"));
-// Settings saved before the acceptance mode existed read as "automatic", what they meant then.
-const decoded = (row) => (row ? { project: row.project, version: row.version, settings: { ...row.settings, acceptance: row.settings?.acceptance === 'owner' ? 'owner' : 'automatic' }, digest: row.digest, requestId: row.request_id, createdAt: row.created_at } : null);
+// Settings saved before the acceptance mode existed read as "automatic", what they meant then; without limits, as none set.
+const decoded = (row) => (row ? { project: row.project, version: row.version, settings: { ...row.settings, acceptance: row.settings?.acceptance === 'owner' ? 'owner' : 'automatic',
+  limits: plainObject(row.settings?.limits) ? row.settings.limits : {} }, digest: row.digest, requestId: row.request_id, createdAt: row.created_at } : null);
 
 /** The newest settings of a project, or none: version 0 with no protection, no notes, no budget and automatic acceptance. */
 export function currentSettings(store, project) {
@@ -135,7 +151,7 @@ export function saveSettings(store, { project, expectedVersion, requestId, setti
   store.run('INSERT INTO project_settings (project, version, settings, digest, request_id, created_at) VALUES (?, ?, ?, ?, ?, ?)',
     key, version, JSON.stringify(value), digest, requestId.toLowerCase(), now);
   store.journal(null, 'project-settings-saved', { project: key, version, digest, protectedAreas: value.protectedAreas.length,
-    budget: value.budget, acceptance: value.acceptance }, now);
+    budget: value.budget, acceptance: value.acceptance, limits: value.limits ?? {} }, now);
   return { ...decoded(store.get('SELECT * FROM project_settings WHERE project = ? AND version = ?', key, version)), duplicate: false };
 }
 
@@ -144,6 +160,20 @@ export function saveSettings(store, { project, expectedVersion, requestId, setti
  * "automatic", also for a project without settings or a store without the table.
  */
 export const acceptanceMode = (store, project) => (currentSettings(store, project).settings.acceptance === 'owner' ? 'owner' : 'automatic');
+
+/**
+ * A campaign's effective limits now (campaign.mjs campaignLimits): its declaration's, with the repair-round limit taken
+ * from the newest settings of its project when the declaration does not name it, else the default of 3. Every caller
+ * that holds the store uses this, so the dashboard, status and the controller judge one value.
+ */
+export const effectiveLimits = (store, declaration) => campaignLimits(declaration, projectLimitsOf(store, declaration));
+/** The `limits` of the newest settings of a declaration's project, or null when none are set or the store has no table. */
+export function projectLimitsOf(store, declaration) {
+  const key = store ? projectKey(projectOf(declaration)) : null;
+  if (!key || !hasTable(store)) return null;
+  const limits = currentSettings(store, key).settings.limits;
+  return limits.maxRepairRounds === undefined ? null : limits;
+}
 
 /**
  * The protected areas that bind a campaign now: those of the newest settings, together with those in force when the

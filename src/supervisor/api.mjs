@@ -14,7 +14,7 @@ import { reviewRecords } from './result-review.mjs';
 import { selfHostingSettings, trustedTip, trustsLocalMain } from './self-hosting.mjs';
 import { resolveCheckout } from './project-connect.mjs';
 import { backupStatus } from './github-backup.mjs';
-import { projectBudget, projectOf, protectedWriteConflicts } from './project-settings.mjs';
+import { effectiveLimits, projectBudget, projectOf, protectedWriteConflicts } from './project-settings.mjs';
 import { operationGateWait } from './gate-slot.mjs';
 
 export class CampaignError extends Error {
@@ -104,8 +104,8 @@ export function campaignStart(store, declaration, now = Date.now()) {
         if (task.blocked?.class !== 'stalled' || task.state === 'done') continue;
         const reason = String(task.blocked.reason ?? '');
         const failed = /^(\d+) failed attempts/.exec(reason);
-        const released = /^verifier still rejects/.test(reason) ? allows(campaignLimits(decl).maxRepairRounds, task.repair_rounds)
-          : failed ? allows(campaignLimits(decl).maxRetriesPerTask, Number(failed[1]) - 1) : false;
+        const released = /^verifier still rejects/.test(reason) ? allows(effectiveLimits(store, decl).maxRepairRounds, task.repair_rounds)
+          : failed ? allows(effectiveLimits(store, decl).maxRetriesPerTask, Number(failed[1]) - 1) : false;
         if (!released) continue;
         store.patch('tasks', { campaign_id: decl.campaignId, task_id: task.task_id }, task.version, { blocked: null, retry_at: null }, now);
         store.journal(decl.campaignId, 'stall-released', { task: task.task_id, reason: reason.slice(0, 120), limits: decl.limits }, now);
@@ -129,6 +129,7 @@ export function campaignStart(store, declaration, now = Date.now()) {
  * below that ceiling. With neither, only provider subscription/usage limits stop work.
  */
 export function campaignBudget(store, c) {
+  // Run and cost limits have no project setting or default (AW-002): the declaration's are the effective ones.
   const limits = campaignLimits(c.declaration);
   const measured = Math.round(c.cost_usd * 10000) / 10000;
   const rows = store.all("SELECT state, outcome FROM operations WHERE campaign_id = ? AND state IN ('finished', 'recorded', 'dispatched')", c.id);
@@ -255,8 +256,8 @@ export function campaignStatus(store, id, now = Date.now(), { releaseStop = fals
     blocker: c.blocker,
     livenessDefect: Boolean(c.liveness_defect),
     runsUsed: c.runs_used,
-    maxWorkerRuns: campaignLimits(c.declaration).maxWorkerRuns,
-    maxCostUsd: campaignLimits(c.declaration).maxCostUsd,
+    maxWorkerRuns: effectiveLimits(store, c.declaration).maxWorkerRuns,
+    maxCostUsd: effectiveLimits(store, c.declaration).maxCostUsd,
     budget: campaignBudget(store, c),
     executorOrder: executorOrder(c.declaration.executor).map((executor) => executor.kind),
     executorWaits: executorWaitsView(store, c),

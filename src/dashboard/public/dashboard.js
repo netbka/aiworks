@@ -3645,8 +3645,12 @@ function settingsDraft(project, view) {
   if (saved) return saved;
   const { settings } = view;
   return { base: view.version, areas: settings.protectedAreas.join('\n'), notes: settings.notes, totalUsd: amountText(settings.budget.totalUsd),
-    monthlyUsd: amountText(settings.budget.monthlyUsd), unknownRunCostUsd: amountText(settings.budget.unknownRunCostUsd), acceptance: settings.acceptance ?? 'automatic' };
+    monthlyUsd: amountText(settings.budget.monthlyUsd), unknownRunCostUsd: amountText(settings.budget.unknownRunCostUsd), acceptance: settings.acceptance ?? 'automatic',
+    repairRounds: repairRoundsChoice(settings.limits) };
 }
+// Repair rounds in Project settings (AW-002, amended 2026-11-06): 'default' (3), a number 0..5, or 'none' (no limit).
+const repairRoundsChoice = (limits) => !limits || limits.maxRepairRounds === undefined ? 'default' : limits.maxRepairRounds === null ? 'none' : String(limits.maxRepairRounds);
+const repairRoundsLimits = (choice) => choice === 'default' || choice === undefined ? {} : { maxRepairRounds: choice === 'none' ? null : Number(choice) };
 
 /** One budget period in words: charged against the cap and what is left, or the reported spend without a cap. Unknown is never $0. */
 function spendLine(label, period, price) {
@@ -3760,7 +3764,14 @@ function projectSettingsScreen(project) {
     ['owner', 'I accept results myself', 'A checked result is merged only after you accept exactly that version. It waits on Home with Accept and Request changes.']];
   const choices = modes.map(([value]) => el('input', { type: 'radio', name: `settings-acceptance-${project}`, value, checked: (draft.acceptance ?? 'automatic') === value, onchange: () => save() }));
   const acceptance = () => choices.find((input) => input.checked)?.value ?? draft.acceptance ?? 'automatic';
-  const fields = () => ({ areas: areas.value, notes: notes.value, totalUsd: total.value, monthlyUsd: monthly.value, unknownRunCostUsd: price.value, acceptance: acceptance() });
+  // Repair rounds per step for every goal here whose plan names none: the default 3, 0 to 5, or no limit.
+  const rounds = el('select', { id: 'settings-repair-rounds', 'aria-describedby': 'settings-repair-rounds-help', onchange: () => save() },
+    el('option', { value: 'default' }, 'Default (3)'),
+    ...Array.from({ length: limits.repairRounds.max - limits.repairRounds.min + 1 }, (_, i) => String(limits.repairRounds.min + i)).map((n) => el('option', { value: n }, n)),
+    el('option', { value: 'none' }, 'No limit'));
+  rounds.value = draft.repairRounds ?? 'default';
+  const fields = () => ({ areas: areas.value, notes: notes.value, totalUsd: total.value, monthlyUsd: monthly.value, unknownRunCostUsd: price.value, acceptance: acceptance(),
+    repairRounds: rounds.value });
   function save() { drafts.set(address, 'settings', { ...settingsDraft(project, settingsEntry(project).view ?? v), ...fields() }); }
   const money = (text) => (text.trim() ? Number(text.trim()) : null);
   const form = el('form', { novalidate: true, class: 'panel-body start-form', 'data-settings-form': project, 'data-focus-scope': `settings/${project}/form`,
@@ -3771,7 +3782,8 @@ function projectSettingsScreen(project) {
       if (settingsOff() || !validateForm(form)) return;
       const lines = areas.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
       void saveSettings(project, { version: settingsDraft(project, v).base, protectedAreas: lines, notes: notes.value,
-        budget: { totalUsd: money(total.value), monthlyUsd: money(monthly.value), unknownRunCostUsd: money(price.value) }, acceptance: acceptance() });
+        budget: { totalUsd: money(total.value), monthlyUsd: money(monthly.value), unknownRunCostUsd: money(price.value) }, acceptance: acceptance(),
+        limits: repairRoundsLimits(rounds.value) });
     } },
     el('label', { class: 'field' }, el('strong', {}, 'Protected areas'), areas,
       el('span', { id: 'settings-areas-help', class: 'subtext' }, `Folders or files AIWorks must never change, one per line, such as docs/legal or config/production.json. Up to ${limits.protected}. A plan that changes one is refused; a step that changes one stops for you.`)),
@@ -3783,11 +3795,13 @@ function projectSettingsScreen(project) {
       el('label', { class: 'field' }, el('strong', {}, 'Monthly budget ($)'), monthly),
       el('label', { class: 'field' }, el('strong', {}, 'Count a run with no reported cost as ($)'), price,
         el('span', { class: 'subtext' }, 'Needed with a budget: some AI workers do not report what a run cost, and that is never counted as $0.'))),
+    el('label', { class: 'field' }, el('strong', {}, 'Repair rounds per step'), rounds,
+      el('span', { id: 'settings-repair-rounds-help', class: 'subtext' }, 'How often AIWorks repairs a step after a check finds a problem. A plan that sets its own number keeps it. At the limit AIWorks does not wait for you: a step whose full check passed is delivered with its known problems listed, otherwise it ends as not done, each with a follow-up item.')),
     // A project without GitHub is accepted by Apply, so it has no merge to wait for.
     v.local ? null : el('fieldset', {}, el('legend', {}, 'Accepting results'),
       ...modes.map(([, label, help], i) => el('div', {}, el('label', { class: 'choice' }, choices[i], ` ${label}`), el('p', { class: 'subtext' }, help))),
       el('p', { class: 'subtext' }, 'Switching to “I accept results myself” holds every checked result that is not merged yet until you accept it. Switching back lets the merge gate go on.')),
-    el('p', { class: 'subtext' }, 'Saving applies to the next step AIWorks starts here. Work already approved keeps its own limits, and these settings never widen what it may change.'),
+    el('p', { class: 'subtext' }, 'Saving applies to the next step AIWorks starts here. Work already approved keeps its own limits, except repair rounds where its plan names none: those follow this setting from the next check. These settings never widen what work may change.'),
     el('button', { class: 'button', type: 'submit', disabled: settingsOff() }, 'Save settings'));
   return [howWorkRuns(project), el('section', { class: 'panel', 'aria-labelledby': 'settings-title' },
     el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'settings-title' }, 'Standing rules and budget'),
@@ -3798,12 +3812,15 @@ function projectSettingsScreen(project) {
 /*
  * How work runs (OWNER_UI_V2 screen 9 and section 4): what AIWorks does after Approve and start, the limits each goal of
  * this project was approved with, and what AIWorks never does. Read-only: it explains the existing authority and offers
- * no control of its own. Limits come from the goals' approved declarations (supervisor.mjs `limits`), never a default.
+ * no control of its own. Limits are those in force (supervisor.mjs `limits`): the goals' approved declarations, with repair
+ * rounds from Project settings or the default 3 where a plan names none (`repairRoundsFrom`, AW-002); no other default.
  */
 const LIMIT_WORDS = { slots: (n) => `${plural(n, 'step')} at a time`, maxWorkerRuns: (n) => `at most ${plural(n, 'AI worker run')}`,
   maxRepairRounds: (n) => `at most ${plural(n, 'repair round')} per step`, maxRetriesPerTask: (n) => `at most ${plural(n, 'retry', 'retries')} per step`,
   maxCostUsd: (n) => `at most ${usd(n)} reported`, unknownRunCostUsd: (n) => `a run with no reported cost counts as ${usd(n)}` };
-const limitsText = (limits) => Object.entries(limits ?? {}).filter(([key, value]) => value !== null && LIMIT_WORDS[key]).map(([key, value]) => LIMIT_WORDS[key](value)).join(' · ');
+const ROUNDS_FROM = { project: ' (from Project settings)', default: ' (the default)' };
+const limitsText = (limits, from = 'goal') => Object.entries(limits ?? {}).filter(([key, value]) => value !== null && LIMIT_WORDS[key])
+  .map(([key, value]) => `${LIMIT_WORDS[key](value)}${key === 'maxRepairRounds' ? ROUNDS_FROM[from] ?? '' : ''}`).join(' · ');
 const NEVER = [
   'Changes a protected area, or anything outside what the approved plan allows. Such a result is held and never published, and there is no “allow once”.',
   'Widens a goal’s files, protected areas, limits or budget by itself or from your answer to a decision. That is a new plan version for you to compare and approve.',
@@ -3826,7 +3843,7 @@ function howWorkRuns(project) {
         : 'Release: review only. A checked result is published for your review; merging follows the merge gate you set.'),
       el('h3', {}, 'Limits of the goals here'),
       goals.length ? el('ul', { class: 'settings-links' }, ...goals.map((c) => el('li', {}, el('strong', {}, campaignTitle(c, { inProject: true })),
-        el('div', { class: 'subtext' }, `${limitsText(c.limits) || 'No limits were set for this goal'}. Approved version ${c.authorizationVersion}.`))))
+        el('div', { class: 'subtext' }, `${limitsText(c.limits, c.repairRoundsFrom) || 'No limits were set for this goal'}. Approved version ${c.authorizationVersion}.`))))
         : el('p', { class: 'subtext' }, localProject(project) && localWork(project).length ? 'Each goal here keeps the limits its plan showed on Review when you approved it.'
           : 'No goal is running here, so no goal limits apply yet. Each plan states its limits on Review before you approve it.'),
       el('h3', {}, 'AIWorks never'),

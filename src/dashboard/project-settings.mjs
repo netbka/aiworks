@@ -10,7 +10,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
-import { BUDGET_RANGE, currentSettings, MAX_NOTES, MAX_PROTECTED, projectBudget, projectKey, projectOf, ProjectSettingsError, saveSettings,
+import { BUDGET_RANGE, currentSettings, MAX_NOTES, MAX_PROTECTED, projectBudget, projectKey, projectOf, ProjectSettingsError, REPAIR_ROUNDS_RANGE, saveSettings,
   unallocatedPlanning, UNKNOWN_RUN_RANGE } from '../supervisor/project-settings.mjs';
 import { configuredRepositories } from './projects.mjs';
 import { ownerOnly } from './work-list.mjs';
@@ -60,7 +60,7 @@ function settingsView(store, resolved, now) {
       exhausted: spend.exhausted ? (spend.month?.exhausted && !spend.total?.exhausted ? 'month' : 'total') : null,
       // Planning that names no single project: charged to no project's budget, so shown apart and never in this one's sum.
       unallocated: units(unallocatedPlanning(store, now).total) },
-    limits: { protected: MAX_PROTECTED, notes: MAX_NOTES, budget: BUDGET_RANGE, unknownRun: UNKNOWN_RUN_RANGE } };
+    limits: { protected: MAX_PROTECTED, notes: MAX_NOTES, budget: BUDGET_RANGE, unknownRun: UNKNOWN_RUN_RANGE, repairRounds: REPAIR_ROUNDS_RANGE } };
 }
 
 /** GET /api/v2/projects/:id/settings. Read-only; a missing store is unavailable, never empty settings. */
@@ -79,11 +79,12 @@ const REFUSAL_WORDS = {
 
 /**
  * POST /api/v2/projects/settings: the owner saves a project's settings as the next version. input: { requestId, project,
- * version, protectedAreas, notes, budget: { totalUsd, monthlyUsd, unknownRunCostUsd }, acceptance }. The caller check runs
- * first. A request without `acceptance` keeps the saved mode, so an older page never turns owner acceptance off.
+ * version, protectedAreas, notes, budget: { totalUsd, monthlyUsd, unknownRunCostUsd }, acceptance, limits: { maxRepairRounds } }.
+ * The caller check runs first. A request without `acceptance` keeps the saved mode, so an older page never turns owner
+ * acceptance off; one without `limits` keeps the saved repair rounds. `limits: {}` returns repair rounds to the default.
  */
 export async function saveProjectSettings(dataDir, input, { caller, now = Date.now() } = {}) {
-  const keys = ['requestId', 'project', 'version', 'protectedAreas', 'notes', 'budget', 'acceptance'];
+  const keys = ['requestId', 'project', 'version', 'protectedAreas', 'notes', 'budget', 'acceptance', 'limits'];
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !keys.includes(key)) ||
       !UUID.test(input.requestId ?? '') || typeof input.project !== 'string' || !Number.isSafeInteger(input.version) || input.version < 0) {
     throw fail(400, 'Invalid request.');
@@ -94,11 +95,13 @@ export async function saveProjectSettings(dataDir, input, { caller, now = Date.n
     await ownerOnly(store, caller);
     return store.tx(() => {
       const resolved = resolveProject(store, dataDir, input.project);
-      const saved = saveSettings(store, { project: resolved.key, expectedVersion: input.version, requestId: input.requestId,
+      const saved = currentSettings(store, resolved.key).settings;
+      const result = saveSettings(store, { project: resolved.key, expectedVersion: input.version, requestId: input.requestId,
         settings: { protectedAreas: input.protectedAreas, notes: input.notes, budget: input.budget,
-          acceptance: input.acceptance === undefined ? currentSettings(store, resolved.key).settings.acceptance : input.acceptance } }, now);
-      return { ok: true, duplicate: saved.duplicate, version: saved.version,
-        message: saved.duplicate ? `Version ${saved.version} was already saved; nothing was saved twice.` : `Saved as version ${saved.version}. It applies to the next step AIWorks starts in this project, and who accepts results to the next merge.`,
+          acceptance: input.acceptance === undefined ? saved.acceptance : input.acceptance,
+          limits: input.limits === undefined ? saved.limits : input.limits } }, now);
+      return { ok: true, duplicate: result.duplicate, version: result.version,
+        message: result.duplicate ? `Version ${result.version} was already saved; nothing was saved twice.` : `Saved as version ${result.version}. It applies to the next step AIWorks starts in this project, and who accepts results to the next merge.`,
         view: settingsView(store, resolved, now) };
     });
   } catch (error) {

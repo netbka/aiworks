@@ -11,7 +11,7 @@ import { pendingInstructions } from '../supervisor/instructions.mjs';
 import { answerChange, changeGuidance, changeKey, decisionId, isDecision, recordedDecision, structuredDecision } from '../supervisor/decisions.mjs';
 import { followUp } from '../supervisor/work-list.mjs';
 import { criterionEvidence, MAX_FEEDBACK, OWNER_CHANGES, passedCheck, reviewRecords, unresolvedOf, verifiedReview } from '../supervisor/result-review.mjs';
-import { acceptanceMode } from '../supervisor/project-settings.mjs';
+import { acceptanceMode, effectiveLimits, projectLimitsOf } from '../supervisor/project-settings.mjs';
 import { mergeSettings } from '../supervisor/merge.mjs';
 import { previewManifest, previewSupport, PreviewError, PreviewSessions } from '../supervisor/preview.mjs';
 import { captureSupport, CaptureError } from '../supervisor/preview-capture.mjs';
@@ -20,7 +20,7 @@ import { packageCacheOf } from '../supervisor/preview-packages.mjs';
 import { resolveCheckout, resolveLocalProject } from '../supervisor/project-connect.mjs';
 import { configuredGitCommand } from './merges.mjs';
 import { roleUnavailableReason, runNotCounted } from '../supervisor/adapters/executors.mjs';
-import { campaignLimits } from '../supervisor/campaign.mjs';
+import { repairRoundsSource } from '../supervisor/campaign.mjs';
 import { parseReference } from '../supervisor/reading.mjs';
 import { coordinatorView, LANE as COORDINATOR_LANE, postOwnerMessage } from '../supervisor/coordinator.mjs';
 import { CODE_ROOT, revisionNotMerged, runtimeTrust } from '../supervisor/provenance.mjs';
@@ -139,7 +139,8 @@ function stepRisks(operations, declaration) {
   };
 }
 
-// The limits of a goal as approved, numbers only (campaign.mjs campaignLimits); null where none is set.
+// The limits of a goal in force, numbers only (project-settings.mjs effectiveLimits: the declaration's, with repair rounds
+// from the project's settings or the default when it names none); null where none is set.
 const LIMIT_KEYS = ['slots', 'maxWorkerRuns', 'maxRepairRounds', 'maxRetriesPerTask', 'maxCostUsd', 'unknownRunCostUsd'];
 const limitsOf = (limits) => (limits && typeof limits === 'object' && !Array.isArray(limits)
   ? Object.fromEntries(LIMIT_KEYS.map((key) => [key, Number.isFinite(limits[key]) ? limits[key] : null])) : null);
@@ -163,7 +164,7 @@ function goalVersions(store, c) {
     } else if (versions.length) versions.at(-1).changed.push(row.kind === 'executor-amended' ? 'workers' : 'routing');
   }
   // The newest version's limits are the declaration's own.
-  if (versions.length && versions.at(-1).version === c.authorization_version) versions.at(-1).limits ??= limitsOf(campaignLimits(c.declaration));
+  if (versions.length && versions.at(-1).version === c.authorization_version) versions.at(-1).limits ??= limitsOf(effectiveLimits(store, c.declaration));
   let amendments = [];
   try {
     amendments = store.all('SELECT seq, authorization_version, ops, created_at FROM plan_amendments WHERE campaign_id = ? ORDER BY seq', c.id).map((row) => {
@@ -984,7 +985,7 @@ export function resultReview(store, c, task, spec, config = {}, { records = revi
 function reviewOf(store, c, task, spec, config, records, acceptanceOf) {
   if (!task?.verified_sha) return null;
   const local = isLocalTarget(c.declaration), commit = spec?.deliverable === 'commit';
-  const limits = campaignLimits(c.declaration);
+  const limits = effectiveLimits(store, c.declaration);
   const roundsLeft = limits.maxRepairRounds === null ? null : Math.max(0, limits.maxRepairRounds - task.repair_rounds);
   const base = { verifiedSha: task.verified_sha, local, commit, repairRounds: task.repair_rounds, roundsLeft, criteria: [], findings: [], eyesOn: [],
     unresolved: null, summary: null, reportDigest: null, acceptedAt: null, requestedAt: null, mergeGate: null, canAccept: false, canRequestChanges: false,
@@ -1243,9 +1244,11 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
         blockerReason: c.blocker ? ['budget', 'executors'].includes(c.blocker.kind) ? safeText(String(c.blocker.reason ?? ''), 300) : `Recovery required: ${code(c.blocker.kind) ?? 'blocked'}` : null,
         blockerAction: c.blocker ? ['budget', 'executors'].includes(c.blocker.kind) ? safeText(String(c.blocker.requestedAction ?? ''), 300) : 'Inspect local supervisor status, resolve the recorded blocker, then recheck.' : null,
         controls: workControls(c.control),
-        slots: campaignLimits(c.declaration).slots, phase: status.phase,
-        // The goal's own limits as approved, and its approved versions with what each changed (Project settings, Overview).
-        limits: limitsOf(campaignLimits(c.declaration)), versions: goalVersions(store, c),
+        slots: effectiveLimits(store, c.declaration).slots, phase: status.phase,
+        // The goal's limits in force, and its approved versions with what each changed (Project settings, Overview).
+        // repairRoundsFrom: 'goal' (its declaration), 'project' (Project settings) or 'default' (3), AW-002.
+        limits: limitsOf(effectiveLimits(store, c.declaration)), repairRoundsFrom: repairRoundsSource(c.declaration, projectLimitsOf(store, c.declaration)),
+        versions: goalVersions(store, c),
         runsUsed: status.runsUsed, maxWorkerRuns: status.maxWorkerRuns, recordedCostUsd: status.costUsd,
         // OWNER_WORKSPACE S7: today's totals, with unreported and running runs apart; null, never 0, when nothing reported a cost.
         cost: { reportedUsd: status.costUsd > 0 ? status.costUsd : null, unreportedRuns: status.budget.unknownCostRuns, runningRuns: operations.length },
