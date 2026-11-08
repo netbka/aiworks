@@ -7,6 +7,12 @@ const { Store } = SQLITE ? await import('../../src/supervisor/store.mjs') : {};
 const { Controller } = SQLITE ? await import('../../src/supervisor/controller.mjs') : {};
 const coordinator = SQLITE ? await import('../../src/supervisor/coordinator.mjs') : {};
 
+test('a selected message cannot give the Cursor coordinator access to a repository outside its grant', { skip: skipWithoutSqlite }, () => {
+  const allowed = ['example-org/sampleapp'];
+  assert.deepEqual(coordinator.cursorRepositoryScope([{ repository: 'example-org/sampleapp' }], allowed), allowed);
+  assert.throws(() => coordinator.cursorRepositoryScope([{ repository: 'example-org/unassigned' }], allowed), /outside its configured grant/);
+});
+
 test('Cursor coordinator requires an included model attestation and never falls back to Claude', { skip: skipWithoutSqlite }, async (t) => {
   const env = environment();
   env.config.coordinator = { repositories: ['example-org/sampleapp'], executorKind: 'cursor-cli', model: 'grok-4.7-low',

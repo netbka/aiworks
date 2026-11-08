@@ -498,7 +498,11 @@ if (process.argv[1] && samePath(resolve(process.argv[1]), SELF)) {
   if (action === 'start') process.exitCode = await start(args);
   else if (action === 'start-wait') {
     let requestId = null;
-    const started = await start(args, (id) => { requestId = id; });
+    const started = await start(args, (id) => {
+      requestId = id;
+      // A controller parent binds to this selection, never a later mutable checkout receipt.
+      if (process.send) process.send({ type: 'gate-request', id });
+    });
     process.exitCode = started || await wait({ minutes: 120, pollSeconds: 1, requestId });
   }
   else if (action === 'run') await run(args[0], args.slice(1));

@@ -9,6 +9,7 @@ import { parseReference, resolveSection } from './reading.mjs';
 import { containsSecret } from './coordinator.mjs';
 import { applyEdits } from './release/edit-broker.mjs';
 import { readGateRun, gateHeadProblem } from './gate.mjs';
+import { GateSlotStore, gateHost, gateCheckoutKey } from './gate-slot.mjs';
 
 export const snapshotDigest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const prefix = (entry, path) => path.toLowerCase() === entry.replace(/\/$/, '').toLowerCase()
@@ -124,9 +125,27 @@ export function settleCodeProposal({ git, op, outcome, task, deniedPaths }) {
 
 export function verifyBrokerCheck(op) {
   const evidence = JSON.parse(readFileSync(join(op.run_dir, 'code-check.json'), 'utf8'));
+  const spec = JSON.parse(readFileSync(join(op.run_dir, 'code-check-spec.json'), 'utf8'));
   if (evidence.operationId !== op.id || evidence.sessionId !== op.session_id || evidence.packetDigest !== op.packet_digest
-      || evidence.targetSha !== op.target_sha || typeof evidence.requestId !== 'string') throw Error('Code check identity changed');
-  const run = readGateRun(op.workspace, evidence.requestId);
-  if (!run || run.exit === null || gateHeadProblem(run, op.target_sha)) throw Error('Code check lacks exact-head terminal evidence');
+      || evidence.targetSha !== op.target_sha || typeof evidence.requestId !== 'string'
+      || spec.operationId !== op.id || spec.sessionId !== op.session_id || spec.packetDigest !== op.packet_digest
+      || spec.targetSha !== op.target_sha || spec.workspace !== op.workspace
+      || snapshotDigest(evidence.command) !== snapshotDigest(spec.command)) throw Error('Code check identity changed');
+  return readCodeCheck({ workspace: op.workspace, targetSha: op.target_sha, command: spec.command, requestId: evidence.requestId });
+}
+
+export function assertCodeCheckRequest(request, { workspace, targetSha, command, requestId }) {
+  if (!request || request.id !== requestId || request.checkoutKey !== gateCheckoutKey(workspace)
+      || request.head !== targetSha || request.clean !== true || !['finished', 'failed'].includes(request.state)
+      || request.commandDigest !== snapshotDigest(command)) throw Error('Code check request or configured full command changed');
+}
+
+export function readCodeCheck(expected) {
+  const store = new GateSlotStore(gateHost().root, { readOnly: true });
+  let request;
+  try { request = store.request(expected.requestId); assertCodeCheckRequest(request, expected); }
+  finally { store.close(); }
+  const run = readGateRun(expected.workspace, expected.requestId);
+  if (!run || run.exit === null || run.exit !== request.exit || gateHeadProblem(run, expected.targetSha)) throw Error('Code check lacks exact-head terminal evidence');
   return run;
 }

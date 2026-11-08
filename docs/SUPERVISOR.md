@@ -884,6 +884,10 @@ campaign IDs, explicit model, roles, observed native model name, allowed filesys
 local verification command. It also records the owner's attestation that paid overages are off.
 An absent or mismatched grant enables nothing; an attestation is not a provider billing audit.
 The transport retains subscription login, its model allowlist and both Windows and Linux custody.
+The native CLI allowlist contains only its read-only session todo metadata operation in the empty
+isolated scratch session; it has no host-source or publication capability. Accepted results must
+contain no tool-call events, including that operation. This is a tool-free result contract, not a
+claim that the CLI offers no internal metadata operation.
 
 ```json
 "codeBroker": {
@@ -914,7 +918,9 @@ make retries recognize the same result. Unknown worktree changes are preserved a
 
 The verifier receives every changed file, the complete diff, and the actual full-gate evidence.
 Its gate runs inside the ordinary owned Windows job before the fresh model session. Timeout and
-cancellation contain the check's descendants too. Existing exact-head, independent-verification,
+cancellation contain the check's descendants too. A private parent-child channel pins the selected
+gate request; its durable command digest, checkout and exact head must match before evidence is
+used, so a later same-head gate cannot substitute another command. Existing exact-head, independent-verification,
 publication, workflow-path and merge checks still decide acceptance. This route is an additional
 static-chain capability; it does not make native Windows Cursor or Windows Codex commit roles
 available, add a provider, or enable automatic model routing. A grant never permits deployment.

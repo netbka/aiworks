@@ -3,13 +3,26 @@ import { test } from 'node:test';
 import { writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { codeBrokerPolicy, codeSnapshot, safeCodePath } from '../../src/supervisor/code-broker.mjs';
+import { codeBrokerPolicy, codeSnapshot, safeCodePath, assertCodeCheckRequest, snapshotDigest } from '../../src/supervisor/code-broker.mjs';
+import { gateCheckoutKey } from '../../src/supervisor/gate-slot.mjs';
 import { environment, declaration, skipWithoutSqlite } from './helpers.mjs';
 import { exec } from '../../src/supervisor/adapters/git.mjs';
 import { roleUnavailableReason } from '../../src/supervisor/adapters/executors.mjs';
 import { Store } from '../../src/supervisor/store.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
 import { campaignStart } from '../../src/supervisor/api.mjs';
+
+test('a same-head gate cannot substitute a different command, checkout, or request for the configured full check', (t) => {
+  const env = environment(); t.after(() => env.cleanup());
+  const expected = { workspace: env.repo, targetSha: 'a'.repeat(40), command: ['npm', 'ci', '&&', 'npm', 'run', 'check'], requestId: 'selected-request' };
+  const request = { id: expected.requestId, checkoutKey: gateCheckoutKey(env.repo), head: expected.targetSha, clean: true,
+    state: 'finished', commandDigest: snapshotDigest(expected.command) };
+  assert.doesNotThrow(() => assertCodeCheckRequest(request, expected));
+  for (const change of [{ id: 'another-request' }, { commandDigest: snapshotDigest(['node', '-e', 'process.exit(0)']) },
+    { checkoutKey: 'other' }, { head: 'b'.repeat(40) }, { clean: false }, { state: 'running' }]) {
+    assert.throws(() => assertCodeCheckRequest({ ...request, ...change }, expected), /request or configured full command changed/);
+  }
+});
 
 test('code capability requires the exact campaign, model, role and included-only grant', () => {
   const command = [process.execPath, fileURLToPath(new URL('../../src/supervisor/adapters/cursor-wsl.mjs', import.meta.url)), '--config', 'private.json'];
