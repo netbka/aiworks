@@ -37,7 +37,7 @@ export function priorAttempt(op) {
  */
 export function receiptInputs({ stage, chain, spec, providers, platform, facts, priorAttempts }) {
   const candidates = providers.map((provider) => ({ kind: provider.kind, model: provider.model ?? null, tier: null,
-    researchOnly: provider.researchOnly === true }));
+    researchOnly: provider.researchOnly === true, ...(provider.brokeredCode === true ? { brokeredCode: true } : {}) }));
   return {
     stage, chain,
     task: { deliverable: spec.deliverable, web: webFlag(spec.web) },
@@ -53,7 +53,7 @@ function reasons(candidate, fact, role, { deliverable, web }, platform) {
   if (candidate.researchOnly && deliverable !== 'report') out.push('research-only');
   if (web ? !BROWSER_KINDS.includes(candidate.kind) : candidate.kind === 'agy-cli') out.push('web-mismatch');
   if (!fact.cliConfigured) out.push('cli-not-configured');
-  if (roleUnavailableReason({ kind: candidate.kind, researchOnly: candidate.researchOnly }, role, deliverable, platform, web)) out.push('role-unsupported');
+  if (roleUnavailableReason(candidate, role, deliverable, platform, web)) out.push('role-unsupported');
   if (fact.hostUnavailable) out.push('host-unavailable');
   if (fact.wait) out.push('account-wait');
   return out;
@@ -81,7 +81,7 @@ export function route(inputs) {
     if (candidate.researchOnly && task.deliverable !== 'report') continue;
     if (task.web ? !BROWSER_KINDS.includes(candidate.kind) : candidate.kind === 'agy-cli') continue;
     if (!own.cliConfigured) { earliest(own.cliRecheckAt); continue; }
-    if (roleUnavailableReason({ kind: candidate.kind, researchOnly: candidate.researchOnly }, role, task.deliverable, platform, task.web)) continue;
+    if (roleUnavailableReason(candidate, role, task.deliverable, platform, task.web)) continue;
     if (own.wait) { if (own.wait.retryAt !== null) earliest(own.wait.retryAt); continue; }
     if (candidate.kind === avoid) { fallback ??= candidate; continue; }
     return pick(candidate, avoid ? 'failed-provider-last' : 'declared-order',

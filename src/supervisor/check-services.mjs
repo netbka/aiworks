@@ -21,7 +21,7 @@ const plain = (text) => String(text).replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, ' ').sli
 const SHA = /^[0-9a-f]{40}$/;
 const JOB_ID = /^[0-9a-f-]{36}$/;
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
-const TOKEN = /^[\w.-]{1,64}$/;
+const IDENTIFIER = /^[\w.-]{1,64}$/;
 const DEFAULT_GATE = ['run', 'check'];
 const bounded = (value, low, high, fallback) => (Number.isSafeInteger(value) && value >= low && value <= high ? value : fallback);
 
@@ -29,7 +29,7 @@ const bounded = (value, low, high, fallback) => (Number.isSafeInteger(value) && 
 function serviceProblem(entry) {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return 'is not an object';
   if (!SERVICE_KINDS.includes(entry.kind)) return `has unknown kind ${JSON.stringify(entry.kind)} (known: ${SERVICE_KINDS.join(', ')})`;
-  if (typeof entry.name !== 'string' || !TOKEN.test(entry.name)) return 'needs a name of letters, digits, dot, dash or underscore';
+  if (typeof entry.name !== 'string' || !IDENTIFIER.test(entry.name)) return 'needs a name of letters, digits, dot, dash or underscore';
   let url;
   try { url = new URL(entry.baseUrl); } catch { return 'needs baseUrl, an https address'; }
   if (url.protocol !== 'https:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
@@ -42,7 +42,7 @@ function serviceProblem(entry) {
   }
   for (const [repository, project] of Object.entries(projects)) {
     if (!REPOSITORY.test(repository)) return `has projects key ${JSON.stringify(repository)}, which is not <owner>/<repository>`;
-    if (!TOKEN.test(project?.projectId ?? '') || !TOKEN.test(project?.profile ?? '')) return `needs projectId and profile for ${repository}`;
+    if (!IDENTIFIER.test(project?.projectId ?? '') || !IDENTIFIER.test(project?.profile ?? '')) return `needs projectId and profile for ${repository}`;
   }
   return null;
 }

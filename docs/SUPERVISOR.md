@@ -876,6 +876,64 @@ timeout and abrupt parent death, followed by a real bounded model canary; metada
 
 ## 9. Owner messages and the coordinator
 
+### Optional tool-free Cursor code broker and coordinator
+
+The optional `codeBroker` route lets a Cursor research session propose exact text edits. The model
+still has no file, shell, Git, web or MCP tools. A private operator grant must name the repository,
+campaign IDs, explicit model, roles, observed native model name, allowed filesystem root and full
+local verification command. It also records the owner's attestation that paid overages are off.
+An absent or mismatched grant enables nothing; an attestation is not a provider billing audit.
+The transport retains subscription login, its model allowlist and both Windows and Linux custody.
+The native CLI allowlist contains only its read-only session todo metadata operation in the empty
+isolated scratch session; it has no host-source or publication capability. Accepted results must
+contain no tool-call events, including that operation. This is a tool-free result contract, not a
+claim that the CLI offers no internal metadata operation.
+
+```json
+"codeBroker": {
+  "enabled": true,
+  "repositories": {
+    "example-org/sampleapp": {
+      "campaigns": ["sample-improvements"],
+      "models": ["example-included-model"],
+      "roles": ["implementer", "verification"],
+      "nativeModels": { "example-included-model": "Example Included Model" },
+      "includedOnly": { "attestedBy": "owner", "paidOverages": false, "recordedAt": "2026-01-01" },
+      "allowedRoot": "C:/work",
+      "verificationCommand": ["npm", "ci", "&&", "npm", "run", "check"],
+      "sources": { "T1": ["src/example.mjs", "tests/example.test.mjs"] }
+    }
+  }
+}
+```
+
+The command must be the project's complete documented gate, including dependency preparation.
+It is chosen by the operator, never by the model. `sources` adds explicit pinned source references
+to the task's references; no private or untracked file is read. Source and output sizes are bounded.
+Missing files are identified as absent at the pinned revision; oversized or unsafe input refuses
+dispatch. The broker validates the snapshot digest, exact unique preimages, paths, protected areas
+and operation identity before changing files. It commits in a separate controller-owned worktree
+with ordinary Git hooks, then fast-forwards only the unchanged task branch. Durable intent records
+make retries recognize the same result. Unknown worktree changes are preserved and refused.
+
+The verifier receives every changed file, the complete diff, and the actual full-gate evidence.
+Its gate runs inside the ordinary owned Windows job before the fresh model session. Timeout and
+cancellation contain the check's descendants too. A private parent-child channel pins the selected
+gate request; its durable command digest, checkout and exact head must match before evidence is
+used, so a later same-head gate cannot substitute another command. Existing exact-head, independent-verification,
+publication, workflow-path and merge checks still decide acceptance. This route is an additional
+static-chain capability; it does not make native Windows Cursor or Windows Codex commit roles
+available, add a provider, or enable automatic model routing. A grant never permits deployment.
+
+The read-only coordinator can separately select `executorKind: "cursor-cli"`, an explicit `model`,
+`allowedModels`, the observed `nativeModel`, and the same `includedOnly` attestation object.
+Omit `permissionMode` for this route. It uses bounded pinned public documentation and campaign
+status scoped to its configured repositories, returns the existing coordinator schema through a
+tool-free report, and stores replies locally. There is no fallback to Claude. Cursor intake drafting
+remains unavailable and is reported explicitly. The coordinator still never registers work, changes
+source, publishes, merges or deploys. Both routes require reviewed deployment and a native canary
+before operational use; passing synthetic tests alone is not activation evidence.
+
 The dashboard's **Message coordinator** button, and `cli.mjs message "<text>"`, send the owner's free-text request to a coordinator agent. Task instructions remain the separate per-task channel (section 3, delivered with the next matching worker run).
 
 Each message carries a durable receipt in `owner_messages`, shown in the dashboard's **Messages** view and by `cli.mjs messages`:
