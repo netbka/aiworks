@@ -263,6 +263,9 @@ export function roleUnavailableReason(executor, role, deliverable, platform = pr
   if (web) return executor.kind === 'claude-cli' && !executor.researchOnly ? null
     : 'Web acceptance tasks run only on a browser worker: AGY, or Claude with the isolated browser';
   if (deliverable !== 'commit') return null;
+  // This fact is added only by the controller's explicit repository/campaign/model grant.
+  // The model remains tool-free; a trusted broker applies proposals and runs the full gate.
+  if (executor.kind === 'cursor-cli' && executor.brokeredCode === true && !executor.researchOnly) return null;
   // The gate needs a writable node_modules and temp directory; never widen the verifier's read-only sandbox (#113).
   if (role === 'verification') return executor.kind === 'codex-cli' && platform === 'win32'
     ? "Codex cannot run the repository's tests in its read-only sandbox on Windows" : null;

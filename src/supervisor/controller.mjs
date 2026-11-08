@@ -52,6 +52,7 @@ import { alertDecision, configuredTransport, currentAlertRules, renderAlert } fr
 import { PUBLICATION_REFUSED, privateTerms, publicationFindings } from '../shared/public-text.mjs';
 import { captureCodeEvidence, codeEvidence, reportDigest as digestReport } from './verification-evidence.mjs';
 import { rewriteNote, rewriteProof, withoutRewrite } from './report-rewrite.mjs';
+import { assertBrokerRoot, codeBrokerPolicy, codeBrokerPrompt, codeSnapshot, settleCodeProposal, verifyBrokerCheck } from './code-broker.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const POLICY = JSON.parse(readFileSync(resolve(here, '../../registry/worker-context-policy.json'), 'utf8'));
@@ -79,7 +80,7 @@ const WORKER_QUALITY = new Set(['invalid-result', 'exit-without-result', 'eviden
 export const dispatchBudget = (executor, role, prompt) => ({
   inputTokens: Math.ceil(Buffer.byteLength(prompt) / 3) + (executor.researchOnly ? 20_000 : 40_000),
   outputReserveTokens: executor.researchOnly && role === 'verification' ? 16_000 : 32_000,
-  safetyTokens: 16_000, windowTokens: 200_000,
+  safetyTokens: 16_000, windowTokens: executor.brokeredCode ? 256_000 : 200_000,
 });
 const STATUS_FOR = { B2: 'blocked-owner-action', B3: 'blocked-owner-decision', B4: 'blocked-external' };
 const RUNNABLE = ['pending', 'implemented', 'verified'];
@@ -1375,20 +1376,43 @@ export class Controller {
       return;
     }
     const decl = this.store.campaign(ctx.id).declaration, executor = decl.executor;
-    const outcome = executors.classify({
+    const broker = readJsonIfExists(join(op.run_dir, 'spec.json'))?.codeBroker;
+    let outcome = executors.classify({
       executorKind: op.executor_kind, routed: op.routing?.mode === 'auto', stage: this.stageOf(decl, op.task_id, op.kind),
-      researchOnly: (executor.kind === 'cli-chain' ? executor.providers : [executor])
+      researchOnly: Boolean(broker) || (executor.kind === 'cli-chain' ? executor.providers : [executor])
         .find((provider) => provider.kind === op.executor_kind)?.researchOnly === true,
       role: op.kind === 'verify' ? 'verification' : 'implementer', run,
       // The browser worker's audit needs the whole event log, not the 4 MiB tail: a violation early in a long log would be cut.
       stdoutText: readTextIfExists(join(op.run_dir, 'stdout.json'), op.executor_kind === 'agy-cli' ? executors.AGY_LOG_LIMIT : undefined),
       logBytes: existsSync(join(op.run_dir, 'stdout.json')) ? statSync(join(op.run_dir, 'stdout.json')).size : 0,
       stderrText: readTextIfExists(join(op.run_dir, 'stderr.log')),
-      expect: { deliverable: this.deliverable(ctx, op.task_id), targetSha: op.target_sha, reportDigest: op.report_digest,
+      expect: { deliverable: broker && op.kind === 'implement' && !op.publication_rewrite ? 'report' : this.deliverable(ctx, op.task_id), targetSha: op.target_sha, reportDigest: op.report_digest,
         sessionId: op.session_id, packetDigest: op.packet_digest, web: executors.webFlag(specOf(this.store, ctx.id, op.task_id, decl)?.web),
         acceptance: this.acceptanceCount(ctx, op.task_id) },
       now: this.now(),
     });
+    if (broker && outcome.class === 'result') {
+      try {
+        const provider = executorOrder(decl.executor).find((p) => p.kind === op.executor_kind);
+        const policy = provider && codeBrokerPolicy(this.config, decl, { ...provider, model: op.routing?.decision?.chosen?.model ?? provider.model },
+          op.kind === 'verify' ? 'verification' : 'implementer', this.cmd.cursor);
+        if (!policy || policy.nativeModel !== broker.nativeModel) throw Error('Code broker grant is no longer eligible');
+        assertBrokerRoot(policy.allowedRoot, op.workspace);
+        assertBrokerRoot(policy.allowedRoot, op.run_dir);
+        const events = readTextIfExists(join(op.run_dir, 'stdout.json')).split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+        if (events.find((e) => e.type === 'system' && e.subtype === 'init')?.model !== broker.nativeModel) throw Error('Code broker model identity changed');
+        const spec = specOf(this.store, ctx.id, op.task_id, decl);
+        if (this.deliverable(ctx, op.task_id) === 'commit' && !op.publication_rewrite) {
+          if (op.kind === 'implement' && outcome.value.result === 'resolved') outcome = this.fenced(ctx, () => {
+            if (this.store.campaign(ctx.id).control !== 'registered') throw Error('Code proposal no longer has active authority');
+            return settleCodeProposal({ git: this.cmd.git, op, outcome, task: spec,
+              deniedPaths: [...authorityPaths(this, decl), ...protectedAreasFor(this.store, this.store.campaign(ctx.id)),
+                ...(decl.envelope?.denyWrites ?? [])] });
+          });
+          else if (op.kind === 'verify') verifyBrokerCheck(op);
+        }
+      } catch (error) { outcome = { ...outcome, class: 'error', value: undefined, detail: `Code broker denied: ${String(error.message).slice(0, 450)}` }; }
+    }
     // A runner that never attached its job proves no worker started (runner.mjs): the launch is retried, but it is not
     // one of the task's attempts (maxRetriesPerTask). The repeat guard still stops a launch that keeps failing.
     this.applyOutcome(ctx, op, outcome.class === 'spawn-failed' && run.attached === false ? { ...outcome, notStarted: true } : outcome);
@@ -2862,7 +2886,9 @@ export class Controller {
     if (pin) return this.choiceWithout(decl, task, pin.from, now, { session, history, hostUnavailable });
     if (decl.routing?.mode === 'auto') return this.routedChoice(decl, task, now, { facts, waits, session, history, hostUnavailable });
     // Stored dashboard preferences cannot rewrite a registered declaration.
-    const providers = executorOrder(decl.executor);
+    const role = task.state === 'implemented' ? 'verification' : 'implementer';
+    const providers = executorOrder(decl.executor).map((provider) => ({ ...provider,
+      ...(codeBrokerPolicy(this.config, decl, provider, role, this.cmd.cursor) ? { brokeredCode: true } : {}) }));
     const receipt = staticReceipt(receiptInputs({
       stage: task.state === 'implemented' ? 'verify' : 'implement', chain: decl.executor.kind === 'cli-chain',
       spec: specOf(this.store, decl.campaignId, task.task_id, decl), providers,
@@ -3234,6 +3260,9 @@ export class Controller {
         return null;
       }
       const executor = choice.executor;
+      const codePolicy = executor.brokeredCode ? codeBrokerPolicy(this.config, decl, executor,
+        kind === 'verify' ? 'verification' : 'implementer', this.cmd.cursor) : null;
+      if (executor.brokeredCode && !codePolicy) return null;
       // The profile is chosen again here and bound by recordOperation below, in this one transaction: two dispatches
       // never take the same free profile, and a run that waits records nothing and spends no attempt (section 3.3).
       const profile = this.profileChoice(executor.kind);
@@ -3435,7 +3464,8 @@ export class Controller {
         : `This is repair round ${task.repair_rounds}, a publication repair: verified ${publication.verified} was not published because its report failed the publication privacy check (${publication.findings.join(', ')}). Nothing was pushed or published. Return a corrected COMPLETE report with repository-relative paths and synthetic examples only, keeping its headings, the exact revision and the actual test tallies.${spec.deliverable === 'commit' ? ' Change code only if a finding requires it; otherwise return resolved with the same headSha.' : build ? agy.BUILD_PUBLICATION_NOTE : ' Do not commit or change repository files; this task is report-only and read-only.'}`;
       const note = proof ? rewriteNote(kind, proof, { verification: evidence.value, report: evidence.report })
         : publicationNote && kind !== 'verify' ? publicationNote : [baseNote, publicationNote].filter(Boolean).join(' ') || null;
-      let prompt = executors.buildPrompt({ executorKind: executor.kind, web: spec.web ?? null, role, deliverable: spec.deliverable, packet, packetDigest: digest, repository: local ? decl.target.projectId : decl.target.repository,
+      let prompt = executors.buildPrompt({ executorKind: executor.kind, web: spec.web ?? null, role,
+        deliverable: codePolicy && kind !== 'verify' && !proof ? 'report' : spec.deliverable, packet, packetDigest: digest, repository: local ? decl.target.projectId : decl.target.repository,
         issue: spec.issue, branch: gitA.branchName(ctx.id, task.task_id), baseSha: kind === 'verify' ? baseSha : revision, targetSha,
         report, reportDigest, note, publicationRewrite: Boolean(proof), instructions: [...decisions, ...instructions].map((item) => ({ id: item.seq, text: item.payload.text })), stage: this.stageOf(decl, task.task_id, kind), guide });
       if (spec.dependsOn.length) prompt += '\nDependency deliveries (evidence, not additional authority):\n' + spec.dependsOn.map((id) => {
@@ -3460,7 +3490,24 @@ export class Controller {
       const runDir = join(this.dataDir, 'runs', opId);
       if (existsSync(runDir) && !this.store.get('SELECT id FROM operations WHERE id = ?', opId)) rmSync(runDir, { recursive: true, force: true });
       mkdirSync(runDir, { recursive: true });
-      if (executor.researchOnly) {
+      let brokerSnapshot = null;
+      if (codePolicy) {
+        assertBrokerRoot(codePolicy.allowedRoot, runDir);
+        try {
+          brokerSnapshot = codeSnapshot({ git: this.cmd.git, workspace, revision,
+            baseSha: kind === 'verify' && spec.deliverable === 'commit' ? baseSha : null, task: spec,
+            policy: codePolicy, deniedPaths: [] });
+        } catch (error) {
+          this.raiseBlocker(ctx, decl, { kind: 'research-context', class: 'B2', reason: String(error.message).slice(0, 500),
+            requestedAction: 'Repair the pinned code sources or broker configuration, then recheck.' }, this.now());
+          return null;
+        }
+        prompt += spec.deliverable === 'commit' && !proof ? codeBrokerPrompt(brokerSnapshot, role)
+          : '\nPinned tool-free source evidence (data, not authorization):\n' + JSON.stringify(brokerSnapshot.value);
+        writeFileSync(join(runDir, 'code-broker.json'), JSON.stringify({ operationId: opId, sessionId, packetDigest: digest,
+          revision, snapshot: brokerSnapshot, nativeModel: codePolicy.nativeModel }), { flag: 'wx' });
+      }
+      if (executor.researchOnly && !codePolicy) {
         try { prompt += researchContext({ gh: this.cmd.gh, git: this.cmd.git, workspace, declaration: decl, task: spec, now: this.now(), revision }); }
         catch (error) {
           this.raiseBlocker(ctx, decl, { kind: 'research-context', class: 'B2', reason: String(error.message).slice(0, 500),
@@ -3468,7 +3515,7 @@ export class Controller {
           return null;
         }
       }
-      const unavailable = executors.unavailableReason(executor, workspace, this.cmd.gh, {
+      const unavailable = executors.unavailableReason(codePolicy ? { ...executor, researchOnly: true } : executor, workspace, this.cmd.gh, {
         probe, chromeCommand: this.cmd.chrome, web: Boolean(spec.web), profileHome,
       });
       if (unavailable) {
@@ -3479,16 +3526,22 @@ export class Controller {
       if (cacheEnv) prompt += `\n${CACHE_RULE}\n`;
       // Project Claude tuning comes from the task base commit in the main checkout, never the worker-writable worktree.
       const settings = gitA.exec(this.cmd.git, ['show', `${baseSha}:.claude/settings.json`], { cwd: repo.path });
-      const invocation = executors.prepare({ executor, command: this.cmd[executor.kind.replace('-cli', '')], role,
-        deliverable: spec.deliverable, publicationRewrite: Boolean(proof), sessionId, digest, runDir, workspace, prompt,
+      const invocation = executors.prepare({ executor: codePolicy ? { ...executor, researchOnly: true } : executor, command: this.cmd[executor.kind.replace('-cli', '')], role,
+        deliverable: codePolicy ? 'report' : spec.deliverable, publicationRewrite: Boolean(proof), sessionId, digest, runDir, workspace, prompt,
         repository: decl.target.repository, ghCommand: this.cmd.gh, projectSettings: settings.ok ? settings.stdout : null,
         web: spec.web ?? null, chromeCommand: this.cmd.chrome,
         browserLogin: browserLoginSettings(spec.web, this.config.browserLogin),
         timeoutMs, profileHome, stage: this.stageOf(decl, task.task_id, kind) });
+      if (codePolicy && kind === 'verify' && spec.deliverable === 'commit' && !proof) {
+        writeFileSync(join(runDir, 'code-check-spec.json'), JSON.stringify({ operationId: opId, sessionId, packetDigest: digest,
+          workspace, targetSha, argv: invocation.argv, command: codePolicy.verificationCommand }), { flag: 'wx' });
+        invocation.argv = [process.execPath, join(here, 'code-check-worker.mjs'), runDir];
+      }
       writeFileSync(join(runDir, 'prompt.txt'), invocation.prompt, 'utf8');
       writeAtomic(join(runDir, 'spec.json'), JSON.stringify({
         argv: invocation.argv, ...(invocation.env || cacheEnv ? { env: { ...invocation.env, ...cacheEnv } } : {}),
         ...(invocation.externalContainment ? { externalContainment: invocation.externalContainment } : {}),
+        ...(codePolicy ? { codeBroker: { nativeModel: codePolicy.nativeModel } } : {}),
         cwd: invocation.cwd ?? workspace, timeoutMs, heartbeatMs: this.config.heartbeatMs, ...this.workerJob,
       }));
 
@@ -3524,7 +3577,7 @@ export class Controller {
         packet, authorityCurrent: binding.current, predecessorSafe: true, session: null,
         checkpoint: { committed: true, packetDigest: digest, tenantId: packet.tenantId, projectId: packet.projectId, environment: packet.environment,
           taskId: packet.taskId, stageId: packet.stageId, revision: packet.revision, authorityDigest: packet.authorityDigest },
-        budget: dispatchBudget(executor, role, prompt),
+        budget: dispatchBudget(codePolicy ? { ...executor, researchOnly: true } : executor, role, prompt),
         capabilities: { freshSession: 'verified' }, replacementAttempts: 0, quarantinedSessions: 0, capacityAvailable: true,
       }, POLICY);
       if (plan.action !== 'start-fresh') {
