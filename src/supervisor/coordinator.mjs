@@ -743,22 +743,8 @@ async function reconcile(ctl, ctx, cfg, run) {
       setBlocked(ctl, 'Cursor run custody receipt is missing or mismatched; the run remains unresolved');
       return;
     }
-    const digest = spec.packetDigest;
-    const adapted = classifyExecutor({ executorKind: 'cursor-cli', role: 'implementer', deliverable: 'report', researchOnly: true,
-      run: result, stdoutText: readTextIfExists(join(run.run_dir, 'stdout.json')), stderrText: readTextIfExists(join(run.run_dir, 'stderr.log')),
-      expect: { sessionId: run.session_id, packetDigest: digest, deliverable: 'report' }, now,
-      strip: (report) => typeof report === 'string' ? { result: 'resolved', summary: 'Coordinator report', report } : report });
-    if (adapted.class !== 'result') outcome = { class: adapted.class === 'exit-without-result' ? 'invalid-result' : adapted.class };
-    else {
-      let value;
-      try { value = JSON.parse(adapted.value.report); } catch { value = null; }
-      let modelMatches = false;
-      try { modelMatches = readTextIfExists(join(run.run_dir, 'stdout.json')).split(/\r?\n/).filter(Boolean).map(JSON.parse)
-        .find((e) => e.type === 'system' && e.subtype === 'init')?.model === spec.nativeModel; } catch { /* malformed */ }
-      const scope = new Set((spec.repositories ?? []).map((r) => r.toLowerCase()));
-      outcome = modelMatches && value && validate(value) && value.newWork.every((item) => scope.has(item.repository.toLowerCase()))
-        ? { class: 'result', value, costUsd: adapted.receipt?.costUsd ?? null } : { class: 'invalid-result' };
-    }
+    outcome = classifyCursorCoordinator({ run, spec, result, now,
+      stdoutText: readTextIfExists(join(run.run_dir, 'stdout.json')), stderrText: readTextIfExists(join(run.run_dir, 'stderr.log')) });
   } else outcome = result.containment === 'windows-job-v1' && result.containmentStopped === true
     ? classify({ run: result, stdoutText: readTextIfExists(join(run.run_dir, 'stdout.json')), stderrText: readTextIfExists(join(run.run_dir, 'stderr.log')),
       sessionId: run.session_id, check: isIntake(run) ? validateIntake : validate })
@@ -773,6 +759,23 @@ async function reconcile(ctl, ctx, cfg, run) {
     return;
   }
   finish(ctl, ctx, cfg, run, outcome);
+}
+
+// Keep the executor's normal nullable-envelope normalization. The native schema requires
+// optional report fields as null; replacing that normalization rejects otherwise valid reads.
+export function classifyCursorCoordinator({ run, spec, result, stdoutText, stderrText, now }) {
+  const adapted = classifyExecutor({ executorKind: 'cursor-cli', role: 'implementer', deliverable: 'report', researchOnly: true,
+    run: result, stdoutText, stderrText,
+    expect: { sessionId: run.session_id, packetDigest: spec.packetDigest, deliverable: 'report' }, now });
+  if (adapted.class !== 'result') return { class: adapted.class === 'exit-without-result' ? 'invalid-result' : adapted.class };
+  let value;
+  try { value = JSON.parse(adapted.value.report); } catch { value = null; }
+  let modelMatches = false;
+  try { modelMatches = stdoutText.split(/\r?\n/).filter(Boolean).map(JSON.parse)
+    .find((e) => e.type === 'system' && e.subtype === 'init')?.model === spec.nativeModel; } catch { /* malformed */ }
+  const scope = new Set((spec.repositories ?? []).map((r) => r.toLowerCase()));
+  return modelMatches && value && validate(value) && value.newWork.every((item) => scope.has(item.repository.toLowerCase()))
+    ? { class: 'result', value, costUsd: adapted.receipt?.costUsd ?? null } : { class: 'invalid-result' };
 }
 
 const VIOLATION_REASON = 'a coordinator run changed its checkout or the live runtime; nothing it produced was posted. Inspect and restore the checkout, then run: node src/supervisor/cli.mjs coordinator-clear --data <supervisor data dir>';
