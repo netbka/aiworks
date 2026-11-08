@@ -451,6 +451,22 @@ function classifyStaged({ stage = null, ...args }) {
   return outcome.class === 'result' ? { ...outcome, value: { ...outcome.value, ...extra } } : outcome;
 }
 
+function cursorTransportEvent(event, sessionId) {
+  if (event.session_id !== sessionId || !Number.isFinite(event.timestamp_ms)) return false;
+  const common = ['type', 'subtype', 'session_id', 'timestamp_ms'];
+  let fields;
+  if (event.type === 'connection' && event.subtype === 'reconnected') fields = common;
+  else if (event.type === 'connection' && event.subtype === 'reconnecting') {
+    if (!Number.isSafeInteger(event.attempt) || event.attempt < 1) return false;
+    try { const url = new URL(event.endpoint_url); if (url.protocol !== 'https:' || url.username || url.password) return false; } catch { return false; }
+    fields = [...common, 'attempt', 'endpoint_url'];
+  } else if (event.type === 'retry' && event.subtype === 'starting') {
+    if (!Number.isSafeInteger(event.attempt) || event.attempt < 1 || typeof event.is_resume !== 'boolean') return false;
+    fields = [...common, 'attempt', 'is_resume'];
+  } else return false;
+  return Object.keys(event).every((key) => fields.includes(key));
+}
+
 function classifyRun({ executorKind, strip = null, ...args }) {
   const kind = nativeKind(executorKind);
   // The per-run readers a Codex worker may be given: the GitHub reader, or the work-list reader of the self-hosted
@@ -490,7 +506,9 @@ function classifyRun({ executorKind, strip = null, ...args }) {
         const events = stdoutText.split(/\r?\n/).filter((line) => line.trim()).map((line) => JSON.parse(line));
         const init = events.filter((event) => event.type === 'system' && event.subtype === 'init');
         const results = events.filter((event) => event.type === 'result');
-        researchToolUsed = events.some((event) => event.type === 'thinking'
+        researchToolUsed = events.some((event) => ['connection', 'retry'].includes(event.type)
+          ? !cursorTransportEvent(event, init[0]?.session_id)
+          : event.type === 'thinking'
           ? event.session_id !== init[0]?.session_id || !Number.isFinite(event.timestamp_ms) ||
             (event.subtype === 'delta' ? typeof event.text !== 'string' : event.subtype !== 'completed') ||
             Object.keys(event).some((key) => !['type', 'subtype', 'session_id', 'timestamp_ms', ...(event.subtype === 'delta' ? ['text'] : [])].includes(key))
