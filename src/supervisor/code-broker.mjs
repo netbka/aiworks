@@ -7,7 +7,7 @@ import { isCursorWsl } from './adapters/cursor-wsl.mjs';
 import { safeResearchPath } from './adapters/research-context.mjs';
 import { parseReference, resolveSection } from './reading.mjs';
 import { containsSecret } from './coordinator.mjs';
-import { applyEdits } from './edit-broker.mjs';
+import { applyEdits } from './release/edit-broker.mjs';
 import { readGateRun, gateHeadProblem } from './gate.mjs';
 
 export const snapshotDigest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');

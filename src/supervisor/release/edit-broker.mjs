@@ -2,8 +2,8 @@ import { createHash } from 'node:crypto';
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { containsSecret } from './coordinator.mjs';
-import { writeAtomic } from './proc.mjs';
+import { containsSecret } from '../coordinator.mjs';
+import { writeAtomic } from '../proc.mjs';
 
 const MAX_EDITS = 32;
 const MAX_BYTES = 512 * 1024;
