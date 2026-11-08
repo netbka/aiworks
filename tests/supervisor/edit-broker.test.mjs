@@ -77,7 +77,7 @@ test('disjoint base edits share one crash-safe file image; overlap and aliases n
   const f = fixture();
   try {
     const first = { path: 'note.txt', before: 'first line', after: 'second line' };
-    const second = { path: 'note.txt', before: 'second line', after: 'last line' };
+    const second = { path: 'note.txt', before: 'second line', after: 'last line $& $$ $` $\'' };
     for (const edits of [[first, first], [first, { ...second, path: 'NOTE.txt' }],
       [first, { ...second, before: 'line' }],
       [{ path: 'new.txt', before: '', after: 'one' }, { path: 'new.txt', before: '', after: 'two' }]]) {
@@ -88,7 +88,7 @@ test('disjoint base edits share one crash-safe file image; overlap and aliases n
     assert.throws(() => applyEdits({ ...input, checkpoint: (at) => { if (at === 'commit') throw Error('crash'); } }), /crash/);
     const result = applyEdits(input);
     assert.equal(applyEdits(input).headSha, result.headSha);
-    assert.equal(readFileSync(join(f.workspace, 'note.txt'), 'utf8').replaceAll('\r\n', '\n'), 'second line\nlast line\n');
+    assert.equal(readFileSync(join(f.workspace, 'note.txt'), 'utf8').replaceAll('\r\n', '\n'), 'second line\nlast line $& $$ $` $\'\n');
     assert.equal(git(f.workspace, 'rev-list', '--count', `${f.input.baseSha}..HEAD`), '1');
   } finally { f.cleanup(); }
 });

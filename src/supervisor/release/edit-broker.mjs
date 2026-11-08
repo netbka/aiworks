@@ -196,7 +196,7 @@ export function applyEdits({ git = ['git'], workspace, runDir, operationId, sess
       const work = readFileSync(join(workspace, ...edit.path.split('/')), 'utf8');
       const crlf = work !== base.content && !base.content.includes('\r') && work.replaceAll('\r\n', '\n') === base.content;
       if (work !== base.content && !crlf) fail('workspace file differs from base image');
-      const blobImage = base.content.replace(edit.before, edit.after);
+      const blobImage = base.content.replace(edit.before, () => edit.after);
       const afterImage = blobImage;
       secretFree(blobImage);
       return { ...edit, existed: true, baseMode: base.mode, beforeImage: base.content, afterImage, blobImage };
