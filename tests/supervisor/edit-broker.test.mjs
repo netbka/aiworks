@@ -72,3 +72,23 @@ test('refuses a stale or concurrently advanced branch without applying edits', (
     assert.equal(readFileSync(join(f.workspace, 'note.txt'), 'utf8'), 'first line\nsecond line\n');
   } finally { f.cleanup(); }
 });
+
+test('disjoint base edits share one crash-safe file image; overlap and aliases never mutate it', () => {
+  const f = fixture();
+  try {
+    const first = { path: 'note.txt', before: 'first line', after: 'second line' };
+    const second = { path: 'note.txt', before: 'second line', after: 'last line $& $$ $` $\'' };
+    for (const edits of [[first, first], [first, { ...second, path: 'NOTE.txt' }],
+      [first, { ...second, before: 'line' }],
+      [{ path: 'new.txt', before: '', after: 'one' }, { path: 'new.txt', before: '', after: 'two' }]]) {
+      assert.throws(() => applyEdits({ ...f.input, allowedPaths: ['note.txt', 'new.txt'], edits }));
+      assert.equal(git(f.workspace, 'status', '--porcelain=v1'), '');
+    }
+    const input = { ...f.input, edits: [second, first] };
+    assert.throws(() => applyEdits({ ...input, checkpoint: (at) => { if (at === 'commit') throw Error('crash'); } }), /crash/);
+    const result = applyEdits(input);
+    assert.equal(applyEdits(input).headSha, result.headSha);
+    assert.equal(readFileSync(join(f.workspace, 'note.txt'), 'utf8').replaceAll('\r\n', '\n'), 'second line\nlast line $& $$ $` $\'\n');
+    assert.equal(git(f.workspace, 'rev-list', '--count', `${f.input.baseSha}..HEAD`), '1');
+  } finally { f.cleanup(); }
+});

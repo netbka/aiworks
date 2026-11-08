@@ -52,12 +52,12 @@ function validateEdits(edits, allowedPaths, deniedPaths) {
   const allowSet = new Set(allowed.map((p) => p.folded));
   if (new Set(allowed.map((p) => p.folded)).size !== allowed.length) fail('duplicate allowlist path');
   let bytes = 0;
-  const seen = new Set();
+  const seen = new Map();
   const normalized = edits.map((edit) => {
     if (!edit || typeof edit !== 'object' || Array.isArray(edit) || typeof edit.before !== 'string' || typeof edit.after !== 'string' || Object.keys(edit).sort().join(',') !== 'after,before,path' || edit.before.includes('\0') || edit.after.includes('\0')) fail('invalid edit');
     const { path, folded } = canonicalPath(edit.path);
-    if (seen.has(folded)) fail('duplicate edit path');
-    seen.add(folded);
+    if (seen.has(folded) && seen.get(folded) !== path) fail('aliased edit path');
+    seen.set(folded, path);
     if (!allowSet.has(folded) || denied.some((p) => folded === p.folded || folded.startsWith(`${p.folded}/`))) fail('path outside authorized scope');
     if (edit.before.length === 0 && edit.after.length === 0) fail('empty edit');
     bytes += Buffer.byteLength(edit.before) + Buffer.byteLength(edit.after);
@@ -90,6 +90,30 @@ function trackedBlob(git, workspace, baseSha, path) {
   const match = /^([0-7]{6}) blob ([0-9a-f]{40})\t(.+)$/.exec(entry);
   if (!match || match[3] !== path || !['100644', '100755'].includes(match[1])) fail('base path is not a regular file');
   return { mode: match[1], content: run(git, workspace, ['cat-file', 'blob', match[2]]).toString('utf8') };
+}
+
+// Every preimage refers to the pinned base, never to a preceding edit's output.
+// Collapse disjoint ranges into one durable file image before any mutation.
+function fileEdits(git, workspace, baseSha, edits) {
+  const groups = new Map();
+  for (const edit of edits) {
+    if (!groups.has(edit.path)) groups.set(edit.path, []);
+    groups.get(edit.path).push(edit);
+  }
+  return [...groups.values()].map((group) => {
+    if (group.length === 1) return group[0];
+    const base = trackedBlob(git, workspace, baseSha, group[0].path);
+    if (!base) fail('multiple edits cannot create the same file');
+    const ranges = group.map((edit) => {
+      const start = base.content.indexOf(edit.before);
+      if (!edit.before || start < 0 || base.content.indexOf(edit.before, start + 1) !== -1) fail('before text must be one exact base substring');
+      return { ...edit, start, end: start + edit.before.length };
+    }).sort((a, b) => a.start - b.start);
+    for (let i = 1; i < ranges.length; i++) if (ranges[i].start < ranges[i - 1].end) fail('overlapping base edits');
+    let after = base.content;
+    for (const edit of ranges.reverse()) after = after.slice(0, edit.start) + edit.after + after.slice(edit.end);
+    return { ...group[0], before: base.content, after };
+  });
 }
 function treeMode(git, workspace, tree, path) {
   const entry = run(git, workspace, ['ls-tree', '-z', tree, '--', path]).toString('utf8').replace(/\0$/, '');
@@ -160,7 +184,7 @@ export function applyEdits({ git = ['git'], workspace, runDir, operationId, sess
     if (str(run(git, workspace, ['symbolic-ref', '--quiet', '--short', 'HEAD'])) !== expectedBranch) fail('workspace is not on its expected task branch');
     if (head !== baseSha) fail('workspace head differs from pinned base');
     if (statusPaths(git, workspace).length) fail('workspace is not clean');
-    const entries = normalized.map((edit) => {
+    const entries = fileEdits(git, workspace, baseSha, normalized).map((edit) => {
       const base = trackedBlob(git, workspace, baseSha, edit.path);
       if (base === null) {
         if (edit.before !== '' || checkNoLinks(workspace, edit.path, { mayBeMissing: true })) fail('new file must be absent at base and in workspace');
@@ -172,7 +196,7 @@ export function applyEdits({ git = ['git'], workspace, runDir, operationId, sess
       const work = readFileSync(join(workspace, ...edit.path.split('/')), 'utf8');
       const crlf = work !== base.content && !base.content.includes('\r') && work.replaceAll('\r\n', '\n') === base.content;
       if (work !== base.content && !crlf) fail('workspace file differs from base image');
-      const blobImage = base.content.replace(edit.before, edit.after);
+      const blobImage = base.content.replace(edit.before, () => edit.after);
       const afterImage = blobImage;
       secretFree(blobImage);
       return { ...edit, existed: true, baseMode: base.mode, beforeImage: base.content, afterImage, blobImage };
