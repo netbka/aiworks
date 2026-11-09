@@ -1330,13 +1330,22 @@ export class Controller {
     if (dropped > 0) this.store.journal(ctx.id, 'product-defect-dropped', { op: op.id, task: op.task_id, dropped }, now);
     if (!valid.length) return;
     const decl = this.store.campaign(ctx.id).declaration, sha = op.target_sha;
-    const norm = (text) => String(text).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    // Letters and digits of any script count, so a title in Russian keys on its words; one with none keys on itself.
+    const norm = (text) => {
+      const plain = String(text).normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+      return plain || String(text).trim();
+    };
+    // The verifier's text is quoted as code: it cannot mention anyone, link or render HTML where it is published.
+    const quote = (text) => {
+      const fence = '`'.repeat(Math.max(3, ...(String(text).match(/`+/g) ?? []).map((run) => run.length + 1)));
+      return `${fence}text\n${text}\n${fence}`;
+    };
     for (const defect of valid) {
       const key = createHash('sha256').update(`${norm(defect.component)}\n${norm(defect.title)}`, 'utf8').digest('hex').slice(0, 16);
       const title = `Product defect in ${defect.component}: ${defect.title}`.slice(0, 256);
-      const body = [`The independent verifier of ${ctx.id}/${op.task_id} found this defect outside the task's write scope at \`${sha}\`. It did not change that task's verdict and widens no scope or authority; plan its repair as separate work.`, '',
-        `**Component:** ${defect.component}`, '', '**Evidence:**', defect.evidence, '', '**Minimal reproduction:**', defect.reproduction, '',
-        '**Proposed scope:**', defect.proposedScope, '', '**Acceptance:**', defect.acceptance].join('\n');
+      const body = [`The independent verifier of ${ctx.id}/${op.task_id} found this defect outside the task's write scope at \`${sha}\`. It did not change that task's verdict and widens no scope or authority; plan its repair as separate work.`,
+        ...[['Title', defect.title], ['Component', defect.component], ['Evidence', defect.evidence], ['Minimal reproduction', defect.reproduction],
+          ['Proposed scope', defect.proposedScope], ['Acceptance', defect.acceptance]].flatMap(([label, text]) => ['', `**${label}:**`, quote(text)])].join('\n');
       const fallbackTitle = `Product defect found by ${ctx.id}/${op.task_id}`.slice(0, 256);
       const fallback = `The independent verifier of ${ctx.id}/${op.task_id} found a product defect outside the task's write scope at \`${sha}\`. Its text was refused by the credential check; it is kept in the verify operation's result.`;
       let where;
@@ -1348,7 +1357,7 @@ export class Controller {
           where = 'not recorded: GitHub comments are off';
         } else {
           const outboxKey = `${ctx.id}:product-defect:${key}`;
-          const text = `**${title}**\n\n${body}`;
+          const text = `**Product defect outside the task's write scope**\n\n${body}`;
           this.enqueue(ctx.id, outboxKey, decl, containsSecret(text) ? `**${fallbackTitle}**\n\n${fallback}` : text, now);
           where = `outbox:${outboxKey}`;
         }

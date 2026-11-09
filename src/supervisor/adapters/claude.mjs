@@ -64,20 +64,15 @@ export const CRITERIA_RULE = 'Also return verdictSummary = one or two plain sent
 
 // Owner decision (work item "independent failure analyst", routing 2): a defect the verifier finds in this repository's
 // product OUTSIDE the task's write scope. Optional and never part of the task's own verdict: the controller records each
-// one once as a work item linked to the campaign, task and exact SHA (recordProductDefects). An entry that does not fit is
-// dropped there with a journal entry; it never invalidates the verdict.
-const DEFECT_TEXT = { type: 'string', maxLength: 2000 };
+// one once as a work item linked to the campaign, task and exact SHA (recordProductDefects). The schema sent to workers
+// (--json-schema) carries no length or count limit, so an oversized entry can never fail the verifier run: the limits
+// below are applied by productDefectsOf, which shortens long text, keeps the first MAX_PRODUCT_DEFECTS entries and drops an
+// entry of the wrong shape with a journal entry. It never invalidates the verdict.
+const PRODUCT_DEFECT_FIELDS = Object.freeze({ title: 200, component: 120, evidence: 2000, reproduction: 2000, proposedScope: 2000, acceptance: 2000 });
 export const PRODUCT_DEFECT_SCHEMA = {
   type: 'object', additionalProperties: false,
-  required: ['title', 'component', 'evidence', 'reproduction', 'proposedScope', 'acceptance'],
-  properties: {
-    title: { type: 'string', maxLength: 200 },
-    component: { type: 'string', maxLength: 120 },
-    evidence: DEFECT_TEXT,
-    reproduction: DEFECT_TEXT,
-    proposedScope: DEFECT_TEXT,
-    acceptance: DEFECT_TEXT,
-  },
+  required: Object.keys(PRODUCT_DEFECT_FIELDS),
+  properties: Object.fromEntries(Object.keys(PRODUCT_DEFECT_FIELDS).map((key) => [key, { type: 'string' }])),
 };
 export const MAX_PRODUCT_DEFECTS = 5;
 export const PRODUCT_DEFECT_RULE = `If you find a defect in this repository's product OUTSIDE this task's write scope (not caused by this change and not fixable within it), do not reject the task for it and do not ask for it to be fixed here: report it in productDefects as { title, component (the affected module or feature, for example a source path), evidence (what you observed at the target commit), reproduction (the minimal steps or command that shows it), proposedScope (the files or area a separate fix would change), acceptance (how a fix is shown to work) }, at most ${MAX_PRODUCT_DEFECTS}. AIWorks records each one once as a separate work item; it does not change this verdict or widen this task. A defect in the task's own change is a finding, not a product defect. Leave productDefects out when there is none.`;
@@ -135,7 +130,7 @@ export const VERIFIER_SCHEMA = {
     verdictSummary: REVIEW_TEXT,
     criteria: CRITERIA_SCHEMA,
     eyesOn: EYES_ON_SCHEMA,
-    productDefects: { type: 'array', maxItems: MAX_PRODUCT_DEFECTS, items: PRODUCT_DEFECT_SCHEMA },
+    productDefects: { type: 'array', items: PRODUCT_DEFECT_SCHEMA },
   },
 };
 
@@ -150,11 +145,16 @@ LENIENT_VERIFIER_SCHEMA.properties.productDefects = {};
 const validateVerifier = ajv.compile(LENIENT_VERIFIER_SCHEMA);
 const validateProductDefect = ajv.compile(PRODUCT_DEFECT_SCHEMA);
 
-/** The verifier's product-defect entries that fit the schema (at most MAX_PRODUCT_DEFECTS), and how many were dropped. */
+/**
+ * The verifier's product-defect entries of the right shape with no blank field, each text shortened to its limit, at most
+ * MAX_PRODUCT_DEFECTS; and how many entries were dropped (wrong shape, blank, or past the count).
+ */
 export function productDefectsOf(value) {
   const raw = value?.productDefects;
   const list = Array.isArray(raw) ? raw : raw === undefined || raw === null ? [] : [raw];
-  const valid = list.filter((entry) => validateProductDefect(entry) && Object.values(entry).every((text) => text.trim())).slice(0, MAX_PRODUCT_DEFECTS);
+  const valid = list.filter((entry) => validateProductDefect(entry) && Object.values(entry).every((text) => text.trim()))
+    .slice(0, MAX_PRODUCT_DEFECTS)
+    .map((entry) => Object.fromEntries(Object.entries(PRODUCT_DEFECT_FIELDS).map(([key, max]) => [key, entry[key].trim().slice(0, max)])));
   return { valid, dropped: list.length - valid.length };
 }
 
