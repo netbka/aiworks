@@ -171,6 +171,7 @@ Owner decision 2026-10-30, in the owner's words (translated): "AIWorks decides a
 | A step stopped at the repair limit whose last head passed the full check, with only the verifier's findings open | Delivers it as it is through the normal publication and merge path, with the findings recorded as known defects. It is never shown or counted as passed |
 | Any other stalled or stopped step, a second decision without a suggestion, or a step past the limit of automatic answers | Ends it as not done, with the steps that depend on it. Nothing of it is merged |
 | Either of the last two | Records a follow-up item in the work list and lets the campaign continue and finish |
+| The independent verifier finds a defect in the product outside the task's write scope | Records it once as a linked, deduplicated work item for separate planning ([Product defects outside the task's scope](SUPERVISOR.md#product-defects-outside-the-tasks-scope)). The task's own verdict, scope and authority are unchanged |
 
 - Automatic answers and send-backs on one step stop after the no-progress limit (four); the step is then finished. No answer starts unbounded paid runs.
 - Needs you lists only what needs the owner's own sign-in, credential or payment (a provider login, more runs or cost than approved), as information, and the checked versions the owner chose to accept themselves ([AW-015](#aw-015---acceptance-controls-merging-when-the-owner-chooses-it), off by default). Everything else is listed apart, not counted.
