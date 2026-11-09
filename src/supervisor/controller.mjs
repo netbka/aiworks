@@ -124,9 +124,9 @@ export const DEFAULTS = {
   startGraceMs: 30_000, dispatchWaitMs: 15_000, publishRetryMs: 5 * 60_000, outboxRetryMs: 60_000,
   retryBackoffMs: [2 * 60_000, 10 * 60_000, 30 * 60_000],
   integrationPollMs: 60_000,
-  // aiworks#42: a published head's CI is read at most once per ciPollMs; a head with no check run ciNoChecksMs after its
-  // publication is recorded as having no CI, and its polling stops.
-  ciPollMs: 60_000, ciNoChecksMs: 30 * 60_000,
+  // aiworks#42: a published head's CI is read at most once per ciPollMs until it settles. Time alone never settles it: a
+  // head counts as having no CI only in a repository declared in ciRepair.noHostedChecks (github.commitChecks).
+  ciPollMs: 60_000,
   // A GitHub rate-limit refusal waits for its reported reset plus this margin, instead of publishRetryMs (aiworks#21).
   rateLimitMarginMs: 5_000,
   // aiworks#140: each step of a base read (the fetch, then the read of its ref) and each remote branch read ends by this.
@@ -473,6 +473,11 @@ export class Controller {
     // aiworks#42 CI repair: off unless the data-directory config enables it. Poll times are kept in memory only: after a
     // restart each published head whose CI is not yet settled is read once more. Settled results are in the journal.
     this.ci = this.config.ciRepair?.enabled === true;
+    // Repositories the owner declared to run no hosted checks (ciRepair.noHostedChecks): only there can a head with no
+    // check run, no commit status and no required status check count as having no CI. Malformed is none, logged.
+    const noHosted = this.config.ciRepair?.noHostedChecks;
+    const noHostedOk = noHosted === undefined || Array.isArray(noHosted) && noHosted.every((item) => typeof item === 'string' && /^[\w.-]+\/[\w.-]+$/.test(item));
+    this.noHostedChecks = new Set(noHostedOk ? (noHosted ?? []).map((item) => item.toLowerCase()) : []);
     // WORK_ENVELOPE slice E5 adaptive planning: off unless the data-directory config enables it. Off, no envelope campaign
     // gets a planning step or a closing check, and every worker schema and prompt is today's. On, an envelope campaign
     // gets the closing check ACCEPT, and a planning step PLAN runs only on a trigger: a result's followUps, or a closing
@@ -527,6 +532,7 @@ export class Controller {
     // dependency receipts and campaign branches are read from local refs and the main ledger, and CI repair is refused.
     this.selfHosting = selfHostingSettings(this.config);
     this.trustedMain = this.selfHosting.local ? 'the trusted tip of local main' : 'origin/main';
+    if (!noHostedOk) this.log('ciRepair.noHostedChecks is ignored: it must be a list of owner/repository names');
     if (this.ci && this.selfHosting.local) this.log(`ciRepair is refused for ${this.selfHosting.repository}: it trusts local main and has no CI run`);
     if (this.merges.problem) this.log(this.merges.problem);
     this.mergeCheckedAt = new Map();
@@ -2423,7 +2429,8 @@ export class Controller {
       this.ciPolledAt.set(key, now);
       let read;
       try {
-        read = github.commitChecks({ gh: this.cmd.gh, repository: decl.target.repository, sha: task.verified_sha });
+        read = github.commitChecks({ gh: this.cmd.gh, repository: decl.target.repository, sha: task.verified_sha,
+          baseBranch: decl.target.baseBranch, noHostedChecks: this.noHostedChecks.has(String(decl.target.repository).toLowerCase()) });
         // A PR merged, closed or pushed by someone else since publication is not repaired: its head is no longer ours to fix.
         if (read.state === 'failure') read.pr = github.findOpenPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, branch: gitA.branchName(ctx.id, task.task_id) });
       } catch (error) {
@@ -2447,11 +2454,11 @@ export class Controller {
       if (fresh.version !== task.version || !this.takesRepair(ctx.id)) return false;
       const decl = this.store.campaign(ctx.id).declaration, spec = specOf(this.store, ctx.id, task.task_id, decl);
       const sha = task.verified_sha, names = (list) => list.map((check) => check.name);
+      if (state === 'none') {
+        this.store.journal(ctx.id, 'ci-none', { task: task.task_id, sha }, now);
+        return false;
+      }
       if (state === 'pending') {
-        if (!checks.length && now - task.updated_at >= this.config.ciNoChecksMs) {
-          this.store.journal(ctx.id, 'ci-none', { task: task.task_id, sha }, now);
-          return false;
-        }
         const seen = this.store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'ci-pending'", ctx.id)
           .some((row) => row.detail?.task === task.task_id && row.detail?.sha === sha);
         if (!seen) this.store.journal(ctx.id, 'ci-pending', { task: task.task_id, sha, checks: names(checks) }, now);

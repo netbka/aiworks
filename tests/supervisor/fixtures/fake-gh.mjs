@@ -5,7 +5,7 @@
 // <FAKE_GH_STATE>/rate-limit.json ({ route: 'POST pulls', times: 1, retryAfter: 2 } or { ..., reset: <epoch s> }) makes
 // that route refuse with a 403 rate-limit response carrying the reset headers, `times` times.
 // <FAKE_GH_STATE>/check-runs.json ({ "<sha>": [{ name, status, conclusion }] }) holds the CI check runs of each commit; a
-// commit it does not list has none yet.
+// commit it does not list has none yet. Commit statuses (GET .../status) are always empty.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -52,7 +52,8 @@ const pulls = /^repos\/([^/]+\/[^/]+)\/pulls$/.exec(path);
 const pull = /^repos\/([^/]+\/[^/]+)\/pulls\/(\d+)$/.exec(path);
 const issueComments = /^repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/comments$/.exec(path);
 const checkRuns = /^repos\/([^/]+\/[^/]+)\/commits\/([0-9a-f]{40})\/check-runs$/.exec(path);
-const route = `${method} ${pulls ? 'pulls' : pull ? 'pull' : issueComments ? 'comments' : checkRuns ? 'check-runs' : path}`;
+const commitStatus = /^repos\/([^/]+\/[^/]+)\/commits\/([0-9a-f]{40})\/status$/.exec(path);
+const route = `${method} ${pulls ? 'pulls' : pull ? 'pull' : issueComments ? 'comments' : checkRuns ? 'check-runs' : commitStatus ? 'status' : path}`;
 
 const limit = existsSync(limitFile) ? JSON.parse(readFileSync(limitFile, 'utf8')) : null;
 if (limit && limit.times > 0 && (limit.route === route || limit.route === '*')) {
@@ -97,6 +98,8 @@ if (/^repos\/[^/]+\/[^/]+\/actions\/permissions$/.test(path) && method === 'GET'
   respond(200, { total_count: runs.length, check_runs: runs.slice(0, Number(fields.per_page ?? 30)).map((run, index) => ({ id: index + 1,
     name: run.name, status: run.status, conclusion: run.conclusion ?? null, head_sha: checkRuns[2],
     html_url: `https://github.com/${checkRuns[1]}/actions/runs/${index + 1}` })) });
+} else if (commitStatus && method === 'GET') {
+  respond(200, { state: 'pending', sha: commitStatus[2], total_count: 0, statuses: [] });
 } else {
   refuse(`unsupported gh ${args.join(' ')}`);
 }

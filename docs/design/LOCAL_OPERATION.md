@@ -46,7 +46,7 @@ Grep basis: `gh`, `api.github.com` and `github.com` as words in `src/` and `scri
 | G3 | Find a pull request | `src/supervisor/adapters/github.mjs:53-58` | `GET pulls?head=` | SELF7 (publication), SELF4 (CI repair is off for AIWorks itself) |
 | G4 | Merge receipt | `src/supervisor/adapters/github.mjs:62-70` | `GET pulls/{n}`: was the pull request merged at the verified head? | SELF4 (the main ledger answers it) |
 | G5 | Pull request state | `src/supervisor/adapters/github.mjs:72-80` | `GET pulls/{n}` for the merge gate | SELF8 |
-| G6 | CI read | `src/supervisor/adapters/github.mjs:101-104` | `GET commits/{sha}/check-runs` | Off for AIWorks itself: there is no GitHub Actions run (owner decision 2026-10-13); SELF4 refuses `ciRepair` for the self-hosted repository |
+| G6 | CI read | `src/supervisor/adapters/github.mjs:101-104` | `GET commits/{sha}/check-runs`, `GET commits/{sha}/status`; `GET branches/{base}/protection/required_status_checks` only for a repository in `ciRepair.noHostedChecks` | Off for AIWorks itself: there is no GitHub Actions run (owner decision 2026-10-13); SELF4 refuses `ciRepair` for the self-hosted repository |
 | G7 | Open a pull request | `src/supervisor/adapters/github.mjs:106-133` (`:108`, `:112`, `:116`, `:121`, `:127`) | `POST pulls`, after a lookup | SELF7 |
 | G8 | Find a marked comment | `src/supervisor/adapters/github.mjs:137-143` (`:138-139`, `:141`) | `gh api .../comments --paginate`, so a retry never posts twice | SELF7 |
 | G9 | Post a comment | `src/supervisor/adapters/github.mjs:145-150` (`:147`) | `POST issues/{n}/comments` | SELF7 |
