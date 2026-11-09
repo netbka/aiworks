@@ -55,12 +55,18 @@ export function repairSources({ tree, present = [], texts = [], diff = '', files
   return out;
 }
 
-/** The complete model input of a run apart from its run identity: executor, model and the whole prompt. */
+/**
+ * The complete model input of a run apart from its run identity: executor, model and the whole prompt. Per-run data that
+ * enters a brokered prompt (a time, an attempt number, a path) makes keys differ, so the guard fails safe by never matching.
+ */
 export function inputKey({ executor, model = null, prompt }) {
   return createHash('sha256').update(JSON.stringify([executor, model, prompt])).digest('hex');
 }
 
-const BROKER_PROTOCOL = /edit broker refused|before text must be|duplicate edit path|no longer has active authority/i;
+// Edit-format errors the model itself causes. "no longer has active authority" comes from campaign control (a pause while
+// the proposal settles), so it is catalogued below but never counts as a deterministic repeat.
+const BROKER_PROTOCOL = /edit broker refused|before text must be|duplicate edit path/i;
+const BROKER_REFUSED = /edit broker refused|before text must be|duplicate edit path|no longer has active authority/i;
 
 /** An attempt that ended without a usable step forward: the worker lacked evidence, or the run ended in an error. */
 export function noProgress(outcome) {
@@ -91,7 +97,7 @@ export function sameFailedInput(key, previous) {
 const CATALOG = [
   { code: 'admission-budget', test: (o) => o.class === 'admission-blocked',
     prevention: 'The packet did not fit the executor before it started. Choose an executor whose context fits, or split the task, before registering it again.' },
-  { code: 'broker-edit-protocol', test: (o) => BROKER_PROTOCOL.test(o.detail ?? ''),
+  { code: 'broker-edit-protocol', test: (o) => BROKER_REFUSED.test(o.detail ?? ''),
     prevention: 'The model broke the brokered edit format, a known limit of the tool-free code broker. Give the step a declared executor that edits files directly, or a stronger model, instead of the same one again.' },
   { code: 'executor-tooling', test: (o) => /unexpected tool|not configured on this PC|executor-unavailable/i.test(o.detail ?? ''),
     prevention: 'The executor could not run as configured. Fix the host configuration or route the step to another declared executor.' },
