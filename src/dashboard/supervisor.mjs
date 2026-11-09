@@ -961,8 +961,12 @@ function stepAutoAnswer(store, campaignId, taskId) {
 export function resultReview(store, c, task, spec, config = {}, { records = reviewRecords(store, c.id), acceptance = (project) => acceptanceMode(store, project) } = {}) {
   const review = reviewOf(store, c, task, spec, config, records, acceptance);
   // Whether Review offers a preview of this checked version (WP7), and why not when it does not. `runtime` says whether
-  // opening it starts the version's own server, which the operator declared for this project (preview-server.mjs).
-  return review && { ...review, preview: { ...previewSupport(task, spec, review), runtime: serverPreviewDeclaration(config, projectOf(c.declaration)) ? 'server' : 'static' } };
+  // opening it starts the version's own server, which the operator declared for this project (preview-server.mjs). A
+  // declaration that is malformed or asks for what is not built offers no preview, and says why.
+  if (!review) return review;
+  const declared = serverPreviewDeclaration(config, projectOf(c.declaration)), support = previewSupport(task, spec, review);
+  const refused = declared?.error && support.available ? { available: false, reason: declared.error } : {};
+  return { ...review, preview: { ...support, ...refused, runtime: declared ? 'server' : 'static' } };
 }
 
 function reviewOf(store, c, task, spec, config, records, acceptanceOf) {
