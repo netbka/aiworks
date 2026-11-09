@@ -2952,8 +2952,15 @@ export class Controller {
     const stage = task.state === 'implemented' ? 'verify' : 'implement';
     const spec = specOf(this.store, decl.campaignId, task.task_id, decl);
     const providers = executorOrder(decl.executor);
+    // The operator's code broker grant applies here as on the static path, judged for each routing candidate's own model
+    // and this stage's role, exactly as dispatch re-checks it: one provider entry per candidate (kind, model).
+    const role = stage === 'verify' ? 'verification' : 'implementer';
+    const candidateProviders = decl.routing.candidates.map(({ kind, model }) => {
+      const provider = { ...providers.find((item) => item.kind === kind), model };
+      return { ...provider, ...(codeBrokerPolicy(this.config, decl, provider, role, this.cmd.cursor) ? { brokeredCode: true } : {}) };
+    });
     const ops = this.taskOperations(decl, task);
-    const inputs = policyInputs({ stage, spec, routing: decl.routing, providers, platform: process.platform,
+    const inputs = policyInputs({ stage, spec, routing: decl.routing, providers: candidateProviders, platform: process.platform,
       facts: (kind) => ({ ...facts(kind), ...(hostUnavailable?.has(kind) ? { hostUnavailable: hostUnavailable.get(kind) } : {}) }),
       priorAttempts: this.routedAttempts(ops, stage), catalog: spec.role ? this.routingCatalog() : null,
       session: stage === 'verify' ? session ?? randomUUID() : null, ...this.reviewedHead(ops, task, stage) });
@@ -2973,7 +2980,7 @@ export class Controller {
     }
     const receipt = autoReceipt(inputs);
     const chosen = receipt.decision.chosen;
-    const provider = chosen && providers.find((item) => item.kind === chosen.kind);
+    const provider = chosen && candidateProviders.find((item) => item.kind === chosen.kind && item.model === chosen.model);
     const effort = chosen?.effort;
     return { executor: provider ? { ...provider, model: chosen.model, ...(effort ? { effort } : {}) } : null, retryAt: receipt.decision.retryAt, receipt };
   }

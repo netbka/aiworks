@@ -343,8 +343,13 @@ export function routeAuto(inputs) {
  */
 export function policyInputs({ stage, spec, routing, providers, platform, facts, history = [], priorAttempts = [], catalog = null,
   session = null, implementerSessions = [], headImplementer = null }) {
-  const candidates = routing.candidates.map(({ kind, model, tier }) => ({ kind, model, tier,
-    researchOnly: providers.find((provider) => provider.kind === kind)?.researchOnly === true }));
+  // A code broker grant (code-broker.mjs) reaches only the candidate whose exact (kind, model) it was judged for: the
+  // caller passes one provider entry per candidate model. Without it a Cursor candidate never commits on Windows.
+  const candidates = routing.candidates.map(({ kind, model, tier }) => {
+    const exact = providers.find((item) => item.kind === kind && (item.model ?? null) === model);
+    const provider = exact ?? providers.find((item) => item.kind === kind);
+    return { kind, model, tier, researchOnly: provider?.researchOnly === true, ...(exact?.brokeredCode === true ? { brokeredCode: true } : {}) };
+  });
   return {
     stage,
     task: { deliverable: spec.deliverable, web: webFlag(spec.web), role: spec.role ?? null, references: spec.references?.length ?? 0,
