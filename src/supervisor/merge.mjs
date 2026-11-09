@@ -302,15 +302,20 @@ const comparable = (path) => {
   value = value.replaceAll('\\', '/').replace(/\/+$/, '');
   return process.platform === 'win32' ? value.toLowerCase() : value;
 };
-const overlap = (a, b) => { const [x, y] = [comparable(a), comparable(b)]; return x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`); };
+/** Whether folder `a` is folder `b` or lies inside it, after links and junctions are resolved. */
+const within = (a, b) => { const [x, y] = [comparable(a), comparable(b)]; return x === y || x.startsWith(`${y}/`); };
+const foldPath = (path) => (process.platform === 'win32' ? path.toLowerCase() : path);
+/** Whether repository path `changed` is, contains or lies inside the folder-relative path `held`. */
+const touches = (changed, held) => { const p = foldPath(changed); return p === held || p.startsWith(`${held}/`) || held.startsWith(`${p}/`); };
 
 /**
  * Bring a GitHub project's configured folder (config.json `repositories` path, or the connected project's root) up to
  * the newest merge AIWorks recorded for it (AW-018). Only a fast-forward of the base branch, and only when that branch
  * is checked out there with no changes and no commits of its own: anything else is the owner's, left as it is with the
  * reason recorded, and tried again after the next merge. Each recorded merge is tried once. Never the folder AIWorks
- * itself runs from or keeps its data in, and never AIWorks's own repository (its main moves through the local merge
- * gate). No hook of the folder runs. Returns the journal kind recorded, or null when nothing was due.
+ * itself runs from or keeps its data in, nor one inside them; a folder holding them moves only when the fast-forward
+ * changes nothing there. AIWorks's own repository with local main trusted is not handled here (its main moves through
+ * the local merge gate). No hook of the folder runs. Returns the journal kind recorded, or null when nothing was due.
  */
 export async function updateFolder(controller, key) {
   const { store } = controller, git = controller.cmd.git;
@@ -337,11 +342,22 @@ export async function updateFolder(controller, key) {
     return kind;
   };
   const left = (reason) => note(FOLDER_LEFT, { reason });
-  if (overlap(path, controller.runtimeRoot ?? RUNTIME_ROOT) || (controller.dataDir && overlap(path, controller.dataDir))) return left('aiworks-runtime');
+  const own = [controller.runtimeRoot ?? RUNTIME_ROOT, controller.dataDir].filter(Boolean);
+  if (own.some((dir) => within(path, dir))) return left('aiworks-runtime');
+  // The runtime checkout or data directory may sit in an ignored folder of this checkout (the AIWorks source with its
+  // `.local/`). The folder then moves only when the fast-forward changes no tracked path there: Git would write over
+  // ignored files.
+  const held = own.filter((dir) => within(dir, path)).map((dir) => comparable(dir).slice(comparable(path).length + 1));
   const fetched = await controller.fetchBase(path, base, decl.target.repository);
   // The merged base could not be read: nothing is recorded, so the next pass tries the same merge again.
   if (!fetched.ok) return null;
   if (!gitA.isAncestor({ git, path, ancestor: mergeCommit, descendant: fetched.sha })) return left('unreadable');
+  if (held.length) {
+    const head = gitA.exec(git, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], { cwd: path });
+    const changed = head.ok && SHA.test(head.stdout) ? gitA.changedPaths({ git, path, from: head.stdout, to: fetched.sha }) : null;
+    if (!changed) return left('unreadable');
+    if (changed.some((file) => held.some((dir) => touches(file, dir)))) return left('aiworks-runtime');
+  }
   const moved = fastForwardFolder({ git, path, branch: base, target: fetched.sha, hooksOff: join(controller.dataDir, 'no-hooks') });
   return moved.updated ? note(FOLDER_UPDATED, { from: moved.from, to: moved.to, already: moved.already }) : left(moved.reason);
 }

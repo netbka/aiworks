@@ -154,6 +154,10 @@ test('an eligible pull request is merged once with a merge commit of the verifie
   const [record] = r.journal(A, 'merged');
   assert.deepEqual(record, { task: 'A1', sha: verified, url, mergeCommit: merged, reconciled: false, requested: true });
   assert.equal(r.journal(A, 'merge-requested').length, 1);
+  // The same pass brings the clean configured source checkout up to the merge by fast-forward only (AW-018).
+  assert.equal(git(r.env.repo, 'rev-parse', 'HEAD'), merged);
+  assert.equal(git(r.env.repo, 'status', '--porcelain'), '');
+  assert.deepEqual(r.journal(A, 'project-folder-updated').map((row) => [row.mergeCommit, row.to]), [[merged, merged]]);
   await r.tick(); // drain the note
   assert.ok(r.env.comments().some((comment) => comment.body.includes(`merged into main under the merge gate`) && comment.body.includes('Merged is not deployed')));
 

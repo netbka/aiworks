@@ -184,3 +184,30 @@ test('AIWorks\'s own runtime checkout is never written by either path', async (t
   assert.deepEqual(snapshot(local.root), files, 'nothing was written');
   assert.equal(existsSync(join(local.dataDir, 'applies', local.project.id, refused.applyId, 'apply.json')), false, 'no backup was even taken');
 });
+
+test('a checkout holding AIWorks\'s data in an ignored folder follows a merge, but never one that would write there', async (t) => {
+  const r = githubRig(t);
+  // The runbook layout: the data directory lives under the source checkout's ignored `.local/`.
+  writeFileSync(join(r.env.repo, '.git', 'info', 'exclude'), '.local/\n');
+  const data = join(r.env.repo, '.local', 'data');
+  mkdirSync(data, { recursive: true });
+  writeFileSync(join(data, 'config.json'), '{"live":true}\n');
+  r.controller.dataDir = data;
+  const first = r.merge();
+  assert.equal(await r.sync(), FOLDER_UPDATED);
+  assert.equal(r.head(), first, 'a merge that changes nothing under the data directory fast-forwards the checkout');
+
+  // A merge that adds a tracked file where the live data is: the checkout is left as it is and the data stays.
+  const other = join(r.env.tmp, 'elsewhere');
+  mkdirSync(join(other, '.local', 'data'), { recursive: true });
+  writeFileSync(join(other, '.local', 'data', 'config.json'), '{"live":false}\n');
+  run(other, ['add', '-f', '-A']);
+  run(other, [...owner, 'commit', '-q', '-m', 'write over the data']);
+  run(other, ['push', '-q', 'origin', 'main']);
+  const mergeCommit = run(other, ['rev-parse', 'HEAD']);
+  r.store.journal('folder-sync', 'merged', { task: 'T1', sha: mergeCommit, url: `https://github.com/${REPOSITORY}/pull/9`, mergeCommit, reconciled: false, requested: true }, Date.now());
+  assert.equal(await r.sync(), FOLDER_LEFT);
+  assert.equal(r.last().detail.reason, 'aiworks-runtime');
+  assert.equal(r.head(), first, 'the checkout did not move');
+  assert.equal(readFileSync(join(data, 'config.json'), 'utf8'), '{"live":true}\n', 'the live data is unchanged');
+});
