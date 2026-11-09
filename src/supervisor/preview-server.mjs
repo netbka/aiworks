@@ -111,6 +111,7 @@ export function serverPreviewDeclaration(config, project) {
   }
   if (plainObject(entry) && entry.outgoingNetwork === 'contained' && !outgoingNetworkContainment().available) return { error: outgoingNetworkContainment().reason };
   const valid = plainObject(entry) && Object.keys(entry).every((name) => ['script', 'ready', 'runtime', 'outgoingNetwork'].includes(name)) &&
+    (entry.runtime === undefined || typeof entry.runtime === 'string') &&
     [undefined, 'uncontained'].includes(entry.outgoingNetwork) &&
     typeof entry.script === 'string' && entry.script.length <= 200 && SCRIPT.test(entry.script) && !entry.script.split('/').some((part) => WINDOWS_UNSAFE.test(part)) &&
     (entry.ready === undefined || typeof entry.ready === 'string' && entry.ready.length <= 200 && READY.test(entry.ready));
@@ -133,11 +134,11 @@ export function serverPreviewPlan({ git = ['git'], repoPath, sha, declaration, p
   // placed exactly as its lockfile pins them.
   const parts = script.split('/'), packages = [];
   const folders = parts.map((_, depth) => parts.slice(0, depth).map((part) => `${part}/`).join(''));
-  // Node resolves the script's packages from a node_modules folder on its path; one the commit carries itself would
-  // run dependencies no lockfile pins and no cached copy proves, whether or not a package.json declares them. Windows
-  // folds case, so the names are compared folded.
-  const modules = folders.map((folder) => `${folder}node_modules/`.toLowerCase());
-  if ([...tree.keys()].some((path) => modules.some((prefix) => path.toLowerCase().startsWith(prefix)))) {
+  // Node resolves a bare import from the importing module's folder upward, so a node_modules folder anywhere in the
+  // commit could be loaded, running dependencies no lockfile pins and no cached copy proves, whether or not a
+  // package.json declares them. Locked packages are placed from the cache after this, never from the tree. Windows folds
+  // case, so the names are compared folded.
+  if ([...tree.keys()].some((path) => path.toLowerCase().split('/').includes('node_modules'))) {
     throw new PreviewError('PREVIEW_DEPENDENCY_UNSUPPORTED', 'This checked version carries its own node_modules folder, which AIWorks does not run for a preview, so nothing was started.');
   }
   for (const folder of folders) {
@@ -335,13 +336,14 @@ export async function startServerPreview({ git = ['git'], repoPath, plan, workDi
     // A server that stops by itself (its deadline, or a crash) is cleaned up at once, even one that stopped before this
     // listener was added; one that starts listening anywhere but its own port is stopped.
     child.once('exit', () => void server.stop());
-    if (exited(child)) void server.stop();
     watch = setInterval(async () => {
       if (!server.running()) return;
       const again = await serverListeners(child.pid, port);
       if (server.running() && (again.exposed.length || !again.proved)) void server.stop();
     }, WATCH_MS);
     watch.unref?.();
+    // After the watch exists, so stopping a server that already ended also clears it.
+    if (exited(child)) void server.stop();
     return server;
   } catch (error) {
     const proof = runner ? await reclaim(runner, workDir, true) : 'stopped';

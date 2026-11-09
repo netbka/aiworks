@@ -37,13 +37,18 @@ function repository(t) {
   run(repo, 'config', 'user.email', 'preview-test@example.invalid');
   const files = { 'ok.mjs': serving('process.env.HOST'), 'wide.mjs': serving("'0.0.0.0'"), 'silent.mjs': 'setInterval(() => {}, 1000);\n',
     'withdeps/server.mjs': serving('process.env.HOST'), 'withdeps/package.json': '{"dependencies":{"example-server":"1.0.0"}}\n', 'install.sh': 'echo synthetic\n',
-    'second.mjs': `${serving('process.env.HOST')}createServer(() => {}).listen(0, '127.0.0.1');\n`, 'escape.mjs': escaping,
-    'vendor/server.mjs': serving('process.env.HOST'), 'vendor/Node_Modules/example-outside/index.mjs': 'export const x = 1;\n' };
-  mkdirSync(join(repo, 'vendor', 'Node_Modules', 'example-outside'), { recursive: true });
+    'second.mjs': `${serving('process.env.HOST')}createServer(() => {}).listen(0, '127.0.0.1');\n`, 'escape.mjs': escaping };
   for (const [path, text] of Object.entries(files)) writeFileSync(join(repo, path), text);
   run(repo, 'add', '-A');
   run(repo, 'commit', '-q', '-m', 'Synthetic servers');
-  return { tmp, repo, sha: run(repo, 'rev-parse', 'HEAD') };
+  const sha = run(repo, 'rev-parse', 'HEAD');
+  // A later commit carries a package of its own beside a module the script could import, off the script's own path.
+  mkdirSync(join(repo, 'lib', 'Node_Modules', 'example-outside'), { recursive: true });
+  writeFileSync(join(repo, 'lib', 'helper.mjs'), "export { x } from 'example-outside';\n");
+  writeFileSync(join(repo, 'lib', 'Node_Modules', 'example-outside', 'index.mjs'), 'export const x = 1;\n');
+  run(repo, 'add', '-A');
+  run(repo, 'commit', '-q', '-m', 'Synthetic vendored package');
+  return { tmp, repo, sha, vendoredSha: run(repo, 'rev-parse', 'HEAD') };
 }
 
 /** Processes whose command line names `dir`: a server preview's runner, helper and server all carry its folder. */
@@ -65,11 +70,11 @@ test('only an operator-declared plain Node script of the checked commit that nee
     assert.ok(serverPreviewDeclaration(config(entry), project)?.error, JSON.stringify(entry));
   }
   assert.deepEqual(serverPreviewDeclaration(config({ script: 'ok.mjs' }), 'Example-Org/SampleApp'), { script: 'ok.mjs', ready: '/' });
-  const { repo, sha } = repository(t);
+  const { repo, sha, vendoredSha } = repository(t);
   assert.throws(() => serverPreviewPlan({ repoPath: repo, sha, declaration: { script: 'missing.mjs', ready: '/' } }), { code: 'PREVIEW_SERVER_SCRIPT_MISSING' });
   assert.throws(() => serverPreviewPlan({ repoPath: repo, sha, declaration: { script: 'withdeps/server.mjs', ready: '/' } }), { code: 'PREVIEW_SERVER_NEEDS_INSTALL' });
-  assert.throws(() => serverPreviewPlan({ repoPath: repo, sha, declaration: { script: 'vendor/server.mjs', ready: '/' } }), { code: 'PREVIEW_DEPENDENCY_UNSUPPORTED' },
-    'a node_modules folder the commit carries on the script’s path, pinned by no lockfile, is never run');
+  assert.throws(() => serverPreviewPlan({ repoPath: repo, sha: vendoredSha, declaration: { script: 'ok.mjs', ready: '/' } }), { code: 'PREVIEW_DEPENDENCY_UNSUPPORTED' },
+    'a node_modules folder anywhere in the commit, pinned by no lockfile, is never run');
   assert.throws(() => serverPreviewPlan({ repoPath: repo, sha: 'f'.repeat(40), declaration: { script: 'ok.mjs', ready: '/' } }), { code: 'PREVIEW_COMMIT_MISSING' });
   assert.equal(serverPreviewPlan({ repoPath: repo, sha, declaration: { script: 'ok.mjs', ready: '/' } }).sha, sha);
 });
@@ -156,21 +161,20 @@ function lockedRepository(t) {
   app('credential', manifest({ 'example-greeting': '^1.0.0' }), { ...pinned, 'node_modules/example-greeting': { ...pinned['node_modules/example-greeting'],
     // Split so this file itself holds no address with a password.
     resolved: ['https://reader', 'synthetic-pass@registry.example.invalid/example-greeting/-/example-greeting-1.0.0.tgz'].join(':') } });
-  app('vendored', manifest({ 'example-greeting': '^1.0.0' }), pinned, { 'node_modules/example-greeting/index.mjs': 'export const greeting = "substituted";\n' });
   app('missing', manifest({ 'example-greeting': '^1.0.0' }), { ...pinned, 'node_modules/@example/words': locked('@example/words', '2.1.0', notCached) });
   run(repo, 'add', '-A');
   run(repo, 'commit', '-q', '-m', 'Synthetic apps with locked dependencies');
   return { tmp, repo, npmCache, sha: run(repo, 'rev-parse', 'HEAD') };
 }
 
-test('a version with dependencies is planned only with the packages its lockfile pins from cached copies; unlocked, stale, scripted, escaping, linked, credential-bearing, vendored and missing ones are refused', (t) => {
+test('a version with dependencies is planned only with the packages its lockfile pins from cached copies; unlocked, stale, scripted, escaping, linked, credential-bearing and missing ones are refused', (t) => {
   const { repo, npmCache, sha } = lockedRepository(t);
   const plan = (folder, packageCache = npmCache) => serverPreviewPlan({ repoPath: repo, sha, declaration: { script: `${folder}/server.mjs`, ready: '/' }, packageCache });
   assert.deepEqual(plan('locked').packages.map((each) => [each.dir, each.name, each.version]),
     [['locked/node_modules/example-greeting', 'example-greeting', '1.0.0'], ['locked/node_modules/@example/words', '@example/words', '2.1.0']], 'development dependencies are left out');
   for (const [folder, code] of [['nolock', 'PREVIEW_SERVER_NEEDS_INSTALL'], ['stale', 'PREVIEW_DEPENDENCY_STALE'], ['scripted', 'PREVIEW_DEPENDENCY_SCRIPT'],
     ['escape', 'PREVIEW_DEPENDENCY_UNSAFE'], ['linked', 'PREVIEW_DEPENDENCY_UNSUPPORTED'], ['credential', 'PREVIEW_DEPENDENCY_SECRET'],
-    ['vendored', 'PREVIEW_DEPENDENCY_UNSUPPORTED'], ['missing', 'PREVIEW_DEPENDENCY_MISSING']]) {
+    ['missing', 'PREVIEW_DEPENDENCY_MISSING']]) {
     assert.throws(() => plan(folder), { code }, folder);
   }
   assert.throws(() => plan('locked', null), { code: 'PREVIEW_DEPENDENCY_MISSING' }, 'no usable cache, nothing is planned');
