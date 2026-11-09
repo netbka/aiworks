@@ -135,8 +135,8 @@ function startGroup(controller, all, items, settings, repoPath, baseSha, note) {
   const signature = members.map((m) => `${m.campaignId}:${m.task}:${m.sha}`).join(' ');
   if (all.some((group) => group.started.detail.base === baseSha && group.started.detail.signature === signature)) return false;
   const branch = items[0].decl.target.baseBranch;
-  const path = join(controller.repo(items[0].decl).worktreeRoot, `merge-batch-${baseSha.slice(0, 12)}-${head.slice(0, 12)}`);
-  try { checkout(git, repoPath, path, head); } catch (error) { controller.log(`group merge onto ${baseSha} could not start: ${error.message}`); return false; }
+  const root = controller.repo(items[0].decl).worktreeRoot, path = join(root, `merge-batch-${baseSha.slice(0, 12)}-${head.slice(0, 12)}`);
+  try { checkout(git, repoPath, path, head, root); } catch (error) { controller.log(`group merge onto ${baseSha} could not start: ${error.message}`); return false; }
   // Recorded before the gate starts: after a crash here the next pass finds the worktree and starts the gate.
   note('merge-batch-started', { id: head, base: baseSha, branch, members, signature, candidates, path, command: settings.refresh.command });
   try { startGate(path, settings.refresh.command); } catch (error) {

@@ -3,9 +3,9 @@
 // it again. Removal is only the non-forced worktree remove and branch -d below; which ones may go is cleanup.mjs's rule.
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GATE_FILES } from '../gate.mjs';
 import { DEVELOPMENT_ENV } from '../development-policy.mjs';
@@ -329,6 +329,53 @@ function workspacePath(worktreeRoot, campaignId, taskId, suffix = '') {
   return existsSync(legacy) ? legacy : join(worktreeRoot, `${workspaceName(campaignId, taskId)}${suffix}`);
 }
 
+const outsideRoot = (message) => Object.assign(new Error(message), { code: 'WORKTREE_ROOT' });
+const folded = (path) => {
+  const text = path.replaceAll('\\', '/').replace(/\/+$/, '');
+  return process.platform === 'win32' ? text.toLowerCase() : text;
+};
+/** The real path of the nearest existing ancestor of `path` with the missing rest appended; links and junctions resolved. */
+function canonicalPath(path) {
+  const missing = [];
+  let current = resolve(path);
+  for (;;) {
+    try { return join(realpathSync.native(current), ...missing); } catch (error) {
+      const parent = dirname(current);
+      if (error?.code !== 'ENOENT' || parent === current) throw outsideRoot(`worktree path ${path} cannot be resolved`);
+      missing.unshift(basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
+ * Throws (code WORKTREE_ROOT) unless `path` is a folder strictly inside the configured worktree root `root`, compared
+ * after links and junctions are resolved, and no existing folder between the root and `path` (`path` included) is a link
+ * or junction. Called before any managed worktree is created or reused, so nothing is written outside the root. The root
+ * is the installation's own configuration (config.json `worktreeRoot`); no path is built in here. Creates nothing.
+ */
+export function assertManagedWorktree(root, path) {
+  if (typeof root !== 'string' || !isAbsolute(root) || typeof path !== 'string' || !isAbsolute(path)) {
+    throw outsideRoot('a managed worktree needs an absolute worktree root and destination');
+  }
+  const base = canonicalPath(root), target = canonicalPath(path);
+  if (!folded(target).startsWith(`${folded(base)}/`)) throw outsideRoot(`worktree ${path} is outside the configured worktree root ${root}`);
+  // The lexical path under the root must not pass through a link: one inside the root could be redirected later.
+  const rest = relative(resolve(root), resolve(path));
+  if (!rest || /^\.\.(?:[\\/]|$)/.test(rest) || isAbsolute(rest)) throw outsideRoot(`worktree ${path} is outside the configured worktree root ${root}`);
+  let at = resolve(root);
+  for (const part of rest.split(/[\\/]+/)) {
+    at = join(at, part);
+    let stat;
+    try { stat = lstatSync(at); } catch (error) {
+      if (error?.code === 'ENOENT') break;
+      throw outsideRoot(`worktree path ${at} cannot be inspected`);
+    }
+    // On Windows Node reports a junction as a symbolic link, so this covers both.
+    if (stat.isSymbolicLink()) throw outsideRoot(`worktree path ${at} is a link or junction`);
+  }
+}
+
 // The helper owns these root-level artifacts even when a target does not ignore *.log.
 // Tracked changes, other untracked files, directories and linked files remain dirty.
 function verificationCheckoutClean(git, path) {
@@ -353,6 +400,7 @@ export function prepareImplementWorkspace({ git, repoPath, worktreeRoot, campaig
   if (baseSha !== undefined && !SHA.test(baseSha)) throw new Error('implementation base must be a full SHA');
   const path = workspacePath(worktreeRoot, campaignId, taskId);
   const branch = branchName(campaignId, taskId);
+  assertManagedWorktree(worktreeRoot, path);
   if (existsSync(path)) {
     const current = must(exec(git, ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: path }), 'inspect worktree branch');
     if (current !== branch) throw new Error(`worktree ${path} is on ${current}, expected ${branch}`);
@@ -372,6 +420,7 @@ export function prepareVerifyWorkspace({ git, repoPath, worktreeRoot, campaignId
   if (!SHA.test(targetSha)) throw new Error('verify target must be a full SHA');
   if (!Number.isSafeInteger(attempt) || attempt < 1) throw new Error('verify attempt must be a positive integer');
   const path = workspacePath(worktreeRoot, campaignId, taskId, `-verify-${targetSha.slice(0, 12)}-${attempt}`);
+  assertManagedWorktree(worktreeRoot, path);
   if (existsSync(path)) {
     const head = must(exec(git, ['rev-parse', 'HEAD'], { cwd: path }), 'read verify head');
     if (head !== targetSha || !verificationCheckoutClean(git, path)) throw new Error(`verify worktree ${path} is not a clean checkout of ${targetSha}`);

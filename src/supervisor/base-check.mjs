@@ -69,7 +69,7 @@ export function baseCheckStep(controller, ctx, { repository, repoPath, worktreeR
     record = row(store, repository, baseSha, settings.command);
     if (!inserted) return record;
     try {
-      checkout(git, repoPath, path, baseSha);
+      checkout(git, repoPath, path, baseSha, worktreeRoot);
       startGate(path, settings.command);
     } catch (error) {
       write({ state: 'failed', failed: null, reason: `the base check could not start: ${error.message}`.slice(0, 500) });
@@ -90,7 +90,7 @@ export function baseCheckStep(controller, ctx, { repository, repoPath, worktreeR
     // A gate that ended without an exit code (a restart, a reboot) starts again in the same worktree, as a refresh does.
     const pid = gatePid(record.path);
     if (pid === null || !alive(pid)) {
-      try { checkout(git, repoPath, record.path, baseSha); startGate(record.path, settings.command); } catch (error) {
+      try { checkout(git, repoPath, record.path, baseSha, worktreeRoot); startGate(record.path, settings.command); } catch (error) {
         write({ state: 'failed', failed: null, reason: `the base gate could not restart: ${error.message}`.slice(0, 500) });
         return row(store, repository, baseSha, settings.command);
       }
