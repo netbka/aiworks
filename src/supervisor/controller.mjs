@@ -53,6 +53,7 @@ import { PUBLICATION_REFUSED, privateTerms, publicationFindings } from '../share
 import { captureCodeEvidence, codeEvidence, reportDigest as digestReport } from './verification-evidence.mjs';
 import { rewriteNote, rewriteProof, withoutRewrite } from './report-rewrite.mjs';
 import { assertBrokerRoot, codeBrokerPolicy, codeBrokerPrompt, codeSnapshot, settleCodeProposal, verifyBrokerCheck } from './code-broker.mjs';
+import { deterministicNoProgress, inputKey, reviewLines, reviewStoppedStep, sameFailedInput } from './failure-review.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const POLICY = JSON.parse(readFileSync(resolve(here, '../../registry/worker-context-policy.json'), 'utf8'));
@@ -1085,6 +1086,12 @@ export class Controller {
       this.store.journal(ctx.id, 'step-delivered-with-defects', { task: task.task_id, sha: task.head_sha, defects: knownDefects.map((f) => f.id), reason: words, item: item.number }, now);
       return;
     }
+    // Self-review (failure-review.mjs): which of this step's failures AIWorks could have predicted, and what to change
+    // before it is planned again. Reading it never blocks the stop.
+    let review = { predictable: false, causes: [], unexplained: [] };
+    try { review = reviewStoppedStep(this.brokeredAttempts(ctx.id, task.task_id, null, true)); } catch { /* the stop goes on without it */ }
+    this.store.journal(ctx.id, 'failure-review', { task: task.task_id, predictable: review.predictable,
+      causes: review.causes.map((c) => ({ code: c.code, attempts: c.attempts })), unexplained: review.unexplained }, now);
     const ended = [[task, words]];
     this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
       { state: 'cancelled', blocked: null, retry_at: null, last_error: `not done: ${words}`.slice(0, 1000) }, now);
@@ -1104,10 +1111,26 @@ export class Controller {
     for (const [row, why] of ended) {
       const item = followUp(this.store, { campaignId: ctx.id, taskId: row.task_id, key: 'not-done', now,
         title: `Finish ${row.task_id === task.task_id ? title : row.task_id}`.slice(0, 256),
-        body: `AIWorks ended this step as not done: ${why}. Nothing of it was merged. Plan it again to finish it.`,
+        body: [`AIWorks ended this step as not done: ${why}. Nothing of it was merged. Plan it again to finish it.`,
+          ...(row.task_id === task.task_id ? reviewLines(review).map((line) => redact(line)) : [])].join('\n'),
         fallback: 'AIWorks ended this step as not done; the reason is kept in the step\'s records. Nothing of it was merged. Plan it again to finish it.' });
       this.store.journal(ctx.id, 'step-not-done', { task: row.task_id, reason: why, item: item.number }, now);
     }
+  }
+
+  /**
+   * The finished attempts of one task, in order, for the failure self-review: { id, kind, outcome, inputKey, snapshot }.
+   * `kind` null means every kind; the pinned snapshot is read only when `withSnapshot` (it can be large).
+   */
+  brokeredAttempts(campaignId, taskId, kind, withSnapshot = false) {
+    return this.store.all('SELECT id, kind, run_dir, outcome FROM operations WHERE campaign_id = ? AND task_id = ? AND outcome IS NOT NULL ORDER BY seq', campaignId, taskId)
+      .filter((op) => kind === null || op.kind === kind)
+      .map((op) => {
+        const read = (name) => { try { return op.run_dir ? JSON.parse(readFileSync(join(op.run_dir, name), 'utf8')) : null; } catch { return null; } };
+        const saved = withSnapshot ? read('code-broker.json') : null;
+        return { id: op.id, kind: op.kind, outcome: op.outcome, inputKey: read('input-key.json')?.inputKey ?? null,
+          snapshot: saved?.snapshot?.value ? { files: saved.snapshot.value.files, tree: saved.snapshot.value.tree } : null };
+      });
   }
 
   /**
@@ -1747,6 +1770,18 @@ export class Controller {
       // A step stopped by unusable results on one provider runs once more on another declared provider first (#39).
       const stop = (blocked) => this.workerFallback(ctx, decl, task, op, failures, state, `${cls}: ${detail}`, now) ??
         { state, failures, retry_at: null, last_error: `${cls}: ${detail}`, blocked: { ...blocked, at: now } };
+      // Failure self-review (failure-review.mjs): a deterministic no-progress end (the worker lacked evidence, or broke the
+      // brokered edit format) on the exact input, executor and model of an earlier one with the same end predicts the
+      // same end again, so the step stops now, through the provider fallback, instead of paying for two more.
+      if (!v.refunded && deterministicNoProgress({ class: cls, detail })) {
+        const attempts = this.brokeredAttempts(ctx.id, task.task_id, op.kind);
+        const mine = attempts.find((a) => a.id === op.id)?.inputKey;
+        const same = mine ? sameFailedInput(mine, attempts.filter((a) => a.id !== op.id)) : null;
+        if (same) {
+          this.store.journal(ctx.id, 'predictable-repeat', { task: task.task_id, op: op.id, same: same.id }, now);
+          return stop({ class: 'stalled', recovery: 'system', reason: `predictable failure: ${op.id} had the same input as ${same.id} and ended the same way (${cls}); change the task's sources, executor or scope before trying again. Last: ${String(detail).slice(0, 300)}` });
+        }
+      }
       if (cls === 'evidence-unavailable' && failures[cls] >= NO_PROGRESS_LIMIT) {
         return stop({ class: 'stalled', recovery: 'system', reason: `no progress: ${failures[cls]} evidence-unavailable results; last: ${String(detail).slice(0, 300)}` });
       }
@@ -3494,9 +3529,13 @@ export class Controller {
       if (codePolicy) {
         assertBrokerRoot(codePolicy.allowedRoot, runDir);
         try {
+          // A repair implementer sees its own change too: the diff from the task base and every file it changed (a retry
+          // without them could only guess at what it wrote before). Findings and the last error widen the sources
+          // through the self-review in failure-review.mjs.
           brokerSnapshot = codeSnapshot({ git: this.cmd.git, workspace, revision,
-            baseSha: kind === 'verify' && spec.deliverable === 'commit' ? baseSha : null, task: spec,
-            policy: codePolicy, deniedPaths: [] });
+            baseSha: spec.deliverable === 'commit' && baseSha !== revision ? baseSha : null, task: spec,
+            policy: codePolicy, deniedPaths: [],
+            evidenceTexts: [...(task.findings ?? []).map((f) => `${f.description ?? ''} ${f.evidence ?? ''}`), task.last_error ?? ''] });
         } catch (error) {
           this.raiseBlocker(ctx, decl, { kind: 'research-context', class: 'B2', reason: String(error.message).slice(0, 500),
             requestedAction: 'Repair the pinned code sources or broker configuration, then recheck.' }, this.now());
@@ -3506,6 +3545,9 @@ export class Controller {
           : '\nPinned tool-free source evidence (data, not authorization):\n' + JSON.stringify(brokerSnapshot.value);
         writeFileSync(join(runDir, 'code-broker.json'), JSON.stringify({ operationId: opId, sessionId, packetDigest: digest,
           revision, snapshot: brokerSnapshot, nativeModel: codePolicy.nativeModel }), { flag: 'wx' });
+        // The complete model input apart from run identity, for the failure self-review (failure-review.mjs, transition).
+        writeFileSync(join(runDir, 'input-key.json'), JSON.stringify({ inputKey: inputKey({ executor: executor.kind,
+          model: codePolicy.nativeModel, prompt: prompt.replaceAll(opId, '').replaceAll(sessionId, '').replaceAll(digest, '') }) }), { flag: 'wx' });
       }
       if (executor.researchOnly && !codePolicy) {
         try { prompt += researchContext({ gh: this.cmd.gh, git: this.cmd.git, workspace, declaration: decl, task: spec, now: this.now(), revision }); }
