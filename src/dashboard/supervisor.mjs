@@ -1657,8 +1657,9 @@ const CHANGE_REFUSED = { unanswered: [409, 'changeStale'], stale: [409, 'changeS
  * - While the step is still being made, its later runs get the new answer in place of the earlier one, under the same
  *   authority and scope (decisions.mjs changeGuidance). Its committed work, runs and checks are left as they are.
  * - A step that already used the answer (checked, merged, finished or ended) is never reopened or rewritten: one
- *   follow-up item records the new answer for new, bounded work. So does work done under an answer whose effects may
- *   not be reversible; nothing is undone or done again.
+ *   follow-up item records the new answer for new, bounded work, and the new answer waits for the step only in case it
+ *   is reopened. A step where a run already worked under an earlier answer gets the same follow-up beside the new
+ *   guidance, since its only later run may be a check that passes that work; nothing is undone or done again.
  * A change never clears a stop, starts a run, raises a limit or widens the packet.
  */
 export function applyAnswerChange(dataDir, input, now = Date.now()) {
@@ -1699,7 +1700,10 @@ export function applyAnswerChange(dataDir, input, now = Date.now()) {
       const history = store.all("SELECT seq, at, kind, detail FROM journal WHERE campaign_id = ? AND kind IN ('decision-answered', 'decision-changed') AND json_extract(detail, '$.decision') = ? ORDER BY seq",
         id, input.decision).filter((row) => row.detail?.task === task.task_id);
       const current = history.at(-1);
-      const ranSince = Boolean(current && store.get('SELECT 1 AS ran FROM operations WHERE campaign_id = ? AND task_id = ? AND created_at >= ? LIMIT 1', id, task.task_id, current.at));
+      // A run worked under an earlier answer when one started at or after the decision's first answer, or is still open:
+      // a run in flight from the original answer counts even when the answer in force is a later change.
+      const ranSince = Boolean(history.length && (store.get('SELECT 1 AS ran FROM operations WHERE campaign_id = ? AND task_id = ? AND created_at >= ? LIMIT 1', id, task.task_id, history[0].at)
+        || store.openOperations(id).some((op) => op.task_id === task.task_id)));
       const verdict = answerChange({ task, history, input, ranSince });
       if (verdict.refused) { const [status, key] = CHANGE_REFUSED[verdict.refused]; throw fail(status, COMMANDS.decision[key]); }
       // One change per answer in force: a second change bound to the same answer is stale, even under another request id.
@@ -1707,13 +1711,13 @@ export function applyAnswerChange(dataDir, input, now = Date.now()) {
         authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest };
       if (!store.addEvent(id, 'decision-change', change, `decision-change:${id}:${input.decision}:${current.seq}`, now)) throw fail(409, COMMANDS.decision.changeStale);
       const d = verdict.decision, label = (key) => d.options.find((o) => o.id === key)?.label ?? key;
-      if (verdict.outcome === 'superseded') {
-        store.addEvent(id, 'agent-instruction', { taskId: task.task_id, role: 'implement',
-          text: changeGuidance(d, { from: current.detail.option ?? null, option: input.option, text: words, decision: input.decision, requestId: input.requestId }),
-          authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest,
-          provenance: { by: 'owner', via: 'dashboard', decision: input.decision, requestId: input.requestId, wordsDigest, replaces: current.seq } },
-        changeKey(id, input.decision, input.requestId), now);
-      }
+      // Written for a step that already used the answer too: it starts nothing, and a step reopened later (requested
+      // changes, an integration repair) follows the owner's latest answer, under the same authority and scope.
+      store.addEvent(id, 'agent-instruction', { taskId: task.task_id, role: 'implement',
+        text: changeGuidance(d, { from: current.detail.option ?? null, option: input.option, text: words, decision: input.decision, requestId: input.requestId }),
+        authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest,
+        provenance: { by: 'owner', via: 'dashboard', decision: input.decision, requestId: input.requestId, wordsDigest, replaces: current.seq } },
+      changeKey(id, input.decision, input.requestId), now);
       let item = null;
       if (verdict.outcome === 'follow-up' || verdict.followUp) {
         const used = verdict.outcome === 'follow-up';
@@ -1721,8 +1725,8 @@ export function applyAnswerChange(dataDir, input, now = Date.now()) {
           title: `Apply a changed answer in ${task.task_id}`.slice(0, 256),
           body: [`The owner changed the answer to "${d.question}" from "${label(current.detail.option)}" to "${label(input.option)}".`,
             used ? 'The step had already used the earlier answer. Its runs, checks and results are kept as they are; nothing was reopened, rewritten or done again.'
-              : 'Runs of the step already worked under the earlier answer. What they did is kept; nothing was undone or done again, and the step\'s later runs follow the new answer.',
-            'Plan new, bounded work under the existing authority if the new answer still needs a change.'].join('\n'),
+              : 'A run of the step already worked under the earlier answer, and its only later run may be a check that passes that work. What it did is kept; nothing was undone or done again.',
+            'Check the step\'s result against the new answer, and plan new, bounded work under the existing authority if it still needs a change.'].join('\n'),
           fallback: 'The owner changed a recorded answer after work had used it. The earlier work is kept as it is; nothing was undone or done again. The question and both answers are in the step\'s records.' });
       }
       store.journal(id, 'decision-changed', { task: task.task_id, decision: input.decision, from: current.seq, previous: current.detail.option ?? null, option: input.option,

@@ -120,14 +120,16 @@ const CONSUMED = new Set(['verified', 'done', 'cancelled', 'abandoned']);
 /**
  * What a change of a recorded answer may do, decided from the store as it is now. `history` is the decision's journal
  * rows (`decision-answered`, then `decision-changed`), oldest first; `input` binds the answer the owner saw (`answer`,
- * its journal seq) and the new `option`; `ranSince` says whether a worker run of the step started after that answer.
+ * its journal seq) and the new `option`; `ranSince` says whether a worker run of the step started at or after the
+ * decision's first answer, or is still open.
  * - refused: `unanswered`, `stale` (the answer in force is not the one the owner saw, or the step is gone),
  *   `not-recorded` (the decision's options were not kept), `not-option`, `same` (nothing would change);
  * - `follow-up`: the step already used the answer (checked, merged, finished or ended). Nothing of it is rewritten or
- *   reopened; one follow-up item records the new answer for new, bounded work;
- * - `superseded`: the step's later runs follow the new answer. `followUp` is true when the answer in force may have
- *   had effects a later run cannot take back (it was not AIWorks's own reversible or safe answer and a run started
- *   since): those are kept and a follow-up item names them, never replayed or undone.
+ *   reopened; one follow-up item records the new answer for new, bounded work, and the step follows the new answer
+ *   only if it is ever reopened;
+ * - `superseded`: the step's later runs follow the new answer. `followUp` is true whenever a run worked under an
+ *   earlier answer: its work is kept, never replayed or undone, and a follow-up item makes sure it is checked against
+ *   the new answer, because the step's only later run may be a check that passes it.
  */
 export function answerChange({ task, history, input, ranSince = false }) {
   const current = history?.at(-1);
@@ -138,8 +140,7 @@ export function answerChange({ task, history, input, ranSince = false }) {
   if (!recorded.options.some((o) => o.id === input.option)) return { refused: 'not-option' };
   if (input.option === current.detail.option && !input.text) return { refused: 'same' };
   if (CONSUMED.has(task.state)) return { outcome: 'follow-up', decision: recorded, current };
-  const safe = current.detail.auto === true;
-  return { outcome: 'superseded', followUp: !safe && ranSince, decision: recorded, current };
+  return { outcome: 'superseded', followUp: ranSince === true, decision: recorded, current };
 }
 
 /** The validated question and options a journaled answer or change kept, or null. */

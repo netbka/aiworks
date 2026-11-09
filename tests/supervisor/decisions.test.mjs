@@ -53,36 +53,48 @@ test('a stale, replayed or already-used answer change never rewrites the step, r
   assert.throws(() => applyAnswerChange(env.dataDir, { ...request, requestId: randomUUID() }), (error) => error.status === 409);
   assert.equal(changes(), 1);
 
-  // The step already used the answer: its result, head and runs are kept exactly; one follow-up records the new answer.
+  // A run worked under an earlier answer (here one recorded after AIWorks's answer): the change is never reported as
+  // simply applied, and exactly one follow-up makes sure that work is checked against the new answer.
+  const latest = () => store.all("SELECT seq FROM journal WHERE campaign_id = ? AND kind = 'decision-changed' ORDER BY seq", campaignId).at(-1).seq;
+  const items = () => store.all("SELECT number FROM work_items WHERE campaign_id = ? AND task_id = 'T1'", campaignId).length;
+  store.insert('operations', { id: 'synthetic.implement.1', campaign_id: campaignId, task_id: 'T1', kind: 'implement', seq: 1, idempotency_key: 'synthetic-1',
+    lease_generation: 1, state: 'finished', session_id: 's', run_dir: 'r', workspace: 'w', packet: '{}', packet_digest: 'd', created_at: Date.now(), updated_at: Date.now() });
+  const afterRun = { ...request, requestId: randomUUID(), option: 'neutral', answer: latest() };
+  assert.equal(applyAnswerChange(env.dataDir, afterRun).outcome, 'changed-later');
+  assert.equal(items(), 1, 'one bounded follow-up');
+  assert.equal(applyAnswerChange(env.dataDir, afterRun).duplicate, true);
+  assert.equal(items(), 1, 'a replay adds none');
+
+  // The step already used the answer: its result, head and runs are kept exactly; one more follow-up records the new
+  // answer, which is kept for the step only in case it is reopened.
   const row = store.task(campaignId, 'T1');
   store.patch('tasks', { campaign_id: campaignId, task_id: 'T1' }, row.version, { state: 'done', head_sha: 'a'.repeat(40), verified_sha: 'a'.repeat(40) }, Date.now());
-  const before = JSON.stringify(store.task(campaignId, 'T1')), ops = store.all('SELECT * FROM operations WHERE campaign_id = ?', campaignId).length;
-  const instructions = store.all("SELECT seq FROM events WHERE kind = 'agent-instruction'").length;
-  const later = { ...request, requestId: randomUUID(), taskVersion: store.task(campaignId, 'T1').version, option: 'neutral',
-    answer: store.get("SELECT seq FROM journal WHERE campaign_id = ? AND kind = 'decision-changed'", campaignId).seq };
-  assert.equal(applyAnswerChange(env.dataDir, later).outcome, 'follow-up');
+  const before = JSON.stringify(store.task(campaignId, 'T1')), ops = JSON.stringify(store.all('SELECT * FROM operations WHERE campaign_id = ?', campaignId));
+  const replaced = latest();
+  const used = { ...request, requestId: randomUUID(), taskVersion: store.task(campaignId, 'T1').version, option: 'brand', answer: replaced };
+  assert.equal(applyAnswerChange(env.dataDir, used).outcome, 'follow-up');
   assert.equal(JSON.stringify(store.task(campaignId, 'T1')), before, 'the finished step is not reopened or rewritten');
-  assert.equal(store.all('SELECT * FROM operations WHERE campaign_id = ?', campaignId).length, ops, 'no run is started or changed');
-  assert.equal(store.all("SELECT seq FROM events WHERE kind = 'agent-instruction'").length, instructions, 'no guidance for a run that will not come');
-  assert.equal(store.all("SELECT number FROM work_items WHERE campaign_id = ? AND task_id = 'T1'", campaignId).length, 1, 'one bounded follow-up');
-  assert.equal(applyAnswerChange(env.dataDir, later).duplicate, true);
-  assert.equal(store.all("SELECT number FROM work_items WHERE campaign_id = ? AND task_id = 'T1'", campaignId).length, 1, 'a replay adds none');
-  // The whole history stays: AIWorks's answer with its provenance, then both changes.
+  assert.equal(JSON.stringify(store.all('SELECT * FROM operations WHERE campaign_id = ?', campaignId)), ops, 'no run is started or changed');
+  assert.deepEqual(decisionInstructions(store, store.campaign(campaignId), 'T1').map((item) => item.payload.provenance?.replaces), [replaced]);
+  assert.equal(items(), 2);
+  assert.equal(applyAnswerChange(env.dataDir, used).duplicate, true);
+  assert.equal(items(), 2, 'a replay adds none');
+  // The whole history stays: AIWorks's answer with its provenance, then every change.
   assert.deepEqual(store.all("SELECT kind, detail FROM journal WHERE campaign_id = ? AND kind IN ('decision-answered', 'decision-changed') ORDER BY seq", campaignId)
-    .map((r) => [r.kind, r.detail.option, r.detail.auto ?? r.detail.by]), [['decision-answered', 'neutral', true], ['decision-changed', 'brand', 'owner'], ['decision-changed', 'neutral', 'owner']]);
+    .map((r) => [r.kind, r.detail.option, r.detail.auto ?? r.detail.by]),
+  [['decision-answered', 'neutral', true], ['decision-changed', 'brand', 'owner'], ['decision-changed', 'neutral', 'owner'], ['decision-changed', 'brand', 'owner']]);
 });
 
 test('a changed answer replaces the earlier one in every later run under the same authority, and never under another', (t) => {
-  const { env, store, campaignId, bind } = answered(t);
-  const request = bind({ text: 'Keep the logo blue.' });
+  const { env, store, campaignId, shown, bind } = answered(t);
+  const first = shown(), request = bind({ text: 'Keep the logo blue.' });
   applyAnswerChange(env.dataDir, request);
   const c = store.campaign(campaignId);
-  const inForce = decisionInstructions(store, c, 'T1');
-  assert.equal(inForce.length, 1, 'only the answer in force reaches the packet');
-  assert.match(inForce[0].payload.text, /New answer: Brand \(brand\)/);
-  assert.match(inForce[0].payload.text, new RegExp(`owner request ${request.requestId}`), 'it names the owner request it came from');
-  assert.equal(pendingInstructions(store, c, 'T1').filter((item) => /Chosen option: Neutral/.test(item.payload.text)).length, 0, 'the replaced answer is never delivered again');
-  assert.equal(store.all("SELECT seq FROM events WHERE kind = 'agent-instruction' AND payload LIKE '%Chosen option: Neutral%'").length, 1, 'but it stays in the record');
+  const original = store.get('SELECT seq FROM events WHERE dedup_key = ?', `instruction:decision:${campaignId}:${first.decision}`)?.seq;
+  assert.ok(original, 'the replaced answer stays in the record');
+  assert.deepEqual(decisionInstructions(store, c, 'T1').map((item) => [item.dedup_key, item.payload.provenance.requestId, item.payload.provenance.replaces]),
+    [[`instruction:decision:${campaignId}:${first.decision}:change:${request.requestId}`, request.requestId, first.answer]], 'only the owner change reaches the packet');
+  assert.ok(!pendingInstructions(store, c, 'T1').some((item) => item.seq === original), 'the replaced answer is never delivered again');
   assert.equal(decisionInstructions(store, { ...c, authorization_version: c.authorization_version + 1 }, 'T1').length, 0, 'another authority inherits nothing');
   assert.equal(decisionInstructions(store, c, 'T2').length, 0, 'nor does another step');
   assert.equal(store.task(campaignId, 'T1').blocked, null, 'a change clears and sets no stop');

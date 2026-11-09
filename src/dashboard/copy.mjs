@@ -716,9 +716,9 @@ export const COMMANDS = {
     notOption: 'Choose one of the options shown, or write your own answer.',
     noted: 'You already said this decision did not need you.',
     // Changing a recorded answer (HOME_V2 2.1): the earlier answer stays in the record either way.
-    changed: 'Changed. The step’s next runs follow your new answer; nothing already done was undone or done again.',
-    changedLater: 'Changed. Some work already done under the earlier answer cannot be taken back, so it stays; AIWorks added a follow-up for it.',
-    followUp: 'Recorded. That step had already used the earlier answer, so its work stays as it is; AIWorks added a follow-up to apply your new answer.',
+    changed: 'Changed. No run has used the earlier answer yet; the step’s runs follow your new answer.',
+    changedLater: 'Changed. A run already worked under the earlier answer; its work stays as it is, the step’s later runs follow your new answer, and AIWorks added a follow-up to check that work against it.',
+    followUp: 'Recorded. That step had already used the earlier answer, so its work stays as it is; AIWorks added a follow-up to apply your new answer, and the step follows it if it is ever reopened.',
     changeStale: 'This answer changed since the page was loaded, or its step moved on. Nothing was recorded. Refresh the page to see the answer in force.',
     sameAnswer: 'That is already the answer. Nothing was recorded.',
     notRecorded: 'The options of this decision were not kept, so its answer cannot be changed here.',
