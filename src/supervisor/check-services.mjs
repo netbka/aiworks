@@ -2,10 +2,11 @@
 // The managed gate helper always runs its required local contained command; it no longer submits service jobs or
 // substitutes a service result for local evidence. Separate authorized callers can still use this bounded client.
 // Service configuration comes only from SERVICES_ENV, populated from the installation config by serve, never from
-// the shared gate registry. It contains addresses, certificate paths, project mappings and, for a service that requires
-// authentication, its declared header contract and a credential reference: never secret values. The value is resolved
-// only through a credential broker the authorized caller passes in (token-store.mjs), never from this environment, a
-// file or a default store, and it never reaches gate.log, an error message or the returned result.
+// the shared gate registry. It contains addresses, certificate paths and project mappings, never secret values and
+// never an authentication contract: workers inherit and can rewrite it. A service that requires authentication is
+// offered a credential only when the authorized caller read it from the controller's own config.json
+// (checkServiceSettings) and passes a credential broker (token-store.mjs) built from that same config. The value never
+// reaches gate.log, an error message or the returned result.
 // Each offer has one bounded budget. An unsuitable or unavailable additional service never blocks local work.
 import https from 'node:https';
 import { spawnSync } from 'node:child_process';
@@ -31,12 +32,15 @@ const DEFAULT_GATE = ['run', 'check'];
 // value alone in the one header the contract names. Nothing else is ever inferred: a service without `auth` gets no
 // credential, and a malformed `auth` leaves the service out rather than sending it unauthenticated or guessing.
 export const AUTH_SCHEMES = Object.freeze(['bearer', 'header']);
+/** Every check-service credential reference lives under this prefix, so one can never name another operator secret. */
+export const CHECK_SERVICE_TOKEN_PREFIX = 'aiworks-check-service';
 const HEADER_NAME = /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/;
 // Headers the transport owns, or that would change routing, framing or another credential: never a credential header.
 const RESERVED_HEADERS = new Set(['authorization', 'host', 'content-type', 'content-length', 'transfer-encoding', 'connection', 'te',
   'upgrade', 'cookie', 'proxy-authorization', 'expect', 'keep-alive', 'trailer']);
-// A credential value fit for one header line: printable ASCII, no space at either end, bounded.
-const CREDENTIAL_VALUE = /^[\x21-\x7e](?:[\x20-\x7e]{0,4094}[\x21-\x7e])?$/;
+// A credential value fit for one header line: printable ASCII without `"` or `\` (so its JSON-escaped form is itself and
+// redaction finds it in JSON text too), no space at either end, bounded.
+const CREDENTIAL_VALUE = /^[\x21\x23-\x5b\x5d-\x7e](?:[\x20\x21\x23-\x5b\x5d-\x7e]{0,4094}[\x21\x23-\x5b\x5d-\x7e])?$/;
 const validStoreSpec = (store) => store === undefined || (store && typeof store === 'object' && !Array.isArray(store) &&
   (store.kind === 'windows' || (store.kind === 'command' && Array.isArray(store.command) && store.command.length > 0 &&
     store.command.every((part) => typeof part === 'string' && part))));
@@ -75,7 +79,9 @@ function authProblem(auth) {
   if (auth.scheme === 'header' && (typeof auth.header !== 'string' || !HEADER_NAME.test(auth.header) || RESERVED_HEADERS.has(auth.header.toLowerCase()))) {
     return 'needs auth.header, the one header name the service contract documents (not Authorization or a transport header)';
   }
-  if (!validTokenRef(auth.tokenRef)) return 'needs auth.tokenRef, a credential reference such as aiworks-check-service:<name>';
+  if (!validTokenRef(auth.tokenRef) || !auth.tokenRef.startsWith(`${CHECK_SERVICE_TOKEN_PREFIX}:`) || auth.tokenRef.length <= CHECK_SERVICE_TOKEN_PREFIX.length + 1) {
+    return `needs auth.tokenRef, a credential reference ${CHECK_SERVICE_TOKEN_PREFIX}:<name>`;
+  }
   if (!validStoreSpec(auth.credentialStore)) return 'has auth.credentialStore that is neither { "kind": "windows" } nor { "kind": "command", "command": [...] }';
   return null;
 }
@@ -115,26 +121,42 @@ export function checkServiceSettings(config) {
       projects: Object.fromEntries(Object.entries(entry.projects).map(([repository, p]) => [repository.toLowerCase(),
         { projectId: p.projectId, profile: p.profile }])),
       ...(entry.auth === undefined ? {} : { auth: { scheme: entry.auth.scheme, ...(entry.auth.scheme === 'header' ? { header: entry.auth.header } : {}),
-        tokenRef: entry.auth.tokenRef, credentialStore: entry.auth.credentialStore ?? { kind: 'windows' } } }),
+        tokenRef: entry.auth.tokenRef } }),
       queueSeconds: bounded(entry.queueSeconds, 10, 3600, 120), timeoutMinutes: bounded(entry.timeoutMinutes, 5, MAX_TIMEOUT_MINUTES, 60) });
   });
   return { services, problems };
 }
 
+// A service as the shared environment may carry it: never its authentication contract. Every worker inherits and can
+// rewrite SERVICES_ENV, so a credential is offered only to a service the authorized caller read from the controller's
+// own config.json (checkServiceSettings), with a broker built from that same config.
+const withoutAuth = (entry) => {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+  const { auth, ...rest } = entry;
+  return rest;
+};
+
 /**
  * The value of SERVICES_ENV for the accepted services of `config` (null when there are none), with a relative caFile
- * read from `base` (the supervisor data folder).
+ * read from `base` (the supervisor data folder). No `auth` is exported.
  */
 export function checkServicesEnvironment(config, base = process.cwd()) {
-  const { services, problems } = checkServiceSettings(config);
+  const { services: accepted, problems } = checkServiceSettings(config);
+  const services = accepted.map(withoutAuth);
   for (const service of services) if (!isAbsolute(service.caFile)) service.caFile = resolve(base, service.caFile);
   return { value: services.length ? JSON.stringify(services) : null, services, problems };
 }
 
-/** The services a gate helper may offer a commit to: those serve put in its environment, else none. */
+/**
+ * The services a gate helper may offer a commit to: those serve put in its environment, else none. Any `auth` found
+ * there is dropped, so a service from the environment can never produce credential headers.
+ */
 export function readCheckServices(env = process.env) {
   if (!env[SERVICES_ENV]) return [];
-  try { return checkServiceSettings({ checkServices: JSON.parse(env[SERVICES_ENV]) }).services; } catch { return []; }
+  try {
+    const listed = JSON.parse(env[SERVICES_ENV]);
+    return checkServiceSettings({ checkServices: Array.isArray(listed) ? listed.map(withoutAuth) : [] }).services;
+  } catch { return []; }
 }
 
 /** `<owner>/<repository>` of a checkout's origin (https or ssh form), lower case, or null. */

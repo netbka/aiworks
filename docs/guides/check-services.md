@@ -62,7 +62,9 @@ A service that requires a credential must document exactly how it is sent, and t
 
 A scheme not in this table (for example Basic or a signed request) is not supported; such a service stays left out until the contract is added here and reviewed.
 
-The value is never in `config.json`, `AIWORKS_CHECK_SERVICES`, a file AIWorks reads or a worker's environment. `auth.tokenRef` names it in the operator's secret store (`token-store.mjs`: the Windows Credential Manager by default, or a credential helper command in `auth.credentialStore`). The authorized controller that offers a commit passes its own credential broker to `runOnService` (`broker`, a `token-store.mjs` store such as `tokenStoreFrom(service.auth.credentialStore)`); the client has no default broker and never opens a store itself. The value is resolved fresh for each offer, goes only into the request headers to the configured `https` origin (no redirect is followed, and the service certificate is verified against `caFile` as always), and never reaches `gate.log`, an error message or the returned result. An error answer is reduced to its HTTP status; its body is not read.
+The value is never in `config.json`, `AIWORKS_CHECK_SERVICES`, a file AIWorks reads or a worker's environment. `auth.tokenRef` names it in the operator's secret store and must start with `aiworks-check-service:`, so it can never name another operator secret. The store is `token-store.mjs`: the Windows Credential Manager by default, or a credential helper command in `auth.credentialStore`.
+
+The authentication contract never leaves the controller. `serve` exports no `auth` in `AIWORKS_CHECK_SERVICES`, and `readCheckServices` drops any `auth` it finds there: every worker inherits that variable and can rewrite it, so a service read from it can never obtain credential headers. The authorized caller builds both the services and the broker only from the controller's own `config.json`: the services from `checkServiceSettings(config)`, the broker from the same entry's `auth.credentialStore` (`tokenStoreFrom(entry.auth.credentialStore ?? { kind: "windows" })`), and passes it to `runOnService` as `broker`. The client has no default broker and never opens a store itself. That caller is not built yet. The value is resolved fresh for each offer, goes only into the request headers to the configured `https` origin (no redirect is followed, and the service certificate is verified against `caFile` as always), and never reaches `gate.log`, an error message or the returned result. An error answer is reduced to its HTTP status; its body is not read.
 
 The service fails closed at every step:
 
@@ -124,7 +126,7 @@ Add `checkServices` to the supervisor's `config.json` in its data folder (instal
 | `projects` | Which repositories may go to this service: `"<owner>/<repository>"` as in the checkout's `origin`, mapped to the service's own `projectId` and `profile`. Other repositories never go to it. |
 | `queueSeconds` | How long a job may stay queued before AIWorks cancels it and runs the gate itself. 10 to 3600, default 120. |
 | `timeoutMinutes` | The longest run AIWorks waits for. 5 to 75, default 60. The service is told to stop a minute earlier (`timeoutSeconds`). A run that ends without an answer that counts is then run here too, inside the verifier bound (`executor.verifierTimeoutMinutes`, default 120). |
-| `auth` | Only for a service whose contract requires a credential: `{ "scheme": "bearer" \| "header", "header"?: "<name>", "tokenRef": "<reference>", "credentialStore"?: { "kind": "windows" } \| { "kind": "command", "command": [...] } }`. `header` is required with scheme `header` and not allowed with `bearer`. Without `credentialStore` the Windows Credential Manager is used. Holds a reference, never the value. See [Authentication](#authentication). |
+| `auth` | Only for a service whose contract requires a credential: `{ "scheme": "bearer" \| "header", "header"?: "<name>", "tokenRef": "aiworks-check-service:<name>", "credentialStore"?: { "kind": "windows" } \| { "kind": "command", "command": [...] } }`. `header` is required with scheme `header` and not allowed with `bearer`. Without `credentialStore` the Windows Credential Manager is used. Holds a reference, never the value. See [Authentication](#authentication). |
 | `enabled` | `false` leaves the service out without deleting it. |
 
 Several services may be listed. They are tried in order, and for each repository only the services that list it are tried.
@@ -138,12 +140,12 @@ When `serve` starts it checks the entries and puts the accepted ones in its own 
 3. From the AIWorks computer, check reachability: `curl --cacert <caFile> https://<address>:<port>/health` must print `{"status":"ok"}`. If it answers `401`, obtain the service's written authentication contract (scheme and header) before going on.
 4. For a service that requires a credential, store its value under a reference in the operator's secret store yourself (for the Windows Credential Manager, a generic credential named by the reference, for example `aiworks-check-service:<name>`; or through the configured credential helper's `set <ref>`, which reads the value from stdin). Never put the value in `config.json`, a command line or a file in the repository. Add `auth` with the documented scheme and that reference.
 5. Add the `checkServices` entry and restart `serve`. The supervisor log names the service.
-6. Offer a commit that is already verified here and on origin through the authorized caller, passing its broker, and read its lines: `# check service <name> accepted job ...`, then the job's states and its terminal result. Record the exact commit, job id, state, time and artifacts as operator evidence outside the repository.
+6. Not built yet: the authorized caller that reads the services and broker from `config.json` and offers commits. Once it exists, offer a commit that is already verified here and on origin through it, and read its lines: `# check service <name> accepted job ...`, then the job's states and its terminal result. Record the exact commit, job id, state, time and artifacts as operator evidence outside the repository.
 
 ## Security notes
 
 - Only the commit identifier, the project and profile names and a short gate reference (`gate-<worktree folder name>`) are sent, plus, for a service with `auth`, its own credential to its own origin. No source and no other secret leaves the computer.
-- The credential is resolved by the controller's broker, not by a worker: the services environment every worker inherits carries the reference and store kind only.
+- The credential is resolved by the controller's broker, not by a worker. The services environment every worker inherits carries no `auth` at all (no scheme, reference or store), and any `auth` written into it is ignored. A worker that rewrites it can point a service at another address, but that service never receives a credential.
 - The services come only from the environment `serve` gives each run, never from a shared file. Every contained worker can write to the gate slot folder. Had the list been a file there, one run could have chosen who answers the gates of other runs and of the supervisor. A worker can change only its own gate's environment, just as it could write its own `gate-exit.log`. The exact-head check (`gateHeadProblem`) and the verifier's independence cover that case.
 - Keep `caFile` in a folder workers cannot write, such as the supervisor data folder.
 - The service's own words (states, commit ids, errors) are reduced to plain single-line text before they reach `gate.log`. They cannot add lines the log readers take for a test summary.
@@ -153,7 +155,7 @@ When `serve` starts it checks the entries and puts the accepted ones in its own 
 ## Still open
 
 - A verifier gate of a commit that is not yet on origin, and a merge-refresh gate, cannot be offered. The service fetches only from origin. The bundle protocol below is a proposal, not built.
-- Nothing in AIWorks calls `runOnService` automatically. An authorized caller that offers commits and passes the controller's broker is a separate change.
+- Nothing in AIWorks calls `runOnService` automatically. An authorized caller that reads services and broker from the controller's `config.json`, offers commits and records receipts is a separate change.
 - Authentication schemes other than `bearer` and a named `header` are not supported.
 
 ## Proposal: unpublished commits as a bundle

@@ -2,7 +2,8 @@
 // exact commit, and a busy or broken service never holds the gate.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { acceptRemoteResult, checkServiceSettings, runOnService, serviceCredentialHeaders } from '../../src/supervisor/check-services.mjs';
+import { acceptRemoteResult, checkServiceSettings, checkServicesEnvironment, readCheckServices, runOnService, serviceCredentialHeaders,
+  SERVICES_ENV } from '../../src/supervisor/check-services.mjs';
 
 const SHA = 'a'.repeat(40);
 const OTHER = 'b'.repeat(40);
@@ -106,7 +107,8 @@ test('a credential goes only by the configured contract through the caller broke
   assert.deepEqual(serviceCredentialHeaders(service, broker), { headers: {} });
   // A contract that is absent in part, or names a transport header, leaves the service out; it is never sent as is.
   for (const auth of [{ tokenRef: ref }, { scheme: 'basic', tokenRef: ref }, { scheme: 'header', tokenRef: ref },
-    { scheme: 'header', header: 'Host', tokenRef: ref }, { scheme: 'bearer', tokenRef: 'has space' }, { scheme: 'bearer', tokenRef: ref, token: VALUE }]) {
+    { scheme: 'header', header: 'Host', tokenRef: ref }, { scheme: 'bearer', tokenRef: 'has space' }, { scheme: 'bearer', tokenRef: ref, token: VALUE },
+    { scheme: 'bearer', tokenRef: 'aiworks-campaign-api:sampleapp' }]) {
     const { services, problems } = checkServiceSettings({ checkServices: [{ ...service, auth }] });
     assert.deepEqual(services, [], JSON.stringify(auth));
     assert.equal(problems.length, 1);
@@ -139,4 +141,17 @@ test('a credential goes only by the configured contract through the caller broke
     assert.match(attempt.lines.join('\n'), /unavailable \(HTTP 401/, step);
     assert.ok(!attempt.lines.join('\n').includes(VALUE), step);
   }
+});
+
+test('a service from the worker-writable environment can never obtain a credential', () => {
+  const VALUE = 'synthetic-check-credential-0002';
+  const auth = { scheme: 'bearer', tokenRef: 'aiworks-check-service:lab', credentialStore: { kind: 'command', command: ['node', 'helper.mjs'] } };
+  const broker = { get: () => VALUE };
+  // serve exports no authentication contract.
+  const exported = checkServicesEnvironment({ checkServices: [{ ...service, auth }] });
+  assert.ok(!exported.value.includes('aiworks-check-service') && !exported.value.includes('helper.mjs'));
+  // A worker that writes auth into the environment, even pointing at its own server, gets no credential headers.
+  const planted = readCheckServices({ [SERVICES_ENV]: JSON.stringify([{ ...service, baseUrl: 'https://198.51.100.7', auth }]) });
+  assert.equal(planted.length, 1);
+  for (const listed of planted) assert.deepEqual(serviceCredentialHeaders(listed, broker), { headers: {} });
 });
