@@ -10,8 +10,10 @@ import { containsSecret } from './coordinator.mjs';
 import { applyEdits } from './release/edit-broker.mjs';
 import { readGateRun, gateHeadProblem } from './gate.mjs';
 import { GateSlotStore, gateHost, gateCheckoutKey } from './gate-slot.mjs';
+import { repairSources } from './failure-review.mjs';
 
-export const snapshotDigest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const SNAPSHOT_BOUND = 580_000;
+export const snapshotDigest =(value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const prefix = (entry, path) => path.toLowerCase() === entry.replace(/\/$/, '').toLowerCase()
   || path.toLowerCase().startsWith(entry.replace(/\/$/, '').toLowerCase() + '/');
 const boundedStrings = (value, max = 64) => Array.isArray(value) && value.length > 0 && value.length <= max
@@ -42,7 +44,7 @@ export function assertBrokerRoot(root, path) {
 }
 
 /** Tracked regular blobs at exactly revision; no mutable/untracked installation files enter the prompt. */
-export function codeSnapshot({ git, workspace, revision, baseSha, task, policy, deniedPaths = [] }) {
+export function codeSnapshot({ git, workspace, revision, baseSha, task, policy, deniedPaths = [], evidenceTexts = [] }) {
   assertBrokerRoot(policy.allowedRoot, workspace);
   const run = (args) => { const r = exec(git, args, { cwd: workspace }); if (!r.ok) throw Error('Code snapshot Git evidence unavailable'); return r.stdout; };
   if (!/^[0-9a-f]{40}$/.test(revision) || run(['rev-parse', 'HEAD']) !== revision || run(['status', '--porcelain=v1'])) throw Error('Code snapshot requires the exact clean head');
@@ -81,8 +83,29 @@ export function codeSnapshot({ git, workspace, revision, baseSha, task, policy, 
   }
   const diff = changed.length ? run(['diff', '--no-ext-diff', '--no-textconv', baseSha, revision, '--']) : '';
   if (containsSecret(diff)) throw Error('Code diff contains credential-shaped content');
-  const value = { revision, baseSha, files, diff, tree: entries.filter((e) => safeCodePath(e.path)).map((e) => e.path) };
-  if (Buffer.byteLength(JSON.stringify(value)) > 580_000) throw Error('Code snapshot exceeds its complete-context bound');
+  const tree = entries.filter((e) => safeCodePath(e.path)).map((e) => e.path);
+  const value = { revision, baseSha, files, diff, tree };
+  if (Buffer.byteLength(JSON.stringify(value)) > SNAPSHOT_BOUND) throw Error('Code snapshot exceeds its complete-context bound');
+  // Self-review before dispatch (failure-review.mjs): files a predictable failure would lack are added while they fit:
+  // paths the findings or last error name, and callers of an exported function the change altered. Extras never block.
+  const filesWith = (word) => {
+    const r = exec(git, ['grep', '-l', '-w', '-F', '-e', word, revision, '--'], { cwd: workspace });
+    return r.ok ? r.stdout.split('\n').filter(Boolean).map((line) => line.slice(revision.length + 1)) : [];
+  };
+  const extras = repairSources({ tree, present: files.filter((f) => !f.anchor && !f.missing).map((f) => f.path), texts: evidenceTexts, diff, filesWith })
+    .filter((path) => !deniedPaths.some((p) => prefix(p, path)));
+  let size = Buffer.byteLength(JSON.stringify(value));
+  for (const path of extras) {
+    const entry = entries.find((e) => e.path === path);
+    if (!entry || entry.type !== 'blob' || !['100644', '100755'].includes(entry.mode)) continue;
+    let content;
+    try { content = readBlob(git, workspace, entry.blob); } catch { continue; }
+    if (containsSecret(content)) continue;
+    const added = Buffer.byteLength(JSON.stringify({ path, blob: entry.blob, content })) + 1;
+    if (size + added > SNAPSHOT_BOUND) continue;
+    files.push({ path, blob: entry.blob, content, added: 'self-review' });
+    size += added;
+  }
   return { value, digest: snapshotDigest(value) };
 }
 

@@ -282,6 +282,13 @@ Idle ticks read local files and SQLite; no model is called for polling. Tasks ex
   - Otherwise the step **ends as not done**: state `cancelled`, `last_error` `not done: <reason>`, and every step that depends on it ends the same way. Nothing of it is merged. Journal: `step-not-done`.
   - Either way a follow-up `task` item goes to the local work list (`followUp`, label `follow-up`, one per step and reason), and the campaign continues and finishes; its ready note counts what passed, what was delivered with known defects and what was not done.
 
+#### Failure self-review: could it have been predicted?
+
+`failure-review.mjs` checks every failure against the causes AIWorks can know in advance, at two moments:
+
+- **Before a brokered run** (code broker, see below). A commit step's snapshot always holds its diff from the task base and every file it changed, including on an implement retry or repair. It also takes, while they fit the snapshot bound, the repository files that the step's findings or last error name, and the source files that import a module and use an exported function whose declaration the change removed or rewrote. When the complete input (snapshot digest, findings and controller note) equals that of an earlier attempt of the same step and stage that ended without progress, the run is not started: the step stalls with `self-review: same input as <operation>` (journal `predictable-repeat-refused`) and is finished as above.
+- **When a step ends as not done.** Its attempts are sorted against the catalog: `admission-budget`, `broker-edit-protocol`, `executor-tooling`, `context-gap` (the worker named files that exist but were not supplied), `self-broken-gate` (the change turned a green base gate red) and `same-input-repeat`. The journal records `failure-review`. The follow-up item says what to change before planning the step again. Any attempt that no cause covers is listed as a new failure class to diagnose and add to the catalog. Re-planning the same step unchanged is a predictable failure.
+
 Automatic answers and send-backs on one step stop at the no-progress limit (four): the next stop of that step is finished instead, so answers never buy unbounded paid runs. Nothing here starts a run, raises a limit or widens a packet; run and cost limits, exact-head verification and the merge gate stay as they are. The merge gate never merges a head whose recorded full check failed, nor a rejected head that is not a delivery with known defects (`mergeRefusal`). An AW-015 owner acceptance, where the owner chose it, still holds the merge. Paused and cancelled work is left alone until it resumes.
 
 ### Continuing after an internal failure
