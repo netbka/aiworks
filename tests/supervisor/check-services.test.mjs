@@ -2,7 +2,7 @@
 // exact commit, and a busy or broken service never holds the gate.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { acceptRemoteResult, runOnService } from '../../src/supervisor/check-services.mjs';
+import { acceptRemoteResult, checkServiceSettings, runOnService, serviceCredentialHeaders } from '../../src/supervisor/check-services.mjs';
 
 const SHA = 'a'.repeat(40);
 const OTHER = 'b'.repeat(40);
@@ -87,4 +87,56 @@ test('a busy, broken or unreachable service hands the gate back to this computer
   const unlisted = fake(['passed']);
   assert.equal(await runOnService({ services: [service], repository: 'example-org/service', sha: SHA, client: unlisted.client, ...clock() }), null);
   assert.deepEqual(unlisted.calls, []);
+});
+
+test('a credential goes only by the configured contract through the caller broker, never leaks, and a refusal never counts', async () => {
+  const VALUE = 'synthetic-check-credential-0001';
+  const ref = 'aiworks-check-service:lab';
+  const authed = { ...service, auth: { scheme: 'bearer', tokenRef: ref, credentialStore: { kind: 'windows' } } };
+  const broker = { get: (asked) => (asked === ref ? VALUE : null) };
+  const run = (fakeService, extra) => {
+    const lines = [];
+    return { lines, done: runOnService({ services: [authed], repository: 'example-org/sampleapp', sha: SHA, client: fakeService.client,
+      summaryRequired: true, ...clock(), say: (line) => lines.push(line), ...extra }) };
+  };
+  // The declared scheme decides the header; nothing is inferred.
+  assert.deepEqual(serviceCredentialHeaders(authed, broker), { headers: { Authorization: `Bearer ${VALUE}` } });
+  assert.deepEqual(serviceCredentialHeaders({ ...service, auth: { scheme: 'header', header: 'X-Check-Key', tokenRef: ref } }, broker),
+    { headers: { 'X-Check-Key': VALUE } });
+  assert.deepEqual(serviceCredentialHeaders(service, broker), { headers: {} });
+  // A contract that is absent in part, or names a transport header, leaves the service out; it is never sent as is.
+  for (const auth of [{ tokenRef: ref }, { scheme: 'basic', tokenRef: ref }, { scheme: 'header', tokenRef: ref },
+    { scheme: 'header', header: 'Host', tokenRef: ref }, { scheme: 'bearer', tokenRef: 'has space' }, { scheme: 'bearer', tokenRef: ref, token: VALUE }]) {
+    const { services, problems } = checkServiceSettings({ checkServices: [{ ...service, auth }] });
+    assert.deepEqual(services, [], JSON.stringify(auth));
+    assert.equal(problems.length, 1);
+  }
+  // With its credential the exact-commit pass counts, and the value reaches only the client's headers, even when the
+  // service's output echoes it.
+  const seen = [];
+  const good = fake(['passed'], passed, `${SUMMARY}request header echoed: Bearer ${VALUE}\n`);
+  const ok = run({ client: (svc, options) => { seen.push(options.headers); return good.client(); } }, { broker });
+  const result = await ok.done;
+  assert.equal(result?.exit, 0);
+  assert.deepEqual(seen, [{ Authorization: `Bearer ${VALUE}` }]);
+  assert.ok(!JSON.stringify(result).includes(VALUE) && !ok.lines.join('\n').includes(VALUE));
+  // No broker, an unresolved reference or a store that cannot tell: unavailable, and no request is sent at all.
+  for (const extra of [{}, { broker: { get: () => null } }, { broker: { get: () => { throw new Error(VALUE); } } }]) {
+    const unsent = fake(['passed']);
+    const attempt = run(unsent, extra);
+    assert.equal(await attempt.done, null);
+    assert.deepEqual(unsent.calls, []);
+    assert.match(attempt.lines.join('\n'), /unavailable/);
+    assert.ok(!attempt.lines.join('\n').includes(VALUE));
+  }
+  // HTTP 401 at any step is recorded as unavailable, never a result and never with the value.
+  const refusal = Object.assign(new Error('HTTP 401'), { status: 401 });
+  for (const step of ['health', 'submit', 'status', 'result']) {
+    const refusing = fake(['running', 'passed']);
+    const client = () => ({ ...refusing.client(), [step]: async () => { throw refusal; } });
+    const attempt = run({ client }, { broker });
+    assert.equal(await attempt.done, null, step);
+    assert.match(attempt.lines.join('\n'), /unavailable \(HTTP 401/, step);
+    assert.ok(!attempt.lines.join('\n').includes(VALUE), step);
+  }
 });
