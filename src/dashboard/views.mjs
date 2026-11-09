@@ -245,7 +245,9 @@ function homeV2({ supervisor, owner, projects, now }) {
     const next = tasks.find((task, i) => segments[i] === 'todo' && (task.dependsOn ?? []).every((dep) => done.has(dep))) ?? tasks.find((task, i) => segments[i] === 'todo');
     // Work in a project without GitHub carries its project's name; GitHub work is named by its project row.
     const project = c.projectName !== undefined ? c.projectName ?? null : nameOf(goal.project);
-    return { index, cost: c.costToday ?? null, item: { project, title: goalTitle(c),
+    // Where the goal's link leads: this goal in its own project, by the ids the page's addresses use (never shown as words).
+    const route = c.projectName !== undefined ? c.project ?? null : c.repository ?? goal.project ?? null;
+    return { index, cost: c.costToday ?? null, item: { project, title: goalTitle(c), link: route ? { project: route, goal: goal.id } : null,
       now: state === 'Asks you' ? 'Waiting for your answer' : current ? `Now: ${stepTitle(current)}` : next ? `Next: ${stepTitle(next)}` : null,
       done: done.size, total: tasks.length, dropped: segments.filter((segment) => segment === 'dropped').length, segments, state } };
   }).sort((a, b) => GOAL_ORDER[a.item.state] - GOAL_ORDER[b.item.state] || a.index - b.index);

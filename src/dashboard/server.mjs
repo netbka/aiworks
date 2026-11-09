@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
-import { supervisorSnapshot, applyCommand, applyDecision, applyResultReview, captureResultPreview, checkRelease, openResultPreview, previewStillChecked, applyScopedControl, postMessage, dashboardAccounts, removeDashboardAccount, configuredModelPreferences, saveDashboardModelPreferences } from './supervisor.mjs';
+import { supervisorSnapshot, applyCommand, applyAnswerChange, applyDecision, applyResultReview, captureResultPreview, checkRelease, openResultPreview, previewStillChecked, applyScopedControl, postMessage, dashboardAccounts, removeDashboardAccount, configuredModelPreferences, saveDashboardModelPreferences } from './supervisor.mjs';
 import { Store } from '../supervisor/store.mjs';
 import { configuredGovernanceRoot } from '../supervisor/governance.mjs';
 import { RELEASE_STOP } from '../supervisor/release/state.mjs';
@@ -402,6 +402,11 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       if (/^\/api\/v2\/decisions\/(?:answer|snooze|not-needed)$/.test(path)) {
         await ownerCaller(dataDir, caller);
         return send(202, applyDecision(dataDir, path.slice('/api/v2/decisions/'.length), value, Date.now()));
+      }
+      // Change a recorded answer (HOME_V2 2.1), bound to the answer in force; only the owner's own session may change it.
+      if (path === '/api/v2/decisions/change') {
+        await ownerCaller(dataDir, caller);
+        return send(202, applyAnswerChange(dataDir, value, Date.now()));
       }
       // Review of a result (WP4): accept, or request changes, bound to one verified head and its report; the action is the address.
       // The caller check runs first, so a program AIWorks started can neither accept a result nor send it back for changes.

@@ -160,7 +160,7 @@ const screenText = { home: ['Home', 'What needs me, and what changed?'], project
   diagnostics: ['Diagnostics', 'What exactly did the machine record?'], overview: ['Overview', 'Where is the current goal?'], now: ['Overview', 'Where is the current goal?'],
   connections: ['Connections', 'What does AIWorks use on this computer, and can it reach it?'],
   alerts: ['Alerts', 'When does AIWorks tell me that something needs me?'],
-  results: ['Review', 'Does the result do what was promised?'], step: ['Step', 'What is happening on this step?'], start: ['Plan work', 'Describe the result. AIWorks proposes the steps.'],
+  results: ['Review', 'Does the result do what was promised?'], step: ['Step', 'What is happening on this step?'], goal: ['Goal', 'Where does this goal stand?'], start: ['Plan work', 'Describe the result. AIWorks proposes the steps.'],
   review: ['Review', 'Is this the right goal and limits?'], plan: ['Plan', 'What will be true when this is done?'], 'add-project': ['Add project', 'Which folder should AIWorks work on?'],
   worklist: ['Work list', 'What is on AIWorks’s own work list?'], 'worklist-item': ['Work item', 'What does this item say, and what happened to it?'],
   'worklist-import': ['Imported issues', 'Which imported GitHub issues should be closed there?'],
@@ -1292,8 +1292,8 @@ function localResultsScreen(project) {
 }
 
 /** Work of a project without GitHub: each approved plan with its steps, in the owner's words. */
-function localWorkScreen(project) {
-  const work = localWork(project);
+function localWorkScreen(project, only = null) {
+  const work = localWork(project).filter((c) => !only || c.id === only);
   if (!work.length) return [empty('Nothing is running or waiting in this project', 'A plan you approve appears here.')];
   return work.map((c) => el('section', { class: 'panel', 'data-focus-scope': `local-work/${c.id}` }, el('div', { class: 'panel-body' },
     el('h2', {}, c.outcome), el('p', { class: 'subtext' }, LOCAL_CONTROL[c.control] ?? ''),
@@ -2599,6 +2599,56 @@ function homeDecisionCard(c, task) {
   return form;
 }
 
+/*
+ * Change a decided answer on Home (HOME_V2 2.1): Change opens the decision's options in place, with the answer in force
+ * chosen. The request binds that very answer, so the server refuses it when the answer or its step moved on; a step that
+ * already used the answer keeps its work and gets a follow-up instead.
+ */
+let changingDecision = null;
+function decidedChange(d) {
+  const c = campaignById(d.campaignId), task = c?.tasks.find((item) => item.id === d.taskId);
+  if (!c || !task || !d.decision || !d.answer || !(d.options?.length > 1)) return null;
+  const off = decisionBusy || commandsOff();
+  if (changingDecision !== d.decision) return el('button', { class: 'button link', type: 'button', disabled: off, onclick: () => { changingDecision = d.decision; render(); } }, 'Change');
+  const radios = `home-change-${d.decision}`;
+  const options = d.options.map((o) => {
+    const input = el('input', { type: 'radio', name: radios, value: o.id });
+    input.checked = o.id === d.option;
+    return el('label', { class: 'home-option' }, input, el('span', { class: 'home-option-body' }, el('strong', {}, o.label)));
+  });
+  const form = el('form', { novalidate: true, class: 'home-card', 'data-focus-scope': `home/change/${d.decision}`,
+    onsubmit: (event) => {
+      event.preventDefault();
+      const option = form.querySelector(`input[name="${radios}"]:checked`)?.value;
+      if (off || !option) return;
+      void sendAnswerChange(c, task, d, option);
+    } },
+  el('fieldset', { class: 'home-options', 'aria-label': d.question }, ...options),
+  el('div', { class: 'home-answer' }, el('button', { class: 'button', type: 'submit', disabled: off }, 'Change answer'), ' ',
+    el('button', { class: 'button secondary', type: 'button', onclick: () => { changingDecision = null; render(); } }, 'Keep it')));
+  return form;
+}
+
+const CHANGE_WORDS = { changed: 'changed', 'changed-later': 'changedLater', 'follow-up': 'followUp' };
+async function sendAnswerChange(c, task, d, option, { address = current.address } = {}) {
+  c = campaignById(c.id) ?? c; task = c.tasks.find((item) => item.id === task.id) ?? task;
+  const payload = { requestId: crypto.randomUUID(), campaignId: c.id, taskId: task.id, taskVersion: task.version, version: c.version,
+    authorizationVersion: c.authorizationVersion, scopeDigest: c.scopeDigest, decision: d.decision, answer: d.answer, option };
+  decisionBusy = true; render();
+  const attempt = async () => {
+    try {
+      const result = await post('/api/v2/decisions/change', payload);
+      changingDecision = null;
+      const words = result.duplicate ? COMMANDS.duplicate : COMMANDS.decision[CHANGE_WORDS[result.outcome] ?? 'changed'];
+      homeConfirm = { text: words, until: Date.now() + 15_000 };
+      notice(words, null, null, address);
+    } catch (error) {
+      notice(error.known ? error.message : COMMANDS.unconfirmed, error.known ? null : attempt, error.known ? error.detail : null, address);
+    }
+  };
+  try { await attempt(); } finally { decisionBusy = false; await poll(); }
+}
+
 /**
  * A waiting item that is not a choice: its question, what it means, the one action that settles it on the card (the same
  * bound requests as its step and Review) and a link to where it is settled, so a card is never a dead end.
@@ -2628,10 +2678,12 @@ function homeScreen() {
     const row = (home.projects ?? []).find((project) => sameProject(project.name, name));
     return row ? formatRoute({ screen: 'project', project: row.id, tab: 'overview' }) : null;
   };
-  const decided = (state.owner?.decided ?? []).slice(0, 3).map((d) => ({ question: d.question, chosen: d.chosen,
+  const decided = (state.owner?.decided ?? []).slice(0, 3).map((d) => ({ question: d.question, chosen: d.chosen, change: decidedChange(d),
     address: formatRoute({ screen: 'step', project: d.project, work: d.campaignId, step: d.taskId }) }));
+  // A goal opens itself in its own project; the data names both.
+  const goalAddress = (goal) => goal.link ? formatRoute({ screen: 'goal', project: goal.link.project, work: goal.link.goal }) : null;
   const confirmation = homeConfirm && homeConfirm.until > Date.now() ? homeConfirm.text : null;
-  const blocks = homeBlocks({ ...home, needCards, decided, confirmation, checking: state.owner?.unknownResults ?? 0,
+  const blocks = homeBlocks({ ...home, needCards, decided, confirmation, checking: state.owner?.unknownResults ?? 0, goalAddress,
     ownProblems: { count: ownProblemCount(), address: formatRoute({ screen: 'settings', section: 'itself' }) }, address: projectAddress, showAll: landedAll,
     onShowAll: () => { landedAll = !landedAll; render(); } }, { el, timeAgo });
   // AIWorks's answer to the owner's last message, as one line with its link.
@@ -4276,6 +4328,18 @@ function usageScreen() {
     el('p', { class: 'subtext' }, 'Dollars are as each AI worker reported them. Tokens and dollars are counted apart and never added together.')];
 }
 
+/**
+ * One goal in its project (HOME_V2 2.2), the page Home's goal links open: exactly the goal the address names, and only
+ * when it belongs to that project, so a link never shows another project's goal or a different one.
+ */
+function goalScreen(project, id, all) {
+  const back = routeLink('All work in this project', { screen: 'project', project, tab: 'overview' }, 'button secondary');
+  if (localWork(project).some((c) => c.id === id)) return [...localWorkScreen(project, id), back];
+  const c = all.find((item) => item.id === id);
+  if (!c) return [empty('This goal is not recorded for this project', 'It may belong to another project, or the address is mistyped.'), back];
+  return [campaignCard(c, true), back];
+}
+
 /** One project's screens. Campaign cards, step tables and costs are today's, limited to this project. */
 function projectScreen(route) {
   const project = route.project, all = projectCampaigns(project);
@@ -4296,6 +4360,7 @@ function projectScreen(route) {
   }
   if (route.screen === 'review') return [...reviewScreen(project, route.plan), el('p', { class: 'subtext' }, routeLink('All plans for this project', { screen: 'plan', project }))];
   if (route.screen === 'plan') return planScreen(project);
+  if (route.screen === 'goal') return goalScreen(project, route.work, all);
   // A project without GitHub: its work and results come from the work view; never a pull request (UI17). Earlier work and
   // results stay reachable after its rules are revoked, so an applied result can still be undone.
   const local = localProject(project);

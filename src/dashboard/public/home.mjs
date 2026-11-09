@@ -25,8 +25,9 @@ export function summaryLine(goals, landed, checking = 0, count = 0) {
 }
 
 /**
- * @param data   the Home data (goals, landed, needs, quiet, spentToday) plus `decided` ({ question, chosen, address }),
- *               `address(project)` for a project's page, `confirmation` text or null, `needCards` (finished nodes)
+ * @param data   the Home data (goals, landed, needs, quiet, spentToday) plus `decided` ({ question, chosen, change?, address }),
+ *               `goalAddress(goal)` for a goal's own page, `address(project)` for a project's page, `confirmation` text
+ *               or null, `needCards` (finished nodes)
  * @param h      { el, timeAgo }
  */
 export function homeBlocks(data, h) {
@@ -52,7 +53,8 @@ export function homeBlocks(data, h) {
       el('div', { class: 'home-head' }, el('h2', { id: 'home-progress' }, 'In progress'),
         typeof spent === 'number' ? el('span', { class: 'home-note' }, `$${spent.toFixed(2)} spent on these today`) : null),
       el('ul', { class: 'home-goals' }, ...goals.map((goal) => {
-        const shown = goal.total - goal.dropped, to = data.address?.(goal.project) ?? null;
+        // The goal's own address in its project when the data names it; otherwise its project's page.
+        const shown = goal.total - goal.dropped, to = data.goalAddress?.(goal) ?? data.address?.(goal.project) ?? null;
         return el('li', { class: 'home-goal' },
           el('div', { class: 'home-goal-top' },
             to ? el('a', { class: 'home-goal-title', href: to }, goal.title) : el('span', { class: 'home-goal-title' }, goal.title),
@@ -69,7 +71,8 @@ export function homeBlocks(data, h) {
   if (decided.length) out.push(el('section', { class: 'home-block', 'aria-labelledby': 'home-decided' },
     el('h2', { id: 'home-decided' }, 'Decided for you'),
     el('ul', { class: 'home-lines' }, ...decided.map((d) => el('li', {}, el('span', {}, d.question, ' ', el('strong', {}, d.chosen)),
-      d.address ? el('a', { href: d.address }, 'Change') : null)))));
+      // `change` is the page's own Change control (a finished node); without it, a link to where the answer is settled.
+      d.change ?? (d.address ? el('a', { href: d.address }, 'Change') : null))))));
 
   if (landed.entries.length) {
     const rows = data.showAll ? landed.entries : landed.entries.slice(0, LANDED_SHOWN);

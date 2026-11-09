@@ -8,7 +8,8 @@ import { campaignStatus, campaignPause, campaignCancel, campaignRecheck, campaig
 import { DEFAULTS } from '../supervisor/controller.mjs';
 import { safeText } from './roadmap.mjs';
 import { pendingInstructions } from '../supervisor/instructions.mjs';
-import { decisionId, isDecision, structuredDecision } from '../supervisor/decisions.mjs';
+import { answerChange, changeGuidance, changeKey, decisionId, isDecision, recordedDecision, structuredDecision } from '../supervisor/decisions.mjs';
+import { followUp } from '../supervisor/work-list.mjs';
 import { criterionEvidence, MAX_FEEDBACK, OWNER_CHANGES, passedCheck, reviewRecords, unresolvedOf, verifiedReview } from '../supervisor/result-review.mjs';
 import { acceptanceMode } from '../supervisor/project-settings.mjs';
 import { mergeSettings } from '../supervisor/merge.mjs';
@@ -911,36 +912,42 @@ export function decisionView(campaignId, task, feedback, now) {
 /**
  * AW-016: the decisions AIWorks answered itself with the worker's reversible suggestion, newest first, while their step's
  * result is not accepted or merged yet, so the owner can still change them. Question, options and reason come from the
- * validated decision recorded with the answer and pass the same filter as an open decision's.
+ * validated decision recorded with the answer and pass the same filter as an open decision's. One line per decision: a
+ * decision the owner changed since shows the answer in force (`changed`), and `answer` is the record a change binds to.
  */
 export function autoAnswers(store, campaignId, taskRows) {
   // Shown while the step's result is still being made; once it is done the owner meets the choice in its Review.
   const open = new Set(taskRows.filter((task) => !['done', 'cancelled'].includes(task.state)).map((task) => task.task_id));
   const seen = new Set(), out = [];
-  for (const row of store.all("SELECT at, detail FROM journal WHERE campaign_id = ? AND kind = 'decision-answered' ORDER BY seq DESC LIMIT 200", campaignId)) {
+  for (const row of store.all("SELECT seq, at, kind, detail FROM journal WHERE campaign_id = ? AND kind IN ('decision-answered', 'decision-changed') ORDER BY seq DESC LIMIT 200", campaignId)) {
     const detail = row.detail ?? {};
-    if (!open.has(detail.task) || seen.has(detail.task)) continue;
+    if (!open.has(detail.task) || seen.has(detail.decision ?? row.seq)) continue;
+    seen.add(detail.decision ?? row.seq);
     const answer = autoAnswer(row);
-    if (!answer) continue;
-    seen.add(detail.task);
-    out.push(answer);
+    if (answer) out.push(answer);
   }
   return out;
 }
 
-/** One journaled decision AIWorks answered itself with its suggestion, as the owner reads it; null for any other answer. */
+/**
+ * One journaled decision AIWorks answered itself with its suggestion, or the owner's later change of one, as the owner
+ * reads it; null for any other answer.
+ */
 function autoAnswer(row) {
-  const detail = row.detail ?? {}, d = detail.auto ? structuredDecision({ decision: { question: detail.question, options: detail.options, suggestion: detail.suggestion } }) : null;
+  const detail = row.detail ?? {}, changed = row.kind === 'decision-changed';
+  const d = detail.auto || changed ? recordedDecision(detail) : null;
   const chosen = d?.options.find((o) => o.id === detail.option);
   if (!chosen) return null;
   return { taskId: detail.task, at: row.at, question: safeText(d.question, 500), chosen: safeText(chosen.label, 120),
-    reason: d.suggestion && d.suggestion.option === chosen.id ? safeText(d.suggestion.reason, 500) : null,
-    others: d.options.filter((o) => o.id !== chosen.id).map((o) => safeText(o.label, 120)) };
+    reason: !changed && d.suggestion && d.suggestion.option === chosen.id ? safeText(d.suggestion.reason, 500) : null,
+    others: d.options.filter((o) => o.id !== chosen.id).map((o) => safeText(o.label, 120)),
+    changed, decision: typeof detail.decision === 'string' ? detail.decision : null, answer: row.seq ?? null, option: chosen.id,
+    options: d.options.map((o) => ({ id: o.id, label: safeText(o.label, 120) })) };
 }
 
 /** AW-016: the latest decision on this step that AIWorks answered itself, so the owner sees it when accepting its result. */
 function stepAutoAnswer(store, campaignId, taskId) {
-  for (const row of store.all("SELECT at, detail FROM journal WHERE campaign_id = ? AND kind = 'decision-answered' AND json_extract(detail, '$.task') = ? ORDER BY seq DESC LIMIT 20", campaignId, taskId)) {
+  for (const row of store.all("SELECT seq, at, kind, detail FROM journal WHERE campaign_id = ? AND kind IN ('decision-answered', 'decision-changed') AND json_extract(detail, '$.task') = ? ORDER BY seq DESC LIMIT 20", campaignId, taskId)) {
     const answer = autoAnswer(row);
     if (answer) return answer;
   }
@@ -1639,6 +1646,99 @@ export function applyDecision(dataDir, action, input, now = Date.now()) {
       store.addEvent(id, 'dashboard-command', payload, dedup, now);
       store.journal(id, 'dashboard-command', { action: `decision-${action}`, task: input.taskId, requestId: input.requestId }, now);
       return { accepted: true, duplicate: false, action, ...(action === 'snooze' ? { until: now + SNOOZE[input.snooze] } : {}) };
+    });
+  } finally { store.close(); }
+}
+
+const CHANGE_KEYS = ['requestId', 'campaignId', 'taskId', 'taskVersion', 'version', 'authorizationVersion', 'scopeDigest', 'decision', 'answer', 'option', 'text'];
+const CHANGE_REFUSED = { unanswered: [409, 'changeStale'], stale: [409, 'changeStale'], 'not-recorded': [409, 'notRecorded'], 'not-option': [400, 'notOption'], same: [409, 'sameAnswer'] };
+
+/**
+ * Change a recorded answer to a decision (docs/design/HOME_V2.md 2.1), from the owner's checked dashboard session. The
+ * request binds the goal's version, authorization and scope, the step's version, the decision and the exact answer the
+ * owner saw (its journal record), so a stale view, a second change of the same answer or a replay records nothing.
+ * The earlier answer and its provenance stay in the journal; the change is a new record beside them.
+ * - While the step is still being made, its later runs get the new answer in place of the earlier one, under the same
+ *   authority and scope (decisions.mjs changeGuidance). Its committed work, runs and checks are left as they are.
+ * - A step that already used the answer (checked, merged, finished or ended) is never reopened or rewritten: one
+ *   follow-up item records the new answer for new, bounded work, and the new answer waits for the step only in case it
+ *   is reopened. A step where a run already worked under an earlier answer gets the same follow-up beside the new
+ *   guidance, since its only later run may be a check that passes that work; nothing is undone or done again.
+ * A change never clears a stop, starts a run, raises a limit or widens the packet.
+ */
+export function applyAnswerChange(dataDir, input, now = Date.now()) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !CHANGE_KEYS.includes(key)) ||
+      !/^[0-9a-f-]{36}$/i.test(input.requestId ?? '') || !identifier.test(input.campaignId ?? '') || !identifier.test(input.taskId ?? '') ||
+      !Number.isSafeInteger(input.taskVersion) || !Number.isSafeInteger(input.version) || input.version < 1 ||
+      !Number.isSafeInteger(input.authorizationVersion) || !/^[a-f0-9]{64}$/.test(input.scopeDigest ?? '') || !/^[a-f0-9]{32}$/.test(input.decision ?? '') ||
+      !Number.isSafeInteger(input.answer) || input.answer < 1 || !/^[a-z][a-z0-9-]{0,31}$/.test(input.option ?? '') ||
+      input.text !== undefined && (typeof input.text !== 'string' || !input.text.trim() || input.text.length > 2000 ||
+        /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(input.text))) {
+    throw fail(400, 'Invalid dashboard command.');
+  }
+  if (input.text !== undefined && safeText(input.text, 2000) !== input.text) {
+    throw Object.assign(fail(400, INSTRUCTION_LOOKS_SENSITIVE), { code: 'INSTRUCTION_LOOKS_SENSITIVE' });
+  }
+  if (!existsSync(join(dataDir, 'supervisor.db'))) throw fail(503, 'AIWorks can’t read its work records on this computer right now.');
+  const store = new Store(join(dataDir, 'supervisor.db'));
+  try {
+    return store.tx(() => {
+      const id = input.campaignId, words = input.text ?? null;
+      const wordsDigest = words === null ? null : createHash('sha256').update(words, 'utf8').digest('hex');
+      const payload = { action: 'change', taskId: input.taskId, decision: input.decision, answer: input.answer, option: input.option, taskVersion: input.taskVersion,
+        version: input.version, authorizationVersion: input.authorizationVersion, scopeDigest: input.scopeDigest, text: wordsDigest };
+      const dedup = `dashboard:${input.requestId}`;
+      const previous = store.get('SELECT campaign_id, payload FROM events WHERE dedup_key = ?', dedup);
+      if (previous) {
+        if (previous.campaign_id !== id || JSON.stringify(previous.payload) !== JSON.stringify(payload)) throw fail(409, 'That command identifier was already used for a different request.');
+        return { accepted: true, duplicate: true, action: 'change' };
+      }
+      const c = store.campaign(id);
+      if (!c) throw fail(404, COMMANDS.notFound);
+      if (c.version !== input.version || c.authorization_version !== input.authorizationVersion || c.scope_digest !== input.scopeDigest) {
+        throw fail(409, 'Work changed since this view was loaded. Refresh and try again.');
+      }
+      if (!['registered', 'paused'].includes(c.control)) throw fail(409, COMMANDS.closed);
+      const task = store.task(id, input.taskId);
+      if (!task || task.version !== input.taskVersion) throw fail(409, COMMANDS.decision.changeStale);
+      const history = store.all("SELECT seq, at, kind, detail FROM journal WHERE campaign_id = ? AND kind IN ('decision-answered', 'decision-changed') AND json_extract(detail, '$.decision') = ? ORDER BY seq",
+        id, input.decision).filter((row) => row.detail?.task === task.task_id);
+      const current = history.at(-1);
+      // A run worked under an earlier answer when one started at or after the decision's first answer, or is still open:
+      // a run in flight from the original answer counts even when the answer in force is a later change.
+      const ranSince = Boolean(history.length && (store.get('SELECT 1 AS ran FROM operations WHERE campaign_id = ? AND task_id = ? AND created_at >= ? LIMIT 1', id, task.task_id, history[0].at)
+        || store.openOperations(id).some((op) => op.task_id === task.task_id)));
+      const verdict = answerChange({ task, history, input, ranSince });
+      if (verdict.refused) { const [status, key] = CHANGE_REFUSED[verdict.refused]; throw fail(status, COMMANDS.decision[key]); }
+      // One change per answer in force: a second change bound to the same answer is stale, even under another request id.
+      const change = { taskId: task.task_id, decision: input.decision, from: current.seq, option: input.option, text: words, requestId: input.requestId,
+        authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest };
+      if (!store.addEvent(id, 'decision-change', change, `decision-change:${id}:${input.decision}:${current.seq}`, now)) throw fail(409, COMMANDS.decision.changeStale);
+      const d = verdict.decision, label = (key) => d.options.find((o) => o.id === key)?.label ?? key;
+      // Written for a step that already used the answer too: it starts nothing, and a step reopened later (requested
+      // changes, an integration repair) follows the owner's latest answer, under the same authority and scope.
+      store.addEvent(id, 'agent-instruction', { taskId: task.task_id, role: 'implement',
+        text: changeGuidance(d, { from: current.detail.option ?? null, option: input.option, text: words, decision: input.decision, requestId: input.requestId }),
+        authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest,
+        provenance: { by: 'owner', via: 'dashboard', decision: input.decision, requestId: input.requestId, wordsDigest, replaces: current.seq } },
+      changeKey(id, input.decision, input.requestId), now);
+      let item = null;
+      if (verdict.outcome === 'follow-up' || verdict.followUp) {
+        const used = verdict.outcome === 'follow-up';
+        item = followUp(store, { campaignId: id, taskId: task.task_id, key: `answer-${input.decision.slice(0, 8)}-${current.seq}`, now,
+          title: `Apply a changed answer in ${task.task_id}`.slice(0, 256),
+          body: [`The owner changed the answer to "${d.question}" from "${label(current.detail.option)}" to "${label(input.option)}".`,
+            used ? 'The step had already used the earlier answer. Its runs, checks and results are kept as they are; nothing was reopened, rewritten or done again.'
+              : 'A run of the step already worked under the earlier answer, and its only later run may be a check that passes that work. What it did is kept; nothing was undone or done again.',
+            'Check the step\'s result against the new answer, and plan new, bounded work under the existing authority if it still needs a change.'].join('\n'),
+          fallback: 'The owner changed a recorded answer after work had used it. The earlier work is kept as it is; nothing was undone or done again. The question and both answers are in the step\'s records.' });
+      }
+      store.journal(id, 'decision-changed', { task: task.task_id, decision: input.decision, from: current.seq, previous: current.detail.option ?? null, option: input.option,
+        by: 'owner', requestId: input.requestId, wordsDigest, outcome: verdict.outcome, item: item?.number ?? null,
+        question: d.question, options: d.options, ...(d.suggestion ? { suggestion: d.suggestion } : {}) }, now);
+      store.addEvent(id, 'dashboard-command', payload, dedup, now);
+      store.journal(id, 'dashboard-command', { action: 'decision-change', task: task.task_id, requestId: input.requestId }, now);
+      return { accepted: true, duplicate: false, action: 'change', outcome: verdict.outcome === 'follow-up' ? 'follow-up' : verdict.followUp ? 'changed-later' : 'changed' };
     });
   } finally { store.close(); }
 }
